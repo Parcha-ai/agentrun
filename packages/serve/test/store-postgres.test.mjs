@@ -14,8 +14,8 @@ import { inspect } from "node:util";
 import { queued, storeOn } from "./store-helpers.mjs";
 import { client, dropSchema, freshSchema, PG_URL, postgresOnly, schemaOf } from "./store-target.mjs";
 
-const { migrate, migrationsIn, openPostgresStore, postgresVersionOf: versionOf, postgresWhere, openStore, PgConnection, SchemaVersionUnknown, storeTarget, StoreBusy, StoreConstraint, STORE_CONNECT_TIMEOUT_MS, StoreDeadline, StoreOwned } = await import("../dist/store/index.js");
-const { RunnerRefused, startRunnerProcess } = await import("../dist/runner/main.js");
+const { migrate, migrationsIn, openPostgresStore, postgresVersionOf: versionOf, postgresWhere, openStore, PgConnection, SchemaVersionUnknown, storeTarget, StoreBusy, StoreConstraint, STORE_CONNECT_TIMEOUT_MS, StoreDeadline, StoreOwned, Unanswered, LEASE_DEADLINE_MS } = await import("../dist/store/index.js");
+const { RUNNER_RENEW_EVERY_MS, RunnerRefused, startRunnerProcess } = await import("../dist/runner/main.js");
 
 const ONLY = postgresOnly("the Postgres adapter");
 
@@ -101,6 +101,7 @@ test("a duplicate write on a store with a pool of one client is StoreConstraint 
  *  false and every connection open is cut, and new ones hang. */
 async function silentHost(t, forward) {
   const sockets = new Set();
+  const pairs = new Set();
   const server = createServer((socket) => {
     sockets.add(socket);
     socket.on("close", () => sockets.delete(socket));
@@ -108,18 +109,44 @@ async function silentHost(t, forward) {
     if (forward?.on) {
       const target = new URL(PG_URL);
       const upstream = connect(Number(target.port || 5432), target.hostname);
+      upstreams.add(upstream);
+      upstream.on("close", () => upstreams.delete(upstream));
+      const pair = { socket, upstream, cutOff: false };
       upstream.on("error", () => socket.destroy());
-      socket.on("close", () => upstream.destroy());
+      // Cut off (partition): the client's close never reaches the database, whose session stays open, idle.
+      socket.on("close", () => { if (!pair.cutOff) upstream.destroy(); });
       upstream.on("close", () => socket.destroy());
       socket.pipe(upstream).pipe(socket);
+      pairs.add(pair);
+      socket.on("close", () => pairs.delete(pair));
     }
   });
+  const upstreams = new Set();
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   t.after(() => new Promise((resolve) => {
     for (const socket of sockets) socket.destroy();
+    for (const upstream of upstreams) upstream.destroy();
     server.close(resolve);
   }));
-  return { port: server.address().port, cut: () => { for (const socket of sockets) socket.destroy(); } };
+  const freeze = (cutOff) => {
+    for (const pair of pairs) {
+      pair.cutOff = cutOff;
+      pair.socket.unpipe(pair.upstream);
+      pair.upstream.unpipe(pair.socket);
+      pair.socket.pause();
+      pair.upstream.pause();
+    }
+  };
+  return {
+    port: server.address().port,
+    cut: () => { for (const socket of sockets) socket.destroy(); },
+    // Every forwarded connection goes silent and stays open: no byte either way, no FIN, no RST (a load balancer's idle
+    // drop, a failover whose old address stops answering).
+    freeze: () => freeze(false),
+    // As freeze, and a partition: nothing the client does after (its close) reaches the database, nor the database's
+    // keepalives the client; the database finds the session dead only by its own timeouts.
+    partition: () => freeze(true),
+  };
 }
 
 /** `promise`'s outcome, or "hung" past `ms` on this test's own timer: a call that never settles fails the test, bounded. */
@@ -218,9 +245,183 @@ test("a renew after the lease connection's backend died gets a fresh lease conne
     if (!outcome.error) renewed = outcome.value;
   }
   assert.equal(renewed?.[0]?.runId, "run-0", "renewed: the claim holds");
-  assert.ok(Date.now() - started < 4_000, `within the connect deadline (${Date.now() - started} ms)`);
+  // At most two tries (one may meet the dead client and fail at once), each bounded by the 1 s connect deadline.
+  assert.ok(Date.now() - started < 4_000, `within the connect deadline, twice at most (${Date.now() - started} ms)`);
   const fresh = await sql(schema, "SELECT count(*)::int AS n FROM pg_stat_activity WHERE application_name = $1", `agentrun-store-lease:${schema}`);
   assert.equal(fresh[0].n, 1, "on a fresh lease connection, never the shared pool");
+});
+
+test("a renew whose lease connection goes silent (open, no answer, no reset) fails before the runner's next renew tick, and the next renew lands on a fresh connection", ONLY, async (t) => {
+  // The bound, its commit's 1 s floor with it, fits under the runner's renew interval.
+  assert.ok(LEASE_DEADLINE_MS + 1_000 < RUNNER_RENEW_EVERY_MS, `${LEASE_DEADLINE_MS} ms + 1 s under ${RUNNER_RENEW_EVERY_MS} ms`);
+  const schema = await schemaFor(t);
+  const server = await openPostgresStore({ url: PG_URL, schema });
+  t.after(() => server.close());
+  await queued(server, "run-0");
+  const forward = { on: true };
+  const host = await silentHost(t, forward);
+  const through = new URL(PG_URL);
+  through.host = `127.0.0.1:${host.port}`;
+  const runner = await openPostgresStore({ url: through.href, schema, role: "runner", connectTimeoutMs: 500 });
+  const claim = await runner.claim("run-0", "runner-a", { leaseMs: 30_000 });
+  await runner.renewMany([claim], { leaseMs: 30_000 });
+  // The lease connection (and every other one) still open, gone silent.
+  host.freeze();
+  // The runner (lease 30 s, renew every 10 s, stop margin 5 s): a renew sent at +10 s that fails before +20 s leaves the
+  // +20 s tick to renew on a fresh connection before the +25 s stop. One still running at +20 s has that tick skipped.
+  const sentAt = Date.now();
+  const outcome = await within(runner.renewMany([claim], { leaseMs: 30_000 }), 15_000);
+  const tookMs = Date.now() - sentAt;
+  assert.notEqual(outcome, "hung", "the renew hung on a silent connection");
+  assert.ok(outcome.error instanceof StoreDeadline, `refused at its deadline: ${outcome.error ?? "renewed"}`);
+  assert.equal(outcome.error.deadlineMs, LEASE_DEADLINE_MS, "the lease's own deadline, from its call");
+  assert.ok(tookMs < RUNNER_RENEW_EVERY_MS, `failed within ${RUNNER_RENEW_EVERY_MS} ms of its call, not ${tookMs} ms`);
+  // New connections are not silent: the next renew opens one and lands, the claim still held.
+  const next = await within(runner.renewMany([claim], { leaseMs: 30_000 }), 5_000);
+  assert.equal(next.value?.[0]?.runId, "run-0", `the next renew lands on a fresh connection: ${next.error ?? next}`);
+  const closed = await within(runner.close(), 5_000);
+  assert.notEqual(closed, "hung", "the store's close hung");
+});
+
+test("a transaction whose connection goes silent mid-way is let go at its deadline, one silent at its commit within the commit's bound (Unanswered), never waiting on a rollback", ONLY, async (t) => {
+  const schema = await schemaFor(t);
+  const silentAt = async (freezeWhere, { read = false } = {}) => {
+    const host = await silentHost(t, { on: true });
+    const through = new URL(PG_URL);
+    through.host = `127.0.0.1:${host.port}`;
+    const connection = await PgConnection.open({ url: through.href, schema, connectTimeoutMs: 500 });
+    const outcome = connection.transaction(async (tx) => {
+      if (freezeWhere === "mid-way") host.freeze();
+      const { one } = await tx.get("SELECT 1 AS one");
+      if (freezeWhere === "at its commit") host.freeze();
+      return one;
+    }, { deadlineMs: 1_000, read });
+    return { connection, outcome };
+  };
+  // Silent before a statement answers: StoreDeadline at the transaction's own 1 s, its client let go, no ROLLBACK waited
+  // on (a silent connection never answers one).
+  const mid = await silentAt("mid-way");
+  const midOutcome = await within(mid.outcome, 4_000);
+  assert.notEqual(midOutcome, "hung", "the transaction waited on a silent connection past its deadline");
+  assert.ok(midOutcome.error instanceof StoreDeadline, `refused at its deadline: ${midOutcome.error ?? midOutcome.value}`);
+  assert.equal(midOutcome.error.deadlineMs, 1_000);
+  assert.notEqual(await within(mid.connection.close(), 3_000), "hung", "the connection's close hung");
+  // Silent at the commit: its outcome is unknown, so Unanswered (never StoreDeadline, which says nothing was written), within
+  // what is left of its deadline (1 s at least), never past it by more.
+  const late = await silentAt("at its commit");
+  const lateOutcome = await within(late.outcome, 4_000);
+  assert.notEqual(lateOutcome, "hung", "the commit waited on a silent connection past its deadline");
+  assert.ok(lateOutcome.error instanceof Unanswered, `the commit unanswered: ${lateOutcome.error ?? lateOutcome.value}`);
+  assert.notEqual(await within(late.connection.close(), 3_000), "hung", "the connection's close hung");
+  // A read silent at its commit: its snapshot has nothing to land, so what it read stands.
+  const read = await silentAt("at its commit", { read: true });
+  const readOutcome = await within(read.outcome, 4_000);
+  assert.notEqual(readOutcome, "hung", "the read's commit waited on a silent connection past its deadline");
+  assert.equal(readOutcome.value, 1, `the read's value: ${readOutcome.error ?? ""}`);
+  assert.notEqual(await within(read.connection.close(), 3_000), "hung", "the connection's close hung");
+});
+
+test("a single statement (get, all, run outside a transaction) on a connection gone silent is Unanswered past the transaction deadline and the busy wait, and the store still closes", ONLY, async (t) => {
+  const schema = await schemaFor(t);
+  const host = await silentHost(t, { on: true });
+  const through = new URL(PG_URL);
+  through.host = `127.0.0.1:${host.port}`;
+  const connection = await PgConnection.open({ url: through.href, schema, poolSize: 1, connectTimeoutMs: 500 });
+  assert.equal((await connection.get("SELECT 1 AS one")).one, 1);
+  // The pool's one client, idle, gone silent: the next statement is sent on it.
+  host.freeze();
+  // Its bound: 10 s (the deadline and the busy wait both) + 2 s.
+  const outcome = await within(connection.get("SELECT 1 AS one"), 15_000);
+  assert.notEqual(outcome, "hung", "the statement hung on a silent connection");
+  assert.ok(outcome.error instanceof Unanswered, `unanswered: ${outcome.error ?? JSON.stringify(outcome.value)}`);
+  assert.notEqual(await within(connection.close(), 3_000), "hung", "the connection's close hung");
+});
+
+test("a transaction whose client vanished mid-way (a partition: the database never hears it go) lets its row locks go once idle past its deadline", ONLY, async (t) => {
+  const schema = await schemaFor(t);
+  const server = await openPostgresStore({ url: PG_URL, schema });
+  t.after(() => server.close());
+  await queued(server, "run-0");
+  const host = await silentHost(t, { on: true });
+  const through = new URL(PG_URL);
+  through.host = `127.0.0.1:${host.port}`;
+  const connection = await PgConnection.open({ url: through.href, schema, connectTimeoutMs: 500 });
+  t.after(() => connection.close());
+  const outcome = connection.transaction(async (tx) => {
+    await tx.get("SELECT id FROM runs WHERE id = ? FOR UPDATE", "run-0");
+    host.partition();
+    await tx.get("SELECT 1 AS one");
+  }, { deadlineMs: 1_000 });
+  assert.ok((await within(outcome, 4_000)).error instanceof StoreDeadline, "the transaction let go at its deadline");
+  // The row stays locked by the vanished session until the database ends it: idle in its transaction past its deadline
+  // and the slack (1 s + 5 s). Its statement_timeout never fires on an idle session, and the default keepalive is 2 h.
+  const watcher = await client(schema);
+  t.after(() => watcher.end().catch(() => undefined));
+  const startedAt = Date.now();
+  for (;;) {
+    const got = await watcher.query("SELECT id FROM runs WHERE id = 'run-0' FOR UPDATE SKIP LOCKED");
+    if (got.rows.length === 1) break;
+    assert.ok(Date.now() - startedAt < 12_000, "the run's row still locked by a session whose client vanished");
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+});
+
+test("a store's sessions ask the database for TCP keepalives every 10 s, so a vanished client's session ends in about 25 s, not the OS's 2 h", ONLY, async (t) => {
+  const schema = await schemaFor(t);
+  const connection = await PgConnection.open({ url: PG_URL, schema });
+  t.after(() => connection.close());
+  const shown = await connection.get("SELECT current_setting('tcp_keepalives_idle') AS idle, current_setting('tcp_keepalives_interval') AS every, current_setting('tcp_keepalives_count') AS count");
+  assert.deepEqual(shown, { idle: "10", every: "5", count: "3" });
+});
+
+test("a callback that catches a failed statement's typed error and returns still rejects with that error (StoreConstraint), never a plain Error", ONLY, async (t) => {
+  const schema = await schemaFor(t);
+  const connection = await PgConnection.open({ url: PG_URL, schema });
+  t.after(() => connection.close());
+  const outcome = await connection.transaction(async (tx) => {
+    await tx.exec("CREATE TEMP TABLE once (k int PRIMARY KEY)");
+    await tx.run("INSERT INTO once VALUES (1)");
+    await tx.run("INSERT INTO once VALUES (1)").catch(() => undefined);
+    return "returned";
+  }).then((value) => ({ value }), (error) => ({ error }));
+  assert.ok(outcome.error instanceof StoreConstraint, `StoreConstraint: ${outcome.error?.name ?? ""} ${outcome.error ?? outcome.value}`);
+});
+
+test("a backend that dies while its client is checked out (a transaction open) fails that call, never the process", ONLY, async (t) => {
+  const schema = await schemaFor(t);
+  const server = await openPostgresStore({ url: PG_URL, schema });
+  t.after(() => server.close());
+  await queued(server, "run-0");
+  const runner = await openPostgresStore({ url: PG_URL, schema, role: "runner" });
+  t.after(() => runner.close().catch(() => undefined));
+  const claim = await runner.claim("run-0", "runner-a", { leaseMs: 30_000 });
+  // A transaction held open (a renew waiting on another session's lock on its run), its backend ended under it.
+  const holder = await client(schema);
+  t.after(() => holder.end().catch(() => undefined));
+  await holder.query("BEGIN");
+  await holder.query("SELECT 1 FROM runs WHERE id = 'run-0' FOR UPDATE");
+  const holderPid = (await holder.query("SELECT pg_backend_pid() AS pid")).rows[0].pid;
+  const renew = runner.renewMany([claim], { leaseMs: 30_000 });
+  renew.catch(() => undefined);
+  // Watched from a session of its own: inside the holder's transaction pg_stat_activity is one snapshot, taken at its
+  // first read, and would never show the renew's wait.
+  const watcher = await client(schema);
+  t.after(() => watcher.end().catch(() => undefined));
+  let waiting;
+  for (const until = Date.now() + 5_000; ; ) {
+    assert.ok(Date.now() < until, "the renew never waited on the held run row");
+    waiting = (await watcher.query("SELECT pid FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid))", [holderPid])).rows[0];
+    if (waiting) break;
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  // An uncaught error from here fails this test (node:test reports it as the test's own failure).
+  await watcher.query("SELECT pg_terminate_backend($1)", [waiting.pid]);
+  const outcome = await within(renew, 5_000);
+  await holder.query("ROLLBACK");
+  assert.notEqual(outcome, "hung", "the renew hung");
+  assert.ok(outcome.error instanceof Error, `the renew failed with its connection: ${outcome.value ? "renewed" : outcome.error}`);
+  const after = await within(runner.renewMany([claim], { leaseMs: 30_000 }), 5_000);
+  assert.equal(after.value?.[0]?.runId, "run-0", `the next renew lands on a fresh connection: ${after.error ?? ""}`);
 });
 
 test("a write on a store whose every pool client is held is refused at the connect deadline (StoreDeadline), never left waiting for one", ONLY, async (t) => {
@@ -230,6 +431,7 @@ test("a write on a store whose every pool client is held is refused at the conne
   await letGo();
   assert.notEqual(outcome, "hung", "the write hung");
   assert.ok(outcome.error instanceof StoreDeadline, `refused at the connect deadline: ${outcome.error ?? "written"}`);
+  assert.equal(outcome.error.deadlineMs, 500, "the connect deadline's, not another");
 });
 
 test("a transaction whose deadline runs from its call counts the wait for a pool client against it: past it, StoreDeadline, never begun", ONLY, async (t) => {
@@ -261,6 +463,8 @@ test("a store's connection errors (a refused port, a wrong password, a host that
     refused: `postgres://agentrun:${secret}@127.0.0.1:1/agentrun`,
     "wrong password": `postgres://${real.username}:${secret}@${real.host}${real.pathname}`,
     silent: `postgres://agentrun:${secret}@127.0.0.1:${host.port}/agentrun`,
+    // A typo in the port: the URL's own parse fails, before any connection.
+    malformed: `postgres://agentrun:${secret}@127.0.0.1:bad/agentrun`,
   };
   for (const [what, url] of Object.entries(urls)) {
     const error = await openPostgresStore({ url, schema: "agentrun", role: "runner", connectTimeoutMs: 500 }).then(() => null, (e) => e);

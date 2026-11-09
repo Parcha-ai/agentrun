@@ -34,7 +34,7 @@ export interface PostgresStoreOptions {
   /** Most connections the store holds at once (10 by default). */
   readonly poolSize?: number;
   /** How long getting a connection may take, in ms: a new one's connect and startup, or a wait for one of the pool's to
-   *  come free (STORE_CONNECT_TIMEOUT_MS, 10 s, by default). Past it the call, or the open, is refused (StoreDeadline,
+   *  come free (STORE_CONNECT_TIMEOUT_MS, 4 s, by default). Past it the call, or the open, is refused (StoreDeadline,
    *  naming the database's host, database and schema, never the URL), never left hanging. */
   readonly connectTimeoutMs?: number;
   /** Told, at a runner's open, when its clock is more than CLOCK_WARN_MS from the database's. */
