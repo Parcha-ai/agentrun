@@ -300,6 +300,73 @@ test("the token that lists a github_app server's tools as it is saved asks for t
   assert.ok(seen.some((request) => request.authorization === `Bearer ${listing.token}`), "the narrowed one listed the tools");
 });
 
+/** A connected server whose MCP server lists its tools with the App's tokens, before any is saved: the fake takes only a
+ *  token GitHub minted. */
+async function connectedForListing(t) {
+  let server;
+  const minted = () => server.github.tokens.map((entry) => `Bearer ${entry.token}`);
+  const fake = await startFakeMcp({ token: (authorization) => minted().includes(authorization) });
+  t.after(() => fake.close());
+  server = await connectable(t, { githubMcpOrigin: new URL(fake.url).origin });
+  await connect(server);
+  return { server, fake, entry: { url: fake.url, auth: { type: "github_app", headers: { "X-MCP-Tools": "add" } } } };
+}
+
+test("the token that lists a github_app server's tools comes from the first installation that covers a repository: one whose account has none selected is passed over, and each scout is revoked", { timeout: 60_000 }, async (t) => {
+  const { server, entry } = await connectedForListing(t);
+  const { installations, app } = server.github;
+  // acme's installation has no repository selected; other's, installed after it, has one.
+  installations.get(777).repositories = [];
+  installations.set(778, { account: "other", suspended_at: null, repositories: ["other/gadgets"] });
+  assert.equal((await deliver(server.baseUrl, app.webhook_secret, "installation", { action: "created", installation: { id: 778, account: { login: "other" }, app_id: 4242 } })).status, 200);
+  assert.deepEqual((await server.api("GET", "/integrations/github")).body.installations, [{ id: 777, account: "acme" }, { id: 778, account: "other" }]);
+  const preview = await server.api("POST", "/settings/mcp-servers/preview", entry);
+  assert.equal(preview.status, 200, JSON.stringify(preview.body));
+  assert.ok(preview.body.tools.some((tool) => tool.name === "add"));
+  const listing = listingTokens(server);
+  assert.deepEqual(listing.map((token) => [token.installation, token.repositories ?? null]), [[777, null], [778, null], [778, ["gadgets"]]], "a scout on each installation in turn, then the token narrowed to the second's repository");
+  assert.deepEqual(server.github.revoked, [listing[0].token, listing[1].token], "both scouts revoked");
+});
+
+test("GitHub not answering the listing's read of an installation's repositories (a 503, a 429) is 502 github_failed, \"GitHub didn't answer: try again\", never github_not_connected: a preview, a save and a refresh each, and nothing stored changes", { timeout: 60_000 }, async (t) => {
+  const { server, entry } = await connectedForListing(t);
+  assert.equal((await server.api("PUT", "/settings/mcp-servers/gh", entry)).status, 200);
+  const before = (await server.api("GET", "/settings/mcp-servers/gh")).body;
+  for (const status of [503, 429]) {
+    server.github.failures.repositories = status;
+    const tries = [["POST", "/settings/mcp-servers/preview", entry], ["PUT", "/settings/mcp-servers/other", entry], ["POST", "/settings/mcp-servers/gh/refresh"]];
+    for (const [method, path, body] of tries) {
+      const refused = await server.api(method, path, body);
+      assert.deepEqual([refused.status, refused.body.error?.code, refused.body.error?.retryable], [502, "github_failed", true], `${status} ${method} ${path}: ${JSON.stringify(refused.body)}`);
+      assert.match(refused.body.error.message, /GitHub didn't answer: try again/);
+    }
+  }
+  assert.equal((await server.api("GET", "/settings/mcp-servers/other")).status, 404, "nothing saved");
+  assert.deepEqual((await server.api("GET", "/settings/mcp-servers/gh")).body, before, "the saved one unchanged");
+  const scouts = listingTokens(server).filter((token) => !token.repositories);
+  assert.deepEqual(server.github.revoked, scouts.map((token) => token.token), "every scout revoked, the refused ones too");
+});
+
+test("a GitHub rate limit answered 403 (a secondary limit's words, X-RateLimit-Remaining 0, a Retry-After), on the repositories read or on the scout's mint, is 502 github_failed too; a 403 that is no rate limit is a refusal, never \"try again\"", { timeout: 60_000 }, async (t) => {
+  const { server, entry } = await connectedForListing(t);
+  const { failures } = server.github;
+  const limited = [
+    ["repositories", { status: 403, message: "You have exceeded a secondary rate limit. Please wait a few minutes before you try again." }],
+    ["repositories", { status: 403, message: "Forbidden", headers: { "x-ratelimit-remaining": "0" } }],
+    ["mint", { status: 403, message: "API rate limit exceeded for installation ID 777." }],
+    ["mint", { status: 403, message: "Forbidden", headers: { "retry-after": "60" } }],
+  ];
+  for (const [what, failure] of limited) {
+    Object.assign(failures, { repositories: undefined, mint: undefined, [what]: failure });
+    const refused = await server.api("POST", "/settings/mcp-servers/preview", entry);
+    assert.deepEqual([refused.status, refused.body.error?.code, refused.body.error?.retryable], [502, "github_failed", true], `${what} ${JSON.stringify(failure)}: ${JSON.stringify(refused.body)}`);
+  }
+  // A 403 that names no limit (the token cannot read here) is said as it is, not as GitHub being away.
+  Object.assign(failures, { repositories: { status: 403, message: "Resource not accessible by integration" }, mint: undefined });
+  const denied = await server.api("POST", "/settings/mcp-servers/preview", entry);
+  assert.deepEqual([denied.status, denied.body.error?.code], [409, "github_not_connected"], JSON.stringify(denied.body));
+});
+
 test("a github_app server saved at an origin that is no longer GitHub's hosted MCP gets no token: its preview by name is refused, and a run's launch mints none", { timeout: 120_000 }, async (t) => {
   const { server } = await withGitHubMcp(t);
   await server.close();

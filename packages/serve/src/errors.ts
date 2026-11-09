@@ -50,17 +50,19 @@ export const ERROR_STATUS = {
   handoff_answered: 409,
   scope_taken: 409,
   // Connect GitHub (github-connection.ts): a github trigger on a server with no GitHub App, a second App, a Connect that
-  // GitHub could not call back (no public address), and one whose secrets could not be kept (no seal key).
+  // GitHub could not call back (no public address), one whose secrets could not be kept (no seal key), and GitHub that
+  // did not answer (a 429, a 5xx, or nothing) while a github_app MCP server's listing token was minted: tried again.
   github_not_connected: 409,
   github_already_connected: 409,
   github_no_public_url: 409,
   github_no_seal_key: 409,
   github_wrong_origin: 409,
+  github_failed: 502,
 } as const;
 
 export type ErrorCode = keyof typeof ERROR_STATUS;
 
-const RETRYABLE = new Set<ErrorCode>(["home_busy", "idempotency_in_progress", "rate_limited", "internal", "unavailable"]);
+const RETRYABLE = new Set<ErrorCode>(["home_busy", "idempotency_in_progress", "rate_limited", "internal", "unavailable", "github_failed"]);
 
 /** A field that is missing or wrong. `example`: a value the field accepts, read from the request body's schema (explain.ts). */
 export type InputIssue = { field: string; reason: string; message: string; expected?: string; fix?: string; code?: string; example?: unknown };
