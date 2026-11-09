@@ -843,8 +843,10 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   // A stored key that does not open is said once at the start, never a refusal to start.
   toolKeys.view();
   const mcpServers = new McpServers(data, withSecrets(base, "own"), VERSION);
+  if (options.githubMcpOrigin) mcpServers.appOrigin = options.githubMcpOrigin;
   // What a run's grants are checked against, its pin made from and its credentials read from (runs.ts, runnable.ts). A
-  // github_app MCP server's per-run installation token is minted in the runner (runner/mcp-github.ts), not here.
+  // github_app MCP server's per-run installation token is minted in the runner (runner/mcp-github.ts), not here; this
+  // server mints only the save-time listing token (mcpServers.appToken, set once githubConnect is made below).
   const mcpSource: McpServerSource = {
     server: (name) => {
       try {
@@ -1162,8 +1164,10 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   const githubConnection = () => github.view();
   /** What applying a template reads of the server (templates.ts TemplatesDeps). */
   const templateDeps: TemplatesDeps = { githubConnection };
-  // A github_app MCP server's installation token is minted for each run in the runner (runner/mcp-github.ts); every token
+  // A github_app MCP server's tools are listed, as it is saved or previewed, with an installation token of the App minted
+  // here (used once, never returned or stored); a run's own is minted in the runner (runner/mcp-github.ts). Every token
   // minted is one of the server's secrets while it may be in use.
+  mcpServers.appToken = (signal) => githubConnect.tokenForListing(signal);
   secretStores.add("github-tokens", () => githubConnect.liveTokens());
   const triggers: Triggers = new Triggers({
     store: options.store ?? storeless(),

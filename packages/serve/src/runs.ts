@@ -2396,7 +2396,7 @@ export class Runs {
 
   private mcpFreshNow(run: Run): Promise<void> | undefined {
     const source = this.options.mcpServers;
-    if (!source?.refresh && !source?.mint) return undefined;
+    if (!source?.refresh) return undefined;
     // The servers its pin names, or, before its first launch makes the pin (which may refuse the launch in words, there
     // alone), the ones its granted tools name: read only, never pinned here.
     const file = join(run.dir, MCP_PIN);
@@ -2408,8 +2408,7 @@ export class Runs {
     }
     // Nothing to refresh, nothing awaited: a launch path with no OAuth server takes not one tick more than it did.
     if (!names.length) return undefined;
-    // And each github_app server's token for this launch, minted now, so a start and every resume carry a fresh one.
-    return Promise.all(names.flatMap((name) => [source.refresh?.(name), source.mint?.(name, run.id, run.meta.input?.content)])).then(() => undefined);
+    return Promise.all(names.map((name) => source.refresh!(name))).then(() => undefined);
   }
 
   /** `run`'s pinned MCP tools: read from its directory, or at its first launch made from the granted `tools` and the
@@ -2545,7 +2544,7 @@ export class Runs {
       void this.settle(run, 1, true);
       return;
     }
-    const mcp = pin && this.options.mcpServers ? mcpCredentialsOf(pin, this.options.mcpServers, run.id) : undefined;
+    const mcp = pin && this.options.mcpServers ? mcpCredentialsOf(pin, this.options.mcpServers) : undefined;
     // And its saved sign-in, on the same pipe after them (pinSignIn): a pointer its browser opens, never in its environment.
     const secrets = Buffer.concat([handover(handed, this.options.storedKeys), ...(mcp ? [mcpHandover(mcp)] : []), ...(run.signIn ? [handoverSignIn(run.signIn)] : [])]);
     // What it was handed, for the check of what its end-of-run turn writes (learning-run.ts).
