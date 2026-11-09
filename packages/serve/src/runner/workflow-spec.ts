@@ -260,8 +260,9 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string 
           onEvent: async (event) => { if (event.type === "request_start") await deps.store.flush(); },
         });
         // The run's decisions book on the same cap, under their own session (DECISION_SESSION); created now the Harness is
-        // open, so a decision node (which runs after this) reaches it through the deferred reference.
-        if (decisions) decisionCap = await run.decisions(await sessions.open(DECISION_SESSION));
+        // open, so a decision node (which runs after this) reaches it through the deferred reference. The flush makes each
+        // decision's hold durable before it is sent, as a model request's is.
+        if (decisions) decisionCap = await run.decisions(await sessions.open(DECISION_SESSION), { flush: () => deps.store.flush() });
         hooks.setPort(booking.models as never);
       },
       release: async () => {
