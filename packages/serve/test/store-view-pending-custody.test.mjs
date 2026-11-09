@@ -1,4 +1,5 @@
-// What a waiting run's `pending` card serves (store-view.ts), in its view and in both run lists, is cut by the run's one
+// What a waiting run's `pending` card serves (store-view.ts), in its view and in both run lists (one list row,
+// summaryOverStore, serves GET /runs and GET /agents/{id}/runs alike), is cut by the run's one
 // cut (run-cut.ts) as every other word it says: a question its turn ended on and an approval's argument preview hold no
 // secret this server keeps and no sign-in pointer the run was handed; a run whose hand can't be read back here serves no
 // pending at all (its words are withheld). Built in a temp store, the waiting row written to the journal as the runner
@@ -66,9 +67,10 @@ test("a question the run's turn ended on, holding a key this server keeps and th
   }
 });
 
-test("an approval's argument preview holding a key this server keeps is served cut in its view and its list row", async (t) => {
+test("an approval's argument preview holding a key this server keeps and the pointer the run was handed (a readable Browserbase hand) is served cut in its view and its list row", async (t) => {
   const { store, claim } = await waiting(t);
-  const args = { url: `https://example.test/?k=${KEY}` };
+  await store.runs.update(claim, { signInHanded: [sha(POINTER)] });
+  const args = { url: `https://example.test/?k=${KEY}&ctx=${POINTER}` };
   await endedOn(store, claim, { name: "web_fetch", arguments: args }, [
     { kind: "agentrun.ask", data: { callId: "c1", tool: "web_fetch", args, requestedAt: new Date(T0 + 1_500).toISOString(), price: 0.02 } },
   ]);
@@ -76,9 +78,24 @@ test("an approval's argument preview holding a key this server keeps is served c
   const { view, summary } = await pendings(store);
   for (const [where, pending] of Object.entries({ view, summary })) {
     assert.equal(pending?.kind, "approval", `${where}: ${JSON.stringify(pending)}`);
-    assert.ok(!holds(pending, KEY), `${where}: ${JSON.stringify(pending)}`);
-    assert.match(pending.args_preview, /\[redacted\]/, where);
+    assert.ok(!holds(pending, KEY) && !holds(pending, POINTER), `${where}: ${JSON.stringify(pending)}`);
+    assert.equal(pending.args_preview, '{"url":"https://example.test/?k=[redacted]&ctx=[redacted]"}', where);
   }
+});
+
+test("a parked approval of a run whose hand can't be read back serves no pending card, its arguments withheld with its words, in its view and its list row", async (t) => {
+  const { store, claim } = await waiting(t);
+  await store.runs.update(claim, { signInHanded: [sha("a pointer this server never kept")] });
+  const args = { url: `https://example.test/?k=${KEY}&ctx=${POINTER}` };
+  await endedOn(store, claim, { name: "web_fetch", arguments: args }, [
+    { kind: "agentrun.ask", data: { callId: "c1", tool: "web_fetch", args, requestedAt: new Date(T0 + 1_500).toISOString(), price: 0.02 } },
+  ]);
+  await store.release(claim);
+  const view = await viewOverStore(store, "run-1", depsOf(store));
+  assert.equal(view.status, "input_required", "it still waits on its approval");
+  const { view: pending, summary } = await pendings(store);
+  assert.deepEqual([pending, summary], [null, null]);
+  assert.ok(!holds(view, KEY) && !holds(view, POINTER), JSON.stringify(view));
 });
 
 test("a run whose hand can't be read back serves no pending card: its question is withheld with its words, in its view and its list row", async (t) => {
