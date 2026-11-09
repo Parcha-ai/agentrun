@@ -49,8 +49,10 @@ export interface RunDecisions {
 export interface RunCap {
   /** The run's one rule for every model request (a model booking's beforeRequest), its decisions' models known to it. */
   readonly before: BeforeRequest;
-  /** The run's decisions, booked on `writer` (the run's DECISION_SESSION) under the same rule. */
-  decisions(writer: SessionWriter): Promise<RunDecisions>;
+  /** The run's decisions, booked on `writer` (the run's DECISION_SESSION) under the same rule. `flush`: makes what the
+   *  journal holds survive a lost box, awaited once a decision's hold is written and before it is sent, as a model
+   *  request's is (request_start), so a decision sent and then lost with its box still counts after the next claim. */
+  decisions(writer: SessionWriter, options?: { flush?: () => Promise<void> }): Promise<RunDecisions>;
 }
 
 export function runCap(options: RunCapOptions): RunCap {
@@ -70,7 +72,7 @@ export function runCap(options: RunCapOptions): RunCap {
 
   return {
     before,
-    async decisions(writer) {
+    async decisions(writer, decisionOptions = {}) {
       /** The verdict of the decision being admitted (admissions run one at a time on the booking), for its refusal. */
       let verdict: Verdict | undefined;
       const lastVerdict = (): Verdict | undefined => verdict;
@@ -82,6 +84,8 @@ export function runCap(options: RunCapOptions): RunCap {
           verdict = (answer ?? undefined) as Verdict | undefined;
           return answer;
         },
+        // Its hold durable before it leaves: the booking awaits request_start once its runner.request is written.
+        ...(decisionOptions.flush ? { onEvent: async (event: { type: string }) => { if (event.type === "request_start") await decisionOptions.flush!(); } } : {}),
       });
       // A decision an earlier claim admitted and that never answered: booked cut, counted at its hold and its bound.
       await booking.bookCut();
