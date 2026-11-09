@@ -133,8 +133,8 @@ export async function agentLearningCountsOverStore(store: Store, agentId: string
  *  (agentLearningCountsOverStore), each note's runs given it and that read it (noteRuns over notesOf), and what learning
  *  changed (learningImpact), never a run's files. Each run's part is read from its launch (the notes it was given,
  *  learningStartOf), its journal once final (the notes its job read, notesReadOf) and its learning end (when its job
- *  answered and what it and looking back cost, its grade's cost). `seed_notes`, the notes a run started from, is the
- *  count its launch was given: the store keeps no other. */
+ *  answered and what it and looking back cost, its grade's cost). `seed_notes`, the notes a run started from, is its
+ *  launch's seedNotes: every note in its seed, before the budget picked the given ones (main's seed_notes). */
 export async function agentLearningOverStore(store: Store, agentId: string): Promise<{ counts: Omit<LearningCounts, "runs">; impact: Impact; notes: NoteRuns }> {
   const counts = await agentLearningCountsOverStore(store, agentId);
   const kinds = new Map<string, string | undefined>();
@@ -167,7 +167,7 @@ function impactLearningOf(end: RunLearningEnd, started: RunLaunch["learning"]): 
   const over = end.state === "merged" || end.state === "dropped";
   const looked = end.answered_at !== undefined ? { answered_at: end.answered_at, job_cost_usd: end.job_cost_usd ?? null, look_back_usd: end.look_back_usd ?? null } : over ? { look_back_usd: 0 } : {};
   return {
-    state: end.state, reason: end.reason, at: end.at, ...(started ? { seed_notes: started.given.length } : {}), ...looked,
+    state: end.state, reason: end.reason, at: end.at, ...(started?.seedNotes !== undefined ? { seed_notes: started.seedNotes } : {}), ...looked,
     ...(over ? { grade_usd: end.cost_usd ? end.cost_usd.grade : 0 } : {}),
   };
 }

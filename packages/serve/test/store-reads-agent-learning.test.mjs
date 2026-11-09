@@ -46,9 +46,9 @@ test("an agent's notes' runs and its impact from the store: given and read by no
   // Two runs before any note (learning not started), then two that started from notes and looked back.
   await run(store, clock, { id: "r1", start: T0, seconds: 10, usd: 0.1 });
   await run(store, clock, { id: "r2", start: T0 + 100_000, seconds: 20, usd: 0.3 });
-  const both = { given: [{ file: "a.md", name: "Alpha" }, { file: "b.md", name: "Beta" }], seed: "a".repeat(40), section: "# Learned\n" };
+  const both = { given: [{ file: "a.md", name: "Alpha" }, { file: "b.md", name: "Beta" }], seed: "a".repeat(40), section: "# Learned\n", seedNotes: 2 };
   await run(store, clock, { id: "r3", start: T0 + 1_000_000, seconds: 45, usd: 0.25, learning: both, read: ["a.md"], kept: lookedBack(T0 + 1_000_000, 30, 0.2, 0.05) });
-  const one = { given: [{ file: "a.md", name: "Alpha" }], seed: "a".repeat(40), section: "# Learned\n" };
+  const one = { given: [{ file: "a.md", name: "Alpha" }], seed: "a".repeat(40), section: "# Learned\n", seedNotes: 2 };
   await run(store, clock, { id: "r4", start: T0 + 2_000_000, seconds: 70, usd: 0.47, learning: one, kept: lookedBack(T0 + 2_000_000, 50, 0.4, 0.07) });
 
   const view = await agentLearningOverStore(store, "agent-1");
