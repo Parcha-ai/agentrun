@@ -16,10 +16,11 @@ export interface DispatchDeps {
   /** The run's launch row (store.runs.launch): its body names the harness. It throws (StoreLaunchMissing) when the run
    *  was not started with one, which fails the run in words. */
   launchOf(runId: string): Promise<{ readonly body: unknown }>;
-  /** The loop factory for a run launched with `harness`, built from its `launch` record, or undefined when this runner
-   *  does not run that harness (the run fails in words). pi is createPiLoop with the launch's PiRunSpec; a built-in
-   *  learning run names "learning"; the CLI harnesses name their own. */
-  resolve(harness: string, launch: RunLaunch): LoopFactory | undefined;
+  /** The loop factory for a run launched with `harness`, built from its `launch` record and its run id (so the switch may
+   *  read the run's revision — a workflow revision runs on the workflow loop whatever its harness name), or undefined when
+   *  this runner does not run it (the run fails in words). pi is the adapter loop with adapterRunSpecFromLaunch; a built-in
+   *  learning run names "learning"; the CLI harnesses name their own. May be async (the revision read). */
+  resolve(harness: string, launch: RunLaunch, runId: string): LoopFactory | undefined | Promise<LoopFactory | undefined>;
 }
 
 /** A launch naming a harness this runner does not run. */
@@ -69,7 +70,7 @@ function dispatchLoop(deps: DispatchDeps, loopDeps: LoopDeps): Loop {
     const launch = readLaunchBody(row.body);
     if (!launch) throw new LaunchUnreadable(claim.runId);
     const harness = harnessOfBody(row.body as { harness?: string });
-    const factory = deps.resolve(harness, launch);
+    const factory = await deps.resolve(harness, launch, claim.runId);
     if (!factory) throw new UnknownHarness(harness);
     // Set the inner loop and start it before anything awaits: a command() or stop() that interleaves here sees it, so no
     // buffered row and no buffered stop is lost between choosing the loop and replaying what was buffered.
