@@ -177,6 +177,21 @@ test("archil claim: a reclaim removes the run's token users of an earlier epoch 
   assert.deepEqual([...fake.users.keys()].sort(), ["tok-1", "tok-other-run", "tok-person"]);
 });
 
+test("archil claim: a reclaim whose list lags the earlier epoch's mint misses its user; the newer claim's revoke removes it with its own", async (t) => {
+  // Archil's list, read right after a mint, may not hold that user yet (the live reclaim of mint-3; mint-4 saw it lag).
+  const { fake, mount } = await controlOn(t, { lagging: true });
+  const first = await claimOf({ mount: { ...mount, epoch: 1 } });
+  await first.claim.token();
+  // A crashed runner: epoch 1's claim is neither revoked nor released. Epoch 2's list is the first read after its mint.
+  const second = await claimOf({ mount: { ...mount, epoch: 2 } });
+  await second.claim.token();
+  assert.deepEqual([...fake.users.values()].map((one) => one.nickname).sort(), ["agentrun:run-1:1", "agentrun:run-1:2"], "the reclaim's list missed epoch 1's user, as live");
+  // By the run's end the list holds it: the newer claim's revoke removes its own, then the run's earlier epochs.
+  await second.claim.revoke();
+  assert.deepEqual([...fake.users.keys()], [], "epoch 2's user and epoch 1's are both gone");
+  assert.deepEqual(fake.requests.filter((one) => one.method === "DELETE").map((one) => one.query.identifier), ["tok-2", "tok-1"]);
+});
+
 test("archil claim: a lost claim removes the run's mount credential at once, not at its ttl", async (t) => {
   const { fake, mount } = await controlOn(t);
   const controller = new AbortController();
