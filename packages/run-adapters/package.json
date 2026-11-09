@@ -30,6 +30,10 @@
       "types": "./dist/kernel/index.d.ts",
       "default": "./dist/kernel/index.js"
     },
+    "./kernel/cap": {
+      "types": "./dist/kernel/cap/index.d.ts",
+      "default": "./dist/kernel/cap/index.js"
+    },
     "./process": {
       "types": "./dist/process/index.d.ts",
       "default": "./dist/process/index.js"
