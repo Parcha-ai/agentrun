@@ -75,8 +75,9 @@ function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView
   // starts empty, its default as its hint, and is left out untouched for the server to apply that default.
   const [values, setValues] = useState<ParameterText>(() => startValues(t));
   const [ticked, setTicked] = useState<Set<string>>(new Set());
-  // The agent's approvals, sent as overrides.approvals: Ask me unless the owner picks Never ask.
-  const [approvals, setApprovals] = useState<Approvals>("ask");
+  // The agent's approvals, sent as overrides.approvals: the template's own (approvals_default: never for one that runs
+  // on its triggers with no one there), which the owner can switch.
+  const [approvals, setApprovals] = useState<Approvals>(t.approvals_default ?? "ask");
   const [servers, setServers] = useState<Set<string> | null>(null);
   const [applying, setApplying] = useState(false);
   const [issues, setIssues] = useState<FieldIssue[]>([]);
