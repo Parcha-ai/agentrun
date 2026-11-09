@@ -179,6 +179,9 @@ test("Orgo create: each refusal deletes the computer and says why, never with th
 		[{ x11: false }, /\/tmp\/\.X11-unix\/X99.*abstract/],
 		[{ box: { display: false } }, /screen/],
 		[{ box: { status: { NoNewPrivs: "0" } } }, /no_new_privs/],
+		[{ box: { status: { Seccomp: "0" } } }, /daemon seccomp: declared 2/],
+		[{ box: { interfaces: ["lo", "eth0"] } }, /daemon network: declared its own \(lo alone\), read back lo, eth0/],
+		[{ box: { raised: ["tunl0"] } }, /brought up tunl0/],
 		[{ box: { reached: ["1.1.1.1:443"] } }, /1\.1\.1\.1:443/],
 	]) {
 		const { provider, api } = setup({}, { channel: channelOptions });
