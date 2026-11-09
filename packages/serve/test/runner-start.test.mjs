@@ -379,3 +379,16 @@ test("the environment a claimed run's host tools are handed holds none of the ru
   assert.equal(tools.LANG, "C.UTF-8", "the run environment's other names reach the tools");
   assert.deepEqual(runnerOwnIn(tools), { names: [], values: [] }, "none of the runner's own names, nor their values under another name");
 });
+
+test("a claimed run's host tools are cut of the server's secrets even from an environment that still holds them: no store URL, seal key, token or API key, by name or value", async () => {
+  // The second strip, apart from runEnv's: claimSecrets cuts every secret on the launcher's list (secrets.ts
+  // withoutSecrets) from whatever environment it is given, so a run environment that kept one still hands the tools none.
+  const { claimSecrets } = await import("../dist/runner/claim-secrets.js");
+  const store = { sealedKeys: { get: async () => undefined } };
+  const tools = await claimSecrets({ store, sealKey: Buffer.from(SEAL, "base64"), env: { PATH: "/usr/bin:/bin", LANG: "C.UTF-8", ...RUNNER_OWN } }, { kind: "agentic", body: { tools: ["bash", "web_search", "monid.run"] } }, {});
+  assert.equal(tools.LANG, "C.UTF-8", "the environment's other names reach the tools");
+  const listed = ["AGENTRUN_STORE_URL", "AGENTRUN_SEAL_KEY", "AGENTRUN_TOKEN", "AGENTRUN_API_KEY"];
+  const names = Object.getOwnPropertyNames(tools);
+  const values = names.map((name) => String(tools[name])).join("\n");
+  assert.deepEqual({ names: names.filter((name) => listed.includes(name)), values: listed.filter((name) => values.includes(RUNNER_OWN[name])) }, { names: [], values: [] }, "none of the server's secrets by name, nor their values under another name");
+});
