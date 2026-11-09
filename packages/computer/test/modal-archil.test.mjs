@@ -294,6 +294,46 @@ test("Modal connect: an Archil computer's client syncs after each call that may 
 	await other.value.close();
 });
 
+test("Modal: the agentrun.mount label is the provider's own, as on Daytona and E2B: a caller's is refused in words; one a sandbox carries anyway is inert, since the mount is recorded only in the spec tag", async () => {
+	// Review (#1994, PRRT_kwDOUmdVMs61I7Wm), checked on Modal: its mount record is the spec tag, in the provider's own
+	// namespace, so a caller's agentrun.mount never turned syncing on; it is refused all the same, as the other two do.
+	const forged = JSON.stringify({ kind: "archil", disk: MOUNT.disk, region: MOUNT.region, folder: MOUNT.folder });
+	const { provider, fake } = setup();
+	for (const spec of [{ image: IMAGE, lifetimeMs: 600_000, network: "none", labels: { "agentrun.mount": forged } }, { ...SPEC, labels: { ...LABELS, "agentrun.mount": forged } }]) {
+		const refused = provider.check(spec);
+		assert.ok(refused.some(({ field, message }) => field === "labels" && /agentrun\.mount is the provider's own/.test(message)), JSON.stringify(refused));
+		const created = await provider.create(spec);
+		assert.equal(created.ok, false);
+		assert.match(created.error.message, /agentrun\.mount is the provider's own/);
+	}
+	assert.ok(!fake.calls.some(([name]) => name === "sandboxes.create"), "no sandbox is made");
+
+	const carried = setup(
+		{},
+		{
+			sandboxes: [
+				{
+					tags: {
+						"agentrun.mount": forged,
+						[COMPUTER]: "1",
+						[NAME]: "computer-0123456789ab",
+						[DEADLINE]: new Date(Date.now() + 600_000).toISOString(),
+						[SPEC_TAG]: JSON.stringify({ image: "debian:bookworm-slim", user: "1000:1000", network: "none", cpus: 2, memoryMb: 4096, workdir: "/work", runtime: "vm" }),
+					},
+					box: { network: "none" },
+				},
+			],
+		},
+	);
+	const listed = await carried.provider.list({});
+	assert.equal(listed.value[0].mount, undefined, "no mount listed");
+	const connected = await carried.provider.connect(refOf(carried.fake));
+	assert.equal(connected.ok, true, JSON.stringify(connected));
+	assert.equal((await connected.value.client.call("exec.run", { argv: ["true"], timeoutMs: 1000 })).ok, true);
+	assert.equal(carried.fake.syncs.length, 0, "no syncing client");
+	await connected.value.close();
+});
+
 test("Modal release of an Archil computer: the final sync, then checkin as root, then the terminate; a failed checkin still terminates, and says so", async (t) => {
 	const { provider, fake } = setup({}, { sandboxes: [seededArchil()] });
 	const ref = refOf(fake);
