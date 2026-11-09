@@ -1944,8 +1944,9 @@ those that need no group (health, provider, drift) among them. The report carrie
 reasons }`), the text report ends on `kind <kind> PASS` or `kind <kind> FAIL: <why>`, and the CLI exits on it: 0 when
 the provider passes the kind, 1 when it does not. A provider passes a kind only when it serves it (by its
 capabilities), no case of the run failed (a declared optional group that fails would hand a loop a broken tool),
-every required group has at least one passing case and none skipped but for an optional group the computer does not
-declare, and the run left nothing behind. `none` is no computer, and `--kind` refuses it in words; `browser` runs, and
+every required group has at least one passing case and no Core case skipped but for an optional group the computer does
+not declare, and the run left nothing behind. A Full case that skips is owed by no group: a provider may refuse in
+words what its kind does not require, as the phone harness refuses `touch.pinch`, and the report still shows the skip. `none` is no computer, and `--kind` refuses it in words; `browser` runs, and
 fails `no case of cdp passed` until the suite has CDP cases. `kindCases` and `kindVerdict` are exported, so the serve
 side reads the same table.
 
