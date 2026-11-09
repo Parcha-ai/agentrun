@@ -7,27 +7,26 @@
 //   onAdopt       a running run read at a start: one a server left in its end-of-run turn finishes, its turn asked again
 //   onLaunch      its process launched: the saved keys it was handed, kept for the check of what its turn writes
 //   beforeSettle  its end being written: the turn's rows closed, and what the turn answered kept aside
-//   afterSettle   its end written: the notes the turn answered with checked (propose.ts), graded and merged (grade.ts)
+//   afterSettle   its end written: the notes the turn answered with checked (propose.ts) and kept as its proposal; the
+//                 runner's built-in learning run grades and merges it (runner/learning-loop.ts)
 //   onReopen, afterReopen   a follow-up: its copy laid again where it is gone, and a turn its process went in aborted
 //   recover       the server's start: what a server left between steps, picked up once
-//   close, idle   the server closing: grades stopped, then every check and grade in flight waited for
+//   close, idle   the server closing: nothing new started, then every check in flight waited for
 // It holds the runs' learning in flight; a run's learning itself is in its serve.json (`learning`, `reflect`), which
 // the kernel writes.
-import { readFile } from "node:fs/promises";
 import { join, posix } from "node:path";
-import { ANSWER_MAX, INDEX_FILE, parseNoteFile, redactSecrets, type Verdict } from "./learn/index.js";
+import { ANSWER_MAX, INDEX_FILE } from "./learn/index.js";
 import { type AnalyticsFilter, type Revision, runDirIn, type RunRow, type StartedRun } from "@parcha/pi-durable-agent";
 import type { TimelineEvent } from "@parcha/pi-durable-agent/timeline";
 import { CAP_REFUSAL_PREFIX, SPEND_CAP_REACHED } from "./cap.js";
 import { readJson, RUN_META, runDoorToken } from "./files.js";
-import { activeOf, currentLearning, detailShown, dropSeed, holdsForOk, gradeModelOf, keepTurn, KEPT_LEARNING, layLearned, layPinnedSkills, LEARNED_DIR, type LearnedFile, type Learning, LEARNING_BUDGET, type NoteRuns, LEARNING_LABEL, LEARNING_REASONS, learningBlocker, type LearningReason, type LearningState, learningTestHooks, learningView, type NoteLearned, pinSeed, type Proposal, PROPOSAL, readPin, readTurn, secretsShown, type Seed, seedAt, seedOf, shortLearning, type Shown, skillsAt, type Turn, withAgentGrade } from "./learning.js";
+import { activeOf, currentLearning, detailShown, dropSeed, holdsForOk, keepTurn, KEPT_LEARNING, layLearned, layPinnedSkills, LEARNED_DIR, type Learning, LEARNING_BUDGET, type NoteRuns, LEARNING_LABEL, LEARNING_REASONS, learningBlocker, type LearningReason, type LearningState, learningTestHooks, learningView, pinSeed, readPin, readTurn, secretsShown, type Seed, seedAt, seedOf, shortLearning, type Shown, skillsAt, type Turn } from "./learning.js";
 import { statusesOf } from "./learning-routes.js";
 import { cutStrings, redacted } from "./key-refusal.js";
-import { withoutFaux } from "./model.js";
 import { servedOnly } from "./served-only.js";
 import type { Run, RunsOptions, Status } from "./runs.js";
-import { secret, SECRET_NAMES, withSecrets } from "./secrets.js";
-import { notKept, said, STOPPED } from "./learning-words.js";
+import { secret, SECRET_NAMES } from "./secrets.js";
+import { said, STOPPED } from "./learning-words.js";
 import { ended, lineNotesOf, type NoteFiles, notesLineOf, notesOf, type Outcome, outcomeOf, outcomes, record } from "./usage.js";
 import { isObject, type Json } from "./validate.js";
 import { REFLECT_REQUEST } from "./turns.js";
@@ -93,32 +92,6 @@ export function notesRead(reflect: Reflect | undefined, rows: readonly TimelineE
   return [...read];
 }
 
-/** How much of a grader's answer the host could not read a run keeps: its start and its end, where such an answer goes
- *  wrong (words before its JSON, or JSON cut off). */
-const UNREAD_MAX = 2_000;
-/** How much of an answer redactSecrets reads before it gives up on it whole: more than the grader's answer can hold
- *  (GRADE_MAX_TOKENS). */
-const UNREAD_SCAN = 256 * 1024;
-/** `text` cut of `values` (redactSecrets), whole, and then in size at whitespace. Cut of secrets first: a key may hold a
- *  space, or be written in spaced parts, and a cut before could leave a part of it. */
-const unreadShown = (text: string, values: readonly string[]): string => {
-  const cut = redactSecrets(text, values, UNREAD_SCAN);
-  return cut.length <= UNREAD_MAX ? cut : `${cut.slice(0, 1_500).replace(/\S*$/, "")}\n…\n${cut.slice(-(UNREAD_MAX - 1_503)).replace(/^\S*/, "")}`;
-};
-
-/** `verdict` with its reason, and each item's question and why, cut of `values` (learn/secrets.ts redactSecrets). */
-const cutVerdict = (verdict: Verdict, values: readonly string[]): Verdict => ({
-  ...verdict,
-  reason: redactSecrets(verdict.reason, values),
-  items: verdict.items.map((item) => ({ ...item, ...(item.question === undefined ? {} : { question: redactSecrets(item.question, values) }), why: redactSecrets(item.why, values) })),
-});
-
-/** The notes a run's learning added, from its proposal: each note's file, name and the notes it supersedes. */
-const learnedOf = (proposal: Proposal): NoteLearned[] => proposal.notes.flatMap(({ file, text }) => {
-  const note = parseNoteFile(file, text);
-  return Array.isArray(note) ? [] : [{ file, name: note.name, supersedes: note.supersedes }];
-});
-
 /** The run's learning row, once its learning was proposed, merged or dropped (`seed_failed` included): its state, reason
  *  and detail, its summary the detail itself as the run's view says it (learning.ts detailShown: cut of the host's
  *  secrets now, `shown`, then cut short). One row, which says where the learning ended. */
@@ -157,11 +130,6 @@ export function learningStats(rows: readonly RunRow[], filter: AnalyticsFilter, 
   return out;
 }
 
-/** A note's name, from its front matter; its file when it has none. */
-const nameOf = (file: string, text: string) => {
-  const note = parseNoteFile(file, text);
-  return Array.isArray(note) ? file : note.name;
-};
 
 /** What run `run`'s end-of-run turn answered, and what the user said in the run, as beforeSettle keeps them: the whole
  *  text of each of the turn's assistant messages, in order (its notes may come in more than one), cut once past
@@ -271,7 +239,7 @@ function once(running: Map<string, Promise<void>>, key: string, work: () => Prom
 }
 
 /** What learning needs of the server's options: the data directory and the agents, its tokens, the switch, and its bounds. */
-export type LearningOptions = Pick<RunsOptions, "agents" | "token" | "doorToken" | "storedKeys" | "serverSecrets" | "learning" | "learningBudget" | "reflectTimeoutMs" | "gradeTimeoutMs" | "gradeModel">;
+export type LearningOptions = Pick<RunsOptions, "agents" | "token" | "doorToken" | "storedKeys" | "serverSecrets" | "learning" | "learningBudget" | "reflectTimeoutMs">;
 /** What the kernel (runs.ts) hands learning: its runs, and the parts of a run's life learning moves. */
 export type LearningKernel = {
   /** Run `id` when the kernel holds it; read from the agent store the first time (`get`). */
@@ -305,14 +273,13 @@ export class LearningRuns {
    *  disk: a server that restarts loses them, and the run's next launch hands it the keys as they are then, which the
    *  check reads too. Dropped once the run's learning ends, and when the server closes. */
   private readonly handed = new Map<string, Set<string>>();
-  /** Aborted as the server closes: a grade's screen and grader stop, and leave the run's learning `proposed`. */
+  /** Aborted as the server closes: no check starts after it. */
   private readonly stopping = new AbortController();
   /** The runs whose learning's end is in the learning ledger (usage.ts), each with the files its lines say it was given
    *  and read (filesKey): read at the start, and each one written since. */
   private readonly recorded = new Map<string, string>();
-  /** By run: what its end-of-run turn wrote, being checked (proposeOnce), and its proposal, being graded (gradeOnce). */
+  /** By run: what its end-of-run turn wrote, being checked (proposeOnce). */
   private readonly proposing = new Map<string, Promise<void>>();
-  private readonly grading = new Map<string, Promise<void>>();
   /** The host's secrets as shown() last cut them, by their values, and the saved keys it read. */
   private cut?: { key: string; shown: Shown };
   private saved?: Map<string, string | undefined>;
@@ -450,14 +417,11 @@ export class LearningRuns {
     await this.noteRead(run);
   }
 
-  /** The run's end written, as it would be without learning: what its end-of-run turn wrote checked, then graded and
-   *  merged. Called only then, so a slow or failing check never holds the job. A run already `proposed` is graded: one
-   *  a follow-up opened again mid-grade, whose server went while it ran, which the next start passed over as running.
-   *  gradeOnce does nothing for any other state, nor while a grade of the run is in flight here. */
+  /** The run's end written, as it would be without learning: what its end-of-run turn wrote checked, and kept as its
+   *  proposal or dropped. Called only then, so a slow or failing check never holds the job. A proposal is graded and
+   *  merged by the runner's built-in learning run (runner/learning-loop.ts), never here. */
   afterSettle(run: Run): Promise<void> {
-    const proposing = this.proposeOnce(run);
-    void this.gradeOnce(run);
-    return proposing;
+    return this.proposeOnce(run);
   }
 
   /** A run that learns, opened again for a follow-up, before its process starts: `work/.learning/` laid again from its
@@ -486,9 +450,8 @@ export class LearningRuns {
 
   /** The server's start: the learning ledger read from now, beside the running runs' pass, never before it (a line
    *  written twice meanwhile is read once). What comes back takes every run once that pass is done: each ended run whose
-   *  learning a server left between steps, what its end-of-run turn wrote not checked yet, or its proposal not graded or
-   *  merged, is checked or graded now, once; a learning end saved and not in the ledger (a server that went between the
-   *  two) is written there. */
+   *  learning a server left between steps, what its end-of-run turn wrote not checked yet, is checked now, once; a
+   *  learning end saved and not in the ledger (a server that went between the two) is written there. */
   recover(): (rows: readonly RunRow[]) => Promise<void> {
     const inLedger = outcomes(this.options.agents.dir).catch(() => new Map<string, Outcome>());
     return async (rows) => {
@@ -499,24 +462,22 @@ export class LearningRuns {
         const meta = (await readJson(join(runDirIn(this.options.agents.dir, row.agent, row.id), RUN_META))) as Partial<Run["meta"]> | null;
         const learning = isObject(meta?.learning) ? meta.learning : undefined;
         await this.onSaved({ id: row.id, agentId: row.agent }, learning);
-        if (!awaitsPropose(meta) && learning?.state !== "proposed") continue;
+        if (!awaitsPropose(meta)) continue;
         const run = await this.kernel.get(row.id).catch((error: Error) => (warn(row.id, `not read: ${error.message}; the next start tries again`), null));
         if (run && awaitsPropose(run.meta)) await this.proposeOnce(run);
-        else if (run) void this.gradeOnce(run);
       }
     };
   }
 
-  /** The server closing: a grade's screen and grader stop, and leave the run's learning `proposed`; nothing new starts. */
+  /** The server closing: nothing new starts. */
   close(): void {
     this.stopping.abort();
     this.handed.clear();
   }
 
-  /** Once every run has settled: each check in flight, then each grade, ended. */
+  /** Once every run has settled: each check in flight ended. */
   async idle(): Promise<void> {
     await Promise.all(this.proposing.values());
-    await Promise.all(this.grading.values());
   }
 
   /** A held run's learning, in short, from memory (null when it does not learn); undefined for a run the kernel does not
@@ -819,95 +780,6 @@ export class LearningRuns {
       this.setLearning(run, "dropped", "propose_failed", said.stopped(STOPPED.notChecked));
     }
     await this.kernel.save(run).catch((error: Error) => warn(run.id, `its learning is not saved: ${error.message}`));
-    void this.gradeOnce(run);
-  }
-
-  /** The run's proposal merged into main or dropped (grade.ts), one grade at a time per agent, after the checks and
-   *  never in a run's way. The verdict and what the grade spent are kept in serve.json before the merge, so a restart
-   *  never asks the grader again; what it spent is in the ledger with the run's end. A server that closes mid-grade leaves the
-   *  learning `proposed`, and its next start grades it. */
-  private gradeOnce(run: Run): Promise<void> {
-    // Not while the run is hidden (proposeOnce): its verdict's words are cut and its merge's message said over the values
-    // refused, which lack the pointer here.
-    if (run.meta.learning?.state !== "proposed" || run.meta.unshown) return Promise.resolve();
-    return once(this.grading, run.id, () => withAgentGrade(this.options.agents.dir, run.agentId, () => this.grade(run)));
-  }
-
-  private async grade(run: Run): Promise<void> {
-    const before = run.meta.learning;
-    if (before?.state !== "proposed" || this.closing) return;
-    const data = this.options.agents.dir;
-    // What the checks left out of the proposal (a verdict per item) stays with it to its end.
-    const checkedOut = before.problems?.length ? { problems: before.problems } : {};
-    let kept: Omit<Partial<Learning>, "state" | "reason" | "detail" | "at"> = before.verdict ? { ...checkedOut, verdict: before.verdict, graded: before.graded, cost_usd: before.cost_usd, tokens: before.tokens } : { ...checkedOut };
-    // Its end saved, and with it its line in the ledger, which carries what the grade spent (onSaved).
-    const end = (state: LearningState, reason: LearningReason | null, detail: string, more: typeof kept = {}) => {
-      this.setLearning(run, state, reason, detail, { ...kept, ...more });
-      return this.kernel.save(run).catch((error: Error) => warn(run.id, `its learning is not saved: ${error.message}`));
-    };
-    try {
-      const proposal = JSON.parse(await readFile(join(run.dir, PROPOSAL), "utf8")) as Proposal;
-      const known = await this.options.agents.revision(run.agentId, run.revision);
-      if (known?.revision.kind !== "agentic") throw new Error("the run's revision is not agentic");
-      const { judgeProposal, keptProposal, mergeProposal, readForGrade } = await import("./grade.js");
-      const main = kept.verdict ? undefined : await readForGrade(data, run.agentId, run.id, proposal);
-      // Main took a note of the same name, or superseded one it supersedes, since the run started: refused before the
-      // grader is asked.
-      if (main && "problems" in main) return await end("dropped", "checker", said.stale(main.problems), { problems: main.problems });
-      if (main && !("merged" in main)) {
-        const { instructions, harness, model, thinking } = known.revision.body;
-        const env = this.hostEnv();
-        const gradeModel = gradeModelOf(env, this.options.gradeModel);
-        const judged = await judgeProposal({ runId: run.id, agent: { instructions, harness, model, thinking }, main, proposed: proposal.notes, ...(proposal.files ? { files: proposal.files } : {}), ...(proposal.asked ? { asked: proposal.asked } : {}), ...(proposal.triggered ? { triggered: proposal.triggered } : {}), ...(gradeModel ? { gradeModel } : {}), env, signal: this.stopping.signal, ...(this.options.gradeTimeoutMs ? { gradeTimeoutMs: this.options.gradeTimeoutMs } : {}) });
-        kept = { ...checkedOut, cost_usd: { grade: judged.cost.usd }, tokens: { grade: judged.cost.tokens } };
-        if ("error" in judged) {
-          warn(run.id, `its grader gave no verdict: ${judged.error.message}`);
-          return await end("dropped", "grade_failed", said.stopped(STOPPED.noReview));
-        }
-        // Kept cut of every secret the run's notes were checked against, the keys its launches handed it included, which a
-        // read no longer knows: its reason and its items' words are what the run's words are said from again (wordsOf).
-        kept.verdict = cutVerdict(judged.verdict, this.refused(run));
-        if (!kept.verdict.merge) {
-          // What it proposed is lost whole: its skill and its draft are named, from the proposal (a verdict the host
-          // refused has no items), and the line cut of every secret the verdict was.
-          const lost = (proposal.files ?? []).flatMap(({ file }) => {
-            const place = /^(?:skills\/([^/]+)\/SKILL\.md|workflows\/([^/]+)\/workflow\.json)$/.exec(file);
-            return place ? [{ file, name: (place[1] ?? place[2])! }] : [];
-          });
-          // Two answers it could not read: the last kept, in size and cut of every secret, to diagnose it by.
-          const unread = "unread" in judged && judged.unread !== undefined ? { unread: unreadShown(judged.unread, this.refused(run)) } : {};
-          return await end("dropped", "grader", redactSecrets(notKept(kept.verdict, lost), this.refused(run)), { ...(lost.length ? { lost } : {}), ...unread });
-        }
-        // Kept before the merge, with the blobs it judged superseded: a restart merges on this verdict, never asks the
-        // grader again, and checks the same blobs.
-        kept.graded = main.graded;
-        this.setLearning(run, "proposed", null, before.detail, kept);
-        await this.kernel.save(run);
-      }
-      // A verdict kept with no `graded`: a note the proposal supersedes is refused, never marked on a text nobody knows
-      // was read.
-      // A verdict per item: what it keeps merges, what it drops is left out (keptProposal), and said.
-      const merging = keptProposal(proposal, kept.verdict);
-      const left = (kept.verdict?.items ?? []).filter((item) => !item.keep);
-      const merge = await mergeProposal(data, run.agentId, run.id, merging, kept.verdict?.reason || "The grader kept every new note.", kept.graded ?? {}, kept.verdict);
-      if ("problems" in merge) return await end("dropped", "checker", said.stale(merge.problems), { problems: merge.problems });
-      if (merge.checkout) warn(run.id, `its merge is on main, but the folder's files were not brought in line: ${merge.checkout.message}`);
-      // A note the user asked for whose rule is risky waits on main for their OK: named here, and no run reads it yet.
-      const waiting = new Set((kept.verdict?.items ?? []).filter((item) => item.pending).map((item) => item.file));
-      const pending = merging.notes.filter(({ file }) => waiting.has(file)).map(({ file, text }) => ({ file, name: nameOf(file, text) }));
-      // What it learned: the notes it added that runs read, a note that waits for its OK not among them; and its skill
-      // and workflow draft, each pending when it waits.
-      const learned = learnedOf(merging).filter(({ file }) => !waiting.has(file));
-      const made = (suffix: string): LearnedFile[] => (merging.files ?? []).filter(({ file }) => file.endsWith(suffix)).map(({ file }) => ({ file, name: file.split("/")[1]!, ...(waiting.has(file) ? { pending: true as const } : {}) }));
-      const skills = made("/SKILL.md");
-      const workflows = made("/workflow.json");
-      await end("merged", null, redactSecrets(said.merged(learned, pending, [...skills, ...workflows], left, before.problems ?? []), this.refused(run)), { merged: merge.merged, learned, ...(pending.length ? { pending } : {}), ...(skills.length ? { skills } : {}), ...(workflows.length ? { workflows } : {}) });
-    } catch (error) {
-      // A server closing: nothing was decided, and the next start grades the run.
-      if (this.closing) return;
-      warn(run.id, `what it proposed could not be graded: ${(error as Error).message}`);
-      await end("dropped", "grade_failed", said.stopped(STOPPED.notReviewed));
-    }
   }
 
   /** What a run's learning refuses, and cuts from what it says: every secret this server never shows (serverSecrets),
@@ -917,12 +789,5 @@ export class LearningRuns {
     // The run's own door token too: its process holds it, so its notes may.
     const own = run.doorToken ?? runDoorToken(run.dir);
     return [...this.options.serverSecrets(), ...(this.handed.get(run.id) ?? []), ...(run.handed ?? []), ...(own ? [own] : [])];
-  }
-
-  /** This server's environment for a call of its own (a grade's screen and grader): its secrets readable, never a
-   *  child's, the keys saved on it with them (a Jev key saved through the settings API screens as one in the environment
-   *  does), and the test hooks a run's process gets. */
-  private hostEnv(): NodeJS.ProcessEnv {
-    return withSecrets({ ...withoutFaux(process.env), ...this.kernel.fauxEnv() }, "all", this.options.storedKeys);
   }
 }

@@ -51,9 +51,9 @@ import { isObject } from "./validate.js";
 import { mirrorWrites } from "./workspace.js";
 import { deniedText, runGate } from "./tool-gate.js";
 
-/** The workflow adapters this host gives every run: model nodes, and calls `via: "tool"` to the table's tools. Typed
- *  questions (`runJudge`) run too where the host sets a decision provider's key (decisions.ts). */
-export const WORKFLOW_ADAPTERS = ["runNode", "runEffect"] as const;
+// The workflow adapters this host gives every run moved to the runner side (runner/workflow-adapters.ts); re-exported
+// here so readers that still take it from this module are unchanged.
+export { WORKFLOW_ADAPTERS } from "./runner/workflow-adapters.js";
 
 /** A call node's tool failure, as the value its effect completed with (runEffect below). */
 const TOOL_FAILED = "agentrun_serve_tool_failed";

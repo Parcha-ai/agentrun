@@ -62,6 +62,83 @@ const hostApi = (given: HostApi): ToolExecutionApi =>
 /** The tools whose result is pi's own words about a path (`Successfully wrote to <path>`), never a file's text. */
 const SAYS_PATH = new Set(["write", "edit"]);
 
+/** What one host tool's call reads of the run, beside the gate: the run's environment (its file environment, the api's
+ *  `env`), its harness's commit and its root agent (a paid call's booking and pi's read), the context and the results map,
+ *  and the paid-call money seam. The same over a DurableRun (hostTools below) and over the runner's claim Harness
+ *  (runner/adapter-run-spec.ts), so a tool runs and answers one way on both. */
+export interface HostToolCtx {
+  readonly context: Context;
+  readonly results: ToolResults;
+  /** The run's environment, as the api's `env` (the file environment; the web and monid tools read none of it). */
+  env(): Promise<ToolExecutionApi["env"]>;
+  readonly commit: ToolExecutionApi["commit"];
+  readonly agent: ToolExecutionApi["agent"];
+  /** The run's tool gate and the park it takes; none for the gate's own run of an approved call (the adapter loop's own
+   *  gate, which gates every host-tool call before its intent). */
+  readonly gated?: { gate: RunGate; park: Park };
+  /** A paid tool's money, routed through one seam: undefined to run the call, else the refusal that is its answer, so a
+   *  paid tool whose charge cannot be settled here is never run unbooked (runner/adapter-run-spec.ts settlePaidCall). */
+  settle?(name: string, args: unknown, callId: string): { refused: string } | undefined;
+}
+
+/** One pi ToolRegistration `tool` (named `name` by its catalog name) as the kernel's HostTool an adapter session takes:
+ *  the gate before the call, the paid-call seam, then the tool on the run's environment and harness, its answer the text a
+ *  model reads (the output or the failure, a write's or an error's path named relative to the run's folder). Undefined when
+ *  `name` is not one a host runs (REPLAY). */
+export function hostToolOf(name: string, tool: ToolRegistration, ctx: HostToolCtx): HostTool | undefined {
+  const replay = REPLAY[name];
+  if (!replay) return undefined;
+  return {
+    name: tool.name,
+    description: tool.description,
+    inputSchema: tool.parameters as unknown as Record<string, unknown>,
+    replay,
+    async call(args, { callId, signal, attempt }) {
+      // A replay (the kernel's attempt above 0) may follow an attempt that was sent: the gate's refusal then says so.
+      const refused = await ctx.gated?.gate.enter(name, args, callId, ctx.gated.park, (attempt ?? 0) > 0 ? { replayed: true } : {});
+      if (refused) {
+        const answer = { text: refused.text, isError: refused.isError };
+        ctx.results.set(callId, answer);
+        // A parked call did not run: the harness's session records it so (HostTool's `parked`).
+        return refused.parked ? { ...answer, parked: true as const } : answer;
+      }
+      // The paid-call money seam: a paid tool whose charge cannot be settled here is refused in words, never run unbooked.
+      const unsettled = ctx.settle?.(name, args, callId);
+      if (unsettled) {
+        const answer = { text: unsettled.refused, isError: true };
+        ctx.results.set(callId, answer);
+        return answer;
+      }
+      const out = bounded(tool.outputLimits);
+      const notes: string[] = [];
+      const env = await ctx.env();
+      // The call's id and the run's store, as pi's: a paid call marks and books its charge there (monid.ts).
+      const api = hostApi({
+        env, callId,
+        commit: ctx.commit,
+        output: (chunk) => out.push(chunk), outputWindow: undefined, retainedOutput: () => out.retained(),
+        diagnostic: (note) => void notes.push(note.message),
+        agent: ctx.agent,
+        models: createModels(),
+        conversationId: ROOT_CONVERSATION_ID,
+      });
+      // A tool that throws (bash on a non-zero exit or a timeout) still answers with its output, as pi's harness does;
+      // monid's answer a failure as an error result, which is kept as it is.
+      const result = await tool.execute(args as never, api, withAbortSignal(signal, ctx.context)).catch((error: Error) => ({ failed: error.message, isError: true }));
+      // pi names a result's blocks `output`; its bash answers its exit as a result's diagnostic.
+      const given = result as unknown as { output?: unknown; isError?: boolean; failed?: string; diagnostics?: readonly { message: string }[] };
+      const said = [textOf(given.output) || out.text(), given.failed, ...notes, ...(given.diagnostics ?? []).map((note) => note.message)].filter((part) => part).join("\n\n");
+      const isError = given.isError === true;
+      const work = (env as { cwd?: unknown }).cwd;
+      const works = typeof work === "string" ? [work, realOf(work)] : [];
+      const answer = { text: isError || SAYS_PATH.has(name) ? workspaceRelative(said, works) : said, isError };
+      ctx.results.set(callId, answer);
+      const images = imagesOf(given.output);
+      return images.length ? { ...answer, images } : answer;
+    },
+  };
+}
+
 
 /** The host tools `names` names, on the run's coding source `coding`. `gated`: the run's tool gate, which every call
  *  passes, and the park it takes (harness-app.ts), told of a call it parked, whose turn the harness ends; none (the
@@ -79,59 +156,24 @@ export function hostTools(run: DurableRun, names: readonly string[], context: Co
   const monid = names.some((name) => name.startsWith("monid.")) ? monidTools(withSecrets(process.env), () => localWorkspace(run.claim.work)) : [];
   // `extra`: the run's own tools beyond the table, its learned_workflow (learned-workflow.ts) when its pin names one.
   const tools = new Map([...coding, ...web, ...monid, ...extra].map((tool) => [tool.name, tool as ToolRegistration] as const));
+  // What each call reads of the run: its environment, its harness's commit and root agent (pi's read asks the calling
+  // agent for its model, for an image's limits; a non-pi run's root agent has no pi model, so read uses its default).
+  const ctx: HostToolCtx = {
+    context,
+    results,
+    ...(gated ? { gated } : {}),
+    env: async () => await run.env({ conversationId: ROOT_CONVERSATION_ID, read: undefined as never }, context),
+    commit: (change, at, options) => run.harness.commit(change, at, options),
+    agent: async (at) => {
+      const root = await run.harness.conversation(ROOT_CONVERSATION_ID, at);
+      if (!root) throw new Error("the run has no root conversation");
+      return root.agent(at);
+    },
+  };
+  // The registrations are keyed by their wire names: the same name for every tool here but monid's.
   return names.flatMap((name) => {
-    // The registrations are keyed by their wire names: the same name for every tool here but monid's.
     const tool = tools.get(wireName(name));
-    const replay = REPLAY[name];
-    if (!tool || !replay) return [];
-    const host: HostTool = {
-      name: tool.name,
-      description: tool.description,
-      inputSchema: tool.parameters as unknown as Record<string, unknown>,
-      replay,
-      async call(args, { callId, signal, attempt }) {
-        // A replay (the kernel's attempt above 0) may follow an attempt that was sent: the gate's refusal then says so.
-        const refused = await gated?.gate.enter(name, args, callId, gated.park, (attempt ?? 0) > 0 ? { replayed: true } : {});
-        if (refused) {
-          const answer = { text: refused.text, isError: refused.isError };
-          results.set(callId, answer);
-          // A parked call did not run: the harness's session records it so (HostTool's `parked`).
-          return refused.parked ? { ...answer, parked: true as const } : answer;
-        }
-        const out = bounded(tool.outputLimits);
-        const notes: string[] = [];
-        const env = await run.env({ conversationId: ROOT_CONVERSATION_ID, read: undefined as never }, context);
-        // The call's id and the run's store, as pi's: a paid call marks and books its charge there (monid.ts).
-        const api = hostApi({
-          env, callId,
-          commit: (change, at, options) => run.harness.commit(change, at, options),
-          output: (chunk) => out.push(chunk), outputWindow: undefined, retainedOutput: () => out.retained(),
-          diagnostic: (note) => void notes.push(note.message),
-          // pi's read asks the calling agent for its model, for an image's limits. A non-pi run's root agent has no pi
-          // model, so read uses its default image limits; models is an empty catalog it then never consults.
-          agent: async (at) => {
-            const root = await run.harness.conversation(ROOT_CONVERSATION_ID, at);
-            if (!root) throw new Error("the run has no root conversation");
-            return root.agent(at);
-          },
-          models: createModels(),
-          conversationId: ROOT_CONVERSATION_ID,
-        });
-        // A tool that throws (bash on a non-zero exit or a timeout) still answers with its output, as pi's harness does;
-        // monid's answer a failure as an error result, which is kept as it is.
-        const result = await tool.execute(args as never, api, withAbortSignal(signal, context)).catch((error: Error) => ({ failed: error.message, isError: true }));
-        // pi names a result's blocks `output`; its bash answers its exit as a result's diagnostic.
-        const given = result as unknown as { output?: unknown; isError?: boolean; failed?: string; diagnostics?: readonly { message: string }[] };
-        const said = [textOf(given.output) || out.text(), given.failed, ...notes, ...(given.diagnostics ?? []).map((note) => note.message)].filter((part) => part).join("\n\n");
-        const isError = given.isError === true;
-        const work = (env as { cwd?: unknown }).cwd;
-        const works = typeof work === "string" ? [work, realOf(work)] : [];
-        const answer = { text: isError || SAYS_PATH.has(name) ? workspaceRelative(said, works) : said, isError };
-        results.set(callId, answer);
-        const images = imagesOf(given.output);
-        return images.length ? { ...answer, images } : answer;
-      },
-    };
-    return [host];
+    const host = tool ? hostToolOf(name, tool, ctx) : undefined;
+    return host ? [host] : [];
   });
 }

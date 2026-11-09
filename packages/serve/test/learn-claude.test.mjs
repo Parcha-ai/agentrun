@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { fakeAnthropic } from "@parcha/agentrun-harness-claude/testing";
 import { answerWith, note } from "./fixtures/faux-learn.mjs";
-import { ended, git, learner, made, onMain, reflectRows, repoOf, savedOf, settled, started, turnOf } from "./learn-support.mjs";
+import { ended, learner, made, reflectRows, settled, started, turnOf } from "./learn-support.mjs";
 import { runDir, serve, withEnv } from "./support.mjs";
 
 const MODEL = "claude-haiku-4-5";
@@ -23,7 +23,7 @@ const ASKED = /Answer with one block per note to keep\./;
 const CWD = /(?:Primary working directory|Working directory): (\/[^\s"\\]+)/;
 const textOf = (m) => (typeof m.content === "string" ? m.content : m.content.filter((b) => b.type === "text").map((b) => b.text).join("\n"));
 
-test("on claude-agent's real adapter, with no tool of its own, the end-of-run turn answers with its notes and calls no tool: the server reads both whole from the answer, and they are proposed, graded at the same endpoint and merged", { timeout: 180_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
+test("on claude-agent's real adapter, with no tool of its own, the end-of-run turn answers with its notes and calls no tool: the server reads both whole from the answer, and they are proposed, for the runner's learning run to grade and merge", { timeout: 180_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
   let cwd;
   let graded = 0;
   let turns = 0;
@@ -60,7 +60,7 @@ test("on claude-agent's real adapter, with no tool of its own, the end-of-run tu
   assert.equal(realpathSync(cwd), realpathSync(join(runDir(data, runId), "work")), "the CLI works in the run's workspace");
   assert.equal(turns, 1, "one end-of-run turn");
   assert.deepEqual(reflectRows(rows).filter((row) => row.kind === "tool_use" || row.kind === "tool_result"), [], "it called no tool");
-  settled(view, rows, "merged");
+  assert.equal(view.learning?.state, "proposed", JSON.stringify(view.learning));
   assert.equal(turnOf(data, runId).answer, answerWith([["check-units.md", UNITS], ["cite-sources.md", SOURCES]]), "the answer whole");
   // The message names the folder relative to the run's work, never by a host path; the timeline shows none of it.
   assert.match(prompt, /The task is done\./);
@@ -70,19 +70,9 @@ test("on claude-agent's real adapter, with no tool of its own, the end-of-run tu
   assert.deepEqual(reflectRows(rows).filter((row) => row.kind === "user_message").map((row) => [row.summary, row.text]), [["Looking back on this run.", "Looking back on this run."]]);
   const proposal = JSON.parse(readFileSync(join(runDir(data, runId), "learning-proposal.json"), "utf8"));
   assert.deepEqual(proposal.notes, [{ file: "check-units.md", text: UNITS }, { file: "cite-sources.md", text: SOURCES }]);
-
-  // Graded once, at the endpoint the run's own requests went to, and merged onto the folder's main.
-  assert.equal(graded, 1, "the grader asked the same endpoint once");
-  const { learning } = await savedOf(data, runId);
-  assert.equal(learning.verdict.merge, true, JSON.stringify(learning));
-  const repo = repoOf(data, id);
-  assert.equal(learning.merged, git(repo, ["rev-parse", "main"]));
-  assert.equal(`${git(repo, ["show", "main:check-units.md"])}\n`, onMain(UNITS));
-  assert.equal(`${git(repo, ["show", "main:cite-sources.md"])}\n`, onMain(SOURCES));
-  assert.deepEqual(git(repo, ["show", "main:MEMORY.md"]).split("\n").sort(), [
-    "- [Check units](check-units.md) — Convert every amount to one unit before comparing",
-    "- [Cite sources](cite-sources.md) — Name the page each figure came from",
-  ]);
+  // The grade and the merge are the runner's learning run, its grader asked through the kernel's proxy
+  // (runner-learning-loop.test.mjs, runner-learning-folder.test.mjs): no server asks this endpoint to grade.
+  assert.equal(graded, 0, "the server grades nothing");
 });
 
 test("on claude-agent's real adapter, a run that reads a note its CLI names by the working directory's full path used it: its learning block names the note by its name, and a note its end-of-run turn reads is not one it used", { timeout: 180_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
