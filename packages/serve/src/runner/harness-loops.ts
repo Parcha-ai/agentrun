@@ -11,6 +11,7 @@ import { DEFAULT_HARNESS, HARNESSES } from "../harness.js";
 import type { RunLaunch } from "../run-launch.js";
 import { adapterRunSpecFromLaunch, type AdapterSpecDeps } from "./adapter-run-spec.js";
 import { createAdapterLoop } from "./adapter-loop.js";
+import { createDispatchLoop } from "./dispatch.js";
 import { cliRunSpecFromLaunch } from "./cli-run-spec.js";
 import { learningLoopOf } from "./learning-dispatch.js";
 import type { LoopFactory } from "./loop-contract.js";
@@ -51,4 +52,14 @@ export function resolveRunnerLoop(deps: AdapterSpecDeps): (harness: string, laun
     }
     return undefined;
   };
+}
+
+/** The loop factory the runner holds for every run (its createLoop), built from the runner's deps over the one store: the
+ *  dispatch (dispatch.ts) reads each run's launch and asks the switch (resolveRunnerLoop) for its harness loop. The server
+ *  start and the test server pass this to startRunner. */
+export function dispatchRunner(deps: AdapterSpecDeps): LoopFactory {
+  return createDispatchLoop({
+    launchOf: (runId) => deps.store.runs.launch(runId),
+    resolve: resolveRunnerLoop(deps),
+  });
 }

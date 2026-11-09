@@ -50,14 +50,14 @@ export type RevisionPlace = { mode: string; box?: string };
  *  pin?}), checked and made canonical by the caller (agents-store.ts, through tool-plane's settingsIssues +
  *  canonicalToolSettings, the one copy). The store body holds it as it is given; this validator never reimplements it. */
 export type ToolSettings = Record<string, unknown>;
-export type AgenticBody = { instructions: string; skills: Record<string, string>; tools: string[]; model?: string; thinking?: string; prompts?: Record<string, PromptVariant>; harness?: string; place?: RevisionPlace; learning?: boolean; toolSettings?: ToolSettings; approvals?: "never"; maxCostUsd?: number; capMode?: string };
-export type WorkflowBody = { workflow: Record<string, unknown>; skills: Record<string, string>; tools: string[]; harness?: string; place?: RevisionPlace; toolSettings?: ToolSettings; approvals?: "never"; maxCostUsd?: number; capMode?: string };
+export type AgenticBody = { instructions: string; skills: Record<string, string>; tools: string[]; model?: string; thinking?: string; prompts?: Record<string, PromptVariant>; harness?: string; place?: RevisionPlace; learning?: boolean; toolSettings?: ToolSettings; maxCostUsd?: number; capMode?: string; approvals?: "ask" | "never" };
+export type WorkflowBody = { workflow: Record<string, unknown>; skills: Record<string, string>; tools: string[]; harness?: string; place?: RevisionPlace; toolSettings?: ToolSettings; maxCostUsd?: number; capMode?: string; approvals?: "ask" | "never" };
 
 /** The input a revision's body is built from (the control plane's, in the store's own shape). `toolSettings` is already
  *  checked and canonical (agents-store.ts via tool-plane's one copy); this validator keeps it as given. */
 export type RevisionBodyInput =
-  | { kind: "agentic"; instructions: string; skills?: Record<string, string>; tools?: string[]; model?: string; thinking?: string; prompts?: Record<string, PromptVariant>; harness?: string; place?: unknown; learning?: boolean; toolSettings?: ToolSettings; approvals?: "never"; maxCostUsd?: number; capMode?: string }
-  | { kind: "workflow"; workflow: unknown; skills?: Record<string, string>; tools?: string[]; harness?: string; place?: unknown; toolSettings?: ToolSettings; approvals?: "never"; maxCostUsd?: number; capMode?: string };
+  | { kind: "agentic"; instructions: string; skills?: Record<string, string>; tools?: string[]; model?: string; thinking?: string; prompts?: Record<string, PromptVariant>; harness?: string; place?: unknown; learning?: boolean; toolSettings?: ToolSettings; maxCostUsd?: number; capMode?: string; approvals?: "ask" | "never" }
+  | { kind: "workflow"; workflow: unknown; skills?: Record<string, string>; tools?: string[]; harness?: string; place?: unknown; toolSettings?: ToolSettings; maxCostUsd?: number; capMode?: string; approvals?: "ask" | "never" };
 
 /** A place as a body keeps it: `{mode, box?}`, nothing else. */
 function placeOf(place: unknown): RevisionPlace {
@@ -109,6 +109,7 @@ export function bodyOf(input: RevisionBodyInput): { body: AgenticBody | Workflow
     if (typeof input.instructions !== "string") invalid("an agentic revision needs instructions (its prompt, possibly empty)");
     for (const field of ["model", "thinking"] as const) if (input[field] !== undefined && (typeof input[field] !== "string" || input[field] === "")) invalid(`the ${field} is not a non-empty string`);
     if (input.learning !== undefined && typeof input.learning !== "boolean") invalid("learning is not true or false");
+    if (input.approvals !== undefined && input.approvals !== "ask" && input.approvals !== "never") invalid("approvals is ask or never");
     const body: AgenticBody = {
       instructions: input.instructions,
       skills: skillShas,
@@ -118,6 +119,8 @@ export function bodyOf(input: RevisionBodyInput): { body: AgenticBody | Workflow
       ...(input.prompts !== undefined ? { prompts: structuredClone(input.prompts) } : {}),
       ...host,
       ...(input.learning !== undefined ? { learning: input.learning } : {}),
+      // The agent's unattended policy (PR #2003): the runner's gate reads it from the revision body at claim.
+      ...(input.approvals !== undefined ? { approvals: input.approvals } : {}),
       ...capped,
       ...unattended,
     };

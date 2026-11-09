@@ -316,6 +316,7 @@ export class McpServersOverStore {
     const listedAt = new Date(row.listedAt ?? row.updatedAt).toISOString();
     return {
       name,
+      url: row.url,
       ...listed,
       tools: listed.tools.map((tool) => ({ ...tool, ...serverGate(`mcp:${name}/${tool.name}`, settings) })),
       ...(unmetered.length ? { not_metered: unmetered } : {}),

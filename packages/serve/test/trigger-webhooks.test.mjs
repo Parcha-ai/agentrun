@@ -104,7 +104,7 @@ test("a wrong signature, a stale or future timestamp, missing headers, an unknow
   await follow(api, fired.run_id, ["completed"]);
 });
 
-test("a rotated secret signs from then on, and the old one is refused; with no seal key no webhook trigger is made", { timeout: 120_000, skip: E2 }, async (t) => {
+test("a rotated secret signs from then on, and the old one is refused; handed no seal key, the server keeps a webhook trigger's secret under the one it made", { timeout: 120_000 }, async (t) => {
   withEnv(t, SEAL);
   const { api, baseUrl } = await serve(t);
   await made(api, "triage");
@@ -118,12 +118,13 @@ test("a rotated secret signs from then on, and the old one is refused; with no s
   const [started] = await firings(api, id, 1);
   assert.equal((await api("POST", `/runs/${started.run_id}/cancel`)).status, 202);
 
+  // A server never runs without a seal key (seal-key.ts): handed none, it makes one, and keeps the secret under it.
   withEnv(t, {}, ["AGENTRUN_SEAL_KEY"]);
   const bare = await serve(t);
   await made(bare.api, "triage");
-  const refused = await bare.api("POST", "/triggers", hooked("triage"));
-  assert.deepEqual([refused.status, refused.body.error.code], [409, "no_sealing_key"]);
-  assert.deepEqual((await bare.api("GET", "/triggers")).body.triggers, []);
+  const kept = await bare.api("POST", "/triggers", hooked("triage"));
+  assert.equal(kept.status, 201, JSON.stringify(kept.body));
+  assert.equal((await bare.api("GET", "/triggers")).body.triggers.length, 1);
 });
 
 test("a message_run trigger sends each firing to its run, which takes it once: a completed run opens again and answers", { timeout: 120_000, skip: E2_RUN }, async (t) => {

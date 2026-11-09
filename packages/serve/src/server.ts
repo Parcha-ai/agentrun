@@ -12,8 +12,8 @@ import { once } from "node:events";
 import { existsSync, readFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { homedir } from "node:os";
-import { type NewRevision, type Revision, runDirIn, type RunOrigin, STORE_FILE } from "@parcha/pi-durable-agent";
-import { agentView, Agents, etagOf, homeBusy, revisionView, storeBusy, type AgentEntry } from "./agents.js";
+import { type Revision, type RunOrigin } from "@parcha/pi-durable-agent";
+import { type AgentEntry, agentRevision, agentRevisions, agentView, commitAgent, createAgent, definitionOf, etagOf, getAgent, listAgents, revisionView, setAgentArchived, setCurrentRevision } from "./agents-store.js";
 import { WORKFLOW_ADAPTERS } from "./app.js";
 import { DECISION_ADAPTER, decisionsOf, FAUX_JEV_ENV, FAUX_OPENROUTER_ENV, FAUX_PARALLEL_ENV, fauxFetch } from "./decisions.js";
 import { FAUX_WEB_ENV } from "./web-fetch-direct.js";
@@ -22,7 +22,7 @@ import { FAUX_EXA_ENV } from "./exa-keyless.js";
 import { FAUX_BROWSER_ENV, NODE_TOOLS, toolingOf, toolOf, toolsView } from "./tools.js";
 import { ApiError, type InputIssue, invalid, unsupported } from "./errors.js";
 import { deref, explain } from "./explain.js";
-import { DOOR_TOKEN_FILE, HOME_HOST_OWNED, RUN_META, SETUP_LOST } from "./files.js";
+import { HOME_HOST_OWNED, RUN_META, SETUP_LOST } from "./files.js";
 import { DATA_ENV, readJson, syncDir, TOKEN_FILE, writeDurable } from "./server-fs.js";
 import { checkedPath, decodedPath, homePath, hostOwnedOf, type OwnedReadAt } from "./home-path.js";
 import { chooseModel, EFFORTS, FAUX_ENV, FAUX_UPSTREAM_ENV, MODEL_NODES, type ModelNeeds, modelSource, THINKING_LEVELS, unpricedModels, withoutFaux } from "./model.js";
@@ -34,7 +34,7 @@ import { IMPORT_ASKED } from "./import.js";
 import type { ImportAnswer, ImportTask } from "./import-worker.js";
 import type { MessageOrigin } from "@parcha/pi-durable-agent/timeline";
 import { gradeModelOf, learningBudgetOf, type LearningMode, learningOf } from "./learning.js";
-import { agentLearning, learningLog, learningNotes, noteBody, pendingCount, readNote, runDiff, runLearning, secretsShown, sendNote, writeNote } from "./learning-routes.js";
+import { agentLearning, learningLog, learningNotes, noteBody, pendingCount, readNote, secretsShown, sendNote, writeNote } from "./learning-routes.js";
 import { answerLlms, MCP_PATH, mcpEndpoint } from "./mcp.js";
 import { openapiDocument, servedOpenapi, UNSUPPORTED } from "./openapi.js";
 import { boxesLine, defaultPlaceOf, NEW_AGENT_TOOLS, newAgentPlace, noBoxReason, type Place, placesOf, resolvePlace } from "./place.js";
@@ -42,10 +42,28 @@ import { BOX_ALLOW_ENV, boxAllowOf, boxLimitsOf, boxNetworkOf, FAUX_BOX_ENV, fau
 import { Owner, passwordProblem, SESSION_MS } from "./owner.js";
 import { answerPage, byOwnerSession, heldSessions, isJson, overHttps, ownerCookie, ownOrigin, sendHostRefused, signedIn } from "./page.js";
 import { hostFix, hostName, loopbackNames } from "./host-check.js";
-import { handoverById, type LiveHandover, liveRest, OpenViewers, proxyLiveUpgrade, readHandover, readHandovers, serveViewerFile, viewerAnswers, viewerLink } from "./browser-live.js";
-import { answerAsk } from "./browser-person.js";
+import { handoverById, type LiveHandover, liveRest, liveViewer, liveViewerById, liveViewerFor, liveViewerLink, OpenViewers, proxyLiveUpgrade, readHandover, readHandovers, serveViewerFile, viewerAnswers, viewerLink } from "./browser-live.js";
+import { browserHandBack, handBackTarget } from "./browser-commands.js";
 import { durationMs, logLine } from "./print.js";
-import { type CarryBackRetry, knownToolCostOf, type Run, Runs, STATUSES, type Status, statusOf, toolCostOf, WAITS_ON_A_PERSON, WITHHELD_SIGN_IN } from "./runs.js";
+import { knownToolCostOf, type RunMoment, type State, type Status, toolCostOf, WITHHELD_SIGN_IN } from "./run-view.js";
+import { approve, archiveRun, cancel, message, raiseCap, type StartDeps, type StartOptions, startRun, stop as stopRunOverStore, WAITS_ON_A_PERSON } from "./runs-over-store.js";
+import { momentOverStore, summaryOverStore, type ViewDeps, viewOverStore, withheldOverStore } from "./store-view.js";
+import { listRunFiles as listRunFilesOverStore, readRunFile as readRunFileOverStore, runBrowserState, runGraphView, type RunReadsDeps, runTimelines } from "./run-reads-over-store.js";
+import { triggerTargets, type TriggerTargetDeps } from "./trigger-targets.js";
+import { listRuns as listRunsOverStore, readRun as readRunOverStore, runOfOrigin as runOfOriginOverStore } from "./store-reads/runs.js";
+import { runEntries, runTimeline } from "./store-reads/journal.js";
+import { watchRun } from "./live/stream.js";
+import { stats as statsOverStore } from "./store-reads/stats.js";
+import { analytics as analyticsOverStore } from "./store-reads/analytics.js";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { type AgenticBody, type NewRevision, openSqliteStore, type RevisionPlace, type RunRow, type Store, StoreBusy, StoreConstraint, type WorkflowBody } from "./store/index.js";
+import { runModelRef } from "./model.js";
+// The v2 run statuses, as the run view names them (run-view.ts Status), for the list filter's validation. */
+const STATUSES = ["queued", "working", "paused", "input_required", "completed", "failed", "cancelled"] as const;
+/** A busy store, and the home_busy answer it maps to (byte-identical to the old agents.ts words), for a read or write that
+ *  meets the one store under load. */
+const storeBusy = (error: unknown): boolean => error instanceof StoreBusy;
+const homeBusy = (): ApiError => new ApiError("home_busy", "the agent store is busy with another write; try again", { retry_after_ms: 500 });
 import { runLines } from "./usage-lines.js";
 import { BOX_QUARANTINE, type BoxHost, Quarantine } from "./box/sweep.js";
 import { type BoxOffer, boxesByDefault, boxesLog, boxRegistry, daytonaApi, enabledBoxes, VM_NO_LIST, VM_PROVIDER } from "./boxes.js";
@@ -59,19 +77,28 @@ import { memoryMbOf } from "./run-box.js";
 import { DOCUMENTS_ENV } from "./pdf-pages.js";
 import { CAP_MODES, type CapMode, meterFiguresIn } from "./cap.js";
 import { type Blocker, blockersOf, CODE_NODES_ENV, issueOf, MCP_HARNESSES, NOT_SET_UP, type RevisionShape } from "./runnable.js";
-import { hostSecrets, SECRET_NAMES, secret, type StoredKeys, withSecrets } from "./secrets.js";
+import { holdMadeSecret, hostSecrets, SECRET_NAMES, secret, type StoredKeys, withSecrets } from "./secrets.js";
+import { isSecretWriteOperation, SECRET_WRITE_REFUSAL, secretsWritableFields, secretWriterFacts, writesSecret, writesSecretsAllowed } from "./secret-writes.js";
+import { ensureSealKey, SealKeyRefused, sealKeyHome, sealKeyLine } from "./seal-key.js";
 import { redactedOutput } from "./key-refusal.js";
-import { analyticsFilter, analyticsView, pendingOf, statsView } from "./stats.js";
+import { analyticsFilter, analyticsView, statsView } from "./stats.js";
+import { agentLearningCountsOverStore, learningCountsOverStore, runLearningOverStore } from "./store-reads/learning.js";
 import { outcomes } from "./usage.js";
-import { keyOf, SEAL_KEY_ENV, sealKeyOf, TOOL_FIELDS, ToolKeys } from "./tool-keys.js";
-import { SIGN_INS_DIR, SignIns, vendorsOver } from "./sign-ins.js";
-import { MCP_AUTH_TYPES, McpServers } from "./mcp-servers.js";
+import { keyOf, SEAL_KEY_ENV, sealKeyOf, TOOL_FIELDS } from "./tool-keys.js";
+import { toolKeysOverStore } from "./tool-keys-store.js";
+import { SIGN_INS_DIR, vendorsOver } from "./sign-ins.js";
+// E1b builds the store-backed sign-ins bridge (the old SignIns interface — peek/forgotten/view/forget — over store.signIns,
+// byte-identical v2 shapes; "held"/held_by from a live run whose sign_in_handed holds the pointer, verified_at from the
+// last holder's lease end). TODO(E1b): wire its sha; named import until then.
+import { signInsOverStore } from "./sign-ins-store.js";
+import { MCP_AUTH_TYPES, type McpTool } from "./mcp-probe.js";
+import { mcpServersOverStore } from "./mcp-servers-store.js";
 import { metaToolOf } from "./mcp-meta.js";
 import { MCP_SETTINGS_PAGE, signInCookie, startedHere } from "./mcp-oauth.js";
-import type { McpServerSource } from "./mcp-gateway.js";
 import { WEBHOOK_EVENTS, Webhooks } from "./webhooks.js";
-import { type SealedSettings } from "./sealed-settings.js";
-import { openServerSecrets, type ServerSecrets } from "./server-secrets.js";
+import { type SealedSettingsOverStore } from "./sealed-settings-store.js";
+import { type ServerSecrets } from "./server-secrets.js";
+import { openServerSecretsOverStore } from "./server-secrets-store.js";
 import { HOOK_TOLERANCE_S } from "./standard-webhooks.js";
 import { HookCut, receivePush } from "./push-handler.js";
 import type { TriggerAdapter } from "./trigger-adapter.js";
@@ -80,15 +107,15 @@ import { webhook } from "./trigger-webhook.js";
 import { SCHEME_NAMES } from "./trigger-signatures.js";
 import { permissionFrom, pinWords } from "./tool-gate.js";
 import { CATCHUP_WINDOW_S, FAILURES_TO_PAUSE, HISTORY_KEPT, MIN_EVERY_S, PAYLOAD_KEPT_BYTES, type RunTrigger, SOURCE_KINDS, TARGET_KINDS, type TriggerClock, Triggers } from "./triggers.js";
-import type { Store } from "./store/index.js";
 import { applyBodyOf, compiled, madeTriggerIssues, type Package, packageModel, packageView, readPackages } from "./templates.js";
-import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, definitionBodyIssues, ID, IDEMPOTENCY_TTL_S, inputIssues, isObject, type Json, stable, unknownFields } from "./validate.js";
-import { agentTools, browserKeyRow, isUnavailable, recheckPlane, settingsIssues, ToolSettings, type ToolSettingsMap, whyUnavailable, withDefaults } from "./tool-plane.js";
+import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, type DefinitionBody, definitionBodyIssues, ID, IDEMPOTENCY_TTL_S, inputIssues, isObject, type Json, stable, unknownFields } from "./validate.js";
+import { agentTools, browserKeyRow, isUnavailable, recheckPlane, settingsIssues, type ToolSettingsMap, whyUnavailable, withDefaults } from "./tool-plane.js";
+import { toolSettingsOverStore } from "./tool-settings-store.js";
 import { MAX_FILES_PER_RUN, MAX_UPLOAD_BYTES, Uploads, UPLOADS_DIR } from "./uploads.js";
 import { entryAt, listFiles, sendFile as sendWorkspaceFile, viewOf } from "./run-files.js";
 import { writesHeld } from "./workspace.js";
-import { agentHomeFolder, isWorkspaceError, localWorkspace, runFolder, type Workspace } from "./workspace/index.js";
-import { markRunning, markStopping, type ServerLock, takeServerLockAfterStop } from "./server-lock.js";
+import { agentHomeFolder, isWorkspaceError, localWorkspace, runFolder, serverRunWorkspace, type Workspace } from "./workspace/index.js";
+// server-lock.ts is gone: the store's EXCLUSIVE connection is the one-server lock (StoreOwned refuses a second server).
 
 export const CONTRACT = "agentrun.v2/0";
 
@@ -240,7 +267,8 @@ export type ServeOptions = {
   notice?: (line: string) => void;
   /** The waits between carry backs that found the store held by another writer (default 0.5, 1, 2, 4 and 8 s), and a
    *  hook called at each such refusal. */
-  carryBackRetry?: CarryBackRetry;
+  /** A test hook the per-run process used for carry-back; the runner owns carry-back now (unused by the server cut). */
+  carryBackRetry?: unknown;
   /** A test's seam: awaited by a stop between its mark and its abort, so a test can hold a stop in flight there. */
   beforeAbort?: (runId: string) => Promise<void> | void;
   /** A test's seam: awaited by a completed run's reopen for a follow-up, after the run reads open again and before its
@@ -363,6 +391,8 @@ export type Route =
 export const ROUTES: readonly Route[] = [
   { method: "GET", pattern: /^\/capabilities$/, name: "getCapabilities" },
   { method: "GET", pattern: /^\/openapi\.json$/, name: "getOpenapi" },
+  // Answered here only with accounts off: with accounts on, the owner's routes answer it before any route (ownerRoute).
+  { method: "GET", pattern: /^\/auth\/session$/, name: "getAuthSession" },
   { method: "GET", pattern: /^\/health$/, name: "getHealth" },
   { method: "POST", pattern: /^\/agents$/, name: "createAgent" },
   { method: "GET", pattern: /^\/agents$/, name: "listAgents" },
@@ -460,11 +490,8 @@ export const ROUTES: readonly Route[] = [
 
 /** Where agent `agentId`'s host-owned path is read on this server: its route, when ROUTES has one (the learning API, for
  *  learning/); sign-ins/ only as the agent's `sign_ins`, never a pointer. */
-/** A run's files (its work/), refused while it is hidden (runs.ts meta.unshown: this server can't read the browser
- *  sign-in it was handed), as its graph is: a page it saved signed in is what it saw, and no file is cut. */
-function filesShown(run: Run): void {
-  if (run.meta.unshown) throw new ApiError("forbidden", WITHHELD_SIGN_IN);
-}
+// A run's files were refused while it was hidden (the browser sign-in it was handed can't be read back): that cut is the
+// store-backed run view's now (run-reads-over-store, E2c), over the run's handed pointers. Removed here with the file route.
 
 const ownedReadAt = (agentId: string): OwnedReadAt => (owned) => (owned === SIGN_INS_DIR ? `/v2/agents/${agentId}` : ROUTES.some((r) => r.method === "GET" && r.pattern.test(`/agents/${agentId}/${owned}`)) ? `/v2/agents/${agentId}/${owned}` : undefined);
 
@@ -670,51 +697,28 @@ function integerParam(value: string | null, name: string, max: number): number {
   return Number(value);
 }
 
-/** The agent homes 0.1.0-beta.26 and earlier kept in the data directory (`<data>/<agent>/agent.sqlite`, an agent named
- *  `runs` or a symlinked home included), which this version's store does not read: their agents and runs would not
- *  show. This version keeps no `agent.sqlite` under the data directory. */
-async function oldHomes(data: string): Promise<string[]> {
-  const found: string[] = [];
-  for (const name of await readdir(data)) {
-    const file = join(data, name, "agent.sqlite");
-    if (await stat(file).then((info) => info.isFile(), () => false)) found.push(file);
-  }
-  return found.sort();
-}
-
-/** Why the data directory is one an earlier version wrote, which keeps its runs outside the disk: a `runs/` folder at
- *  its top (0.1.0-beta.27 to this version's last, `<data>/runs/<id>/`), or a store.sqlite of store version 1. This
- *  version keeps every run on the disk (`<data>/disk/agents/<agent>/runs/<run>/`), and moves nothing: undefined when
- *  neither is there. */
-async function oldLayout(data: string): Promise<string | undefined> {
-  if (await stat(join(data, "runs")).then((info) => info.isDirectory(), () => false)) return `${join(data, "runs")} holds runs in an earlier version's layout`;
-  const file = join(data, STORE_FILE);
-  if (!(await stat(file).then((info) => info.isFile(), () => false))) return undefined;
-  const { DatabaseSync } = await import("node:sqlite");
-  const db = new DatabaseSync(file, { readOnly: true });
-  try {
-    const version = Number((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version);
-    return version === 1 ? `${file} is an earlier version's store (store version 1)` : undefined;
-  } finally {
-    db.close();
-  }
-}
+// A data directory an earlier version wrote (old agent homes, an old runs/ layout, or an earlier store version) is refused
+// by the store itself when it opens (StoreFromEarlierVersion), in words, to start fresh: no pre-open scan, no migration.
 
 export async function startServe(options: ServeOptions): Promise<Serve> {
   // A harness table module is the server's to name, from `harnessTable` alone, for itself and its runs: one in its own
   // environment (an operator's export, a leftover) never loads, wherever the server reads its environment.
   delete process.env[HARNESS_TABLE_ENV];
+  // No start without a seal key (seal-key.ts): the one handed over, else the one kept under the config home, made at the
+  // first start with only its path printed. Every secret here is kept under it; there is no keeping one in the clear.
+  const handedSeal = secret(SEAL_KEY_ENV);
+  let seal;
+  try {
+    seal = ensureSealKey(handedSeal, { configHome: sealKeyHome(process.env) });
+  } catch (error) {
+    if (error instanceof SealKeyRefused) throw new Error(`agentrun-serve does not start without a seal key. ${error.message}`, { cause: error });
+    throw error;
+  }
+  if (!handedSeal) holdMadeSecret(SEAL_KEY_ENV, seal.text);
+  if (seal.generated) process.stderr.write(`${sealKeyLine(seal)}\n`);
   await mkdir(resolve(options.data), { recursive: true, mode: 0o700 });
   // Canonical once, here: a box's mount source below it must then be its own canonical path, through no link (run-box.ts).
   const data = await realpath(resolve(options.data));
-  // What only reads and refuses comes first: a start refused for it creates nothing in the data root, server.lock included.
-  const homes = await oldHomes(data);
-  if (homes.length) {
-    const named = homes.length > 5 ? [...homes.slice(0, 5), `and ${homes.length - 5} more`] : homes;
-    throw new Error(`this data directory holds agent homes from AgentRun Server 0.1.0-beta.26 or earlier (${named.join(", ")}), which this version does not read: started here, it would show none of their agents or runs. Keep them with the earlier version, or move those directories out of ${data} to start this one; see "Upgrading from 0.1.0-beta.26" in the serve README.`);
-  }
-  const old = await oldLayout(data);
-  if (old) throw new Error(`this data directory was written by an earlier version of AgentRun Server, which kept its runs outside the disk (${old}): this version keeps every run under ${join(data, "disk")} and does not read or move the old ones. Keep this directory with the earlier version, or start this one on a new data directory (an empty folder, or a new volume).`);
   if (options.token !== undefined && (options.token.length < 32 || /\s/.test(options.token))) throw new Error("the token must be 32 characters or more, with no whitespace");
   if (options.drainTimeout !== undefined && durationMs(options.drainTimeout) === undefined) throw new Error(`the drain timeout ${options.drainTimeout} is not a duration such as 8s`);
   enabledBoxes(process.env);
@@ -728,28 +732,21 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   const minFreeBytes = options.minFreeBytes ?? minFreeMib * 2 ** 20;
   // The template packages, each checked whole (templates.ts readPackage): a broken one stops the start.
   const templates = readPackages(options.templates);
-  // Then one server per data root, before anything writes it: a refused second server writes no token, opens no store,
-  // adopts or sweeps no run, binds no port and prints no address (server-lock.ts). A failed start releases the lock and
-  // leaves the file, which the next server reuses: unlinking it would race a server that opens it meanwhile. A server
-  // that is stopping (its runs' processes still drain) is waited for, up to the time its mark gives, not refused.
-  const lock = await takeServerLockAfterStop(data, {
-    waiting: ({ pid, until }) => noticeOf(options)(`the server on this data root (pid ${pid}) is stopping; waiting for it, up to ${seconds(until - Date.now())}`),
-  });
-  // What a start that fails stops before the lock goes: the webhook deliveries it began, which would write the next
-  // server's outbox.
+  // One server per data root is the store's own EXCLUSIVE lock (StoreOwned), taken when startHolding opens the store; a
+  // data directory an earlier version wrote is refused there too (StoreFromEarlierVersion), in words, to start fresh. No
+  // server.lock, no oldHomes/oldLayout checks, no migration.
+  // What a start that fails stops: the webhook deliveries it began, which would write the next server's outbox, and the
+  // store handle it opened.
   const stops: Array<() => Promise<void>> = [];
   try {
-    // The server's record, which its stop rewrites in place (server-lock.ts): made now, so the stop makes nothing.
-    markRunning(data);
-    return await startHolding(options, data, lock, { maxRuns, minFreeBytes, learning, learningBudget, boxAllow, templates }, stops);
+    return await startHolding(options, data, { maxRuns, minFreeBytes, learning, learningBudget, boxAllow, templates }, stops);
   } catch (error) {
     for (const stop of stops) await stop().catch(() => undefined);
-    lock.release();
     throw error;
   }
 }
 
-async function startHolding(options: ServeOptions, data: string, lock: ServerLock, checked: { maxRuns: number; minFreeBytes: number; learning: LearningMode; learningBudget: number; boxAllow: readonly string[] | "none"; templates: Package[] }, stops: Array<() => Promise<void>>): Promise<Serve> {
+async function startHolding(options: ServeOptions, data: string, checked: { maxRuns: number; minFreeBytes: number; learning: LearningMode; learningBudget: number; boxAllow: readonly string[] | "none"; templates: Package[] }, stops: Array<() => Promise<void>>): Promise<Serve> {
   const { maxRuns, minFreeBytes, learning, learningBudget, boxAllow, templates } = checked;
   /** What an agent's view says of its learning: how many learned items wait for its owner's OK, for an agent that learns
    *  on this server (learning on, its current revision `learning: true`); none for another, or when the count cannot be
@@ -766,8 +763,6 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   // (a person told the token is there, a CLI that reads it) takes a dead token from it. A later start without one makes a
   // new file and token.
   if (options.token !== undefined) await rm(join(data, TOKEN_FILE), { force: true });
-  const doorTokenFile = join(data, DOOR_TOKEN_FILE);
-  const { token: doorToken } = await tokenIn(doorTokenFile);
   const log = options.log;
   const quiet = process.env.AGENTRUN_LOG === "quiet";
   const authFailed = (route: string, reason: string) => log?.(logLine("auth_failed", { route, reason }));
@@ -779,11 +774,18 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   // The server's own secrets, and each trigger source's sealed settings, opened below once the environment is read;
   // shown nowhere.
   let secretStores: ServerSecrets | undefined;
-  let triggerSettings: Map<string, SealedSettings> = new Map();
+  let triggerSettings: Map<string, SealedSettingsOverStore> = new Map();
   const base = { ...withoutFaux(process.env), [DATA_ENV]: data, ...(options.allowCodeNodes ? { [CODE_NODES_ENV]: "1" } : {}), ...(options.faux ? { [FAUX_ENV]: resolve(options.faux) } : {}), ...(options.harnessTable ? { [HARNESS_TABLE_ENV]: resolve(options.harnessTable) } : {}) };
+  // The one store (module A), opened here as this data root's single owner, before the settings layers that read it: its
+  // EXCLUSIVE lock is the one-server lock (no server-lock.ts), and it refuses a data directory an earlier version wrote, in
+  // words, to start fresh (no oldHomes/oldLayout checks, no migration). Every agent, run, setting and sign-in is a row; the
+  // server writes and reads rows, and a runner (its own process, sharing only this store) runs every run.
+  const store = await openSqliteStore({ dataDir: data, role: "server" });
+  stops.push(() => store.close());
   // Which fields are the server's is read from what it is started with alone: handed the saved keys too, ToolKeys would
-  // call each the server's, and none could be deleted.
-  const toolKeys = new ToolKeys(data, withSecrets(base, "own"), (fields) => (log ? log(logLine("tool_keys", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("tool_keys", fields)}\n`)));
+  // call each the server's, and none could be deleted. The keys are sealed rows in the store; load() reads them once here.
+  const toolKeys = toolKeysOverStore(store, withSecrets(base, "own"), (fields) => (log ? log(logLine("tool_keys", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("tool_keys", fields)}\n`)));
+  await toolKeys.load();
   // A key's check as it is saved (key-check.ts) goes to its provider; under faux only to the tests' fake for that provider,
   // the one its runs are given (monid, Parallel, TypeSafe's Jev), never to the network: one with no fake is not checked.
   const fakes: Record<string, string | undefined> = { monid: options.fauxMonid, parallel: options.fauxParallel, typesafe: options.fauxJev, browserbase: options.fauxBrowserbase, kernel: options.fauxKernel };
@@ -798,30 +800,30 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   const storedKeys: StoredKeys = (name) => toolKeys.value(name);
   // A stored key that does not open is said once at the start, never a refusal to start.
   toolKeys.view();
-  const mcpServers = new McpServers(data, withSecrets(base, "own"), VERSION);
-  // What a run's grants are checked against, its pin made from and its credentials read from (runs.ts, runnable.ts).
-  const mcpSource: McpServerSource = {
-    server: (name) => {
-      try {
-        const saved = mcpServers.get(name);
-        return { url: saved.url, tools: saved.tools.map(({ name: tool, title, description, input_schema, annotations }) => ({ name: tool, ...(title ? { title } : {}), ...(description ? { description } : {}), inputSchema: input_schema as Record<string, unknown>, ...(annotations ? { annotations: annotations as Record<string, unknown> } : {}) })), ...(saved.prices ? { prices: saved.prices } : {}) };
-      } catch {
-        return undefined;
-      }
-    },
-    headers: (name) => mcpServers.headers(name),
-    refresh: (name) => mcpServers.headersForRun(name).then(() => undefined, () => undefined),
+  const mcpServers = mcpServersOverStore(store, withSecrets(base, "own"), VERSION);
+  // The saved MCP servers' metadata (their addresses and the tools they list), a snapshot the run-grant checks read in
+  // step (blockersOf's `mcp`, and the template apply): the server is the one writer of these rows (a save, refresh, sign-in
+  // or delete), so the snapshot is refreshed after each of those and reads what is saved now. The runner reads the registry,
+  // pins and credentials from the store at a run's claim (runner/mcp-claim.ts); this server hands a run no MCP source.
+  let mcpMeta = new Map<string, { url: string; tools: readonly McpTool[] }>();
+  const refreshMcpMeta = async (): Promise<void> => {
+    mcpMeta = new Map((await store.mcp.servers()).map((row) => [row.name, { url: row.url, tools: (row.tools as McpTool[]) ?? [] }]));
   };
-  // Each with whether it can be granted: a known meta tool can't (mcp-meta.ts).
+  await refreshMcpMeta();
+  // Each saved server's tools in the harnesses' shape (the registry keeps input_schema; a bound tool takes inputSchema),
+  // with whether each can be granted: a known meta tool can't (mcp-meta.ts).
   const mcpTools = (server: string) => {
-    const saved = mcpSource.server(server);
+    const saved = mcpMeta.get(server);
     return saved?.tools.map((tool) => {
       const meta = metaToolOf(saved.url, tool.name);
-      return meta ? { ...tool, grantable: false as const, reason: meta.reason } : tool;
+      const bound = { name: tool.name, ...(tool.title ? { title: tool.title } : {}), ...(tool.description ? { description: tool.description } : {}), inputSchema: (tool.input_schema ?? {}) as Record<string, unknown>, ...(tool.annotations ? { annotations: tool.annotations as Record<string, unknown> } : {}) };
+      return meta ? { ...bound, grantable: false as const, reason: meta.reason } : bound;
     });
   };
-  // The server's tool settings, beside the agent store: capabilities say what they resolve to, again after a PUT.
-  const settings = new ToolSettings(data);
+  // The server's tool settings, in the store: capabilities say what they resolve to, again after a PUT. load() reads them
+  // once here.
+  const settings = toolSettingsOverStore(store);
+  await settings.load();
   mcpServers.toolSettings = () => settings.get();
   // The server's reading, in parts: `env`, its environment with its secrets, saved keys among them (storedKeys);
   // `offers`, what each harness offers, probed from env without the tool keys (offersEnvOf), the one slow part (each
@@ -858,8 +860,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
    *  finishes after it is dropped. */
   let needsAsked = 0;
   const keysChanged = async () => {
-    // A run's learning, as its view, a list and its timeline row show it, is cut of the keys saved now (runs.ts).
-    runs.keysChanged();
+    // A run's learning, view, list and timeline row are cut of the keys saved now by the run view at read time (it reads
+    // serverSecrets live, store-view), so a key change needs no cache invalidation here.
     env = withSecrets(base, "all", storedKeys);
     const mine = ++needsAsked;
     const next = await needsOf(env);
@@ -978,13 +980,37 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   if (image) imageLog(image.state());
   const adapters = options.triggerAdapters ?? TRIGGER_ADAPTERS;
   const openapi = openapiDocument((operationId) => ROUTES.find((r) => r.name === operationId)?.capability, adapters);
-  const agents = new Agents(data);
-  ({ secrets: secretStores, settings: triggerSettings } = openServerSecrets(data, env, adapters, (fields) => (log ? log(logLine("trigger", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("trigger", fields)}\n`))));
-  secretStores.add("server", () => [token, doorToken]);
-  // Each agent's saved sign-ins (sign-ins.ts), under the seal key the tool keys are kept under: its vendor's calls on the
-  // server's keys (under faux, the vendor's fake alone), a lease held while the run it names has not ended, and a
-  // pointer never forgotten while a run it was handed is going (runs.ts handedTo; `runs` is made below, before any request).
-  const signIns = new SignIns(data, sealKeyOf(withSecrets(base, "own")[SEAL_KEY_ENV]), vendorsOver(() => env, checkFetch), async (runId) => (await agents.request(() => agents.store.readRun(runId)))?.state === "running", { handedTo: (agentId: string, hash: string | undefined): Promise<string | undefined> => runs.handedTo(agentId, hash) });
+  const sealKey = sealKeyOf(withSecrets(base, "own")[SEAL_KEY_ENV]);
+  // The agents accessor the routes call, over the one store (module A): the agents-store functions, with the run-row reads
+  // the server makes (store-reads) under `.store`. `.request` is a thin pass-through — the store runs its own transactions,
+  // so a call needs no outer serialization. The old Agents class and its per-agent home store are gone.
+  const ctx = BACKGROUND_CONTEXT;
+  const agents = {
+    get: (id: string) => getAgent(store, id),
+    list: (options: { archived?: boolean } = {}) => listAgents(store, options),
+    create: (body: DefinitionBody, check?: (revision: NewRevision) => Promise<void>, fresh?: { place: RevisionPlace; tools: readonly string[] }) =>
+      createAgent(store, body, { ...(check ? { check } : {}), ...(fresh ? { fresh } : {}) }),
+    commit: (entry: AgentEntry, body: DefinitionBody, options: { ifCurrent?: string | null; check?: (revision: NewRevision) => Promise<void>; contract?: boolean } = {}) => commitAgent(store, entry, body, options),
+    revisions: (id: string) => agentRevisions(store, id),
+    revision: (agentId: string, revisionId: string) => agentRevision(store, agentId, revisionId),
+    setCurrent: (entry: AgentEntry, revisionId: string) => setCurrentRevision(store, entry, revisionId),
+    setArchived: (kind: "agent" | "run", id: string, archived: boolean) => (kind === "agent" ? setAgentArchived(store, id, archived) : archiveRun(store, id, archived)),
+    request: <T>(fn: () => T | Promise<T>): Promise<T> => Promise.resolve(fn()),
+    dir: data,
+    store: {
+      listRuns: (filter: { agent?: string; revision?: string } = {}) => listRunsOverStore(store, filter, ctx),
+      readRun: (id: string) => readRunOverStore(store, id, ctx),
+      runOfOrigin: (key: string) => runOfOriginOverStore(store, key),
+      readRevision: (id: string) => store.agents.revision(id),
+    },
+    close: () => store.close(),
+  };
+  ({ secrets: secretStores, settings: triggerSettings } = await openServerSecretsOverStore(store, data, env, adapters, (fields) => (log ? log(logLine("trigger", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("trigger", fields)}\n`))));
+  secretStores.add("server", () => [token]);
+  // Each agent's saved sign-ins, over the one store (module A, sign-ins-store): the vendor's calls on the server's keys
+  // (under faux, the vendor's fake alone), under this server's seal key. The store holds whether a sign-in is still held
+  // (a live run's sign_in_handed) and who was handed it, so this takes no `holds`/`handedTo` callback — one store, one lock.
+  const signIns = signInsOverStore(store, sealKey, vendorsOver(() => env, checkFetch));
   const webhooks = new Webhooks(data, env, (fields) => (log ? log(logLine("webhook", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("webhook", fields)}\n`)), options.webhookRetryMs);
   // The outbound webhook's secret, as it stands (set by a PUT, gone with a DELETE), and each it held before.
   secretStores.add("webhook", () => webhooks.signingSecrets());
@@ -1033,20 +1059,70 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     const provider = await making.catch((error: unknown) => { if (pricing === making) pricing = undefined; throw error; });
     return provider.priceOf(model);
   };
-  const runs = new Runs({ installs, dockerAllow: boxNetwork.allow, ...(egress?.volume ? { dockerVolume: egress.volume } : {}), ...(boxPaths ? { dockerPaths: boxPaths } : {}), agents, token, storedKeys, mcpServers: mcpSource, doorTokenFile, doorToken, learning, learningBudget, ...(documents ? { documents: resolve(documents) } : {}), fauxEnv: fauxEnvOf(options), toolSettings: () => settings.get(), ...(runBoxes ? { runBoxes } : {}), ...(remoteBoxes ? { remoteBoxes } : {}), ...(vmBoxes && vmRelayHalf ? { vmBoxes, vmLimits, vmRelay: vmRelayHalf } : {}), ...(remoteBoxes && daytonaApi(env) ? { remoteApi: daytonaApi(env)! } : {}), ...(remoteBoxes ? { boxAllow, onNoBoxList } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}), maxRuns, ...(options.box ? { box: { host: options.box, quarantine: await Quarantine.open(join(data, BOX_QUARANTINE)) } } : {}), ...(options.settleRetryMs ? { settleRetryMs: options.settleRetryMs } : {}), ...(options.readyTimeoutMs ? { readyTimeoutMs: options.readyTimeoutMs } : {}), ...(options.openTimeoutMs ? { openTimeoutMs: options.openTimeoutMs } : {}), ...(options.faux && options.fauxHandedNonce ? { fauxHandedNonce: options.fauxHandedNonce } : {}), ...(options.reflectTimeoutMs ? { reflectTimeoutMs: options.reflectTimeoutMs } : {}), ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}), notify: (event, run, marker) => webhooks.emit(event, run, marker), serverSecrets, signIns, approvers: options.accounts === true });
-  const daytona = daytonaApi(env);
-  const relay = (remoteBoxes && daytona) || vmRelayHalf ? await startBoxRelay({ root: data, tokenOf: (id) => runs.relayToken(id), ...(remoteBoxes && daytona ? daytona : {}), ...(vmRelayHalf ? { vm: vmRelayHalf } : {}), serves: (id) => runs.servesBox(id), ensure: (id) => runs.ensureBox(id) }) : undefined;
-  if (relay) stops.push(() => relay.close());
+  // The run write half (runs-over-store): the server INSERTs a queued run and its launch (startRun), and writes command
+  // rows (message/stop/cancel/raise/approve/archive) a run's runner reads and applies. No per-run process, no HTTP door,
+  // no box relay here — a runner (its own process, sharing only this store) claims and runs every run. The leaves a start
+  // needs that live in this request layer are gathered once as StartDeps; the run's model is resolved once, now (the runner
+  // reads launch.model alone).
+  const modelOf = (_entry: AgentEntry, revision: Revision) => runModelRef(env, revision);
+  const startDeps: StartDeps = {
+    runBodyIssues,
+    pinnedOf,
+    inputIssuesOf,
+    explainRun,
+    // told and fallbackPlace are const arrows declared later in startHolding; wrap them so startDeps captures the binding
+    // (called at request time, after they are assigned) rather than reading them before their declaration.
+    told: (error) => told(error),
+    runnable,
+    readyFiles: (ids) => uploads.readyFiles(ids as string[]),
+    fallbackPlace: (kind, tools) => fallbackPlace(kind, tools),
+    workflowTitle,
+    serverSecrets,
+    toolSettings: () => settings.get(),
+    planeEnv: () => env,
+    approvers: options.accounts === true,
+    ...(documents ? { documents: resolve(documents) } : {}),
+    ...(boxAllow !== undefined ? { boxAllow } : {}),
+    modelOf,
+  };
+  // A run's served view and its live moment, from the store (store-view): `origin` is where this request reaches the
+  // console, the secrets are cut live, and the sign-ins give the handed-pointer cut. Trigger and background reads (no
+  // request) use the server's public address, else its own.
+  const viewDepsFor = (origin: string): ViewDeps => ({ origin, serverSecrets, signIns });
+  const ownOriginOf = (): string => options.publicUrl ?? url;
+  // The run read routes (a run's files, its browser state, its workflow graph) over the one store (run-reads-over-store):
+  // a run's files through the server's read-only Workspace of its folder (serverRunWorkspace, no runner claim), its view
+  // and withheld verdict from store-view. The live browser viewer reads the runner's published handover from the store
+  // (liveViewerLink, the one the runner's browser tool wrote under its claim), when this server has the seal key its token
+  // is sealed under; with no seal key no live view is ever served, so the live branch is left off. The timeline route keeps
+  // its own stub (store-reads journal + SSE) until E2c's timeline lands.
+  const runReadsDeps: RunReadsDeps = {
+    runWorkspace: (_store, runId) => serverRunWorkspace(store, runId, { data, sealKey }),
+    env,
+    runView: (_store, runId) => viewOverStore(store, runId, viewDepsFor(ownOriginOf())),
+    withheld: (_store, runId) => withheldOverStore(store, runId, viewDepsFor(ownOriginOf())),
+    context: ctx,
+    ...(sealKey ? { liveViewer: (runId: string) => liveViewerLink(store, sealKey, runId) } : {}),
+  };
+  // The run timeline reader over the store (run-reads-over-store runTimelines): one change-numbered RowLog per run, synced
+  // from its journal (store-reads) on each read, its view (viewOverStore) for status/state/cost and whether it is final.
+  // The route frames the SSE around its `page`, which long-polls the journal, byte-identical to the old live run's page.
+  const timelines = runTimelines({
+    context: ctx,
+    timelineRows: (forStore, runId, context) => runTimeline(forStore, runId, context),
+    runView: (forStore, runId) => viewOverStore(forStore, runId, viewDepsFor(ownOriginOf())),
+  });
+  const triggerDeps: TriggerTargetDeps = {
+    start: startDeps,
+    getAgent: async (agentId: string) => (await getAgent(store, agentId)) ?? undefined,
+    needAgent,
+    momentOf: (runId: string) => momentOverStore(store, runId, viewDepsFor(ownOriginOf())),
+    runStatus: async (runId: string) => ((await viewOverStore(store, runId, viewDepsFor(ownOriginOf())))?.status as string | undefined) ?? null,
+  };
+  const targets = triggerTargets(store, triggerDeps);
   const expected = digest(`Bearer ${token}`);
-  if (options.beforeAbort) runs.beforeAbort = options.beforeAbort;
-  if (options.beforeReopenLaunch) runs.beforeReopenLaunch = options.beforeReopenLaunch;
-  if (options.beforeRaiseLaunch) runs.beforeRaiseLaunch = options.beforeRaiseLaunch;
-  if (options.hostMemory) runs.memory = options.hostMemory;
-  if (options.onPauseCheck) runs.onPauseCheck = options.onPauseCheck;
-  if (options.beforeSubmit) runs.beforeSubmit = options.beforeSubmit;
-  if (options.beforeMetaSave) runs.beforeMetaSave = options.beforeMetaSave;
-  if (options.onRunLoad) runs.onRunLoad = options.onRunLoad;
-  if (options.messageOrigin) runs.messageOrigin = options.messageOrigin;
+  // The old per-run-process test hooks (beforeAbort/beforeReopenLaunch/onRunLoad/messageOrigin …) are the runner's now
+  // (E2r), not the server's: a run executes in a runner process, not here. TODO(E2r): the equivalents on the runner's loop.
   // Answered keys are kept in the data directory for the retention capabilities state, and written before the answer
   // is sent, so a client that retries after a restart gets the first answer back.
   type Kept = { fingerprint: string; at: number; answer?: { status: number; body: unknown; headers: Record<string, string> } };
@@ -1081,32 +1157,10 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   };
   // Decided once, by the probe the confinement walks by: capabilities.home.writes says what PUT and DELETE do.
   const homeWrites = caps.home.writes;
-  // Runs an earlier server left: supervised again, carried back when they already ended, or opened again. Then, however
-  // that went, the webhook's ledger against the agent store: waits of runs ended or gone dropped, and each end it lacks
-  // queued. Each is its own step: a recovery that gives up (a store busy past its wait) still lets the catch-up run, and a
-  // step that gives up is said, the next start trying it again.
-  void runs
-    .recover()
-    .catch((error: Error) => void process.stderr.write(`agentrun-serve: recovery: ${error.message}\n`))
-    .then(async () => {
-      const rows = (await agents.request(() => agents.store.listRuns())).filter((row) => !row.importedFrom);
-      // An end's notice from its row as the agent store holds it now and its serve.json alone, as the run list reads an
-      // ended run (summaryOfRow): never its own store, whose read can fail, so a busy store loses no end. The same body a
-      // live end's notice has.
-      await webhooks.catchUp(rows, async (id) => {
-        // Its folder on the disk by its row's agent, which a run never changes: the listed row's, or the store's for a run
-        // listed after the list.
-        const listed = rows.find((row) => row.id === id) ?? (await agents.request(() => agents.store.readRun(id)));
-        if (!listed) return null;
-        const meta = await readJson(join(runDirIn(agents.dir, listed.agent, id), RUN_META));
-        // Read last, so nothing but this read stands between the run as it is now and its end's queuing.
-        const row = await agents.request(() => agents.store.readRun(id));
-        if (!row) return null;
-        const notice = { run_id: id, agent_id: row.agent, status: await runs.statusOfRow(row), title: isObject(meta) && typeof meta.title === "string" ? meta.title : "" };
-        return { state: row.state, endedAt: row.endedAt, notice };
-      });
-    })
-    .catch((error: Error) => void process.stderr.write(`agentrun-serve: the webhook's catch-up: ${error.message}\n`));
+  // No server-side run recovery: a runner (its own process) claims every run an earlier runner left and resumes it from the
+  // journal under the claim epoch — the server starts no run process and adopts none.
+  // TODO(switch): rebuild the webhook catch-up over the store's run rows (listRuns + the run view's status) so an end a
+  // stopped server never delivered is queued at the next start; deferred (webhooks stay until route-1's triggers8 merges).
 
   // Schedules: each firing starts its run as POST /agents/{id}/runs does, capped, under the firing's key (triggers.ts).
   // Firings an earlier server left due are driven again now, beside the recovery above.
@@ -1115,56 +1169,12 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     clock: options.triggerClock,
     adapters,
     say: (fields) => (log ? log(logLine("trigger", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("trigger", fields)}\n`)),
-    async targetIssues(target) {
-      if (target.kind === "message_run") {
-        const run = await runs.get(target.run_id);
-        if (!run) return [{ field: "target.run_id", reason: "not_found", message: `no run ${target.run_id}` }];
-        if (run.kind === "workflow") return [{ field: "target.run_id", reason: "not_allowed", message: "A workflow run takes no messages here." }];
-        return run.meta.max_cost_usd === undefined ? [{ field: "target.run_id", reason: "not_allowed", message: NO_CAP }] : [];
-      }
-      const entry = await agents.get(target.agent_id);
-      if (!entry) return [{ field: "target.agent_id", reason: "not_found", message: `no agent ${target.agent_id}` }];
-      if (!entry.revision) return [{ field: "target.agent_id", reason: "invalid", message: `the agent ${target.agent_id} has no current revision` }];
-      const uncapped = target.max_cost_usd === undefined && entry.revision.body.maxCostUsd === undefined ? [{ field: "target.max_cost_usd", reason: "missing", message: `Every run a trigger starts is capped: give the target a max_cost_usd or set the agent's (the agent ${target.agent_id} has none).` }] : [];
-      return [...uncapped, ...(await explainRun(await inputIssuesOf(entry.revision, target.input), { input: target.input }, entry.revision)).map((issue) => ({ ...issue, field: `target.${issue.field}` }))];
-    },
-    async start(target, input, trigger, from) {
-      const entry = await needAgent(target.agent_id);
-      // The target's cap, else the agent's default as it stands now: a run a trigger starts is never uncapped.
-      const run = await startRunOf(entry, { input, ...(target.max_cost_usd !== undefined ? { max_cost_usd: target.max_cost_usd } : {}), ...(target.effort ? { effort: target.effort } : {}) }, { trigger, origin: { key: trigger.firing_key }, capped: true, from });
-      return { run_id: run.id };
-    },
-    async message(target, input, key, from) {
-      const run = await needRun(target.run_id);
-      if (run.kind === "workflow") throw unsupported("messages.steer_workflow_runs", "A workflow run takes no messages here.");
-      // A store held past its retries is a busy store: the firing stays due and is tried again, never failed.
-      if (await runs.tookMessage(run, key).catch((error: unknown) => { throw storeBusy(error) ? homeBusy() : error; })) return;
-      // Never an uncapped turn, nor an answer to a person's question, an approval or a budget pause: a run that waits on
-      // its person is told nothing by a trigger.
-      if (run.meta.max_cost_usd === undefined) throw new ApiError("not_continuable", NO_CAP);
-      const { status, state } = statusOf(run);
-      if (status === "input_required" && state === "waiting") return { skipped: WAITS_ON_A_PERSON };
-      try {
-        await runs.message(run, String(input.content), key, { answers: false, origin: from });
-      } catch (error) {
-        if (error instanceof ApiError && error.message === WAITS_ON_A_PERSON) return { skipped: WAITS_ON_A_PERSON };
-        throw error;
-      }
-    },
+    // The trigger target policy (what a trigger may start or message, and in what words it is refused) is the one store's
+    // (trigger-targets.ts, over the run write half and the run view): targetIssues, start, message, statusOf, runOf. The
+    // queue a firing takes — how many of a trigger's messages wait for a busy run — is route-1's store.triggers.
+    ...targets,
     settings: (adapterId) => triggerSettings.get(adapterId),
     notify: (failed, key) => webhooks.emitTrigger(failed, key),
-    async runOf(key) {
-      const started = await agents.request(() => agents.store.runOfOrigin(key));
-      if (!started) return null;
-      // Never set up as runs.ts load reads it (notSetUp: the store has it running and its serve.json holds no input), which
-      // this start's recovery fails as server_lost_at_setup; or failed so already.
-      const run = await runs.get(started.runId);
-      return { run_id: started.runId, setup_lost: run?.notSetUp === true || run?.error?.details?.reason === SETUP_LOST };
-    },
-    async statusOf(runId) {
-      const row = await agents.request(() => agents.store.readRun(runId));
-      return row ? runs.statusOfRow(row) : null;
-    },
   });
   stops.push(async () => triggers.close());
   if (options.store) void triggers.start().catch((error: Error) => void process.stderr.write(`agentrun-serve: the triggers' start: ${error.message}\n`));
@@ -1265,6 +1275,9 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   }
 
   async function bodyOf(req: IncomingMessage): Promise<Json> {
+    // Read once: the secret-write check reads a registered operation's body before its route does (secret-writes.ts).
+    const read = bodies.get(req);
+    if (read !== undefined) return read;
     const type = String(req.headers["content-type"] ?? "");
     if (!type.startsWith("application/json")) throw new ApiError("unsupported_media_type", "the body must be application/json");
     const bytes = await bytesOf(req);
@@ -1284,20 +1297,40 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   async function learnedDraftToolsOf(id: string): Promise<{ tools: string[]; gated: Record<string, string> }> {
     const revision = (await needAgent(id)).revision;
     if (revision?.kind !== "agentic") return { tools: [], gated: {} };
-    const [{ learnedDraftTools }, { permissionOf }, { readToolSettings }] = await Promise.all([import("./tools.js"), import("./tool-gate.js"), import("./tool-plane.js")]);
-    const server = readToolSettings(agents.dir).settings;
-    return learnedDraftTools(revision.body.tools, (name) => permissionOf(name, server as never, (revision.body.toolSettings ?? {}) as never, revision.body.approvals === "never" ? "never" : "ask"));
+    const [{ learnedDraftTools }, { permissionOf }] = await Promise.all([import("./tools.js"), import("./tool-gate.js")]);
+    const server = settings.get();
+    // The revision row's body is the agentic body JSON (store-backed RevisionRow types it as unknown).
+    const body = revision.body as { tools?: string[]; toolSettings?: unknown; approvals?: string };
+    return learnedDraftTools(body.tools ?? [], (name) => permissionOf(name, server as never, (body.toolSettings ?? {}) as never, body.approvals === "never" ? "never" : "ask"));
   }
   async function needAgent(id: string): Promise<AgentEntry> {
     const entry = ID.test(id) ? await agents.get(id) : null;
     if (!entry) throw new ApiError("not_found", `no agent ${id}`);
     return entry;
   }
-  async function needRun(id: string): Promise<Run> {
-    const run = ID.test(id) ? await runs.get(id) : null;
+  /** An agent view's extra fields (agents-store agentView): its saved sign-ins, its learning count, and its run counts.
+   *  The run counts read the store's runs (store-reads/runs.ts listRuns): `count` is every run the agent has, `live` those
+   *  still running (runReadState 'running': queued, running or parked), the same numbers the file-backed view showed. */
+  const agentExtra = async (entry: AgentEntry): Promise<{ signIns: object[]; learning?: { pending: number }; runs: { count: number; live: number } }> => {
+    const learning = await learningOfAgent(entry);
+    const runs = await listRunsOverStore(store, { agent: entry.agent.id }, ctx);
+    return { signIns: await signIns.view(entry.agent.id), ...(learning ? { learning } : {}), runs: { count: runs.length, live: runs.filter((run) => run.state === "running").length } };
+  };
+  // A run's live moment from the store (store-view momentOf), for the one acceptance each act a run takes reads. The run
+  // routes read from the store + the run view now, not a live Run.
+  async function needRun(id: string): Promise<RunMoment> {
+    const run = ID.test(id) ? await momentOverStore(store, id, viewDepsFor(ownOriginOf())) : undefined;
     if (!run) throw new ApiError("not_found", `no run ${id}`);
     return run;
   }
+  /** A run's v2 status and state now (the run view), for the answer an act reports once it has written its command row. */
+  const runStatusState = async (runId: string): Promise<{ status: Status; state: State }> => {
+    const v = await viewOverStore(store, runId, viewDepsFor(ownOriginOf()));
+    return { status: (v?.status as Status) ?? "queued", state: (v?.state as State) ?? "idle" };
+  };
+  /** The run read routes (timeline, files, graph, browser, live viewer) over the store are E2c's run-reads-over-store.ts
+   *  (watchRun + run-workspace + store-view), not committed yet. TODO(E2c): replace each call with its function on that sha. */
+  const runReadsTodo = (): never => { throw new ApiError("unsupported_here", "run reads over the store (timeline, files, graph, browser) are being wired (run-reads-over-store); not available on this build yet"); };
 
   const mismatch = () => new ApiError("idempotency_mismatch", "this Idempotency-Key was used with another body");
   /** Replays the first answer to a create with the same key and body; another body is a mismatch. `work` gets the key's
@@ -1376,18 +1409,21 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   /** A definition being saved: refused (422 by field) when it can never run here; else what this host still lacks. A
    *  revision that names no place is checked where it would run (fallbackPlace). */
   async function saveable(revision: NewRevision): Promise<InputIssue[]> {
+    // The store's NewRevision keeps the revision's fields under `body` (AgenticBody|WorkflowBody); build the flat shape the
+    // host checks (runnable.ts RevisionShape) from it, as shapeOf does for a run's Revision.
+    const body = revision.body as AgenticBody & Partial<WorkflowBody>;
     // An agent on a harness that installs on first use starts its install, if it is not in yet: its first run waits for less.
-    const install = revision.kind === "agentic" ? installs[harnessOfBody(revision)] : undefined;
+    const install = revision.kind === "agentic" ? installs[harnessOfBody(body)] : undefined;
     if (install) {
       void install.ensure().catch((error: Error) => log?.(logLine("harness_install_failed", { harness: install.entry.id, message: error.message })));
     }
-    const named = revision.kind === "agentic" ? revision : workflowShape(revision);
+    const named = (revision.kind === "agentic" ? { kind: "agentic" as const, ...(body as AgenticBody) } : workflowShape(body as never)) as unknown as RevisionShape;
     const shape = named.place ? named : { ...named, place: fallbackPlace(named.kind, named.tools ?? []), unnamed: true as const };
     const blockers = await blockersOf(env, shape, settings.get(), { boxes: boxOffers, offers, mcp: mcpTools });
     // An agent's default cap caps each run started without one of its own, and a web tool resolves by the cap: what a cap
     // alone keeps from running under the definition's own picks, whatever this host's settings, would keep every such run
     // from running, so the save is refused, not each run (claude-agent's or codex's own search, picked, under a cap).
-    if ((revision.maxCostUsd ?? 0) > 0) {
+    if ((body.maxCostUsd ?? 0) > 0) {
       const key = (b: Blocker) => `${b.field}\n${b.message}`;
       const plain = new Set((await blockersOf(env, shape, {}, { boxes: boxOffers, offers, mcp: mcpTools })).map(key));
       const capped = await blockersOf(env, shape, {}, { capped: true, boxes: boxOffers, offers, mcp: mcpTools, decisionPrice });
@@ -1424,7 +1460,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   async function applyTemplate(pkg: Package, body: Json) {
     const { parameters, grants, model: override, approvals } = applyBodyOf(pkg, body);
     const missing = pkg.secrets.filter((name) => !secret(name, storedKeys));
-    const saved = pkg.mcp.filter((need) => mcpSource.server(need.server));
+    const saved = pkg.mcp.filter((need) => mcpMeta.has(need.server));
     const unsaved = pkg.mcp.filter((need) => !saved.includes(need));
     const needed = unsaved.filter((need) => need.required);
     // A webhook trigger's secret is kept sealed, never in the clear: with no seal key, its create would be refused after
@@ -1531,12 +1567,11 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       if (first) {
         if (first.existing?.fingerprint !== origin.fingerprint) throw mismatch();
         const headers: Record<string, string> = { location: `/v2/runs/${first.runId}`, "idempotent-replayed": "true" };
-        return { status: 202, body: await runs.view(await needRun(first.runId), linkOrigin(req)), headers };
+        return { status: 202, body: await viewOverStore(store, first.runId, viewDepsFor(linkOrigin(req))), headers };
       }
       const run = await startRunOf(entry, body, { ...(origin ? { origin } : {}) });
-      // Its view from the run itself: it is written, with its first message, so an answer read from the store, which a
-      // busy store would turn into home_busy, would refuse a run that runs, and a retry would start a second one.
-      return { status: 202, body: await runs.view(run, linkOrigin(req), { stored: null }), headers: { location: `/v2/runs/${run.id}` } };
+      // Its view from the store: the run and its launch were inserted in one transaction, so the view reads it whole.
+      return { status: 202, body: await viewOverStore(store, run.id, viewDepsFor(linkOrigin(req))), headers: { location: `/v2/runs/${run.id}` } };
     });
   }
 
@@ -1545,42 +1580,21 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
    *  gets that run (the agent store's run_origins). */
   /** `capped`: the run must have a cap (a trigger's), its own or else its agent's default. */
   /** `from`: who the run's first message is from when the person did not write it (a trigger's firing). */
-  async function startRunOf(entry: AgentEntry, body: Json, { trigger, origin, capped = false, from }: { trigger?: RunTrigger; origin?: RunOrigin; capped?: boolean; from?: MessageOrigin } = {}): Promise<Run> {
-    const issues = runBodyIssues(body);
-    if (issues.length) {
-      // Told from the revision the run would start on (a pinned one, else the current), once it reads as one: a pin that
-      // is malformed or names no revision gets the refusal alone, no hint.
-      const on = issues.some((issue) => issue.field === "revision") ? undefined : await pinnedOf(entry, body);
-      throw told(invalid(on ? await explainRun(issues, body, on.revision) : issues));
-    }
-    if (body.quote_id !== undefined) throw unsupported("quotes", "This server has no billing, so it takes no quotes.");
-    // Each a ready file, before anything starts: copied into the run's work/inputs/ once its directory is made.
-    const files = Array.isArray(body.file_ids) ? await uploads.readyFiles(body.file_ids) : [];
-    const pinned = await pinnedOf(entry, body);
-    if (!pinned) throw invalid([{ field: "revision", reason: "not_an_option", message: typeof body.revision === "string" ? `${body.revision} is not a revision of the agent ${entry.agent.id}` : `the agent ${entry.agent.id} has no current revision` }]);
-    const { revision, version } = pinned;
-    const input = body.input as Json;
-    const wrong = await inputIssuesOf(revision, input);
-    if (wrong.length) throw told(invalid(await explainRun(wrong, body, revision)));
-    // The run's own cap, else the agent's default: the caller chose its own.
-    const cap = typeof body.max_cost_usd === "number" ? body.max_cost_usd : revision.body.maxCostUsd;
-    if (capped && cap === undefined) throw invalid([{ field: "max_cost_usd", reason: "missing", message: "Every run a trigger starts is capped: give the trigger's target a max_cost_usd or set the agent's." }]);
-    // How its cap prices a request: the run's own, else the agent's, else expected (cap.ts). Only a run with a cap has one.
-    if (body.cap_mode !== undefined && cap === undefined) throw invalid([{ field: "cap_mode", reason: "not_allowed", message: "cap_mode says how a run's cap prices its requests, and this run has no cap: give it a max_cost_usd, or set the agent's." }]);
-    const capMode = cap === undefined ? undefined : typeof body.cap_mode === "string" ? (body.cap_mode as CapMode) : (revision.body.capMode as CapMode | undefined);
-    const place = resolvePlace(revision.body.place as Place | undefined, fallbackPlace(revision.kind, revision.kind === "agentic" ? (revision.body.tools ?? []) : []));
-    await runnable(revision, place, { capped: cap !== undefined });
-    // The title shows on the run's page, the runs list and Mission Control: built from its input as shown, each held
-    // value redacted before a long one is cut (a cut key could no longer be found), and the run gets its input as given.
-    const shown = redactedOutput(input, serverSecrets());
-    const title = revision.kind === "workflow" ? workflowTitle(entry.agent.name || entry.agent.id, isObject(shown) ? shown : {}) : typeof input.content === "string" ? input.content : (Object.values(input).find((v): v is string => typeof v === "string") ?? JSON.stringify(input));
-    return runs.create(entry, revision, version, { input, title, place, ...(typeof body.effort === "string" ? { effort: body.effort } : {}), ...(cap !== undefined ? { maxCostUsd: cap } : {}), ...(capMode !== undefined ? { capMode } : {}), ...(trigger ? { trigger } : {}), ...(origin ? { origin } : {}), ...(from ? { from } : {}), ...(files.length ? { inputs: (work: string) => uploads.copyInto(work, files) } : {}) });
+  async function startRunOf(entry: AgentEntry, body: Json, options: StartOptions = {}): Promise<RunRow> {
+    // Every check the old start made, in the same order and words, now lives in the run write half (runs-over-store.startRun,
+    // over StartDeps): the body's fields, the revision it pins, the input against its schema, the cap rules, the plane this
+    // host resolves, whether the revision can run here — then an INSERT of a queued run and its launch in one transaction,
+    // which a runner reads at its claim. No process, no door, no setup file.
+    return startRun(store, startDeps, entry, body, options);
   }
 
   /** The revision a run of `entry` starts on: the one `body.revision` pins, else the agent's current; undefined when the
    *  pin names none, or the agent has no revision. */
-  async function pinnedOf(entry: AgentEntry, body: Json) {
-    return typeof body.revision === "string" ? await agents.revision(entry.agent.id, body.revision) : entry.revision && { revision: entry.revision, version: entry.version };
+  async function pinnedOf(entry: AgentEntry, body: Json): Promise<{ revision: Revision; version: number } | undefined> {
+    const found = typeof body.revision === "string" ? await agents.revision(entry.agent.id, body.revision) : entry.revision && { revision: entry.revision, version: entry.version };
+    // A store RevisionRow is the same revision the run path reads as a pi Revision (its body is the revision body JSON); the
+    // run write half (StartDeps) types it as Revision, so the row is handed across as one.
+    return found ? { revision: found.revision as unknown as Revision, version: found.version } : undefined;
   }
 
   /** A run create's body as POST /agents/{id}/runs checks it before it reads the agent: each field issue. */
@@ -1610,32 +1624,30 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     if (status !== null && !(STATUSES as readonly string[]).includes(status)) throw new ApiError("bad_request", `status is one of ${STATUSES.join(", ")}`);
     for (const [key, value] of Object.entries(filter)) if (value !== undefined && !ID.test(value)) throw new ApiError("bad_request", `${key} is an id`);
     const archived = archivedParam(url);
-    let rows = (await agents.request(() => agents.store.listRuns(filter))).filter((row) => Boolean(row.archivedAt) === archived);
+    const vd = viewDepsFor(origin);
+    let rows = (await listRunsOverStore(store, filter, ctx)).filter((row) => Boolean(row.archivedAt) === archived);
     if (status !== null) {
-      const statuses = await Promise.all(rows.map((row) => runs.statusOfRow(row)));
+      // The v2 status is the run view's (store-view over the journal), per row.
+      const statuses = await Promise.all(rows.map((row) => viewOverStore(store, row.id, vd).then((v) => v?.status as Status | undefined)));
       rows = rows.filter((_, i) => statuses[i] === (status as Status));
     }
-    const versions = new Map<string, number>();
-    for (const agent of new Set(rows.slice(offset, offset + limit).map((row) => row.agent))) for (const r of await agents.revisions(agent)) versions.set(r.id, r.version);
-    const page = await Promise.all(rows.slice(offset, offset + limit).map((row) => runs.summaryOfRow(row, versions, origin)));
+    // summaryOverStore reads each run's view (its version, status, cost and learning among them); no versions map is needed.
+    const page = await Promise.all(rows.slice(offset, offset + limit).map((row) => summaryOverStore(store, row.id, vd)));
     return { runs: page, next_cursor: nextCursor(offset + limit, rows.length) };
   }
 
-  async function timeline(req: IncomingMessage, res: ServerResponse, url: URL, run: Run): Promise<void> {
+  async function timeline(req: IncomingMessage, res: ServerResponse, url: URL, runId: string): Promise<void> {
     const after = integerParam(url.searchParams.get("after"), "after", Number.MAX_SAFE_INTEGER);
     const waitMs = integerParam(url.searchParams.get("wait_ms"), "wait_ms", MAX_WAIT_MS);
     // This server's own: a page of at most `limit` rows, for a client that reads a little at a time (the MCP tool's).
     const asked = url.searchParams.get("limit");
     if (asked !== null && !(/^\d+$/.test(asked) && Number(asked) >= 1 && Number(asked) <= PAGE_ROWS)) throw new ApiError("bad_request", `limit is an integer from 1 to ${PAGE_ROWS}`);
     const limit = asked === null ? PAGE_ROWS : Number(asked);
-    const pageOf = async (from: number, wait: number) => {
-      const page = await runs.page(run, from, wait, limit);
-      // Its learning row as it reads now: what it held for its owner's OK, approved or retired since, waits no more.
-      const rows = page.rows.some((row) => row.kind === "learning") ? await runs.learning.rowsNow(run.agentId, run.meta.learning, page.rows) : page.rows;
-      return { run_id: run.id, status: page.status, state: page.state, reset: page.reset, rows, drop: page.drop, next_after: page.next_after, unchanged: page.unchanged, has_more: page.has_more, final: page.final, cost: runs.cost(run) };
-    };
+    // The run's page from the store (runTimelines): run_id/status/state/reset/rows/drop/next_after/unchanged/has_more/final/
+    // cost, byte-identical to the old live page. TODO(learning-row freshness): a learning row approved or retired since the
+    // journal wrote it reads its journal state here (store-view owns the fresh learning view); folded in with learning-1.
     if (!String(req.headers.accept ?? "").includes("text/event-stream")) {
-      const page = await pageOf(after, waitMs);
+      const page = await timelines.page(store, runId, after, waitMs, limit);
       return send(res, 200, { ...page, poll_after_ms: page.final || page.has_more ? 0 : 1000 });
     }
     const last = req.headers["last-event-id"];
@@ -1645,9 +1657,21 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     const beat = setInterval(() => res.write(": keepalive\n\n"), 15_000);
     let open = true;
     res.once("close", () => void (open = false));
+    // The live wake: watchRun (live/stream.ts) signals a new journal commit or the run's end, so the page is re-read at
+    // once instead of only on a poll. A run with no watch (gone, or a store with no live) falls back to a 1s re-read; the
+    // page it serves is byte-identical either way.
+    const stream = await watchRun(store, runId).catch(() => undefined);
+    let notify: (() => void) | undefined;
+    stream?.start(() => notify?.());
+    const nextChange = (ms: number): Promise<void> =>
+      new Promise<void>((resolve) => {
+        const t = setTimeout(() => ((notify = undefined), resolve()), ms);
+        t.unref?.();
+        notify = () => (clearTimeout(t), (notify = undefined), resolve());
+      });
     try {
       for (let first = true; open; first = false) {
-        const page = await pageOf(cursor, first ? 0 : 15_000);
+        const page = await timelines.page(store, runId, cursor, 0, limit);
         if (!open) break;
         if (first || !page.unchanged || page.final) res.write(`event: rows\nid: ${page.next_after}\ndata: ${JSON.stringify(page)}\n\n`);
         cursor = page.next_after;
@@ -1655,21 +1679,20 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
           res.write(`event: end\ndata: ${JSON.stringify({ reason: "terminal" })}\n\n`);
           break;
         }
+        // Until the next commit, the run's end, or 15s (the keepalive cadence; a run with no watch re-reads every 1s).
+        await Promise.race([nextChange(stream ? 15_000 : 1_000), ...(stream ? [stream.closed] : [])]);
       }
     } finally {
       clearInterval(beat);
+      await stream?.stop().catch(() => {});
       res.end();
     }
   }
 
   // ---- files ----------------------------------------------------------------------------------------------------------
 
-  /** Run `run`'s Workspace, which its files' list and reads go through: null while the run has no folder (an imported
-   *  run never has one), which lists nothing. */
-  async function runWorkspace(run: Pick<Run, "agentId" | "id">): Promise<Workspace | null> {
-    const root = runFolder(data, run.agentId, run.id);
-    return (await lstat(root).catch(() => null))?.isDirectory() ? localWorkspace(root) : null;
-  }
+  // A run's Workspace (its files' list and reads) is the store-backed run reads' now (run-reads-over-store, E2c, over the
+  // run's launch place with run-workspace.ts), not a local folder off the data directory. Removed with the file routes.
 
   // ---- an agent's home --------------------------------------------------------------------------------------------------
 
@@ -1713,11 +1736,10 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   const savedSoFarOf = (row: { id: string; endedAt?: string | null }) => {
     const key = `${row.id} ${row.endedAt}`;
     if (!endedSoFar.has(key)) {
+      // TODO(E3/store-reads): a run's kept so-far cost comes from the store (its row/journal), not a per-run RUN_META file
+      // (runStorePath is gone). Undefined until the usage route reads it over the store.
       let usd: number | undefined;
-      try {
-        const kept = (JSON.parse(readFileSync(join(dirname(dirname(agents.store.runStorePath(row.id))), RUN_META), "utf8")) as { cost_so_far?: { so_far_usd?: unknown } }).cost_so_far?.so_far_usd;
-        usd = typeof kept === "number" && Number.isFinite(kept) ? kept : undefined;
-      } catch {
+      {
         usd = undefined;
       }
       endedSoFar.set(key, usd);
@@ -1728,11 +1750,9 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     const key = `${row.id} ${row.endedAt}`;
     let meters = endedMeters.get(key);
     if (!meters) {
-      try {
-        meters = meterFiguresIn(agents.store.runStorePath(row.id));
-      } catch {
-        meters = { tools: 0, tokens: null, browser: { usd: 0, seconds: 0 }, others: 0, known: { tokens: 0, browser: 0, others: 0 } };
-      }
+      // TODO(E3/store-reads): an ended run's meter figures come from store-reads (store-reads/stats over its journal), not
+      // a per-run store file (runStorePath is gone). Empty until the usage route is wired over the store.
+      meters = { tools: 0, tokens: null, browser: { usd: 0, seconds: 0 }, others: 0, known: { tokens: 0, browser: 0, others: 0 } };
       endedMeters.set(key, meters);
     }
     return meters;
@@ -1767,25 +1787,26 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     for (const row of await agents.request(() => agents.store.listRuns())) {
       const at = Date.parse(row.startedAt);
       if (!(at >= from && at < to)) continue;
-      const live = row.state === "running" ? await runs.get(row.id) : null;
-      const usd = live ? runs.cost(live).usd : (row.costUsd ?? null);
+      // A running run's cost is its booked-so-far spend (store-reads/runs listRuns reads it over the store with
+      // spentOverStore); an ended run's is its stored cost. A null cost (a running run with none yet) counts unpriced.
+      const usd = row.costUsd ?? null;
       const key = group === "agent" ? row.agent : group === "day" ? row.startedAt.slice(0, 10) : group === "meter" ? "tokens" : "local";
       // By meter, what a run's paid tools charged (monid's) is `tools`, its browser session time `browser_time`, the rest
       // `tokens`, all from the same records: a live run's rows (a call still marked is no charge), else its store as it
       // ended (a call a crash cut makes `tools` unknown, never `tokens`). An unknown meter counts the run as unpriced on it.
       // An ended run's are its store's figures (metersOf keeps them, never its timeline), read for its lines by meter and,
       // by any group, for what a run of unknown cost is known to have spent.
-      const read = (group === "meter" && usd !== 0) || usd === null ? (live ? { tools: toolCostOf(live.rows), tokens: null, browser: { usd: toolCostOf(live.rows, "browser"), seconds: null }, others: toolCostOf(live.rows, "browser", true), known: { tokens: 0, browser: knownToolCostOf(live.rows, "browser"), others: knownToolCostOf(live.rows, "browser", true) } } : metersOf(row)) : undefined;
+      const read = (group === "meter" && usd !== 0) || usd === null ? metersOf(row) : undefined;
       // A run whose cost is unknown still spent what is known of it (so_far: each meter's known dollars): that is in the
       // total and its lines, and the run is counted unpriced, so a total is never below a line of its own and reads as
       // the lower bound unpriced_runs says it is.
-      const soFar = usd !== null || !read ? 0 : live ? (runs.cost(live).so_far_usd ?? 0) : (savedSoFarOf(row) ?? read.known.tokens + read.known.browser + read.known.others);
+      const soFar = usd !== null || !read ? 0 : (savedSoFarOf(row) ?? read.known.tokens + read.known.browser + read.known.others);
       const meters = group === "meter" && usd !== 0 ? read : undefined;
       if (meters && meters.browser.usd !== 0) browserSeconds = browserSeconds === null || meters.browser.seconds === null ? null : browserSeconds + meters.browser.seconds;
       // Its parts of the lines (usage-lines.ts): an unknown one counts the run unpriced there and adds what is known of it.
       // An unpriced MCP call is in none of them: counted apart as not metered on the tools line, which a $0 run shows only
       // when it made one.
-      const unmetered = group !== "meter" ? 0 : ((live ? live.rows.find((one) => one.kind === "usage")?.usage?.not_metered : metersOf(row).notMetered) ?? 0);
+      const unmetered = group !== "meter" ? 0 : (metersOf(row).notMetered ?? 0);
       notMetered += unmetered;
       if (unmetered && !lines.has("tools")) lines.set("tools", { usd: 0, unpriced: 0 });
       for (const part of runLines({ usd, soFar, key, meters })) {
@@ -1907,7 +1928,11 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         // Before the owner's password is set: whether setup takes the printed code (a server at a public address), so
         // the page asks for it when opened with no link. Never the code itself.
         const set = me.hasPassword();
-        return send(res, 200, { password_set: set, signed_in: signedIn(req, me), ...(set ? {} : { setup_code: !me.openSetup }) });
+        // secrets_writable: whether this browser may save a secret (secret-writes.ts mayWriteSecrets, the dispatch check's
+        // own rule), so the console offers a paste only where it would be taken. Answered before the page marks the
+        // request, so its facts are read here: accounts are on, and its session is its password's.
+        const writable = secretsWritableFields({ accounts: true, passwordSession: signedIn(req, me), consoleSession: false, token: req.headers.authorization !== undefined && !signedIn(req, me), loopbackBound: isLoopback(host) });
+        return send(res, 200, { accounts: true, password_set: set, signed_in: signedIn(req, me), ...writable, ...(set ? {} : { setup_code: !me.openSetup }) });
       }
     }
     throw new ApiError("not_found", `no route /v2${path}`);
@@ -1971,6 +1996,9 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     if (!found) throw new ApiError("method_not_allowed", `${req.method} is not a method of ${path}`, {}, { allow: [...new Set(matching.map((r) => r.method))].join(", ") });
     if (found.name === "getCapabilities") return send(res, 200, forCaller(caps, byOwnerSession(req)));
     if (found.name === "getOpenapi") return send(res, 200, servedOpenapi(openapi, req.socket.localPort));
+    // With accounts off there is no owner, and the console still asks whether it may save a secret: secret-writes.ts'
+    // verdict over the request the page just marked, never a signed-in user it doesn't have.
+    if (found.name === "getAuthSession") return send(res, 200, { accounts: false, ...secretsWritableFields(secretWriterFacts(req, { accounts: false, loopbackBound: isLoopback(host) })) });
     // The one route with no token: a pushed trigger source's request, checked by its source before anything else is
     // read (push-handler.ts).
     if (found.name === "receiveHook") {
@@ -1985,6 +2013,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       const state = url.searchParams.get("state");
       if (!startedHere(req.headers.cookie, req.socket.localPort, state)) throw new ApiError("forbidden", "This sign-in was started in another browser, or its 10 minutes are over: start it again in Settings → MCP servers, in this browser.");
       const location = await mcpServers.oauthCallback(url.searchParams, stopping.signal);
+      // A sign-in that finished kept the server's tools again: the grant-check snapshot reads them.
+      await refreshMcpMeta();
       // Its sign-in is over: its cookie goes.
       return void res.writeHead(302, { location, "cache-control": "no-store", "set-cookie": signInCookie(req.socket.localPort, state!, overHttps(req), 0) }).end();
     }
@@ -2019,6 +2049,16 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       authFailed(`/v2${path}`, "approve_without_session");
       throw new ApiError("forbidden", owner ? "Answering a tool call's approval takes the owner's password sign-in in the console, never a token." : "Answering a tool call's approval takes the owner's password sign-in, and this server has no accounts (AGENTRUN_ACCOUNTS=0).");
     }
+    // Saving, replacing or removing a secret (secret-writes.ts): the one check. Who may is mayWriteSecrets' alone (the
+    // owner's session); which writes are secret is each plane's registered predicate, read from the body, so a token's
+    // non-secret edit on the same route still goes through. A body that does not read counts as the plane says of none.
+    if (isSecretWriteOperation(found.name) && req.headers.authorization !== undefined && !writesSecretsAllowed(req, { accounts: owner !== undefined, loopbackBound: isLoopback(host) })) {
+      const body = req.method === "DELETE" || req.method === "GET" ? undefined : await bodyOf(req).catch(() => undefined);
+      if (writesSecret(found.name, body)) {
+        authFailed(`/v2${path}`, "secret_without_session");
+        throw new ApiError("forbidden", SECRET_WRITE_REFUSAL);
+      }
+    }
     if (!timingSafeEqual(digest(String(req.headers.authorization ?? "")), expected)) {
       authFailed(`/v2${path}`, req.headers.authorization === undefined ? "no_credential" : "wrong_token");
       throw new ApiError("unauthenticated", "this route needs Authorization: Bearer <the token in the data directory>", {}, { "www-authenticate": "Bearer" });
@@ -2031,7 +2071,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         const body = await bodyOf(req);
         const answer = await idempotent(req, "/agents", body, async () => {
           const { entry, warnings } = await createAgentOf(body);
-          return { status: 201, body: { ...agentView(entry, linkOrigin(req), await signIns.view(entry.agent.id), await learningOfAgent(entry)), warnings }, headers: { location: `/v2/agents/${entry.agent.id}`, etag: etagOf(entry) } };
+          return { status: 201, body: { ...agentView(entry, linkOrigin(req), await agentExtra(entry)), warnings }, headers: { location: `/v2/agents/${entry.agent.id}`, etag: etagOf(entry) } };
         });
         return send(res, answer.status, answer.body, answer.headers);
       }
@@ -2040,13 +2080,13 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         const offset = cursorOf(url.searchParams.get("cursor"));
         const archived = archivedParam(url);
         const all = (await agents.list()).filter((entry) => Boolean(entry.agent.archivedAt) === archived);
-        return send(res, 200, { agents: await Promise.all(all.slice(offset, offset + limit).map(async (entry) => agentView(entry, linkOrigin(req), await signIns.view(entry.agent.id), await learningOfAgent(entry)))), next_cursor: nextCursor(offset + limit, all.length) });
+        return send(res, 200, { agents: await Promise.all(all.slice(offset, offset + limit).map(async (entry) => agentView(entry, linkOrigin(req), await agentExtra(entry)))), next_cursor: nextCursor(offset + limit, all.length) });
       }
       case "getAgent": {
         const entry = await needAgent(id);
         // The tools its current revision grants, as capabilities list them, each with its provider for this agent.
-        const tools = entry.revision ? agentTools(env, settings.get(), await toolingOf(entry.revision), caps.tools.map((tool) => tool.name)) : [];
-        return send(res, 200, { ...agentView(entry, linkOrigin(req), await signIns.view(entry.agent.id), await learningOfAgent(entry)), tools }, { etag: etagOf(entry) });
+        const tools = entry.revision ? agentTools(env, settings.get(), await toolingOf(entry.revision as unknown as Revision), caps.tools.map((tool) => tool.name)) : [];
+        return send(res, 200, { ...agentView(entry, linkOrigin(req), await agentExtra(entry)), tools }, { etag: etagOf(entry) });
       }
       case "updateDefinition": {
         const entry = await needAgent(id);
@@ -2066,14 +2106,15 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         let warnings: InputIssue[] = [];
         const check = async (revision: NewRevision) => void (warnings = await saveable(revision));
         const edited = await agents.commit(entry, checkDefinitionBody(contract ? { definition: body } : body, { creating: false }), { check, contract, ...(match === undefined ? {} : { ifCurrent: entry.revision?.id ?? null }) });
-        return send(res, 200, { ...agentView(edited, linkOrigin(req), await signIns.view(edited.agent.id), await learningOfAgent(edited)), warnings }, { etag: etagOf(edited) });
+        return send(res, 200, { ...agentView(edited, linkOrigin(req), await agentExtra(edited)), warnings }, { etag: etagOf(edited) });
       }
       case "listRevisions": {
         const entry = await needAgent(id);
         const limit = limitOf(url.searchParams.get("limit"));
         const offset = cursorOf(url.searchParams.get("cursor"));
         const all = await agents.revisions(id);
-        const page = await agents.request(() => all.slice(offset, offset + limit).map((row) => revisionView(entry.agent, row, agents.store.readRevision(row.id))));
+        // agentRevisions already carries each row's version and current flag; revisionView builds the v2 shape from it.
+        const page = all.slice(offset, offset + limit).map((row) => revisionView(entry.agent, row));
         return send(res, 200, { revisions: page, next_cursor: nextCursor(offset + limit, all.length) });
       }
       case "setCurrent": {
@@ -2085,15 +2126,15 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         if (typeof revision !== "string" || !ID.test(revision)) throw invalid([{ field: "revision", reason: revision === undefined ? "missing" : "wrong_type", message: "revision is a revision id of this agent" }]);
         if (!(await agents.revision(id, revision))) throw invalid([{ field: "revision", reason: "not_an_option", message: `${revision} is not a revision of the agent ${id}` }]);
         const moved = await agents.setCurrent(entry, revision);
-        return send(res, 200, agentView(moved, linkOrigin(req), await signIns.view(moved.agent.id), await learningOfAgent(moved)), { etag: etagOf(moved) });
+        return send(res, 200, agentView(moved, linkOrigin(req), await agentExtra(moved)), { etag: etagOf(moved) });
       }
       case "archiveAgent":
       case "unarchiveAgent": {
         await needAgent(id);
         await agents.setArchived("agent", id, found.name === "archiveAgent");
-        if (found.name === "archiveAgent") await runs.archived();
+        // No run sweep on archive: a runner reads an archived agent's run rows directly, nothing to sweep.
         const entry = await needAgent(id);
-        return send(res, 200, agentView(entry, linkOrigin(req), await signIns.view(entry.agent.id), await learningOfAgent(entry)), { etag: etagOf(entry) });
+        return send(res, 200, agentView(entry, linkOrigin(req), await agentExtra(entry)), { etag: etagOf(entry) });
       }
       case "forgetSignIn": {
         await needAgent(id);
@@ -2117,10 +2158,16 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         const revision = url.searchParams.get("revision") ?? undefined;
         return send(res, 200, await runsPage(url, { ...(agent ? { agent } : {}), ...(revision ? { revision } : {}) }, linkOrigin(req)));
       }
-      case "getRun":
-        return send(res, 200, await runs.view(await needRun(id), linkOrigin(req)));
+      case "getRun": {
+        const view = await viewOverStore(store, id, viewDepsFor(linkOrigin(req)));
+        if (!view) throw new ApiError("not_found", `no run ${id}`);
+        return send(res, 200, view);
+      }
       case "getTimeline":
-        return timeline(req, res, url, await needRun(id));
+        await needRun(id);
+        // Awaited, not dropped: a throw from the timeline (a run gone mid-stream, a bad page) reaches the router's catch,
+        // which answers; a floated rejection would hang the request with no answer.
+        return await timeline(req, res, url, id);
       case "sendMessage": {
         const run = await needRun(id);
         if (run.kind === "workflow") throw unsupported("messages.steer_workflow_runs", "A workflow run takes no messages here: its workflow runs to its end, or a cancel ends it.");
@@ -2131,10 +2178,9 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
           const content = body.content;
           if (typeof content !== "string" || !/\S/.test(content)) throw invalid([{ field: "content", reason: content === undefined ? "missing" : "wrong_type", message: "content is a non-empty string" }]);
           if (content.length > MAX_MESSAGE) throw invalid([{ field: "content", reason: "too_long", message: `content is at most ${MAX_MESSAGE} characters` }]);
-          const { mode, messageId } = await runs.message(run, content);
-          // The run's state as the message left it, from the run itself: the stored row (its view's) would make a
-          // message already taken answer home_busy while another connection holds the agent store.
-          const { status, state } = statusOf(run);
+          const { mode, messageId } = await message(store, run, content);
+          // The run's state after the command row is written (the run view): the runner applies the steer; the client polls.
+          const { status, state } = await runStatusState(run.id);
           return { status: 202, body: { run_id: run.id, message_id: messageId, mode, status, state, poll_after_ms: 1000 } };
         });
         return send(res, answer.status, answer.body, answer.headers);
@@ -2146,23 +2192,22 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         if (extra.length) throw invalid(extra);
         const cap = body.max_cost_usd;
         if (!(typeof cap === "number" && Number.isFinite(cap) && cap > 0)) throw invalid([{ field: "max_cost_usd", reason: cap === undefined ? "missing" : "wrong_type", message: "max_cost_usd is a number above 0" }]);
-        const now = run.meta.max_cost_usd;
+        const now = run.maxCostUsd;
         if (now === undefined) throw invalid([{ field: "max_cost_usd", reason: "not_allowed", message: "This run has no cap to raise: a cap is named when a run starts." }]);
-        const { resumed, messageId, note } = await runs.raiseCap(run, cap);
-        const { status, state } = statusOf(run);
+        const { resumed, messageId, note } = await raiseCap(store, run, cap);
+        const { status, state } = await runStatusState(run.id);
         return send(res, 200, { run_id: run.id, max_cost_usd: cap, resumed, ...(messageId ? { message_id: messageId } : {}), ...(note ? { note } : {}), status, state });
       }
       case "stopRun": {
         const run = await needRun(id);
-        const stopped = await runs.stop(run);
-        // From the run itself, as a message's answer: a stop that happened is never answered home_busy.
-        const { status, state } = statusOf(run);
+        const stopped = await stopRunOverStore(store, run.id);
+        const { status, state } = await runStatusState(run.id);
         return send(res, 200, { run_id: run.id, stopped, status, state });
       }
       case "cancelRun": {
         const run = await needRun(id);
-        const requested = await runs.cancel(run);
-        return send(res, 202, { run_id: run.id, cancel_requested: requested, already_terminal: !requested, status: statusOf(run).status });
+        const requested = await cancel(store, run);
+        return send(res, 202, { run_id: run.id, cancel_requested: requested, already_terminal: !requested, status: (await runStatusState(run.id)).status });
       }
       case "answerApproval": {
         // The owner's answer to a tool call that waits for approval (tool-gate.ts): the first answer wins.
@@ -2172,57 +2217,43 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         if (body.decision !== "allow" && body.decision !== "deny") issues.push({ field: "decision", reason: body.decision === undefined ? "missing" : "not_an_option", message: "decision is allow or deny" });
         if (body.note !== undefined && (typeof body.note !== "string" || body.note.length > 2000)) issues.push({ field: "note", reason: "wrong_type", message: "note is a string of at most 2000 characters" });
         if (issues.length) throw invalid(issues);
-        await runs.approve(run, decodeURIComponent(second!), body.decision as "allow" | "deny", typeof body.note === "string" && body.note.trim() ? body.note.trim() : undefined);
+        await approve(store, run, decodeURIComponent(second!), body.decision as "allow" | "deny", typeof body.note === "string" && body.note.trim() ? body.note.trim() : undefined);
         res.writeHead(204, { "cache-control": "no-store", "x-content-type-options": "nosniff" });
         return void res.end();
       }
       case "archiveRun":
       case "unarchiveRun": {
         const run = await needRun(id);
-        await agents.setArchived("run", run.id, found.name === "archiveRun");
-        if (found.name === "archiveRun") await runs.archived();
-        return send(res, 200, await runs.view(run, linkOrigin(req)));
+        await archiveRun(store, run.id, found.name === "archiveRun");
+        return send(res, 200, await viewOverStore(store, run.id, viewDepsFor(linkOrigin(req))));
       }
       case "getRunBrowser": {
-        const run = await needRun(id);
-        // The run's open viewer first: its process holds the keys it started with, so a key deleted here since (the server's
-        // keys now) never hides a browser that runs. Only the run's live process serves its view: a file one that is gone
-        // left behind names none, whatever answers its port. The newest session whose viewer answers: an older one still open
-        // is the next, one that went quiet none.
-        let live: LiveHandover | undefined;
-        for (const handover of runs.hasProcess(run.id) ? await readHandovers(run.dir) : []) if ((live = (await viewerAnswers(handover)) ? handover : undefined)) break;
-        if (live) return send(res, 200, { state: "live", viewer: viewerLink(run.id, live) }, { "cache-control": "no-store" });
-        // None open: whether the run has a browser at all, its kept plane's (a run from before the plane names none, and is
-        // Browserbase's where it grants the tool), checked again as a launch would be. None, or unavailable, is `off`, saying why.
-        const granted = run.tooling?.tools.includes("browser") === true;
-        const kept = run.meta.tool_plane?.browser ?? (granted ? "browserbase" : undefined);
-        const browser = kept === undefined ? undefined : recheckPlane({ browser: kept }, env).browser;
-        if (browser === undefined || isUnavailable(browser)) return send(res, 200, { state: "off", reason: browser === undefined ? "this run's agent has no browser tool" : whyUnavailable(browser) }, { "cache-control": "no-store" });
-        return send(res, 200, { state: "none" }, { "cache-control": "no-store" });
+        await needRun(id);
+        // The run's browser state over the store: its runner's live viewer when it serves one (liveViewer, unset until
+        // the runner publishes the handover), else its kept plane re-checked, as a launch would, for `off`/`none`.
+        return send(res, 200, await runBrowserState(store, id, runReadsDeps));
       }
       case "handBackRunBrowser": {
-        // The owner's answer to the agent's ask for them in its browser (browser-person.ts): the first answer wins, the same
-        // one again is that answer, a different one is 409; an ask past its expiry has `expired`.
+        // The owner's answer to the agent's ask for them in its browser (browser-commands.ts): the first answer wins, the same
+        // one again is that answer, a different one is 409; an ask past its expiry has `expired`. A hand-over command row the
+        // runner reads and applies.
         const run = await needRun(id);
         const body = await bodyOf(req);
         const issues = unknownFields(body, ["outcome"]);
         if (body.outcome !== "done" && body.outcome !== "cancelled") issues.push({ field: "outcome", reason: body.outcome === undefined ? "missing" : "not_an_option", message: "outcome is done or cancelled" });
         if (issues.length) throw invalid(issues);
-        const answered = answerAsk(run.dir, body.outcome as "done" | "cancelled");
-        if (!answered) throw new ApiError("not_found", "this run's agent has not asked for you in its browser");
-        if (answered.outcome !== body.outcome) throw new ApiError("handoff_answered", answered.outcome === "expired" ? "The agent's hand-over expired before this answer: the agent was told it expired." : `The agent's hand-over was already answered ${answered.outcome}.`, { details: { outcome: answered.outcome } });
-        if (answered.first) runs.remark(run.id);
+        // The ask this answer targets, read over the run's hand-over entries and the hand-back commands before this write;
+        // browserHandBack writes the answer, then lets the lowest-id command win, re-reading the journal for a live view's own give.
+        const entries = (await runEntries(store, run.id, ctx)) as unknown as Parameters<typeof handBackTarget>[0];
+        const target = handBackTarget(entries, await store.commands(run.id, 0));
+        const answered = await browserHandBack(store, run.id, body.outcome as "done" | "cancelled", target, Date.now(), async () => (await runEntries(store, run.id, ctx)) as unknown as Parameters<typeof handBackTarget>[0]);
         return send(res, 200, { outcome: answered.outcome }, { "cache-control": "no-store" });
       }
       case "listRunFiles": {
-        const run = await needRun(id);
-        filesShown(run);
-        // A remote box's turn just ended: its pull lands first, so the list shows what the box wrote.
-        await runs.pulled(run.id);
-        const workspace = await runWorkspace(run);
-        const { files, deep } = workspace ? await listFiles(workspace, FILE_LIST_CAP) : { files: [], deep: false };
-        files.sort((a, b) => a.path.localeCompare(b.path));
-        return send(res, 200, { run_id: run.id, files: files.slice(0, FILE_LIST_CAP), complete: true, truncated: deep || files.length > FILE_LIST_CAP });
+        await needRun(id);
+        // A run's files through the server's read-only Workspace of its folder (serverRunWorkspace); a run with no folder
+        // lists none. Same shape and cap the file route answered.
+        return send(res, 200, await listRunFilesOverStore(store, id, runReadsDeps));
       }
       // An archived agent's home is read and written as any other's: as its definition is.
       case "listHomeFiles": {
@@ -2285,18 +2316,25 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         return send(res, 200, { ok: issues.length === 0, issues, warnings });
       }
       case "getRunGraph":
-        return send(res, 200, await runs.graph(await needRun(id)));
+        await needRun(id);
+        // The workflow run's graph from its journal over the store (run-reads-over-store): an agentic run has none (404),
+        // a run whose output is withheld is refused (403), as the route refused it.
+        return send(res, 200, await runGraphView(store, id, runReadsDeps));
       case "pauseRun":
-      case "resumeRun":
-        return send(res, 200, await runs.pause(await needRun(id), found.name === "pauseRun"));
-      case "readRunFile": {
+      case "resumeRun": {
         const run = await needRun(id);
-        filesShown(run);
-        await runs.pulled(run.id);
-        const rel = checkedPath(decodedPath(second!), "the run's own, not a file it wrote");
-        const workspace = await runWorkspace(run);
-        if (!workspace) throw new ApiError("not_found", "no such file");
-        return sendWorkspaceFile(req, res, url, workspace, rel, "a tool in the run's box");
+        // RULED (A1): an agentic run is not paused or resumed by hand — the cap's raise brings a run paused at its cap back;
+        // there is no manual pause. 501, as the document says.
+        if (run.kind === "agentic") throw unsupported("runs.pause_resume", "A run is not paused or resumed by hand: raise its cap to bring a run paused at its cap back; there is no manual pause.");
+        // A workflow run's pause and resume are real, and come with the runner's pause/resume command kinds and E2c's
+        // journal writers: until those land this is a named TODO, refused as unsupported here (not as a permanent no).
+        throw unsupported("runs.pause_resume", "TODO(pause): a workflow run's pause and resume are being wired (the runner's pause/resume and the store's writers); not available on this build yet.");
+      }
+      case "readRunFile": {
+        await needRun(id);
+        // One of a run's files through the server's read-only Workspace, streamed as the file route streams it; the path
+        // check and 404 words are the reader's own.
+        return readRunFileOverStore(store, id, second!, req, res, url, runReadsDeps);
       }
       case "createFile": {
         // A `path` in the query, or a body that is not JSON: the file sent in one call, its bytes the body. Else the
@@ -2336,15 +2374,18 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         return send(res, 200, await usage(url));
       case "getStats": {
         const filter = analyticsFilter(url);
-        // A run this server holds as ended whose end the store does not have yet is pending: counted as it ended, its
-        // metrics left out until the store has them (stats.ts pendingOf).
-        const [stats, analytics, rows, pending] = await agents.request(() => {
-          const stats = agents.store.stats();
-          const pending = pendingOf(stats.running, runs);
-          return [stats, agents.store.analytics({ ...filter, pending }), agents.store.listRuns(), pending] as const;
-        });
-        // How the runs that tried to learn fared: a held run's learning from memory, any other's end from the ledger.
-        return send(res, 200, { ...statsView(stats, runs, pending), analytics: analyticsView(analytics, filter), learning: await runs.learning.counts(rows, filter) });
+        // The store's counts and cost sums (store-reads/stats), the runs' metrics summed (store-reads/analytics), and the
+        // runs over the store for the learning counts. No in-process pending set and no held Runs: the runner writes a
+        // run's end to the store before it lets it go.
+        const [s, a] = await Promise.all([statsOverStore(store), analyticsOverStore(store, { ...filter })]);
+        // Each running row's status over the store (viewOverStore), for the active/needs_input/unknown buckets.
+        const vd = viewDepsFor(ownOriginOf());
+        const runningStatus = new Map<string, Status>();
+        await Promise.all(s.running.map(async (id) => { const v = await viewOverStore(store, id, vd); if (v?.status) runningStatus.set(id, v.status as Status); }));
+        // How the runs that tried to learn fared, over the store (learning-1's learningCountsOverStore): the same figures the
+        // ledger gave, run for run; no held run's learning from memory.
+        const learning = await learningCountsOverStore(store, filter);
+        return send(res, 200, { ...statsView(s, (id) => runningStatus.get(id)), analytics: analyticsView(a, filter), learning });
       }
       case "listToolKeys":
         // The offers the server holds, not capabilities': a model key's row names the harnesses its key would run too.
@@ -2357,25 +2398,31 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         // A server that began to close stores nothing: it may have released its lock, and another server may hold this
         // directory and its keys by now.
         if (stopping.signal.aborted) throw new ApiError("unavailable", "The server is shutting down: the key was not saved.");
-        toolKeys.save(id, body, check);
+        await toolKeys.save(id, body, check);
         await keysChanged();
         return void res.writeHead(204, { "cache-control": "no-store" }).end();
       }
       case "deleteToolKey":
-        toolKeys.remove(id);
+        await toolKeys.remove(id);
         await keysChanged();
         return void res.writeHead(204, { "cache-control": "no-store" }).end();
       // Never through `idempotent`: its record keeps the body, and a body may hold a credential.
       case "listMcpServers":
-        return send(res, 200, mcpServers.list());
+        return send(res, 200, await mcpServers.list());
       case "getMcpServer":
-        return send(res, 200, mcpServers.get(id));
+        return send(res, 200, await mcpServers.get(id));
       case "previewMcpServer":
         return send(res, 200, await mcpServers.preview(await bodyOf(req), stopping.signal));
-      case "saveMcpServer":
-        return send(res, 200, await mcpServers.save(id, await bodyOf(req), stopping.signal));
-      case "refreshMcpServer":
-        return send(res, 200, await mcpServers.refresh(id, stopping.signal));
+      case "saveMcpServer": {
+        const saved = await mcpServers.save(id, await bodyOf(req), stopping.signal);
+        await refreshMcpMeta();
+        return send(res, 200, saved);
+      }
+      case "refreshMcpServer": {
+        const refreshed = await mcpServers.refresh(id, stopping.signal);
+        await refreshMcpMeta();
+        return send(res, 200, refreshed);
+      }
       case "startMcpOAuth": {
         // The cookie is set on the address the request came to, and the authorization server sends the browser back
         // to the callback's: they must be the one origin, or the callback never sees the cookie. The redirect URI
@@ -2387,7 +2434,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         return send(res, 200, started, { "set-cookie": signInCookie(req.socket.localPort, state, overHttps(req)) });
       }
       case "deleteMcpServer":
-        mcpServers.remove(id);
+        await mcpServers.remove(id);
+        await refreshMcpMeta();
         return void res.writeHead(204, { "cache-control": "no-store" }).end();
       case "getToolSettings":
         return send(res, 200, withDefaults(settings.get()));
@@ -2397,7 +2445,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         const body = await bodyOf(req);
         const issues = settingsIssues(body);
         if (issues.length) throw invalid(issues);
-        settings.put(body as ToolSettingsMap);
+        await settings.put(body as ToolSettingsMap);
         // A setting changes what the web tools resolve to, never env or what a harness offers: capabilities again.
         recompose();
         return send(res, 200, withDefaults(settings.get()));
@@ -2406,19 +2454,18 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       // they are now; a write as the definition's: an archived agent's too.
       case "getAgentLearning": {
         await needAgent(id);
-        const rows = await agents.request(() => agents.store.listRuns({ agent: id }));
-        // Counted as GET /stats counts (learning-run.ts counts): a held run from memory, any other's end from the ledger;
-        // what learning changed, from the same rows and ledger (learningImpact).
-        const { counts, impact, notes } = await runs.learning.ofAgent(rows, id);
-        return send(res, 200, await agentLearning(data, id, secretsShown(serverSecrets()), counts, impact, notes));
+        // The agent's learning view: its notes, skills, workflows and log from its learning folder; its run-fared counts over the
+        // store (learning-1's agentLearningCountsOverStore). Each note's runs and the impact are named gaps until learning-1 records
+        // a run's given/read notes and its answer times in the store.
+        const counts = await agentLearningCountsOverStore(store, id);
+        return send(res, 200, await agentLearning(data, id, secretsShown(serverSecrets()), counts, null));
       }
       case "listLearningNotes":
       case "listLearningLog":
         await needAgent(id);
         if (found.name === "listLearningNotes") {
-          // Each note's runs (given it, read it), counted as the agent's learning view counts them (learning-run.ts ofAgent).
-          const { notes } = await runs.learning.ofAgent(await agents.request(() => agents.store.listRuns({ agent: id })), id);
-          return send(res, 200, await learningNotes(data, id, url.searchParams, secretsShown(serverSecrets()), notes));
+          // The notes from the agent's learning folder; each note's runs are a named gap until learning-1 records them in the store.
+          return send(res, 200, await learningNotes(data, id, url.searchParams, secretsShown(serverSecrets())));
         }
         return send(res, 200, await learningLog(data, id, url.searchParams, secretsShown(serverSecrets())));
       case "readLearningFile":
@@ -2437,10 +2484,17 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         const located = written.status === 201 && shown.name(written.file) === written.file;
         return sendNote(res, written.status, { ...written, text: shown.text(written.text) }, located ? { location: `/v2/agents/${encodeURIComponent(id)}/learning/files/${written.file}` } : {});
       }
-      case "getRunLearning":
-        return send(res, 200, await runLearning(await needRun(id), secretsShown(serverSecrets()), serverSecrets(), data));
+      case "getRunLearning": {
+        const run = await needRun(id);
+        // The run's learning view over the store (learning-1's runLearningOverStore): its end, the notes it was given and its seed
+        // from its launch, what it holds for the owner's OK as the store's run view reads it (no folder), byte-identical to main.
+        return send(res, 200, await runLearningOverStore(store, run.id, secretsShown(serverSecrets()), serverSecrets()));
+      }
       case "getRunLearningDiff":
-        return send(res, 200, await runDiff(data, await needRun(id), secretsShown(serverSecrets())));
+        await needRun(id);
+        // TODO(learning-1): the run's learning diff over the store — learning-1's diff read on untangle/cutover-switch-learn, not the run's
+        // .learning/diffs files. Wire when its head lands.
+        return runReadsTodo();
       case "getWebhook":
         return send(res, 200, webhooks.view());
       case "saveWebhook": {
@@ -2524,10 +2578,11 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       authFailed(`/v2/runs/${runId}/browser/live`, req.headers.authorization === undefined ? "no_credential" : "browser_without_session");
       throw req.headers.authorization === undefined ? new ApiError("unauthenticated", "a run's live browser view takes the owner's password sign-in in the console") : new ApiError("forbidden", "a run's live browser view takes the owner's password sign-in in the console, never a token");
     }
-    const run = await needRun(runId);
-    const viewer = /^\/v\/([A-Za-z0-9_-]{22})$/.exec(rest)?.[1];
-    // A viewer's page, for a viewer the run has open; its two files, while the run has one open.
-    const handover = !runs.hasProcess(run.id) || !liveRest(rest) ? undefined : viewer ? await handoverById(run.dir, viewer) : await readHandover(run.dir);
+    await needRun(runId);
+    // The run's live viewer from the store (the runner's browser tool wrote it under its claim; liveViewerFor picks a named
+    // viewer's handover or the run's open one). The store's live-claim filter answers none for a run no runner holds, as
+    // hasProcess did; with no seal key this server serves no live view.
+    const handover = sealKey ? await liveViewerFor(store, sealKey, runId, rest) : undefined;
     if (!handover) throw new ApiError("not_found", "this run's browser has no live view at that address");
     await serveViewerFile(req, res, rest);
   }
@@ -2610,11 +2665,12 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     // Once the run's WebSocket is piped to this socket, a failure here only ends it: an HTTP line would land mid-stream.
     let piping = false;
     void (async () => {
-      const run = await runs.get(viewing[1]!);
-      const handover = run && runs.hasProcess(run.id) ? await handoverById(run.dir, viewing[2]!.slice(3, -3)) : undefined;
+      const run = ID.test(viewing[1]!) ? await momentOverStore(store, viewing[1]!, viewDepsFor(ownOriginOf())) : undefined;
+      // The run's live viewer from the store (the runner's browser tool wrote it under its claim): the store's live-claim
+      // filter answers none for a run no runner holds, as hasProcess did; with no seal key no live view is served.
+      const handover = run && sealKey ? await liveViewerById(store, sealKey, run.id, viewing[2]!.slice(3, -3)) : undefined;
       if (!handover) return deny("404 Not Found");
-      // Gone during the lookup (its close is past, and nothing would drop it from the viewers), or the server is closing
-      // and has ended its viewers, or is about to.
+      // Gone during the lookup, or the server is closing and has ended its viewers, or is about to.
       if (socket.destroyed || closing) return void socket.destroy();
       // Checked again after the lookup, then for as long as the socket is open: the sessions that let it in, and no other.
       const held = heldSessions(req);
@@ -2663,24 +2719,15 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   /** The server's stop: once (`close` keeps its promise). */
   let stopped: Promise<void> | undefined;
   async function stop(): Promise<void> {
-    // First, the record a start on this data root waits on while the runs' processes drain and exit (server-lock.ts),
-    // rewritten in place: this close's bound, with time for the deliveries and the listener after them. One not
-    // written leaves a start refused.
-    const { runs: busy, boundMs } = runs.stopping();
-    try {
-      markStopping(data, Date.now() + boundMs + STOP_MARGIN_MS);
-    } catch (error) {
-      const fields = { reason: (error as NodeJS.ErrnoException).code ?? (error as Error).message };
-      void (log ? log(logLine("stopping_mark_unwritten", fields)) : process.stderr.write(`agentrun-serve: ${logLine("stopping_mark_unwritten", fields)}\n`));
-    }
-    if (busy > 0) noticeOf(options)(`stopping: waiting up to ${seconds(boundMs)} for ${busy === 1 ? "1 run to finish its turn" : `${busy} runs to finish their turn`}`);
-    // An import under way stops between two session files and is waited for: nothing writes the store after close. A
-    // count writes nothing (it lists and reads), so it is ended at once: its listing of a big home checks for no stop.
+    // The server writes rows and a runner (its own process) runs every run, so this stop drains no run process and writes
+    // no "stopping" mark for a start to wait on: the store's EXCLUSIVE lock is this server's one-server lock, released as
+    // the store closes, and the next server takes it. The deliveries, the import, the installs and the listener stop first;
+    // the store closes last.
     closing = true;
     stopping.abort();
     // A harness install under way stops with the server: npm gets SIGTERM, then SIGKILL, and nothing half installed stays.
     const installStopped = Promise.all(Object.values(installs).map((install) => install.stop()));
-    // Aborted now, so nothing it writes races the next server on the same refresh token; drained before the lock goes.
+    // Aborted now, so nothing it writes races the next server on the same refresh token; drained before the store closes.
     const mcpStopped = mcpServers.close();
     triggers.close();
     for (const [worker, { task }] of workers) {
@@ -2689,11 +2736,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     }
     await Promise.all([...workers.values()].map((w) => w.exit));
     await importing;
-    // Runs that end while their processes stop still give their notices; then the deliveries stop, before the lock goes.
-    await runs.close();
     await installStopped;
-    await relay?.close();
-    // Before the lock goes: the image's last record lands first (box-image.ts), never after the next server's start.
+    // Before the store closes: the image's last record lands first (box-image.ts), never after the next server's start.
     await image?.close();
     // The box network proxy goes with the server that owns it (box-egress-vm.ts); its volume stays for the next start.
     await egress?.close();
@@ -2701,10 +2745,9 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     // An upgraded socket is no connection closeAllConnections ends, and server.close waits for it.
     viewers.close();
     await new Promise((done) => (server.close(done), server.closeAllConnections()));
-    agents.close();
     await mcpStopped;
-    // The record stays: the next server rewrites it as it starts, and a stopped one whose time has passed is no stop.
-    lock.release();
+    // The store's EXCLUSIVE lock is the one-server lock: closing it releases it for the next server.
+    await store.close();
   }
   return {
     url,
@@ -2718,6 +2761,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     // Once: a second call, at any time, is the first one's promise, so a close repeated after the next server started
     // never writes this data root's record again (the next server's, by then).
     close: () => (stopped ??= stop()),
-    stopping: () => runs.stopping(),
+    // No per-run process drains here: the runner owns a run's turn, so a stop waits on none.
+    stopping: () => ({ runs: 0, boundMs: 0 }),
   };
 }

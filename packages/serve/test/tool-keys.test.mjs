@@ -8,13 +8,12 @@ import { randomBytes } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
-import { unseal } from "@parcha/pi-durable-agent";
 import { startServe } from "../dist/index.js";
 import { secret } from "../dist/secrets.js";
 import { readingOf } from "../dist/server.js";
 import { rowUnlocks, TOOL_KEYS, unlockedBy } from "../dist/tool-keys.js";
 import { schemaProblems } from "./schema-support.mjs";
-import { agent, call, harnessData, client, cookieOf, FAUX, follow, printed, scratch, serve, withEnv } from "./support.mjs";
+import { agent, call, harnessData, client, cookieOf, FAUX, follow, printed, scratch, serve, storeBytes, withEnv } from "./support.mjs";
 
 const LAUNCHER = new URL("../launcher/agentrun-serve", import.meta.url).pathname;
 const FAUX_BROWSER = new URL("./fixtures/faux-browser.mjs", import.meta.url).pathname;
@@ -79,10 +78,7 @@ test("a tool key saved then removed in Settings: the refusal names Settings → 
   assert.ok(search.body.error.message.includes("web_search does not run here on pi: parallel is picked, and it needs a Parallel key: save one in Settings → Tool keys (or set PARALLEL_API_KEY where the server starts)"), search.body.error.message);
 });
 
-test("a key saved by name is kept sealed: GET says which fields are set and from where, never a value; PUT merges by field, DELETE forgets; the file is 0600 and holds no value", async (t) => {
-  // Under a permissive umask, so the mode seen is the one the write asks for, not what the umask leaves of it.
-  const umask = process.umask(0o022);
-  t.after(() => process.umask(umask));
+test("a key saved by name is kept sealed over the store: GET says which fields are set and from where, never a value; PUT merges by field, DELETE forgets; the store holds no value", async (t) => {
   const key = sealKey();
   withEnv(t, { AGENTRUN_SEAL_KEY: key, AGENTRUN_SERVE_CODEX_STANDIN: await codexStandIn(t) }, [...KEYS, ...HARNESS_VARS]);
   withMemory(t, ROOMY_MIB);
@@ -107,22 +103,15 @@ test("a key saved by name is kept sealed: GET says which fields are set and from
   ], "only what this server binds: web_fetch and web_search on every harness; the monid tools on every harness, as capabilities run them");
   assert.equal(listed.body.reenter, null);
   await meetsDocument(api, listed.body);
-  const file = join(data, "tool-keys.json");
-  assert.equal(statSync(file).mode & 0o777, 0o600);
+  // Sealed at rest: no answer and no store byte (the DB and its WAL/shm) holds a saved value or the seal key in the clear.
+  // How each value is sealed in its own row, bound to its field's name, and read back is store-tool-keys' (store path).
   for (const value of Object.values(values)) {
     holdsNone(JSON.stringify(listed.body), formsOf(value), "GET's answer");
-    holdsNone(readFileSync(file), formsOf(value), "tool-keys.json");
+    holdsNone(storeBytes(data), formsOf(value), "the store");
   }
-  // The file's own reading: each value opens under the seal key bound to its own name and this format, no other.
-  const kept = JSON.parse(readFileSync(file, "utf8"));
-  assert.deepEqual(Object.keys(kept.fields).sort(), Object.keys(values).sort());
-  const sealed = Buffer.from(kept.fields.PARALLEL_API_KEY.sealed, "base64");
-  assert.equal(unseal(Buffer.from(key, "base64"), sealed, "tool-keys/1|PARALLEL_API_KEY").toString(), values.PARALLEL_API_KEY);
-  assert.throws(() => unseal(Buffer.from(key, "base64"), sealed, "tool-keys/1|MONID_API_KEY"));
-  holdsNone(readFileSync(file), keyForms(key), "tool-keys.json");
+  holdsNone(storeBytes(data), keyForms(key), "the store");
   assert.equal((await api("DELETE", "/settings/tool-keys/browserbase")).status, 204);
   assert.deepEqual(fieldsOf((await api("GET", "/settings/tool-keys")).body), { PARALLEL_API_KEY: STORED, MONID_API_KEY: UNSET, BROWSERBASE_API_KEY: UNSET, BROWSERBASE_PROJECT_ID: UNSET, KERNEL_API_KEY: UNSET, TYPESAFE_API_KEY: UNSET, ANTHROPIC_API_KEY: UNSET, OPENAI_API_KEY: UNSET, OPENROUTER_API_KEY: UNSET });
-  assert.deepEqual(Object.keys(JSON.parse(readFileSync(file, "utf8")).fields), ["PARALLEL_API_KEY"]);
 });
 
 test("each key unlocks only what capabilities bind, a tool or a decision provider, and runs on the union of those tools' harnesses; a name bound later shows with no edit to the key table", async (t) => {
@@ -201,18 +190,6 @@ test("before any model key is saved, a model key's row names every harness the k
   }
 });
 
-test("a sealed value moved to another field's name does not open there: it is asked for again as a damaged entry", async (t) => {
-  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, KEYS);
-  const { api, data } = await serve(t);
-  assert.equal((await api("PUT", "/settings/tool-keys/parallel", { values: { PARALLEL_API_KEY: made() } })).status, 204);
-  const file = join(data, "tool-keys.json");
-  const kept = JSON.parse(readFileSync(file, "utf8"));
-  writeFileSync(file, JSON.stringify({ v: 1, fields: { MONID_API_KEY: kept.fields.PARALLEL_API_KEY } }));
-  const view = (await api("GET", "/settings/tool-keys")).body;
-  assert.deepEqual([fieldsOf(view).MONID_API_KEY, fieldsOf(view).PARALLEL_API_KEY], [AGAIN, UNSET]);
-  assert.deepEqual(view.reenter, { reason: "file_unreadable", fields: ["MONID_API_KEY"] }, "its key check matches: not another key, a moved value");
-});
-
 test("PUT refuses with 422 an unknown key or field, an empty value, a control character, over 1 KiB, or another body field, and keeps nothing; no answer holds the value", async (t) => {
   withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, KEYS);
   const { api, data } = await serve(t);
@@ -255,13 +232,15 @@ test("a field the server is started with is the server's: GET says so, PUT and D
   assert.deepEqual(fieldsOf((await api("GET", "/settings/tool-keys")).body).BROWSERBASE_PROJECT_ID, UNSET);
 });
 
-test("with no seal key nothing is kept, never in the clear: PUT is 409 no_sealing_key, nothing is written, and capabilities say unavailable", async (t) => {
+test("handed no seal key, the server keeps a key under the one it made at its start, never in the clear: PUT is 204, and capabilities say sealed", async (t) => {
+  // A server never runs without a seal key (seal-key.ts): handed none, it makes one under the config home.
   withEnv(t, {}, KEYS);
   const { api, data } = await serve(t);
-  assert.deepEqual((await api("GET", "/capabilities")).body.features.tool_keys, { routes: true, at_rest: "unavailable" });
-  const refused = await api("PUT", "/settings/tool-keys/monid", { values: { MONID_API_KEY: made() } });
-  assert.deepEqual([refused.status, refused.body.error.code], [409, "no_sealing_key"]);
+  assert.deepEqual((await api("GET", "/capabilities")).body.features.tool_keys, { routes: true, at_rest: "sealed" });
+  const value = made();
+  assert.equal((await api("PUT", "/settings/tool-keys/monid", { values: { MONID_API_KEY: value } })).status, 204);
   assert.equal(existsSync(join(data, "tool-keys.json")), false);
+  assert.ok(!storeBytes(data).toString("latin1").includes(value), "sealed, never in the clear");
   assert.deepEqual((await api("GET", "/settings/tool-keys")).body.reenter, null);
 });
 
@@ -299,11 +278,11 @@ test("values sealed under another key, with no key, or in a damaged file do not 
   assert.deepEqual([fieldsOf(resealed).PARALLEL_API_KEY, resealed.reenter], [STORED, { reason: "seal_key_changed", fields: ["MONID_API_KEY"] }], "sealed anew under the current key");
   await server.close();
 
+  // Handed no seal key, the server makes its own (seal-key.ts): what the others sealed does not open under it.
   server = await started(undefined);
-  assert.equal(await parallel(), false, "with no seal key, nothing opens");
+  assert.equal(await parallel(), false, "under the key the server made, nothing sealed under another opens");
   const missing = await server.api("GET", "/settings/tool-keys");
-  assert.deepEqual(missing.body.reenter, { reason: "seal_key_missing", fields: ["PARALLEL_API_KEY", "MONID_API_KEY"] });
-  assert.equal((await server.api("PUT", "/settings/tool-keys/parallel", { values: { PARALLEL_API_KEY: values.PARALLEL_API_KEY } })).body.error.code, "no_sealing_key");
+  assert.deepEqual(missing.body.reenter, { reason: "seal_key_changed", fields: ["PARALLEL_API_KEY", "MONID_API_KEY"] });
   await server.close();
 
   writeFileSync(file, "{ not json");
