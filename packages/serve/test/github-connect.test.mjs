@@ -79,7 +79,7 @@ test("the callback takes a state once, from the browser that started it: a bad, 
   const { app } = server.github;
   // Kept in the store's trigger_settings rows (adapter github, scope server), sealed: the runner reads the App there.
   const rows = await (await storeOf(t, server)).triggerSettings.get("github");
-  assert.deepEqual(rows.map((r) => r.field).sort(), ["api_url", "app_id", "client_id", "installations", "private_key", "settings_url", "slug", "webhook_secret"], "in the store, its client secret never");
+  assert.deepEqual(rows.map((r) => r.field).sort(), ["app_id", "client_id", "installations", "private_key", "settings_url", "slug", "webhook_secret"], "in the store, its client secret never");
   const file = JSON.stringify(rows);
   for (const secret of [app.webhook_secret, app.client_secret, app.pem.split("\n")[1]]) assert.ok(!file.includes(secret), "kept only sealed");
   const view = await server.api("GET", "/integrations/github");

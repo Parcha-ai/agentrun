@@ -93,7 +93,7 @@ export async function mintInstallationToken(api: string, appId: string, pem: str
  *  page, which are no secret, and its installations (public: sealed, never redacted); its private key and webhook secret,
  *  sealed and redacted. The server writes them (github-connection.ts); the runner reads the id and key per claim
  *  (runner/github-app.ts). */
-export const GITHUB_FIELDS = { appId: "app_id", slug: "slug", clientId: "client_id", settingsUrl: "settings_url", privateKey: "private_key", webhookSecret: "webhook_secret", installations: "installations", apiUrl: "api_url" } as const;
+export const GITHUB_FIELDS = { appId: "app_id", slug: "slug", clientId: "client_id", settingsUrl: "settings_url", privateKey: "private_key", webhookSecret: "webhook_secret", installations: "installations" } as const;
 export const GITHUB_SCOPE = "server";
 
 const unescapeAttr = (value: string) => value.replace(/&quot;/g, '"').replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");

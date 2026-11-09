@@ -10,17 +10,22 @@ import type { TriggerSettings } from "../store/index.js";
 import { isObject } from "../validate.js";
 import type { GithubAppAccess } from "./mcp-github.js";
 
+/** The access, with the API base its mint goes to: GitHub's own, or a test runner's fake. */
+export type GithubAppAccessAt = GithubAppAccess & { readonly api: string };
+
 const ADAPTER = "github";
 const aad = (field: string) => `trigger_settings|${ADAPTER}|${GITHUB_SCOPE}|${field}`;
 
 /** The GitHub App access for one claim of a run whose first input is `firstInput` (run_launch's), or undefined when this
- *  server has no App the runner can open. `api`: GitHub's API (a test's fake). */
+ *  server has no App the runner can open. Its mint goes to https://api.github.com (GITHUB_API): the App's JWT, signed
+ *  with its key and good for every installation, goes nowhere else. `api` is a test runner's fake GitHub, given in the
+ *  runner's own options (AdapterSpecDeps.githubApi); nothing kept, no environment variable and no flag reaches it. */
 export async function githubAppAccess(
   store: { readonly triggerSettings: Pick<TriggerSettings, "get"> },
   sealKey: Buffer | undefined,
   firstInput: unknown,
-  { api, now = Date.now }: { api?: string; now?: () => number } = {},
-): Promise<GithubAppAccess | undefined> {
+  { api = GITHUB_API, now = Date.now }: { api?: string; now?: () => number } = {},
+): Promise<GithubAppAccessAt | undefined> {
   if (!sealKey) return undefined;
   const rows = (await store.triggerSettings.get(ADAPTER)).filter((row) => row.scope === GITHUB_SCOPE);
   const open = (field: string): string | undefined => {
@@ -36,7 +41,5 @@ export async function githubAppAccess(
   const pem = open(GITHUB_FIELDS.privateKey);
   if (!appId || !pem) return undefined;
   const target = githubTargetOf(isObject(firstInput) ? firstInput.content : firstInput);
-  // GitHub's API the App was made on (kept with it), else github.com's: a test's `api` first.
-  const base = api ?? open(GITHUB_FIELDS.apiUrl) ?? GITHUB_API;
-  return { mint: (to) => mintInstallationToken(base, appId, pem, to, now()), target };
+  return { api, mint: (to) => mintInstallationToken(api, appId, pem, to, now()), target };
 }

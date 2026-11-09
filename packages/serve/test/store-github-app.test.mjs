@@ -136,9 +136,11 @@ test("the GitHub API base has one way in, a test runner's option: no api_url (or
   // The App's settings and every writer and reader of them: github.ts (its fields), github-connection.ts (Connect, the one
   // writer), trigger-github.ts (its settings spec), runner/github-app.ts (the runner's read).
   const github = ["github.ts", "github-connection.ts", "trigger-github.ts", "runner/github-app.ts"];
-  assert.deepEqual(github.filter((f) => /api_url|apiUrl|_url"|Url:/.test(text[f].replace(/settings_url|settingsUrl|settings\.url/g, ""))), [], "no URL kept with the App but its GitHub settings page");
+  assert.deepEqual(github.filter((f) => /api_url|apiUrl/.test(text[f])), [], "no api_url anywhere in the App's settings, their writer or their reader");
+  const { GITHUB_FIELDS } = await import("../dist/github.js");
+  assert.deepEqual(Object.values(GITHUB_FIELDS).sort(), ["app_id", "client_id", "installations", "private_key", "settings_url", "slug", "webhook_secret"], "the App's fields: no API base among them (settings_url is the App's page on GitHub, shown to its owner)");
   const githubApi = files.filter((f) => /\bgithubApi\b/.test(text[f])).sort();
-  assert.deepEqual(githubApi, ["runner/adapter-run-spec.ts", "runner/cli-run-spec.ts", "server.ts"], "the spec deps (a test runner's option) and the server's own test seam");
+  assert.deepEqual(githubApi, ["runner/adapter-run-spec.ts", "runner/cli-run-spec.ts", "runner/github-app.ts", "server.ts"], "the spec deps (a test runner's option, which github-app.ts's doc names) and the server's own test seam");
   assert.ok(!/githubApi|GITHUB_API_URL|github-api/.test(text["cli.ts"]), "the CLI maps nothing onto it");
   assert.deepEqual(files.filter((f) => /process\.env\.[A-Z_]*GITHUB|env\[["'][A-Z_]*GITHUB/.test(text[f])), [], "no environment variable names it");
   assert.match(text["github.ts"], /export const GITHUB_API = "https:\/\/api\.github\.com";/);

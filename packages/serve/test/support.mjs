@@ -291,7 +291,7 @@ export async function triggerStore(of) {
  *  dispatch (dispatch.ts): each claim's launch picks its harness loop — pi on the kernel's adapter loop with the run's pi
  *  spec, a learning run on the learning loop, its model route the faux model under `faux`. Returns a close() that stops the
  *  runner and closes its store handle. */
-export async function startInProcessRunner(data, { faux, fauxMonid } = {}) {
+export async function startInProcessRunner(data, { faux, fauxMonid, githubApi } = {}) {
   const store = await openSqliteStore({ dataDir: data, role: "runner" });
   // The runner's env mirrors the server's faux (model.ts FAUX_ENV): its model route reads the faux model from it, so a run
   // never reaches the network. The seal key is the server's (seal-key.ts), read as the CLI's runner reads it: the one
@@ -306,7 +306,8 @@ export async function startInProcessRunner(data, { faux, fauxMonid } = {}) {
   try {
     runner = startRunner({
       store,
-      createLoop: dispatchRunner({ env, data, journal: (claim) => store.journal(claim), store, sealKey, routeOf, computerForClaim: computers.computerForClaim, computerDeps: computers.computerDeps }),
+      // A test's fake GitHub, the server's githubApi seam: the runner mints the App's tokens there (never from the env).
+      createLoop: dispatchRunner({ env, data, journal: (claim) => store.journal(claim), store, sealKey, routeOf, computerForClaim: computers.computerForClaim, computerDeps: computers.computerDeps, ...(githubApi ? { githubApi } : {}) }),
     });
   } catch (error) {
     await store.close();
@@ -327,7 +328,7 @@ export async function serve(t, { harnesses: asked, runner: wantRunner = true, ..
   // A runner beside the server on the same data (the CLI start's server-and-runner): it claims and runs what the server
   // starts, so a test reads a run that runs, not one that queues forever. `runner: false` leaves it off for a test that
   // wants the server alone. Its loop is the switch's dispatch (learning wired; pi/workflow the server's own, E2r).
-  const closeRunner = wantRunner === false ? undefined : await startInProcessRunner(data, { faux: Object.hasOwn(options, "faux") ? options.faux : FAUX, fauxMonid: options.fauxMonid });
+  const closeRunner = wantRunner === false ? undefined : await startInProcessRunner(data, { faux: Object.hasOwn(options, "faux") ? options.faux : FAUX, fauxMonid: options.fauxMonid, githubApi: options.githubApi });
   // A server on another's data (a restart's): its owner's hook closes it before the directory goes.
   if (dir) sharing.set(data, new Set());
   else sharing.get(data)?.add(server);
