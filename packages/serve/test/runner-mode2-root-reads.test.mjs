@@ -12,8 +12,9 @@
 //     is not asserted here: it is one of those reads until it moves.)
 // The run's mount credential is minted per run at Archil's control plane, lazily (the lead's ruling): a run with no
 // computer makes no control call at all; a computer that mounts the folder mints one at the claim, and it is removed at
-// the run's end. The control plane is ws-c3's loopback fake (archil-control-fake.mjs), given through the spec's
-// mountControl; any fetch to a host other than this machine's loopback fails the test, so none reaches Archil.
+// the run's end. The control plane is ws-c3's fake as a fetch function (archil-control-fake.mjs archilControlFetch: no port, so
+// it sees every request the claim makes and nothing else), given through the spec's mountControl; any other fetch to a
+// host other than this machine's loopback fails the test, so none reaches Archil.
 import assert from "node:assert/strict";
 import { createRequire, syncBuiltinESMExports } from "node:module";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -34,7 +35,7 @@ const { sealColumn, sealedAt } = await import("../dist/store/seal.js");
 const { OPENCODE_STANDIN_ENV } = await import("../dist/adapters.js");
 const { NOTE_ONLY_TEXT } = await import("../dist/tool-gate.js");
 const { FakeArchilDisk } = await import("./fixtures/archil-fake.mjs");
-const { archilControlFake } = await import("./archil-control-fake.mjs");
+const { archilControlFetch } = await import("./archil-control-fake.mjs");
 
 process.env.AGENTRUN_OPENCODE_STANDIN = "1";
 const STAND_IN = new URL("./fixtures/fake-opencode-serve.mjs", import.meta.url).pathname;
@@ -101,19 +102,18 @@ const mountingComputer = async (_launch, _store, given) => {
 /** A claimed run in Mode 2 over the Archil fake, the run's folder on the disk holding the real files and its local path the
  *  decoys, and `build`'s spec for its claim. `watch`: every read under the run's local folder path while the spec is built
  *  and used (`use`) is recorded. `computer`: the run's computerForClaim (none by default). The control plane is the
- *  loopback fake (`control`), and every outbound fetch is refused (`outbound`). */
+ *  fake as a fetch function (`control`: no port), and every other outbound fetch is refused (`outbound`). */
 async function mode2Spec(t, { harness, build, watch = false, use = async () => {}, computer = async () => ({ release: async () => {} }) }) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-mode2-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
-  const control = await archilControlFake();
+  const control = archilControlFetch();
   const guard = guardFetch();
   let spec;
   let harnessRun;
   t.after(async () => {
     await spec?.release?.().catch(() => {});
     guard.off();
-    await control.close();
     await harnessRun?.close(ctx).catch(() => {});
     await store.close().catch(() => {});
     await server.close().catch(() => {});
@@ -145,9 +145,9 @@ async function mode2Spec(t, { harness, build, watch = false, use = async () => {
   const env = { AGENT_MODEL_BASE_URL: "http://127.0.0.1:9", AGENT_MODEL_API_KEY: `not-a-secret-${"gateway"}`, [OPENCODE_STANDIN_ENV]: JSON.stringify({ command: process.execPath, args: [STAND_IN] }) };
   const deps = {
     env, data: dir, journal: (c) => store.journal(c), store, sealKey: SEAL_KEY, routeOf: stubRoute,
-    // The run's Archil disk is the fake (Mode 2's disk, for both builders), and its control plane the loopback fake.
+    // The run's Archil disk is the fake (Mode 2's disk, for both builders), and its control plane the fake's fetch.
     makeArchilDisk: () => disk,
-    mountControl: { baseUrl: control.baseUrl },
+    mountControl: { baseUrl: control.baseUrl, fetch: control.fetch },
     computerForClaim: computer,
   };
   // The run's whole local folder path, the run's directory above its work folder included.
@@ -161,10 +161,9 @@ async function mode2Spec(t, { harness, build, watch = false, use = async () => {
   return { spec, disk, control, outbound: guard.outbound, localReads: watcher?.seen ?? [] };
 }
 
-/** The control plane's API requests (under /api/: Archil's; a bare probe of the fake's loopback port by anything else on
- *  this machine is not one), the requests themselves and as method and path (the disk's id kept). */
-const apiOf = (control) => control.requests.filter((request) => request.path.startsWith("/api/"));
-const callsOf = (control) => apiOf(control).map((request) => `${request.method} ${request.path}${request.query.identifier ? `?identifier=${request.query.identifier}` : ""}`);
+/** Every request the control plane saw (the fake is a function the claim alone holds, so each is the claim's), as method
+ *  and path (the disk's id kept). */
+const callsOf = (control) => control.requests.map((request) => `${request.method} ${request.path}${request.query.identifier ? `?identifier=${request.query.identifier}` : ""}`);
 
 /** The disk's reads of `key`: a get of the file, or a listing of the folder. */
 const readsOf = (disk, key) => disk.calls.filter((call) => (call.key ?? call.prefix ?? call.directory ?? "").startsWith(key));
@@ -202,9 +201,9 @@ for (const [name, harness, build] of [["pi's spec", undefined, adapterRunSpecFro
     const { spec, control, outbound } = await mode2Spec(t, { harness, build, computer: mountingComputer });
     const disk = `/api/disks/${ARCHIL_SETTINGS.diskId}`;
     assert.deepEqual(callsOf(control), [`GET ${disk}`, `POST ${disk}/users`], "an earlier claim's credentials looked for, then one minted");
-    assert.equal(apiOf(control)[1].authorization, "Bearer fake-test-key-api-0001", "minted with the account key");
-    assert.match(apiOf(control)[1].body?.nickname ?? "", new RegExp(RUN), "named for the run");
-    assert.equal(apiOf(control)[1].body?.ttl, "604800s", "its safety-net lifetime, MOUNT_TTL_MS (7 days), in case the removal never comes");
+    assert.equal(control.requests[1].authorization, "Bearer fake-test-key-api-0001", "minted with the account key");
+    assert.match(control.requests[1].body?.nickname ?? "", new RegExp(RUN), "named for the run");
+    assert.equal(control.requests[1].body?.ttl, "604800s", "its safety-net lifetime, MOUNT_TTL_MS (7 days), in case the removal never comes");
     await spec.release();
     assert.deepEqual(callsOf(control).slice(2), [`DELETE ${disk}/users/token?identifier=tok-1`], "removed once at the end: the computer's release and the run's end revoke it, idempotently");
     assert.deepEqual(outbound, [], "nothing left this machine");
