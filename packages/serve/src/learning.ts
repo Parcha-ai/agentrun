@@ -483,11 +483,7 @@ export const activeOf = (seed: Pick<Seed, "notes">): LearnedNote[] => Object.ent
  *  learned files are written, once its pin is in place, before what its end-of-run turn wrote is checked, as a run that
  *  learns opens again for a follow-up, and as each git call starts (its arguments). */
 export const learningTestHooks: {
-  beforePin?: (runDir: string) => Promise<void> | void;
   afterPin?: (runDir: string) => Promise<void> | void;
-  /** Once a start's seed is copied and pinned, before its learning is said: a throw here leaves the start's pin. */
-  afterSeed?: (runDir: string) => Promise<void> | void;
-  beforeReopen?: (runDir: string) => Promise<void> | void;
 } = {};
 
 /** `text` cut of the host's secrets (`shown`) a line at a time: the index, which may be longer than a whole text is
@@ -676,7 +672,6 @@ export async function pinSeed(runDir: string, work: Workspace, seed: Seed, optio
   const pinFile = join(runDir, LEARNING_PIN);
   const made: string[] = [];
   try {
-    await learningTestHooks.beforePin?.(runDir);
     await layLearned(work, seed, options.shown);
     const { section, given } = learnedParts(seed, options);
     const { taken, left } = await chooseSkills(work, seed, options.own ?? [], options.shown);

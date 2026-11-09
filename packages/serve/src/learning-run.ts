@@ -13,7 +13,7 @@ import { INDEX_FILE } from "./learn/index.js";
 import { type AnalyticsFilter, type Revision, runDirIn, type RunRow, type StartedRun } from "@parcha/pi-durable-agent";
 import type { TimelineEvent } from "@parcha/pi-durable-agent/timeline";
 import { readJson, RUN_META } from "./files.js";
-import { currentLearning, detailShown, dropSeed, holdsForOk, layLearned, layPinnedSkills, LEARNED_DIR, type Learning, LEARNING_BUDGET, type NoteRuns, LEARNING_LABEL, LEARNING_REASONS, learningTestHooks, learningView, pinSeed, readPin, secretsShown, type Seed, seedAt, seedOf, shortLearning, type Shown, skillsAt } from "./learning.js";
+import { currentLearning, detailShown, dropSeed, holdsForOk, layLearned, layPinnedSkills, LEARNED_DIR, type Learning, LEARNING_BUDGET, type NoteRuns, LEARNING_LABEL, LEARNING_REASONS, learningView, pinSeed, readPin, secretsShown, type Seed, seedAt, seedOf, shortLearning, type Shown, skillsAt } from "./learning.js";
 import { statusesOf } from "./learning-routes.js";
 import { servedOnly } from "./served-only.js";
 import type { Run, RunsOptions } from "./runs.js";
@@ -220,7 +220,6 @@ export class LearningRuns {
           failed = said.stopped(STOPPED.notCopied);
         }
       }
-      await learningTestHooks.afterSeed?.(started.dir);
       const notes = "seed" in seeded ? Object.keys(seeded.seed.notes).length : 0;
       return failed === undefined ? { state: "seeded", reason: null, detail: said.seeded(notes), at, seed_notes: notes, ...(given.length ? { given } : {}) } : { state: "dropped", reason: "seed_failed", detail: failed, at };
     };
@@ -268,7 +267,6 @@ export class LearningRuns {
    *  seed where the run took it away, so the follow-up finds the notes its instructions name where they say, and the
    *  learned skills its pin names laid again, fresh, so its process reads each where it was. A fault leaves it without. */
   async onReopen(run: Run): Promise<void> {
-    await learningTestHooks.beforeReopen?.(run.dir);
     const work = localWorkspace(join(run.dir, "work"));
     if (!run.meta.reflect) return;
     try {

@@ -12,7 +12,6 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { ANSWER_TOKENS_LEAST } from "../dist/cap.js";
 import { agentFolderOf } from "../dist/files.js";
-import { learningTestHooks } from "../dist/learning.js";
 import { answerWith, note } from "./fixtures/faux-learn.mjs";
 import { copyOf, ended, git, keptProposal, LEARN, learnedOnMain, learner, learningRows, made, onMain, proposedOf, reflectRows, repoOf, savedOf, settled, sleep, started } from "./learn-support.mjs";
 import { agent, client, follow, serve, withEnv } from "./support.mjs";
@@ -36,26 +35,6 @@ async function serverProcess(data) {
   }
   return { child, api: client(/AGENTRUN_BASE_URL=(\S+)/.exec(out)[1], (await readFile(join(data, ".token"), "utf8")).trim()) };
 }
-
-/** Holds every run's seed copy once its pin is in place, until released: the run's directory, as each is held. */
-function holdSeeds(t) {
-  const held = [];
-  let release;
-  const gate = new Promise((resolve) => (release = resolve));
-  learningTestHooks.afterPin = async (dir) => {
-    held.push(dir);
-    await gate;
-  };
-  t.after(() => void (learningTestHooks.afterPin = undefined));
-  return { held, release: () => { learningTestHooks.afterPin = undefined; release(); } };
-}
-const heldRun = async (held) => {
-  for (let i = 0; !held.length; i++) {
-    assert.ok(i < 1200, "the seed is copied");
-    await sleep(25);
-  }
-  return held[0].split("/").at(-1);
-};
 
 test("a seed that failed is a learning row, seed_failed, and a run that does not learn has none", { timeout: 90_000 }, async (t) => {
   const { api, data } = await serve(t, { learning: "on", faux: LEARN });

@@ -8,6 +8,7 @@
 import assert from "node:assert/strict";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { randomBytes } from "node:crypto";
 import { test } from "node:test";
 import { CAPS } from "../dist/learn/check.js";
 import { currentLearning } from "../dist/learning.js";
@@ -370,6 +371,21 @@ test("approving a pending note that supersedes one marks it as a merge would, in
   assert.deepEqual(changed(), ["M\tMEMORY.md", "M\tcite-every-figure.md"]);
   assert.equal(git(repo, ["rev-parse", "main:quote-sources.md"]), retired, "the retired note is unchanged");
   assert.deepEqual(git(repo, ["show", "main:MEMORY.md"]).split("\n").sort(), ["- [Answer in short tables](answer-in-short-tables.md) — The user wants answers as short tables", "- [Cite every figure](cite-every-figure.md) — Link the page each figure came from"]);
+});
+
+test("a run's own credentials cannot approve: each secret the runner holds for its runs, and the server's token, are refused on approve, and the note stays pending", { timeout: 150_000 }, async (t) => {
+  // A key the runner holds for its runs (a key-named value in its environment): what a run on the runner could read.
+  const held = `not-a-secret-${"held"}-${randomBytes(12).toString("hex")}`;
+  withEnv(t, { LEARN_PROBE_API_KEY: held });
+  const server = await learnedPending(t, { accounts: true, openSetup: true });
+  const { api, port, repo } = server;
+  const path = "/v2/agents/buyer/learning/files/paperdepot24-first.md";
+  const etag = (await api("GET", "/agents/buyer/learning/files/paperdepot24-first.md")).headers.get("etag");
+  for (const value of [held, server.token]) {
+    const res = await call(port, { method: "POST", path: `${path}/approve`, headers: { ...json, origin: `http://127.0.0.1:${port}`, authorization: `Bearer ${value}`, "if-match": etag }, body: {} });
+    assert.ok(res.status === 401 || res.status === 403, `a credential a run could hold: ${res.status} ${res.text}`);
+  }
+  assert.match(git(repo, ["show", "main:paperdepot24-first.md"]), /status: pending/, "nothing approved it");
 });
 
 test("with accounts off nothing approves, a page cookie the token mints included, and capabilities say so", { timeout: 150_000 }, async (t) => {
