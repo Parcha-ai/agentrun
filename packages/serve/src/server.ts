@@ -13,7 +13,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import { type NewRevision, type Revision, runDirIn, type RunOrigin, STORE_FILE } from "@parcha/pi-durable-agent";
-import { agentView, Agents, etagOf, homeBusy, revisionView, storeBusy, type AgentEntry } from "./agents.js";
+import { type AgentEntry, agentRevision, agentRevisions, agentView, commitAgent, createAgent, definitionOf, etagOf, getAgent, listAgents, revisionView, setAgentArchived, setCurrentRevision } from "./agents-store.js";
 import { WORKFLOW_ADAPTERS } from "./app.js";
 import { DECISION_ADAPTER, decisionsOf, FAUX_JEV_ENV, FAUX_OPENROUTER_ENV, FAUX_PARALLEL_ENV, fauxFetch } from "./decisions.js";
 import { FAUX_WEB_ENV } from "./web-fetch-direct.js";
@@ -45,7 +45,20 @@ import { hostFix, hostName, loopbackNames } from "./host-check.js";
 import { handoverById, type LiveHandover, liveRest, LiveViewers, proxyLiveUpgrade, readHandover, readHandovers, serveViewerFile, viewerAnswers, viewerLink } from "./browser-live.js";
 import { answerAsk } from "./browser-person.js";
 import { durationMs, logLine } from "./print.js";
-import { type CarryBackRetry, knownToolCostOf, type Run, Runs, STATUSES, type Status, statusOf, toolCostOf, WAITS_ON_A_PERSON, WITHHELD_SIGN_IN } from "./runs.js";
+import { knownToolCostOf, type RunMoment, type State, type Status, toolCostOf, WITHHELD_SIGN_IN } from "./run-view.js";
+import { approve, archiveRun, cancel, message, raiseCap, type StartDeps, startRun, stop as stopRun, WAITS_ON_A_PERSON } from "./runs-over-store.js";
+import { momentOverStore, summaryOverStore, type ViewDeps, viewOverStore } from "./store-view.js";
+import { triggerTargets, type TriggerTargetDeps } from "./trigger-targets.js";
+import { listRuns as listRunsOverStore, readRun as readRunOverStore, runOfOrigin as runOfOriginOverStore } from "./store-reads/runs.js";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { openSqliteStore, type RevisionPlace, type Store, StoreBusy, StoreConstraint } from "./store/index.js";
+import { runModelRef } from "./model.js";
+// The v2 run statuses, as the run view names them (run-view.ts Status), for the list filter's validation. */
+const STATUSES = ["queued", "working", "paused", "input_required", "completed", "failed", "cancelled"] as const;
+/** A busy store, and the home_busy answer it maps to (byte-identical to the old agents.ts words), for a read or write that
+ *  meets the one store under load. */
+const storeBusy = (error: unknown): boolean => error instanceof StoreBusy;
+const homeBusy = (): ApiError => new ApiError("home_busy", "the agent store is busy with another write; try again", { retry_after_ms: 500 });
 import { runLines } from "./usage-lines.js";
 import { BOX_QUARANTINE, type BoxHost, Quarantine } from "./box/sweep.js";
 import { type BoxOffer, boxesByDefault, boxesLog, boxRegistry, daytonaApi, enabledBoxes, VM_NO_LIST, VM_PROVIDER } from "./boxes.js";
@@ -64,7 +77,11 @@ import { redactedOutput } from "./key-refusal.js";
 import { analyticsFilter, analyticsView, pendingOf, statsView } from "./stats.js";
 import { outcomes } from "./usage.js";
 import { keyOf, SEAL_KEY_ENV, sealKeyOf, TOOL_FIELDS, ToolKeys } from "./tool-keys.js";
-import { SIGN_INS_DIR, SignIns, vendorsOver } from "./sign-ins.js";
+import { vendorsOver } from "./sign-ins.js";
+// E1b builds the store-backed sign-ins bridge (the old SignIns interface — peek/forgotten/view/forget — over store.signIns,
+// byte-identical v2 shapes; "held"/held_by from a live run whose sign_in_handed holds the pointer, verified_at from the
+// last holder's lease end). TODO(E1b): wire its sha; named import until then.
+import { signInsOverStore } from "./sign-ins-store.js";
 import { MCP_AUTH_TYPES, McpServers } from "./mcp-servers.js";
 import { metaToolOf } from "./mcp-meta.js";
 import { MCP_SETTINGS_PAGE, signInCookie, startedHere } from "./mcp-oauth.js";
@@ -81,7 +98,7 @@ import { SCHEME_NAMES } from "./trigger-signatures.js";
 import { permissionFrom, pinWords } from "./tool-gate.js";
 import { CATCHUP_WINDOW_S, FAILURES_TO_PAUSE, HISTORY_KEPT, MIN_EVERY_S, PAYLOAD_KEPT_BYTES, type RunTrigger, SOURCE_KINDS, TARGET_KINDS, type TriggerClock, Triggers } from "./triggers.js";
 import { applyBodyOf, compiled, madeTriggerIssues, type Package, packageModel, packageView, readPackages } from "./templates.js";
-import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, definitionBodyIssues, ID, IDEMPOTENCY_TTL_S, inputIssues, isObject, type Json, stable, unknownFields } from "./validate.js";
+import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, type DefinitionBody, definitionBodyIssues, ID, IDEMPOTENCY_TTL_S, inputIssues, isObject, type Json, stable, unknownFields } from "./validate.js";
 import { agentTools, browserKeyRow, isUnavailable, recheckPlane, settingsIssues, ToolSettings, type ToolSettingsMap, whyUnavailable, withDefaults } from "./tool-plane.js";
 import { MAX_FILES_PER_RUN, MAX_UPLOAD_BYTES, Uploads, UPLOADS_DIR } from "./uploads.js";
 import { entryAt, listFiles, sendFile as sendWorkspaceFile, viewOf } from "./run-files.js";
@@ -925,12 +942,36 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const store = await openSqliteStore({ dataDir: data, role: "server" });
   stops.push(() => store.close());
   const sealKey = sealKeyOf(withSecrets(base, "own")[SEAL_KEY_ENV]);
+  // The agents accessor the routes call, over the one store (module A): the agents-store functions, with the run-row reads
+  // the server makes (store-reads) under `.store`. `.request` is a thin pass-through — the store runs its own transactions,
+  // so a call needs no outer serialization. The old Agents class and its per-agent home store are gone.
+  const ctx = BACKGROUND_CONTEXT;
+  const agents = {
+    get: (id: string) => getAgent(store, id),
+    list: (options: { archived?: boolean } = {}) => listAgents(store, options),
+    create: (body: DefinitionBody, check?: (revision: NewRevision) => Promise<void>, fresh?: { place: RevisionPlace; tools: readonly string[] }) =>
+      createAgent(store, body, { ...(check ? { check } : {}), ...(fresh ? { fresh } : {}) }),
+    commit: (entry: AgentEntry, body: DefinitionBody, options: { ifCurrent?: string | null; check?: (revision: NewRevision) => Promise<void>; contract?: boolean } = {}) => commitAgent(store, entry, body, options),
+    revisions: (id: string) => agentRevisions(store, id),
+    revision: (agentId: string, revisionId: string) => agentRevision(store, agentId, revisionId),
+    setCurrent: (entry: AgentEntry, revisionId: string) => setCurrentRevision(store, entry, revisionId),
+    setArchived: (kind: "agent" | "run", id: string, archived: boolean) => (kind === "agent" ? setAgentArchived(store, id, archived) : archiveRun(store, id, archived)),
+    request: <T>(fn: () => T | Promise<T>): Promise<T> => Promise.resolve(fn()),
+    dir: data,
+    store: {
+      listRuns: (filter: { agent?: string; revision?: string } = {}) => listRunsOverStore(store, filter, ctx),
+      readRun: (id: string) => readRunOverStore(store, id, ctx),
+      runOfOrigin: (key: string) => runOfOriginOverStore(store, key),
+      readRevision: (id: string) => store.agents.revision(id),
+    },
+    close: () => store.close(),
+  };
   ({ secrets: secretStores, settings: triggerSettings } = openServerSecrets(data, env, adapters, (fields) => (log ? log(logLine("trigger", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("trigger", fields)}\n`))));
   secretStores.add("server", () => [token, doorToken]);
-  // Each agent's saved sign-ins (sign-ins.ts), under the seal key the tool keys are kept under: its vendor's calls on the
-  // server's keys (under faux, the vendor's fake alone), a lease held while the run it names has not ended, and a
-  // pointer never forgotten while a run it was handed is going (runs.ts handedTo; `runs` is made below, before any request).
-  const signIns = new SignIns(data, sealKeyOf(withSecrets(base, "own")[SEAL_KEY_ENV]), vendorsOver(() => env, checkFetch), async (runId) => (await agents.request(() => agents.store.readRun(runId)))?.state === "running", { handedTo: (agentId: string, hash: string | undefined): Promise<string | undefined> => runs.handedTo(agentId, hash) });
+  // Each agent's saved sign-ins, over the one store (module A, sign-ins-store): the vendor's calls on the server's keys
+  // (under faux, the vendor's fake alone), under this server's seal key. The store holds whether a sign-in is still held
+  // (a live run's sign_in_handed) and who was handed it, so this takes no `holds`/`handedTo` callback — one store, one lock.
+  const signIns = signInsOverStore(store, sealKey, vendorsOver(() => env, checkFetch));
   const webhooks = new Webhooks(data, env, (fields) => (log ? log(logLine("webhook", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("webhook", fields)}\n`)), options.webhookRetryMs);
   // The outbound webhook's secret, as it stands (set by a PUT, gone with a DELETE), and each it held before.
   secretStores.add("webhook", () => webhooks.signingSecrets());
@@ -979,20 +1020,46 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const provider = await making.catch((error: unknown) => { if (pricing === making) pricing = undefined; throw error; });
     return provider.priceOf(model);
   };
-  const runs = new Runs({ installs, dockerAllow: boxNetwork.allow, ...(egress?.volume ? { dockerVolume: egress.volume } : {}), ...(boxPaths ? { dockerPaths: boxPaths } : {}), agents, token, storedKeys, mcpServers: mcpSource, doorTokenFile, doorToken, learning, learningBudget, ...(documents ? { documents: resolve(documents) } : {}), fauxEnv: fauxEnvOf(options), toolSettings: () => settings.get(), ...(runBoxes ? { runBoxes } : {}), ...(remoteBoxes ? { remoteBoxes } : {}), ...(vmBoxes && vmRelayHalf ? { vmBoxes, vmLimits, vmRelay: vmRelayHalf } : {}), ...(remoteBoxes && daytonaApi(env) ? { remoteApi: daytonaApi(env)! } : {}), ...(remoteBoxes ? { boxAllow, onNoBoxList } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}), maxRuns, ...(options.box ? { box: { host: options.box, quarantine: await Quarantine.open(join(data, BOX_QUARANTINE)) } } : {}), ...(options.settleRetryMs ? { settleRetryMs: options.settleRetryMs } : {}), ...(options.readyTimeoutMs ? { readyTimeoutMs: options.readyTimeoutMs } : {}), ...(options.openTimeoutMs ? { openTimeoutMs: options.openTimeoutMs } : {}), ...(options.faux && options.fauxHandedNonce ? { fauxHandedNonce: options.fauxHandedNonce } : {}), ...(options.reflectTimeoutMs ? { reflectTimeoutMs: options.reflectTimeoutMs } : {}), ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}), notify: (event, run, marker) => webhooks.emit(event, run, marker), serverSecrets, signIns, approvers: options.accounts === true });
-  const daytona = daytonaApi(env);
-  const relay = (remoteBoxes && daytona) || vmRelayHalf ? await startBoxRelay({ root: data, tokenOf: (id) => runs.relayToken(id), ...(remoteBoxes && daytona ? daytona : {}), ...(vmRelayHalf ? { vm: vmRelayHalf } : {}), serves: (id) => runs.servesBox(id), ensure: (id) => runs.ensureBox(id) }) : undefined;
-  if (relay) stops.push(() => relay.close());
+  // The run write half (runs-over-store): the server INSERTs a queued run and its launch (startRun), and writes command
+  // rows (message/stop/cancel/raise/approve/archive) a run's runner reads and applies. No per-run process, no HTTP door,
+  // no box relay here — a runner (its own process, sharing only this store) claims and runs every run. The leaves a start
+  // needs that live in this request layer are gathered once as StartDeps; the run's model is resolved once, now (the runner
+  // reads launch.model alone).
+  const modelOf = (_entry: AgentEntry, revision: Revision) => runModelRef(env, revision);
+  const startDeps: StartDeps = {
+    runBodyIssues,
+    pinnedOf,
+    inputIssuesOf,
+    explainRun,
+    told,
+    runnable,
+    readyFiles: (ids) => uploads.readyFiles(ids as string[]),
+    fallbackPlace,
+    workflowTitle,
+    serverSecrets,
+    toolSettings: () => settings.get(),
+    planeEnv: () => env,
+    approvers: options.accounts === true,
+    ...(documents ? { documents: resolve(documents) } : {}),
+    ...(boxAllow !== undefined ? { boxAllow } : {}),
+    modelOf,
+  };
+  // A run's served view and its live moment, from the store (store-view): `origin` is where this request reaches the
+  // console, the secrets are cut live, and the sign-ins give the handed-pointer cut. Trigger and background reads (no
+  // request) use the server's public address, else its own.
+  const viewDepsFor = (origin: string): ViewDeps => ({ origin, serverSecrets, signIns });
+  const ownOriginOf = (): string => options.publicUrl ?? url;
+  const triggerDeps: TriggerTargetDeps = {
+    start: startDeps,
+    getAgent: async (agentId: string) => (await getAgent(store, agentId)) ?? undefined,
+    needAgent,
+    momentOf: (runId: string) => momentOverStore(store, runId, viewDepsFor(ownOriginOf())),
+    runStatus: async (runId: string) => ((await viewOverStore(store, runId, viewDepsFor(ownOriginOf())))?.status as string | undefined) ?? null,
+  };
+  const targets = triggerTargets(store, triggerDeps);
   const expected = digest(`Bearer ${token}`);
-  if (options.beforeAbort) runs.beforeAbort = options.beforeAbort;
-  if (options.beforeReopenLaunch) runs.beforeReopenLaunch = options.beforeReopenLaunch;
-  if (options.beforeRaiseLaunch) runs.beforeRaiseLaunch = options.beforeRaiseLaunch;
-  if (options.hostMemory) runs.memory = options.hostMemory;
-  if (options.onPauseCheck) runs.onPauseCheck = options.onPauseCheck;
-  if (options.beforeSubmit) runs.beforeSubmit = options.beforeSubmit;
-  if (options.beforeMetaSave) runs.beforeMetaSave = options.beforeMetaSave;
-  if (options.onRunLoad) runs.onRunLoad = options.onRunLoad;
-  if (options.messageOrigin) runs.messageOrigin = options.messageOrigin;
+  // The old per-run-process test hooks (beforeAbort/beforeReopenLaunch/onRunLoad/messageOrigin …) are the runner's now
+  // (E2r), not the server's: a run executes in a runner process, not here. TODO(E2r): the equivalents on the runner's loop.
   // Answered keys are kept in the data directory for the retention capabilities state, and written before the answer
   // is sent, so a client that retries after a restart gets the first answer back.
   type Kept = { fingerprint: string; at: number; answer?: { status: number; body: unknown; headers: Record<string, string> } };
@@ -1027,32 +1094,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   };
   // Decided once, by the probe the confinement walks by: capabilities.home.writes says what PUT and DELETE do.
   const homeWrites = caps.home.writes;
-  // Runs an earlier server left: supervised again, carried back when they already ended, or opened again. Then, however
-  // that went, the webhook's ledger against the agent store: waits of runs ended or gone dropped, and each end it lacks
-  // queued. Each is its own step: a recovery that gives up (a store busy past its wait) still lets the catch-up run, and a
-  // step that gives up is said, the next start trying it again.
-  void runs
-    .recover()
-    .catch((error: Error) => void process.stderr.write(`agentrun-serve: recovery: ${error.message}\n`))
-    .then(async () => {
-      const rows = (await agents.request(() => agents.store.listRuns())).filter((row) => !row.importedFrom);
-      // An end's notice from its row as the agent store holds it now and its serve.json alone, as the run list reads an
-      // ended run (summaryOfRow): never its own store, whose read can fail, so a busy store loses no end. The same body a
-      // live end's notice has.
-      await webhooks.catchUp(rows, async (id) => {
-        // Its folder on the disk by its row's agent, which a run never changes: the listed row's, or the store's for a run
-        // listed after the list.
-        const listed = rows.find((row) => row.id === id) ?? (await agents.request(() => agents.store.readRun(id)));
-        if (!listed) return null;
-        const meta = await readJson(join(runDirIn(agents.dir, listed.agent, id), RUN_META));
-        // Read last, so nothing but this read stands between the run as it is now and its end's queuing.
-        const row = await agents.request(() => agents.store.readRun(id));
-        if (!row) return null;
-        const notice = { run_id: id, agent_id: row.agent, status: await runs.statusOfRow(row), title: isObject(meta) && typeof meta.title === "string" ? meta.title : "" };
-        return { state: row.state, endedAt: row.endedAt, notice };
-      });
-    })
-    .catch((error: Error) => void process.stderr.write(`agentrun-serve: the webhook's catch-up: ${error.message}\n`));
+  // No server-side run recovery: a runner (its own process) claims every run an earlier runner left and resumes it from the
+  // journal under the claim epoch — the server starts no run process and adopts none.
+  // TODO(switch): rebuild the webhook catch-up over the store's run rows (listRuns + the run view's status) so an end a
+  // stopped server never delivered is queued at the next start; deferred (webhooks stay until route-1's triggers8 merges).
 
   // Schedules: each firing starts its run as POST /agents/{id}/runs does, capped, under the firing's key (triggers.ts).
   // Firings an earlier server left due are driven again now, beside the recovery above.
@@ -1060,56 +1105,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     clock: options.triggerClock,
     adapters,
     say: (fields) => (log ? log(logLine("trigger", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("trigger", fields)}\n`)),
-    async targetIssues(target) {
-      if (target.kind === "message_run") {
-        const run = await runs.get(target.run_id);
-        if (!run) return [{ field: "target.run_id", reason: "not_found", message: `no run ${target.run_id}` }];
-        if (run.kind === "workflow") return [{ field: "target.run_id", reason: "not_allowed", message: "A workflow run takes no messages here." }];
-        return run.meta.max_cost_usd === undefined ? [{ field: "target.run_id", reason: "not_allowed", message: NO_CAP }] : [];
-      }
-      const entry = await agents.get(target.agent_id);
-      if (!entry) return [{ field: "target.agent_id", reason: "not_found", message: `no agent ${target.agent_id}` }];
-      if (!entry.revision) return [{ field: "target.agent_id", reason: "invalid", message: `the agent ${target.agent_id} has no current revision` }];
-      const uncapped = target.max_cost_usd === undefined && entry.revision.body.maxCostUsd === undefined ? [{ field: "target.max_cost_usd", reason: "missing", message: `Every run a trigger starts is capped: give the target a max_cost_usd or set the agent's (the agent ${target.agent_id} has none).` }] : [];
-      return [...uncapped, ...(await explainRun(await inputIssuesOf(entry.revision, target.input), { input: target.input }, entry.revision)).map((issue) => ({ ...issue, field: `target.${issue.field}` }))];
-    },
-    async start(target, input, trigger, from) {
-      const entry = await needAgent(target.agent_id);
-      // The target's cap, else the agent's default as it stands now: a run a trigger starts is never uncapped.
-      const run = await startRunOf(entry, { input, ...(target.max_cost_usd !== undefined ? { max_cost_usd: target.max_cost_usd } : {}), ...(target.effort ? { effort: target.effort } : {}) }, { trigger, origin: { key: trigger.firing_key }, capped: true, from });
-      return { run_id: run.id };
-    },
-    async message(target, input, key, from) {
-      const run = await needRun(target.run_id);
-      if (run.kind === "workflow") throw unsupported("messages.steer_workflow_runs", "A workflow run takes no messages here.");
-      // A store held past its retries is a busy store: the firing stays due and is tried again, never failed.
-      if (await runs.tookMessage(run, key).catch((error: unknown) => { throw storeBusy(error) ? homeBusy() : error; })) return;
-      // Never an uncapped turn, nor an answer to a person's question, an approval or a budget pause: a run that waits on
-      // its person is told nothing by a trigger.
-      if (run.meta.max_cost_usd === undefined) throw new ApiError("not_continuable", NO_CAP);
-      const { status, state } = statusOf(run);
-      if (status === "input_required" && state === "waiting") return { skipped: WAITS_ON_A_PERSON };
-      try {
-        await runs.message(run, String(input.content), key, { answers: false, origin: from });
-      } catch (error) {
-        if (error instanceof ApiError && error.message === WAITS_ON_A_PERSON) return { skipped: WAITS_ON_A_PERSON };
-        throw error;
-      }
-    },
+    // The trigger target policy (what a trigger may start or message, and in what words it is refused) is the one store's
+    // (trigger-targets.ts, over the run write half and the run view): targetIssues, start, message, statusOf, runOf. The
+    // queue a firing takes — how many of a trigger's messages wait for a busy run — is route-1's store.triggers.
+    ...targets,
     settings: (adapterId) => triggerSettings.get(adapterId),
     notify: (failed, key) => webhooks.emitTrigger(failed, key),
-    async runOf(key) {
-      const started = await agents.request(() => agents.store.runOfOrigin(key));
-      if (!started) return null;
-      // Never set up as runs.ts load reads it (notSetUp: the store has it running and its serve.json holds no input), which
-      // this start's recovery fails as server_lost_at_setup; or failed so already.
-      const run = await runs.get(started.runId);
-      return { run_id: started.runId, setup_lost: run?.notSetUp === true || run?.error?.details?.reason === SETUP_LOST };
-    },
-    async statusOf(runId) {
-      const row = await agents.request(() => agents.store.readRun(runId));
-      return row ? runs.statusOfRow(row) : null;
-    },
   });
   stops.push(async () => triggers.close());
   triggers.start();
