@@ -5,10 +5,11 @@
 // unknown one are refused in the store (RunFinal), and nothing is written. A store over another database (Postgres) runs
 // this same case.
 import assert from "node:assert/strict";
+import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { agentWithRevision, queued, storeOn } from "./store-helpers.mjs";
 
-const { RunFinal } = await import("../dist/store/index.js");
+const { RunFinal, endedReason } = await import("../dist/store/index.js");
 
 test("runs.reopen puts a completed agentic run back to running, released and claimable, with its follow-up untaken and its spend kept; every other run is refused in the store", async (t) => {
   const { store } = await storeOn(t);
@@ -54,4 +55,58 @@ test("runs.reopen puts a completed agentic run back to running, released and cla
   await store.runs.update(await store.claim("run-learning", "runner-a", { leaseMs: 30_000 }), { state: "ended" });
   await refused("run-learning", "a learning run");
   await refused("run-none", "no such run");
+});
+
+test("a person's message racing a completed run's end lands on exactly one path: in before the end, the end opens the run again with it; after the end, a new row is refused and runs.reopen takes it", async (t) => {
+  const { store, file } = await storeOn(t);
+  // Every write of a run's state, as a row trigger sees it (a test-only log on the store's file): the end's final write must
+  // be one of them, its ended_at set, before the reopen's, so what follows a run's changes tells its end (run.ended, its
+  // marker the end's ended_at) as main does before it opens the run again (runs.ts reopen: the end's run.ended first).
+  const db = new DatabaseSync(file);
+  db.exec("CREATE TABLE test_state_log (n INTEGER PRIMARY KEY, run_id TEXT, state TEXT, ended_at INTEGER)");
+  db.exec("CREATE TRIGGER test_state_log_t AFTER UPDATE OF state ON runs BEGIN INSERT INTO test_state_log (run_id, state, ended_at) VALUES (NEW.id, NEW.state, NEW.ended_at); END");
+  t.after(() => db.close());
+  // In before the end: the message waits untaken at the end commit, which opens the run again with it (main's: a message
+  // that waited for the end opens the completed run again), its other leftovers refused as before.
+  await queued(store);
+  const first = await store.claim("run-1", "runner-a", { leaseMs: 30_000 });
+  const message = await store.command("run-1", { kind: "steer", body: { text: "Also this." } });
+  const raise = await store.command("run-1", { kind: "raise", body: { capUsd: 5 } });
+  await store.runs.update(first, { state: "ended", summary: "The first answer." });
+  const row = await store.runs.get("run-1");
+  assert.deepEqual({ state: row.state, runner: row.runner, endedAt: row.endedAt, summary: row.summary }, { state: "running", runner: null, endedAt: null, summary: null }, "opened again in the end's commit");
+  const writes = db.prepare("SELECT state, ended_at FROM test_state_log WHERE run_id = 'run-1' ORDER BY n").all().map((one) => [one.state, one.ended_at !== null]);
+  assert.deepEqual(writes.slice(-2), [["ended", true], ["running", false]], `the end's final write, its ended_at set, then the reopen: ${JSON.stringify(writes)}`);
+  assert.ok((await store.runs.claimable()).includes("run-1"), "a runner claims it at once");
+  const rows = await store.commands("run-1", 0);
+  const of = (id) => rows.find((one) => one.id === id);
+  assert.equal(of(message.id).takenAt, null, "the message waits untaken for the next claim, which runs it as a new turn");
+  assert.equal(of(raise.id).refused, endedReason("ended"), "the run's other leftovers are refused as before");
+  await assert.rejects(store.runs.reopen("run-1", { kind: "steer", body: { text: "x" } }), (e) => e instanceof RunFinal, "never reopened twice: the run is running again");
+
+  // After the end: the store takes no new row on the ended run (RunFinal), and runs.reopen is the one way in.
+  await queued(store, "run-2");
+  await store.runs.update(await store.claim("run-2", "runner-a", { leaseMs: 30_000 }), { state: "ended" });
+  await assert.rejects(store.command("run-2", { kind: "steer", body: { text: "Later." } }), (e) => e instanceof RunFinal, "no row on a final run");
+  assert.equal((await store.runs.get("run-2")).state, "ended", "the refused row opened nothing");
+  await store.runs.reopen("run-2", { kind: "steer", body: { text: "Later." } });
+  assert.deepEqual((await store.commands("run-2", 0)).map((one) => [one.body.text, one.takenAt]), [["Later.", null]], "one row, from the reopen");
+
+  // A run that does not reopen refuses the message at its end, as before: stopped, failed, a workflow's.
+  for (const [id, patch] of [["run-3", { state: "stopped", summary: "stopped by a person" }], ["run-4", { state: "failed", summary: "it broke" }]]) {
+    await queued(store, id);
+    const claim = await store.claim(id, "runner-a", { leaseMs: 30_000 });
+    const late = await store.command(id, { kind: "steer", body: { text: "too late" } });
+    await store.runs.update(claim, patch);
+    assert.equal((await store.runs.get(id)).state, patch.state);
+    assert.equal((await store.commands(id, 0)).find((one) => one.id === late.id).refused, endedReason(patch.state), `a ${patch.state} run refuses it`);
+  }
+  await agentWithRevision(store, "agent-wf", "rev-wf");
+  await store.agents.addRevision({ agentId: "agent-wf", id: "rev-wf2", kind: "workflow", body: { workflow: { name: "w", nodes: [] } } });
+  await store.runs.create({ id: "run-wf", agentId: "agent-wf", revisionId: "rev-wf2" });
+  const wfClaim = await store.claim("run-wf", "runner-a", { leaseMs: 30_000 });
+  const wfLate = await store.command("run-wf", { kind: "steer", body: { text: "too late" } });
+  await store.runs.update(wfClaim, { state: "ended" });
+  assert.equal((await store.runs.get("run-wf")).state, "ended", "a completed workflow run stays ended");
+  assert.equal((await store.commands("run-wf", 0)).find((one) => one.id === wfLate.id).refused, endedReason("ended"));
 });
