@@ -26,8 +26,8 @@ test("claude-agent's own facts rule out the four cases", () => {
   assert.deepEqual(Object.keys(factsRuleOut(claudeFacts)).sort(), ["fault-restarts-bounded", "replay-safe-rerun", "steer-mid-turn", "steer-origin"]);
 });
 
-test("codex's own facts rule out the three cases", () => {
-  assert.deepEqual(Object.keys(factsRuleOut(codexFacts)).sort(), ["fault-restarts-bounded", "replay-safe-rerun", "steer-mid-turn"]);
+test("codex's own facts rule out the four cases", () => {
+  assert.deepEqual(Object.keys(factsRuleOut(codexFacts)).sort(), ["fault-restarts-bounded", "replay-safe-rerun", "steer-mid-turn", "steer-origin"]);
 });
 
 test("registered, a ruled-out case is skipped saying it is by design; the rest run", () => {
