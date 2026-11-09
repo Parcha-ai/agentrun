@@ -91,7 +91,7 @@ function views(refusal) {
   return { open, opened, closed };
 }
 
-async function claim(setting, { mode = 1, keys = {}, groups = ["exec", "files", "processes"], existing, view, machine } = {}) {
+async function claim(setting, { mode = 1, keys = {}, groups = ["exec", "files", "processes"], existing, view, machine = setting.kind === "desktop" ? "desktop" : setting.kind === "phone" ? "android" : "linux" } = {}) {
   const root = scratch();
   const store = memoryStore();
   const sealKey = randomBytes(32);
@@ -203,6 +203,43 @@ test("the runner's start sweeps each provider's computers past their deadline, o
   assert.equal(swept.length, 1);
   assert.equal(swept[0].swept.ok, true, JSON.stringify(swept));
   assert.deepEqual(record.released, [["late", "delete"]]);
+});
+
+test("a faux desktop (--faux's launch) is the kinded RunComputer: kind desktop, the groups the computer declares", async () => {
+  const { fauxComputers } = await import("../dist/faux-computers.js");
+  const faux = fauxComputers({ viewerBase: "http://127.0.0.1:9" });
+  const store = memoryStore();
+  const root = scratch();
+  const answer = await computerForClaim({ runId: "run-faux", epoch: 1, computer: { kind: "desktop", provider: "faux-desktop" } }, store, {
+    mode: 1, kinds: faux.kinds, sealKey: randomBytes(32), providers: {}, spec: SPEC, keyTable: faux.keyTable, launch: faux.launch,
+    workspace: localWorkspace(root), check: { readBackOf, epoch: 1 },
+  });
+  assert.equal(answer.computer.kind, "desktop");
+  assert.deepEqual([...answer.computer.groups], ["screen", "input.pointer", "input.keys"]);
+  await answer.release();
+});
+
+test("a phone is the kinded RunComputer: kind phone, the groups its hello declares", async () => {
+  const PHONE = ["screen", "input.touch", "input.keys", "apps", "apps.ui_tree"];
+  const { run } = await claim({ kind: "phone", provider: "phone-harness" }, { keys: { PHONE_HARNESS_API_KEY: "pk-test" }, groups: PHONE, machine: "android" });
+  const answer = await run();
+  assert.equal(answer.computer.kind, "phone");
+  assert.deepEqual([...answer.computer.groups], PHONE);
+  await answer.release();
+});
+
+test("a computer whose hello does not serve the setting's kind is refused in the registry's words and released", async () => {
+  // A phone that declares no apps group.
+  const phone = await claim({ kind: "phone", provider: "phone-harness" }, { keys: { PHONE_HARNESS_API_KEY: "pk-test" }, groups: ["screen", "input.touch"], machine: "android" });
+  const refused = await phone.run().then(() => undefined, (error) => error);
+  assert.equal(refused?.code, "computer_unavailable");
+  assert.match(refused.message, /the run's computer can't serve a phone: kind phone needs groups apps/);
+  assert.deepEqual(phone.record.released, [["c1", "delete"]], "released, never handed on");
+  // A desktop setting whose computer says it is a linux machine.
+  const desktop = await claim({ kind: "desktop", provider: "e2b" }, { keys: { E2B_API_KEY: "ek-test" }, groups: ["screen", "input.pointer", "input.keys"], machine: "linux" });
+  const notDesktop = await desktop.run().then(() => undefined, (error) => error);
+  assert.match(notDesktop?.message ?? "", /kind desktop is a desktop machine, not a linux one/);
+  assert.deepEqual(desktop.record.released, [["c1", "delete"]]);
 });
 
 async function refusal(setting, options) {
