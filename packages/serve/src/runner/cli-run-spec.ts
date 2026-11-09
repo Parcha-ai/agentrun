@@ -37,6 +37,7 @@ import { INPUTS_DIR, UPLOADS_DIR, Uploads } from "../uploads.js";
 import { isObject } from "../validate.js";
 import { runFolder, scratchFolder } from "../workspace/paths.js";
 import { openRunWorkspace } from "../workspace/run-workspace.js";
+import { layOwnSkills } from "../workspace/revision-skills.js";
 import { runTools, type ToolResults } from "../workspace/run-tools.js";
 import { archilClaim, MOUNT_TTL_MS } from "../workspace/archil-claim.js";
 import { loadArchilSettings } from "../archil-settings.js";
@@ -185,6 +186,8 @@ export async function cliRunSpecFromLaunch(launch: RunLaunch, run: AdapterRun, d
   const start = learningStartOf(launch);
   const laid = start ? laidLearned(body.instructions ?? "", start.section) : (body.instructions ?? "");
   const check = await entry.skillCheck?.();
+  // The revision's own skills laid before they are read, as the pi spec lays them (adapter-run-spec.ts).
+  await layOwnSkills(ws.workspace, (revisionRow.skills ?? {}) as Record<string, string>);
   const { system: instructions, native } = await systemOf(laid, Object.keys(body.skills ?? {}), ws.workspace, check, { onDemand: readsFiles(granted) });
   const guidance = effortGuidance(launch.effort);
 
