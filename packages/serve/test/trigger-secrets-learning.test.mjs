@@ -30,8 +30,8 @@ test("a note holding a webhook trigger's signing secret is refused, by its value
   await made(api, learner("target"));
   const created = await api("POST", "/triggers", hooked);
   assert.equal(created.status, 201, JSON.stringify(created.body));
-  assert.ok((await proposing(api, data, "leaky", created.body.secret)).includes("secret_value"), "the value this server holds");
-  const rotated = (await api("POST", `/triggers/${created.body.id}/secret`)).body.secret;
+  assert.ok((await proposing(api, data, "leaky", created.body.signing_secret)).includes("secret_value"), "the value this server holds");
+  const rotated = (await api("POST", `/triggers/${created.body.id}/secret`)).body.signing_secret;
   assert.ok((await proposing(api, data, "rotated", rotated)).includes("secret_value"), "the new value, read as it is now");
   assert.ok((await proposing(api, data, "foreign", `whsec_${randomBytes(32).toString("base64")}`)).includes("secret_shape"), "a whsec_ secret this server never made");
 });

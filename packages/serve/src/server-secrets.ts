@@ -6,7 +6,7 @@
 // of them assembles its own.
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { DOOR_TOKEN_FILE, TOKEN_FILE } from "./files.js";
+import { TOKEN_FILE } from "./files.js";
 import { SESSION_SECRET_FILE } from "./owner.js";
 import { SealedSettings } from "./sealed-settings.js";
 import { secretForms } from "./standard-webhooks.js";
@@ -54,7 +54,7 @@ export function openServerSecrets(data: string, env: NodeJS.ProcessEnv, adapters
   // Each read until it is there, then kept: they are made once, and a redaction reads the list often.
   const read = new Map<string, string>();
   const kept = (name: string) => read.get(name) || (read.set(name, fileIn(data, name)), read.get(name)!);
-  secrets.add("files", () => [kept(TOKEN_FILE), kept(DOOR_TOKEN_FILE), kept(SESSION_SECRET_FILE)]);
+  secrets.add("files", () => [kept(TOKEN_FILE), kept(SESSION_SECRET_FILE)]);
   const webhook = webhookSecretIn(data, env);
   secrets.add("webhook", () => (webhook && "secret" in webhook ? [webhook.secret] : []));
   // Where a webhook trigger's secret was kept before its source's sealed settings were: no longer read.
