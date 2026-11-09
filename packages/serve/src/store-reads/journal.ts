@@ -4,7 +4,7 @@
 // The renderer and the hearing keep their words; only where the entries come from changes.
 import type { Context } from "@earendil-works/chord";
 import type { EntryLike, TimelineEvent, TimelineOptions } from "@parcha/pi-durable-agent/timeline";
-import { timelineOf, TOOL_COST, TOOL_UNMETERED } from "@parcha/pi-durable-agent/timeline";
+import { timelineOf, TOOL_COST } from "@parcha/pi-durable-agent/timeline";
 import { RUNNER_RECORDS } from "@parcha/agentrun-kernel";
 import { TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
 import { Hearing } from "../heard.js";
@@ -59,11 +59,13 @@ function piShaped(entries: readonly EntryLike[]): EntryLike[] {
 }
 
 /** The paid tool charges a run booked, read back from its paid-tools session (the kernel cap's TOOL_SESSION) as the
- *  TOOL_COST / TOOL_UNMETERED entries the timeline renders, which the file-backed path had on the run's root (the MCP
- *  gateway, the paid-call ledger). Each paid request's runner.request names its tool (its model "paid:<name>") and the call
- *  it ran under (`call`, written by the cap so the view puts the charge under that call); its runner.turn carries the cost (a
- *  priced one a charge, an unpriced one not metered). Each charge is placed right after its call's result, joined by `call`,
- *  as the ledger wrote it there. A run with no paid-tools session reads unchanged. */
+ *  TOOL_COST entries the timeline renders, which the file-backed path had on the run's root (the paid-call ledger). Each
+ *  paid request's runner.request names its tool (its model "paid:<name>") and the call it ran under (`call`, written by the
+ *  cap so the view puts the charge under that call); its runner.turn carries the cost: a charge at what it charged, $0
+ *  included, or of an unknown amount when it says none (null), as main's TOOL_COST renders it. Not metered (main's
+ *  TOOL_UNMETERED) is a tool with no price set, which books no paid record on the runner, so none is read here. A hold
+ *  given back unused shows nothing. Each charge is placed right after its call's result, joined by `call`, as the ledger
+ *  wrote it there. A run with no paid-tools session reads unchanged. */
 export function withPaidCosts(entries: readonly EntryLike[]): EntryLike[] {
   const session = entries.find((e) => e.kind === KINDS.sessionKey && (e.data as { key?: unknown } | undefined)?.key === TOOL_SESSION);
   const conv = session ? (session.data as { conversation?: unknown }).conversation : undefined;
@@ -78,9 +80,13 @@ export function withPaidCosts(entries: readonly EntryLike[]): EntryLike[] {
   const charges: { tool: string; call?: string; chargedBy?: string; usd: number | null }[] = [];
   for (const e of entries) {
     if (e.conversationId !== conv || e.kind !== RUNNER_RECORDS.turn) continue;
-    const d = (e.data ?? {}) as { turn?: number; usd?: number | null };
+    const d = (e.data ?? {}) as { turn?: number; usd?: number | null; givenBack?: boolean };
     const req = typeof d.turn === "number" ? named.get(d.turn) : undefined;
-    if (req) charges.push({ ...req, usd: typeof d.usd === "number" && Number.isFinite(d.usd) && d.usd > 0 ? d.usd : null });
+    // Three outcomes, as main's records keep them apart: a hold given back unused (nothing sent) shows no row; a request
+    // that ran is a charge at what it charged, $0 included (main's TOOL_COST of usd 0, a Parallel 4xx); one whose charge
+    // is unknown (null) is a charge of an unknown amount (main's TOOL_COST with no usd).
+    if (!req || d.givenBack === true) continue;
+    charges.push({ ...req, usd: typeof d.usd === "number" && Number.isFinite(d.usd) && d.usd >= 0 ? d.usd : null });
   }
   if (!charges.length) return [...entries];
   const out = [...entries];
@@ -90,7 +96,7 @@ export function withPaidCosts(entries: readonly EntryLike[]): EntryLike[] {
     const by = charge.chargedBy;
     const at = charge.call === undefined ? -1 : out.findIndex((e) => e.kind === "pi.tool-result" && String((e.model?.[0] as { toolCallId?: unknown } | undefined)?.toolCallId ?? "") === charge.call);
     const data = { tool: charge.tool, ...(by ? { charged_by: by } : {}), ...(charge.call ? { call: charge.call } : {}), ...(charge.usd !== null ? { usd: charge.usd } : {}) };
-    const entry = { conversationId: at >= 0 ? out[at]!.conversationId : conv, kind: charge.usd !== null ? TOOL_COST : TOOL_UNMETERED, data, id: `paid:${charge.call ?? charge.tool}` } as unknown as EntryLike;
+    const entry = { conversationId: at >= 0 ? out[at]!.conversationId : conv, kind: TOOL_COST, data, id: `paid:${charge.call ?? charge.tool}` } as unknown as EntryLike;
     out.splice(at >= 0 ? at + 1 : out.length, 0, entry);
   }
   return out;

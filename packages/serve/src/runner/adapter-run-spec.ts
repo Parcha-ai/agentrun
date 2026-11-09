@@ -11,7 +11,7 @@
 // run's revision's tool settings, read through runGate (approvals "never" among them), the adapter loop asking it.
 import type { Context } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { ROOT_CONVERSATION_ID, type ToolExecutionApi } from "@earendil-works/pi-durable";
+import { defineExtension, ROOT_CONVERSATION_ID, type ToolExecutionApi } from "@earendil-works/pi-durable";
 import { beforeRequestOf, type CapModel, type CapRefused, checkRaise, followUpOf, parkOf } from "@parcha/agentrun-kernel/kernel/cap";
 import type { BeforeRequest, HostTool, SessionSpec, Wire } from "@parcha/agentrun-kernel";
 import type { Approvals } from "../approvals.js";
@@ -24,13 +24,15 @@ import type { Store } from "../store/store.js";
 import { isObject } from "../validate.js";
 import { type RunFiles, runGate } from "../tool-gate.js";
 import { loadToolSettings, recheckPlane, TOOL_PLANE_ENV } from "../tool-plane.js";
-import { type ToolHost, toolOf } from "../tools.js";
+import { ASK_TOOL, askPerson, type ToolHost, toolOf } from "../tools.js";
 import { type HostToolCtx, hostToolOf } from "../host-tools.js";
 import { WEB_FETCH_TOOL } from "../web-fetch.js";
 import { WEB_SEARCH_TOOL } from "../web-search.js";
 import { environmentLine } from "../environment.js";
 import { effortGuidance } from "../effort-guidance.js";
-import { laidLearned, learningFolderOf, pinnedWorkflows, readPin } from "../learning.js";
+import { laidLearned, learningFolderOf, pinnedWorkflows, readPin, secretsShown } from "../learning.js";
+import { layLearningSeed } from "./learning-seed.js";
+import { savedKeyValues } from "../server-keys.js";
 import { learningWorkspace } from "../learn/folder.js";
 import { learningEndOfRun } from "./learning-end.js";
 import { LEARNED_WORKFLOW_TOOL, learnedWorkflowTool } from "../learned-workflow.js";
@@ -58,8 +60,9 @@ import type { ComputerSetting } from "../computer-setting.js";
 import type { claimComputer, ComputerDeps } from "../workspace/computer-deps.js";
 import type { RunComputer } from "../workspace/run-tools.js";
 import type { Workspace } from "../workspace/workspace.js";
-import { heldRedactor, holdClaimed, runnerSecrets, secretRedactor } from "./redact.js";
+import { type HeldRedact, heldRedactor, holdClaimed, runnerSecrets, secretRedactor } from "./redact.js";
 import { githubAppAccess } from "./github-app.js";
+import { holdStored } from "./store-secrets.js";
 
 /** What a claim gives the shared computerForClaim: the run, its epoch, its revision, its place and any computer choice. */
 export interface ClaimLaunch {
@@ -241,8 +244,8 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
     // mounting computer never mints one.
     // The mint is lazy (archil-claim.ts token(), k2's run-tools.ts): only a mounting computer asks for it, so a Mode 2 run
     // with no computer makes no control-plane call. mountControl (a test's loopback control-plane fake) is spread into the
-    // mount, so no test reaches the real control plane. MOUNT_TTL_MS is the credential's safety net (7 days), not its lifetime.
-    : await archilClaim({ settings: archilSettings, keys: deps.store.sealedKeys, sealKey: deps.sealKey, signal: new AbortController().signal, env: deps.env, mount: { runId: claim.runId, epoch: claim.epoch, ttlMs: MOUNT_TTL_MS, ...(deps.mountControl ?? {}) }, ...(deps.makeArchilDisk ? { makeDisk: deps.makeArchilDisk } : {}) });
+    // mount, so no test reaches the real control plane. MOUNT_TTL_MS is the credential's safety net (its computer's 24 h bound), not its lifetime.
+    : await archilClaim({ settings: archilSettings, keys: deps.store.sealedKeys, sealKey: deps.sealKey, signal: run.signal ?? new AbortController().signal, env: deps.env, mount: { runId: claim.runId, epoch: claim.epoch, ttlMs: MOUNT_TTL_MS, ...(deps.mountControl ?? {}) }, ...(deps.makeArchilDisk ? { makeDisk: deps.makeArchilDisk } : {}) });
   // The run's Workspace at the claim: Mode 1 the run's local folder (made here, the server's start made it before); Mode 2
   // the run's folder on the disk.
   const ws = archil === undefined
@@ -286,6 +289,11 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
   // The runner's one redactor (run.redact) goes to the route's translation and to the session's model proxy: a provider's
   // error that echoes a secret reaches pi's record with none in it, on any route.
   const route = await deps.routeOf(launch.model ? `${launch.model.provider}/${launch.model.modelId}` : undefined, deps.env, "default", PI_WIRES, undefined, cut);
+  // ask_person is pi's own tool (tools.ts): a run granted it carries its native extension on the root agent through the pi
+  // adapter (PiAdapterOptions.extensions), so pi runs it as its own tool task under the session's gate and keeps its
+  // control.terminate — the turn ends on the person's question and the loop parks the run (endedOnTurnEndingTool). It stays
+  // out of the session's host tools and REPLAY, so a CLI harness still refuses it (runnable.ts). pi only.
+  const native = granted.includes(ASK_TOOL) ? [defineExtension({ name: "ask_person", tools: [askPerson] })] : [];
   const adapter = piAdapter({
     run,
     model: route.model,
@@ -294,6 +302,7 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
     ...(route.like ? { like: route.like } : {}),
     ...(route.price ? { price: route.price as never } : {}),
     ...(route.fetch ? { fetch: route.fetch } : {}),
+    ...(native.length ? { extensions: native } : {}),
   });
 
   // The gate before a call's intent: the run's revision's tool settings through runGate (approvals "never" turns the one
@@ -332,6 +341,8 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
   const toolEnv = await claimSecrets({ store: deps.store, sealKey: deps.sealKey, env: deps.env }, revisionRow as unknown as Parameters<typeof claimSecrets>[1], launch);
   // The keys it opened join the run's one redactor before any tool or model request can echo one.
   holdClaimed(cut, toolEnv);
+  // And every secret the server keeps sealed (store-secrets.ts): a run's text may quote one it was never handed.
+  await holdStored(cut, deps.store, deps.sealKey, deps.data);
   // The run's resolved tool plane (its web_search/web_fetch/browser providers), as main hands its per-run process (runs.ts):
   // the web tools read it (tool-plane.ts planeOf) to pick Parallel where the run resolves to it, the model provider's native
   // search, or the guarded direct fetch. Not a secret; without it the runner's web tools would ignore the run's plane and
@@ -366,10 +377,7 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
     // browser holds and settles its calls here (host.ledger.paid), never on this process's own spend, and a refusal at the
     // cap parks the run (pause). browserListed reads it to fail closed.
     ledger: run.ledger,
-    liveViewers: {
-      put: (handover: LiveHandover) => putLiveViewer(deps.store, deps.sealKey, claim, handover),
-      drop: (tag?: string) => dropLiveViewer(deps.store, claim, tag),
-    },
+    liveViewers: liveViewersOf(deps.store, deps.sealKey, claim, cut),
   };
 
   // The run's tools. The hands (read/write/edit/bash and the background tools) are the kernel registry's over the run's
@@ -392,7 +400,20 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
   // on the one store the claim does), from the revision row's texts (the body keeps only each file's SHA-256): each
   // folder not there yet, never over a learned skill or an earlier claim's.
   await layOwnSkills(ws.workspace, (revisionRow.skills ?? {}) as Record<string, string>, { computer: (launch as { computer?: ComputerSetting }).computer?.kind });
-  const instructions = await promptOf(laid, Object.keys(body.skills ?? {}), ws.workspace, { onDemand: readsFiles(granted) });
+  // A learning run's seed, read once from its learning folder where the run's place keeps it: its notes in .learning/
+  // and its learned skills beside the revision's own (runner/learning-seed.ts), cut of the server's secrets, the learned
+  // skills then in the skill list the prompt names. A learning fault lays nothing and the run goes on.
+  const seedLaid = start
+    ? await layLearningSeed({
+      work: ws.workspace,
+      seed: start.seed,
+      folder: () => (archil === undefined ? learningFolderOf(deps.data, runRow.agentId) : learningWorkspace({ mode: "archil", agentId: runRow.agentId, archil })),
+      own: Object.keys(revisionRow.skills ?? {}),
+      shown: async () => secretsShown(runnerSecrets(deps.env, await savedKeyValues(deps.store, deps.sealKey))),
+      log,
+    })
+    : undefined;
+  const instructions = await promptOf(laid, [...Object.keys(body.skills ?? {}), ...(seedLaid?.skills ?? [])], ws.workspace, { onDemand: readsFiles(granted) });
   const guidance = effortGuidance(launch.effort);
   const system = [environmentLine(), instructions, guidance].filter((line): line is string => Boolean(line));
 
@@ -431,6 +452,8 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
     adapter,
     session,
     input,
+    // A trigger's first input is its origin's, the launch's own owner flag kept (run-launch.ts keepInputOrigin).
+    ...(launch.inputOrigin ? { inputOrigin: launch.inputOrigin } : {}),
     // The gate's answer with its words (adapterRunGate, RunGate.decide): a deny names where it was set and that nothing was
     // sent or charged, and a pinned MCP tool's call outside its pin is refused before it is asked or sent.
     gate,
@@ -517,6 +540,18 @@ export async function learnedWorkflowHostTool(opts: {
  *  (bookedIn), as main books them, so they run. The browser (through host.liveViewers), MCP (the MCP claim step's
  *  mcpForClaim(claim, store, sealKey, pin) -> { sessionMcp, redactions, release }), the learned workflow and decisions are
  *  each a named todo, added as their seams land. */
+/** The run's live-viewer writers over the store (browser-live.ts): a session's hand-over written sealed, and gone. Its
+ *  viewer token, minted in the run, is held by `cut`, the run's one redactor, as it is handed over, before it is written. */
+export function liveViewersOf(store: LiveViewerStore, sealKey: Buffer, claim: Claim, cut: HeldRedact): { put(handover: LiveHandover): Promise<boolean>; drop(tag?: string): Promise<void> } {
+  return {
+    put: (handover) => {
+      cut.hold([handover.token]);
+      return putLiveViewer(store, sealKey, claim, handover);
+    },
+    drop: (tag) => dropLiveViewer(store, claim, tag),
+  };
+}
+
 /** `tool` with its answer's text, and a throw's message, cut by `cut` (the run's one redactor). */
 export function answersCut(tool: HostTool, cut: (text: string) => string): HostTool {
   return {

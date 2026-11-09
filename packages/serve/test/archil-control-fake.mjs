@@ -1,7 +1,10 @@
 // A fake of Archil's control API for a disk's token users: GET /api/disks/{disk} lists them (its authorizedUsers); POST
 // /api/disks/{disk}/users mints a token user ({data: {token, identifier}}), DELETE /api/disks/{disk}/users/token?identifier=
 // removes one (404 once it is gone). It records each request, its Authorization and body. `answer` overrides a reply
-// ({status, body}) for a test that wants a refusal.
+// ({status, body}) for a test that wants a refusal. `lagging`: the first list read after a mint omits the user it minted,
+// as Archil's list did live (mint-4: the read right after epoch 1's mint lacked it; 15 s later it was there).
+// `seen(predicate)`: a promise of the first request `predicate(request, index, requests)` holds for, made already or still
+// to come, so a test awaits the request it means to read after instead of polling for it.
 //
 // Two ways to reach it, one in-memory logic (controlState): archilControlFake listens on this machine's loopback (a real
 // port); archilControlFetch is a fetch function with no port at all, for a test whose asserts must see every request and
@@ -10,22 +13,35 @@
 import { createServer } from "node:http";
 
 /** The fake's state and its answer to one request: { status, json }. */
-function controlState({ answer, tokenOf = (n) => `fake-minted-token-${n}`, existing = [] } = {}) {
+function controlState({ answer, tokenOf = (n) => `fake-minted-token-${n}`, existing = [], lagging = false } = {}) {
   const requests = [];
   /** The disk's token users by identifier: `existing` ones first (an earlier claim's, another run's). */
   const users = new Map(existing.map((user) => [user.identifier, { ...user }]));
+  /** With `lagging`: the users minted since the last list read, which that read leaves out. */
+  const unlisted = new Set();
   let minted = 0;
+  /** The awaited predicates, each with the resolve of its promise. */
+  const waiting = [];
+  const seen = (predicate) => {
+    const found = requests.find((one, index) => predicate(one, index, requests));
+    return found ? Promise.resolve(found) : new Promise((resolve) => waiting.push({ predicate, resolve }));
+  };
   const handle = ({ method, url, authorization, body }) => {
     requests.push({ method, path: url.pathname, query: Object.fromEntries(url.searchParams), authorization, body });
+    const index = requests.length - 1;
+    for (const one of waiting.splice(0)) one.predicate(requests[index], index, requests) ? one.resolve(requests[index]) : waiting.push(one);
     const forced = answer?.({ method, path: url.pathname, body });
     if (forced) return { status: forced.status, json: forced.body };
     if (method === "GET" && /^\/api\/disks\/[^/]+$/.test(url.pathname)) {
-      return { status: 200, json: { success: true, data: { authorizedUsers: [...users.values()].map(({ identifier, nickname }) => ({ type: "token", identifier, nickname })) } } };
+      const listed = [...users.values()].filter((user) => !unlisted.has(user.identifier));
+      unlisted.clear();
+      return { status: 200, json: { success: true, data: { authorizedUsers: listed.map(({ identifier, nickname }) => ({ type: "token", identifier, nickname })) } } };
     }
     if (method === "POST" && /^\/api\/disks\/([^/]+)\/users$/.test(url.pathname)) {
       minted += 1;
       const user = { token: tokenOf(minted), identifier: `tok-${minted}`, nickname: body?.nickname, ttl: body?.ttl };
       users.set(user.identifier, user);
+      if (lagging) unlisted.add(user.identifier);
       return { status: 201, json: { success: true, data: user } };
     }
     if (method === "DELETE" && /^\/api\/disks\/([^/]+)\/users\/token$/.test(url.pathname)) {
@@ -36,12 +52,12 @@ function controlState({ answer, tokenOf = (n) => `fake-minted-token-${n}`, exist
     }
     return { status: 404, json: { error: "not a fake route" } };
   };
-  return { requests, users, handle };
+  return { requests, users, handle, seen };
 }
 
-/** The fake on this machine's loopback: its `baseUrl`, the requests it saw, its users, and `close`. */
+/** The fake on this machine's loopback: its `baseUrl`, the requests it saw, its users, `seen` and `close`. */
 export async function archilControlFake(options = {}) {
-  const { requests, users, handle } = controlState(options);
+  const { requests, users, handle, seen } = controlState(options);
   const server = createServer((req, res) => {
     let raw = "";
     req.on("data", (chunk) => { raw += chunk; });
@@ -53,18 +69,18 @@ export async function archilControlFake(options = {}) {
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   const baseUrl = `http://127.0.0.1:${server.address().port}`;
-  return { baseUrl, requests, users, close: () => new Promise((resolve) => server.close(resolve)) };
+  return { baseUrl, requests, users, seen, close: () => new Promise((resolve) => server.close(resolve)) };
 }
 
 /** The fake as a fetch function, no port: `fetch` answers every request whatever its host (give `baseUrl` as the
  *  claim's control plane), and `requests` records each one, so a count of zero means none was made. */
 export function archilControlFetch(options = {}) {
-  const { requests, users, handle } = controlState(options);
+  const { requests, users, handle, seen } = controlState(options);
   const fetch = async (input, init = {}) => {
     const request = new Request(input, init);
     const raw = await request.text();
     const { status, json } = handle({ method: request.method, url: new URL(request.url), authorization: request.headers.get("authorization") ?? undefined, body: raw === "" ? undefined : JSON.parse(raw) });
     return new Response(JSON.stringify(json), { status, headers: { "content-type": "application/json" } });
   };
-  return { baseUrl: "https://control.test", fetch, requests, users };
+  return { baseUrl: "https://control.test", fetch, requests, users, seen };
 }
