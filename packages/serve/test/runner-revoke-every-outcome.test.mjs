@@ -252,3 +252,54 @@ for (const held of [false, true]) {
     assert.equal(w.control.users.size, 0, "no token left with the control plane");
   });
 }
+
+/** `n` turns of the event loop (setImmediate, which the mock timers leave alone), each moving the mocked clock `ms` on: a
+ *  wait that reads no wall clock. */
+async function turns(t, n, ms = 0) {
+  for (let i = 0; i < n; i += 1) {
+    await new Promise((resolve) => setImmediate(resolve));
+    if (ms > 0) t.mock.timers.tick(ms);
+  }
+}
+
+test("a run held when the runner closes keeps its mount credential through the drain and loses it at the abort", async (t) => {
+  // The drain's bound is a setTimeout of drainMs in close() (runner.ts takes drainMs, no timer of its own): node:test's mock
+  // timers (setTimeout alone, enabled just around close) move it on, so nothing here waits on the wall clock.
+  const DRAIN_MS = 30_000;
+  const w = await revokeRun(t, { script: [{ call: "slow" }, { say: "never" }] });
+  const runner = w.start({ ...STEADY, drainMs: DRAIN_MS });
+  await w.slowStarted;
+  assert.equal(w.control.users.size, 1, "the run holds its token while it runs");
+  const deletes = () => w.control.requests.filter((one) => one.method === "DELETE");
+  const calls = () => w.control.requests.map((one) => `${one.method}${one.query?.identifier ? ` ${one.query.identifier}` : ""}${one.body?.nickname ? ` ${one.body.nickname}` : ""}`);
+  /** The control plane's calls up to the close: the claim's sweep and its mint. */
+  const minting = ["GET", "POST agentrun:run-1:1"];
+  assert.deepEqual(calls(), minting);
+
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    const closing = runner.close();
+    // The drain: close() stops claiming and lets the held run go on. Up to a moment before its bound, the token stays.
+    await turns(t, 50);
+    t.mock.timers.tick(DRAIN_MS - 1);
+    await turns(t, 50);
+    assert.deepEqual(deletes(), [], "no DELETE for the run's token while it drains");
+    assert.deepEqual(calls(), minting, "nothing reaches the control plane while it drains");
+    assert.equal(w.control.users.size, 1, "the token is still the run's");
+
+    // The bound: close() stops the loop for the shutdown and aborts the claim's signal; the loop's release revokes it,
+    // and the revoke's sweep then reads the list for an earlier epoch's left.
+    t.mock.timers.tick(1);
+    for (let i = 0; i < 400 && calls().length < minting.length + 2; i += 1) await turns(t, 1, 100);
+    assert.deepEqual(calls(), [...minting, "DELETE tok-1", "GET"], "the DELETE right after the abort, then the revoke's sweep");
+    assert.equal(w.control.users.size, 0, "no token left with the control plane");
+    // close() itself ends once the loop is done (its own bound, leaseMs - stopMarginMs, is mocked too).
+    let closed = false;
+    void closing.then(() => (closed = true));
+    for (let i = 0; i < 400 && !closed; i += 1) await turns(t, 1, 100);
+    assert.ok(closed, "the runner closed");
+  } finally {
+    t.mock.timers.reset();
+  }
+  assert.deepEqual(w.minted, [1]);
+});
