@@ -45,7 +45,7 @@ So:
   can be 20,000 characters on its own. You need links only to find a changelog or careers URL you don't know.
 - **Every `web_search` passes `n: 5`:** each result's snippet can be 3000 characters. Read the snippets; fetch a result
   only when its snippet can't date or source the event.
-- **Per company: at most 3 fetches and 1 search,** made together in one turn where you can (one request, not four).
+- **Per company: at most 3 fetches and 1 search** (plus the Pricing fetch's recovery, up to 2 more, when `/pricing` is not found: item 2 of the fetch plan in step 3), made together in one turn where you can (one request, not four).
   Stop a company as soon as its changes are settled; a company with a quiet changelog and unchanged prices is done.
 - **Topics:** at most 2 searches in all, `n: 5`.
 - **Never fetch a URL twice,** never a home page when a changelog, pricing or careers URL will do, and never a whole
@@ -75,7 +75,15 @@ So:
       costs one fetch more, so this run skips the pricing baseline (fetch 3) for that company and says so in
       `unreachable`; the discovered URL goes in a learned note, so next week starts from it.
    2. **Pricing** (`max_chars: 6000`): the pricing page's plan table. It carries no dates, so it needs a baseline: a
-      price the previous digest quoted, else fetch 3.
+      price the previous digest quoted, else fetch 3. The URL is the one a learned note names, else `/pricing`. A
+      not-found answer (404, "page not found") or a page with no plans means the guess is wrong, never that the
+      company blocks you. Find the pricing page in the home page's links: the ones you already have when the
+      changelog step fetched the home page this run, else one home fetch now (offset 0, `max_chars: 1000`). Read
+      the page it links, and put its URL in a learned note so next week starts from it. This recovery may take up to
+      2 fetches beyond the 3 (the home page and the found page); it then skips the pricing baseline (fetch 3) for
+      that company this run, putting the baseline's URL in `unreachable`. No pricing link on the home page (some
+      companies publish none): put the guessed pricing URL in `unreachable` and give the company's digest line
+      "no public pricing page", never a block. A challenge or an access-denied page is a block; say that instead.
    3. **Pricing baseline** (`max_chars: 6000`): the archive copy from before the window,
       `https://web.archive.org/web/<YYYYMMDD of from>/<pricing URL>`. Check the snapshot's own date in the URL it
       lands on, and use it only when it is on or before `from`. A plan, price, limit, free tier or billing unit that

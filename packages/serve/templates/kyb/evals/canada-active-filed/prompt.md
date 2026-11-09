@@ -1,5 +1,5 @@
 ---
-description: 'A Canadian federal corporation that is active and has filed. Its registry record, as captured, carries hidden help pop-ups about a notice of intent to dissolve and overdue filings, which every record shows and which are never a finding. Verdict proceed. Pass 3 of 3.'
+description: 'A Canadian federal corporation that is active and has filed, within its $1.50 cap (a run that re-reads the record into its context runs out first). Its registry record, as captured, carries hidden help pop-ups about a notice of intent to dissolve and overdue filings, which every record shows and which are never a finding. Verdict proceed. Pass 3 of 3.'
 runs: 3
 max_cost_usd: 1.50
 ---
