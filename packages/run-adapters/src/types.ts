@@ -172,6 +172,10 @@ export interface ModelUsage {
   /** A request a crash cut off: it left, and no answer came back to this run. Its tokens are unknown (0 here) and its
    *  price is null; the provider may have billed it. */
   cut?: boolean;
+  /** A paid step's hold given back unused (a workflow call node's, its effect never sent the paid request it held for):
+   *  nothing was sent and nothing charged, at usd 0. Its record says so, so no reader takes it for a $0 charge or an
+   *  unpriced one. */
+  givenBack?: true;
   /** The ids the provider's response gave the request, by header name (the provider's `request-id`, a gateway's call
    *  id such as LiteLLM's `x-litellm-call-id`): what joins this booking to the provider's own log. A cut request has
    *  them only if its response had begun. */

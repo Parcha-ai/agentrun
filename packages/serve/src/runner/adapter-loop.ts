@@ -581,7 +581,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           },
           paid: {
             admit: async (request) => (await paidOf()).admit(request),
-            settle: async (id, usd) => (await paidOf()).settle(id, usd),
+            settle: async (id, usd, options) => (await paidOf()).settle(id, usd, options),
             spentUsd: () => (paidReady ? paidReady.spentUsd() : earlierPaid),
             heldUsd: () => paidReady?.heldUsd() ?? 0,
           },
