@@ -35,16 +35,18 @@ test("1. a server deny is absolute through the runner: the agent's own ask or al
 });
 
 test("2. a pin refuses through the runner: a server-pinned MCP tool called outside its pin is refused before it is asked or sent; as pinned it goes", async (t) => {
+  // The settings key is mcp:<server>/<tool>; the run calls the tool by the name its harness gives it (mcp__<server>__<tool>).
   const pinned = "mcp:fake/send_message";
+  const called = "mcp__fake__send_message";
   for (const approvals of ["ask", "never"]) {
     const { spec } = await specFor(t, {
-      body: { tools: [pinned], approvals },
+      body: { tools: ["web_search"], approvals },
       settings: { [pinned]: { permission: "allow", pin: { channel_id: "C0123" } } },
     });
-    const outside = answer(spec, pinned, { channel_id: "C0999", text: "hi" });
+    const outside = answer(spec, called, { channel_id: "C0999", text: "hi" });
     assert.equal(outside.decision, "deny", `under ${approvals}: a call outside the pin is refused, never asked: ${JSON.stringify(outside)}`);
     assert.match(outside.text ?? "", /C0123|pin/i, `under ${approvals}: the refusal is the pin's: ${outside.text}`);
-    assert.equal(answer(spec, pinned, { channel_id: "C0123", text: "hi" }).decision, "allow", `under ${approvals}: a call as pinned goes`);
+    assert.equal(answer(spec, called, { channel_id: "C0123", text: "hi" }).decision, "allow", `under ${approvals}: a call as pinned goes`);
   }
 });
 
