@@ -1,7 +1,7 @@
 // The browser's money on the runner, through the real loop (startRunner over createDispatchLoop and the adapter spec, on a
 // real store, the faux browser and a scripted model origin):
 //   - its session time is counted ONCE in the run's cost: each charge is booked on the run's one ledger (the paid-tools
-//     session the cap counts) and recorded on the root (TOOL_COST, for the browser's own holds, its seconds and its row),
+//     session the cap counts) and recorded on the root (for the browser's own holds and its seconds),
 //     and the stored cost (the end patch), the view and the timeline's usage row each hold model cost + browser cost,
 //     every charge once;
 //   - a browser call the cap refuses for room PARKS the run, as any paid step of the agent's own does: no further model
@@ -74,10 +74,16 @@ async function browserRun(t, { script, price = 0, launch = LAUNCH, tools = ["bro
     fetch: scriptedOrigin(script, requests), price: () => price, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, outputCeiling: 100,
   };
   const deps = { env: { [FAUX_ENV]: "faux", [FAUX_BROWSER_ENV]: FAUX_BROWSER }, data: dir, journal: (claim) => store.journal(claim), store, sealKey: SEAL_KEY, routeOf: async () => route, computerForClaim: async () => ({ release: async () => {} }) };
+  // The run's cap after a raise is the server's to keep (E2), as adapter-pi-cap-raise.test.mjs keeps it: the cap rule
+  // reads the raised figure, here a closure `raise` moves.
+  let raised;
+  const capped = (spec) => (spec.runCap ? { ...spec, runCap: { ...spec.runCap, capUsd: () => raised ?? spec.runCap.capUsd() } } : spec);
   runner = startRunner({
     store, name: "runner-a", ...CONFORMANCE_TIMING, leaseMs: 30_000, stopMarginMs: 5_000,
-    createLoop: createDispatchLoop({ launchOf: (runId) => store.runs.launch(runId), resolve: (name, given) => (name === "pi" ? createAdapterLoop((claim, run) => adapterRunSpecFromLaunch(given, run, deps, claim)) : undefined) }),
+    createLoop: createDispatchLoop({ launchOf: (runId) => store.runs.launch(runId), resolve: (name, given) => (name === "pi" ? createAdapterLoop(async (claim, run) => capped(await adapterRunSpecFromLaunch(given, run, deps, claim))) : undefined) }),
   });
+  /** A person's raise to `usd`: the cap kept (E2), and the raise row the run's runner takes. */
+  const raise = (usd) => ((raised = usd), sendCommand(server, RUN, { kind: "raise", body: { capUsd: usd } }));
   /** The run once it rests in one of `states`, released: its row, its journal's records, and every surface its cost is
    *  read on (the view: its timeline's usage row, else the stored cost; the timeline's usage row itself). */
   const rest = async (states = ["ended", "failed", "stopped", "parked"]) => {
@@ -90,15 +96,16 @@ async function browserRun(t, { script, price = 0, launch = LAUNCH, tools = ["bro
     const usage = (await runTimeline(server, RUN, ctx, { settled: true })).filter((one) => one.kind === "usage").at(-1);
     return { row, records, viewUsd: view?.cost?.usd, usageUsd: usage?.usage?.usd };
   };
-  return { server, store, requests, rest };
+  return { server, store, requests, rest, raise };
 }
 
 /** What the run's model requests cost (each runner.turn of a request that is no paid tool's), and what its browser's
- *  session time cost (each browser charge on the root, TOOL_COST of tool "browser"). */
+ *  session time cost (each browser charge the root records: a TOOL_COST of tool "browser", or on the runner's ledger its
+ *  BROWSER_CHARGED). */
 function spentOf(records) {
   const paidTurns = new Set(records.entries.filter((e) => e.kind === "runner.request" && String(e.data?.model ?? "").startsWith("paid:")).map((e) => `${e.conversationId}/${e.data.turn}`));
   const model = sum(records.entries.filter((e) => e.kind === "runner.turn" && !paidTurns.has(`${e.conversationId}/${e.data?.turn}`)).map((e) => e.data?.usd ?? 0));
-  const browser = records.entries.filter((e) => e.kind === "agentrun.tool_cost" && e.data?.tool === "browser").map((e) => e.data.usd);
+  const browser = records.entries.filter((e) => (e.kind === "agentrun.tool_cost" || e.kind === "agentrun.browser_charged") && e.data?.tool === "browser").map((e) => e.data.usd);
   return { model, browser: sum(browser), charges: browser.length };
 }
 
@@ -126,7 +133,7 @@ test("a browser call the cap refuses for room parks the run: no further model re
   assert.match(JSON.stringify(run.requests), /spend_cap_reached|cap/, "the model's only request");
   assert.equal(spentOf(parked.records).charges, 0, "the refused call opened no session and charged nothing");
   // The raise: the run resumes, its next request goes out, the call runs this time and its time is booked.
-  await sendCommand(run.server, RUN, { kind: "raise", body: { capUsd: 1 } });
+  await run.raise(1);
   const resumed = await run.rest(["ended", "failed", "stopped"]);
   assert.equal(resumed.row.state, "ended", JSON.stringify({ state: resumed.row.state, summary: resumed.row.summary }));
   assert.equal(run.requests.length, 3, `the run resumed with its next request: ${run.requests.length}`);

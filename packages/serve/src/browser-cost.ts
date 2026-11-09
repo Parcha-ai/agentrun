@@ -1,7 +1,8 @@
 // Browser minutes in the run's spend: each charge of a browser session's time (pi-browser's onCharge) is booked as a
 // TOOL_COST in the commit that writes it on the session's record, so the run's cost, /usage and the cap read it as they read
-// monid's, and a crash never leaves one booked and not billed or billed and not booked. What the run's process counts
-// (its spend, the holds below) moves once that commit is in, from the commit itself. Under a cap, no session time runs
+// monid's, and a crash never leaves one booked and not billed or billed and not booked. On the runner's one ledger the
+// charge's money is a paid step there instead, and the root's record of it (BROWSER_CHARGED) is no cost: counted once.
+// What the run's process counts (its spend, the holds below) moves once that commit is in, from the commit itself. Under a cap, no session time runs
 // that the cap has not held first (cap.ts' paid holds):
 // - The next stretch is the most a session can run before the run can check again: the provider's minimum (what a
 //   release may top it up to), the idle window before pi-browser releases it, and RELEASE_ALLOWANCE_S for that release
@@ -73,6 +74,12 @@ const microUsd = (usd: number) => Math.ceil(Math.round(usd * 1e12) / 1e6) / 1e6;
 /** A browser charge as its TOOL_COST holds it. */
 type Booked = { tool: "browser"; charged_by: string; call: string | null; usd: number | null; seconds: number; tag: string; conversation: number; at: string; final: boolean };
 type Open = { cid: number; reserve: Hold; at: number; call: string | null };
+/** A browser charge's record on the run's root when the run books its money on the runner's one ledger (browserSpend's
+ *  `paid`): the same record a TOOL_COST is (Booked), for what this process holds (watch) and the seconds it was for, under
+ *  a kind no cost reads. The charge's money is the ledger's paid step alone, which the cap counts and the run's cost
+ *  (adapter-run-spec.ts endPatch) and its timeline (store-reads/journal.ts withPaidCosts) read, as every paid tool's on
+ *  the runner: a TOOL_COST beside it would count the same charge twice. */
+export const BROWSER_CHARGED = "agentrun.browser_charged";
 /** A row of pi-browser's open-session inventory. */
 type Row = { tag: string; conversationId: number; state: string; resourceId: string | null };
 
@@ -173,8 +180,9 @@ export function browserSpend(provider: string, price: { usdPerHour: number | nul
   const take = (hold: Hold | undefined, usd: number) => void (hold && (hold.usd = Math.max(0, hold.usd - usd)));
 
   /** Booked in the commit that bills it: a TOOL_COST under the call that ran it (a release's, under its session's last
-   *  call), what it cost or null when its time has no price, and the seconds it was for, with what `booked` needs. A free
-   *  provider's time books nothing and holds nothing. */
+   *  call; on the runner's ledger, a BROWSER_CHARGED, its money the ledger step's), what it cost or null when its time
+   *  has no price, and the seconds it was for, with what `booked` needs. A free provider's time books nothing and holds
+   *  nothing. */
   async function onCharge(charge: SessionCharge, tx: Tx, call?: { callId: string }): Promise<void> {
     if (rate === 0) return;
     const usd = charge.state === "priced" ? charge.usd : null;
@@ -192,7 +200,8 @@ export function browserSpend(provider: string, price: { usdPerHour: number | nul
       }
     }
     const data: Booked = { tool: "browser", charged_by: charge.provider, call: call?.callId ?? sessions.get(charge.tag)?.call ?? null, usd, seconds: charge.seconds, tag: charge.tag, conversation: charge.conversationId, at: charge.at, final: charge.final };
-    await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: TOOL_COST, data });
+    // On the ledger, its money is the ledger step's above: the root keeps the record under a kind no cost reads.
+    await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: paid ? BROWSER_CHARGED : TOOL_COST, data });
   }
 
   /** A charge whose commit is in (watch): it joins what the run's process counts as spent, and moves the holds. Never
@@ -285,7 +294,7 @@ export function browserSpend(provider: string, price: { usdPerHour: number | nul
       advance: (publication) => {
         try {
           for (const change of publication.changes) {
-            const data = change.type === "entry" && change.value.kind === TOOL_COST ? (change.value.data as Partial<Booked> | undefined) : undefined;
+            const data = change.type === "entry" && (change.value.kind === TOOL_COST || change.value.kind === BROWSER_CHARGED) ? (change.value.data as Partial<Booked> | undefined) : undefined;
             if (data?.tool === "browser" && typeof data.tag === "string") booked(data as Booked);
           }
           for (const change of publication.changes) {
@@ -329,7 +338,10 @@ export function browserSpend(provider: string, price: { usdPerHour: number | nul
           calls.set(api.callId, { cid: api.conversationId, hold: { usd, drop: () => {} } as Hold });
           try {
             // A provider whose time has no price is held at no figure: the cap's rule refuses it for good, as main does.
-            const stepped = await paidStep(ledger.paid, api.callId, { name: "this browser call", holdUsd: rate === null ? Number.NaN : usd, basis, by: provider }, () => tool.execute(args, api as never, context), () => chargedUnder.get(api.callId) ?? null);
+            // One refused for room pauses the run (ledger.pause, the run's own: a native tool task runs in no host tool
+            // call's ledger), in the cap's words and figures, as an ask's person time does: its next request is refused
+            // and the run parks for a raise.
+            const stepped = await paidStep(ledger.paid, api.callId, { name: "this browser call", holdUsd: rate === null ? Number.NaN : usd, basis, by: provider }, () => tool.execute(args, api as never, context), () => chargedUnder.get(api.callId) ?? null, ledger.pause);
             return "refused" in stepped ? await refuse(stepped.refused, api, context) : stepped.result;
           } finally {
             calls.delete(api.callId);

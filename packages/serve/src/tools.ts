@@ -33,7 +33,7 @@ import { browserNeeds, explainsView, isUnavailable, NO_PARALLEL_KEY, type Pickab
 import type { DenyFrom, SettingFrom } from "./tool-gate.js";
 import { fauxFetch, PARALLEL_KEY_ENV } from "./decisions.js";
 import { keyNeeded } from "./key-words.js";
-import { handedSignIn, hostSecrets } from "./secrets.js";
+import { handedSignIn } from "./secrets.js";
 import { redactedAnswer } from "./key-refusal.js";
 import { SIGN_IN_KEY, SIGN_IN_SAVED, vendorsOver } from "./sign-ins.js";
 import { answerIn, answerOnce } from "./runner/hand-back.js";
@@ -363,8 +363,10 @@ const browserTool: ToolEntry = {
       gates,
       personTime: (what, seconds, options) => spend.personTime(what, seconds, options),
       carry: (tag, seconds) => spend.carry(tag, seconds),
-      // The model's words for the person, with every value this run holds cut, whole, before they are cut to their bound.
-      redact: (text) => redactedAnswer(text, [...hostSecrets(host.env), ...(kept ? [kept.ref] : [])]),
+      // The model's words for the person, with every value this run holds cut, whole, before they are cut to their bound:
+      // the run's own cut on the runner (host.redact: the claim's keys too, every tool's, in every form), and the secrets
+      // its env holds (runnerSecrets: hostSecrets and every launcher name's value) with its sign-in's pointer.
+      redact: (text) => redactedAnswer(host.redact ? host.redact(text) : text, [...runnerSecrets(host.env), ...(kept ? [kept.ref] : [])]),
       note: async (kind, data) => void (await opened?.commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind, data })), context)),
       holdMs: windows.holdMs,
       // The run's waiting rows for a session: each is an agent.handover entry of the root's, waiting, naming it.

@@ -81,10 +81,10 @@ const roomOf = (error: unknown): LedgerRefusal | undefined => {
   if (given?.code !== "spend_cap_reached" || given.forGood !== false || !given.figures) return undefined;
   return { refuse: String(given.message), forGood: false, figures: given.figures };
 };
-/** A paid step refused for room pauses the run, through the call's ledger (Ledger.pause), before its refusal is told. */
-const pauseOn = async (error: unknown): Promise<void> => {
+/** A paid step refused for room pauses the run, through `pause` (the call's ledger's, Ledger.pause, by default), before
+ *  its refusal is told. */
+const pauseOn = async (error: unknown, pause: Ledger["pause"] = ledgers.getStore()?.pause): Promise<void> => {
   const room = roomOf(error);
-  const pause = ledgers.getStore()?.pause;
   if (room && pause) await pause(room);
 };
 /** The kernel cap's booking of a run's paid calls (RunTools), as a paid request uses it. */
@@ -218,13 +218,15 @@ let paidSeq = 0;
 export const paidLedger = (): PaidBooking | undefined => ledgers.getStore()?.paid;
 
 /** One paid step on the run's one ledger `paid`, under call `call`: admitted at `holdUsd` (refused unsent: the cap's words,
- *  or why its hold could not be kept), then `run`, then settled at `chargeOf` its outcome (null: at its hold). */
-export async function paidStep<T>(paid: PaidBooking, call: string, fee: { name: string; holdUsd: number; basis: string; by: string }, run: () => Promise<T>, chargeOf: (outcome: { result: T } | { thrown: unknown }) => number | null): Promise<{ refused: string } | { result: T }> {
+ *  or why its hold could not be kept), then `run`, then settled at `chargeOf` its outcome (null: at its hold). One refused
+ *  for room pauses the run through `pause`, else through the ledger of the call it runs in (bookedIn's), as main's
+ *  paidCall pauses: a step outside any host tool call (a pi-native tool's, the browser's) passes the run's own. */
+export async function paidStep<T>(paid: PaidBooking, call: string, fee: { name: string; holdUsd: number; basis: string; by: string }, run: () => Promise<T>, chargeOf: (outcome: { result: T } | { thrown: unknown }) => number | null, pause?: Ledger["pause"]): Promise<{ refused: string } | { result: T }> {
   const id = `${call}#${(paidSeq += 1)}`;
   try {
     await paid.admit({ id, name: fee.name, holdUsd: fee.holdUsd, basis: fee.basis, call, chargedBy: fee.by });
   } catch (error) {
-    await pauseOn(error);
+    await pauseOn(error, pause);
     return { refused: (error as { code?: unknown })?.code === "spend_cap_reached" ? String((error as Error).message) : holdRefusal(fee.name, error) };
   }
   let outcome: { result: T } | { thrown: unknown };
