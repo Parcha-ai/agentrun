@@ -111,7 +111,7 @@ import { agentTools, browserKeyRow, isUnavailable, recheckPlane, settingsIssues,
 import { toolSettingsOverStore } from "./tool-settings-store.js";
 import { MAX_FILES_PER_RUN, MAX_UPLOAD_BYTES, Uploads, UPLOADS_DIR } from "./uploads.js";
 import { entryAt, listFiles, sendFile as sendWorkspaceFile, viewOf } from "./run-files.js";
-import { COMPUTER_ROUTES } from "./computer-view.js";
+import { COMPUTER_ROUTES, computerAsk, computerRoute, runViewedKind } from "./computer-view.js";
 import { PROVIDERS as COMPUTER_PROVIDERS, providerFor as computerProviderFor, providerIds as computerProviderIds, SETTING_KINDS, servingRefusals } from "@parcha/agentrun-computer";
 import { capabilityToolDefs, hostToolDefs } from "@parcha/agentrun-kernel/kernel";
 import { archilRoute, createArchilRoutes } from "./archil-routes.js";
@@ -2272,11 +2272,14 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       case "getRunComputer":
       case "takeOverRunComputer":
       case "handBackRunComputer": {
-        // TODO(take-over over the store, k2): a run's desktop or phone view, take-over and hand-back read and write the
-        // run's computer through the store, as its runner holds it; computer-view.ts's in-memory register belongs to the
-        // pre-cut server and is not ported. Until k2's store-backed work lands, these routes refuse in words.
-        await needRun(id);
-        throw unsupported("computer.take_over", "A run's desktop or phone view, take-over and hand-back are not wired on this server yet: they move to the store with the runner's computer (the store-backed take-over).");
+        // A run's desktop or phone: its view, the owner's take-over and hand-back (computer-view.ts), over the store: the
+        // hold is the run's journal, a take-over and a hand-back are command rows its runner applies.
+        const run = await needRun(id);
+        const answer = await computerRoute(found.name, run.id, {
+          ownerSession: byOwnerSession(req), token: req.headers.authorization !== undefined, accounts: owner !== undefined,
+          ...(found.name === "getRunComputer" ? {} : { body: await bodyOf(req) }),
+        }, { store, entries: async () => (await runEntries(store, run.id, ctx)) as unknown as Parameters<typeof computerAsk>[0], kind: await runViewedKind(store, run.id) });
+        return send(res, 200, answer, { "cache-control": "no-store" });
       }
       case "listComputers":
       case "saveComputerKeys":

@@ -25,6 +25,8 @@ import { answerText, REFLECT_NOTE_ONLY, reflectRequestId, underLearning, WRITES 
 import { approvalOf, CLOSE_MS, CUT_STEP_MS, STOP_SETTLE_MS, commandRequest, cutLast, DEFAULT_RESTART_LIMIT, entriesOf, findData, Gate, heldReporter, Interrupted, KernelFault, Parked, quiet, restartLimited, writesEntry, writesSubmission } from "./loop.js";
 import type { PiRun, PiSessionIO, PreIntentAnswer, PreIntentCall } from "./adapters/pi.js";
 import { HAND_BACK, handBackOf } from "./hand-back.js";
+import { isComputerCommand, type JournalHold, journalHold, type RunComputerHold } from "./computer-journal.js";
+import { COMPUTER_HANDOVER_KIND, COMPUTER_HOLD_KIND } from "../computer-commands.js";
 import { journalSessions } from "./sessions.js";
 import { paidCalls, TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
 import { bookedIn } from "../paid-calls.js";
@@ -84,6 +86,10 @@ export interface AdapterRunSpec {
   /** Handed the run's own Harness commit once it opens (and after each restart's re-open): what a mark of the run's
    *  commits through, so a commit after the claim is lost is refused by the fence like any other. */
   readonly harnessReady?: (commit: Harness["commit"]) => void;
+  /** The run's desktop or phone and the person's hold on it (workspace/computer-hold.ts): the loop commits the hold's
+   *  changes to the run's journal, which the server reads (computer-view.ts), and applies the person's take-over and
+   *  hand-back rows to it (runner/computer-journal.ts). */
+  readonly computer?: RunComputerHold;
   /** Lets this spec's resources go once the loop writes nothing more through them: called once, after its Session and
    *  Harness are closed, when its pass ends (a restart's included) and at the run's end. Never throws out: a failure is
    *  logged, and the end stands. */
@@ -277,6 +283,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
   let opened: () => void = () => {};
   const ready = new Promise<void>((resolve) => (opened = resolve));
   let held: { detach(): void } | undefined;
+  /** The run's computer hold's journal side, for the current pass (AdapterRunSpec.computer). */
+  let computerNow: JournalHold | undefined;
   /** This claim's spec, once known: a raise is checked by its cap's rule, and the end's patch is read from it. */
   let specNow: AdapterRunSpec | undefined;
   /** The current pass's spec's release, until it is called (closeSession). */
@@ -354,6 +362,27 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         await landed;
       }
       return refused === undefined ? { taken: true } : { refused };
+    });
+    handing = turn.catch(() => undefined);
+    return turn;
+  };
+
+  /** A person's take-over or hand-back of the run's desktop or phone (computer-journal.ts): applied to the hold, and taken
+   *  by the commit that writes the change it made (its entries carry the row's id); refused in words when it changed
+   *  nothing. One at a time, behind the browser's hand-backs' turn: each meets the hold the one before it left. */
+  const computerCommand = (command: Command): Promise<CommandOutcome> => {
+    const turn = handing.then(async (): Promise<CommandOutcome> => {
+      await Promise.race([ready, (finished ?? new Promise<never>(() => {})).then(() => undefined, () => undefined)]);
+      const [theGate, journal] = [gate, computerNow];
+      if (!theGate || theGate.sealed || !journal) return { refused: "This run has no desktop or phone up now." };
+      const outcome = journal.apply(command);
+      if (!("taken" in outcome)) return outcome;
+      // Registered before the change's commit runs (the hold's writes go out one at a time, after this turn).
+      const madeBy = (data: Record<string, unknown>) => journal.madeBy(data, command.id);
+      const landed = theGate.expect((batches) => writesEntry(COMPUTER_HOLD_KIND, madeBy)(batches) ?? writesEntry(COMPUTER_HANDOVER_KIND, madeBy)(batches), { take: [command.id] });
+      landed.catch(() => undefined);
+      await landed;
+      return outcome;
     });
     handing = turn.catch(() => undefined);
     return turn;
@@ -539,6 +568,17 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         const io: PiSessionIO = { writer, models: counted, signal: deps.signal, onEvent: record ? (event) => record.onEvent(event) : () => {}, gate: gateOf };
         session = await spec.adapter.open({ ...spec.session, tools }, io);
         root = await harness.root(context);
+        // The run's desktop or phone: its hold's changes go to the run's journal, through this pass's Harness (under its
+        // fence), and the computer shows up, the agent driving.
+        computerNow?.detach();
+        computerNow = undefined;
+        if (spec.computer) {
+          const [journalOf, rootOf] = [harness, root];
+          computerNow = journalHold(spec.computer, (entries) => journalOf.commit(async (tx) => {
+            for (const entry of entries) await tx.appendEntry(rootOf.id, { kind: entry.kind, data: entry.data as unknown as JsonValue });
+          }, context), now);
+          await computerNow.up();
+        }
         // A run brought back from a park: the raises its claim has are taken together, once its delivery is done. So is a
         // run whose journal still holds an unanswered budget pause, whatever its row said at the claim: a resumed claim lost
         // before its raise entry landed leaves the run running, its pause unanswered and its raises untaken.
@@ -664,6 +704,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     } finally {
       deps.signal.removeEventListener("abort", signalAbort);
       held?.detach();
+      computerNow?.detach();
+      computerNow = undefined;
       deps.live?.(() => undefined);
       // A tool host's beforeRelease: the claim lets the run go (its end, a park, a shutdown), the Harness still open. A
       // restart within the claim is no release. A hook that throws is logged; the run's end stands.
@@ -1005,6 +1047,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       }
       if (command.kind === "raise") return raise(command);
       if (command.kind === HAND_BACK) return handBack(command);
+      if (isComputerCommand(command)) return computerCommand(command);
       return { refused: `an adapter loop takes no ${command.kind} command` };
     },
     async stop(reason) {

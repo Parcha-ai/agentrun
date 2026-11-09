@@ -22,6 +22,7 @@ const { computerRoute } = await import("../dist/computer-view.js");
 const { computerHold, heldHands } = await import("../dist/workspace/computer-hold.js");
 const { runEntries, runTimeline } = await import("../dist/store-reads/journal.js");
 const { ApiError } = await import("../dist/errors.js");
+const { viewOverStore } = await import("../dist/store-view.js");
 
 const quiet = { beforeIntent: async () => {}, beforeResult: async () => {} };
 const TIMING = { leaseMs: 600, renewEveryMs: 150, stopMarginMs: 200, pollMs: 20, commandPollMs: 30 };
@@ -88,11 +89,26 @@ async function setup(t) {
     await inShot;
     return { hold, letGo };
   };
+  /** The run on a runner, its agent asking for the person on its desktop (computer_request_handoff's port, Hands.handoff):
+   *  its tool's result is the answer's outcome. */
+  const startAsking = async () => {
+    const hold = computerHold();
+    const held = heldHands({ screen: { shot: async () => ({ png: "AA==" }) } }, hold);
+    const handoff = { name: "handoff", replaySafe: false, run: async (_args, signal) => (await held.handoff.ask({ instruction: "Type the bank's code", completion_condition: "the statements show" }, signal)).outcome };
+    const spec = piAdapterSpec({ script: [{ call: "handoff" }, { say: "done" }], tools: { handoff }, hooks: quiet });
+    const loop = createAdapterLoop(async (claim, run) => ({ ...(await spec(claim, run)), agentId: "agent-1", computer: { kind: "desktop", hold } }));
+    const store = await openSqliteStore({ dataDir: dir, role: "runner" });
+    stores.push(store);
+    runners.push(startRunner({ store, createLoop: loop, name: "runner-a", ...TIMING }));
+    return { hold };
+  };
+  /** The run read, as GET /v2/runs/{id} answers it over the store. */
+  const read = () => viewOverStore(server, "run-1", { origin: "http://127.0.0.1:1", serverSecrets: () => [] });
   const ended = () => until(async () => {
     const row = await server.runs.get("run-1");
     return row.state === "ended" && row.runner === null && row;
   }, "the run ended");
-  return { route, answer, restart, rows, start, until, ended };
+  return { route, answer, restart, rows, start, startAsking, read, until, ended };
 }
 
 test("a person takes over a runner run's desktop and hands it back: the take waits out the agent's call in flight, and the Timeline says both at their own times", async (t) => {
@@ -170,4 +186,27 @@ test("a take-over survives a server restart: it is read from the store, never fr
   await world.ended();
   const said = await world.rows();
   assert.equal(said.filter((row) => row === "You took over the desktop").length, 1, `one take on the Timeline:\n${said.join("\n")}`);
+});
+
+test("the agent's ask on its desktop: the run waits on it with pending kind computer and the Timeline says so; the hand-back's answer is the first, the agent gets it, and a different second answer is 409 in words", async (t) => {
+  const world = await setup(t);
+  await world.startAsking();
+  const waiting = await world.until(async () => {
+    const view = await world.read();
+    return view?.pending?.kind === "computer" && view;
+  }, "the run reads waiting on the person's hand-back");
+  assert.deepEqual([waiting.status, waiting.state], ["input_required", "waiting"]);
+  const { asked_at, expires_at, ...pending } = waiting.pending;
+  assert.deepEqual(pending, { kind: "computer", computer: "desktop", instruction: "Type the bank's code", completion_condition: "the statements show" });
+  assert.equal(Date.parse(expires_at) - Date.parse(asked_at), 15 * 60_000, "the default wait, the longest");
+  assert.ok((await world.rows()).includes("Waiting for you: Type the bank's code"));
+
+  const done = await world.route("handBackRunComputer", { outcome: "done" });
+  assert.equal(done.outcome, "done");
+  const again = await world.answer("handBackRunComputer", { outcome: "cancelled" });
+  assert.deepEqual(again, { status: 409, code: "handoff_answered", message: "The agent's hand-over was already answered done." });
+  await world.ended();
+  const said = await world.rows();
+  assert.ok(said.includes("Done: the owner answered the agent's request."), `the answer on the Timeline:\n${said.join("\n")}`);
+  assert.equal((await world.read()).pending, null, "the run waits on nothing once it ended");
 });

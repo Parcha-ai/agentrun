@@ -54,8 +54,9 @@ export type RunComputer =
   | { readonly kind: "browser"; readonly connect: () => Promise<CdpSession> };
 
 /** A desktop's or a phone's ports as a person's hold on the computer gives them back: each call made while the person
- *  holds it waits for hand-back; a read then runs, an action then is refused (the take-over's own words). */
-export type RunHold = (ports: Pick<Hands, "screen" | "input" | "phone">) => Pick<Hands, "screen" | "input" | "phone">;
+ *  holds it waits for hand-back; a read then runs, an action then is refused (the take-over's own words). With them, the
+ *  agent's ask for the person (`handoff`, computer_request_handoff's port), through the same hold. */
+export type RunHold = (ports: Pick<Hands, "screen" | "input" | "phone">) => Pick<Hands, "screen" | "input" | "phone" | "handoff">;
 
 /** The computer the run's folder is attached to, with its check: a sandbox, or a desktop with files and exec whose
  *  provider mounts the folder; none for any other. */

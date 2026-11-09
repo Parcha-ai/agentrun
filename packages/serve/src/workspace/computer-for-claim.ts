@@ -1,8 +1,9 @@
 // The run's computer at its claim, the one call both runner specs make (the adapter loop's and the CLI's): the agent's
 // computer setting, resolved in the server's mode against the computer module's kind registry (resolveComputer), started
 // for this run under this claim (labels agentrun.run and agentrun.epoch, the run's folder mounted only where the provider
-// mounts it), registered for its owner's view and take-over when it is a desktop or a phone (registerRunComputer, with
-// the provider's own live stream), and released once at the run's end. A computer that cannot be had is refused in words
+// mounts it), held for its owner's take-over when it is a desktop or a phone (a computer hold the run's spec hands the
+// adapter loop as AdapterRunSpec.computer, which records it in the run's journal for the server to read), and released
+// once at the run's end. A computer that cannot be had is refused in words
 // with code computer_unavailable; kind none, or no setting where the server's default is none, is no computer.
 //
 // A provider is made with its keys from the store's sealed keys, by the names the registry declares, through serve's own
@@ -13,11 +14,10 @@ import type { ComputerProvider, ComputerSpec, MountReadBack, Result, Swept } fro
 import { releaseOlder, runLabels, sweep } from "@parcha/agentrun-computer";
 import { computerOfPlace, type ComputerSetting as RevisionComputer, type PlaceView } from "../computer-setting.js";
 import { KEY_TABLE, type KeyTable, type ProviderSettings, providerOptions } from "../computer-keys.js";
-import { registerRunComputer } from "../computer-view.js";
 import { getSealedKey } from "../server-keys.js";
 import type { Store } from "../store/index.js";
 import type { MountCheck } from "./attach.js";
-import { computerHold, heldHands } from "./computer-hold.js";
+import { type ComputerHold, computerHold, heldHands } from "./computer-hold.js";
 import { type ServingRefusals, servedGroups } from "./computer-serves.js";
 import { type ProviderLedger, storeLedger } from "./computer-ledger.js";
 import { type ClaimSide, type ComputerSetting, type ComputerSettingKind, type KindRegistry, type LaunchedComputer, type ProviderEntry, resolveComputer } from "./resolve-computer.js";
@@ -86,12 +86,14 @@ export interface ComputerForClaimDeps {
   readonly signal?: AbortSignal;
 }
 
-/** The run's computer at its claim: what runTools takes, the person's hold on a desktop's or phone's ports, and its
- *  release (idempotent): the live view closed ("released" when the computer goes before the run's end, "ended" at the
- *  run's end), the owner's view let go, then the computer. */
+/** The run's computer at its claim: what runTools takes, the person's hold on a desktop's or phone's ports (`hold`, for
+ *  runTools; `held`, the hold itself and its kind, for the spec's AdapterRunSpec.computer), and its release
+ *  (idempotent): the live view closed ("released" when the computer goes before the run's end, "ended" at the run's
+ *  end), the hold closed (a take in force ends released), then the computer. */
 export interface ClaimComputer {
   readonly computer?: RunComputer;
   readonly hold?: RunHold;
+  readonly held?: { readonly kind: "desktop" | "phone"; readonly hold: ComputerHold };
   release(why?: ViewEnd): Promise<void>;
 }
 
@@ -247,12 +249,12 @@ export async function computerForClaim(launch: ClaimLaunch, store: Pick<Store, "
     throw error;
   }
   const computer = started.computer;
-  // A desktop's or a phone's: the owner's take-over (registered, its hold parking the run's ports) and its live view,
-  // proxy-only (no vendor's URL reaches a person), opened under this claim. A fenced registration is a lost claim.
-  let unregister: () => void = () => {};
+  // A desktop's or a phone's: the owner's take-over (its hold parking the run's ports, recorded in the run's journal by
+  // the adapter loop) and its live view, proxy-only (no vendor's URL reaches a person), opened under this claim. A fenced
+  // registration is a lost claim.
   let hold: RunHold | undefined;
+  let held: ClaimComputer["held"];
   let view: { close(why: ViewEnd): unknown } | undefined;
-  let up = true;
   if (computer && (computer.kind === "desktop" || computer.kind === "phone")) {
     const theHold = computerHold();
     if (deps.openComputerView && made?.watch) {
@@ -267,18 +269,18 @@ export async function computerForClaim(launch: ClaimLaunch, store: Pick<Store, "
       }
       view = opened.view;
     }
-    unregister = registerRunComputer(launch.runId, { kind: computer.kind, hold: theHold, live: () => up });
+    held = { kind: computer.kind, hold: theHold };
     hold = (ports) => heldHands(ports as never, theHold);
   }
   let released: Promise<void> | undefined;
   return {
     ...(computer ? { computer } : {}),
     ...(hold ? { hold } : {}),
+    ...(held ? { held } : {}),
     release: (why: ViewEnd = "released") =>
       (released ??= (async () => {
-        up = false;
         await Promise.resolve(view?.close(why)).catch(() => undefined);
-        unregister();
+        held?.hold.close();
         try {
           await started.release();
         } finally {
