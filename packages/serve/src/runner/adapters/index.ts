@@ -35,6 +35,8 @@ export interface RunnerHarness {
 
 type ClaudePackage = { claudeAgentAdapter(options: Record<string, unknown>): AgentAdapter };
 const CLAUDE_PACKAGE = "@parcha/agentrun-harness-claude";
+type CodexPackage = { codexAdapter(options: Record<string, unknown>): AgentAdapter };
+const CODEX_PACKAGE = "@parcha/agentrun-harness-codex";
 
 /** Every harness the runner runs, by name. */
 export const RUNNER_HARNESSES: Readonly<Record<string, RunnerHarness>> = {
@@ -55,6 +57,21 @@ export const RUNNER_HARNESSES: Readonly<Record<string, RunnerHarness>> = {
       return claude.claudeAgentAdapter({
         model: launch.model,
         provider: { origin: launch.provider.origin, credential: launch.provider.credential, ...(launch.provider.headers ? { headers: launch.provider.headers } : {}) },
+        ...(launch.price ? { price: launch.price } : {}),
+        ...(launch.fetch ? { fetch: launch.fetch } : {}),
+        sessionsDir: launch.sessionsDir,
+        ...extra,
+      });
+    },
+  },
+  codex: {
+    record: "loop",
+    adapter: async (launch, extra = {}) => {
+      const codex = (await import(CODEX_PACKAGE)) as CodexPackage;
+      // Codex's provider is its origin and credential, as serve gives it today (adapters.ts, codexOf): no headers.
+      return codex.codexAdapter({
+        model: launch.model,
+        provider: { origin: launch.provider.origin, credential: launch.provider.credential },
         ...(launch.price ? { price: launch.price } : {}),
         ...(launch.fetch ? { fetch: launch.fetch } : {}),
         sessionsDir: launch.sessionsDir,
