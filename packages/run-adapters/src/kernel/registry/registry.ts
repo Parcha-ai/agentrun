@@ -39,6 +39,8 @@ export function createRegistry(options: { maxExecS: number; shell: ShellPlace; k
   const defs = [...own];
   for (const kind of kinds) {
     for (const def of capabilityToolDefs(kind, options.browserTools ? { browserTools: options.browserTools } : {})) {
+      // A tool two kinds share (the hand-over) is listed once, as the first kind gives it.
+      if (runs.has(def.name)) continue;
       const run = kind === "desktop" ? DESKTOP_EXECUTORS[def.name] : kind === "phone" ? PHONE_EXECUTORS[def.name] : executors.browser?.[def.name];
       if (!run) throw new Error(`the registry has no executor for ${def.name}, a ${kind} tool the model sees: the host gives the browser's runs`);
       runs.set(def.name, run);
