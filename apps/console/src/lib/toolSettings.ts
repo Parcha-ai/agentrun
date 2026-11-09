@@ -1,4 +1,4 @@
-import type { Permission, ToolSetting, ToolSettings } from "./v2";
+import type { AgentTool, Permission, ToolPin, ToolSetting, ToolSettings } from "./v2";
 
 /** The harnesses a capability resolves for, in the order the console shows them. */
 export const HARNESS_ORDER = ["pi", "claude-agent", "codex", "opencode"] as const;
@@ -46,6 +46,25 @@ export function toolChoices(raw: unknown): ToolChoice[] {
  *  default), the owner's default, those it may be set to, and `ask_needs: "password"` where ask can't be answered here
  *  (accounts off: approving a call takes the owner's password sign-in). */
 export type ToolGate = { name: string; permission: Permission; default_permission: Permission; permissions: Permission[]; ask_needs?: "password" };
+
+/** Said wherever a tool the server's table denies shows: the server's deny is absolute (it holds over an agent's own
+ *  allow or ask and over Never ask). */
+export const SERVER_DENY = "Refused on this server for every agent, whatever the agent's own setting or Never ask.";
+
+/** An MCP tool as its server's read lists it (GET /v2/mcp/servers/{name}): this server's permission in force for it. */
+type McpListed = { name: string; tools: readonly { name: string; permission?: Permission }[] };
+
+/** Whether this server denies `name` for every agent, from the newest word there is on it: the agent's read when it lists
+ *  the tool (permission deny, from the server: read after capabilities, so a deny lifted since holds nothing); else, for an
+ *  MCP tool, its server's read; else the server's table (capabilities' permission in force). */
+export const serverDenies = (name: string, gates: readonly ToolGate[], read?: readonly AgentTool[], mcpServers?: readonly McpListed[]): boolean => {
+  const own = read?.find((t) => t.name === name);
+  if (own) return own.permission === "deny" && own.permission_from === "server";
+  const grant = /^mcp:([^/]+)\/(.+)$/.exec(name);
+  const listed = grant ? mcpServers?.find((s) => s.name === grant[1])?.tools.find((t) => t.name === grant[2]) : undefined;
+  if (listed) return listed.permission === "deny";
+  return gates.some((g) => g.name === name && g.permission === "deny");
+};
 
 const PERMISSIONS: readonly string[] = ["allow", "ask", "deny"];
 const isPermission = (v: unknown): v is Permission => typeof v === "string" && PERMISSIONS.includes(v);
@@ -144,3 +163,30 @@ export function issuesFor(fields: Record<string, string>, prefix: string, shown:
   }
   return { byTool, rest };
 }
+
+type PinScalar = Exclude<ToolPin[string], unknown[]>;
+/** A one-of list in the gate's one form (tool-gate.ts canonicalChoices): each value once, null first, then by JSON text. */
+const choicesOf = (value: ToolPin[string]): PinScalar[] => {
+  if (!Array.isArray(value)) return [value];
+  const texts = [...new Set(value.filter((one) => one !== null).map((one) => JSON.stringify(one)))].sort();
+  return [...(value.includes(null) ? [null] : []), ...texts.map((text) => JSON.parse(text) as PinScalar)];
+};
+/** A pinned value in words: text as it is, any other as JSON (tool-gate.ts scalarWords; null is said by pinLine). */
+const valueWords = (one: PinScalar): string => (typeof one === "string" ? one : JSON.stringify(one));
+
+/** A pin in words, in the gate's order (tool-gate.ts pinWords: arguments sorted, each list in its one form), so the screen
+ *  and a refusal read alike: "event must be left out or COMMENT; method must be one of create, delete_pending". */
+export function pinLine(pin: ToolPin): string {
+  return Object.keys(pin).sort().map((arg) => {
+    const values = choicesOf(pin[arg]!);
+    const nullable = values[0] === null;
+    const rest = (nullable ? values.slice(1) : values).map((one) => valueWords(one));
+    if (!rest.length) return `${arg} must be left out`;
+    const of = rest.length === 1 ? rest[0] : `one of ${rest.join(", ")}`;
+    return `${arg} must be ${nullable ? `left out or ${of}` : of}`;
+  }).join("; ");
+}
+/** What every pin says after its words. */
+export const PIN_HOLDS = "Calls outside it are refused before they run or ask.";
+/** A pin that doesn't read (pin_broken): it fails closed. */
+export const PIN_BROKEN = "This pin doesn't read, so every call to this tool is refused. Set the pin again, or remove the tool's setting.";

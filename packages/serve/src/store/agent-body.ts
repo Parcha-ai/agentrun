@@ -89,20 +89,21 @@ export function bodyOf(input: RevisionBodyInput): { body: AgenticBody | Workflow
   if (set !== undefined && !isObject(set)) invalid("the tool settings are not an object of tools to their settings");
   const toolSettings = set && Object.keys(set).length ? (set as ToolSettings) : undefined;
 
-  // Unattended (approvals "never") is the one value kept: ask, the default, is kept as nothing, so an agent that asks is
-  // one body with an agent that names the default.
-  if (input.approvals !== undefined && input.approvals !== "never") invalid('the approvals is "never", or absent (ask)');
   const host = {
     ...(input.harness !== undefined ? { harness: input.harness } : {}),
     ...(input.place !== undefined ? { place: placeOf(input.place) } : {}),
     ...(toolSettings ? { toolSettings } : {}),
-    ...(input.approvals === "never" ? { approvals: "never" as const } : {}),
   };
 
   // A default spend cap, and how it prices a request, for a revision of either kind.
   if (input.maxCostUsd !== undefined && !(typeof input.maxCostUsd === "number" && Number.isFinite(input.maxCostUsd) && input.maxCostUsd > 0)) invalid("the maxCostUsd is not a number above 0");
   if (input.capMode !== undefined && (typeof input.capMode !== "string" || input.capMode === "")) invalid("the capMode is not a non-empty string");
   const capped = { ...(input.maxCostUsd !== undefined ? { maxCostUsd: input.maxCostUsd } : {}), ...(input.capMode !== undefined ? { capMode: input.capMode } : {}) };
+
+  // Whether the agent runs unattended (its definition.approvals): "never" lets an ask run without a person, for a revision
+  // of either kind. Nothing else is a value here.
+  if (input.approvals !== undefined && input.approvals !== "never") invalid('approvals, when set, is "never"');
+  const unattended = input.approvals !== undefined ? { approvals: input.approvals } : {};
 
   if (input.kind === "agentic") {
     if (typeof input.instructions !== "string") invalid("an agentic revision needs instructions (its prompt, possibly empty)");
@@ -121,11 +122,12 @@ export function bodyOf(input: RevisionBodyInput): { body: AgenticBody | Workflow
       // The agent's unattended policy (PR #2003): the runner's gate reads it from the revision body at claim.
       ...(input.approvals !== undefined ? { approvals: input.approvals } : {}),
       ...capped,
+      ...unattended,
     };
     return { body, skills: skillTexts };
   }
   if (input.kind !== "workflow") invalid("the revision kind is not agentic or workflow");
   if (!isObject((input as { workflow?: unknown }).workflow)) invalid("a workflow revision needs a workflow (a JSON object)");
-  const body: WorkflowBody = { workflow: structuredClone((input as { workflow: Record<string, unknown> }).workflow), skills: skillShas, tools: [...tools], ...host, ...capped };
+  const body: WorkflowBody = { workflow: structuredClone((input as { workflow: Record<string, unknown> }).workflow), skills: skillShas, tools: [...tools], ...host, ...capped, ...unattended };
   return { body, skills: skillTexts };
 }

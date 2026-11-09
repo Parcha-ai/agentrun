@@ -82,7 +82,7 @@ import { isSecretWriteOperation, SECRET_WRITE_REFUSAL, secretsWritableFields, se
 import { ensureSealKey, SealKeyRefused, sealKeyHome, sealKeyLine } from "./seal-key.js";
 import { redactedOutput } from "./key-refusal.js";
 import { analyticsFilter, analyticsView, statsView } from "./stats.js";
-import { agentLearningCountsOverStore, learningCountsOverStore, runLearningOverStore } from "./store-reads/learning.js";
+import { agentLearningOverStore, learningCountsOverStore, runLearningOverStore } from "./store-reads/learning.js";
 import { outcomes } from "./usage.js";
 import { keyOf, SEAL_KEY_ENV, sealKeyOf, TOOL_FIELDS } from "./tool-keys.js";
 import { toolKeysOverStore } from "./tool-keys-store.js";
@@ -314,6 +314,9 @@ export type ServeOptions = {
   learningBudget?: number;
   /** A test's seam: the triggers' clock and timer (triggers.ts), in place of Date.now and setTimeout. */
   triggerClock?: TriggerClock;
+  /** The server's store (store/index.ts), where the triggers and their firings live. Without it the trigger routes answer
+   *  unavailable and nothing fires. */
+  store?: Pick<Store, "triggers" | "runs">;
   /** A test's seam: the trigger sources this server has (default the registry, trigger-adapters.ts). */
   triggerAdapters?: readonly TriggerAdapter[];
   /** A test's seam: the folder the template packages are read from, in place of the package's own (templates.ts). */
@@ -363,6 +366,7 @@ async function tokenIn(file: string): Promise<{ token: string; made: boolean }> 
 const digest = (text: string) => createHash("sha256").update(text).digest();
 /** Why a trigger never messages a run: it has no spend cap, and every turn a trigger drives is capped. */
 const NO_CAP = "The run has no spend cap: a trigger only messages a run with one, as every turn it drives is capped.";
+
 const sha256Hex = (text: string) => createHash("sha256").update(text).digest("hex");
 const SESSION_S = SESSION_MS / 1000;
 
@@ -1156,7 +1160,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
 
   // Schedules: each firing starts its run as POST /agents/{id}/runs does, capped, under the firing's key (triggers.ts).
   // Firings an earlier server left due are driven again now, beside the recovery above.
-  const triggers: Triggers = new Triggers(data, {
+  const triggers: Triggers = new Triggers({
+    // The server's own store (the one it opened) holds the triggers a person writes and reads; a test may inject another
+    // (startServe's `store`).
+    store: options.store ?? store,
     clock: options.triggerClock,
     adapters,
     say: (fields) => (log ? log(logLine("trigger", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("trigger", fields)}\n`)),
@@ -1168,7 +1175,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     notify: (failed, key) => webhooks.emitTrigger(failed, key),
   });
   stops.push(async () => triggers.close());
-  triggers.start();
+  // The firing loop runs against the server's own opened store: due firings start their runs through the run write half,
+  // times missed while it was down are recorded, and the timer is armed for the next. (A test may inject its own store.)
+  void triggers.start().catch((error: Error) => void process.stderr.write(`agentrun-serve: the triggers' start: ${error.message}\n`));
 
   // Setup's import of this machine's sessions: offered by a server on this machine only (no public address, listening
   // on loopback), counted once (a listing, no transcript kept), run once, each on a worker thread (import-worker.ts) so
@@ -1552,7 +1561,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
 
   async function createRun(req: IncomingMessage, agentId: string) {
     const entry = await needAgent(agentId);
-    if (entry.agent.archivedAt) throw new ApiError("agent_not_runnable", `The agent ${agentId} is archived: unarchive it to run it.`, { details: { archived_at: entry.agent.archivedAt } });
+    if (entry.agent.archivedAt) throw new ApiError("agent_not_runnable", `The agent ${agentId} is archived: unarchive it to run it.`, { details: { archived_at: new Date(entry.agent.archivedAt).toISOString() } });
     const body = await bodyOf(req);
     return idempotent(req, `/agents/${agentId}/runs`, body, async (origin) => {
       // A run the store started under this key, though no answer was kept (its server went down first): that run, as it is now.
@@ -2072,7 +2081,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const limit = limitOf(url.searchParams.get("limit"));
         const offset = cursorOf(url.searchParams.get("cursor"));
         const archived = archivedParam(url);
-        const all = (await agents.list()).filter((entry) => Boolean(entry.agent.archivedAt) === archived);
+        const all = await agents.list({ archived });
         return send(res, 200, { agents: await Promise.all(all.slice(offset, offset + limit).map(async (entry) => agentView(entry, linkOrigin(req), await agentExtra(entry)))), next_cursor: nextCursor(offset + limit, all.length) });
       }
       case "getAgent": {
@@ -2447,18 +2456,19 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       // they are now; a write as the definition's: an archived agent's too.
       case "getAgentLearning": {
         await needAgent(id);
-        // The agent's learning view: its notes, skills, workflows and log from its learning folder; its run-fared counts over the
-        // store (learning-1's agentLearningCountsOverStore). Each note's runs and the impact are named gaps until learning-1 records
-        // a run's given/read notes and its answer times in the store.
-        const counts = await agentLearningCountsOverStore(store, id);
-        return send(res, 200, await agentLearning(data, id, secretsShown(serverSecrets()), counts, null));
+        // The agent's learning view: its notes, skills, workflows and log from its learning folder; its run-fared counts, each
+        // note's runs (given it and that read it) and its impact over the one store (agentLearningOverStore), from each run's
+        // launch, journal and learning end.
+        const { counts, impact, notes } = await agentLearningOverStore(store, id);
+        return send(res, 200, await agentLearning(data, id, secretsShown(serverSecrets()), counts, impact, notes));
       }
       case "listLearningNotes":
       case "listLearningLog":
         await needAgent(id);
         if (found.name === "listLearningNotes") {
-          // The notes from the agent's learning folder; each note's runs are a named gap until learning-1 records them in the store.
-          return send(res, 200, await learningNotes(data, id, url.searchParams, secretsShown(serverSecrets())));
+          // The notes from the agent's learning folder, each with its runs over the one store (agentLearningOverStore's noteRuns).
+          const { notes } = await agentLearningOverStore(store, id);
+          return send(res, 200, await learningNotes(data, id, url.searchParams, secretsShown(serverSecrets()), notes));
         }
         return send(res, 200, await learningLog(data, id, url.searchParams, secretsShown(serverSecrets())));
       case "readLearningFile":
@@ -2506,7 +2516,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       case "redeliverWebhook":
         return send(res, 200, await webhooks.redeliver(id));
       case "listTriggers":
-        return send(res, 200, { triggers: triggers.list().triggers.map(withSecretOf) });
+        return send(res, 200, { triggers: (await triggers.list()).triggers.map(withSecretOf) });
       case "createTrigger": {
         const body = await bodyOf(req);
         // A webhook trigger's secret is in its first answer alone: the Idempotency-Key's record keeps the trigger and a
@@ -2538,7 +2548,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // A secret write: the dispatch's one check let only the owner's session this far (trigger-secrets-shown.ts).
         return send(res, 200, triggerRotated(id, (await triggers.rotate(id)).secret!, new Date().toISOString()));
       case "getTrigger":
-        return send(res, 200, withSecretOf(triggers.get(id)));
+        return send(res, 200, withSecretOf(await triggers.get(id)));
       case "updateTrigger":
         return send(res, 200, await triggers.update(id, await bodyOf(req)));
       case "deleteTrigger":
@@ -2551,7 +2561,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         return send(res, fired.created ? 202 : 200, fired.firing, fired.created ? {} : { "idempotent-replayed": "true" });
       }
       case "listTriggerFirings":
-        return send(res, 200, triggers.firings(id));
+        return send(res, 200, await triggers.firings(id));
     }
     throw new ApiError("not_found", `no route ${path}`);
   }

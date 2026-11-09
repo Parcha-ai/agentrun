@@ -318,7 +318,7 @@ export function agentView(
     runs: extra.runs ?? { count: 0, live: 0 },
     region: "local",
     home_etag: etagOf(entry),
-    archived_at: agent.archivedAt ?? null,
+    archived_at: agent.archivedAt == null ? null : new Date(agent.archivedAt).toISOString(),
     console_url: agentLink(origin, agent.id),
     ...(extra.learning ? { learning: extra.learning } : {}),
     created_at: new Date(agent.createdAt).toISOString(),
