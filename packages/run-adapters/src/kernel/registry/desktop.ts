@@ -6,6 +6,7 @@
 // test (serve's computer-tools parity test).
 import type { ToolDef } from "./defs.js";
 import { answerOf, type Executor, type Hands, type InputAction, needsKindWords, shotAnswer } from "./hands.js";
+import { HANDOFF_TOOL, handoffDef, handoffExecutor } from "./handoff.js";
 
 /** computerd's key table (protocol.ts KEYS): a key is one of these names, or one printable ASCII character. */
 export const DESKTOP_KEYS = [
@@ -60,6 +61,8 @@ export const DESKTOP_TOOL_DEFS: readonly ToolDef[] = Object.freeze([
     }, ["actions"]),
     false,
   ),
+  // The agent's hand-over of the desktop to the person (handoff.ts), under the desktop's settings key.
+  handoffDef("desktop"),
 ]);
 
 const isWhole = (value: unknown, min: number): value is number => Number.isSafeInteger(value) && (value as number) >= min;
@@ -107,4 +110,5 @@ export const DESKTOP_EXECUTORS: Readonly<Record<string, Executor>> = Object.free
     await input.actions(actions);
     return { text: `Ran ${actions.length} action${actions.length === 1 ? "" : "s"}. desktop_screen shows what ${actions.length === 1 ? "it" : "they"} did.` };
   }),
+  [HANDOFF_TOOL]: handoffExecutor("desktop"),
 });

@@ -9,22 +9,22 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fakeAnthropic } from "@parcha/agentrun-harness-claude/testing";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
-import { REQUESTS_ENV, requestsOf, rolesOf } from "./fixtures/faux-requests.mjs";
+import { notedRequests, REQUESTS_ENV, rolesOf } from "./fixtures/faux-requests.mjs";
 import { noApproverText } from "../dist/tool-gate.js";
 import { schemaProblems } from "./schema-support.mjs";
 import { copyStandIn } from "../../run-adapters-codex/test/stand-in.mjs";
-import { agent, call, cookieOf, follow, runDir, runRecordOf, scratch, serve as serveOf, withEnv } from "./support.mjs";
+import { agent, call, clientOwnerSession, follow, runDir, runRecordOf, scratch, serve as serveOf, startInProcessRunner, withEnv } from "./support.mjs";
+import { HOLD_ENV } from "./fixtures/faux-mcp.mjs";
 
 const FAUX_MCP = new URL("./fixtures/faux-mcp.mjs", import.meta.url).pathname;
 const TOKEN = `not-a-secret-${"mcp-gate-bearer-0123"}`;
-const SIGN_IN_PHRASE = "the owner signs in with this phrase";
 const json = { "content-type": "application/json" };
 /** A server that seals saved credentials and has an owner who signs in with a password. */
 const serve = (t, options = {}) => (withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") }), serveOf(t, { faux: FAUX_MCP, accounts: true, openSetup: true, ...options }));
@@ -52,10 +52,8 @@ async function started(api, id, tools, content, { extra = {}, run = {} } = {}) {
 
 /** The owner's password session: an answer to approval `approvalId` of run `runId`, as the console sends it. */
 async function owner(server) {
-  const origin = `http://127.0.0.1:${server.port}`;
-  const setup = await call(server.port, { method: "POST", path: "/v2/setup", headers: { ...json, origin }, body: { password: SIGN_IN_PHRASE } });
-  assert.equal(setup.status, 201, setup.text);
-  const cookie = cookieOf(setup);
+  // The owner's session the test client holds (its one owner on this server), as the console sends an answer.
+  const { cookie, origin } = await clientOwnerSession(server);
   return async (runId, approvalId, body) => (await call(server.port, { method: "POST", path: `/v2/runs/${runId}/approvals/${approvalId}`, headers: { ...json, cookie, origin }, body })).status;
 }
 
@@ -96,7 +94,9 @@ test("prices: a PUT keeps each tool's price in USD a call, a read shows them, an
     assert.ok(JSON.stringify(refused.body).includes(field), JSON.stringify(refused.body));
   }
   // JSON's 1e400 reads as Infinity: not a price.
-  const infinite = await call(server.port, { method: "PUT", path: "/v2/settings/mcp-servers/fake", headers: { ...json, authorization: `Bearer ${server.token}` }, body: `{"url":${JSON.stringify(fake.url)},"auth":{"type":"bearer","token":"${TOKEN}"},"prices":{"paid":1e400}}` });
+  // Sent as the console sends a secret write (the body carries the bearer): from the owner's session.
+  const { cookie, origin } = await clientOwnerSession(server);
+  const infinite = await call(server.port, { method: "PUT", path: "/v2/settings/mcp-servers/fake", headers: { ...json, cookie, origin }, body: `{"url":${JSON.stringify(fake.url)},"auth":{"type":"bearer","token":"${TOKEN}"},"prices":{"paid":1e400}}` });
   assert.equal(infinite.status, 422, infinite.text);
   assert.deepEqual((await api("GET", "/settings/mcp-servers/fake")).body.prices, { paid: 0.05, add: 0 }, "nothing refused was saved");
   const doc = (await api("GET", "/openapi.json")).body;
@@ -130,19 +130,23 @@ test("pi: allowed by the agent's exact key, or by the server's mcp:fake/*, the c
   withEnv(t, { [REQUESTS_ENV]: requests });
   const { api } = await serve(t);
   const fake = await addFake(t, api);
+  // The runs share the in-process runner's process, one after the other: each run's requests are the ones noted while it
+  // ran, from its start to its end.
   const exact = await started(api, "exact", ["mcp:fake/add"], ADD, { extra: { tool_settings: { "mcp:fake/add": { permission: "allow" } } } });
   await follow(api, exact, ["completed"], { deadlineMs: 60_000 });
   assert.equal(await answerOf(api, exact), "The tool said: 5");
+  const afterExact = notedRequests(requests).length;
   assert.equal((await allowFake(api)).status, 200);
   const wide = await started(api, "wide", ["mcp:fake/add"], ADD);
   await follow(api, wide, ["completed"], { deadlineMs: 60_000 });
   assert.equal(await answerOf(api, wide), "The tool said: 5");
+  const byRun = { exact: notedRequests(requests).slice(0, afterExact), wide: notedRequests(requests).slice(afterExact) };
   // Each run asked its model twice: the message (the call), then the call's result (the answer). A third request is a
   // real extra one, whatever the faux model made of it.
   // Both runs' request roles and the server's calls (JSON-RPC id, time), in either failure's message: an extra request is
   // explained by the calls it made, and an extra call by the requests around it.
-  const seen = `exact ${rolesOf(requestsOf(requests, exact))}; wide ${rolesOf(requestsOf(requests, wide))}; the server's calls ${JSON.stringify(calls(fake, "add").map((entry) => ({ id: entry.id, at: entry.at })))}`;
-  for (const runId of [exact, wide]) assert.equal(requestsOf(requests, runId).length, 2, `${runId === exact ? "exact" : "wide"}: one request for the call, one for its answer: ${seen}`);
+  const seen = `exact ${rolesOf(byRun.exact)}; wide ${rolesOf(byRun.wide)}; the server's calls ${JSON.stringify(calls(fake, "add").map((entry) => ({ id: entry.id, at: entry.at })))}`;
+  for (const name of ["exact", "wide"]) assert.equal(byRun[name].length, 2, `${name}: one request for the call, one for its answer: ${seen}`);
   assert.equal(calls(fake, "add").length, 2, `one call each: ${seen}`);
 });
 
@@ -158,7 +162,8 @@ test("pi: with no setting an MCP tool asks once (exactly one approval): the call
   assert.equal((await api("POST", `/runs/${runId}/approvals/${pending.id}`, { decision: "allow" })).status, 403, "a token never answers");
   assert.equal(await answer(runId, pending.id, { decision: "allow" }), 204);
   await follow(api, runId, ["completed"], { deadlineMs: 60_000 });
-  assert.equal(await answerOf(api, runId), "Resumed: paid for ada");
+  // On the runner, pi's answered call reaches the model as the call's own result (the faux model's "The tool said").
+  assert.equal(await answerOf(api, runId), "The tool said: paid for ada");
   assert.equal(calls(fake, "paid").length, 1, "run once, by the gate");
   await resumeRowIsAgentRuns(api, runId, pending.call_id, "mcp:fake/paid", "pi");
 });
@@ -186,7 +191,8 @@ test("pi: an MCP tool's default ask shows not metered when it has no price; the 
   assert.equal(pending.price, "not metered");
   assert.equal(await answer(runId, pending.id, { decision: "deny", note: "not today" }), 204);
   await follow(server.api, runId, ["completed"], { deadlineMs: 60_000 });
-  assert.equal(await answerOf(server.api, runId), "Resumed: The user denied this mcp:fake/add call. It was not run: nothing was sent and nothing was charged. Reason: not today");
+  // The refusal reaches pi's model as the call's own result.
+  assert.equal(await answerOf(server.api, runId), "The tool said: The user denied this mcp:fake/add call. It was not run: nothing was sent and nothing was charged. Reason: not today");
   assert.equal(calls(fake).length, 0);
 });
 
@@ -203,31 +209,40 @@ test("pi: the run's process killed while a call is parked loses nothing: the sam
   assert.equal(again.id, pending.id, "the same approval");
   assert.equal(await answer(runId, again.id, { decision: "allow" }), 204);
   await follow(api, runId, ["completed"], { deadlineMs: 90_000 });
-  assert.equal(await answerOf(api, runId), "Resumed: 5");
+  assert.equal(await answerOf(api, runId), "The tool said: 5");
   assert.equal(calls(fake, "add").length, 1, "run once");
 });
 
 test("pi: a paid call that ran before a crash keeps its result when its tool is set to deny before the run reopens: the model gets the saved result, never that nothing was charged, and it is booked once", { timeout: 240_000 }, async (t) => {
+  // On the runner: the runner holding the run goes after the call ran and before the model read its result (the faux
+  // model holds that request until the runner lets it go), and another runner claims the run and resumes it.
   const crashed = join(await mkdtemp(join(tmpdir(), "gate-crash-")), "crashed");
-  withEnv(t, { AGENTRUN_SERVE_TEST_CRASH_AFTER_CALL: crashed });
-  const server = await serve(t);
-  const { api } = server;
+  withEnv(t, { [HOLD_ENV]: crashed });
+  const server = await serve(t, { runner: false });
+  const { api, data } = server;
   const answer = await owner(server);
   const fake = await addFake(t, api, { paid: 0.05 });
+  const closeFirst = await startInProcessRunner(data, { faux: FAUX_MCP });
+  let firstClosed = false;
+  t.after(() => (firstClosed ? undefined : closeFirst()));
   const runId = await started(api, "ran-then-deny", ["mcp:fake/paid"], PAID);
   const pending = await parked(api, runId);
   assert.equal(await answer(runId, pending.id, { decision: "allow" }), 204);
-  for (let i = 0; calls(fake, "paid").length === 0; i++) {
-    assert.ok(i < 600, "the approved call reaches the server");
+  for (let i = 0; !existsSync(crashed); i++) {
+    assert.ok(i < 600, "the approved call runs and the model is asked to read its result");
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
-  // The call ran and its outcome is in the journal; its tool is set to deny before the process goes and the run reopens.
+  assert.equal(calls(fake, "paid").length, 1, "the approved call reached the server");
+  // The call ran and its outcome is in the journal; its tool is set to deny before the runner goes and the run reopens.
   assert.equal((await api("PUT", "/settings/tools", { "mcp:fake/paid": { permission: "deny" } })).status, 200);
-  await writeFile(`${crashed}.go`, "");
+  await closeFirst();
+  firstClosed = true;
+  const closeSecond = await startInProcessRunner(data, { faux: FAUX_MCP });
+  t.after(() => closeSecond());
   const { rows } = await follow(api, runId, ["completed", "failed"], { deadlineMs: 150_000 });
   assert.ok(existsSync(crashed), "the process went between the call and its resume");
   const said = (await answerOf(api, runId)) ?? "";
-  assert.equal(said, "Resumed: paid for ada", "the model gets the call's saved result");
+  assert.equal(said, "The tool said: paid for ada", "the model gets the call's saved result");
   assert.ok(!said.includes("nothing was charged"), said);
   assert.equal(rows.filter((row) => /^Tool cost:/.test(row.summary ?? "")).length, 1, "booked once");
   assert.equal(calls(fake, "paid").length, 1, "never run again");
@@ -446,6 +461,15 @@ async function parkingServer(t, harness, { tool = "add", input = { a: 2, b: 3 } 
 }
 const PARK_HARNESSES = ["pi", ...(existsSync("/usr/bin/setpriv") ? ["claude-agent"] : [])];
 
+/** Run `runId` of `harness` after its stop was accepted: followed until it reads ended (bounded, failing by name), then
+ *  cancelled with nothing pending. A stop is a command the run's runner applies, so the run reads ended only once it has. */
+async function stoppedRun(api, runId, harness) {
+  const ended = await follow(api, runId, ["completed", "failed", "cancelled"], { deadlineMs: 60_000 }).catch((error) => assert.fail(`${harness}: the stopped run never read ended: ${error.message}`));
+  assert.equal(ended.last.status, "cancelled", `${harness}: a stopped run reads cancelled`);
+  assert.equal((await api("GET", `/runs/${runId}`)).body.pending, null, `${harness}: nothing pending once stopped`);
+  return ended;
+}
+
 test("a person's message while an MCP call is parked declines it with their words: the run resumes with the refusal, the row reads Declined by your message, a later allow is 409, and the server saw nothing; on pi and claude-agent", { timeout: 300_000 }, async (t) => {
   const said = "use the cached sum instead";
   for (const harness of PARK_HARNESSES) {
@@ -456,7 +480,9 @@ test("a person's message while an MCP call is parked declines it with their word
     const sent = await api("POST", `/runs/${runId}/messages`, { content: said });
     assert.equal(sent.status, 202, JSON.stringify(sent.body));
     const { rows } = await follow(api, runId, ["completed", "failed"], { deadlineMs: 150_000 });
-    assert.match(await answerOf(api, runId) ?? "", new RegExp(`^Resumed: The user denied this mcp:fake/add call\\. It was not run: nothing was sent and nothing was charged\\. Reason: ${said}`), harness);
+    // pi's model reads the refusal as the call's own result; the CLI's session is resumed with main's message.
+    const head = harness === "pi" ? "The tool said" : "Resumed";
+    assert.match(await answerOf(api, runId) ?? "", new RegExp(`^${head}: The user denied this mcp:fake/add call\\. It was not run: nothing was sent and nothing was charged\\. Reason: ${said}`), harness);
     assert.match(rows.find((row) => row.kind === "tool_approval_requested")?.summary ?? "", /^Declined by your message: mcp:fake\/add /, harness);
     assert.equal(await answer(runId, pending.id, { decision: "allow" }), 409, `${harness}: a later allow`);
     assert.equal(calls(fake).length, 0, `${harness}: the server saw nothing`);
@@ -471,9 +497,8 @@ test("a stop while an MCP call is parked withdraws it: no pending approval, the 
     const pending = await parked(api, runId);
     const stop = await api("POST", `/runs/${runId}/stop`, {});
     assert.deepEqual([stop.status, stop.body.stopped], [200, true], JSON.stringify(stop.body));
-    const view = (await api("GET", `/runs/${runId}`)).body;
-    assert.equal(view.pending, null, `${harness}: nothing pending`);
-    const { rows } = await follow(api, runId, ["input_required", "completed", "failed"]);
+    // The stop is the run's runner's to apply: once it has, the run reads ended, cancelled, with nothing pending.
+    const { rows } = await stoppedRun(api, runId, harness);
     assert.match(rows.find((row) => row.kind === "tool_approval_requested")?.summary ?? "", /^Withdrawn/, harness);
     assert.equal(await answer(runId, pending.id, { decision: "allow" }), 409, `${harness}: a later allow`);
     await new Promise((resolve) => setTimeout(resolve, 2_000));
@@ -507,7 +532,7 @@ test("a stop while an approved MCP call runs cuts it at the server: the fake see
       assert.ok(i < 100, `${harness}: the server sees the call's request closed: ${JSON.stringify(fake.log.map((entry) => entry.method))}`);
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
-    const { rows } = await follow(api, runId, ["input_required", "completed", "failed"]);
+    const { rows } = await stoppedRun(api, runId, harness);
     assert.match(rows.find((row) => row.kind === "tool_approval_requested")?.summary ?? "", /^Withdrawn/, harness);
     assert.ok(!rows.some((row) => row.kind === "user_message" && (row.text ?? "").includes("[tool approval]")), `${harness}: nothing resumed`);
     assert.ok(!rows.some((row) => `${row.text ?? ""} ${row.tool_result_preview ?? ""}`.includes("wrote never")), `${harness}: no result of the work reached the run`);

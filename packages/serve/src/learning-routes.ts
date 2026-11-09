@@ -21,7 +21,7 @@ import { approve, buildIndex, CAPS, checkNote, draftProblems, frontKeys, INDEX_F
 import { beforeRetire, blobOid, type FolderChange, FolderBusy, FolderRefused, FolderTooLarge, FolderUnreadable, heldOnMain, isBodyMismatch, type PersonKind, readLearning, PATCH_CAP, readRunDiff, readSnapshot, type SnapChange, type SnapHistory, type SnapLearned, type SnapNote, type Snapshot, snapshotNotes, writeLearning } from "./learn/folder.js";
 import { ApiError, invalid } from "./errors.js";
 import { readJson } from "./files.js";
-import { currentLearning, holdsForOk, type ItemStatus, detailShown, learningFolderOf, type NoteRuns, notesView, PROPOSAL, readPin, secretsShown, type Shown, withAgentRepo } from "./learning.js";
+import { currentLearning, holdsForOk, type ItemStatus, detailShown, type Learning, learningFolderOf, type NoteRuns, notesView, PROPOSAL, readPin, secretsShown, type Shown, withAgentRepo } from "./learning.js";
 import type { Impact } from "./learning-run.js";
 import type { Run } from "./runs.js";
 import { isObject } from "./validate.js";
@@ -498,12 +498,20 @@ export async function runLearning(run: Run, shown: Shown, secrets: readonly stri
   const learning = holdsForOk(run.meta.learning) ? currentLearning(run.meta.learning, await statusesOf(data, run.agentId)) : run.meta.learning;
   if (!learning) return null;
   const pin = await readPin(run.dir).catch(() => undefined);
+  return runLearningBody({ id: run.id, learning, seed: pin?.seed ?? null, settled: run.settled }, shown, secrets);
+}
+
+/** GET /runs/{id}/learning's body, from the run's learning as it reads now, the seed it started from and whether it
+ *  settled: the one shape, read from a run's files (runLearning) or from the one store (store-reads/learning.ts
+ *  runLearningOverStore). */
+export function runLearningBody(input: { readonly id: string; readonly learning: Learning; readonly seed: string | null; readonly settled: boolean }, shown: Shown, secrets: readonly string[]) {
+  const { learning } = input;
   const { state, reason, at, verdict, problems, merged, cost_usd, tokens, pending } = learning;
   return {
-    run: run.id, state, reason, detail: detailShown(learning, shown), at,
+    run: input.id, state, reason, detail: detailShown(learning, shown), at,
     // Once it settled (a run that runs again for a follow-up is still reading).
-    ...notesView(learning, shown, run.settled),
-    seed: pin?.seed ?? null,
+    ...notesView(learning, shown, input.settled),
+    seed: input.seed,
     merged: merged ?? null,
     // The merge's notes that wait for a person's OK: on main as `status: pending`, read by no run until approved.
     pending: (pending ?? []).map(({ file, name }) => ({ file: shown.name(file), name: shown.text(name) })),

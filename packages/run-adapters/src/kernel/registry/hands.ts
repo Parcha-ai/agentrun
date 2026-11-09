@@ -78,12 +78,36 @@ export type Input = { actions(list: readonly InputAction[]): Promise<void> };
 /** A point on a phone's screen, in its screenshot's pixels. */
 export type PhonePoint = { readonly x: number; readonly y: number };
 
-/** A phone: its screen, a tap, a swipe, typing into the field in focus, and its apps. */
+/** A node of a phone screen's structure, flattened: its platform class, its id, text and label where it has them, its
+ *  bounds in screenshot pixels, and whether a model can tap it or type into it. */
+export type PhoneNode = {
+  readonly role: string;
+  readonly id?: string;
+  readonly text?: string;
+  readonly label?: string;
+  readonly bounds: { readonly x: number; readonly y: number; readonly w: number; readonly h: number };
+  readonly clickable: boolean;
+  readonly editable: boolean;
+  readonly focused?: boolean;
+  /** A node with no text or label of its own, named by its first inner text (else label): an Android list row, a
+   *  clickable layout whose title sits on a child that is not clickable. */
+  readonly inner?: string;
+};
+
+/** A key a phone presses: its back and home buttons, and enter. */
+export type PhoneKey = "back" | "home" | "enter";
+
+/** A phone: its screen and the screen's structure, a tap, a swipe, typing into the field in focus, its keys, and its apps. */
 export type Phone = {
   shot(): Promise<Shot>;
+  /** The screen's structure, flattened (`total` the nodes the phone gave, `truncated` when it gave only part); absent on a
+   *  phone that does not offer it. */
+  tree?(): Promise<{ readonly nodes: readonly PhoneNode[]; readonly total: number; readonly truncated: boolean }>;
   tap(at: PhonePoint): Promise<void>;
   swipe(spec: { readonly from: PhonePoint; readonly to: PhonePoint; readonly durationMs: number }): Promise<void>;
   type(text: string): Promise<void>;
+  /** Absent on a phone that does not offer its keys. */
+  key?(name: PhoneKey): Promise<void>;
   readonly apps: {
     list(): Promise<{ readonly apps: readonly { readonly id: string; readonly name?: string }[]; readonly foreground: string | null }>;
     open(id: string): Promise<void>;
@@ -99,6 +123,13 @@ export type CdpSession = {
 
 /** A browser computer: a connection to its CDP. The browser's tools and take-over are the host's (pi-browser's). */
 export type Browser = { connect(): Promise<CdpSession> };
+
+/** The agent's hand-over of a desktop or a phone to the person, through the run's hold: ask opens it (what the person is
+ *  to do, how both will know it is done, when it expires, ISO time) and resolves with its first answer, or expired. An
+ *  abort of `signal` (a stop, a lost claim) rejects it. */
+export type Handoff = {
+  ask(request: { readonly instruction: string; readonly completion_condition: string; readonly expires_at: string }, signal?: AbortSignal): Promise<{ readonly outcome: "done" | "cancelled" | "expired" }>;
+};
 
 /** What a host tool does with the run's files and shell. */
 export type Hands = {
@@ -123,6 +154,8 @@ export type Hands = {
   readonly phone?: Phone;
   /** A browser's CDP; absent where the computer is no browser. */
   readonly browser?: Browser;
+  /** A desktop's or a phone's hand-over to the person (the run's hold); absent where there is none. */
+  readonly handoff?: Handoff;
 };
 
 /** A tool's answer: the text the model reads (and its images), with details for the run's timeline. A failure is an

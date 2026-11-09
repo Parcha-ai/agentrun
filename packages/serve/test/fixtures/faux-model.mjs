@@ -13,15 +13,33 @@ const slow = (faux, ms, text) =>
     faux.signal?.addEventListener("abort", () => (clearTimeout(timer), resolve(faux.message("", { stopReason: "aborted" }))), { once: true });
   });
 
-const untilExists = async (file) => {
+/** Resolves once `file` exists. Once the turn is stopped (`signal`), it stops looking and never settles: the reply is
+ *  the aborted one (reply's race), and no timer is left behind to keep a test's process alive after its server went. */
+const untilExistsOr = async (file, signal) => {
   const { access } = await import("node:fs/promises");
-  while (!(await access(file).then(() => true, () => false))) await new Promise((resolve) => setTimeout(resolve, 20));
+  while (!(await access(file).then(() => true, () => false))) {
+    if (signal?.aborted) return new Promise(() => {});
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
 };
+
+/** The aborted reply, once the turn is stopped. */
+const abortedOf = (faux) =>
+  new Promise((resolve) => {
+    if (faux.signal.aborted) return resolve(faux.message("", { stopReason: "aborted" }));
+    faux.signal.addEventListener("abort", () => resolve(faux.message("", { stopReason: "aborted" })), { once: true });
+  });
 
 /** The key timeline-key-words.test.mjs holds, which the provider errors above echo. */
 const CUT_KEY = `not-a-secret-${"cut-key-0123456789abcdef"}`;
 
 export default function reply(context, faux) {
+  const answer = replyTo(context, faux);
+  return faux.signal && answer instanceof Promise ? Promise.race([answer, abortedOf(faux)]) : answer;
+}
+
+function replyTo(context, faux) {
+  const untilExists = (file) => untilExistsOr(file, faux.signal);
   const users = personOf(context).map(textOf);
   const [first = "", last = ""] = [users[0], users.at(-1)];
   const answered = context.messages.at(-1)?.role === "toolResult";
@@ -318,6 +336,12 @@ export default function reply(context, faux) {
   if (first.includes("Answer with a megabyte of sk- runs.")) return faux.message(`${"sk-".repeat(2730)} `.repeat(128));
   // An answer quoting a value no key holds yet (final-answer-redact.test.mjs saves it as one after the run).
   if (first.includes("Answer quoting the later key.")) return faux.message(`Later: ${["not-a-secret", "later-key-0123456789abcdef"].join("-")} ends here.`);
+  // A provider error quoting what the message gave it after "Fail quoting: " (server-secrets.test.mjs: a webhook trigger's
+  // secret in each of its spellings), as a gateway that echoes a header would.
+  // The same, of a value the message holds reversed (runner-trigger-secret.test.mjs): the value reaches the run only through
+  // the provider's error, never as the person's own words.
+  if (first.startsWith("Fail quoting reversed: ")) return faux.message("", { stopReason: "error", errorMessage: `500 {"message":"The hook said ${first.slice("Fail quoting reversed: ".length).split(" ").map((one) => [...one].reverse().join("")).join(" ")}"}` });
+  if (first.startsWith("Fail quoting: ")) return faux.message("", { stopReason: "error", errorMessage: `500 {"message":"The hook said ${first.slice("Fail quoting: ".length)}"}` });
   // A provider error that is no 401 but echoes the key it was sent.
   if (first.includes("Fail echoing a held key")) return faux.message("", { stopReason: "error", errorMessage: '500 {"message":"Key not-a-secret-echoed-key-0123 is not valid"}' });
   // A provider's content filter stopping the answer, in pi-ai's words for it on each API (its stop reason "error"): the

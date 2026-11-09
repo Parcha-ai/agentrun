@@ -5,11 +5,21 @@
 // provider makes: put at create and attach, get by id, list filtered by labels, remove at release.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { storeLedger } from "../dist/workspace/index.js";
+import { phoneLedger, storeLedger } from "../dist/workspace/index.js";
 import { storeOn } from "./store-helpers.mjs";
 
 const A = { id: "sess-a", labels: { "agentrun.run": "run-1", "agentrun.epoch": "2" }, image: "android-14", deadline: "2026-11-08T21:30:00.000Z" };
 const B = { id: "sess-b", labels: { "agentrun.run": "run-2" }, image: "android-14", deadline: "2026-11-08T21:45:00Z" };
+
+test("phoneLedger is the phone provider's ledger over the store, its rows under phone-harness", async (t) => {
+  const { store } = await storeOn(t);
+  const ledger = phoneLedger(store.computerLedger);
+  await ledger.put(A);
+  assert.deepEqual(await ledger.get("sess-a"), A);
+  assert.deepEqual(await storeLedger(store.computerLedger, "phone-harness").list(), [A], "the phone provider's rows");
+  await ledger.remove("sess-a");
+  assert.deepEqual(await ledger.list(), []);
+});
 
 test("the ledger keeps a provider's whole session entry by its id, read back as put, its rows only", async (t) => {
   const { store } = await storeOn(t);

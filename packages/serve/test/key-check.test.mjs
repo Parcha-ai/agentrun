@@ -12,10 +12,9 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { setImmediate as turn } from "node:timers/promises";
 import { startServe } from "../dist/index.js";
-import { ToolKeys } from "../dist/tool-keys.js";
 import { calls as monidCalls, KEY as MONID_KEY, release as releaseMonid, stalled as monidStalled } from "./fixtures/faux-monid.mjs";
 import { schemaProblems } from "./schema-support.mjs";
-import { client, FAUX, scratch, serve, withEnv } from "./support.mjs";
+import { client, FAUX, scratch, serve, storeBytes, withEnv } from "./support.mjs";
 
 const FAUX_MONID = new URL("./fixtures/faux-monid.mjs", import.meta.url).pathname;
 const KEYS = ["PARALLEL_API_KEY", "MONID_API_KEY", "BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "TYPESAFE_API_KEY", "AGENTRUN_SEAL_KEY", "AGENTRUN_TEST_FAUX_MONID_CALLS", "AGENTRUN_TEST_FAUX_MONID_KEY", "AGENTRUN_TEST_FAUX_MONID_DOWN", "AGENTRUN_TEST_FAUX_MONID_STATUS", "AGENTRUN_TEST_FAUX_MONID_STALL"];
@@ -56,7 +55,8 @@ test("a key monid refuses is not kept: the PUT is 422 in monid's own words, neve
   const again = await api("PUT", "/settings/tool-keys/monid", { values: { MONID_API_KEY: fake() } });
   assert.equal(again.status, 422);
   assert.deepEqual(rowOf((await api("GET", "/settings/tool-keys")).body, "monid"), kept, "the kept key, its source and its check, unchanged");
-  assert.equal(new ToolKeys(data, { AGENTRUN_SEAL_KEY: process.env.AGENTRUN_SEAL_KEY }, () => undefined).value("MONID_API_KEY"), MONID_KEY, "the stored value is the accepted one");
+  // A refused PUT stores nothing (check() throws before save), so the kept key and check stand, as the row above shows; that the
+  // stored value is the accepted one and reads back by name is store-tool-keys' ("a reload reads the saved value back from the store").
 });
 
 test("a key monid accepts is kept, and GET says it was checked and when; DELETE forgets the check with the key", async (t) => {
@@ -75,11 +75,11 @@ test("a key monid accepts is kept, and GET says it was checked and when; DELETE 
   assert.deepEqual(monidCalls.slice(from).map(({ method, path, body, authorized }) => [method, path, body?.limit, authorized]), [["POST", "/v1/discover", 1, true]], "one discover of one result, on the key");
   for (const other of ["parallel", "browserbase", "typesafe"]) assert.equal(rowOf(view, other).check, null, `${other}: nothing saved, nothing checked`);
   await meetsDocument(api, view);
-  assert.ok(!readFileSync(join(data, "tool-keys.json"), "utf8").includes(MONID_KEY), "the file holds no value");
+  assert.ok(!storeBytes(data).includes(MONID_KEY), "the store holds no value in the clear");
 
   assert.equal((await api("DELETE", "/settings/tool-keys/monid")).status, 204);
   assert.equal(rowOf((await api("GET", "/settings/tool-keys")).body, "monid").check, null);
-  assert.equal(readFileSync(join(data, "tool-keys.json"), "utf8").includes("accepted"), false, "the check goes with the key");
+  // The check goes with the key on a delete: the GET above shows it gone; the store row's check removal is store-tool-keys' ("remove drops the stored fields and the check").
 });
 
 test("a key whose provider can't be reached, or has no fake under faux, is kept as not checked, saying why; a key the server is started with has no check; one saved before checks reads not checked", async (t) => {
@@ -108,11 +108,9 @@ test("a key whose provider can't be reached, or has no fake under faux, is kept 
   assert.equal((await api("PUT", "/settings/tool-keys/browserbase", { values: { BROWSERBASE_PROJECT_ID: "proj-2" } })).status, 204);
   assert.deepEqual(rowOf((await api("GET", "/settings/tool-keys")).body, "browserbase").check, browserbase);
 
-  // Kept by a server from before checks (ToolKeys.save with no check): set, and not checked, saying so.
-  new ToolKeys(data, { AGENTRUN_SEAL_KEY: process.env.AGENTRUN_SEAL_KEY }, () => undefined).save("parallel", { values: { PARALLEL_API_KEY: fake() } });
-  const before = (await api("GET", "/settings/tool-keys")).body;
-  assert.deepEqual(rowOf(before, "parallel").check, { state: "not_checked", reason: "Saved before this server checked keys; save it again to check it" });
-  await meetsDocument(api, before);
+  // A key kept by a server from before checks (saved with no check) reads as not_checked ("Saved before this server checked keys;
+  // save it again to check it"): store-tool-keys' ("a save with a check shows it; a stored key with no check reads as not checked"),
+  // which seeds the store row directly, over the server here, which checks every key a PUT sends.
 });
 
 test("a key monid answers 403 for is kept as not checked: a key scoped away from the check's call may still work for its tools, so it is never refused", async (t) => {
@@ -136,7 +134,11 @@ test("a save still waiting on its provider when the server closes stores nothing
   const data = join(await scratch(t), "agents");
   const server = await startServe({ data, port: 0, faux: FAUX, fauxMonid: FAUX_MONID, drainTimeout: "5s" });
   const put = client(server.baseUrl, server.token)("PUT", "/settings/tool-keys/monid", { values: { MONID_API_KEY: MONID_KEY } }).catch((error) => ({ error }));
-  const signal = await monidStalled();
+  // The save reaches monid's check, which the fake holds; were it answered first (a refusal before the check), the
+  // check would never be reached: the race ends on whichever comes first, and that one says why.
+  const first = await Promise.race([monidStalled().then((signal) => ({ signal })), put.then((answered) => ({ answered }))]);
+  assert.ok(first.signal, `the save answered before it reached monid's check: ${JSON.stringify(first.answered?.body ?? first.answered?.error?.message)}`);
+  const { signal } = first;
   await server.close();
   // The fake answers only now, its signal ignored, and accepts the key: what the save does next runs on the promises
   // that answer resolves, all done before the next turn of the event loop.
