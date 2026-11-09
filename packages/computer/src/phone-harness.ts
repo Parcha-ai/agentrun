@@ -448,13 +448,14 @@ export class PhoneHarnessProvider implements ComputerProvider {
 	/**
 	 * One request, bounded by ms (default requestMs) and by the caller's signal. A failure is `uncertain` when the
 	 * service may have acted on the request all the same: no answer (lost, or cut off by its bound), or a 5xx other than
-	 * phones_busy, the service's own word that nothing was made.
+	 * phones_busy, the service's own word that nothing was made. A 409 profile_running is `held`: the phone is held by a
+	 * session, which may be the one this very request made (a gateway's retry of it is refused).
 	 */
 	async #api(
 		method: string,
 		path: string,
 		{ body, headers = {}, signal, ms = this.#requestMs }: { body?: unknown; headers?: Record<string, string>; signal?: AbortSignal; ms?: number } = {},
-	): Promise<Result<{ status: number; json: unknown }> & { uncertain?: boolean }> {
+	): Promise<Result<{ status: number; json: unknown }> & { uncertain?: boolean; held?: boolean }> {
 		const bound = this.#timeout(Math.max(1, Math.ceil(ms)));
 		const either = signal ? AbortSignal.any([signal, bound]) : bound;
 		const cut = (error: unknown): Result<never> & { uncertain?: boolean } => {
@@ -499,7 +500,7 @@ export class PhoneHarnessProvider implements ComputerProvider {
 		}
 		if (answer.code === "session_limit") return fail("limit", `${where}: ${said} (session_limit)`);
 		// One session at a time holds an iPhone (docs, guides/iphone): a second start answers 409 profile_running.
-		if (answer.code === "profile_running") return fail("limit", `${where}: ${said} (profile_running)`);
+		if (answer.code === "profile_running") return { ...fail("limit", `${where}: ${said} (profile_running)`), held: true };
 		if (response.status === 404) return fail("not_found", `${where}: ${said} (404)`);
 		const failed = fail("phone", `${where}: ${said} (${response.status}${answer.code ? `, ${answer.code}` : ""})`);
 		// A 5xx is no refusal: a gateway may answer it for a request the service went on to act on.
@@ -546,6 +547,27 @@ export class PhoneHarnessProvider implements ComputerProvider {
 		return entry !== undefined && this.#mine(entry) ? entry : undefined;
 	}
 
+	/**
+	 * Waits until each phone of this platform the ledger marks released is gone (its GET a 404, which forgets it), or
+	 * readyMs has passed, or signal fires. A read that fails otherwise stops the wait: create posts, and the vendor says.
+	 */
+	async #awaitReleased(signal?: AbortSignal): Promise<void> {
+		const until = this.#now() + this.#readyMs;
+		const ending = (await this.#ledger.list()).filter((entry) => this.#mine(entry) && entry.released !== undefined).map((entry) => entry.id);
+		for (const id of ending) {
+			for (;;) {
+				if (signal?.aborted || this.#now() >= until) return;
+				const read = await this.#session(id, signal);
+				if (!read.ok) {
+					if (read.error.code === "gone") await this.#ledger.remove(id);
+					break;
+				}
+				if (read.value.state !== "closing" && read.value.state !== "ready" && read.value.state !== "provisioning") break;
+				await this.#sleep(this.#pollMs);
+			}
+		}
+	}
+
 	/** An entry for this provider's platform: an iPhone's names it; an Android's is written as before. */
 	#entry(fields: Omit<PhoneLedgerEntry, "platform">): PhoneLedgerEntry {
 		return this.#platform === "ios" ? { ...fields, platform: "ios" } : fields;
@@ -581,6 +603,10 @@ export class PhoneHarnessProvider implements ComputerProvider {
 		const refusals = this.check(spec);
 		if (refusals.length > 0) return fail("refused", refusals.map(({ field, message }) => `${field}: ${message}`).join("; "));
 		if (signal?.aborted) return fail("aborted", "create was aborted before the phone harness was asked");
+		// One session at a time holds an iPhone, and this provider's own released one stays closing a while (the end is
+		// asynchronous): wait for it to end, bounded by readyMs, before posting. Another holder still meets a limit in words.
+		if (this.#platform === "ios") await this.#awaitReleased(signal);
+		if (signal?.aborted) return fail("aborted", "create was aborted before the phone harness was asked");
 		const from = this.#now();
 		const requestKey = randomBytes(16).toString("hex");
 		const timeout_seconds = Math.ceil(spec.lifetimeMs / 1000);
@@ -607,6 +633,19 @@ export class PhoneHarnessProvider implements ComputerProvider {
 			if (!recovered.ok) return fail(cancelled ? "aborted" : "phone", `${why}; and the service has no session for the request: ${recovered.error.message}; ${kept}`);
 			first = sessionOf(recovered.value.json, `GET /sessions/requests/${requestKey}`);
 			if (!first.ok) return fail(cancelled ? "aborted" : "phone", `${why}; and its recovery answered no session: ${first.error.message}; ${kept}`);
+		} else if (!posted.ok && posted.held) {
+			// 409 profile_running is no proof nothing was made: a gateway's retry of this POST is refused by the session the
+			// first attempt made. Ask by the key once: a session found is this create's, and adopted.
+			const asked = await this.#api("GET", `/sessions/requests/${requestKey}`);
+			const found = asked.ok ? sessionOf(asked.value.json, `GET /sessions/requests/${requestKey}`) : undefined;
+			if (found?.ok) first = found;
+			else if (!asked.ok && asked.error.code !== "not_found") {
+				return fail("limit", `${posted.error.message}; and the service could not be asked for the request: ${asked.error.message}; the ledger keeps the request's key, so list() finds the phone if it was made`);
+			} else {
+				// Another session holds the phone, and none was made for this request: the key is forgotten.
+				await this.#ledger.remove(pending);
+				return posted;
+			}
 		} else if (!posted.ok) {
 			// The phone harness refused the request: nothing was made, and the key is forgotten.
 			await this.#ledger.remove(pending);
@@ -823,11 +862,8 @@ export class PhoneHarnessProvider implements ComputerProvider {
 		return fail("phone", `adb connected to the phone, and the adb server still lists it as ${last}, not a device`);
 	}
 
-	/**
-	 * An iPhone's connection: its session's control grant, on the API's own origin, opened with GET /ops. The token is
-	 * sent nowhere else, and named in no words: a grant on another origin is refused before any request.
-	 */
-	async #connectControl(id: string, session: Session): Promise<Result<ComputerConnection>> {
+	/** A session's control grant this provider can use: a URL on the API's own origin, and a token fit for a header. */
+	#grantOf(id: string, session: Session): Result<{ url: string; token: string }> {
 		const { url, token } = session.control ?? {};
 		// The token goes in a header: printable ASCII with no space, so nothing in it can break the header.
 		if (typeof url !== "string" || typeof token !== "string" || !/^[\x21-\x7e]{1,4096}$/.test(token)) {
@@ -843,7 +879,24 @@ export class PhoneHarnessProvider implements ComputerProvider {
 		if (where.origin !== api.origin) {
 			return fail("phone", `the phone harness gave the iPhone ${id} a control URL on ${where.host}, not ${api.host}: its token is sent only to the API's own host`);
 		}
-		const client = controlClient({ url, token, groups: IOS_GROUPS, fetch: this.#fetch, sleep: this.#sleep, timeout: this.#timeout });
+		return ok({ url, token });
+	}
+
+	/**
+	 * An iPhone's connection: its session's control grant, on the API's own origin, opened with GET /ops. The token is
+	 * sent nowhere else, and named in no words: a grant on another origin is refused before any request.
+	 */
+	async #connectControl(id: string, session: Session): Promise<Result<ComputerConnection>> {
+		const grant = this.#grantOf(id, session);
+		if (!grant.ok) return grant;
+		// A grant that expires before its session (a 404 on an op) is renewed once from the session's own read.
+		const renew = async () => {
+			const read = await this.#session(id);
+			if (!read.ok) return read;
+			if (read.value.state !== "ready") return fail("gone", `${id} is ${read.value.state}, not ready`);
+			return this.#grantOf(id, read.value);
+		};
+		const client = controlClient({ ...grant.value, groups: IOS_GROUPS, fetch: this.#fetch, sleep: this.#sleep, timeout: this.#timeout, renew });
 		const opened = await client.open(this.#daemonVersion);
 		if (!opened.ok) {
 			client.close();

@@ -1951,9 +1951,16 @@ guides/iphone, and its open client).
 
 - **create** posts `{ platform: "ios", kind: "device", device_id?, timeout_seconds }`. `deviceId` names which iPhone,
   and may be left out while the account holds one. An account with no iPhone is refused in the vendor's words.
+  - One session at a time holds the iPhone, and the vendor ends a session asynchronously: create first waits, bounded
+    by `readyMs`, until this provider's own released iPhone is gone.
+  - A 409 `profile_running` is no proof nothing was made (a gateway's retry of the POST is refused by the session the
+    first attempt made): create asks `GET /sessions/requests/<key>` once and adopts a session it finds; else the key is
+    forgotten and create answers `limit` in the vendor's words.
 - **connect** reads the ready session's `control { url, token }`. The token is a bearer of the phone: it goes only in
   the Authorization header, and only to the API's own origin (a control URL on another host is refused before any
-  request); no result, error or log holds it, nor the URL's path, which is the grant. `GET <url>/ops` lists what the
+  request); no result, error or log holds it, nor the URL's path, which is the grant. A request the grant answers 404
+  (it may expire before the session) reads the session once and is sent again on a fresh grant; with none it is
+  `gone`. `GET <url>/ops` lists what the
   phone takes, and connect refuses a phone that lacks an op a declared group needs, naming each one. Then a client in
   this process answers each method with `POST <url>/op { op, kw }`, one op at a time:
   - `screen.shot`: `screen.capture`'s PNG, its own pixels (never downscaled), cropped locally for a region; `scale` is

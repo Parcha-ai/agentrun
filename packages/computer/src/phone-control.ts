@@ -131,6 +131,12 @@ export interface ControlClientOptions {
 	sleep?: (ms: number) => Promise<void>;
 	/** A signal that fires after ms, which bounds an op; default AbortSignal.timeout. */
 	timeout?: (ms: number) => AbortSignal;
+	/**
+	 * The session's grant as it is now, read again: a request answered 404 (the grant may expire before the session) asks
+	 * it once, and is sent again on a fresh grant; the same grant, or none, leaves the request gone. The provider checks
+	 * its origin.
+	 */
+	renew?: () => Promise<Result<{ url: string; token: string }>>;
 }
 
 /** The in-process client of one cloud iPhone over its control API. */
@@ -146,10 +152,11 @@ type Op = { op: string; kw: Record<string, unknown>; ms?: number };
 type Plan = { ops: Op[]; waitMs?: number };
 
 export class ControlClient implements ComputerClient {
-	readonly #url: string;
-	readonly #token: string;
-	readonly #origin: string;
-	readonly #path: string;
+	#url = "";
+	#token = "";
+	/** Every token and grant path this client has held: each is scrubbed from every word, a renewed one's old as well. */
+	readonly #secrets: Array<[string, string]> = [];
+	readonly #renew: ControlClientOptions["renew"];
 	readonly #groups: readonly Group[];
 	readonly #fetch: typeof globalThis.fetch;
 	readonly #sleep: (ms: number) => Promise<void>;
@@ -164,27 +171,45 @@ export class ControlClient implements ComputerClient {
 	#queue: Promise<unknown> = Promise.resolve();
 
 	constructor(options: ControlClientOptions) {
-		const url = new URL(options.url);
-		this.#url = options.url.replace(/\/+$/, "");
-		this.#origin = url.origin;
-		this.#path = url.pathname.replace(/\/+$/, "");
-		this.#token = options.token;
+		this.#use(options);
+		this.#renew = options.renew;
 		this.#groups = [...options.groups];
 		this.#fetch = options.fetch ?? globalThis.fetch;
 		this.#sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
 		this.#timeout = options.timeout ?? ((ms) => AbortSignal.timeout(ms));
 	}
 
-	/** Words without the token or the grant, whatever the vendor echoed: the URL is named by its host alone. */
+	/** Takes a grant: its URL and token, each kept among the secrets scrubbed from words. */
+	#use({ url, token }: { url: string; token: string }): void {
+		this.#url = url.replace(/\/+$/, "");
+		this.#token = token;
+		const path = new URL(url).pathname.replace(/\/+$/, "");
+		this.#secrets.push([token, path]);
+	}
+
+	/** Words without any token or grant, whatever the vendor echoed: the URL is named by its host alone. */
 	#clean(text: string): string {
-		let out = text.replaceAll(this.#token, "[the token]");
-		if (this.#path !== "" && this.#path !== "/") out = out.replaceAll(this.#path, "/[the grant]");
+		let out = text;
+		for (const [token, path] of this.#secrets) {
+			out = out.replaceAll(token, "[the token]");
+			if (path !== "" && path !== "/") out = out.replaceAll(path, "/[the grant]");
+		}
 		return out;
 	}
 
-	/** One request to the control API, after the one before it: its JSON, or a failure in words. */
+	/**
+	 * One request to the control API, after the one before it: its JSON, or a failure in words. A 404 (gone) asks renew
+	 * once; on a fresh grant the request is sent again, else it stays gone.
+	 */
 	#request(method: "GET" | "POST", path: string, body: unknown, what: string, ms: number, signal?: AbortSignal): Promise<Result<unknown>> {
-		const turn = this.#queue.then(() => this.#send(method, path, body, what, ms, signal));
+		const turn = this.#queue.then(async () => {
+			const sent = await this.#send(method, path, body, what, ms, signal);
+			if (sent.ok || sent.error.code !== "gone" || this.#renew === undefined || this.#closed) return sent;
+			const fresh = await this.#renew();
+			if (!fresh.ok || fresh.value.token === this.#token) return sent;
+			this.#use(fresh.value);
+			return this.#send(method, path, body, what, ms, signal);
+		});
 		this.#queue = turn.catch(() => undefined);
 		return turn;
 	}
