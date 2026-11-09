@@ -14,6 +14,7 @@ const { openSqliteStore } = await import("../dist/store/sqlite/store.js");
 const { adapterRunSpecFromLaunch } = await import("../dist/runner/adapter-run-spec.js");
 const { runFolder } = await import("../dist/workspace/paths.js");
 const { Uploads } = await import("../dist/uploads.js");
+const { putSealedKey } = await import("../dist/server-keys.js");
 
 /** A test seal key, no real one: the live-viewer tokens are sealed under it. */
 const SEAL_KEY = Buffer.alloc(32, 7);
@@ -28,8 +29,10 @@ const stubRoute = async () => ({ model: "faux-1", provider: { api: "anthropic-me
  *   settings the server's tool settings saved in the one store (store.settings), or none
  *   routeOf  the model route (a stub by default)
  *   uploads  [{ path, text, contentType? }] reserved and received as ready files, their ids put on launch.files
+ *   env      the runner's base environment (deps.env), none by default
+ *   keys     server keys saved sealed in the one store (store.sealedKeys), as the settings API saves them
  */
-export async function specFor(t, { body = {}, launch = {}, settings, routeOf = stubRoute, uploads = [] } = {}) {
+export async function specFor(t, { body = {}, launch = {}, settings, routeOf = stubRoute, uploads = [], env = {}, keys = {} } = {}) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-spec-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -43,6 +46,7 @@ export async function specFor(t, { body = {}, launch = {}, settings, routeOf = s
   await server.agents.create({ id: "agent-1", name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", ...body } });
   await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" });
   if (settings !== undefined) await server.settings.put("tool-settings", settings);
+  for (const [name, value] of Object.entries(keys)) await putSealedKey(server, SEAL_KEY, name, value);
   await server.flush?.();
   // Ready uploads the run names: reserved and received into the data directory's files/, their ids onto launch.files.
   const fileIds = [];
@@ -63,7 +67,7 @@ export async function specFor(t, { body = {}, launch = {}, settings, routeOf = s
   let models = createModels();
   harness = await Harness.open(store.journal(claim), { models: () => models, registry, onReport: () => {} }, ctx);
   const run = { harness, registry, setModels: (given) => (models = given) };
-  const deps = { env: {}, data: dir, journal: (c) => store.journal(c), store, sealKey: SEAL_KEY, routeOf };
+  const deps = { env, data: dir, journal: (c) => store.journal(c), store, sealKey: SEAL_KEY, routeOf };
   const launchBody = { input: { content: "Do the thing." }, title: "t", place: { mode: "runner" }, model: { provider: "anthropic", modelId: "claude-sonnet-5.5" }, ...(fileIds.length ? { files: fileIds } : {}), ...launch };
   const spec = await adapterRunSpecFromLaunch(launchBody, run, deps, claim);
   return { spec, store, server, claim, dir, run, workFolder };
