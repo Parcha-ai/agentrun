@@ -21,6 +21,7 @@ import type { KernelHooks, ToolCall } from "./conformance/subject.js";
 import { type AnswerData, type ApprovalPrice, type AskData, type BudgetData, type CallEndData, type CallStartData, type CallStatus, type EndData, KINDS, type MessageData, type RaiseData, withdrawnAnswers } from "./journal-kinds.js";
 import { originOf, RUN_RESUMED } from "@parcha/pi-durable-agent/timeline";
 import { type AlsoRow, type Claim, type Command, type CommandOutcome, deniedText, endedBy, type EndOfRunAnswer, type EndOfRunTurn, type Loop, type LoopDeps, type LoopEnd, type LoopFactory, noteOf, type StopReason } from "./loop-contract.js";
+import { deniedText as setToDenyText } from "../refusal-words.js";
 import { answerText, REFLECT_NOTE_ONLY, reflectRequestId, underLearning, WRITES } from "./end-of-run.js";
 import { approvalOf, CLOSE_MS, CUT_STEP_MS, STOP_SETTLE_MS, commandRequest, cutLast, DEFAULT_RESTART_LIMIT, entriesOf, findData, Gate, heldReporter, Interrupted, KernelFault, Parked, quiet, restartLimited, writesEntry, writesSubmission } from "./loop.js";
 import type { PiRun, PiSessionIO, PreIntentAnswer, PreIntentCall } from "./adapters/pi.js";
@@ -168,6 +169,9 @@ export interface AdapterLoopOptions {
   /** The gate's clock (epoch ms): when an ask was asked and answered. Default Date.now. */
   readonly now?: () => number;
 }
+
+/** The most of a harness's own turn error a failed run's summary keeps. */
+const TURN_ERROR_MAX = 500;
 
 /** A host check's refusal as the cap's rule reads it (AdapterRunSpec.cap.park). */
 const refusalOf = (refusal: Refusal) => ({ message: refusal.refuse, forGood: refusal.forGood ?? true, ...(refusal.figures ? { figures: refusal.figures } : {}) });
@@ -782,7 +786,13 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           }
           if (park?.outcome === "parked") return await parkAtCap(harness, root, gate, { pending: park.pending, words: park.words });
           data = { state: "failed", summary: park?.outcome === "failed" ? park.error : refused.refuse };
-        } else if (outcome.status !== "completed") data = { state: "failed", summary: `the run gave no answer (${outcome.status})` };
+        } else if (outcome.status !== "completed") {
+          // A turn that ended on its harness's own error (a CLI's: a codex run whose MCP door could not be reached) fails
+          // the run in those words, bounded; serve redacts a run's summary as it serves it, as every summary. With none,
+          // the loop's own words.
+          const said = outcome.error?.trim();
+          data = { state: "failed", summary: said ? said.slice(0, TURN_ERROR_MAX) : `the run gave no answer (${outcome.status})` };
+        }
         else {
           // An answer cut at the model's output limit is unfinished: the run fails, saying so, never ended (loop.ts cutLast,
           // the direct loop's rule: the words are loop-contract's cutAtLimit).
@@ -829,7 +839,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       await hooks.beforeIntent(kernelCall);
       const decision = (await spec.gate?.(kernelCall)) ?? "allow";
       if (typeof decision === "object") return { deny: decision.deny };
-      if (decision === "deny") return { deny: `Permission denied: ${call.tool} is set to deny.` };
+      // Main's words for a tool set to deny (tool-gate's deniedText, from its one copy in refusal-words.ts).
+      if (decision === "deny") return { deny: setToDenyText(call.tool) };
       if (decision === "allow") return "allow";
       const answer = await answerOf(call, spec.approvalPrice?.(kernelCall) ?? null);
       if (answer === "park") return { park: true };
