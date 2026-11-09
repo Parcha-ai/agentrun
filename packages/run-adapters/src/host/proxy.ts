@@ -1096,10 +1096,11 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
       res.writeHead(upstream.status, { "content-type": contentType });
       const decoder = new TextDecoder();
       // The provider's own words in an error reach the harness with the credential this proxy sent, and the values of the
-      // headers it added, cut out, then the host's redactor (errorCut): an error answer, or an error event in a stream.
+      // headers it added, cut out, then the host's redactor (errorCut): an error answer, or an error event in a stream. Every
+      // value goes in, a short one too: an error is cut of each; a healthy event only of those of MIN_ECHO or more.
       const relay = errorCut(
         !upstream.ok ? "error" : /^text\/event-stream\b/i.test(contentType) ? "events" : "as-is",
-        echoForms([credential, ...Object.values(hostHeaders).filter((value) => value.length >= 8)]),
+        echoForms([credential, ...Object.values(hostHeaders)]),
         options.redact,
         (message) => say(`model proxy (${policy.id}): ${message}`),
       );
