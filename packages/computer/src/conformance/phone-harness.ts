@@ -203,9 +203,10 @@ function optionsOf({ env = process.env, adb, ...rest }: PhoneModuleOptions): Pho
 	return {
 		apiKey: settings.apiKey,
 		...(settings.platform ? { platform: settings.platform } : {}),
-		// The adb the run spawns starts from this environment with every adb variable dropped (adbCli's env), and this
-		// module's own names too: the API key has no business in adb's environment.
-		adb: adb ?? adbCli(settings.adb ?? "adb", { env: Object.fromEntries(Object.entries(env).filter(([name]) => !(Object.values(PHONE_ENV) as string[]).includes(name))) }),
+		// Every adb the run spawns, from a path given as the adb option or by its setting, starts from this environment
+		// with every adb variable dropped (adbCli's env), and this module's own names too: the API key has no business in
+		// adb's environment. A transport given as the option is used as it is: it spawns nothing of this module's.
+		adb: adb !== undefined && typeof adb !== "string" ? adb : adbCli(adb ?? settings.adb ?? "adb", { env: Object.fromEntries(Object.entries(env).filter(([name]) => !(Object.values(PHONE_ENV) as string[]).includes(name))) }),
 		ledger: fileLedger(settings.ledgerPath ?? join(tmpdir(), "agentrun-phone-ledger.json")),
 		maxLifetimeMs: RUN_MAX_LIFETIME_MS,
 		...rest,
