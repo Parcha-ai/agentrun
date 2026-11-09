@@ -327,7 +327,8 @@ class SqliteStore implements Store {
       list: async ({ archived = false } = {}) =>
         (await db.all<AgentRecord>(`SELECT ${AGENT_COLUMNS} FROM agents WHERE archived_at IS ${archived ? "NOT NULL" : "NULL"} ORDER BY created_at, id`)).map(agentOf),
       archive: async (id, archived) => {
-        await db.write([{ sql: "UPDATE agents SET archived_at = ? WHERE id = ?", params: [archived ? now() : null, id] }]);
+        // Re-archiving an already-archived agent keeps the first time (COALESCE); unarchiving clears it.
+        await db.write([{ sql: archived ? "UPDATE agents SET archived_at = COALESCE(archived_at, ?) WHERE id = ?" : "UPDATE agents SET archived_at = NULL WHERE id = ?", params: archived ? [now(), id] : [id] }]);
       },
       addRevision: async ({ agentId, ...revision }) => {
         await db.transaction((tx) => insertRevision(tx, agentId, revision, now()));
