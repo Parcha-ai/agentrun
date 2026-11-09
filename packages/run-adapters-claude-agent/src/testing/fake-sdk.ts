@@ -45,6 +45,9 @@ import type { ClaudeAgentSdk } from '../harness.js';
  *   call and exits at once (the CLI dying mid-call).
  * - `mirror-error` yields the SDK's `system/mirror_error` (a dropped mirror
  *   batch), then answers as usual.
+ * - `cut <json answers>` says each answer in one turn; one the output limit
+ *   cut (stop_reason max_tokens) the CLI resumes with its recovery note, up
+ *   to 3 times, as Claude Code does, and the result says the last stop.
  */
 
 interface FakeTool {
@@ -132,6 +135,10 @@ rl.on('line', (line) => {
 });
 rl.on('close', () => process.exit(0));
 `;
+
+/** How many times Claude Code resumes an answer its output limit cut, in the same turn, and the note it resumes with. */
+const RECOVER_CUTS = 3;
+const RECOVERY_NOTE = 'Output token limit hit. Resume directly — no apology, no recap of what you were doing. Pick up mid-thought if that is where the cut happened. Break remaining work into smaller pieces.';
 
 /** The fake "CLI" with built-ins off: it lives until its stdin closes (the SDK closing the CLI). */
 const IDLE = `process.stdin.on('data', () => {}).on('end', () => process.exit(0))`;
@@ -413,6 +420,31 @@ export function fakeSdk(fake: FakeSdkOptions = {}): FakeSdk {
             yield { type: 'assistant', parent_tool_use_id: null, session_id: sessionId, message: { content: [{ type: 'tool_use', id, name: `mcp__hands__${dying[1]}` }] } };
             void tools.then((t) => t.get(dying[1]!)?.handler(JSON.parse(dying[2]!), { _meta: { 'claudecode/toolUseId': id } }));
             return;
+          }
+          // `cut <json>`: the model's answers in this turn, in order, each `{ text, cut? }`. A cut answer stops at the output
+          // limit (stop_reason max_tokens), and the CLI, as Claude Code does, asks again with its recovery note, up to
+          // RECOVER_CUTS times; past the list the model is cut again with nothing said. The result says the last answer's
+          // stop, with the turn's output tokens.
+          const cutting = /^cut (.*)$/s.exec(command);
+          if (cutting) {
+            const answers = JSON.parse(cutting[1]!) as { text: string; cut?: boolean }[];
+            let recovered = 0;
+            let stop = 'end_turn';
+            for (let at = 0; ; at++) {
+              const answer = answers[at] ?? { text: '', cut: true };
+              if (answer.text) yield* speak(answer.text);
+              stop = answer.cut ? 'max_tokens' : 'end_turn';
+              yield { type: 'stream_event', parent_tool_use_id: null, event: { type: 'message_delta', delta: { stop_reason: stop, stop_sequence: null }, usage: { output_tokens: 12 } } };
+              const b = entry('assistant', { message: { role: 'assistant', content: answer.text ? [{ type: 'text', text: answer.text }] : [], stop_reason: stop } });
+              await mirror([b]);
+              yield { type: 'assistant', parent_tool_use_id: null, uuid: b.uuid, session_id: sessionId, message: b.message };
+              if (!answer.cut || recovered >= RECOVER_CUTS) break;
+              recovered++;
+              await mirror([entry('user', { isMeta: true, message: { role: 'user', content: RECOVERY_NOTE } })]);
+            }
+            yield { type: 'result', subtype: 'success', is_error: false, result: 'ok', stop_reason: stop, usage: { output_tokens: 12 }, session_id: sessionId, user_message_uuids: consumed, queued_turn_count: 0 };
+            await mirror([{ type: 'last-prompt' }]);
+            continue;
           }
           const call = /^call (\S+) (.*)$/s.exec(command);
           if (call) {

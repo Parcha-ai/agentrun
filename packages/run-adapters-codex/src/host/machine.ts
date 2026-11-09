@@ -253,6 +253,7 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
     let announced: string | undefined;
     let open = 0;
     const rolloutListeners: ((line: string) => void)[] = [];
+    const cutListeners: ((stop: { outputTokens?: number }) => void)[] = [];
     let calls: CallHooks | undefined;
     const search = options.webSearch === "live";
     const price = options.proxy.price && search ? withWebSearches(options.proxy.price) : options.proxy.price;
@@ -288,6 +289,11 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
       ...(options.proxy.fetch ? { fetch: options.proxy.fetch } : {}),
       // The provider stopped the turn's answer on its content filter: no retry of it can pass, so the turn ends at once.
       onFiltered: (message) => ctx.halt?.(new Error(message)),
+      // The provider cut the turn's answer at its output limit: Codex would ask for it again (it retries an incomplete
+      // stream), so the harness ends the turn there, its answer cut.
+      onCut: (stop) => {
+        for (const listener of cutListeners) listener(stop);
+      },
     }, key);
     const lost = new AbortController();
     const children = new Set<SessionProcess>();
@@ -302,6 +308,7 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
       modelKey: key,
       announcedExec: () => announced,
       onRolloutLine: (listener) => void rolloutListeners.push(listener),
+      onCut: (listener) => void cutListeners.push(listener),
       onCalls: (given) => void (calls = given),
       ...(search || options.mcp || catalog ? {
         configure: (config: Record<string, TomlValue>) => {
