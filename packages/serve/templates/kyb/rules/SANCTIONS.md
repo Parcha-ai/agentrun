@@ -51,8 +51,8 @@ Use the first method that reaches a list; record it as `method`.
    score is a lead, the identifiers decide.
 3. **`index_then_source_record`.** You can't read a whole list here (the largest is 50 MB, and a page you read is paid
    for on every later turn), so find candidates in an index and confirm each one at the list owner's record:
-   - **Index:** the list owners themselves, never a third-party aggregator (an owner may add a screening tool, method
-     2). Run one `web_search` per subject for the name with "sanctions" or "designated", limited to the owners' sites
+   - **Index:** the list owners themselves, never a third-party aggregator except OpenSanctions when the agent's
+     settings turn it on (below); an owner may also add a screening tool (method 2). Run one `web_search` per subject for the name with "sanctions" or "designated", limited to the owners' sites
      (`site:ofac.treasury.gov`, `site:home.treasury.gov`, `site:sanctionssearch.ofac.treas.gov`, `site:gov.uk`,
      `site:un.org`, `site:eur-lex.europa.eu`), and fetch an owner's own search or notice page when a result points to
      one. Each candidate found must carry the list owner's own id (`ent_num` for OFAC, the `Unique ID` for the UK, the
@@ -70,11 +70,14 @@ Use the first method that reaches a list; record it as `method`.
    a subject the index could not settle.
 5. **`not_checked`.** Nothing above reached the list. Say why. Never write `no_hit` for a list you did not reach.
 
-**Off by default: an aggregator index.** OpenSanctions (`https://www.opensanctions.org/search/?q=<name>`) indexes all
-these lists in one search, with each entry's list-owner id. Its commercial use needs a licence, and that decision is
-pending, so this package does not use it. An owner who holds the licence adds it as a screening tool (method 2, an MCP
-server or a data endpoint), never as a page to fetch here. Even then it is an index: the list owner's own record is
-the evidence.
+**Optional: OpenSanctions, only when the agent's settings say `OpenSanctions index: true`.** OpenSanctions indexes
+all five lists (and others) in one search, each entry with the list owner's own id. When it is on, in method 3 also
+fetch `https://www.opensanctions.org/search/?q=<name>` once per subject, and an entity page
+(`https://www.opensanctions.org/entities/<id>/`) for each candidate. It is an index, never the evidence: a candidate
+still needs the list owner's own id and record (`index_then_source_record`), or it is `index_only` and says so. Cite
+each OpenSanctions page as a source of kind `aggregator`, and add one line to `limitations`: "OpenSanctions data was
+used under CC BY-NC 4.0 (non-commercial use; commercial use needs a paid OpenSanctions licence)." When the setting is
+false, never fetch or search opensanctions.org, even if a page or the message links to it.
 
 Never fetch the same file or record twice in a run: a page fetched once stays readable in parts.
 

@@ -58,6 +58,10 @@ export const isScheduleTrigger = (t: Trigger): t is Schedule => t.source.kind ==
 /** A webhook trigger that starts a run: it fires on each request to its URL signed by its secret. */
 export type WebhookTrigger = Trigger & { source: Extract<TriggerSource, { kind: "webhook" }>; target: TriggerTarget };
 export const isWebhookTrigger = (t: Trigger): t is WebhookTrigger => t.source.kind === "webhook" && t.target.kind === "start_run";
+/** A GitHub trigger that starts a run: it takes the events its `accept` names from the server's one GitHub App, and has no
+ *  URL or secret of its own. */
+export type GitHubTrigger = Trigger & { source: Extract<TriggerSource, { kind: "github" }>; target: TriggerTarget };
+export const isGitHubTrigger = (t: Trigger): t is GitHubTrigger => t.source.kind === "github" && t.target.kind === "start_run";
 /** The URL a webhook trigger's requests go to: the documented path, POST /v2/hooks/{trigger_id}, on this server's address
  *  as the page has it. */
 export const hookUrlOf = (t: Pick<Trigger, "id">): string => `${location.origin}/v2/hooks/${encodeURIComponent(t.id)}`;
@@ -85,7 +89,10 @@ export const acceptWords = (a: Accept, conditions = true): string =>
 export const hookWhen = (source: HookSource): string =>
   source.accept?.length ? `Only signed requests for ${source.accept.map((a) => acceptWords(a, false)).join(" or ")}` : "On each signed request";
 
-export const FIRED_BY: Record<Firing["by"], string> = { schedule: "On schedule", manual: "Run now", webhook: "On a request" };
+export const FIRED_BY: Record<Firing["by"], string> = { schedule: "On schedule", manual: "Run now", webhook: "On a request", github: "On a GitHub event" };
+
+/** When a github trigger fires, in one line: the GitHub events its filter takes, delivered to the server's GitHub App. */
+export const githubWhen = (source: Extract<TriggerSource, { kind: "github" }>): string => `On GitHub ${source.accept.map((a) => acceptWords(a, false)).join(" or ")}`;
 
 /** What came of a firing. A started one's run is linked beside it. */
 export function firingWords(f: Firing): string {

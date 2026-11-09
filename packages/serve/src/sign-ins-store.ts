@@ -1,5 +1,5 @@
 // An agent's saved browser sign-ins, over the one store (A: store.signIns), the store-backed replacement for sign-ins.ts's
-// file store (tl-browser's rules, the E1 store half of the E1/E2/E3 split). The cookies stay at the browser's vendor (a
+// file store (the browser sign-in rules, the E1 store half of the E1/E2/E3 split). The cookies stay at the browser's vendor (a
 // Browserbase context, a Kernel profile); this server keeps one sealed pointer per agent and provider, sealed with the
 // store's one rule (store/seal.ts, AAD sign_ins|<agent>:<provider>|pointer), never served, never written to a run in the
 // clear. Only the owner reads a sign-in's name ("default") and state. A run gets the pointer only at its launch, over its
@@ -227,13 +227,21 @@ export async function forgetSignInView(
   return { key, removed };
 }
 
+/** The reads that find what a run was handed (handed-values.ts handedValuesOf): an agent's live pointer and its
+ *  forgotten ones, opened under `sealKey`. Read-only: what the runner's learning end holds to refuse a run's pointer. */
+export function signInReads(store: SignInsStore, sealKey: Buffer | undefined) {
+  return {
+    peek: (agentId: string, resolution: string) => peekSignIn(store, sealKey, agentId, resolution),
+    forgotten: (agentId: string, resolution: string) => forgottenSignIns(store, sealKey, agentId, resolution),
+  };
+}
+
 /** The old SignIns interface's read and forget surface over the store (view, peek, forgotten, forget), so the switch can
  *  wire it where `new SignIns(...)` was, with the v2 answers unchanged. */
 export function signInsOverStore(store: SignInsStore, sealKey: Buffer | undefined, vendors: SignInVendors) {
   return {
     view: (agentId: string) => signInViews(store, sealKey, agentId),
-    peek: (agentId: string, resolution: string) => peekSignIn(store, sealKey, agentId, resolution),
-    forgotten: (agentId: string, resolution: string) => forgottenSignIns(store, sealKey, agentId, resolution),
+    ...signInReads(store, sealKey),
     forget: (agentId: string, key: string) => forgetSignInView(store, sealKey, vendors, agentId, key),
   };
 }
