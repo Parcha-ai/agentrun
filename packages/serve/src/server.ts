@@ -43,7 +43,7 @@ import { Owner, passwordProblem, SESSION_MS } from "./owner.js";
 import { answerPage, byOwnerSession, heldSessions, isJson, overHttps, ownerCookie, ownOrigin, sendHostRefused, signedIn } from "./page.js";
 import { hostFix, hostName, loopbackNames } from "./host-check.js";
 import { handoverById, type LiveHandover, liveRest, liveViewer, liveViewerById, liveViewerFor, liveViewerLink, OpenViewers, proxyLiveUpgrade, readHandover, readHandovers, serveViewerFile, viewerAnswers, viewerLink } from "./browser-live.js";
-import { answerAsk } from "./browser-person.js";
+import { browserHandBack, handBackTarget } from "./browser-commands.js";
 import { durationMs, logLine } from "./print.js";
 import { knownToolCostOf, type RunMoment, type State, type Status, toolCostOf, WITHHELD_SIGN_IN } from "./run-view.js";
 import { approve, archiveRun, cancel, message, raiseCap, type StartDeps, type StartOptions, startRun, stop as stopRunOverStore, WAITS_ON_A_PERSON } from "./runs-over-store.js";
@@ -51,7 +51,7 @@ import { momentOverStore, summaryOverStore, type ViewDeps, viewOverStore, withhe
 import { listRunFiles as listRunFilesOverStore, readRunFile as readRunFileOverStore, runBrowserState, runGraphView, type RunReadsDeps, runTimelines } from "./run-reads-over-store.js";
 import { triggerTargets, type TriggerTargetDeps } from "./trigger-targets.js";
 import { listRuns as listRunsOverStore, readRun as readRunOverStore, runOfOrigin as runOfOriginOverStore } from "./store-reads/runs.js";
-import { runTimeline } from "./store-reads/journal.js";
+import { runEntries, runTimeline } from "./store-reads/journal.js";
 import { watchRun } from "./live/stream.js";
 import { stats as statsOverStore } from "./store-reads/stats.js";
 import { analytics as analyticsOverStore } from "./store-reads/analytics.js";
@@ -2180,10 +2180,20 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         return send(res, 200, await runBrowserState(store, id, runReadsDeps));
       }
       case "handBackRunBrowser": {
-        await needRun(id);
-        await bodyOf(req);
-        // TODO(E2c): handBackRunBrowserOverStore (the hand-off ask/answer as command rows, P8).
-        return runReadsTodo();
+        // The owner's answer to the agent's ask for them in its browser (browser-commands.ts): the first answer wins, the same
+        // one again is that answer, a different one is 409; an ask past its expiry has `expired`. A hand-over command row the
+        // runner reads and applies.
+        const run = await needRun(id);
+        const body = await bodyOf(req);
+        const issues = unknownFields(body, ["outcome"]);
+        if (body.outcome !== "done" && body.outcome !== "cancelled") issues.push({ field: "outcome", reason: body.outcome === undefined ? "missing" : "not_an_option", message: "outcome is done or cancelled" });
+        if (issues.length) throw invalid(issues);
+        // The ask this answer targets, read over the run's hand-over entries and the hand-back commands before this write;
+        // browserHandBack writes the answer, then lets the lowest-id command win, re-reading the journal for a live view's own give.
+        const entries = (await runEntries(store, run.id, ctx)) as unknown as Parameters<typeof handBackTarget>[0];
+        const target = handBackTarget(entries, await store.commands(run.id, 0));
+        const answered = await browserHandBack(store, run.id, body.outcome as "done" | "cancelled", target, Date.now(), async () => (await runEntries(store, run.id, ctx)) as unknown as Parameters<typeof handBackTarget>[0]);
+        return send(res, 200, { outcome: answered.outcome }, { "cache-control": "no-store" });
       }
       case "listRunFiles": {
         await needRun(id);
