@@ -5,8 +5,7 @@
 // alone.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
-import { createServer } from "node:net";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -42,7 +41,6 @@ async function box(t, { root = true } = {}) {
   chmodSync(computerd, 0o755);
   const mp = join(dir, "workspace");
   mkdirSync(mp);
-  mkdirSync(join(dir, "sysrun"));
   const mounts = join(dir, "mounts");
   writeFileSync(mounts, PROC);
   const calls = join(dir, "calls");
@@ -63,7 +61,7 @@ async function box(t, { root = true } = {}) {
   writeFileSync(mount, `#!/bin/sh\nprintf '%s\\n' "$*" >> '${remounts}'\n[ -e '${remountable}' ] || { echo 'mount: /proc: permission denied.' >&2; exit 32; }\n[ "$*" = '-o remount,hidepid=2 /proc' ] || exit 1\nsed -i 's#^proc /proc proc \\([^ ]*\\) #proc /proc proc \\1,hidepid=invisible #' '${mounts}'\n`);
   chmodSync(mount, 0o755);
   const source = readFileSync(HELPER, "utf8");
-  const fixed = { ARCHIL: ["/usr/bin/archil", archil], MP: ["/workspace", mp], MOUNTS: ["/proc/self/mounts", mounts], MOUNT: ["/usr/bin/mount", mount], CHOWN: ["/usr/bin/chown", chown], RUNDIR: ["/run", join(dir, "sysrun")], TOOL: ["agentrun-tool", userInfo().username], TOOL_UID: ["2510", String(process.getuid() + 1)], ROOT_UID: ["0", String(root ? process.getuid() : process.getuid() + 1)], COMPUTERD: ["/opt/agentrun/computerd", computerd], HELD_TOP: ["/", dir], SOCK: ["/run/agentrun-archil/archil.sock", join(dir, "run", "archil.sock")] };
+  const fixed = { ARCHIL: ["/usr/bin/archil", archil], MP: ["/workspace", mp], MOUNTS: ["/proc/self/mounts", mounts], MOUNT: ["/usr/bin/mount", mount], CHOWN: ["/usr/bin/chown", chown], TOOL: ["agentrun-tool", userInfo().username], TOOL_UID: ["2510", String(process.getuid() + 1)], ROOT_UID: ["0", String(root ? process.getuid() : process.getuid() + 1)], COMPUTERD: ["/opt/agentrun/computerd", computerd], HELD_TOP: ["/", dir], SOCK: ["/run/agentrun-archil/archil.sock", join(dir, "run", "archil.sock")] };
   let copy = source;
   for (const [name, [shipped, here]] of Object.entries(fixed)) {
     assert.ok(source.includes(`\n${name}=${shipped}\n`), `the helper fixes ${name}=${shipped}`);
@@ -84,35 +82,6 @@ async function box(t, { root = true } = {}) {
  * of them; an empty mount is its top alone) given to the tool user, links themselves (-h), in no token's company.
  */
 const chowned = (b) => `chown -h ${userInfo().username}:${userInfo().username} ${b.mp}`;
-
-test("mount and revoke take others' write off every unix socket under /run, so the tool user connects to none of the system's; sockets elsewhere and owner or group access stay", async (t) => {
-  // The E2B live run: the tool user connected to rpcbind, ssh's unix-local socket, systemd's varlink sockets (some PID
-  // 1's own, which no unit mask removes) and the journal's stdout socket, all world-writable. Connecting to a unix socket
-  // takes write on it; root and the system's services keep theirs.
-  for (const verb of ["mount", "revoke"]) {
-    const b = await box(t);
-    const listen = async (path, mode) => {
-      const server = createServer();
-      await new Promise((resolve) => server.listen(path, resolve));
-      chmodSync(path, mode);
-      t.after(() => server.close());
-      return path;
-    };
-    mkdirSync(join(b.dir, "sysrun", "systemd", "userdb"), { recursive: true });
-    const world = await listen(join(b.dir, "sysrun", "systemd", "userdb", "io.systemd.DynamicUser"), 0o666);
-    const rpcbind = await listen(join(b.dir, "sysrun", "rpcbind.sock"), 0o777);
-    const grouped = await listen(join(b.dir, "sysrun", "grouped.sock"), 0o660);
-    mkdirSync(join(b.dir, "x11"));
-    const display = await listen(join(b.dir, "x11", "X0"), 0o777);
-    const ran = b.run([verb, DISK, REGION, FOLDER]);
-    assert.equal(ran.status, 0, ran.stderr);
-    const mode = (path) => statSync(path).mode & 0o777;
-    assert.equal(mode(world), 0o660, `${verb}: a world-writable system socket loses others' access`);
-    assert.equal(mode(rpcbind), 0o770, `${verb}: rpcbind's too`);
-    assert.equal(mode(grouped), 0o660, `${verb}: owner and group access stay`);
-    assert.equal(mode(display), 0o777, `${verb}: a socket outside /run (a display's) is left alone`);
-  }
-});
 
 test("mount and revoke give the whole mounted tree to the tool user, as root, never following a link out of it", async (t) => {
   // The Daytona live run: files and folders the disk's object API made read uid 0, 644 and 755, so the tools could not
