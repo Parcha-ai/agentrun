@@ -108,20 +108,30 @@ function breakDead(lockPath: string, dead: string, words: string): boolean {
 	const breaker = `${lockPath}.break`;
 	if (!take(breaker, words)) {
 		// Another waiter is breaking it. A breaker that died midway leaves its own lock, named by it: that one goes too.
+		// Two waiters may both find it dead and both remove it: the second finds it gone, and goes on.
 		const other = lockWords(breaker);
 		if (other === undefined) return true;
 		if (leftByTheDead(other) && lockWords(breaker) === other) {
-			unlinkSync(breaker);
+			removeIfThere(breaker);
 			return true;
 		}
 		return false;
 	}
 	try {
-		if (lockWords(lockPath) === dead) unlinkSync(lockPath);
+		if (lockWords(lockPath) === dead) removeIfThere(lockPath);
 	} finally {
-		unlinkSync(breaker);
+		removeIfThere(breaker);
 	}
 	return true;
+}
+
+/** Removes the file at path. One another waiter removed first is gone already, as asked: that is no failure. */
+function removeIfThere(path: string): void {
+	try {
+		unlinkSync(path);
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+	}
 }
 
 /**
@@ -154,7 +164,7 @@ export function fileLedger(path: string, { waitMs = LOCK_WAIT_MS }: { waitMs?: n
 				return fn();
 			} finally {
 				// Only its own lock: never one a breaker let another take.
-				if (lockWords(lockPath) === words) unlinkSync(lockPath);
+				if (lockWords(lockPath) === words) removeIfThere(lockPath);
 			}
 		});
 		queue = turn.catch(() => undefined);
