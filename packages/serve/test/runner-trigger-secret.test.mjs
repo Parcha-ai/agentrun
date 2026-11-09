@@ -3,6 +3,8 @@
 // among them, not only those in the runner's environment. A run its provider fails with an error quoting the trigger's
 // secret leaves it nowhere in the store in the clear: not in the run's row, not in its journal. The server's read-side cut
 // (server-secrets.test.mjs) is the second line, never the only one.
+// The run's input holds each spelling reversed, so the secret reaches the run only through the provider's error: a person's
+// own words are kept as given (the run's launch and its first message), and are no write of the run's to cut.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { test } from "node:test";
@@ -17,7 +19,7 @@ test("a run its provider fails quoting a webhook trigger's secret writes it nowh
   const secret = trigger.body.signing_secret;
   const key = Buffer.from(secret.slice("whsec_".length), "base64");
   const forms = { whole: secret, bare: secret.slice("whsec_".length), hex: key.toString("hex") };
-  const runId = (await server.api("POST", "/agents/target/runs", { input: { content: `Fail quoting: ${Object.values(forms).join(" ")}` } })).body.run_id;
+  const runId = (await server.api("POST", "/agents/target/runs", { input: { content: `Fail quoting reversed: ${Object.values(forms).map((one) => [...one].reverse().join("")).join(" ")}` } })).body.run_id;
   await follow(server.api, runId, ["failed"], { deadlineMs: 90_000 });
   await server.close();
   const bytes = storeBytes(server.data);
