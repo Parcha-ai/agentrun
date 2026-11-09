@@ -1303,9 +1303,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const githubConnection = () => github.view();
   /** What applying a template reads of the server (templates.ts TemplatesDeps). */
   const templateDeps: TemplatesDeps = { githubConnection };
-  // STOPGAP: a github_app MCP server's save-time listing token is set on the MCP registry's `appToken`; the store-backed
-  // registry gains that setter with the github-over-store MCP work, so until then the github MCP listing mints no token here
-  // (a run's own is minted in the runner, runner/mcp-github.ts). Every token minted is a server secret while it may be in use.
+  // A github_app MCP server's tools are listed with an installation token of the App, narrowed to one repository it covers
+  // with metadata read (tokenForListing); a run's own is minted in the runner (runner/github-app.ts). Every token minted
+  // is a server secret while it may be in use.
+  mcpServers.appToken = (signal) => githubConnect.tokenForListing(signal);
   secretStores.add("github-tokens", () => githubConnect.liveTokens());
   const triggers: Triggers = new Triggers({
     // The server's own store (the one it opened) holds the triggers a person writes and reads; a test may inject another
