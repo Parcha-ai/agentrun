@@ -265,6 +265,9 @@ async function openCliRecord(harness: Harness, journal: Gate["journal"], context
   };
 }
 
+/** A host check's refusal as the cap's rule reads it (AdapterRunSpec.cap.park). */
+const refusalOf = (refusal: Refusal) => ({ message: refusal.refuse, forGood: refusal.forGood ?? true, ...(refusal.figures ? { figures: refusal.figures } : {}) });
+
 /** Loops for runs on the adapter contract: `spec(claim, run)` gives each Session what it runs. */
 export function createAdapterLoop(spec: (claim: Claim, run: AdapterRun) => AdapterRunSpec | Promise<AdapterRunSpec>, options: AdapterLoopOptions = {}): LoopFactory {
   return (deps) => adapterLoop(spec, options, deps);
@@ -518,9 +521,27 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         // words.
         const paid = ledger.paid;
         let refused: Refusal | undefined;
+        /** The pause a refusal for room journaled before pi heard of it (pauseAtCap), the run parked with it. */
+        let pausedAtRefusal = false;
         const beforeRequest: BeforeRequest = async (request) => {
           const answer = await theCap().before(request);
-          if (answer && "refuse" in answer) refused = answer;
+          if (answer && "refuse" in answer) {
+            refused = answer;
+            // A refusal a raise could fix (the cap's rule, parkOf) journals its pause, the run parked, before the refusal
+            // reaches pi: pi stores the refused turn only after it, so a claim lost in between leaves the pause, and the next
+            // claim resumes the run parked (an unanswered pause), never ends it as a failed turn. One that cannot land (the
+            // journal sealed) is left to the turn's end, as before.
+            const park = spec.cap?.park(refusalOf(answer));
+            if (park?.outcome === "parked" && !pausedAtRefusal && harness && gate && !gate.sealed) {
+              const on = gate;
+              try {
+                await pauseAtCap(harness, root ?? (await harness.root(context)), on, { pending: park.pending, words: park.words });
+                pausedAtRefusal = true;
+              } catch {
+                // Not landed: the turn's end parks the run, or the claim's next holder does.
+              }
+            }
+          }
           return answer;
         };
         // The rule before a side effect for every paid model request, on the path every adapter's requests take: the
@@ -691,7 +712,13 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           // A turn the host's check refused: what that does to the run is the cap's rule (parkOf), as on main. A refusal a
           // raise could fix parks the run on a raise; one no raise could fix (or a check with no cap) fails it, in the
           // check's own words, never as a run with no answer.
-          const park = spec.cap?.park({ message: refused.refuse, forGood: refused.forGood ?? true, ...(refused.figures ? { figures: refused.figures } : {}) });
+          const park = spec.cap?.park(refusalOf(refused));
+          if (park?.outcome === "parked" && pausedAtRefusal) {
+            // Its pause and the run parked landed before pi heard of the refusal.
+            await releaseHost(harness);
+            gate.seal(new Parked());
+            return { state: "parked" };
+          }
           if (park?.outcome === "parked") return await parkAtCap(harness, root, gate, { pending: park.pending, words: park.words });
           data = { state: "failed", summary: park?.outcome === "failed" ? park.error : refused.refuse };
         } else if (outcome.status !== "completed") data = { state: "failed", summary: `the run gave no answer (${outcome.status})` };
@@ -966,6 +993,14 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
   /** The run parked at its cap: its pending budget as an agentrun.budget entry, in one commit with the run parked in the
    *  cap's words (as the ask park's entry and state), and the loop ends parked: a raise row wakes it. */
   async function parkAtCap(on: Harness, conversation: Conversation, theGate: Gate, data: BudgetData): Promise<LoopEnd> {
+    await pauseAtCap(on, conversation, theGate, data);
+    await releaseHost(on);
+    theGate.seal(new Parked());
+    return { state: "parked" };
+  }
+
+  /** The run's pause at its cap: its agentrun.budget entry, in one commit with the run parked in the cap's words. */
+  async function pauseAtCap(on: Harness, conversation: Conversation, theGate: Gate, data: BudgetData): Promise<void> {
     const parkedAt = theGate.expect(writesEntry(KINDS.budget), { run: { state: "parked", summary: data.words } });
     // A seal while the commit is in flight fails it before it is awaited: handled here, read below.
     parkedAt.catch(() => undefined);
@@ -976,9 +1011,6 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       throw error;
     }
     await parkedAt;
-    await releaseHost(on);
-    theGate.seal(new Parked());
-    return { state: "parked" };
   }
 
   /** Waits, at most CLOSE_MS, until every paid request the session admitted is booked: a person's stop is booked at what
