@@ -249,10 +249,8 @@ test("handed no seal key, the server keeps a key under the one it made at its st
 test("values sealed under another key, under the key a server handed none makes, or in a damaged row do not open: the server starts, GET asks for them again with why, the log says so once naming where they are kept and no value, and a PUT seals anew", async (t) => {
   withEnv(t, {}, KEYS);
   const data = join(await scratch(t), "agents");
-  // Where the server keeps saved keys, and so what its log names: the store's sealed_keys rows (tool-keys-store.ts), or,
-  // on a server that keeps them in its tool-keys file (tool-keys.ts), that file. Read once the first server saved.
-  const file = join(data, "tool-keys.json");
-  let kept;
+  // Where the log says the keys are kept: the store's sealed_keys rows (tool-keys-store.ts, the reenter line).
+  const kept = "store:sealed_keys";
   const lines = [];
   const open = new Set();
   t.after(() => Promise.all([...open].map((server) => server.close())));
@@ -269,7 +267,6 @@ test("values sealed under another key, under the key a server handed none makes,
   for (const [id, name] of [["parallel", "PARALLEL_API_KEY"], ["monid", "MONID_API_KEY"]]) assert.equal((await server.api("PUT", `/settings/tool-keys/${id}`, { values: { [name]: values[name] } })).status, 204);
   await server.close();
 
-  kept = existsSync(file) ? file : "store:sealed_keys";
   server = await started(second);
   const parallel = async () => (await server.api("GET", "/capabilities")).body.workflows.decisions.providers.find((p) => p.id === "parallel").available;
   assert.equal(await parallel(), false, "a value that does not open is absent: no key, never a crash or the ciphertext");
@@ -309,19 +306,15 @@ test("values sealed under another key, under the key a server handed none makes,
   assert.deepEqual(missing.body.reenter, { reason: "seal_key_changed", fields: ["PARALLEL_API_KEY", "MONID_API_KEY"] });
   await server.close();
 
-  // Damage where the keys are kept. In the store: Parallel's sealed bytes, under the key it was sealed with, overwritten,
-  // and Monid's row (still under the first key) removed, so the damage is the only thing that does not open: it names its
-  // field. In the tool-keys file: the file no longer reads, which names no field.
-  if (kept === file) writeFileSync(file, "{ not json");
-  else {
-    const store = await openSqliteStore({ file: join(data, STORE_FILE), role: "server", now: Date.now });
-    await store.sealedKeys.put("PARALLEL_API_KEY", Uint8Array.from(Buffer.from("garbage-not-sealed")));
-    await store.sealedKeys.remove("MONID_API_KEY");
-    await store.close();
-  }
+  // A damaged row: Parallel's sealed bytes, under the key it was sealed with, overwritten; Monid's row (still under the
+  // first key) removed, so the damage is the only thing that does not open.
+  const store = await openSqliteStore({ file: join(data, STORE_FILE), role: "server", now: Date.now });
+  await store.sealedKeys.put("PARALLEL_API_KEY", Uint8Array.from(Buffer.from("garbage-not-sealed")));
+  await store.sealedKeys.remove("MONID_API_KEY");
+  await store.close();
   server = await started(second);
-  assert.equal((await server.api("GET", "/health")).status, 200, "damage never stops the server");
-  assert.deepEqual((await server.api("GET", "/settings/tool-keys")).body.reenter, { reason: "file_unreadable", fields: kept === file ? [] : ["PARALLEL_API_KEY"] }, "what does not open is asked for again: a row by its field; a file that does not read, no field");
+  assert.equal((await server.api("GET", "/health")).status, 200, "a damaged row never stops the server");
+  assert.deepEqual((await server.api("GET", "/settings/tool-keys")).body.reenter, { reason: "file_unreadable", fields: ["PARALLEL_API_KEY"] }, "a row that does not open names its field");
   assert.equal((await server.api("PUT", "/settings/tool-keys/parallel", { values: { PARALLEL_API_KEY: values.PARALLEL_API_KEY } })).status, 204, "a PUT replaces it");
   assert.deepEqual((await server.api("GET", "/settings/tool-keys")).body.reenter, null);
   await server.close();
