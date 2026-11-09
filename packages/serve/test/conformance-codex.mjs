@@ -40,9 +40,12 @@ export function scriptedResponses(script, requests = []) {
       const item = { type: "function_call", id: `fc_${step}`, call_id: `call_${step}`, name: next.call, arguments: JSON.stringify(next.args ?? {}), status: "completed" };
       return sse([{ type: "response.output_item.added", output_index: 0, item: { ...item, arguments: "" } }, { type: "response.output_item.done", output_index: 0, item }, done]);
     }
-    // The newest person message (a steer, once one was placed).
+    // The newest person message (a steer, once one was placed), and the newest call's output (on a resume, the one the
+    // resume wrote into the rollout Codex resumed from: the model reads it back as it would any result).
     const lastPerson = [...input].reverse().find((item) => item.role === "user");
-    const text = next === undefined ? "" : "say" in next ? next.say : textOf(lastPerson);
+    const lastResult = [...input].reverse().find((item) => item.type === "function_call_output");
+    const resultText = (output) => (typeof output === "string" ? output : (output ?? []).map((part) => part.text ?? "").join(""));
+    const text = next === undefined ? "" : "say" in next ? next.say : "sayLastResult" in next ? resultText(lastResult?.output) : textOf(lastPerson);
     return sse([{ type: "response.output_text.delta", item_id: `m_${step}`, output_index: 0, content_index: 0, delta: text }, done]);
   };
 }
