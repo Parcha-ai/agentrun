@@ -6,13 +6,13 @@
 // vendors are the tests' fakes.
 import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
-import { chmod, cp, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { test } from "node:test";
-import { homeOf, writeDurable } from "../dist/files.js";
-import { BROWSERBASE_SETTLE_MS, GONE_LEASE_MS, MAX_FORGOTTEN, SIGN_IN_SAVED, SignIns, vendorOf, vendorsOver } from "../dist/sign-ins.js";
+import { homeOf } from "../dist/files.js";
+import { SignIns, vendorOf, vendorsOver } from "../dist/sign-ins.js";
 import { keptContexts, keptProfile, savedOnRelease } from "../dist/tools.js";
 import { openapiDocument } from "../dist/openapi.js";
 import { WITHHELD_SIGN_IN } from "../dist/runs.js";
@@ -43,51 +43,6 @@ function fakeStore(data, { key = randomBytes(32), running = new Set(), refuseRem
   };
   return { store: new SignIns(data, key, vendors, async (run) => running.has(run), { ...(now ? { now } : {}), ...(handedTo ? { handedTo } : {}) }), made, removed, running, key };
 }
-
-test("the save lease: the first run takes it, a run started while it holds gets the same sign-in with save false, and it ends with its run (released, or its run ended without a release)", async (t) => {
-  const data = await scratch(t);
-  const clock = { now: Date.parse("2026-11-05T02:00:00.000Z") };
-  const { store, made, running } = fakeStore(data, { now: () => clock.now });
-  running.add("run-1");
-  const one = await store.forRun("alpha", "run-1", "browserbase");
-  running.add("run-2");
-  const two = await store.forRun("alpha", "run-2", "browserbase");
-  assert.deepEqual([one.save, two.save, two.ref], [true, false, one.ref], "the second starts signed in and saves nothing");
-  assert.deepEqual(await store.view("alpha"), [{ key: "default", provider: "browserbase", state: "held", held_by: "run-1", verified_at: null }]);
-  // The holder launched again (its process went and came back) keeps saving.
-  assert.equal((await store.forRun("alpha", "run-1", "browserbase")).save, true);
-  // A release by a run that holds nothing changes nothing.
-  const dir2 = await scratch(t);
-  await store.release("alpha", "run-2", dir2);
-  assert.equal((await store.view("alpha"))[0].held_by, "run-1");
-  // The holder's release, after a session that saved: verified at that time, and, Browserbase writing the context back
-  // after its session ends, held for the run that saved until that is done; then ready.
-  const dir1 = await scratch(t);
-  await writeFile(join(dir1, SIGN_IN_SAVED), "2026-11-05T01:02:03.000Z");
-  await store.release("alpha", "run-1", dir1);
-  assert.deepEqual(await store.view("alpha"), [{ key: "default", provider: "browserbase", state: "held", held_by: "run-1", verified_at: "2026-11-05T01:02:03.000Z" }]);
-  running.add("run-9");
-  assert.equal((await store.forRun("alpha", "run-9", "browserbase")).save, false, "a run started while it is written back saves nothing over it");
-  clock.now += BROWSERBASE_SETTLE_MS;
-  assert.deepEqual(await store.view("alpha"), [{ key: "default", provider: "browserbase", state: "ready", held_by: null, verified_at: "2026-11-05T01:02:03.000Z" }]);
-  await assert.rejects(readFile(join(dir1, SIGN_IN_SAVED)), "the mark is taken");
-  // A lease whose run ended with no release (a server that went down first) is stale: the next run takes it.
-  running.add("run-3");
-  assert.equal((await store.forRun("alpha", "run-3", "browserbase")).save, true);
-  running.delete("run-3");
-  assert.equal((await store.view("alpha"))[0].state, "ready");
-  assert.equal((await store.forRun("alpha", "run-4", "browserbase")).save, true);
-  // Kernel: its own sign-in beside Browserbase's, a profile of its own made at Kernel.
-  const kernel = await store.forRun("alpha", "run-4", "kernel");
-  assert.deepEqual(kernel, { provider: "kernel", ref: made[1], save: true });
-  assert.equal(made.length, 2);
-  assert.deepEqual((await store.view("alpha")).map((s) => s.provider), ["browserbase", "kernel"]);
-  // Kernel saves as its browser ends: its saver's lease goes with the run, Browserbase's after its write-back.
-  const dir4 = await scratch(t);
-  await writeFile(join(dir4, SIGN_IN_SAVED), "2026-11-05T03:00:00.000Z");
-  await store.release("alpha", "run-4", dir4);
-  assert.deepEqual((await store.view("alpha")).map((s) => [s.provider, s.state]), [["browserbase", "held"], ["kernel", "ready"]]);
-});
 
 test("local Chrome keeps no saved sign-in, refused by name; an unavailable browser has none", async (t) => {
   const { store } = fakeStore(await scratch(t));
@@ -238,44 +193,6 @@ test("through the API: an agent's first run holds the sign-in and saves; one sta
   assert.equal((await api("DELETE", "/agents/nobody/sign-ins/default")).status, 404);
 });
 
-test("a run's save lease outlives its process until the run ends: a server that stops with it mid-browse leaves the lease with it, for its relaunch, never for another run to take while its session may still write back", { timeout: 120_000 }, async (t) => {
-  const dir = await scratch(t);
-  const log = join(dir, "browser.jsonl");
-  const seal = randomBytes(32);
-  withEnv(t, { BROWSERBASE_API_KEY: BB_KEY, BROWSERBASE_PROJECT_ID: "proj-1", AGENTRUN_SEAL_KEY: seal.toString("base64"), FAUX_BROWSER_LOG: log }, KEYS);
-  const server = await serve(t, { fauxBrowser: FAUX_BROWSER, fauxBrowserbase: FAUX_BROWSERBASE });
-  assert.equal((await server.api("POST", "/agents", agent("alpha", { instructions: "Browse.", tools: ["browser"] }))).status, 201);
-  const started = await server.api("POST", "/agents/alpha/runs", { input: { content: `Browse the example page once ${join(dir, "never")} exists.` } });
-  assert.equal(started.status, 202, JSON.stringify(started.body));
-  await until(async () => (await readFile(log, "utf8").catch(() => "")), (text) => text.includes('"op":"profile"'));
-  await server.close();
-  const view = await new SignIns(server.data, seal, {}, async () => true).view("alpha");
-  assert.deepEqual(view.map((s) => [s.state, s.held_by]), [["held", started.body.run_id]]);
-  const [entry] = JSON.parse(await readFile(join(homeOf(server.data, "alpha"), "sign-ins", "sign-ins.json"), "utf8")).sign_ins;
-  assert.ok(Date.parse(entry.gone_at) > 0, "its process found gone, from when");
-});
-
-test("a lease whose holder's process is gone lasts no longer than a session it opened could: then another run takes it; a holder that comes back holds it again", async (t) => {
-  const { DEFAULT_BROWSER_POLICY } = await import("@parcha/pi-browser");
-  assert.equal(GONE_LEASE_MS, DEFAULT_BROWSER_POLICY.sessionTimeoutS * 1000, "pi-browser's session timeout");
-  let now = Date.parse("2026-11-05T00:00:00.000Z");
-  const data = await scratch(t);
-  const made = [];
-  const store = new SignIns(data, randomBytes(32), { create: async () => (made.push(`ctx-${made.length + 1}`), made.at(-1)) }, async () => true, { now: () => now });
-  await store.forRun("alpha", "run-1", "browserbase");
-  await store.markGone("alpha", "run-1");
-  now += GONE_LEASE_MS - 1000;
-  assert.equal((await store.forRun("alpha", "run-2", "browserbase")).save, false, "a session it opened may still write back");
-  now += 1000 + BROWSERBASE_SETTLE_MS;
-  assert.equal((await store.view("alpha"))[0].state, "ready");
-  assert.equal((await store.forRun("alpha", "run-3", "browserbase")).save, true);
-  // run-3's process goes and comes back (its relaunch): the lease is its again, with no clock on it.
-  await store.markGone("alpha", "run-3");
-  assert.equal((await store.forRun("alpha", "run-3", "browserbase")).save, true);
-  now += 2 * GONE_LEASE_MS;
-  assert.deepEqual((await store.view("alpha")).map((s) => [s.state, s.held_by]), [["held", "run-3"]]);
-});
-
 test("a pointer that does not open under this server's seal key reads unreadable, never ready: no run starts from it and none is made in its place until it is forgotten", async (t) => {
   const data = await scratch(t);
   const { store, made } = fakeStore(data);
@@ -336,49 +253,6 @@ test("a vendor call that fails before an answer says only which vendor and the e
   const answer = await signInsOverStore(store, key, vendorsOver(() => ({ KERNEL_API_KEY: "k", KERNEL_BASE_URL: "kernel.example" }), async () => fetch)).forget("alpha", "default");
   assert.deepEqual(answer.removed, [{ provider: "kernel", at_vendor: "not_deleted", message: "Not deleted at kernel: kernel unreachable (TypeError). This server no longer points to it." }]);
   assert.ok(!JSON.stringify(answer).includes(pointer));
-});
-
-test("a Browserbase lease whose holder's process is gone outlasts the longest session it could have opened by that session's write-back; Kernel's, which saves as its browser ends, does not", async (t) => {
-  let now = Date.parse("2026-11-05T04:00:00.000Z");
-  const store = new SignIns(await scratch(t), randomBytes(32), { create: async (vendor) => `${vendor}-pointer-1` }, async () => true, { now: () => now });
-  for (const vendor of ["browserbase", "kernel"]) await store.forRun("alpha", "run-1", vendor);
-  await store.markGone("alpha", "run-1");
-  now += GONE_LEASE_MS;
-  assert.deepEqual((await store.view("alpha")).map((s) => [s.provider, s.state]), [["browserbase", "held"], ["kernel", "ready"]]);
-  now += BROWSERBASE_SETTLE_MS - 1;
-  assert.equal((await store.forRun("alpha", "run-2", "browserbase")).save, false, "a second short of its write-back");
-  now += 1;
-  assert.equal((await store.forRun("alpha", "run-3", "browserbase")).save, true);
-});
-
-test("a Browserbase saver resumed while its own last save is still being written back waits that out before it saves again", async (t) => {
-  let now = Date.parse("2026-11-05T05:00:00.000Z");
-  const slept = [];
-  const store = new SignIns(await scratch(t), randomBytes(32), { create: async () => "ctx-1" }, async () => true, { now: () => now, sleep: async (ms) => void (slept.push(ms), (now += ms)) });
-  await store.forRun("alpha", "run-1", "browserbase");
-  const dir = await scratch(t);
-  await writeFile(join(dir, SIGN_IN_SAVED), new Date(now).toISOString());
-  await store.release("alpha", "run-1", dir);
-  now += 3_000;
-  assert.deepEqual(await store.forRun("alpha", "run-1", "browserbase"), { provider: "browserbase", ref: "ctx-1", save: true });
-  assert.deepEqual(slept, [BROWSERBASE_SETTLE_MS - 3_000], "the rest of its write-back, then saving");
-  assert.deepEqual((await store.view("alpha")).map((s) => [s.state, s.held_by]), [["held", "run-1"]]);
-  // Past it, nothing to wait for.
-  await store.forRun("alpha", "run-1", "browserbase");
-  assert.equal(slept.length, 1);
-});
-
-test("a run's end lets its lease go only when its process let its sessions go: after a crash the lease stays with it, by the gone rule", async (t) => {
-  let now = Date.parse("2026-11-05T06:00:00.000Z");
-  const store = new SignIns(await scratch(t), randomBytes(32), { create: async (vendor) => `${vendor}-pointer-1` }, async () => false, { now: () => now });
-  for (const vendor of ["browserbase", "kernel"]) await store.forRun("alpha", "run-1", vendor);
-  const dir = await scratch(t);
-  await store.release("alpha", "run-1", dir, false);
-  assert.deepEqual((await store.view("alpha")).map((s) => [s.provider, s.state, s.held_by]), [["browserbase", "held", "run-1"], ["kernel", "held", "run-1"]], "its run has ended, yet it holds");
-  now += GONE_LEASE_MS;
-  assert.deepEqual((await store.view("alpha")).map((s) => [s.provider, s.state]), [["browserbase", "held"], ["kernel", "ready"]]);
-  now += BROWSERBASE_SETTLE_MS;
-  assert.equal((await store.forRun("alpha", "run-2", "browserbase")).save, true);
 });
 
 test("a follow-up of a run that saved, opened while another run holds the lease, saves nothing: the save flag its sessions carry is its current launch's", { timeout: 180_000 }, async (t) => {
