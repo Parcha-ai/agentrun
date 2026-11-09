@@ -31,12 +31,22 @@ export const STORE_DDL: readonly string[] = [
     created_at INTEGER NOT NULL,
     archived_at INTEGER
   ) STRICT`,
+  // A revision's skills (the P4 fold of the old agent store's skill table): the revision's own skill files, a JSON object
+  // keyed by the skill's path under `.agents/skills/` to its text. The body's `skills` map keeps the path to the text's
+  // SHA-256 (so two revisions with the same files are one body, and a view can show each file's size), and this column
+  // holds the texts themselves, on the revision's own row rather than a shared, content-addressed table: a revision is
+  // read and copied whole with its files. Null is none (a revision with no skills).
+  // `parent_id`: the revision that was the agent's current one when this revision was committed (null for its first), kept
+  // for the v2 revisions view. `note`: the optional note a revision was committed with (the v2 note), null for none.
   `CREATE TABLE IF NOT EXISTS revisions (
     id TEXT PRIMARY KEY,
     agent_id TEXT NOT NULL REFERENCES agents (id),
+    parent_id TEXT REFERENCES revisions (id),
     kind TEXT NOT NULL CHECK (kind IN ('agentic', 'workflow')),
     ${json("body")},
+    ${json("skills", true)},
     ${json("package", true)},
+    note TEXT,
     created_at INTEGER NOT NULL
   ) STRICT`,
   `CREATE INDEX IF NOT EXISTS revisions_by_agent ON revisions (agent_id, created_at)`,
@@ -64,6 +74,11 @@ export const STORE_DDL: readonly string[] = [
     archived_at INTEGER,
     -- The session an imported run came from ({source, session}), written by Store.importRun; null for a run started here.
     ${json("imported_from", true)},
+    -- The SHA-256 hashes (a JSON array) of the browser sign-in pointers handed to this run at its launch, never the
+    -- pointers themselves. Written once with the queued run (runs.create). While the run is running, a sign-in whose
+    -- pointer hashes to one of these is in use by it, so forgetting it is refused (sign-ins-store.ts), and its served
+    -- output is redacted by every handed pointer. Null when the run was handed none.
+    ${json("sign_in_handed", true)},
     started_at INTEGER NOT NULL,
     ended_at INTEGER
   ) STRICT`,
@@ -108,7 +123,11 @@ export const STORE_DDL: readonly string[] = [
     created_at INTEGER NOT NULL
   ) STRICT`,
 
-  // Triggers (module E's), their scopes (rows only while enabled), firings, conversations and adapter settings.
+  // Triggers (module E's), their scopes (rows only while enabled), firings, conversations and adapter settings. A trigger's
+  // firings are one table: its history (shown 1, the newest HISTORY_KEPT), the due queue, and the keys kept only for their
+  // day (shown 0: a run now's or a delivery's, an ignored delivery's included). A due firing keeps its next try in
+  // retry_at under the engine's one backoff table, or waits for its trigger's room (waits_on: the run it waits behind).
+  // max_active_runs: the most of the trigger's started runs not yet ended (a JOIN on runs), none past it.
   `CREATE TABLE IF NOT EXISTS triggers (
     id TEXT PRIMARY KEY,
     agent_id TEXT NOT NULL REFERENCES agents (id),
@@ -117,10 +136,11 @@ export const STORE_DDL: readonly string[] = [
     ${json("source")},
     ${json("target")},
     next_at INTEGER,
-    last_run_id TEXT REFERENCES runs (id),
+    last_run_id TEXT REFERENCES runs (id) ON DELETE SET NULL,
     catchup_window_s INTEGER,
     failures_in_a_row INTEGER NOT NULL DEFAULT 0,
     ${json("disabled", true)},
+    max_active_runs INTEGER CHECK (max_active_runs IS NULL OR max_active_runs BETWEEN 1 AND 100),
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
     UNIQUE (agent_id, name)
@@ -137,9 +157,9 @@ export const STORE_DDL: readonly string[] = [
     key TEXT NOT NULL,
     by TEXT,
     nominal_at INTEGER,
-    status TEXT NOT NULL CHECK (status IN ('due', 'started', 'skipped', 'failed', 'missed')),
+    status TEXT NOT NULL CHECK (status IN ('due', 'started', 'sent', 'skipped', 'failed', 'missed', 'ignored')),
     at INTEGER NOT NULL,
-    run_id TEXT REFERENCES runs (id),
+    run_id TEXT REFERENCES runs (id) ON DELETE SET NULL,
     reason TEXT,
     ${json("error", true)},
     count INTEGER,
@@ -149,7 +169,9 @@ export const STORE_DDL: readonly string[] = [
     catch_up INTEGER,
     paused INTEGER,
     payload TEXT,
+    ${json("attrs", true)},
     shown INTEGER,
+    waits_on TEXT,
     PRIMARY KEY (trigger_id, key)
   ) STRICT`,
   `CREATE INDEX IF NOT EXISTS trigger_firings_retry ON trigger_firings (status, retry_at)`,
@@ -228,6 +250,33 @@ export const STORE_DDL: readonly string[] = [
     PRIMARY KEY (agent_id, key)
   ) STRICT`,
 
+  // An agent's saved browser sign-ins (design 2.1, tl-browser's rules): one live row per agent and browser provider, its
+  // pointer (the vendor's context or profile id) sealed with the store's one rule (store/seal.ts, AAD
+  // sign_ins|<agent>:<provider>|pointer), which the store never opens. The owner sees its name ("default") and saved_at,
+  // never the pointer, and no run's tools ever do. Forgetting a sign-in moves its sealed pointer, byte for byte so it
+  // still opens, into a tombstone row (sign_in_tombstones), kept only so a server started later can still cut it from
+  // what a run it was handed shows; the newest 32 per agent are kept, the oldest dropped first.
+  `CREATE TABLE IF NOT EXISTS sign_ins (
+    agent_id TEXT NOT NULL REFERENCES agents (id),
+    provider TEXT NOT NULL,
+    name TEXT NOT NULL,
+    pointer_sealed BLOB NOT NULL,
+    saved_at INTEGER NOT NULL,
+    -- When a run that held this sign-in last verified it (saved a live session back to the vendor): the v2 view's
+    -- verified_at. Null when the owner just saved it and no run has verified it since (a fresh save clears it). Written by
+    -- the run path (store.signIns.verify) at a run's save, read by the view bridge (sign-ins-store.ts).
+    verified_at INTEGER,
+    PRIMARY KEY (agent_id, provider)
+  ) STRICT`,
+  `CREATE TABLE IF NOT EXISTS sign_in_tombstones (
+    id INTEGER PRIMARY KEY,
+    agent_id TEXT NOT NULL REFERENCES agents (id),
+    provider TEXT NOT NULL,
+    pointer_sealed BLOB NOT NULL,
+    forgotten_at INTEGER NOT NULL
+  ) STRICT`,
+  `CREATE INDEX IF NOT EXISTS sign_in_tombstones_by_agent ON sign_in_tombstones (agent_id, id)`,
+
   // The MCP registry: one row per saved server (its listed tools with each one's grantable and meta reason, the owner's
   // prices, and the credential, a bearer, headers or the OAuth token set and client, sealed). A sign-in in flight (10 min).
   // A run's pin: written once in its first claim's commit, never rewritten.
@@ -289,11 +338,13 @@ export const STORE_DDL: readonly string[] = [
     updated_at INTEGER NOT NULL
   ) STRICT`,
 
-  // A run's browser sessions' viewer hand-overs (store.liveViewers, browser-live.ts): one row per run and session tag,
-  // the viewer token sealed (sealedAt.liveViewer), written under the claim of `runner` at `epoch`. Gone with the run's
-  // end, a take or reclaim at a newer epoch, and the run.
-  `CREATE TABLE IF NOT EXISTS browser_viewers (
-    run_id TEXT NOT NULL REFERENCES runs (id) ON DELETE CASCADE,
+  // A run's computer sessions' viewer hand-overs (store.liveViewers, browser-live.ts): one row per run, computer kind
+  // (browser, desktop, phone) and session tag, the viewer token sealed (sealedAt.liveViewer), written under the claim of
+  // `runner` at `epoch`. Gone with the run's end, a take or reclaim at a newer epoch, and the run. The predecessor table
+  // browser_viewers is dropped at a server's open (sqlite/store.ts): its rows are ephemeral, so none migrate.
+  `CREATE TABLE IF NOT EXISTS computer_viewers (
+    run_id TEXT NOT NULL REFERENCES runs ON DELETE CASCADE,
+    kind TEXT NOT NULL CHECK (kind IN ('browser', 'desktop', 'phone')),
     tag TEXT NOT NULL,
     port INTEGER NOT NULL,
     viewer_id TEXT NOT NULL,
@@ -301,17 +352,19 @@ export const STORE_DDL: readonly string[] = [
     at INTEGER NOT NULL,
     runner TEXT NOT NULL,
     epoch INTEGER NOT NULL,
-    PRIMARY KEY (run_id, tag)
+    PRIMARY KEY (run_id, kind, tag)
   ) STRICT`,
 
   // Learning on the runner: what a run's end-of-run turn kept (the turn it asked and answered, and the proposal checked from
-  // it), written in the same commit as the run's end, beside the learning run that grades and merges it. Read by the
-  // learning routes (the pre-merge view) and by the learning run.
+  // it), written in the same commit as the run's end, beside the learning run that grades and merges it (learning_run_id,
+  // none for a learning dropped before it was proposed). Read by the learning routes (the pre-merge view), by the
+  // learning run, and by the reader of a run's learning end (store-reads/learning.ts).
   `CREATE TABLE IF NOT EXISTS learning_proposals (
     run_id TEXT PRIMARY KEY REFERENCES runs (id),
     agent_id TEXT NOT NULL REFERENCES agents (id),
     ${json("turn")},
     ${json("proposal")},
+    learning_run_id TEXT,
     created_at INTEGER NOT NULL
   ) STRICT`,
   `CREATE INDEX IF NOT EXISTS learning_proposals_by_agent ON learning_proposals (agent_id, created_at DESC)`,

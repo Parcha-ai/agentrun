@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { cn } from "@/lib/utils";
 import { grantOf, grantProblem, type McpServer, mcpGrant, staleGrants } from "@/lib/mcp";
+import { SERVER_DENY } from "@/lib/toolSettings";
 
 /** The Tools step's MCP servers: a group per saved server with a box per tool it lists, ticked when `tools` grants
  *  `mcp:<server>/<tool>`; then each grant that no saved server answers for (its server deleted, or the tool no longer
@@ -44,7 +45,7 @@ export function McpToolPicker({ servers, tools, harness, harnesses, onChange, on
         <section key={s.name} aria-label={`MCP server ${s.name}`}>
           <p className="caps mb-2 text-[11px] font-semibold text-muted-foreground">{s.name} · MCP server</p>
           {/* A tool its server's read says no price meters: its calls run outside the run's cost and cap. */}
-          {grid(s.tools.map((t) => box(mcpGrant(s.name, t.name), s.not_metered?.includes(t.name) ? <>{t.name}<span className="ml-2 font-sans text-[11px] text-muted-foreground">not metered</span></> : t.name, [t.title, t.description].filter(Boolean).join(": ") || undefined, undefined, grantProblem(s.name, t, harness))))}
+          {grid(s.tools.map((t) => box(mcpGrant(s.name, t.name), s.not_metered?.includes(t.name) ? <>{t.name}<span className="ml-2 font-sans text-[11px] text-muted-foreground">not metered</span></> : t.name, [t.title, t.description].filter(Boolean).join(": ") || undefined, undefined, grantProblem(s.name, t, harness) ?? (t.permission === "deny" ? SERVER_DENY : undefined))))}
         </section>
       ))}
       {stale.length > 0 && (

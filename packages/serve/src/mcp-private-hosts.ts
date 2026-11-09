@@ -1,4 +1,4 @@
-// The owner's private-network OAuth hosts (Miguel's decision, 2026-11-09): an MCP server's authorization server on a
+// The owner's private-network OAuth hosts (the launch decision of 2026-11-09): an MCP server's authorization server on a
 // private network is refused by default, and an owner can allow named hosts in Settings → MCP servers. The list is one
 // row in the store (store.settings, MCP_PRIVATE_HOSTS_KEY), read by the server's sign-in and the runner's token refresh
 // through privateOAuthHosts() alone, and the rule a listed host is held to is privateAllowed(), applied by mcp-oauth.ts's

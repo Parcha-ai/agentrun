@@ -3,12 +3,15 @@ import type { MountKind, MountSpec } from "../mount.js";
 import type { ComputerClient, ComputerKind, DaemonMethod, DaemonMethods, ExecRunParams, Group, HelloResult } from "../protocol.js";
 import type { ComputerConnection, ComputerProvider, ComputerRef, ComputerSpec, DaemonMode } from "../provider.js";
 import type { ComputerError, ComputerErrorCode, Result } from "../result.js";
+import type { ComputerSettingKind } from "../kinds.js";
+import type { CdpDialer, CdpSocket } from "./cdp.js";
 import type { StartedFixture } from "./fixture.js";
+import type { KindVerdict } from "./kind.js";
 
 /** Core: what a computer of its kind must do. Full: an optional capability, tested only where it is declared. */
 export type Level = "core" | "full";
 /** The suite's own grouping of its cases, the first part of each case id; not the protocol's Group. */
-export type CaseGroup = "health" | "exec" | "files" | "process" | "provider" | "drift" | "mount" | "screen" | "input" | "touch" | "apps" | "lifetime";
+export type CaseGroup = "health" | "exec" | "files" | "process" | "provider" | "drift" | "mount" | "screen" | "input" | "touch" | "apps" | "lifetime" | "browser";
 
 /**
  * What a case needs: a group (declared by both the provider's capabilities().groups and the computer's hello), a
@@ -48,7 +51,7 @@ export interface RunFolder {
  * What a computer of this kind and daemon mode must declare: a case that needs one of these fails Core when it is
  * missing, where a case that needs an undeclared optional group is skipped. exec, files and processes are Core whenever
  * computerd runs (pid1 or child); with daemon none they are tested only when declared. Network none is Core wherever
- * computerd runs; a phone is tested on an open network.
+ * computerd runs; a phone is tested on an open network. A browser must declare its CDP target.
  */
 export function coreGroups(kind: ComputerKind, daemon: DaemonMode): Capability[] {
 	const computerd: Capability[] = daemon === "none" ? [] : ["exec", "files", "processes", "network:none"];
@@ -60,6 +63,8 @@ export function coreGroups(kind: ComputerKind, daemon: DaemonMode): Capability[]
 		case "android":
 		case "ios":
 			return ["screen", "input.touch"];
+		case "browser":
+			return ["cdp"];
 		default:
 			return computerd;
 	}
@@ -119,6 +124,8 @@ export interface CaseContext {
 	fixture(): Promise<StartedFixture>;
 	/** fetch, as the run was given it; the global one by default. */
 	fetch(url: string, init?: { signal?: AbortSignal; method?: string }): Promise<{ status: number }>;
+	/** A CDP socket to a browser's CDP URL, through the run's dialer, closed when the case ends. */
+	cdp(url: string): Promise<CdpSocket>;
 	/** The run's clock: the wall clock by default. A case that waits on a vendor's timer reads time and waits through it. */
 	clock: Clock;
 	exec(argv: string[], extra?: Partial<ExecRunParams>, client?: ComputerClient): Promise<Ran>;
@@ -177,8 +184,10 @@ export interface ConformanceReport {
 	daemon: { version: string; os: string; arch: string } | null;
 	/** The groups or case ids the run was limited to, when it was. */
 	only?: string[];
-	/** When only was given: the Core cases it left out, which did not run. */
+	/** When only or kind was given: the Core cases it left out, which did not run. */
 	coreNotRun?: string[];
+	/** When the run was by kind: whether the provider passes it, and why not. */
+	kindVerdict?: KindVerdict;
 	results: CaseResult[];
 	/**
 	 * pass when every Core case ran and passed, but those skipped for an optional group the computer does not declare,
@@ -213,8 +222,13 @@ export interface ConformanceOptions {
 	image: string;
 	/** Run only these groups or case ids. */
 	only?: string[];
+	/**
+	 * Run a setting kind's cases (kindCases) and give its verdict (report.kindVerdict); not with only. Kind none, no
+	 * computer, is refused, in words.
+	 */
+	kind?: ComputerSettingKind;
 	signal?: AbortSignal;
-	/** The cases to run; default every case of the suite. */
+	/** The cases to run; default casesFor the provider's machine kind: a browser's own cases, else every case of the suite. */
 	cases?: Case[];
 	/** The same provider with a daemon that reports another version, for the drift cases. */
 	drifted?: () => Promise<ComputerProvider> | ComputerProvider;
@@ -240,6 +254,8 @@ export interface ConformanceOptions {
 	fixture?: string;
 	/** fetch for screen.stream; default the global one. */
 	fetch?: CaseContext["fetch"];
+	/** How the browser cases open a CDP socket; default a WebSocket (dialCdp). Tests give a fake browser's. */
+	cdp?: CdpDialer;
 	/** The clock lifetime.extend reads and waits on; default the wall clock. Tests give one their fakes share. */
 	clock?: Clock;
 }

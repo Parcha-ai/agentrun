@@ -8,7 +8,7 @@ import { writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { note } from "./fixtures/faux-learn.mjs";
-import { ended, git, LEARN, learner, made, repoOf, resnap, started } from "./learn-support.mjs";
+import { ended, git, LEARN, learnedOnMain, learner, made, repoOf, resnap, started } from "./learn-support.mjs";
 import { call, cookieOf, serve, withEnv } from "./support.mjs";
 
 const SIGN_IN_PHRASE = "the owner signs in with this phrase";
@@ -127,7 +127,9 @@ test("every item in the learning view says its last change, from the newest comm
   const { api, data, cookie, origin, port, restore, retire, etag } = await keeper(t, { "paperdepot24-first.md": PENDING });
   // A note a run's merge kept: learned, by the run.
   await made(api, learner("learnt", { plan: [["answer-in-tables.md", TABLES]] }));
-  await ended(api, await started(api, "learnt"));
+  const learntRun = await started(api, "learnt");
+  await ended(api, learntRun);
+  assert.equal((await learnedOnMain({ api, data }, "learnt", learntRun)).result?.ok, true);
   const learnt = (await api("GET", "/agents/learnt/learning")).body.notes.items.find((item) => item.file === "answer-in-tables.md");
   assert.deepEqual([learnt?.last_change?.kind, learnt?.last_change?.by], ["learned", "run"], JSON.stringify(learnt));
   assert.ok(!Number.isNaN(Date.parse(learnt.last_change.at)));

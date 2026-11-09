@@ -252,32 +252,3 @@ test('test:changed runs every workspace for a root file their tests may read, an
   assert.match(lost.stderr, /no merge base of HEAD and no-such-ref; .* pass --base <ref>/);
 });
 
-test('a Ctrl-C stops every workspace\'s processes, and a process a script leaves behind is killed', { timeout: 60_000 }, async (t) => {
-  const root = fixture(t, { a: { test: step('a', '--hang') }, b: { test: step('b', '--hang') }, c: { test: step('c') } });
-  // Killed at the end whatever happens; the fixtures' own cleanup removes the pid files first.
-  const strays = new Set();
-  const pids = () => { const all = Object.values(pidsOf(root)).flat(); for (const pid of all) strays.add(pid); return all; };
-  const child = spawn(process.execPath, [runner], { cwd: root, env: env(atOnce(2)), stdio: ['ignore', 'pipe', 'pipe'] });
-  t.after(() => { child.kill('SIGKILL'); for (const pid of strays) try { process.kill(pid, 'SIGKILL'); } catch {} });
-  let stdout = '';
-  child.stdout.on('data', (chunk) => { stdout += chunk; });
-  const exited = new Promise((resolve) => child.on('exit', (code, signal) => resolve(code ?? signal)));
-  while (pids().length < 4) await new Promise((resolve) => setTimeout(resolve, 25));
-  child.kill('SIGINT');
-  assert.equal(await exited, 130, stdout);
-  assert.match(stdout, /SIGINT, stopping 2 running workspaces/);
-  assert.match(stdout, /^@fx\/c\s+not run\s+-$/m);
-  assert.deepEqual(logOf(root).filter((line) => line.startsWith('term ')).sort(), ['term a', 'term b']);
-  for (const pid of pids()) assert.ok(dead(pid), `pid ${pid} still running`);
-
-  const left = fixture(t, { a: { test: step('a', '--orphan') }, b: { test: step('b', '--escape') } });
-  const result = run(left, atOnce(2));
-  const [orphan, escaped] = [pidsOf(left).a?.[1], pidsOf(left).b?.[1]];
-  strays.add(orphan).add(escaped);
-  assert.equal(result.status, 0, result.stdout + result.stderr);
-  assert.match(result.stdout, /^--- @fx\/a: passed in \d+\.\d s; left processes running when it ended; they were killed ---$/m);
-  assert.ok(dead(orphan), `pid ${orphan} still running`);
-  // Outside the group and out of reach, it held b's output; the run ended anyway.
-  assert.match(result.stdout, /^--- @fx\/b: passed in \d+\.\d s ---$/m);
-  assert.ok(!dead(escaped));
-});

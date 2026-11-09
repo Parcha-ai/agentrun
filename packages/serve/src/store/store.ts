@@ -17,6 +17,8 @@ import type { JournalPage } from "./journal/storage.js";
  *  failed are final. A running run whose runner died is claimable once its claim runs out. */
 export type RunState = "queued" | "running" | "parked" | "ended" | "stopped" | "failed";
 export const FINAL_STATES: readonly RunState[] = ["ended", "stopped", "failed"];
+/** A state a release may leave a run in: never a final one (Store.release). */
+export type ReleasedState = Exclude<RunState, "ended" | "stopped" | "failed">;
 
 /** Why a command row still untaken when its run went final is refused: the write that makes a run final refuses each
  *  such row with these words, in that same transaction (a final run takes no new row, so none is left for good). */
@@ -34,6 +36,9 @@ export interface Claim {
   readonly epoch: number;
   readonly until: number;
   readonly from: RunState;
+  /** The runner that held the run when this claim took it over: its lease ran out with the run still running (that
+   *  runner was lost, or lost its claim). Its loop says so on the run's timeline. Absent for any other claim. */
+  readonly lost?: { readonly runner: string };
 }
 
 /** A command the server wrote for a run (stop, cancel, steer, approve, deny, raise): one row, read by the run's runner in id order
@@ -73,14 +78,26 @@ export interface NewRevision {
   readonly id: string;
   readonly kind: string;
   readonly body: unknown;
+  /** The revision's skill files, a JSON object keyed by the skill's path to its text, or none. The body's own `skills`
+   *  map keeps each path to its text's SHA-256; this is the texts, kept on the revision's row (store schema `revisions`). */
+  readonly skills?: unknown;
+  /** The optional note the revision is committed with (the v2 note), or none. */
+  readonly note?: string;
   readonly package?: TemplatePackage;
 }
 
 export interface RevisionRow {
   readonly id: string;
   readonly agentId: string;
+  /** The revision that was the agent's current one when this one was committed (null for its first): the v2 revisions
+   *  view's parent. */
+  readonly parent: string | null;
   readonly kind: string;
   readonly body: unknown;
+  /** The revision's skill files as it was written (path to text), or null for a revision with none. */
+  readonly skills: unknown;
+  /** The note the revision was committed with, or null. */
+  readonly note: string | null;
   readonly package: TemplatePackage | null;
   readonly createdAt: number;
 }
@@ -124,6 +141,9 @@ export interface RunRow {
   readonly archivedAt: number | null;
   /** The session an imported run came from; null for a run started here. */
   readonly importedFrom: ImportedFrom | null;
+  /** The SHA-256 hashes of the browser sign-in pointers handed to the run at its launch (never the pointers), or null when
+   *  it was handed none. A sign-in whose pointer hashes to one of these cannot be forgotten while the run runs. */
+  readonly signInHanded: readonly string[] | null;
   readonly startedAt: number;
   readonly endedAt: number | null;
 }
@@ -136,6 +156,9 @@ export interface RunPatch {
   readonly summary?: string | null;
   /** An ended run's outcome, set in its end commit; null clears it. */
   readonly outcome?: RunOutcome | null;
+  /** The SHA-256 hashes of the sign-in pointers handed to the run, which the runner writes at its claim (under the epoch
+   *  fence); null clears them. While the run runs, a sign-in hashing to one of these cannot be forgotten (sign-ins-store.ts). */
+  readonly signInHanded?: readonly string[] | null;
   readonly endedAt?: number | null;
 }
 
@@ -185,7 +208,8 @@ export type AlsoRow =
   | { readonly table: "learning_proposals"; readonly row: { turn: unknown; proposal: unknown } }
   /** The learning run that grades and merges the kept proposal: a queued run `id` of the run's agent and revision. Started
    *  once: the same id staged again (an end replayed after a crash) adds nothing. */
-  | { readonly table: "learning_run"; readonly row: { id: string } };
+  /** `model`: the grade model (gradeModelOf, as the server resolves it), on the learning run's launch; none, the agent's own. */
+  | { readonly table: "learning_run"; readonly row: { id: string; model?: string } };
 
 /** A run's kept learning (learning_proposals): what its end-of-run turn asked and answered, and the proposal checked from it. */
 export interface LearningProposal {
@@ -193,6 +217,8 @@ export interface LearningProposal {
   readonly agentId: string;
   readonly turn: unknown;
   readonly proposal: unknown;
+  /** The learning run its end queued with it, which grades and merges it; absent for a learning dropped before. */
+  readonly learningRunId?: string;
   readonly createdAt: number;
 }
 
@@ -278,6 +304,13 @@ export interface TriggerRow {
   readonly target: unknown;
   readonly nextAt: number | null;
   readonly lastRunId: string | null;
+  readonly catchupWindowS: number | null;
+  readonly failuresInARow: number;
+  /** Why it is off, when a failure streak or its source turned it off (JSON); null once it is on again. */
+  readonly disabled: unknown;
+  readonly maxActiveRuns: number | null;
+  readonly createdAt: number;
+  readonly updatedAt: number;
 }
 /** A trigger's firing that starts a run. */
 export interface Firing {
@@ -287,6 +320,81 @@ export interface Firing {
   readonly nominalAt?: number | null;
   readonly catchUp?: boolean;
   readonly payload?: string | null;
+}
+
+export type FiringStatus = "due" | "started" | "sent" | "skipped" | "failed" | "missed" | "ignored";
+/** A trigger's firing as its row keeps it. `shown`: in the trigger's history (the newest HISTORY_KEPT); false, kept only
+ *  for its key's day. `retryAt`: a due firing's next try; `waitsOn`: the run whose turn end wakes a due firing. */
+export interface FiringRow {
+  readonly triggerId: string;
+  readonly key: string;
+  readonly by: string;
+  readonly nominalAt: number;
+  readonly status: FiringStatus;
+  readonly at: number;
+  readonly runId: string | null;
+  readonly reason: string | null;
+  readonly error: { code: string; message: string } | null;
+  readonly count: number | null;
+  readonly attempts: number;
+  readonly retryAt: number | null;
+  readonly payload: string | null;
+  readonly attrs: unknown;
+  readonly notified: boolean;
+  readonly catchUp: boolean;
+  readonly paused: boolean;
+  readonly shown: boolean;
+  readonly waitsOn: string | null;
+}
+/** A firing recorded: due (to be driven), or settled at once (skipped, missed, ignored). */
+export interface NewFiring {
+  readonly key: string;
+  readonly by: string;
+  readonly nominalAt: number;
+  readonly status: "due" | "skipped" | "missed" | "ignored";
+  readonly reason?: string;
+  readonly count?: number;
+  readonly catchUp?: boolean;
+  readonly payload?: string;
+  readonly attrs?: unknown;
+  /** False: kept only for its key's day, never in the history (an ignored delivery's key). */
+  readonly shown?: boolean;
+}
+/** A trigger made, as POST /triggers keeps it. */
+export interface NewTrigger {
+  readonly id: string;
+  readonly agentId: string;
+  readonly name: string;
+  readonly enabled: boolean;
+  readonly source: unknown;
+  readonly target: unknown;
+  readonly nextAt: number | null;
+  readonly catchupWindowS: number;
+  readonly maxActiveRuns?: number | null;
+}
+/** A trigger's fields changed; the ones absent stay. */
+/** `agentId`: the agent it belongs to, which follows its target (a PATCH may aim it at another agent's run or agent). */
+export type TriggerPatch = Partial<Pick<TriggerRow, "agentId" | "name" | "enabled" | "source" | "target" | "nextAt" | "catchupWindowS" | "failuresInARow" | "disabled" | "maxActiveRuns">>;
+/** A firing's new state. Out of due, a firing keeps no retry, wait, payload nor the reason its last try gave (unless given). */
+export interface FiringChange {
+  readonly status?: FiringStatus;
+  readonly runId?: string;
+  readonly reason?: string | null;
+  readonly error?: { code: string; message: string };
+  readonly attempts?: number;
+  readonly retryAt?: number | null;
+  readonly waitsOn?: string | null;
+  readonly notified?: boolean;
+}
+/** What a settle does to the firing's trigger besides: `reset` its failure streak (a run started, a message sent), or
+ *  count a `failure` toward it, turning it off at `pauseAt` in a row (auto-pause, the firing marked paused). */
+export type FiringStreak = { readonly reset: true } | { readonly failure: true; readonly pauseAt: number };
+/** A firing a trigger has no room for: `due` firings are DUE_KEPT already. Nothing was written. */
+export class TriggerFull extends Error {
+  override name = "TriggerFull";
+  constructor(readonly triggerId: string, readonly due: number) {
+    super(`trigger ${triggerId} holds ${due} firings due`);
+  }
 }
 
 export interface Agents {
@@ -299,6 +407,8 @@ export interface Agents {
   archive(id: string, archived: boolean): Promise<void>;
   /** Adds a revision and makes it the agent's current one, in one commit. */
   addRevision(revision: NewRevision & { agentId: string }): Promise<void>;
+  /** Makes `revisionId`, one of the agent's own, its current one. StoreConstraint when it is not a revision of `agentId`. */
+  setCurrent(agentId: string, revisionId: string): Promise<void>;
   revision(id: string): Promise<RevisionRow | undefined>;
   revisions(agentId: string): Promise<RevisionRow[]>;
 }
@@ -316,14 +426,55 @@ export interface Templates {
 export interface Triggers {
   get(id: string): Promise<TriggerRow | undefined>;
   list(agentId: string): Promise<TriggerRow[]>;
+  /** Every trigger, oldest first. */
+  all(): Promise<TriggerRow[]>;
+  /** The trigger and, while it is enabled, its scope rows (`scopes`), in one transaction: a scope another enabled trigger
+   *  holds is refused (StoreConstraint on trigger_scopes), nothing written. */
+  create(trigger: NewTrigger, scopes?: readonly TriggerScope[]): Promise<TriggerRow>;
+  /** The fields given changed, `updatedAt` set: undefined when there is no such trigger. With `scopes`, its scope rows
+   *  rewritten in the same transaction (none while it is off); a patch that turns it off drops them. */
+  update(id: string, patch: TriggerPatch, scopes?: readonly TriggerScope[]): Promise<TriggerRow | undefined>;
+  /** The trigger, its scope rows and its firings gone. */
+  remove(id: string): Promise<void>;
   /** Enables the trigger and writes its scope rows, in one transaction. */
   enable(triggerId: string, scopes: readonly TriggerScope[]): Promise<void>;
   /** Disables the trigger (with why, JSON) and deletes its scope rows, in one transaction. */
   disable(triggerId: string, why?: unknown): Promise<void>;
-  /** The firing starts a run: the queued run, the `started` firing that names it and the trigger's last_run_id, in one
-   *  transaction. The run's launch row is written in that same transaction when the firing carries one (route-1's fire
-   *  calls the store's writeLaunch). */
-  fire(firing: Firing, run: { id: string; agentId: string; revisionId: string }): Promise<RunRow>;
+  /** The firing starts a run: the queued run, the `started` firing that names it (the due firing's row, or a new one) and
+   *  the trigger's last_run_id, with its failure streak reset, in one transaction; with `launch`, the run's launch row in
+   *  that same transaction (the store's one writeLaunch). */
+  fire(firing: Firing, run: { id: string; agentId: string; revisionId: string }, options?: { launch?: RunLaunchInput }): Promise<RunRow>;
+  /** The enabled triggers listening on (`kind`, `scope`): its scope rows. */
+  scoped(kind: string, scope: string): Promise<string[]>;
+  /** `firings` recorded and the trigger's `patch` applied, in one transaction; a key already there is not recorded again
+   *  (`created` false for it). With `room`, a due firing is refused (TriggerFull, nothing written) while the trigger holds
+   *  `room` due already. Undefined when there is no such trigger. */
+  record(triggerId: string, firings: readonly NewFiring[], options?: { patch?: TriggerPatch; room?: number }): Promise<{ created: boolean[] } | undefined>;
+  /** The firing's row, shown or kept for its day. */
+  firing(triggerId: string, key: string): Promise<FiringRow | undefined>;
+  /** The trigger's history, newest first: its shown firings. */
+  firings(triggerId: string): Promise<FiringRow[]>;
+  /** The firing changed (with its trigger's last_run_id moved to a newer run it names, and `streak`), in one transaction:
+   *  undefined when the firing is gone (its trigger deleted). `paused`: this failure turned the trigger off. */
+  settle(triggerId: string, key: string, change: FiringChange, streak?: FiringStreak): Promise<{ firing: FiringRow; paused: boolean } | undefined>;
+  /** Every due firing, and every failed one whose trigger.failed is not marked queued, oldest first. */
+  pending(): Promise<FiringRow[]>;
+  /** A message_run firing's message queued for run `runId` as a command row (its body's origin names the trigger), with
+   *  the firing marked sent and the trigger's streak reset, in one transaction; unless the run already holds `bound.max`
+   *  untaken command rows from this trigger, read in that same transaction: then the firing is skipped with
+   *  `bound.reason` and nothing is queued. Undefined when the firing is gone or no longer due. */
+  message(firing: { triggerId: string; key: string }, runId: string, command: { kind: string; body: unknown }, bound: { max: number; reason: string }): Promise<{ sent: true; commandId: number } | { skipped: string } | undefined>;
+  /** Every due firing waiting for its trigger's room (waits_on), oldest first, each with whether the room is there now
+   *  (fewer of its trigger's started runs not ended than its max_active_runs): one read for all of them. */
+  waiting(): Promise<(FiringRow & { readonly free: boolean })[]>;
+  /** The soonest next time of an enabled trigger, or null. */
+  soonest(): Promise<number | null>;
+  /** How many of the trigger's started runs have not ended (a run reopened later does not count). */
+  activeRuns(triggerId: string): Promise<number>;
+  /** The history kept to `history` shown firings: older ones a sender's key names (manual, pushed) are kept for their day
+   *  (shown 0), others removed; shown-0 rows past `dayMs` removed, then the oldest past `kept` of them. Never a due
+   *  firing, a failure not yet told, nor a started firing whose run has not ended. Answers how many went past `kept`. */
+  prune(triggerId: string, options: { history: number; dayMs: number; keepByKey: (by: string) => boolean; kept?: number }): Promise<number>;
 }
 
 export interface Runs {
@@ -505,6 +656,59 @@ export interface McpOauth {
   count(now: number): Promise<number>;
 }
 
+/** A saved browser sign-in as the store holds it (store schema `sign_ins`): one live row per agent and provider, its
+ *  pointer sealed (store/seal.ts, AAD sign_ins|<agent>:<provider>|pointer), which the store never opens. `name` is the
+ *  owner's label for it ("default"). */
+export interface SignInRow {
+  readonly agentId: string;
+  readonly provider: string;
+  readonly name: string;
+  readonly pointerSealed: Uint8Array;
+  readonly savedAt: number;
+  /** When a run last verified this sign-in (saved a live session back to the vendor), ms; null when none has since it was
+   *  saved. The v2 view's verified_at. */
+  readonly verifiedAt: number | null;
+}
+
+/** A forgotten sign-in's pointer, kept sealed byte for byte as its live row held it (so it still opens under the same
+ *  binding), only so a server started later can cut it from what a run it was handed shows. */
+export interface SignInTombstoneRow {
+  readonly agentId: string;
+  readonly provider: string;
+  readonly pointerSealed: Uint8Array;
+  readonly forgottenAt: number;
+}
+
+/** How many forgotten pointers an agent keeps per store, the oldest dropped first. */
+export const SIGN_IN_TOMBSTONES_KEPT = 32;
+
+export interface SignIns {
+  /** Saves the one live sign-in for the agent and provider, its pointer already sealed by the caller: inserted, or replaced
+   *  in place when one is saved already (one per agent and provider). */
+  save(signIn: { agentId: string; provider: string; name: string; pointerSealed: Uint8Array }): Promise<SignInRow>;
+  /** The agent's live sign-ins, by provider (their pointers stay sealed). */
+  list(agentId: string): Promise<SignInRow[]>;
+  /** The agent's live sign-in for the provider, or undefined. */
+  get(agentId: string, provider: string): Promise<SignInRow | undefined>;
+  /** Marks the agent's sign-in for the provider verified at `at` (a run saved a live session back): sets verified_at, for
+   *  the v2 view. The run path (E2) calls it at a run's save; a missing sign-in is left as it is. */
+  verify(agentId: string, provider: string, at: number): Promise<void>;
+  /** The agent's forgotten pointers for the provider, newest first (kept sealed, never opened here). */
+  tombstones(agentId: string, provider: string): Promise<SignInTombstoneRow[]>;
+  /** Forgets the agent's live sign-in for the provider, in the one transaction a launch shares as its lock: when a running
+   *  run holds `hash` in its sign_in_handed (or, with `heldUnreadable`, when any running run was handed a sign-in at all),
+   *  the forget is refused (SignInHandedTo, naming the run) and nothing is written; otherwise the live row's sealed pointer
+   *  moves to a tombstone (the newest SIGN_IN_TOMBSTONES_KEPT kept) and the live row goes. SignInMissing when the agent has
+   *  no live sign-in for the provider. */
+  forget(agentId: string, provider: string, held: { hash?: string; heldUnreadable?: boolean }): Promise<SignInTombstoneRow>;
+  /** The id of a running run whose sign_in_handed holds `hash`, if one does; undefined otherwise. The check the runner
+   *  makes before it serves a run's output, and forget makes before it removes a sign-in. */
+  handedHolder(hash: string): Promise<string | undefined>;
+  /** The id of a running run that was handed any sign-in (a non-empty sign_in_handed), if one was: for a pointer that does
+   *  not open here, which any such run may hold. */
+  handedAny(): Promise<string | undefined>;
+}
+
 /** A running run's live view as the store keeps it: `state` is JSON (the tool it runs now, its partial text). */
 export interface LiveRow {
   readonly runId: string;
@@ -523,21 +727,26 @@ export interface Live {
   drop(claim: Claim): Promise<void>;
 }
 
-/** One open browser session's viewer as the store keeps it: one row per (run, session tag), its token sealed
- *  (sealedAt.liveViewer), `at` the store's clock when it was put, `runner` the claim's holder. */
-export type LiveViewerRow = { tag: string; port: number; id: string; sealed: Uint8Array; at: number; runner: string };
+/** A live view's computer kind: the live view is proxy-only for each (browser, desktop, phone). (Distinct from
+ *  @parcha/computer's ComputerKind, which names a provider's OS family.) */
+export type ViewerKind = "browser" | "desktop" | "phone";
 
-/** The browser sessions' viewer hand-overs (browser-live.ts): the runner puts and drops them under its claim, the server
+/** One open computer session's viewer as the store keeps it: one row per (run, computer kind, session tag), its token
+ *  sealed (sealedAt.liveViewer), `at` the store's clock when it was put, `runner` the claim's holder. */
+export type LiveViewerRow = { kind: ViewerKind; tag: string; port: number; id: string; sealed: Uint8Array; at: number; runner: string };
+
+/** The computer sessions' viewer hand-overs (browser-live.ts): the runner puts and drops them under its claim, the server
  *  reads them. The rows go with the run's end (its end commit), a take or reclaim of the run (a newer epoch, in the
  *  claim's transaction), and the run's delete (on delete cascade). */
 export interface LiveViewers {
-  /** The runner's put under its claim, upsert on (run_id, tag), `at` stamped by the store: false when the claim is stale
-   *  (its epoch moved on, or its lease ran out), and nothing written. */
-  put(claim: Claim, viewer: { tag: string; port: number; id: string; sealed: Uint8Array }): Promise<boolean>;
-  /** The runner's drop, fenced by its claim's epoch: session `tag`'s row, or with no tag every row of the run. */
-  drop(claim: Claim, tag?: string): Promise<void>;
+  /** The runner's put under its claim, upsert on (run_id, kind, tag), `at` stamped by the store: false when the claim is
+   *  stale (its epoch moved on, or its lease ran out), and nothing written. */
+  put(claim: Claim, viewer: { kind: ViewerKind; tag: string; port: number; id: string; sealed: Uint8Array }): Promise<boolean>;
+  /** The runner's drop, fenced by its claim's epoch: with no kind every row of the run; a kind with no tag that kind's
+   *  rows; a kind and a tag that one row. */
+  drop(claim: Claim, kind?: ViewerKind, tag?: string): Promise<void>;
   /** The server's read: the run's rows, newest first, only those of its epoch, under a live claim, by its runner (a runner
-   *  that died, or a claim lost, names no viewer). */
+   *  that died, or a claim lost, names no viewer), each carrying its kind. */
   of(runId: string): Promise<LiveViewerRow[]>;
 }
 
@@ -562,6 +771,9 @@ export interface Store {
   readonly triggerSettings: TriggerSettings;
   /** MCP OAuth sign-ins in flight (design 2.1): one row per pending sign-in, its verifier sealed. */
   readonly mcpOauth: McpOauth;
+  /** Each agent's saved browser sign-ins (design 2.1): one live row per agent and provider, its pointer sealed, with the
+   *  forgotten pointers kept as tombstones. */
+  readonly signIns: SignIns;
   /** Claims the run for `runner` until now + `leaseMs`: the run's epoch + 1 when it is claimable (runs.claimable); null when
    *  another claim holds it, or it is final, or parked with nothing to wake it. A queued or parked run becomes running. */
   claim(runId: string, runner: string, options?: { leaseMs?: number }): Promise<Claim | null>;
@@ -571,8 +783,9 @@ export interface Store {
    *  renewed claim, or Fenced for one whose epoch moved on (nothing written to it; the others renew). */
   renewMany(claims: readonly Claim[], options?: { leaseMs?: number }): Promise<(Claim | Fenced)[]>;
   /** Gives the run back (no runner, no claimed_until; `state` when given; `wakeAt` and `backoffUntil` or none), in a
-   *  durable commit (as flush). Fenced when the epoch moved on. */
-  release(claim: Claim, options?: { state?: RunState; wakeAt?: number | null; backoffUntil?: number | null }): Promise<void>;
+   *  durable commit (as flush). Fenced when the epoch moved on. Never a final state: the run's end commit is the one write
+   *  that makes it final (a release asked for one is refused with a TypeError). */
+  release(claim: Claim, options?: { state?: ReleasedState; wakeAt?: number | null; backoffUntil?: number | null }): Promise<void>;
   /** The run's journal: pi-durable's Storage for this one run, every commit fenced by the claim (store/journal). Its commit
    *  holds the store's one connection while it runs, so it awaits nothing but its own statements, under a deadline. */
   journal(claim: Claim): Journal;
@@ -742,5 +955,23 @@ export class StoreConstraint extends Error {
   constructor(message: string) {
     super(message);
     this.name = "StoreConstraint";
+  }
+}
+
+/** Forgetting a sign-in a running run was handed: refused, nothing written. `runId` is the run that holds it. */
+export class SignInHandedTo extends Error {
+  readonly runId: string;
+  constructor(runId: string) {
+    super(`a running run (${runId}) was handed this sign-in, so it is not forgotten while that run runs`);
+    this.name = "SignInHandedTo";
+    this.runId = runId;
+  }
+}
+
+/** Forgetting a sign-in the agent does not have for the provider. */
+export class SignInMissing extends Error {
+  constructor(agentId: string, provider: string) {
+    super(`the agent ${agentId} has no ${provider} sign-in to forget`);
+    this.name = "SignInMissing";
   }
 }
