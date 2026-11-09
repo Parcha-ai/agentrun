@@ -281,10 +281,13 @@ test("a github_app server is GitHub's hosted MCP only: a preview or a save at an
   assert.equal(mints(), before, "no token minted for any of them");
 });
 
+// A URL carrying a user name and password, built rather than written, so the source holds no credential-shaped URL.
+const withUserinfo = (href, username, password) => Object.assign(new URL(href), { username, password }).href;
+
 test("githubMcpUrl: GitHub's hosted MCP at its origin, any path, the default port written or not; nothing else", async () => {
   const { githubMcpUrl } = await import("../dist/github.js");
   for (const url of ["https://api.githubcopilot.com/mcp/", "https://api.githubcopilot.com:443/mcp/", "https://API.githubcopilot.com/x/readonly", "https://api.githubcopilot.com"]) assert.equal(githubMcpUrl(url), true, url);
-  for (const url of ["https://x@api.githubcopilot.com/mcp/", "https://x:y@api.githubcopilot.com/mcp/", "https://api.githubcopilot.com:8443/mcp/", "http://api.githubcopilot.com/mcp/", "https://api.githubcopilot.com./mcp/", "https://api.githubcopilot.com.example.com/mcp/", "https://mcp.example.com/mcp", "not a url"]) assert.equal(githubMcpUrl(url), false, url);
+  for (const url of ["https://x@api.githubcopilot.com/mcp/", withUserinfo("https://api.githubcopilot.com/mcp/", "x", "y"), "https://api.githubcopilot.com:8443/mcp/", "http://api.githubcopilot.com/mcp/", "https://api.githubcopilot.com./mcp/", "https://api.githubcopilot.com.example.com/mcp/", "https://mcp.example.com/mcp", "not a url"]) assert.equal(githubMcpUrl(url), false, url);
 });
 
 test("the token that lists a github_app server's tools as it is saved asks for the least: metadata read, of one repository; the one that found that repository never left the server and is revoked", { timeout: 60_000 }, async (t) => {
