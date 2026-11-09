@@ -21,7 +21,8 @@ const { openSqliteStore, sealMcpCredential } = await import("../dist/store/index
 const { startRunner } = await import("../dist/runner/runner.js");
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { permissionOf } = await import("../dist/tool-gate.js");
-const { cannotWait } = await import("../dist/mcp-gateway.js");
+const { waitingText } = await import("../dist/tool-gate.js");
+const { deniedText } = await import("../dist/runner/loop-contract.js");
 const { KINDS } = await import("../dist/runner/journal-kinds.js");
 const { journalRecords } = await import("../dist/runner/journal-reader.js");
 const { TOOL_UNMETERED } = await import("@parcha/pi-durable-agent/timeline");
@@ -58,7 +59,17 @@ function mcpCli(seen) {
       let turn;
       return {
         get state() { return state; },
-        async send() {
+        async send(text) {
+          // The resume message for a call that parked (main's [tool approval] words): kept, and the turn says it heard it.
+          if (text.startsWith("[tool approval] ")) {
+            (seen.followUps ??= []).push(text);
+            turn = (async () => {
+              io.onEvent({ type: "text", delta: "Resumed." });
+              io.onEvent({ type: "turn_end", status: "completed" });
+              return { status: "completed" };
+            })();
+            return;
+          }
           await io.writer.append([{ kind: "stand-in.sent", data: null }]);
           state = "idle";
           turn = (async () => {
@@ -117,15 +128,19 @@ async function cliRun(t, { settings = {} } = {}) {
     };
   });
   runner = startRunner({ store, createLoop: loop, name: "runner-a", ...STEADY });
-  const from = Date.now();
-  let row;
-  for (;;) {
-    row = await server.runs.get("run-1");
-    if ((row.state !== "running" && row.state !== "queued" && row.runner === null) || Date.now() - from > 20_000) break;
-    await sleep(20);
-  }
-  const entries = (await journalRecords(server.journal({ runId: "run-1", runner: "reader", epoch: row.epoch, until: 0, from: row.state }), BACKGROUND_CONTEXT)).entries;
-  return { row, seen, fake, entries };
+  /** The run once it is no longer running, and its journal's entries. */
+  const settled = async () => {
+    const from = Date.now();
+    let row;
+    for (;;) {
+      row = await server.runs.get("run-1");
+      if ((row.state !== "running" && row.state !== "queued" && row.runner === null) || Date.now() - from > 20_000) break;
+      await sleep(20);
+    }
+    const entries = (await journalRecords(server.journal({ runId: "run-1", runner: "reader", epoch: row.epoch, until: 0, from: row.state }), BACKGROUND_CONTEXT)).entries;
+    return { row, entries };
+  };
+  return { ...(await settled()), seen, fake, server, settled };
 }
 
 const toolCalls = (fake) => fake.log.filter((entry) => entry.method === "tools/call");
@@ -147,12 +162,35 @@ test("C1: the CLI's session carries the run's MCP, not its tools as host tools; 
   assert.deepEqual(entries.filter((entry) => entry.kind === TOOL_UNMETERED).map((entry) => entry.data.tool), ["mcp:fake/add"]);
 });
 
-test("C2: a call set to ask is answered that the harness can't wait for a person's approval yet: nothing sent, no approval left waiting", async (t) => {
-  const { row, seen, fake, entries } = await cliRun(t);
+test("C2: a call set to ask parks the run with nothing sent, the CLI answered main's waiting words; the owner's Allow runs it exactly once and the session goes on with its result", async (t) => {
+  const run = await cliRun(t);
+  assert.equal(run.row.state, "parked", JSON.stringify(run.row));
+  // The run parks on the ask and its session closes: the door's answer, when it reaches the CLI before that, is the
+  // waiting words (the door sends no parked flag).
+  if (run.seen.answer !== undefined) assert.deepEqual(run.seen.answer, { content: [{ type: "text", text: waitingText("mcp:fake/add") }] });
+  assert.equal(toolCalls(run.fake).length, 0, "nothing sent while it waits");
+  const [ask] = run.entries.filter((entry) => entry.kind === KINDS.ask).map((entry) => entry.data);
+  assert.deepEqual([ask?.callId, ask?.tool, ask?.price], [CALL_ID, "mcp:fake/add", "not metered"], "asked by the CLI's own call id, as main's card");
+  await run.server.command("run-1", { kind: "approve", body: { approval: CALL_ID } });
+  for (const from = Date.now(); (await run.server.runs.get("run-1")).state !== "ended" && Date.now() - from < 20_000; ) await sleep(20);
+  const { row, entries } = await run.settled();
   assert.equal(row.state, "ended", JSON.stringify(row));
-  assert.deepEqual(seen.answer, { content: [{ type: "text", text: cannotWait("mcp:fake/add") }], isError: true });
-  assert.equal(toolCalls(fake).length, 0, "nothing sent");
-  assert.deepEqual(entries.filter((entry) => entry.kind === KINDS.ask), [], "no ask written");
+  assert.equal(toolCalls(run.fake).length, 1, "run exactly once");
+  assert.equal(run.seen.followUps?.length, 1, "one resume message");
+  assert.ok(run.seen.followUps[0].startsWith(`[tool approval] This answers your mcp:fake/add call ${CALL_ID} (arguments {"a":2,"b":3})`), run.seen.followUps[0]);
+  assert.ok(run.seen.followUps[0].endsWith("They allowed it, and it ran. Its result:\n5"), run.seen.followUps[0]);
+  assert.equal(entries.find((entry) => entry.kind === KINDS.callEnd)?.data.output, "5", "the approved call on the run's record");
+});
+
+test("C4: a parked call the owner denies is told in their words, and nothing is ever sent", async (t) => {
+  const run = await cliRun(t);
+  assert.equal(run.row.state, "parked", JSON.stringify(run.row));
+  await run.server.command("run-1", { kind: "deny", body: { approval: CALL_ID, note: "not today" } });
+  for (const from = Date.now(); (await run.server.runs.get("run-1")).state !== "ended" && Date.now() - from < 20_000; ) await sleep(20);
+  const { row } = await run.settled();
+  assert.equal(row.state, "ended", JSON.stringify(row));
+  assert.equal(toolCalls(run.fake).length, 0, "nothing sent");
+  assert.ok(run.seen.followUps?.[0]?.endsWith(`\n${deniedText("mcp:fake/add", "not today")}`), run.seen.followUps?.[0]);
 });
 
 test("C3: a call set to deny is refused in the gate's words, nothing sent", async (t) => {

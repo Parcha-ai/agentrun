@@ -29,10 +29,9 @@ import { journalSessions } from "./sessions.js";
 import { CapRefused, paidCalls, TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
 import { bookedIn } from "../paid-calls.js";
 import { sideEffect } from "./side-effects.js";
-import { cannotWait } from "../mcp-gateway.js";
 import { McpClaimRefused } from "./mcp-claim.js";
 import { Fenced } from "../store/index.js";
-import type { ClaimMcp } from "./mcp-run.js";
+import { type ClaimMcp, parkedFollowUp } from "./mcp-run.js";
 
 /** What a raise meets, as the kernel cap's checkRaise reads it (run-adapters/src/kernel/cap/park.ts): the run's cap, the
  *  pause it waits at (none while it works) and its last raise, with the pause that one answered. */
@@ -584,13 +583,13 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         };
         const io: PiSessionIO = { writer, models: counted, signal: deps.signal, onEvent: record ? (event) => record.onEvent(event) : () => {}, gate: gateOf };
         // The MCP tools: pi's own (host tools, through the gate above); for a harness with its own MCP client, the session's
-        // MCP its adapter mounts on its proxy, each call asking the gate first (no park: it cannot hold a call yet).
+        // MCP its adapter mounts on its proxy, each call asking the gate first (an ask parks the run, nothing sent).
         const mcpNames = new Set(mcp?.tools.map((tool) => tool.name));
         const ownClient = mcp !== undefined && spec.adapter.capabilities().mcpClient !== undefined;
         const sessionMcp = ownClient
           ? mcp!.session(new Map(tools.filter((tool) => mcpNames.has(tool.name)).map((tool) => [tool.name, tool])), async (call) => {
-              const answer = await gateOf(call, context, false);
-              return answer === "allow" ? undefined : "deny" in answer ? answer.deny : cannotWait(call.tool);
+              const answer = await gateOf(call, context);
+              return answer === "allow" ? undefined : "deny" in answer ? { refused: answer.deny } : { parked: true as const };
             })
           : undefined;
         session = await spec.adapter.open({ ...spec.session, tools: ownClient ? tools.filter((tool) => !mcpNames.has(tool.name)) : tools, ...(sessionMcp ? { mcp: sessionMcp } : {}) }, io);
@@ -634,6 +633,31 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           const state = await raiseStateOf();
           if (state.pause === undefined && state.lastRaise?.pause !== undefined) {
             await session!.send(spec.cap.followUpOf(state.lastRaise.to).text, { id: `agentrun:raise:${state.lastRaise.pause}` });
+            followedUp = true;
+          }
+        }
+        if (!followedUp && ownClient) {
+          // MCP calls a harness with its own client parked through the door: each answered once (an allow runs it, a deny
+          // is told), then the session goes on with main's resume message for them, written on the record before it is
+          // sent (as the person's input is). A call still waiting parks the run again.
+          const wrapped = new Map(tools.map((tool) => [tool.name, tool]));
+          const follow = await parkedFollowUp(mcp!, {
+            entries: await entriesOf(gate.journal, root.id, context),
+            answer: (call, price) => answerOf(call, price),
+            deniedNow: (call) => {
+              const now = spec.gate?.({ callId: call.callId, tool: call.tool as never, args: call.args });
+              return now === "deny" ? `Permission denied: ${call.tool} is set to deny.` : typeof now === "object" ? now.deny : undefined;
+            },
+            run: (call) => wrapped.get(mcp!.tools.find((tool) => mcp!.catalogOf(tool.name) === call.tool)!.name)!.call(call.args, { callId: call.callId, signal: deps.signal }),
+          });
+          if (follow === "park") {
+            gate.seal(new Parked());
+            return { state: "parked" };
+          }
+          if (follow) {
+            const theRoot = root;
+            await harness.commit((tx) => tx.appendEntry(theRoot.id, { kind: KINDS.message, data: { role: "person", text: follow.text, origin: { kind: "server", reason: "approval" } } as unknown as JsonValue }), context);
+            await session!.send(follow.text, { id: `agentrun:approval:${follow.callIds[0]}` });
             followedUp = true;
           }
         }
@@ -735,7 +759,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
 
   /** The gate before a call's intent: the kernel's beforeIntent point, then allow, deny, or ask (answered, or park). */
   function preIntentGate(spec: AdapterRunSpec, hooks: KernelHooks) {
-    return async (call: PreIntentCall, _hookContext: Context, canPark = true): Promise<PreIntentAnswer> => {
+    return async (call: PreIntentCall, _hookContext: Context): Promise<PreIntentAnswer> => {
       // An MCP tool is asked about by its catalog name (`mcp:<server>/<tool>`), as its settings and its card name it.
       const tool = mcp?.catalogOf(call.tool) ?? call.tool;
       const kernelCall: ToolCall = { callId: call.callId, tool: tool as never, args: call.args };
@@ -746,8 +770,6 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       if (typeof decision === "object") return { deny: decision.deny };
       if (decision === "deny") return { deny: `Permission denied: ${tool} is set to deny.` };
       if (decision === "allow") return "allow";
-      // A call its harness cannot hold for a person's answer (an MCP call through a CLI's own client): answered so, unsent.
-      if (!canPark) return { deny: cannotWait(tool) };
       const answer = await answerOf({ ...call, tool }, mcp?.priceOf(tool) ?? spec.approvalPrice?.(kernelCall) ?? null);
       if (answer === "park") return { park: true };
       return answer.approved ? "allow" : { deny: deniedText(tool, answer.note) };

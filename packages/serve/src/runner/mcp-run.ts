@@ -9,7 +9,9 @@
 //   before the intent (allow, ask and park, deny), the flush, the record, the run's one ledger for a priced call.
 // - a harness with its own MCP client gets the session's MCP (`session`), which its adapter mounts once on its model
 //   proxy at `/mcp/<server>`: each call asks the loop's gate first, then runs the same host tool as the loop wrapped it.
-//   Such a harness cannot yet hold a call across a park: an asked call is answered so (cannotWait), nothing sent.
+//   An asked call parks the run as main's gate did through the door: the CLI is answered the waiting words, marked parked,
+//   and nothing is sent. The claim that resumes it answers it (parkedFollowUp): an allow runs the call once, a deny is
+//   told in words, and the session goes on with main's resume message for it.
 // - a command row handed to the running loop makes the credentials fresh again (`fresh`, on the same pin) before its
 //   next model request; the loop calls `release` when its pass ends, the claim is lost or its signal aborts.
 // The gateway holds no gate here (the loop's is the run's one gate) and keeps the rest as it is: the meta refusal, the
@@ -22,7 +24,9 @@ import { wireName } from "../catalog.js";
 import { mcpGateway, type McpGatewayOptions, noCallId } from "../mcp-gateway.js";
 import type { OAuthNetwork } from "../mcp-oauth.js";
 import type { Store, TriggerSettings } from "../store/index.js";
-import { type ApprovalPrice, mcpToolName } from "../tool-gate.js";
+import { type ApprovalPrice, argsPreview, mcpToolName, resumeText, RESUME_PREFIX, waitingText } from "../tool-gate.js";
+import { deniedText } from "./loop-contract.js";
+import { type AnswerData, type AskData, type CallEndData, KINDS } from "./journal-kinds.js";
 import type { Claim } from "./loop-contract.js";
 import { mcpClaim, type McpClaimStep } from "./mcp-claim.js";
 import type { GithubAppAccess, GithubTimer } from "./mcp-github.js";
@@ -60,6 +64,9 @@ export interface McpForClaimOptions {
 
 /** A call as the loop's gate is asked about it: the tool by its catalog name. */
 export type McpGateCall = { readonly callId: string; readonly tool: string; readonly args: Record<string, unknown> };
+/** The loop's gate's answer to a call through the door: let go (undefined), refused in words, or parked (the run parks on
+ *  its ask, nothing sent). */
+export type McpGateAnswer = undefined | { readonly refused: string } | { readonly parked: true };
 
 /** A claim's MCP (AdapterRunSpec.mcp): what the loop reaches the gateway by, and the claim step's own hooks. */
 export interface ClaimMcp {
@@ -71,9 +78,10 @@ export interface ClaimMcp {
   catalogOf(tool: string): string | undefined;
   /** What an asked call of a pinned tool costs on its card (main's: its price, else "not metered"); undefined otherwise. */
   priceOf(name: string): ApprovalPrice | undefined;
-  /** The session's MCP for a harness with its own client: each call through `gate` (undefined: let go; a text: refused
-   *  in those words, nothing sent), then its host tool from `wrapped`, as the loop wrapped it. */
-  session(wrapped: ReadonlyMap<string, HostTool>, gate: (call: McpGateCall) => Promise<string | undefined>): SessionMcp;
+  /** The session's MCP for a harness with its own client: each call through `gate` (let go; refused in words, nothing
+   *  sent; or parked, answered the gate's waiting words marked parked, nothing sent), then its host tool from `wrapped`,
+   *  as the loop wrapped it. */
+  session(wrapped: ReadonlyMap<string, HostTool>, gate: (call: McpGateCall) => Promise<McpGateAnswer>): SessionMcp;
   /** The credential values the gateway's calls in flight hold, for a redaction: each call's for as long as it is out,
    *  with any token refreshed while it was; none when idle. */
   redactions(): string[];
@@ -164,14 +172,66 @@ export async function mcpForClaim(options: McpForClaimOptions): Promise<ClaimMcp
         if (!host) return said(`${tool} is not a tool of the MCP server ${server} in this run.`, true);
         // The gate and the run's record know a call by its id: one without is never sent.
         if (!callId) return said(noCallId(name), true);
-        const refused = await gate({ callId, tool: name, args });
-        if (refused !== undefined) return said(refused, true);
-        const answer = await host.call(args, { callId, signal });
-        return said(answer.text, answer.isError === true);
+        const answer = await gate({ callId, tool: name, args });
+        if (answer && "refused" in answer) return said(answer.refused, true);
+        // The run parks on its ask: the CLI reads main's waiting words, and its adapter records the call as one that did not
+        // run (McpCallResult.parked); the claim that resumes the run answers it (parkedFollowUp).
+        if (answer) return { ...said(waitingText(name)), parked: true };
+        const result = await host.call(args, { callId, signal });
+        return said(result.text, result.isError === true);
       },
     }),
     redactions: () => gateway.heldValues(),
     fresh: () => step.fresh(),
     release: () => held.abort(),
   };
+}
+
+/** What the loop lends parkedFollowUp: the journal's root entries, its answer for an asked call (an answer entry, the
+ *  approve or deny row the claim was handed, or a park when none came: AdapterLoop answerOf), its gate's word on a call
+ *  now (a deny set since it asked refuses it), and the call itself through the loop's host-tool path. */
+export interface ParkedFollowUpOptions {
+  readonly entries: readonly { readonly kind: string; readonly data?: unknown }[];
+  answer(call: McpGateCall, price: ApprovalPrice | null): Promise<AnswerData | "park">;
+  deniedNow(call: McpGateCall): string | undefined;
+  run(call: McpGateCall): Promise<{ text: string; isError?: boolean }>;
+}
+
+/** For a harness with its own MCP client, on a claim that finds its MCP calls parked through the door: each asked call's
+ *  answer acted on once, as main's gate did after a person answered (tool-gate.ts): an allow runs the call through the
+ *  loop's path (its start and end on the run's record, never sent twice: a call with an end is answered from it), a deny
+ *  is told in its words; then one message, main's resume message per call (resumeText), the session goes on with.
+ *  "park": a call still waits (the run parks again, its ask asked again). Undefined: nothing waits. A call a follow-up
+ *  already answered (its resume message on the record) is not answered again. */
+export async function parkedFollowUp(mcp: ClaimMcp, options: ParkedFollowUpOptions): Promise<{ text: string; callIds: string[] } | "park" | undefined> {
+  const said = new Set<string>();
+  for (const entry of options.entries) {
+    const text = (entry.data as { text?: unknown } | null)?.text;
+    if (entry.kind === KINDS.message && typeof text === "string" && text.startsWith(RESUME_PREFIX)) said.add(text);
+  }
+  const answered = (callId: string) => [...said].some((text) => text.includes(` call ${callId} `));
+  const ended = new Map<string, CallEndData>();
+  for (const entry of options.entries) if (entry.kind === KINDS.callEnd) ended.set((entry.data as CallEndData).callId, entry.data as CallEndData);
+  const texts: string[] = [];
+  const callIds: string[] = [];
+  const asked = new Set<string>();
+  for (const entry of options.entries) {
+    if (entry.kind !== KINDS.ask) continue;
+    const ask = entry.data as AskData;
+    if (asked.has(ask.callId) || mcp.priceOf(ask.tool) === undefined || answered(ask.callId)) continue;
+    asked.add(ask.callId);
+    const call: McpGateCall = { callId: ask.callId, tool: ask.tool, args: (ask.args ?? {}) as Record<string, unknown> };
+    const answer = await options.answer(call, ask.price ?? null);
+    if (answer === "park") return "park";
+    let result: { text: string; isError?: boolean };
+    if (!answer.approved) result = { text: deniedText(call.tool, answer.note), isError: true };
+    else {
+      const done = ended.get(call.callId);
+      const denied = options.deniedNow(call);
+      result = done ? { text: typeof done.output === "string" ? done.output : `The ${call.tool} call ended ${done.status}.`, isError: done.status !== "done" } : denied !== undefined ? { text: denied, isError: true } : await options.run(call);
+    }
+    texts.push(resumeText({ tool: call.tool, call_id: call.callId }, argsPreview(call.args), answer.approved ? "allow" : "deny", { text: result.text, isError: result.isError === true }));
+    callIds.push(call.callId);
+  }
+  return texts.length ? { text: texts.join("\n\n"), callIds } : undefined;
 }
