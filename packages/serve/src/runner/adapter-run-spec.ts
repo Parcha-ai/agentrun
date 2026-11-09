@@ -24,7 +24,7 @@ import type { RunLaunch } from "../run-launch.js";
 import type { Store } from "../store/store.js";
 import { isObject } from "../validate.js";
 import { runGate } from "../tool-gate.js";
-import { loadToolSettings } from "../tool-plane.js";
+import { loadToolSettings, type Plane, recheckPlane, TOOL_PLANE_ENV } from "../tool-plane.js";
 import { type ToolHost, toolOf } from "../tools.js";
 import { type HostToolCtx, hostToolOf } from "../host-tools.js";
 import { WEB_FETCH_TOOL } from "../web-fetch.js";
@@ -46,6 +46,9 @@ import { entriesOf } from "./loop.js";
 import type { Claim, Journal } from "./loop-contract.js";
 import { runMetrics } from "./metrics.js";
 import type { ModelRoute, RouteCost } from "./model-route.js";
+
+/** The browser's catalog name (tools.ts TOOLS.browser). */
+const BROWSER_TOOL = "browser";
 
 /** What the runner hands the spec builder, beside the claim and the loop's own Harness (the AdapterRun): the store (its
  *  agent and run reads, and the live-viewer seam the browser tool writes through), the data directory a Mode 1 run folder
@@ -219,7 +222,7 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
   // Workspace and computer (runTools.hostTools); the gate is the adapter loop's own (spec.gate), so they run as asked.
   const results: ToolResults = new Map();
   const handTools = tools.hostTools(granted, undefined, results);
-  const nonHandTools = await bindNonHandTools(host, granted, run, context, results, root);
+  const nonHandTools = await bindNonHandTools(host, granted, run, context, results, root, launch.plane);
   const sessionTools = [...handTools, ...nonHandTools];
 
   // The run's system prompt, as main's per-run process builds it (app.ts): the environment line first (environment.ts, as
@@ -283,12 +286,13 @@ function settlePaidCall(name: string): { refused: string } | undefined {
 
 /** The run's non-hand tools as HostTool[], bound through the ToolHost seam and wrapped as the hands are (host-tools.ts
  *  hostToolOf): web_fetch, web_search and monid, each by its catalog name under the adapter loop's one gate (`spec.gate`;
- *  `gated` is undefined here, as for the hands), its paid call's money through settlePaidCall. The browser (tl-browser,
- *  through host.liveViewers), MCP (tl-mcp's mcpForClaim(claim, store, sealKey, pin) -> { sessionMcp, redactions, release }),
+ *  `gated` is undefined here, as for the hands), its paid call's money through settlePaidCall; the browser (tl-browser) as
+ *  tools.ts binds it, through host.liveViewers and its per-claim sign-in. MCP (tl-mcp's mcpForClaim(claim, store, sealKey, pin) -> { sessionMcp, redactions, release }),
  *  the learned workflow and decisions are each a named todo, added as their seams land. */
-async function bindNonHandTools(host: ToolHost, granted: readonly string[], run: AdapterRun, context: Context, results: ToolResults, root: string): Promise<AdapterRunSpec["session"]["tools"]> {
+async function bindNonHandTools(host: ToolHost, granted: readonly string[], run: AdapterRun, context: Context, results: ToolResults, root: string, plane: Plane | undefined): Promise<AdapterRunSpec["session"]["tools"]> {
   const names = granted.filter((name) => name === WEB_FETCH_TOOL || name === WEB_SEARCH_TOOL || name.startsWith("monid."));
-  if (names.length === 0) return [];
+  const browser = granted.includes(BROWSER_TOOL);
+  if (names.length === 0 && !browser) return [];
   const ctx: HostToolCtx = {
     context,
     results,
@@ -311,6 +315,21 @@ async function bindNonHandTools(host: ToolHost, granted: readonly string[], run:
     const binding = await entry.bind(host);
     for (const registration of binding.tools) {
       const tool = hostToolOf(name, registration, ctx);
+      if (tool) tools.push(tool);
+    }
+  }
+  // The browser (tl-browser): tools.ts's own binding on this run's ToolHost (its store, claim and seal key, its live viewers
+  // through the store, its sign-in read under the claim), its vendor the launch's plane checked again against the keys
+  // this claim read from the store, as main's launch hands its process the plane (runs.ts TOOL_PLANE_ENV). Each of its
+  // tools as a HostTool under the loop's one gate, with its own replay policy.
+  if (browser) {
+    const checked = plane ? recheckPlane(plane, host.env) : {};
+    const env = { ...host.env };
+    delete env[TOOL_PLANE_ENV];
+    if (Object.keys(checked).length) env[TOOL_PLANE_ENV] = JSON.stringify(checked);
+    const binding = await toolOf(BROWSER_TOOL)!.bind({ ...host, env });
+    for (const registration of binding.tools) {
+      const tool = hostToolOf(BROWSER_TOOL, registration, ctx, (registration as { replay?: string }).replay === "safe" ? "safe" : "never");
       if (tool) tools.push(tool);
     }
   }

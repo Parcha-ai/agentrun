@@ -215,4 +215,4 @@ test("bound through a host whose lifecycle is the adapter loop's hostLifecycle()
   assert.deepEqual((await r.store.runs.get("run-a")).signInHanded, [pointerHash(r.refs.a)]);
 });
 
-test.todo("a runner-path run's browser opens its sessions on the handed sign-in end to end through the adapter loop (a session's profile, its viewer handed over, its save on release and the sign-in's verified_at): waits on E2r3: the runner's ToolHost built with hostLifecycle().register (adapter-run-spec.ts host, today no-op hooks), spec.lifecycle passed to the adapter loop, and the browser bound in bindNonHandTools");
+test.todo("a runner-path run's browser opens its sessions on the handed sign-in end to end through the adapter loop (a session's profile, its viewer handed over, its save on release and the sign-in's verified_at): waits on E2r3: the runner's ToolHost built with hostLifecycle().register (adapter-run-spec.ts host, today no-op hooks) and spec.lifecycle passed to the adapter loop; and on the host tool's api giving the browser's calls the tool task's own members (memo, snapshot, waitForTask, conversation, taskId), which HOST_API_MEMBERS does not");

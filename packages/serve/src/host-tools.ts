@@ -85,8 +85,9 @@ export interface HostToolCtx {
  *  the gate before the call, the paid-call seam, then the tool on the run's environment and harness, its answer the text a
  *  model reads (the output or the failure, a write's or an error's path named relative to the run's folder). Undefined when
  *  `name` is not one a host runs (REPLAY). */
-export function hostToolOf(name: string, tool: ToolRegistration, ctx: HostToolCtx): HostTool | undefined {
-  const replay = REPLAY[name];
+export function hostToolOf(name: string, tool: ToolRegistration, ctx: HostToolCtx, replayOf?: "safe" | "never"): HostTool | undefined {
+  // A tool whose catalog name binds several tools (the browser's) gives each one's own policy (`replayOf`).
+  const replay = replayOf ?? REPLAY[name];
   if (!replay) return undefined;
   return {
     name: tool.name,
