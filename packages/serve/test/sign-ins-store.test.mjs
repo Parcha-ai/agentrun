@@ -48,6 +48,47 @@ test("a pointer is sealed at rest, bound to its agent and provider, and opens fo
   assert.ok(!JSON.stringify(views).includes("ctx-123"), "the view never holds the pointer");
 });
 
+// A first sign-in made twice at once (two runs' first creates for one agent, each with a vendor object of its own): exactly
+// one row wins, and the other is handed the winner's row back, never its own, so its caller can let its own vendor object
+// go and use the winner's. A plain save would replace the first pointer in place, leaving its vendor object (cookies)
+// held by no row, and the run handed it would find nothing that opens.
+test("two first creates of one agent's sign-in race: exactly one row wins, and the loser is handed the winner's row back", async (t) => {
+  const { store } = await storeOn(t);
+  await agentWithRevision(store, "alpha", "alpha-rev");
+  const sealedA = Uint8Array.from([1, 1, 1]);
+  const sealedB = Uint8Array.from([2, 2, 2]);
+  const [a, b] = await Promise.all([
+    store.signIns.saveIfAbsent({ agentId: "alpha", provider: "browserbase", name: "default", pointerSealed: sealedA }),
+    store.signIns.saveIfAbsent({ agentId: "alpha", provider: "browserbase", name: "default", pointerSealed: sealedB }),
+  ]);
+  assert.deepEqual([a.saved, b.saved].sort(), [false, true], `exactly one saved: ${JSON.stringify([a.saved, b.saved])}`);
+  const [winner, loser] = a.saved ? [a, b] : [b, a];
+  const kept = await store.signIns.get("alpha", "browserbase");
+  assert.deepEqual([...kept.pointerSealed], [...winner.row.pointerSealed], "the store keeps the winner's pointer");
+  assert.deepEqual([...loser.row.pointerSealed], [...winner.row.pointerSealed], "the loser is handed the winner's row, not its own");
+  assert.equal((await store.signIns.list("alpha")).length, 1, "one row");
+  // Once one is saved, a later saveIfAbsent saves nothing and hands the live row back.
+  const later = await store.signIns.saveIfAbsent({ agentId: "alpha", provider: "browserbase", name: "default", pointerSealed: Uint8Array.from([3]) });
+  assert.equal(later.saved, false);
+  assert.deepEqual([...later.row.pointerSealed], [...winner.row.pointerSealed]);
+});
+
+// verify's guard is the save it was checked against, by number (SignInRow.save, one more on every save of the row), never
+// its saved_at: two saves can land in one millisecond, and a guard on saved_at would stamp the newer one as verified.
+test("a verify guarded by the save it checked never stamps a newer save, even one in the same millisecond", async (t) => {
+  const { store } = await storeOn(t);
+  await agentWithRevision(store, "alpha", "alpha-rev");
+  const first = await store.signIns.save({ agentId: "alpha", provider: "browserbase", name: "default", pointerSealed: Uint8Array.from([1]) });
+  // The store's clock does not move: the re-save lands in the same millisecond.
+  const again = await store.signIns.save({ agentId: "alpha", provider: "browserbase", name: "default", pointerSealed: Uint8Array.from([2]) });
+  assert.equal(again.savedAt, first.savedAt, "both saves in one millisecond");
+  const stale = await store.signIns.verify("alpha", "browserbase", first.savedAt + 1, { ifSave: first.save });
+  assert.equal(stale, false, "guarded by the first save, verify stamps nothing");
+  assert.equal((await store.signIns.get("alpha", "browserbase")).verifiedAt, null, "the newer save stays unverified");
+  assert.notEqual(again.save, first.save, "each save has a number of its own");
+  assert.equal(await store.signIns.verify("alpha", "browserbase", first.savedAt + 2, { ifSave: again.save }), true, "guarded by the live save, it stamps");
+});
+
 test("one live sign-in per agent and provider: a second save replaces it in place", async (t) => {
   const { store, clock } = await storeOn(t);
   await agentWithRevision(store, "alpha", "alpha-rev");
