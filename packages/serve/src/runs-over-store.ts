@@ -191,9 +191,10 @@ export async function raiseCap(store: RunsStore, moment: RunMoment, cap: number)
   return { resumed: false, ...(moment.live ? { note: `The run's process keeps the ${money(from)} cap it was opened with; the ${money(cap)} cap holds from its next process.` } : {}) };
 }
 
-/** The refusal for a tool call already answered, in the old runs.ts words, by how it was answered. */
-function alreadyAnswered(id: string, decision: ApprovalDecision): ApiError {
-  const how = decision === "canceled" ? "canceled with its run" : decision === "withdrawn" ? "withdrawn when its run was stopped" : `answered: ${decision}`;
+/** The refusal for a tool call already answered, in the old runs.ts words, by how it was answered; a withdrawal by a run
+ *  that ended (completed or failed, `ended`) says its run ended, never that it was stopped. */
+function alreadyAnswered(id: string, decision: ApprovalDecision, ended = false): ApiError {
+  const how = decision === "canceled" ? "canceled with its run" : decision === "withdrawn" ? (ended ? "withdrawn when its run ended" : "withdrawn when its run was stopped") : `answered: ${decision}`;
   return new ApiError("not_continuable", `The tool call ${id} was already ${how}.`, { details: { reason: "already_answered", decision } });
 }
 
@@ -205,7 +206,7 @@ export async function approve(store: RunsStore, moment: RunMoment, id: string, d
   if (!given && !(moment.approvalIds?.has(id) ?? false)) throw new ApiError("not_found", `The run ${moment.id} has no tool call ${id} waiting for approval.`);
   if (given) {
     if (given.decision === decision) return;
-    throw alreadyAnswered(id, given.decision);
+    throw alreadyAnswered(id, given.decision, given.ended === true);
   }
   const body: Record<string, unknown> = { approval: id, ...(note !== undefined ? { note } : {}) };
   await sendCommand(store, moment.id, { kind: decision === "allow" ? "approve" : "deny", body });
