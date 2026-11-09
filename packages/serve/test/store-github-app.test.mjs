@@ -118,3 +118,28 @@ test("a claimed run whose agent grants a github_app server's tools gets the App'
   assert.deepEqual(answer, { content: [{ type: "text", text: "2" }] }, "the server took the App's token");
   assert.deepEqual(github.asked.map((a) => a.url), ["/app/installations/777/access_tokens"], "minted once, for the run's repository");
 });
+
+test("a runner started normally mints the App's tokens at https://api.github.com: the base is the runner's own test option alone, never the store, a run's environment or a flag", async (t) => {
+  const { store } = await storeOn(t);
+  await connected(store);
+  const access = await githubAppAccess(store, KEY, { content: "https://github.com/acme/widgets" });
+  assert.equal(access.api, "https://api.github.com", "no option: GitHub's own");
+  const fake = await githubAppAccess(store, KEY, { content: "https://github.com/acme/widgets" }, { api: "http://127.0.0.1:1" });
+  assert.equal(fake.api, "http://127.0.0.1:1", "a test runner's option");
+});
+
+test("the GitHub API base has one way in, a test runner's option: no api_url (or any URL) kept with the App, and no CLI flag, environment variable or setting maps onto the runner's githubApi", async () => {
+  const { readFile, readdir } = await import("node:fs/promises");
+  const src = new URL("../src/", import.meta.url).pathname;
+  const files = (await readdir(src, { recursive: true })).filter((f) => f.endsWith(".ts"));
+  const text = Object.fromEntries(await Promise.all(files.map(async (f) => [f, await readFile(src + f, "utf8")])));
+  // The App's settings and every writer and reader of them: github.ts (its fields), github-connection.ts (Connect, the one
+  // writer), trigger-github.ts (its settings spec), runner/github-app.ts (the runner's read).
+  const github = ["github.ts", "github-connection.ts", "trigger-github.ts", "runner/github-app.ts"];
+  assert.deepEqual(github.filter((f) => /api_url|apiUrl|_url"|Url:/.test(text[f].replace(/settings_url|settingsUrl|settings\.url/g, ""))), [], "no URL kept with the App but its GitHub settings page");
+  const githubApi = files.filter((f) => /\bgithubApi\b/.test(text[f])).sort();
+  assert.deepEqual(githubApi, ["runner/adapter-run-spec.ts", "runner/cli-run-spec.ts", "server.ts"], "the spec deps (a test runner's option) and the server's own test seam");
+  assert.ok(!/githubApi|GITHUB_API_URL|github-api/.test(text["cli.ts"]), "the CLI maps nothing onto it");
+  assert.deepEqual(files.filter((f) => /process\.env\.[A-Z_]*GITHUB|env\[["'][A-Z_]*GITHUB/.test(text[f])), [], "no environment variable names it");
+  assert.match(text["github.ts"], /export const GITHUB_API = "https:\/\/api\.github\.com";/);
+});
