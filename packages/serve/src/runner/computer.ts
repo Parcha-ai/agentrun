@@ -17,6 +17,7 @@ import {
   readBackOf,
   type Result,
   runLabels,
+  servingRefusals,
 } from "@parcha/agentrun-computer";
 import type { AttachableComputer } from "../workspace/attach.js";
 import type { RunComputer } from "../workspace/run-tools.js";
@@ -35,6 +36,8 @@ export interface DockerComputerOptions {
   readonly boxAllow?: readonly string[] | "none";
   /** The image owner setting (AGENTRUN_DOCKER_IMAGE); absent is D's own default image. */
   readonly image?: string;
+  /** The run's computer setting's kind, of those that mount the run's folder: a plain box is a sandbox (the default). */
+  readonly kind?: "sandbox" | "desktop";
   readonly signal?: AbortSignal;
 }
 
@@ -71,11 +74,19 @@ export async function dockerComputer(
   if (!made.ok) throw new Error(`the run's computer could not be made: ${made.error.message}`);
   const ref: ComputerRef = made.value;
   const release = async (): Promise<void> => void (await provider.release(ref, "delete").catch(() => undefined));
+  const kind = options.kind ?? "sandbox";
   let client;
+  let groups;
   try {
     const connected = await provider.connect(ref);
     if (!connected.ok) throw new Error(`the run's computer could not be reached: ${connected.error.message}`);
     client = connected.value.client;
+    // What the computer says it is (its hello), read against the kind registry: one that does not serve the run's kind
+    // is refused in the registry's words, never handed on.
+    const { hello } = connected.value;
+    groups = hello.groups;
+    const refusals = servingRefusals({ kind: hello.kind, groups: hello.groups }, kind);
+    if (refusals.length > 0) throw new Error(`the run's computer can't serve a ${kind}: ${refusals.join("; ")}`);
   } catch (error) {
     await release();
     throw error;
@@ -92,5 +103,9 @@ export async function dockerComputer(
   };
   // The check carries the claim's epoch (D6): a disk read-back under another epoch is refused. Docker's bind read-back
   // carries no epoch, so the fence there is the computer's epoch label; the epoch here is for a disk mount.
-  return { run: { computer, check: { readBackOf, epoch: options.epoch } }, release };
+  const check = { readBackOf, epoch: options.epoch };
+  // The kinded RunComputer runTools takes: a sandbox, or a desktop with the groups its hello declares; both mount the
+  // run's folder here, so both carry its check.
+  const run: RunComputer = kind === "sandbox" ? { kind, computer, check } : { kind, computer, groups, check };
+  return { run, release };
 }
