@@ -16,7 +16,7 @@ import { KINDS, withdrawnAnswers } from "./journal-kinds.js";
 import { journalEntries } from "./journal-reader.js";
 import { type Claim, type Command, endedBy, type Journal, type Loop, type LoopEnd, type LoopFactory, type StopReason } from "./loop-contract.js";
 import { isFenced, type RunnerStore } from "./store-port.js";
-import { heldRedactor, type Redact, runnerSecrets, secretRedactor } from "./redact.js";
+import { heldRedactor, processSecretRedactor, type Redact } from "./redact.js";
 
 /** Most runs a runner holds at once, unless told (RunnerOptions.loops). */
 export const RUNNER_LOOPS = 300;
@@ -163,7 +163,7 @@ export function startRunner(options: RunnerOptions): Runner {
     endRetryCapMs = END_RETRY_CAP_MS,
     endRetryAtCap = END_RETRY_AT_CAP,
     onEvent = () => {},
-    redact: given = secretRedactor(runnerSecrets(process.env)),
+    redact: given = processSecretRedactor(),
     now = Date.now,
     onBeat = () => {},
     clock = { now: () => Date.now(), setTimeout: (fn: () => void, ms: number) => setTimeout(fn, ms), clearTimeout: (handle: unknown) => clearTimeout(handle as NodeJS.Timeout) },

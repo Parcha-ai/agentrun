@@ -14,7 +14,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
 import { closeOpenSessions, piAdapterSpec, scriptedOrigin } from "./conformance-pi-adapter.mjs";
-import { beforeRequestOf, cap, quiet, rootEntries, SONNET, sleep, STEADY } from "./adapter-pi-cap-support.mjs";
+import { beforeRequestOf, cap, quiet, rootEntries, SONNET, sleep, STEADY, TIMING } from "./adapter-pi-cap-support.mjs";
 
 after(closeOpenSessions);
 const { openSqliteStore } = await import("../dist/store/index.js");
@@ -59,12 +59,8 @@ function stoppingAt(point) {
 
 async function crashedRaise(t, point, { short = false } = {}) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-adapter-raise-crash-"));
-  // The stores' clock: real time plus `clock.skewMs`, so the killed runner's claim runs out when the case moves the
-  // store's now past its until, never by waiting for a short real lease.
-  const clock = { skewMs: 0 };
-  const now = () => Date.now() + clock.skewMs;
-  const server = await openSqliteStore({ dataDir: dir, role: "server", now });
-  const stores = [await openSqliteStore({ dataDir: dir, role: "runner", now }), await openSqliteStore({ dataDir: dir, role: "runner", now })];
+  const server = await openSqliteStore({ dataDir: dir, role: "server" });
+  const stores = [await openSqliteStore({ dataDir: dir, role: "runner" }), await openSqliteStore({ dataDir: dir, role: "runner" })];
   const runners = [];
   const stop = stoppingAt(point);
   t.after(async () => {
@@ -88,7 +84,7 @@ async function crashedRaise(t, point, { short = false } = {}) {
   }), { restartLimit: MAX_RESTARTS });
   // The first runner's journal stops at the point; the second's is the store's own.
   const first = (deps) => loop({ ...deps, journal: (claim) => stop.wrap(deps.journal(claim)) });
-  runners.push(startRunner({ store: stores[0], createLoop: first, name: "runner-a", ...STEADY }));
+  runners.push(startRunner({ store: stores[0], createLoop: first, name: "runner-a", ...TIMING }));
   const settled = async (state, ms = 20_000) => {
     const from = Date.now();
     for (;;) {
