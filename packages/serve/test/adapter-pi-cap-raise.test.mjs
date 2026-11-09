@@ -20,6 +20,19 @@ const { MAX_RESTARTS } = await import("../dist/runner/conformance/harness.js");
 
 const CAP = 0.01;
 const FOLLOW_UP = (usd) => cap.followUpOf(usd).text;
+/** The bound on a wait for a runner's own event: it caps the wait, it never orders anything. */
+const EVENT_WAIT_MS = 30_000;
+
+/** `event`, or a failure naming `what` once EVENT_WAIT_MS passes without it: a loop that fails before it gets there fails
+ *  the case in words, never hangs it. */
+async function reached(event, what) {
+  let timer;
+  try {
+    return await Promise.race([event, new Promise((_, reject) => (timer = setTimeout(() => reject(new Error(`not within ${EVENT_WAIT_MS} ms: ${what}`)), EVENT_WAIT_MS)))]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 /** One pi run on the adapter loop under a cap that `raise(usd)` moves, as the server keeps a raised run's cap. The runner
  *  runs until `stopRunner()`, and a new one until the test ends: raises sent between them meet the run unclaimed.
@@ -168,7 +181,7 @@ test("a raised run whose resumed claim is lost before its raise entry lands resu
   // untaken. Ordered by that event, never by a short real lease.
   const stuck = raiseEntryNeverLands();
   w.startOne({ storeOf: renewsRefused, journalOf: stuck.journalOf });
-  await stuck.reached;
+  await reached(stuck.reached, "the resuming runner asks to commit its raise entry");
   w.runOut();
   // The next runner claims it once that lease ran out: from "running", its pause still unanswered.
   w.startOne();
@@ -244,7 +257,7 @@ test("a run refused at its cap whose claim is lost before its park lands is park
   // never by a short real lease.
   const starved = starvedAtPark();
   const w = await cappedRun(t, [{ say: "done" }], starved.hooks);
-  await starved.reached;
+  await reached(starved.reached, "the first runner asks to commit its park (the budget entry)");
   w.runOut();
   // The next runner claims it once that lease ran out, from "running".
   w.startOne();
