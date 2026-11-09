@@ -46,12 +46,12 @@ import { handoverById, type LiveHandover, liveRest, LiveViewers, proxyLiveUpgrad
 import { answerAsk } from "./browser-person.js";
 import { durationMs, logLine } from "./print.js";
 import { knownToolCostOf, type RunMoment, type State, type Status, toolCostOf, WITHHELD_SIGN_IN } from "./run-view.js";
-import { approve, archiveRun, cancel, message, raiseCap, type StartDeps, startRun, stop as stopRun, WAITS_ON_A_PERSON } from "./runs-over-store.js";
+import { approve, archiveRun, cancel, message, raiseCap, type StartDeps, type StartOptions, startRun, stop as stopRunOverStore, WAITS_ON_A_PERSON } from "./runs-over-store.js";
 import { momentOverStore, summaryOverStore, type ViewDeps, viewOverStore } from "./store-view.js";
 import { triggerTargets, type TriggerTargetDeps } from "./trigger-targets.js";
 import { listRuns as listRunsOverStore, readRun as readRunOverStore, runOfOrigin as runOfOriginOverStore } from "./store-reads/runs.js";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { openSqliteStore, type RevisionPlace, type Store, StoreBusy, StoreConstraint } from "./store/index.js";
+import { openSqliteStore, type RevisionPlace, type RunRow, type Store, StoreBusy, StoreConstraint } from "./store/index.js";
 import { runModelRef } from "./model.js";
 // The v2 run statuses, as the run view names them (run-view.ts Status), for the list filter's validation. */
 const STATUSES = ["queued", "working", "paused", "input_required", "completed", "failed", "cancelled"] as const;
@@ -104,7 +104,7 @@ import { MAX_FILES_PER_RUN, MAX_UPLOAD_BYTES, Uploads, UPLOADS_DIR } from "./upl
 import { entryAt, listFiles, sendFile as sendWorkspaceFile, viewOf } from "./run-files.js";
 import { writesHeld } from "./workspace.js";
 import { agentHomeFolder, isWorkspaceError, localWorkspace, runFolder, type Workspace } from "./workspace/index.js";
-import { markRunning, markStopping, type ServerLock, takeServerLockAfterStop } from "./server-lock.js";
+// server-lock.ts is gone: the store's EXCLUSIVE connection is the one-server lock (StoreOwned refuses a second server).
 
 export const CONTRACT = "agentrun.v2/0";
 
@@ -459,11 +459,8 @@ export const ROUTES: readonly Route[] = [
 
 /** Where agent `agentId`'s host-owned path is read on this server: its route, when ROUTES has one (the learning API, for
  *  learning/); sign-ins/ only as the agent's `sign_ins`, never a pointer. */
-/** A run's files (its work/), refused while it is hidden (runs.ts meta.unshown: this server can't read the browser
- *  sign-in it was handed), as its graph is: a page it saved signed in is what it saw, and no file is cut. */
-function filesShown(run: Run): void {
-  if (run.meta.unshown) throw new ApiError("forbidden", WITHHELD_SIGN_IN);
-}
+// A run's files were refused while it was hidden (the browser sign-in it was handed can't be read back): that cut is the
+// store-backed run view's now (run-reads-over-store, E2c), over the run's handed pointers. Removed here with the file route.
 
 const ownedReadAt = (agentId: string): OwnedReadAt => (owned) => (owned === SIGN_INS_DIR ? `/v2/agents/${agentId}` : ROUTES.some((r) => r.method === "GET" && r.pattern.test(`/agents/${agentId}/${owned}`)) ? `/v2/agents/${agentId}/${owned}` : undefined);
 
@@ -815,8 +812,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  finishes after it is dropped. */
   let needsAsked = 0;
   const keysChanged = async () => {
-    // A run's learning, as its view, a list and its timeline row show it, is cut of the keys saved now (runs.ts).
-    runs.keysChanged();
+    // A run's learning, view, list and timeline row are cut of the keys saved now by the run view at read time (it reads
+    // serverSecrets live, store-view), so a key change needs no cache invalidation here.
     env = withSecrets(base, "all", storedKeys);
     const mine = ++needsAsked;
     const next = await needsOf(env);
@@ -1239,11 +1236,21 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     if (!entry) throw new ApiError("not_found", `no agent ${id}`);
     return entry;
   }
-  async function needRun(id: string): Promise<Run> {
-    const run = ID.test(id) ? await runs.get(id) : null;
+  // A run's live moment from the store (store-view momentOf), for the one acceptance each act a run takes reads. The run
+  // routes read from the store + the run view now, not a live Run.
+  async function needRun(id: string): Promise<RunMoment> {
+    const run = ID.test(id) ? await momentOverStore(store, id, viewDepsFor(ownOriginOf())) : undefined;
     if (!run) throw new ApiError("not_found", `no run ${id}`);
     return run;
   }
+  /** A run's v2 status and state now (the run view), for the answer an act reports once it has written its command row. */
+  const runStatusState = async (runId: string): Promise<{ status: Status; state: State }> => {
+    const v = await viewOverStore(store, runId, viewDepsFor(ownOriginOf()));
+    return { status: (v?.status as Status) ?? "queued", state: (v?.state as State) ?? "idle" };
+  };
+  /** The run read routes (timeline, files, graph, browser, live viewer) over the store are E2c's run-reads-over-store.ts
+   *  (watchRun + run-workspace + store-view), not committed yet. TODO(E2c): replace each call with its function on that sha. */
+  const runReadsTodo = (): never => { throw new ApiError("unsupported_here", "run reads over the store (timeline, files, graph, browser) are being wired (run-reads-over-store); not available on this build yet"); };
 
   const mismatch = () => new ApiError("idempotency_mismatch", "this Idempotency-Key was used with another body");
   /** Replays the first answer to a create with the same key and body; another body is a mismatch. `work` gets the key's
@@ -1477,12 +1484,11 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       if (first) {
         if (first.existing?.fingerprint !== origin.fingerprint) throw mismatch();
         const headers: Record<string, string> = { location: `/v2/runs/${first.runId}`, "idempotent-replayed": "true" };
-        return { status: 202, body: await runs.view(await needRun(first.runId), linkOrigin(req)), headers };
+        return { status: 202, body: await viewOverStore(store, first.runId, viewDepsFor(linkOrigin(req))), headers };
       }
       const run = await startRunOf(entry, body, { ...(origin ? { origin } : {}) });
-      // Its view from the run itself: it is written, with its first message, so an answer read from the store, which a
-      // busy store would turn into home_busy, would refuse a run that runs, and a retry would start a second one.
-      return { status: 202, body: await runs.view(run, linkOrigin(req), { stored: null }), headers: { location: `/v2/runs/${run.id}` } };
+      // Its view from the store: the run and its launch were inserted in one transaction, so the view reads it whole.
+      return { status: 202, body: await viewOverStore(store, run.id, viewDepsFor(linkOrigin(req))), headers: { location: `/v2/runs/${run.id}` } };
     });
   }
 
@@ -1491,36 +1497,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  gets that run (the agent store's run_origins). */
   /** `capped`: the run must have a cap (a trigger's), its own or else its agent's default. */
   /** `from`: who the run's first message is from when the person did not write it (a trigger's firing). */
-  async function startRunOf(entry: AgentEntry, body: Json, { trigger, origin, capped = false, from }: { trigger?: RunTrigger; origin?: RunOrigin; capped?: boolean; from?: MessageOrigin } = {}): Promise<Run> {
-    const issues = runBodyIssues(body);
-    if (issues.length) {
-      // Told from the revision the run would start on (a pinned one, else the current), once it reads as one: a pin that
-      // is malformed or names no revision gets the refusal alone, no hint.
-      const on = issues.some((issue) => issue.field === "revision") ? undefined : await pinnedOf(entry, body);
-      throw told(invalid(on ? await explainRun(issues, body, on.revision) : issues));
-    }
-    if (body.quote_id !== undefined) throw unsupported("quotes", "This server has no billing, so it takes no quotes.");
-    // Each a ready file, before anything starts: copied into the run's work/inputs/ once its directory is made.
-    const files = Array.isArray(body.file_ids) ? await uploads.readyFiles(body.file_ids) : [];
-    const pinned = await pinnedOf(entry, body);
-    if (!pinned) throw invalid([{ field: "revision", reason: "not_an_option", message: typeof body.revision === "string" ? `${body.revision} is not a revision of the agent ${entry.agent.id}` : `the agent ${entry.agent.id} has no current revision` }]);
-    const { revision, version } = pinned;
-    const input = body.input as Json;
-    const wrong = await inputIssuesOf(revision, input);
-    if (wrong.length) throw told(invalid(await explainRun(wrong, body, revision)));
-    // The run's own cap, else the agent's default: the caller chose its own.
-    const cap = typeof body.max_cost_usd === "number" ? body.max_cost_usd : revision.body.maxCostUsd;
-    if (capped && cap === undefined) throw invalid([{ field: "max_cost_usd", reason: "missing", message: "Every run a trigger starts is capped: give the trigger's target a max_cost_usd or set the agent's." }]);
-    // How its cap prices a request: the run's own, else the agent's, else expected (cap.ts). Only a run with a cap has one.
-    if (body.cap_mode !== undefined && cap === undefined) throw invalid([{ field: "cap_mode", reason: "not_allowed", message: "cap_mode says how a run's cap prices its requests, and this run has no cap: give it a max_cost_usd, or set the agent's." }]);
-    const capMode = cap === undefined ? undefined : typeof body.cap_mode === "string" ? (body.cap_mode as CapMode) : (revision.body.capMode as CapMode | undefined);
-    const place = resolvePlace(revision.body.place as Place | undefined, fallbackPlace(revision.kind, revision.kind === "agentic" ? (revision.body.tools ?? []) : []));
-    await runnable(revision, place, { capped: cap !== undefined });
-    // The title shows on the run's page, the runs list and Mission Control: built from its input as shown, each held
-    // value redacted before a long one is cut (a cut key could no longer be found), and the run gets its input as given.
-    const shown = redactedOutput(input, serverSecrets());
-    const title = revision.kind === "workflow" ? workflowTitle(entry.agent.name || entry.agent.id, isObject(shown) ? shown : {}) : typeof input.content === "string" ? input.content : (Object.values(input).find((v): v is string => typeof v === "string") ?? JSON.stringify(input));
-    return runs.create(entry, revision, version, { input, title, place, ...(typeof body.effort === "string" ? { effort: body.effort } : {}), ...(cap !== undefined ? { maxCostUsd: cap } : {}), ...(capMode !== undefined ? { capMode } : {}), ...(trigger ? { trigger } : {}), ...(origin ? { origin } : {}), ...(from ? { from } : {}), ...(files.length ? { inputs: (work: string) => uploads.copyInto(work, files) } : {}) });
+  async function startRunOf(entry: AgentEntry, body: Json, options: StartOptions = {}): Promise<RunRow> {
+    // Every check the old start made, in the same order and words, now lives in the run write half (runs-over-store.startRun,
+    // over StartDeps): the body's fields, the revision it pins, the input against its schema, the cap rules, the plane this
+    // host resolves, whether the revision can run here — then an INSERT of a queued run and its launch in one transaction,
+    // which a runner reads at its claim. No process, no door, no setup file.
+    return startRun(store, startDeps, entry, body, options);
   }
 
   /** The revision a run of `entry` starts on: the one `body.revision` pins, else the agent's current; undefined when the
@@ -1556,56 +1538,22 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     if (status !== null && !(STATUSES as readonly string[]).includes(status)) throw new ApiError("bad_request", `status is one of ${STATUSES.join(", ")}`);
     for (const [key, value] of Object.entries(filter)) if (value !== undefined && !ID.test(value)) throw new ApiError("bad_request", `${key} is an id`);
     const archived = archivedParam(url);
-    let rows = (await agents.request(() => agents.store.listRuns(filter))).filter((row) => Boolean(row.archivedAt) === archived);
+    const vd = viewDepsFor(origin);
+    let rows = (await listRunsOverStore(store, filter, ctx)).filter((row) => Boolean(row.archivedAt) === archived);
     if (status !== null) {
-      const statuses = await Promise.all(rows.map((row) => runs.statusOfRow(row)));
+      // The v2 status is the run view's (store-view over the journal), per row.
+      const statuses = await Promise.all(rows.map((row) => viewOverStore(store, row.id, vd).then((v) => v?.status as Status | undefined)));
       rows = rows.filter((_, i) => statuses[i] === (status as Status));
     }
-    const versions = new Map<string, number>();
-    for (const agent of new Set(rows.slice(offset, offset + limit).map((row) => row.agent))) for (const r of await agents.revisions(agent)) versions.set(r.id, r.version);
-    const page = await Promise.all(rows.slice(offset, offset + limit).map((row) => runs.summaryOfRow(row, versions, origin)));
+    // summaryOverStore reads each run's view (its version, status, cost and learning among them); no versions map is needed.
+    const page = await Promise.all(rows.slice(offset, offset + limit).map((row) => summaryOverStore(store, row.id, vd)));
     return { runs: page, next_cursor: nextCursor(offset + limit, rows.length) };
   }
 
-  async function timeline(req: IncomingMessage, res: ServerResponse, url: URL, run: Run): Promise<void> {
-    const after = integerParam(url.searchParams.get("after"), "after", Number.MAX_SAFE_INTEGER);
-    const waitMs = integerParam(url.searchParams.get("wait_ms"), "wait_ms", MAX_WAIT_MS);
-    // This server's own: a page of at most `limit` rows, for a client that reads a little at a time (the MCP tool's).
-    const asked = url.searchParams.get("limit");
-    if (asked !== null && !(/^\d+$/.test(asked) && Number(asked) >= 1 && Number(asked) <= PAGE_ROWS)) throw new ApiError("bad_request", `limit is an integer from 1 to ${PAGE_ROWS}`);
-    const limit = asked === null ? PAGE_ROWS : Number(asked);
-    const pageOf = async (from: number, wait: number) => {
-      const page = await runs.page(run, from, wait, limit);
-      // Its learning row as it reads now: what it held for its owner's OK, approved or retired since, waits no more.
-      const rows = page.rows.some((row) => row.kind === "learning") ? await runs.learning.rowsNow(run.agentId, run.meta.learning, page.rows) : page.rows;
-      return { run_id: run.id, status: page.status, state: page.state, reset: page.reset, rows, drop: page.drop, next_after: page.next_after, unchanged: page.unchanged, has_more: page.has_more, final: page.final, cost: runs.cost(run) };
-    };
-    if (!String(req.headers.accept ?? "").includes("text/event-stream")) {
-      const page = await pageOf(after, waitMs);
-      return send(res, 200, { ...page, poll_after_ms: page.final || page.has_more ? 0 : 1000 });
-    }
-    const last = req.headers["last-event-id"];
-    if (last !== undefined && !/^[0-9]+$/.test(String(last))) throw new ApiError("bad_request", "Last-Event-ID is a change number");
-    let cursor = last !== undefined ? Number(last) : after;
-    res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache, no-transform", connection: "keep-alive", "x-content-type-options": "nosniff" });
-    const beat = setInterval(() => res.write(": keepalive\n\n"), 15_000);
-    let open = true;
-    res.once("close", () => void (open = false));
-    try {
-      for (let first = true; open; first = false) {
-        const page = await pageOf(cursor, first ? 0 : 15_000);
-        if (!open) break;
-        if (first || !page.unchanged || page.final) res.write(`event: rows\nid: ${page.next_after}\ndata: ${JSON.stringify(page)}\n\n`);
-        cursor = page.next_after;
-        if (page.final && !page.has_more) {
-          res.write(`event: end\ndata: ${JSON.stringify({ reason: "terminal" })}\n\n`);
-          break;
-        }
-      }
-    } finally {
-      clearInterval(beat);
-      res.end();
-    }
+  async function timeline(_req: IncomingMessage, _res: ServerResponse, _url: URL, _runId: string): Promise<void> {
+    // TODO(E2c): timelineOverStore — the run's journal page (store-reads) and its SSE, with the live tick from
+    // live/stream.ts watchRun and the learning row read now. The paging/SSE shell above is unchanged behaviour to port.
+    runReadsTodo();
   }
 
   // ---- files ----------------------------------------------------------------------------------------------------------
@@ -1659,11 +1607,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const savedSoFarOf = (row: { id: string; endedAt?: string | null }) => {
     const key = `${row.id} ${row.endedAt}`;
     if (!endedSoFar.has(key)) {
+      // TODO(E3/store-reads): a run's kept so-far cost comes from the store (its row/journal), not a per-run RUN_META file
+      // (runStorePath is gone). Undefined until the usage route reads it over the store.
       let usd: number | undefined;
-      try {
-        const kept = (JSON.parse(readFileSync(join(dirname(dirname(agents.store.runStorePath(row.id))), RUN_META), "utf8")) as { cost_so_far?: { so_far_usd?: unknown } }).cost_so_far?.so_far_usd;
-        usd = typeof kept === "number" && Number.isFinite(kept) ? kept : undefined;
-      } catch {
+      {
         usd = undefined;
       }
       endedSoFar.set(key, usd);
@@ -1674,11 +1621,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const key = `${row.id} ${row.endedAt}`;
     let meters = endedMeters.get(key);
     if (!meters) {
-      try {
-        meters = meterFiguresIn(agents.store.runStorePath(row.id));
-      } catch {
-        meters = { tools: 0, tokens: null, browser: { usd: 0, seconds: 0 }, others: 0, known: { tokens: 0, browser: 0, others: 0 } };
-      }
+      // TODO(E3/store-reads): an ended run's meter figures come from store-reads (store-reads/stats over its journal), not
+      // a per-run store file (runStorePath is gone). Empty until the usage route is wired over the store.
+      meters = { tools: 0, tokens: null, browser: { usd: 0, seconds: 0 }, others: 0, known: { tokens: 0, browser: 0, others: 0 } };
       endedMeters.set(key, meters);
     }
     return meters;
@@ -1713,25 +1658,26 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     for (const row of await agents.request(() => agents.store.listRuns())) {
       const at = Date.parse(row.startedAt);
       if (!(at >= from && at < to)) continue;
-      const live = row.state === "running" ? await runs.get(row.id) : null;
-      const usd = live ? runs.cost(live).usd : (row.costUsd ?? null);
+      // TODO(E3/store-reads): a running run's booked-so-far cost comes from store-reads (spentOverStore); until the usage
+      // route is wired over the store, a run reads its stored cost (null while running counts as unpriced).
+      const usd = row.costUsd ?? null;
       const key = group === "agent" ? row.agent : group === "day" ? row.startedAt.slice(0, 10) : group === "meter" ? "tokens" : "local";
       // By meter, what a run's paid tools charged (monid's) is `tools`, its browser session time `browser_time`, the rest
       // `tokens`, all from the same records: a live run's rows (a call still marked is no charge), else its store as it
       // ended (a call a crash cut makes `tools` unknown, never `tokens`). An unknown meter counts the run as unpriced on it.
       // An ended run's are its store's figures (metersOf keeps them, never its timeline), read for its lines by meter and,
       // by any group, for what a run of unknown cost is known to have spent.
-      const read = (group === "meter" && usd !== 0) || usd === null ? (live ? { tools: toolCostOf(live.rows), tokens: null, browser: { usd: toolCostOf(live.rows, "browser"), seconds: null }, others: toolCostOf(live.rows, "browser", true), known: { tokens: 0, browser: knownToolCostOf(live.rows, "browser"), others: knownToolCostOf(live.rows, "browser", true) } } : metersOf(row)) : undefined;
+      const read = (group === "meter" && usd !== 0) || usd === null ? metersOf(row) : undefined;
       // A run whose cost is unknown still spent what is known of it (so_far: each meter's known dollars): that is in the
       // total and its lines, and the run is counted unpriced, so a total is never below a line of its own and reads as
       // the lower bound unpriced_runs says it is.
-      const soFar = usd !== null || !read ? 0 : live ? (runs.cost(live).so_far_usd ?? 0) : (savedSoFarOf(row) ?? read.known.tokens + read.known.browser + read.known.others);
+      const soFar = usd !== null || !read ? 0 : (savedSoFarOf(row) ?? read.known.tokens + read.known.browser + read.known.others);
       const meters = group === "meter" && usd !== 0 ? read : undefined;
       if (meters && meters.browser.usd !== 0) browserSeconds = browserSeconds === null || meters.browser.seconds === null ? null : browserSeconds + meters.browser.seconds;
       // Its parts of the lines (usage-lines.ts): an unknown one counts the run unpriced there and adds what is known of it.
       // An unpriced MCP call is in none of them: counted apart as not metered on the tools line, which a $0 run shows only
       // when it made one.
-      const unmetered = group !== "meter" ? 0 : ((live ? live.rows.find((one) => one.kind === "usage")?.usage?.not_metered : metersOf(row).notMetered) ?? 0);
+      const unmetered = group !== "meter" ? 0 : (metersOf(row).notMetered ?? 0);
       notMetered += unmetered;
       if (unmetered && !lines.has("tools")) lines.set("tools", { usd: 0, unpriced: 0 });
       for (const part of runLines({ usd, soFar, key, meters })) {
@@ -2037,7 +1983,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       case "unarchiveAgent": {
         await needAgent(id);
         await agents.setArchived("agent", id, found.name === "archiveAgent");
-        if (found.name === "archiveAgent") await runs.archived();
+        // No run sweep on archive: a runner reads an archived agent's run rows directly, nothing to sweep.
         const entry = await needAgent(id);
         return send(res, 200, agentView(entry, linkOrigin(req), await signIns.view(entry.agent.id), await learningOfAgent(entry)), { etag: etagOf(entry) });
       }
@@ -2063,10 +2009,14 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const revision = url.searchParams.get("revision") ?? undefined;
         return send(res, 200, await runsPage(url, { ...(agent ? { agent } : {}), ...(revision ? { revision } : {}) }, linkOrigin(req)));
       }
-      case "getRun":
-        return send(res, 200, await runs.view(await needRun(id), linkOrigin(req)));
+      case "getRun": {
+        const view = await viewOverStore(store, id, viewDepsFor(linkOrigin(req)));
+        if (!view) throw new ApiError("not_found", `no run ${id}`);
+        return send(res, 200, view);
+      }
       case "getTimeline":
-        return timeline(req, res, url, await needRun(id));
+        await needRun(id);
+        return void timeline(req, res, url, id);
       case "sendMessage": {
         const run = await needRun(id);
         if (run.kind === "workflow") throw unsupported("messages.steer_workflow_runs", "A workflow run takes no messages here: its workflow runs to its end, or a cancel ends it.");
@@ -2077,10 +2027,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
           const content = body.content;
           if (typeof content !== "string" || !/\S/.test(content)) throw invalid([{ field: "content", reason: content === undefined ? "missing" : "wrong_type", message: "content is a non-empty string" }]);
           if (content.length > MAX_MESSAGE) throw invalid([{ field: "content", reason: "too_long", message: `content is at most ${MAX_MESSAGE} characters` }]);
-          const { mode, messageId } = await runs.message(run, content);
-          // The run's state as the message left it, from the run itself: the stored row (its view's) would make a
-          // message already taken answer home_busy while another connection holds the agent store.
-          const { status, state } = statusOf(run);
+          const { mode, messageId } = await message(store, run, content);
+          // The run's state after the command row is written (the run view): the runner applies the steer; the client polls.
+          const { status, state } = await runStatusState(run.id);
           return { status: 202, body: { run_id: run.id, message_id: messageId, mode, status, state, poll_after_ms: 1000 } };
         });
         return send(res, answer.status, answer.body, answer.headers);
@@ -2092,23 +2041,22 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         if (extra.length) throw invalid(extra);
         const cap = body.max_cost_usd;
         if (!(typeof cap === "number" && Number.isFinite(cap) && cap > 0)) throw invalid([{ field: "max_cost_usd", reason: cap === undefined ? "missing" : "wrong_type", message: "max_cost_usd is a number above 0" }]);
-        const now = run.meta.max_cost_usd;
+        const now = run.maxCostUsd;
         if (now === undefined) throw invalid([{ field: "max_cost_usd", reason: "not_allowed", message: "This run has no cap to raise: a cap is named when a run starts." }]);
-        const { resumed, messageId, note } = await runs.raiseCap(run, cap);
-        const { status, state } = statusOf(run);
+        const { resumed, messageId, note } = await raiseCap(store, run, cap);
+        const { status, state } = await runStatusState(run.id);
         return send(res, 200, { run_id: run.id, max_cost_usd: cap, resumed, ...(messageId ? { message_id: messageId } : {}), ...(note ? { note } : {}), status, state });
       }
       case "stopRun": {
         const run = await needRun(id);
-        const stopped = await runs.stop(run);
-        // From the run itself, as a message's answer: a stop that happened is never answered home_busy.
-        const { status, state } = statusOf(run);
+        const stopped = await stopRunOverStore(store, run.id);
+        const { status, state } = await runStatusState(run.id);
         return send(res, 200, { run_id: run.id, stopped, status, state });
       }
       case "cancelRun": {
         const run = await needRun(id);
-        const requested = await runs.cancel(run);
-        return send(res, 202, { run_id: run.id, cancel_requested: requested, already_terminal: !requested, status: statusOf(run).status });
+        const requested = await cancel(store, run);
+        return send(res, 202, { run_id: run.id, cancel_requested: requested, already_terminal: !requested, status: (await runStatusState(run.id)).status });
       }
       case "answerApproval": {
         // The owner's answer to a tool call that waits for approval (tool-gate.ts): the first answer wins.
@@ -2118,57 +2066,31 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         if (body.decision !== "allow" && body.decision !== "deny") issues.push({ field: "decision", reason: body.decision === undefined ? "missing" : "not_an_option", message: "decision is allow or deny" });
         if (body.note !== undefined && (typeof body.note !== "string" || body.note.length > 2000)) issues.push({ field: "note", reason: "wrong_type", message: "note is a string of at most 2000 characters" });
         if (issues.length) throw invalid(issues);
-        await runs.approve(run, decodeURIComponent(second!), body.decision as "allow" | "deny", typeof body.note === "string" && body.note.trim() ? body.note.trim() : undefined);
+        await approve(store, run, decodeURIComponent(second!), body.decision as "allow" | "deny", typeof body.note === "string" && body.note.trim() ? body.note.trim() : undefined);
         res.writeHead(204, { "cache-control": "no-store", "x-content-type-options": "nosniff" });
         return void res.end();
       }
       case "archiveRun":
       case "unarchiveRun": {
         const run = await needRun(id);
-        await agents.setArchived("run", run.id, found.name === "archiveRun");
-        if (found.name === "archiveRun") await runs.archived();
-        return send(res, 200, await runs.view(run, linkOrigin(req)));
+        await archiveRun(store, run.id, found.name === "archiveRun");
+        return send(res, 200, await viewOverStore(store, run.id, viewDepsFor(linkOrigin(req))));
       }
       case "getRunBrowser": {
-        const run = await needRun(id);
-        // The run's open viewer first: its process holds the keys it started with, so a key deleted here since (the server's
-        // keys now) never hides a browser that runs. Only the run's live process serves its view: a file one that is gone
-        // left behind names none, whatever answers its port. The newest session whose viewer answers: an older one still open
-        // is the next, one that went quiet none.
-        let live: LiveHandover | undefined;
-        for (const handover of runs.hasProcess(run.id) ? await readHandovers(run.dir) : []) if ((live = (await viewerAnswers(handover)) ? handover : undefined)) break;
-        if (live) return send(res, 200, { state: "live", viewer: viewerLink(run.id, live) }, { "cache-control": "no-store" });
-        // None open: whether the run has a browser at all, its kept plane's (a run from before the plane names none, and is
-        // Browserbase's where it grants the tool), checked again as a launch would be. None, or unavailable, is `off`, saying why.
-        const granted = run.tooling?.tools.includes("browser") === true;
-        const kept = run.meta.tool_plane?.browser ?? (granted ? "browserbase" : undefined);
-        const browser = kept === undefined ? undefined : recheckPlane({ browser: kept }, env).browser;
-        if (browser === undefined || isUnavailable(browser)) return send(res, 200, { state: "off", reason: browser === undefined ? "this run's agent has no browser tool" : whyUnavailable(browser) }, { "cache-control": "no-store" });
-        return send(res, 200, { state: "none" }, { "cache-control": "no-store" });
+        await needRun(id);
+        // TODO(E2c): runBrowserOverStore (live viewer via live/stream watchRun + the run's kept plane).
+        return runReadsTodo();
       }
       case "handBackRunBrowser": {
-        // The owner's answer to the agent's ask for them in its browser (browser-person.ts): the first answer wins, the same
-        // one again is that answer, a different one is 409; an ask past its expiry has `expired`.
-        const run = await needRun(id);
-        const body = await bodyOf(req);
-        const issues = unknownFields(body, ["outcome"]);
-        if (body.outcome !== "done" && body.outcome !== "cancelled") issues.push({ field: "outcome", reason: body.outcome === undefined ? "missing" : "not_an_option", message: "outcome is done or cancelled" });
-        if (issues.length) throw invalid(issues);
-        const answered = answerAsk(run.dir, body.outcome as "done" | "cancelled");
-        if (!answered) throw new ApiError("not_found", "this run's agent has not asked for you in its browser");
-        if (answered.outcome !== body.outcome) throw new ApiError("handoff_answered", answered.outcome === "expired" ? "The agent's hand-over expired before this answer: the agent was told it expired." : `The agent's hand-over was already answered ${answered.outcome}.`, { details: { outcome: answered.outcome } });
-        if (answered.first) runs.remark(run.id);
-        return send(res, 200, { outcome: answered.outcome }, { "cache-control": "no-store" });
+        await needRun(id);
+        await bodyOf(req);
+        // TODO(E2c): handBackRunBrowserOverStore (the hand-off ask/answer as command rows, P8).
+        return runReadsTodo();
       }
       case "listRunFiles": {
-        const run = await needRun(id);
-        filesShown(run);
-        // A remote box's turn just ended: its pull lands first, so the list shows what the box wrote.
-        await runs.pulled(run.id);
-        const workspace = await runWorkspace(run);
-        const { files, deep } = workspace ? await listFiles(workspace, FILE_LIST_CAP) : { files: [], deep: false };
-        files.sort((a, b) => a.path.localeCompare(b.path));
-        return send(res, 200, { run_id: run.id, files: files.slice(0, FILE_LIST_CAP), complete: true, truncated: deep || files.length > FILE_LIST_CAP });
+        await needRun(id);
+        // TODO(E2c): listRunFilesOverStore (run-workspace.ts over the run's launch place).
+        return runReadsTodo();
       }
       // An archived agent's home is read and written as any other's: as its definition is.
       case "listHomeFiles": {
@@ -2231,18 +2153,20 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         return send(res, 200, { ok: issues.length === 0, issues, warnings });
       }
       case "getRunGraph":
-        return send(res, 200, await runs.graph(await needRun(id)));
+        await needRun(id);
+        // TODO(E2c): runGraphOverStore (the workflow graph from the run's journal, store-reads).
+        return runReadsTodo();
       case "pauseRun":
       case "resumeRun":
-        return send(res, 200, await runs.pause(await needRun(id), found.name === "pauseRun"));
+        // RULED (A1): pause/resume are not a run act over the store — the cap's raise resumes a paused run; a run has no
+        // manual pause. 501, as the document says.
+        await needRun(id);
+        throw unsupported("runs.pause_resume", "A run is not paused or resumed by hand: raise its cap to bring a run paused at its cap back; there is no manual pause.");
       case "readRunFile": {
-        const run = await needRun(id);
-        filesShown(run);
-        await runs.pulled(run.id);
-        const rel = checkedPath(decodedPath(second!), "the run's own, not a file it wrote");
-        const workspace = await runWorkspace(run);
-        if (!workspace) throw new ApiError("not_found", "no such file");
-        return sendWorkspaceFile(req, res, url, workspace, rel, "a tool in the run's box");
+        await needRun(id);
+        checkedPath(decodedPath(second!), "the run's own, not a file it wrote");
+        // TODO(E2c): readRunFileOverStore (run-workspace.ts ranged read over the run's launch place).
+        return runReadsTodo();
       }
       case "createFile": {
         // A `path` in the query, or a body that is not JSON: the file sent in one call, its bytes the body. Else the
@@ -2281,16 +2205,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       case "getUsage":
         return send(res, 200, await usage(url));
       case "getStats": {
-        const filter = analyticsFilter(url);
-        // A run this server holds as ended whose end the store does not have yet is pending: counted as it ended, its
-        // metrics left out until the store has them (stats.ts pendingOf).
-        const [stats, analytics, rows, pending] = await agents.request(() => {
-          const stats = agents.store.stats();
-          const pending = pendingOf(stats.running, runs);
-          return [stats, agents.store.analytics({ ...filter, pending }), agents.store.listRuns(), pending] as const;
-        });
-        // How the runs that tried to learn fared: a held run's learning from memory, any other's end from the ledger.
-        return send(res, 200, { ...statsView(stats, runs, pending), analytics: analyticsView(analytics, filter), learning: await runs.learning.counts(rows, filter) });
+        analyticsFilter(url);
+        // TODO(E3/store-reads): stats and analytics over the store (store-reads/stats + store-reads/analytics), with the
+        // learning counts from the ledger — no per-process pending set, no live Runs. Not wired yet.
+        return runReadsTodo();
       }
       case "listToolKeys":
         // The offers the server holds, not capabilities': a model key's row names the harnesses its key would run too.
@@ -2352,19 +2270,16 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       // they are now; a write as the definition's: an archived agent's too.
       case "getAgentLearning": {
         await needAgent(id);
-        const rows = await agents.request(() => agents.store.listRuns({ agent: id }));
-        // Counted as GET /stats counts (learning-run.ts counts): a held run from memory, any other's end from the ledger;
-        // what learning changed, from the same rows and ledger (learningImpact).
-        const { counts, impact, notes } = await runs.learning.ofAgent(rows, id);
-        return send(res, 200, await agentLearning(data, id, secretsShown(serverSecrets()), counts, impact, notes));
+        // TODO(E3/learning-1): the agent's learning counts/impact/notes over the store (store-reads/learning + the ledger),
+        // in place of runs.learning.ofAgent over live runs. Not wired yet.
+        return runReadsTodo();
       }
       case "listLearningNotes":
       case "listLearningLog":
         await needAgent(id);
         if (found.name === "listLearningNotes") {
-          // Each note's runs (given it, read it), counted as the agent's learning view counts them (learning-run.ts ofAgent).
-          const { notes } = await runs.learning.ofAgent(await agents.request(() => agents.store.listRuns({ agent: id })), id);
-          return send(res, 200, await learningNotes(data, id, url.searchParams, secretsShown(serverSecrets()), notes));
+          // TODO(E3/learning-1): each note's run counts over the store's ledger (store-reads/learning), not live runs.
+          return runReadsTodo();
         }
         return send(res, 200, await learningLog(data, id, url.searchParams, secretsShown(serverSecrets())));
       case "readLearningFile":
@@ -2384,9 +2299,13 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         return sendNote(res, written.status, { ...written, text: shown.text(written.text) }, located ? { location: `/v2/agents/${encodeURIComponent(id)}/learning/files/${written.file}` } : {});
       }
       case "getRunLearning":
-        return send(res, 200, await runLearning(await needRun(id), secretsShown(serverSecrets()), serverSecrets(), data));
+        await needRun(id);
+        // TODO(E2c/learning-1): the run's learning view over the store (store-reads/learning + store-view), not per-run files.
+        return runReadsTodo();
       case "getRunLearningDiff":
-        return send(res, 200, await runDiff(data, await needRun(id), secretsShown(serverSecrets())));
+        await needRun(id);
+        // TODO(E2c/learning-1): the run's learning diff over the store (store-reads), not the run's .learning/diffs files.
+        return runReadsTodo();
       case "getWebhook":
         return send(res, 200, webhooks.view());
       case "saveWebhook": {
@@ -2470,12 +2389,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       authFailed(`/v2/runs/${runId}/browser/live`, req.headers.authorization === undefined ? "no_credential" : "browser_without_session");
       throw req.headers.authorization === undefined ? new ApiError("unauthenticated", "a run's live browser view takes the owner's password sign-in in the console") : new ApiError("forbidden", "a run's live browser view takes the owner's password sign-in in the console, never a token");
     }
-    const run = await needRun(runId);
-    const viewer = /^\/v\/([A-Za-z0-9_-]{22})$/.exec(rest)?.[1];
-    // A viewer's page, for a viewer the run has open; its two files, while the run has one open.
-    const handover = !runs.hasProcess(run.id) || !liveRest(rest) ? undefined : viewer ? await handoverById(run.dir, viewer) : await readHandover(run.dir);
-    if (!handover) throw new ApiError("not_found", "this run's browser has no live view at that address");
-    await serveViewerFile(req, res, rest);
+    await needRun(runId);
+    // TODO(E2c): the live viewer page/files over the store (live/stream watchRun gives whether a run has a live view now,
+    // in place of runs.hasProcess + the per-run handover files). Not wired yet.
+    runReadsTodo();
   }
 
   /** The origin of the address people open (`publicUrl`, AGENTRUN_PUBLIC_URL), lowercased; none, undefined. */
@@ -2553,22 +2470,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const sent = String(req.headers.origin ?? "").toLowerCase();
     if (sent === "" || (sent !== ownOrigin(req) && sent !== publicOrigin)) return (authFailed(raw, "live_view_origin"), deny("403 Forbidden"));
     if (!owner || !signedIn(req, owner)) return (authFailed(raw, "live_view_without_session"), deny("401 Unauthorized"));
-    // Once the run's WebSocket is piped to this socket, a failure here only ends it: an HTTP line would land mid-stream.
-    let piping = false;
+    // TODO(E2c): the live viewer WebSocket over the store (live/stream watchRun gives the run's live viewer handover in
+    // place of runs.hasProcess + the per-run handover files). Until then no live view is served; the socket is denied.
     void (async () => {
-      const run = await runs.get(viewing[1]!);
-      const handover = run && runs.hasProcess(run.id) ? await handoverById(run.dir, viewing[2]!.slice(3, -3)) : undefined;
-      if (!handover) return deny("404 Not Found");
-      // Gone during the lookup (its close is past, and nothing would drop it from the viewers), or the server is closing
-      // and has ended its viewers, or is about to.
       if (socket.destroyed || closing) return void socket.destroy();
-      // Checked again after the lookup, then for as long as the socket is open: the sessions that let it in, and no other.
-      const held = heldSessions(req);
-      const admitted = () => held.some((value) => owner.valid(value));
-      if (!admitted()) return deny("401 Unauthorized");
-      viewers.watch(socket, admitted);
-      proxyLiveUpgrade(req, socket, head, handover, viewing[2]!, () => { piping = true; });
-    })().catch(() => (piping ? void socket.destroy() : deny("500 Internal Server Error")));
+      return deny("404 Not Found");
+    })().catch(() => deny("500 Internal Server Error"));
   });
   const first = options.port ?? DEFAULT_PORT;
   const last = options.nextFreePort && first !== 0 ? Math.min(first + 99, 65_535) : first;
@@ -2609,24 +2516,15 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   /** The server's stop: once (`close` keeps its promise). */
   let stopped: Promise<void> | undefined;
   async function stop(): Promise<void> {
-    // First, the record a start on this data root waits on while the runs' processes drain and exit (server-lock.ts),
-    // rewritten in place: this close's bound, with time for the deliveries and the listener after them. One not
-    // written leaves a start refused.
-    const { runs: busy, boundMs } = runs.stopping();
-    try {
-      markStopping(data, Date.now() + boundMs + STOP_MARGIN_MS);
-    } catch (error) {
-      const fields = { reason: (error as NodeJS.ErrnoException).code ?? (error as Error).message };
-      void (log ? log(logLine("stopping_mark_unwritten", fields)) : process.stderr.write(`agentrun-serve: ${logLine("stopping_mark_unwritten", fields)}\n`));
-    }
-    if (busy > 0) noticeOf(options)(`stopping: waiting up to ${seconds(boundMs)} for ${busy === 1 ? "1 run to finish its turn" : `${busy} runs to finish their turn`}`);
-    // An import under way stops between two session files and is waited for: nothing writes the store after close. A
-    // count writes nothing (it lists and reads), so it is ended at once: its listing of a big home checks for no stop.
+    // The server writes rows and a runner (its own process) runs every run, so this stop drains no run process and writes
+    // no "stopping" mark for a start to wait on: the store's EXCLUSIVE lock is this server's one-server lock, released as
+    // the store closes, and the next server takes it. The deliveries, the import, the installs and the listener stop first;
+    // the store closes last.
     closing = true;
     stopping.abort();
     // A harness install under way stops with the server: npm gets SIGTERM, then SIGKILL, and nothing half installed stays.
     const installStopped = Promise.all(Object.values(installs).map((install) => install.stop()));
-    // Aborted now, so nothing it writes races the next server on the same refresh token; drained before the lock goes.
+    // Aborted now, so nothing it writes races the next server on the same refresh token; drained before the store closes.
     const mcpStopped = mcpServers.close();
     triggers.close();
     for (const [worker, { task }] of workers) {
@@ -2635,11 +2533,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     }
     await Promise.all([...workers.values()].map((w) => w.exit));
     await importing;
-    // Runs that end while their processes stop still give their notices; then the deliveries stop, before the lock goes.
-    await runs.close();
     await installStopped;
-    await relay?.close();
-    // Before the lock goes: the image's last record lands first (box-image.ts), never after the next server's start.
+    // Before the store closes: the image's last record lands first (box-image.ts), never after the next server's start.
     await image?.close();
     // The box network proxy goes with the server that owns it (box-egress-vm.ts); its volume stays for the next start.
     await egress?.close();
@@ -2647,10 +2542,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // An upgraded socket is no connection closeAllConnections ends, and server.close waits for it.
     viewers.close();
     await new Promise((done) => (server.close(done), server.closeAllConnections()));
-    agents.close();
     await mcpStopped;
-    // The record stays: the next server rewrites it as it starts, and a stopped one whose time has passed is no stop.
-    lock.release();
+    // The store's EXCLUSIVE lock is the one-server lock: closing it releases it for the next server.
+    await store.close();
   }
   return {
     url,
@@ -2664,6 +2558,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // Once: a second call, at any time, is the first one's promise, so a close repeated after the next server started
     // never writes this data root's record again (the next server's, by then).
     close: () => (stopped ??= stop()),
-    stopping: () => runs.stopping(),
+    // No per-run process drains here: the runner owns a run's turn, so a stop waits on none.
+    stopping: () => ({ runs: 0, boundMs: 0 }),
   };
 }
