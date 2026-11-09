@@ -57,6 +57,16 @@ describe("the session that may write secrets", () => {
     expect(secretsWhyNot({ status: 200, body: { accounts: false, secrets_writable: false } })).toBe("no_accounts");
     expect(secretsWhyNot({ status: 404, body: null })).toBe("no_accounts");
     expect(secretsWhyNot({ status: 200, body: { password_set: true, signed_in: true } })).toBe("sign_in");
+    // A browser in on the API token alone (no launcher session): it never writes.
+    expect(secretsWhyNot({ status: 200, body: { accounts: false, secrets_writable: false, secrets_reason: "token" } })).toBe("token");
+  });
+});
+
+describe("Keys in a browser on the API token alone", () => {
+  it("says to open the console from the server's link", async () => {
+    const host = await mount(createElement(KeysPage, { v2: client(() => KEYS), atRest: "sealed", writable: false, whyNot: "token" }));
+    expect(host.textContent).toContain("Open the console from the server's link to change secrets.");
+    expect(labels(host).filter((l) => /^(Paste|Replace|Remove)$/.test(l ?? ""))).toEqual([]);
   });
 });
 
