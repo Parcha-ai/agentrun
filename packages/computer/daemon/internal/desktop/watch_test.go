@@ -272,3 +272,70 @@ func TestOnXvfbAPointerMoveIsANewFrameWithTheCursorWhereItWent(t *testing.T) {
 		t.Fatalf("after a pointer move: %+v; want frame %d with the cursor at 201,99", moved, first.Seq+1)
 	}
 }
+
+// A frame over a chunk says eof false in its JSON: a caller in a language that reads a missing field as true (JS's
+// ?? true) must still read on.
+func TestOnTheFakeAFrameOverAChunkSaysEofFalseInItsJSON(t *testing.T) {
+	defer desktop.SetChunkForTest(100)()
+	c, _ := shaded(t)
+	r := c.call("screen.watch", map[string]any{"after": 0})
+	if r.Error != nil {
+		t.Fatal(r.Error.Message)
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(r.Result, &raw); err != nil {
+		t.Fatal(err)
+	}
+	if string(raw["eof"]) != "false" {
+		t.Fatalf("a frame over a chunk: eof is %q in %s; want false, present", raw["eof"], r.Result)
+	}
+}
+
+// A watch's frame is held apart from screen.shot's: a shot between the frame and its screen.read never evicts it.
+func TestOnTheFakeAShotDoesNotEvictAWatchFrame(t *testing.T) {
+	defer desktop.SetChunkForTest(100)()
+	c, _ := shaded(t)
+	var r watchResult
+	c.ok("screen.watch", map[string]any{"after": 0}, &r)
+	if r.EOF || r.ID == "" {
+		t.Fatalf("want a frame over a chunk; got %+v", r)
+	}
+	var shot desktop.ShotResult
+	c.ok("screen.shot", map[string]any{}, &shot)
+	if _, err := jpeg.Decode(bytes.NewReader(frameOf(t, c, r))); err != nil {
+		t.Fatalf("the frame after a shot: %v", err)
+	}
+}
+
+// An animated screen is read no faster than the poll interval: frames are at least 200 ms apart, however soon each is
+// acked.
+func TestOnTheFakeAnAnimatedScreenGivesFramesNoFasterThanThePollInterval(t *testing.T) {
+	t.Setenv("XAUTHORITY", "")
+	var reads atomic.Int32
+	_, name := x11fake.Listen(t, func(f *x11fake.Server) {
+		f.Image = func(x, y, w, h int) []byte {
+			out := make([]byte, w*h*4)
+			v := byte(reads.Add(1))
+			for i := range out {
+				out[i] = v
+			}
+			return out
+		}
+	})
+	d := desktop.New(name)
+	t.Cleanup(d.Close)
+	c := serve(t, d)
+	start := time.Now()
+	after := 0
+	for range 4 {
+		var r watchResult
+		c.ok("screen.watch", map[string]any{"after": after}, &r)
+		if !r.Changed {
+			t.Fatalf("an animated screen: %+v; want a frame", r)
+		}
+		after = r.Seq
+	}
+	if took := time.Since(start); took < 550*time.Millisecond {
+		t.Fatalf("4 frames of an animated screen in %v: faster than one each 200 ms after the first", took)
+	}
+}
