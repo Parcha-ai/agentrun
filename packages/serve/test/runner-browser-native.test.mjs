@@ -8,7 +8,7 @@
 // completes BEFORE the seal: at the run's end, and at a park. Through the runner, its dispatch and the spec builder, on
 // the faux browser and a scripted model origin.
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
@@ -27,6 +27,7 @@ const { adapterRunSpecFromLaunch } = await import("../dist/runner/adapter-run-sp
 const cliSpec = await import("../dist/runner/cli-run-spec.js");
 const { FAUX_BROWSER_ENV } = await import("../dist/tools.js");
 const { FAUX_ENV } = await import("../dist/model.js");
+const { saveSignIn, signInViews } = await import("../dist/sign-ins-store.js");
 
 /** A test seal key, no real one. */
 const SEAL_KEY = Buffer.alloc(32, 9);
@@ -51,7 +52,7 @@ const until = async (done, what, ms = 60_000) => {
 const offered = (body) => (body?.tools ?? []).map((tool) => tool.name);
 
 /** A store on a new data directory with the browser's keys saved, an agent of `body`, and run-1 launched with `launch`. */
-async function storeWith(t, body, launch, settings) {
+async function storeWith(t, body, launch, settings, before) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-browser-native-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -64,14 +65,15 @@ async function storeWith(t, body, launch, settings) {
   await server.agents.create({ id: "agent-1", name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Browse.", ...body } });
   await server.runs.create({ id: RUN, agentId: "agent-1", revisionId: "rev-1" }, { body: launch });
   if (settings) await server.settings.put("tool-settings", settings);
+  if (before) await before(server);
   await server.flush?.();
   return { dir, server, store };
 }
 
 /** run-1 run by a runner whose pi loop is the spec builder's (with `run` reshaped by `runAs`) on a scripted origin; until
  *  it is released `ended` (its end) or `parked`. Its row, the requests the model was sent, and its journal's records. */
-async function piRun(t, { body, script, settings, until: want = ["ended", "failed", "stopped"], runAs = (run) => run }) {
-  const opened = await storeWith(t, body, PI_LAUNCH, settings);
+async function piRun(t, { body, script, settings, before, during, until: want = ["ended", "failed", "stopped"], runAs = (run) => run }) {
+  const opened = await storeWith(t, body, PI_LAUNCH, settings, before);
   const requests = [];
   const route = { model: "faux-1", provider: { api: "anthropic-messages", origin: "https://route.invalid", credential: () => "not-a-secret" }, fetch: scriptedOrigin(script, requests) };
   const deps = { env: { [FAUX_ENV]: "faux", [FAUX_BROWSER_ENV]: FAUX_BROWSER }, data: opened.dir, journal: (claim) => opened.store.journal(claim), store: opened.store, sealKey: SEAL_KEY, routeOf: async () => route, computerForClaim: async () => ({ release: async () => {} }) };
@@ -80,12 +82,13 @@ async function piRun(t, { body, script, settings, until: want = ["ended", "faile
     createLoop: createDispatchLoop({ launchOf: (runId) => opened.store.runs.launch(runId), resolve: (name, given) => (name === "pi" ? createAdapterLoop((claim, run) => adapterRunSpecFromLaunch(given, runAs(run), deps, claim)) : undefined) }),
   });
   t.after(() => runner.close().catch(() => {}));
+  const seen = during ? await during(opened) : undefined;
   const row = await until(async () => {
     const now = await opened.server.runs.get(RUN);
     return want.includes(now.state) && now.runner === null && now;
   }, `the run is released ${want.join("|")}`);
   const records = await journalRecords(opened.server.journal({ runId: RUN, runner: "reader", epoch: row.epoch, until: 0, from: row.state }), ctx);
-  return { row, requests, records };
+  return { row, requests, records, seen, opened };
 }
 
 /** The browser.release tasks the journal holds, each its status. */
@@ -138,4 +141,29 @@ test("the drain at a park: the release that lets the run's sessions go waits for
   const released = releaseTasks(r.records);
   assert.ok(released.length >= 1, `the session's release task is in the journal: ${JSON.stringify(r.records.tasks.map((task) => task.kind))}`);
   assert.ok(released.every((task) => task.status === "terminal"), `each completed before the seal: ${JSON.stringify(released.map((task) => task.status))}`);
+});
+
+test("end to end on the runner: a run handed its agent's saved sign-in opens its session on the profile to save, hands its viewer over through the store, saves on release (verified_at), and books its time on the run's ledger", { timeout: 120_000 }, async (t) => {
+  const log = join(mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-browser-log-")), "browser.jsonl");
+  writeFileSync(log, "");
+  const before = process.env.FAUX_BROWSER_LOG;
+  process.env.FAUX_BROWSER_LOG = log;
+  t.after(() => (before === undefined ? delete process.env.FAUX_BROWSER_LOG : (process.env.FAUX_BROWSER_LOG = before)));
+  const pointer = `ctx-saved-${Date.now().toString(16)}`;
+  const r = await piRun(t, {
+    body: { tools: ["browser"] },
+    // A turn that opens a session, then a read of it, so the session stays open while the viewer is looked for.
+    script: [{ call: "snapshot" }, { call: "browser_read" }, { say: "done" }],
+    before: (server) => saveSignIn(server, SEAL_KEY, { agentId: "agent-1", provider: "browserbase", pointer }),
+    // While the run holds its session: the run's viewer, handed over through the store under its claim.
+    during: (opened) => until(async () => (await opened.server.liveViewers.of(RUN)).length > 0 || (await opened.server.runs.get(RUN)).state !== "running", "the viewer or the end"),
+  });
+  assert.equal(r.row.state, "ended", JSON.stringify(r.row));
+  const ops = readFileSync(log, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line));
+  assert.deepEqual(ops.filter((op) => op.op === "sign-in").map(({ ref, save, ref_in_env }) => ({ ref, save, ref_in_env })), [{ ref: pointer, save: true, ref_in_env: false }], "handed the saved sign-in, to save");
+  assert.deepEqual(ops.filter((op) => op.op === "profile").map(({ name, save }) => ({ name, save })), [{ name: "default", save: true }], "its session opened on the profile, saving");
+  assert.equal(r.seen, true, "its viewer was handed over through the store while it ran");
+  assert.deepEqual(await r.opened.server.liveViewers.of(RUN), [], "and gone with the run");
+  assert.ok((await signInViews(r.opened.server, SEAL_KEY, "agent-1"))[0]?.verified_at, "its release saved: the sign-in verified");
+  assert.ok((r.row.costUsd ?? 0) > 0, `its session time booked on the run's ledger: ${JSON.stringify(r.row.metrics)}`);
 });
