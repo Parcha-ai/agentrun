@@ -1,6 +1,6 @@
-// The store's live viewers, in memory (browser-live.ts LiveViewers): the slice of the one store that holds each open browser
-// session's viewer hand-over, one row per (run, session tag), its token sealed. The store's real `liveViewers` (tl-jobs,
-// store/) replaces this fake; until then tests use it. It keeps the contract the real one is held to:
+// The store's live viewers, in memory: the store's LiveViewers (store/store.ts; SqliteStore's on the browser_viewers
+// table), for unit tests that need no database (browser-live-store-sqlite.test.mjs runs the same calls on the real one).
+// It keeps the contract the real one is held to:
 // - put is a runner's, fenced by its claim: a claim whose epoch is not the run's, or whose lease has run out, writes nothing
 //   and answers false. It upserts on (run_id, tag), `at` stamped by the store's clock;
 // - drop is fenced by the claim's epoch: a stale one drops nothing (and says nothing, as run_live's drop);
