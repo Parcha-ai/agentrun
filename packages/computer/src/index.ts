@@ -6,7 +6,18 @@ export { type CallOptions, DaemonClient, type DaemonStream } from "./client.js";
 export { type ActionFailure, type CheckActionsOptions, checkActions, isKey } from "./actions.js";
 export { pullTar, pullTarStream, pushTar, readFile, writeFile, type PulledTar } from "./files.js";
 export { listProcesses, readAll, type ReadAllResult } from "./processes.js";
-export { redactWords, type ScreenFrame, type ScreenWatch, ScreenWatchError, type ScreenWatchOptions, watchScreen } from "./screen-watch.js";
+export {
+	daemonWatch,
+	redactWords,
+	type ScreenFrame,
+	type ScreenWatch,
+	type ScreenWatchHandlers,
+	toAction,
+	type ViewerEvent,
+	type WatchEndCode,
+	watchEndCode,
+	type WatchOptions,
+} from "./screen-watch.js";
 export { type DockerDesktopOptions, type DockerEgressOptions, DockerProvider, type DockerProviderOptions } from "./docker.js";
 export {
 	DEFAULT_DOCKER_IMAGE,

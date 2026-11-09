@@ -167,10 +167,12 @@ func (d *Display) frame(ctx context.Context, w *watching) WatchResult {
 	}
 }
 
-// hashOf is what a frame was read from: its pixels and the pointer's place.
+// hashOf is what a frame was read from: its size (a screen resized may keep its bytes), its pixels and the pointer's
+// place.
 func hashOf(img *image.RGBA, cursor *[2]int) uint64 {
 	var h maphash.Hash
 	h.SetSeed(seed)
+	_, _ = fmt.Fprintf(&h, "%dx%d|", img.Bounds().Dx(), img.Bounds().Dy())
 	_, _ = h.Write(img.Pix)
 	if cursor != nil {
 		_, _ = fmt.Fprintf(&h, "|%d,%d", cursor[0], cursor[1])

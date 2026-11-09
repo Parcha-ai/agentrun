@@ -4,7 +4,7 @@
 // `broken` names one behavior that is wrong, so each case of the extension is seen to fail. No Docker, no daemon, no X
 // server, no phone.
 import { deflateSync } from "node:zlib";
-import { checkActions, checkLifetime, FIXTURE_APP_ID, FIXTURE_BUTTON, FIXTURE_COLORS, FIXTURE_WINDOW, fixtureAppLog } from "../dist/index.js";
+import { checkActions, checkLifetime, daemonWatch, FIXTURE_APP_ID, FIXTURE_BUTTON, FIXTURE_COLORS, FIXTURE_WINDOW, fixtureAppLog } from "../dist/index.js";
 
 const ok = (value) => ({ ok: true, value });
 const fail = (code, message) => ({ ok: false, error: { code, message } });
@@ -424,6 +424,8 @@ export function fakeDevices({
 			return ok({ deadline: new Date(at) });
 		};
 	}
+	// The live view, as every computerd provider gives it: daemonWatch over this fake's connect().
+	provider.watch = (ref, handlers, options) => daemonWatch(provider, ref, handlers, options);
 	if (stream) {
 		provider.stream = async (ref) => ok({ url: `${broken === "stream-http" ? "http" : "https"}://stream.example.test/${ref.name}?token=fake` });
 	}

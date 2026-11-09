@@ -47,6 +47,7 @@ import {
 	type Refusal,
 } from "./provider.js";
 import { type ComputerErrorCode, fail, ok, type Result } from "./result.js";
+import { daemonWatch, type ScreenWatch, type ScreenWatchHandlers, type WatchOptions } from "./screen-watch.js";
 import { listTested } from "./test-connection.js";
 
 /** The phone harness's API. */
@@ -514,6 +515,15 @@ export class PhoneHarnessProvider implements ComputerProvider {
 
 	connect(ref: ComputerRef): Promise<Result<ComputerConnection>> {
 		return ledgerSafe(() => this.#connect(ref));
+	}
+
+	/**
+	 * The live view: the phone client's screen.watch on a connection of the watch's own (daemonWatch), PNG frames from
+	 * screencap. Upright with no rotation of ours: screencap gives the display in its current orientation, and input tap
+	 * and swipe take that same space, so each frame's width and height come from its own screencap, never from wm size.
+	 */
+	watch(ref: ComputerRef, handlers: ScreenWatchHandlers, options?: WatchOptions): Promise<Result<ScreenWatch>> {
+		return daemonWatch(this, ref, handlers, options);
 	}
 
 	async #create(spec: ComputerSpec, { signal }: { signal?: AbortSignal } = {}): Promise<Result<CreatedComputer>> {
@@ -1042,7 +1052,8 @@ class AdbClient implements ComputerClient {
 			if (!read.ok) return read;
 			const { width, height, rgba } = read.value;
 			this.#size = [width, height];
-			const digest = createHash("sha256").update(rgba).digest("hex");
+			// The size is in the digest: a phone turned to landscape may give the same pixels, the other way round.
+			const digest = createHash("sha256").update(`${width}x${height}|`).update(rgba).digest("hex");
 			if (watch.seq === 0 || digest !== watch.digest) {
 				const frameWidth = Math.min(width, maxWidth as number);
 				const frameHeight = Math.max(1, Math.floor((height * frameWidth) / width));

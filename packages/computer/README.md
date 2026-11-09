@@ -428,13 +428,26 @@ provider declares, either way.
 | `apps`, `apps.install` | `apps.list` (`{ apps, foreground }`), `apps.launch`, `apps.terminate`; `apps.install({ path })` of a file already in the computer |
 | `apps.ui_tree` | `apps.ui_tree`: `{ root: UiNode, nodes, truncated }`, at most 5000 nodes; a node has `role`, `id?`, `text?`, `label?`, `bounds` in screenshot pixels, `enabled`, the optional booleans and `children` |
 
-**The live view's seam.** `watchScreen(connection, { signal?, maxWidth?, quality? })` (`src/screen-watch.ts`) is what
-the runner's viewer reads a computer through: `frames`, an async iterable of whole `ScreenFrame`s (`{ seq, format,
-bytes, frameWidth, frameHeight, width, height, cursor? }`), pull-paced so that each `next()` is the ack of the frame
-before it and nothing is asked for before it; `act(actions)`, the viewer's events already mapped to input actions,
-sent as `input.actions` on the same connection; and `close()`, which with the signal cancels the waiting ask, ends the
-frames and makes `act()` refuse in words. No error it gives holds a URL or a secret (`redactWords`). Every computer
-that answers `screen.watch` has a live view through it: computerd's desktops and the Android phone.
+**The live view's seam** (`src/screen-watch.ts`). The runner's viewer reads a computer through
+`provider.watch?(ref, handlers, { signal?, maxWidth?, quality? })`:
+- `handlers.frame(frame, ack)` gets each whole `ScreenFrame` (`{ seq, format, bytes, width, height, frameWidth,
+  frameHeight, cursor? }`), and the next frame is asked for only once `ack()` is called. `width` and `height` are the
+  screen's real pixels, the input space; only `frameWidth` and `frameHeight` scale to `maxWidth`.
+- `handlers.ended(error)` is called once if the computer goes, with the code `gone`, `unreachable`, `refused` or
+  `unsupported`, in words with no URL. `close()` and the signal end the watch with no `ended()`.
+- The answer's `input(actions)` sends `input.actions` on the watch's own connection, and `close()` lets that
+  connection go. After the end, `input()` refuses in words.
+
+`daemonWatch` is the one implementation behind every provider's `watch()` (Docker, Daytona, Modal, E2B, Orgo, the
+phone harness): a computer whose hello has no `screen` is refused as `unsupported`. `toAction(event, kind)` maps the
+viewer's `ViewerEvent`s, in the screen's upright pixels, to input actions:
+- a desktop takes the mouse (a move, and a button down or up at a point), the wheel (in clicks, about 120 px a
+  notch), keys (combos with the modifiers held) and typed text;
+- a phone (`android`, `ios`) takes taps, swipes, back, home and recents (`app_switch`), keys and typed text;
+- anything else is refused in words.
+
+No error in this seam holds a URL or a secret (`redactWords`). A phone's frames are upright with no rotation of ours:
+screencap gives the display in its current orientation, and `input tap` takes the same space.
 
 Points are `[x, y]` in the full screenshot's pixels, origin top left; a region shot never changes that space. A key is a
 name in `KEYS` (enter, tab, space, backspace, delete, escape, insert, the arrows, home, end, pageup, pagedown, f1-f12,
@@ -2081,9 +2094,9 @@ Core and Full follow the Kubernetes agent-sandbox conformance levels (KEP-539.2)
   process started earlier still running and `list()` shows the new deadline; three extends are refused with the
   deadline unchanged: to an earlier deadline, to maxLifetimeMs + 1, and, 60 s after create, to maxLifetimeMs less 30 s,
   within the cap on its own but past create + maxLifetimeMs; a cap under 3 min skips it).
-- **`screen.watch` is Core in the screen group**: through `watchScreen` on a connection of its own, the first frame is
-  an image (JPEG or PNG) of the size it says, of the screen `screen.shot` reads; on a computer with `input.pointer`, a
-  pointer move through `act()` is a new frame with the cursor where it went. It replaced `screen.stream`, which
+- **`screen.watch` is Core in the screen group**: through the provider's `watch()`, the first frame is an image (JPEG
+  or PNG) of the size it says, of the screen `screen.shot` reads; on a computer with `input.pointer`, a pointer move
+  through `input()` is a new frame with the cursor where it went. It replaced `screen.stream`, which
   checked a vendor's URL: the live view is proxy only (Miguel's decision, 2026-11-09).
 - **The mount group is Full**, optional for every kind until the cutover decides. "Mounts the run's folder",
   `mount.run-folder-bind` and `mount.run-folder-archil` (`mount:bind`, `mount:archil`, from `capabilities().mount`):
