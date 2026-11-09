@@ -139,7 +139,10 @@ function canaries() {
   // Short, each its own: every secret set at once goes over the launcher's pipe, which holds 4096 bytes for sure, and
   // the list grows with pi-ai's providers. The token's is the API's, 32 characters or more.
   const canary = `nak-${process.pid}-${Date.now().toString(36)}`;
-  return { canary, secrets: Object.fromEntries([...new Set([...READ, ...SECRET_NAMES])].map((name, i) => [name, name === "AGENTRUN_TOKEN" ? `${canary}-${name}` : `${canary}-${i}`])) };
+  // The seal key's must be a key the server takes (43 base64url characters: it never starts on a bad one), and is still a
+  // canary: the canary is base64url, padded to a key's length.
+  const sealKey = (value) => (assert.ok(value.length <= 43, value), value.padEnd(43, "k"));
+  return { canary, secrets: Object.fromEntries([...new Set([...READ, ...SECRET_NAMES])].map((name, i) => [name, name === "AGENTRUN_TOKEN" ? `${canary}-${name}` : name === "AGENTRUN_SEAL_KEY" ? sealKey(`${canary}-${i}`) : `${canary}-${i}`])) };
 }
 
 /** The server, started by its launcher in a session of its own, with `env` (its secrets among it) in its environment.

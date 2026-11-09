@@ -330,7 +330,9 @@ export function client(baseUrl, token, { owner = false } = {}) {
  *  loopback server (secret-writes.ts). Undefined where neither works (an owner the test set up with its own password): the
  *  write then goes with the token, which the server refuses, so such a test makes its own owner's session for it. */
 async function ownerSessionOf(baseUrl, token) {
-  if (ownerCookies.has(baseUrl)) return ownerCookies.get(baseUrl);
+  // By address and token: a server started again on a port another used has its own owner and cookie.
+  const known = `${baseUrl} ${token ?? ""}`;
+  if (ownerCookies.has(known)) return ownerCookies.get(known);
   const origin = new URL(baseUrl).origin;
   const post = (path) => fetch(`${baseUrl}${path}`, { method: "POST", redirect: "manual", headers: { "content-type": "application/json", origin }, body: JSON.stringify({ password: CLIENT_OWNER_PHRASE }) });
   let res = await post("/setup");
@@ -340,7 +342,7 @@ async function ownerSessionOf(baseUrl, token) {
   const cookie = res.headers.getSetCookie().map((line) => line.split(";")[0]).join("; ");
   if (!cookie) return undefined;
   const session = { cookie, origin };
-  ownerCookies.set(baseUrl, session);
+  ownerCookies.set(known, session);
   return session;
 }
 

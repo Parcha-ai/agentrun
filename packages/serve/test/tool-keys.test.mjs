@@ -232,13 +232,15 @@ test("a field the server is started with is the server's: GET says so, PUT and D
   assert.deepEqual(fieldsOf((await api("GET", "/settings/tool-keys")).body).BROWSERBASE_PROJECT_ID, UNSET);
 });
 
-test("with no seal key nothing is kept, never in the clear: PUT is 409 no_sealing_key, nothing is written, and capabilities say unavailable", async (t) => {
+test("handed no seal key, the server keeps a key under the one it made at its start, never in the clear: PUT is 204, and capabilities say sealed", async (t) => {
+  // A server never runs without a seal key (seal-key.ts): handed none, it makes one under the config home.
   withEnv(t, {}, KEYS);
   const { api, data } = await serve(t);
-  assert.deepEqual((await api("GET", "/capabilities")).body.features.tool_keys, { routes: true, at_rest: "unavailable" });
-  const refused = await api("PUT", "/settings/tool-keys/monid", { values: { MONID_API_KEY: made() } });
-  assert.deepEqual([refused.status, refused.body.error.code], [409, "no_sealing_key"]);
+  assert.deepEqual((await api("GET", "/capabilities")).body.features.tool_keys, { routes: true, at_rest: "sealed" });
+  const value = made();
+  assert.equal((await api("PUT", "/settings/tool-keys/monid", { values: { MONID_API_KEY: value } })).status, 204);
   assert.equal(existsSync(join(data, "tool-keys.json")), false);
+  assert.ok(!storeBytes(data).toString("latin1").includes(value), "sealed, never in the clear");
   assert.deepEqual((await api("GET", "/settings/tool-keys")).body.reenter, null);
 });
 
@@ -276,11 +278,11 @@ test("values sealed under another key, with no key, or in a damaged file do not 
   assert.deepEqual([fieldsOf(resealed).PARALLEL_API_KEY, resealed.reenter], [STORED, { reason: "seal_key_changed", fields: ["MONID_API_KEY"] }], "sealed anew under the current key");
   await server.close();
 
+  // Handed no seal key, the server makes its own (seal-key.ts): what the others sealed does not open under it.
   server = await started(undefined);
-  assert.equal(await parallel(), false, "with no seal key, nothing opens");
+  assert.equal(await parallel(), false, "under the key the server made, nothing sealed under another opens");
   const missing = await server.api("GET", "/settings/tool-keys");
-  assert.deepEqual(missing.body.reenter, { reason: "seal_key_missing", fields: ["PARALLEL_API_KEY", "MONID_API_KEY"] });
-  assert.equal((await server.api("PUT", "/settings/tool-keys/parallel", { values: { PARALLEL_API_KEY: values.PARALLEL_API_KEY } })).body.error.code, "no_sealing_key");
+  assert.deepEqual(missing.body.reenter, { reason: "seal_key_changed", fields: ["PARALLEL_API_KEY", "MONID_API_KEY"] });
   await server.close();
 
   writeFileSync(file, "{ not json");
