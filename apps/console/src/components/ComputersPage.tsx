@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
 import { type Client, ClientError, problemOf } from "@/lib/client";
 import { clock } from "@/lib/format";
-import { SIGN_IN_TO_CHANGE } from "@/lib/secrets";
+import { type SecretsWhyNot, WHY_NOT_WORDS } from "@/lib/secrets";
 import type { ApiError, ComputerKindView, ComputerProvider, Computers } from "@/lib/v2";
 
 /** Each kind's name and what it gives a run, in the console's words. A kind the console doesn't know yet reads as its id. */
@@ -39,10 +39,12 @@ type Tested = { ok: boolean; words: string; at: string };
  *  (null), and Test connection (POST …/test). A save or removal reads the whole page again: a key can make a provider
  *  ready, and a kind offered, under every kind at once. Keys change only on a writable session. A metered provider of a kind
  *  that bills by the minute says so, and that those minutes are outside a run's spending cap. */
-export function ComputersPage({ v2, writable }: {
+export function ComputersPage({ v2, writable, whyNot = "sign_in" }: {
   v2: Client;
-  /** Whether this session may paste, replace or remove a key (lib/secrets.ts useSecretsWritable). */
+  /** Whether this session may paste, replace or remove a key: the session read's secrets_writable (lib/secrets.ts useSecrets). */
   writable: boolean;
+  /** Why not, when it may not: the reason line (WHY_NOT_WORDS). */
+  whyNot?: SecretsWhyNot;
 }) {
   const [view, setView] = useState<Computers | null>(null);
   const [loadError, setLoadError] = useState<ApiError | null>(null);
@@ -100,7 +102,7 @@ export function ComputersPage({ v2, writable }: {
           <h1 className="mt-1 text-2xl font-semibold">Computers</h1>
           <p className="mt-2 text-[14px] text-muted-foreground">The computers an agent can be given, and who provides them. An agent can have a kind once one of its providers is ready. Keys are kept sealed on this server and never shown again.</p>
         </div>
-        {!writable && <p role="status" className="border bg-card p-4 text-[13px]">{SIGN_IN_TO_CHANGE}</p>}
+        {!writable && <p role="status" className="border bg-card p-4 text-[13px]">{WHY_NOT_WORDS[whyNot]}</p>}
         {view.kinds.map((k) => (
           <KindSection key={k.kind} kind={k}>
             {k.providers.map((p) => {

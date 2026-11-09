@@ -94,9 +94,17 @@ export type RunFiles = components["RunFileList"];
 export type RunBrowser = Answer<"getRunComputer">;
 
 /** Tool keys (GET /v2/settings/tool-keys, a serve extension). The server never sends a value. */
-export type ToolKeys = Answer<"listToolKeys">;
-export type ToolKey = ToolKeys["keys"][number];
+/** A secret as every read says it (SecretMeta): its "<plane>:<id>" name, set or not, where from, and its own last change. */
+export type SecretMeta = components["SecretMeta"];
+/** GET /v2/auth/session's answer, on a server with accounts or without (`accounts`): whether this session may write a
+ *  secret, and why not. */
+export type SessionSecrets = Answer<"getAuthSession">;
+type ServedToolKeys = Answer<"listToolKeys">;
+/** A key with its secrets (`secrets`, "tool:<KEY>"/"model:<KEY>"); `fields` as served, for the paste form. */
+export type ToolKey = ServedToolKeys["keys"][number];
+export type ToolKeys = ServedToolKeys;
 export type ToolKeyField = ToolKey["fields"][number];
+
 /** A saved key's check with its provider. Null, or absent from a server that does not check, says nothing. */
 export type ToolKeyCheck = NonNullable<ToolKey["check"]>;
 /** Saved values that do not open on this server, and why. `fields` is empty when the whole file does not read. */
@@ -149,5 +157,3 @@ export type Archil = Answer<"getWorkspaceArchil">;
 export type ArchilBody = Body<"putWorkspaceArchil">;
 /** POST /v2/workspace/archil/test's answer. */
 export type ArchilTest = Answer<"testWorkspaceArchil">;
-/** One secret's fields, as every secret read gives them: name ("<plane>:<id>"), set, source and changed_at. */
-export type SecretMeta = components["SecretMeta"];
