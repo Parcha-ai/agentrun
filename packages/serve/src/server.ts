@@ -2300,10 +2300,11 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       case "archiveAgent":
       case "unarchiveAgent": {
         await needAgent(id);
-        await agents.setArchived("agent", id, found.name === "archiveAgent");
         // No run sweep on archive: a runner reads an archived agent's run rows directly, nothing to sweep.
-        // Archived, every trigger that runs turns off in the store's archive transaction; unarchived, none turns on. Both
-        // answer the triggers off for the archive, each turned on again by PATCH /triggers/{id} {enabled: true}.
+        // The engine archives (or unarchives) the agent itself: archived, every trigger that runs as it turns off with
+        // agent_archived in that same store transaction; unarchived, none turns on. Never archived first by another path,
+        // which would turn its triggers off with no reason and leave the answer empty. Both answer the triggers off for
+        // the archive, each turned on again by PATCH /triggers/{id} {enabled: true}.
         const triggersOff = found.name === "archiveAgent" ? await triggers.agentArchived(id) : await triggers.agentUnarchived(id);
         const entry = await needAgent(id);
         return send(res, 200, { ...agentView(entry, linkOrigin(req), await agentExtra(entry)), triggers_off: triggersOff }, { etag: etagOf(entry) });
