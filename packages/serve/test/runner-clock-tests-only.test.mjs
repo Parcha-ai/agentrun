@@ -85,6 +85,31 @@ test("every production startRunner call passes an object literal of named fields
   }
 });
 
+// The conformance suite's own code (runner/conformance/: the harness and its runner process, child.ts, whose test hooks
+// read the environment) is reached only by tests: production code takes types from subject.ts and nothing else, only the
+// harness starts child.js, and the package's exports and bin never name it.
+test("the conformance suite's code is the tests' alone: production takes only types from it, only the harness starts its runner process, and the package never exports it", () => {
+  // Serve's own src outside the suite: no other package reaches serve's internals but through its exports, read below.
+  const SERVE_SRC = join(PACKAGES, "serve", "src");
+  const production = sources().filter((file) => file.startsWith(SERVE_SRC) && !file.startsWith(SUITE));
+  for (const file of production) {
+    const where = relative(ROOT, file);
+    const text = readFileSync(file, "utf8");
+    for (const match of text.matchAll(/^\s*(import|export)\s+([^;]*?)\s+from\s+["']([^"']*conformance\/[^"']*)["']/gm)) {
+      const [, , clause, path] = match;
+      assert.ok(/^type\s/.test(clause) && /conformance\/subject\.js$/.test(path), `${where} reaches the conformance suite by value: ${match[0].trim()}`);
+    }
+    assert.doesNotMatch(text, /import\(\s*["'][^"']*conformance\//, `${where} loads the conformance suite at run time`);
+  }
+  const spawners = sources().filter((file) => file.startsWith(SUITE) && /["']\.\/child\.js["']/.test(readFileSync(file, "utf8")));
+  assert.deepEqual(spawners.map((file) => relative(SUITE, file)), ["harness.ts"], "only the harness names its runner process (child.js)");
+  for (const file of production) {
+    assert.doesNotMatch(readFileSync(file, "utf8"), /conformance\/child/, `${relative(ROOT, file)} names the conformance runner process`);
+  }
+  const pkg = JSON.parse(readFileSync(join(PACKAGES, "serve", "package.json"), "utf8"));
+  assert.doesNotMatch(JSON.stringify({ exports: pkg.exports ?? {}, bin: pkg.bin ?? {} }), /conformance/, "the package's exports and bin never name the conformance suite");
+});
+
 test("the runner reads its clock from its options alone: never the environment or argv", () => {
   const text = readFileSync(RUNNER, "utf8");
   assert.doesNotMatch(text, /process\.(env|argv)/, "runner.ts reads neither the environment nor argv");
