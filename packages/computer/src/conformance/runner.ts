@@ -31,7 +31,15 @@ const LIFETIME_MS = 30 * 60_000;
 const GROUP_NAMES: ReadonlySet<string> = new Set(GROUPS);
 const CLOSE_MS = 10_000;
 
-class Skip extends Error {}
+class Skip extends Error {
+	constructor(
+		message: string,
+		/** The groups the skip is owed to, when the case says so. */
+		readonly undeclared?: Capability[],
+	) {
+		super(message);
+	}
+}
 
 const show = (value: unknown) => {
 	const text = value === undefined ? "undefined" : JSON.stringify(value);
@@ -450,8 +458,8 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 						await sleep(200);
 					}
 				},
-				skip(reason: string): never {
-					throw new Skip(reason);
+				skip(reason: string, options?: { undeclared?: Capability[] }): never {
+					throw new Skip(reason, options?.undeclared);
 				},
 			};
 			await c.run(t);
@@ -461,7 +469,13 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 			await Promise.race([prepareAndRun(), whenAborted(caseSignal)]);
 			return result("pass");
 		} catch (error) {
-			if (error instanceof Skip) return result("skip", error.message);
+			if (error instanceof Skip) {
+				// Owed to undeclared groups only when the computer declares none of them: else it is a plain skip.
+				const owed = error.undeclared ?? [];
+				if (owed.length === 0 || owed.some((need) => GROUP_NAMES.has(need) && groups.includes(need as Group))) return result("skip", error.message);
+				for (const need of owed) if (!report.undeclared.includes(need)) report.undeclared.push(need);
+				return { ...result("skip", error.message), undeclared: [...owed] };
+			}
 			if (signal?.aborted && !timer.signal.aborted) return result("fail", "the run was aborted");
 			return result("fail", words(error));
 		} finally {

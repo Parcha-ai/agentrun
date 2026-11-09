@@ -142,8 +142,12 @@ export interface CaseContext {
 	present<T>(value: T | undefined | null, what: string): T;
 	/** Calls fn until it returns a value other than undefined or false, for up to ms (default patience). */
 	until<T>(fn: () => Promise<T | undefined | false>, what: string, ms?: number): Promise<T>;
-	/** Ends the case as a skip, with the reason. */
-	skip(reason: string): never;
+	/**
+	 * Ends the case as a skip, with the reason. With undeclared, the skip is owed to those groups, which the computer
+	 * does not declare: it is named in undeclared, as a skip for a need the case lists is, and Core does not count it.
+	 * A group in it that the computer declares makes the skip a plain one.
+	 */
+	skip(reason: string, options?: { undeclared?: Capability[] }): never;
 }
 
 export interface Case {

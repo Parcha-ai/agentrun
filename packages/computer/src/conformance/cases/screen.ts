@@ -39,6 +39,16 @@ export async function shoot(t: CaseContext, region?: Rect): Promise<{ shot: Scre
 	return { shot, image };
 }
 
+/** A screenshot's pixels sampled on a 16 x 16 grid, with its size: two different screens differ in it. */
+export async function screenPrint(t: CaseContext): Promise<string> {
+	const { image } = await shoot(t);
+	const samples: string[] = [];
+	for (let j = 0; j < 16; j++) {
+		for (let i = 0; i < 16; i++) samples.push(image.rgb(Math.floor(((i + 0.5) * image.width) / 16), Math.floor(((j + 0.5) * image.height) / 16)).join(","));
+	}
+	return `${image.width}x${image.height}:${samples.join(";")}`;
+}
+
 const QUADRANTS = ["top left", "top right", "bottom left", "bottom right"];
 
 export const screenCases: Case[] = [

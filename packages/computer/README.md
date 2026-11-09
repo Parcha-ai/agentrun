@@ -346,8 +346,8 @@ in the kernel's tool registry, keyed by these groups.
 | --- | --- | --- | --- |
 | `none` | | | (the run's folder only: no computer) |
 | `sandbox` | `linux` | `exec`, `files`, `processes` | |
-| `desktop` | `desktop` | `screen`, `input.pointer`, `input.keys` | `exec`, `files`, `processes`, `apps`, `stream` |
-| `phone` | `android`, `ios` | `screen`, `input.touch`, `apps` | `input.keys`, `apps.install`, `apps.ui_tree`, `stream` |
+| `desktop` | `desktop` | `screen`, `input.pointer`, `input.keys` | `exec`, `files`, `processes`, `apps`, `apps.terminate`, `stream` |
+| `phone` | `android`, `ios` | `screen`, `input.touch`, `apps` | `input.keys`, `apps.terminate`, `apps.install`, `apps.ui_tree`, `stream` |
 | `browser` | `browser` | `cdp` | `stream`, `downloads` |
 
 - `serves(capabilities, kind)` is true when `capabilities().kind` is one of the kind's machine kinds and every required
@@ -415,7 +415,7 @@ itself, from our server (adb, a vendor API). Either way a connection's `client` 
 params, { signal })` and `close()`): `DaemonClient` over a stream, or a provider's in-process client.
 
 **Groups.** `capabilities().groups` is one flat list, repeated in hello's `groups`: `exec`, `files`, `processes`,
-`screen`, `input.pointer`, `input.keys`, `input.touch`, `apps`, `apps.install`, `apps.ui_tree`, and the provider's
+`screen`, `input.pointer`, `input.keys`, `input.touch`, `apps`, `apps.terminate`, `apps.install`, `apps.ui_tree`, and the provider's
 `cdp`, `stream`, `downloads`. Each is optional unless kind makes it Core. The drift check and Docker's `connect` refuse a hello whose kind or groups differ from what the
 provider declares, either way.
 
@@ -425,7 +425,7 @@ provider declares, either way.
 | `input.pointer` | `input.actions`: `move`, `down`, `up`, `click` (`count` 1-3, held `keys`), `drag` (a path of 2 or more points), `scroll` (`unit` clicks or px) |
 | `input.keys` | `input.actions`: `key` (one key pressed, or a combo released in reverse; `repeat`), `hold` (`ms`), `type` |
 | `input.touch` | `input.actions`: `tap`, `long_press`, `swipe`, `pinch` (`scale` above 1 apart, below together), `button` (back, home, app_switch) |
-| `apps`, `apps.install` | `apps.list` (`{ apps, foreground }`), `apps.launch`, `apps.terminate`; `apps.install({ path })` of a file already in the computer |
+| `apps`, `apps.terminate`, `apps.install` | `apps.list` (`{ apps, foreground }`) and `apps.launch`; `apps.terminate`, its own group since a phone may have no way to end an app (an iPhone's control API has none); `apps.install({ path })` of a file already in the computer |
 | `apps.ui_tree` | `apps.ui_tree`: `{ root: UiNode, nodes, truncated }`, at most 5000 nodes; a node has `role`, `id?`, `text?`, `label?`, `bounds` in screenshot pixels, `enabled`, the optional booleans and `children` |
 
 Points are `[x, y]` in the full screenshot's pixels, origin top left; a region shot never changes that space. A key is a
@@ -1857,8 +1857,8 @@ const made = await phones.create({ image: "android", lifetimeMs: 10 * 60_000, ne
 ```
 
 `src/phone-harness.ts`, provider id `phone-harness`, rents a temporary cloud Android emulator from the phone harness
-(phone-harness.com). The phone harness bills it at 5 cents a minute from the account's credit. A cloud iPhone (driven by
-the API's control URL) is a later change: `platform: "ios"` is refused in words.
+(phone-harness.com). The phone harness bills it at 5 cents a minute from the account's credit. With `platform: "ios"`
+it starts the account's own cloud iPhone instead (see "A cloud iPhone" below).
 
 - **No daemon.** Nothing runs on the phone. `connect()` asks the phone harness for the session's adb link, runs
   connects to it, unlocks the phone with the session's code (never in a result or an error) and probes it.
@@ -1892,8 +1892,8 @@ the API's control URL) is a later change: `platform: "ios"` is refused in words.
   exec, files, processes and tar are refused in words: a phone has no shell in the computer protocol. So are pinch
   (adb's `input` has one finger), hold, a combo of keys, `apps.install` and `deadline.extend`.
 - **Capabilities.** Kind and os `android`, daemon `none`, lifetime `vendor`, network `open`, release `delete` only.
-  Groups `screen`, `input.touch`, `input.keys`, `apps` and `apps.ui_tree`. `maxLifetimeMs` is 30 min by default. No
-  mount, no extend.
+  Groups `screen`, `input.touch`, `input.keys`, `apps`, `apps.terminate` and `apps.ui_tree`. `maxLifetimeMs` is 30
+  min by default. No mount, no extend.
 - **create** asks for `timeout_seconds` = the lifetime, and the phone harness ends the session then, whatever happens.
   The lifetime includes the boot, so a phone ready past its deadline fails `timeout`.
   - Each POST carries an Idempotency-Key, and a create whose answer is uncertain is found by it, never sent twice.
@@ -1906,8 +1906,9 @@ the API's control URL) is a later change: `platform: "ios"` is refused in words.
     off by `requestMs` while `readyMs` has time left is asked again; only `readyMs` itself ends a phone that is slow to
     start. The `timeout` option is the timer (default `AbortSignal.timeout`).
   - Once the phone's id is known, a ledger write that fails ends the phone, and create answers in words.
-  - The service's refusals keep their words (`limit` for `phones_busy` and `session_limit`, `denied` for the key or
-    credit) and never hold the key.
+  - The service's refusals keep their words (`limit` for `phones_busy`, `session_limit` and an iPhone another session
+    holds, `profile_running`; `denied` for the key or credit) and never hold the key. A vendor answer shown in words
+    because it was not what was asked has its bearers (`token`, `url`, `code`) hidden.
 - **The ledger.** The phone harness keeps no labels on a session, so the provider keeps each phone's labels, image and
   deadline in its `ledger` option: `{ put, get, list, remove }`. It is in memory by default; serve passes a store-backed
   one, and the conformance module a JSON file. `list`, `attach`, `network`, `connect`, `release` and the janitor see
@@ -1915,7 +1916,9 @@ the API's control URL) is a later change: `platform: "ios"` is refused in words.
   id the ledger does not name sends no DELETE: it answers `not_found` while that session runs, and ok once it is gone.
   The service ends a session asynchronously, so a released phone's entry stays, marked `released`, until its own
   `GET /sessions/<id>` is a 404. Meanwhile a second release is ok, list leaves it out, and attach, connect and network
-  answer `not_found`, as for a deleted computer.
+  answer `not_found`, as for a deleted computer. An iPhone's entry carries `platform: "ios"` (an Android's carries none,
+  as before), and each provider sees only its own platform's entries: one ledger holds both, and an Android provider
+  never lists, attaches, connects or releases an iPhone, nor the reverse.
   - create puts an entry under `pending-<Idempotency-Key>` before its POST, and replaces it by the session's id once
     known; a refused POST forgets it.
   - If the POST's answer and its recovery (`GET /sessions/requests/<key>`) are both lost, the entry stays. `list()`
@@ -1934,9 +1937,43 @@ the API's control URL) is a later change: `platform: "ios"` is refused in words.
   count of this provider's phones, `unauthorized` for a refused key, `unreachable` when the phone harness is not
   reached.
 
+### A cloud iPhone
+
+```ts
+const iphones = await providerFor("phone-harness", { apiKey, platform: "ios", deviceId }); // deviceId: from GET /me
+const made = await iphones.create({ image: "ios", lifetimeMs: 10 * 60_000, network: "open", labels: { run } });
+```
+
+The phone harness sets up a real iPhone per account, on a Mac it runs, on a flat subscription (not by the minute). It
+is the account's own phone: nothing on it is wiped between sessions, and one session at a time holds it. The session
+and ledger layer above is the same; only the device channel differs (`src/phone-control.ts`, after the vendor's docs,
+guides/iphone, and its open client).
+
+- **create** posts `{ platform: "ios", kind: "device", device_id?, timeout_seconds }`. `deviceId` names which iPhone,
+  and may be left out while the account holds one. An account with no iPhone is refused in the vendor's words.
+- **connect** reads the ready session's `control { url, token }`. The token is a bearer of the phone: it goes only in
+  the Authorization header, and only to the API's own origin (a control URL on another host is refused before any
+  request); no result, error or log holds it, nor the URL's path, which is the grant. `GET <url>/ops` lists what the
+  phone takes, and connect refuses a phone that lacks an op a declared group needs, naming each one. Then a client in
+  this process answers each method with `POST <url>/op { op, kw }`, one op at a time:
+  - `screen.shot`: `screen.capture`'s PNG, cropped locally for a region;
+  - `input.actions`: tap (`input.tap`), long press (`input.press`), a swipe of two points (`input.drag`), the home and
+    app switch buttons (`nav.home`, `nav.recents`), back only where the phone lists `nav.back` (an iPhone has no system
+    Back button), and `wait`. A swipe of more points, pinch and hold are refused in words;
+  - `apps.list` (`apps.list`, and the app in front from `apps.current`) and `apps.launch` (`apps.launch` with the id
+    as given). An app that is not there is `not_found`. `apps.terminate` is refused: the control API has no op that
+    ends an app.
+- **Capabilities.** Kind and os `ios`, groups `screen`, `input.touch` and `apps`. `input.keys` (typing is
+  `input.text`, keys are `input.keys` in the vendor's names) and `apps.ui_tree` (`tree`) are coded behind groups an
+  iPhone does not declare until a live run on one shows the ops take them; until then a key or a tree is refused in
+  words.
+- **Open until the first live run on a real iPhone:** which ops it lists; the coordinate space (taps go in the
+  screenshot's pixels); whether apps are named by bundle id or name; the key names; whether pasted text lands in a
+  field; whether two quick taps are a double tap; and whether a control URL is ever on another host.
+
 Conformance (`src/conformance/phone-harness.ts`) reads `COMPUTER_PHONE_HARNESS_API_KEY`,
-`COMPUTER_PHONE_HARNESS_PLATFORM`, `COMPUTER_PHONE_HARNESS_ADB`, `COMPUTER_PHONE_HARNESS_LEDGER` and
-`AGENTRUN_COMPUTER_LIVE_PHONE_HARNESS`, never the bare
+`COMPUTER_PHONE_HARNESS_PLATFORM`, `COMPUTER_PHONE_HARNESS_DEVICE`, `COMPUTER_PHONE_HARNESS_ADB`,
+`COMPUTER_PHONE_HARNESS_LEDGER` and `AGENTRUN_COMPUTER_LIVE_PHONE_HARNESS`, never the bare
 `PHONE_HARNESS_API_KEY`. A run's phones live at most 10 min, and the run's computers ask for at most the provider's
 `maxLifetimeMs`.
 
@@ -1948,12 +1985,18 @@ through `apps.ui_tree` (`src/conformance/cases/settings.ts`):
   whether the title shows outside the list, and whether the next row is still shown;
 - `touch.swipe`: a swipe up moves the list up;
 - `input.type-text` and `input.key-table-refuses-unknown`: the text read back from the search field;
-- `apps.launch-terminate`, which needs the apps group alone: Settings is listed; once launched it is in front, and
-  shown, in `apps.ui_tree` when the phone has one, else in a screenshot other than the one before; once terminated it
-  is not in front;
+- `apps.launch-terminate`, which needs `apps` and `apps.terminate`: Settings is listed; once launched it is in front,
+  and shown, in `apps.ui_tree` when the phone has one, else in a screenshot other than the one before; once terminated
+  it is not in front;
+- `apps.launch`, which needs `apps` alone: Settings is listed, put out of the way (terminated where the phone can, else
+  left by the home button), launched, in front and shown;
 - `apps.ui-tree-shape`: the tree's shape, on Settings.
 
-`touch.pinch` skips in the provider's own refusal.
+`touch.pinch` skips in the provider's own refusal. A phone with neither files nor a tree, such as a cloud iPhone, is
+checked on Settings' screen: `touch.swipe` sees Settings' list scroll in the screenshot, and `touch.tap` skips, owed to
+`files` and `apps.ui_tree`, which it does not declare. On an iPhone, which is the owner's own and never wiped, the run
+only looks, launches, scrolls and goes home: it taps nothing, types nothing and changes no setting. Settings is
+`com.apple.Preferences` there.
 
 ## Conformance
 
@@ -1978,7 +2021,7 @@ full lifetime  extend                                       - 1
 optional screen screenshot-size                              - 1
   - screen.screenshot-size: the provider does not declare screen
 ...
-core PASS 54/54 · 9 optional cases skipped, not declared · full 10/14 · mount:archil screen stream input.pointer input.keys input.touch apps.install apps apps.ui_tree extend not declared
+core PASS 54/54 · 9 optional cases skipped, not declared · full 10/14 · mount:archil screen stream input.pointer input.keys input.touch apps.install apps apps.terminate apps.ui_tree extend not declared
 ```
 
 An id is resolved through the provider registry, and only there; the usage lists every id it holds. A module path is
