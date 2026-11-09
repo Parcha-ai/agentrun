@@ -2536,9 +2536,9 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       case "getGitHubConnection": {
         // Repaired from GitHub's own first, at most once a minute: a missed installation event is put right here.
         await githubConnect.reconcile((detail) => triggers.turnOff("github", detail));
+        // Always a 200: not connected is an answer, never an error a browser logs as one.
         const view = githubConnection();
-        if (!view) throw new ApiError("not_found", "No GitHub App is connected to this server: Connect GitHub in Settings.");
-        return send(res, 200, view);
+        return send(res, 200, view ? { connected: true, ...view } : { connected: false });
       }
       case "disconnectGitHub": {
         const view = githubConnection();

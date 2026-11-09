@@ -6,7 +6,7 @@
 // The daemon is uploaded into each computer (dist/computerd-linux-amd64, `npm run build:daemon`); the drifted provider
 // uploads one built with Go as version <version>-drift. Every computer of a run lives at most 1 h, Orgo's shortest end
 // (ends_in_hours 1): Orgo deletes it then whatever happens to the run.
-import { create, type OrgoChannel, type OrgoProvider, type OrgoWebSocketFactory } from "../orgo.js";
+import { create, ORGO_BASE_IMAGE, type OrgoChannel, type OrgoProvider, type OrgoWebSocketFactory } from "../orgo.js";
 import { buildDriftDaemon, DRIFT_VERSION } from "./drift-daemon.js";
 
 /** The environment this module reads, by name: the live switch, the run's template, and the provider's settings. */
@@ -28,7 +28,7 @@ export const CONFORMANCE_MAX_LIFETIME_MS = 60 * 60_000;
 
 /** For the run's report: what this configuration means for the suite. */
 export const conformanceNotes: string[] = [
-	"orgo: a Linux desktop on Orgo with computerd inside, on Orgo's own X display :99, its tools as 2510:2510; every computer ends within 1 h (Orgo deletes it at ends_in_hours 1); network none is init's own namespace, probed from inside, since Orgo has no egress control; no mount.",
+	"orgo: a Linux desktop on Orgo with computerd inside, on Orgo's own X display :99, its tools as 2510:2510; janitor-ended at the exact deadline its name carries, and within 1 h whatever happens (Orgo deletes it at ends_in_hours 1, the backstop); network none is init's own namespace (--own-network), probed from inside at the outside and at every port root listens on, since Orgo has no egress control; the desktop's path sockets are root's alone but the display's; no mount.",
 ];
 
 export interface OrgoModuleOptions {
@@ -62,7 +62,7 @@ export function settingsFromEnv(env: Record<string, string | undefined> = proces
 
 /** The image every computer of the run starts from: COMPUTER_ORGO_TEMPLATE, or Orgo's base desktop. */
 export function conformanceImage({ env = process.env }: Pick<OrgoModuleOptions, "env"> = {}): string {
-	return env[ORGO_ENV.template] || "linux";
+	return env[ORGO_ENV.template] || ORGO_BASE_IMAGE;
 }
 
 function build({ env = process.env, fetch, webSocket, channel }: OrgoModuleOptions, daemonPath: string | undefined): OrgoProvider {

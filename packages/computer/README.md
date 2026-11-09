@@ -382,13 +382,26 @@ in the kernel's tool registry, keyed by these groups.
   required or not; never a value), `mounts` (the mount kinds its computers take; `[]` cannot mount the run's folder),
   `metered` (the vendor bills by time), and `capabilities`, the machine kind and groups of each configuration it
   offers. Its `kinds` are derived from those by `serves`, never written by hand.
+- An entry's `defaultImage` names the image a computer of each setting kind starts from when its setting names none,
+  each the constant its provider module owns. A kind with no entry has no default, and the caller refuses the setting in
+  words. Docker has none: serve builds its image itself.
+
+  | id | defaultImage |
+  | --- | --- |
+  | docker | none |
+  | daytona | sandbox: `DAYTONA_DEFAULT_SNAPSHOT` ("default") |
+  | modal | sandbox: `MODAL_DEFAULT_IMAGE` ("debian:bookworm-slim") |
+  | e2b | sandbox: `E2B_BASE_TEMPLATE` ("base"); desktop: `E2B_DESKTOP_TEMPLATE` ("desktop") |
+  | orgo | desktop: `ORGO_BASE_IMAGE` ("linux") |
+  | phone-harness | phone: `PHONE_IMAGE` ("android") |
+  | browserbase, kernel | browser: `BROWSER_IMAGE` ("chromium") |
 
   | id | label | kinds | keys (required unless marked) | mounts | metered |
   | --- | --- | --- | --- | --- | --- |
   | docker | Docker | sandbox, desktop | none | bind | no |
-  | daytona | Daytona | sandbox | `DAYTONA_API_KEY`; `DAYTONA_API_URL`, `DAYTONA_TARGET` (optional) | none until D6's archil | yes |
-  | modal | Modal | sandbox | `MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET` | none until D6's archil | yes |
-  | e2b | E2B | sandbox, desktop | `E2B_API_KEY` | none until D6's archil | yes |
+  | daytona | Daytona | sandbox | `DAYTONA_API_KEY`; `DAYTONA_API_URL`, `DAYTONA_TARGET` (optional) | archil | yes |
+  | modal | Modal | sandbox | `MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET` | archil | yes |
+  | e2b | E2B | sandbox, desktop | `E2B_API_KEY` | archil | yes |
   | orgo | Orgo | desktop | `ORGO_API_KEY` | none | yes |
   | phone-harness | Phone harness | phone | `PHONE_HARNESS_API_KEY` | none | yes |
   | browserbase | Browserbase | browser | `BROWSERBASE_API_KEY`, `BROWSERBASE_PROJECT_ID` | none | yes |
@@ -446,12 +459,50 @@ provider declares, either way.
 
 | group | methods |
 | --- | --- |
-| `screen` | `screen.shot({ region? })`: a PNG (8-bit, non-interlaced), its first `MAX_CHUNK_BYTES` in `data`, with `width`, `height` (the image's pixels, the input coordinate space, never downscaled), `scale` and `cursor?`; `screen.read({ id, offset })` for the rest. One shot is held, until its eof or the next shot. |
+| `screen` | `screen.shot({ region? })`: a PNG (8-bit, non-interlaced), its first `MAX_CHUNK_BYTES` in `data`, with `width`, `height` (the image's pixels, the input coordinate space, never downscaled), `scale` and `cursor?`; `screen.read({ id, offset })` for the rest. One shot is held, until its eof or the next shot. `screen.watch({ after, waitMs?, maxWidth?, quality? })`: the live view's frames, paced by the caller's ack (`after`, the seq of the last frame it has whole; an older one gets the newest frame at once): the next frame once the screen or the pointer changed, else `changed: false` when `waitMs` (default 2000, at most 10000) is over. A frame is `{ seq, changed, format, frameWidth, frameHeight, width, height, cursor? }` and its bytes as a shot's (`data`, `id` and `screen.read`); `format` is `jpeg` from computerd (scaled to `maxWidth`, default 1280, at `quality`, default 60) and `png` from the phone client. One watch per connection. |
 | `input.pointer` | `input.actions`: `move`, `down`, `up`, `click` (`count` 1-3, held `keys`), `drag` (a path of 2 or more points), `scroll` (`unit` clicks or px) |
 | `input.keys` | `input.actions`: `key` (one key pressed, or a combo released in reverse; `repeat`), `hold` (`ms`), `type` |
 | `input.touch` | `input.actions`: `tap`, `long_press`, `swipe`, `pinch` (`scale` above 1 apart, below together), `button` (back, home, app_switch) |
 | `apps`, `apps.install` | `apps.list` (`{ apps, foreground }`), `apps.launch`, `apps.terminate`; `apps.install({ path })` of a file already in the computer |
 | `apps.ui_tree` | `apps.ui_tree`: `{ root: UiNode, nodes, truncated }`, at most 5000 nodes; a node has `role`, `id?`, `text?`, `label?`, `bounds` in screenshot pixels, `enabled`, the optional booleans and `children` |
+
+**The live view's seam** (`src/screen-watch.ts`). The runner's viewer reads a computer through
+`provider.watch?(ref, handlers, { signal?, maxWidth?, quality? })`:
+- `handlers.frame(frame, ack)` gets each whole `ScreenFrame` (`{ seq, format, bytes, width, height, frameWidth,
+  frameHeight, cursor? }`), and the next frame is asked for only once `ack()` is called. `width` and `height` are the
+  screen's real pixels, the input space; only `frameWidth` and `frameHeight` scale to `maxWidth`.
+- `handlers.ended(error)` is called once if the computer goes, with the code `gone`, `unreachable`, `refused` or
+  `unsupported`, in words with no URL. `close()` and the signal end the watch with no `ended()`.
+- The answer's `input(actions)` sends `input.actions` on the watch's own connection, and `close()` lets that
+  connection go. After the end, `input()` refuses in words.
+
+`daemonWatch` is the one implementation behind every provider's `watch()` (Docker, Daytona, Modal, E2B, Orgo, the
+phone harness): a computer whose hello has no `screen` is refused as `unsupported`. It adapts the internal seam,
+`watchScreen(connection, options)`: pull-paced `frames` (each `next()` the ack), `act(actions)` and `close()`, whose
+failures are `ScreenWatchError`s. `toAction(event, kind)` maps the viewer's `ViewerEvent`s, in the screen's upright
+pixels, to input actions, or to a `Refusal` (`{ field, message }`) for what a kind cannot take:
+- a desktop takes the mouse (a move, and a button down or up at a point; with a modifier held, the up is one click
+  with its keys and the down only moves; each up is one click, so a double-click is two and never a `count`), the
+  wheel (in clicks, about 120 px a notch, 20 clicks at most an event),
+  keys (combos with the modifiers held, Shift kept: ctrl+shift+s) and typed text; never ctrl+alt+backspace or
+  ctrl+alt+F1 to F12, which end or switch the X display;
+- a phone (`android`, `ios`) takes taps, swipes (0 to 1000 ms, clamped), back, home and recents (`app_switch`), keys
+  and typed text;
+- a typed text holds 65,536 characters at most (`checkActions` refuses more as `limit` too, as computerd does);
+- anything else, and an event whose fields are not what its type says, is refused in words: `toAction` never throws.
+
+`toAction` is stateless. A viewer maps through `createActionMapper(kind)`, one per take-over: its `map(event)` answers
+as `toAction` does, but a desktop's mouse press decides the strategy for the press and its release together (a
+modifier let go before the up still clicks once, with the keys held at the down; a plain press stays plain), and its
+`release()` gives the ups for every button it pressed and has not released, then forgets them (on blur, or when the
+take-over ends). No key is ever among them: the protocol presses and releases a key within its action.
+
+The seam reads a frame by the size it says (never past it, never over 64 MiB, and whole at the end), keeps 8 inputs
+in flight at most on a watch (one more is refused as `limit`), and redacts every error and a failed action's words
+(`redactWords`: URLs, logins, bearers, secret-named parameters, key and token shapes, and host or IPv4 endpoints).
+
+No error in this seam holds a URL or a secret (`redactWords`). A phone's frames are upright with no rotation of ours:
+screencap gives the display in its current orientation, and `input tap` takes the same space.
 
 Points are `[x, y]` in the full screenshot's pixels, origin top left; a region shot never changes that space. A key is a
 name in `KEYS` (enter, tab, space, backspace, delete, escape, insert, the arrows, home, end, pageup, pagedown, f1-f12,
@@ -1746,28 +1797,11 @@ to the cap, once it is more than 2 s past where create set it (its start plus th
 to the second E2B rounds to); extend never leaves E2B's end inside those 2 s, moving it at least 3 s past create's end,
 so an extend however short reads back.
 
-**Limit: `publicStream` is refused for now.** create() throws in words on `publicStream: true` (in a conformance run,
-`COMPUTER_E2B_PUBLIC_STREAM=1`): the
-stream's servers would run as the daemon's programs, inside their own network namespace, where E2B's proxy cannot reach
-noVNC's port, and a public stream's network is open, which a remote computer does not take yet. No provider has
-`stream()` until an inbound forward lifts this. The rest of this paragraph is what `stream()` does then, and its code
-and tests stay for it (the tests skipped, in words).
-
-`stream()` exists only on a provider made with `publicStream: true` (in a conformance run, `COMPUTER_E2B_PUBLIC_STREAM=1`): a private sandbox's
-URL needs the `e2b-traffic-access-token` header, which a browser cannot send (E2B docs, network/restrict-public-access),
-so a stream URL a person can open needs public traffic, and that opens every port, so such a provider's computers are
-network `open` only, and `check()` refuses none in words. `stream()` starts x11vnc on the display, listening on
-loopback only and IPv4 alone, with a fresh password from a file only the computer's user reads, and noVNC in front of it, both through
-the daemon (the ports and paths are E2B Desktop's own: `@e2b/desktop@2.5.0` `dist/index.mjs:426-506`), and returns
-`https://6080-<id>.<domain>/vnc.html?autoconnect=true&resize=scale&password=<password>`. The password is the URL's
-only secret beyond the sandbox's id, a bearer token: it is never logged and never in an error (a unit test holds that).
-VNC authentication reads 8 characters at most (it keys DES with them), so it is 8 random letters and digits. Each call
-starts the stream anew, so an earlier URL stops working: it reads every page of the process table, kills the running
-x11vnc and noVNC it finds, waits up to 10 s for each to end (a signal is only sent, and an old server holds its port
-until it ends), then starts the new pair, and returns the URL only once both new servers still run and ports 5900 and
-6080 both listen; a new server that ended first is an error with its last lines of stderr. `viewOnly` starts x11vnc
-with `-viewonly`. E2B's own SDK
-leaves x11vnc listening on every interface (`dist/index.mjs:502`); this provider does not.
+There is no `stream()`: a screen is streamed through agentrun, never through a vendor URL. A URL into an E2B sandbox
+that a browser could open needs public traffic, since a private sandbox's URL needs the `e2b-traffic-access-token`
+header, which a browser cannot send (E2B docs, network/restrict-public-access). Public traffic opens every port in the
+computer to anyone with its address. So the provider takes no `publicStream` option: making one with it throws in
+words, whatever its value, and every sandbox is made with public traffic off.
 
 ### What the provider does
 
@@ -1824,9 +1858,9 @@ live switch.
 The conformance module's `settingsFromEnv` reads these names, and the sweep and `e2b-diagnose.js` read them through it,
 each passed to `create()` as the option in brackets: `COMPUTER_E2B_API_KEY` (`apiKey`, required),
 `COMPUTER_E2B_DOMAIN` (`domain`), `COMPUTER_E2B_DAEMON` (`daemonPath`), `COMPUTER_E2B_KIND` (`kind`),
-`COMPUTER_E2B_MAX_LIFETIME_MS` (`maxLifetimeMs`, a whole number of ms), `COMPUTER_E2B_USER` (`daemonUser`) and
-`COMPUTER_E2B_PUBLIC_STREAM` (`publicStream`, `1` or unset). It refuses while `E2B_SANDBOX_URL` is set in the
-environment it reads, as the provider does in `process.env`.
+`COMPUTER_E2B_MAX_LIFETIME_MS` (`maxLifetimeMs`, a whole number of ms) and `COMPUTER_E2B_USER` (`daemonUser`). It
+refuses while `E2B_SANDBOX_URL` is set in the environment it reads, as the provider does in `process.env`.
+`COMPUTER_E2B_PUBLIC_STREAM` is no longer read.
 
 ### What waits for a live run
 
@@ -1842,8 +1876,7 @@ A live run must show:
   the IPv6 target refused and every IPv4 one accepted with 0 bytes), and what else `denyOut 0.0.0.0/0` lets through;
 - that envd keeps init running once create disconnects, and how long `getInfo` takes to answer not found after a kill;
 - that Xvfb starts as uid 1000 in the desktop template, and the screen and input cases pass against it;
-- `endAt` against E2B's start plus the timeout, to the second, and how long the listing takes to show a new sandbox;
-- with `publicStream`, that noVNC answers 200 at the URL.
+- `endAt` against E2B's start plus the timeout, to the second, and how long the listing takes to show a new sandbox.
 
 ### Sources
 
@@ -1935,6 +1968,10 @@ the API's control URL) is a later change: `platform: "ios"` is refused in words.
   a client in this process that answers each protocol method with adb commands:
   - `screen.shot`/`screen.read`: a raw `screencap`, cropped to the region and encoded as an RGBA PNG; `scale` is the
     density over 160;
+  - `screen.watch`: PNG frames (`format: "png"`) from `screencap`, read once a second at most, across calls too (an
+    animated screen acked at once is no faster), a new frame only when the pixels changed; `maxWidth` scales by the
+    nearest pixel, and `quality` has no effect on a PNG. A cancel or the connection's close ends a screencap and a
+    wait in flight;
   - `input.actions`: checked whole first (`checkActions`). Then:
     - tap and long press;
     - swipe: `input swipe`, or `input motionevent` for a path of three points or more. Its `ms` is shared between the
@@ -2039,7 +2076,7 @@ full lifetime  extend                                       - 1
 optional screen screenshot-size                              - 1
   - screen.screenshot-size: the provider does not declare screen
 ...
-core PASS 54/54 · 9 optional cases skipped, not declared · full 10/14 · mount:archil screen stream input.pointer input.keys input.touch apps.install apps apps.ui_tree extend not declared
+core PASS 54/54 · 10 optional cases skipped, not declared · full 10/13 · mount:archil screen input.pointer input.keys input.touch apps.install apps apps.ui_tree extend not declared
 ```
 
 An id is resolved through the provider registry, and only there; the usage lists every id it holds. A module path is
@@ -2139,8 +2176,12 @@ Core and Full follow the Kubernetes agent-sandbox conformance levels (KEP-539.2)
   moving apart), `lifetime.extend` (`extend`: made with 45 s and extended to 120 s, at 60 s it answers ping with a
   process started earlier still running and `list()` shows the new deadline; three extends are refused with the
   deadline unchanged: to an earlier deadline, to maxLifetimeMs + 1, and, 60 s after create, to maxLifetimeMs less 30 s,
-  within the cap on its own but past create + maxLifetimeMs; a cap under 3 min skips it) and `screen.stream`
-  (`stream`: an https URL that answers 200; only its origin is ever reported).
+  within the cap on its own but past create + maxLifetimeMs; a cap under 3 min skips it).
+- **`screen.watch` is Core in the screen group**: through the provider's `watch()`, the first frame decodes (a PNG
+  whole; a JPEG walked to its end, as the suite has no JPEG decoder) to the size it says, of the screen `screen.shot`
+  reads; on a computer with `input.pointer`, a pointer move through `input()` is a new frame with the cursor where it
+  went (a frame with no cursor is not it). It replaced `screen.stream`, which
+  checked a vendor's URL: the live view is proxy only (the user-approved decision, 2026-11-09).
 - **The mount group is Full**, optional for every kind until the cutover decides. "Mounts the run's folder",
   `mount.run-folder-bind` and `mount.run-folder-archil` (`mount:bind`, `mount:archil`, from `capabilities().mount`):
   on a computer of its own made with the run folder `mountFor(kind)` gives, `check` takes the spec, `attach` and `list`
