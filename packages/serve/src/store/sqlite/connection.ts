@@ -4,6 +4,7 @@
 // queue: a call starts when the one before it has answered, and a transaction holds every other call until it commits or
 // rolls back. Errors come back typed: Fenced, RunFinal, StoreBusy, StoreConstraint, StoreClosed, StoreOwned.
 import { Worker } from "node:worker_threads";
+import { type Dialect, SQLITE } from "../dialect.js";
 import { Fenced, RunFinal, StoreBusy, StoreClosed, StoreConstraint, StoreDeadline, StoreOwned, StoreWorkerLost } from "../store.js";
 import type { Mode, Params, Reply, Request, Statement, StatementResult, WorkerError } from "./worker.js";
 
@@ -31,6 +32,31 @@ export interface SqliteDatabase extends SqliteExecutor {
  *  `expect` (a fence, a final run) rolls the transaction back when it changes no row. */
 export interface Tx extends SqliteExecutor {
   step(statement: Statement): Promise<StatementResult>;
+  /** What this database's SQL says differently, and its locks (store/dialect.ts). */
+  readonly dialect: Dialect;
+}
+
+/** A transaction's options: `full`, a durable commit (as flush); `read`, one snapshot that only reads; `deadlineMs`, how
+ *  long it may stay open before it is rolled back (StoreDeadline). */
+export interface TransactionOptions {
+  readonly full?: boolean;
+  readonly read?: boolean;
+  readonly deadlineMs?: number;
+}
+
+/** The store's connection as its shared domain code (store.ts here, run-patch.ts, journal/storage.ts) uses it, whichever
+ *  database is under it: this file's Connection on SQLite, postgres/connection.ts on Postgres. Statements take `?`
+ *  parameters; a statement's `expect` (a fence, a final run) rolls its transaction back when it changes no row. */
+export interface StoreConnection {
+  readonly dialect: Dialect;
+  get<T extends object>(sql: string, ...params: SqliteValue[]): Promise<T | undefined>;
+  all<T extends object>(sql: string, ...params: SqliteValue[]): Promise<T[]>;
+  /** One write transaction of fixed statements, in order; `full`: a durable commit. */
+  write(statements: readonly Statement[], options?: { full?: boolean }): Promise<StatementResult[]>;
+  /** A transaction the callback steps through its handle; it commits when the callback resolves, rolls back when it
+   *  rejects. */
+  transaction<T>(callback: (transaction: Tx) => Promise<T>, options?: TransactionOptions): Promise<T>;
+  close(): Promise<void>;
 }
 
 function typed(error: WorkerError): Error {
@@ -50,7 +76,8 @@ function typed(error: WorkerError): Error {
   }
 }
 
-export class Connection implements SqliteDatabase {
+export class Connection implements SqliteDatabase, StoreConnection {
+  readonly dialect: Dialect = SQLITE;
   readonly #worker: Worker;
   #next = 1;
   readonly #waiting = new Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void }>();
@@ -135,6 +162,7 @@ export class Connection implements SqliteDatabase {
       if (!live()) throw new Error("the store's transaction is over: its handle takes no more statements");
     };
     return {
+      dialect: this.dialect,
       step: async (statement) => (check(), (await this.#send({ op: "step", statement })) as StatementResult),
       exec: async (sql) => (check(), void (await this.#send({ op: "exec", sql }))),
       run: async (sql, ...params) => (check(), void (await this.#stmt(sql, params, "run"))),
@@ -172,7 +200,8 @@ export class Connection implements SqliteDatabase {
    *  waits for it, so the callback awaits nothing but its own statements (no model or tool call inside), and a transaction
    *  still open `deadlineMs` after it began is rolled back and rejects with StoreDeadline: a later statement of its callback
    *  is refused, and the calls behind it go on. */
-  transaction<T>(callback: (transaction: Tx) => Promise<T>, { full = false, read = false, deadlineMs = DEFAULT_TRANSACTION_DEADLINE_MS }: { full?: boolean; /** A read: one snapshot in a deferred transaction, taking no writer lock (its statements only read). */ read?: boolean; deadlineMs?: number } = {}): Promise<T> {
+  transaction<T>(callback: (transaction: Tx) => Promise<T>, { full = false, read = false, deadlineMs = DEFAULT_TRANSACTION_DEADLINE_MS }: TransactionOptions = {}): Promise<T> {
+    // `read`: one snapshot in a deferred transaction, taking no writer lock (its statements only read).
     return this.#queued(async () => {
       await this.#send({ op: "begin", full, ...(read ? { read } : {}) });
       let live = true;
