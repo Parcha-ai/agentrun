@@ -1,5 +1,5 @@
 import { workflowGraph } from "@dsl/graph";
-import { ArrowLeft, Bot, Pencil, Workflow } from "lucide-react";
+import { ArrowLeft, Bot, ChevronRight, Pencil, Workflow } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AnalyticsTab, FIRST_RANGE } from "@/components/AgentAnalytics";
 import { LatestRun } from "@/components/LatestRun";
@@ -61,6 +61,8 @@ export function AgentPage({ v2, agentId, defaultModel, modelSource, routePrefix,
   // The agent's stats over the Analytics tab's first range: undefined until read, null when the read failed. A read that
   // landed gives the tab, which opens on this answer, never a second read of it.
   const [stats, setStats] = useState<Stats | null | undefined>(undefined);
+  // On a phone the revision's facts show as one line until it is opened.
+  const [factsOpen, setFactsOpen] = useState(false);
   useEffect(() => {
     let live = true;
     setAgent(null); setError(null); setStats(undefined);
@@ -100,20 +102,30 @@ export function AgentPage({ v2, agentId, defaultModel, modelSource, routePrefix,
   const waiting = tab === "analytics" && analytics === undefined;
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <header className="border-b px-5 py-4 md:px-8">
-        <button type="button" onClick={() => go(agent.archived_at ? "#/agents?archived=true" : "#/agents")} className="caps flex items-center gap-2 text-[11px] text-muted-foreground hover:text-foreground">
-          <ArrowLeft className="size-3.5" aria-hidden /> Agents
-        </button>
-        <div className="mt-3 flex flex-wrap items-center gap-3">
-          <Icon className="size-5 shrink-0 text-muted-foreground" aria-hidden />
-          <h1 className="min-w-0 truncate font-mono text-xl font-semibold">{d.name}</h1>
-          <Chip>{agent.kind}</Chip>
-          {agent.archived_at && <Chip tone="muted">Archived</Chip>}
-          <span className="flex-1" />
-          <Button size="sm" onClick={() => go(agentHash(agent.agent_id, "edit"))}><Pencil aria-hidden /> Edit</Button>
+      <header className="border-b px-5 py-4 max-sm:py-3 md:px-8">
+        {/* On a phone the back button joins the name row (its word read, not shown), and Edit shows its icon alone. */}
+        <div data-phone-row className="flex flex-col gap-3 max-sm:flex-row max-sm:items-center">
+          <button type="button" onClick={() => go(agent.archived_at ? "#/agents?archived=true" : "#/agents")} className="caps flex items-center gap-2 self-start text-[11px] text-muted-foreground hover:text-foreground max-sm:-m-1 max-sm:self-center max-sm:p-1">
+            <ArrowLeft className="size-3.5" aria-hidden /> <span className="max-sm:sr-only">Agents</span>
+          </button>
+          <div className="flex flex-wrap items-center gap-3 max-sm:min-w-0 max-sm:flex-1 max-sm:flex-nowrap max-sm:gap-2">
+            <Icon className="size-5 shrink-0 text-muted-foreground max-sm:hidden" aria-hidden />
+            <h1 className="min-w-0 truncate font-mono text-xl font-semibold max-sm:text-lg">{d.name}</h1>
+            <Chip>{agent.kind}</Chip>
+            {agent.archived_at && <Chip tone="muted">Archived</Chip>}
+            <span className="flex-1" />
+            <Button size="sm" onClick={() => go(agentHash(agent.agent_id, "edit"))} title="Edit" className="max-sm:w-8 max-sm:shrink-0 max-sm:px-0"><Pencil aria-hidden /> <span className="max-sm:sr-only">Edit</span></Button>
+          </div>
         </div>
-        {d.description && <p className="mt-2 max-w-3xl text-[14px] text-muted-foreground">{d.description}</p>}
-        <dl className="mt-3 flex flex-wrap gap-x-6 gap-y-2" aria-label="Current revision">
+        {/* On a phone a long description is cut at two lines until the facts' line is opened, which shows it whole. */}
+        {d.description && <p id="agent-description" className={cn("mt-2 max-w-3xl text-[14px] text-muted-foreground", !factsOpen && "max-sm:line-clamp-2")}>{d.description}</p>}
+        {/* On a phone the facts fold into one line, which opens them; 640 px and up show the list. */}
+        <button type="button" aria-expanded={factsOpen} aria-controls={d.description ? "agent-description agent-facts" : "agent-facts"} onClick={() => setFactsOpen((o) => !o)}
+          className="mt-1.5 flex w-full min-w-0 items-center gap-1.5 text-left font-mono text-[12px] text-muted-foreground sm:hidden">
+          <ChevronRight className={cn("size-3.5 shrink-0 transition-transform", factsOpen && "rotate-90")} aria-hidden />
+          <span className="truncate">{facts.map(([, v]) => v).join(" · ")}</span>
+        </button>
+        <dl id="agent-facts" className={cn("mt-3 flex flex-wrap gap-x-6 gap-y-2", !factsOpen && "max-sm:hidden")} aria-label="Current revision">
           {facts.map(([k, v, title]) => (
             <div key={k} className="flex items-baseline gap-2"><dt className="caps text-[10px] text-muted-foreground">{k}</dt><dd className="font-mono text-[12px]" title={title}>{v}</dd></div>
           ))}
@@ -124,7 +136,7 @@ export function AgentPage({ v2, agentId, defaultModel, modelSource, routePrefix,
       <div className="flex border-b px-5 md:px-8" role="tablist">
         {tabs.map((t) => (
           <button key={t.id} type="button" role="tab" aria-selected={at.id === t.id} onClick={() => go(agentHash(agent.agent_id, t.id))}
-            className={cn("caps -mb-px border-b-2 px-3 py-3 text-[12px]", at.id === t.id ? "border-primary text-primary" : "border-transparent text-muted-foreground hover:text-foreground")}>
+            className={cn("caps -mb-px whitespace-nowrap border-b-2 px-3 py-3 text-[12px] max-sm:px-2.5 max-sm:py-2", at.id === t.id ? "border-primary text-primary" : "border-transparent text-muted-foreground hover:text-foreground")}>
             {t.label}
           </button>
         ))}
