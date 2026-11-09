@@ -347,6 +347,26 @@ test("GitHub not answering the listing's read of an installation's repositories 
   assert.deepEqual(server.github.revoked, scouts.map((token) => token.token), "every scout revoked, the refused ones too");
 });
 
+test("a GitHub rate limit answered 403 (a secondary limit's words, X-RateLimit-Remaining 0, a Retry-After), on the repositories read or on the scout's mint, is 502 github_failed too; a 403 that is no rate limit is a refusal, never \"try again\"", { timeout: 60_000 }, async (t) => {
+  const { server, entry } = await connectedForListing(t);
+  const { failures } = server.github;
+  const limited = [
+    ["repositories", { status: 403, message: "You have exceeded a secondary rate limit. Please wait a few minutes before you try again." }],
+    ["repositories", { status: 403, message: "Forbidden", headers: { "x-ratelimit-remaining": "0" } }],
+    ["mint", { status: 403, message: "API rate limit exceeded for installation ID 777." }],
+    ["mint", { status: 403, message: "Forbidden", headers: { "retry-after": "60" } }],
+  ];
+  for (const [what, failure] of limited) {
+    Object.assign(failures, { repositories: undefined, mint: undefined, [what]: failure });
+    const refused = await server.api("POST", "/settings/mcp-servers/preview", entry);
+    assert.deepEqual([refused.status, refused.body.error?.code, refused.body.error?.retryable], [502, "github_failed", true], `${what} ${JSON.stringify(failure)}: ${JSON.stringify(refused.body)}`);
+  }
+  // A 403 that names no limit (the token cannot read here) is said as it is, not as GitHub being away.
+  Object.assign(failures, { repositories: { status: 403, message: "Resource not accessible by integration" }, mint: undefined });
+  const denied = await server.api("POST", "/settings/mcp-servers/preview", entry);
+  assert.deepEqual([denied.status, denied.body.error?.code], [409, "github_not_connected"], JSON.stringify(denied.body));
+});
+
 test("a github_app server saved at an origin that is no longer GitHub's hosted MCP gets no token: its preview by name is refused, and a run's launch mints none", { timeout: 120_000 }, async (t) => {
   const { server } = await withGitHubMcp(t);
   await server.close();

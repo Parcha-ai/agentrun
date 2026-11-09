@@ -29,7 +29,8 @@ export async function fakeGitHub(t) {
   const installations = new Map([[777, { account: "acme", suspended_at: null }]]);
   const holds = {};
   /** An HTTP status a test makes GitHub answer: `installation` (one installation's read), `installations` (the list),
-   *  `repositories` (an installation token's read of the repositories it covers). */
+   *  `repositories` (an installation token's read of the repositories it covers), `mint` (an installation token's
+   *  mint). `repositories` and `mint` also take {status, message, headers}, as GitHub's rate limits answer a 403. */
   const failures = {};
   const requests = [];
   const tokens = [];
@@ -49,7 +50,9 @@ export async function fakeGitHub(t) {
     req.on("data", (chunk) => (body += chunk)).on("end", async () => {
       requests.push({ method: req.method, url: req.url, headers: req.headers, body });
       fire("asked", req.url);
-      const answer = (status, doc) => res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(doc));
+      const answer = (status, doc, headers = {}) => res.writeHead(status, { "content-type": "application/json", ...headers }).end(JSON.stringify(doc));
+      /** A failure a test set, as its status, its message and its headers. */
+      const failed = (set) => (typeof set === "object" ? [set.status, { message: set.message ?? "Server Error" }, set.headers ?? {}] : [set, { message: set === 429 ? "API rate limit exceeded" : "Server Error" }]);
       const conversion = /^\/app-manifests\/([^/]+)\/conversions$/.exec(req.url);
       if (req.method === "POST" && conversion) {
         const made = byCode.get(conversion[1]);
@@ -108,6 +111,7 @@ export async function fakeGitHub(t) {
         if (!id) return answer(401, { message: "A JSON web token could not be decoded" });
         const on = installations.get(Number(minting[1]));
         if (!on || (on.app_id ?? app.id) !== id) return answer(404, { message: "Not Found" });
+        if (failures.mint) return answer(...failed(failures.mint));
         const asked = JSON.parse(body || "{}");
         if ((asked.repositories ?? []).some((name) => !coveredBy(Number(minting[1])).has(`${on.account}/${name}`))) return answer(422, { message: "There is at least one repository that does not exist or is not accessible to the parent installation." });
         const token = `ghs_test${randomBytes(18).toString("hex")}`;
@@ -119,7 +123,7 @@ export async function fakeGitHub(t) {
       const held = tokens.find((entry) => entry.token === bearer && !revoked.includes(entry.token));
       if (req.method === "GET" && req.url.startsWith("/installation/repositories")) {
         if (!held) return answer(401, { message: "Bad credentials" });
-        if (failures.repositories) return answer(failures.repositories, { message: failures.repositories === 429 ? "API rate limit exceeded" : "Server Error" });
+        if (failures.repositories) return answer(...failed(failures.repositories));
         const full = [...coveredBy(held.installation)].filter((name) => !held.repositories || held.repositories.includes(name.split("/")[1]));
         return answer(200, { total_count: full.length, repositories: full.map((name) => ({ name: name.split("/")[1], full_name: name })) });
       }
