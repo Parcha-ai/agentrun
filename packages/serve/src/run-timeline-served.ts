@@ -10,7 +10,7 @@ import type { TimelineEvent } from "@parcha/pi-durable-agent/timeline";
 import { withDecisions } from "./decision-rows.js";
 import { redacted } from "./key-refusal.js";
 import { runCutValues, runErrorWordsOf } from "./run-cut.js";
-import { answersOf, asksOf, type SignInReader, shownOf, withApprovalRows } from "./run-view.js";
+import { answersOf, asksOf, type SignInReader, shownOf, withApprovalRows, withAsks } from "./run-view.js";
 import { journalRecords } from "./runner/journal-reader.js";
 import { decisionsOverStore } from "./store-reads/decisions.js";
 import { readRun } from "./store-reads/runs.js";
@@ -39,7 +39,9 @@ export async function servedTimelineRows(deps: ServedTimelineDeps, store: Store,
   const ended = run ? FINAL_STATES.includes(run.state) : false;
   const records = await journalRecords(store.readJournal(runId), context);
   const final = run?.state === "stopped" || run?.state === "failed" ? run.state : undefined;
-  const rows = withApprovalRows(await runTimeline(store, runId, context, { redact }), asksOf(records.entries), answersOf(records.entries, { final }), redact);
+  // The waiting row after each answered ask_person call, its question read from the call's row, already cut (withAsks),
+  // ahead of the approval rows, as main's served rows were built.
+  const rows = withApprovalRows(withAsks(await runTimeline(store, runId, context, { redact })), asksOf(records.entries), answersOf(records.entries, { final }), redact);
   // A workflow's decisions: their rows among the model nodes' by time, each text shown through the cut set, with as many
   // characters held back from a text stored cut as a held value takes in its widest form (main's decisionShown).
   const receipts = await decisionsOverStore(store, runId, context).catch(() => null);
