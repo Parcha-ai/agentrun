@@ -3,12 +3,21 @@
  *  object from a line that starts with `{` to the end. Anything else (an array, JSON that does not parse, an object in
  *  the middle of the words): null, and the answer stays Markdown. */
 export function answerRecord(text: string): { words: string; record: Record<string, unknown> } | null {
-  const answer = text.trim();
+  // Windows line endings read as plain ones.
+  const answer = text.replace(/\r\n?/g, "\n").trim();
   const object = (raw: string): Record<string, unknown> | null => {
     try { const v: unknown = JSON.parse(raw); return v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : null; } catch { return null; }
   };
-  const fenced = /```(?:json)?[ \t]*\n([\s\S]*?)\n[ \t]*```$/.exec(answer);
-  if (fenced) { const record = object(fenced[1]); return record ? { words: answer.slice(0, fenced.index).trim(), record } : null; }
+  // The closing fenced block: from the last opening fence (a line that starts with ``` or ```json) to the closing ```,
+  // never across an earlier block.
+  if (/\n[ \t]*```$/.test(answer)) {
+    const close = answer.lastIndexOf("```");
+    const open = [...answer.slice(0, close).matchAll(/(?:^|\n)[ \t]*```(?:json)?[ \t]*\n/g)].at(-1);
+    if (!open) return null;
+    const start = open.index + open[0].length;
+    const record = object(answer.slice(start, close));
+    return record ? { words: answer.slice(0, open.index).trim(), record } : null;
+  }
   const whole = object(answer);
   if (whole) return { words: "", record: whole };
   // A bare object from the start of a line: the last such start whose rest parses.

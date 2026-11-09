@@ -9,7 +9,7 @@ function Value({ value }: { value: unknown }) {
     if (!value.length) return <span data-json-value className="text-muted-foreground">none</span>;
     return (
       <ul data-json="array" className="list-disc space-y-1 pl-5">
-        {value.map((item, i) => <li key={i} className="min-w-0 break-words [overflow-wrap:anywhere]">{item && typeof item === "object" ? <Value value={item} /> : String(item)}</li>)}
+        {value.map((item, i) => <li key={i} className="min-w-0 break-words [overflow-wrap:anywhere]"><Value value={item} /></li>)}
       </ul>
     );
   }
@@ -23,7 +23,7 @@ function Fields({ record }: { record: Record<string, unknown> }) {
     <dl data-json="object" className="min-w-0 space-y-3 border-l pl-4">
       {Object.entries(record).map(([key, value]) => (
         <div key={key} className="min-w-0">
-          <dt className="caps text-[11px] text-muted-foreground">{keyLabel(key)}</dt>
+          <dt className="caps break-words [overflow-wrap:anywhere] text-[11px] text-muted-foreground">{keyLabel(key)}</dt>
           <dd className="mt-1 min-w-0 text-[15px] leading-relaxed">{<Value value={value} />}</dd>
         </div>
       ))}
