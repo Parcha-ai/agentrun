@@ -14,7 +14,7 @@ import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
 import * as faux from "@earendil-works/pi-ai/providers/faux";
 import { createRegistry, Harness, MemoryStorage } from "@earendil-works/pi-durable";
-import { calls as vendorCalls } from "./fixtures/faux-vendor-api.mjs";
+import fakeVendors, { calls as vendorCalls } from "./fixtures/faux-vendor-api.mjs";
 import { storeOn } from "./store-helpers.mjs";
 import { withEnv } from "./support.mjs";
 
@@ -22,6 +22,7 @@ const signIns = await import("../dist/sign-ins-store.js");
 const tools = await import("../dist/tools.js");
 const { FAUX_ENV } = await import("../dist/model.js");
 const { TOOL_PLANE_ENV } = await import("../dist/tool-plane.js");
+const { vendorsOver } = await import("../dist/sign-ins.js");
 const { hostLifecycle } = await import("../dist/runner/adapter-loop.js");
 
 const FAUX_BROWSER = new URL("./fixtures/faux-browser.mjs", import.meta.url).pathname;
@@ -37,7 +38,7 @@ async function runner(t) {
   const s = await storeOn(t);
   const log = join(s.dir, "browser.jsonl");
   writeFileSync(log, "");
-  withEnv(t, { FAUX_BROWSER_LOG: log }, ["FAUX_BROWSER_LOG", "AGENTRUN_TEST_FAUX_VENDOR_DOWN"]);
+  withEnv(t, { FAUX_BROWSER_LOG: log }, ["FAUX_BROWSER_LOG", "AGENTRUN_TEST_FAUX_VENDOR_DOWN", "AGENTRUN_TEST_FAUX_VENDOR_DELETE_DOWN"]);
   vendorCalls.length = 0;
   for (const agent of ["c", "d"]) await s.store.agents.create({ id: `agent-${agent}`, name: agent }, { id: `rev-${agent}`, kind: "agentic", body: { instructions: "Browse.", tools: ["browser"] } });
   const claims = {};
@@ -132,6 +133,25 @@ test("a create another run's save beat goes at the vendor, and the run is handed
   assert.equal(handed?.ref, winner, "the saved one");
   assert.deepEqual(removed, [["browserbase", "ctx-ours"]], "ours went at the vendor");
   assert.equal(await r.saved("c", "browserbase"), winner);
+});
+
+test("a beaten create whose delete the vendor refuses is said in the run's log, naming the vendor and its answer alone, never the pointer or a URL; the run is still handed the saved one", async (t) => {
+  const r = await runner(t);
+  process.env.AGENTRUN_TEST_FAUX_VENDOR_DELETE_DOWN = "1";
+  const winner = `ctx-winner-${randomBytes(6).toString("hex")}`;
+  // Another run's save lands while this run's create is out at Browserbase; its delete then answers 503.
+  const fetchWith = async (url, init = {}) => {
+    if ((init.method ?? "GET") === "POST") await signIns.saveSignIn(r.store, KEY, { agentId: "agent-c", provider: "browserbase", pointer: winner });
+    return fakeVendors(url, init);
+  };
+  const env = keysOf("run-c");
+  const said = [];
+  const handed = await signIns.runSignIn(r.store, KEY, r.claims["run-c"], "browserbase", { vendors: vendorsOver(() => env, async () => fetchWith), log: (line) => void said.push(line) });
+  assert.equal(handed?.ref, winner, "the saved one is handed");
+  const made = vendorCalls.find((call) => call.method === "POST");
+  assert.ok(made && vendorCalls.some((call) => call.method === "DELETE"), "its create was asked to go");
+  assert.deepEqual(said, ["its browser's extra sign-in could not be removed: browserbase answered 503"]);
+  assert.ok(!said.join("").match(/ctx-|https?:|\/v1\//), `no pointer or URL: ${said.join(" | ")}`);
 });
 
 test("the made sign-in's sessions open on its profile with save on, and their release verifies it", { timeout: 120_000 }, async (t) => {
