@@ -32,10 +32,11 @@ const stubRoute = async () => ({ model: "faux-1", provider: { api: "anthropic-me
  *   uploads  [{ path, text, contentType? }] reserved and received as ready files, their ids put on launch.files
  *   env      the runner process's environment the claim's tools are handed (claim-secrets.ts scopes it); {} by default
  *   keys     server keys saved sealed in the one store (store.sealedKeys), as the settings API saves them
+ *   before   called with the server's store once the run is made, before the runner claims it (a test arranges the run there)
  */
 export async function specFor(t, options = {}) {
-  strictOptions("specFor", options, ["body", "launch", "settings", "routeOf", "uploads", "env", "keys"]);
-  const { body = {}, launch = {}, settings, routeOf = stubRoute, uploads = [], env = {}, keys = {} } = options;
+  strictOptions("specFor", options, ["body", "launch", "settings", "routeOf", "uploads", "env", "keys", "before"]);
+  const { body = {}, launch = {}, settings, routeOf = stubRoute, uploads = [], env = {}, keys = {}, before } = options;
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-spec-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -50,6 +51,7 @@ export async function specFor(t, options = {}) {
   await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" });
   if (settings !== undefined) await server.settings.put("tool-settings", settings);
   for (const [name, value] of Object.entries(keys)) await putSealedKey(server, SEAL_KEY, name, value);
+  if (before) await before(server, SEAL_KEY);
   await server.flush?.();
   // Ready uploads the run names: reserved and received into the data directory's files/, their ids onto launch.files.
   const fileIds = [];

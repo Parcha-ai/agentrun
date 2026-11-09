@@ -387,9 +387,11 @@ export function startRunner(options: RunnerOptions): Runner {
       // on as any end does, made durable (a flush) before the runner says released. Any other lost claim writes nothing.
       const endedItself = !threw && (end.state === "ended" || end.state === "stopped" || end.state === "failed");
       if (held.fence.lost && !endedItself) return;
-      // A parked run brought back (a raise, an approval) whose loop could not start stays parked: its waking row keeps
-      // one more try, and the run is claimable again after a backoff; after the last try that row is refused with why.
-      // Never failed: a person can raise again or stop it (#1944-5, the lead's keep list).
+      // A parked run brought back (a raise, an approval) whose loop threw before it could start stays parked: its waking
+      // row keeps one more try, and the run is claimable again after a backoff; after the last try that row is refused
+      // with why, and a person can raise again or stop it (#1944-5). A claim its spec refuses (ClaimRefused: a handed
+      // sign-in that won't read back, an MCP pin refused) never comes here: the loop writes that end itself, final, the run
+      // failed in the refusal's words.
       if (threw && end.state === "failed" && claim.from === "parked") return await resumeFailed(held, end.error.message);
       if (threw && end.state === "failed") {
         // A loop that failed with no end written: a person's stop waiting now is the run's end (stopped, its row taken),

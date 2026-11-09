@@ -40,13 +40,14 @@ import { openRunWorkspace } from "../workspace/run-workspace.js";
 import { COMPUTER_ROOT, runFolder } from "../workspace/paths.js";
 import { runTools, type ToolResults } from "../workspace/run-tools.js";
 import { INPUTS_DIR, UPLOADS_DIR, Uploads } from "../uploads.js";
-import { signInReads } from "../sign-ins-store.js";
+import { handedSignInReadsBack, signInReads } from "../sign-ins-store.js";
+import { UNREADABLE_SIGN_IN } from "../runs.js";
 import { claimSecrets } from "./claim-secrets.js";
 import { join } from "node:path";
 import { type AdapterRun, type AdapterRunSpec, hostLifecycle, type RunCapConfig } from "./adapter-loop.js";
 import { piAdapter } from "./adapters/pi.js";
 import { entriesOf } from "./loop.js";
-import type { Claim, Journal } from "./loop-contract.js";
+import { type Claim, ClaimRefused, type Journal } from "./loop-contract.js";
 import { runMetrics } from "./metrics.js";
 import type { ModelRoute, RouteCost } from "./model-route.js";
 import { archilClaim, type ArchilClaimOptions, MOUNT_TTL_MS } from "../workspace/archil-claim.js";
@@ -209,6 +210,9 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
   const log = (line: string) => (deps.log ?? (() => {}))(cut(line));
   const runRow = await deps.store.runs.get(claim.runId);
   if (!runRow) throw new Error(`run ${claim.runId}: its row is gone from the store`);
+  // A run handed a browser sign-in this runner can't read back (its seal does not open here, or nothing of it is kept):
+  // what it said could repeat a pointer nothing can cut, so it ends failed at its claim, in main's words (runs.ts).
+  if (!(await handedSignInReadsBack(deps.store, deps.sealKey, runRow))) throw new ClaimRefused(UNREADABLE_SIGN_IN);
   const revisionRow = await deps.store.agents.revision(runRow.revisionId);
   if (!revisionRow) throw new Error(`run ${claim.runId}: its revision ${runRow.revisionId} is gone from the store`);
   const body = (revisionRow.body ?? {}) as RevisionBody;
