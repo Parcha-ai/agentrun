@@ -64,8 +64,9 @@ export const capOf = (own: number | undefined, agentDefault: number | undefined)
 
 /** Where a one-time schedule stands once its time has passed (`now`) and the server gives it no next time: `ran`, the
  *  firing of its own time that started a run (from its last firing, or `history` after a Run now replaced it), or
- *  `passed`, its time, when no such firing is known (it waits, missed, failed, or the list read lacks it). Either way
- *  there's nothing to resume. Null for a one time still to come (an edit gave it a new time), and for any other schedule:
+ *  `passed`, its time, when no such firing is known (it waits, missed, failed, or the list read lacks it). Only `ran`
+ *  (the server's word) hides Resume: `passed` is read on the browser's clock, which may run ahead. Null for a one time
+ *  still to come (an edit gave it a new time), and for any other schedule:
  *  never read from `enabled` alone, since a paused recurring schedule is off too. */
 export type OnceState = { ran: Firing } | { passed: string } | null;
 export function onceState(t: Trigger, now: number, history: readonly Firing[] = []): OnceState {
