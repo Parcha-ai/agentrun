@@ -138,6 +138,14 @@ export { SignInHandedTo, SignInMissing };
 // run (running, not final) was handed its pointer's hash (store.signIns.handedHolder), and verified_at is the time a run
 // last verified it (store column, written by E2's run path through store.signIns.verify).
 
+/** Browserbase writes a saved context back after its session ends (pi-browser waits for it), so the saver's save lease must
+ *  outlast its run leaving 'running' by this long, or the next run saves over a write-back in flight. Main's constant and
+ *  value (sign-ins.ts); the serve layer's policy, passed to the store as signInSettleMs. Kernel and others keep none. */
+export const BROWSERBASE_SETTLE_MS = 10_000;
+
+/** The settle window a provider's save lease outlives its run leaving 'running' by: Browserbase's, and none for the rest. */
+const settleFor = (provider: string): number => (provider === "browserbase" ? BROWSERBASE_SETTLE_MS : 0);
+
 /** A browser the server keeps a sign-in for; a local Chrome keeps none. Ported from sign-ins.ts, kept here so this module
  *  does not depend on the file store the switch deletes. */
 export type Vendor = "browserbase" | "kernel";
@@ -155,13 +163,14 @@ export function vendorOf(resolution: string): Vendor | undefined {
 const isoOf = (ms: number | null): string | null => (ms === null ? null : new Date(ms).toISOString());
 
 /** The agent's sign-ins as the v2 API shows them (the old SignIns.view), never a pointer. Per sign-in: `held`/`held_by`
- *  when a live run holds its pointer's hash (store.signIns.handedHolder); `unreadable` when its pointer does not open under
- *  this server's seal key (then held_by is null — no hash to match a run by); `verified_at` from the store. */
+ *  when a live run holds its pointer's hash (store.signIns.handedHolder), a Browserbase one for its settle window past the
+ *  run's end too (settleFor, so the view matches the save lease); `unreadable` when its pointer does not open under this
+ *  server's seal key (then held_by is null — no hash to match a run by); `verified_at` from the store. */
 export async function signInViews(store: SignInsStore, sealKey: Buffer | undefined, agentId: string): Promise<SignInView[]> {
   const rows = await store.signIns.list(agentId);
   return Promise.all(rows.map(async (row): Promise<SignInView> => {
     const pointer = open(sealKey, agentId, row.provider, row.pointerSealed);
-    const heldBy = pointer === undefined ? null : (await store.signIns.handedHolder(pointerHash(pointer))) ?? null;
+    const heldBy = pointer === undefined ? null : (await store.signIns.handedHolder(pointerHash(pointer), { settleMs: settleFor(row.provider) })) ?? null;
     const base = { key: row.name, provider: row.provider as Vendor, held_by: heldBy, verified_at: isoOf(row.verifiedAt) };
     if (pointer === undefined) return { ...base, state: "unreadable" };
     return { ...base, state: heldBy ? "held" : "ready" };

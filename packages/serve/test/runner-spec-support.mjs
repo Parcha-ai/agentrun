@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { createRegistry, Harness } from "@earendil-works/pi-durable";
+import { strictOptions } from "./strict-options.mjs";
 
 const { openSqliteStore } = await import("../dist/store/sqlite/store.js");
 const { adapterRunSpecFromLaunch } = await import("../dist/runner/adapter-run-spec.js");
@@ -30,7 +31,9 @@ const stubRoute = async () => ({ model: "faux-1", provider: { api: "anthropic-me
  *   uploads  [{ path, text, contentType? }] reserved and received as ready files, their ids put on launch.files
  *   env      the runner process's environment the claim's tools are handed (claim-secrets.ts scopes it); {} by default
  */
-export async function specFor(t, { body = {}, launch = {}, settings, routeOf = stubRoute, uploads = [], env = {} } = {}) {
+export async function specFor(t, options = {}) {
+  strictOptions("specFor", options, ["body", "launch", "settings", "routeOf", "uploads", "env"]);
+  const { body = {}, launch = {}, settings, routeOf = stubRoute, uploads = [], env = {} } = options;
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-spec-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });

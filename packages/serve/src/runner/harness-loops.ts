@@ -9,7 +9,7 @@
 //   - anything else fails the run in words (the dispatch's UnknownHarness).
 import type { RunLaunch } from "../run-launch.js";
 import { resolveHarness } from "./adapters/index.js";
-import { adapterRunSpecFromLaunch, type AdapterSpecDeps, type ComputerForClaim } from "./adapter-run-spec.js";
+import { adapterRunSpecFromLaunch, type AdapterSpecDeps, PI_WIRES } from "./adapter-run-spec.js";
 import { createAdapterLoop } from "./adapter-loop.js";
 import { createDispatchLoop } from "./dispatch.js";
 import { cliRunSpecFromLaunch } from "./cli-run-spec.js";
@@ -37,7 +37,9 @@ export function resolveRunnerLoop(deps: AdapterSpecDeps): (harness: string, laun
       return learningLoopOf({
         store: deps.store,
         data: deps.data,
-        routeOf: (grade) => deps.routeOf(grade.model, deps.env),
+        // The grader speaks the route's wire, as pi does (learning-ask.ts: pi.ts policyFor and port-models.ts
+        // sessionProvider), so its route is asked on pi's wires; a model on neither keeps the route's Messages translation.
+        routeOf: (grade) => deps.routeOf(grade.model, deps.env, "default", PI_WIRES),
         ...(deps.log ? { log: deps.log } : {}),
       });
     }
@@ -46,6 +48,10 @@ export function resolveRunnerLoop(deps: AdapterSpecDeps): (harness: string, laun
     // runs the pi spec (adapterRunSpecFromLaunch). A harness with no entry is unknown here: the dispatch fails it in words.
     const runner = resolveHarness(harness);
     if (runner) {
+      // A run that learns supplies its own end-of-run step (reflect + proposal over its store) from its spec builder now,
+      // where the run's Archil claim is: a Mode 2 run's learning folder is on its claim's disk, not this machine's local
+      // path (adapter-run-spec.ts / cli-run-spec.ts endOfRun). The loop prefers the spec's step over its deps' (stepOf); a
+      // run that does not learn supplies none. The same for the pi and the CLI spec.
       return createAdapterLoop((claim, adapterRun) =>
         runner.record === "loop"
           ? cliRunSpecFromLaunch(launch, adapterRun, deps, claim)
@@ -54,17 +60,6 @@ export function resolveRunnerLoop(deps: AdapterSpecDeps): (harness: string, laun
     return undefined;
   };
 }
-
-/** STOPGAP computerForClaim (named in the commit): the run's computer at its claim as this runner process has it today —
- *  a run in the runner's own place needs none; a run whose place is a box is refused in plain words, nothing made, until
- *  the shared claim-time computer (tl-places' composer computerDepsFrom / computer-for-claim.ts) is wired in here. The
- *  server start (cli.ts) and the in-process test runner pass this so every spec builder has a computerForClaim; it is
- *  replaced by the real supplier when that lands. */
-export const runnerPlaceComputer: ComputerForClaim = async (launch) => {
-  const mode = typeof launch.place === "object" && launch.place !== null ? (launch.place as { mode?: unknown }).mode : undefined;
-  if (mode === undefined || mode === "runner") return { release: async () => {} };
-  throw new Error(`computer_unavailable: this runner process runs only runs in the runner's place, and run ${launch.runId}'s place is ${JSON.stringify(mode)}: start a runner that has its computers, or give the agent the runner's place.`);
-};
 
 /** The loop factory the runner holds for every run (its createLoop), built from the runner's deps over the one store: the
  *  dispatch (dispatch.ts) reads each run's launch and asks the switch (resolveRunnerLoop) for its harness loop. The server

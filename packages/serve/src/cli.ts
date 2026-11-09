@@ -19,16 +19,16 @@ import { banner, boxImageLine } from "./print.js";
 import type { LearningMode } from "./learning.js";
 import { DEFAULT_PORT, type Serve, startServe } from "./server.js";
 import { SEAL_KEY_ENV, sealKeyOf } from "./tool-keys.js";
-import { withoutFaux } from "./model.js";
 
 /** A runner beside the server on the same data directory (the CLI start's server-and-runner, and the `runner` subcommand):
  *  its own store handle (role runner), and the runner's dispatch (dispatch.ts) for each claimed run — pi on the kernel's
  *  adapter loop, a learning run on the learning loop. Returns the runner and a close() that stops it and closes its store. */
 async function runnerBeside(dataDir: string, loops?: number): Promise<{ runner: Awaited<ReturnType<typeof import("./runner/runner.js")["startRunner"]>>; close: () => Promise<void> }> {
   const { startRunner } = await import("./runner/runner.js");
-  const { dispatchRunner, runnerPlaceComputer } = await import("./runner/harness-loops.js");
+  const { dispatchRunner } = await import("./runner/harness-loops.js");
   const { routeOf } = await import("./runner/model-route.js");
-  const { RunnerRefused } = await import("./runner/main.js");
+  const { RunnerRefused, runEnv } = await import("./runner/main.js");
+  const { computerDepsFrom } = await import("./workspace/index.js");
   const { openSqliteStore, SchemaVersionUnknown } = await import("./store/index.js");
   let store: Awaited<ReturnType<typeof openSqliteStore>>;
   try {
@@ -47,9 +47,12 @@ async function runnerBeside(dataDir: string, loops?: number): Promise<{ runner: 
   // A server with no seal key never serves a live view, so a stand-in satisfies the spec's live-viewer seam; a server with
   // one seals its live-viewer tokens with it.
   const sealKey = sealKeyOf(process.env[SEAL_KEY_ENV]) ?? Buffer.alloc(32);
-  // STOPGAP (named in the commit): computerForClaim refuses any box-place claim in words and computerDeps is the empty
-  // none-form, until tl-places' composer (computerDepsFrom) lands through the base — then this is one line each.
-  const createLoop = dispatchRunner({ env: withoutFaux(process.env), data: dataDir, journal: (claim) => store.journal(claim), store, sealKey, routeOf, computerForClaim: runnerPlaceComputer, computerDeps: {} });
+  // The beside-runner sees the server's environment as a separate runner would (runEnv, not withoutFaux): so an API run on
+  // a --faux server reaches the faux gateway and its computers. The run's claim-time computer is composed once, the one way
+  // (workspace/computer-deps.ts computerDepsFrom), from that same environment.
+  const runs = runEnv(process.env);
+  const computers = computerDepsFrom({ env: runs, store, sealKey });
+  const createLoop = dispatchRunner({ env: runs, data: dataDir, journal: (claim) => store.journal(claim), store, sealKey, routeOf, computerForClaim: computers.computerForClaim, computerDeps: computers.computerDeps });
   const runner = startRunner({ store, createLoop, ...(loops !== undefined ? { loops } : {}) });
   return { runner, close: async () => { await runner.close(); await store.close(); } };
 }
@@ -59,7 +62,8 @@ const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--
        agentrun-serve validate-template DIR
        agentrun-serve eval-template DIR [--case NAME ...] [--runs N] [--server URL] [--grader-model PROVIDER/MODEL] [--report FILE] [--faux MODULE]
        agentrun-serve import [--data DIR] [--from claude-code,codex,pi] [--dry-run] [--include-deleted] [--all] [--verbose] [--port N]
-       agentrun-serve runner --data DIR [--loops N]
+       agentrun-serve runner --data DIR [--loops N] [--name NAME]
+       agentrun-serve runner --check --data DIR [--name NAME]
 
   --data DIR        the agent store and its runs (default ~/.local/share/agentrun/agents); the token is DIR/.token, mode 0600
   --listen ADDR     the address to listen on (default 127.0.0.1); on any other, every Host name is served and the token
@@ -216,33 +220,17 @@ if (process.argv[2] === "eval-template") {
   }
 }
 
+// The runner process (runner/main.ts): beside the server, its own store connection in --data, claiming runs until SIGTERM
+// or SIGINT. Its exit: 2 bad arguments, 3 a store schema it does not know, 1 anything else, 0 closed. `--check` reads its
+// heartbeat (0 fresh, 1 not).
+if (process.argv[2] === "runner") {
+  const { runnerMain } = await import("./runner/main.js");
+  process.exit(await runnerMain(process.argv.slice(3)));
+}
+
 if (process.argv[2] === "import") {
   const { importCommand } = await import("./import.js");
   process.exit(await importCommand(process.argv.slice(3), USAGE));
-}
-
-// A runner process of its own: `agentrun-serve runner --data D [--loops N]`. It opens the store in the data directory as a
-// runner (sharing it with the server, setting nothing up) and claims and runs every run until SIGTERM/SIGINT. The loop it
-// runs for each run comes from the runner's dispatch (per harness).
-if (process.argv[2] === "runner") {
-  const { runnerArgs, runUntilSignalled, RunnerRefused } = await import("./runner/main.js");
-  let args: { dataDir: string; loops?: number };
-  try {
-    args = runnerArgs(process.argv.slice(3));
-  } catch (error) {
-    console.error(`${(error as Error).message}\n\n${USAGE}`);
-    process.exit(2);
-  }
-  let runner;
-  try {
-    runner = await runnerBeside(args.dataDir, args.loops);
-  } catch (error) {
-    console.error(`agentrun-serve runner: ${error instanceof RunnerRefused ? error.message : (error as Error).message}`);
-    process.exit(1);
-  }
-  console.log(`runner on ${args.dataDir}${args.loops !== undefined ? ` (up to ${args.loops} runs at once)` : ""}`);
-  await runUntilSignalled(runner);
-  process.exit(0);
 }
 
 let values;

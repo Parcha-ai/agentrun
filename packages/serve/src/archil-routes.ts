@@ -11,25 +11,21 @@
 // archilRoute holds the routes' rules, so serve's dispatch only calls it and sends the answer, or the ApiError's status.
 import { ARCHIL_API_KEY_ROW, type ArchilSettings, clearArchilSettings, loadArchilSettings, saveArchilSettings } from "./archil-settings.js";
 import { ApiError, type InputIssue, invalid } from "./errors.js";
-import { type KeyEnv, type KeyMeta, keyMetaOf, secretName } from "./key-meta.js";
+import { envValue, type KeyEnv, type KeyMeta, keyMetaOf } from "./key-meta.js";
 import { putSealedKey, removeSealedKey } from "./server-keys.js";
 import type { Store } from "./store/index.js";
 import { unknownFields } from "./validate.js";
-import { ArchilClaimRefused } from "./workspace/archil-claim.js";
-import { ARCHIL_API_KEY_ENV, archilApiKey } from "./workspace/archil-key.js";
+import { ArchilClaimRefused, archilClaim } from "./workspace/archil-claim.js";
 import { type ArchilDisk, type ArchilDiskOptions, archilDisk, pinnedImage } from "./workspace/archil-disk.js";
 
 /** The routes, by their operation names. */
 export const ARCHIL_ROUTES: ReadonlySet<string> = new Set(["getWorkspaceArchil", "putWorkspaceArchil", "deleteWorkspaceArchil", "testWorkspaceArchil"]);
 
 /** The key the owner gives, by the name the API takes, and the sealed-key row it is kept in. */
-const KEYS: readonly { readonly name: string; readonly row: string }[] = [{ name: ARCHIL_API_KEY_ENV, row: ARCHIL_API_KEY_ROW }];
+const KEYS: readonly { readonly name: string; readonly row: string }[] = [{ name: "ARCHIL_API_KEY", row: ARCHIL_API_KEY_ROW }];
 
-/** The account key as its one SecretMeta: named "workspace:archil", set by ARCHIL_API_KEY or its sealed row. */
-const SECRET = { secret: secretName("workspace", "archil"), env: ARCHIL_API_KEY_ENV, row: ARCHIL_API_KEY_ROW };
-
-/** The Archil settings as the owner reads them: the account key as `secret`, its SecretMeta, never a value. */
-export type ArchilView = { on: boolean; diskId?: string; region?: string; s3Url?: string; image?: string; secret: KeyMeta };
+/** The Archil settings as the owner reads them: the key in the shared secret shape (key-meta.ts), never a value. */
+export type ArchilView = { on: boolean; diskId?: string; region?: string; s3Url?: string; image?: string; keys: KeyMeta[] };
 export type ArchilTest = { ok: true; detail: string } | { ok: false; why: string };
 
 export interface ArchilRoutesOptions {
@@ -56,7 +52,7 @@ export function createArchilRoutes(options: ArchilRoutesOptions) {
 
   async function view(): Promise<ArchilView> {
     const settings = await loadArchilSettings(store);
-    return { on: settings !== undefined, ...(settings ?? {}), secret: (await keyMetaOf(store, [SECRET], env))[0]! };
+    return { on: settings !== undefined, ...(settings ?? {}), keys: await keyMetaOf(store, KEYS, env) };
   }
 
   /** The settings row replaced and the keys given sealed, once every field is right; nothing is saved when one is not. */
@@ -99,27 +95,30 @@ export function createArchilRoutes(options: ArchilRoutesOptions) {
     return view();
   }
 
-  /** One listing of the disk's root, with the account key by the one resolver (archil-key.ts: the environment's, else
-   *  the sealed row) and the disk made as the claim makes it; no exec image, as nothing runs. The key is dropped after. */
+  /** One listing of the disk's root, with its key opened as a claim opens it; the exec image is left out, as nothing runs. */
   async function test(signal?: AbortSignal): Promise<ArchilTest> {
     const settings = await loadArchilSettings(store);
     if (settings === undefined) return { ok: false, why: OFF };
-    let key: string | undefined;
     let disk: ArchilDisk;
+    let secrets: ReadonlySet<string> = new Set();
+    const done = new AbortController();
+    const fromEnv = envValue(env, KEYS[0]!.name);
     try {
-      key = (await archilApiKey({ env, keys: store.sealedKeys, sealKey })).value;
-      const held = key;
-      disk = (options.makeDisk ?? archilDisk)({ disk: settings.diskId, region: settings.region, s3BaseUrl: settings.s3Url, key: () => {
-        if (key === undefined) throw new Error("the test's Archil key was released once the test was done");
-        return held;
-      } });
+      if (fromEnv !== undefined) {
+        // The environment's key wins over a saved one: the disk made with it, as the claim makes it.
+        secrets = new Set([fromEnv]);
+        disk = (options.makeDisk ?? archilDisk)({ disk: settings.diskId, region: settings.region, s3BaseUrl: settings.s3Url, key: () => fromEnv });
+      } else {
+        const claim = await archilClaim({ settings: { diskId: settings.diskId, region: settings.region, s3Url: settings.s3Url }, keys: store.sealedKeys, sealKey, signal: done.signal, ...(options.makeDisk ? { makeDisk: options.makeDisk } : {}) });
+        disk = claim.disk;
+        secrets = new Set(claim.secrets);
+      }
     } catch (error) {
       if (error instanceof ArchilClaimRefused) return { ok: false, why: error.message };
-      const words = key ? describe(error).split(key).join("[the key]") : describe(error);
-      return { ok: false, why: `This server's Archil settings can't make its disk: ${words}` };
+      if (fromEnv !== undefined) return { ok: false, why: `This server's Archil settings can't make its disk: ${[...secrets].reduce((out, value) => out.split(value).join("[the key]"), describe(error))}` };
+      throw error;
     }
-    const secret = key;
-    const scrub = (text: string): string => text.split(secret).join("[the key]");
+    const scrub = (text: string): string => [...secrets].reduce((out, value) => (value ? out.split(value).join("[the key]") : out), text);
     try {
       if (signal?.aborted) return { ok: false, why: "The test of Archil was cancelled." };
       await disk.listPage("", { recursive: false });
@@ -130,7 +129,7 @@ export function createArchilRoutes(options: ArchilRoutesOptions) {
       if (status === 404) return { ok: false, why: `Archil has no disk ${settings.diskId} in ${settings.region}: check the disk and region, then test again.` };
       return { ok: false, why: `Archil could not be reached: check the S3 URL and the network, then test again. (${scrub(describe(error))})` };
     } finally {
-      key = undefined;
+      done.abort();
     }
   }
 

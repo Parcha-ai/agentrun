@@ -101,7 +101,7 @@ export function npmExecOf(env, from = process.ppid) {
 }
 
 export const USAGE = `Usage: npx @parcha/agentrun [--port N] [--data DIR] [--no-open]   start the server
-       npx @parcha/agentrun import|reset-password [--data DIR]   a server command
+       npx @parcha/agentrun import|reset-password|runner [--data DIR]   a server command (runner: one more runner on this store)
        npx @parcha/agentrun <command> [args]   the server's API: agents, runs, triggers, ..., api (npx @parcha/agentrun help)`;
 
 /** The server's launcher, installed with this package (its dependency), or undefined. */

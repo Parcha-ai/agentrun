@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { facts } from "@parcha/agentrun-harness-claude/facts";
 import { fakeSdk } from "@parcha/agentrun-harness-claude/testing";
+import { strictOptions } from "./strict-options.mjs";
 
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { resolveHarness } = await import("../dist/runner/adapters/index.js");
@@ -77,7 +78,9 @@ function standInScript(script) {
 }
 
 /** The adapter loop for the suite's setup: claude-agent as the runner's harnesses give it, on the stand-in CLI. */
-export function claudeAgentSpec({ script, tools, hooks, agentId }) {
+export function claudeAgentSpec(setup) {
+  strictOptions("claudeAgentSpec's setup", setup, ["script", "tools", "hooks", "agentId"]);
+  const { script, tools, hooks, agentId } = setup;
   const harness = resolveHarness("claude-agent");
   return async (_claim, run) => ({
     ...(agentId ? { agentId } : {}),

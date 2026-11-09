@@ -4,20 +4,21 @@
 //
 // pi's model requests go through the session's model proxy (the kernel's startModelProxy), as the CLI harnesses' do:
 // pi-ai's provider points at the proxy, so every paid request is admitted and booked by the runner's booking (io.models),
-// the one ledger; pi's own createCap is not used. The host's tools run through HostTool.call, where the kernel's rule
+// the one ledger; pi's own createCap is not used. The proxy speaks the provider's wire (provider.api, main's set: Anthropic's
+// Messages or OpenAI's Responses), under that wire's CLI policy, and pi-ai's client speaks the same. The host's tools run through HostTool.call, where the kernel's rule
 // before a side effect sits (runner/adapter-loop.ts); the gate is asked before pi stores a call's intent (pi's beforeTool
 // hook), through io.gate.
 import type { Context, JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import type { Models } from "@earendil-works/pi-ai";
-import { createModels, createProvider } from "@earendil-works/pi-ai/models";
-import { anthropicMessagesApi } from "@earendil-works/pi-ai/api/anthropic-messages.lazy";
+import { createModels } from "@earendil-works/pi-ai/models";
 import { type Conversation, defineExtension, defineTool, GenerationTask, type Harness, hook, type Registry, type Submission, ToolTask } from "@earendil-works/pi-durable";
 import { anthropicPolicy } from "@parcha/agentrun-harness-claude";
-import type { AdapterSession, AgentAdapter, HostTool, SessionIO, SessionSpec, TurnStatus } from "@parcha/agentrun-kernel";
-import { type ModelProxy, startModelProxy } from "@parcha/agentrun-kernel/host";
+import type { AdapterSession, AgentAdapter, HostTool, SessionIO, SessionSpec, TurnStatus, Wire } from "@parcha/agentrun-kernel";
+import { type ModelProxy, type ProviderPolicy, startModelProxy } from "@parcha/agentrun-kernel/host";
 import { randomBytes } from "node:crypto";
 import { DEFAULT_HARNESS } from "../../harness.js";
+import { sessionProvider } from "../../port-models.js";
 import { KINDS } from "../journal-kinds.js";
 
 /** What the adapter loop lends pi for one claim: the run's Harness, its registry, and where pi's models go. */
@@ -48,10 +49,15 @@ export type PiSessionIO = SessionIO & {
 
 export interface PiAdapterOptions {
   readonly run: PiRun;
-  /** The provider the session's proxy forwards to: Anthropic's Messages API at `origin`. */
-  readonly provider: { readonly api: "anthropic-messages"; readonly origin: string; readonly credential: () => string | Promise<string>; readonly headers?: Readonly<Record<string, string>> };
+  /** The provider the session's proxy forwards to: the API it speaks (a wire main's pi speaks, provider.ts: Anthropic's
+   *  Messages or OpenAI's Responses) at `origin`, its credential, sent as `auth` says (Messages' default x-api-key;
+   *  Responses' is always a bearer token). `api` is the one source of the session's wire: its policy, pi-ai's client and
+   *  its port all read it. */
+  readonly provider: { readonly api: Wire; readonly origin: string; readonly credential: () => string | Promise<string>; readonly headers?: Readonly<Record<string, string>>; readonly auth?: "bearer" | "x-api-key" };
   /** The model pi asks for. */
   readonly model: string;
+  /** The catalog's entry for the model: whether it reasons, its window and its output ceiling, as pi-ai's model of it. */
+  readonly like?: { readonly reasoning?: boolean; readonly contextWindow?: number; readonly maxTokens?: number };
   /** The price of a request's usage, for the proxy's booking. */
   readonly price?: (model: string, usage: never) => number | null;
   /** The proxy's upstream fetch (a test's scripted origin). */
@@ -78,7 +84,7 @@ async function openPi(options: PiAdapterOptions, spec: SessionSpec, io: PiSessio
   // The session's route: pi-ai's requests reach the provider only through this proxy, which admits and books each one
   // through the runner's booking (io.models).
   const proxy = await startModelProxy({
-    policy: anthropicPolicy({ model, tools: [] }),
+    policy: await policyFor(options.provider, model, spec.tools.map((tool) => tool.name)),
     hooks: io.models,
     model,
     origin: options.provider.origin,
@@ -97,23 +103,40 @@ async function openPi(options: PiAdapterOptions, spec: SessionSpec, io: PiSessio
   }
 }
 
+/** The session proxy's policy on Messages: claude-agent's (no fork), with pi's tools, the host's own names (`tools`), as
+ *  the names its client offers by themselves (its builtins). The CLI's own `mcp__hands__` prefix is not pi's: under it
+ *  every one of pi's tool definitions would be dropped and the model offered none. Every other tool definition is
+ *  dropped, and a request that offers the session's tools is the turn's answer request. `auth`: how the provider takes
+ *  its credential (default x-api-key). */
+export function piPolicy(model: string, tools: readonly string[], auth?: "bearer" | "x-api-key"): ProviderPolicy {
+  return anthropicPolicy({ model, tools: [], builtins: tools, ...(auth ? { auth } : {}) });
+}
+
+/** The policy of the session's wire, the one each CLI harness of that wire applies (no fork of either): Anthropic's
+ *  Messages as claude-agent's (piPolicy), OpenAI's Responses as codex's, which takes pi's tools as the session's own by
+ *  name. Either way every other tool definition is dropped and the request that offers them is the turn's answer
+ *  request. */
+export async function policyFor(provider: PiAdapterOptions["provider"], model: string, tools: readonly string[]): Promise<ProviderPolicy> {
+  if (provider.api === "anthropic-messages") return piPolicy(model, tools, provider.auth);
+  // Loaded when a session of its wire opens, as the runner loads the codex harness.
+  const { codexPolicy } = (await import("@parcha/agentrun-harness-codex")) as { codexPolicy(options: { model: string; tools: readonly string[] }): ProviderPolicy };
+  return codexPolicy({ model, tools });
+}
+
 /** The session on its proxy: pi's models through it, the host's tools and the gate as pi's extension, the root's state. */
 async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: SessionSpec, io: PiSessionIO, context: Context): Promise<AdapterSession> {
-  const { run, model } = options;
+  const { run, model, like } = options;
+  const { api } = options.provider;
   const models = createModels();
-  models.setProvider(createProvider({
-    id: PROVIDER,
-    baseUrl: proxy.url,
-    auth: { apiKey: { name: "AGENTRUN_SESSION_KEY", resolve: async () => ({ auth: { apiKey: proxy.key }, source: "session" }) } },
-    // The proxy knows the session by `authorization: Bearer <key>` (the Anthropic policy's keyOf); pi-ai's own x-api-key
-    // stays here, since the proxy forwards only its routes' listed headers.
-    // Image input: a host tool's images (a screenshot) reach the model in its tool result.
-    models: [{ id: model, name: model, api: "anthropic-messages", provider: PROVIDER, baseUrl: proxy.url, headers: { authorization: `Bearer ${proxy.key}` }, reasoning: false, input: ["text", "image"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 200_000, maxTokens: 32_000 }],
-    api: anthropicMessagesApi(),
-  } as never));
+  // pi-ai's client of the session's wire at its proxy (port-models.ts sessionProvider). pi prices nothing itself (the
+  // proxy's booking does), so the model's cost stays $0. Image input on either wire (sessionModel): a host tool's images
+  // (a screenshot) reach the model in its tool result.
+  models.setProvider(sessionProvider(api, proxy, model, { provider: PROVIDER, keyName: "AGENTRUN_SESSION_KEY", ...(like ? { like } : {}), reasoning: false }));
   run.setModels(models);
 
   const tools = spec.tools.map((tool) => piTool(tool, io));
+  // A refused call's words (the gate's deny, main's), by call: its result is those words alone, as main gives them.
+  const refusals = new Map<string, string>();
   const extension = defineExtension({
     name: `agentrun-session-${spec.key}`,
     tools,
@@ -123,13 +146,25 @@ async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: Ses
           if (!io.gate) return undefined;
           const answer = await io.gate({ callId: call.id, tool: call.name, args: (call.arguments ?? {}) as Record<string, unknown> }, hookContext);
           if (answer === "allow") return undefined;
-          if ("deny" in answer) return { block: answer.deny };
+          if ("deny" in answer) {
+            refusals.set(call.id, answer.deny);
+            return { block: answer.deny };
+          }
           // Parked: held until pi closes the Session, so the call never reaches its intent in this process.
           return new Promise<never>((_, reject) => {
             const signal = hookContext.abortSignal;
             if (signal?.aborted) return reject(new Error("parked"));
             signal?.addEventListener("abort", () => reject(new Error("parked")), { once: true });
           });
+        },
+        // A call the gate refused: its result is main's words alone, an error, never pi's framing of a blocked call (its
+        // diagnostic, which the model reads as "<harness>[error] Tool call blocked: ..."). Every other result is pi's.
+        afterTool: async (call, result) => {
+          const words = refusals.get(call.id);
+          const blocked = result.diagnostics?.some((diagnostic) => diagnostic.code === "blocked");
+          if (words === undefined || !blocked) return undefined;
+          refusals.delete(call.id);
+          return { output: [{ type: "text" as const, text: words }], isError: true } as never;
         },
       }),
       // An answer's cost is the runner's booking of its request, never pi's $0 for a model it has no price for: set on
@@ -158,6 +193,8 @@ async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: Ses
   // unanswered (a failed turn whose end the loop never read: a claim lost before the run's end landed): an open turn,
   // whose end recover() reads, so a failed turn ends the run failed, never as a completed one.
   let input: Submission | undefined;
+  /** The session closed (its proxy with it): its port gives no route. */
+  let closed = false;
   const existing = await run.harness.commit((tx) => tx.submissionByRequest(root.id, INPUT_REQUEST), context);
   if (existing) input = await run.harness.submission(existing.id, context);
   let state: AdapterSession["state"] = existing === undefined ? "new" : existing.status === "done" ? "idle" : "open_turn";
@@ -206,8 +243,13 @@ async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: Ses
       await root.abort(context).catch(() => undefined);
     },
     async close() {
+      closed = true;
       await proxy.close().catch(() => undefined);
     },
+    // The session's own model route for a request the host sends beside pi's (a learned workflow's model node): its proxy
+    // with a side key minted for `label`, pi's model and the provider's wire (never a literal), so the request goes through
+    // the same policy, origin, credential, price and booking as pi's own, labelled. None once the session is closed.
+    port: (label: string) => (closed ? undefined : { url: proxy.url, key: proxy.sideKey(label), model, api }),
     // A steer: pi places it in the turn in flight, at its next boundary. `id`: its request id (the command's), so the
     // commit that places it is the one that takes its row. `origin` (a trigger's message): its input is the host's user
     // entry (KINDS.input) with that origin, in the same submission, so the attribution lands with the message or not at all.
