@@ -125,7 +125,7 @@ export const TOOLS: Tool[] = [
   },
   {
     name: "agents_revise", title: "Revise an agent", annotations: WRITE,
-    description: "Makes the agent's next revision from its current definition with these fields changed, and any other field in definition (GET /v2/agents/{agent_id}, then PUT /v2/agents/{agent_id}/definition on that revision): fields you leave out stay; null clears model or thinking. definition.max_cost_usd sets the agent's default spend cap of each run started without one; 0 clears it (null is refused), and a revise that leaves it out keeps it. Its next run runs the new revision. A revision saved in between is refused (precondition_failed), never overwritten. Its name and description stay as it was created.",
+    description: "Makes the agent's next revision from its current definition with these fields changed, and any other field in definition (GET /v2/agents/{agent_id}, then PUT /v2/agents/{agent_id}/definition on that revision): fields you leave out stay; null clears model or thinking. definition.computer and definition.place are one setting: naming either alone replaces it (the other follows), and naming both they must agree. definition.max_cost_usd sets the agent's default spend cap of each run started without one; 0 clears it (null is refused), and a revise that leaves it out keeps it. Its next run runs the new revision. A revision saved in between is refused (precondition_failed), never overwritten. Its name and description stay as it was created.",
     inputSchema: { type: "object", required: ["agent_id"], properties: { agent_id: AGENT_ID, ...DEFINITION, note: { type: "string", description: "Optional: what this revision changes." } } },
     run: async (args, context) => {
       const agent = text(args, "agent_id");
@@ -137,6 +137,11 @@ export const TOOLS: Tool[] = [
       // The revision's number is the server's to give, and new instructions make an agentic revision.
       delete merged.version;
       if ("instructions" in changes) delete merged.workflow;
+      // The computer and its place are one setting, and the read shows both (computer-setting.ts). A revise that names
+      // only one replaces the setting: the other, as the old revision said it, is not carried beside it. Only a revise
+      // that names both has the route check that they agree.
+      if ("place" in changes && !("computer" in changes)) delete merged.computer;
+      if ("computer" in changes && !("place" in changes)) delete merged.place;
       // null clears model or thinking (the server's default then); any other null goes to the route, which checks it.
       for (const key of ["model", "thinking"]) if (merged[key] === null) delete merged[key];
       const etag = read.headers.etag;
