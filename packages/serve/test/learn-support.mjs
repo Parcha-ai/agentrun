@@ -62,7 +62,7 @@ export async function ended(api, runId, until = ["completed"]) {
  *  ledger's, usage's and stats' lines) waits: the server's grade wrote that end, and its reader of the runner's learning
  *  run is to come. The case is skipped with this reason (a failing todo is a `not ok` line, which a push refuses), and
  *  turns back on when it lands. */
-export const RUN_END_TODO = "E2s's reader: a run's learning end from learning_proposals and the learning run's journal";
+export const SWITCH_TODO = "the switch: the server answers from the store-backed run view (viewOverStore), which reads a run's learning end; these drive the file-backed server and turn back on when it is wired onto the store";
 
 /** The server's part of the run's learning done: what its end-of-run turn wrote is kept as its proposal. */
 export function proposedOf(view) {

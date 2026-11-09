@@ -11,7 +11,7 @@ import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { test } from "node:test";
 import { note } from "./fixtures/faux-learn.mjs";
-import { copyOf, ended, git, LEARN, learnedOnMain, learner, made, mergesOf, objects, onMain, proposedOf, reflectRows, repoOf, resnap, RUN_END_TODO, savedOf, settled, sleep, started } from "./learn-support.mjs";
+import { copyOf, ended, git, LEARN, learnedOnMain, learner, made, mergesOf, objects, onMain, proposedOf, reflectRows, repoOf, resnap, SWITCH_TODO, savedOf, settled, sleep, started } from "./learn-support.mjs";
 import { client, runDir, scratch, serve, withEnv } from "./support.mjs";
 import { folderTestHooks } from "../dist/learn/folder.js";
 import { learningTestHooks } from "../dist/learning.js";
@@ -75,7 +75,7 @@ async function personEdits({ api, baseUrl, token }, id, file, text) {
   assert.equal(res.status, 200, await res.text());
 }
 
-test("a note that supersedes one: the old note is marked superseded by the new one, and the index lists the new one alone", { timeout: 120_000, skip: RUN_END_TODO }, async (t) => {
+test("a note that supersedes one: the old note is marked superseded by the new one, and the index lists the new one alone", { timeout: 120_000, skip: SWITCH_TODO }, async (t) => {
   const { api, data, repo } = await seeded(t, "replacer", SEED);
   const NEW = note("Refunds path", "Refunds live under /policies/refunds", "Moved in the redesign.\n", "supersedes: [refunds.md]\n");
   await plans(api, "replacer", [["refunds-v2.md", NEW]]);
@@ -99,7 +99,7 @@ test("a note that supersedes one: the old note is marked superseded by the new o
   assert.ok(existsSync(join(copyOf(data, next), "refunds-v2.md")));
 });
 
-test("a note a person corrects while a grade that supersedes it is under way is never superseded on that grade: the person's text stays active and in the index, and the run's learning is dropped as checker, naming the note", { timeout: 150_000, skip: RUN_END_TODO }, async (t) => {
+test("a note a person corrects while a grade that supersedes it is under way is never superseded on that grade: the person's text stays active and in the index, and the run's learning is dropped as checker, naming the note", { timeout: 150_000, skip: SWITCH_TODO }, async (t) => {
   const held = await heldGrade(t, "corrected");
   const CORRECTED = note("Refunds path", "Refunds live under /help/refunds", "A person corrected the path.\n");
   await personEdits(held, "corrected", "refunds.md", CORRECTED);
@@ -119,7 +119,7 @@ test("a note a person corrects while a grade that supersedes it is under way is 
   assert.deepEqual(mergesOf(held.repo, held.runId), []);
 });
 
-test("a replacement held for the owner's OK supersedes nothing, so a person's edit of the note it names, made while it was graded, stands and the replacement merges to wait", { timeout: 150_000, skip: RUN_END_TODO }, async (t) => {
+test("a replacement held for the owner's OK supersedes nothing, so a person's edit of the note it names, made while it was graded, stands and the replacement merges to wait", { timeout: 150_000, skip: SWITCH_TODO }, async (t) => {
   const held = await heldGrade(t, "waiting", "Grade: pending refunds-v2.md.");
   const CORRECTED = note("Refunds path", "Refunds live under /help/refunds", "A person corrected the path.\n");
   await personEdits(held, "waiting", "refunds.md", CORRECTED);
@@ -148,7 +148,7 @@ test("a grade that supersedes a note merges as before when a person changed anot
   assert.equal(mergesOf(held.repo, held.runId).length, 1);
 });
 
-test("two runs at once that add different notes both merge, and the index has both; the same name added by two runs at once merges once, and the second is refused as exists at the merge", { timeout: 150_000, skip: RUN_END_TODO }, async (t) => {
+test("two runs at once that add different notes both merge, and the index has both; the same name added by two runs at once merges once, and the second is refused as exists at the merge", { timeout: 150_000, skip: SWITCH_TODO }, async (t) => {
   const { api, data, repo } = await seeded(t, "pair", SEED);
   const a = ["alpha.md", note("Alpha", "The first of two rules")];
   const b = ["beta.md", note("Beta", "The second of two rules")];

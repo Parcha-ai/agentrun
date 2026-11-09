@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { note } from "./fixtures/faux-learn.mjs";
 import { CAPS } from "../dist/learn/check.js";
-import { ended, git, learnedOnMain, learner, LEARN, made, mergesOf, proposedOf, reflectRows, repoOf, resnap, RUN_END_TODO, savedOf, sleep, started } from "./learn-support.mjs";
+import { ended, git, learnedOnMain, learner, LEARN, made, mergesOf, proposedOf, reflectRows, repoOf, resnap, SWITCH_TODO, savedOf, sleep, started } from "./learn-support.mjs";
 import { runDir, scratch, serve, withEnv } from "./support.mjs";
 
 /** A SKILL.md whose steps hold a fenced code block: a ``` line inside its four-backtick block closes nothing. */
@@ -48,7 +48,7 @@ async function server(t) {
 
 const show = (repo, path) => git(repo, ["show", `main:${path}`]);
 
-test("a note, a skill and a workflow draft in one answer: one grader call, one merge commit with all three, the README written from the draft's description, and the SKILL.md with its code block kept whole", { timeout: 120_000, skip: RUN_END_TODO }, async (t) => {
+test("a note, a skill and a workflow draft in one answer: one grader call, one merge commit with all three, the README written from the draft's description, and the SKILL.md with its code block kept whole", { timeout: 120_000, skip: SWITCH_TODO }, async (t) => {
   const { api, data, grades } = await server(t);
   await made(api, answering("keeper", answer()));
   const { view } = await ended(api, await started(api, "keeper"));
@@ -67,7 +67,7 @@ test("a note, a skill and a workflow draft in one answer: one grader call, one m
   assert.match(view.learning.detail, /Learned: Check units\. Also learned the skill find-policies and the workflow find-policies/);
 });
 
-test("a skill from a run whose job failed is left out by the checks as skill_outcome, and the rest of its answer goes on to the grader", { timeout: 120_000, skip: RUN_END_TODO }, async (t) => {
+test("a skill from a run whose job failed is left out by the checks as skill_outcome, and the rest of its answer goes on to the grader", { timeout: 120_000, skip: SWITCH_TODO }, async (t) => {
   const { api, data, grades } = await server(t);
   await made(api, answering("failing", answer(), ["Fail the job."]));
   const { view } = await ended(api, await started(api, "failing"), ["failed"]);
@@ -91,7 +91,7 @@ const callDraft = (tool) => {
   return JSON.stringify(doc, null, 2);
 };
 
-test("a draft may name only the agent's own tools, on a call node: with web_fetch granted a draft that runs it merges, and without it the checks leave the draft out and the rest merges; a model node that names a tool is left out though the agent was granted it", { timeout: 120_000, skip: RUN_END_TODO }, async (t) => {
+test("a draft may name only the agent's own tools, on a call node: with web_fetch granted a draft that runs it merges, and without it the checks leave the draft out and the rest merges; a model node that names a tool is left out though the agent was granted it", { timeout: 120_000, skip: SWITCH_TODO }, async (t) => {
   const { api, data } = await server(t);
   const text = answer({ json: callDraft("web_fetch") });
   await made(api, answering("fetcher", text, [], { tools: ["web_fetch"] }));
@@ -114,7 +114,7 @@ test("a draft may name only the agent's own tools, on a call node: with web_fetc
   assert.match(refused.learning.problems[0].detail, /model node at \/root names a tool \(web_fetch\): a learned workflow's model node runs without tools/);
 });
 
-test("the grader drops a draft that singles out one case: the draft (its workflow.json and README) is left out, and the note and the skill it kept merge", { timeout: 120_000, skip: RUN_END_TODO }, async (t) => {
+test("the grader drops a draft that singles out one case: the draft (its workflow.json and README) is left out, and the note and the skill it kept merge", { timeout: 120_000, skip: SWITCH_TODO }, async (t) => {
   const { api, data, grades } = await server(t);
   const text = answer({ json: draft([], "Find the refund policy of the one store in this case, shop.example, and answer 30 days.") });
   await made(api, answering("caser", text, ["Grade: drop workflows/find-policies/workflow.json."]));
@@ -132,7 +132,7 @@ test("the grader drops a draft that singles out one case: the draft (its workflo
   assert.deepEqual(view.learning.workflows ?? [], [], "nor named as learned");
 });
 
-test("a risky skill waits for its owner's OK: merged with status: pending in its SKILL.md, and said so", { timeout: 120_000, skip: RUN_END_TODO }, async (t) => {
+test("a risky skill waits for its owner's OK: merged with status: pending in its SKILL.md, and said so", { timeout: 120_000, skip: SWITCH_TODO }, async (t) => {
   const { api, data } = await server(t);
   await made(api, answering("risky", answer(), ["Grade: pending skills/find-policies/SKILL.md."]));
   const { view } = await ended(api, await started(api, "risky"));
@@ -145,7 +145,7 @@ test("a risky skill waits for its owner's OK: merged with status: pending in its
   assert.match(view.learning.detail, /Waiting for your OK: skill find-policies\./);
 });
 
-test("a run whose skill changed on main after it started never writes over it: retired by a person meanwhile, the run's merge is refused and the skill stays retired", { timeout: 180_000, skip: RUN_END_TODO }, async (t) => {
+test("a run whose skill changed on main after it started never writes over it: retired by a person meanwhile, the run's merge is refused and the skill stays retired", { timeout: 180_000, skip: SWITCH_TODO }, async (t) => {
   const { api, data } = await server(t);
   const go = join(await scratch(t), "go");
   const only = (skill) => ["Keeping a skill.", `\`\`\`\`skill find-policies\n${skill}\`\`\`\``, "Reflected."].join("\n\n");
@@ -172,7 +172,7 @@ test("a run whose skill changed on main after it started never writes over it: r
   assert.ok(!show(repo, "skills/find-policies/SKILL.md").includes("Then the site map."), "the run's text is not on main");
 });
 
-test("a note the run marked risky: true waits for its owner's OK through the server's own grade, beside a skill: the grade reads the note's text for the mark, not just its name", { timeout: 120_000, skip: RUN_END_TODO }, async (t) => {
+test("a note the run marked risky: true waits for its owner's OK through the server's own grade, beside a skill: the grade reads the note's text for the mark, not just its name", { timeout: 120_000, skip: SWITCH_TODO }, async (t) => {
   const { api, data } = await server(t);
   const RISKY = note("Refund limit", "Use when staff ask whether a refund needs a manager", "Staff can refund up to $250 on their own.\n", "risky: true\n");
   assert.match(RISKY, /^risky: true$/m);

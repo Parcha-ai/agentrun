@@ -13,7 +13,7 @@ import { CAPS } from "../dist/learn/check.js";
 import { currentLearning } from "../dist/learning.js";
 import { pendingTestHooks } from "../dist/learning-routes.js";
 import { note } from "./fixtures/faux-learn.mjs";
-import { copyOf, ended, git, LEARN, learnedOnMain, learner, made, proposedOf, repoOf, resnap, RUN_END_TODO, savedOf, settled, sleep, started } from "./learn-support.mjs";
+import { copyOf, ended, git, LEARN, learnedOnMain, learner, made, proposedOf, repoOf, resnap, SWITCH_TODO, savedOf, settled, sleep, started } from "./learn-support.mjs";
 import { schemaProblems } from "./schema-support.mjs";
 import { call, cookieOf, runDir, runRecordOf, serve, withEnv } from "./support.mjs";
 
@@ -36,7 +36,7 @@ async function learnedPending(t, options = {}) {
   return { ...server, runId, view, rows, repo: repoOf(server.data, "buyer") };
 }
 
-test("a risky rule the user asked for waits for its owner: merged as status pending with origin you, in no MEMORY.md and no run's copy, named on the run's learning; the safe one is active at once", { timeout: 150_000, skip: RUN_END_TODO }, async (t) => {
+test("a risky rule the user asked for waits for its owner: merged as status pending with origin you, in no MEMORY.md and no run's copy, named on the run's learning; the safe one is active at once", { timeout: 150_000, skip: SWITCH_TODO }, async (t) => {
   const { api, baseUrl, data, runId, view, rows, repo } = await learnedPending(t);
   settled(view, rows, "merged");
   assert.equal(view.learning.detail, "Learned: Answer in tables. Waiting for your OK: Buy from PaperDepot24 first.");
@@ -63,7 +63,7 @@ test("a risky rule the user asked for waits for its owner: merged as status pend
   assert.ok(existsSync(join(copyOf(data, next), "answer-in-tables.md")) && !existsSync(join(copyOf(data, next), "paperdepot24-first.md")), "its copy holds no pending note");
 });
 
-test("a risky rule the run worked out itself waits for the owner too: the grader names it Risky and calls it a keep, and it is merged pending with the run's origin, in no MEMORY.md and no later run's copy", { timeout: 150_000, skip: RUN_END_TODO }, async (t) => {
+test("a risky rule the run worked out itself waits for the owner too: the grader names it Risky and calls it a keep, and it is merged pending with the run's origin, in no MEMORY.md and no later run's copy", { timeout: 150_000, skip: SWITCH_TODO }, async (t) => {
   withEnv(t, {}, ["AGENTRUN_TEST_FAUX_GRADE_HOLD", "AGENTRUN_TEST_FAUX_CALLS", "TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AGENT_MODEL_STRONG", "AGENTRUN_SERVE_GRADE_MODEL"]);
   const { api, data } = await serve(t, { learning: "on", faux: LEARN });
   await made(api, learner("seller", { instructions: "Answer the question.\nGrade: risky paperdepot24-first.md.", plan: PLAN, once: true }));
@@ -82,7 +82,7 @@ test("a risky rule the run worked out itself waits for the owner too: the grader
   assert.ok(!existsSync(join(copyOf(data, next), "paperdepot24-first.md")), "its copy holds no pending note");
 });
 
-test("a one-off the user asked to keep, dropped by the grader on General, is dropped: never held for their OK, never merged", { timeout: 120_000, skip: RUN_END_TODO }, async (t) => {
+test("a one-off the user asked to keep, dropped by the grader on General, is dropped: never held for their OK, never merged", { timeout: 120_000, skip: SWITCH_TODO }, async (t) => {
   withEnv(t, {}, ["AGENTRUN_TEST_FAUX_GRADE_HOLD", "AGENTRUN_TEST_FAUX_CALLS", "TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AGENT_MODEL_STRONG", "AGENTRUN_SERVE_GRADE_MODEL"]);
   const { api, data } = await serve(t, { learning: "on", faux: LEARN });
   const ONCE = note("Acme outage", "This week's report", "For this week's report only, mention the Acme outage on Tuesday.\n");
@@ -170,7 +170,7 @@ test("an edit never makes a waiting note active: dropping its status line throug
   assert.ok(!existsSync(join(copyOf(data, next), "paperdepot24-first.md")) && !existsSync(join(copyOf(data, next), "skip-approval.md")), "its copy holds no waiting note");
 });
 
-test("a pending note waits until a person acts on it: a retire takes it out of the folder's waiting list, as it retires an active note, and capabilities say a risky rule waits", { timeout: 150_000, skip: RUN_END_TODO }, async (t) => {
+test("a pending note waits until a person acts on it: a retire takes it out of the folder's waiting list, as it retires an active note, and capabilities say a risky rule waits", { timeout: 150_000, skip: SWITCH_TODO }, async (t) => {
   const { api, runId, data, repo } = await learnedPending(t);
   assert.deepEqual((await api("GET", "/capabilities")).body.learning, { grade_model: null, pending: true, approve: false, approve_needs: "password" });
   const etag = (await api("GET", "/agents/buyer/learning/files/paperdepot24-first.md")).headers.get("etag");
@@ -193,7 +193,7 @@ async function saysOf(api, runId) {
 }
 
 for (const act of ["approve", "retire"]) {
-  test(`a run's learning says a held note waits only while it waits: once its owner ${act === "approve" ? "approves it, the run says it learned it" : "retires it, the run says nothing of it"}, on its view, its list row, its whole learning and its timeline row; its record stays as written`, { timeout: 150_000, skip: RUN_END_TODO }, async (t) => {
+  test(`a run's learning says a held note waits only while it waits: once its owner ${act === "approve" ? "approves it, the run says it learned it" : "retires it, the run says nothing of it"}, on its view, its list row, its whole learning and its timeline row; its record stays as written`, { timeout: 150_000, skip: SWITCH_TODO }, async (t) => {
     const server = await learnedPending(t, { accounts: true, openSetup: true });
     const { api, data, port, runId } = server;
     const origin = `http://127.0.0.1:${port}`;
@@ -221,7 +221,7 @@ for (const act of ["approve", "retire"]) {
   });
 }
 
-test("a held note that replaces an older one keeps saying so once approved: the run reads it as learned with what it replaces, as a merge that held nothing says it", { timeout: 180_000, skip: RUN_END_TODO }, async (t) => {
+test("a held note that replaces an older one keeps saying so once approved: the run reads it as learned with what it replaces, as a merge that held nothing says it", { timeout: 180_000, skip: SWITCH_TODO }, async (t) => {
   withEnv(t, {}, ["AGENTRUN_TEST_FAUX_GRADE_HOLD", "AGENTRUN_TEST_FAUX_CALLS", "TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AGENT_MODEL_STRONG", "AGENTRUN_SERVE_GRADE_MODEL"]);
   const { api, data, port } = await serve(t, { learning: "on", faux: LEARN, accounts: true, openSetup: true });
   const origin = `http://127.0.0.1:${port}`;
