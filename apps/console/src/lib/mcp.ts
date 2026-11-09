@@ -14,7 +14,7 @@ export type McpServer = {
   /** Its credential as every secret is read: set or not, how it came, when it last changed. Never a value. */
   secret?: { name: string; set: boolean; source: "env" | "console" | "sign-in" | null; changed_at: string | null };
   name: string; url: string; auth: { type: McpAuthType; headers?: string[] }; tools: McpTool[]; protocol?: string; listed_at?: string; updated_at?: string;
-  credential: "sealed" | "seal_key_missing" | "unreadable" | "expired" | null;
+  credential: "sealed" | "unreadable" | "expired" | null;
   oauth?: { expires_at?: string; scopes: string[]; client: string; client_id?: string };
   prices?: Record<string, number>;
 };
@@ -23,7 +23,7 @@ export type McpRefresh = { added: string[]; removed: string[]; changed: string[]
 /** What a preview or save sends as `auth`: a credential only when one was typed (none: keep the sealed one). */
 export type McpAuth = { type: Exclude<McpAuthType, "oauth"> | "oauth"; token?: string; headers?: Record<string, string> };
 /** Capabilities' `features.mcp_client`. */
-export type McpClientFeature = { auth?: string[]; at_rest?: "sealed" | "unavailable"; harnesses?: string[] };
+export type McpClientFeature = { auth?: string[]; harnesses?: string[] };
 
 /** The grant `definition.tools` holds for a server's tool, and the server and tool a grant names (null: not one). */
 export const mcpGrant = (server: string, tool: string) => `mcp:${server}/${tool}`;
@@ -64,8 +64,6 @@ export function staleGrants(tools: readonly string[], servers: readonly McpServe
   });
 }
 
-const SEAL = "This server's launcher has no seal key (AGENTRUN_SEAL_KEY), so it can't keep a credential: start it with one, or add a server that takes none.";
-
 /** A refused preview, save or sign-in in plain words; `signIn` when the server signs in with OAuth. */
 export function mcpProblem(e: unknown): { text: string; detail?: string; signIn?: boolean } {
   if (!(e instanceof ClientError)) return { text: `The request didn't reach this server: ${e instanceof Error ? e.message : String(e)}` };
@@ -74,14 +72,12 @@ export function mcpProblem(e: unknown): { text: string; detail?: string; signIn?
   if (e.code === "not_mcp") return { text: "This address doesn't speak MCP.", detail: e.message };
   if (redirect) return { text: "This address redirects; use the final address.", detail: redirect.message };
   if (e.status === 424) return { text: `The server failed: ${e.message}` };
-  if (e.code === "no_sealing_key") return { text: SEAL };
   // A sign-in finishes only in a browser that started it at the address the authorization server sends it back to.
   if (e.code === "wrong_origin") return { text: "Sign in from this server's own address: the sign-in comes back there.", ...(typeof e.details?.open === "string" ? { detail: `Open ${e.details.open} and sign in from it.` } : {}) };
   if (e.code === "store_unreadable") return { text: "The file this server keeps its MCP servers in can't be read: restore it or remove it." };
   if (e.fields?.length) return { text: e.fields.map((f) => f.message).join(" ") };
   return { text: `${e.code}: ${e.message}` };
 }
-export const NO_SEAL_KEY = SEAL;
 
 /** Why a sign-in failed, by the code its way back names (`error=`): an OAuth error its authorization server sent back
  *  (RFC 6749 4.1.2.1, the token request's 5.2, OpenID Connect's), or this server's own (mcp-oauth.ts reasonOf: an API
@@ -107,7 +103,6 @@ const SIGN_IN_FAILED: Record<string, string> = {
   input_invalid: "the MCP server's tools could not be kept (too many of them, or the address redirects)",
   upstream_failed: "the MCP server or its authorization server failed: try again",
   unavailable: "this server was stopping: sign in again",
-  no_sealing_key: "this server has no seal key, so it keeps no sign-in",
   changed_meanwhile: "the server was changed or removed while you signed in, so nothing was saved",
 };
 const SIGN_IN_UNKNOWN = "the sign-in didn't finish: try again";
