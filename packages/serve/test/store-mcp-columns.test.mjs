@@ -27,6 +27,18 @@ test("a server saved without them reads null", async (t) => {
   assert.equal(row.instructions, null);
 });
 
+test("a save sets listed_at with updated_at; a later save that keeps updated_at (a refresh) moves listed_at alone", async (t) => {
+  const { store, clock } = await storeOn(t);
+  const first = await saveMcpServer(store, KEY, base({ serverInfo: { name: "GitHub" } }));
+  assert.equal(first.listedAt, first.updatedAt, "a save: listed_at is the update time");
+  clock.now += 1000;
+  // A refresh keeps updated_at (passed back) and lets listed_at move.
+  const refreshed = await saveMcpServer(store, KEY, base({ serverInfo: { name: "GitHub v2" }, updatedAt: first.updatedAt }));
+  assert.equal(refreshed.updatedAt, first.updatedAt, "updated_at is kept, so a refresh isn't an edit");
+  assert.ok(refreshed.listedAt > first.updatedAt, "listed_at moved to the refresh time");
+  assert.equal((await store.mcp.server("github")).listedAt, refreshed.listedAt, "reads back from the store");
+});
+
 test("both are bounded at save: oversized instructions are trimmed to the cap, oversized server_info drops to null", async (t) => {
   const { store } = await storeOn(t);
   const big = "x".repeat(MCP_META_MAX_BYTES + 5000);

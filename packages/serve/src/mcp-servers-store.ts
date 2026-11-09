@@ -172,6 +172,8 @@ export class McpServersOverStore {
     const saved = await saveMcpServer(this.store, this.sealKey!, {
       name, url: was.url, auth: was.auth, protocol: listed.protocol, tools: listed.tools, serverInfo: listed.server_info, instructions: listed.instructions ?? null,
       ...(Object.keys(prices).length ? { prices } : {}), ...(was.auth !== "none" ? { credential: open.credential } : {}),
+      // A refresh re-lists the tools; it keeps updated_at (not an owner edit) and lets listed_at move to now.
+      updatedAt: was.updatedAt,
     });
     await this.store.flush();
     return {
@@ -285,7 +287,10 @@ export class McpServersOverStore {
     const cred = opened && opened !== "no_key" && "credential" in opened ? opened.credential : undefined;
     const set = cred?.type === "oauth" ? (cred.set as TokenSet) : undefined;
     const expired = cred?.type === "oauth" && (cred as { expired?: true }).expired === true;
-    const at = new Date(row.updatedAt).toISOString();
+    const updatedAt = new Date(row.updatedAt).toISOString();
+    // A refresh moves listed_at, not updated_at, so the two differ after a refresh (updatedAt for a row from before the
+    // column).
+    const listedAt = new Date(row.listedAt ?? row.updatedAt).toISOString();
     return {
       name,
       ...listed,
@@ -294,8 +299,8 @@ export class McpServersOverStore {
       auth: { type: row.auth, ...(row.auth === "headers" ? { headers: Object.keys((cred?.type === "headers" ? cred.headers : {}) as HeaderMap) } : {}) },
       credential: row.auth === "none" ? null : opened === "no_key" ? ("seal_key_missing" as const) : !cred ? ("unreadable" as const) : expired ? ("expired" as const) : ("sealed" as const),
       ...(set ? { oauth: { ...(set.expires_at ? { expires_at: set.expires_at } : {}), scopes: (set.tokens.scope ?? "").split(" ").filter(Boolean), client: set.kind, ...(set.client?.client_id ? { client_id: set.client.client_id } : {}) } } : {}),
-      listed_at: at,
-      updated_at: at,
+      listed_at: listedAt,
+      updated_at: updatedAt,
     };
   }
 

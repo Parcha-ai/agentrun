@@ -35,10 +35,14 @@ function boundedServerInfo(info: unknown): unknown {
 export async function saveMcpServer(
   store: { mcp: Pick<Mcp, "put"> },
   sealKey: Buffer,
-  server: { name: string; url: string; auth: string; protocol?: string | null; tools: unknown; prices?: unknown; serverInfo?: unknown; instructions?: string | null; credential?: McpCredential },
+  server: { name: string; url: string; auth: string; protocol?: string | null; tools: unknown; prices?: unknown; serverInfo?: unknown; instructions?: string | null; credential?: McpCredential; listedAt?: number; updatedAt?: number },
 ): Promise<McpServerRow> {
   const sealed = server.credential ? sealMcpCredential(sealKey, server.name, server.credential, server.url) : null;
-  return store.mcp.put({ name: server.name, url: server.url, auth: server.auth, protocol: server.protocol ?? null, tools: server.tools, prices: server.prices ?? null, serverInfo: boundedServerInfo(server.serverInfo), instructions: boundedInstructions(server.instructions), sealed });
+  return store.mcp.put({
+    name: server.name, url: server.url, auth: server.auth, protocol: server.protocol ?? null, tools: server.tools, prices: server.prices ?? null,
+    serverInfo: boundedServerInfo(server.serverInfo), instructions: boundedInstructions(server.instructions), sealed,
+    ...(server.listedAt !== undefined ? { listedAt: server.listedAt } : {}), ...(server.updatedAt !== undefined ? { updatedAt: server.updatedAt } : {}),
+  });
 }
 
 /** The server's row goes. */
