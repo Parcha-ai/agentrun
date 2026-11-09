@@ -9,6 +9,11 @@ import type { Claim, Command, Journal } from "../store/store.js";
 // set once, by the loop's journal commit that applies it or by the runner's refusal, with `refused` its reason).
 export type { Claim, Command, Journal };
 
+/** Why a run ends failed when the answer it would end on was cut at the model's output limit (stopReason "length"): the
+ *  answer is unfinished, so the run never reads ended. `tokens`: what the cut answer used, when its harness says. */
+export const cutAtLimit = (tokens?: number): string =>
+  `the model stopped at its output limit${tokens !== undefined && Number.isSafeInteger(tokens) && tokens > 0 ? ` (${tokens} tokens)` : ""} before finishing its answer`;
+
 /** How a loop's start() ended. The run's own outcome (state, cost) is already in the journal's last commit. */
 export type LoopEnd =
   | { readonly state: "ended" | "stopped" }

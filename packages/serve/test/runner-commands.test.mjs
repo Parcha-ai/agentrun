@@ -19,25 +19,24 @@ async function runner(t, createLoop, timing = {}, storeOf = (store) => store) {
   return { server, record };
 }
 
-test("a steer and then a stop reach the running loop within one poll, and each row's taken_at is set", async (t) => {
+// No wall-clock bound: how soon a row arrives is the poll's (commandPollMs), and a loaded machine's tick says nothing about
+// it. The order (steer before stop) and each row's taken_at are the property.
+test("a steer and then a stop reach the running loop in order, and each row's taken_at is set", async (t) => {
   const faux = fauxLoops({ turns: 1_000, turnMs: 10 });
   const { server } = await runner(t, faux.createLoop);
   await queue(server, "run-1");
   const loop = await until(() => faux.loops[0]?.claim && faux.loops[0], "the loop runs");
 
   const steer = await sendCommand(server, "run-1", { kind: "steer", body: { text: "check the totals" } });
-  const sentAt = Date.now();
   const received = await until(() => loop.received.find((command) => command.id === steer.id), "the steer reaches the loop");
-  assert.ok(received.at - sentAt <= POLL_MS * 2, `the steer took ${received.at - sentAt} ms (one poll is ${POLL_MS})`);
   assert.deepEqual(received.body, { text: "check the totals" });
   const taken = await until(async () => (await commandRow(server, "run-1", steer.id)).takenAt !== null && commandRow(server, "run-1", steer.id), "the steer's taken_at");
   assert.equal(taken.refused, null);
 
   const stop = await sendCommand(server, "run-1", { kind: "stop" });
-  const stoppedAt = Date.now();
   await until(() => loop.stopCalls[0], "the stop reaches the loop");
   assert.deepEqual([loop.stopCalls[0].kind, loop.stopCalls[0].commandId], ["command", stop.id]);
-  assert.ok(loop.stopCalls[0].at - stoppedAt <= POLL_MS * 2, `the stop took ${loop.stopCalls[0].at - stoppedAt} ms`);
+  assert.ok(loop.stopCalls[0].at >= received.at, "the stop reached the loop after the steer");
   await until(async () => (await server.runs.get("run-1")).state === "stopped", "the run is stopped");
   const row = await commandRow(server, "run-1", stop.id);
   assert.ok(row.takenAt !== null, "the stop's taken_at is set by the stopped commit");

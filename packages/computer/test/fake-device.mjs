@@ -12,6 +12,9 @@ const fail = (code, message) => ({ ok: false, error: { code, message } });
 const DESKTOP_GROUPS = ["exec", "files", "processes", "screen", "input.pointer", "input.keys"];
 const ANDROID_GROUPS = ["files", "screen", "input.touch", "apps", "apps.install", "apps.ui_tree"];
 const BACKGROUND = [40, 40, 40];
+/** A phone's stock Settings app, and the color its screen is while it is in front. */
+const SETTINGS_APP = "com.android.settings";
+const SETTINGS_BACKGROUND = [30, 60, 90];
 
 const chunk = (type, body) => {
 	const length = Buffer.alloc(4);
@@ -66,7 +69,8 @@ const shift = ([x, y], dx, dy = 0) => [x + dx, y + dy];
  * `maxLifetimeMs`, `chunk` (bytes a screen.shot or screen.read gives), and `broken`, one of: no-cap, screen-size,
  * screen-region, screen-colors, screen-no-idat, screen-corrupt-idat, screen-region-corrupt, click-offset, type-case,
  * no-precheck, no-stop, no-release, tap-offset, swipe-stuck, pinch-together, terminate-stays, tree-types, extend-noop,
- * extend-past-cap, extend-per-call, extend-shortens, stream-http, fixture-never-ready, screen-huge-size, screen-endless.
+ * extend-past-cap, extend-per-call, extend-shortens, stream-http, fixture-never-ready, screen-huge-size, screen-endless,
+ * launch-hidden (apps.list says Settings is in front, and neither the screen nor the tree shows it).
  * `createMs` is how long each create takes on the clock, in turn (the last for every create after): a host slow to
  * start a computer. The lifetime counts from create's start, and a computer whose deadline passed before create
  * finished fails it as Docker's does, timeout.
@@ -84,6 +88,21 @@ export const testClock = (() => {
 		},
 	};
 })();
+
+/**
+ * A clock that reads no wall clock at all: it starts at `start` and moves only when something sleeps on it. A run and
+ * its fake given the same one measure every duration exactly, so a test may assert a number computed from them (what a
+ * create took) to the millisecond.
+ */
+export function virtualClock(start = Date.UTC(2026, 0, 1)) {
+	let now = start;
+	return {
+		now: () => now,
+		sleep: async (ms) => {
+			now += Math.max(0, ms);
+		},
+	};
+}
 
 export function fakeDevices({
 	clock = testClock,
@@ -133,7 +152,10 @@ export function fakeDevices({
 			else c.held.delete(name);
 			if (desktopUp() && inside(c.cursor, FIXTURE_WINDOW)) log({ event, button: name, at: c.cursor });
 		};
+		/** Settings in front, and shown: broken launch-hidden says it is in front and shows nothing of it. */
+		const settingsShown = () => c.foreground === SETTINGS_APP && broken !== "launch-hidden";
 		const screenColor = (x, y) => {
+			if (settingsShown()) return SETTINGS_BACKGROUND;
 			if (!desktopUp() || !inside([x, y], FIXTURE_WINDOW)) return BACKGROUND;
 			const [, , w, h] = FIXTURE_WINDOW;
 			const quadrant = (x < w / 2 ? 0 : 1) + (y < h / 2 ? 0 : 2);
@@ -273,6 +295,9 @@ export function fakeDevices({
 			},
 			"apps.ui_tree": () => {
 				const button = { role: "android.widget.Button", id: FIXTURE_BUTTON.id, text: FIXTURE_BUTTON.text, bounds: [20, 40, 200, 60], enabled: broken === "tree-types" ? "true" : true, clickable: true, children: [] };
+				const row = (text, y) => ({ role: "android.widget.LinearLayout", bounds: [0, y, width, 40], enabled: true, clickable: true, children: [{ role: "android.widget.TextView", text, bounds: [10, y + 10, 200, 20], enabled: true, children: [] }] });
+				const list = { role: "androidx.recyclerview.widget.RecyclerView", bounds: [0, 100, width, 200], enabled: true, scrollable: true, children: [row("Network & internet", 110), row("Display", 160)] };
+				if (settingsShown()) return ok({ root: { role: "android.widget.FrameLayout", bounds: [0, 0, width, height], enabled: true, children: [list] }, nodes: 6, truncated: false });
 				const children = c.foreground === FIXTURE_APP_ID ? [button] : [];
 				return ok({ root: { role: "android.widget.FrameLayout", bounds: [0, 0, width, height], enabled: true, children }, nodes: 1 + children.length, truncated: false });
 			},
@@ -324,7 +349,8 @@ export function fakeDevices({
 				deadline: new Date(created + spec.lifetimeMs),
 				files: new Map(),
 				processes: new Map(),
-				apps: new Map(),
+				// A phone comes with its stock Settings app, which apps.launch-terminate drives.
+				apps: new Map(kind === "android" ? [["com.android.settings", { id: "com.android.settings", name: "Settings" }]] : []),
 				foreground: null,
 				cursor: [0, 0],
 				held: new Set(),

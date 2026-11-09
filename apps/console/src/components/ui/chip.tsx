@@ -12,6 +12,7 @@ const TONE: Record<Tone | "plain", string> = {
   muted: "border-border-strong/60 text-muted-foreground",
 };
 
-export function Chip({ tone = "plain", className, children }: { tone?: Tone | "plain"; className?: string; children: React.ReactNode }) {
-  return <span className={cn("caps inline-flex h-5 items-center gap-1 border px-1.5 text-[10px] leading-none", TONE[tone], className)}>{children}</span>;
+/** `title`: what the label means, on hover. */
+export function Chip({ tone = "plain", className, title, children }: { tone?: Tone | "plain"; className?: string; title?: string; children: React.ReactNode }) {
+  return <span title={title} className={cn("caps inline-flex h-5 items-center gap-1 border px-1.5 text-[10px] leading-none", TONE[tone], className)}>{children}</span>;
 }

@@ -126,8 +126,10 @@ export function settingsKeyOf(harness: string, name: string, mcpServers: readonl
  *  gate reads it: a permission by settings key. */
 export type PermissionSettings = Readonly<Record<string, { permission?: Permission; /** Not as written: a value not offered, read as its fail-closed stand-in (tool-plane.ts readToolSettings). Never shown. */ fallback?: true } | undefined>>;
 
-/** `name`'s permission in force and the layer it came from, most specific first: the agent's exact key, the agent's
- *  server wildcard, the server's exact key, the server's server wildcard, then the default. Rules over a call's
+/** `name`'s permission in force and the layer it came from. A deny set on this server, under the tool's own key or its MCP
+ *  server's wildcard (bash's for a shell tool), is absolute: it refuses on this server over any setting of the agent's.
+ *  Otherwise most specific first: the agent's exact key, the agent's server wildcard, the server's exact key, the
+ *  server's server wildcard, then the default. Rules over a call's
  *  arguments are not in V1. `approvals` "never" (an agent run unattended) turns the ask that is left into an allow, from
  *  "unattended", as the last step, and only where nothing stands behind that ask (standsBehind): never past a deny in any
  *  layer, nor an ask that stands in for a setting that does not read. Nor is anything RunGate.enter refuses before it
@@ -139,10 +141,17 @@ export function permissionFrom(name: string, server: PermissionSettings, agent: 
   return { permission: "allow", from: "unattended" };
 }
 
-/** Whether something stands behind `name`'s ask that approvals "never" must not lift: in either layer, under any key the
- *  tool is read by (its own, its MCP server's wildcard; a shell tool's, bash's), a deny, a value that is no permission,
- *  or a setting marked as not read as written (`fallback`). The ask a layer above gives does not hide a deny below it. */
+/** Marks the server's settings map when its file is present but does not read (tool-plane.ts ToolSettings.get): every
+ *  tool then takes its defaults, and the deny the file may hold can't be seen, so nothing lifts an ask over it. A symbol:
+ *  carried by a spread, never by JSON (it is never served) nor by Object.entries (no reader takes it for a tool). */
+export const SETTINGS_UNREAD: unique symbol = Symbol("agentrun.tool-settings.unread");
+
+/** Whether something stands behind `name`'s ask that approvals "never" must not lift: the server's settings unread
+ *  (SETTINGS_UNREAD: a deny may be in the file), or in either layer, under any key the tool is read by (its own, its MCP
+ *  server's wildcard; a shell tool's, bash's), a deny, a value that is no permission, or a setting marked as not read as
+ *  written (`fallback`). The ask a layer above gives does not hide a deny below it. */
 function standsBehind(name: string, server: PermissionSettings, agent: PermissionSettings): boolean {
+  if ((server as { readonly [SETTINGS_UNREAD]?: true })[SETTINGS_UNREAD] === true) return true;
   const held = Object.hasOwn(SHELL_FAMILY, name) ? SHELL_FAMILY[name]! : name;
   return [agent, server].some((layer) => permissionKeys(held).some((key) => {
     const setting = layer[key];
@@ -165,8 +174,14 @@ function settingOf(name: string, server: PermissionSettings, agent: PermissionSe
 }
 
 /** permissionFrom's own read, and whether the permission is `written`: a valid one set in a layer as it reads there, not
- *  a stand-in. A value that is no permission at all reads ask, never the value. */
+ *  a stand-in. A value that is no permission at all reads ask, never the value. A deny set on this server is absolute:
+ *  where the server's own answer for the tool (its most specific key set there: the tool's own, else its MCP server's
+ *  wildcard) is deny, that is the answer, from the server, before the agent's own settings are read, so no ask or allow
+ *  of the agent's reaches past it. The server's own exact allow under its wildcard deny is its answer, as before.
+ *  Otherwise the agent's own setting comes first, then the server's, then the default. */
 function settingFrom(name: string, server: PermissionSettings, agent: PermissionSettings): { permission: Permission; from: "agent" | "server" | "default"; written: boolean } {
+  const own = permissionKeys(name).map((key) => server[key]).find((setting) => setting?.permission !== undefined);
+  if (own?.permission === "deny") return { permission: "deny", from: "server", written: own.fallback !== true };
   for (const [from, layer] of [["agent", agent], ["server", server]] as const) {
     for (const key of permissionKeys(name)) {
       const setting = layer[key];

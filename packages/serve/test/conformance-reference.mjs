@@ -9,6 +9,8 @@ const { callsOf, journalEntries, messagesOf } = await import("../dist/runner/jou
 const { KINDS } = await import("../dist/runner/journal-kinds.js");
 const { deniedText, endedBy, noteOf } = await import("../dist/runner/loop-contract.js");
 const { MAX_RESTARTS } = await import("../dist/runner/conformance/harness.js");
+const { RUN_RESUMED } = await import("@parcha/pi-durable-agent/timeline");
+const { cutAtLimit } = await import("../dist/runner/loop-contract.js");
 
 /** A task that kept faulting: the run fails, saying so. */
 class RestartsRanOut extends Error {}
@@ -74,7 +76,8 @@ function referenceLoop({ script, tools, hooks }, deps) {
   /** The run ends stopped, why on its row (the end commit's summary), the stop or cancel row taken in the same commit. */
   const writeStop = async () => {
     const run = MUTANT === "stop-unwritten" ? { state: "stopped" } : { state: "stopped", summary: endedBy(stopReason.cancel) };
-    await append(TURN_END, {}, { run, take: [stopReason.commandId] });
+    // The loop's end commit, as every loop writes it (KINDS.end): the live view reads the stop from it.
+    await append(KINDS.end, run, { run, take: [stopReason.commandId] });
     return { state: "stopped" };
   };
 
@@ -126,6 +129,8 @@ function referenceLoop({ script, tools, hooks }, deps) {
   return {
     async start(claim) {
       journal = deps.journal(claim);
+      // Taken over from a runner whose lease ran out mid-run: said on the run's timeline (a mutant leaves it unsaid).
+      if (claim.lost && MUTANT !== "takeover-unsaid") await append(RUN_RESUMED, { after: "runner_lost", runner: claim.lost.runner, at: Date.now() });
       let entries = await journalEntries(journal, context);
       // Recovery: an intent with no result. A replay-safe call runs again; any other is interrupted, never run twice.
       for (const call of callsOf(entries).filter((c) => c.status === "pending")) {
@@ -188,6 +193,13 @@ function referenceLoop({ script, tools, hooks }, deps) {
           const text = "say" in next ? next.say : "sayLastResult" in next ? lastResult(await journalEntries(journal, context)) : [...messagesOf(await journalEntries(journal, context))].reverse().find((m) => m.role === "steer")?.text ?? "";
           if (MUTANT === "steer-at-end") await writeSteersNow();
           const last = step === script.length - 1;
+          // The run's last answer cut at the model's output limit is unfinished: the run ends failed, saying so (a mutant
+          // ends it as ever). One the run goes on from is a message like any other.
+          if (last && next.cut && MUTANT !== "length-ended") {
+            const summary = cutAtLimit();
+            await append(KINDS.message, { role: "model", text }, { run: { state: "failed", summary } });
+            return { state: "failed", error: { code: "length", message: summary } };
+          }
           await append(KINDS.message, { role: "model", text }, last ? { run: { state: "ended" } } : undefined);
           if (last) return { state: "ended" };
         }

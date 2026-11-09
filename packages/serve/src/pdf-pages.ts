@@ -11,6 +11,7 @@ import { createHash } from "node:crypto";
 import { copyFile, mkdir, mkdtemp, readdir, readFile, realpath, rename, rm, stat } from "node:fs/promises";
 import { basename, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
+import { helperEnv } from "./helper-env.js";
 
 export const PDF_PAGES_TOOL = "pdf_pages";
 /** The read-only directory a run's documents are read from: the server's `--documents`. */
@@ -19,6 +20,7 @@ const TEXT_CAP = 20_000;
 const MAX_PAGES = 50;
 /** The longest side a drawn page may have, in pixels: Jev's image limit (1568 per side; 1569 is refused). */
 export const MAX_PAGE_PX = 1568;
+// Each helper starts with helperEnv(): PATH, the locale and TMPDIR, never the server's secrets (helper-env.ts).
 const run = promisify(execFile);
 
 /** `dpi`: the dpi the pages were drawn at (at most the asked one); null for an image that passed through. */
@@ -95,19 +97,19 @@ export async function pdfPages(args: Record<string, unknown>, where: { work: str
     const size = imageDimensions(new Uint8Array(await readFile(file)));
     if (size && Math.max(size.width, size.height) > MAX_PAGE_PX) {
       const scale = size.width >= size.height ? `${MAX_PAGE_PX}:-2` : `-2:${MAX_PAGE_PX}`;
-      await run("ffmpeg", ["-v", "error", "-y", "-i", file, "-vf", `scale=${scale}`, "-frames:v", "1", join(dir, out)], { signal, maxBuffer: 1 << 20 }).catch((error: Error) => {
+      await run("ffmpeg", ["-v", "error", "-y", "-i", file, "-vf", `scale=${scale}`, "-frames:v", "1", join(dir, out)], { signal, maxBuffer: 1 << 20, env: helperEnv() }).catch((error: Error) => {
         throw new Error(`pdf_pages: ${name} is ${size.width}x${size.height}, over ${MAX_PAGE_PX} px on a side, and ffmpeg did not scale it: ${error.message.split("\n")[0]}`);
       });
     } else await copyFile(file, join(dir, out));
     return { name, pageCount: 1, dpi: null, pages: [{ page: 1, image: `pages/${stem}/${out}` }], text: "" };
   }
-  const info = await run("pdfinfo", [file], { signal, maxBuffer: 1 << 20 }).catch((error: Error) => {
+  const info = await run("pdfinfo", [file], { signal, maxBuffer: 1 << 20, env: helperEnv() }).catch((error: Error) => {
     throw new Error(`pdf_pages: ${name} is not a PDF poppler reads: ${error.message.split("\n")[0]}`);
   });
   const pageCount = Number(/^Pages:\s+(\d+)/m.exec(info.stdout)?.[1] ?? 0);
   const last = Math.min(maxPages, Math.max(pageCount, 1));
   // The largest side of the pages drawn, in points (1/72 in), and the dpi that keeps it within MAX_PAGE_PX.
-  const sizes = await run("pdfinfo", ["-f", "1", "-l", String(last), file], { signal, maxBuffer: 1 << 20 }).then((r) => r.stdout, () => info.stdout);
+  const sizes = await run("pdfinfo", ["-f", "1", "-l", String(last), file], { signal, maxBuffer: 1 << 20, env: helperEnv() }).then((r) => r.stdout, () => info.stdout);
   const points = Math.max(0, ...[...sizes.matchAll(/size:\s+([\d.]+) x ([\d.]+) pts/g)].flatMap((m) => [Number(m[1]), Number(m[2])]));
   // Two pixels short of the cap: pdftoppm rounds a page's size up.
   const used = points > 0 ? Math.max(1, Math.min(dpi, Math.floor(((MAX_PAGE_PX - 2) * 72) / points))) : dpi;
@@ -116,14 +118,14 @@ export async function pdfPages(args: Record<string, unknown>, where: { work: str
   // pdftoppm pads its page numbers to the document's page count: drawn apart, then named by page.
   const temp = await mkdtemp(join(dir, ".draw-"));
   try {
-    await run("pdftoppm", ["-png", "-r", String(used), "-f", "1", "-l", String(last), file, join(temp, "p")], { signal, maxBuffer: 1 << 20 });
+    await run("pdftoppm", ["-png", "-r", String(used), "-f", "1", "-l", String(last), file, join(temp, "p")], { signal, maxBuffer: 1 << 20, env: helperEnv() });
     const drawn = (await readdir(temp)).filter((f) => /^p-\d+\.png$/.test(f)).map((f) => ({ f, page: Number(/(\d+)\.png$/.exec(f)![1]) })).sort((a, b) => a.page - b.page);
     const pages: PdfPages["pages"] = [];
     for (const { f, page } of drawn) {
       await rename(join(temp, f), join(dir, `${page}.png`));
       pages.push({ page, image: `pages/${stem}/${used}/${page}.png` });
     }
-    const { stdout } = await run("pdftotext", ["-l", String(last), "-enc", "UTF-8", file, "-"], { signal, maxBuffer: 16 << 20 });
+    const { stdout } = await run("pdftotext", ["-l", String(last), "-enc", "UTF-8", file, "-"], { signal, maxBuffer: 16 << 20, env: helperEnv() });
     const text = stdout.length > TEXT_CAP ? `${stdout.slice(0, TEXT_CAP - 1)}…` : stdout;
     return { name, pageCount, dpi: used, pages, text };
   } finally {

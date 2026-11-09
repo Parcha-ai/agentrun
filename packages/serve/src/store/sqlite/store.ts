@@ -11,7 +11,7 @@ import { DDL, SCHEMA_VERSION } from "../schema.js";
 import {
   CommandTaken, Fenced, RefreshLeaseLost, SchemaVersionUnknown, StoreConstraint, StoreFromEarlierVersion,
   type AgentRow, type Agents, type AlsoRow, type Claim, type Command, type Journal, type NewRevision, type RevisionRow, type RunPatch, type RunRow, type Runs,
-  type RunState, type Store, type StoreRole, type TemplatePackage, type Templates, type TriggerDef, type TriggerRow, type Triggers, type TriggerScope,
+  type ReleasedState, type RunState, type Store, type StoreRole, type TemplatePackage, type Templates, type TriggerDef, type TriggerRow, type Triggers, type TriggerScope,
   FINAL_STATES, MCP_REFRESH_CALL_MS, MCP_REFRESH_LEASE_MS, type Live, type LiveRow, type Mcp, type McpPinRow, type McpServerRow,
 } from "../store.js";
 import { Connection, type SqliteExecutor, type SqliteValue, type Statement } from "./connection.js";
@@ -148,6 +148,11 @@ function isThisVersionsStore(file: string): boolean {
  *  refuses a schema version this build does not know (SchemaVersionUnknown); a runner refuses no schema (or no data
  *  directory) too. */
 export async function openSqliteStore(options: SqliteStoreOptions): Promise<Store> {
+  // No in-memory store: a caller that names neither place (an undefined passed through) is refused before anything is
+  // opened or made, never left to open a path built from "undefined" (its owner lock in the working directory).
+  if (options.dataDir === undefined && (options as { file?: string }).file === undefined) {
+    throw new TypeError("A store is opened in its data directory (dataDir) or at its file (file): neither was given, so nothing was opened or made.");
+  }
   const role = options.role ?? "server";
   let file: string;
   if (options.dataDir !== undefined) {
@@ -485,8 +490,8 @@ class SqliteStore implements Store {
       const at = this.#now();
       const until = at + leaseMs;
       const picked = "runId" in pick
-        ? await tx.all<{ id: string; state: RunState }>(`SELECT id, state FROM runs WHERE id = ? AND ${CLAIMABLE}`, pick.runId, ...CLAIMABLE_AT(at))
-        : await tx.all<{ id: string; state: RunState }>(`SELECT id, state FROM runs WHERE ${CLAIMABLE} ORDER BY started_at, id LIMIT ?`, ...CLAIMABLE_AT(at), pick.k);
+        ? await tx.all<{ id: string; state: RunState; runner: string | null }>(`SELECT id, state, runner FROM runs WHERE id = ? AND ${CLAIMABLE}`, pick.runId, ...CLAIMABLE_AT(at))
+        : await tx.all<{ id: string; state: RunState; runner: string | null }>(`SELECT id, state, runner FROM runs WHERE ${CLAIMABLE} ORDER BY started_at, id LIMIT ?`, ...CLAIMABLE_AT(at), pick.k);
       if (picked.length === 0) return [];
       const rows = await tx.all<{ id: string; epoch: number }>(
         `UPDATE runs SET ${CLAIM_SET} WHERE id IN (${picked.map(() => "?").join(", ")}) RETURNING id, epoch`,
@@ -495,7 +500,8 @@ class SqliteStore implements Store {
       const epochs = new Map(rows.map((row) => [row.id, row.epoch]));
       // A newer claim of a run supersedes its release here: journal() refuses by epoch, and the newer epoch passes.
       for (const { id } of picked) this.#released.delete(id);
-      return picked.map(({ id, state }) => ({ runId: id, runner, epoch: epochs.get(id)!, until, from: state }));
+      // A running run that still names its runner was taken from it: that runner's lease ran out mid-run (CLAIMABLE).
+      return picked.map(({ id, state, runner: held }) => ({ runId: id, runner, epoch: epochs.get(id)!, until, from: state, ...(state === "running" && held !== null ? { lost: { runner: held } } : {}) }));
     });
   }
 
@@ -529,8 +535,10 @@ class SqliteStore implements Store {
     });
   }
 
-  async release(claim: Claim, { state, wakeAt = null, backoffUntil = null }: { state?: RunState; wakeAt?: number | null; backoffUntil?: number | null } = {}): Promise<void> {
-    const ending = state !== undefined && FINAL_STATES.includes(state);
+  async release(claim: Claim, { state, wakeAt = null, backoffUntil = null }: { state?: ReleasedState; wakeAt?: number | null; backoffUntil?: number | null } = {}): Promise<void> {
+    // The end commit is the one write that makes a run final (applyRunPatch: the leftover rows refused and the run_live
+    // row deleted with it). A release never does: asked to, it is refused before anything is written.
+    if (state !== undefined && FINAL_STATES.includes(state as RunState)) throw new TypeError(`a release never makes a run final (asked for ${state}): only the run's end commit does, refusing its leftover rows with it`);
     await this.#db.transaction(async (tx) => {
       // A run its end already made final was released by that end (applyRunPatch): this release is a no-op, no second
       // move of its epoch and no error, whatever its claim's lease says now.
@@ -542,8 +550,8 @@ class SqliteStore implements Store {
         // The epoch moves on at a release: the released claim is dead everywhere (its journal, its run updates, its takes),
         // never live until the next claim. A claim whose lease ran out releases nothing: the run, running with its lease run
         // out, is claimable at once, never stuck.
-        `UPDATE runs SET epoch = epoch + 1, runner = NULL, claimed_until = NULL, wake_at = ?, backoff_until = ?, state = coalesce(?, state)${ending ? ", ended_at = coalesce(ended_at, ?)" : ""} WHERE ${claimFence(claim, now).where} AND runner = ?`,
-        [wakeAt, backoffUntil, state ?? null, ...(ending ? [now] : []), ...claimFence(claim, now).params, claim.runner],
+        `UPDATE runs SET epoch = epoch + 1, runner = NULL, claimed_until = NULL, wake_at = ?, backoff_until = ?, state = coalesce(?, state) WHERE ${claimFence(claim, now).where} AND runner = ?`,
+        [wakeAt, backoffUntil, state ?? null, ...claimFence(claim, now).params, claim.runner],
       ));
     }, { full: true });
     // The released claim's journal is dead (its epoch moved on): the store keeps it no longer, and refuses it from now.

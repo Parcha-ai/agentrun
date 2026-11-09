@@ -1,8 +1,36 @@
 // Apps: the fixture installs, is listed, comes to the front when launched and leaves it when terminated; the UI tree has
-// the protocol's shape, inside the screen, with the fixture's button found by its id.
+// the protocol's shape, inside the screen, with the fixture's button found by its id. A phone's stock Settings app is
+// listed, launched and terminated with no install, which needs the apps group alone: its launch is seen in the UI tree
+// (Settings' list) when the phone has one, else in a screenshot that is not the one before. On a phone that takes no
+// fixture file the tree's shape is checked on Settings, with its rows found (settings.ts).
 import { MAX_UI_NODES, type Rect, type UiNode } from "../../protocol.js";
 import { FIXTURE_BUTTON } from "../fixture.js";
 import type { Case, CaseContext } from "../types.js";
+import { shoot } from "./screen.js";
+import { openSettings, rowsOf, settingsApp, textsOf, throughSettings } from "./settings.js";
+
+/** Whether the provider and the computer both declare group. */
+const declares = (t: CaseContext, group: "apps.ui_tree" | "screen") => t.provider.capabilities().groups.includes(group) && t.hello.groups.includes(group);
+
+/** A screenshot's pixels sampled on a 16 x 16 grid, with its size: two different screens differ in it. */
+async function screenPrint(t: CaseContext): Promise<string> {
+	const { image } = await shoot(t);
+	const samples: string[] = [];
+	for (let j = 0; j < 16; j++) {
+		for (let i = 0; i < 16; i++) samples.push(image.rgb(Math.floor(((i + 0.5) * image.width) / 16), Math.floor(((j + 0.5) * image.height) / 16)).join(","));
+	}
+	return `${image.width}x${image.height}:${samples.join(";")}`;
+}
+
+/**
+ * What the screen shows now, as the case compares it: the UI tree's texts when the phone has a tree, else a
+ * screenshot's print. Undefined when it has neither, and the launch cannot be seen.
+ */
+async function shown(t: CaseContext): Promise<string | undefined> {
+	if (declares(t, "apps.ui_tree")) return JSON.stringify(textsOf(await t.call("apps.ui_tree", {})));
+	if (declares(t, "screen")) return screenPrint(t);
+	return undefined;
+}
 
 const BOOLEANS = ["clickable", "focused", "selected", "checked", "scrollable"] as const;
 const STRINGS = ["id", "text", "label"] as const;
@@ -57,12 +85,46 @@ export const appsCases: Case[] = [
 		},
 	},
 	{
+		id: "apps.launch-terminate",
+		level: "core",
+		group: "apps",
+		needs: ["apps"],
+		async run(t) {
+			// The phone's own Settings app: listed; launched, in front and shown; terminated, and no longer in front.
+			const app = settingsApp(t);
+			const listed = await t.call("apps.list", {});
+			t.assert(Array.isArray(listed.apps) && listed.apps.every((one) => typeof one?.id === "string"), `apps.list gives apps with ids: ${JSON.stringify(listed.apps).slice(0, 300)}`);
+			t.assert(listed.apps.some((one) => one.id === app), `apps.list holds ${app}`);
+			t.deepEqual(await t.call("apps.terminate", { id: app }), {}, `apps.terminate ${app}`);
+			await t.until(async () => (await foreground(t)) !== app, `${app} not in front after apps.terminate`);
+			const before = await shown(t);
+			if (before === undefined) return t.skip("no way to see a launch: the computer declares neither apps.ui_tree nor screen");
+			t.deepEqual(await t.call("apps.launch", { id: app }), {}, `apps.launch ${app}`);
+			await t.until(async () => (await foreground(t)) === app, `${app} in front after apps.launch`);
+			// apps.list's word is not enough: the screen must show it.
+			if (declares(t, "apps.ui_tree")) {
+				await t.until(async () => {
+					const tree = await t.call("apps.ui_tree", {});
+					return rowsOf(tree).length > 0 && JSON.stringify(textsOf(tree)) !== before;
+				}, `${app} shown after apps.launch: Settings' list in apps.ui_tree, not the screen before it`);
+			} else {
+				await t.until(async () => (await screenPrint(t)) !== before, `${app} shown after apps.launch: a screenshot other than the one before it`);
+			}
+			t.deepEqual(await t.call("apps.terminate", { id: app }), {}, `apps.terminate ${app}, launched`);
+			await t.until(async () => (await foreground(t)) !== app, `${app} no longer in front after apps.terminate`);
+			const missing = await t.client.call("apps.launch", { id: "ai.agentrun.no.such.app" }, { signal: t.signal });
+			t.refused(missing, "apps.launch of an app that is not installed", ["not_found"]);
+		},
+	},
+	{
 		id: "apps.ui-tree-shape",
 		level: "core",
 		group: "apps",
 		needs: ["apps.ui_tree"],
 		async run(t) {
-			await t.fixture();
+			const settings = throughSettings(t);
+			if (settings) await openSettings(t);
+			else await t.fixture();
 			const screen = t.provider.capabilities().groups.includes("screen") ? await t.call("screen.shot", {}) : undefined;
 			const rect: Rect | undefined = screen ? [0, 0, screen.width, screen.height] : undefined;
 			const tree = await t.call("apps.ui_tree", {});
@@ -71,6 +133,10 @@ export const appsCases: Case[] = [
 			t.assert(wrong === undefined, `apps.ui_tree: ${wrong}`);
 			t.equal(tree.nodes, seen.nodes, "apps.ui_tree's nodes, against the nodes in its tree");
 			t.equal(typeof tree.truncated, "boolean", "apps.ui_tree's truncated is a boolean");
+			if (settings) {
+				t.assert(rowsOf(tree).length > 0, "Settings' list, with its rows, in apps.ui_tree");
+				return;
+			}
 			const button = t.present(seen.button, `the fixture's button, by its id ${FIXTURE_BUTTON.id}, in apps.ui_tree`);
 			t.equal(button.text, FIXTURE_BUTTON.text, "the fixture's button's text");
 		},

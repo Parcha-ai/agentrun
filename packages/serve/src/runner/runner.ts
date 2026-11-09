@@ -92,6 +92,8 @@ interface Held {
 }
 
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
+/** The run states a run patch makes final: a commit that lands one is the run's end, and its release. */
+const FINAL = new Set<string>(["ended", "stopped", "failed"]);
 
 export function startRunner(options: RunnerOptions): Runner {
   const {
@@ -133,21 +135,40 @@ export function startRunner(options: RunnerOptions): Runner {
   let commandTimer: NodeJS.Timeout | undefined;
   let polling = false;
 
-  /** The run's journal with this runner's fence on its one write: after the claim is lost, commit throws ClaimLost. */
-  const fenced = (journal: Journal, fence: { lost: boolean }, runId: string): Journal =>
-    new Proxy(journal, {
+  /** The run's journal with this runner's fence on its one write: after the claim is lost, commit throws ClaimLost. A
+   *  commit that lands a final run patch (the loop's own end, which is the run's release) calls `ended` at once: from
+   *  then the run is ending, before the loop's teardown, so a renew answered Fenced by that end's epoch is never a lost
+   *  claim. */
+  const fenced = (journal: Journal, fence: { lost: boolean }, runId: string, ended: () => void): Journal => {
+    let finalStaged = false;
+    return new Proxy(journal, {
       get(target, property) {
         const value: unknown = Reflect.get(target, property, target);
         if (typeof value !== "function") return value;
+        if (property === "stage") {
+          return (staged: { run?: { state?: string } } | undefined, ...rest: unknown[]) => {
+            if (FINAL.has(staged?.run?.state ?? "")) finalStaged = true;
+            return value.call(target, staged, ...rest);
+          };
+        }
         if (property !== "commit") return value.bind(target);
         // pi's commit is async and pi chains on it (group commit, the publish queue): the refusal is a rejected promise,
         // so it fails that commit on the path pi already handles, never a throw out of a caller that is not async.
-        return (...args: unknown[]) =>
-          fence.lost
-            ? Promise.reject(new ClaimLost(`run ${runId}: this runner lost its claim; the commit is not written`))
-            : value.apply(target, args);
+        return (...args: unknown[]) => {
+          if (fence.lost) return Promise.reject(new ClaimLost(`run ${runId}: this runner lost its claim; the commit is not written`));
+          // A stage holds for the commit right after it (the loop's Gate, the runner's endRun): read once, then cleared, so
+          // a refused end staged again is read again.
+          const staged = finalStaged;
+          finalStaged = false;
+          const batches = Array.isArray(args[0]) ? args[0].length : 1;
+          return (value.apply(target, args) as Promise<{ stored?: number }>).then((result) => {
+            if (staged && (result?.stored ?? 0) >= batches) ended();
+            return result;
+          });
+        };
       },
     });
+  };
 
   const armDeadline = (held: Held, at: number) => {
     clearTimeout(held.deadline);
@@ -406,13 +427,20 @@ export function startRunner(options: RunnerOptions): Runner {
     const abort = new AbortController();
     let firstDelivered!: () => void;
     const delivered = new Promise<void>((resolve) => (firstDelivered = resolve));
+    // Set below, once held is made: the loop's end commit lands only after start(), well after.
+    let ending: () => void = () => {};
     const loop = createLoop({
-      journal: (forClaim) => fenced(store.journal(forClaim), fence, forClaim.runId),
+      journal: (forClaim) => fenced(store.journal(forClaim), fence, forClaim.runId, () => ending()),
       flush: () => store.flush(),
       signal: abort.signal,
       delivered,
     });
     const held: Held = { claim, loop, fence, abort, cursor: 0, stopping: false, ending: false, sealed: false, renewing: false, delivering: false };
+    // The loop's own end landed: the run is ending from here, its teardown included (no renew, no lost claim).
+    ending = () => {
+      held.ending = true;
+      clearTimeout(held.deadline);
+    };
     runs.set(claim.runId, held);
     armDeadline(held, sentAt + leaseMs - stopMarginMs);
     emit({ type: "claimed", claim });

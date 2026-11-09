@@ -10,7 +10,8 @@ const caps = { harnesses: [{ id: "pi", available: true }, { id: "claude-agent", 
 describe("AgentEditor, a new agent's tools", () => {
   it("starts with the harness's tools ticked, and the server's tool objects render as their names", () => {
     const html = renderToStaticMarkup(createElement(AgentEditor, { agent: null, caps, step: "tools" }));
-    expect((html.match(/checked=""/g) ?? []).length).toBe(3);
+    // The tools ticked (the Approvals choice below them is a radio of its own).
+    expect((html.match(/<input type="checkbox"[^>]*checked=""/g) ?? []).length).toBe(3);
     expect(html).toContain("web_fetch");
     expect(html).not.toContain("can&#x27;t reach the web");
   });
@@ -24,7 +25,7 @@ describe("AgentEditor, a new agent's tools", () => {
   it("an agent whose only tool is web_fetch reaches the web: no notice", () => {
     const reader = { agent_id: "reader", kind: "agentic" as const, revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: "Reader", instructions: "Read it.", harness: "pi", skills: [], tools: ["web_fetch"] } };
     const html = renderToStaticMarkup(createElement(AgentEditor, { agent: reader, caps: withWebFetch, step: "tools" }));
-    expect((html.match(/checked=""/g) ?? []).length).toBe(1);
+    expect((html.match(/<input type="checkbox"[^>]*checked=""/g) ?? []).length).toBe(1);
     expect(html.match(/<input[^>]*value="web_fetch"[^>]*>/)?.[0]).toContain('checked=""');
     expect(html).not.toContain("can&#x27;t reach the web");
   });
