@@ -70,6 +70,7 @@ test("a completed run's view reads the whole answer, cost and shape from the sto
     pending: null,
     cost: { usd: 0.25, basis: "estimate", charge_state: null, cap_usd: null },
     cap_mode: null,
+    approvals: "ask",
     archived_at: null,
     imported_from: null,
     trigger: null,
@@ -107,7 +108,7 @@ test("a queued run (created, not yet claimed) reads queued and working, its cost
     created_at: iso(T0), updated_at: iso(T0), ended_at: null,
     result: null, error: null, review: null, pending: null,
     cost: { usd: 0, basis: "estimate", charge_state: null, cap_usd: null },
-    cap_mode: null, archived_at: null, imported_from: null, trigger: null, learning: null, poll_after_ms: 1000, last_progress_at: null,
+    cap_mode: null, approvals: "ask", archived_at: null, imported_from: null, trigger: null, learning: null, poll_after_ms: 1000, last_progress_at: null,
   });
   const moment = await momentOverStore(store, "run-1");
   assert.equal(moment.terminal, false);
@@ -139,7 +140,7 @@ test("a working run reads working/working and live, its updated_at and last_prog
     created_at: iso(T0), updated_at: iso(T0 + 10_000), ended_at: null,
     result: null, error: null, review: null, pending: null,
     cost: { usd: 0, basis: "estimate", charge_state: null, cap_usd: null },
-    cap_mode: null, archived_at: null, imported_from: null, trigger: null, learning: null, poll_after_ms: 1000, last_progress_at: iso(T0 + 10_000),
+    cap_mode: null, approvals: "ask", archived_at: null, imported_from: null, trigger: null, learning: null, poll_after_ms: 1000, last_progress_at: iso(T0 + 10_000),
   });
   const moment = await momentOverStore(store, "run-1", liveDeps);
   assert.equal(moment.working, true);
@@ -371,7 +372,7 @@ test("a failed run's view serves its error from the row, with an unknown cost", 
     created_at: iso(T0), updated_at: iso(T0 + 3_000), ended_at: iso(T0 + 3_000),
     result: null, error: { code: "run_failed", message: "The model refused.", retryable: false }, review: null, pending: null,
     cost: { usd: null, basis: "estimate", charge_state: null, cap_usd: null },
-    cap_mode: null, archived_at: null, imported_from: null, trigger: null, learning: null, poll_after_ms: 0, last_progress_at: null,
+    cap_mode: null, approvals: "ask", archived_at: null, imported_from: null, trigger: null, learning: null, poll_after_ms: 0, last_progress_at: null,
   });
   const moment = await momentOverStore(store, "run-1");
   assert.equal(moment.terminalKind, "failed");
@@ -411,4 +412,23 @@ test("a cancelled run (the store's stopped state) reads cancelled, with no resul
   assert.equal(moment.terminal, true);
   assert.equal(moment.terminalKind, "cancelled");
   assert.equal(moment.cancelled, true);
+});
+
+test("the run read carries the agent's approvals setting (never when unattended), as runs.ts serves it; the list omits it", async (t) => {
+  const { store } = await storeOn(t);
+  // An agent that runs unattended (approvals "never"), as its revision body kept it.
+  await store.agents.create({ id: "agent-1", name: "First agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", approvals: "never" } });
+  await store.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { message: "Go." }, title: "Unattended", place: { mode: "runner" } } });
+
+  const view = await viewOverStore(store, "run-1", deps);
+  assert.equal(view.approvals, "never");
+  // The list summary does not carry it, exactly as runs.ts's summary omits it.
+  const summary = await summaryOverStore(store, "run-1", deps);
+  assert.equal("approvals" in summary, false);
+
+  // An agent with none set reads the default, ask.
+  await store.agents.create({ id: "agent-2", name: "Second agent" }, { id: "rev-2", kind: "agentic", body: { instructions: "Answer." } });
+  await store.runs.create({ id: "run-2", agentId: "agent-2", revisionId: "rev-2" }, { body: { input: { message: "Go." }, title: "Default", place: { mode: "runner" } } });
+  const view2 = await viewOverStore(store, "run-2", deps);
+  assert.equal(view2.approvals, "ask");
 });

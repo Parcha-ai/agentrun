@@ -46,6 +46,7 @@ import { Turns } from "./turns.js";
 import { harnessOfBody } from "./harness.js";
 import { browserAsk as browserAskOf, BROWSER_HANDOVER_KIND } from "./browser-commands.js";
 import type { PendingAsk } from "./browser-person.js";
+import { approvalsOf, type Approvals } from "./approvals.js";
 import type { SignIns } from "./sign-ins.js";
 import { FINAL_STATES, type RunRow, type Store } from "./store/store.js";
 
@@ -114,6 +115,9 @@ interface StoreRun {
   /** The browser hand-over the run's agent waits on (the newest ask still waiting), or undefined. Also the `browserAsk`
    *  fact. */
   readonly browserAsk: PendingAsk | undefined;
+  /** Whether the run ran unattended, as its revision kept it (approvals "never"), else the default (ask): the run read's
+   *  `approvals` field, as runs.ts serves it. Named to stand apart from the approval-request map on the view. */
+  readonly approvalsMode: Approvals;
 }
 
 /** A runner holds the run's claim now: it is not in a final state, a runner is named on its row, and its lease has not run
@@ -146,6 +150,8 @@ async function storeRunOf(store: Store, runId: string, deps: ViewDeps): Promise<
   const launch = await launchOf(store, runId);
   const revision = await store.agents.revision(row.revision);
   const harness = launch?.harness ?? harnessOfBody((revision?.body ?? {}) as { harness?: string });
+  // Whether the run ran unattended, from the revision it is pinned to (approvals "never"), else the default (ask).
+  const approvalsMode = approvalsOf((revision?.body as { approvals?: unknown } | undefined)?.approvals);
   const terminal = row.state !== "running";
   // The timeline, then the waiting row a run asking a question shows (withAsks), as the file path's rows carried it, so a
   // run waiting on a question reads the same status and pending.
@@ -214,7 +220,7 @@ async function storeRunOf(store: Store, runId: string, deps: ViewDeps): Promise<
     ...(approvals.size ? { approvals } : {}),
     meta,
   };
-  return { row, runRow, launch, rows, version, harness, learningEnd, view, unshown, values, live, updatedAtMs, lastProgressAt, budget, browserAsk };
+  return { row, runRow, launch, rows, version, harness, learningEnd, view, unshown, values, live, updatedAtMs, lastProgressAt, budget, browserAsk, approvalsMode };
 }
 
 /** A run's learning as the view shows it: its end from the store, in a person's words cut of the host's secrets now, and,
@@ -288,6 +294,8 @@ export async function viewOverStore(store: Store, runId: string, deps: ViewDeps)
     pending,
     cost: costOfView(run),
     cap_mode: launch?.maxCostUsd === undefined ? null : (launch.capMode ?? "expected"),
+    // Whether it ran unattended (its revision's approvals, as it started): never, an ask allowed at its gate; ask, the default.
+    approvals: run.approvalsMode,
     archived_at: row.archivedAt ?? null,
     imported_from: runRow.importedFrom ?? null,
     trigger: launch?.trigger ?? null,
