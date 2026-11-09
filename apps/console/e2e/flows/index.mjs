@@ -8,11 +8,13 @@
 //                                                            making them
 //   origin(server)                                           the origin the page opens (default: the server's own)
 //   allow                                                    hosts the flow routes itself (the rest leave loopback: a failure)
-//   shares                                                   it can run against a server already running (run.mjs --url)
+//   shares                                                   it can run against a server already running (run.mjs --url);
+//                                                            or a function of the run's { setupCodeFile } saying so
 //   signedIn                                                 the page starts signed in (the owner set first if it has none)
 //   pending                                                  what the flow waits on; it doesn't run until then
 import connectGitHub from "./connect-github.mjs";
 import setupOpen from "./setup-open.mjs";
+import setupPublic from "./setup-public.mjs";
 import signIn from "./sign-in.mjs";
 import runToEnd from "./run-to-end.mjs";
 import takeOver from "./take-over.mjs";
@@ -21,7 +23,7 @@ import watchLive from "./watch-live.mjs";
 
 export const flows = [
   setupOpen,
-  { name: "setup-public", pending: "waits on #1995 (setup at a public URL asks for the setup code)" },
+  setupPublic,
   signIn,
   connectGitHub,
   templateApply,

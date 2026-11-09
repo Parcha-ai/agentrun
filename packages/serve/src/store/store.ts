@@ -8,13 +8,22 @@
 // The claim is the one fence for a run: claim() moves the run's epoch up by one, and every write a runner makes for the
 // run (its row, its journal commits, a command taken) carries the epoch it holds. A write under a lower epoch than the
 // run's is refused (Fenced) and writes nothing.
+import type { Context } from "@earendil-works/chord";
 import type { Storage } from "@earendil-works/pi-durable";
+import type { JournalPage } from "./journal/storage.js";
 
 /** A run's state. queued: a row, no runner yet. running: a runner holds the claim. parked: waiting for a person (an
  *  approval, a raised cap) with no claim held; a command row or its wake_at makes it claimable again. ended, stopped and
  *  failed are final. A running run whose runner died is claimable once its claim runs out. */
 export type RunState = "queued" | "running" | "parked" | "ended" | "stopped" | "failed";
 export const FINAL_STATES: readonly RunState[] = ["ended", "stopped", "failed"];
+
+/** Why a command row still untaken when its run went final is refused: the write that makes a run final refuses each
+ *  such row with these words, in that same transaction (a final run takes no new row, so none is left for good). */
+export function endedReason(state: "ended" | "stopped" | "failed"): string {
+  const how = state === "ended" ? "ended" : state === "stopped" ? "was stopped" : "failed";
+  return `the run ${how} before this command was taken`;
+}
 
 /** A runner's hold on a run: the epoch every write it makes for the run carries, until `until` (ms) unless renewed. `from`:
  *  the run's state before this claim (queued; parked: woken by a command or its wake_at; running: released, or its last
@@ -121,10 +130,12 @@ export interface StagedTake {
 }
 
 /** What a journal commit writes beside its batches, in its one transaction, under its fence: the run row's patch and rows
- *  beside it (the next commit that stores a batch), and the commands it takes (the commit that stores each one's effect). */
+ *  beside it, landing with the record `effect` names (required with either: a park's ask, an end's entry), and the
+ *  commands it takes (each with its own effect). Each is written only by the commit that stores its effect. */
 export interface Staged {
   readonly run?: RunPatch;
   readonly also?: readonly AlsoRow[];
+  readonly effect?: number;
   readonly take?: readonly StagedTake[];
 }
 
@@ -133,6 +144,8 @@ export interface Staged {
 export interface Journal extends Storage {
   readonly runId: string;
   stage(staged: Staged): void;
+  /** The run's commits after `afterSeq`, at most `limit`, each with only what it wrote (store/journal JournalPage). */
+  commitsAfter(afterSeq: number, limit: number, context: Context): Promise<JournalPage>;
 }
 
 export interface ChannelPost {
@@ -229,9 +242,85 @@ export interface Runs {
   /** Claims up to `k` claimable runs for `runner`, oldest first, in one transaction: each at its own epoch + 1, with its
    *  `from`. A runner fills its free loops with one call. */
   claimMany(runner: string, k: number, options?: { leaseMs?: number }): Promise<Claim[]>;
-  /** Changes the run's row under `claim`, and writes `also` in the same commit: refused (Fenced) and nothing written when
-   *  the run's epoch is not the claim's. */
-  update(claim: Claim, patch: RunPatch, also?: readonly AlsoRow[]): Promise<RunRow>;
+  /** Changes the run's row under `claim`, and in the same commit writes `also` and marks `take`'s command rows taken (a
+   *  stop the runner applies itself ends the run with its stop row taken, or neither). Refused, nothing written: Fenced when
+   *  the run's epoch is not the claim's; CommandTaken when a command in `take` is taken already, or not the run's. */
+  update(claim: Claim, patch: RunPatch, rows?: { readonly also?: readonly AlsoRow[]; readonly take?: readonly number[] }): Promise<RunRow>;
+}
+
+/** A saved MCP server: its listed tools (each with whether it can be granted, and why not), the owner's prices, and its
+ *  credential sealed (store/seal.ts): bytes the store never opens. `tools` and `prices` are JSON. */
+export interface McpServerRow {
+  readonly name: string;
+  readonly url: string;
+  readonly auth: string;
+  readonly protocol: string | null;
+  readonly tools: unknown;
+  readonly prices: unknown;
+  readonly sealed: Uint8Array | null;
+  /** A refresh in flight: its holder and the lease's end (ms), or null. */
+  readonly refreshHolder: string | null;
+  readonly refreshUntil: number | null;
+  readonly createdAt: number;
+  readonly updatedAt: number;
+}
+
+/** A run's MCP pin: what it may call, per granted server (url, tools, prices), written once at its first claim. */
+export interface McpPinRow {
+  readonly runId: string;
+  readonly body: unknown;
+  readonly pinnedAt: number;
+}
+
+/** The longest an MCP token refresh may take: two tries of 4 s each. The runner's claim step gives its call up by then. */
+export const MCP_REFRESH_CALL_MS = 2 * 4_000;
+/** A refresh lease's length by default: the call's deadline and room to write its result. */
+export const MCP_REFRESH_LEASE_MS = MCP_REFRESH_CALL_MS + 4_000;
+
+export interface Mcp {
+  /** The server's write: the server's row, inserted or replaced by name (its first save's time kept). An owner's save
+   *  clears any refresh lease, so a refresh in flight is refused (RefreshLeaseLost) and never overwrites it. */
+  put(server: { name: string; url: string; auth: string; protocol?: string | null; tools: unknown; prices?: unknown; sealed?: Uint8Array | null }): Promise<McpServerRow>;
+  remove(name: string): Promise<void>;
+  /** The registry's rows, by name. */
+  servers(): Promise<McpServerRow[]>;
+  server(name: string): Promise<McpServerRow | undefined>;
+  /** The run's pin, or none (a run that grants no MCP tool has none). */
+  pin(runId: string): Promise<McpPinRow | undefined>;
+  /** Writes the run's pin under `claim` unless it has one, in one transaction with the claim's epoch fence, and answers the
+   *  pin as stored: never rewritten, so a second call (or a later claim's) reads the first. Fenced, writing nothing, on a
+   *  stale claim. */
+  pinOnce(claim: Claim, body: unknown): Promise<McpPinRow>;
+  /** One refresh at a time per server (a provider that rotates refresh tokens spends the old one at each refresh): the lease
+   *  is granted to `holder` for `ms` (MCP_REFRESH_LEASE_MS by default) only while the credential is still the one it read
+   *  (`seen`: the sealed bytes, null for none) and no live lease is held. Not granted: the current row comes back, and the
+   *  caller waits for the holder's set (re-reading) or the lease's end. A lease whose holder died runs out; the next claim
+   *  may take it. `ms` must be longer than the refresh call's own deadline (MCP_REFRESH_CALL_MS: the holder gives its call
+   *  up by then), so a lease never lapses while its holder's call may still spend the token; a shorter one is refused. */
+  leaseRefresh(name: string, lease: { seen: Uint8Array | null; holder: string; ms?: number }): Promise<{ leased: boolean; row: McpServerRow }>;
+  /** The lease holder's refreshed credential: written, and the lease cleared, in one transaction. RefreshLeaseLost (nothing
+   *  written) when `holder` no longer holds the lease (it ran out and another claim took it, or the server was removed). */
+  refreshToken(name: string, refresh: { holder: string; sealed: Uint8Array }): Promise<McpServerRow>;
+  /** Gives the lease back without a new credential (the refresh failed or got no answer), so the next claim may try at once. */
+  releaseRefresh(name: string, holder: string): Promise<void>;
+}
+
+/** A running run's live view as the store keeps it: `state` is JSON (the tool it runs now, its partial text). */
+export interface LiveRow {
+  readonly runId: string;
+  readonly state: unknown;
+  readonly updatedAt: number;
+}
+
+export interface Live {
+  /** A runner's tick: every changed run's row, written in ONE transaction, each fenced by its claim's epoch. A row whose
+   *  claim is stale is skipped (never written); the rest are written, overwriting each run's last. */
+  put(rows: readonly { readonly claim: Claim; readonly state: unknown }[]): Promise<{ written: string[]; fenced: string[] }>;
+  /** The rows of `runIds` that have one, in one query: the server's read. */
+  read(runIds: readonly string[]): Promise<LiveRow[]>;
+  /** The run's row goes, at its end, under `claim`: fenced by its epoch like a put, so a loop that ends after its claim
+   *  was lost drops nothing of the row a later claim wrote. */
+  drop(claim: Claim): Promise<void>;
 }
 
 /** Who opens the store. The server sets the schema up at its start and holds the store's owner lock (one server per
@@ -243,11 +332,16 @@ export interface Store {
   readonly templates: Templates;
   readonly triggers: Triggers;
   readonly runs: Runs;
+  readonly mcp: Mcp;
+  readonly live: Live;
   /** Claims the run for `runner` until now + `leaseMs`: the run's epoch + 1 when it is claimable (runs.claimable); null when
    *  another claim holds it, or it is final, or parked with nothing to wake it. A queued or parked run becomes running. */
   claim(runId: string, runner: string, options?: { leaseMs?: number }): Promise<Claim | null>;
   /** Moves the claim's end to now + `leaseMs`. Fenced when the run's epoch moved on. */
   renew(claim: Claim, options?: { leaseMs?: number }): Promise<Claim>;
+  /** Renews every claim in one transaction, each to now + `leaseMs`: a runner's renew of all it holds. Each answer is the
+   *  renewed claim, or Fenced for one whose epoch moved on (nothing written to it; the others renew). */
+  renewMany(claims: readonly Claim[], options?: { leaseMs?: number }): Promise<(Claim | Fenced)[]>;
   /** Gives the run back (no runner, no claimed_until; `state` when given; `wakeAt` and `backoffUntil` or none), in a
    *  durable commit (as flush). Fenced when the epoch moved on. */
   release(claim: Claim, options?: { state?: RunState; wakeAt?: number | null; backoffUntil?: number | null }): Promise<void>;
@@ -261,6 +355,9 @@ export interface Store {
   command(runId: string, command: { kind: string; body?: unknown }): Promise<Command>;
   /** The run's commands with an id above `after`, in id order. */
   commands(runId: string, after: number): Promise<Command[]>;
+  /** Every run's commands with an id above its own cursor, in id order, in one read: a runner's poll of all it holds. A run
+   *  with none is absent from the map. */
+  commandsOf(cursors: readonly { runId: string; after: number }[]): Promise<Map<string, Command[]>>;
   /** Marks the command taken (or refused, with `reason`) under the claim, once: a command already taken stays as it was.
    *  Fenced on a stale claim. */
   take(claim: Claim, commandId: number, outcome?: "taken" | "refused", reason?: string): Promise<void>;
@@ -339,6 +436,32 @@ export class StoreOwned extends Error {
   constructor(message: string) {
     super(message);
     this.name = "StoreOwned";
+  }
+}
+
+/** A refreshed MCP credential from a claim that no longer holds the server's refresh lease: nothing is written. */
+export class RefreshLeaseLost extends Error {
+  readonly server: string;
+  readonly holder: string;
+  constructor(server: string, holder: string) {
+    super(`the MCP server ${server}'s refresh lease is not ${holder}'s any more: its token set is not written`);
+    this.name = "RefreshLeaseLost";
+    this.server = server;
+    this.holder = holder;
+  }
+}
+
+/** A data directory an earlier version wrote (its store, agent homes, run databases or settings files): this version
+ *  neither reads nor moves it. `found`: what was found, relative to the directory. */
+export class StoreFromEarlierVersion extends Error {
+  readonly found: readonly string[];
+  constructor(dataDir: string, found: readonly string[]) {
+    super(
+      `${dataDir} holds an earlier version's data (${found.join(", ")}), which this version does not read or move: ` +
+        "start with a new, empty directory, and add your MCP servers, keys and sign-ins there again.",
+    );
+    this.name = "StoreFromEarlierVersion";
+    this.found = found;
   }
 }
 
