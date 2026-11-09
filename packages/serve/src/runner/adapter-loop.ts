@@ -160,7 +160,7 @@ async function openCliRecord(harness: Harness, journal: Gate["journal"], context
       if (event.type === "text") {
         if (answer === undefined) text += event.delta;
         else answer += event.delta;
-      } else if (event.type === "tool_start") void flushText().catch(() => undefined);
+      } else if (event.type === "tool_start" || event.type === "text_end") void flushText().catch(() => undefined);
       else if (event.type === "turn_end") void flushText(event).catch(() => undefined);
     },
     flushText,
