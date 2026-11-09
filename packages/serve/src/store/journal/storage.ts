@@ -37,7 +37,8 @@ import {
   type TaskRecord,
 } from "@earendil-works/pi-durable";
 import { PI_TABLE as T } from "../schema.js";
-import type { Connection } from "../sqlite/connection.js";
+import { type Dialect, SQLITE } from "../dialect.js";
+import type { StoreConnection } from "../sqlite/connection.js";
 import { claimFence } from "../fence.js";
 import { applyRunPatch, refuseLeftovers } from "../sqlite/run-patch.js";
 import { type Claim, CommandTaken, Fenced, type Journal, type Staged } from "../store.js";
@@ -45,8 +46,10 @@ import { type Claim, CommandTaken, Fenced, type Journal, type Staged } from "../
 /** A run's claim, as the journal is opened under it: the run and the epoch its claim holds. */
 export type JournalClaim = Pick<Claim, "runId" | "epoch">;
 
-/** The store's connection as the journal uses it (sqlite/connection.ts): reads, and one interactive transaction per commit. */
-export type JournalConnection = Pick<Connection, "get" | "all" | "transaction">;
+/** The store's connection as the journal uses it (sqlite/connection.ts StoreConnection, on SQLite or Postgres): reads, and
+ *  one interactive transaction per commit. Its dialect (store/dialect.ts) when it names one; a connection that names none
+ *  is SQLite's, as every connection was before there were two. */
+export type JournalConnection = Pick<StoreConnection, "get" | "all" | "transaction"> & { readonly dialect?: Dialect };
 
 /** A value a statement binds. */
 type SqliteValue = null | number | bigint | string | Uint8Array;
@@ -187,6 +190,8 @@ function watchCalls(executor: SqliteExecutor, calls: { failed: boolean }): Sqlit
 /** pi-durable's Storage for one run in the one store. */
 export class RunStorage implements Journal {
   readonly #db: JournalConnection;
+  /** What the connection's database says differently (store/dialect.ts): SQLite's when it names none. */
+  readonly #dialect: Dialect;
   readonly #read: Pick<SqliteExecutor, "get" | "all">;
   readonly #runId: string;
   readonly #epoch: number;
@@ -210,6 +215,7 @@ export class RunStorage implements Journal {
    *  on first use, by its first commit or mintId. `now`: the store's clock (epoch ms). */
   constructor(db: JournalConnection, claim: JournalClaim, now: () => number = Date.now, onClose?: () => void) {
     this.#db = db;
+    this.#dialect = db.dialect ?? SQLITE;
     this.#read = readsOf(db);
     this.#runId = claim.runId;
     this.#epoch = claim.epoch;
@@ -367,7 +373,7 @@ export class RunStorage implements Journal {
         // them), then the takes.
         const now = this.#now();
         if (patching && (staged?.run !== undefined || (staged?.also ?? []).length > 0)) {
-          await applyRunPatch(tx, { runId: this.#runId, epoch: this.#epoch }, staged?.run ?? {}, staged?.also ?? [], now);
+          await applyRunPatch(tx, { runId: this.#runId, epoch: this.#epoch }, staged?.run ?? {}, staged?.also ?? [], now, this.#dialect);
         }
         for (const commandId of taking) {
           if ((await tx.runCounted("UPDATE commands SET taken_at = ? WHERE id = ? AND run_id = ? AND taken_at IS NULL", now, commandId, this.#runId)) === 0) {
@@ -1012,7 +1018,8 @@ export class RunStorage implements Journal {
   }
 
   async #claimId(executor: SqliteExecutor, id: number, table: string): Promise<void> {
-    await executor.run(`INSERT OR IGNORE INTO ${T.recordIds} (run_id, id, record_type) VALUES (?, ?, ?)`, this.#runId, id, table);
+    const d = this.#dialect;
+    await executor.run(`${d.insertOrIgnore} INTO ${T.recordIds} (run_id, id, record_type) VALUES (?, ?, ?)${d.onConflictIgnore}`, this.#runId, id, table);
   }
 
   /** Resolve each copy to a base of its source's state before this batch, which may not change the source. */
