@@ -958,3 +958,196 @@ test("the phone's watch() gives its PNG frames whole and upright, landscape too,
 	await watched.value.close();
 	await provider.release(ref, "delete");
 });
+
+// --- the live view's phone under a misbehaving phone or viewer (#2017's review and security read) ----------------------
+
+/** The fake's adb with each spawned run going through around(args, options, run): the test's own phone behaviour. */
+function aroundAdb(fake, around) {
+	const run = (args, options = {}) => around(args, options, () => fake.adb.run(args, options));
+	return Object.assign((args, options) => run(args, options), { run, server: fake.adb.server });
+}
+
+/** A run that answers only when its signal fires, as a stalled adb killed by it does; with no signal, never. */
+const stalled = (options) =>
+	new Promise((resolve) => {
+		const stop = () => resolve({ ok: false, error: { code: "aborted", message: "adb was aborted" } });
+		if (options.signal?.aborted) stop();
+		else options.signal?.addEventListener("abort", stop, { once: true });
+	});
+
+test("a phone watch's screencap and its poll sleep end when the watch is cancelled or the connection closed: neither waits for the phone", { timeout: 10_000 }, async (t) => {
+	// A watch that waits for the phone holds no timer: this one keeps the run alive so the test's bound can fail it.
+	const alive = setInterval(() => {}, 1_000);
+	t.after(() => clearInterval(alive));
+	const fake = fakePhoneHarness();
+	let stall = false;
+	let began;
+	const capturing = () => new Promise((resolve) => (began = resolve));
+	const adb = aroundAdb(fake, (args, options, run) => (stall && args.includes("screencap") ? (began(), stalled(options)) : run()));
+	let hang = false;
+	let slept;
+	const sleeping = () => new Promise((resolve) => (slept = resolve));
+	const sleep = (ms) => (hang ? (slept(ms), new Promise(() => {})) : fake.clock.sleep(ms));
+	const provider = await create({ apiKey: KEY, fetch: fake.fetch, adb, ledger: memoryLedger(), now: fake.clock.now, sleep });
+	const { value: ref } = await provider.create(SPEC);
+	const { value: connection } = await provider.connect(ref);
+	const { client } = connection;
+	assert.equal((await client.call("screen.watch", { after: 0 })).ok, true);
+
+	// A screencap that stalls: the watch's cancel ends it.
+	stall = true;
+	let cancel = new AbortController();
+	let started = capturing();
+	let call = client.call("screen.watch", { after: 0 }, { signal: cancel.signal });
+	// after 0 is older than the newest frame: answered at once, with no screencap. after 1 waits for a change.
+	assert.equal((await call).value.seq, 1);
+	call = client.call("screen.watch", { after: 1, waitMs: 3000 }, { signal: cancel.signal });
+	await started;
+	cancel.abort();
+	let ended = await call;
+	assert.equal(ended.ok, false, JSON.stringify(ended));
+	assert.equal(ended.error.code, "aborted");
+
+	// A poll sleep that never ends by itself: the watch's cancel ends it.
+	stall = false;
+	hang = true;
+	cancel = new AbortController();
+	const asleep = sleeping();
+	call = client.call("screen.watch", { after: 1, waitMs: 3000 }, { signal: cancel.signal });
+	await asleep;
+	cancel.abort();
+	ended = await call;
+	assert.equal(ended.ok, false, JSON.stringify(ended));
+	assert.equal(ended.error.code, "aborted");
+	hang = false;
+
+	// A screencap that stalls with no cancel: closing the connection ends it.
+	stall = true;
+	started = capturing();
+	call = client.call("screen.watch", { after: 1, waitMs: 3000 });
+	await started;
+	await connection.close();
+	ended = await call;
+	assert.equal(ended.ok, false, JSON.stringify(ended));
+
+	// watch() over a stalled screencap: close() comes back, the frame reader does not hold it.
+	stall = false;
+	const frames = [];
+	let ack;
+	let arrived;
+	const first = new Promise((resolve) => (arrived = resolve));
+	const watched = await provider.watch(ref, {
+		frame(frame, given) {
+			frames.push(frame);
+			ack = given;
+			arrived();
+		},
+		ended() {},
+	});
+	assert.equal(watched.ok, true, JSON.stringify(watched));
+	await first;
+	stall = true;
+	started = capturing();
+	ack();
+	await started;
+	await watched.value.close();
+	assert.equal(frames.length, 1);
+	await provider.release(ref, "delete");
+});
+
+test("an animated phone screen, acked at once, is read about once a second: the pace holds across calls", { timeout: 10_000 }, async () => {
+	const fake = fakePhoneHarness();
+	const reads = [];
+	let shade = 0;
+	const adb = aroundAdb(fake, async (args, options, run) => {
+		const ran = await run();
+		if (!args.includes("screencap") || !ran.ok) return ran;
+		// Each screencap differs from the last: an animation.
+		reads.push(fake.clock.now());
+		const stdout = Buffer.from(ran.value.stdout);
+		stdout[stdout.length - 2] = shade++ % 256;
+		return { ok: true, value: { ...ran.value, stdout } };
+	});
+	const provider = await create({ apiKey: KEY, fetch: fake.fetch, adb, ledger: memoryLedger(), now: fake.clock.now, sleep: fake.clock.sleep });
+	const { value: ref } = await provider.create(SPEC);
+	const { value: connection } = await provider.connect(ref);
+	for (let after = 0; after < 4; after++) {
+		const frame = await connection.client.call("screen.watch", { after });
+		assert.equal(frame.value.seq, after + 1, JSON.stringify(frame).slice(0, 200));
+	}
+	const gaps = reads.slice(1).map((at, i) => at - reads[i]);
+	assert.ok(gaps.length >= 3 && gaps.every((gap) => gap >= 1000), `screencaps ${gaps.join(", ")} ms apart`);
+	await connection.close();
+	await provider.release(ref, "delete");
+});
+
+test("a phone runs one input batch at a time: a second waits for the first, whole, and never cuts into it", { timeout: 10_000 }, async () => {
+	const fake = fakePhoneHarness();
+	let armed = false;
+	let wake;
+	let began;
+	const waiting = new Promise((resolve) => (began = resolve));
+	const sleep = (ms) => (armed ? (began(ms), new Promise((resolve) => (wake = resolve))) : fake.clock.sleep(ms));
+	const provider = await create({ apiKey: KEY, fetch: fake.fetch, adb: fake.adb, ledger: memoryLedger(), now: fake.clock.now, sleep });
+	const { value: ref } = await provider.create(SPEC);
+	const { value: connection } = await provider.connect(ref);
+	const { client } = connection;
+	armed = true;
+	const first = client.call("input.actions", { actions: [{ type: "wait", ms: 500 }, { type: "tap", at: [100, 300] }] });
+	await waiting;
+	const second = client.call("input.actions", { actions: [{ type: "button", name: "back" }] });
+	for (let turn = 0; turn < 5; turn++) await new Promise((resolve) => setImmediate(resolve));
+	assert.equal(fake.shells().filter((command) => command.startsWith("input keyevent")).length, 0, "the second batch waits for the first");
+	armed = false;
+	wake();
+	assert.deepEqual(await first, { ok: true, value: { done: 2 } });
+	assert.deepEqual(await second, { ok: true, value: { done: 1 } });
+	const order = fake.shells().filter((command) => /^input (tap|keyevent)/.test(command));
+	assert.deepEqual(order, ["input tap 100 300", "input keyevent KEYCODE_BACK"]);
+	await connection.close();
+	await provider.release(ref, "delete");
+});
+
+test("a phone types 65,536 characters at most in one type action, computerd's bound: one more is refused as limit, with nothing typed", async () => {
+	const { provider, fake } = await setup();
+	const { value: ref } = await provider.create(SPEC);
+	const { client } = (await provider.connect(ref)).value;
+	const over = await client.call("input.actions", { actions: [{ type: "type", text: "a".repeat(65_537) }] });
+	assert.equal(over.ok, true, JSON.stringify(over).slice(0, 300));
+	assert.equal(over.value.done, 0);
+	assert.deepEqual([over.value.failed?.index, over.value.failed?.kind], [0, "limit"]);
+	assert.match(over.value.failed.message, /65537 characters.*65536/);
+	assert.equal(fake.shells().filter((command) => command.startsWith("input text")).length, 0, "nothing typed");
+	const most = await client.call("input.actions", { actions: [{ type: "type", text: "a".repeat(65_536) }] });
+	assert.deepEqual(most, { ok: true, value: { done: 1 } });
+});
+
+test("no phone error carries the phone's endpoint: adb's connect answer gets fixed words, and the adb server's and a shell's words are redacted", async () => {
+	const endpoint = /phone-harness\.test|:2222\d/;
+	// adb's connect answer names the endpoint: the provider's error says what failed in its own words.
+	const fake = fakePhoneHarness();
+	const server = (service, options) => (service.startsWith("host:connect:") ? Promise.resolve({ ok: true, value: `failed to connect to '${service.slice("host:connect:".length)}': Connection refused` }) : fake.adb.server(service, options));
+	const adb = Object.assign((args, options) => fake.adb.run(args, options), { run: fake.adb.run, server });
+	const provider = await create({ apiKey: KEY, fetch: fake.fetch, adb, ledger: memoryLedger(), now: fake.clock.now, sleep: fake.clock.sleep });
+	const { value: ref } = await provider.create(SPEC);
+	const refused = await provider.connect(ref);
+	assert.equal(refused.ok, false);
+	assert.match(refused.error.message, /adb could not reach the phone/);
+	assert.doesNotMatch(refused.error.message, endpoint);
+	// The adb server's FAIL words, which may name the endpoint.
+	const frame = (status, message) => Buffer.from(`${status}${Buffer.byteLength(message).toString(16).padStart(4, "0")}${message}`);
+	const failed = phone.adbAnswer(frame("FAIL", `failed to connect to '${ADB_HOST}:22221'`), "host:connect");
+	assert.equal(failed.ok, false);
+	assert.doesNotMatch(failed.error.message, endpoint);
+	assert.match(failed.error.message, /^the adb server refused host:connect: failed to connect to/);
+	// A shell's stderr, which adb fills with the device's name.
+	const other = fakePhoneHarness();
+	const noisy = aroundAdb(other, (args, options, run) => (args.at(-1)?.startsWith("input tap") ? Promise.resolve({ ok: true, value: { exitCode: 1, stdout: Buffer.alloc(0), stderr: `error: device '${ADB_HOST}:22221' not found\n` } }) : run()));
+	const second = await create({ apiKey: KEY, fetch: other.fetch, adb: noisy, ledger: memoryLedger(), now: other.clock.now, sleep: other.clock.sleep });
+	const { value: ref2 } = await second.create(SPEC);
+	const { client } = (await second.connect(ref2)).value;
+	const tapped = await client.call("input.actions", { actions: [{ type: "tap", at: [100, 300] }] });
+	assert.equal(tapped.ok, true, JSON.stringify(tapped));
+	assert.match(tapped.value.failed.message, /input tap on the phone failed/);
+	assert.doesNotMatch(tapped.value.failed.message, endpoint);
+});
