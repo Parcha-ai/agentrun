@@ -262,12 +262,27 @@ async function turns(t, n, ms = 0) {
   }
 }
 
+/** The runner's `store` with its claim's release (the end's last store write, runner.ts finish) answered only after
+ *  `turns` turns of the event loop, as a loaded machine's store answers late: the order in which the end's own store work
+ *  outlasts a waiter that counts turns. Each turn is a setImmediate, which the mock timers leave alone. */
+const lateRelease = (turns) => (store) => new Proxy(store, {
+  get(target, key) {
+    const value = Reflect.get(target, key, target);
+    if (key !== "release" || typeof value !== "function") return typeof value === "function" ? value.bind(target) : value;
+    return async (...args) => {
+      for (let i = 0; i < turns; i += 1) await new Promise((resolve) => setImmediate(resolve));
+      return value.apply(target, args);
+    };
+  },
+});
+
 test("a run held when the runner closes keeps its mount credential through the drain and loses it at the abort", async (t) => {
   // The drain's bound is a setTimeout of drainMs in close() (runner.ts takes drainMs, no timer of its own): node:test's mock
   // timers (setTimeout alone, enabled just around close) move it on, so nothing here waits on the wall clock.
   const DRAIN_MS = 30_000;
   const w = await revokeRun(t, { script: [{ call: "slow" }, { say: "never" }] });
-  const runner = w.start({ ...STEADY, drainMs: DRAIN_MS });
+  // The end's release answers late (800 turns), as a loaded machine's store did in round 115.
+  const runner = w.start({ ...STEADY, drainMs: DRAIN_MS }, lateRelease(800));
   await w.slowStarted;
   assert.equal(w.control.users.size, 1, "the run holds its token while it runs");
   const deletes = () => w.control.requests.filter((one) => one.method === "DELETE");
