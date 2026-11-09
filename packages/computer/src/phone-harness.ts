@@ -796,6 +796,8 @@ const KEYCODES: Record<string, string> = {
 const BUTTON_KEYS = { back: "BACK", home: "HOME", app_switch: "APP_SWITCH" } as const;
 
 type Call = Result<unknown>;
+/** One action's shell commands; waitMs, a wait before them; busyMs, how long they take on the phone by design. */
+type Plan = { commands: string[]; waitMs?: number; busyMs?: number };
 const refuse = (code: ComputerErrorCode, message: string): Call => fail(code, message);
 
 /** The in-process client of one cloud Android: each protocol method is one or more adb commands. */
@@ -851,8 +853,8 @@ class AdbClient implements ComputerClient {
 	}
 
 	/** One shell command on the phone: its stdout, or the failure in words. */
-	async #shell(command: string, signal?: AbortSignal): Promise<Result<string>> {
-		const ran = await this.adb(["shell", command], signal ? { signal } : {});
+	async #shell(command: string, signal?: AbortSignal, timeoutMs?: number): Promise<Result<string>> {
+		const ran = await this.adb(["shell", command], { ...(signal ? { signal } : {}), ...(timeoutMs === undefined ? {} : { timeoutMs }) });
 		if (!ran.ok) return ran;
 		if (ran.value.exitCode !== 0) {
 			const why = (ran.value.stderr.trim() || ran.value.stdout.toString("utf8").trim()).split("\n")[0] || `exit code ${ran.value.exitCode}`;
@@ -938,19 +940,35 @@ class AdbClient implements ComputerClient {
 
 	// --- input ---------------------------------------------------------------------------------------------------
 
-	/** The shell commands of one action, or why the phone cannot do it. */
-	#commands(action: InputAction): { commands: string[]; waitMs?: number } | { kind: DaemonErrorKind; message: string } {
+	/** The shell commands of one action, or why the phone cannot do it. Its adb call gets busyMs on top of its bound. */
+	#commands(action: InputAction): Plan | { kind: DaemonErrorKind; message: string } {
 		const point = ([x, y]: [number, number]) => `${Math.round(x)} ${Math.round(y)}`;
 		switch (action.type) {
 			case "tap":
 				return { commands: Array.from({ length: action.count ?? 1 }, () => `input tap ${point(action.at)}`) };
 			case "long_press":
-				return { commands: [`input swipe ${point(action.at)} ${point(action.at)} ${action.ms ?? 800}`] };
+				return { commands: [`input swipe ${point(action.at)} ${point(action.at)} ${action.ms ?? 800}`], busyMs: action.ms ?? 800 };
 			case "swipe": {
 				const path = action.path;
-				if (path.length === 2) return { commands: [`input swipe ${point(path[0])} ${point(path[1])} ${action.ms ?? 300}`] };
+				if (path.length === 2) return { commands: [`input swipe ${point(path[0])} ${point(path[1])} ${action.ms ?? 300}`], busyMs: action.ms ?? 300 };
 				const last = path[path.length - 1];
-				return { commands: [[`input motionevent DOWN ${point(path[0])}`, ...path.slice(1).map((p) => `input motionevent MOVE ${point(p)}`), `input motionevent UP ${point(last)}`].join(";")] };
+				// input motionevent has no duration, so ms goes between the moves as toybox sleeps. Each segment takes its
+				// share by length, evenly when the path has none. Each motionevent takes time of its own, so the swipe
+				// lasts ms at least.
+				const lengths = path.slice(1).map((p, i) => Math.hypot(p[0] - path[i][0], p[1] - path[i][1]));
+				const total = lengths.reduce((sum, one) => sum + one, 0);
+				const steps = [`input motionevent DOWN ${point(path[0])}`];
+				let gone = 0;
+				let walked = 0;
+				for (const [i, p] of path.slice(1).entries()) {
+					walked += total > 0 ? lengths[i] : 1;
+					const by = action.ms === undefined ? 0 : Math.round((action.ms * walked) / (total > 0 ? total : lengths.length));
+					if (by > gone) steps.push(`sleep ${(by - gone) / 1000}`);
+					gone = by;
+					steps.push(`input motionevent MOVE ${point(p)}`);
+				}
+				steps.push(`input motionevent UP ${point(last)}`);
+				return { commands: [steps.join(";")], busyMs: gone };
 			}
 			case "button":
 				return { commands: [`input keyevent KEYCODE_${BUTTON_KEYS[action.name]}`] };
@@ -1001,7 +1019,7 @@ class AdbClient implements ComputerClient {
 		const refused = checkActions(actions, PHONE_GROUPS);
 		if (refused !== undefined) return ok({ done: 0, failed: refused } satisfies InputActionsResult);
 		const list = actions as InputAction[];
-		const plans: Array<{ commands: string[]; waitMs?: number }> = [];
+		const plans: Plan[] = [];
 		for (const [index, action] of list.entries()) {
 			const plan = this.#commands(action);
 			if ("kind" in plan) return ok({ done: 0, failed: { index, kind: plan.kind, message: `action ${index}: ${plan.message}` } } satisfies InputActionsResult);
@@ -1023,7 +1041,7 @@ class AdbClient implements ComputerClient {
 			}
 			for (const command of plan.commands) {
 				if (signal?.aborted) return cancelled(index);
-				const ran = await this.#shell(command, signal);
+				const ran = await this.#shell(command, signal, ADB_TIMEOUT_MS + (plan.busyMs ?? 0));
 				if (!ran.ok) {
 					const kind: DaemonErrorKind = ran.error.code === "timeout" || ran.error.code === "aborted" || ran.error.code === "not_found" ? ran.error.code : "invalid";
 					return ok({ done: index, failed: { index, kind, message: `action ${index}: ${ran.error.message}` } } satisfies InputActionsResult);

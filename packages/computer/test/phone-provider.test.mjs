@@ -543,6 +543,12 @@ test("a swipe of more than two points takes its ms, spread over its segments by 
 		],
 		"200 px of 300 take 400 ms of 600, and the last 100 px the other 200",
 	);
+	// adb's bound on a timed command leaves room for its own time: 30 s on top of the swipe's or the long press's ms.
+	await client.call("input.actions", { actions: [{ type: "swipe", path: [[10, 10], [10, 500]], ms: 45_000 }, { type: "long_press", at: [10, 10], ms: 40_000 }] });
+	const bound = (pattern) => fake.adbRuns().findLast((one) => pattern.test(one.args.at(-1))).timeoutMs;
+	assert.equal(bound(/^input motionevent DOWN 100 100;/), 30_600);
+	assert.equal(bound(/^input swipe 10 10 10 500 45000$/), 75_000);
+	assert.equal(bound(/^input swipe 10 10 10 10 40000$/), 70_000);
 });
 
 // The hang guard only bounds a failure: on a pass the batch answers in microtasks, with no timer.

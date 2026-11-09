@@ -1842,7 +1842,8 @@ the API's control URL) is a later change: `platform: "ios"` is refused in words.
   - `screen.shot`/`screen.read`: a raw `screencap`, cropped to the region and encoded as an RGBA PNG; `scale` is the
     density over 160;
   - `input.actions`: checked whole first (`checkActions`). Then tap, long press, swipe (`input swipe`, or
-    `input motionevent` for a path of three points or more), the back, home and app switch buttons, `type`
+    `input motionevent` for a path of three points or more, its `ms` shared between the moves by each segment's length
+    as `sleep`s, so it lasts `ms` at least), the back, home and app switch buttons, `type`
     (`input text`, ASCII and line breaks) and one key at a time (`input keyevent`), and `wait`. A cancelled batch
     stops at the action it is on, a `wait` included, and answers failed, kind `aborted`, there;
   - `apps.list` (`pm list packages`, and the app in front from `dumpsys activity activities`), `apps.launch` (its

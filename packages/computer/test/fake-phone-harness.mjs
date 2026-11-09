@@ -462,6 +462,8 @@ export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = fa
 		requests: () => requests,
 		/** Every spawned adb's argv. */
 		adbCalls: () => adbCalls.map((c) => c.args),
+		/** Every spawned adb's argv, with the bound it was given. */
+		adbRuns: () => adbCalls.map((c) => ({ args: c.args, timeoutMs: c.timeoutMs })),
 		/** Every request to the local adb server. */
 		serverCalls: () => [...serverCalls],
 		/** The shell commands the phone ran, in order, from an argv or from stdin. */
