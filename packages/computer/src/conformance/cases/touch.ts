@@ -6,7 +6,7 @@ import type { Point, UiTreeResult } from "../../protocol.js";
 import type { FixtureEvent, StartedFixture } from "../fixture.js";
 import type { Case, CaseContext } from "../types.js";
 import { act, allRan, logged, pointIn } from "./input.js";
-import { listOf, middle, openSettings, rowsOf, settingsRows, tapScene, textsOf, throughSettings } from "./settings.js";
+import { listOf, middle, openSettings, rowsOf, settingsRows, showsName, tapScene, textsOf, throughSettings } from "./settings.js";
 
 /** How far a logged touch may be from where it was aimed: a phone's input path may round. */
 const SLACK = 2;
@@ -27,7 +27,11 @@ async function observed(t: CaseContext): Promise<StartedFixture> {
 	return t.fixture();
 }
 
-/** A tap on Settings' first row opens its page, which shows its title and not the next row's; back comes back to the list. */
+/**
+ * A tap on Settings' first row opens its page: the row's title shows, as a text or a label (a live Android 15 page
+ * shows it only as its toolbar's content-desc), and the next row is gone. Back comes back to the list. A tap that lands
+ * nowhere leaves the next row, and one on another row shows another title, so neither passes.
+ */
 async function tapThroughSettings(t: CaseContext) {
 	await openSettings(t);
 	const { rows } = await settingsRows(t, 2);
@@ -38,9 +42,8 @@ async function tapThroughSettings(t: CaseContext) {
 	try {
 		await t.until(async () => {
 			seen = await t.call("apps.ui_tree", {});
-			const texts = textsOf(seen);
-			return texts.includes(row.text) && !texts.includes(next.text);
-		}, `the page of ${JSON.stringify(row.text)} after a tap on its row: its title, and not the row ${JSON.stringify(next.text)}`);
+			return showsName(seen, row.text) && !showsName(seen, next.text);
+		}, `the page of ${JSON.stringify(row.text)} after a tap on its row: its title, as a text or a label, and not the row ${JSON.stringify(next.text)}`);
 	} catch (error) {
 		// A live run showed only the wait: the words say what the case saw, so a page beside the list tells apart from a
 		// tap that missed.

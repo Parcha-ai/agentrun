@@ -65,7 +65,7 @@ test("touch.tap's failure says what it saw: the screen in px and dp, what is in 
 		const report = await runConformance(provider, { image: "android", patience: 1000, cases: conformanceCases.filter((c) => c.id === "touch.tap") });
 		assert.equal(statuses(report)["touch.tap"], "fail", fault);
 		words[fault] = reasonOf(report, "touch.tap");
-		assert.match(words[fault], /^the page of "Network & internet" after a tap on its row: its title, and not the row "Connected devices": still not so after/, fault);
+		assert.match(words[fault], /^the page of "Network & internet" after a tap on its row: its title, as a text or a label, and not the row "Connected devices": still not so after/, fault);
 		assert.equal(fake.sessions.size, 0);
 	}
 	assert.match(
