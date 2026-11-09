@@ -10,6 +10,7 @@ import { test } from "node:test";
 import { seal, unseal } from "@parcha/pi-durable-agent";
 
 const { openSqliteStore, sealColumn, sealedAt, sealMcpCredential } = await import("../dist/store/index.js");
+const { DDL } = await import("../dist/store/schema.js");
 
 const KEY = Buffer.alloc(32, 9);
 
@@ -30,10 +31,21 @@ test("one read answers every sealed value the store keeps, on every plane, each 
   await store.signIns.save({ agentId: "a1", provider: "steel", name: "S", pointerSealed: sealColumn(KEY, sealedAt.signIn("a1", "steel"), "forgotten-pointer") });
   await store.signIns.forget("a1", "steel", {});
   await store.signIns.save({ agentId: "a1", provider: "browserbase", name: "B", pointerSealed: sealColumn(KEY, sealedAt.signIn("a1", "browserbase"), "live-pointer") });
+  const claim = await store.claim("run-1", "runner-a");
+  assert.ok(claim, "the run is claimed, so its viewer can be written");
+  assert.equal(await store.liveViewers.put(claim, { kind: "browser", tag: "s1", port: 4100, id: "i".repeat(22), sealed: sealColumn(KEY, sealedAt.liveViewer("run-1", "browser", "s1"), "viewer-token") }), true);
 
   const rows = await store.sealedSecrets.all();
   const opened = Object.fromEntries(rows.map((row) => [row.plane, unseal(KEY, Buffer.from(row.sealed), row.aad).toString("utf8")]));
-  assert.deepEqual(Object.keys(opened).sort(), ["mcp_oauth_pending", "mcp_servers", "run_launch", "sealed_keys", "sign_in_tombstones", "sign_ins", "trigger_settings"]);
+  // Every table of the schema with a sealed column is a plane this read answers: a table that keeps a secret and is left out
+  // of the read fails here, so it can never skip a runner's redaction set quietly.
+  const sealedTables = DDL.flatMap((ddl) => {
+    const table = /CREATE TABLE IF NOT EXISTS (\w+) \(/.exec(ddl)?.[1];
+    return table && /^\s*\w*sealed\s+(BLOB|TEXT)\b/m.test(ddl) ? [table] : [];
+  });
+  assert.ok(sealedTables.length >= 8, `the schema's sealed tables are found: ${sealedTables}`);
+  assert.deepEqual(Object.keys(opened).sort(), [...sealedTables].sort(), "the read answers a row of every table with a sealed column");
+  assert.equal(opened.computer_viewers, "viewer-token");
   assert.equal(opened.sealed_keys, "tool-secret");
   assert.match(opened.mcp_servers, /mcp-secret/);
   assert.equal(opened.mcp_oauth_pending, "pending-secret");

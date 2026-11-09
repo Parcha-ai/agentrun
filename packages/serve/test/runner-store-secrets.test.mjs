@@ -158,6 +158,16 @@ const PLANES = [
     const key = Buffer.from(secret.slice("whsec_".length), "base64");
     return [secret, secret.slice("whsec_".length), key.toString("hex")];
   }],
+  ["a retired webhook trigger secret and a retired GitHub App key (trigger_settings, scope retired:<scope>:<n>)", async (server) => {
+    // As the trigger settings keep a value they no longer hold (rotated, or its trigger deleted): sealed in a row of its own,
+    // scope retired:<scope>:<n>, under that row's AAD.
+    const secret = planted("retiredhook");
+    await putSetting(server, "webhook", "retired:trg-9:1", "secret", secret);
+    const { privateKey: old } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+    const pem = old.export({ type: "pkcs8", format: "pem" });
+    await putSetting(server, "github", "retired:server:1", "private_key", pem);
+    return [secret, pem.split("\n").find((one) => one && !one.startsWith("-----"))];
+  }],
   ["the agent's browser sign-in pointer (sign_ins)", async (server) => {
     const pointer = planted("signinpointer");
     await server.signIns.save({ agentId: AGENT, provider: "browserbase", name: "Work", pointerSealed: sealColumn(SEAL_KEY, sealedAt.signIn(AGENT, "browserbase"), pointer) });
