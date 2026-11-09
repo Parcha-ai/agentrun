@@ -179,6 +179,7 @@ test("code-review through the API: listed, applied with a repo it makes the agen
     assert.equal(typeof view.output?.schema, "string", `${view.name} names its answer's schema file`);
     assert.equal(view.output.json_schema.type, "object", `${view.name} shows the schema itself, for the console`);
   }
+  assert.deepEqual(Object.fromEntries(listed.body.templates.map((x) => [x.name, x.approvals_default])), { "code-review": "never", "inbound-lead": "never", kyb: "ask", "market-monitor": "never", "release-notes": "never" }, "a template whose job runs on triggers runs unattended by default");
   const review = listed.body.templates.find((x) => x.name === "code-review");
   assert.deepEqual([review.version, review.secrets, review.skills, review.evals, review.parameters.repo.required], ["0.1.0", [], ["review"], ["clean-refactor", "injection", "null-name", "off-by-one", "re-review", "repo-rule"], true]);
 
@@ -250,6 +251,29 @@ test("apply makes nothing when a secret is missing, its parameters do not check,
   assert.deepEqual([(await api("GET", "/agents")).body.agents, (await api("GET", "/triggers")).body.triggers], [[], []], "nothing was made");
 });
 
+test("an apply that makes a webhook trigger hands back its signing secret once, as POST /triggers does: never on a retry or a GET", async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") });
+  const { api } = await serve(t);
+  const body = { parameters: { icp: "B2B fintech, 50-2000 people, US or EU", post_to: "none" } };
+  const applied = await api("POST", "/templates/inbound-lead/apply", body, { "idempotency-key": "lead-1" });
+  assert.equal(applied.status, 201, JSON.stringify(applied.body));
+  const hooks = [];
+  for (const id of applied.body.trigger_ids) if ((await api("GET", `/triggers/${id}`)).body.source.kind === "webhook") hooks.push(id);
+  assert.ok(hooks.length > 0, "inbound-lead makes a webhook trigger");
+  assert.deepEqual(applied.body.webhook_secrets.map((one) => one.trigger_id), hooks);
+  for (const { secret } of applied.body.webhook_secrets) assert.match(secret, /^whsec_[A-Za-z0-9+/]+={0,2}$/);
+  assert.equal(applied.body.note, undefined);
+  // A retry under the key: the same agent and triggers, the secrets never again.
+  const again = await api("POST", "/templates/inbound-lead/apply", body, { "idempotency-key": "lead-1" });
+  assert.deepEqual([again.status, again.headers.get("idempotent-replayed"), again.body.agent_id, again.body.trigger_ids], [201, "true", applied.body.agent_id, applied.body.trigger_ids]);
+  assert.equal(again.body.webhook_secrets, undefined);
+  assert.match(again.body.note, /shown once, in the first answer; POST \/v2\/triggers\/\{trigger_id\}\/secret makes a new one/);
+  for (const id of hooks) assert.ok(!JSON.stringify((await api("GET", `/triggers/${id}`)).body).includes("whsec_"), "no GET shows it");
+  // A package with no webhook trigger: no secrets, no note.
+  const plain = await api("POST", "/templates/kyb/apply", { parameters: { risk_appetite: "medium" } });
+  assert.deepEqual([plain.status, plain.body.webhook_secrets, plain.body.note], [201, undefined, undefined]);
+});
+
 test("a package's triggers are made on its agent, placeholders filled; a trigger the server would refuse refuses the apply before anything is made", async (t) => {
   withEnv(t, { [KEY]: "fake-test-key" });
   const { api } = await serve(t, { templates: FIXTURES });
@@ -294,14 +318,18 @@ test("code-review's GitHub tools: granted, never allowed by the package itself; 
   assert.equal(plain.body.warnings.find((w) => w.field === "mcp.github"), undefined, "nothing skipped");
   const agent = (await api("GET", `/agents/${plain.body.agent_id}`)).body;
   assert.deepEqual(agent.definition.tools, ["read", ...granted], "its read, for the skill's rules, and the GitHub tools; no box here, so no shell");
-  assert.deepEqual(agent.definition.tool_settings, AGENT_LAYER_PINS ? { "mcp:github/pull_request_review_write": { pin: { event: [null, "COMMENT"], method: ["create", "delete_pending", "submit_pending"] } } } : undefined, "the package sets no permission");
+  // The package sets no permission of its own; its pinned write gets its pin, or, while the agent store keeps none and
+  // this server pins nothing for it, deny: a write a template grants never runs without its pin.
+  assert.deepEqual(agent.definition.tool_settings, AGENT_LAYER_PINS ? { "mcp:github/pull_request_review_write": { pin: { event: [null, "COMMENT"], method: ["create", "delete_pending", "submit_pending"] } } } : { "mcp:github/pull_request_review_write": { permission: "deny" } });
   // Its review write is bounded to COMMENT reviews even once granted; until the store cutover the apply says how.
   if (!AGENT_LAYER_PINS) {
     const pinned = plain.body.warnings.filter((w) => w.field.startsWith("pins."));
     assert.deepEqual(pinned.map((w) => [w.field, w.reason]), [["pins.mcp:github/pull_request_review_write", "not_set_up_here"]]);
     assert.match(pinned[0].message, /^mcp:github\/pull_request_review_write is not pinned to event in \(absent \| COMMENT\), method in \(create \| delete_pending \| submit_pending\) for this agent yet/);
   }
-  assert.deepEqual(await permissions(plain.body.agent_id), Object.fromEntries(GITHUB_TOOLS.map((name) => [name, "ask"])));
+  // code-review runs unattended by default (approvals never): its asks are allows, except the pinned write, which is
+  // deny until its pin is kept (the agent's own, from the cutover on, or this server's).
+  assert.deepEqual(await permissions(plain.body.agent_id), Object.fromEntries(GITHUB_TOOLS.map((name) => [name, name === "pull_request_review_write" && !AGENT_LAYER_PINS ? "deny" : "allow"])));
 
   // The owner's grants, and only those, become allow; one the package does not list is refused, and nothing is made.
   const reads = GITHUB_READS.map((name) => `mcp:github/${name}`);
@@ -315,8 +343,8 @@ test("code-review's GitHub tools: granted, never allowed by the package itself; 
   assert.equal((await api("PUT", "/settings/tools", { "mcp:github/get_file_contents": { permission: "deny" } })).status, 200);
   const consented = await api("POST", "/templates/code-review/apply", { parameters: { repo: "Parcha-ai/agentrun" }, grants: reads });
   assert.equal(consented.status, 201, JSON.stringify(consented.body));
-  assert.deepEqual((await api("GET", `/agents/${consented.body.agent_id}`)).body.definition.tool_settings, Object.fromEntries(reads.filter((tool) => tool !== "mcp:github/get_file_contents").map((tool) => [tool, { permission: "allow" }])));
-  assert.deepEqual(await permissions(consented.body.agent_id), { pull_request_read: "allow", get_file_contents: "deny", search_code: "allow", get_repository_tree: "allow", pull_request_review_write: "ask", add_comment_to_pending_review: "ask" });
+  assert.deepEqual((await api("GET", `/agents/${consented.body.agent_id}`)).body.definition.tool_settings, { ...Object.fromEntries(reads.filter((tool) => tool !== "mcp:github/get_file_contents").map((tool) => [tool, { permission: "allow" }])), ...(AGENT_LAYER_PINS ? {} : { "mcp:github/pull_request_review_write": { permission: "deny" } }) });
+  assert.deepEqual(await permissions(consented.body.agent_id), { pull_request_read: "allow", get_file_contents: "deny", search_code: "allow", get_repository_tree: "allow", pull_request_review_write: AGENT_LAYER_PINS ? "ask" : "deny", add_comment_to_pending_review: "allow" }, "unattended by default: the unpinned comment write runs unasked (bounded by the pinned review write it adds to)");
   assert.deepEqual(consented.body.warnings.filter((w) => w.field.startsWith("grants.")).map((w) => [w.field, w.reason]), [["grants.mcp:github/get_file_contents", "not_allowed"]]);
 });
 
@@ -368,19 +396,28 @@ test("the keyed-tool check above sees a tool that needs a key: a package grantin
   assert.equal(keyedWarnings(applied.body).length, 1, JSON.stringify(applied.body.warnings));
 });
 
-test("no package lets its agent write or send unasked: each MCP tool a package lists is a known read or write, and no write is in its allow", () => {
-  // An agent that reads untrusted content (pages, PRs, payloads) never gets a write or send tool at allow: a pin fixes a
-  // send's destination, but not what it says, nor a write's record, so a write asks until the owner grants it at apply. A tool new to a package is
+test("a package's writes are bounded: each MCP tool it lists is a known read or write, a write is never in its allow, and in a package that runs unattended every write is pinned or bounded by a stated rule", () => {
+  // An agent that reads untrusted content (pages, PRs, payloads) never gets a write at the package's own allow. A package
+  // whose job runs on triggers runs unattended (approvals: never: the lead, 11-09), so no write asks there: each one is
+  // then held by its pin, which the gate checks before allow or ask, or by a rule stated here. A tool new to a package is
   // classified here before it ships.
   const WRITES = new Set(["github/pull_request_review_write", "github/add_comment_to_pending_review", "github/issue_write", "hubspot/manage_crm_objects", "slack/slack_send_message", "gmail/GMAIL_SEND_EMAIL"]);
   const READS = new Set([
     ...["pull_request_read", "get_file_contents", "search_code", "get_repository_tree", "list_releases", "get_latest_release", "get_release_by_tag", "list_tags", "get_tag", "list_commits", "get_commit", "search_pull_requests", "search_issues", "get_label"].map((tool) => `github/${tool}`),
     ...["search_crm_objects", "get_crm_objects", "search_properties", "tool_guidance"].map((tool) => `hubspot/${tool}`),
   ]);
-  const listed = readPackages().flatMap((p) => p.mcp.flatMap((need) => need.tools.map((tool) => ({ p: p.name, id: `${need.server}/${tool}`, allowed: need.allow.includes(tool) }))));
+  // A write no pin can bound, and why it is bounded anyway. Each needs a reason a reviewer can check.
+  const BOUNDED = {
+    "github/add_comment_to_pending_review": "it only adds to the caller's own pending review, which only the pinned pull_request_review_write (create, COMMENT) opens; the GitHub token is narrowed to the event's repository",
+    "hubspot/manage_crm_objects": "the skill writes only onto the contact whose email equals the lead's (read first), and the HubSpot connection's scopes bound what it can touch",
+  };
+  const packages = readPackages();
+  const listed = packages.flatMap((p) => p.mcp.flatMap((need) => need.tools.map((tool) => ({ p: p.name, id: `${need.server}/${tool}`, allowed: need.allow.includes(tool), pinned: Object.hasOwn(need.pin ?? {}, tool), unattended: p.approvals === "never" }))));
   for (const { p, id } of listed) assert.ok(WRITES.has(id) || READS.has(id), `${p} lists ${id}, neither a known read nor a known write: classify it here`);
-  assert.deepEqual(listed.filter((x) => x.allowed && WRITES.has(x.id)).map((x) => `${x.p}: ${x.id}`), [], "a write at allow");
-  assert.ok(listed.some((x) => WRITES.has(x.id)) && listed.some((x) => x.allowed), "the check sees both writes and allowed tools");
+  assert.deepEqual(listed.filter((x) => x.allowed && WRITES.has(x.id)).map((x) => `${x.p}: ${x.id}`), [], "a write at the package's allow");
+  assert.deepEqual(listed.filter((x) => x.unattended && WRITES.has(x.id) && !x.pinned && !Object.hasOwn(BOUNDED, x.id)).map((x) => `${x.p}: ${x.id}`), [], "an unattended package's write with neither a pin nor a stated bound");
+  assert.deepEqual(packages.filter((p) => p.approvals === "never").map((p) => p.name), ["code-review", "inbound-lead", "market-monitor", "release-notes"], "the packages whose job runs on triggers run unattended");
+  assert.ok(listed.some((x) => WRITES.has(x.id) && x.pinned) && listed.some((x) => x.allowed), "the check sees pinned writes and allowed tools");
 });
 
 test("a package with a webhook trigger, on a server with no seal key to keep its secret, is refused before anything is made", async (t) => {
@@ -405,7 +442,7 @@ test("a server-wide deny of every tool of an MCP server (mcp:<server>/*) keeps e
   const applied = await api("POST", "/templates/code-review/apply", { parameters: { repo: "Parcha-ai/agentrun" }, grants: granted });
   assert.equal(applied.status, 201, JSON.stringify(applied.body));
   const agent = (await api("GET", `/agents/${applied.body.agent_id}`)).body;
-  assert.equal(agent.definition.tool_settings, undefined, "no grant is written over the wildcard deny");
+  assert.deepEqual(agent.definition.tool_settings, AGENT_LAYER_PINS ? { "mcp:github/pull_request_review_write": { pin: { event: [null, "COMMENT"], method: ["create", "delete_pending", "submit_pending"] } } } : { "mcp:github/pull_request_review_write": { permission: "deny" } }, "no grant is written over the wildcard deny; the pinned write is deny until its pin is kept");
   assert.deepEqual(agent.tools.filter((x) => granted.includes(x.name)).map((x) => [x.name, x.permission]), granted.map((tool) => [tool, "deny"]));
   assert.deepEqual(applied.body.warnings.filter((w) => w.field.startsWith("grants.")).map((w) => w.field), granted.map((tool) => `grants.${tool}`));
 });
@@ -462,6 +499,16 @@ test("every shipped package's agent gets its answer schema beside its skill, and
   }
 });
 
+test("an apply's approvals: the override, else the package's own (a trigger template runs unattended), else ask", async (t) => {
+  const { api } = await serve(t);
+  const approvalsOf = async (applied) => { assert.equal(applied.status, 201, JSON.stringify(applied.body)); return (await api("GET", `/agents/${applied.body.agent_id}`)).body.definition.approvals ?? "ask"; };
+  const review = { parameters: { repo: "Parcha-ai/agentrun" } };
+  assert.equal(await approvalsOf(await api("POST", "/templates/code-review/apply", review)), "never", "code-review's own default");
+  assert.equal(await approvalsOf(await api("POST", "/templates/code-review/apply", { ...review, overrides: { approvals: "ask" } })), "ask", "the owner's override");
+  assert.equal(await approvalsOf(await api("POST", "/templates/kyb/apply", { parameters: { risk_appetite: "medium" } })), "ask", "kyb asks");
+  assert.equal(await approvalsOf(await api("POST", "/templates/kyb/apply", { parameters: { risk_appetite: "medium" }, overrides: { approvals: "never" } })), "never");
+});
+
 test("a parameter is read from the caller's own fields: a required one named constructor is missing from {parameters: {}}", async (t) => {
   const dir = join(await scratch(t), "inherits");
   mkdirSync(dir);
@@ -494,8 +541,11 @@ test("an mcp entry's pin is checked: each tool one of the entry's, 1 to 8 argume
   const made = compiled(p, { channel: "C0123", count: 3 }, { mcp: p.mcp, defaultTools: [], grants: [SEND], pins: true });
   assert.deepEqual(made.agent.definition.tool_settings, { [SEND]: { permission: "allow", pin: { channel_id: "C0123", limit: 3, unfurl_links: false, thread_ts: null } } });
   assert.deepEqual([made.unpinned, made.unkept], [[], []]);
-  const later = compiled(p, { channel: "C0123", count: 3 }, { mcp: p.mcp, defaultTools: [], grants: [], pins: false });
-  assert.equal(later.agent.definition.tool_settings, undefined);
+  // Its pin not kept on the agent: deny, granted or not, unless this server's settings pin the tool, when the grant stands.
+  const later = compiled(p, { channel: "C0123", count: 3 }, { mcp: p.mcp, defaultTools: [], grants: [SEND], pins: false });
+  assert.deepEqual(later.agent.definition.tool_settings, { [SEND]: { permission: "deny" } });
+  const covered = compiled(p, { channel: "C0123", count: 3 }, { mcp: p.mcp, defaultTools: [], grants: [SEND], pins: false, serverPinned: new Set([SEND]) });
+  assert.deepEqual(covered.agent.definition.tool_settings, { [SEND]: { permission: "allow" } });
   assert.deepEqual(later.unkept, [{ tool: SEND, pin: { channel_id: "C0123", limit: 3, unfurl_links: false, thread_ts: null } }]);
   for (const given of [{ count: 3 }, { channel: "", count: 3 }]) {
     const empty = compiled(p, given, { mcp: p.mcp, defaultTools: [], grants: [SEND], pins: true });
@@ -548,7 +598,7 @@ test("market-monitor's sends are pinned to its channel: the consent screen shows
   // setting that holds the send meanwhile, and the send asks unless granted.
   const given = await api("POST", "/templates/market-monitor/apply", { parameters: { competitors: "Acme (acme.example)", channel: "C0MKTINTEL" } });
   assert.equal(given.status, 201, JSON.stringify(given.body));
-  assert.equal((await api("GET", `/agents/${given.body.agent_id}`)).body.tools.find((x) => x.name === SEND).permission, "ask");
+  assert.equal((await api("GET", `/agents/${given.body.agent_id}`)).body.tools.find((x) => x.name === SEND).permission, AGENT_LAYER_PINS ? "ask" : "deny");
   const granted = await api("POST", "/templates/market-monitor/apply", { parameters: { competitors: "Acme (acme.example)", channel: "C0MKTINTEL" }, grants: [SEND] });
   assert.equal(granted.status, 201, JSON.stringify(granted.body));
   if (AGENT_LAYER_PINS) {
@@ -556,13 +606,22 @@ test("market-monitor's sends are pinned to its channel: the consent screen shows
     assert.deepEqual(pinWarnings(given), []);
     assert.deepEqual(await settingsOf(granted), { [SEND]: { permission: "allow", pin: { channel_id: "C0MKTINTEL" } } });
   } else {
-    assert.equal(await settingsOf(given), undefined);
-    assert.deepEqual(await settingsOf(granted), { [SEND]: { permission: "allow" } });
+    // Until then a send whose pin the agent can't keep is deny, granted or not, so no approvals setting runs it unbounded.
+    assert.deepEqual(await settingsOf(given), { [SEND]: { permission: "deny" } });
+    assert.deepEqual(await settingsOf(granted), { [SEND]: { permission: "deny" } });
     for (const applied of [given, granted]) {
       assert.deepEqual(pinWarnings(applied).map((w) => [w.field, w.reason]), [[`pins.${SEND}`, "not_set_up_here"]]);
-      assert.match(pinWarnings(applied)[0].message, /^mcp:slack\/slack_send_message is not pinned to channel_id = C0MKTINTEL for this agent yet/);
+      assert.match(pinWarnings(applied)[0].message, /^mcp:slack\/slack_send_message is not pinned to channel_id = C0MKTINTEL for this agent yet: .* set to deny/);
       assert.match(pinWarnings(applied)[0].fix, /\{"mcp:slack\/slack_send_message":\{"pin":\{"channel_id":"C0MKTINTEL"\}\}\}/);
     }
+    // With the send pinned on this server, the owner's grant stands: the server's pin holds its calls.
+    assert.equal((await api("PUT", "/settings/tools", { [SEND]: { pin: { channel_id: "C0MKTINTEL" } } })).status, 200);
+    const covered = await api("POST", "/templates/market-monitor/apply", { parameters: { competitors: "Acme (acme.example)", channel: "C0MKTINTEL" }, grants: [SEND] });
+    assert.equal(covered.status, 201, JSON.stringify(covered.body));
+    assert.deepEqual(await settingsOf(covered), { [SEND]: { permission: "allow" } });
+    assert.match(pinWarnings(covered)[0].message, /this server's own pin of mcp:slack\/slack_send_message holds its calls meanwhile/);
+    assert.equal(pinWarnings(covered)[0].fix, undefined, "nothing to add: the server's pin already holds it");
+    assert.equal((await api("PUT", "/settings/tools", {})).status, 200);
   }
 
   // No channel: the send has no destination, so it can't run at all, granted or not, and the answer says so.

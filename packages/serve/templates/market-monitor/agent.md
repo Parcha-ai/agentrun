@@ -30,6 +30,8 @@ parameters:
   timezone: { type: string, default: UTC, description: "the IANA time zone the cron line is read in (Europe/Madrid, America/New_York): UTC unless you set it" }
 budget: { per_run_usd: 5.00 }
 learning: true
+# Runs unattended (its job runs on triggers): no tool asks; deny and the pins above still hold.
+approvals: never
 triggers:
   - name: weekly-digest
     source: { kind: schedule, cron: "${parameters.cron}", timezone: "${parameters.timezone}" }

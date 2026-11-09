@@ -161,6 +161,8 @@ test("a case whose answer fails a grader of every type fails, each failure named
 });
 
 test("a fake MCP server answers from its fixture and records each call; tool_used's args match a call or fail naming it", { timeout: 600_000 }, async () => {
+  // update_contact is pinned to id 7 (evalpkg's agent.md): on its own server the runner pins it as an owner would before
+  // the apply, so the granted write reaches the fake; without that pin the apply would make it deny (AGENT_LAYER_PINS).
   const match = await caseOf("mcp-match");
   assert.equal(match.pass, true, JSON.stringify(match, null, 1));
   const [run] = match.runs;
@@ -202,6 +204,12 @@ test("a case passes only when every run passes: one failing run of two fails it"
 test("on an owner's server it applies that server's package only when it is this folder's, never replaces an MCP server, and archives what it made", { timeout: 300_000 }, async (t) => {
   const { api, baseUrl, token } = await serve(t, { faux: FAUX, templates: FIXTURES });
   const server = { baseUrl, token };
+  // The owner's settings are theirs: unpinned there, the pinned write stays deny and the case fails on it.
+  const before = (await api("GET", "/settings/tools")).body;
+  const unpinned = await evalTemplate({ dir: PKG, cases: ["mcp-match"], server });
+  assert.equal(unpinned.pass, false);
+  assert.deepEqual((await api("GET", "/settings/tools")).body, before, "the runner wrote no setting of the owner's");
+  assert.equal((await api("PUT", "/settings/tools", { ...before, "mcp:crm/update_contact": { pin: { id: "7" } } })).status, 200);
   const report = await evalTemplate({ dir: PKG, cases: ["mcp-match"], server });
   assert.equal(report.pass, true, JSON.stringify(report, null, 1));
   assert.deepEqual(report.server, { kind: "remote", base_url: baseUrl.replace(/\/$/, "") });

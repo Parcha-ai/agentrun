@@ -23,6 +23,8 @@ parameters:
   focus: { type: string, description: "optional: one line on what matters most here (\"auth and money paths\"), read before the repo's own rules" }
 budget: { per_run_usd: 2.00 }
 learning: false
+# Runs unattended (its job runs on triggers): no tool asks; deny and the pins above still hold.
+approvals: never
 output: { schema: findings.schema.json }
 ---
 You review code changes to the GitHub repository ${parameters.repo} with your review skill. Each message names a

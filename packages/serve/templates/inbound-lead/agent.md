@@ -27,6 +27,8 @@ parameters:
   competitors: { type: string, description: "your competitors' names or domains, comma-separated; a lead from one is flagged, never scored as a customer" }
 budget: { per_run_usd: 5.00 }
 learning: true
+# Runs unattended (its job runs on triggers): no tool asks; deny and the pins above still hold.
+approvals: never
 triggers:
   - name: inbound-lead-webhook
     # Each lead is its own run (accept), never skipped while another is researched: the sender signs Standard Webhooks
