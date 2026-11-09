@@ -194,7 +194,7 @@ export async function cliRunSpecFromLaunch(launch: RunLaunch, run: AdapterRun, d
   const laid = start ? laidLearned(body.instructions ?? "", start.section) : (body.instructions ?? "");
   const check = await entry.skillCheck?.();
   // The revision's own skills laid before they are read, as the pi spec lays them (adapter-run-spec.ts).
-  await layOwnSkills(ws.workspace, (revisionRow.skills ?? {}) as Record<string, string>);
+  await layOwnSkills(ws.workspace, (revisionRow.skills ?? {}) as Record<string, string>, { computer: (launch as { computer?: ComputerSetting }).computer?.kind });
   const { system: instructions, native } = await systemOf(laid, Object.keys(body.skills ?? {}), ws.workspace, check, { onDemand: readsFiles(granted) });
   const guidance = effortGuidance(launch.effort);
 
