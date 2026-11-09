@@ -443,10 +443,18 @@ phone harness): a computer whose hello has no `screen` is refused as `unsupporte
 `watchScreen(connection, options)`: pull-paced `frames` (each `next()` the ack), `act(actions)` and `close()`, whose
 failures are `ScreenWatchError`s. `toAction(event, kind)` maps the viewer's `ViewerEvent`s, in the screen's upright
 pixels, to input actions, or to a `Refusal` (`{ field, message }`) for what a kind cannot take:
-- a desktop takes the mouse (a move, and a button down or up at a point), the wheel (in clicks, about 120 px a
-  notch), keys (combos with the modifiers held) and typed text;
-- a phone (`android`, `ios`) takes taps, swipes, back, home and recents (`app_switch`), keys and typed text;
-- anything else is refused in words.
+- a desktop takes the mouse (a move, and a button down or up at a point; with a modifier held, the up is one click
+  with its keys and the down only moves), the wheel (in clicks, about 120 px a notch, 20 clicks at most an event),
+  keys (combos with the modifiers held, Shift kept: ctrl+shift+s) and typed text; never ctrl+alt+backspace or
+  ctrl+alt+F1 to F12, which end or switch the X display;
+- a phone (`android`, `ios`) takes taps, swipes (0 to 1000 ms, clamped), back, home and recents (`app_switch`), keys
+  and typed text;
+- a typed text holds 65,536 characters at most (`checkActions` refuses more as `limit` too, as computerd does);
+- anything else, and an event whose fields are not what its type says, is refused in words: `toAction` never throws.
+
+The seam reads a frame by the size it says (never past it, never over 64 MiB, and whole at the end), keeps 8 inputs
+in flight at most on a watch (one more is refused as `limit`), and redacts every error and a failed action's words
+(`redactWords`: URLs, logins, bearers, secret-named parameters, key and token shapes, and host or IPv4 endpoints).
 
 No error in this seam holds a URL or a secret (`redactWords`). A phone's frames are upright with no rotation of ours:
 screencap gives the display in its current orientation, and `input tap` takes the same space.
@@ -1897,8 +1905,10 @@ the API's control URL) is a later change: `platform: "ios"` is refused in words.
   a client in this process that answers each protocol method with adb commands:
   - `screen.shot`/`screen.read`: a raw `screencap`, cropped to the region and encoded as an RGBA PNG; `scale` is the
     density over 160;
-  - `screen.watch`: PNG frames (`format: "png"`) from `screencap`, read about once a second while it waits, a new frame
-    only when the pixels changed; `maxWidth` scales by the nearest pixel, and `quality` has no effect on a PNG;
+  - `screen.watch`: PNG frames (`format: "png"`) from `screencap`, read once a second at most, across calls too (an
+    animated screen acked at once is no faster), a new frame only when the pixels changed; `maxWidth` scales by the
+    nearest pixel, and `quality` has no effect on a PNG. A cancel or the connection's close ends a screencap and a
+    wait in flight;
   - `input.actions`: checked whole first (`checkActions`). Then:
     - tap and long press;
     - swipe: `input swipe`, or `input motionevent` for a path of three points or more. Its `ms` is shared between the
@@ -2096,9 +2106,10 @@ Core and Full follow the Kubernetes agent-sandbox conformance levels (KEP-539.2)
   process started earlier still running and `list()` shows the new deadline; three extends are refused with the
   deadline unchanged: to an earlier deadline, to maxLifetimeMs + 1, and, 60 s after create, to maxLifetimeMs less 30 s,
   within the cap on its own but past create + maxLifetimeMs; a cap under 3 min skips it).
-- **`screen.watch` is Core in the screen group**: through the provider's `watch()`, the first frame is an image (JPEG
-  or PNG) of the size it says, of the screen `screen.shot` reads; on a computer with `input.pointer`, a pointer move
-  through `input()` is a new frame with the cursor where it went. It replaced `screen.stream`, which
+- **`screen.watch` is Core in the screen group**: through the provider's `watch()`, the first frame decodes (a PNG
+  whole; a JPEG walked to its end, as the suite has no JPEG decoder) to the size it says, of the screen `screen.shot`
+  reads; on a computer with `input.pointer`, a pointer move through `input()` is a new frame with the cursor where it
+  went (a frame with no cursor is not it). It replaced `screen.stream`, which
   checked a vendor's URL: the live view is proxy only (the user-approved decision, 2026-11-09).
 - **The mount group is Full**, optional for every kind until the cutover decides. "Mounts the run's folder",
   `mount.run-folder-bind` and `mount.run-folder-archil` (`mount:bind`, `mount:archil`, from `capabilities().mount`):
