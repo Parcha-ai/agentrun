@@ -168,10 +168,13 @@ test("a repository named in the owner's words ends where the sentence does: trai
   ]) assert.deepEqual(githubTargetOf(words), { repo }, words);
 });
 
+// A URL carrying a user name and password, built rather than written, so the source holds no credential-shaped URL.
+const withUserinfo = (href, username, password) => Object.assign(new URL(href), { username, password }).href;
+
 test("githubMcpUrl: GitHub's hosted MCP at its origin, any path, the default port written or not; nothing else", async () => {
   const { githubMcpUrl } = await import("../dist/github.js");
   for (const url of ["https://api.githubcopilot.com/mcp/", "https://api.githubcopilot.com:443/mcp/", "https://API.githubcopilot.com/x/readonly", "https://api.githubcopilot.com"]) assert.equal(githubMcpUrl(url), true, url);
-  for (const url of ["https://x@api.githubcopilot.com/mcp/", "https://x:y@api.githubcopilot.com/mcp/", "https://api.githubcopilot.com:8443/mcp/", "http://api.githubcopilot.com/mcp/", "https://api.githubcopilot.com./mcp/", "https://api.githubcopilot.com.example.com/mcp/", "https://mcp.example.com/mcp", "not a url"]) assert.equal(githubMcpUrl(url), false, url);
+  for (const url of ["https://x@api.githubcopilot.com/mcp/", withUserinfo("https://api.githubcopilot.com/mcp/", "x", "y"), "https://api.githubcopilot.com:8443/mcp/", "http://api.githubcopilot.com/mcp/", "https://api.githubcopilot.com./mcp/", "https://api.githubcopilot.com.example.com/mcp/", "https://mcp.example.com/mcp", "not a url"]) assert.equal(githubMcpUrl(url), false, url);
 });
 
 test("a github_app run's MCP call carries an installation token the runner minted from the store's App for the run's repository, through the run spec's githubAppAccess", { timeout: 120_000 }, async (t) => {
