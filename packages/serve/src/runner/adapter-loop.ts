@@ -45,6 +45,9 @@ export type RaiseCheck =
 
 /** The gate's answer for a call: run it, ask a person, or refuse it (with the words the model reads, or generic ones). */
 export type GateAnswer = "allow" | "ask" | "deny" | { readonly deny: string };
+/** The gate before a call's intent; `askedAs`, when it has one, names a call as a person is asked about it (its settings
+ *  key, as main's pending approval names it), else the call is asked about by its own name. */
+export type SpecGate = ((call: ToolCall) => GateAnswer | Promise<GateAnswer>) & { readonly askedAs?: (tool: string) => string };
 
 /** What one claimed run's adapter loop runs. */
 export interface AdapterRunSpec {
@@ -60,7 +63,7 @@ export interface AdapterRunSpec {
   readonly hooks?: KernelHooks;
   /** The gate's answer for a call, before its intent: run it, refuse it, or ask a person (the run parks). A refusal may
    *  carry the words the model reads (`{ deny }`: where the deny was set, a pin's words); a bare "deny" gets generic ones. */
-  readonly gate?: (call: ToolCall) => GateAnswer | Promise<GateAnswer>;
+  readonly gate?: SpecGate;
   /** What an asked call costs, for its approval card (main's tool gate options.price): dollars, or "not metered";
    *  undefined when it has none (the ask says null). */
   readonly approvalPrice?: (call: ToolCall) => ApprovalPrice | undefined;
@@ -831,22 +834,26 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       if (typeof decision === "object") return { deny: decision.deny };
       if (decision === "deny") return { deny: `Permission denied: ${call.tool} is set to deny.` };
       if (decision === "allow") return "allow";
-      const answer = await answerOf(call, spec.approvalPrice?.(kernelCall) ?? null);
+      // Asked about by the name the gate gives (its settings key, as main's pending approval is named), else the call's.
+      const asked = spec.gate?.askedAs?.(call.tool) ?? call.tool;
+      const answer = await answerOf(call, spec.approvalPrice?.(kernelCall) ?? null, asked);
       if (answer === "park") return { park: true };
-      return answer.approved ? "allow" : { deny: deniedText(call.tool, answer.note) };
+      return answer.approved ? "allow" : { deny: deniedText(asked, answer.note) };
     };
   }
 
   /** An ask's answer: one in the journal stands; else the approve or deny the runner hands over on a resume; else ask and
    *  park (the ask entry with the run parked, in one commit). The ask is main's approval card: the call's input, when it
    *  was asked and its `price`; asked again on a resume, it is the same request. */
-  async function answerOf(call: PreIntentCall, price: ApprovalPrice | null): Promise<AnswerData | "park"> {
+  async function answerOf(call: PreIntentCall, price: ApprovalPrice | null, asked: string = call.tool): Promise<AnswerData | "park"> {
     const conversation = await harness!.root(context);
     const entries = await entriesOf(gate!.journal, conversation.id, context);
     const known = findData<AnswerData>(entries, KINDS.answer, (data) => data.callId === call.callId);
     if (known) return known;
     const first = findData<AskData>(entries, KINDS.ask, (data) => data.callId === call.callId);
-    const ask: AskData = first ?? { callId: call.callId, tool: call.tool, args: call.args ?? null, requestedAt: isoNow(), price };
+    // The ask names the call as the person is asked about it (`asked`: its settings key), so every reader of the ask (the
+    // run's pending approval, its approval row, an "always" answer pinned by it) has the one name main gives it.
+    const ask: AskData = first ?? { callId: call.callId, tool: asked, args: call.args ?? null, requestedAt: isoNow(), price };
     // Commits the root's entry of `kind`, staging `staged` with it. False when the journal is sealed first (another call
     // of the round parked the run): nothing landed, and the expectation's failure is no one's to wait on.
     const entryLands = async (kind: string, data: AskData | AnswerData, staged: Parameters<Gate["expect"]>[1]): Promise<boolean> => {

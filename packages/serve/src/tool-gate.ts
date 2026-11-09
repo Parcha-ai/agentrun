@@ -507,7 +507,7 @@ export class RunGate {
    *  only after every refusal. */
   async decide(name: string, args: unknown): Promise<"allow" | "ask" | { deny: string }> {
     const key = settingsKeyOf(this.where.harness ?? DEFAULT_HARNESS, name, this.where.mcpServers) ?? name;
-    const tool = shellToolOf(name) ?? key;
+    const tool = this.askedAs(name);
     const learning = await this.learningRefusal(key, args);
     if (learning) return { deny: learning };
     const verdict = this.policy(name);
@@ -515,6 +515,12 @@ export class RunGate {
     const pinned = this.pinned(key, args, "no");
     if (pinned) return { deny: pinned.text };
     return verdict === "allow" ? "allow" : "ask";
+  }
+
+  /** The name a call is asked about by, as main's request names it (enter's `tool`): its settings key, a shell tool its
+   *  own name; a name nothing maps, as it came. */
+  askedAs(name: string): string {
+    return shellToolOf(name) ?? settingsKeyOf(this.where.harness ?? DEFAULT_HARNESS, name, this.where.mcpServers) ?? name;
   }
   /** Where the permission `policy` gives `tool` was set: the agent's own tool settings, the server's, or the default; or
    *  "unattended", an ask the agent's approvals allowed. */
