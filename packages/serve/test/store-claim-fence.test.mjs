@@ -9,6 +9,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { commitWrites } from "@earendil-works/pi-durable/testing";
 import { Fenced } from "../dist/store/store.js";
 import { queued, storeOn } from "./store-helpers.mjs";
+import { sqliteOnly } from "./store-target.mjs";
 
 /** Another process's write holding the store's writer lock until the clock has moved `ms`; it lets go then. */
 function holdWriter(file, clock, ms) {
@@ -39,7 +40,8 @@ test("a released claim writes nothing more: after release, its journal commit, r
   assert.deepEqual((await store.commands("run-1", 0)).map((c) => [c.takenAt, c.tries]), [[null, 0]], "the command untaken, no try counted");
 });
 
-test("a claim and a renew that wait for the writer lock run their lease from when they hold it, never come back expired", async (t) => {
+// On Postgres a claim never waits (it skips a held run) and a renew's wait is store-many-writers.test.mjs's.
+test("a claim and a renew that wait for the writer lock run their lease from when they hold it, never come back expired", sqliteOnly("the store file's one writer lock"), async (t) => {
   const { store, clock, file } = await storeOn(t);
   await queued(store);
   holdWriter(file, clock, 5_000);

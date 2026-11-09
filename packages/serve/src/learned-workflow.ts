@@ -86,7 +86,8 @@ type RunModels = {
 };
 
 export type LearnedWorkflowRun = {
-  /** The learned workflows the run's pin names (pinnedWorkflows). */
+  /** The run's learned workflows (learning.ts chooseWorkflows): on the server those its pin names (pinnedWorkflows), on
+   *  the runner those its claim's seed lay chose (runner/learning-seed.ts). */
   workflows: readonly LearnedWorkflow[];
   /** The tools the agent's revision grants: a workflow's call node may name only those a call node runs here
    *  (tools.ts learnedWorkflowTools), and of those, none `plane` resolves unavailable. */
