@@ -1863,7 +1863,9 @@ the API's control URL) is a later change: `platform: "ios"` is refused in words.
   mount, no extend.
 - **create** asks for `timeout_seconds` = the lifetime, and the phone harness ends the session then, whatever happens.
   The lifetime includes the boot, so a phone ready past its deadline fails `timeout`.
-  - Each POST carries an Idempotency-Key, and a create whose answer was lost is found by it, never sent twice.
+  - Each POST carries an Idempotency-Key, and a create whose answer is uncertain is found by it, never sent twice.
+    Only a refusal (a 4xx, or `phones_busy`) says nothing was made. No answer, a 5xx, or a 2xx with no session is
+    uncertain: create asks `GET /sessions/requests/<key>` before it forgets the key, and records the phone it finds.
   - A create cancelled during its POST is recovered by its key all the same, and the phone the service made is ended.
   - A phone that fails, or is not ready within `readyMs` (240 s), is ended.
   - Each request has a bound of its own, `requestMs` (30 s), beside the caller's signal, and a readiness read takes no
