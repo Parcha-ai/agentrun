@@ -112,7 +112,7 @@ import { toolSettingsOverStore } from "./tool-settings-store.js";
 import { MAX_FILES_PER_RUN, MAX_UPLOAD_BYTES, Uploads, UPLOADS_DIR } from "./uploads.js";
 import { entryAt, listFiles, sendFile as sendWorkspaceFile, viewOf } from "./run-files.js";
 import { COMPUTER_ROUTES, computerRoute } from "./computer-view.js";
-import { PROVIDERS as COMPUTER_PROVIDERS, providerFor as computerProviderFor, providerIds as computerProviderIds, SETTING_KINDS, servingRefusals } from "@parcha/agentrun-computer";
+import { PROVIDERS as COMPUTER_PROVIDERS, SETTING_KINDS, servingRefusals } from "@parcha/agentrun-computer";
 import { capabilityToolDefs, hostToolDefs } from "@parcha/agentrun-kernel/kernel";
 import { archilRoute, createArchilRoutes } from "./archil-routes.js";
 import { computerOfPlace, type ComputerKind, type ComputerSetting, type PlaceView } from "./computer-setting.js";
@@ -120,7 +120,7 @@ import { computerCapabilities, type ComputerRoutes, createComputerRoutes, folder
 import { FAUX_VIEW_PATH, type FauxComputers, fauxComputers } from "./faux-computers.js";
 import { runComputerField } from "./run-computer.js";
 import { writesHeld } from "./workspace.js";
-import { agentHomeFolder, isWorkspaceError, localWorkspace, runFolder, serverRunWorkspace, type Workspace } from "./workspace/index.js";
+import { agentHomeFolder, computerProviderFactories, computerProviderMakers, isWorkspaceError, localWorkspace, runFolder, serverRunWorkspace, storeLedger, type Workspace } from "./workspace/index.js";
 // server-lock.ts is gone: the store's EXCLUSIVE connection is the one-server lock (StoreOwned refuses a second server).
 
 export const CONTRACT = "agentrun.v2/0";
@@ -999,7 +999,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       ? { kinds: fauxOf().kinds, factories: fauxOf().factories, keyTable: fauxOf().keyTable }
       : {
         kinds: { SETTING_KINDS, PROVIDERS: COMPUTER_PROVIDERS, servingRefusals } as unknown as KindRegistry,
-        factories: Object.fromEntries(computerProviderIds.map((id) => [id, (providerOptions: Record<string, string>) => computerProviderFor(id, providerOptions as never)])),
+        // The one place serve builds a provider (workspace/computer-providers.ts), the claim's makers' own.
+        factories: computerProviderFactories(computerProviderMakers(), (id) => storeLedger(store.computerLedger, id)),
       }),
   }));
   const archil = createArchilRoutes({ store, sealKey, env: process.env });
