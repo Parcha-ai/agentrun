@@ -1179,7 +1179,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // A run's served view and its live moment, from the store (store-view): `origin` is where this request reaches the
   // console, the secrets are cut live, and the sign-ins give the handed-pointer cut. Trigger and background reads (no
   // request) use the server's public address, else its own.
-  const viewDepsFor = (origin: string): ViewDeps => ({ origin, serverSecrets, signIns });
+  // The run's key read from this server's environment with the keys a person saved, as its Timeline reads it (keyEnv below).
+  const viewDepsFor = (origin: string): ViewDeps => ({ origin, serverSecrets, signIns, keyEnv: () => withSecrets(process.env, "all", storedKeys) });
   const ownOriginOf = (): string => options.publicUrl ?? url;
   // The run read routes (a run's files, its browser state, its workflow graph) over the one store (run-reads-over-store):
   // a run's files through the server's read-only Workspace of its folder (serverRunWorkspace, no runner claim), its view

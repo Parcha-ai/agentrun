@@ -44,7 +44,7 @@ import { journalRecords, recordOf } from "./runner/journal-reader.js";
 import { notesReadOf, runLearningEnd, type RunLearning, withNotes } from "./store-reads/learning.js";
 import { runReflect, runTimeline } from "./store-reads/journal.js";
 import { type RunReadState, readRun } from "./store-reads/runs.js";
-import { runCutValues } from "./run-cut.js";
+import { runCutValues, runErrorWordsOf } from "./run-cut.js";
 import { Turns } from "./turns.js";
 import { harnessOfBody } from "./harness.js";
 import { browserAsk as browserAskOf, BROWSER_HANDOVER_KIND } from "./browser-commands.js";
@@ -63,6 +63,10 @@ export interface ViewDeps {
   /** The server's clock (ms), for the claim-lease check that decides a run is live; defaults to Date.now. The server
    *  passes the same clock the store uses, so a test on a moved clock reads a fresh claim as live. */
   readonly now?: () => number;
+  /** The environment a run's model key is read from, with the keys a person saved (run-cut.ts runErrorWordsOf): a failed
+   *  run's error names a refused key in plain words, as its Timeline's error row does. Default: this process's
+   *  environment (the server passes it with the keys a person saved). */
+  readonly keyEnv?: () => NodeJS.ProcessEnv;
 }
 
 /** A run that has ended reads one of these (the old RunRow state → the v2 status: an escalation is a completion with a
@@ -288,10 +292,13 @@ export async function viewOverStore(store: Store, runId: string, deps: ViewDeps)
   const result = status === "completed" ? { output: null, final_answer: servedAnswer(finalAnswer) } : null;
   // A failed run's reason in the model's own words when the store holds them: the last model-error row's text (a provider's
   // refusal, rendered from its pi.assistant error entry), else the run row's summary (the runner's generic "gave no answer").
-  // servedRunErrorWith cuts it of every secret (the view's values), so a key or a pointer the provider quoted never shows,
-  // as main serves the run's error cut.
+  // It reads as the run's Timeline error row does (run-cut.ts runErrorWordsOf, main's errorWords): a refused key in plain
+  // words, else cut of every secret (the view's values) and of any loopback address, so a key or a pointer the provider
+  // quoted never shows, as main serves the run's error.
   const failedReason = run.rows.findLast((r) => r.kind === "error")?.text ?? row.summary ?? null;
-  const error = status === "failed" ? (unshown ? { code: "run_failed", message: WITHHELD_SIGN_IN, retryable: false } : servedRunErrorWith(shownWords, errorOfRow(failedReason))) : null;
+  const errorWords = status === "failed" && !unshown ? await runErrorWordsOf({ ...deps, keyEnv: deps.keyEnv ?? (() => process.env) }, store, runId, { workflow: row.kind === "workflow" }) : undefined;
+  const withheld = unshown || errorWords === "unreadable";
+  const error = status === "failed" ? (withheld ? { code: "run_failed", message: WITHHELD_SIGN_IN, retryable: false } : servedRunErrorWith(errorWords ?? shownWords, errorOfRow(failedReason))) : null;
   const review = endedAtMs === null ? null : servedReviewWith(shownWords, unshown, reviewAt(reviewOfRow(row.state, row.summary ?? null), iso(endedAtMs)));
   // The card the run shows while it waits, in the order the file-backed view (runs.ts) picks them: a tool call parked for a
   // person's approval (approvalOf, its arguments shown through the run's redactor), else a run parked at its cap (the budget
