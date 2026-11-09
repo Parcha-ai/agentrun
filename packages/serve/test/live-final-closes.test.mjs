@@ -6,13 +6,14 @@ import { after, test } from "node:test";
 import { sendCommand } from "../dist/runner/commands.js";
 import { closeOpenSessions, piAdapterSpec } from "./conformance-pi-adapter.mjs";
 import { collect, liveWorld, quiet, RUN } from "./live-support.mjs";
+import { STEADY_LEASE } from "./runner-support.mjs";
 
 const { watchRun } = await import("../dist/live/stream.js");
 const { openSqliteStore } = await import("../dist/store/index.js");
 const { startRunner } = await import("../dist/runner/runner.js");
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 after(closeOpenSessions);
-const TIMING = { leaseMs: 600, renewEveryMs: 150, stopMarginMs: 200, pollMs: 20, commandPollMs: 30 };
+const TIMING = { ...STEADY_LEASE, pollMs: 20, commandPollMs: 30 };
 
 /** `journal` with every read refused, as a store that cannot be read: pi's Harness cannot open on it. */
 const unreadable = (journal) =>
