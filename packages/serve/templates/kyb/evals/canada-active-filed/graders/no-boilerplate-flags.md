@@ -15,5 +15,7 @@ Read the answer's last fenced `json` block, its `report_markdown` included. Pass
    dissolution proceeding, or overdue filings (RF09, RF10 or any flag in those words), and the narrative does not say so.
 3. **Sanctions:** the company is screened, each list with a result, none a `confirmed_hit`.
 4. **Verdict:** `verdict.decision` is `proceed`.
+5. **One read of the record:** nothing in the answer shows the record fetched again to re-check a flag; the status
+   and filings are quoted from the captured record.
 
 Fail if any one does not hold.
