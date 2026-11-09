@@ -229,8 +229,16 @@ export async function webFetch(url: unknown, { parallel, pages, checkMs = TIMEOU
 /** Each run's Parallel extract, by the environment its calls are given: one object per run (main's run process hands
  *  process.env; the runner hands each claim its own, claim-secrets.ts), so one claim's key or client never serves another. */
 const parallels = new WeakMap<NodeJS.ProcessEnv, Extract | null>();
-/** The pages this run read (Pages): its process is the run's, so the agent's tool and a call node's web_fetch share them. */
-export const runPages: Pages = new Map();
+/** Each run's pages, by the environment its calls are given (one object per run: main's run process hands process.env,
+ *  the runner hands each claim its own), so the pages one run read never serve another's. */
+const pagesByRun = new WeakMap<NodeJS.ProcessEnv, Pages>();
+/** The pages the run whose calls are given `env` read (Pages): the agent's tool and a call node's web_fetch of that run
+ *  share them, another run's never. */
+export function pagesOf(env: NodeJS.ProcessEnv): Pages {
+  let pages = pagesByRun.get(env);
+  if (!pages) pagesByRun.set(env, (pages = new Map()));
+  return pages;
+}
 /** The run's Parallel extract, made once for the environment its calls are given, so a refused key holds for the rest of
  *  the run: on the Parallel key that environment holds (parallelKeyOf: the per-run pipe, or the claim's own), null
  *  without one. */
@@ -246,7 +254,7 @@ export function parallelOf(env: NodeJS.ProcessEnv): Extract | null {
 /** The part `options` names of the page at `url` by the provider the run's plane resolves web_fetch to: Parallel's
  *  extract (with the direct fetch behind it) where it resolves to parallel, the guarded direct fetch otherwise, and a
  *  failed Page saying why where it is unavailable or the part is one a call may not ask for (partProblem), before
- *  anything is fetched. From `pages` (the run's, runPages) where they hold the URL. */
+ *  anything is fetched. From `pages` (the run's, pagesOf) where they hold the URL. */
 export async function fetchFor(env: NodeJS.ProcessEnv, url: unknown, options: GuardOptions & Part & { pages?: Pages } = {}): Promise<WebPage | Page> {
   const problem = partProblem(options);
   if (problem) return { ok: false, url: typeof url === "string" ? clip(url, URL_MAX) : "", status: 0, title: "", text: "", links: [], error: problem };
@@ -298,7 +306,7 @@ export function webFetchTool(env: NodeJS.ProcessEnv, name = WEB_FETCH_TOOL): Too
     replay: "safe",
     execute: async (args, _api, context) => {
       const { url, offset, max_chars } = args as { url?: unknown; offset?: number; max_chars?: number };
-      const page = await fetchFor(env, url, { ...(await fetchOptions(env, FAUX_ENV)), offset, maxChars: max_chars, pages: runPages, ...(context?.abortSignal ? { signal: context.abortSignal } : {}) });
+      const page = await fetchFor(env, url, { ...(await fetchOptions(env, FAUX_ENV)), offset, maxChars: max_chars, pages: pagesOf(env), ...(context?.abortSignal ? { signal: context.abortSignal } : {}) });
       return forModel(webFetchText(page, name), { details: page });
     },
   });
