@@ -218,7 +218,9 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
     adapter,
     session,
     input,
-    gate: (call) => gate.policy(call.tool),
+    // The gate's answer with its words (RunGate.decide): a deny names where it was set and that nothing was sent or charged,
+    // and a pinned MCP tool's call outside its pin is refused before it is asked or sent, as the old per-run gate did.
+    gate: (call) => gate.decide(call.tool, call.args),
     ...(beforeRequest ? { beforeRequest } : {}),
     ...(cap ? { cap } : {}),
     agentId: runRow.agentId,

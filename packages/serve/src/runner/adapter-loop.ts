@@ -49,8 +49,9 @@ export interface AdapterRunSpec {
    *  (its text events, at each call and turn boundary), and ends interrupted a call a crash or a fault left open. */
   readonly record?: "loop";
   readonly hooks?: KernelHooks;
-  /** The gate's answer for a call, before its intent: run it, refuse it, or ask a person (the run parks). */
-  readonly gate?: (call: ToolCall) => "allow" | "ask" | "deny";
+  /** The gate's answer for a call, before its intent: run it, refuse it, or ask a person (the run parks). A refusal may
+   *  carry the words the model reads (`{ deny }`: where the deny was set, a pin's words); a bare "deny" gets generic ones. */
+  readonly gate?: (call: ToolCall) => "allow" | "ask" | "deny" | { readonly deny: string };
   /** What an asked call costs, for its approval card (main's tool gate options.price): dollars, or "not metered";
    *  undefined when it has none (the ask says null). */
   readonly approvalPrice?: (call: ToolCall) => ApprovalPrice | undefined;
@@ -608,6 +609,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       if (reflecting && WRITES.has(call.tool) && underLearning(spec.workRoot, call.args)) return { deny: REFLECT_NOTE_ONLY };
       await hooks.beforeIntent(kernelCall);
       const decision = spec.gate?.(kernelCall) ?? "allow";
+      if (typeof decision === "object") return { deny: decision.deny };
       if (decision === "deny") return { deny: `Permission denied: ${call.tool} is set to deny.` };
       if (decision === "allow") return "allow";
       const answer = await answerOf(call, spec.approvalPrice?.(kernelCall) ?? null);

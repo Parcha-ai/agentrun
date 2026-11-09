@@ -483,6 +483,20 @@ export class RunGate {
   /** A tool's permission now (permissionOf): the revision's own over the server's setting, read at each call, so a change
    *  reaches a live run at its next call; under approvals "never", an ask is an allow. */
   readonly policy = (tool: string): Permission => this.setting(tool).permission;
+
+  /** The gate's answer for one call before its intent, for a loop that parks and answers asks itself (the runner's adapter
+   *  loop): run it, ask a person, or refuse it with the words the model reads. The same order as `enter`, past the end-of-run
+   *  turn's write check (the loop's own): the deny (with where it was set, and that nothing was sent or charged), then a
+   *  pin, then the allow, then the ask, so an allow that approvals "never" made is decided only after every refusal. */
+  decide(name: string, args: unknown): "allow" | "ask" | { deny: string } {
+    const key = settingsKeyOf(this.where.harness ?? DEFAULT_HARNESS, name, this.where.mcpServers) ?? name;
+    const tool = shellToolOf(name) ?? key;
+    const verdict = this.policy(name);
+    if (verdict === "deny") return { deny: deniedText(tool, key, this.denyFrom(name), "no") };
+    const pinned = this.pinned(key, args, "no");
+    if (pinned) return { deny: pinned.text };
+    return verdict === "allow" ? "allow" : "ask";
+  }
   /** Where the permission `policy` gives `tool` was set: the agent's own tool settings, the server's, or the default; or
    *  "unattended", an ask the agent's approvals allowed. */
   readonly denyFrom = (tool: string): SettingFrom => this.setting(tool).from;

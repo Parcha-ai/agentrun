@@ -502,7 +502,12 @@ export const TOOL_SETTINGS_KEY = "tool-settings";
 export async function loadToolSettings(store: { settings: Pick<Settings, "get"> }): Promise<{ settings: ToolSettingsMap; problems: string[]; unreadable?: true }> {
   const read = await store.settings.get(TOOL_SETTINGS_KEY);
   if (read === undefined) return { settings: {}, problems: [] };
-  return checkToolSettings(read, "the stored tool settings");
+  const checked = checkToolSettings(read, "the stored tool settings");
+  // A stored row that does not read carries SETTINGS_UNREAD (tool-gate.ts), as ToolSettings.get does for the file: wherever
+  // these settings go (the plane's providers, an agent's tools, a save's blockers) approvals "never" lifts no ask over a
+  // deny the row may hold. A save over it (saveToolSettings) writes a row that reads.
+  if (checked.unreadable) (checked.settings as { [SETTINGS_UNREAD]?: true })[SETTINGS_UNREAD] = true;
+  return checked;
 }
 
 /** A save of the server's tool settings: `map` (a tool it leaves out takes its defaults) over the settings read before it
