@@ -113,6 +113,8 @@ function runFile(href: string, files: LinkedFiles): string | null {
  *  to another app (mailto:, tel:) is as marked and the sanitizer leave it. */
 export function markdown(text: string, files?: LinkedFiles): string {
   const body = DOMPurify.sanitize(marked.parse(text, { async: false }) as string, { RETURN_DOM: true }) as HTMLElement;
+  // A code block wraps inside its box (a long line breaks, never runs past the page's edge).
+  for (const pre of [...body.querySelectorAll("pre")]) pre.classList.add("whitespace-pre-wrap", "break-words", "[overflow-wrap:anywhere]");
   for (const a of [...body.querySelectorAll("a[href]")]) {
     const href = a.getAttribute("href")!.trim();
     if (/^(https?|ftps?):/i.test(href)) { a.setAttribute("target", "_blank"); a.setAttribute("rel", "noopener noreferrer"); continue; }

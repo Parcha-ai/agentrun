@@ -87,6 +87,8 @@
   .report ol { @apply mb-4 list-decimal pl-6; }
   .report code { @apply bg-muted px-1 font-mono text-[13px]; }
   .report pre { @apply mb-4 overflow-x-auto border bg-card p-4 font-mono text-[12px] leading-[1.8]; }
+  /* A code block's code is the block's text: no inline code's tint per line. */
+  .report pre code { @apply bg-transparent p-0; }
   .report table { @apply mb-4 w-full border-collapse text-sm; }
   .report th, .report td { @apply border px-3 py-2 text-left align-top; }
   .report th { @apply caps text-[11px] text-muted-foreground; }
