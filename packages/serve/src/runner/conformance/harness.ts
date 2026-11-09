@@ -223,7 +223,8 @@ export type Seen = { type?: string; at?: number; epoch?: number; name?: string; 
 /**
  * The claim's fence, as the stalled process's own events show it: once it went on (`continuedAt`, its lease run out and no
  * one holding the run yet), its old loop's writes under its first epoch are each refused by the fence, by name (ClaimLost
- * or Fenced), and at least one was tried. A landed one names how long after its claim was lost it landed.
+ * or Fenced), or, with none tried, the runner said its claim was lost once it went on (its loop stopped before any write).
+ * A landed one names how long after its claim was lost it landed.
  */
 export function fenceHeld(events: readonly Seen[], continuedAt: number): void {
   const history = JSON.stringify(events);
@@ -234,7 +235,13 @@ export function fenceHeld(events: readonly Seen[], continuedAt: number): void {
     const when = lost?.at !== undefined ? `${landed.at! - lost.at} ms after its claim was lost` : `${landed.at! - continuedAt} ms after it went on, its lease run out`;
     assert.fail(`an epoch-${first} commit landed ${when}: ${history}`);
   }
-  assert.ok(old.length > 0, `the old loop tried to write after it went on: ${history}`);
+  // Which way the fence is kept is the box's timing, and both keep it: the runner sees its claim lost and stops the loop
+  // before any write (a loaded box), or the loop's write is tried and refused. The store's refusal of a write past the
+  // lease is held on its own, deterministically (store-claim-lease).
+  if (old.length === 0) {
+    assert.ok(lost !== undefined && (lost.at ?? 0) >= continuedAt, `the old loop neither tried a write nor was stopped by its claim lost once it went on: ${history}`);
+    return;
+  }
   assert.ok(old.every((event) => event.name === "ClaimLost" || event.name === "Fenced"), `each was refused by the claim's fence, by name: ${history}`);
 }
 
