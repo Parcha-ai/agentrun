@@ -51,6 +51,7 @@ import { archilClaim, type ArchilClaimOptions, MOUNT_TTL_MS } from "../workspace
 import { loadArchilSettings } from "../archil-settings.js";
 import type { RunComputer } from "../workspace/run-tools.js";
 import type { Workspace } from "../workspace/workspace.js";
+import { runnerSecrets, secretRedactor } from "./redact.js";
 
 /** What a claim gives the shared computerForClaim: the run, its epoch, its revision, its place and any computer choice. */
 export interface ClaimLaunch {
@@ -180,7 +181,9 @@ async function storeSettings(store: Pick<Store, "settings">): Promise<Awaited<Re
 
 export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRun, deps: AdapterSpecDeps, claim: Claim): Promise<AdapterRunSpec> {
   const context = BACKGROUND_CONTEXT;
-  const log = deps.log ?? (() => {});
+  // The spec's log lines carry error text (a release, a workspace's end): cut of every secret the runner's env holds.
+  const cut = secretRedactor(runnerSecrets(deps.env));
+  const log = (line: string) => (deps.log ?? (() => {}))(cut(line));
   const runRow = await deps.store.runs.get(claim.runId);
   if (!runRow) throw new Error(`run ${claim.runId}: its row is gone from the store`);
   const revisionRow = await deps.store.agents.revision(runRow.revisionId);
