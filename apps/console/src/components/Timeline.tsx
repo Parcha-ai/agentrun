@@ -22,10 +22,12 @@ const awaitsApproval = (row: TimelineRow) => row.kind === "tool_approval_request
 
 /** A message the server wrote into the run (served `origin: "server"`): AgentRun's, never the person's. */
 const fromServer = (row: TimelineRow) => row.origin === "server";
+/** A trigger's message, a webhook's input or a schedule's (served `origin: "trigger"`): the trigger's, never the person's. */
+const fromTrigger = (row: TimelineRow) => row.origin === "trigger";
 /** The title a row shows: its summary without the kind's own prefix ("Thinking: ", "You: ", a server message's
- *  "AgentRun: "). */
+ *  "AgentRun: ", a trigger's "Trigger <its id>: "). */
 const title = (row: TimelineRow) => {
-  const text = (row.summary ?? "").replace(fromServer(row) ? /^AgentRun:\s*/ : /^(You|Thinking|Asked you|Waiting for you):\s*/, "");
+  const text = (row.summary ?? "").replace(fromServer(row) ? /^AgentRun:\s*/ : fromTrigger(row) ? /^Trigger [^:]+:\s*/ : /^(You|Thinking|Asked you|Waiting for you):\s*/, "");
   // A workflow run's input is a JSON object: show its fields, not its braces.
   if (row.kind === "user_message" && text.startsWith("{")) {
     try { return Object.entries(JSON.parse(text) as Record<string, unknown>).map(([k, v]) => `${k}: ${typeof v === "string" ? v : JSON.stringify(v)}`).join(" · "); } catch { /* not whole JSON: as is */ }
@@ -46,7 +48,7 @@ const BROWSER = new Set<string>(BROWSER_TOOL_NAMES);
 /** A tool's name as the label says it: an MCP server's tool as `<server> · <tool>`, a browser tool by its name, any
  *  other as the harness names it. */
 const toolName = (tool: string | null | undefined) => (tool ? (mcpToolLabel(tool) ?? (BROWSER.has(tool) ? nameOf(tool) : tool)) : tool);
-const label = (row: TimelineRow) => fromServer(row) ? "AgentRun" :
+const label = (row: TimelineRow) => fromServer(row) ? "AgentRun" : fromTrigger(row) ? "Trigger" :
   ({ user_message: "You", thinking: "Thinking", tool_use: toolName(row.tool_name) ?? "Tool", tool_result: toolName(row.tool_name) ?? "Result", waiting: "Waiting for you", usage: "Usage", final_answer: "Answer", phase: "Phase", error: "Error", decision: "Decision", text_block: "Text", tool_approval_requested: "Your approval", learning: "Learning" } as Partial<Record<string, string>>)[row.kind] ?? row.kind;
 
 /** One step: a failed one reads as failed. */

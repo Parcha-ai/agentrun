@@ -13,6 +13,7 @@ import { BoxImageBanner } from "@/components/BoxImageBanner";
 import { WebhookPage } from "@/components/WebhookPage";
 import { ScheduleNames } from "@/components/ScheduleChip";
 import { SchedulesPage } from "@/components/Schedules";
+import { TemplatesPage } from "@/components/Templates";
 import { LiveRun } from "@/components/LiveRun";
 import { MissionControl } from "@/components/MissionControl";
 import { NeedsYouStrip } from "@/components/NeedsYouStrip";
@@ -42,7 +43,7 @@ const MODEL_CHECK_MS = 10_000;
 
 /** `agent`: an agent's page (at `tab`), or with `edit` its editor; null is a new agent's editor. `runsOf`, `status` and
  *  `archived` (for runs): the runs list's filters. `settings`: a settings page. */
-type Where = { section: Section; run?: string; trigger?: string | null; kind?: "schedule" | "webhook"; agent?: string | null; edit?: boolean; tool?: string; tab?: string; notes?: string[]; runsOf?: string; archived?: boolean; status?: RunStatus; settings?: SettingsPage; signIn?: ReturnType<typeof signInOf> };
+type Where = { section: Section; template?: string; run?: string; trigger?: string | null; kind?: "schedule" | "webhook"; agent?: string | null; edit?: boolean; tool?: string; tab?: string; notes?: string[]; runsOf?: string; archived?: boolean; status?: RunStatus; settings?: SettingsPage; signIn?: ReturnType<typeof signInOf> };
 /** The page an address opens. Exported for its test. */
 export function route(h: string = location.hash): Where {
   let m = h.match(/^#\/runs\/([^/?]+)$/);
@@ -58,6 +59,10 @@ export function route(h: string = location.hash): Where {
   if (m) return { section: "agents", agent: decodeURIComponent(m[1]), ...(m[2] === "edit" ? { edit: true } : m[2] ? { tab: m[2] } : {}) };
   if (h.startsWith("#/agents")) return { section: "agents", archived: /[?&]archived=true\b/.test(h) };
   if (h.startsWith("#/playground")) return { section: "playground" };
+  // The server's templates: the list, and one template's Apply screen.
+  m = h.match(/^#\/templates\/([^/?]+)$/);
+  if (m) return { section: "templates", template: decodeURIComponent(m[1]) };
+  if (h.startsWith("#/templates")) return { section: "templates" };
   // Triggers: the list, a new schedule, a new webhook, one trigger, and a schedule's editor.
   if (h === "#/triggers/new") return { section: "triggers", trigger: null, kind: "schedule" };
   if (h === "#/triggers/new-webhook") return { section: "triggers", trigger: null, kind: "webhook" };
@@ -319,7 +324,7 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
   // The settings pages this server has: tool keys (their routes), tools (a capability with a choice of provider, or a
   // permission to set), MCP servers (every server has them), and the webhook (its routes).
   const settingsOffered: SettingsPage[] = [...(caps?.features?.tool_keys?.routes ? ["keys" as const] : []), ...(choices.length || gates.length ? ["tools" as const] : []), "mcp" as const, ...(caps?.features?.webhooks?.routes ? ["webhook" as const] : [])];
-  const nav = (s: Section) => go({ runs: "#/runs", agents: "#/agents", playground: "#/playground", mission: "#/", triggers: "#/triggers", settings: `#/settings/${settingsOffered[0] ?? "keys"}` }[s]);
+  const nav = (s: Section) => go({ runs: "#/runs", agents: "#/agents", playground: "#/playground", mission: "#/", triggers: "#/triggers", templates: "#/templates", settings: `#/settings/${settingsOffered[0] ?? "keys"}` }[s]);
   // One click on a template makes its agent (once) on the first harness with a model, runs it, and opens the run.
   // Try it keeps its start's key until a start lands: a click after a lost answer is the same start, not a second run.
   const templateKeys = useRef(keeper()).current;
@@ -501,6 +506,8 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
                   keyCard={keyCardSavesModel} /> : undefined} />
             </div>
           </div>
+        : where.section === "templates"
+        ? <TemplatesPage key={where.template ?? ""} v2={v2} name={where.template} go={go} />
         : where.section === "triggers"
         ? <SchedulesPage v2={v2} view={{ trigger: where.trigger, kind: where.kind, edit: where.edit }} go={go} agentName={agentName} minEvery={caps?.features?.triggers?.min_every_s} />
         : where.section === "playground"
