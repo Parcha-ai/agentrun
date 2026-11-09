@@ -49,13 +49,12 @@ async function runnerBeside(dataDir: string, loops?: number, switches: NodeJS.Pr
   // seals the live-viewer tokens, and there is no stand-in key.
   const { ensureSealKey, sealKeyHome } = await import("./seal-key.js");
   const sealKey = ensureSealKey(secret(SEAL_KEY_ENV), { configHome: sealKeyHome(process.env) }).key;
-  // The beside-runner sees the server's environment as a separate runner would (runEnv, not withoutFaux): so an API run on
-  // a --faux server reaches the faux gateway and its computers. The run's claim-time computer is composed once, the one way
-  // (workspace/computer-deps.ts computerDepsFrom), from that same environment.
-  // With the server's test switches (`switches`, server.ts fauxEnvOf: --faux and its modules), which the CLI hands the
-  // server as options, never through this process's environment: without them a --faux start's runner looks its faux
-  // model up in pi-ai's own catalog and every run fails on its first request. Assigned onto runEnv's result, never spread:
-  // its secrets are non-enumerable and a spread drops them.
+  // The beside-runner sees the server's environment as a separate runner would (runEnv, which drops a test hook's name the
+  // environment holds, as the server's withoutFaux does), with the server's test switches (`switches`, server.ts
+  // fauxEnvOf: --faux and its modules), which the CLI hands the server as options: without them a --faux start's runner
+  // looks its faux model up in pi-ai's own catalog and every run fails on its first request. Assigned onto runEnv's
+  // result, never spread: its secrets are non-enumerable and a spread drops them. The run's claim-time computer is
+  // composed once, the one way (workspace/computer-deps.ts computerDepsFrom), from that same environment.
   const runs = Object.assign(runEnv(process.env), switches);
   const computers = computerDepsFrom({ env: runs, store, sealKey });
   const createLoop = dispatchRunner({ env: runs, data: dataDir, journal: (claim) => store.journal(claim), store, sealKey, routeOf, computerForClaim: computers.computerForClaim, computerDeps: computers.computerDeps });

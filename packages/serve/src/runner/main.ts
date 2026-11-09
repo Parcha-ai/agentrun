@@ -9,6 +9,8 @@
 // lease lapses); then 0. Bad arguments exit 2, a store schema it does not know 3, anything else 1.
 import { mkdirSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { isFauxName } from "../model.js";
+import { keptSealKey, SealKeyRefused, sealKeyHome } from "../seal-key.js";
 import { SECRET_NAMES, secret } from "../secrets.js";
 import { openSqliteStore, SchemaVersionUnknown, type Store } from "../store/index.js";
 import { SCHEMA_VERSION } from "../store/schema.js";
@@ -78,7 +80,9 @@ const RUNNER_ONLY = (name: string): boolean => name === "AGENTRUN_TOKEN" || name
  *  a spread of the object or a spawn given it carries none. */
 export function runEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const out: NodeJS.ProcessEnv = {};
-  for (const [name, value] of Object.entries(env)) if (!RUNNER_ONLY(name)) out[name] = value;
+  // Never a test hook's name (model.ts isFauxName): one the operator's environment holds gives no run fake answers and
+  // loads no module, as on the server (withoutFaux); a --faux start hands its runner the switches from its options.
+  for (const [name, value] of Object.entries(env)) if (!RUNNER_ONLY(name) && !isFauxName(name)) out[name] = value;
   for (const name of SECRET_NAMES) {
     if (RUNNER_ONLY(name)) continue;
     const value = secret(name);
@@ -91,8 +95,17 @@ export function runEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv 
  *  its launch (harness-loops.ts resolveRunnerLoop), with the data directory, the run environment (runEnv), the store's
  *  journal, the seal key and the model route. Refused in words with no seal key. */
 export function runnerLoop(store: Store, dataDir: string, env: NodeJS.ProcessEnv = process.env): LoopFactory {
-  const sealKey = sealKeyOf(secret(SEAL_KEY_ENV) ?? env[SEAL_KEY_ENV]);
-  if (!sealKey) throw new RunnerRefused(`A runner needs the server's seal key (${SEAL_KEY_ENV}): start it through the server's launcher, which hands it over.`);
+  // The key handed over (the launcher's pipe, or the environment), else the one the server keeps under the config home
+  // (seal-key.ts), read and never made here: the server makes it at its first start, and a runner's own would not open
+  // what the server sealed.
+  let sealKey = sealKeyOf(secret(SEAL_KEY_ENV) ?? env[SEAL_KEY_ENV]);
+  try {
+    sealKey ??= keptSealKey(sealKeyHome(env))?.key;
+  } catch (error) {
+    if (error instanceof SealKeyRefused) throw new RunnerRefused(error.message, { cause: error });
+    throw error;
+  }
+  if (!sealKey) throw new RunnerRefused(`A runner needs the server's seal key: ${SEAL_KEY_ENV} handed over by the server's launcher, or the one the server keeps under the config home (start the server on this machine first).`);
   const runs = runEnv(env);
   // The run's computer at its claim, composed once (workspace/computer-deps.ts): none for the runner's place, a box's
   // computer by the agent's setting, its keys read from the run environment first, then the store's sealed rows.

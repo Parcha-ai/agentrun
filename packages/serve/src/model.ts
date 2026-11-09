@@ -23,7 +23,9 @@ export const FAUX_ENV = "AGENTRUN_SERVE_FAUX";
 export const FAUX_PREFIX = "AGENTRUN_SERVE_FAUX";
 /** `env` without a test hook's name: serve sets those from startServe's options alone, so a name the server's own
  *  environment holds (an operator's export, a leftover) never gives its runs fake answers or loads a module. */
-export const withoutFaux = (env: NodeJS.ProcessEnv): NodeJS.ProcessEnv => Object.fromEntries(Object.entries(env).filter(([name]) => !name.startsWith(FAUX_PREFIX) && name !== HARNESS_TABLE_ENV));
+export const withoutFaux = (env: NodeJS.ProcessEnv): NodeJS.ProcessEnv => Object.fromEntries(Object.entries(env).filter(([name]) => !isFauxName(name)));
+/** A test hook's name (withoutFaux drops each): AGENTRUN_SERVE_FAUX and the names after it, and the harness table's. */
+export const isFauxName = (name: string): boolean => name.startsWith(FAUX_PREFIX) || name === HARNESS_TABLE_ENV;
 /** Under `--faux` only: a module whose default export is the fetch the Anthropic and OpenAI providers send through (the
  *  tests' fake upstream), in place of their APIs. With it they are registered beside the faux model, for a tool's own
  *  request to the provider the revision's model names (web_search's, hosted-search.ts); the run's turns stay faux. */

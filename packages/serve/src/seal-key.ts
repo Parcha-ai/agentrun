@@ -92,6 +92,24 @@ export function ensureSealKey(given: string | undefined, { configHome }: { confi
       rmSync(temp, { force: true });
     }
   }
+  return keptAt(dir, file, generated);
+}
+
+/**
+ * The key a server keeps under `configHome` (ensureSealKey), read and never made: undefined when none is kept there. A
+ * runner started on its own (runner/main.ts) reads it, so it opens what its server sealed; a key it made itself would
+ * seal what the server could never open. Throws SealKeyRefused, in words, for a kept key it must not use.
+ */
+export function keptSealKey(configHome: string | undefined): SealKey | undefined {
+  if (!configHome) return undefined;
+  const dir = join(configHome, SEAL_KEY_DIR);
+  const file = join(dir, SEAL_KEY_FILE);
+  if (!lstatOf(file)) return undefined;
+  return keptAt(dir, file, false);
+}
+
+/** The key in `file`, once its directory and itself are this user's alone; refused, in words, otherwise. */
+function keptAt(dir: string, file: string, generated: boolean): SealKey {
   const held = lstatOf(dir);
   if (!held || held.isSymbolicLink() || !held.isDirectory() || !mine(held) || !ownerOnly(held)) {
     throw refused(`${dir} can be read by another user, or is not this user's: make it 0700 (chmod 700 ${dir}); it is never changed for you once a key is in it`);
