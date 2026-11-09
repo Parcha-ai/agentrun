@@ -209,23 +209,33 @@ interface Case {
 }
 
 /** One event of the runner process (child.ts): a claim, a lost claim, a commit's outcome by epoch, and when. */
-type Seen = { type?: string; at?: number; epoch?: number; name?: string; why?: string; claim?: { epoch: number } };
+export type Seen = { type?: string; at?: number; epoch?: number; name?: string; why?: string; claim?: { epoch: number } };
 
 /**
  * The claim's fence, as the stalled process's own events show it: once it went on (`continuedAt`, its lease run out and no
- * one holding the run yet), its old loop's writes under its first epoch are each refused by the fence, by name (ClaimLost
- * or Fenced), and at least one was tried. A landed one names how long after its claim was lost it landed.
+ * one holding the run yet), its old loop's writes under the claim it was held under are each refused by the fence, by name (ClaimLost
+ * or Fenced), or, with none tried, the runner said its claim was lost once it went on (its loop stopped before any write).
+ * A landed one names how long after its claim was lost it landed.
  */
-function fenceHeld(events: readonly Seen[], continuedAt: number): void {
+export function fenceHeld(events: readonly Seen[], continuedAt: number): void {
   const history = JSON.stringify(events);
-  const first = events.find((event) => event.type === "claimed")?.claim?.epoch;
+  // The claim the held loop ran under: the process's last claim before it stopped at the point. A starved box can lose the
+  // process's first claim before the point and take the run again, so the held loop's epoch need not be its first.
+  const heldFrom = events.find((event) => event.type === "stopping")?.at ?? continuedAt;
+  const first = events.filter((event) => event.type === "claimed" && (event.at ?? 0) <= heldFrom).at(-1)?.claim?.epoch;
   const old = events.filter((event) => (event.at ?? 0) >= continuedAt && event.epoch === first && (event.type === "commit-landed" || event.type === "commit-refused"));
   const lost = events.find((event) => event.type === "claim-lost" && event.epoch === first);
   for (const landed of old.filter((event) => event.type === "commit-landed")) {
     const when = lost?.at !== undefined ? `${landed.at! - lost.at} ms after its claim was lost` : `${landed.at! - continuedAt} ms after it went on, its lease run out`;
     assert.fail(`an epoch-${first} commit landed ${when}: ${history}`);
   }
-  assert.ok(old.length > 0, `the old loop tried to write after it went on: ${history}`);
+  // Which way the fence is kept is the box's timing, and both keep it: the runner sees its claim lost and stops the loop
+  // before any write (a loaded box), or the loop's write is tried and refused. The store's refusal of a write past the
+  // lease is held on its own, deterministically (store-claim-lease).
+  if (old.length === 0) {
+    assert.ok(lost !== undefined && (lost.at ?? 0) >= continuedAt, `the old loop neither tried a write nor was stopped by its claim lost once it went on: ${history}`);
+    return;
+  }
   assert.ok(old.every((event) => event.name === "ClaimLost" || event.name === "Fenced"), `each was refused by the claim's fence, by name: ${history}`);
 }
 
@@ -330,7 +340,7 @@ async function processCrashThenResume(subject: ConformanceSubject, t: { after(fn
     continuedAt = Date.now();
     child.kill("SIGCONT");
     // The fence first, before anything waits on the process's death: its old loop's first write once it went on (landed or
-    // refused), or the process's end, bounded. The old loop's epoch is the process's first claim's.
+    // refused), or the process's end, bounded. The old loop's epoch is the claim it was held under.
     const outcome = (event: Seen) => (event.at ?? 0) >= continuedAt && (event.type === "commit-landed" || event.type === "commit-refused");
     await until(() => child.exitCode !== null || child.signalCode !== null || childEvents(eventsFile).some((event) => outcome(event as Seen)), "the old loop writes once it goes on, or the process ends", 15_000);
     fenceHeld(childEvents(eventsFile) as Seen[], continuedAt);
@@ -731,10 +741,6 @@ const CASES: readonly Case[] = [
   },
 ];
 
-/** The output-limit cases a CLI subject cannot model yet, with why (stated once, for each CLI subject's unsupported list):
- *  the loop reads a cut answer from its entry's stop reason (loop.ts cutLast), and a CLI's record carries none yet. */
-export const CLI_NO_STOP_REASON = "the CLI adapters don't report a turn cut at the model's output limit (stopReason length) yet, and the CLI record carries no stop reason for the loop to read";
-export const CLI_OUTPUT_LIMIT_UNSUPPORTED: Partial<Record<ConformanceCase, string>> = Object.freeze({ "length-ends-failed": CLI_NO_STOP_REASON, "length-mid-run": CLI_NO_STOP_REASON });
 
 const CLI_NEVER_RERUNS = "a CLI never reruns a call that started; only the model calls again (its adapter's facts: rerunsStarted false)";
 
@@ -746,6 +752,12 @@ export function factsRuleOut(facts: ConformanceSubject["facts"]): Partial<Record
     // steer-origin steers the turn in flight too: its message is taken mid-turn, or never.
     ...(facts.steer ? {} : { "steer-mid-turn": noSteer, "steer-origin": noSteer }),
     ...(facts.rerunsStarted === false ? { "replay-safe-rerun": CLI_NEVER_RERUNS, "fault-restarts-bounded": CLI_NEVER_RERUNS } : {}),
+    // A harness that resumes a cut answer itself never ends a turn on the cut; one whose cut ends its turn never goes on
+    // from it in the same turn.
+    ...(facts.recoversCutAnswers !== undefined && facts.recoversCutAnswers > 0
+      ? { "length-ends-failed": `${facts.id} resumes an answer its output limit cut itself, up to ${facts.recoversCutAnswers} times in one turn (its adapter's facts: recoversCutAnswers ${facts.recoversCutAnswers})` }
+      : {}),
+    ...(facts.recoversCutAnswers === 0 ? { "length-mid-run": `a cut ends ${facts.id}'s turn, as pi's does (its adapter's facts: recoversCutAnswers 0)` } : {}),
   };
 }
 

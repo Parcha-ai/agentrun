@@ -244,10 +244,16 @@ const NO_GIT_DIR = '/nonexistent/dh-no-git';
 interface TurnOutcome {
   status: 'completed' | 'failed' | 'interrupted';
   error?: string;
+  /** The turn's answer was cut at the model's output limit: it ended, unfinished. */
+  stopReason?: 'length';
+  /** The cut answer's output tokens, when the provider said them. */
+  outputTokens?: number;
 }
 
 interface ActiveTurn {
   id?: string;
+  /** The provider cut the turn's answer at its output limit (the model proxy read it before Codex had it). */
+  cut?: { outputTokens?: number };
   /** Completed agent messages since the last transcript entry. */
   said: string[];
   /** Agent messages still streaming (item id to text so far). */
@@ -613,6 +619,18 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
         return text;
       };
 
+      // The provider cut the turn's answer at its output limit, read by the model proxy before Codex has the stop. Codex
+      // takes an incomplete answer as a stream error and asks for it again (each time paid), so the turn is interrupted
+      // here, and its outcome is the cut answer's: completed, stopReason "length", the text it said so far kept.
+      machine.onCut?.((stop) => {
+        const t = active;
+        if (!t?.id || t.cut) return;
+        t.cut = stop;
+        void rpc.request('turn/interrupt', { threadId, turnId: t.id }).catch((err) => {
+          log('codex: the turn whose answer was cut could not be interrupted', { error: String((err as Error)?.message ?? err).slice(0, 200) });
+        });
+      });
+
       // The built-ins: each command and patch an intent before Codex runs it, its outcome when the item completes.
       const calls = (builtins = new BuiltinCalls(ctx, {
         live: true,
@@ -933,6 +951,8 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
         const said = takeSaid(t);
         if (said) journal.message({ type: 'message', role: 'assistant', text: said });
         active = undefined;
+        // Its answer cut at the output limit: the turn was interrupted for it, and ended there, its answer unfinished.
+        if (t.cut) return { status: 'completed', stopReason: 'length', ...(t.cut.outputTokens !== undefined ? { outputTokens: t.cut.outputTokens } : {}) };
         const status = result.status === 'completed' ? 'completed' : result.status === 'interrupted' ? 'interrupted' : 'failed';
         const error = status === 'completed' ? undefined : (t.error ?? result.error?.message ?? undefined);
         return { status, ...(error ? { error } : {}) };
