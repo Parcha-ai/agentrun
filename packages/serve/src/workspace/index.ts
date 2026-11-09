@@ -33,5 +33,6 @@ export {
   type ProviderEntry, resolveComputer, type ResolvedComputer, type StartedComputer,
 } from "./resolve-computer.js";
 export { computerProviderFactories, computerProviderMakers, type ProviderLoad } from "./computer-providers.js";
+export { type ComputerDeps, computerDepsFrom, type ComputerDepsOptions, computerSpecOf } from "./computer-deps.js";
 export { type ClaimComputer, type ClaimLaunch, computerForClaim, type ComputerForClaimDeps, type OpenComputerView, type ProviderMakers, sweepComputers, type ViewEnd } from "./computer-for-claim.js";
 export { layRevisionSkills, RUN_SKILLS_DIR } from "./revision-skills.js";

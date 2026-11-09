@@ -5,7 +5,8 @@
 // owner's take-over over the store is not on this line yet: its routes answer 501, computer-routes.ts.) A computer that cannot be had is refused in words
 // with code computer_unavailable; kind none, or no setting where the server's default is none, is no computer.
 //
-// A provider is made with its keys from the store's sealed keys, by the names the registry declares, through serve's own
+// A provider is made with its keys (the server's environment's, else the store's sealed keys, through the composer's
+// keyOf: computer-deps.ts), by the names the registry declares, through serve's own
 // map of key names to options (computer-keys.ts providerOptions); a provider that keeps sessions with no labels of their
 // own (the phone's) is given the store's computer ledger. Nothing here knows a vendor: the registry, the providers' create
 // and a test's stand-ins are passed in.
@@ -66,6 +67,9 @@ export interface ComputerForClaimDeps {
   readonly providers: ProviderMakers;
   /** What a computer of `kind` is made with, besides its labels and its mount: image, lifetime, network. */
   readonly spec: (entry: ProviderEntry, kind: Exclude<ComputerSettingKind, "none">) => Omit<ComputerSpec, "labels" | "mount">;
+  /** A provider key's value by its name, as the server reads it (key-meta.ts keyReader: the environment's, else the
+   *  saved one). Absent: the saved one alone, opened with `sealKey`. */
+  readonly keyOf?: (name: string) => Promise<string | undefined>;
   /** The map from key names to options: serve's own unless given (--faux's). */
   readonly keyTable?: KeyTable;
   readonly settings?: ProviderSettings;
@@ -189,7 +193,7 @@ export async function computerForClaim(launch: ClaimLaunch, store: Pick<Store, "
       const entry = deps.kinds.PROVIDERS.find((one) => one.id === provider);
       const keys: Record<string, string> = {};
       for (const key of entry?.keys ?? []) {
-        const value = deps.sealKey ? await getSealedKey(store, deps.sealKey, key.name) : undefined;
+        const value = deps.keyOf ? await deps.keyOf(key.name) : deps.sealKey ? await getSealedKey(store, deps.sealKey, key.name) : undefined;
         if (value !== undefined) keys[key.name] = value;
       }
       return keys;
@@ -225,7 +229,8 @@ export async function computerForClaim(launch: ClaimLaunch, store: Pick<Store, "
   const revoke = async (): Promise<void> => { await deps.revokeMount?.(); };
   let started: Awaited<ReturnType<typeof resolved.start>>;
   try {
-    started = await resolved.start({ workspace: deps.workspace, check: deps.check, ...(deps.signal ? { signal: deps.signal } : {}) });
+    // The mount check carries the claim's epoch (a disk read-back under another epoch is refused) unless it names one.
+    started = await resolved.start({ workspace: deps.workspace, check: { ...deps.check, epoch: deps.check.epoch ?? launch.epoch }, ...(deps.signal ? { signal: deps.signal } : {}) });
   } catch (error) {
     await revoke().catch(() => undefined);
     throw error;
