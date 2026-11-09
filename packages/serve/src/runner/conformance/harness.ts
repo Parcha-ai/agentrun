@@ -124,14 +124,19 @@ function crashAt(point: keyof KernelHooks, holder: { runner?: Runner; crashed?: 
   };
 }
 
+/** The Postgres store each registered subject's worlds open (registerHarnessConformance's `storeUrl`), by the subject
+ *  object the suite's cases are handed: none for the data directory's SQLite store. */
+const STORE_URLS = new WeakMap<ConformanceSubject, string>();
+
 /** A store in a data directory of its own, one queued run, and runners started on it (each its own connection). */
 async function world(subject: ConformanceSubject, t: { after(fn: () => unknown): void }, timing: Partial<typeof TIMING> = {}) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-conformance-"));
-  // The store the environment names (store/open.ts): on Postgres, a schema of this world's own, dropped after it.
-  const target = storeTarget(dir);
-  const storeEnv: Record<string, string> = target.kind === "postgres" ? { AGENTRUN_STORE_URL: target.url, AGENTRUN_STORE_SCHEMA: `${target.schema}_c${randomBytes(6).toString("hex")}` } : {};
+  // The store the suite was handed (store/open.ts): on Postgres, a schema of this world's own, dropped after it. The URL
+  // goes to each opener by hand, and to a runner process in its config, never through an environment (a secret is read
+  // by name: store/open.ts); the environment names only the schema.
+  const target = storeTarget(dir, {}, STORE_URLS.get(subject) ?? "");
+  const storeEnv: Record<string, string> = target.kind === "postgres" ? { AGENTRUN_STORE_SCHEMA: `${target.schema}_c${randomBytes(6).toString("hex")}` } : {};
   const env = { ...process.env, ...storeEnv };
-  // The URL goes to the opener by hand (a secret is read by name, never from an environment: store/open.ts).
   const url = target.kind === "postgres" ? target.url : "";
   const server = await openStore({ dataDir: dir, role: "server", url, env });
   const stores: Store[] = [server];
@@ -227,7 +232,7 @@ async function world(subject: ConformanceSubject, t: { after(fn: () => unknown):
     assert.ok(ask, "the run wrote its ask");
     return String((ask.data as { callId?: unknown }).callId);
   };
-  return { dir, storeEnv, server, start, run, read, ended, commandRow, askedCall, events, handedOver: (id: number) => handed.has(id), liveRows };
+  return { dir, storeUrl: url, storeEnv, server, start, run, read, ended, commandRow, askedCall, events, handedOver: (id: number) => handed.has(id), liveRows };
 }
 
 interface Case {
@@ -356,7 +361,7 @@ async function processCrashThenResume(subject: ConformanceSubject, t: { after(fn
   const countFile = join(w.dir, "tool-runs");
   const { tools, ran } = suiteTools(countFile);
   const eventsFile = join(w.dir, "runner-process-events.jsonl");
-  const config = { dataDir: w.dir, storeEnv: w.storeEnv, module: subject.process!.module, export: subject.process!.export, tool, point, countFile, eventsFile, ...(stall ? { stopOnce: true } : {}) };
+  const config = { dataDir: w.dir, storeUrl: w.storeUrl, storeEnv: w.storeEnv, module: subject.process!.module, export: subject.process!.export, tool, point, countFile, eventsFile, ...(stall ? { stopOnce: true } : {}) };
   const child = spawn(process.execPath, [CHILD, JSON.stringify(config)], { env: childEnv(), stdio: ["ignore", "ignore", "pipe"] });
   // Its end, listened for from its start: a process that ends while the case waits on something else (the fence's wait
   // returns on that end) is never missed by the wait for its death below.
@@ -817,7 +822,12 @@ async function settledRun(w: { run(): Promise<RunRow> }): Promise<RunRow> {
 
 /** Registers the cases for `subject` with `test` (node:test). A case its facts rule out, or one it cannot model yet, is
  *  skipped with its reason, never passed. */
-export function registerHarnessConformance(subject: ConformanceSubject, { test }: { test: TestFunction }): void {
+/** Registers the suite's cases for `subject` with `test`. `storeUrl`: the Postgres store every case's world opens (each
+ *  in a schema of its own), handed by the caller; without it, the data directory's SQLite store. */
+export function registerHarnessConformance(given: ConformanceSubject, { test, storeUrl }: { test: TestFunction; storeUrl?: string }): void {
+  // The subject object the cases are handed, which names the store their worlds open.
+  const subject: ConformanceSubject = Object.create(given) as ConformanceSubject;
+  if (storeUrl) STORE_URLS.set(subject, storeUrl);
   const ruledOut = factsRuleOut(subject.facts);
   for (const entry of CASES) {
     const processCase = entry.id.endsWith("-process");
