@@ -15,7 +15,7 @@
 // (HOLD_ASK_MAX_MS at most), or until its signal aborts. A hand-back while the owner holds the computer answers it done.
 //
 // Every change is an event (`on`): the run's journal records them (runner/computer-journal.ts), which is what the server
-// reads (computer-view.ts). The hold itself keeps nothing beyond this process.
+// reads (computer-routes.ts). The hold itself keeps nothing beyond this process.
 import { randomBytes } from "node:crypto";
 import type { Hands } from "./hands.js";
 

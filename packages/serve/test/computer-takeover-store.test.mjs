@@ -20,7 +20,7 @@ import { startRunner } from "../dist/runner/runner.js";
 import { closeOpenSessions, piAdapterSpec } from "./conformance-pi-adapter.mjs";
 
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
-const { computerRoute, computerViewOf } = await import("../dist/computer-view.js");
+const { computerRoute, computerViewOf } = await import("../dist/computer-routes.js");
 const { computerHoldOf } = await import("../dist/computer-commands.js");
 const { onComputerHold } = await import("../dist/runner/computer-journal.js");
 const { computerHold, heldHands } = await import("../dist/workspace/computer-hold.js");

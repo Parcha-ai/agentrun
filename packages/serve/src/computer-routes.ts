@@ -8,7 +8,7 @@
 // hold (workspace/computer-hold.ts). Nothing is kept in this process, so any server answers the same, and a take-over
 // outlives the server that took it.
 import {
-  type ComputerAnswer, type ComputerCallOptions, type ComputerCallStore, computerAsk, computerHoldOf, entriesOf, handBackComputer, holdIn,
+  type ComputerHoldAnswer, type ComputerCallOptions, type ComputerCallStore, computerAsk, computerHoldOf, entriesOf, handBackComputer, holdIn,
   holdShown, type JournalEntry, runOver, runViewedKind, takeOverComputer, type ViewedKind,
 } from "./computer-commands.js";
 import { ApiError, invalid } from "./errors.js";
@@ -58,7 +58,7 @@ export type ComputerRequest = { readonly ownerSession: boolean; readonly token: 
  * run's browser does. The take-over takes an empty body; the hand-back an `outcome` (done or cancelled) at most. Serve's
  * dispatch sends what this answers.
  */
-export async function computerRoute(name: string, runId: string, request: ComputerRequest, store: ComputerCallStore, options: ComputerCallOptions = {}): Promise<ComputerAnswer> {
+export async function computerRoute(name: string, runId: string, request: ComputerRequest, store: ComputerCallStore, options: ComputerCallOptions = {}): Promise<ComputerHoldAnswer> {
   if (!request.ownerSession && request.token) {
     throw new ApiError("forbidden", request.accounts ? "A run's computer takes the owner's password sign-in in the console, never a token." : "A run's computer takes the owner's password sign-in, and this server has no accounts (AGENTRUN_ACCOUNTS=0).");
   }

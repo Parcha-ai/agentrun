@@ -1,5 +1,5 @@
 // The run's desktop or phone hold, on the runner: every change of the hold (workspace/computer-hold.ts) is committed to the
-// run's journal with its Timeline row, which is what the server reads (computer-commands.ts, computer-view.ts); and the
+// run's journal with its Timeline row, which is what the server reads (computer-commands.ts, computer-routes.ts); and the
 // person's take-over and hand-back rows are applied to the hold. The adapter loop calls this once the run's Harness is
 // open, for a spec that carries a computer (AdapterRunSpec.computer).
 //

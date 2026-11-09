@@ -87,7 +87,7 @@ export interface AdapterRunSpec {
    *  commits through, so a commit after the claim is lost is refused by the fence like any other. */
   readonly harnessReady?: (commit: Harness["commit"]) => void;
   /** The run's desktop or phone and the person's hold on it (workspace/computer-hold.ts): the loop commits the hold's
-   *  changes to the run's journal, which the server reads (computer-view.ts), and applies the person's take-over and
+   *  changes to the run's journal, which the server reads (computer-routes.ts), and applies the person's take-over and
    *  hand-back rows to it (runner/computer-journal.ts). */
   readonly computer?: RunComputerHold;
   /** Lets this spec's resources go once the loop writes nothing more through them: called once, after its Session and

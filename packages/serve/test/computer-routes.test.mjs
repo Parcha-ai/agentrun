@@ -1,4 +1,4 @@
-// A run's desktop or phone through our two routes (computer-view.ts): POST /v2/runs/{id}/computer/take-over and
+// A run's desktop or phone through our two routes (computer-routes.ts): POST /v2/runs/{id}/computer/take-over and
 // POST .../hand-back, owner-only, driven at the route's own handler (computerRoute) as serve's dispatch calls it, and the
 // store-backed read tl-browser's GET builds on (computerViewOf, computerHoldOf): no server, no socket, no port. Everything
 // is read from the store: the run's journal entries (given here as the runner would commit them, computer-commands.ts's
@@ -11,7 +11,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
-import { COMPUTER_ROUTES, computerRoute, computerViewOf, takenOverIn } from "../dist/computer-view.js";
+import { COMPUTER_ROUTES, computerRoute, computerViewOf, takenOverIn } from "../dist/computer-routes.js";
 import { COMPUTER_HAND_BACK, COMPUTER_HANDOVER_KIND, COMPUTER_HOLD_KIND, COMPUTER_TAKE_OVER, computerAsk, computerHoldOf } from "../dist/computer-commands.js";
 import { ERROR_STATUS } from "../dist/errors.js";
 import { openapiDocument } from "../dist/openapi.js";

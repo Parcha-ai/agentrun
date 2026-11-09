@@ -259,7 +259,7 @@ export type ComputerCallOptions = {
 export type ComputerCallStore = Pick<Store, "command" | "commands" | "runs" | "agents" | "readJournal">;
 
 /** What a take-over or a hand-back answers: who drives now, and the answer the agent gets when it answered its ask. */
-export type ComputerAnswer = { readonly hold: HoldState; readonly outcome?: AskOutcome };
+export type ComputerHoldAnswer = { readonly hold: HoldState; readonly outcome?: AskOutcome };
 
 /** The kind of computer run `runId`'s revision asks for, when it is one a person watches and takes (a desktop or a phone). */
 export async function runViewedKind(store: Pick<Store, "runs" | "agents">, runId: string): Promise<ViewedKind | undefined> {
@@ -292,7 +292,7 @@ export async function computerHoldOf(store: ComputerCallStore, runId: string, op
 /** The owner takes run `runId`'s desktop or phone: a take-over row the runner applies, unless a take is pending or held
  *  already (the same answer, nothing written). 404 for a run with no desktop or phone; 409 computer_not_live when it is
  *  not up now. */
-export async function takeOverComputer(store: ComputerCallStore, runId: string, options: ComputerCallOptions = {}): Promise<ComputerAnswer> {
+export async function takeOverComputer(store: ComputerCallStore, runId: string, options: ComputerCallOptions = {}): Promise<ComputerHoldAnswer> {
   const kind = await runViewedKind(store, runId);
   if (kind === undefined) throw new ApiError("not_found", "this run has no desktop or phone to take over (a browser is taken over in its live view)");
   const hold = holdIn(await entriesOf(store, runId, options));
@@ -305,7 +305,7 @@ export async function takeOverComputer(store: ComputerCallStore, runId: string, 
  *  (`outcome`, done when not given), else the take in force ended; the first wins, a second is 409 (handBackCommand). A
  *  browser: the answer to its agent's ask, the browser's own command (browserHandBack, the browser_hand_back row the /browser
  *  route writes), so both routes give the one answer. */
-export async function handBackComputer(store: ComputerCallStore, runId: string, body: { readonly outcome?: "done" | "cancelled" } = {}, options: ComputerCallOptions = {}): Promise<ComputerAnswer> {
+export async function handBackComputer(store: ComputerCallStore, runId: string, body: { readonly outcome?: "done" | "cancelled" } = {}, options: ComputerCallOptions = {}): Promise<ComputerHoldAnswer> {
   const now = options.now?.() ?? Date.now();
   const fresh = () => entriesOf(store, runId, options);
   const kind = await runViewedKind(store, runId);

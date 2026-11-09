@@ -111,7 +111,7 @@ import { agentTools, browserKeyRow, isUnavailable, recheckPlane, settingsIssues,
 import { toolSettingsOverStore } from "./tool-settings-store.js";
 import { MAX_FILES_PER_RUN, MAX_UPLOAD_BYTES, Uploads, UPLOADS_DIR } from "./uploads.js";
 import { entryAt, listFiles, sendFile as sendWorkspaceFile, viewOf } from "./run-files.js";
-import { COMPUTER_ROUTES, computerRoute } from "./computer-view.js";
+import { COMPUTER_ROUTES, computerRoute } from "./computer-routes.js";
 import { PROVIDERS as COMPUTER_PROVIDERS, SETTING_KINDS, servingRefusals } from "@parcha/agentrun-computer";
 import { capabilityToolDefs, hostToolDefs } from "@parcha/agentrun-kernel/kernel";
 import { archilRoute, createArchilRoutes } from "./archil-routes.js";
@@ -2071,7 +2071,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       authFailed(`/v2${path}`, "browser_without_session");
       throw new ApiError("forbidden", owner ? "A run's live browser takes the owner's password sign-in in the console, never a token." : "A run's live browser takes the owner's password sign-in, and this server has no accounts (AGENTRUN_ACCOUNTS=0).");
     }
-    // A run's desktop or phone view drives it once taken over: the owner's signed-in page alone (computer-view.ts decides).
+    // A run's desktop or phone view drives it once taken over: the owner's signed-in page alone (computer-routes.ts decides).
     if (COMPUTER_ROUTES.has(found.name) && !byOwnerSession(req) && req.headers.authorization !== undefined) authFailed(`/v2${path}`, "computer_without_session");
     // Answering a tool call that waits for approval (tool-gate.ts) is the same: the owner's signed-in page alone, never a
     // token, which the run's own process, an agent's MCP client or a script may hold.
@@ -2271,7 +2271,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       }
       case "takeOverRunComputer":
       case "handBackRunComputer": {
-        // The owner's take-over of a run's desktop or phone, and the hand-back for every kind (computer-view.ts), over the
+        // The owner's take-over of a run's desktop or phone, and the hand-back for every kind (computer-routes.ts), over the
         // store: the hold is the run's journal, a take-over and a hand-back are command rows its runner applies; a browser's
         // hand-back is the browser's own answer row, as POST .../browser/hand-back writes it.
         const run = await needRun(id);

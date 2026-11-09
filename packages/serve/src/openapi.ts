@@ -9,7 +9,7 @@ import type { TriggerAdapter } from "./trigger-adapter.js";
 import { TRIGGER_ADAPTERS } from "./trigger-adapters.js";
 import { NOTE_ORIGINS, NOTE_STATUSES, NOTE_TYPES } from "./learn/index.js";
 import { ERROR_STATUS } from "./errors.js";
-import { TAKE_OVER_MINUTES } from "./computer-view.js";
+import { TAKE_OVER_MINUTES } from "./computer-routes.js";
 import { LAUNCH_LOST, SETUP_LOST } from "./files.js";
 import { HARNESSES } from "./harness.js";
 import { LEARNING_LABEL, LEARNING_MODES, LEARNING_REASONS, LEARNING_STATES } from "./learning.js";
@@ -541,7 +541,7 @@ const RUN_NOTES: Record<string, Json> = {
 /** `properties` as a closed object, its `optional` ones left out of `required`. */
 const closedWith = (properties: Record<string, Json>, optional: Record<string, Json>) => ({ ...closed(properties), properties: { ...properties, ...optional } });
 
-/** What POST /runs/{run_id}/computer/take-over and .../hand-back answer (computer-commands.ts ComputerAnswer). */
+/** What POST /runs/{run_id}/computer/take-over and .../hand-back answer (computer-commands.ts ComputerHoldAnswer). */
 const COMPUTER_ANSWER = closedWith({
   hold: { enum: ["agent", "pending", "person"], description: "Who drives now: `agent`; `pending`, the owner's take waits for the agent's call in flight (new agent calls wait meanwhile); `person`, the owner." },
 }, {
