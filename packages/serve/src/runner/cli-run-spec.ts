@@ -18,7 +18,7 @@ import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { type CapModel, type CapRefused, checkRaise, followUpOf, parkOf } from "@parcha/agentrun-kernel/kernel/cap";
-import type { SessionSpec } from "@parcha/agentrun-kernel";
+import type { HostTool, SessionSpec } from "@parcha/agentrun-kernel";
 import type { AdapterNeeds } from "../adapters.js";
 import { thinkingFor } from "../adapters.js";
 import type { Approvals } from "../approvals.js";
@@ -45,8 +45,8 @@ import { archilClaim, MOUNT_TTL_MS } from "../workspace/archil-claim.js";
 import { loadArchilSettings } from "../archil-settings.js";
 import type { Workspace } from "../workspace/workspace.js";
 import type { ComputerSetting } from "../computer-setting.js";
-import type { AdapterRun, AdapterRunSpec, RunCapConfig } from "./adapter-loop.js";
-import { adapterRunGate, type AdapterSpecDeps, answersCut, hostToolCtxOf, learnedWorkflowHostTool } from "./adapter-run-spec.js";
+import { type AdapterRun, type AdapterRunSpec, hostLifecycle, type RunCapConfig } from "./adapter-loop.js";
+import { adapterRunGate, type AdapterSpecDeps, answersCut, buildToolHost, hostToolCtxOf, learnedWorkflowHostTool, webHostTools, webToolNames } from "./adapter-run-spec.js";
 import { signInReads } from "../sign-ins-store.js";
 import { claimSecrets } from "./claim-secrets.js";
 import { LEARNED_WORKFLOW_TOOL } from "../learned-workflow.js";
@@ -261,31 +261,49 @@ export async function cliRunSpecFromLaunch(launch: RunLaunch, run: AdapterRun, d
   // (RunGate.decide: the reflect-turn .learning refusal, deny with its words, a pin, allow, ask).
   const gate = await adapterRunGate(deps.store, claim, revision, ws.workspace);
 
-  // The run's tools: the kernel registry's hands on its Workspace (and computer), beside the learned_workflow tool when the
-  // claim's seed lay chose learned workflows (seedLaid.workflows, as the pi spec lists them). A CLI harness's session has
-  // a model port, so learned_workflow runs for real on the session's proxied models (learnedWorkflowHostTool), each node
-  // a request on the run's one route labelled learned_workflow, booked on the run's one ledger. Its call nodes run the agent's tools' effects on the run's scoped
-  // keys (claim-secrets.ts), the run's plane threaded for the web tools among them. (web_fetch/web_search/monid as the CLI's
-  // own host tools are still a TODO, as the pi spec binds them.)
+  // The run's tools: the kernel registry's hands on its Workspace (and computer); the web host tools it is granted
+  // (web_fetch, web_search, monid), bound by the binding the pi spec uses (webHostTools) on the ToolHost the pi spec builds
+  // (buildToolHost); and the learned_workflow tool when the claim's seed lay chose learned workflows (seedLaid.workflows,
+  // as the pi spec lists them). A CLI harness's session has a model port, so learned_workflow runs for real on the
+  // session's proxied models (learnedWorkflowHostTool), each node a request on the run's one route labelled
+  // learned_workflow, booked on the run's one ledger. The web tools and the learned workflow's call nodes run on the run's
+  // scoped keys (claim-secrets.ts), the run's plane threaded for the web tools. Each call goes through the run's gate
+  // (spec.gate), and a web tool books its paid requests on the run's one ledger itself (bookedIn). The browser is pi's
+  // only (its native route): a CLI harness is not handed it.
   const results: ToolResults = new Map();
+  const ctx = hostToolCtxOf(run, context, results, root);
+  // The runner's one redactor (the loop's), else this spec's log cut: the claim's keys join it, and the answers of the tools
+  // that run on them pass it.
+  const held = run.redact ? heldRedactor(run.redact) : cut;
+  const webNames = webToolNames(granted);
   let learnedTool: Awaited<ReturnType<typeof learnedWorkflowHostTool>>;
-  // The keys the claim hands the run (its learned workflow's call nodes run on them): never learned (learningEndOfRun).
+  let webTools: HostTool[] = [];
+  let life: ReturnType<typeof hostLifecycle> | undefined;
+  // The keys the claim hands the run (its web tools and its learned workflow's call nodes run on them): never learned
+  // (learningEndOfRun).
   let handedKeys: string[] = [];
-  if (granted.includes(LEARNED_WORKFLOW_TOOL)) {
+  if (webNames.length || granted.includes(LEARNED_WORKFLOW_TOOL)) {
     const toolEnv = await claimSecrets({ store: deps.store, sealKey: deps.sealKey, env: deps.env }, revisionRow as unknown as Parameters<typeof claimSecrets>[1], launch);
     handedKeys = runnerSecrets(toolEnv);
     // The keys it opened join the runner's one redactor (the loop's), and this spec's log cut.
     for (const redact of [...(run.redact ? [heldRedactor(run.redact)] : []), cut]) holdClaimed(redact, toolEnv);
+    // The run's resolved tool plane (its web tools' providers), as the pi spec hands it its web tools.
     delete toolEnv[TOOL_PLANE_ENV];
     if (launch.plane && Object.keys(launch.plane).length) toolEnv[TOOL_PLANE_ENV] = JSON.stringify(launch.plane);
-    learnedTool = await learnedWorkflowHostTool({ run, granted, plane: launch.plane, env: toolEnv, work: root, workflows: seedLaid?.workflows ?? [], ctx: hostToolCtxOf(run, context, results, root) });
+    if (webNames.length) {
+      life = hostLifecycle();
+      const host = buildToolHost({ root, claim, env: toolEnv, run, store: deps.store, sealKey: deps.sealKey, life, redact: held });
+      webTools = await webHostTools(host, granted, ctx);
+    }
+    learnedTool = await learnedWorkflowHostTool({ run, granted, plane: launch.plane, env: toolEnv, work: root, workflows: seedLaid?.workflows ?? [], ctx });
   }
   const session: SessionSpec = {
     key: `run:${claim.runId}`,
     label: runRow.agentId,
     system: [environmentLine(), instructions, guidance].filter((line): line is string => Boolean(line)),
-    // The learned workflow's call nodes run on the claim's keys: its answers pass the runner's one redactor, as pi's do.
-    tools: [...tools.hostTools(granted, undefined, results), ...(learnedTool ? [answersCut(learnedTool, run.redact ? heldRedactor(run.redact) : cut)] : [])],
+    // The web tools and the learned workflow's call nodes run on the claim's keys: their answers pass the runner's one
+    // redactor, as pi's do.
+    tools: [...tools.hostTools(granted, undefined, results), ...[...webTools, ...(learnedTool ? [learnedTool] : [])].map((tool) => answersCut(tool, held))],
     context: "fresh",
     ...(launch.effort ? { thinking: thinkingFor(facts, launch.effort) } : {}),
   };
@@ -321,13 +339,19 @@ export async function cliRunSpecFromLaunch(launch: RunLaunch, run: AdapterRun, d
     ...(cap ? { cap } : {}),
     // The run's end-of-run step, when it learns (the spec's, preferred over the loop's deps': adapter-loop.ts stepOf).
     ...(endOfRun ? { endOfRun } : {}),
+    // The web tools' install lifecycle, run by the adapter loop, as the pi spec's (they register none today).
+    ...(life ? { lifecycle: life } : {}),
     agentId: runRow.agentId,
     workRoot: root,
     // The end's metrics and cost from the run's journal; a CLI run's carry its model.
     endPatch: async () => {
       const entries = await entriesOf(deps.journal(claim), ROOT_CONVERSATION_ID, context);
       const { metrics, costUsd } = runMetrics(entries as never, { ...(launch.effort !== undefined ? { effort: launch.effort } : {}), model: `${chosen.model.provider}/${chosen.model.modelId}` });
-      return { ...(costUsd !== null ? { costUsd } : {}), metrics };
+      // Its paid tool calls (a Parallel extract or search, a monid call), booked on the run's one ledger in their own
+      // session, are the run's cost too, as the pi spec's.
+      const paid = run.ledger?.paid ? run.ledger.paid.spentUsd() : 0;
+      const total = costUsd === null || paid === null ? null : costUsd + paid;
+      return { ...(total !== null ? { costUsd: total } : {}), metrics };
     },
     release: async () => {
       await tools.end().catch((error: unknown) => log(`the run's tools' end failed: ${(error as Error)?.message ?? String(error)}`));
