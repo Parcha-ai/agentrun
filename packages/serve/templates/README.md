@@ -83,7 +83,7 @@ Each `evals/<case>/` is one test of the package's agent. No eval runs on the ser
   `result` is an MCP tool result.
 - `fixtures/`: what the case's fakes and notes read.
 - `graders/*.md`, each one check of every run, by its front matter's `type`:
-  - `llm`: the body is the rubric a blind grader applies to the answer (or to `target`, one field of the answer's JSON).
+  - `llm`: the body is the rubric a blind grader applies to the answer (or to `target`, one field of the answer's JSON), with the run's tool calls (each with its preview) and the fake MCP servers' calls beside it, so a rubric can check what the run did, not only what it said.
   - `regex`: `pattern` over the answer (or `target`), with `flags` and `expect: match` (the default) or `no_match`.
   - `tool_used`: `tool` (or `tools`, a list), `expect: called` (the default) or `not_called`, and optionally `count` and
     `args` (the arguments a call must carry).

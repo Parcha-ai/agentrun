@@ -45,7 +45,7 @@ So:
   can be 20,000 characters on its own. You need links only to find a changelog or careers URL you don't know.
 - **Every `web_search` passes `n: 5`:** each result's snippet can be 3000 characters. Read the snippets; fetch a result
   only when its snippet can't date or source the event.
-- **Per company: at most 3 fetches and 1 search** (plus the pricing recovery's 2 in step 3, when `/pricing` is not found), made together in one turn where you can (one request, not four).
+- **Per company: at most 3 fetches and 1 search** (plus the Pricing fetch's recovery, up to 2 more, when `/pricing` is not found: item 2 of the fetch plan in step 3), made together in one turn where you can (one request, not four).
   Stop a company as soon as its changes are settled; a company with a quiet changelog and unchanged prices is done.
 - **Topics:** at most 2 searches in all, `n: 5`.
 - **Never fetch a URL twice,** never a home page when a changelog, pricing or careers URL will do, and never a whole
