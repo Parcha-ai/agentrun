@@ -19,7 +19,7 @@ import { type Conversation, type ConversationId, createRegistry, Harness, LiveDo
 import { type AdapterSession, type AgentAdapter, type BeforeRequest, type HostTool, modelPortFor, type Refusal, RUNNER_RECORDS, type SessionRecord, type SessionSpec, sessionSpendOf } from "@parcha/agentrun-kernel";
 import type { KernelHooks, ToolCall } from "./conformance/subject.js";
 import { type AnswerData, type ApprovalPrice, type AskData, type BudgetData, type CallEndData, type CallStartData, type CallStatus, type EndData, KINDS, type MessageData, type RaiseData, withdrawnAnswers } from "./journal-kinds.js";
-import { originOf, RUN_RESUMED } from "@parcha/pi-durable-agent/timeline";
+import { endedOnTurnEndingTool, originOf, RUN_RESUMED } from "@parcha/pi-durable-agent/timeline";
 import { type AlsoRow, type Claim, ClaimRefused, type Command, type CommandOutcome, deniedText, endedBy, type EndOfRunAnswer, type EndOfRunTurn, type Loop, type LoopDeps, type LoopEnd, type LoopFactory, noteOf, type StopReason } from "./loop-contract.js";
 import { deniedText as setToDenyText } from "../refusal-words.js";
 import { ADAPTER_API } from "../turn-end.js";
@@ -183,6 +183,9 @@ export interface AdapterLoopOptions {
 
 /** The most of a harness's own turn error a failed run's summary keeps. */
 const TURN_ERROR_MAX = 500;
+/** A run parked on an ask_person question reads this fixed summary; the view reads the question itself from the call (never
+ *  this entry), so the model's question text is never copied into the run row. */
+const ASK_PERSON_WAITING = "Waiting for your reply";
 
 /** `text` cut to at most `max` UTF-16 units, never inside a character: a high surrogate the cut leaves alone goes too. */
 const cutWhole = (text: string, max: number): string => {
@@ -842,6 +845,25 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           // A CLI's turn (record "loop"; pi journals its own): its error is also main's error row, pi's error answer in the
           // end's commit, cut of every secret the runner holds, so the timeline shows it as an error row with no key in it.
           if (said && spec.record === "loop") failedWith = deps.redact ? deps.redact(said) : said;
+        }
+        else if (endedOnTurnEndingTool(settledEntries as never) !== undefined) {
+          // The turn ended on a tool that waits on the person (ask_person ended its turn): the run parks, never ends. A
+          // KINDS.personAsked entry naming that call carries the run patch to "parked" (as the cap park commits its pause on
+          // a budget entry), so the runner leaves it for the person's message and never claims it again with nothing to
+          // answer; the reader passes the entry over, and input_required with its question is the view's to read (the same
+          // endedOnTurnEndingTool rule, over the ask_person call pi wrote). First write wins, so a second claim finding it
+          // does not write it again. Then the cap park's move (759): the claim released, nothing more booked. The person's
+          // reply arrives as the run's next user message and resumes it on the next claim, as on main — the ask_person tool
+          // result stays what pi wrote, so nothing is re-asked or re-billed. The summary is plain words, never the question.
+          const conversation = root!;
+          const callId = endedOnTurnEndingTool(settledEntries as never)!;
+          const parkedAt = gate.expect(writesEntry(KINDS.personAsked, (entry) => entry.callId === callId), { run: { state: "parked", summary: ASK_PERSON_WAITING } });
+          parkedAt.catch(() => undefined);
+          await harness.commit((tx) => tx.appendEntry(conversation.id, { kind: KINDS.personAsked, data: { callId } }), context);
+          await parkedAt;
+          await releaseHost(harness);
+          gate.seal(new Parked());
+          return { state: "parked" };
         }
         else {
           // An answer cut at the model's output limit is unfinished: the run fails, saying so, never ended (loop.ts cutLast,
