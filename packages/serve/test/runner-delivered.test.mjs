@@ -7,9 +7,9 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { startRunner } from "../dist/runner/runner.js";
 import { sendCommand } from "../dist/runner/commands.js";
-import { commandRow, observed, queue, recorder, stores, until } from "./runner-support.mjs";
+import { commandRow, observed, queue, recorder, STEADY_LEASE, stores, until } from "./runner-support.mjs";
 
-const TIMING = { leaseMs: 2_000, renewEveryMs: 500, stopMarginMs: 500, pollMs: 20, commandPollMs: 2_000 };
+const TIMING = { ...STEADY_LEASE, pollMs: 20, commandPollMs: 2_000 };
 
 test("deps.delivered resolves once the first read's untaken rows have reached the loop's command()", async (t) => {
   const opened = await stores({ runners: 1 });

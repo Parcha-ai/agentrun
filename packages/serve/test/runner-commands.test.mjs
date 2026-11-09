@@ -6,10 +6,10 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { startRunner } from "../dist/runner/runner.js";
 import { sendCommand } from "../dist/runner/commands.js";
-import { commandRow, fauxLoops, observed, queue, recorder, sleep, stores, until } from "./runner-support.mjs";
+import { commandRow, fauxLoops, observed, queue, recorder, sleep, STEADY_LEASE, stores, until } from "./runner-support.mjs";
 
 const POLL_MS = 50;
-const TIMING = { leaseMs: 2_000, renewEveryMs: 500, stopMarginMs: 500, pollMs: 20 };
+const TIMING = { ...STEADY_LEASE, pollMs: 20 };
 
 async function runner(t, createLoop, timing = {}, storeOf = (store) => store) {
   const { server, runners: [store] } = await stores({ runners: 1 });
