@@ -2,7 +2,7 @@
 // was inline in the server's trigger wiring (the Triggers deps: targetIssues, start, message, statusOf, runOf); here it is
 // rewritten against the run write half (runs-over-store: startRun, message) and the run readers (store-reads: runOfOrigin,
 // and the run view the switch wires in). The queue a firing takes — how many of a trigger's messages wait for a busy run,
-// which are skipped — is the store's trigger side (route-1's store.triggers), not this policy; this says only which runs a
+// which are skipped — is the store's trigger side (store.triggers), not this policy; this says only which runs a
 // trigger may touch and what each refusal answers with.
 import { ApiError, type InputIssue, unsupported } from "./errors.js";
 import { message, type RunMoment, type RunsStore, startRun, type StartDeps, WAITS_ON_A_PERSON } from "./runs-over-store.js";
@@ -17,11 +17,11 @@ import type { RunTrigger, Target } from "./triggers.js";
 const NO_CAP = "The run has no spend cap: a trigger only messages a run with one, as every turn it drives is capped.";
 
 /** What the trigger target policy needs that lives elsewhere: the run-start leaves (StartDeps, shared with the create
- *  route), the agent reads (E1b), and the run view (E2s2) that gives a run's live moment and its v2 status. */
+ *  route), the agent reads, and the run view that gives a run's live moment and its v2 status. */
 export interface TriggerTargetDeps {
   /** The run-start leaves, shared with the create route (runs-over-store.StartDeps). */
   readonly start: StartDeps;
-  /** The agent an id names, with its current revision; undefined when unknown (E1b getAgent). */
+  /** The agent an id names, with its current revision; undefined when unknown (the agent store's getAgent). */
   getAgent(agentId: string): Promise<AgentEntry | undefined>;
   /** The agent an id names, or an ApiError not_found (server.ts needAgent). */
   needAgent(agentId: string): Promise<AgentEntry>;
@@ -87,8 +87,8 @@ export function triggerTargets(store: Store & RunsStore, deps: TriggerTargetDeps
       if (run.waitsOnPerson) return { skipped: WAITS_ON_A_PERSON };
       try {
         // The firing's key is the message's id; the message answers no person (answers false), its origin the trigger's.
-        // How many of a trigger's messages a busy run keeps, and which are skipped, is the store's trigger side (route-1's
-        // store.triggers.message bound); this writes the command through the run write half.
+        // How many of a trigger's messages a busy run keeps, and which are skipped, is the store's trigger side
+        // (store.triggers.message's bound); this writes the command through the run write half.
         await message(store, run, String((input as { content?: unknown }).content), { answers: false, origin: from, requestId: key });
       } catch (error) {
         if (error instanceof ApiError && error.message === WAITS_ON_A_PERSON) return { skipped: WAITS_ON_A_PERSON };

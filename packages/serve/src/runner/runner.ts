@@ -16,6 +16,7 @@ import { KINDS, withdrawnAnswers } from "./journal-kinds.js";
 import { journalEntries } from "./journal-reader.js";
 import { type Claim, type Command, endedBy, type Journal, type Loop, type LoopEnd, type LoopFactory, type StopReason } from "./loop-contract.js";
 import { isFenced, type RunnerStore } from "./store-port.js";
+import { type Redact, runnerSecrets, secretRedactor } from "./redact.js";
 
 /** Most runs a runner holds at once, unless told (RunnerOptions.loops). */
 export const RUNNER_LOOPS = 300;
@@ -62,6 +63,10 @@ export interface RunnerOptions {
   /** The runner's clock (epoch ms) for what it writes itself: a withdrawn answer's time in an end it writes. Default
    *  Date.now. */
   now?: () => number;
+  /** The one redactor (redact.ts secretRedactor over the secrets the runner holds): every error text this runner writes
+   *  to a run's row or end, or emits, passes through it, and each loop gets it (LoopDeps.redact). Default: the one over every secret this process's environment holds (runnerSecrets), so a runner
+   *  started with none (runner/main.ts) still cuts the keys it was started with. */
+  redact?: Redact;
   /** Called at each poll for runs (every pollMs, whether or not it holds any) and each renewal pass: the runner's own
    *  loop is turning. The runner process writes its heartbeat from it (runner/main.ts), so a check sees a runner that is
    *  idle and well, and not one whose loop has stopped. A throw is the caller's. */
@@ -126,6 +131,7 @@ export function startRunner(options: RunnerOptions): Runner {
     interruptBackoffMs = 1_000,
     endWaitMs = 5_000,
     onEvent = () => {},
+    redact = secretRedactor(runnerSecrets(process.env)),
     now = Date.now,
     onBeat = () => {},
   } = options;
@@ -141,7 +147,8 @@ export function startRunner(options: RunnerOptions): Runner {
   }
   const emit = (event: RunnerEvent) => {
     try {
-      onEvent(event);
+      // An error's text is cut of every secret the runner holds before anyone hears it.
+      onEvent(event.type === "error" ? { ...event, message: redact(event.message) } : event);
     } catch {
       // A listener's throw is its own.
     }
@@ -319,7 +326,9 @@ export function startRunner(options: RunnerOptions): Runner {
    * `take` keyed to that entry, so they land in its one commit or not at all. When the journal cannot take that commit,
    * the run row alone (runs.update, the same take in its one transaction). A lost claim (Fenced) writes neither.
    */
-  const endRun = async (claim: Claim, data: { state: "stopped" | "failed"; summary: string }, take: readonly number[]) => {
+  const endRun = async (claim: Claim, given: { state: "stopped" | "failed"; summary: string }, take: readonly number[]) => {
+    // Why the run ended, as its end and its row say it: cut of every secret the runner holds (an error's text may echo one).
+    const data = { ...given, summary: redact(given.summary) };
     try {
       const journal = store.journal(claim);
       const [root] = (await journal.scanConversations({}, 1, undefined, BACKGROUND_CONTEXT)).items;
@@ -467,6 +476,7 @@ export function startRunner(options: RunnerOptions): Runner {
       flush: () => store.flush(),
       signal: abort.signal,
       delivered,
+      redact,
     });
     const held: Held = { claim, loop, fence, abort, cursor: 0, stopping: false, ending: false, sealed: false, renewing: false, delivering: false };
     // The loop's own end landed: the run is ending from here, its teardown included (no renew, no lost claim).
@@ -520,7 +530,7 @@ export function startRunner(options: RunnerOptions): Runner {
         } catch (error) {
           // The loop could not be made: the run fails here, so it is not claimed again and again.
           emit({ type: "error", runId: claim.runId, step: "create loop", message: message(error) });
-          await store.runs.update(claim, { state: "failed", summary: message(error) }).catch(() => {});
+          await store.runs.update(claim, { state: "failed", summary: redact(message(error)) }).catch(() => {});
           await store.flush().catch(() => {});
           await store.release(claim, {}).catch(() => {});
         }
