@@ -10,6 +10,7 @@ import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { after, before, describe, it } from "node:test";
 import { DockerProvider } from "../../dist/index.js";
+import { createForDeadline } from "./deadline.mjs";
 
 const LIVE = process.env.AGENTRUN_COMPUTER_LIVE_DOCKER === "1";
 const IMAGE = "debian:bookworm-slim";
@@ -99,15 +100,21 @@ describe("a Docker computer's init and its processes", { skip: LIVE ? false : "s
 		assert.equal(inspected.State.ExitCode, 0);
 	});
 
-	it("ends at its deadline with a process that ignores TERM still running: init ends every process and exits 0", async () => {
-		// Long enough to connect and start the process on a loaded host; the test asserts the end, not its timing.
-		const created = await provider.create({ image: IMAGE, lifetimeMs: 45_000, network: "none", labels: { "agentrun.test": "processes" } });
+	it("ends at its deadline with a process that ignores TERM still running: init ends every process and exits 0", async (t) => {
+		// 45 s, with 15 s of it left to connect and start the process, or longer on a host slow to start it
+		// (createForDeadline); the test asserts the end, not its timing.
+		const got = await createForDeadline(t, (lifetimeMs) => provider.create({ image: IMAGE, lifetimeMs, network: "none", labels: { "agentrun.test": "processes" } }), {
+			lifetimeMs: 45_000,
+			leftMs: 15_000,
+			keep: (name) => made.push(name),
+		});
+		if (got === undefined) return;
+		const { result: created, lifetimeMs, from } = got;
 		assert.equal(created.ok, true, JSON.stringify(created));
-		made.push(created.value.name);
 		const connected = await connect(created.value);
 		await call(connected, "process.start", { argv: ["sh", "-c", "trap '' TERM; sleep 600"] });
-		const state = await stopped(created.value.name, 120_000);
-		assert.equal(state.Running, false, "still running 120 s after a 45 s lifetime");
+		const state = await stopped(created.value.name, from + lifetimeMs + 120_000 - Date.now());
+		assert.equal(state.Running, false, `still running 120 s after a ${lifetimeMs / 1000} s lifetime`);
 		assert.equal(state.ExitCode, 0, "init ended the computer, not Docker's SIGKILL");
 		assert.deepEqual(await provider.release(created.value, "delete"), { ok: true, value: undefined });
 	});

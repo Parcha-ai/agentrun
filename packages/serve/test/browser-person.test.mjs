@@ -705,16 +705,22 @@ test("an ask's waiting entry carries the whole hand-over, as the server reads it
  *  for an ask is its answer), never the answer files. Its other rows are `rows`. */
 function journalHands(root, journal, { gates = () => ({ give: () => false }) } = {}) {
   const rows = [];
+  /** Every note, in order, as the run's root entries the timeline reads. */
+  const entries = [];
   const person = personHands({
     root, gates, pollMs: 60_000,
     personTime: async () => ({ drop() {} }),
-    note: async (kind, data) => void (kind === "agent.handover" ? journal.push(data) : rows.push(data.summary)),
+    note: async (kind, data) => {
+      entries.push({ kind, id: 100 + entries.length, conversationId: 1, data });
+      if (kind === "agent.handover") journal.push(data);
+      else rows.push(data.summary);
+    },
     answered: async (id) => {
       const first = journal.find((data) => data.id === id && ["done", "cancelled", "expired"].includes(data.state));
       return first && { outcome: first.state, at: first.at, ...(first.reason ? { reason: first.reason } : {}) };
     },
   });
-  return { person, rows };
+  return { person, rows, entries };
 }
 const answers = (journal) => journal.filter((data) => data.state !== "waiting");
 const T0 = "2001-02-03T04:05:06.007Z";
@@ -769,4 +775,112 @@ test("on the runner's path the person handing the browser back from the live vie
   assert.deepEqual({ ...answer, at: typeof answer?.at }, { state: "done", id, session: tag, at: "string" }, "the live view's hand-back, in the journal");
   assert.ok(Number.isFinite(Date.parse(answer.at)), answer.at);
   assert.deepEqual(rows, ["You took over the browser", "You handed the browser back"]);
+});
+
+test("on the runner's path the row an answer writes shows at the answered entry's time on the timeline: the person's, or the expiry's when the ask lapsed", async (t) => {
+  const { timelineOf } = await import("@parcha/pi-durable-agent/timeline");
+  /** The timeline row that says `summary`, over a run's entries: its kind and time. */
+  const rowSaying = (entries, summary) => {
+    const row = timelineOf(entries).find((each) => each.summary === summary);
+    return row && { kind: row.kind, timestamp: row.timestamp };
+  };
+  const root = await scratch(t);
+  const journal = [];
+  const answeredHands = journalHands(root, journal);
+  t.after(() => answeredHands.person.close());
+  const { interactionId: id } = await answeredHands.person.handoff.request(ask(74, "ar-run-74-1"));
+  journal.push({ state: "cancelled", id, session: "ar-run-74-1", at: T0 });
+  assert.equal(await answeredHands.person.handoff.outcome(id), "cancelled");
+  assert.deepEqual(rowSaying(answeredHands.entries, "You cancelled the agent's hand-over"), { kind: "phase", timestamp: T0 }, "the person's answer's time, on its row");
+
+  const lapsedRoot = await scratch(t);
+  const lapsedJournal = [];
+  const before = journalHands(lapsedRoot, lapsedJournal);
+  const { interactionId: lapsed } = await before.person.handoff.request(ask(75, "ar-run-75-1"));
+  before.person.close();
+  const file = join(lapsedRoot, "browser-ask", `${lapsed}.json`);
+  writeFileSync(file, JSON.stringify({ ...JSON.parse(readFileSync(file, "utf8")), expires_at: T0 }), { mode: 0o600 });
+  const after = journalHands(lapsedRoot, lapsedJournal);
+  t.after(() => after.person.close());
+  assert.equal(await after.person.handoff.outcome(lapsed), "expired");
+  assert.deepEqual(rowSaying([...before.entries, ...after.entries], "The agent's hand-over expired before you answered it"), { kind: "phase", timestamp: T0 }, "the expiry's time, on its row");
+});
+
+test("a take-over in the run's timeline reads as it happened (Manuel's walk of #1703): the take and the hand-back at their own times, the agent's call parked behind the hold between them, saying it waited for the person and how long", async (t) => {
+  const { createDrivingGates } = await import("@parcha/pi-browser/live-view");
+  const { HOST_PHASE, timelineOf } = await import("@parcha/pi-durable-agent/timeline");
+  const T0 = Date.UTC(2026, 10, 3, 9, 0, 0);
+  const clock = fakeClock(T0);
+  const tag = "ar-run-61-1";
+  const gates = createDrivingGates({ timers: clock.timers });
+  // The run's log, as its store keeps it: the server's notes in the order they are committed, the agent's own entries
+  // as pi writes them (a model message at its request's start, a tool's result at its end).
+  let id = 1;
+  const log = [];
+  const entry = (kind, model, data) => log.push({ kind, id: id++, conversationId: 1, ...(model ? { model: [model] } : {}), ...(data ? { data } : {}) });
+  const person = personHands({
+    root: await scratch(t), gates, timers: clock.timers, now: clock.now, pollMs: 60_000,
+    personTime: async () => ({ drop() {} }),
+    note: async (kind, data) => void entry(kind, undefined, data),
+  });
+  t.after(() => person.close());
+  const page = "https://www.bundesarchiv.de/DE/Navigation/Finden/finden.html";
+
+  // 0 s: the agent's snapshot returns, and its next request starts. 1 s: the person takes the browser (the live view's
+  // take, its hold started on the session's gate as the viewer's server starts it).
+  entry("pi.assistant", { role: "assistant", content: [{ type: "toolCall", id: "c0", name: "snapshot", arguments: {} }], stopReason: "toolUse", timestamp: T0 - 3_000 });
+  entry("pi.tool-result", { role: "toolResult", toolCallId: "c0", toolName: "snapshot", content: [{ type: "text", text: "[1] the page" }], isError: false, timestamp: T0 });
+  const requested = T0 + 200;
+  await clock.tick(1_000);
+  const take = await person.take(tag);
+  assert.ok(gates(tag).take((why) => take.end(why), () => take.started()));
+  // The request's answer asks to open a page: the call parks behind the hold.
+  entry("pi.assistant", { role: "assistant", content: [{ type: "toolCall", id: "c1", name: "run", arguments: { code: `await page.goto("${page}")` } }], stopReason: "toolUse", timestamp: requested });
+  const parkedAt = clock.now();
+  const parked = gates(tag).untilFree().then(() => clock.now() - parkedAt);
+  // 12 s: the person hands back (the viewer's give); the call goes on, opens the page, and returns at 14.4 s with the wait
+  // in its details, as pi-browser's driving guard writes it.
+  await clock.tick(11_000);
+  gates(tag).give("given");
+  const waited = await parked;
+  await clock.tick(2_400);
+  entry("pi.tool-result", { role: "toolResult", toolCallId: "c1", toolName: "run", content: [{ type: "text", text: "{\"ok\":true}" }], isError: false, details: { waited_for_person_ms: waited }, timestamp: clock.now() });
+  await sleep(5);
+
+  const rows = timelineOf(log, { settled: true });
+  const told = rows.filter((row) => ["You took over the browser", "You handed the browser back"].includes(row.summary) || (row.kind === "tool_use" && row.tool_name === "run"));
+  const at = (s) => new Date(T0 + s * 1000).toISOString();
+  assert.deepEqual(told.map((row) => row.summary.replace(/ www\..*$/, "")), ["You took over the browser", "Waited for you 11 s, then opened", "You handed the browser back"], "in the order it happened, the call saying it waited");
+  assert.deepEqual([told[0].timestamp, told[2].timestamp], [at(1), at(12)], "the take and the hand-back each at its own time: the hold reads 11 s, as long as it was");
+  assert.ok(log.filter((e) => e.kind === HOST_PHASE).every((e) => typeof e.data.at === "number"), "each phase note carries its time");
+});
+
+test("the hand-back row of a give that answers the session's open ask is at the hand-back's time; one the console's Done answers, at the answer's", async (t) => {
+  const clock = fakeClock(Date.UTC(2026, 10, 3, 9, 0, 0));
+  const notes = [];
+  const root = await scratch(t);
+  const person = personHands({
+    root, gates: () => ({ give: () => false }), timers: clock.timers, now: clock.now, pollMs: 60_000,
+    personTime: async () => ({ drop() {} }),
+    note: async (kind, data) => void notes.push({ kind, ...data }),
+  });
+  t.after(() => person.close());
+  const asked = await person.handoff.request(ask(62, "ar-run-62-1"));
+  const take = await person.take("ar-run-62-1");
+  await clock.tick(1_000);
+  take.started();
+  await clock.tick(9_000);
+  take.end("given");
+  assert.equal(await person.handoff.outcome(asked.interactionId), "done");
+  const phases = notes.filter((note) => note.kind === "agentrun.phase").map((note) => [note.summary, note.at - clock.now()]);
+  assert.deepEqual(phases, [["You took over the browser", -9_000], ["You handed the browser back", 0]]);
+
+  // The console's Done, answered at its own time: this process reads it a minute later and writes the row at the answer's.
+  notes.length = 0;
+  const other = await person.handoff.request(ask(63, "ar-run-63-1"));
+  const doneAt = clock.now() + 5_000;
+  assert.deepEqual(answerAsk(root, "done", doneAt), { outcome: "done", first: true });
+  await clock.tick(60_000);
+  assert.equal(await person.handoff.outcome(other.interactionId), "done");
+  assert.deepEqual(notes.filter((note) => note.kind === "agentrun.phase").map((note) => [note.summary, note.at]), [["You handed the browser back", doneAt]]);
 });

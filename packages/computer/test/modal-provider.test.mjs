@@ -1172,9 +1172,6 @@ function fakeClient() {
 	return { ModalClient, made, servers };
 }
 
-/** The provider's own fromEnv, called as the conformance module's makers are: the env, then the module test's options. */
-const providerFromEnv = async (options) => (await import("../dist/modal.js")).fromEnv(options.env, options);
-
 /** Runs fn with these names set in process.env, where the SDK reads them, and puts back what was there. */
 async function withProcessEnv(values, fn) {
 	const before = Object.fromEntries(Object.keys(values).map((name) => [name, process.env[name]]));
@@ -1191,7 +1188,7 @@ async function withProcessEnv(values, fn) {
 
 test("the conformance module refuses MODAL_TOKEN_ID and MODAL_TOKEN_SECRET: it names the COMPUTER_MODAL_ token it needs", async () => {
 	const { createProvider, createDriftedProvider } = await import("../dist/conformance/modal.js");
-	for (const make of [createProvider, createDriftedProvider, providerFromEnv]) {
+	for (const make of [createProvider, createDriftedProvider]) {
 		const { ModalClient, made } = fakeClient();
 		await assert.rejects(make({ env: { ...MODAL_SETTINGS, ...PROD_TOKEN }, ModalClient, ...MODULE_TEST }), (error) => {
 			assert.match(error.message, /needs COMPUTER_MODAL_TOKEN_ID and COMPUTER_MODAL_TOKEN_SECRET/);
@@ -1205,7 +1202,7 @@ test("the conformance module refuses MODAL_TOKEN_ID and MODAL_TOKEN_SECRET: it n
 
 test("the conformance module passes the COMPUTER_MODAL_ token to the client explicitly, so an ambient MODAL_TOKEN_ cannot win", async () => {
 	const { createProvider, createDriftedProvider } = await import("../dist/conformance/modal.js");
-	for (const make of [createProvider, createDriftedProvider, providerFromEnv]) {
+	for (const make of [createProvider, createDriftedProvider]) {
 		const { ModalClient, made } = fakeClient();
 		const provider = await make({ env: { ...MODAL_SETTINGS, ...PROD_TOKEN, ...DEV_TOKEN }, ModalClient, ...MODULE_TEST });
 		assert.equal(provider.id, "modal");
@@ -1234,7 +1231,7 @@ test("the conformance module pins the client's server: an ambient MODAL_PROFILE 
 	writeFileSync(toml, '[prod]\nactive = true\nserver_url = "https://prod.example.invalid:443"\ntoken_id = "prod-id-must-not-be-used"\n');
 	try {
 		await withProcessEnv({ MODAL_PROFILE: "prod", MODAL_CONFIG_PATH: toml }, async () => {
-			for (const make of [createProvider, createDriftedProvider, providerFromEnv]) {
+			for (const make of [createProvider, createDriftedProvider]) {
 				for (const [chosen, server] of [
 					[{}, "https://api.modal.com:443"],
 					[{ COMPUTER_MODAL_SERVER_URL: "https://dev.example.invalid:443" }, "https://dev.example.invalid:443"],
@@ -1254,7 +1251,7 @@ test("the conformance module pins the client's server: an ambient MODAL_PROFILE 
 
 test("the conformance module refuses an ambient MODAL_SERVER_URL in words, before any client", async () => {
 	const { createProvider, createDriftedProvider } = await import("../dist/conformance/modal.js");
-	for (const make of [createProvider, createDriftedProvider, providerFromEnv]) {
+	for (const make of [createProvider, createDriftedProvider]) {
 		const { ModalClient, made } = fakeClient();
 		const env = { ...MODAL_SETTINGS, ...DEV_TOKEN, MODAL_SERVER_URL: "https://prod.example.invalid:443" };
 		await assert.rejects(make({ env, ModalClient, ...MODULE_TEST }), (error) => {
@@ -1266,21 +1263,123 @@ test("the conformance module refuses an ambient MODAL_SERVER_URL in words, befor
 	}
 });
 
-test("the provider's fromEnv() reads the COMPUTER_MODAL_ names without the live switch, which stays the conformance module's, and keeps Modal's 24-hour cap", async () => {
+/** A Modal token passed as options, as serve passes its own MODAL_TOKEN_ID and MODAL_TOKEN_SECRET. */
+const TOKEN_OPTIONS = { tokenId: "fake-test-key", tokenSecret: "fake-test-key" };
+
+test("the provider's create() reads no environment: the token, the app and the server are options, and it keeps Modal's 24-hour cap", async () => {
 	const modalModule = await import("../dist/modal.js");
+	assert.equal(modalModule.ENV, undefined, "no ENV of names");
+	assert.equal(modalModule.fromEnv, undefined, "no fromEnv");
+	assert.equal(modalModule.modalServerUrl, undefined, "no reader of COMPUTER_MODAL_SERVER_URL");
 	const conformance = await import("../dist/conformance/modal.js");
-	const { live, ...providerNames } = conformance.MODAL_ENV;
-	assert.deepEqual(modalModule.ENV, providerNames);
-	assert.equal(live, "AGENTRUN_COMPUTER_LIVE_MODAL");
 	const env = { ...DEV_TOKEN, COMPUTER_MODAL_APP: APP };
 	const refused = fakeClient();
 	await assert.rejects(conformance.createProvider({ env, ModalClient: refused.ModalClient, ...MODULE_TEST }), /set AGENTRUN_COMPUTER_LIVE_MODAL=1/);
 	assert.deepEqual(refused.made, [], "the conformance module makes no client without its live switch");
+	await withProcessEnv({ ...PROD_TOKEN, ...DEV_TOKEN, COMPUTER_MODAL_APP: "elsewhere", AGENTRUN_BOX_APP: "elsewhere", COMPUTER_MODAL_SERVER_URL: "https://prod.example.invalid:443" }, async () => {
+		const { ModalClient, made, servers } = fakeClient();
+		const provider = await modalModule.create({ ...TOKEN_OPTIONS, app: APP, ModalClient, daemonPath: BINARY_PATH });
+		assert.equal(provider.id, "modal");
+		assert.equal(provider.capabilities().maxLifetimeMs, DAY_MS);
+		assert.deepEqual(made, [TOKEN_OPTIONS], "the token passed in, never one of the environment");
+		assert.deepEqual(servers, ["https://api.modal.com:443"], "the SDK's default server, not COMPUTER_MODAL_SERVER_URL");
+		const chosen = fakeClient();
+		await modalModule.create({ ...TOKEN_OPTIONS, app: APP, serverUrl: "https://dev.example.invalid:443", ModalClient: chosen.ModalClient, daemonPath: BINARY_PATH });
+		assert.deepEqual(chosen.servers, ["https://dev.example.invalid:443"], "options.serverUrl is the server");
+	});
+});
+
+test("the conformance module reads COMPUTER_MODAL_APP and passes it as options.app, and refuses without it in words naming it", async () => {
+	const { createProvider, createDriftedProvider } = await import("../dist/conformance/modal.js");
+	for (const make of [createProvider, createDriftedProvider]) {
+		const fake = fakeModal();
+		await withProcessEnv({ AGENTRUN_BOX_APP: "elsewhere" }, async () => {
+			const provider = await make({ env: { ...MODAL_SETTINGS, ...DEV_TOKEN }, ModalClient: clientOf(fake), ...MODULE_TEST });
+			assert.equal((await provider.list({})).ok, true);
+		});
+		assert.deepEqual(fake.calls.find(([name]) => name === "apps.fromName").slice(0, 2), ["apps.fromName", APP]);
+		const { ModalClient, made } = fakeClient();
+		await assert.rejects(make({ env: { AGENTRUN_COMPUTER_LIVE_MODAL: "1", ...DEV_TOKEN }, ModalClient, ...MODULE_TEST }), /COMPUTER_MODAL_APP/);
+		assert.deepEqual(made, []);
+	}
+});
+
+test("the provider's create() given both daemonImage and daemonPath takes the image: the daemon is copied from it, and nothing is uploaded", async () => {
+	const modalModule = await import("../dist/modal.js");
 	const fake = fakeModal();
-	const provider = await modalModule.fromEnv(env, { ModalClient: clientOf(fake), daemonPath: BINARY_PATH });
+	const provider = await modalModule.create({ ...TOKEN_OPTIONS, app: APP, daemonImage: DAEMON_IMAGE, daemonPath: BINARY_PATH, ModalClient: clientOf(fake) });
 	assert.equal(provider.id, "modal");
-	assert.equal(provider.capabilities().maxLifetimeMs, DAY_MS);
-	await assert.rejects(modalModule.fromEnv({ ...DEV_TOKEN }, { ModalClient: clientOf(fake) }), /COMPUTER_MODAL_APP/);
+	assert.equal((await provider.create(SPEC)).ok, true);
+	assert.deepEqual(fake.calls.find(([name]) => name === "image.dockerfileCommands")[1][0], `COPY --from=${DAEMON_IMAGE} /computerd ${DAEMON}`);
+	assert.deepEqual(fake.uploads, [], "no upload: the image wins");
+});
+
+test("the provider's create() refuses without options.app in words naming the option, before any client: COMPUTER_MODAL_APP or AGENTRUN_BOX_APP in the environment is never read", async () => {
+	const modalModule = await import("../dist/modal.js");
+	await withProcessEnv({ COMPUTER_MODAL_APP: APP, AGENTRUN_BOX_APP: APP }, async () => {
+		for (const app of [undefined, ""]) {
+			const { ModalClient, made } = fakeClient();
+			await assert.rejects(modalModule.create({ ...TOKEN_OPTIONS, ...(app === undefined ? {} : { app }), ModalClient, daemonPath: BINARY_PATH }), (error) => {
+				assert.match(error.message, /options\.app/);
+				assert.doesNotMatch(error.message, /COMPUTER_MODAL_APP|AGENTRUN_BOX_APP/);
+				return true;
+			});
+			assert.deepEqual(made, [], "no client is made without the app");
+		}
+	});
+	await withProcessEnv({ ...PROD_TOKEN, ...DEV_TOKEN }, async () => {
+		const { ModalClient, made } = fakeClient();
+		await assert.rejects(modalModule.create({ app: APP, ModalClient, daemonPath: BINARY_PATH }), (error) => {
+			assert.match(error.message, /options\.tokenId and options\.tokenSecret/);
+			assert.doesNotMatch(error.message, /prod-(id|token)-must-not-be-used|fake-dev-(id|secret)/);
+			return true;
+		});
+		assert.deepEqual(made, []);
+	});
+});
+
+test("the provider refuses an ambient MODAL_SERVER_URL in process.env, the one variable it reads, and makes no client", async () => {
+	const modalModule = await import("../dist/modal.js");
+	await withProcessEnv({ MODAL_SERVER_URL: "https://prod.example.invalid:443" }, async () => {
+		const { ModalClient, made } = fakeClient();
+		await assert.rejects(modalModule.create({ ...TOKEN_OPTIONS, app: APP, ModalClient, daemonPath: BINARY_PATH }), (error) => {
+			assert.match(error.message, /MODAL_SERVER_URL is set/);
+			assert.match(error.message, /options\.serverUrl/);
+			return true;
+		});
+		assert.deepEqual(made, []);
+		assert.equal(process.env.MODAL_SERVER_URL, "https://prod.example.invalid:443", "and leaves it as it was");
+	});
+});
+
+test("client constructions run one at a time: each sees only its own MODAL_SERVER_URL, and process.env is put back after each, a failed one too", async () => {
+	const { modalClient } = await import("../dist/modal.js");
+	const servers = ["https://one.example.invalid:443", "https://two.example.invalid:443", "https://three.example.invalid:443"];
+	const seen = [];
+	let inside = 0;
+	function ModalClient(params) {
+		inside += 1;
+		seen.push({ server: process.env.MODAL_SERVER_URL, inside, tokenId: params.tokenId });
+		inside -= 1;
+		if (process.env.MODAL_SERVER_URL === servers[1]) throw new Error("the SDK failed");
+		return fakeModal().sdk;
+	}
+	const before = process.env.MODAL_SERVER_URL;
+	await withProcessEnv({ MODAL_SERVER_URL: "" }, async () => {
+		const made = servers.map((serverUrl) => modalClient({ ...TOKEN_OPTIONS, serverUrl, ModalClient }));
+		assert.equal(process.env.MODAL_SERVER_URL, "", "nothing is set before a construction's turn");
+		const settled = await Promise.allSettled(made);
+		assert.deepEqual(settled.map((s) => s.status), ["fulfilled", "rejected", "fulfilled"]);
+		assert.match(settled[1].reason.message, /the SDK failed/);
+		assert.deepEqual(seen.map((s) => s.server), servers, "each construction saw its own server, in turn");
+		assert.ok(seen.every((s) => s.inside === 1), "never two at once");
+		assert.equal(process.env.MODAL_SERVER_URL, "", "the empty value it held is put back");
+	});
+	assert.equal(process.env.MODAL_SERVER_URL, before);
+	const after = await modalClient({ ...TOKEN_OPTIONS, ModalClient });
+	assert.ok(after, "a failed construction leaves the turn free for the next");
+	assert.equal(seen.at(-1).server, "https://api.modal.com:443");
+	assert.equal(process.env.MODAL_SERVER_URL, before, "and unset again after it");
 });
 
 test("the CLI resolves --provider modal through the registry to the conformance module, which refuses without its live switch", async () => {

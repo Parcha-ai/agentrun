@@ -67,6 +67,9 @@ const shift = ([x, y], dx, dy = 0) => [x + dx, y + dy];
  * screen-region, screen-colors, screen-no-idat, screen-corrupt-idat, screen-region-corrupt, click-offset, type-case,
  * no-precheck, no-stop, no-release, tap-offset, swipe-stuck, pinch-together, terminate-stays, tree-types, extend-noop,
  * extend-past-cap, extend-per-call, extend-shortens, stream-http, fixture-never-ready, screen-huge-size, screen-endless.
+ * `createMs` is how long each create takes on the clock, in turn (the last for every create after): a host slow to
+ * start a computer. The lifetime counts from create's start, and a computer whose deadline passed before create
+ * finished fails it as Docker's does, timeout.
  */
 /**
  * The clock the fake devices and the group tests' runs share: it reads the wall clock plus whatever its sleeps skipped,
@@ -93,6 +96,7 @@ export function fakeDevices({
 	extend = true,
 	stream = true,
 	maxLifetimeMs = 2 * 60 * 60_000,
+	createMs = [0],
 	chunk = 4096,
 	broken,
 } = {}) {
@@ -326,6 +330,12 @@ export function fakeDevices({
 				held: new Set(),
 			});
 			made.push({ name, spec });
+			const takes = createMs[Math.min(made.length - 1, createMs.length - 1)];
+			await clock.sleep(takes);
+			if (clock.now() >= created + spec.lifetimeMs) {
+				computers.delete(name);
+				return fail("timeout", `${name}'s lifetime of ${spec.lifetimeMs / 1000} s ended before create finished (it took ${takes / 1000} s)`);
+			}
 			return ok({ id: `id-${name}`, name });
 		},
 		async attach(ref) {

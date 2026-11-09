@@ -180,9 +180,9 @@ export function askShown(runDir: string, rows: readonly { kind: string; session?
   return rows.filter((row) => row.kind === "waiting" && row.session === ask.tag).length >= nth ? ask : undefined;
 }
 
-/** The answer to ask `id`, or the first answer written now: `outcome` unless one is there already. */
-function answerOnce(dir: string, id: string, outcome: AskOutcome, reason?: string): AskOutcome {
-  if (writeOwn(dir, `${id}.answer.json`, { outcome, at: new Date().toISOString(), ...(reason ? { reason } : {}) }, true)) return outcome;
+/** The answer to ask `id`, or the first answer written now (at `at`, ms): `outcome` unless one is there already. */
+function answerOnce(dir: string, id: string, outcome: AskOutcome, reason?: string, at = Date.now()): AskOutcome {
+  if (writeOwn(dir, `${id}.answer.json`, { outcome, at: new Date(at).toISOString(), ...(reason ? { reason } : {}) }, true)) return outcome;
   return answerOf(readOwn(dir, `${id}.answer.json`))?.outcome ?? outcome;
 }
 
@@ -195,8 +195,8 @@ export function answerAsk(runDir: string, outcome: "done" | "cancelled", now = D
   const dir = askDir(runDir);
   if (!target || !dir) return undefined;
   if (target.answer) return { outcome: target.answer.outcome, first: false };
-  if (Date.parse(target.ask.expires_at) <= now) return { outcome: answerOnce(dir, target.ask.id, "expired"), first: false };
-  const answered = answerOnce(dir, target.ask.id, outcome);
+  if (Date.parse(target.ask.expires_at) <= now) return { outcome: answerOnce(dir, target.ask.id, "expired", undefined, now), first: false };
+  const answered = answerOnce(dir, target.ask.id, outcome, undefined, now);
   return { outcome: answered, first: answered === outcome };
 }
 
@@ -239,8 +239,9 @@ const waitingEntry = (ask: PendingAsk): Record<string, string> => ({
 
 /** A take-over's share of its session's person time (an ask's is `ask:<id>`). */
 const TAKE_USER = "take";
-/** A root entry of the run's: a timeline row's source. */
-type Note = (kind: string, data: Record<string, string>) => Promise<void>;
+/** A root entry of the run's: a timeline row's source. A phase's carries `at` (ms), when what it says happened, so its row
+ *  shows that time, not the time of the log before it (a model request's start, a call's result). */
+type Note = (kind: string, data: Record<string, string | number>) => Promise<void>;
 
 /** The run's process's side, for the run at `root`: `take` for the live view's takeOver, `handoff` for pi-browser's
  *  HandoffPort. `gates` is the live view's registry (pi-browser's driving gates); `personTime` holds the person's time
@@ -283,7 +284,7 @@ export function personHands(options: {
   /** The run's process let go (close): every hold that comes back after it is dropped, and nothing new is held. */
   let closed = false;
   const CLOSED = { refused: "the run's process is letting go of the browser" };
-  const note = (kind: string, data: Record<string, string>): Promise<void> => options.note(kind, data).catch(() => undefined);
+  const note = (kind: string, data: Record<string, string | number>): Promise<void> => options.note(kind, data).catch(() => undefined);
   /** The run's journal holds the answers (options.answered): the runner's path. */
   const journal = options.answered;
   /** Each ask's answer as the journal has it, once read: an answer never changes. */
@@ -451,7 +452,7 @@ export function personHands(options: {
       if (tag) void answerInJournal(id, tag, "expired", new Date(now()).toISOString(), words).then(() => settle(id), () => undefined);
       return;
     }
-    answerOnce(dir, id, "expired", words);
+    answerOnce(dir, id, "expired", words, now());
     settle(id);
   };
 
@@ -467,10 +468,10 @@ export function personHands(options: {
     if (journal) {
       // Written as the journal's answer, now, unless the ask has one there already (a person's answer that came first
       // writes its own row, settle's, as this one would).
-      void answerInJournal(waiting.id, tag, "done", new Date().toISOString()).then(() => settle(waiting.id), () => undefined);
+      void answerInJournal(waiting.id, tag, "done", new Date(now()).toISOString()).then(() => settle(waiting.id), () => undefined);
       return true;
     }
-    answerOnce(dir, waiting.id, "done");
+    answerOnce(dir, waiting.id, "done", undefined, now());
     return settle(waiting.id) !== undefined;
   };
 
@@ -525,7 +526,7 @@ export function personHands(options: {
     if (!ask || !dir) return undefined;
     // On the runner's path the answer is the journal's, as last read (refresh writes a lapsed ask's expiry there first).
     const written = journal ? fromJournal.get(id) : answerOf(readOwn(dir, `${id}.answer.json`));
-    const answered = written?.outcome ?? (!journal && Date.now() >= ask.expiresAt ? answerOnce(dir, id, "expired") : undefined);
+    const answered = written?.outcome ?? (!journal && Date.now() >= ask.expiresAt ? answerOnce(dir, id, "expired", undefined, now()) : undefined);
     if (!answered) return undefined;
     // The cap's words, kept with the answer: a process that takes the ask up after a restart tells them too.
     if (written?.reason !== undefined && !capped.has(id)) capped.set(id, written.reason);
@@ -534,7 +535,9 @@ export function personHands(options: {
     ask.drop();
     options.gates(ask.tag).give?.("answered");
     const words = capped.get(id);
-    void note(HOST_PHASE, { summary: words !== undefined && answered === "expired" ? `${CAP_ENDED}: ${words}` : ASK_ENDED[answered] });
+    // At the answer's own time (the person's, or the expiry's as written), which can be well before this process reads it.
+    const when = written ? Date.parse(written.at) : now();
+    void note(HOST_PHASE, { summary: words !== undefined && answered === "expired" ? `${CAP_ENDED}: ${words}` : ASK_ENDED[answered], at: Number.isFinite(when) ? when : now() });
     if (!open.size && poll) (clearInterval(poll), (poll = undefined));
     return answered;
   };
@@ -563,7 +566,7 @@ export function personHands(options: {
         started: () => {
           if (ended || live) return;
           live = true;
-          void note(HOST_PHASE, { summary: TAKEN });
+          void note(HOST_PHASE, { summary: TAKEN, at: now() });
         },
         // No hold started after all: what was held for it goes, and no row was written for it.
         cancel: () => {
@@ -584,8 +587,8 @@ export function personHands(options: {
           // end (cap, idle, away, released, answered): the person did not say they were done. The answer's own row
           // ("You handed the browser back", settle's) is then the hand-back's one row: none is written here as well.
           const answeredAsk = why === "given" && givenDone(tag);
-          if (why === "cap") void note(HOST_PHASE, { summary: `${CAPPED}${words ? `: ${words}` : ""}` });
-          else if (why !== "answered" && !answeredAsk) void note(HOST_PHASE, { summary: TAKE_ENDED[why] });
+          if (why === "cap") void note(HOST_PHASE, { summary: `${CAPPED}${words ? `: ${words}` : ""}`, at: now() });
+          else if (why !== "answered" && !answeredAsk) void note(HOST_PHASE, { summary: TAKE_ENDED[why], at: now() });
         },
       };
     },
