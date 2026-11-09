@@ -19,7 +19,7 @@ after(() => { for (const dir of dirs) rmSync(dir, { recursive: true, force: true
 const RECIPE_TAG = recipeTag(DOCKER_RECIPE);
 
 /** A Mode 1 Docker sandbox through the composer on a fresh host (dockerHost), with `env` the server's environment. */
-async function dockerSandbox(t, env = {}) {
+async function dockerSandbox(t, env = {}, waits = []) {
   const host = dockerHost();
   const path = process.env.PATH;
   process.env.PATH = `${host.dir}:${path}`;
@@ -37,7 +37,7 @@ async function dockerSandbox(t, env = {}) {
   // The production builder, told only where the fake's daemon file and cache are; docker is the one first on PATH.
   const load = (id, options) => providerFor(id, { ...options, daemonPath: host.fake.daemonPath, daemonCache: host.fake.cache });
   const { computerForClaim, computerDeps } = computerDepsFrom({ env, store, sealKey, load });
-  const claim = () => computerForClaim({ runId: "run-1", epoch: 1, computer: { kind: "sandbox", provider: "docker" } }, store, { ...computerDeps, mode: 1, workspace: localWorkspace(root), sealKey });
+  const claim = () => computerForClaim({ runId: "run-1", epoch: 1, computer: { kind: "sandbox", provider: "docker" } }, store, { ...computerDeps, mode: 1, workspace: localWorkspace(root), sealKey, onImageWait: (making, tag) => void waits.push([making, tag]) });
   return { host, claim };
 }
 
@@ -64,6 +64,15 @@ test("a second sandbox on the same host finds the recipe's image built: no secon
   await (await claim()).release();
   await (await claim()).release();
   assert.equal(host.calls().filter((args) => args[0] === "build").length, 1, "built once for both");
+});
+
+test("the claim is told once when it waits on the image (onImageWait: a build on a fresh host), and not at all once it is built", async (t) => {
+  const waits = [];
+  const { claim } = await dockerSandbox(t, {}, waits);
+  await (await claim()).release();
+  assert.deepEqual(waits, [["build", RECIPE_TAG]], "told once, as the build starts");
+  await (await claim()).release();
+  assert.deepEqual(waits, [["build", RECIPE_TAG]], "the second claim finds it built: nothing to wait on");
 });
 
 test("an image the owner names (AGENTRUN_DOCKER_IMAGE) is pulled, never built", async (t) => {
