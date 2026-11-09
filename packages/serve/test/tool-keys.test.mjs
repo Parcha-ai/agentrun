@@ -11,6 +11,7 @@ import { test } from "node:test";
 import { startServe } from "../dist/index.js";
 import { secret } from "../dist/secrets.js";
 import { readingOf } from "../dist/server.js";
+import { openSqliteStore, STORE_FILE } from "../dist/store/sqlite/store.js";
 import { rowUnlocks, TOOL_KEYS, unlockedBy } from "../dist/tool-keys.js";
 import { schemaProblems } from "./schema-support.mjs";
 import { agent, call, harnessData, client, cookieOf, FAUX, follow, printed, scratch, serve, storeBytes, withEnv } from "./support.mjs";
@@ -239,15 +240,17 @@ test("handed no seal key, the server keeps a key under the one it made at its st
   assert.deepEqual((await api("GET", "/capabilities")).body.features.tool_keys, { routes: true, at_rest: "sealed" });
   const value = made();
   assert.equal((await api("PUT", "/settings/tool-keys/monid", { values: { MONID_API_KEY: value } })).status, 204);
-  assert.equal(existsSync(join(data, "tool-keys.json")), false);
-  assert.ok(!storeBytes(data).toString("latin1").includes(value), "sealed, never in the clear");
+  // Sealed, never in the clear, wherever the server keeps it (the store, or its tool-keys file).
+  const kept = existsSync(join(data, "tool-keys.json")) ? readFileSync(join(data, "tool-keys.json"), "latin1") : "";
+  assert.ok(!`${storeBytes(data).toString("latin1")}${kept}`.includes(value), "sealed, never in the clear");
   assert.deepEqual((await api("GET", "/settings/tool-keys")).body.reenter, null);
 });
 
-test("values sealed under another key, with no key, or in a damaged file do not open: the server starts, GET asks for them again with why, the log says so once naming the file and no value, and a PUT seals anew", async (t) => {
+test("values sealed under another key, under the key a server handed none makes, or in a damaged row do not open: the server starts, GET asks for them again with why, the log says so once naming where they are kept and no value, and a PUT seals anew", async (t) => {
   withEnv(t, {}, KEYS);
   const data = join(await scratch(t), "agents");
-  const file = join(data, "tool-keys.json");
+  // Where the log says the keys are kept: the store's sealed_keys rows (tool-keys-store.ts, the reenter line).
+  const kept = "store:sealed_keys";
   const lines = [];
   const open = new Set();
   t.after(() => Promise.all([...open].map((server) => server.close())));
@@ -267,7 +270,7 @@ test("values sealed under another key, with no key, or in a damaged file do not 
   server = await started(second);
   const parallel = async () => (await server.api("GET", "/capabilities")).body.workflows.decisions.providers.find((p) => p.id === "parallel").available;
   assert.equal(await parallel(), false, "a value that does not open is absent: no key, never a crash or the ciphertext");
-  assert.deepEqual(server.said().map((line) => line.replace(/^at=\S+ /, "")), [`event=tool_keys condition=seal_key_changed file=${file} fields=PARALLEL_API_KEY,MONID_API_KEY`], "said once, at the start");
+  assert.deepEqual(server.said().map((line) => line.replace(/^at=\S+ /, "")), [`event=tool_keys condition=seal_key_changed file=${kept} fields=PARALLEL_API_KEY,MONID_API_KEY`], "said once, at the start");
   const changed = (await server.api("GET", "/settings/tool-keys")).body;
   assert.deepEqual([fieldsOf(changed).PARALLEL_API_KEY, fieldsOf(changed).MONID_API_KEY, changed.reenter], [AGAIN, AGAIN, { reason: "seal_key_changed", fields: ["PARALLEL_API_KEY", "MONID_API_KEY"] }]);
   assert.equal(server.said().length, 1, "not again for the same condition");
@@ -278,22 +281,45 @@ test("values sealed under another key, with no key, or in a damaged file do not 
   assert.deepEqual([fieldsOf(resealed).PARALLEL_API_KEY, resealed.reenter], [STORED, { reason: "seal_key_changed", fields: ["MONID_API_KEY"] }], "sealed anew under the current key");
   await server.close();
 
-  // Handed no seal key, the server makes its own (seal-key.ts): what the others sealed does not open under it.
-  server = await started(undefined);
-  assert.equal(await parallel(), false, "under the key the server made, nothing sealed under another opens");
+  // Handed no seal key, the server never runs without one (seal-key.ts): under a config home with none, it makes its own,
+  // 0600 in a 0700 directory, and prints only its path. What the others sealed does not open under it.
+  const home = join(await scratch(t), "config");
+  const madeAt = join(home, "agentrun", "seal.key");
+  const printedLines = [];
+  const write = process.stderr.write.bind(process.stderr);
+  process.stderr.write = (chunk, ...rest) => (printedLines.push(String(chunk)), write(chunk, ...rest));
+  const config = process.env.XDG_CONFIG_HOME;
+  process.env.XDG_CONFIG_HOME = home;
+  try {
+    server = await started(undefined);
+  } finally {
+    process.env.XDG_CONFIG_HOME = config;
+    process.stderr.write = write;
+  }
+  assert.equal(statSync(madeAt).mode & 0o777, 0o600, "its key is 0600");
+  assert.equal(statSync(join(home, "agentrun")).mode & 0o777, 0o700, "in a 0700 directory");
+  const madeKey = readFileSync(madeAt, "utf8").trim();
+  assert.ok(printedLines.join("").includes(madeAt), `it prints the path: ${printedLines.join("")}`);
+  holdsNone(printedLines.join(""), keyForms(madeKey), "what it printed");
+  assert.equal(await parallel(), false, "under the key it made, nothing sealed under another opens");
   const missing = await server.api("GET", "/settings/tool-keys");
   assert.deepEqual(missing.body.reenter, { reason: "seal_key_changed", fields: ["PARALLEL_API_KEY", "MONID_API_KEY"] });
   await server.close();
 
-  writeFileSync(file, "{ not json");
+  // A damaged row: Parallel's sealed bytes, under the key it was sealed with, overwritten; Monid's row (still under the
+  // first key) removed, so the damage is the only thing that does not open.
+  const store = await openSqliteStore({ file: join(data, STORE_FILE), role: "server", now: Date.now });
+  await store.sealedKeys.put("PARALLEL_API_KEY", Uint8Array.from(Buffer.from("garbage-not-sealed")));
+  await store.sealedKeys.remove("MONID_API_KEY");
+  await store.close();
   server = await started(second);
-  assert.equal((await server.api("GET", "/health")).status, 200, "a damaged file never stops the server");
-  assert.deepEqual((await server.api("GET", "/settings/tool-keys")).body.reenter, { reason: "file_unreadable", fields: [] }, "a file that does not read names no field");
+  assert.equal((await server.api("GET", "/health")).status, 200, "a damaged row never stops the server");
+  assert.deepEqual((await server.api("GET", "/settings/tool-keys")).body.reenter, { reason: "file_unreadable", fields: ["PARALLEL_API_KEY"] }, "a row that does not open names its field");
   assert.equal((await server.api("PUT", "/settings/tool-keys/parallel", { values: { PARALLEL_API_KEY: values.PARALLEL_API_KEY } })).status, 204, "a PUT replaces it");
   assert.deepEqual((await server.api("GET", "/settings/tool-keys")).body.reenter, null);
   await server.close();
-  assert.deepEqual(server.said().map((line) => /condition=(\S+)/.exec(line)[1]), ["seal_key_changed", "seal_key_changed", "seal_key_missing", "file_unreadable"]);
-  for (const forms of [...Object.values(values).map(formsOf), keyForms(first), keyForms(second)]) holdsNone(lines.join("\n"), forms, "the log");
+  assert.deepEqual(server.said().map((line) => /condition=(\S+)/.exec(line)[1]), ["seal_key_changed", "seal_key_changed", "seal_key_changed", "file_unreadable"]);
+  for (const forms of [...Object.values(values).map(formsOf), keyForms(first), keyForms(second), keyForms(madeKey)]) holdsNone(lines.join("\n"), forms, "the log");
 });
 
 test("a key saved is read by name with no restart: capabilities lose the tool's missing names and name its key, a run of it starts and its process gets the key; deleted, it is missing again", { timeout: 60_000 }, async (t) => {
@@ -431,7 +457,7 @@ test("under its launcher, a config directory the person made with a plain mkdir 
   assert.ok(!out.includes("no seal key"), out);
 });
 
-test("under its launcher, a key that already exists in a directory another user can read is refused and never changed: nothing is chmod-ed, and the message names the exact fix", { timeout: 60_000 }, async (t) => {
+test("under its launcher, a key that already exists in a directory another user can read is refused and never changed: the server does not start, nothing is chmod-ed, and the message names the exact fix", { timeout: 60_000 }, async (t) => {
   const dir = await scratch(t);
   const [data, config] = [join(dir, "agents"), join(dir, "config")];
   const keys = join(config, "agentrun");
@@ -440,15 +466,18 @@ test("under its launcher, a key that already exists in a directory another user 
   const key = randomBytes(32).toString("base64");
   writeFileSync(join(keys, "seal.key"), `${key}\n`, { mode: 0o600 });
   const token = `not-a-secret-token-${randomBytes(16).toString("hex")}`;
-  const server = await launched(t, data, config, token);
-  assert.deepEqual((await server.api("GET", "/capabilities")).body.features.tool_keys, { routes: true, at_rest: "unavailable" });
-  const out = await server.stop();
+  // The launcher hands no key it would not keep, and the server never starts without one (seal-key.ts): it stops, saying
+  // so in the launcher's words and its own, each naming the fix.
+  let out = "";
+  await assert.rejects(launched(t, data, config, token), (error) => ((out = String(error.message)), true));
+  assert.match(out, /exited \(1\)/, out);
+  assert.ok(out.includes(`no seal key in ${join(keys, "seal.key")}`) && out.includes(`chmod 700 ${keys}; chmod 600 ${join(keys, "seal.key")}`), out);
+  assert.ok(out.includes("agentrun-serve does not start without a seal key") && out.includes(`chmod 700 ${keys}`), out);
   assert.equal(statSync(keys).mode & 0o777, 0o755, "an existing key's directory is never changed");
   assert.equal(readFileSync(join(keys, "seal.key"), "utf8").trim(), key, "the key is untouched");
-  assert.ok(out.includes(`no seal key in ${join(keys, "seal.key")}`) && out.includes(`chmod 700 ${keys}; chmod 600 ${join(keys, "seal.key")}`), out);
 });
 
-test("under its launcher, a key directory that is a symlink is never chmod-ed: a shared target keeps its mode, even when the user owns it", { timeout: 60_000 }, async (t) => {
+test("under its launcher, a key directory that is a symlink is never chmod-ed: the server does not start, and a shared target keeps its mode, even when the user owns it", { timeout: 60_000 }, async (t) => {
   const dir = await scratch(t);
   const [data, config, shared] = [join(dir, "agents"), join(dir, "config"), join(dir, "shared")];
   const keys = join(config, "agentrun");
@@ -457,8 +486,10 @@ test("under its launcher, a key directory that is a symlink is never chmod-ed: a
   chmodSync(shared, 0o755);
   symlinkSync(shared, keys);
   const token = `not-a-secret-token-${randomBytes(16).toString("hex")}`;
-  const server = await launched(t, data, config, token);
-  await server.stop();
+  // A linked key directory is never followed: the server does not start without a key (seal-key.ts), saying why.
+  let out = "";
+  await assert.rejects(launched(t, data, config, token), (error) => ((out = String(error.message)), true));
+  assert.ok(out.includes("agentrun-serve does not start without a seal key") && out.includes(`${keys} is a link`), out);
   assert.equal(statSync(shared).mode & 0o777, 0o755, "the symlink's shared target keeps its mode");
 });
 
