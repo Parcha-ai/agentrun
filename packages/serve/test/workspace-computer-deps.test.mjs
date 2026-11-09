@@ -1,0 +1,133 @@
+// The one composition of a run's computer (serve/src/workspace/computer-deps.ts computerDepsFrom): the kind registry,
+// the provider makers (computer-providers.ts, the one place a provider is built), the computer's spec, the mount check
+// and each provider key, read from the server's environment first and then the store's sealed rows, as the server reads
+// it. The runner and the server both take computerForClaim and its deps from it; a spec builder adds only the claim's own
+// (mode, Workspace, seal key), as it does here.
+//
+// Rule 5: a key goes only into the server-side provider call (the provider's options). The computer it makes carries no
+// provider key, no account key and no database or Redis credential, anywhere in its spec (labels included). Each value
+// here is planted, distinctive, and searched for in the whole spec. Every provider is a loopback stand-in; the kind
+// registry is the agreed fixture (workspace-kinds-fixture.mjs).
+import assert from "node:assert/strict";
+import { randomBytes } from "node:crypto";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { after, test } from "node:test";
+import { putSealedKey } from "../dist/server-keys.js";
+import { computerDepsFrom, localWorkspace } from "../dist/workspace/index.js";
+import { fakeComputer } from "./workspace-fake-computer.mjs";
+import { KINDS } from "./workspace-kinds-fixture.mjs";
+
+const dirs = [];
+after(() => { for (const dir of dirs) rmSync(dir, { recursive: true, force: true }); });
+function scratch() {
+  const dir = realpathSync(mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-computer-deps-")));
+  dirs.push(dir);
+  const root = join(dir, "work");
+  mkdirSync(root);
+  return root;
+}
+
+/** Distinctive planted values: none of them may show up in a computer's spec. */
+const mark = (what) => `planted-${what}-${randomBytes(12).toString("hex")}`;
+const PLANTED = {
+  envKey: mark("e2b-env-key"),
+  storeKey: mark("e2b-store-key"),
+  orgoKey: mark("orgo-store-key"),
+  account: mark("archil-account-key"),
+  db: mark("db-password"),
+  redis: mark("redis-password"),
+};
+/** The server's environment: E2B's key, which wins over its saved one; the account key; the database and Redis URLs. */
+const ENV = {
+  E2B_API_KEY: PLANTED.envKey,
+  ARCHIL_API_KEY: PLANTED.account,
+  DATABASE_URL: `postgres://agentrun:${PLANTED.db}@db.invalid:5432/agentrun`,
+  REDIS_URL: `redis://:${PLANTED.redis}@redis.invalid:6379/0`,
+  PATH: "/usr/bin:/bin",
+};
+
+/** The store's three parts the claim reads: no revision, sealed keys in memory, a ledger in memory. */
+function memoryStore() {
+  const keys = new Map();
+  const ledger = new Map();
+  return {
+    agents: { revision: async () => undefined },
+    sealedKeys: { get: async (name) => keys.get(name), put: async (name, sealed) => void keys.set(name, sealed), remove: async (name) => void keys.delete(name), all: async () => [...keys].map(([name]) => ({ name })) },
+    computerLedger: { put: async (p, id, labels, detail) => void ledger.set(`${p}/${id}`, { sessionId: id, labels, detail }), get: async (p, id) => ledger.get(`${p}/${id}`), list: async () => [...ledger.values()], remove: async (p, id) => void ledger.delete(`${p}/${id}`) },
+  };
+}
+
+/** A desktop provider stand-in in the computer module's shape: create records its spec. */
+function fakeDesktop(root, record) {
+  const computer = fakeComputer(root);
+  return {
+    id: "fake",
+    version: "0",
+    capabilities: () => ({ lifetime: "janitor", maxLifetimeMs: 86_400_000 }),
+    check: () => [],
+    list: async () => ({ ok: true, value: [] }),
+    async create(spec) {
+      record.created.push(structuredClone(spec));
+      return { ok: true, value: { id: "c1", name: "c1" } };
+    },
+    connect: async () => ({ ok: true, value: { client: computer.client, hello: { version: "0", os: "linux", kind: "desktop", arch: "amd64", groups: ["screen", "input.pointer", "input.keys"] }, close: async () => {} } }),
+    attach: async () => ({ ok: true, value: { id: "c1", name: "c1", spec: { image: "i", user: "1000:1000", network: "none" } } }),
+    release: async (ref, how) => (record.released.push([ref.id, how]), { ok: true, value: undefined }),
+  };
+}
+
+/** A run's desktop on `provider`, through the composer as the runner wires it and the spec builder calls it. */
+async function desktopOn(provider) {
+  const root = scratch();
+  const store = memoryStore();
+  const sealKey = randomBytes(32);
+  await putSealedKey(store, sealKey, "E2B_API_KEY", PLANTED.storeKey);
+  await putSealedKey(store, sealKey, "ORGO_API_KEY", PLANTED.orgoKey);
+  const record = { created: [], released: [], loaded: [] };
+  // The provider builder's load (providerFor in production): what the server-side provider call is given.
+  const load = async (id, options) => (record.loaded.push([id, structuredClone(options)]), fakeDesktop(root, record));
+  const { computerForClaim, computerDeps } = computerDepsFrom({ env: ENV, store, sealKey, kinds: KINDS, load });
+  // As the spec builders call it: the composer's deps, then the claim's own.
+  const answer = await computerForClaim({ runId: "run-1", epoch: 3, computer: { kind: "desktop", provider } }, store, { ...computerDeps, mode: 1, workspace: localWorkspace(root), sealKey });
+  return { answer, record };
+}
+
+/** Every planted value found anywhere in `value` (its JSON). */
+const plantsIn = (value) => Object.entries(PLANTED).filter(([, planted]) => JSON.stringify(value).includes(planted)).map(([name]) => name);
+
+test("a key named in the server's environment wins over its saved one, and goes only into the provider call: the computer's spec carries no key, account key or database credential", async () => {
+  const { answer, record } = await desktopOn("e2b");
+  assert.equal(answer.computer?.kind, "desktop");
+  assert.deepEqual(record.loaded.map(([id, options]) => [id, options.apiKey]), [["e2b", PLANTED.envKey]], "the provider is built with the environment's key, over the saved one");
+  assert.equal(record.created.length, 1);
+  const [spec] = record.created;
+  assert.deepEqual(plantsIn(spec), [], `no planted value in the computer's spec: ${JSON.stringify(spec)}`);
+  assert.deepEqual(spec.labels, { "agentrun.run": "run-1", "agentrun.epoch": "3" }, "its labels are the run's, and only those");
+  assert.equal(spec.env, undefined, "no environment is handed to the computer");
+  assert.equal(spec.image, "desktop", "E2B's desktop template");
+  assert.ok(spec.lifetimeMs > 0, "a deadline");
+  await answer.release();
+  assert.deepEqual(record.released, [["c1", "delete"]]);
+});
+
+test("a key only saved in the store is opened with the server's seal key for the provider call alone: the computer's spec carries none of it", async () => {
+  const { answer, record } = await desktopOn("orgo");
+  assert.equal(answer.computer?.kind, "desktop");
+  assert.deepEqual(record.loaded.map(([id, options]) => [id, options.apiKey]), [["orgo", PLANTED.orgoKey]], "the saved key, opened for the provider");
+  const [spec] = record.created;
+  assert.deepEqual(plantsIn(spec), [], `no planted value in the computer's spec: ${JSON.stringify(spec)}`);
+  assert.deepEqual(spec.labels, { "agentrun.run": "run-1", "agentrun.epoch": "3" });
+  assert.equal(spec.image, "linux", "Orgo's base desktop");
+  await answer.release();
+});
+
+test("the composer builds every provider through the one provider builder, and gives the claim the mount check", async () => {
+  const store = memoryStore();
+  const { computerDeps } = computerDepsFrom({ env: {}, store, sealKey: undefined, kinds: KINDS, load: async () => { throw new Error("not built here"); } });
+  assert.equal(computerDeps.kinds, KINDS);
+  for (const id of ["docker", "daytona", "modal", "e2b", "orgo", "phone-harness", "browserbase", "kernel"]) assert.equal(typeof computerDeps.providers[id], "function", `${id} is built by the provider builder`);
+  assert.equal(typeof computerDeps.check?.readBackOf, "function", "the mount check the claim's attach runs");
+  assert.equal(typeof computerDeps.spec, "function");
+});
