@@ -7,6 +7,7 @@ import { observed, queue, recorder, STEADY_LEASE, stores, until } from "./runner
 
 const { startRunner } = await import("../dist/runner/runner.js");
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
+const { viewOverStore, summaryOverStore } = await import("../dist/store-view.js");
 const TIMING = { ...STEADY_LEASE, pollMs: 20, commandPollMs: 30 };
 const quiet = { beforeIntent: async () => {}, beforeResult: async () => {} };
 
@@ -38,8 +39,8 @@ function failingCli(status, error) {
   };
 }
 
-async function runOnce(t, status, error) {
-  const opened = await stores({ runners: 1 });
+async function runOnce(t, status, error, { opened: given } = {}) {
+  const opened = given ?? (await stores({ runners: 1 }));
   await queue(opened.server, "run-1");
   const createLoop = createAdapterLoop(() => ({
     adapter: failingCli(status, error),
@@ -61,6 +62,21 @@ test("a CLI turn that ends on its own error fails the run in the CLI's words, ne
   const row = await runOnce(t, "failed", words);
   assert.equal(row.state, "failed", JSON.stringify(row));
   assert.ok((row.summary ?? "").includes(words), `the run's summary carries the CLI's own error: ${JSON.stringify(row.summary)}`);
+});
+
+test("a CLI error that quotes a held secret is served without it: the run's view and its list row redact it, its other words kept", async (t) => {
+  // The value the server holds (as its own secrets are), made here so no key-shaped literal sits in the source.
+  const held = ["planted", "value", "Zq81Lm4Tx"].join("-");
+  const words = `codex: MCP server 'door' refused the token ${held}: unauthorized`;
+  const opened = await stores({ runners: 1 });
+  const row = await runOnce(t, "failed", words, { opened });
+  assert.ok((row.summary ?? "").includes(held), "the row keeps the CLI's words as they came (at rest, as every summary)");
+  const deps = { origin: "https://run.test", serverSecrets: () => [held] };
+  for (const [what, served] of [["the run's view", await viewOverStore(opened.server, "run-1", deps)], ["its list row", await summaryOverStore(opened.server, "run-1", deps)]]) {
+    const message = String(served?.error?.message ?? "");
+    assert.ok(!message.includes(held), `${what} never serves the held value: ${JSON.stringify(served?.error)}`);
+    assert.ok(message.includes("MCP server 'door' refused the token"), `${what} keeps the CLI's other words: ${JSON.stringify(served?.error)}`);
+  }
 });
 
 test("a CLI turn that fails with no words of its own still ends the run failed in the loop's words", async (t) => {
