@@ -18,6 +18,7 @@ import type { CommitResult, ConversationId, EntryRecord, StorageWrite } from "@e
 import type { KernelHooks, ToolCall } from "./conformance/subject.js";
 import { KINDS } from "./journal-kinds.js";
 import { type Command, cutAtLimit, type HeldState, type Journal, type LoopDeps } from "./loop-contract.js";
+import { PI_STOP } from "./pi-stop.js";
 import type { Staged } from "../store/store.js";
 
 /** pi's own default restart limit (pi-durable 1.5.0 agent settings). */
@@ -182,7 +183,7 @@ export function cutLast(entries: readonly EntryRecord[]): string | undefined {
     return said.stopReason === "length" ? cutAtLimit(said.outputTokens) : undefined;
   }
   const message = (last as { model?: { stopReason?: string; usage?: { output?: number } }[] } | undefined)?.model?.[0];
-  return message?.stopReason === "length" ? cutAtLimit(message.usage?.output) : undefined;
+  return message?.stopReason === PI_STOP.length ? cutAtLimit(message.usage?.output) : undefined;
 }
 
 /** A tool result pi wrote for a call it cut off at its restart limit, as its message, if any. */

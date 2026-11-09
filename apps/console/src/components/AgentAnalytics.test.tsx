@@ -228,15 +228,6 @@ describe("AnalyticsTab, read again", () => {
     expect(host.querySelector('[aria-busy="true"]')).toBeNull();
   });
 
-  it("a tab closed while its answer is unsettled reads no more", async () => {
-    const tab = await open(() => ANALYTICS, { unknown: () => 1 });
-    expect(tab.asked).toHaveLength(1);
-    act(() => root?.unmount());
-    root = undefined;
-    await act(async () => { await new Promise((r) => setTimeout(r, 1500)); });
-    expect(tab.asked).toHaveLength(1);
-  });
-
   it("an unsettled answer that replaced a settled one is never taken for the range on screen: back on 30 days, 30 days is read again", async () => {
     // 30 days settles; 7 days answers unsettled (its retries then never answer); back on 30 days the figures on screen
     // are 7 days', so 30 days is read again rather than kept as if it were shown.

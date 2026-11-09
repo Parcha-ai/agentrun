@@ -590,6 +590,8 @@ test("archil-disk: the SDK seam takes its key and S3 endpoint as options (no env
     request.on("data", (c) => chunks.push(c));
     request.on("end", () => {
       const body = Buffer.concat(chunks).toString("utf8");
+      // The seam never asks for "/": a request there is another test's probe of a port this server reused, not the seam's.
+      if (request.url === "/") { response.writeHead(404); return response.end(); }
       seen.push({ method: request.method, url: request.url, range: request.headers.range, auth: request.headers.authorization, agent: request.headers["user-agent"], body });
       const json = (status, value) => { response.writeHead(status, { "content-type": "application/json" }); response.end(JSON.stringify(value)); };
       if (request.method === "GET" && request.url === "/api/disks/dsk-0000000000000001") {

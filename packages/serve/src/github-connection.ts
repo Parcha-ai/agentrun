@@ -495,39 +495,56 @@ export class GitHubConnect {
     return { token: minted.token, expiresAt: minted.expires_at };
   }
 
-  /** An installation token for listing an MCP server's tools as it is saved: the App's first installation, every
-   *  repository it covers; or why there is none. */
-  async tokenForListing(signal?: AbortSignal): Promise<{ token: string; expiresAt: number } | { unusable: string }> {
+  /** An installation token for listing an MCP server's tools as it is saved, narrowed to one repository: of the first
+   *  of the App's installations, in order, that covers one (an account may have none selected); or why there is none. */
+  async tokenForListing(signal?: AbortSignal): Promise<{ token: string; expiresAt: number } | { unusable: string } | Unanswered> {
     const credentials = this.connection.credentials();
     const view = this.connection.view();
     if (!credentials || !view) return { unusable: "This server has no GitHub App: Connect GitHub in Settings." };
-    const first = view.installations[0];
-    if (!first) return { unusable: "The GitHub App is not installed anywhere yet: install it on an account, then save the server." };
+    const { installations } = view;
+    if (!installations.length) return { unusable: "The GitHub App is not installed anywhere yet: install it on an account, then save the server." };
     try {
       const jwt = appJwt(credentials.appId, credentials.pem, this.options.now?.() ?? Date.now());
-      const refused = { unusable: `GitHub gave no token for the App's installation on ${first.account}.` };
-      // Which repository is the installation's first: asked with a metadata-read token that never leaves this server
-      // (only GitHub's API sees it), revoked at once. The token the listing sends is narrowed to that one repository.
-      const scout = await this.mint(first.id, jwt, undefined, refused, signal, { metadata: "read" });
-      if ("unusable" in scout) return scout;
-      let repo: unknown;
-      try {
-        const listed = await githubCall(this.options.api, "/installation/repositories?per_page=1", { jwt: scout.token, ...(signal ? { signal } : {}) });
-        repo = isObject(listed.json) && Array.isArray(listed.json.repositories) && isObject(listed.json.repositories[0]) ? listed.json.repositories[0].name : undefined;
-      } finally {
-        await githubCall(this.options.api, "/installation/token", { method: "DELETE", jwt: scout.token }).catch(() => undefined);
+      const refusals: { unusable: string }[] = [];
+      for (const installation of installations) {
+        const refused = { unusable: `GitHub gave no token for the App's installation on ${installation.account}.` };
+        const found = await this.firstRepository(installation.id, jwt, refused, signal);
+        // GitHub that does not answer says nothing of the installations: tried again, never read as "no repository".
+        if ("failed" in found) return found;
+        if ("unusable" in found) refusals.push(found);
+        // The least a listing needs: metadata read, of one repository; never the App's write permissions, never all of them.
+        else if (found.repo !== undefined) return await this.mint(installation.id, jwt, [found.repo], refused, signal, { metadata: "read" });
       }
-      if (typeof repo !== "string" || !repo) return { unusable: `The GitHub App's installation on ${first.account} covers no repository yet: add one to it, then save the server.` };
-      // The least a listing needs: metadata read, of one repository; never the App's write permissions, never all of them.
-      return await this.mint(first.id, jwt, [repo], refused, signal, { metadata: "read" });
+      if (refusals.length === installations.length) return refusals[0]!;
+      return installations.length === 1
+        ? { unusable: `The GitHub App's installation on ${installations[0]!.account} covers no repository yet: add one to it, then save the server.` }
+        : { unusable: `None of the GitHub App's installations (on ${installations.map((i) => i.account).join(", ")}) covers a repository yet: add one to any of them, then save the server.` };
     } catch (error) {
       return { unusable: `GitHub did not give a token: ${(error as Error).message}.` };
     }
   }
 
-  private async mint(installation: number, jwt: string, repositories: string[] | undefined, refused: { unusable: string }, signal?: AbortSignal, permissions?: Record<string, string>): Promise<{ token: string; expiresAt: number } | { unusable: string }> {
+  /** The first repository installation `id` covers, if any: asked with a metadata-read token that never leaves this
+   *  server (only GitHub's API sees it), revoked at once, whatever the answer. A read GitHub did not answer (a 429, a
+   *  5xx, nothing) is UNANSWERED, never "none". */
+  private async firstRepository(id: number, jwt: string, refused: { unusable: string }, signal?: AbortSignal): Promise<{ repo?: string } | { unusable: string } | Unanswered> {
+    const scout = await this.mint(id, jwt, undefined, refused, signal, { metadata: "read" });
+    if ("unusable" in scout || "failed" in scout) return scout;
+    try {
+      const listed = await githubCall(this.options.api, "/installation/repositories?per_page=1", { jwt: scout.token, ...(signal ? { signal } : {}) }).catch(() => undefined);
+      if (!listed || unanswered(listed)) return UNANSWERED;
+      if (listed.status !== 200) return {};
+      const repo = isObject(listed.json) && Array.isArray(listed.json.repositories) && isObject(listed.json.repositories[0]) ? listed.json.repositories[0].name : undefined;
+      return typeof repo === "string" && repo ? { repo } : {};
+    } finally {
+      await githubCall(this.options.api, "/installation/token", { method: "DELETE", jwt: scout.token }).catch(() => undefined);
+    }
+  }
+
+  private async mint(installation: number, jwt: string, repositories: string[] | undefined, refused: { unusable: string }, signal?: AbortSignal, permissions?: Record<string, string>): Promise<{ token: string; expiresAt: number } | { unusable: string } | Unanswered> {
     const body = { ...(repositories ? { repositories } : {}), ...(permissions ? { permissions } : {}) };
-    const answer = await githubCall(this.options.api, `/app/installations/${installation}/access_tokens`, { method: "POST", jwt, ...(Object.keys(body).length ? { body } : {}), ...(signal ? { signal } : {}) });
+    const answer = await githubCall(this.options.api, `/app/installations/${installation}/access_tokens`, { method: "POST", jwt, ...(Object.keys(body).length ? { body } : {}), ...(signal ? { signal } : {}) }).catch(() => undefined);
+    if (!answer || unanswered(answer)) return UNANSWERED;
     const minted = isObject(answer.json) ? answer.json : {};
     if (answer.status !== 201 || typeof minted.token !== "string" || typeof minted.expires_at !== "string") return refused;
     const expiresAt = Date.parse(minted.expires_at);
@@ -537,3 +554,11 @@ export class GitHubConnect {
   }
 }
 
+/** GitHub that did not answer a listing token's call: a 429, a 5xx, a rate limit's 403, or no answer at all. Nothing is
+ *  learned from it, so nothing is refused for good: try again (mcp-servers.ts, 502 github_failed). */
+type Unanswered = { failed: string };
+const UNANSWERED: Unanswered = { failed: "GitHub didn't answer: try again." };
+const unanswered = (answer: { status: number; json: unknown; headers: Headers }) => answer.status === 429 || answer.status >= 500 || (answer.status === 403 && rateLimited(answer));
+/** A 403 that is GitHub's rate limit, primary or secondary, not a refusal: its words say so, no request is left
+ *  (X-RateLimit-Remaining 0), or it names a wait (Retry-After). A 403 with none of them is a permission's. */
+const rateLimited = ({ json, headers }: { json: unknown; headers: Headers }) => headers.get("x-ratelimit-remaining") === "0" || headers.has("retry-after") || (isObject(json) && typeof json.message === "string" && /rate limit/i.test(json.message));
