@@ -50,6 +50,8 @@ export type OpenComputerView = (args: {
   readonly sealKey: Buffer | undefined;
   readonly claim: unknown;
   readonly kind: "desktop" | "phone";
+  /** How the viewer's input is made into actions: a desktop's, or the phone's platform (its machine kind). */
+  readonly input: "desktop" | "android" | "ios";
   readonly tag: string;
   readonly watch: (signal: AbortSignal) => unknown;
   readonly hold: unknown;
@@ -104,6 +106,13 @@ async function settingOf(launch: ClaimLaunch, store: Pick<Store, "agents">): Pro
   return launch.place ? computerOfPlace(launch.place) : undefined;
 }
 
+/** A phone's platform: what the phone says it is, else its provider's phone configuration's machine kind; android when
+ *  neither says ios. */
+function phonePlatform(machine: string | undefined, entry: ProviderEntry | undefined): "android" | "ios" {
+  const said = machine ?? entry?.capabilities.find((one) => one.kind === "android" || one.kind === "ios")?.kind;
+  return said === "ios" ? "ios" : "android";
+}
+
 /** The provider's watch of a computer's screen (tl-computer's ComputerProvider.watch), where it has one. */
 type Watching = { watch(ref: { readonly id: string; readonly name: string }, context: { readonly signal: AbortSignal }): unknown };
 const watching = (provider: ComputerProvider): Watching | undefined =>
@@ -117,7 +126,7 @@ async function providerLaunch(
   claim: { readonly runId: string; readonly epoch: number },
   spec: ComputerSpec,
   signal: AbortSignal | undefined,
-): Promise<LaunchedComputer & { watch?: (signal: AbortSignal) => unknown }> {
+): Promise<LaunchedComputer & { machine: string; watch?: (signal: AbortSignal) => unknown }> {
   const older = await releaseOlder(provider, claim.runId, claim.epoch, signal ? { signal } : {});
   if (!older.ok) throw new Error(older.error.message);
   const created = await provider.create(spec, signal ? { signal } : {});
@@ -136,6 +145,8 @@ async function providerLaunch(
   return {
     id: ref.id,
     groups: hello.groups,
+    // What the machine says it is (a phone's android or ios): its live view's input platform.
+    machine: hello.kind,
     client,
     async readBack(): Promise<Result<MountReadBack>> {
       const attached = await provider.attach({ id: ref.id });
@@ -168,7 +179,9 @@ export async function sweepComputers(providers: readonly ComputerProvider[], lab
 export async function computerForClaim(launch: ClaimLaunch, store: Pick<Store, "agents" | "sealedKeys" | "computerLedger">, deps: ComputerForClaimDeps): Promise<ClaimComputer> {
   const table = deps.keyTable ?? KEY_TABLE;
   /** The computer this claim started (one per claim): its ref id tags its live view, and its watch feeds it. */
-  let made: { readonly id: string; readonly watch?: (signal: AbortSignal) => unknown } | undefined;
+  let made: { readonly id: string; readonly machine?: string; readonly watch?: (signal: AbortSignal) => unknown } | undefined;
+  /** The provider entry it was started from: a phone's platform where the computer did not say it. */
+  let madeBy: ProviderEntry | undefined;
   const side: ClaimSide = {
     async keysOf(provider) {
       const entry = deps.kinds.PROVIDERS.find((one) => one.id === provider);
@@ -185,6 +198,7 @@ export async function computerForClaim(launch: ClaimLaunch, store: Pick<Store, "
         const own = await deps.launch(entry, { kind, keys, ...(mount ? { mount } : {}), ...(signal ? { signal } : {}) });
         const ownWatch = (own as unknown as { watch?: (signal: AbortSignal) => unknown }).watch;
         made = { id: own.id, ...(ownWatch ? { watch: ownWatch } : {}) };
+        madeBy = entry;
         return own;
       }
       const make = Object.hasOwn(deps.providers, entry.id) ? deps.providers[entry.id] : undefined;
@@ -194,7 +208,8 @@ export async function computerForClaim(launch: ClaimLaunch, store: Pick<Store, "
       const provider = await make(options.options, { ledger: storeLedger(store.computerLedger, entry.id) });
       const spec: ComputerSpec = { ...deps.spec(entry, kind as Exclude<ComputerSettingKind, "none">), labels: runLabels(launch.runId, launch.epoch), ...(mount ? { mount } : {}) };
       const launched = await providerLaunch(provider, launch, spec, signal);
-      made = { id: launched.id, ...(launched.watch ? { watch: launched.watch } : {}) };
+      made = { id: launched.id, machine: launched.machine, ...(launched.watch ? { watch: launched.watch } : {}) };
+      madeBy = entry;
       return launched;
     },
   };
@@ -215,7 +230,8 @@ export async function computerForClaim(launch: ClaimLaunch, store: Pick<Store, "
     const theHold = computerHold();
     if (deps.openComputerView && made?.watch) {
       const watch = made.watch;
-      const opened = await deps.openComputerView({ store, sealKey: deps.sealKey, claim: launch.claim ?? { runId: launch.runId, epoch: launch.epoch }, kind: computer.kind, tag: made.id, watch: (signal) => watch(signal), hold: theHold });
+      const input = computer.kind === "desktop" ? "desktop" : phonePlatform(made.machine, madeBy);
+      const opened = await deps.openComputerView({ store, sealKey: deps.sealKey, claim: launch.claim ?? { runId: launch.runId, epoch: launch.epoch }, kind: computer.kind, input, tag: made.id, watch: (signal) => watch(signal), hold: theHold });
       if (!opened.ok) {
         await started.release().catch(() => undefined);
         if (opened.refused === "fenced") throw claimLost(`run ${launch.runId}'s claim (epoch ${launch.epoch}) is no longer this runner's, so its ${computer.kind} was released: ${opened.message}`);
