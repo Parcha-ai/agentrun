@@ -55,7 +55,7 @@ async function open(v2: ReturnType<typeof createClient>, props: Record<string, u
   const host = document.body.appendChild(document.createElement("div"));
   root = createRoot(host);
   const opened: string[] = [];
-  act(() => root!.render(createElement(McpServersPage, { v2, open: (u: string) => opened.push(u), ...props })));
+  act(() => root!.render(createElement(McpServersPage, { v2, writable: true, open: (u: string) => opened.push(u), ...props })));
   const settle = async () => { for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
   await settle();
   const button = (label: RegExp, within: Element = host) => [...within.querySelectorAll("button")].find((b) => label.test((b.textContent ?? "").trim()));
@@ -289,9 +289,11 @@ describe("Settings → MCP servers, the saved ones", () => {
       saved({ name: "open", auth: { type: "none" }, credential: null, secret: { name: "mcp:open", set: false, source: null, changed_at: null } }),
     ]]);
     const p = await open(s.v2);
-    expect(p.row("fake").textContent).toContain("Pasted in the console · last changed ");
-    expect(p.row("docs").textContent).toContain("From a sign-in · last changed ");
-    expect(p.row("open").textContent).not.toContain("last changed");
+    // Each server's one secret is its SecretRow (SecretRow.tsx): where it came from, and when it last changed.
+    expect(p.row("fake").querySelector('[data-secret="mcp:fake"]')!.textContent).toMatch(/Pasted here.*Changed .* ago/);
+    expect(p.row("docs").querySelector('[data-secret="mcp:docs"]')!.textContent).toMatch(/From sign-in.*Changed .* ago/);
+    expect(p.row("open").querySelector('[data-secret="mcp:open"]')!.textContent).toContain("Missing");
+    expect(p.row("open").textContent).not.toContain("Changed");
   });
 
   it("refreshes one and says what was added, removed and changed", async () => {

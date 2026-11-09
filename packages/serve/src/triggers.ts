@@ -220,7 +220,9 @@ export const triggerBodyIssues = (adapters: readonly TriggerAdapter[], body: Jso
 /** A trigger is named once per agent (the store's UNIQUE (agent_id, name)): a second of the same name, at a create or a
  *  rename, is `409 name_taken`; any other error as it is. */
 const nameTaken = (error: unknown, name: string): unknown =>
-  error instanceof StoreConstraint && /triggers\.agent_id, triggers\.name/.test(error.message) ? new ApiError("name_taken", `This agent already has a trigger named ${name}.`) : error;
+  error instanceof StoreConstraint && error.unique?.table === "triggers" && error.unique.columns.join(",") === "agent_id,name"
+    ? new ApiError("name_taken", `This agent already has a trigger named ${name}.`)
+    : error;
 /** Why a trigger of an archived agent is off, and the 409 for turning one on: the agent by name. */
 const archivedDetail = (name: string) => `The agent ${name} is archived: unarchive it, then turn the trigger on.`;
 /** Why a trigger is off when the server turned it off, as its row keeps it (`disabled`, JSON). */

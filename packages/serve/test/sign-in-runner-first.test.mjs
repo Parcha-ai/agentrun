@@ -198,6 +198,27 @@ test("two first creates that both land: exactly one object survives, saved; the 
   for (const run of ["run-c", "run-c2"]) assert.equal(await signIns.handedSignInReadsBack(r.store, KEY, await r.store.runs.get(run)), true, `${run} reads its sign-in back`);
 });
 
+test("a first create beaten by a winner whose sign-in won't open here starts the run signed out, saying so in words that name no pointer", async (t) => {
+  const r = await runner(t);
+  const winner = `ctx-winner-${randomBytes(6).toString("hex")}`;
+  const removed = [];
+  // Another run's first save lands under another seal key while ours is out at the vendor: ours loses, and the winner's
+  // row does not open here.
+  const vendors = {
+    create: async () => {
+      await signIns.saveSignIn(r.store, randomBytes(32), { agentId: "agent-c", provider: "browserbase", pointer: winner });
+      return "ctx-ours";
+    },
+    remove: async (vendor, ref) => void removed.push([vendor, ref]),
+  };
+  const said = [];
+  const handed = await signIns.runSignIn(r.store, KEY, r.claims["run-c"], "browserbase", { vendors, log: (line) => void said.push(line) });
+  assert.equal(handed, undefined, "signed out");
+  assert.deepEqual(removed, [["browserbase", "ctx-ours"]], "ours went at the vendor");
+  assert.deepEqual(said, ["its browser starts signed out: the saved sign-in can't be opened here"]);
+  assert.ok(!said.join("").match(/ctx-|https?:/), `no pointer: ${said.join(" | ")}`);
+});
+
 test("the made sign-in's sessions open on its profile with save on, and their release verifies it", { timeout: 120_000 }, async (t) => {
   const r = await runner(t);
   const lifecycle = hostLifecycle();

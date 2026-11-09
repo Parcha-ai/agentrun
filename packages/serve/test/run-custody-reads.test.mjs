@@ -7,7 +7,7 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { test } from "node:test";
-import { WITHHELD_SIGN_IN } from "../dist/run-view.js";
+import { WITHHELD_SIGN_IN, WITHHELD_TITLE } from "../dist/run-view.js";
 import { marked, pointerOf, reads, runSaying as said, saved, server as served, sha } from "./custody-support.mjs";
 
 /** The shared server, its agent `alpha` of `tools`. */
@@ -38,10 +38,16 @@ test("a run whose hand can't be read back here is withheld: its answer, its titl
   marked(s, runId, [sha(pointer)]);
   const { view, lists, timeline } = await reads(s, runId);
   assert.equal(view.result?.final_answer ?? null, null);
-  assert.equal(view.title, WITHHELD_SIGN_IN);
-  for (const row of lists) assert.equal(row.title, WITHHELD_SIGN_IN);
+  // A withheld run's title is the short fixed line that fits the title's length and holds nothing it said: its stored title
+  // (which repeats the pointer) is never served. The full withheld sentence is in error and review.
+  assert.equal(view.title, WITHHELD_TITLE);
+  assert.ok(view.title.length <= 80, `the title fits: ${view.title.length}`);
+  for (const row of lists) assert.equal(row.title, WITHHELD_TITLE);
   assert.deepEqual(timeline.rows, [], "no row of what it said");
   assert.equal(timeline.status, view.status, "its status still reads");
+  // A completed run has no error or review, so the full withheld sentence is nowhere in its view: only the short title says
+  // it is withheld. The sentence shows in error.message or review.reason when the run failed or escalated.
+  assert.ok(!JSON.stringify(view).includes(WITHHELD_SIGN_IN), "the full withheld sentence is not served in a completed run's view");
   for (const [where, shown] of Object.entries({ view, lists, timeline })) {
     assert.ok(!JSON.stringify(shown).includes(pointer), `${where} holds the pointer`);
     assert.ok(!JSON.stringify(shown).includes("Hold, then echo"), `${where} holds its words`);
@@ -56,8 +62,9 @@ test("a run marked handed with no vendor browser on its launch is withheld alike
   marked(s, runId, [sha(pointer)]);
   const { view, lists, timeline } = await reads(s, runId);
   assert.equal(view.result?.final_answer ?? null, null);
-  assert.equal(view.title, WITHHELD_SIGN_IN);
-  for (const row of lists) assert.equal(row.title, WITHHELD_SIGN_IN);
+  assert.equal(view.title, WITHHELD_TITLE);
+  assert.ok(view.title.length <= 80);
+  for (const row of lists) assert.equal(row.title, WITHHELD_TITLE);
   assert.deepEqual(timeline.rows, []);
   for (const shown of [view, lists, timeline]) assert.ok(!JSON.stringify(shown).includes(pointer));
 });
@@ -72,7 +79,8 @@ test("a mark no server writes (a legacy true, one hash alone, an object, an empt
     const { view, lists, timeline } = await reads(s, runId);
     const what = JSON.stringify(mark);
     assert.equal(view.result?.final_answer ?? null, null, what);
-    assert.equal(view.title, WITHHELD_SIGN_IN, what);
+    assert.equal(view.title, WITHHELD_TITLE, what);
+    assert.ok(view.title.length <= 80, what);
     assert.deepEqual(timeline.rows, [], what);
     for (const shown of [view, lists, timeline]) assert.ok(!JSON.stringify(shown).includes(pointer), `${what}: ${JSON.stringify(shown)}`);
   }

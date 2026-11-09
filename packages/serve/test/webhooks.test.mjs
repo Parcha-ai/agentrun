@@ -237,9 +237,9 @@ test("demo: a run that ends POSTs a Standard Webhooks message the spec's library
   assert.equal(statSync(join(data, "webhook-outbox.json")).mode & 0o777, 0o600);
   assert.equal((await api("PUT", "/settings/webhook", { url: hook.url })).body.signing_secret, undefined, "a later PUT keeps the secret and never shows it");
 });
-// The demo's second half, on the switch line: its run never parks on ask_person, so it never asks. Kept, and skipped until
-// it does; the needs_input notice itself is held by the test after it, on a parked run the store holds.
-test("demo: a run that asks its person POSTs run.needs_input while it waits, then run.ended once answered; the deliveries log has each, newest first", { skip: "waits on ask_person parking the run on the runner (switch line)" }, async (t) => {
+// The demo's second half, on the switch line: its run parks on ask_person and asks, so the needs_input notice is the
+// parked run's, and the ended notice follows once it is answered.
+test("demo: a run that asks its person POSTs run.needs_input while it waits, then run.ended once answered; the deliveries log has each, newest first", async (t) => {
   withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, SEAL);
   const hook = await receiver(t);
   const { api, data, url } = await serve(t);
@@ -751,7 +751,7 @@ test("a try in flight when its server closes is cut and waited for; nothing is w
   assert.deepEqual(JSON.parse(readFileSync(outbox, "utf8")).messages.find((m) => m.type === "webhook.test")?.status ?? "failed", "failed");
 });
 
-test("a run stopped, then asked a question on its next turn, gives two needs_input notices: different webhook-ids, `stopped` then `question`", { skip: "waits on ask_person parking the run on the runner (switch line)" }, async (t) => {
+test("a run stopped, then asked a question on its next turn, gives two needs_input notices: different webhook-ids, `stopped` then `question`", { skip: "stop->message resume (switch line, not ask_person): POST /runs/{id}/messages to a stopped agentic run 409s not_continuable because over the store the stopped run reads terminal in statusOf (stopped()/outcome), not input_required/idle; E2v/E2c to carry the stop marker into the store view" }, async (t) => {
   withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, SEAL);
   const hook = await receiver(t);
   const { api } = await serve(t);

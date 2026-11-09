@@ -72,8 +72,10 @@ test("demo: with no model key, the bin starts on a free loopback port and prints
   const health = await fetch(`${base}/v2/health`);
   assert.deepEqual([health.status, (await health.json()).status], [200, "ok"]);
   assert.equal((await (await fetch(`${base}/v2/capabilities`)).json()).models.default, null, "no model: none was given");
-  // Until a single-use sign-in link replaces the plain address, the console's first visit sets the owner's password.
-  assert.deepEqual(await (await fetch(`${base}/v2/auth/session`)).json(), { password_set: false, signed_in: false, setup_code: false });
+  // Until a single-use sign-in link replaces the plain address, the console's first visit sets the owner's password. The
+  // session also carries the accounts/secrets surface (owner-auth.test.mjs, the OpenAPI /v2/auth/session body): accounts
+  // on, no secret writable yet, its reason sign_in.
+  assert.deepEqual(await (await fetch(`${base}/v2/auth/session`)).json(), { accounts: true, password_set: false, signed_in: false, secrets_writable: false, secrets_reason: "sign_in", setup_code: false });
   assert.ok(existsSync(join(STORE(home), ".token")), "the data directory is ~/.agentrun");
   assert.equal(existsSync(SERVE_STORE(home)), false, "no second store");
   child.kill("SIGTERM");

@@ -61,6 +61,9 @@ export const KINDS = {
    *  whole of it (HandoverAsked); its answer is an entry too (HandoverAnswered): the person's (a browser_hand_back row
    *  the loop applies, taking the row in that commit), or the ask's expiry. The first answer for an ask is its answer. */
   handover: "agent.handover",
+  /** A run waiting on the person: ask_person ended its turn. Its data is the ask_person call's id; its commit carries the
+   *  run parked. A person's message after it answers it. Neither a call nor a message, so the reader passes over it. */
+  personAsked: "agentrun.person.asked",
 } as const;
 
 /** How a browser hand-over ended: the person's two answers, or its expiry. */
@@ -163,18 +166,47 @@ export interface AnswerData {
   /** The person's words with their answer (a decline's reason): the model reads it with the refusal, and the resume row
    *  shows it. Absent when they gave none. */
   readonly note?: string;
+  /** "message": a deny a person's message gave while the call waited (the message route's deny row), which its approval
+   *  row reads as "Declined by your message". Absent for an answer given directly. */
+  readonly by?: "message";
+  /** The allow a stop overrode (main's ApprovalAnswer.superseded): the call was approved but had not finished when its
+   *  run was stopped, so the stop withdrew it. Kept as it was given. */
+  readonly superseded?: { readonly decision: "allow"; readonly answeredAt?: string };
 }
 
-/** The withdrawn answers a stopped end writes for every call still waiting (an ask with no answer) in `entries`. */
-export function withdrawnAnswers(entries: readonly { readonly kind: string; readonly data?: unknown }[], answeredAt: string): AnswerData[] {
-  const answered = new Set(entries.filter((entry) => entry.kind === KINDS.answer).map((entry) => (entry.data as AnswerData).callId));
-  const waiting = new Set<string>();
+/** Whether `entries` hold a call's finished result: an agentrun.call.end not cut (a CLI's call), or a pi.tool-result
+ *  for it that pi did not write for an abort (pi's diagnostics code `aborted`). */
+function finished(entries: readonly { readonly kind: string; readonly data?: unknown; readonly model?: unknown }[], callId: string): boolean {
+  return entries.some((entry) => {
+    if (entry.kind === KINDS.callEnd) return (entry.data as CallEndData).callId === callId && (entry.data as CallEndData).status !== "interrupted";
+    if (entry.kind !== "pi.tool-result") return false;
+    const result = (entry.model as { toolCallId?: unknown }[] | undefined)?.[0];
+    const diagnostics = (entry.data as { diagnostics?: { code?: string }[] } | undefined)?.diagnostics ?? [];
+    return result?.toolCallId === callId && !diagnostics.some((diagnostic) => diagnostic.code === "aborted");
+  });
+}
+
+/** The withdrawn answers a stopped end writes in `entries`: for every call still waiting (an ask with no answer), and
+ *  for every approved call that had not finished (no result, or one its abort wrote), which the stop overrides, keeping
+ *  the allow it was given (main's supersede: an answer the run had not acted on to the end is withdrawn by the stop). A
+ *  call that finished before the stop keeps its allow and its result. */
+export function withdrawnAnswers(entries: readonly { readonly kind: string; readonly data?: unknown; readonly model?: unknown }[], answeredAt: string): AnswerData[] {
+  const answers = new Map<string, AnswerData>();
+  for (const entry of entries) if (entry.kind === KINDS.answer) answers.set((entry.data as AnswerData).callId, entry.data as AnswerData);
+  const out: AnswerData[] = [];
+  const seen = new Set<string>();
   for (const entry of entries) {
     if (entry.kind !== KINDS.ask) continue;
     const { callId } = entry.data as AskData;
-    if (!answered.has(callId)) waiting.add(callId);
+    if (seen.has(callId)) continue;
+    seen.add(callId);
+    const given = answers.get(callId);
+    if (!given) out.push({ callId, approved: false, decision: "withdrawn", answeredAt });
+    else if (given.approved && given.decision !== "withdrawn" && !finished(entries, callId)) {
+      out.push({ callId, approved: false, decision: "withdrawn", answeredAt, superseded: { decision: "allow", ...(given.answeredAt ? { answeredAt: given.answeredAt } : {}) } });
+    }
   }
-  return [...waiting].map((callId) => ({ callId, approved: false, decision: "withdrawn", answeredAt }));
+  return out;
 }
 
 export interface EndData {
@@ -186,6 +218,9 @@ export interface EndData {
   readonly costUsd?: number;
   /** The run's metrics (the old StoredMetrics JSON). */
   readonly metrics?: unknown;
+  /** A completed workflow run's output: the value at its workflow's output path (readWorkflowRun's `output`, null when it
+   *  has none), kept at its end as main's server kept it on the run (runs.ts workflowEnd), and served as result.output. */
+  readonly output?: unknown;
 }
 
 export interface SessionKeyData {

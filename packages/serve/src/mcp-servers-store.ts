@@ -76,7 +76,7 @@ export class McpServersOverStore {
   /** The connected GitHub App's installation token for listing a `github_app` server's tools as it is previewed, saved
    *  or refreshed (github-connection.ts tokenForListing); a run's own is minted at its claim (runner/mcp-claim.ts). Set by
    *  the server; absent, such a server's tools can't be listed (github_not_connected). */
-  appToken?: (signal?: AbortSignal) => Promise<{ token: string } | { unusable: string }>;
+  appToken?: (signal?: AbortSignal) => Promise<{ token: string } | { unusable: string } | { failed: string }>;
   /** The one origin a github_app server may have (GITHUB_MCP_ORIGIN; a test's fake through the server's seam): the App's
    *  tokens are minted for, and sent to, nothing else. */
   appOrigin = GITHUB_MCP_ORIGIN;
@@ -374,6 +374,7 @@ export class McpServersOverStore {
     if (!githubMcpUrl(url, this.appOrigin)) throw invalid([{ field: "url", reason: "not_allowed", message: GITHUB_MCP_ONLY }]);
     const minted = this.appToken ? await this.appToken(stop) : { unusable: "This server has no GitHub App: Connect GitHub in Settings." };
     if ("unusable" in minted) throw new ApiError("github_not_connected", minted.unusable);
+    if ("failed" in minted) throw new ApiError("github_failed", minted.failed);
     return { ...headers, authorization: `Bearer ${minted.token}` };
   }
 }

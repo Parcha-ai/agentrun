@@ -55,6 +55,9 @@ export interface McpForClaimOptions {
   /** The GitHub App access for a github_app server (githubAppAccess). None: such a server's calls are refused in words
    *  (GITHUB_UNUSABLE.noAccess). */
   readonly githubAppAccess?: GithubAppAccessOf;
+  /** A test's fake GitHub MCP origin, handed to the claim step (mcpClaim's githubMcpOrigin): for tests only: no environment variable, flag or setting maps onto it; absent, GitHub's hosted MCP
+   *  (github.ts GITHUB_MCP_ORIGIN). */
+  readonly githubMcpOrigin?: string;
   /** For tests: the authorization servers' network, a refresh's bound, the gateway's upstream fetch and bounds, and the
    *  timer a github_app token's refresh is armed on. */
   readonly network?: OAuthNetwork;
@@ -115,6 +118,7 @@ export async function mcpForClaim(options: McpForClaimOptions): Promise<ClaimMcp
       ...(options.bounds ? { bounds: options.bounds } : {}),
       ...(options.network ? { network: options.network } : {}),
       ...(githubApp ? { githubApp } : {}),
+      ...(options.githubMcpOrigin ? { githubMcpOrigin: options.githubMcpOrigin } : {}),
       ...(options.githubTimer ? { githubTimer: options.githubTimer } : {}),
     });
   } catch (error) {

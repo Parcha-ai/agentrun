@@ -6,6 +6,7 @@
 import { createHash } from "node:crypto";
 import { PassThrough, Writable } from "node:stream";
 import { scriptOf } from "./fake-e2b.mjs";
+import { netDevText } from "./net-dev.mjs";
 
 export const VERSION = JSON.parse(await (await import("node:fs/promises")).readFile(new URL("../package.json", import.meta.url), "utf8")).version;
 export const KEY = "sk_fake_orgo_key_0123456789abcdef";
@@ -28,9 +29,11 @@ const json = (status, body, headers = {}) => new Response(body === undefined ? n
  *  - waking: how many DELETEs answer 409 computer_waking before one deletes (default 0);
  *  - lingers: how many reads a deleted computer still answers before it is 404 (default 0);
  *  - bash: (computerId, command, timeout) => { exit_code, output } for POST /computers/{id}/bash;
+ *  - hold: ({ method, path, body }) => a promise the request waits for before Orgo acts on it, or undefined (a test
+ *    makes one call's request land after another's);
  * fake.requests holds every request: { method, path, headers, body, form }; fake.computers each computer's record.
  */
-export function fakeOrgoApi({ create = "ok", creatingReads = 1, waking = 0, lingers = 0, bash = () => ({ exit_code: 0, output: "" }) } = {}) {
+export function fakeOrgoApi({ create = "ok", creatingReads = 1, waking = 0, lingers = 0, bash = () => ({ exit_code: 0, output: "" }), hold } = {}) {
 	const computers = new Map();
 	const requests = [];
 	let wakingLeft = waking;
@@ -47,6 +50,8 @@ export function fakeOrgoApi({ create = "ok", creatingReads = 1, waking = 0, ling
 		const form = init.body instanceof FormData ? init.body : undefined;
 		const body = typeof init.body === "string" ? JSON.parse(init.body) : undefined;
 		requests.push({ method: init.method ?? "GET", path, query: Object.fromEntries(searchParams), headers, body, form });
+		const held = hold?.({ method: init.method ?? "GET", path, body });
+		if (held !== undefined) await held;
 		if (headers.authorization !== `Bearer ${KEY}`) return json(401, { error: "Invalid API key", code: "unauthorized" });
 		if (init.signal?.aborted) throw Object.assign(new Error("This operation was aborted"), { name: "AbortError" });
 		const method = init.method ?? "GET";
@@ -70,6 +75,14 @@ export function fakeOrgoApi({ create = "ok", creatingReads = 1, waking = 0, ling
 					record.creatingLeft--;
 					if (record.creatingLeft === 0) record.status = "running";
 					else return json(200, { ...publicOf(record), status: "creating" });
+				}
+				return json(200, publicOf(record));
+			}
+			if (method === "PATCH") {
+				if (!visible(record) || record.deleted) return json(404, { error: "Computer not found", code: "computer_not_found" });
+				if (typeof body?.name === "string") {
+					if ([...computers.values()].some((c) => c !== record && !c.deleted && c.name === body.name && c.workspace_id === record.workspace_id)) return json(409, { error: "name in use", code: "name_taken" });
+					record.name = body.name;
 				}
 				return json(200, publicOf(record));
 			}
@@ -126,20 +139,28 @@ export function markOf(argv) {
  *  - install: the install script's exit code (default 0); sha: "ok" or "lie";
  *  - x11: false, and no computer has the X server's path socket;
  *  - box: what each daemon reports over the defaults (hello patch, status patch, reached, kernel, interfaces and
- *    raised of its own network, display: false for a daemon that does not reach the display);
+ *    raised of its own network, display: false for a daemon that does not reach the display, extendAt: (at) => the
+ *    time deadline.extend answers and init takes, default at itself);
  *  - notListening: how many stdio bridges find no daemon listening before one does;
  *  - startFails: words the start of init fails with;
  *  - bridge: "ok" (default), or "timeout": every stdio fails as the terminal channel does when its marker never comes;
- *  - initDies: init is gone once the start's call returns (as when bash's end takes it), and its log says why.
- * The status script answers what the computer holds: init running or not, its socket, its log's tail.
- * channel.calls holds every call, { op, computer, argv | path, how }; channel.boxes each computer's state.
+ *  - initDies: init is gone once the start's call returns (as when bash's end takes it), and its log says why;
+ *  - rootPorts: the TCP ports root listens on in Orgo's own network (its agent, its VNC), as the ports script reads
+ *    them (default 8231 and 5900);
+ *  - sockets: the path sockets of Orgo's desktop the lockdown script makes root's alone, as it prints them (default
+ *    root's D-Bus buses, as live run 4 found them);
+ *  - lockdown: { exitCode, output } the lockdown script answers instead (a socket it could not lock).
+ * The status script answers what the computer holds: init running or not, its socket, its log's tail. The daemon holds
+ * its programs to their own loopback when init was started with --own-network, and else shares Orgo's network.
+ * channel.calls holds every call, { op, computer, argv | path, how }; channel.boxes each computer's state, its
+ * probes' targets in box.probes.
  */
-export function fakeOrgoChannel({ install = 0, sha = "ok", x11 = true, box: boxPatch = {}, notListening = 0, startFails, bridge = "ok", initDies = false } = {}) {
+export function fakeOrgoChannel({ install = 0, sha = "ok", x11 = true, box: boxPatch = {}, notListening = 0, startFails, bridge = "ok", initDies = false, rootPorts = [8231, 5900], sockets = ["/run/dbus/system_bus_socket", "/tmp/dbus-3fd5ustF2v"], lockdown } = {}) {
 	const boxes = new Map();
 	const calls = [];
 	let waiting = notListening;
 	const boxOf = (id) => {
-		if (!boxes.has(id)) boxes.set(id, { files: new Map(), labels: undefined, x11, init: undefined, daemon: undefined, streams: [], extended: [] });
+		if (!boxes.has(id)) boxes.set(id, { files: new Map(), labels: undefined, x11, init: undefined, daemon: undefined, streams: [], extended: [], probes: [] });
 		return boxes.get(id);
 	};
 	const channel = {
@@ -171,6 +192,8 @@ export function fakeOrgoChannel({ install = 0, sha = "ok", x11 = true, box: boxP
 				return done(0);
 			}
 			if (mark?.kind === "orgo-labels-read") return box.labels === undefined ? done(1, `cat: ${mark.args[0]}: No such file or directory`) : done(0, box.labels);
+			if (mark?.kind === "orgo-ports") return done(0, rootPorts.map((port) => `${port}\n`).join(""));
+			if (mark?.kind === "orgo-lockdown") return lockdown ? done(lockdown.exitCode, lockdown.output) : done(0, sockets.map((path) => `locked ${path}\n`).join(""));
 			if (mark?.kind === "orgo-status") {
 				const up = box.init !== undefined;
 				return done(0, [`init ${up ? "running" : "not running"}`, `socket ${up ? "present" : "absent"}`, `log ${box.log ?? (up ? "computerd: init: listening" : "")}`].join("\n"));
@@ -186,7 +209,7 @@ export function fakeOrgoChannel({ install = 0, sha = "ok", x11 = true, box: boxP
 			const [, deadline, user, , , display = "", max = ""] = mark.args;
 			const [uid, gid] = user.split(":").map(Number);
 			if (initDies) box.log = "computerd: init: terminated by signal 15 (SIGTERM)";
-			else box.init = { deadline, user, uid, gid, display, max };
+			else box.init = { deadline, user, uid, gid, display, max, ownNetwork: argv.join(" ").includes("--own-network") };
 			return { ok: true, value: undefined };
 		},
 		async stdio(computer, argv) {
@@ -227,8 +250,15 @@ export function fakeOrgoChannel({ install = 0, sha = "ok", x11 = true, box: boxP
 function answer(box, { method, params }, patch) {
 	const result = (value) => ({ result: value });
 	const error = (kind, message) => ({ error: { code: -32000, message, data: { kind } } });
-	const { uid, gid, display } = box.init;
+	const { uid, gid, display, ownNetwork } = box.init;
 	const reaches = display !== "" && patch.display !== false;
+	// Init started with --own-network holds its programs to their own loopback; without it they share Orgo's network,
+	// which reaches the internet and Orgo's agent alike (as live runs 2 and 3 read).
+	const interfaces = patch.interfaces ?? (ownNetwork ? ["lo"] : ["lo", "eth0"]);
+	if (method === "files.read" && params.path === "/proc/self/net/dev") {
+		const text = netDevText(interfaces);
+		return result({ data: Buffer.from(text).toString("base64"), size: text.length, eof: true });
+	}
 	if (method === "hello") return result({ version: VERSION, os: "linux", arch: "amd64", kind: reaches ? "desktop" : "linux", groups: reaches ? [...DESKTOP_GROUPS] : DESKTOP_GROUPS.slice(0, 3), ...patch.hello });
 	if (method === "ping") return result({});
 	if (method === "files.read" && params.path === "/proc/self/status") {
@@ -242,15 +272,19 @@ function answer(box, { method, params }, patch) {
 		return error("not_found", `${params.path}: no such file`);
 	}
 	if (method === "exec.run" && params.argv[0] === DAEMON && params.argv[1] === "probe") {
-		// Init's own network, as computerd probe reports it: the live interfaces, the quiet ones, the raised ones.
-		const report = { uid, gid, kernel: patch.kernel ?? "6.8.0", interfaces: patch.interfaces ?? ["lo"], quiet: [], raised: patch.raised ?? [], reached: patch.reached ?? [], accepted: [] };
+		// Init's own network, as computerd probe reports it: the live interfaces, the quiet ones, the raised ones. Without
+		// --own-network its programs share Orgo's network and reach every target.
+		const targets = params.argv.slice(2).filter((_, at) => at % 2 === 1);
+		box.probes.push(targets);
+		const report = { uid, gid, kernel: patch.kernel ?? "6.8.0", interfaces, quiet: [], raised: patch.raised ?? [], reached: patch.reached ?? (ownNetwork ? [] : targets), accepted: [] };
 		return result({ exitCode: 0, stdout: Buffer.from(`${JSON.stringify(report)}\n`).toString("base64"), stderr: "", timedOut: false, truncated: false });
 	}
 	if (method === "exec.run") return result({ exitCode: 0, stdout: Buffer.from(`${params.argv.join(" ")}\n`).toString("base64"), stderr: "", timedOut: false, truncated: false });
 	if (method === "deadline.extend") {
 		if (box.init.max === "") return error("unsupported", "this computer's deadline cannot move");
 		if (Date.parse(params.at) > Date.parse(box.init.max)) return error("limit", `${params.at} is past the maximum deadline ${box.init.max}`);
-		box.init.deadline = new Date(Date.parse(params.at)).toISOString();
+		// The time init takes and answers: the one asked, or what a patched daemon answers instead.
+		box.init.deadline = new Date(Date.parse(patch.extendAt ? patch.extendAt(params.at) : params.at)).toISOString();
 		box.extended.push(params.at);
 		return result({ at: box.init.deadline });
 	}
