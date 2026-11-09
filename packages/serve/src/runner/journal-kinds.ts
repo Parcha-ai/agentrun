@@ -125,6 +125,10 @@ export interface MessageData {
   readonly text: string;
   /** Who wrote a message the person did not type (a trigger's): the steer row's body.origin. */
   readonly origin?: MessageOrigin;
+  /** A model message that ends a CLI turn its model's output limit cut (its adapter's turn_end): "length", with the cut
+   *  answer's output tokens when known. The loop reads it as pi's stopReason (loop.ts cutLast). */
+  readonly stopReason?: "length";
+  readonly outputTokens?: number;
 }
 
 /** What an approval costs, as main's card shows it (tool-gate.ts ApprovalPrice): dollars, or "not metered". */
