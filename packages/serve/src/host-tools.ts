@@ -48,8 +48,14 @@ export type ToolResults = Map<string, { text: string; isError: boolean }>;
  *  nested-tool members) belongs to the tool task pi runs a tool in, which a host tool, called by another harness, has
  *  none of: the full type cannot be built here, so a read of any other member throws, naming it, rather than reading as
  *  "is not a function". `conversationId` is the run's root conversation, where a host tool's calls are made: serve's
- *  browser-cost `capped` reads it, now that the browser binds as a host tool on the runner. */
-export const HOST_API_MEMBERS = ["env", "callId", "commit", "output", "outputWindow", "retainedOutput", "diagnostic", "agent", "models", "conversationId"] as const;
+ *  browser-cost `capped` reads it, now that the browser binds as a host tool on the runner. `snapshot`, `conversation`
+ *  and `waitForTask` are the run's own Harness's (run.harness, the claim's journal on the runner), as `commit` is: a
+ *  document, a conversation or a task of this run, never another's. A remote executor (workspace/executors.ts
+ *  piExecutor) has no run Harness and gives none of these four (RUN_ONLY_MEMBERS); the coding tools it runs read none.
+ *  `memo` and `taskId` are a pi tool task's own, which a host tool runs in none of: they are not given here. */
+export const HOST_API_MEMBERS = ["env", "callId", "commit", "output", "outputWindow", "retainedOutput", "diagnostic", "agent", "models", "conversationId", "snapshot", "conversation", "waitForTask"] as const;
+/** The members a host tool's api gives only on a run's Harness: a remote executor's api has none of them. */
+export const RUN_ONLY_MEMBERS = ["conversationId", "snapshot", "conversation", "waitForTask"] as const;
 type HostApi = Pick<ToolExecutionApi, (typeof HOST_API_MEMBERS)[number]>;
 const hostApi = (given: HostApi): ToolExecutionApi =>
   new Proxy(given, {
@@ -73,6 +79,11 @@ export interface HostToolCtx {
   env(): Promise<ToolExecutionApi["env"]>;
   readonly commit: ToolExecutionApi["commit"];
   readonly agent: ToolExecutionApi["agent"];
+  /** The run's own Harness's snapshot, conversation and waitForTask (run.harness, the claim's journal on the runner), as
+   *  `commit` is: a document, conversation or task of this run only. */
+  readonly snapshot: ToolExecutionApi["snapshot"];
+  readonly conversation: ToolExecutionApi["conversation"];
+  readonly waitForTask: ToolExecutionApi["waitForTask"];
   /** The run's tool gate and the park it takes; none for the gate's own run of an approved call (the adapter loop's own
    *  gate, which gates every host-tool call before its intent). */
   readonly gated?: { gate: RunGate; park: Park };
@@ -121,6 +132,7 @@ export function hostToolOf(name: string, tool: ToolRegistration, ctx: HostToolCt
         agent: ctx.agent,
         models: createModels(),
         conversationId: ROOT_CONVERSATION_ID,
+        snapshot: ctx.snapshot, conversation: ctx.conversation, waitForTask: ctx.waitForTask,
       });
       // A tool that throws (bash on a non-zero exit or a timeout) still answers with its output, as pi's harness does;
       // monid's answer a failure as an error result, which is kept as it is.
@@ -164,6 +176,10 @@ export function hostTools(run: DurableRun, names: readonly string[], context: Co
     ...(gated ? { gated } : {}),
     env: async () => await run.env({ conversationId: ROOT_CONVERSATION_ID, read: undefined as never }, context),
     commit: (change, at, options) => run.harness.commit(change, at, options),
+    // The run's own Harness, read at the call as commit's is: a document, conversation or task of this run only.
+    snapshot: ((...args: unknown[]) => Reflect.apply(run.harness.snapshot, run.harness, args)) as ToolExecutionApi["snapshot"],
+    conversation: ((id, at) => run.harness.conversation(id, at)) as ToolExecutionApi["conversation"],
+    waitForTask: (id, at) => run.harness.waitForTask(id, at),
     agent: async (at) => {
       const root = await run.harness.conversation(ROOT_CONVERSATION_ID, at);
       if (!root) throw new Error("the run has no root conversation");
