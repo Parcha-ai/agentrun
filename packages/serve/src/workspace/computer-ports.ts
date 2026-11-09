@@ -52,22 +52,40 @@ export const inputOf = (client: ComputerClient): Input => ({
 /** A node's platform class a model types into: Android's EditText (and its subclasses), iOS's text fields and views. */
 const EDITABLE = /(?:EditText|AutoCompleteTextView)$|^XCUIElementType(?:Secure)?Text(?:Field|View)$|^XCUIElementTypeSearchField$/;
 
+/** The first text among `node`'s descendants, in document order, else their first label: the name of a node that has
+ *  none of its own (an Android list row: a clickable layout whose title sits on a child TextView). */
+function innerName(node: UiNode): string | undefined {
+  let label: string | undefined;
+  const stack = [...(node.children ?? [])].reverse();
+  while (stack.length) {
+    const next = stack.pop()!;
+    if (next.text) return next.text;
+    label ??= next.label || undefined;
+    for (const child of [...(next.children ?? [])].reverse()) stack.push(child);
+  }
+  return label;
+}
+
 /** The screen's structure (apps.ui_tree), flattened in document order, each node with whether a model can tap it or type
- *  into it; a node the phone says is not enabled is neither. */
+ *  into it; a node the phone says is not enabled is neither. A clickable node with no text or label of its own is named
+ *  by its first inner text (else label), as phone_tree shows it, marked so. */
 function flattened(root: UiNode): PhoneNode[] {
   const out: PhoneNode[] = [];
   const walk = (node: UiNode) => {
     const [x, y, w, h] = node.bounds;
     const editable = node.enabled && EDITABLE.test(node.role);
+    const clickable = node.enabled && node.clickable === true;
+    const inner = clickable && !node.text && !node.label ? innerName(node) : undefined;
     out.push({
       role: node.role,
       ...(node.id ? { id: node.id } : {}),
       ...(node.text ? { text: node.text } : {}),
       ...(node.label ? { label: node.label } : {}),
       bounds: { x, y, w, h },
-      clickable: node.enabled && node.clickable === true,
+      clickable,
       editable,
       ...(node.focused ? { focused: true } : {}),
+      ...(inner ? { inner } : {}),
     });
     for (const child of node.children ?? []) walk(child);
   };

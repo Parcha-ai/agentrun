@@ -89,6 +89,9 @@ export type PhoneNode = {
   readonly clickable: boolean;
   readonly editable: boolean;
   readonly focused?: boolean;
+  /** A node with no text or label of its own, named by its first inner text (else label): an Android list row, a
+   *  clickable layout whose title sits on a child that is not clickable. */
+  readonly inner?: string;
 };
 
 /** A key a phone presses: its back and home buttons, and enter. */

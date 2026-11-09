@@ -71,14 +71,15 @@ const run = (tool: string, body: (phone: NonNullable<Hands["phone"]>, args: Reco
 /** A node's class as a model reads it: the platform's, its package or iOS prefix dropped ("Button", "EditText"). */
 const classOf = (role: string) => role.replace(/^XCUIElementType/, "").split(".").pop() || role;
 const clip = (text: string) => (text.length > PHONE_TREE_TEXT_CHARS ? `${text.slice(0, PHONE_TREE_TEXT_CHARS - 1)}…` : text);
-/** One node, on one line: its class, its text or label, its id, whether it is a field (and in focus), its center to tap and
- *  its bounds. */
+/** One node, on one line: its class, its text or label (else its first inner text, marked so), its id, whether it is a
+ *  field (and in focus), its center to tap and its bounds. */
 function nodeLine(node: PhoneNode): string {
-  const name = node.text || node.label;
+  const own = node.text || node.label;
+  const name = own ? JSON.stringify(clip(own)) : node.inner ? `${JSON.stringify(clip(node.inner))} (inner text)` : "";
   const { x, y, w, h } = node.bounds;
   const state = node.editable ? `a field${node.focused ? ", focused" : ""}; ` : node.focused ? "focused; " : "";
   const center = `(${Math.round(x + w / 2)}, ${Math.round(y + h / 2)})`;
-  return `- ${clip(classOf(node.role))}${name ? ` ${JSON.stringify(clip(name))}` : ""}${node.id ? ` [${clip(node.id)}]` : ""}: ${state}center ${center}, bounds ${x},${y} ${w}x${h}`;
+  return `- ${clip(classOf(node.role))}${name ? ` ${name}` : ""}${node.id ? ` [${clip(node.id)}]` : ""}: ${state}center ${center}, bounds ${x},${y} ${w}x${h}`;
 }
 /** phone_tree's answer: a head line, then a line a node, at most PHONE_TREE_MAX_NODES of them and PHONE_TREE_MAX_CHARS
  *  characters in all; one last line counts the nodes not shown. */

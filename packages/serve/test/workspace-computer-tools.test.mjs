@@ -124,6 +124,40 @@ test("a phone that does not declare apps.ui_tree or input.keys (an iPhone today)
   assert.deepEqual(names(android).filter((name) => name === "phone_tree" || name === "phone_key"), ["phone_tree"]);
 });
 
+test("an Android list row (a clickable layout whose title sits on a child text) is named by its first inner text, marked so; the search bar by its inner text or label", async () => {
+  const root = scratch();
+  const phone = fakeDesktop(root);
+  const node = (role, extra) => ({ role, enabled: true, children: [], ...extra });
+  const text = (value, bounds) => node("android.widget.TextView", { text: value, bounds });
+  // Settings' top screen, as Android 15 gives it: each row a clickable LinearLayout, its title and summary child TextViews.
+  const row = (y, title, summary) => node("android.widget.LinearLayout", { bounds: [0, y, 720, 150], clickable: true, children: [
+    node("android.widget.ImageView", { bounds: [30, y + 45, 60, 60] }),
+    node("android.widget.RelativeLayout", { bounds: [120, y + 20, 560, 110], children: [text(title, [120, y + 20, 560, 50]), text(summary, [120, y + 75, 560, 40])] }),
+  ] });
+  phone.overrides["apps.ui_tree"] = () => ({
+    root: node("android.widget.FrameLayout", {
+      bounds: [0, 0, 720, 1600],
+      children: [
+        node("android.widget.LinearLayout", { id: "com.android.settings:id/search_action_bar", bounds: [20, 200, 680, 100], clickable: true, children: [node("android.widget.TextView", { label: "Search settings", bounds: [100, 220, 400, 60] })] }),
+        row(550, "Network & internet", "Mobile, Wi-Fi, hotspot"),
+        row(700, "Connected devices", "Bluetooth, pairing"),
+        row(850, "Apps", "Default apps, app management"),
+      ],
+    }),
+    nodes: 20,
+    truncated: false,
+  });
+  const run = await runTools(localWorkspace(root), { kind: "phone", computer: phone, groups: [...PHONE_GROUPS, "apps.ui_tree"] }, { mode: 2, context: ctx });
+  const answer = await call(run.hostTools(["phone_tree"]), "phone_tree", {});
+  assert.deepEqual(answer.text.split("\n"), [
+    "4 nodes you can tap or type into, of 20 on the screen. Coordinates are a phone_screen screenshot's pixels.",
+    '- LinearLayout "Search settings" (inner text) [com.android.settings:id/search_action_bar]: center (360, 250), bounds 20,200 680x100',
+    '- LinearLayout "Network & internet" (inner text): center (360, 625), bounds 0,550 720x150',
+    '- LinearLayout "Connected devices" (inner text): center (360, 775), bounds 0,700 720x150',
+    '- LinearLayout "Apps" (inner text): center (360, 925), bounds 0,850 720x150',
+  ]);
+});
+
 test("a phone's tree is its apps.ui_tree, flattened to the nodes a model can tap or type into; its keys are back and home as the phone's buttons, enter as a key", async () => {
   const root = scratch();
   const phone = fakeDesktop(root);
