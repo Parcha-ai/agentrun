@@ -169,6 +169,8 @@ export const EVENT_HOLD = 64 * 1024;
 const ERROR_TYPES: ReadonlySet<string> = new Set(["error", "response.failed"]);
 /** A data line's JSON whose type comes first, as most providers write it: its type, readable before the line ends. */
 const TYPE_FIRST = /^\s*\{\s*"type"\s*:\s*"([^"]*)"/;
+/** Whether a UTF-16 code unit is the second half of a character written as two. */
+const isLowSurrogate = (unit: number): boolean => unit >= 0xdc00 && unit <= 0xdfff;
 /** A line's end in an event stream: LF, CRLF or a bare CR, as the format has them. */
 const LINE_END = /\r\n|\r|\n/;
 /** The next line end of a piece, searched from `lastIndex`. */
@@ -215,9 +217,11 @@ export function errorCut(mode: "error" | "events" | "as-is", forms: readonly str
     return {
       push(text: string): string {
         const all = redacted(cut(held + text));
-        const keep = Math.min(all.length, Math.max(startOfForm(all), redact ? REDACT_WINDOW : 0));
-        held = all.slice(all.length - keep);
-        return all.slice(0, all.length - keep);
+        let at = all.length - Math.min(all.length, Math.max(startOfForm(all), redact ? REDACT_WINDOW : 0));
+        // Never between the two UTF-16 halves of a character: each half written alone is two U+FFFD to the client.
+        if (at > 0 && at < all.length && isLowSurrogate(all.charCodeAt(at))) at -= 1;
+        held = all.slice(at);
+        return all.slice(0, at);
       },
       end(): string {
         const rest = held;
