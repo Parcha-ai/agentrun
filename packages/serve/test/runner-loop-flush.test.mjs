@@ -10,6 +10,7 @@ import { openSqliteStore } from "../dist/store/index.js";
 import { startRunner } from "../dist/runner/runner.js";
 import { after } from "node:test";
 import { closeOpenSessions, piAdapterSpec, piAdapterSubject, scriptedOrigin } from "./conformance-pi-adapter.mjs";
+import { STEADY_LEASE } from "./runner-support.mjs";
 
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 
@@ -17,7 +18,7 @@ after(closeOpenSessions);
 const quiet = { beforeIntent: async () => {}, beforeResult: async () => {} };
 // A lease no stall of a loaded machine outlasts: a claim lost mid-call is retaken and the call's flush runs again, which
 // these tests do not read. The runs end themselves, so nothing here waits on the lease.
-const TIMING = { leaseMs: 60_000, renewEveryMs: 1_000, stopMarginMs: 5_000, pollMs: 20, commandPollMs: 30 };
+const TIMING = { ...STEADY_LEASE, pollMs: 20, commandPollMs: 30 };
 
 /** `fetch` (the provider's, behind pi's session proxy) whose first model request blocks the process for `ms` before it
  *  goes, as a starved machine does: no renew runs meanwhile, so a lease shorter than the stall runs out with the request

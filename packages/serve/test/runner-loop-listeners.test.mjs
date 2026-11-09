@@ -12,13 +12,14 @@ import { openSqliteStore } from "../dist/store/index.js";
 import { startRunner } from "../dist/runner/runner.js";
 import { suiteTools } from "../dist/runner/conformance/harness.js";
 import { after } from "node:test";
+import { STEADY_LEASE } from "./runner-support.mjs";
 import { closeOpenSessions, piAdapterSubject } from "./conformance-pi-adapter.mjs";
 
 after(closeOpenSessions);
 const quiet = { beforeIntent: async () => {}, beforeResult: async () => {} };
 // A lease no stall of a loaded machine outlasts: a claim lost and retaken gives the run a second claim's signal, which
 // these tests do not read. The runs end themselves, so nothing here waits on the lease.
-const TIMING = { leaseMs: 60_000, renewEveryMs: 1_000, stopMarginMs: 5_000, pollMs: 20, commandPollMs: 30 };
+const TIMING = { ...STEADY_LEASE, pollMs: 20, commandPollMs: 30 };
 
 async function runOnce(t, script, endState) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-loop-listeners-"));
