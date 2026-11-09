@@ -95,8 +95,10 @@ function Row({ step, last, waitingChip }: { step: Step; last: boolean; waitingCh
       <div className="min-w-0 flex-1 border-b py-3">
         <button type="button" className="flex w-full items-start gap-3 text-left" onClick={() => setOpen((v) => !v)} aria-expanded={open} disabled={!detail}>
           <span className="min-w-0 flex-1">
-            <span className="flex items-center gap-2 text-[13px] text-muted-foreground">
-              {label(row)}
+            <span className="flex min-w-0 items-center gap-2 text-[13px] text-muted-foreground">
+              {/* A label can be long (a trigger's name, up to 200 characters, spaces or none): cut to the row's width, so it
+                  never widens the page or runs over the time; whole on hover. */}
+              <span data-label className="min-w-0 truncate" title={label(row)}>{label(row)}</span>
               {row.kind === "waiting" && <Chip tone="warning">{waitingChip ?? "Input required"}</Chip>}
               {awaitsApproval(row) && <Chip tone="warning">Approval required</Chip>}
               {failed && <Chip tone="error">Error</Chip>}

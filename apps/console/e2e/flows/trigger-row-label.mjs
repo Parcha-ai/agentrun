@@ -12,7 +12,7 @@ async function rowLabel(page, base, runId) {
   await page.getByRole("tab", { name: "Timeline", exact: false }).click();
   const row = page.locator("li").filter({ hasText: "Say hello." }).first();
   await row.waitFor();
-  return (await row.locator("button > span > span").first().evaluate((el) => el.childNodes[0]?.textContent ?? "")).trim();
+  return ((await row.locator("[data-label]").first().textContent()) ?? "").trim();
 }
 
 export default {
