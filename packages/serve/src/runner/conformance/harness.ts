@@ -8,7 +8,7 @@
 // Cases 1 and 2 run twice: with the loop frozen in-process, and with the first runner a process of its own (child.ts)
 // that SIGKILLs itself at the point, since a frozen loop can hide a write a real crash would cut.
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { once } from "node:events";
 import { appendFileSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -349,19 +349,29 @@ async function crashThenResume(subject: ConformanceSubject, t: { after(fn: () =>
   return { ...(await w.read()), ran };
 }
 
-/** How processStopped reads a process's state: /proc/<pid>/stat's text (throws where there is no /proc). For the suite's
- *  own test, which takes /proc away. */
-export type ProcessReaders = { readonly stat?: (pid: number) => string };
+/** How processStopped reads a process's state: /proc/<pid>/stat's text (throws where there is no /proc), and `ps -o
+ *  state=`'s answer for it. For the suite's own test, which takes /proc away. */
+export type ProcessReaders = { readonly stat?: (pid: number) => string; readonly ps?: (pid: number) => string };
 
-/** Whether process `pid` is stopped (SIGSTOP), by the kernel's own word: the state field of /proc/<pid>/stat is "T". */
-export function processStopped(pid: number, { stat = (at) => readFileSync(`/proc/${at}/stat`, "utf8") }: ProcessReaders = {}): boolean {
+/** Whether process `pid` is stopped (SIGSTOP), by the kernel's own word, on every platform the suite runs on: the state
+ *  field of /proc/<pid>/stat is "T" where there is a /proc (Linux); elsewhere (macOS) `ps -o state=` answers a state that
+ *  starts with "T". */
+export function processStopped(
+  pid: number,
+  { stat = (at) => readFileSync(`/proc/${at}/stat`, "utf8"), ps = (at) => execFileSync("ps", ["-o", "state=", "-p", String(at)], { encoding: "utf8" }) }: ProcessReaders = {},
+): boolean {
+  let text: string;
   try {
-    const text = stat(pid);
-    // The state follows the command name, which is in parentheses and may itself hold spaces or parentheses.
-    return text.slice(text.lastIndexOf(")") + 1).trim().split(" ")[0] === "T";
+    text = stat(pid);
   } catch {
-    return false;
+    try {
+      return ps(pid).trim().startsWith("T");
+    } catch {
+      return false;
+    }
   }
+  // The state follows the command name, which is in parentheses and may itself hold spaces or parentheses.
+  return text.slice(text.lastIndexOf(")") + 1).trim().split(" ")[0] === "T";
 }
 
 /** The runner process the process cases start (child.ts), and its environment: never a test runner's own. */
