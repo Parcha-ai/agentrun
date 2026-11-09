@@ -782,12 +782,22 @@ const TEMPLATE_APPLY = {
     overrides: { type: "object", additionalProperties: false, properties: { model: { type: "string", pattern: MODEL_REF.source, description: "The agent's model in place of the one the package's tier and preference pick, \"provider/model-id\"." }, approvals: { enum: ["ask", "never"], description: "The agent's approvals (its definition's): never runs it unattended (each tool that would ask allowed, a deny still refusing), ask makes it ask. Absent: the package's `approvals_default` (`ask` only when it names none).", "x-agentrun-serve": "unattended/1" } } },
   },
 };
-const TEMPLATE_APPLIED = closed({
+const TEMPLATE_APPLIED = closedWith({
   template: { type: "string" },
   version: { type: "string" },
   agent_id: { type: "string", description: "The agent made (GET /agents/{agent_id})." },
   trigger_ids: { type: "array", items: { type: "string" }, description: "Its triggers, in the package's order (GET /triggers/{trigger_id})." },
-  warnings: { type: "array", items: ref("schemas/InputIssue"), description: "What this host still lacks for the agent to run, as POST /agents answers it; a webhook trigger the apply made adds a warning pointing to the console for its signing secret (shown there once), never the secret itself." },
+  warnings: { type: "array", items: ref("schemas/InputIssue"), description: "What this host still lacks for the agent to run, as POST /agents answers it; a webhook trigger the apply made adds a warning pointing to the console for its signing secret, never the secret itself (the first answer to the owner's signed-in session shows it once, under `webhook_secrets`)." },
+}, {
+  webhook_secrets: {
+    type: "array",
+    description: "Each webhook trigger it made, in trigger_ids' order; absent when it made none. Each carries its secret's metadata (`secret`) and, in the first answer to the owner's signed-in session alone, its `signing_secret`, shown this once as POST /triggers shows it; to the API token, or on a replay under the same Idempotency-Key, `secret_set` and `note` in its place.",
+    items: closedWith({ trigger_id: { type: "string" }, secret: { ...ref("schemas/SecretMeta"), description: "Its signing secret's metadata, named `trigger:<id>`. Never the value." } }, {
+      signing_secret: { type: "string", pattern: "^whsec_[A-Za-z0-9+/]+={0,2}$", description: "Its signing secret, shown this once: in the apply's first answer to the owner's signed-in session alone." },
+      secret_set: { const: true },
+      note: { type: "string", description: "In place of the secret: to the API token, the words that send the person to the console to rotate it there; on a replay, that it was shown once." },
+    }),
+  },
 });
 const TRIGGER_ERRORS = "409 store_unreadable when triggers.json in the data directory does not read: nothing fires, and nothing is written over it.";
 const RUN_LEARNING = {

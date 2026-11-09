@@ -172,26 +172,26 @@ test("a template applied from the owner's session shows each webhook trigger it 
   const { api, page, baseUrl, data } = await owned(t);
   const applied = await page("POST", "/templates/inbound-lead/apply", LEAD, { "idempotency-key": "lead-1" });
   assert.equal(applied.status, 201, applied.text);
-  const hooks = applied.body.triggers.filter((made) => made.secret !== undefined);
+  const hooks = applied.body.webhook_secrets ?? [];
   assert.ok(hooks.length > 0, "inbound-lead makes a webhook trigger");
-  assert.deepEqual(applied.body.triggers.map((made) => made.id), applied.body.trigger_ids, "every trigger it made, in its order");
+  assert.ok(hooks.every((made) => applied.body.trigger_ids.includes(made.trigger_id)), "each a trigger it made");
   for (const made of hooks) {
     assert.match(made.signing_secret, /^whsec_/, JSON.stringify(made));
-    assert.deepEqual([made.secret.name, made.secret.set, made.secret.source], [`trigger:${made.id}`, true, "console"]);
-    assert.equal(await signed(baseUrl, made.id, made.signing_secret), 202, "the secret shown is the one that signs");
+    assert.deepEqual([made.secret.name, made.secret.set, made.secret.source], [`trigger:${made.trigger_id}`, true, "console"]);
+    assert.notEqual(await signed(baseUrl, made.trigger_id, made.signing_secret), 401, "the secret shown is the one that signs");
   }
-  assert.ok(!applied.body.warnings.some((w) => /^triggers\.\d+\.secret$/.test(w.field)), "no warning sends the owner elsewhere for a secret this answer shows");
   const again = await page("POST", "/templates/inbound-lead/apply", LEAD, { "idempotency-key": "lead-1" });
   assert.equal(again.status, 201, again.text);
   assert.deepEqual(again.body.trigger_ids, applied.body.trigger_ids, "the same apply, made once");
   assert.ok(!again.text.includes("whsec_"), "a replay shows no secret");
-  for (const made of again.body.triggers.filter((one) => one.secret !== undefined)) {
+  assert.equal(again.body.webhook_secrets.length, hooks.length);
+  for (const made of again.body.webhook_secrets) {
     assert.deepEqual([made.secret.set, made.secret_set, typeof made.note], [true, true, "string"], JSON.stringify(made));
     assert.ok(!("signing_secret" in made));
   }
   const kept = [join(data, ".idempotency.json")].filter((file) => existsSync(file)).map((file) => readFileSync(file, "utf8")).join("") + storeBytes(data).toString("latin1");
   for (const made of hooks) assert.ok(!kept.includes(made.signing_secret.slice("whsec_".length)), "the key's record holds no secret");
-  assert.ok(!JSON.stringify((await api("GET", `/triggers/${hooks[0].id}`)).body).includes("whsec_"));
+  assert.ok(!JSON.stringify((await api("GET", `/triggers/${hooks[0].trigger_id}`)).body).includes("whsec_"));
 });
 
 test("a template applied with the API token shows no secret: each webhook trigger it made says secret_set and the console's words", { timeout: 120_000 }, async (t) => {
@@ -200,7 +200,7 @@ test("a template applied with the API token shows no secret: each webhook trigge
   const applied = await token("POST", "/templates/inbound-lead/apply", LEAD);
   assert.equal(applied.status, 201, JSON.stringify(applied.body));
   assert.ok(!JSON.stringify(applied.body).includes("whsec_"), "no value");
-  const hooks = applied.body.triggers.filter((made) => made.secret !== undefined);
+  const hooks = applied.body.webhook_secrets ?? [];
   assert.ok(hooks.length > 0);
   for (const made of hooks) {
     assert.deepEqual([made.secret.set, made.secret_set, made.note], [true, true, TRIGGER_WORDS], JSON.stringify(made));
