@@ -97,12 +97,14 @@ export type PhoneKey = "back" | "home" | "enter";
 /** A phone: its screen and the screen's structure, a tap, a swipe, typing into the field in focus, its keys, and its apps. */
 export type Phone = {
   shot(): Promise<Shot>;
-  /** The screen's structure, flattened (`total` the nodes the phone gave, `truncated` when it gave only part). */
-  tree(): Promise<{ readonly nodes: readonly PhoneNode[]; readonly total: number; readonly truncated: boolean }>;
+  /** The screen's structure, flattened (`total` the nodes the phone gave, `truncated` when it gave only part); absent on a
+   *  phone that does not offer it. */
+  tree?(): Promise<{ readonly nodes: readonly PhoneNode[]; readonly total: number; readonly truncated: boolean }>;
   tap(at: PhonePoint): Promise<void>;
   swipe(spec: { readonly from: PhonePoint; readonly to: PhonePoint; readonly durationMs: number }): Promise<void>;
   type(text: string): Promise<void>;
-  key(name: PhoneKey): Promise<void>;
+  /** Absent on a phone that does not offer its keys. */
+  key?(name: PhoneKey): Promise<void>;
   readonly apps: {
     list(): Promise<{ readonly apps: readonly { readonly id: string; readonly name?: string }[]; readonly foreground: string | null }>;
     open(id: string): Promise<void>;

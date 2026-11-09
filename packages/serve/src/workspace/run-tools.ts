@@ -65,20 +65,24 @@ function mountedIn(computer: RunComputer | undefined): { readonly computer: Atta
   return undefined;
 }
 
-/** The kind's ports, as the computer's groups offer them, and the kinds whose tools the run gets: a desktop's with a
- *  screen and input, a phone's with a screen and touch, a browser's always. */
-function portsOf(computer: RunComputer | undefined): { readonly ports: Pick<Hands, "screen" | "input" | "phone" | "browser">; readonly kinds: readonly CapabilityKind[] } {
+/** The kind's ports, as the computer's groups offer them, the kinds whose tools the run gets (a desktop's with a screen
+ *  and input, a phone's with a screen and touch, a browser's always), and the kind's tools its groups do not offer: a
+ *  phone's tree without apps.ui_tree, its keys without input.keys (an iPhone's today). */
+function portsOf(computer: RunComputer | undefined): { readonly ports: Pick<Hands, "screen" | "input" | "phone" | "browser">; readonly kinds: readonly CapabilityKind[]; readonly without: readonly string[] } {
   if (computer?.kind === "desktop") {
     const { client } = computer.computer;
     const screen = computer.groups.includes("screen");
     const input = computer.groups.includes("input.pointer") || computer.groups.includes("input.keys");
-    return screen && input ? { ports: { screen: screenOf(client), input: inputOf(client) }, kinds: ["desktop"] } : { ports: {}, kinds: [] };
+    return screen && input ? { ports: { screen: screenOf(client), input: inputOf(client) }, kinds: ["desktop"], without: [] } : { ports: {}, kinds: [], without: [] };
   }
   if (computer?.kind === "phone") {
-    return computer.groups.includes("screen") && computer.groups.includes("input.touch") ? { ports: { phone: phoneOf(computer.computer.client) }, kinds: ["phone"] } : { ports: {}, kinds: [] };
+    if (!computer.groups.includes("screen") || !computer.groups.includes("input.touch")) return { ports: {}, kinds: [], without: [] };
+    const tree = computer.groups.includes("apps.ui_tree");
+    const keys = computer.groups.includes("input.keys");
+    return { ports: { phone: phoneOf(computer.computer.client, { tree, keys }) }, kinds: ["phone"], without: [...(tree ? [] : ["phone_tree"]), ...(keys ? [] : ["phone_key"])] };
   }
-  if (computer?.kind === "browser") return { ports: { browser: { connect: computer.connect } }, kinds: ["browser"] };
-  return { ports: {}, kinds: [] };
+  if (computer?.kind === "browser") return { ports: { browser: { connect: computer.connect } }, kinds: ["browser"], without: [] };
+  return { ports: {}, kinds: [], without: [] };
 }
 
 /** The run's scratch in its own folder: bash's TMPDIR. */
@@ -93,6 +97,8 @@ export type RunHands = {
   readonly shell: "computer" | "local";
   /** The computer's kinds whose tools the run gets, past files and a shell. */
   readonly kinds: readonly CapabilityKind[];
+  /** The kinds' tools the computer does not offer (its groups lack them), not listed to the model. */
+  readonly without: readonly string[];
   readonly maxExecS: number;
   /** The name the model knows the run's folder by: /workspace in a computer, the folder's own path otherwise. */
   readonly cwd: string;
@@ -127,7 +133,7 @@ export async function runHands(workspace: Workspace, computer: RunComputer | und
   const executor = (tool: typeof read) => piExecutor(tool, fileEnv, options.context);
   const own = portsOf(computer);
   const held = options.hold !== undefined && (computer?.kind === "desktop" || computer?.kind === "phone") && own.kinds.length > 0;
-  const { ports, kinds } = held ? { ...own, ports: options.hold!(own.ports) } : own;
+  const { ports, kinds, without } = held ? { ...own, ports: options.hold!(own.ports) } : own;
   return {
     workspace: attached,
     // The computer's processes, for the five background tools: the attached Workspace's own; none when the folder is not
@@ -135,6 +141,7 @@ export async function runHands(workspace: Workspace, computer: RunComputer | und
     hands: { ...handsOf(attached, { maxExecS, env, ...(mounted === undefined ? {} : { processes: attached.process }) }), ...ports },
     shell: mounted === undefined ? "local" : "computer",
     kinds,
+    without,
     maxExecS,
     cwd,
     names,
@@ -243,7 +250,7 @@ export async function runTools(workspace: Workspace, computer: RunComputer | und
   const offers = options.browser?.offers;
   const browserTools = run.kinds.includes("browser") ? BROWSER_TOOLS.filter((contract) => listedFor(contract, offers ?? { downloads: false, upload: false, handoff: false })) : BROWSER_TOOLS;
   const registry = createRegistry({
-    maxExecS: run.maxExecS, shell: run.shell, kinds: run.kinds, browserTools,
+    maxExecS: run.maxExecS, shell: run.shell, kinds: run.kinds, browserTools, without: run.without,
     executors: { ...run.executors, ...(options.browser ? { browser: options.browser.executors } : {}) },
   });
   return {

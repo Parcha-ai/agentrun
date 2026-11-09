@@ -82,7 +82,7 @@ function nodeLine(node: PhoneNode): string {
 }
 /** phone_tree's answer: a head line, then a line a node, at most PHONE_TREE_MAX_NODES of them and PHONE_TREE_MAX_CHARS
  *  characters in all; one last line counts the nodes not shown. */
-function treeAnswer(tree: Awaited<ReturnType<NonNullable<Hands["phone"]>["tree"]>>): string {
+function treeAnswer(tree: Awaited<ReturnType<NonNullable<NonNullable<Hands["phone"]>["tree"]>>>): string {
   const nodes = tree.nodes.filter((node) => node.clickable || node.editable);
   const head = `${nodes.length} node${nodes.length === 1 ? "" : "s"} you can tap or type into, of ${tree.total} on the screen. Coordinates are a phone_screen screenshot's pixels.${tree.truncated ? " The phone gave only part of the screen's structure: take a phone_screen screenshot for the rest." : ""}`;
   const lines = [head];
@@ -107,8 +107,12 @@ export const PHONE_EXECUTORS: Readonly<Record<string, Executor>> = Object.freeze
     const shot = await phone.shot();
     return shotAnswer(`A screenshot of the phone's screen, ${shot.width}x${shot.height} pixels.`, shot);
   }),
-  phone_tree: run("phone_tree", async (phone) => ({ text: treeAnswer(await phone.tree()) })),
+  phone_tree: run("phone_tree", async (phone) => {
+    if (!phone.tree) throw new Error("this phone does not offer its UI tree");
+    return { text: treeAnswer(await phone.tree()) };
+  }),
   phone_key: run("phone_key", async (phone, args) => {
+    if (!phone.key) throw new Error("this phone does not offer its keys");
     const key = args.key;
     if (typeof key !== "string" || !(PHONE_KEYS as readonly string[]).includes(key)) throw new Error(`key is ${PHONE_KEYS.slice(0, -1).join(", ")} or ${PHONE_KEYS.at(-1)}`);
     await phone.key(key as PhoneKey);

@@ -156,6 +156,15 @@ test("phone_tree lists the nodes a model can tap or type into, each with its cen
   assert.deepEqual(def.parameters.properties.key.enum, ["back", "home", "enter"]);
 });
 
+test("a tool the run's computer does not offer (without) is not listed; called anyway, a phone with no tree or keys says so in words", async () => {
+  const registry = createRegistry({ maxExecS: 600, shell: "local", kinds: ["phone"], without: ["phone_tree", "phone_key"], executors: injected });
+  assert.deepEqual(registry.list().map((def) => def.name), [...LOCAL, ...PHONE.filter((name) => name !== "phone_tree" && name !== "phone_key")]);
+  const { tree, key, ...rest } = fakePhone();
+  const hands = handsWith({ phone: rest });
+  assert.equal((await registry.invoke("phone_tree", {}, { hands })).error, "this phone does not offer its UI tree");
+  assert.equal((await registry.invoke("phone_key", { key: "back" }, { hands })).error, "this phone does not offer its keys");
+});
+
 test("phone_tree's answer is bounded: past PHONE_TREE_MAX_NODES nodes, or PHONE_TREE_MAX_CHARS characters, one line says how many more were not shown", async () => {
   const registry = createRegistry({ maxExecS: 600, shell: "none", kinds: ["phone"], executors: injected });
   const button = (i, text = `Row ${i}`) => ({ role: "android.widget.Button", text, bounds: { x: 0, y: i * 10, w: 100, h: 10 }, clickable: true, editable: false });

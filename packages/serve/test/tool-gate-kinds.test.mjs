@@ -19,6 +19,7 @@ const KINDS = [...DESKTOP_TOOL_DEFS.map((def) => [def.name, "desktop"]), ...PHON
 test("each desktop tool is held to desktop and each phone tool to phone, by every harness's name for it", () => {
   assert.deepEqual([...KIND_KEYS], ["desktop", "phone"]);
   assert.ok(KINDS.some(([name]) => name === SHARED), "the hand-over is a kind tool");
+  assert.ok(KINDS.some(([name]) => name === "phone_tree") && KINDS.some(([name]) => name === "phone_key"), "the phone's tree and keys are kind tools");
   for (const [name, key] of KINDS) {
     for (const harness of ["pi", "claude-agent", "codex", "opencode"]) {
       assert.equal(settingsKeyOf(harness, name), key, `${harness} ${name}`);

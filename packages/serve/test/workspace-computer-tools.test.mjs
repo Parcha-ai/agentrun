@@ -93,7 +93,7 @@ test("a sandbox: today's computer list, attached; no kind tools", async () => {
 test("a phone: the runner's folder and shell, and the phone's tools on its touch and apps calls", async () => {
   const root = scratch();
   const phone = fakeDesktop(root);
-  const run = await runTools(localWorkspace(root), { kind: "phone", computer: phone, groups: PHONE_GROUPS }, { mode: 2, context: ctx });
+  const run = await runTools(localWorkspace(root), { kind: "phone", computer: phone, groups: [...PHONE_GROUPS, "apps.ui_tree", "input.keys"] }, { mode: 2, context: ctx });
   assert.deepEqual(names(run), [...LOCAL, ...PHONE]);
   const tools = run.hostTools(PHONE);
   assert.equal((await call(tools, "phone_screen", {})).images[0].data, PNG.toString("base64"));
@@ -109,6 +109,19 @@ test("a phone: the runner's folder and shell, and the phone's tools on its touch
     ["apps.list", {}],
     ["apps.launch", { id: "com.example.mail" }],
   ]);
+});
+
+test("a phone that does not declare apps.ui_tree or input.keys (an iPhone today) is offered neither phone_tree nor phone_key, and a call of either is refused in words", async () => {
+  const root = scratch();
+  const iphone = fakeDesktop(root);
+  const run = await runTools(localWorkspace(root), { kind: "phone", computer: iphone, groups: PHONE_GROUPS }, { mode: 2, context: ctx });
+  assert.deepEqual(names(run), [...LOCAL, ...PHONE.filter((name) => name !== "phone_tree" && name !== "phone_key")]);
+  assert.deepEqual(await run.registry.invoke("phone_tree", {}, { hands: run.hands, callId: "t", signal: new AbortController().signal }), { text: "", error: "this phone does not offer its UI tree" });
+  assert.deepEqual(await run.registry.invoke("phone_key", { key: "back" }, { hands: run.hands, callId: "k", signal: new AbortController().signal }), { text: "", error: "this phone does not offer its keys" });
+  assert.ok(!iphone.methods().includes("apps.ui_tree") && !iphone.calls.some(([method]) => method === "input.actions"), "nothing reached the phone");
+  // One declared, the other not: only that one is offered.
+  const android = await runTools(localWorkspace(scratch()), { kind: "phone", computer: fakeDesktop(root), groups: [...PHONE_GROUPS, "apps.ui_tree"] }, { mode: 2, context: ctx });
+  assert.deepEqual(names(android).filter((name) => name === "phone_tree" || name === "phone_key"), ["phone_tree"]);
 });
 
 test("a phone's tree is its apps.ui_tree, flattened to the nodes a model can tap or type into; its keys are back and home as the phone's buttons, enter as a key", async () => {

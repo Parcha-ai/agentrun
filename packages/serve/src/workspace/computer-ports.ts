@@ -78,17 +78,21 @@ function flattened(root: UiNode): PhoneNode[] {
 /** The keys a phone presses: back and home are its buttons (input.touch's button action), enter a key of the key table. */
 const keyAction = (name: PhoneKey): ComputerAction => (name === "enter" ? { type: "key", keys: ["enter"] } : { type: "button", name });
 
-/** A phone: its screen's shot and structure (apps.ui_tree), a tap, a swipe, typing and its keys as input.actions, its apps. */
-export const phoneOf = (client: ComputerClient): Phone => ({
+/** A phone: its screen's shot and structure (apps.ui_tree), a tap, a swipe, typing and its keys as input.actions, its apps.
+ *  `offers`: whether the phone declares its structure (apps.ui_tree) and its keys (input.keys); one it does not declare
+ *  is no method of the port (an iPhone offers neither until a live run proves them). Default both. */
+export const phoneOf = (client: ComputerClient, offers: { readonly tree?: boolean; readonly keys?: boolean } = {}): Phone => ({
   shot: () => shotOf(client),
-  async tree() {
-    const tree = await valueOf(client.call("apps.ui_tree", {}));
-    return { nodes: flattened(tree.root), total: tree.nodes, truncated: tree.truncated };
-  },
+  ...(offers.tree !== false ? {
+    async tree() {
+      const tree = await valueOf(client.call("apps.ui_tree", {}));
+      return { nodes: flattened(tree.root), total: tree.nodes, truncated: tree.truncated };
+    },
+  } : {}),
   tap: (at) => act(client, [{ type: "tap", at: [at.x, at.y] }]),
   swipe: ({ from, to, durationMs }) => act(client, [{ type: "swipe", path: [[from.x, from.y], [to.x, to.y]], ms: durationMs }]),
   type: (text) => act(client, [{ type: "type", text }]),
-  key: (name) => act(client, [keyAction(name)]),
+  ...(offers.keys !== false ? { key: (name: PhoneKey) => act(client, [keyAction(name)]) } : {}),
   apps: {
     async list() {
       const listed = await valueOf(client.call("apps.list", {}));
