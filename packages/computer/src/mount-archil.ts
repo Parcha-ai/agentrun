@@ -246,15 +246,18 @@ export async function archilMount({ root, mount, self: computer, releaseOlder, t
 }
 
 /** The computerd calls that may change the folder: each syncs before it answers. */
-const MUTATING = new Set<DaemonMethod>(["files.write", "files.move", "files.remove", "files.mkdir", "tar.push.end", "exec.run", "process.start", "process.write", "process.signal", "process.wait"]);
+const MUTATING = new Set<DaemonMethod>(["files.write", "files.move", "files.remove", "files.mkdir", "tar.push.begin", "tar.push.end", "exec.run", "process.start", "process.write", "process.signal", "process.wait"]);
 
 /**
- * A computerd client whose every call that may change the folder (files.write, move, remove and mkdir; tar.push.end, and
- * a tar.push.write that failed, which ends the push with no tar.push.end once its extraction stops; exec.run; process.start, which makes its log and the folders above it; process.write and signal; a process seen
+ * A computerd client whose every call that may change the folder (files.write, move, remove and mkdir; tar.push.begin,
+ * which makes the destination and the folders above it, so a push never ended leaves none unsynced; tar.push.end, and
+ * a tar.push.write that failed, which ends the push with no tar.push.end once its extraction stops; exec.run;
+ * process.start, which makes its log and the folders above it; process.write and signal; a process seen
  * ended, by process.wait or a process.read that says so) syncs before it answers, through mount.sync, coalesced: a
  * call during a sync in flight waits for it, then shares one more. A failed sync fails the call in words; a call that
  * failed still syncs, and answers its own error. A caller whose signal fires stops waiting, answered "aborted" in words
- * (or its own error), while the shared sync goes on for every other caller.
+ * (or its own error), while the shared sync goes on for every other caller. A tar.push.begin answered with such an error
+ * instead of its id first ends the push it began, so no push slot is held by a push its caller cannot name.
  */
 export function syncingClient(client: ComputerClient): ComputerClient {
 	// At most one sync in flight, and at most one follower shared by every call that comes during it. The hand-over from a
@@ -302,7 +305,17 @@ export function syncingClient(client: ComputerClient): ComputerClient {
 			// The sync is shared and goes on whatever this caller does; a caller whose signal fires stops waiting for it.
 			const shared = sync();
 			const signal = options?.signal;
-			const stopped = (): Result<never> => fail("aborted", `${method} ran, but its caller stopped waiting for the sync that makes the run's folder durable; the sync goes on`);
+			// A push begun whose caller gets an error instead of its id could never be ended, and would hold one of the
+			// connection's push slots for good: it is ended here, by its id, on the client beneath (no sync of its own), with
+			// no signal, since the caller's may already have fired. Its end's own result changes nothing the caller is told.
+			const beganPush = method === "tar.push.begin" && result.ok ? (result.value as DaemonMethods["tar.push.begin"]["result"]).id : undefined;
+			const endBegun = async () => {
+				if (beganPush !== undefined) await client.call("tar.push.end", { id: beganPush }).catch(() => undefined);
+			};
+			const stopped = async (): Promise<Result<never>> => {
+				await endBegun();
+				return fail("aborted", `${method} ran, but its caller stopped waiting for the sync that makes the run's folder durable; the sync goes on`);
+			};
 			if (signal?.aborted) return result.ok ? stopped() : result;
 			const synced = signal === undefined ? await shared : await new Promise<Result<void> | "stopped">((resolve) => {
 				const onAbort = () => resolve("stopped");
@@ -314,7 +327,8 @@ export function syncingClient(client: ComputerClient): ComputerClient {
 			});
 			if (synced === "stopped") return result.ok ? stopped() : result;
 			if (!result.ok || synced.ok) return result;
-			return fail(synced.error.code, `${method} ran, but the run's folder could not be made durable: ${synced.error.message}`);
+			await endBegun();
+			return fail(synced.error.code, `${method} ran, but the run's folder could not be made durable: ${synced.error.message}${beganPush === undefined ? "" : "; the push it began is ended"}`);
 		},
 		close: () => client.close(),
 	};

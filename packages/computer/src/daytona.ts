@@ -16,6 +16,7 @@ import type { KindCapabilities } from "./kinds.js";
 import { EPOCH_LABEL, epochOf, RUN_LABEL } from "./labels.js";
 import { checkMount, type MountKind, type MountReadBack, readBackOf } from "./mount.js";
 import {
+	ARCHIL_MOUNT_LABEL,
 	ARCHIL_TOOL_UID,
 	type ArchilMount,
 	type ArchilRoot,
@@ -372,6 +373,8 @@ function labelProblem(key: string, value: unknown): string | undefined {
 	if (key.includes("\0") || value.includes("\0")) return `the label ${JSON.stringify(key)}: ${NUL}`;
 	if (key === "") return "a label name must be non-empty";
 	if (key === COMPUTER_LABEL || key.startsWith(`${COMPUTER_LABEL}.`)) return `the label ${key} is in the provider's own namespace (${COMPUTER_LABEL})`;
+	// connect and list read an Archil mount from this label: only create writes it, from the spec's mount.
+	if (key === ARCHIL_MOUNT_LABEL) return `the label ${key} is the provider's own: it records an Archil computer's mount`;
 	return undefined;
 }
 
@@ -1141,7 +1144,8 @@ export class DaytonaProvider implements ComputerProvider {
 		// An Archil computer's Daytona network is open, for root to reach Archil; its spec's network is the tools', none.
 		const archilComputer = recordedMount(sb.labels) !== undefined;
 		if (archilComputer && network !== "open") found.push(`network: an Archil computer's Daytona network is open, for root to reach Archil; read back ${policyWords(network)}`);
-		const labels = Object.fromEntries(Object.entries(sb.labels ?? {}).filter(([key]) => key !== COMPUTER_LABEL && !key.startsWith(`${COMPUTER_LABEL}.`)));
+		// The caller's labels: none of the provider's own, which are read back above (the mount's label by recordedMount).
+		const labels = Object.fromEntries(Object.entries(sb.labels ?? {}).filter(([key]) => key !== COMPUTER_LABEL && !key.startsWith(`${COMPUTER_LABEL}.`) && key !== ARCHIL_MOUNT_LABEL));
 		// The image create was asked for, from its label; a computer made before the label was written reports its snapshot.
 		const asked = sb.labels?.[IMAGE_LABEL];
 		const specNetwork = archilComputer || (typeof network === "object" && "other" in network) ? "none" : network;

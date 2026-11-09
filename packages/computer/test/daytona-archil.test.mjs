@@ -67,6 +67,23 @@ test("capabilities declare the Archil mount; check takes an Archil spec of the r
 	}
 });
 
+test("the agentrun.mount label is the provider's own: a caller's is refused in words, with a mount or without, and create makes no sandbox", async () => {
+	// Review (#1994, PRRT_kwDOUmdVMs61I7Wm): a caller's agentrun.mount on a spec with no mount was kept, so connect turned
+	// on Archil syncing for a plain computer (every change failing: no sync server) and list reported a mount not there.
+	const forged = JSON.stringify({ kind: "archil", disk: MOUNT.disk, region: MOUNT.region, folder: MOUNT.folder });
+	const plain = { image: "debian:bookworm-slim", lifetimeMs: 600_000, network: "none", labels: { [ARCHIL_MOUNT_LABEL]: forged } };
+	for (const spec of [plain, { ...SPEC, labels: { ...LABELS, [ARCHIL_MOUNT_LABEL]: forged } }]) {
+		const { fake, provider } = setup();
+		const refused = provider.check(spec);
+		assert.ok(refused.some(({ field, message }) => field === "labels" && /agentrun\.mount is the provider's own/.test(message)), JSON.stringify(refused));
+		const created = await provider.create(spec);
+		assert.equal(created.ok, false);
+		assert.match(created.error.message, /agentrun\.mount is the provider's own/);
+		assert.ok(!fake.requests.some((request) => request.method === "POST" && /\/sandbox$/.test(request.path)), "no sandbox is made");
+		assert.ok(!JSON.stringify(created).includes(TOKEN));
+	}
+});
+
 test("create: preflight, mount (the token on its stdin alone), serve, each as root in the toolbox, before init, never through computerd; Daytona's network open for root, the mount labelled without the token", async () => {
 	const { fake, provider } = setup();
 	const made = await provider.create(SPEC);

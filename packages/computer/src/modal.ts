@@ -26,6 +26,7 @@ import { EPOCH_LABEL, epochOf, RUN_LABEL } from "./labels.js";
 import { checkMount, type MountKind, type MountReadBack, readBackOf } from "./mount.js";
 import {
 	ARCHIL_HELPER,
+	ARCHIL_MOUNT_LABEL,
 	ARCHIL_TOOL_UID,
 	type ArchilMount,
 	type ArchilRoot,
@@ -607,6 +608,9 @@ function labelProblem(key: string, value: unknown): string | undefined {
 	if (key.includes("\0") || value.includes("\0")) return `the label ${JSON.stringify(key)}: ${NUL}`;
 	if (key === "") return "a label's name must be non-empty";
 	if (key === COMPUTER_LABEL || key.startsWith(`${COMPUTER_LABEL}.`)) return `the label ${key} is in the provider's own namespace (${COMPUTER_LABEL})`;
+	// Modal records the mount in its spec tag, so this label is read nowhere here; it is refused as Daytona and E2B
+	// refuse it, so one spec meets the same rule on every provider with an Archil mount.
+	if (key === ARCHIL_MOUNT_LABEL) return `the label ${key} is the provider's own: it records an Archil computer's mount`;
 	return undefined;
 }
 
