@@ -188,3 +188,34 @@ test("visibility is inherited and a descendant can show itself again: an element
   for (const seen of ["Seen collapse child.", "Seen hidden child.", "Seen utility child.", "Seen class child.", "Seen grandchild.", "Seen after."]) assert.ok(text.includes(seen), `${seen} in: ${text}`);
   for (const gone of ["Gone no visible descendant.", "Gone display child."]) assert.ok(!text.includes(gone), `${gone} in: ${text}`);
 });
+
+test("only a descendant that is shown keeps a visibility-hidden element: one display:none itself, or inside a display:none element within it, shows nothing", async () => {
+  const text = await textOf(page(`
+    <div style="visibility:hidden">Gone filing<span style="display:none;visibility:visible">Gone unused</span></div>
+    <div style="visibility:hidden">Gone wrapped<div style="display:none"><span style="visibility:visible">Gone deep</span></div></div>
+    <div style="visibility:hidden"><span style="visibility:visible">Seen control.</span></div>
+    <div style="visibility:hidden">Gone outer<div style="display:none"><div style="visibility:hidden"><span style="visibility:visible">Gone nested</span></div></div></div>
+    <p>Seen after.</p>`));
+  for (const seen of ["Seen control.", "Seen after."]) assert.ok(text.includes(seen), `${seen} in: ${text}`);
+  for (const gone of ["Gone filing", "Gone unused", "Gone wrapped", "Gone deep", "Gone outer", "Gone nested"]) assert.ok(!text.includes(gone), `${gone} in: ${text}`);
+});
+
+test("20,000 visibility-hidden elements of different names closed oldest first are dropped in one linear pass, well under a second, in a child so a stalled loop cannot stall this runner", async () => {
+  const child = spawn(process.execPath, ["--input-type=module", "-e", `
+    const { dropHidden } = await import(${JSON.stringify(new URL("../dist/core/page-scan.js", import.meta.url).href)});
+    let open = "", close = "";
+    for (let i = 0; i < 20000; i++) { open += "<x-" + i + " class=\\"invisible\\">t"; close += "</x-" + i + ">"; }
+    const html = "<p>Seen.</p>" + open + close;
+    const started = performance.now();
+    const kept = dropHidden(html, new Map(), (text) => text);
+    process.stdout.write(JSON.stringify({ ms: performance.now() - started, seen: kept.includes("Seen.") }));`], { stdio: ["ignore", "pipe", "inherit"] });
+  let out = "";
+  child.stdout.on("data", (chunk) => (out += chunk));
+  const guard = setTimeout(() => child.kill("SIGKILL"), 20_000);
+  const code = await new Promise((resolve) => child.once("exit", (exitCode, signal) => resolve(exitCode ?? signal)));
+  clearTimeout(guard);
+  assert.equal(code, 0, `the drop did not end within 20 s (it was killed): ${out}`);
+  const { ms, seen } = JSON.parse(out);
+  assert.ok(seen, "the page's shown text stays");
+  assert.ok(ms < 1_000, `dropped in ${Math.round(ms)} ms`);
+});
