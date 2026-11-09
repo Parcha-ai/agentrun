@@ -3,7 +3,7 @@
 // looks back, its prompt, how its turn ended, and the rows that keep its learning beside the run's end. A proposal is
 // kept with the turn that gave it (learning_proposals) and queues one learning run (learning_run) that grades and merges
 // it; a learning dropped at any step is kept with its reason and words, and queues none.
-import { reflectPrompt } from "../learn/index.js";
+import { reflectAgain, reflectPrompt } from "../learn/index.js";
 import { said, STOPPED } from "../learning-words.js";
 import type { AlsoRow, EndOfRunTurn } from "./loop-contract.js";
 
@@ -40,8 +40,10 @@ export interface ReflectDeps {
   readonly check: (input: { runId: string; agentId: string; turn: ReflectTurn; outcome: "completed" | "failed" }) => Promise<Checked>;
   /** A new run's id, for the learning run. */
   readonly newRunId: () => string;
-  /** The turn's deadline. Default REFLECT_TIMEOUT_MS. */
+  /** The turn's deadline. Default REFLECT_TIMEOUT_MS. Its re-ask is inside it. */
   readonly deadlineMs?: number;
+  /** For tests: the clock the turn's deadline is measured by. Default Date.now. */
+  readonly now?: () => number;
 }
 
 /** A learning dropped before its turn answered: kept with its reason and words, beside the end. */
@@ -62,17 +64,36 @@ export function createReflectHook(deps: ReflectDeps): EndOfRunTurn {
     if (facts.capReached) return { also: [droppedRow(null, "no_budget", said.noBudget)] };
     if (facts.capUsd !== undefined && facts.costUsd === null) return { also: [droppedRow(null, "unknown_cost", said.unknownCost)] };
     const { active, tools } = await deps.promptFacts(input.runId, input.agentId);
-    const end = await input.ask(reflectPrompt({ dir: LEARNED_DIR, active, tools }), { origin: "reflect", deadlineMs: deps.deadlineMs ?? REFLECT_TIMEOUT_MS });
+    const deadlineMs = deps.deadlineMs ?? REFLECT_TIMEOUT_MS;
+    const now = deps.now ?? Date.now;
+    const started = now();
+    const end = await input.ask(reflectPrompt({ dir: LEARNED_DIR, active, tools }), { origin: "reflect", deadlineMs });
     // closeLearning: how the turn ended.
     if ("timedOut" in end) return { also: [droppedRow(null, "reflect_timeout", said.stopped(STOPPED.timedOut))] };
     if ("failed" in end) return { also: [CAP_REFUSAL.test(end.failed.message) ? droppedRow(null, "no_budget", said.noBudget) : droppedRow(null, "reflect_failed", said.stopped(STOPPED.failed))] };
     const said_ = await deps.asked(input.runId);
-    const turn: ReflectTurn = { answer: end.answer, asked: [...said_.asked], ...(said_.triggered?.length ? { triggered: said_.triggered } : {}) };
-    let checked: Checked;
-    try {
-      checked = await deps.check({ runId: input.runId, agentId: input.agentId, turn, outcome: input.outcome });
-    } catch {
-      return { also: [droppedRow(turn, "propose_failed", said.stopped(STOPPED.notChecked))] };
+    const turnOf = (answer: string): ReflectTurn => ({ answer, asked: [...said_.asked], ...(said_.triggered?.length ? { triggered: said_.triggered } : {}) });
+    const checkOf = async (turn: ReflectTurn): Promise<Checked | undefined> => {
+      try {
+        return await deps.check({ runId: input.runId, agentId: input.agentId, turn, outcome: input.outcome });
+      } catch {
+        return undefined;
+      }
+    };
+    let turn = turnOf(end.answer);
+    let checked = await checkOf(turn);
+    if (!checked) return { also: [droppedRow(turn, "propose_failed", said.stopped(STOPPED.notChecked))] };
+    // An answer the parser refused is asked for again once, in the same turn, saying why in the parser's own words: the
+    // second answer is checked as the first was, and refused again it is dropped as before. Never a third time, and only
+    // within the turn's own deadline; a re-ask that times out or fails leaves the first answer's drop.
+    if (checked.state === "dropped" && checked.reason === "unparsed") {
+      const left = deadlineMs - (now() - started);
+      const again = left > 0 ? await input.ask(reflectAgain(checked.detail), { origin: "reflect", deadlineMs: left, again: true }) : undefined;
+      if (again && "ended" in again) {
+        turn = turnOf(again.answer);
+        checked = await checkOf(turn);
+        if (!checked) return { also: [droppedRow(turn, "propose_failed", said.stopped(STOPPED.notChecked))] };
+      }
     }
     if (checked.state === "dropped") {
       const detail = checked.reason === "empty" ? said.empty : checked.reason === "unparsed" ? said.unparsed : said.checker(checked.problems as never);

@@ -1,4 +1,4 @@
-// The kernel's rule on a pi run (runner/side-effects.ts): a call that is not replay-safe runs only after a flush made its
+// The kernel's rule on a pi run through the adapter (runner/side-effects.ts, on the host-tool path): a call that is not replay-safe runs only after a flush made its
 // intent durable (pi committed it, at synchronous=NORMAL not yet on disk); a replay-safe call runs without one. Read from
 // the order the loop's flush and the tool itself happen in, on a real store and runner.
 import assert from "node:assert/strict";
@@ -8,11 +8,14 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { openSqliteStore } from "../dist/store/index.js";
 import { startRunner } from "../dist/runner/runner.js";
-import { piSpec } from "./conformance-pi.mjs";
+import { after } from "node:test";
+import { closeOpenSessions, piAdapterSubject } from "./conformance-pi-adapter.mjs";
 
-const { createPiLoop } = await import("../dist/runner/loop.js");
+after(closeOpenSessions);
 const quiet = { beforeIntent: async () => {}, beforeResult: async () => {} };
-const TIMING = { leaseMs: 600, renewEveryMs: 150, stopMarginMs: 200, pollMs: 20, commandPollMs: 30 };
+// A lease no stall of a loaded machine outlasts: a claim lost mid-call is retaken and the call's flush runs again, which
+// these tests do not read. The runs end themselves, so nothing here waits on the lease.
+const TIMING = { leaseMs: 60_000, renewEveryMs: 1_000, stopMarginMs: 5_000, pollMs: 20, commandPollMs: 30 };
 
 async function order(t, tool) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-loop-flush-"));
@@ -33,7 +36,7 @@ async function order(t, tool) {
     effect: { name: "effect", replaySafe: false, ask: false, run },
     read: { name: "read", replaySafe: true, ask: false, run },
   };
-  const inner = createPiLoop(piSpec({ script: [{ call: tool }, { say: "done" }], tools, hooks: quiet }));
+  const inner = piAdapterSubject.createLoop({ script: [{ call: tool }, { say: "done" }], tools, hooks: quiet });
   const createLoop = (deps) => inner({ ...deps, flush: async () => (seen.push("flush"), deps.flush()) });
   runner = startRunner({ store, createLoop, name: "runner-a", ...TIMING });
   const deadline = Date.now() + 15_000;

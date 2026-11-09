@@ -6,8 +6,9 @@
 // their names only: a provider declares them, Settings takes only those, and the store keeps each sealed under the
 // server's seal key (server-keys.ts); a provider is handed its keys only at the claim, or for its test, both through
 // computer-keys.ts (providerOptions, testConnection), which maps a key's name onto the option it fills.
-import { type OptionsAnswer, type ProviderFactories, type ProviderSettings, providerOptions, testConnection } from "./computer-keys.js";
+import { KEY_TABLE, type KeyTable, type OptionsAnswer, type ProviderFactories, type ProviderSettings, providerOptions, testConnection } from "./computer-keys.js";
 import { COMPUTER_KINDS, type ComputerKind, type ComputerSetting } from "./computer-setting.js";
+import { ApiError, invalid } from "./errors.js";
 import { getSealedKey, putSealedKey, removeSealedKey, sealedKeyNames } from "./server-keys.js";
 import type { Store } from "./store/index.js";
 
@@ -53,6 +54,8 @@ export interface ComputerRoutesOptions {
   readonly factories: ProviderFactories;
   /** The server's settings that go to a provider's options but are no key (the Modal app). */
   readonly settings?: ProviderSettings;
+  /** The map from a provider's key names to its options: serve's own unless given (--faux gives its own). */
+  readonly keyTable?: KeyTable;
   /** The model-visible tools a kind brings (the kernel registry's capabilityToolDefs), by name. */
   readonly tools: (kind: ComputerKind) => readonly string[];
   readonly mode: FolderMode;
@@ -99,7 +102,7 @@ const keysWhy = (provider: ProviderEntry, missing: readonly string[]): string =>
 /** The routes' work over the server's store: GET /v2/computers (view), PUT /v2/computers/{provider}/keys (saveKeys), POST
  *  /v2/computers/{provider}/test (test), and the claim's refusal (claimRefusal). */
 export function createComputerRoutes(options: ComputerRoutesOptions) {
-  const { store, sealKey, kinds, factories, settings = {}, tools, mode } = options;
+  const { store, sealKey, kinds, factories, settings = {}, keyTable = KEY_TABLE, tools, mode } = options;
   const providerOf = (id: string) => kinds.PROVIDERS.find((one) => one.id === id);
 
   /** Each kind, whether this server offers it and why not, the capability groups and tools it brings, and each provider
@@ -159,7 +162,7 @@ export function createComputerRoutes(options: ComputerRoutesOptions) {
     const keys = await keysOf(provider);
     const missing = missingKeys(provider, new Set(Object.keys(keys)));
     if (missing.length) return { ok: false, why: keysWhy(provider, missing) };
-    const answer = await testConnection(providerId, { keys, ...(signal ? { signal } : {}) }, factories, settings);
+    const answer = await testConnection(providerId, { keys, ...(signal ? { signal } : {}) }, factories, settings, keyTable);
     return answer.ok ? { ok: true, detail: answer.value.detail } : { ok: false, why: answer.error.message };
   }
 
@@ -187,10 +190,47 @@ export function createComputerRoutes(options: ComputerRoutesOptions) {
     if (computer.kind === "none") return undefined;
     const why = await claimRefusal(computer);
     if (why) return { ok: false, error: { code: COMPUTER_UNAVAILABLE, message: why } };
-    return providerOptions(computer.provider, await keysOf(providerOf(computer.provider)!), settings);
+    return providerOptions(computer.provider, await keysOf(providerOf(computer.provider)!), settings, keyTable);
   }
 
   return { view, saveKeys, test, claimRefusal, claimOptions };
 }
 
 export type ComputerRoutes = ReturnType<typeof createComputerRoutes>;
+
+/** Settings → Computers' routes, by their operation names: GET /v2/computers, PUT /v2/computers/{provider}/keys and POST
+ *  /v2/computers/{provider}/test. */
+export const COMPUTER_SETTINGS_ROUTES: ReadonlySet<string> = new Set(["listComputers", "saveComputerKeys", "testComputer"]);
+
+const noProvider = (id: string | undefined): ApiError => new ApiError("not_found", `this server has no computer provider ${JSON.stringify(id ?? "")}: GET /v2/computers lists them`);
+
+/** One of Settings → Computers' routes at its handler, as serve's dispatch calls it: its answer (sent 200), or its refusal
+ *  as an ApiError (sent with its status): an unknown provider is not_found; a key save's body that is not an object of
+ *  names, or a name the provider does not take, is input_invalid with its fields. */
+export async function settingsComputerRoute(routes: ComputerRoutes, name: string, request: { readonly provider?: string; readonly body?: unknown; readonly signal?: AbortSignal }): Promise<unknown> {
+  if (name === "listComputers") return routes.view();
+  if (name === "saveComputerKeys") {
+    const { body } = request;
+    if (typeof body !== "object" || body === null || Array.isArray(body)) throw new ApiError("input_invalid", "the body is a JSON object of the provider's key names, each a string, or null to remove it");
+    let saved: ProviderView | undefined;
+    try {
+      saved = await routes.saveKeys(request.provider ?? "", body as Record<string, unknown>);
+    } catch (error) {
+      if (error instanceof KeysRefused) throw invalid(error.fields, error.message);
+      throw error;
+    }
+    if (saved === undefined) throw noProvider(request.provider);
+    return saved;
+  }
+  if (name === "testComputer") {
+    const answer = await routes.test(request.provider ?? "", request.signal);
+    if (answer === undefined) throw noProvider(request.provider);
+    return answer;
+  }
+  throw new ApiError("not_found", `no computer route ${name}`);
+}
+
+/** capabilities.computers: the kinds this server offers now, in the registry's order. */
+export async function computerCapabilities(routes: ComputerRoutes): Promise<{ kinds: ComputerKind[] }> {
+  return { kinds: (await routes.view()).kinds.filter((kind) => kind.offered).map((kind) => kind.kind) };
+}

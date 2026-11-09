@@ -9,16 +9,40 @@ import {
   sealColumn, sealedAt, sealMcpCredential, unsealColumn,
 } from "./store/index.js";
 
+/** The most server-supplied text (server_info JSON, instructions) a row holds: both come from the remote server
+ *  (untrusted), so they are bounded at save, never stored unbounded. */
+export const MCP_META_MAX_BYTES = 16 * 1024;
+
+/** `text` trimmed to MCP_META_MAX_BYTES on a character boundary (never a split UTF-8 char), or null when there is none. */
+function boundedInstructions(text: string | null | undefined): string | null {
+  if (typeof text !== "string") return null;
+  if (Buffer.byteLength(text, "utf8") <= MCP_META_MAX_BYTES) return text;
+  let out = Buffer.from(text, "utf8").subarray(0, MCP_META_MAX_BYTES).toString("utf8");
+  while (Buffer.byteLength(out, "utf8") > MCP_META_MAX_BYTES) out = out.slice(0, -1);
+  return out;
+}
+
+/** `info` as given when its JSON is within the cap, else null: a JSON value can't be truncated without breaking it, so an
+ *  oversized one is dropped rather than stored unbounded or corrupt. */
+function boundedServerInfo(info: unknown): unknown {
+  if (info === null || info === undefined) return null;
+  return Buffer.byteLength(JSON.stringify(info), "utf8") <= MCP_META_MAX_BYTES ? info : null;
+}
+
 /** Saves a server's registry row, its credential sealed (§7): a server with a credential (bearer, headers, or an OAuth
- *  token set) seals it under the row with the url's origin inside; one with none (auth type "none") stores null. Replaces
- *  the file the registry wrote. */
+ *  token set) seals it under the row with the url's origin inside; one with none (auth type "none") stores null. The
+ *  remote server's reported info and instructions are bounded at save (untrusted). Replaces the file the registry wrote. */
 export async function saveMcpServer(
   store: { mcp: Pick<Mcp, "put"> },
   sealKey: Buffer,
-  server: { name: string; url: string; auth: string; protocol?: string | null; tools: unknown; prices?: unknown; credential?: McpCredential },
+  server: { name: string; url: string; auth: string; protocol?: string | null; tools: unknown; prices?: unknown; serverInfo?: unknown; instructions?: string | null; credential?: McpCredential; listedAt?: number; updatedAt?: number },
 ): Promise<McpServerRow> {
   const sealed = server.credential ? sealMcpCredential(sealKey, server.name, server.credential, server.url) : null;
-  return store.mcp.put({ name: server.name, url: server.url, auth: server.auth, protocol: server.protocol ?? null, tools: server.tools, prices: server.prices ?? null, sealed });
+  return store.mcp.put({
+    name: server.name, url: server.url, auth: server.auth, protocol: server.protocol ?? null, tools: server.tools, prices: server.prices ?? null,
+    serverInfo: boundedServerInfo(server.serverInfo), instructions: boundedInstructions(server.instructions), sealed,
+    ...(server.listedAt !== undefined ? { listedAt: server.listedAt } : {}), ...(server.updatedAt !== undefined ? { updatedAt: server.updatedAt } : {}),
+  });
 }
 
 /** The server's row goes. */
@@ -57,19 +81,19 @@ export async function putPendingSignIn(
   });
 }
 
-/** Takes a pending sign-in at its callback: read (gone when past its expiry, with `now`), then removed, so it is used once
- *  as today's in-memory take is. Its verifier opened and its plain working state returned; undefined when there is none, it
- *  has expired, or the verifier does not open. The read and the remove are two calls (as today's get+delete), not one atomic
- *  take. */
+/** Takes a pending sign-in at its callback, once: the store deletes and returns it in one atomic statement
+ *  (store.mcpOauth.take), gone when past its expiry (with `now`), so a replay or an expired state reads as undefined and no
+ *  second callback can take the same one. Its verifier is opened here (at its own AAD), the store never opens it, and its
+ *  plain working state is returned; undefined when there is none, it has expired, or the verifier does not open. The old
+ *  get()+remove() split is gone: nothing takes a sign-in any other way. */
 export async function takePendingSignIn(
-  store: { mcpOauth: Pick<McpOauth, "get" | "remove"> },
+  store: { mcpOauth: Pick<McpOauth, "take"> },
   sealKey: Buffer,
   state: string,
   now?: number,
 ): Promise<{ server: string; verifier: string; cookieBinding: string; working: unknown; expiresAt: number } | undefined> {
-  const row = await store.mcpOauth.get(state, now);
+  const row = await store.mcpOauth.take(state, now);
   if (!row) return undefined;
-  await store.mcpOauth.remove(state);
   try {
     return { server: row.server, verifier: unsealColumn(sealKey, sealedAt.oauthVerifier(state), row.verifierSealed).toString("utf8"), cookieBinding: row.cookieBinding, working: row.working, expiresAt: row.expiresAt };
   } catch {

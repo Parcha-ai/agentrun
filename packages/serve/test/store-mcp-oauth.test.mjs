@@ -43,3 +43,29 @@ test("sweepExpired removes every pending sign-in at or before now and answers ho
   assert.ok(await store.mcpOauth.get("live"), "the live one stays");
   assert.equal(await store.mcpOauth.sweepExpired(T0 + 200), 0, "nothing more to sweep");
 });
+
+test("take deletes and returns a pending sign-in in one statement; a replay after a successful take gets none", async (t) => {
+  const { store } = await storeOn(t);
+  await store.mcpOauth.put(pending("s1"));
+  const took = await store.mcpOauth.take("s1");
+  assert.deepEqual([took.state, took.server, took.cookieBinding], ["s1", "github", "cookie-abc"], "the row comes back");
+  assert.deepEqual([...took.verifierSealed], [...VERIFIER], "its verifier comes back sealed, the store never opened it");
+  assert.equal(await store.mcpOauth.take("s1"), undefined, "a replay gets none");
+  assert.equal(await store.mcpOauth.get("s1"), undefined, "and it is gone");
+});
+
+test("two concurrent takes of one state: exactly one gets the row, the other none (single use)", async (t) => {
+  const { store } = await storeOn(t);
+  await store.mcpOauth.put(pending("s1"));
+  const [a, b] = await Promise.all([store.mcpOauth.take("s1"), store.mcpOauth.take("s1")]);
+  const got = [a, b].filter((r) => r !== undefined);
+  assert.equal(got.length, 1, "exactly one take wins; a split into get()+remove() would let both read the row first");
+  assert.equal(got[0].state, "s1");
+});
+
+test("take of a row past its expiry returns undefined and deletes it, so a stale state can't be retried", async (t) => {
+  const { store } = await storeOn(t);
+  await store.mcpOauth.put(pending("s1", { expiresAt: T0 + 100 }));
+  assert.equal(await store.mcpOauth.take("s1", T0 + 200), undefined, "past its expiry: none");
+  assert.equal(await store.mcpOauth.get("s1"), undefined, "and removed, so it can't be retried");
+});

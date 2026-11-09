@@ -1,5 +1,6 @@
-export { createHarnessRunner, modelPortFor, SUBMIT_TOOL, RUNNER_RECORDS } from "./runner.js";
-export type { Admission, BeforeRequest, HarnessRunner, HarnessRunnerOptions, InFlight, ModelBooking, ModelPortEvent, ModelPortOptions } from "./runner.js";
+export { createHarnessRunner, modelPortFor, sessionSpendOf, SUBMIT_TOOL, RUNNER_RECORDS } from "./runner.js";
+export { runBooking, type RunSessions } from "./run-booking.js";
+export type { Admission, BeforeRequest, Refusal, HarnessRunner, HarnessRunnerOptions, InFlight, ModelBooking, ModelPortEvent, ModelPortOptions, SessionCost } from "./runner.js";
 export { DELEGATE_RESULT_SCHEMA, DELEGATE_TOOL, delegateProblems, delegateTool } from "./delegate.js";
 export type { DelegateAgent, DelegateEvent, DelegateOptions } from "./delegate.js";
 export { HarnessRunError, SessionFenced, TurnParked } from "./errors.js";
@@ -11,6 +12,6 @@ export { CONTENT_FILTERED, HOST_RESULT_MAX_CHARS } from "./types.js";
 export { bookRequest, isConnectCode, isGatewayTimeout, rejectionCode } from "./booking.js";
 export type { Booked, Ended, Priced } from "./booking.js";
 export type {
-  AdapterCapabilities, AdapterEvent, AdapterSession, AgentAdapter, AdapterFacts, SessionPort, Wire, HarnessEvent, HostTool, McpCallResult, McpClient, McpTool, ToolImage, JsonValue, ModelPort, ModelTicket, ModelRequest, ModelUsage, NoteRequest,
+  AdapterCapabilities, AdapterEvent, AdapterSession, AgentAdapter, AdapterFacts, GateAnswer, GateCall, SessionPort, Wire, HarnessEvent, HostTool, McpCallResult, McpClient, McpTool, ToolImage, JsonValue, ModelPort, ModelTicket, ModelRequest, ModelUsage, NoteRequest,
   NodeRequest, SessionIO, SessionMcp, SessionRecord, SessionSpec, SessionState, SessionStore, SessionWriter, TurnStatus,
 } from "./types.js";

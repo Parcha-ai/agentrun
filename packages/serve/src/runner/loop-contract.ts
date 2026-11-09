@@ -2,11 +2,17 @@
 // claims, renews, delivers command rows and releases; the loop runs the harness on the run's journal. B2's loop.ts
 // implements `Loop` for pi and the CLI adapters; the runner knows nothing about harnesses.
 
+import { refusedText } from "../refusal-words.js";
 import type { AlsoRow, Claim, Command, Journal } from "../store/store.js";
 
 // The store's own: a claim (its epoch fences every write made under it; `until` in epoch ms) and a command row (taken_at
 // set once, by the loop's journal commit that applies it or by the runner's refusal, with `refused` its reason).
 export type { AlsoRow, Claim, Command, Journal };
+
+/** Why a run ends failed when the answer it would end on was cut at the model's output limit (stopReason "length"): the
+ *  answer is unfinished, so the run never reads ended. `tokens`: what the cut answer used, when its harness says. */
+export const cutAtLimit = (tokens?: number): string =>
+  `the model stopped at its output limit${tokens !== undefined && Number.isSafeInteger(tokens) && tokens > 0 ? ` (${tokens} tokens)` : ""} before finishing its answer`;
 
 /** How an end-of-run turn the loop asked ended: its answer's text, its deadline passed (the turn is aborted), or it
  *  failed. */
@@ -29,7 +35,8 @@ export type EndOfRunTurn = (input: {
   /** The run was cut before it could look back: by a person's stop (`stopped`), by one during the end-of-run turn
    *  (`stopped-looking`), or by a fault (`faulted`). The step must not call `ask`: it returns only what a cut run keeps. */
   readonly cut?: "stopped" | "stopped-looking" | "faulted";
-  ask(prompt: string, opts: { readonly origin: "reflect"; readonly deadlineMs: number }): Promise<EndOfRunAnswer>;
+  /** `again`: the turn asked once more in the same session (its first answer out of format), as its own request. */
+  ask(prompt: string, opts: { readonly origin: "reflect"; readonly deadlineMs: number; readonly again?: true }): Promise<EndOfRunAnswer>;
   readonly signal: AbortSignal;
 }) => Promise<{ readonly also: readonly AlsoRow[] } | undefined>;
 
@@ -44,12 +51,30 @@ export type LoopEnd =
   | { readonly state: "parked"; readonly wakeAt?: number };
 
 export type StopReason =
-  /** A stop row: the loop stages that row's take in the commit that ends the run as stopped. */
-  | { readonly kind: "command"; readonly commandId: number }
+  /** A stop or cancel row: the loop stages that row's take in the commit that ends the run as stopped (`cancel`: a cancel
+   *  row, whose end says so, in main's words). */
+  | { readonly kind: "command"; readonly commandId: number; readonly cancel?: true }
   /** The runner could not renew before the claim ran out (or was fenced): the loop must write nothing more. */
   | { readonly kind: "claim-lost" }
   /** The runner is closing: the loop stops where it can resume, and the run is released to another runner. */
   | { readonly kind: "shutdown" };
+
+/** The end a person's stop or cancel writes: stopped, in words that say which. A cancel's are main's ("cancelled"). */
+export function endedBy(cancel: boolean | undefined): string {
+  return cancel ? "cancelled" : "stopped by a person";
+}
+
+/** The refusal a denied call's model reads: serve's own words for a call a person denied (refusal-words.ts refusedText,
+ *  one copy with the tool gate's), the person's note with it. Asked before its intent, the call never ran. */
+export function deniedText(tool: string, note?: string): string {
+  return refusedText(tool, note?.trim() ? note : undefined, "no");
+}
+
+/** An approve's or deny's note (body.note, the person's words), as its answer entry keeps it: absent when blank. */
+export function noteOf(command: Command): { note?: string } {
+  const note = (command.body as { note?: unknown } | null)?.note;
+  return typeof note === "string" && note.trim() !== "" ? { note } : {};
+}
 
 /** A command handed to a loop: "taken" means its take is staged in the journal commit that applies it. */
 /** A command's outcome: `taken` (the loop's own commit took it, with its effect), `refused` (the runner takes it as

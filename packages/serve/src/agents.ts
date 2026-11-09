@@ -17,6 +17,7 @@ import { computerOfPlace, type PlaceView, settingOfDefinition } from "./computer
 const computerView = (body: { computer?: RevisionComputer; place?: RevisionPlace }): { computer?: RevisionComputer } =>
   body.computer ? { computer: body.computer } : body.place ? { computer: computerOfPlace(body.place as PlaceView) as RevisionComputer } : {};
 import type { SignInView } from "./sign-ins.js";
+import { approvalsOf } from "./approvals.js";
 
 /** One agent as the routes show it: its row, its current revision and that revision's number (the oldest is 1). */
 export type AgentEntry = { agent: Agent; revision: Revision | null; version: number; revisions: number; runs: { count: number; live: number }; sizes: Map<string, number> };
@@ -115,7 +116,10 @@ export class Agents {
     // A capability with nothing set is none: `{web_search: {}}` and no settings are one revision.
     const kept = Object.entries(isObject(definition.tool_settings) ? definition.tool_settings : {}).filter(([, setting]) => isObject(setting) && Object.keys(setting).length);
     const set = kept.length ? { toolSettings: Object.fromEntries(kept) as Record<string, Record<string, string>> } : {};
-    const common = { skills: files, tools: (definition.tools as string[] | undefined) ?? [], ...harness, ...place, ...set, ...(note !== undefined ? { note } : {}) };
+    // Unattended is kept only when it is asked for: an agent that asks (the default) and one that says nothing are one
+    // revision, as they were before the field.
+    const unattended = definition.approvals === "never" ? { approvals: "never" as const } : {};
+    const common = { skills: files, tools: (definition.tools as string[] | undefined) ?? [], ...harness, ...place, ...set, ...unattended, ...(note !== undefined ? { note } : {}) };
     // A default spend cap for each run, and how it prices a request: an agentic revision's or a workflow's.
     const capped = { ...(typeof definition.max_cost_usd === "number" && definition.max_cost_usd > 0 ? { maxCostUsd: definition.max_cost_usd } : {}), ...(typeof definition.cap_mode === "string" ? { capMode: definition.cap_mode } : {}) };
     if (isObject(definition.workflow)) return { kind: "workflow", workflow: definition.workflow as never, ...common, ...capped };
@@ -298,7 +302,7 @@ export function definitionOf(agent: Agent, revision: Revision, version: number):
   const body = revision.kind === "agentic"
     ? { instructions: revision.body.instructions, ...(revision.body.model ? { model: revision.body.model } : {}), ...(revision.body.thinking ? { thinking: revision.body.thinking } : {}), ...(revision.body.learning !== undefined ? { learning: revision.body.learning } : {}), ...(revision.body.maxCostUsd !== undefined ? { max_cost_usd: revision.body.maxCostUsd } : {}), ...(revision.body.capMode !== undefined ? { cap_mode: revision.body.capMode } : {}) }
     : { workflow: revision.body.workflow, ...(revision.body.maxCostUsd !== undefined ? { max_cost_usd: revision.body.maxCostUsd } : {}), ...(revision.body.capMode !== undefined ? { cap_mode: revision.body.capMode } : {}) };
-  return { id: agent.id, version, name: agent.name, ...(agent.description !== undefined ? { description: agent.description } : {}), ...body, harness: harnessOfBody(revision.body), ...(revision.body.place ? { place: revision.body.place } : {}), ...computerView(revision.body), skills: skillNames(Object.keys(revision.body.skills)), tools: revision.body.tools, ...(revision.body.toolSettings ? { tool_settings: revision.body.toolSettings } : {}) };
+  return { id: agent.id, version, name: agent.name, ...(agent.description !== undefined ? { description: agent.description } : {}), ...body, harness: harnessOfBody(revision.body), ...(revision.body.place ? { place: revision.body.place } : {}), ...computerView(revision.body), skills: skillNames(Object.keys(revision.body.skills)), tools: revision.body.tools, ...(revision.body.toolSettings ? { tool_settings: revision.body.toolSettings } : {}), approvals: approvalsOf(revision.body.approvals) };
 }
 
 /** `Agent` as the contract shows it, with its current revision and its saved sign-ins (sign-ins.ts view: never a ref).

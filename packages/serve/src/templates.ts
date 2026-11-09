@@ -14,11 +14,12 @@ import { TOOL_KEY_ROWS } from "./key-words.js";
 import { MCP_SERVER_NAME } from "./mcp-servers.js";
 import { chooseModel, harnessRuns, hostModel, MODEL_KEYS, THINKING_LEVELS, type Tier } from "./model.js";
 import { mcpToolName, type PinScalar, type PinValue } from "./tool-gate.js";
-import { AGENT_LAYER_PINS, pinIssues } from "./tool-plane.js";
+import { AGENT_LAYER_PINS, pinIssues, sortedPin } from "./tool-plane.js";
 import { BOUND_TOOLS } from "./tools.js";
 import { TRIGGER_ADAPTERS } from "./trigger-adapters.js";
 import { triggerBodyIssues } from "./triggers.js";
 import { DEFAULT_INPUT_SCHEMA, definitionBodyIssues, inputIssues, isObject, type Json, MODEL_REF, unknownFields } from "./validate.js";
+import { APPROVALS, type Approvals } from "./approvals.js";
 
 /** The packages this server ships. */
 export const TEMPLATES_DIR = fileURLToPath(new URL("../templates/", import.meta.url));
@@ -348,6 +349,13 @@ export function readPackage(dir: string): Package {
       else skills[path] = text(`rules/${entry.name}`);
     }
   }
+  // The answer's schema ships beside each SKILL.md too, as a rule does: the agent reads it there, and the skill names it.
+  const schemaFile = isObject(f.output) && inside(f.output.schema) ? (f.output.schema as string) : undefined;
+  for (const skill of schemaFile ? skillDirs.filter((d) => d.isDirectory()) : []) {
+    const path = `${skill.name}/${basename(schemaFile!)}`;
+    if (Object.hasOwn(skills, path)) bad(schemaFile!, `skills/${path} has the same name, and the answer's schema ships beside each SKILL.md`);
+    else skills[path] = text(schemaFile!);
+  }
 
   // evals/<case>/: prompt.md (the run's input), graders/*.md (each its type in its front matter), case.yaml and
   // fixtures/ if it has them. The layout only: no eval runs here.
@@ -425,7 +433,7 @@ export function packageView(p: Package) {
 /** POST /v2/templates/{name}/apply's body (`{parameters, grants?, overrides?: {model}}`), checked against the package:
  *  the parameters as given, the MCP tools the owner allows (each one the package lists, by its gate name), and the model
  *  asked for in place of the package's. 422 naming every field that is wrong. */
-export function applyBodyOf(p: Package, body: Json): { parameters: Record<string, string | number | boolean>; grants: string[]; model?: string } {
+export function applyBodyOf(p: Package, body: Json): { parameters: Record<string, string | number | boolean>; grants: string[]; model?: string; approvals?: Approvals } {
   const issues: InputIssue[] = unknownFields(body, ["parameters", "grants", "overrides"]);
   const listed = p.mcp.flatMap(({ server, tools }) => tools.map((tool) => mcpToolName(server, tool)));
   const grants: string[] = [];
@@ -451,13 +459,14 @@ export function applyBodyOf(p: Package, body: Json): { parameters: Record<string
     else if (absent && spec.default !== undefined) parameters[key] = spec.default;
   }
   const overrides = body.overrides ?? {};
-  if (!isObject(overrides)) issues.push({ field: "overrides", reason: "wrong_type", message: "overrides is an object: {model?}" });
+  if (!isObject(overrides)) issues.push({ field: "overrides", reason: "wrong_type", message: "overrides is an object: {model?, approvals?}" });
   else {
-    issues.push(...unknownFields(overrides, ["model"]).map((i) => ({ ...i, field: `overrides.${i.field}`, message: "An apply overrides the model alone." })));
+    issues.push(...unknownFields(overrides, ["model", "approvals"]).map((i) => ({ ...i, field: `overrides.${i.field}`, message: "An apply overrides the model and the approvals alone." })));
+    if (overrides.approvals !== undefined && !(APPROVALS as readonly unknown[]).includes(overrides.approvals)) issues.push({ field: "overrides.approvals", reason: "not_an_option", message: `overrides.approvals is one of ${APPROVALS.join(", ")}: never runs the agent unattended, while a deny still refuses` });
     if (overrides.model !== undefined && !(typeof overrides.model === "string" && MODEL_REF.test(overrides.model))) issues.push({ field: "overrides.model", reason: "bad_format", message: 'overrides.model is "provider/model-id"' });
   }
   if (issues.length) throw invalid(issues);
-  return { parameters, grants, ...(isObject(overrides) && typeof overrides.model === "string" ? { model: overrides.model } : {}) };
+  return { parameters, grants, ...(isObject(overrides) && typeof overrides.model === "string" ? { model: overrides.model } : {}), ...(isObject(overrides) && (overrides.approvals === "ask" || overrides.approvals === "never") ? { approvals: overrides.approvals } : {}) };
 }
 
 /** The model a package's agent gets here: its `prefer` when this server runs it on `harness` (a key for its provider, or
@@ -477,8 +486,9 @@ export async function packageModel(env: NodeJS.ProcessEnv, model: Package["model
  *  pin, filled, in the agent's tool settings, whatever its permission; one whose pin fills empty (its parameter not
  *  given) is set to deny instead, granted or not, and named in `unpinned` (by gate name, with the parameters not given):
  *  a send with no destination set never runs. While an agent's own settings keep no pin (`pins`, AGENT_LAYER_PINS by
- *  default) a filled pin is not written: it is named in `unkept`, with its values, for the server's settings. */
-export function compiled(p: Package, parameters: Json, chosen: { harness?: string; model?: string; mcp: McpNeed[]; defaultTools: readonly string[]; grants: readonly string[]; pins?: boolean }): { agent: Json; triggers: Json[]; unpinned: { tool: string; parameters: string[] }[]; unkept: { tool: string; pin: Record<string, PinValue> }[] } {
+ *  default) a filled pin is not written: it is named in `unkept`, with its values, for the server's settings.
+ *  `approvals`: the apply's choice, written only when it is never (none given: the agent asks). */
+export function compiled(p: Package, parameters: Json, chosen: { harness?: string; model?: string; mcp: McpNeed[]; defaultTools: readonly string[]; grants: readonly string[]; pins?: boolean; approvals?: Approvals }): { agent: Json; triggers: Json[]; unpinned: { tool: string; parameters: string[] }[]; unkept: { tool: string; pin: Record<string, PinValue> }[] } {
   const skills = Object.keys(p.skills).filter((path) => /^[^/]+\/SKILL\.md$/.test(path)).map((path) => path.slice(0, -"/SKILL.md".length));
   const granted = chosen.mcp.flatMap(({ server, tools }) => tools.map((tool) => mcpToolName(server, tool)));
   const allowed = chosen.grants.filter((tool) => granted.includes(tool));
@@ -496,7 +506,7 @@ export function compiled(p: Package, parameters: Json, chosen: { harness?: strin
         unpinned.push({ tool: name, parameters: empty });
       } else {
         const filledPin = Object.fromEntries(each.map(([arg, one]) => [arg, one.value]));
-        if (chosen.pins ?? AGENT_LAYER_PINS) settings[name] = { ...settings[name], pin: filledPin };
+        if (chosen.pins ?? AGENT_LAYER_PINS) settings[name] = { ...settings[name], pin: sortedPin(filledPin) as Record<string, PinValue> };
         else unkept.push({ tool: name, pin: filledPin });
       }
     }
@@ -506,6 +516,8 @@ export function compiled(p: Package, parameters: Json, chosen: { harness?: strin
     ...(chosen.harness ? { harness: chosen.harness } : {}), ...(chosen.model ? { model: chosen.model } : {}), ...(p.effort ? { thinking: p.effort } : {}),
     ...(tools ? { tools } : {}), ...(Object.keys(settings).length ? { tool_settings: settings } : {}),
     ...(p.learning !== undefined ? { learning: p.learning } : {}), ...(p.budget ? { max_cost_usd: p.budget.per_run_usd } : {}), skills,
+    // The apply's choice: unattended only when it says never (none given: the agent asks).
+    ...(chosen.approvals === "never" ? { approvals: "never" } : {}),
   };
   return { agent: { definition, skills: { ...p.skills } }, triggers: p.triggers.map((trigger) => filled(trigger, parameters) as Json), unpinned, unkept };
 }

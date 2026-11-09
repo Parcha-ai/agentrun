@@ -6,7 +6,10 @@ import type { Context } from "@earendil-works/chord";
 import type { EntryLike, TimelineEvent, TimelineOptions } from "@parcha/pi-durable-agent/timeline";
 import { timelineOf } from "@parcha/pi-durable-agent/timeline";
 import { Hearing } from "../heard.js";
-import { journalEntries } from "../runner/journal-reader.js";
+import { labelled, type Reflect } from "../learning-run.js";
+import { reflectFrom } from "../runner/end-of-run.js";
+import { journalEntries, journalRecords } from "../runner/journal-reader.js";
+import { KINDS } from "../runner/journal-kinds.js";
 import type { Store } from "../store/store.js";
 
 /** A run's entries from the one store, in log order (by id across every conversation), as the old "SELECT record FROM
@@ -16,9 +19,22 @@ export async function runEntries(store: Store, runId: string, context: Context):
   return entries.slice().sort((a, b) => Number(a.id ?? 0) - Number(b.id ?? 0));
 }
 
-/** A run's timeline rows, the renderer (timelineOf) unchanged, over the one store's entries. */
+/** Where a run's end-of-run turn is in its journal, as the server's Reflect names it for labelled(): `after`, the entry
+ *  before its input; `until`, the run's end entry once written. Undefined for a run that asked none. */
+export async function runReflect(store: Store, runId: string, context: Context): Promise<Pick<Reflect, "after" | "until"> | undefined> {
+  const records = await journalRecords(store.readJournal(runId), context);
+  const from = reflectFrom(records.submissions ?? []);
+  if (from === undefined) return undefined;
+  const end = records.entries.find((entry) => entry.kind === KINDS.end && Number(entry.id) >= from);
+  return { after: from - 1, ...(end ? { until: Number(end.id) } : {}) };
+}
+
+/** A run's timeline rows, the renderer (timelineOf) unchanged, over the one store's entries, the end-of-run turn's rows
+ *  labelled as the server labels them (learning-run.ts labelled: learning, its message in the host's words, its answer
+ *  never the run's). */
 export async function runTimeline(store: Store, runId: string, context: Context, options: TimelineOptions = {}): Promise<TimelineEvent[]> {
-  return timelineOf(await runEntries(store, runId, context), options);
+  const rows = timelineOf(await runEntries(store, runId, context), options);
+  return labelled((await runReflect(store, runId, context)) as Reflect | undefined, rows);
 }
 
 /** What was said to a run (its hearing), from the one store's entries, as runs.ts noteTurns fed it from the stream: each
