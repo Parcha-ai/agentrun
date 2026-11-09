@@ -23,6 +23,8 @@ const { createDispatchLoop } = await import("../dist/runner/dispatch.js");
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { adapterRunSpecFromLaunch } = await import("../dist/runner/adapter-run-spec.js");
 const { runFolder } = await import("../dist/workspace/paths.js");
+const { withLiveTicker } = await import("../dist/runner/live-ticker.js");
+const { routeOf } = await import("../dist/runner/model-route.js");
 after(closeOpenSessions);
 
 const TIMING = { leaseMs: 30_000, renewEveryMs: 1_000, stopMarginMs: 5_000, pollMs: 20, commandPollMs: 30 };
@@ -59,8 +61,10 @@ async function piRun(t, { tools, like, script, files = {}, during }) {
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
   let runner;
+  let ticker;
   t.after(async () => {
     await runner?.close();
+    await ticker?.close();
     await store.close().catch(() => {});
     await server.close().catch(() => {});
     rmSync(dir, { recursive: true, force: true });
@@ -80,10 +84,9 @@ async function piRun(t, { tools, like, script, files = {}, during }) {
     env: {}, data: dir, journal: (claim) => store.journal(claim), store, sealKey: Buffer.alloc(32, 3), routeOf: async () => route,
     computerForClaim: async () => ({ release: async () => {} }),
   };
-  runner = startRunner({
-    store, name: "runner-a", ...TIMING,
-    createLoop: createDispatchLoop({ launchOf: (runId) => store.runs.launch(runId), resolve: (_name, given) => createAdapterLoop((claim, run) => adapterRunSpecFromLaunch(given, run, deps, claim)) }),
-  });
+  // The run's live view: its held state (the tools running now, with their output) written to the store each tick.
+  ticker = withLiveTicker(store, createDispatchLoop({ launchOf: (runId) => store.runs.launch(runId), resolve: (_name, given) => createAdapterLoop((claim, run) => adapterRunSpecFromLaunch(given, run, deps, claim)) }), { tickMs: 50 });
+  runner = startRunner({ store, name: "runner-a", ...TIMING, createLoop: ticker.createLoop });
   const going = during ? during(server, folder) : Promise.resolve();
   const from = Date.now();
   for (;;) {
@@ -107,6 +110,19 @@ function toolResults(request) {
 }
 
 const READ_PIC = { call: "read", args: { path: "pic.png" } };
+
+test("a route carries what its catalog model takes as input, on every wire: a text-only model's route says so, an image model's says it takes images", async () => {
+  const key = { OPENAI_API_KEY: `not-a-secret-${"o"}`, ANTHROPIC_API_KEY: `not-a-secret-${"a"}` };
+  // o3-mini takes text alone in pi-ai's catalog: through the route's own Messages translation, and on OpenAI's Responses.
+  const translated = await routeOf("openai/o3-mini", key);
+  assert.deepEqual(translated.like?.input, ["text"], `the translated route says text alone: ${JSON.stringify(translated.like)}`);
+  const responses = await routeOf("openai/o3-mini", key, "default", ["anthropic-messages", "openai-responses"]);
+  assert.equal(responses.provider.api, "openai-responses");
+  assert.deepEqual(responses.like?.input, ["text"], `the Responses route says text alone: ${JSON.stringify(responses.like)}`);
+  // An Anthropic model, on Anthropic's own route, takes images.
+  const anthropic = await routeOf("anthropic/claude-sonnet-4-5", key);
+  assert.ok(anthropic.like?.input?.includes("image"), `the Anthropic route says it takes images: ${JSON.stringify(anthropic.like)}`);
+});
 
 test("a model without image input reading an image is sent pi-ai's placeholder, not the image, and pi's read says so", { timeout: 60_000 }, async (t) => {
   const { row, requests } = await piRun(t, { tools: ["read"], like: { input: ["text"] }, script: [READ_PIC, { say: "done" }], files: { "pic.png": png(40, 20) } });
@@ -133,6 +149,7 @@ test("a running tool's output reaches the run's live view while it runs, before 
   // it end. No sleep orders this: the release is written only once the chunk is seen.
   const command = "echo first-chunk; while [ ! -e release ]; do sleep 0.05; done; echo last-chunk";
   let seen;
+  let last;
   const { row } = await piRun(t, {
     tools: ["bash"], script: [{ call: "bash", args: { command } }, { say: "done" }],
     during: async (server, folder) => {
@@ -140,6 +157,7 @@ test("a running tool's output reaches the run's live view while it runs, before 
       try {
         for (;;) {
           const [live] = await server.live.read(["run-1"]);
+          if (live) last = live.state;
           const slot = live?.state?.tools?.find((tool) => tool.name === "bash");
           if (typeof slot?.output === "string" && slot.output.includes("first-chunk")) {
             seen = slot.output;
@@ -153,7 +171,7 @@ test("a running tool's output reaches the run's live view while it runs, before 
       }
     },
   });
-  assert.ok(seen !== undefined, "the running bash's first chunk reached the live view while it ran");
+  assert.ok(seen !== undefined, `the running bash's first chunk reached the live view while it ran: the last live state ${JSON.stringify(last)}`);
   assert.equal(seen.includes("last-chunk"), false, "seen before the tool ended");
   assert.equal(row.state, "ended", JSON.stringify({ state: row.state, summary: row.summary }));
 });

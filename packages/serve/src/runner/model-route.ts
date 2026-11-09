@@ -36,9 +36,10 @@ export type RouteUsage = { input: number; output: number; cacheRead: number; cac
 export interface ModelRoute {
   readonly provider: { readonly api: Wire; readonly origin: string; readonly credential: () => string | Promise<string>; readonly headers?: Readonly<Record<string, string>>; readonly auth?: "bearer" | "x-api-key" };
   readonly model: string;
-  /** The catalog's entry for the model on a wire that carries its reasoning (Responses): whether it reasons, its window
-   *  and its output ceiling, as pi-ai's model of it takes them. */
-  readonly like?: { readonly reasoning?: boolean; readonly contextWindow?: number; readonly maxTokens?: number };
+  /** The catalog's entry for the model, as pi-ai's model of it takes it: on every wire, what it takes as input (whether it
+   *  takes images) and its input limits (an image's most size), which pi's session and its read size an image by; on a
+   *  wire that carries its reasoning (Responses), also whether it reasons, its window and its output ceiling. */
+  readonly like?: { readonly reasoning?: boolean; readonly contextWindow?: number; readonly maxTokens?: number; readonly input?: readonly string[]; readonly inputLimits?: unknown };
   /** A request's price from its usage (the proxy's booking reads it): pi-ai's calculateCost, tiers included. */
   readonly price?: (model: string, usage: RouteUsage) => number | null;
   /** The upstream fetch: the route's own, for a model that does not speak Messages. Absent: the network. */
@@ -52,7 +53,7 @@ export interface ModelRoute {
 /** The origin a route with its own fetch names: nothing is ever sent there, its fetch answers every request. */
 export const ROUTE_ORIGIN = "https://model-route.invalid";
 
-type PiModel = { id: string; provider: string; api: string; baseUrl?: string; cost: RouteCost; maxTokens?: number; reasoning?: boolean; contextWindow?: number };
+type PiModel = { id: string; provider: string; api: string; baseUrl?: string; cost: RouteCost; maxTokens?: number; reasoning?: boolean; contextWindow?: number; input?: readonly string[]; inputLimits?: unknown };
 /** The wires a caller of routeOf speaks when it names none: Anthropic's Messages alone. */
 const MESSAGES_ONLY: readonly Wire[] = ["anthropic-messages"];
 type PiModels = { getModel(provider: string, id: string): unknown; streamSimple(model: never, context: never, options?: never): AsyncIterable<PiEvent> };
@@ -74,7 +75,10 @@ export async function routeOf(model: string | undefined, env: NodeJS.ProcessEnv 
     const usage = { ...used, totalTokens: used.input + used.output + used.cacheRead + used.cacheWrite, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
     return calculateCost(target as never, usage as never).total;
   };
-  const route = { model: chosen.model.modelId, price, cost: target.cost, outputCeiling: target.maxTokens ?? null };
+  // What the model takes as input and its input limits, on every wire: pi's session sends a model that takes no images
+  // pi-ai's placeholder in place of one, and pi's read holds an image to the model's limits (port-models.ts sessionModel).
+  const sees = { ...(target.input ? { input: target.input } : {}), ...(target.inputLimits ? { inputLimits: target.inputLimits } : {}) };
+  const route = { model: chosen.model.modelId, price, cost: target.cost, outputCeiling: target.maxTokens ?? null, like: sees };
   // An Anthropic model speaks Messages itself: the network, at its catalog origin, its key read by name per request.
   if (chosen.model.provider === "anthropic") {
     return { ...route, provider: { api: "anthropic-messages", origin: target.baseUrl ?? "https://api.anthropic.com", credential: () => env.ANTHROPIC_API_KEY ?? env.ANTHROPIC_AUTH_TOKEN ?? "" } };
@@ -85,7 +89,7 @@ export async function routeOf(model: string | undefined, env: NodeJS.ProcessEnv 
     return {
       ...route, model: to.modelId,
       provider: { api: "openai-responses", origin: to.origin, credential: to.credential, auth: to.auth },
-      like: { ...(target.reasoning !== undefined ? { reasoning: target.reasoning } : {}), ...(target.contextWindow ? { contextWindow: target.contextWindow } : {}), ...(target.maxTokens ? { maxTokens: target.maxTokens } : {}) },
+      like: { ...sees, ...(target.reasoning !== undefined ? { reasoning: target.reasoning } : {}), ...(target.contextWindow ? { contextWindow: target.contextWindow } : {}), ...(target.maxTokens ? { maxTokens: target.maxTokens } : {}) },
     };
   }
   return { ...route, provider: { api: "anthropic-messages", origin: ROUTE_ORIGIN, credential: () => "model-route" }, fetch: messagesFetch(models as unknown as PiModels, target, redact ?? secretRedactor(runnerSecrets(env)), upstream) };
