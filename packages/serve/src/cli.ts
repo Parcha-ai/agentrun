@@ -24,6 +24,7 @@ const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--
        agentrun-serve validate-template DIR
        agentrun-serve eval-template DIR [--case NAME ...] [--runs N] [--server URL] [--grader-model PROVIDER/MODEL] [--report FILE] [--faux MODULE]
        agentrun-serve import [--data DIR] [--from claude-code,codex,pi] [--dry-run] [--include-deleted] [--all] [--verbose] [--port N]
+       agentrun-serve runner --data DIR [--loops N]
 
   --data DIR        the agent store and its runs (default ~/.local/share/agentrun/agents); the token is DIR/.token, mode 0600
   --listen ADDR     the address to listen on (default 127.0.0.1); on any other, every Host name is served and the token
@@ -183,6 +184,33 @@ if (process.argv[2] === "import") {
   process.exit(await importCommand(process.argv.slice(3), USAGE));
 }
 
+// A runner process of its own: `agentrun-serve runner --data D [--loops N]`. It opens the store in the data directory as a
+// runner (sharing it with the server, setting nothing up) and claims and runs every run until SIGTERM/SIGINT. The loop it
+// runs for each run comes from the runner's dispatch (per harness).
+if (process.argv[2] === "runner") {
+  const { runnerArgs, startRunnerProcess, runUntilSignalled, RunnerRefused } = await import("./runner/main.js");
+  // TODO(E2r): createLoop is the runner's dispatch (runner/dispatch.ts) — the pi adapter loop and the CLI/workflow/learning
+  // loops, keyed by the run's harness. Named import until its sha lands.
+  const { createLoop } = await import("./runner/dispatch.js");
+  let args: { dataDir: string; loops?: number };
+  try {
+    args = runnerArgs(process.argv.slice(3));
+  } catch (error) {
+    console.error(`${(error as Error).message}\n\n${USAGE}`);
+    process.exit(2);
+  }
+  let runner;
+  try {
+    runner = await startRunnerProcess({ dataDir: args.dataDir, ...(args.loops !== undefined ? { loops: args.loops } : {}), createLoop });
+  } catch (error) {
+    console.error(`agentrun-serve runner: ${error instanceof RunnerRefused ? error.message : (error as Error).message}`);
+    process.exit(1);
+  }
+  console.log(`runner on ${args.dataDir}${args.loops !== undefined ? ` (up to ${args.loops} runs at once)` : ""}`);
+  await runUntilSignalled(runner);
+  process.exit(0);
+}
+
 let values;
 try {
   ({ values } = parseArgs({
@@ -274,6 +302,18 @@ try {
   console.error(`agentrun-serve: ${(error as Error).message}`);
   process.exit(1);
 }
+// The start launches one runner beside the server on the same data dir (design: "server and runner"): it claims and runs
+// every run, sharing only the store. TODO(E2r): createLoop is the runner's dispatch (runner/dispatch.ts).
+const { startRunnerProcess: startRunner } = await import("./runner/main.js");
+const { createLoop: runnerLoop } = await import("./runner/dispatch.js");
+let runnerProc;
+try {
+  runnerProc = await startRunner({ dataDir: data, createLoop: runnerLoop });
+} catch (error) {
+  console.error(`agentrun-serve: the runner could not start: ${(error as Error).message}`);
+  await serve.close();
+  process.exit(1);
+}
 // A token from the environment is the operator's already, and the stored one is printed by the start that made it only.
 const source = given ? "env" : serve.tokenMade ? "made" : "file";
 for (const line of banner({ url: serve.url, baseUrl: serve.baseUrl, data, token: serve.token, source, accounts, boxes: serve.boxesLine, ...(values.listen ? { listen: values.listen } : {}), ...(publicUrl ? { publicUrl } : {}) })) console.log(line);
@@ -290,7 +330,7 @@ const record = join(resolve(data), SERVER_FILE);
 // (stop-signals.ts). The stop is in place before the record is written: a SIGTERM sent the moment the record appears is
 // a clean stop that removes it, never the default end by signal that leaves it behind.
 const stop = stopOnSignals({
-  close: () => (removeOwnRecord(record), serve.close()),
+  close: () => (removeOwnRecord(record), Promise.all([runnerProc.close(), serve.close()]).then(() => undefined)),
   stopping: () => serve.stopping(),
   done: (code) => (removeOwnRecord(record), process.exit(code)),
   say: (line) => console.error(line),
