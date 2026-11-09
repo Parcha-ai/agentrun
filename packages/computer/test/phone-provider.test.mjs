@@ -513,6 +513,32 @@ test("a drifted twin's phone is refused at connect, in the drift check's words",
 	assert.match(refused.error.message, new RegExp(`hello: the daemon reports version 0\\.0\\.0-drift, expected ${provider.version.replaceAll(".", "\\.")}`));
 });
 
+test("a ledger put that fails once the phone's id is known ends the phone and answers in words: at the first put, and at the last one once ready", async () => {
+	for (const [nth, when] of [
+		[1, "the put of the id the POST answered"],
+		[2, "the put of the deadline once ready"],
+	]) {
+		// The pending entry is written; the nth put of the session's own entry fails.
+		const base = memoryLedger();
+		let puts = 0;
+		const ledger = {
+			...base,
+			put: (entry) => {
+				if (entry.request === undefined && ++puts === nth) throw new Error("the disk is full");
+				return base.put(entry);
+			},
+		};
+		const { provider, fake } = await setup({ readyAfter: 2 }, { ledger });
+		let created;
+		await assert.doesNotReject(async () => (created = await provider.create(SPEC)), when);
+		assert.equal(created.ok, false, `${when}: ${JSON.stringify(created)}`);
+		assert.equal(created.error.code, "phone", when);
+		assert.match(created.error.message, /the phone ledger could not be written: the disk is full; the phone was ended$/, when);
+		assert.ok(fake.requests().some((r) => r.method === "DELETE" && r.path === "/sessions/sess_0001"), `${when}: DELETE sent`);
+		assert.equal(fake.sessions.size, 0, `${when}: no phone is left running`);
+	}
+});
+
 test("an unreadable ledger is a result in words from list and testConnection, never a throw; create makes no phone without one", async () => {
 	const broken = join(dir, "broken-ledger.json");
 	writeFileSync(broken, "{ not json");
