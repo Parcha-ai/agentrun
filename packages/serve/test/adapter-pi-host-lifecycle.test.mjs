@@ -85,9 +85,10 @@ test("onConversation is for agent conversations only: the root and a subagent's 
   const { agentConversation } = await import("../dist/runner/adapter-loop.js");
   const { ROOT_CONVERSATION_ID } = await import("@earendil-works/pi-durable");
   assert.equal(typeof agentConversation, "function", "the loop's one rule for which conversations a host sees");
-  assert.equal(agentConversation({ id: ROOT_CONVERSATION_ID, ownership: { kind: "ownerless" } }), true, "the root");
-  assert.equal(agentConversation({ id: 7, ownership: { kind: "task", taskId: "task-1" } }), true, "a subagent's, owned by the task that opened it");
-  assert.equal(agentConversation({ id: 5, ownership: { kind: "ownerless" } }), false, "an ownerless conversation that is not the root: the loop's session records");
+  // pi's ConversationRecord: a subagent's names its owner (the task that opened it, and the conversation it ran in).
+  assert.equal(agentConversation({ id: ROOT_CONVERSATION_ID }), true, "the root");
+  assert.equal(agentConversation({ id: 7, owner: { conversationId: ROOT_CONVERSATION_ID, taskId: "task-1" } }), true, "a subagent's, owned by the task that opened it");
+  assert.equal(agentConversation({ id: 5 }), false, "a conversation with no owner that is not the root: the loop's session records");
 });
 
 test("a host tool's api gives its conversationId, as a browser host tool reads it", () => {
