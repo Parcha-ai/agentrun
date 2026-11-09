@@ -1,4 +1,4 @@
-import { act, createElement } from "react";
+import { act, createElement, StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
 import { SchedulesPage } from "./Schedules";
@@ -144,5 +144,24 @@ describe("Triggers: GitHub", () => {
     await act(async () => { answer(json(201, { ...PRS, id: "trg_new" })); });
     await t.settle();
     expect(t.went).not.toContain("#/triggers/trg_new");
+  });
+
+  it("under StrictMode (the console's own root), a create still opens the trigger", async () => {
+    const s = server();
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    const went: string[] = [];
+    act(() => root!.render(createElement(StrictMode, null, createElement(SchedulesPage, { v2: s.v2, view: { trigger: null, kind: "github" }, go: (h: string) => void went.push(h), agentName: (id: string) => id }))));
+    const settle = async () => { for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
+    await settle();
+    const set = async (name: string, value: string) => {
+      const el = host.querySelector(`[name="${name}"]`) as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement;
+      const proto = el instanceof HTMLSelectElement ? HTMLSelectElement.prototype : el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+      await act(async () => { Object.getOwnPropertyDescriptor(proto, "value")!.set!.call(el, value); el.dispatchEvent(new Event(el instanceof HTMLSelectElement ? "change" : "input", { bubbles: true })); });
+    };
+    await set("agent", "triage"); await set("content", "Review the pull request."); await set("maxCost", "1");
+    await act(async () => { [...host.querySelectorAll("button")].find((b) => b.textContent?.trim() === "Create GitHub trigger")!.click(); });
+    await settle();
+    expect(went).toEqual(["#/triggers/trg_new"]);
   });
 });
