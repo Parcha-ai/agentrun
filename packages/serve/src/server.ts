@@ -46,9 +46,11 @@ import { computerViewerLink, handoverById, type LiveFamily, type LiveHandover, l
 import { browserHandBack, handBackTarget } from "./browser-commands.js";
 import { type ComputerOf, computerView } from "./computer-view.js";
 import { durationMs, logLine } from "./print.js";
-import { knownToolCostOf, redactorOf, type RunMoment, type State, type Status, toolCostOf, WITHHELD_SIGN_IN } from "./run-view.js";
+import { knownToolCostOf, redactorOf, type RunMoment, type State, type Status, toolCostOf } from "./run-view.js";
 import { approve, archiveRun, cancel, message, raiseCap, type StartDeps, type StartOptions, startRun, stop as stopRunOverStore, WAITS_ON_A_PERSON } from "./runs-over-store.js";
 import { momentOverStore, summaryOverStore, type ViewDeps, viewOverStore, withheldOverStore } from "./store-view.js";
+import { servedTimelineRows } from "./run-timeline-served.js";
+import { runCutValues } from "./run-cut.js";
 import { readLaunchBody } from "./run-launch.js";
 import { listRunFiles as listRunFilesOverStore, readRunFile as readRunFileOverStore, runBrowserState, runGraphView, type RunReadsDeps, runTimelines } from "./run-reads-over-store.js";
 import { triggerTargets, type TriggerTargetDeps } from "./trigger-targets.js";
@@ -352,8 +354,9 @@ export type ServeOptions = {
  *  harness's, which scripts the harnesses with or without it. */
 const FAUX_SWITCHES = [["fauxBrowser", FAUX_BROWSER_ENV], ["fauxWeb", FAUX_WEB_ENV], ["fauxJev", FAUX_JEV_ENV], ["fauxParallel", FAUX_PARALLEL_ENV], ["fauxOpenrouter", FAUX_OPENROUTER_ENV], ["fauxMonid", FAUX_MONID_ENV], ["fauxUpstream", FAUX_UPSTREAM_ENV], ["fauxExa", FAUX_EXA_ENV], ["fauxBox", FAUX_BOX_ENV], ["fauxEgress", FAUX_EGRESS_ENV]] as const;
 
-/** The test switches a run's process gets, each module path resolved: empty outside tests. */
-function fauxEnvOf(options: ServeOptions): NodeJS.ProcessEnv {
+/** The test switches a run's process gets, each module path resolved: empty outside tests. A test's in-process runner
+ *  takes the same (test/support.mjs startInProcessRunner). */
+export function fauxEnvOf(options: ServeOptions): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = options.harnessTable ? { [HARNESS_TABLE_ENV]: resolve(options.harnessTable) } : {};
   if (!options.faux) return env;
   env[FAUX_ENV] = resolve(options.faux);
@@ -1189,6 +1192,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     env,
     runView: (_store, runId) => viewOverStore(store, runId, viewDepsFor(ownOriginOf())),
     withheld: (_store, runId) => withheldOverStore(store, runId, viewDepsFor(ownOriginOf())),
+    cutValues: (_store, runId) => runCutValues({ serverSecrets, signIns }, store, runId),
     context: ctx,
     ...(sealKey ? { liveViewer: (runId: string) => liveViewerLink(store, sealKey, runId) } : {}),
   };
@@ -1197,10 +1201,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // The route frames the SSE around its `page`, which long-polls the journal, byte-identical to the old live run's page.
   const timelines = runTimelines({
     context: ctx,
-    // Every row cut of each secret this server never shows (serverSecrets, read for each page: one rotated or saved since
-    // is cut at once), in every spelling of it, as the run view's answer and title are: a run's Timeline is read from its
-    // journal, which keeps what the run said whole.
-    timelineRows: (forStore, runId, context) => runTimeline(forStore, runId, context, { redact: redactorOf(serverSecrets()) }),
+    // The run's rows as served (run-timeline-served.ts), by its one cut (run-cut.ts, read for each page: a secret rotated
+    // or saved since is cut at once), the set its view's words, title and error are cut of: each secret this server never
+    // shows and each browser sign-in pointer the run was handed; its decision rows among them, its error rows in the
+    // error's words. A run whose hand can't be read back here is withheld: none of its rows. A run's Timeline is read
+    // from its journal, which keeps what the run said whole.
+    timelineRows: (forStore, runId, context) => servedTimelineRows({ serverSecrets, signIns, keyEnv: () => withSecrets(process.env, "all", storedKeys) }, forStore, runId, context),
     runView: (forStore, runId) => viewOverStore(forStore, runId, viewDepsFor(ownOriginOf())),
   });
   const triggerDeps: TriggerTargetDeps = {
