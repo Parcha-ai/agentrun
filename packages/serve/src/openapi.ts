@@ -551,6 +551,12 @@ const COMPUTER_VIEW = closedWith({
   taken_until: { type: "string", format: "date-time", description: "When an owner's take-over goes back to the agent on its own, without a hand-back." },
   why: { type: "string", description: "Why there is nothing to watch, in the server's words: with state `off` (the run has no desktop or phone) and `none` (it is not up now)." },
 });
+/** A secret as every view shows it (key-meta.ts): never a value, a prefix, a length or a hash. */
+const SECRET_META = {
+  set: { type: "boolean", description: "Whether a value is set: the value itself is never shown." },
+  source: { enum: ["env", "console", "sign-in", null], description: "Where the value comes from: `env`, the server's environment (by the key's name; it wins over a saved one); `console`, saved through this server's routes, sealed; `sign-in`, obtained by a sign-in or Connect; null when it is not set." },
+  changed_at: { type: ["string", "null"], format: "date-time", description: "When the saved value last changed; null when it is not set, or comes from the environment." },
+};
 /** computer/1: an agent's computer kind, as Settings → Computers and the run read name it (computer-setting.ts). */
 const COMPUTER_KIND = { enum: ["none", "sandbox", "desktop", "phone", "browser"] };
 /** A provider in Settings → Computers (computers.ts ProviderView). */
@@ -558,7 +564,7 @@ const COMPUTER_PROVIDER = closedWith({
   id: { type: "string", description: "The provider's id, as an agent's `computer.provider` names it (PUT /computers/{provider}/keys)." },
   name: { type: "string", description: "Its name in words." },
   metered: { type: "boolean", description: "Whether its computers are billed by the vendor." },
-  keys: { type: "array", items: closed({ name: { type: "string", description: "The key's name, as PUT /computers/{provider}/keys takes it." }, required: { type: "boolean" }, saved: { type: "boolean", description: "Whether a value is saved: the value itself is never shown." } }) },
+  keys: { type: "array", items: closed({ name: { type: "string", description: "The key's name, as PUT /computers/{provider}/keys takes it, and the environment variable that sets it." }, required: { type: "boolean", description: "Whether the provider needs it; an optional key may stay unset." }, ...SECRET_META }) },
   ready: { type: "boolean", description: "Whether a run could have its computer of this kind here now: it fits this server's folder mode and every required key is saved." },
 }, {
   why: { type: "string", description: "Why it is not ready, in words naming the setting to fill." },
@@ -596,7 +602,7 @@ const RUN_COMPUTER = {
 /** archil/1: GET, PUT and DELETE /workspace/archil's answer (archil-routes.ts view). */
 const ARCHIL_VIEW = closedWith({
   on: { type: "boolean", description: "Whether Mode 2 is on: run folders on this Archil disk. Off, they are on this server's own disk (Mode 1)." },
-  keys: { type: "array", items: closed({ name: { enum: ["ARCHIL_API_KEY"] }, saved: { type: "boolean", description: "Whether a value is saved: never shown." } }) },
+  keys: { type: "array", items: closed({ name: { enum: ["ARCHIL_API_KEY"] }, ...SECRET_META }) },
 }, {
   diskId: { type: "string" },
   region: { type: "string" },

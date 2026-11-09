@@ -1,7 +1,8 @@
 // The owner's Archil routes: what turns Mode 2 on and off. Mode 2 is the Archil settings row present (archil-settings.ts);
 // the disk's one kept credential is the account key, sealed under the claim's row name ("archil.api_key"). No disk token
 // is kept: a computer's mount credential is minted per run from the account key.
-//   GET    /v2/workspace/archil       on or off, the settings, and whether the account key is saved (never a value)
+//   GET    /v2/workspace/archil       on or off, the settings, and the account key as the shared secret shape: set or not,
+//                                     where from, when changed (never a value)
 //   PUT    /v2/workspace/archil       the settings row replaced, and the account key sealed when given (null removes it);
 //                                     the exec image, when given, pinned by digest
 //   DELETE /v2/workspace/archil       off (the settings row removed; the key is kept, for turning it on again)
@@ -10,7 +11,8 @@
 // archilRoute holds the routes' rules, so serve's dispatch only calls it and sends the answer, or the ApiError's status.
 import { ARCHIL_API_KEY_ROW, type ArchilSettings, clearArchilSettings, loadArchilSettings, saveArchilSettings } from "./archil-settings.js";
 import { ApiError, type InputIssue, invalid } from "./errors.js";
-import { putSealedKey, removeSealedKey, sealedKeyNames } from "./server-keys.js";
+import { type KeyMeta, keyMetaOf } from "./key-meta.js";
+import { putSealedKey, removeSealedKey } from "./server-keys.js";
 import type { Store } from "./store/index.js";
 import { unknownFields } from "./validate.js";
 import { ArchilClaimRefused, archilClaim } from "./workspace/archil-claim.js";
@@ -22,7 +24,8 @@ export const ARCHIL_ROUTES: ReadonlySet<string> = new Set(["getWorkspaceArchil",
 /** The key the owner gives, by the name the API takes, and the sealed-key row it is kept in. */
 const KEYS: readonly { readonly name: string; readonly row: string }[] = [{ name: "ARCHIL_API_KEY", row: ARCHIL_API_KEY_ROW }];
 
-export type ArchilView = { on: boolean; diskId?: string; region?: string; s3Url?: string; image?: string; keys: { name: string; saved: boolean }[] };
+/** The Archil settings as the owner reads them: the key in the shared secret shape (key-meta.ts), never a value. */
+export type ArchilView = { on: boolean; diskId?: string; region?: string; s3Url?: string; image?: string; keys: KeyMeta[] };
 export type ArchilTest = { ok: true; detail: string } | { ok: false; why: string };
 
 export interface ArchilRoutesOptions {
@@ -47,8 +50,7 @@ export function createArchilRoutes(options: ArchilRoutesOptions) {
 
   async function view(): Promise<ArchilView> {
     const settings = await loadArchilSettings(store);
-    const saved = new Set(await sealedKeyNames(store));
-    return { on: settings !== undefined, ...(settings ?? {}), keys: KEYS.map((key) => ({ name: key.name, saved: saved.has(key.row) })) };
+    return { on: settings !== undefined, ...(settings ?? {}), keys: await keyMetaOf(store, KEYS) };
   }
 
   /** The settings row replaced and the keys given sealed, once every field is right; nothing is saved when one is not. */

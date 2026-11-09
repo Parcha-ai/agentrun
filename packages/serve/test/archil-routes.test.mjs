@@ -12,8 +12,11 @@ import { inArchilMode, loadArchilSettings } from "../dist/archil-settings.js";
 import { ApiError } from "../dist/errors.js";
 import { getSealedKey } from "../dist/server-keys.js";
 import { FakeArchilDisk, FakeDiskError } from "./fixtures/archil-fake.mjs";
-import { storeOn } from "./store-helpers.mjs";
+import { storeOn, T0 } from "./store-helpers.mjs";
 
+/** The shared secret shape for the account key: not set, and set from the console at the store's clock. */
+const UNSET = { name: "ARCHIL_API_KEY", set: false, source: null, changed_at: null };
+const FROM_CONSOLE = { name: "ARCHIL_API_KEY", set: true, source: "console", changed_at: new Date(T0).toISOString() };
 const PINNED = `ghcr.io/agentrun/exec@sha256:${"a".repeat(64)}`;
 const SETTINGS = { diskId: "dsk-00000000000fake0", region: "aws-us-east-1", s3Url: "https://s3.archil.example" };
 const API = "archil-account-secret-0001";
@@ -34,9 +37,9 @@ test("the four routes by their operation names", () => {
 
 test("off at first; a PUT saves the settings and seals the account key, never echoed; GET shows it saved; DELETE turns Mode 2 off", async (t) => {
   const { store, sealKey, call } = await setup(t);
-  assert.deepEqual(await call("getWorkspaceArchil"), { on: false, keys: [{ name: "ARCHIL_API_KEY", saved: false }] });
+  assert.deepEqual(await call("getWorkspaceArchil"), { on: false, keys: [UNSET] });
   const saved = await call("putWorkspaceArchil", { ...SETTINGS, image: PINNED, keys: { ARCHIL_API_KEY: API } });
-  assert.deepEqual(saved, { on: true, ...SETTINGS, image: PINNED, keys: [{ name: "ARCHIL_API_KEY", saved: true }] });
+  assert.deepEqual(saved, { on: true, ...SETTINGS, image: PINNED, keys: [FROM_CONSOLE] }, "the shared secret shape: set, where from, when changed; never a value");
   assert.ok(!JSON.stringify(saved).includes(API), "never echoed");
   assert.deepEqual(await call("getWorkspaceArchil"), saved);
   assert.deepEqual(await loadArchilSettings(store), { ...SETTINGS, image: PINNED }, "the settings row E1's readers load");
@@ -45,8 +48,8 @@ test("off at first; a PUT saves the settings and seals the account key, never ec
   assert.deepEqual((await store.sealedKeys.all()).map((row) => row.name), ["archil.api_key"], "no disk token row");
   assert.ok(!Buffer.from(await store.sealedKeys.get("archil.api_key")).toString("latin1").includes(API), "ciphertext only");
   const again = await call("putWorkspaceArchil", { ...SETTINGS, region: "aws-eu-west-1" });
-  assert.deepEqual([again.region, again.image, again.keys.every((key) => key.saved)], ["aws-eu-west-1", undefined, true], "a PUT replaces the settings; a key not given is kept");
-  assert.deepEqual(await call("deleteWorkspaceArchil"), { on: false, keys: [{ name: "ARCHIL_API_KEY", saved: true }] });
+  assert.deepEqual([again.region, again.image, again.keys.every((key) => key.set)], ["aws-eu-west-1", undefined, true], "a PUT replaces the settings; a key not given is kept");
+  assert.deepEqual(await call("deleteWorkspaceArchil"), { on: false, keys: [FROM_CONSOLE] });
   assert.equal(await inArchilMode(store), false, "Mode 1 again");
   await call("putWorkspaceArchil", { ...SETTINGS, keys: { ARCHIL_API_KEY: null } });
   assert.equal(await getSealedKey(store, sealKey, "archil.api_key"), undefined, "null removes the key");
