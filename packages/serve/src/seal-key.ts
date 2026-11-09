@@ -11,6 +11,7 @@ import { randomBytes } from "node:crypto";
 import { chmodSync, closeSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, rmSync, type Stats, writeSync } from "node:fs";
 import { join } from "node:path";
 import { SEAL_KEY_ENV, sealKeyOf } from "./tool-keys.js";
+import { handedSecret, holdMadeSecret } from "./secrets.js";
 
 export const SEAL_KEY_DIR = "agentrun";
 export const SEAL_KEY_FILE = "seal.key";
@@ -110,4 +111,23 @@ export function ensureSealKey(given: string | undefined, { configHome }: { confi
 export function sealKeyLine(seal: SealKey): string {
   if (!seal.path) return `agentrun-serve: the seal key is ${SEAL_KEY_ENV}, as it was handed`;
   return `agentrun-serve: ${seal.generated ? "made a new seal key" : "the seal key is"} at ${seal.path} (0600): every secret saved here opens with it alone, so keep it, and keep it apart from the data directory`;
+}
+
+/** The seal key every entry point boots the one way — the server, the runner and the `import` command all call this, so
+ *  there is one rule, not three copies: the key handed over (AGENTRUN_SEAL_KEY), else the one kept under the config home of
+ *  `env` (made at the first boot, only its path printed). A made key is held back as this process's own secret, so the
+ *  environment it reads next (withSecrets) carries it. Throws with the start message when there is none and none can be made.
+ *  `say` takes the made-key line (stderr by default). */
+export function bootSealKey(env: NodeJS.ProcessEnv = process.env, say: (line: string) => void = (line) => void process.stderr.write(line)): SealKey {
+  const handed = handedSecret(SEAL_KEY_ENV);
+  let seal: SealKey;
+  try {
+    seal = ensureSealKey(handed, { configHome: sealKeyHome(env) });
+  } catch (error) {
+    if (error instanceof SealKeyRefused) throw new Error(`agentrun-serve does not start without a seal key. ${error.message}`, { cause: error });
+    throw error;
+  }
+  if (!handed) holdMadeSecret(SEAL_KEY_ENV, seal.text);
+  if (seal.generated) say(`${sealKeyLine(seal)}\n`);
+  return seal;
 }

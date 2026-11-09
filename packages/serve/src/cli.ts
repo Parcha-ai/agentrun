@@ -18,7 +18,6 @@ import type { ImageState } from "./box-image.js";
 import { banner, boxImageLine } from "./print.js";
 import type { LearningMode } from "./learning.js";
 import { DEFAULT_PORT, fauxEnvOf, type Serve, type ServeOptions, startServe } from "./server.js";
-import { SEAL_KEY_ENV } from "./tool-keys.js";
 import { runnerBeside } from "./runner/beside.js";
 
 

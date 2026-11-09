@@ -1,7 +1,5 @@
 // A runner beside a server on the same data directory: the CLI start's server-and-runner, the `runner` subcommand and
 // the template eval's in-process server (template-eval.ts), which would otherwise leave every run it starts queued.
-import { secret } from "../secrets.js";
-import { SEAL_KEY_ENV } from "../tool-keys.js";
 
 /** A runner beside the server on the same data directory (the CLI start's server-and-runner, and the `runner` subcommand):
  *  its own store handle (role runner), and the runner's dispatch (dispatch.ts) for each claimed run — pi on the kernel's
@@ -32,8 +30,8 @@ export async function runnerBeside(dataDir: string, { loops, env }: { loops?: nu
   // The server's seal key (seal-key.ts): the one handed over (read through secrets.js, which moves it out of the
   // environment as it loads), else the one the server keeps under the config home. A runner never starts without it: it
   // seals the live-viewer tokens, and there is no stand-in key.
-  const { ensureSealKey, sealKeyHome } = await import("../seal-key.js");
-  const sealKey = ensureSealKey(secret(SEAL_KEY_ENV), { configHome: sealKeyHome(process.env) }).key;
+  const { bootSealKey } = await import("../seal-key.js");
+  const sealKey = bootSealKey().key;
   // The beside-runner sees the server's environment as a separate runner would (runEnv, not withoutFaux): so an API run on
   // a --faux server reaches the faux gateway and its computers. The run's claim-time computer is composed once, the one way
   // (workspace/computer-deps.ts computerDepsFrom), from that same environment.

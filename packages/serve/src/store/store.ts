@@ -108,10 +108,14 @@ export type RunOutcome = "completed" | "escalated";
 
 /** The harness an imported run came from. */
 export type ImportSource = "claude-code" | "codex" | "pi";
-/** Where an imported run came from: the harness that ran it, and its own session id. */
+/** Where an imported run came from: the harness that ran it, and its own session id. `file` is the server's own record of
+ *  the session file an import read whole (the sha-256 of its path, never the path, with its size and mtime), so a later
+ *  import does not read an unchanged file again; it is internal and never shown on an answer. The unique import index keys
+ *  on source and session alone, so a re-import of the same session with a different `file` is still the same run. */
 export interface ImportedFrom {
   readonly source: ImportSource;
   readonly session: string;
+  readonly file?: { readonly path_sha256: string; readonly size: number; readonly mtime_ms: number };
 }
 
 /** What a run was started under: `key`, the caller's name for it (a create's idempotency key, a trigger's firing key),
