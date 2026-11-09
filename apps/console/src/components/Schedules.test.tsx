@@ -490,3 +490,34 @@ describe("the New schedule form's cost cap and one time", () => {
     expect(cap(t.host).classList.contains("max-w-40")).toBe(false);
   });
 });
+
+// A one-time schedule that has run (its source is a one time `at`, it has a last firing, and no next time) is done: it
+// reads "Done · ran <when>" on the list and its page, with no Resume. A paused recurring schedule keeps Resume: done is
+// never read from `enabled` alone.
+describe("a one-time schedule that has run", () => {
+  const ONCE: Trigger = { ...NIGHTLY, id: "trg_once", name: "kyb-once", enabled: false, next_at: null, source: { kind: "schedule", at: "2026-11-09T20:43:00Z" }, last_firing: firing({ nominal_at: "2026-11-09T20:43:00Z", at: "2026-11-09T20:43:01Z" }) };
+  const PAUSED: Trigger = { ...NIGHTLY, id: "trg_paused", name: "nightly, paused", enabled: false, next_at: null, last_firing: firing({}) };
+
+  it("reads Done with when it ran on the list, never Paused or no next time", async () => {
+    const t = await open(server({ triggers: [ONCE, PAUSED] }).v2, {});
+    const once = t.host.querySelector('[data-trigger="trg_once"]')!;
+    expect(once.textContent).toContain("Done · ran Nov 9, 8:43 PM");
+    expect(once.textContent).not.toContain("Paused");
+    expect(once.textContent).not.toContain("No next time");
+    expect(t.host.querySelector('[data-trigger="trg_paused"]')!.textContent).toContain("Paused");
+  });
+
+  it("on its page: Done with when it ran, no Resume or Pause; Delete stays", async () => {
+    const t = await open(server({ triggers: [ONCE] }).v2, { trigger: "trg_once" });
+    expect(t.text()).toContain("Done · ran Nov 9, 8:43 PM");
+    expect(t.text()).not.toContain("no next time");
+    expect(t.button(/^(Resume|Pause)$/)).toBeUndefined();
+    expect(t.button(/^Delete$/)).toBeDefined();
+  });
+
+  it("a paused recurring schedule keeps Resume", async () => {
+    const t = await open(server({ triggers: [PAUSED] }).v2, { trigger: "trg_paused" });
+    expect(t.button(/^Resume$/)).toBeDefined();
+    expect(t.text()).not.toContain("Done");
+  });
+});
