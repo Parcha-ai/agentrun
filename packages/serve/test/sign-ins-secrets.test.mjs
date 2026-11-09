@@ -12,11 +12,13 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { openapiDocument } from "../dist/openapi.js";
-import { BROWSER_CREDENTIAL_FIELD, browserBodyCredentials, SIGN_IN_SECRET_FIELDS, SIGN_IN_SOURCE, SIGN_IN_WRITE_ROUTES } from "../dist/sign-ins-secrets.js";
+import { registeredOperations, secretMeta, secretName } from "../dist/secret-writes.js";
+import { BROWSER_CREDENTIAL_FIELD, browserBodyCredentials, SIGN_IN_SECRET_FIELDS, SIGN_IN_SOURCE, SIGN_IN_WRITE_ROUTES, signInSecretMeta } from "../dist/sign-ins-secrets.js";
 import { pointerHash, saveSignIn, signInsOverStore } from "../dist/sign-ins-store.js";
 import { openSqliteStore, STORE_FILE } from "../dist/store/sqlite/store.js";
 import { agent, follow, serve, withEnv } from "./support.mjs";
 import { plantedSignIn } from "./sign-ins-planted.mjs";
+import { registeredPlants } from "./fixtures/planted-secrets.mjs";
 import { agentWithRevision, storeOn, T0 } from "./store-helpers.mjs";
 
 const KEY = randomBytes(32);
@@ -45,6 +47,15 @@ test("rule 1: no browser route takes a credential in its body, so the plane regi
   // Nothing in the document marked a secret on a browser operation either (x-agentrun-secret).
   const marked = JSON.stringify(found.bodies).includes("x-agentrun-secret");
   assert.equal(marked, false);
+  // Registered through secret-writes.ts (the plane's empty registry): no browser operation is a secret write.
+  const browserOps = new Set(found.operations.map((op) => op.split("#")[0]));
+  assert.deepEqual(registeredOperations().filter((op) => browserOps.has(op)), []);
+});
+
+test("rule 5: the planted-secret harness carries the browser sign-in plant, planted through the store since there is no write route", () => {
+  const plant = registeredPlants().find((p) => p.name === "browser sign-in (store)");
+  assert.ok(plant, `the harness's plants: ${registeredPlants().map((p) => p.name).join(", ")}`);
+  assert.deepEqual(SIGN_IN_WRITE_ROUTES, [], "its write is the store's, not a route's");
 });
 
 test("rule 1: the check catches a browser route that takes a credential (a forged operation in a copy of the document)", () => {
@@ -110,19 +121,29 @@ test("rule 3: a sign-in that does not open here is still set, from a sign-in, at
   for (const view of other) assert.deepEqual(keysOf(view), ALL_KEYS);
 });
 
-test("rule 3: the served SignIn schema carries `secret`, the shared shape, marked as this server's, and required", () => {
+test("rule 3: the served SignIn schema carries `secret` as the one SecretMeta component, marked as this server's, and required", () => {
   const doc = openapiDocument(() => undefined);
   const signIn = doc.components.schemas.SignIn;
   assert.deepEqual(Object.keys(signIn.properties).sort(), SIGN_IN_KEYS);
   assert.equal(signIn.properties.secret["x-agentrun-serve"], "secrets/1");
+  assert.equal(signIn.properties.secret.$ref, "#/components/schemas/SecretMeta", "the shared component, not a copy");
   assert.ok(signIn.required.includes("secret"), "secret is always sent");
   assert.equal(signIn.additionalProperties, false);
-  const secret = signIn.properties.secret;
+  const secret = doc.components.schemas.SecretMeta;
   assert.deepEqual(Object.keys(secret.properties).sort(), SECRET_KEYS);
   assert.deepEqual([...secret.required].sort(), SECRET_KEYS);
   assert.equal(secret.additionalProperties, false);
   assert.deepEqual(secret.properties.source.enum, ["env", "console", "sign-in", null]);
   assert.match("sign-in:alpha:browserbase", new RegExp(secret.properties.name.pattern));
+});
+
+test("rule 3: a sign-in's secret is tl-tools' secretMeta, named by secretName(\"sign-in\", agent, provider)", () => {
+  const savedAt = Date.parse("2026-11-09T01:02:03Z");
+  assert.deepEqual(
+    signInSecretMeta({ agentId: "alpha", provider: "kernel", savedAt }),
+    secretMeta(secretName("sign-in", "alpha", "kernel"), { set: true, source: SIGN_IN_SOURCE, changedAt: new Date(savedAt) }),
+  );
+  assert.equal(secretName("sign-in", "alpha", "kernel"), "sign-in:alpha:kernel");
 });
 
 // ---- Rule 3 and 5 over the server: a planted pointer is found nowhere -----------------------------------------------

@@ -10,30 +10,25 @@
 // Rule 3, the views: each saved sign-in carries its one secret under `secret`, in the metadata shape every plane gives
 // (signInSecretMeta), beside its own state (held | ready | unreadable). Never the pointer, a prefix, a length or a hash.
 
+import { registerSecretWrite, type SecretMeta, type SecretPredicate, type SecretSource, secretMeta, secretName } from "./secret-writes.js";
+
+export type { SecretMeta };
+
 /** Where a saved sign-in's credential came from: a person signing in during a run. */
-export const SIGN_IN_SOURCE = "sign-in";
+export const SIGN_IN_SOURCE: SecretSource = "sign-in";
 
-/** The one secret metadata shape every view gives (SECRETS-PLAN.md, shared pieces). `changed_at` is the credential's own
- *  time, ISO, null when not set.
- *  TODO(secret-writes): take this type from tl-tools' metadata helper when it lands, and drop this copy. */
-export type SecretMeta = { name: string; set: boolean; source: "env" | "console" | "sign-in" | null; changed_at: string | null };
-
-/** A secret's name, "<plane>:<id>" with the id's parts joined by ":" (SECRETS-PLAN.md, settled naming).
- *  TODO(secret-writes): take secretName from tl-tools' metadata helper when it lands, and drop this copy. */
-export const secretName = (plane: string, ...id: string[]): string => [plane, ...id].join(":");
-
-/** A saved sign-in's secret as metadata: named `sign-in:<agentId>:<provider>`, set (a row exists only with a sealed
- *  pointer, whether or not it opens here), from a sign-in, changed when its pointer was saved (the row's saved_at; a run
- *  verifying it, verified_at, keeps the same pointer and changes nothing). */
+/** A saved sign-in's secret as metadata (secret-writes.ts secretMeta): named secretName("sign-in", agent, provider), set (a
+ *  row exists only with a sealed pointer, whether or not it opens here), from a sign-in, changed when its pointer was
+ *  saved (the row's saved_at; a run verifying it, verified_at, keeps the same pointer and changes nothing). */
 export function signInSecretMeta(row: { agentId: string; provider: string; savedAt: number }): SecretMeta {
-  return { name: secretName("sign-in", row.agentId, row.provider), set: true, source: SIGN_IN_SOURCE, changed_at: new Date(row.savedAt).toISOString() };
+  return secretMeta(secretName("sign-in", row.agentId, row.provider), { set: true, source: SIGN_IN_SOURCE, changedAt: new Date(row.savedAt) });
 }
 
 /** The browser plane's secret body fields, by operationId, for secret-writes.ts's one gate: none, since no browser route
- *  takes a credential in its body (rule 1 above).
- *  TODO(secret-writes): register with secret-writes.ts when tl-tools lands it (registerSecretFields per entry; there are
- *  none today, so this stays empty unless a browser route that takes a credential is added). */
-export const SIGN_IN_SECRET_FIELDS: Readonly<Record<string, (body: unknown) => boolean>> = {};
+ *  takes a credential in its body (rule 1 above). Registered below all the same, so a browser route that takes one is
+ *  added here and gated with no other change. */
+export const SIGN_IN_SECRET_FIELDS: Readonly<Record<string, SecretPredicate>> = {};
+for (const [operationId, predicate] of Object.entries(SIGN_IN_SECRET_FIELDS)) registerSecretWrite(operationId, predicate);
 
 /** The browser plane's secret write routes, for the planted-secret harness: none. A sign-in is saved inside a run (the
  *  vendor's profile with save:true, kept by the run path in store.signIns), never through an API write, so the harness

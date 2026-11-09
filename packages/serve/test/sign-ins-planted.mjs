@@ -1,7 +1,8 @@
 // The browser plane's piece of the planted-secret harness (SECRETS-PLAN.md, rule 5): one sign-in planted straight into the
-// store, under the server's seal key, with a pointer no answer, row, file or log line may ever hold in the clear. tl-tools'
-// harness imports both exports when it lands: it plants through every secret write route, and the browser plane has none
-// (SIGN_IN_WRITE_ROUTES, src/sign-ins-secrets.ts says why), so its value is planted here instead.
+// store, under the server's seal key, with a pointer no answer, row, file or log line may ever hold in the clear. The
+// harness (fixtures/planted-secrets.mjs, its "browser sign-in (store)" plant) imports both exports: it plants through
+// every secret write route, and the browser plane has none (SIGN_IN_WRITE_ROUTES, src/sign-ins-secrets.ts says why), so
+// its value is planted here instead.
 import { randomBytes } from "node:crypto";
 import { saveSignIn } from "../dist/sign-ins-store.js";
 

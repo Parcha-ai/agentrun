@@ -2119,14 +2119,8 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
   const signInSchema = schemas.SignIn as Json & { properties: Record<string, Json>; required: string[] };
   if (signInSchema.properties.secret === undefined) {
     signInSchema.properties.secret = {
-      type: "object", additionalProperties: false, required: ["name", "set", "source", "changed_at"],
-      description: "The sign-in's one secret, its vendor pointer, as metadata alone: never the pointer, a prefix, a length or a hash.",
-      properties: {
-        name: { type: "string", pattern: "^sign-in:[^:]+:[^:]+$", description: "`sign-in:<agent_id>:<provider>`: the secret's name, `<plane>:<id>`." },
-        set: { type: "boolean", description: "Whether a pointer is saved: always true for a listed sign-in, whether or not it opens here (`state: unreadable`)." },
-        source: { enum: ["env", "console", "sign-in", null], description: "Where the credential came from: `sign-in` for a saved browser sign-in, a person having signed in during a run." },
-        changed_at: { oneOf: [ref("schemas/Timestamp"), { type: "null" }], description: "When its pointer was saved: the sign-in's own time, not a run's verify (`verified_at`)." },
-      },
+      $ref: "#/components/schemas/SecretMeta",
+      description: "The sign-in's one secret, its vendor pointer, as metadata alone (SecretMeta): named `sign-in:<agent_id>:<provider>`, set, from a `sign-in`, changed when its pointer was saved (not a run's verify, `verified_at`). Never the pointer, a prefix, a length or a hash.",
       "x-agentrun-serve": "secrets/1",
     };
     fields.push("SignIn.secret");

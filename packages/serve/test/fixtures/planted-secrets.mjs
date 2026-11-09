@@ -16,6 +16,9 @@
 //   also declare `mints` on itself, for every write it makes;
 // - `cleanup(ctx, ids)`: run once the harness has read everything, with every plant's ids.
 import { randomBytes } from "node:crypto";
+import { openSqliteStore } from "../../dist/store/sqlite/store.js";
+import { sealKeyOf } from "../../dist/tool-keys.js";
+import { plantedSignIn, SIGN_IN_WRITE_ROUTES } from "../sign-ins-planted.mjs";
 
 /** @typedef {{ status: number, text: string, json?: unknown }} Answer */
 /** @typedef {{ owner: (method: string, path: string, body?: unknown) => Promise<Answer>, token: (method: string, path: string, body?: unknown) => Promise<Answer>, api: Function, server: { port: number, data: string, token: string } }} PlantContext */
@@ -129,5 +132,29 @@ registerPlant({
     const res = await owner("PUT", "/v2/settings/tool-keys/openrouter", { values: { OPENROUTER_API_KEY: value } });
     if (res.status !== 204) throw new Error(`the openrouter key was not saved: ${res.status} ${res.text}`);
     return [value];
+  },
+});
+
+// ---- the browser sign-in's plant (sign-ins-secrets.ts): one saved sign-in, planted through the store --------------------
+// A sign-in is saved inside a run (the vendor's profile with save:true), never through an API write: the browser plane has
+// no secret write route (SIGN_IN_WRITE_ROUTES, empty), so its pointer is planted the way a run's save keeps it, sealed
+// under the server's seal key, into the store beside the running server (a runner's handle), for an agent of its own.
+
+registerPlant({
+  name: "browser sign-in (store)",
+  write: async ({ api, server }) => {
+    if (SIGN_IN_WRITE_ROUTES.length) throw new Error(`the browser plane has write routes now (${SIGN_IN_WRITE_ROUTES.join(", ")}): plant through them`);
+    const sealKey = sealKeyOf(process.env.AGENTRUN_SEAL_KEY);
+    if (!sealKey) throw new Error("the sign-in plant seals under AGENTRUN_SEAL_KEY, which the harness sets");
+    const agentId = "planted-sign-in";
+    const made = await api("POST", "/agents", { definition: { id: agentId, version: 1, name: agentId, instructions: "Answer.", skills: [], tools: [] } });
+    if (made.status !== 201) throw new Error(`the sign-in plant's agent was not made: ${made.status}`);
+    const store = await openSqliteStore({ dataDir: server.data, role: "runner" });
+    try {
+      const { pointer } = await plantedSignIn(store, sealKey, { agentId });
+      return { values: [pointer], ids: { agent_id: agentId } };
+    } finally {
+      await store.close();
+    }
   },
 });
