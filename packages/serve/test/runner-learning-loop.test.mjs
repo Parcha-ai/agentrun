@@ -103,12 +103,12 @@ test("a verdict that keeps nothing is dropped with the grader's words, and nothi
   assert.match(dropped.detail, /^Not kept: /);
 });
 
-test("main moved under the merge (a conflict): dropped as stale, the run ended", async (t) => {
+test("main moved under the merge (a conflict): dropped as checker in the stale words, the run ended", async (t) => {
   const { store, clock, claim } = await setUp(t);
   const { loop } = loopOn(store, clock, { commit: async () => ({ ok: false, reason: "conflict", problems: [{ rule: "supersedes", path: "old.md", detail: "moved" }] }) });
   assert.deepEqual(await loop.start(claim), { state: "ended" });
   const entries = await journalEntries(store.journal(claim), BACKGROUND_CONTEXT);
-  assert.equal(entries.find((entry) => entry.kind === KINDS.learningDropped).data.reason, "stale");
+  assert.equal(entries.find((entry) => entry.kind === KINDS.learningDropped).data.reason, "checker", "the server's reason for a merge main refused (LEARNING_REASONS)");
   assert.equal((await store.runs.get("learn-1")).state, "ended");
 });
 

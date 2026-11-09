@@ -25,8 +25,9 @@ export function reflectFrom(submissions: readonly { readonly type?: string; read
   return placed.length ? Math.min(...placed.map((record) => Number(record.entry))) : undefined;
 }
 
-/** The refusal of the end-of-run turn's write or edit under work/.learning/. */
-export const REFLECT_NOTE_ONLY = "A note is kept only from your answer: write it in a ```note block, not to a file.";
+/** The refusal of the end-of-run turn's write or edit under work/.learning/: the tool gate's one text (NOTE_ONLY_TEXT), so
+ *  the adapter loop's refusal and the gate's are the same words. */
+export { NOTE_ONLY_TEXT as REFLECT_NOTE_ONLY } from "../tool-gate.js";
 
 /** The folder of a run's copy of what its agent learned, relative to its work. */
 const LEARNED_DIR = ".learning";

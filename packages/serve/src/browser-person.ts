@@ -271,6 +271,11 @@ export function personHands(options: {
    *  and those this process writes through `note` (the live view's hand-back, the ask's expiry at the expiry's time, its
    *  end at the cap). The answer files are neither read nor written. */
   answered?(id: string): Promise<Answer | undefined>;
+  /** On the runner's path: writes ask `id`'s answer (the hand-over entry `data`) unless the run's journal has one, read
+   *  and written in one commit (runner/hand-back.ts answerOnce), and gives back the answer that stands, so an ask has
+   *  exactly one answered entry whoever writes it (a person's hand-back row the runner applies, this process's give or
+   *  expiry). Without it, the answer is written through `note` after a read. */
+  answer?(id: string, data: Record<string, string>): Promise<Answer>;
   /** For tests: called between an ask's record and its row. */
   afterRecord?: () => void;
 }) {
@@ -309,7 +314,14 @@ export function personHands(options: {
   const answerInJournal = (id: string, tag: string, outcome: AskOutcome, at: string, reason?: string): Promise<void> => {
     const write = (writing.get(id) ?? Promise.resolve()).then(async () => {
       if (await journalRead(id)) return;
-      await note("agent.handover", { state: outcome, id, session: tag, at, ...(reason !== undefined ? { reason } : {}) });
+      const data = { state: outcome, id, session: tag, at, ...(reason !== undefined ? { reason } : {}) };
+      if (options.answer) {
+        // Read and written in one commit: an answer another writer committed since the read above stands, never a second.
+        const stood = await options.answer(id, data).catch(() => undefined);
+        fromJournal.set(id, stood ?? { outcome, at, ...(reason !== undefined ? { reason } : {}) });
+        return;
+      }
+      await note("agent.handover", data);
       if (!(await journalRead(id))) fromJournal.set(id, { outcome, at, ...(reason !== undefined ? { reason } : {}) });
     });
     writing.set(id, write);
@@ -348,7 +360,13 @@ export function personHands(options: {
           // The cap refused to hold more of the person's time here: whoever comes now (a take-over, a new ask) needs more of
           // it, so asks the cap itself, in its own words; with room again, it holds the next stretch and the holding goes on.
           if (known.refused) {
-            const hold = await options.personTime(what, holdMs / 1000, { pauses, tag, from: now() }).catch(() => ({ refused: "the person's time could not be held" }));
+            // Re-held from max(where coverage ends, now): a ledger refused at its coverage end has no live users over the
+            // idle gap since (the reserve and any calls already cover it), so re-holding from `until` would hold that gap a
+            // second time and could falsely refuse a person returning long after. again() differs: it runs only while the
+            // ledger has live users, so its from-until never spans an idle gap.
+            const from = Math.max(known.until, now());
+            const seconds = Math.max(0, now() + holdMs - from) / 1000;
+            const hold = await options.personTime(what, seconds, { pauses, tag, from }).catch(() => ({ refused: "the person's time could not be held" }));
             if ("refused" in hold) return { refused: hold.refused };
             if (ledgers.get(tag) !== known) {
               hold.drop();

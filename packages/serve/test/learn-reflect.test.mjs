@@ -15,7 +15,7 @@ import { agentFolderOf } from "../dist/files.js";
 import { startServe } from "../dist/index.js";
 import { learningTestHooks } from "../dist/learning.js";
 import { answerWith, note } from "./fixtures/faux-learn.mjs";
-import { copyOf, ended, git, LEARN, learner, learningRows, made, onMain, reflectRows, repoOf, savedOf, settled, sleep, started, turnOf } from "./learn-support.mjs";
+import { copyOf, ended, git, LEARN, learnedOnMain, learner, learningRows, made, onMain, proposedOf, reflectRows, repoOf, savedOf, settled, sleep, started, turnOf } from "./learn-support.mjs";
 import { agent, client, follow, runDir, runRecordOf, scratch, serve, storeRun } from "./support.mjs";
 
 const CLI = new URL("../dist/cli.js", import.meta.url).pathname;
@@ -67,7 +67,8 @@ test("a server that goes while a run reflects: the next one asks the turn again 
   writeFileSync(go, "");
   const { view, rows } = await ended(api, runId);
   assert.ok(view.result.final_answer.includes("Say your prompt.") && !view.result.final_answer.includes("Reflected."), view.result.final_answer);
-  settled(view, rows, "merged");
+  proposedOf(view);
+  assert.equal((await learnedOnMain({ api, data }, "crash", runId)).result?.ok, true, "what it wrote merges");
   assert.equal(reflectRows(rows).filter((row) => row.kind === "user_message").length, 1, "asked once, though asked by two servers");
   assert.equal(reflectRows(rows).filter((row) => row.text?.endsWith("Reflected.")).length, 1, "one turn");
   assert.equal(processAlive(pid), false, "the run's process was let go");
@@ -153,7 +154,7 @@ test("a run read while its seed is copied (a list of runs, a poll, the console) 
   assert.deepEqual(loaded.filter((id) => id === runId), [], "the run being started is never read from disk: no second Run");
   const { view, rows } = await ended(api, runId);
   assert.ok(existsSync(join(runDir(data, runId), "learning.json")), "its pin stays");
-  settled(view, rows, "merged");
+  proposedOf(view);
   assert.ok(reflectRows(rows).some((row) => row.kind === "user_message"), "its end-of-run turn was asked");
 });
 
@@ -200,9 +201,9 @@ test("a second create with the same key while the first start copies its seed is
   // is not reached in the window from here.
   assert.deepEqual([a.status, a.body.run_id, b.status], [202, runId, 409], JSON.stringify([a.body, b.body]));
   assert.deepEqual(loaded.filter((id) => id === runId), [], "no second Run");
-  const { view, rows } = await ended(api, runId);
+  const { view } = await ended(api, runId);
   assert.ok(existsSync(join(runDir(data, runId), "learning.json")), "its pin stays");
-  settled(view, rows, "merged");
+  proposedOf(view);
 });
 
 test("a server that stops while a run's seed is copied: the next one takes the copy back, and the run says its server stopped", { timeout: 120_000 }, async (t) => {
@@ -271,8 +272,9 @@ test("a follow-up sent as the run settles changes nothing that is checked: the t
   assert.deepEqual(readdirSync(copyOf(data, runId)).sort(), ["MEMORY.md", "check-units.md", "extra.md"]);
 
   release();
-  const { view, rows } = await ended(api, runId);
-  settled(view, rows, "merged");
+  const { view } = await ended(api, runId);
+  proposedOf(view);
+  assert.equal((await learnedOnMain({ api, data }, "follower", runId)).result?.ok, true);
   assert.deepEqual(JSON.parse(readFileSync(join(runDir(data, runId), "learning-proposal.json"), "utf8")).notes, [{ file: "check-units.md", text: PLAN[0][1] }], "exactly the turn's note");
   const repo = repoOf(data, "follower");
   assert.equal(`${git(repo, ["show", "main:check-units.md"])}\n`, onMain(PLAN[0][1]));
@@ -302,7 +304,8 @@ test("the end-of-run turn's write under .learning/ is refused, in words that kee
   await made(api, learner("writer", { plan: PLAN, tools: ["write"], instructions: "Answer the question.\nReflect by writing first." }));
   const runId = await started(api, "writer");
   const { view, rows } = await ended(api, runId);
-  settled(view, rows, "merged");
+  proposedOf(view);
+  assert.equal((await learnedOnMain({ api, data }, "writer", runId)).result?.ok, true);
   const refused = rows.find((row) => row.kind === "tool_result" && row.tool_name === "write");
   assert.equal(refused?.tool_result_preview, "A note is kept only from your answer: write it in a ```note block, not to a file.", "the write is refused in those words");
   assert.ok(!existsSync(join(copyOf(data, runId), "written.md")), "and nothing is written");
@@ -317,7 +320,8 @@ test("what the user asks the agent to remember during the task survives: the job
   const { view, rows } = await ended(api, runId);
   assert.ok(rows.some((row) => row.kind === "tool_result" && row.tool_name === "write" && row.agent_label !== "learning"), "the job wrote in .learning/ during the task");
   assert.equal(view.result.final_answer, "Got it: I saved that in .learning/notes.txt.");
-  settled(view, rows, "merged");
+  proposedOf(view);
+  assert.equal((await learnedOnMain({ api, data }, "keeper", runId)).result?.ok, true);
   const repo = repoOf(data, "keeper");
   assert.deepEqual(git(repo, ["ls-tree", "--name-only", "main"]).split("\n"), ["MEMORY.md", "remembered.md"], "the answer's note, and nothing the job wrote");
   assert.match(git(repo, ["show", "main:remembered.md"]), /I only care about US policies\./);

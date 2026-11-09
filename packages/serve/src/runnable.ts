@@ -2,7 +2,7 @@
 // the two cannot drift. A blocker no setting of this host fixes (a tool it does not bind, a model pi-ai does not know,
 // no instructions, a workflow needing what it does not give) refuses the save, 422 by field; one a setting fixes (a
 // provider's key, a default model, a tier's model) saves as a warning. Either refuses a run, 409 agent_not_runnable.
-import { WORKFLOW_ADAPTERS } from "./app.js";
+import { WORKFLOW_ADAPTERS } from "./runner/workflow-adapters.js";
 import { DECISION_ADAPTER, decisionModelsNamed, providerMissing, providersNamed } from "./decisions.js";
 import { REPLAY } from "./host-tools.js";
 import { type InputIssue, sentence } from "./errors.js";

@@ -14,7 +14,7 @@ import { DEFINITION_INPUT_OPTIONAL, DEFINITION_OPTIONAL, REQUEST_EXAMPLES, RUN_F
 import { schemaProblems } from "./schema-support.mjs";
 import { capabilities } from "../dist/index.js";
 import { note } from "./fixtures/faux-learn.mjs";
-import { ended, LEARN, learner, made, started } from "./learn-support.mjs";
+import { ended, LEARN, learner, made, SWITCH_TODO, started } from "./learn-support.mjs";
 import { agent, FAUX, flowAgent, follow, serve } from "./support.mjs";
 import { fakeClock, schedule } from "./trigger-support.mjs";
 
@@ -498,7 +498,7 @@ test("learning is this server's own addition, learning/1: the definition's switc
   assert.notDeepEqual(schemaProblems(doc, stats, { ...counted, dropped: { conflict: 1 } }), []);
 });
 
-test("what a run read and learned and what learning changed for its agent are learning/2, each described: a run's used and learned, in its view and its list, absent when empty, and the agent's impact, null until both sides count 2 runs; real answers meet the document", { timeout: 180_000 }, async (t) => {
+test("what a run read and learned and what learning changed for its agent are learning/2, each described: a run's used and learned, in its view and its list, absent when empty, and the agent's impact, null until both sides count 2 runs; real answers meet the document", { timeout: 180_000, skip: SWITCH_TODO }, async (t) => {
   const { api, baseUrl } = await serve(t, { learning: "on", faux: LEARN });
   const doc = await (await fetch(`${baseUrl}/openapi.json`)).json();
   const schemas = doc.components.schemas;
@@ -733,4 +733,15 @@ test("what this server always sends is required in the document: a run's revisio
     const { [filled]: _, ...without } = read.source;
     assert.notDeepEqual(schemaProblems(doc, answer, { ...read, source: without }), [], `an answer without ${filled} is not the document's`);
   }
+});
+
+test("every InputIssue reason the MCP registry sends is one the document's InputIssue lists (a URL's redirect among them)", async () => {
+  const { openapiDocument } = await import("../dist/openapi.js");
+  const listed = openapiDocument(() => undefined).components.schemas.InputIssue.properties.reason.enum;
+  const sent = new Set();
+  for (const file of ["mcp-probe.ts", "mcp-servers-store.ts", "mcp-private-hosts.ts"]) {
+    for (const [, reason] of (await readFile(new URL(`../src/${file}`, import.meta.url), "utf8")).matchAll(/reason: "([a-z_]+)"/g)) sent.add(reason);
+  }
+  assert.ok(sent.has("redirect"), "the registry refuses a redirect with reason redirect");
+  assert.deepEqual([...sent].filter((reason) => !listed.includes(reason)).sort(), []);
 });

@@ -65,6 +65,15 @@ describe("the Tools step's MCP servers", () => {
     expect(html).toMatch(/value="mcp:fake\/add"[^>]*checked=""|checked=""[^>]*value="mcp:fake\/add"/);
   });
 
+  it("marks each tool its server's read says is not metered, and no other", () => {
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    act(() => root!.render(createElement(McpToolPicker, { servers: [{ ...FAKE, prices: { add: 0.01 }, not_metered: ["delete_thing"] }], tools: [], harness: "pi", onChange: () => {} })));
+    const label = (grant: string) => host.querySelector(`input[value="${grant}"]`)!.closest("label")!.textContent ?? "";
+    expect(label("mcp:fake/delete_thing")).toContain("not metered");
+    expect(label("mcp:fake/add")).not.toContain("not metered");
+  });
+
   it("offers nothing new on a harness that doesn't run MCP tools here, and a grant there says it won't run", () => {
     const html = renderToStaticMarkup(createElement(AgentEditor, { agent: agent(["read", "mcp:fake/add"], "codex"), caps: CAPS, step: "tools", mcpServers: [FAKE] }));
     expect(html).toContain("codex doesn&#x27;t run MCP tools on this server: pi and claude-agent do.");

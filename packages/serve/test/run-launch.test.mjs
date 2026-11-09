@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-const { launchBody, readLaunchBody, keepInputOrigin } = await import("../dist/run-launch.js");
+const { launchBody, readLaunchBody, keepInputOrigin, learningStartOf } = await import("../dist/run-launch.js");
 
 test("a launch body round-trips its per-run fields", () => {
   const launch = {
@@ -126,4 +126,32 @@ test("readLaunchBody applies the fail-safe through the body's own trigger", () =
   const read = readLaunchBody(body);
   assert.deepEqual(read.trigger, { id: "trig-1", firing_key: "k1" });
   assert.deepEqual(read.inputOrigin, { kind: "trigger", trigger_id: "trig-1", source: "webhook", owner: false });
+});
+
+test("a launch body keeps the run's ready file ids in order, for the runner to copy at its claim", () => {
+  const read = readLaunchBody(launchBody({ input: { content: "hi" }, title: "t", place: { mode: "runner" }, files: ["f-2", "f-1"] }));
+  assert.deepEqual(read.files, ["f-2", "f-1"]);
+});
+
+test("a launch body with no files reads none, never an empty list", () => {
+  const read = readLaunchBody(launchBody({ input: { content: "hi" }, title: "t", place: { mode: "runner" } }));
+  assert.equal(read.files, undefined);
+});
+
+test("a launch body round-trips the run's learning start (given {file,name}, seed sha, # Learned section)", () => {
+  const learning = { given: [{ file: "a.md", name: "A" }, { file: "b.md", name: "B" }], seed: "seed-abc", section: "# Learned\n\nA note" };
+  const read = readLaunchBody(launchBody({ input: { content: "hi" }, title: "t", place: { mode: "runner" }, learning }));
+  assert.deepEqual(read.learning, learning);
+  assert.deepEqual(learningStartOf(read), learning);
+});
+
+test("a learning start with a failed seed round-trips as given empty, seed null, section empty", () => {
+  const read = readLaunchBody(launchBody({ input: { content: "hi" }, title: "t", place: { mode: "runner" }, learning: { given: [], seed: null, section: "" } }));
+  assert.deepEqual(read.learning, { given: [], seed: null, section: "" });
+});
+
+test("a launch body with no learning reads none", () => {
+  const read = readLaunchBody(launchBody({ input: { content: "hi" }, title: "t", place: { mode: "runner" } }));
+  assert.equal(read.learning, undefined);
+  assert.equal(learningStartOf(read), undefined);
 });

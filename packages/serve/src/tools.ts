@@ -25,7 +25,7 @@ import { FAUX_ENV, workflowNodes } from "./model.js";
 import { bookedIn, booking, type Ledger } from "./paid-calls.js";
 import { browserPrice, browserSpend } from "./browser-cost.js";
 import { forModel } from "./result.js";
-import { fetchFor, runPages, WEB_FETCH_TOOL, webFetchTool } from "./web-fetch.js";
+import { fetchFor, pagesOf, WEB_FETCH_TOOL, webFetchTool } from "./web-fetch.js";
 import { searchFor, WEB_SEARCH_TOOL, webSearchTool } from "./web-search.js";
 import { browserNeeds, explainsView, isUnavailable, NO_PARALLEL_KEY, type Pickable, PICKABLE, planeOf, type Plane, PROVIDERS, serverGate, type Tooling, type ToolSettingsMap, whyUnavailable, withDefaults } from "./tool-plane.js";
 import type { DenyFrom, SettingFrom } from "./tool-gate.js";
@@ -34,7 +34,10 @@ import { keyNeeded } from "./key-words.js";
 import { handedSignIn, hostSecrets } from "./secrets.js";
 import { redactedAnswer } from "./key-refusal.js";
 import { SIGN_IN_KEY, SIGN_IN_SAVED } from "./sign-ins.js";
-import { answerIn } from "./runner/hand-back.js";
+import { answerIn, answerOnce } from "./runner/hand-back.js";
+import type { HandoverAnswered } from "./runner/journal-kinds.js";
+import type { LiveHandover, LiveViewerStore } from "./browser-live.js";
+import type { Claim } from "./store/store.js";
 
 export const ASK_TOOL = "ask_person";
 /** Under `--faux` only: a module whose default export gives the browser's `{ provider, driver }` for the run's
@@ -80,6 +83,19 @@ export type ToolHost = {
    *  runner applies, the live view's hand-back, the ask's expiry), read and written there, never as answer files
    *  (browser-person.ts personHands `answered`). */
   handoverInJournal?: boolean;
+  /** The run is on the runner: its live viewers are handed over through the store, not through files in its directory
+   *  (browser-live.ts putLiveViewer/dropLiveViewer). The browser tool's live-viewer writers hang off this: `put` hands a
+   *  session's viewer over (its token sealed under the run's `sealKey`), `drop` takes one (or all of the run's) back. The
+   *  three fields below are what builds these (the one store, the claim the row is written under, the seal key); a tool's
+   *  binding reads `liveViewers`, never them directly. Absent on the server path, where the viewer lives in the run's
+   *  directory (browser-live.ts sessionHandovers: writeHandover/dropHandover). */
+  liveViewers?: { put(handover: LiveHandover): Promise<boolean>; drop(tag?: string): Promise<void> };
+  /** The one store, for the live-viewer seam above (and the sign-in verify the runner saves). */
+  store?: LiveViewerStore;
+  /** The claim this run is held under: the live-viewer rows are written under it (its epoch fences them). */
+  claim?: Claim;
+  /** The key the live-viewer tokens are sealed under before they go to the store (store/seal.ts). */
+  sealKey?: Buffer;
 };
 
 /** What a name stands for in the run: the pi tools it offers, and the extensions a conversation selects for them. */
@@ -134,9 +150,9 @@ const webFetchEntry = (name: string): ToolEntry => ({
     return { tools: [tool], extensions: [extension] };
   },
   // A call node's Page is the workflow's, not a model's context: it reads the most of a part by default, from the page
-  // the run read (runPages) where it holds the URL. Its request to Parallel, when it makes one, is booked under the call
+  // the run read (pagesOf(run.env)) where it holds the URL. Its request to Parallel, when it makes one, is booked under the call
   // (paid-calls.ts); a part from what the run read makes none and books nothing.
-  effect: async (args, run) => bookedIn(run.ledger, async () => fetchFor(run.env, args.url, { ...(await fetchOptions(run.env, FAUX_ENV)), offset: args.offset as number | undefined, maxChars: (args.max_chars as number | undefined) ?? TEXT_CAP, pages: runPages, signal: run.signal })),
+  effect: async (args, run) => bookedIn(run.ledger, async () => fetchFor(run.env, args.url, { ...(await fetchOptions(run.env, FAUX_ENV)), offset: args.offset as number | undefined, maxChars: (args.max_chars as number | undefined) ?? TEXT_CAP, pages: pagesOf(run.env), signal: run.signal })),
 });
 
 /** A coding tool, from the run's coding source: a name it does not hold (bash on the runner) binds no tool. */
@@ -308,6 +324,16 @@ const browserTool: ToolEntry = {
             cursor = page.next;
           }
         }, context)) ?? undefined,
+        // The answer written only when the ask has none, read and written in one commit: exactly one answered entry.
+        answer: async (id: string, data: Record<string, string>) => {
+          if (!opened) throw new Error("the run's journal is not open");
+          const on = opened;
+          const { stood } = await answerOnce((change) => on.commit(change, context), ROOT_CONVERSATION_ID, (entries) => {
+            const found = answerIn(entries, id);
+            return found ? { stood: found } : { write: data as unknown as HandoverAnswered, stood: data as unknown as HandoverAnswered };
+          });
+          return { outcome: stood.state, at: stood.at, ...(stood.reason !== undefined ? { reason: stood.reason } : {}) };
+        },
       } : {}),
       // Tests only (--faux): the process dies once between an ask's record and its row.
       afterRecord: host.env[FAUX_ENV] && host.env[person.FAUX_ASK_DIES_ENV] ? () => {
@@ -323,12 +349,10 @@ const browserTool: ToolEntry = {
       if (refused) throw refused;
       return watched as never;
     };
-    // Each session's viewer reaches the server in the run's directory, never work/: written as it launches, gone as it ends.
-    const onSession = async (row: { session: { tag: string }; liveView: { fullscreen: string } | null }, change: string) => {
-      if (change === "released") return live.dropHandover(host.where.root, row.session.tag);
-      const handover = row.liveView ? live.handoverOf(row.liveView.fullscreen, row.session.tag) : undefined;
-      if (handover) await live.writeHandover(host.where.root, handover);
-    };
+    // Each session's viewer reaches the server as it launches, and goes as it ends: on the runner through the store, under
+    // the run's claim (host.liveViewers); on the old per-run process, in the run's directory, never work/.
+    const viewers = live.sessionHandovers(host.where.root, host.liveViewers);
+    const onSession = (row: { session: { tag: string }; liveView: { fullscreen: string } | null }, change: string) => viewers.changed(row, change);
     // Its session time is the run's spend, at its provider's price, and held under the run's cap (browser-cost.ts).
     const providerName = (parts.provider as { name?: string } | undefined)?.name ?? vendor;
     const price = browserPrice(providerName, host.env);
@@ -375,8 +399,7 @@ const browserTool: ToolEntry = {
       for (const row of kept.filter((r) => (r.state === "live" || r.state === "held") && r.resourceId !== null)) {
         try {
           const opened = await watched?.liveView?.({ id: row.resourceId!, tag: row.tag });
-          const handover = opened?.fullscreen ? live.handoverOf(opened.fullscreen, row.tag) : undefined;
-          if (handover) await live.writeHandover(host.where.root, handover);
+          await viewers.reopened(row.tag, opened?.fullscreen);
         } catch {
           // A browser that cannot be reached has no view to give: the owner reads none, as for any session without one.
         }
@@ -396,7 +419,7 @@ const browserTool: ToolEntry = {
         // holds go, and the asks with them.
         await view.close();
         hands.close();
-        await live.dropHandover(host.where.root);
+        await viewers.released();
         person.dropAsks(host.where.root);
       }
     });

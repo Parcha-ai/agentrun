@@ -292,7 +292,7 @@ export class McpServers {
       // Tried twice when the authorization server does not answer (a timeout, a 5xx, the network): only a refusal is final.
       for (let tries = 0; set.tokens.refresh_token && !next && !no && tries < 2 && !this.stopped.signal.aborted; tries++) {
         try {
-          next = await refreshed(set, kept.url, this.stopped.signal, this.network, this.signIns.own);
+          next = await refreshed(set, kept.url, this.stopped.signal, this.network, { own: this.signIns.own });
         } catch (error) {
           no = await refused(error);
         }

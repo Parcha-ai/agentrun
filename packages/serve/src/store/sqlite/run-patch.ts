@@ -4,34 +4,41 @@
 // transaction: the run's end and its outbox rows commit with the journal's last entry, or none of them do. The fence is
 // the first statement: `WHERE id = ? AND epoch = ?` changing no row throws Fenced, and the caller's transaction rolls back.
 import { endedReason, FINAL_STATES, Fenced, type AlsoRow, type Claim, type ImportedFrom, type RunOutcome, type RunPatch, type RunRow, type RunState } from "../store.js";
+import { type Dialect, SQLITE } from "../dialect.js";
 import type { SqliteExecutor, SqliteValue } from "./connection.js";
 import { claimFence } from "../fence.js";
 import { writeLaunch } from "./run-launch.js";
 
 /** A learning run's launch body: the learning harness, the run that learned as its input, and where it runs (on the
  *  runner, no box: its only writes are the learning folder's one script). */
-export const learningLaunchOf = (runId: string) => ({ harness: "learning", input: { runId }, title: `Learning from ${runId}`, place: { mode: "runner" } });
+/** A learning run's launch: harness "learning", its input the run that learned, and `model`, the grade model when one is
+ *  named (gradeModelOf; none: the agent's own grades it, as main's). No cap: main caps no grade. */
+export const learningLaunchOf = (runId: string, model?: string) => ({ harness: "learning", input: { runId }, title: `Learning from ${runId}`, place: { mode: "runner" }, ...(model ? { model } : {}) });
+
+/** The lock a write of a run's sign_in_handed and a sign-in's forget both take (Dialect.lockKey): the forget's check of
+ *  the running runs' hashes and a launch's write of them are serialized, as SQLite's one writer serializes them. */
+export const SIGN_IN_HANDED_LOCK = "sign_in_handed";
 
 export type RunRecord = {
   id: string; agent_id: string; revision_id: string; state: RunState; epoch: number; runner: string | null; claimed_until: number | null;
   wake_at: number | null; backoff_until: number | null; cost_usd: number | null; metrics: string | null; summary: string | null;
-  outcome: string | null; archived_at: number | null; imported_from: string | null; started_at: number; ended_at: number | null;
+  outcome: string | null; archived_at: number | null; imported_from: string | null; sign_in_handed: string | null; started_at: number; ended_at: number | null;
 };
 
-export const RUN_COLUMNS = "id, agent_id, revision_id, state, epoch, runner, claimed_until, wake_at, backoff_until, cost_usd, metrics, summary, outcome, archived_at, imported_from, started_at, ended_at";
+export const RUN_COLUMNS = "id, agent_id, revision_id, state, epoch, runner, claimed_until, wake_at, backoff_until, cost_usd, metrics, summary, outcome, archived_at, imported_from, sign_in_handed, started_at, ended_at";
 
 export const runOf = (r: RunRecord): RunRow => ({
   id: r.id, agentId: r.agent_id, revisionId: r.revision_id, state: r.state, epoch: r.epoch, runner: r.runner, claimedUntil: r.claimed_until,
   wakeAt: r.wake_at, backoffUntil: r.backoff_until, costUsd: r.cost_usd, metrics: r.metrics === null ? null : JSON.parse(r.metrics), summary: r.summary,
   outcome: (r.outcome as RunOutcome | null) ?? null, archivedAt: r.archived_at, importedFrom: r.imported_from === null ? null : (JSON.parse(r.imported_from) as ImportedFrom),
-  startedAt: r.started_at, endedAt: r.ended_at,
+  signInHanded: r.sign_in_handed === null ? null : (JSON.parse(r.sign_in_handed) as string[]), startedAt: r.started_at, endedAt: r.ended_at,
 });
 
 /** Applies `patch` to the claim's run, then writes `also`, through `tx` (an open transaction's handle). Fenced, with nothing
  *  of it written once the caller rolls back, when the run's epoch is not the claim's or the claim's lease ran out before
  *  `now` (the store's clock, read in the transaction). A final state with no `endedAt` is stamped `now`, and releases the
- *  run in the same statement. */
-export async function applyRunPatch(tx: Pick<SqliteExecutor, "run" | "get">, claim: Pick<Claim, "runId" | "epoch">, patch: RunPatch, also: readonly AlsoRow[], now: number): Promise<RunRow> {
+ *  run in the same statement. `dialect`: the connection's (store/dialect.ts), SQLite's by default. */
+export async function applyRunPatch(tx: Pick<SqliteExecutor, "run" | "get">, claim: Pick<Claim, "runId" | "epoch">, patch: RunPatch, also: readonly AlsoRow[], now: number, dialect: Dialect = SQLITE): Promise<RunRow> {
   const sets: string[] = [];
   const params: SqliteValue[] = [];
   const set = (column: string, value: SqliteValue) => (sets.push(`${column} = ?`), params.push(value));
@@ -40,6 +47,8 @@ export async function applyRunPatch(tx: Pick<SqliteExecutor, "run" | "get">, cla
   if (patch.metrics !== undefined) set("metrics", patch.metrics === null ? null : JSON.stringify(patch.metrics));
   if (patch.summary !== undefined) set("summary", patch.summary);
   if (patch.outcome !== undefined) set("outcome", patch.outcome);
+  // The runner writes the handed sign-in hashes at its claim, under the epoch fence: an array (never the pointers), or null.
+  if (patch.signInHanded !== undefined) set("sign_in_handed", patch.signInHanded === null ? null : JSON.stringify([...patch.signInHanded]));
   if (patch.endedAt !== undefined) set("ended_at", patch.endedAt);
   else if (patch.state !== undefined && FINAL_STATES.includes(patch.state)) set("ended_at", now);
   // A write that makes the run final is its release, in the same statement: no runner, no lease, the epoch moved on by one
@@ -50,13 +59,15 @@ export async function applyRunPatch(tx: Pick<SqliteExecutor, "run" | "get">, cla
   // run out (claimed_until on this store's clock, the one that set it).
   const assignments = sets.length ? sets.join(", ") : "epoch = epoch";
   const fence = claimFence(claim, now);
+  // A write of the handed hashes and a sign-in's forget (which checks them) never interleave (SIGN_IN_HANDED_LOCK).
+  if (patch.signInHanded !== undefined) await dialect.lockKey(tx, SIGN_IN_HANDED_LOCK);
   const row = await tx.get<RunRecord>(`UPDATE runs SET ${assignments} WHERE ${fence.where} RETURNING ${RUN_COLUMNS}`, ...params, ...fence.params);
   if (!row) throw new Fenced(claim.runId, claim.epoch);
   // Released, the run holds nothing a runner showed: its run_live row goes in the same transaction, so a run read ended
   // never shows a running tool or a partial answer beside it.
   if (ending) await tx.run("DELETE FROM run_live WHERE run_id = ?", claim.runId);
-  // And its browser sessions' viewer hand-overs: a run read ended never names a viewer.
-  if (ending) await tx.run("DELETE FROM browser_viewers WHERE run_id = ?", claim.runId);
+  // And its computer sessions' viewer hand-overs, every kind: a run read ended never names a viewer.
+  if (ending) await tx.run("DELETE FROM computer_viewers WHERE run_id = ?", claim.runId);
   for (const each of also) {
     switch (each.table) {
       case "channel_posts": {
@@ -70,13 +81,16 @@ export async function applyRunPatch(tx: Pick<SqliteExecutor, "run" | "get">, cla
       case "channel_told":
         await tx.run("INSERT INTO channel_told (channel, run_id, marker, at) VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING", each.row.channel, claim.runId, each.row.marker, now);
         break;
-      // The run's kept learning, of the run's own agent; kept once (an end replayed after a crash keeps the first).
-      case "learning_proposals":
+      // The run's kept learning, of the run's own agent, naming the learning run the same end queues (wherever the end
+      // lists it); kept once (an end replayed after a crash keeps the first).
+      case "learning_proposals": {
+        const queued = also.find((one): one is Extract<AlsoRow, { table: "learning_run" }> => one.table === "learning_run");
         await tx.run(
-          "INSERT INTO learning_proposals (run_id, agent_id, turn, proposal, created_at) SELECT id, agent_id, ?, ?, ? FROM runs WHERE id = ? ON CONFLICT (run_id) DO NOTHING",
-          JSON.stringify(each.row.turn ?? null), JSON.stringify(each.row.proposal ?? null), now, claim.runId,
+          "INSERT INTO learning_proposals (run_id, agent_id, turn, proposal, learning_run_id, created_at) SELECT id, agent_id, ?, ?, ?, ? FROM runs WHERE id = ? ON CONFLICT (run_id) DO NOTHING",
+          JSON.stringify(each.row.turn ?? null), JSON.stringify(each.row.proposal ?? null), queued?.row.id ?? null, now, claim.runId,
         );
         break;
+      }
       // The learning run: queued, of the run's agent and revision, started once (the same id again adds nothing).
       case "learning_run":
         await tx.run(
@@ -86,7 +100,7 @@ export async function applyRunPatch(tx: Pick<SqliteExecutor, "run" | "get">, cla
         // Its launch row, with it: harness "learning" (the runner's loop factory picks the learning loop by it), its input
         // the run that learned. Written once, as the run is.
         if (!(await tx.get("SELECT 1 AS found FROM run_launch WHERE run_id = ?", each.row.id))) {
-          await writeLaunch(tx as SqliteExecutor, each.row.id, { body: learningLaunchOf(claim.runId) }, now);
+          await writeLaunch(tx, each.row.id, { body: learningLaunchOf(claim.runId, each.row.model) }, now);
         }
         break;
     }
