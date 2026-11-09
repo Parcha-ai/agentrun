@@ -328,7 +328,7 @@ function childEvents(file: string): unknown[] {
 /** The run's live timeline says it went on after `runner` was lost: the loop that took it over wrote it (Claim.lost). */
 function saidTakenOver(rows: readonly TimelineEvent[], runner: string): void {
   const said = rows.filter((row) => row.kind === "phase" && /^Resumed after its runner/.test(row.summary ?? "")).map((row) => row.summary);
-  assert.ok(said.includes(`Resumed after its runner (${runner}) was lost`), `the timeline says the run went on after ${runner} was lost: ${JSON.stringify(said)}`);
+  assert.ok(said.includes(`Resumed after its runner (${runner}) was lost`), `the timeline says the run went on after ${runner} was lost: ${JSON.stringify(said)}; its rows ${JSON.stringify(rows.map((row) => [row.kind, row.summary]))}`);
 }
 
 /** A crash at `point` during a call of `tool`, then a second runner's resume: the run ends. */
