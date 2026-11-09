@@ -7,6 +7,7 @@ import { secretsShown } from "./learning.js";
 import { runCutValues } from "./run-cut.js";
 import { type SignInReader, WITHHELD_SIGN_IN } from "./run-view.js";
 import { runLearningOverStore } from "./store-reads/learning.js";
+import { runDiffOverStore } from "./learning-routes.js";
 import type { Store } from "./store/store.js";
 
 /** Run `runId`'s learning as GET /runs/{id}/learning serves it, or ApiError forbidden for a withheld run. */
@@ -14,4 +15,12 @@ export async function servedRunLearning(deps: { serverSecrets: () => string[]; s
   const cut = await runCutValues(deps, store, runId);
   if (cut === "unreadable") throw new ApiError("forbidden", WITHHELD_SIGN_IN);
   return runLearningOverStore(store, runId, secretsShown(cut.values), cut.values);
+}
+
+/** Run `runId`'s learning diff as GET /runs/{id}/learning/diff serves it (learning-routes.ts runDiffOverStore), cut by the
+ *  run's one cut, or ApiError forbidden for a withheld run. */
+export async function servedRunDiff(deps: { serverSecrets: () => string[]; signIns?: SignInReader }, store: Store, data: string, runId: string) {
+  const cut = await runCutValues(deps, store, runId);
+  if (cut === "unreadable") throw new ApiError("forbidden", WITHHELD_SIGN_IN);
+  return runDiffOverStore(data, store, runId, secretsShown(cut.values));
 }
