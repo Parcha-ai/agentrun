@@ -274,6 +274,10 @@ const VERSION: string = JSON.parse(readFileSync(new URL("../package.json", impor
 const NAME = /^computer-[0-9a-f]{12}$/;
 const SANDBOX_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 const TEMPLATE = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/;
+/** E2B Desktop's template: a screen with an X server, the default for kind desktop. */
+export const E2B_DESKTOP_TEMPLATE = "desktop";
+/** E2B's plain template: no screen, the default for kind linux (a sandbox). */
+export const E2B_BASE_TEMPLATE = "base";
 const NAME_LABEL = `${COMPUTER_LABEL}.name`;
 /** The template create was asked for: E2B reports its id, and the alias only sometimes. */
 const IMAGE_LABEL = `${COMPUTER_LABEL}.image`;
@@ -690,7 +694,7 @@ export class E2BProvider implements ComputerProvider {
 				`a computer with an Archil mount runs its tools as agentrun-tool, ${ARCHIL_USER}, the user its image makes with no way to root; this provider's daemon user is ${daemonUser}: make it with daemonUser ${ARCHIL_USER}`,
 			);
 		}
-		if (typeof image !== "string" || !TEMPLATE.test(image)) refuse("image", 'an image is required: the name or id of an E2B template, such as "desktop" (E2B Desktop) or "base"');
+		if (typeof image !== "string" || !TEMPLATE.test(image)) refuse("image", `an image is required: the name or id of an E2B template, such as "${E2B_DESKTOP_TEMPLATE}" (E2B Desktop) or "${E2B_BASE_TEMPLATE}"`);
 		refusals.push(...checkLifetime(lifetimeMs, this.capabilities()));
 		if (network === "open" || (typeof network === "object" && network !== null && "allow" in network)) refuse("network", OWN_NETWORK_ONLY);
 		else if (network !== "none") refuse("network", 'network is required: "none"');
