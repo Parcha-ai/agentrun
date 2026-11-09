@@ -53,8 +53,9 @@ test("runner harnesses: each builds its adapter from the launch", async () => {
   }
 });
 
-test("runner harnesses: OpenCode's facts say it never reruns a call it started and takes no steer mid-turn", async () => {
+test("runner harnesses: OpenCode's facts say it never reruns a call it started, takes no steer mid-turn, and ends its turn at a cut answer", async () => {
   const { facts } = await import("../dist/harness-opencode/facts.js");
   assert.equal(facts.rerunsStarted, false);
   assert.equal(facts.steer, false);
+  assert.equal(facts.recoversCutAnswers, 0, "an answer cut at the output limit ends OpenCode's turn, as pi's does");
 });
