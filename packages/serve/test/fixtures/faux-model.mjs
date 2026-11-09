@@ -336,6 +336,9 @@ function replyTo(context, faux) {
   if (first.includes("Answer with a megabyte of sk- runs.")) return faux.message(`${"sk-".repeat(2730)} `.repeat(128));
   // An answer quoting a value no key holds yet (final-answer-redact.test.mjs saves it as one after the run).
   if (first.includes("Answer quoting the later key.")) return faux.message(`Later: ${["not-a-secret", "later-key-0123456789abcdef"].join("-")} ends here.`);
+  // A provider error quoting what the message gave it after "Fail quoting: " (server-secrets.test.mjs: a webhook trigger's
+  // secret in each of its spellings), as a gateway that echoes a header would.
+  if (first.startsWith("Fail quoting: ")) return faux.message("", { stopReason: "error", errorMessage: `500 {"message":"The hook said ${first.slice("Fail quoting: ".length)}"}` });
   // A provider error that is no 401 but echoes the key it was sent.
   if (first.includes("Fail echoing a held key")) return faux.message("", { stopReason: "error", errorMessage: '500 {"message":"Key not-a-secret-echoed-key-0123 is not valid"}' });
   // A provider's content filter stopping the answer, in pi-ai's words for it on each API (its stop reason "error"): the
