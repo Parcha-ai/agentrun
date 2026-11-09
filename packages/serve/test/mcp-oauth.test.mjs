@@ -17,7 +17,7 @@ import { copyStandIn } from "../../run-adapters-codex/test/stand-in.mjs";
 import { McpServers } from "../dist/mcp-servers.js";
 import { systemNetwork } from "../dist/mcp-oauth.js";
 import { network as fakeNetwork } from "./fixtures/fake-network.mjs";
-import { agent, call, cookieOf, flowAgent, follow, runRecordOf, scratch, serve, withEnv } from "./support.mjs";
+import { agent, call, cookieOf, flowAgent, follow, runRecordOf, scratch, serve, storeBytes, withEnv } from "./support.mjs";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { startFakeOAuth } from "./fixtures/fake-oauth-server.mjs";
 
@@ -100,12 +100,44 @@ test("an OAuth server: preview says to sign in; start, approve and callback keep
   assert.ok(caps.features.mcp_client.auth.includes("oauth"));
   const list = await api("GET", "/settings/mcp-servers");
   holdsNone(JSON.stringify([started.body, read.body, list.body, refreshed.body]), as.issued, "a read");
-  holdsNone(readFileSync(join(data, "mcp-servers.json"), "utf8"), as.issued, "mcp-servers.json");
+  holdsNone(storeBytes(data), as.issued, "the store");
 
   // The state is single-use: the same callback again is refused, and an unknown one too.
   const again = await fetch(back.url, { redirect: "manual", headers: { cookie: started.headers.get("set-cookie").split(";")[0] } });
   assert.equal(again.status, 400, "the state is used once");
   assert.equal((await fetch(`${base}${CALLBACK}?code=x&state=never-given`, { redirect: "manual", headers: { cookie: `agentrun-oauth-${new URL(base).port}-${createHash("sha256").update("never-given").digest("hex").slice(0, 16)}=never-given` } })).status, 400);
+});
+
+test("the OAuth callback's owner-cookie gate holds in front of the store-backed registry: no cookie and another browser's cookie are 403 and never run the callback; the right cookie completes", async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() });
+  const { api } = await serve(t);
+  const { as, mcp } = await fakes(t);
+
+  // Two sign-ins at once, each with its own cookie bound to its own state.
+  const first = await api("POST", "/settings/mcp-servers/docs/oauth/start", { url: mcp.url, scopes: ["read"] });
+  assert.equal(first.status, 200, JSON.stringify(first.body));
+  const other = await api("POST", "/settings/mcp-servers/notes/oauth/start", { url: mcp.url, scopes: ["read"] });
+  assert.equal(other.status, 200, JSON.stringify(other.body));
+  const otherCookie = other.headers.get("set-cookie").split(";")[0];
+
+  // No owner cookie: refused before the registry's callback runs (startedHere, constant-time, in front of McpServersOverStore).
+  const noCookie = await approve(first, { cookie: false });
+  assert.equal(noCookie.status, 403, "no owner cookie is refused");
+  assert.match((await noCookie.json()).error.message, /started in another browser/);
+
+  // Another browser's cookie (a different sign-in's): also refused.
+  const wrongCookie = await approve(first, { jar: otherCookie });
+  assert.equal(wrongCookie.status, 403, "another browser's cookie is refused");
+
+  // Neither refused attempt exchanged a code, so the registry's callback never ran for them: the state is still unused.
+  assert.ok(!as.log.some((entry) => entry.path === "/token"), "no code was exchanged while the gate refused the callback");
+
+  // The right cookie completes: the state survived the refusals, so the callback runs exactly once, now.
+  const back = await approve(first);
+  assert.equal(back.status, 302, await back.clone().text());
+  assert.equal(back.headers.get("location"), "/#/settings/mcp?server=docs&sign_in=ok");
+  assert.ok(as.log.some((entry) => entry.path === "/token" && entry.form.grant_type === "authorization_code"), "the right cookie exchanges the code");
+  assert.equal((await api("GET", "/settings/mcp-servers/docs")).body.credential, "sealed");
 });
 
 test("a sign-in's state expires: a callback after ten minutes is refused", async (t) => {
@@ -134,7 +166,7 @@ test("a pre-registered client: its id and secret are used, no registration is ma
   const read = await api("GET", "/settings/mcp-servers/crm");
   assert.equal(read.body.credential, "sealed");
   assert.equal(read.body.oauth.client, "pre-registered");
-  holdsNone(readFileSync(join(data, "mcp-servers.json"), "utf8"), [secret, ...as.issued], "mcp-servers.json");
+  holdsNone(storeBytes(data), [secret, ...as.issued], "the store");
   assert.equal(read.body.oauth.client_id, "owner-app", "reads show the client id");
   holdsNone(JSON.stringify(read.body), [secret], "a read");
   const bad = await api("POST", "/settings/mcp-servers/crm/oauth/start", { url: mcp.url, client_secret: secret });
@@ -198,7 +230,7 @@ test("a run's launch refreshes a token near its expiry, once for launches at the
   const after = (await api("GET", "/settings/mcp-servers/docs")).body;
   assert.equal(after.credential, "sealed");
   assert.ok(Date.parse(after.oauth.expires_at) >= Date.parse(first.oauth.expires_at));
-  holdsNone(readFileSync(join(data, "mcp-servers.json"), "utf8"), as.issued, "mcp-servers.json");
+  holdsNone(storeBytes(data), as.issued, "the store");
 
   as.revoke();
   assert.deepEqual(await store.headersForRun("docs"), { unopened: "its sign-in expired or was revoked: sign in again in Settings → MCP servers" }, "a refused refresh hands the run a credential that does not open, never none");

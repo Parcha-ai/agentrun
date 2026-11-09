@@ -18,7 +18,7 @@ const under = (key, folder) => key === folder || key.startsWith(`${folder}/`);
 const text = (bytes) => Buffer.from(bytes).toString("utf8");
 
 /** A claim as archilClaim gives it, over a fake disk: no key, no call leaves the process. */
-const claimOf = (disk) => ({ disk, region: "aws-us-east-1", image: undefined, token: async () => "unused", secrets: new Set(), release() {} });
+const claimOf = (disk) => ({ disk, region: "aws-us-east-1", image: undefined, secrets: new Set(), release() {} });
 
 const roots = [];
 after(() => { for (const root of roots) rmSync(root, { recursive: true, force: true }); });

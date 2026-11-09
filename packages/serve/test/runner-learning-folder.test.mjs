@@ -1,6 +1,6 @@
 // The learning run's merge on the agent's own learning folder: runner/learning-factory.ts with the folder's API
 // (learn/folder.ts learningWorkspace, learn/commit.ts readMain and learningCommit), the grader alone faked. The merge is
-// the one the server's grade made (grade.ts mergeProposal): it carries the source run's seed, so a skill a person changed
+// the one the server's grade made before the cutover: it carries the source run's seed, so a skill a person changed
 // on main after the run started is a conflict in the script's words and nothing is written over it; a note the grader
 // says came from the user's own words lands on main with `origin: you`; and a draft the grader holds waits on main by
 // its README (its workflow.json is held by it).
@@ -57,7 +57,7 @@ async function learn(store, data, proposal, graded) {
 
 const shown = (entries) => JSON.stringify(entries.map((entry) => [entry.kind, entry.data]));
 
-test("the merge carries the run's seed: a skill a person changed on main after the run started is a conflict in the script's words, dropped as stale, nothing written", async (t) => {
+test("the merge carries the run's seed: a skill a person changed on main after the run started is a conflict in the script's words, dropped as checker, nothing written", async (t) => {
   const { store, data } = await setUp(t);
   const { seed, before } = await inFolder(data, async (ws) => {
     const made = await learningCommit(ws, { kind: "merge", runId: "run-0", reason: "A skill.", files: [{ path: SKILL_PATH, text: SKILL }], graded: {} });
@@ -71,7 +71,7 @@ test("the merge carries the run's seed: a skill a person changed on main after t
   const { end, entries } = await learn(store, data, proposal, answer([{ file: UNITS.file, decision: "keep" }, { file: SKILL_PATH, decision: "keep" }]));
   assert.deepEqual(end, { state: "ended" });
   const dropped = entries.filter((entry) => entry.kind === KINDS.learningDropped).map((entry) => [entry.data.reason, entry.data.problems]);
-  assert.deepEqual(dropped, [["stale", [{ rule: "supersedes", path: SKILL_PATH, detail: `${SKILL_PATH} changed on main after the run started` }]]], shown(entries));
+  assert.deepEqual(dropped, [["checker", [{ rule: "supersedes", path: SKILL_PATH, detail: `${SKILL_PATH} changed on main after the run started` }]]], shown(entries));
   assert.deepEqual(await inFolder(data, (ws) => readSnapshot(ws)), before, "main as the person left it");
 });
 

@@ -191,7 +191,7 @@ risky rule is never silently dropped and never served on its own; it waits. A ri
 with `status: pending` in its `SKILL.md` or README.
 `parseVerdict` reads one verdict with one item per new note and fails closed: an answer it cannot read, a missing or
 extra item, or a decision or an origin out of its list is no merge. Each item stands on its own: the notes, skill and
-draft it keeps or holds merge, and the ones it drops are left out (`keptProposal`), whatever the grader's top-level
+draft it keeps or holds merge, and the ones it drops are left out (the learning run's `keptOf`), whatever the grader's top-level
 `merge` says. Nothing merges when it keeps nothing, when any item's question names Planted however worded, kept, held
 or dropped (the run read something hostile, so nothing it proposed is kept), when it drops an item with no question
 (it says not why), or when it keeps every item and still says no merge.

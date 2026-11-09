@@ -12,8 +12,9 @@ import { localHands } from "./registry-support.mjs";
 const answer = (text) => async () => ({ text });
 const injected = { read: answer("read"), write: answer("write"), edit: answer("edit"), bash: answer("bash") };
 const LOCAL = ["read", "write", "edit", "bash"];
-const DESKTOP = ["desktop_screen", "desktop_input"];
-const PHONE = ["phone_screen", "phone_tap", "phone_swipe", "phone_type", "phone_apps", "phone_open"];
+const HANDOFF = "computer_request_handoff";
+const DESKTOP = ["desktop_screen", "desktop_input", HANDOFF];
+const PHONE = ["phone_screen", "phone_tap", "phone_swipe", "phone_type", "phone_apps", "phone_open", HANDOFF];
 /** A browser's contracts as a host passes them (pi-browser's ToolContract shape); the registry keeps their words as given. */
 const CONTRACTS = Object.freeze([
   { name: "snapshot", label: "Browser: snapshot", description: "The page's tree.", parameters: { type: "object", properties: {} }, effect: "read", replay: "safe" },
@@ -31,7 +32,8 @@ const words = (tool, kind) => `${tool} needs a ${kind} computer: set this agent'
 
 test("a kind's tools follow the host tools, in a fixed order whatever order the kinds are given in", () => {
   const registry = createRegistry({ maxExecS: 600, shell: "local", kinds: ["browser", "phone", "desktop"], executors: { ...injected, browser: browserExecutors() }, browserTools: CONTRACTS });
-  assert.deepEqual(registry.list().map((def) => def.name), [...LOCAL, ...DESKTOP, ...PHONE, ...BROWSER]);
+  // The hand-over both kinds have is listed once, with the desktop's.
+  assert.deepEqual(registry.list().map((def) => def.name), [...LOCAL, ...DESKTOP, ...PHONE.filter((name) => name !== HANDOFF), ...BROWSER]);
   // No kinds: today's rows, unchanged.
   assert.deepEqual(createRegistry({ maxExecS: 600, shell: "local", executors: injected }).list(), hostToolDefs({ maxExecS: 600, shell: "local" }));
 });
@@ -41,10 +43,11 @@ test("each kind's definitions: its own gate names and settings key; a read is re
   assert.deepEqual(desktop.map((def) => [def.name, def.gateName, def.settingsKey, def.replaySafe, def.source]), [
     ["desktop_screen", "host:desktop/desktop_screen", "desktop", true, "host"],
     ["desktop_input", "host:desktop/desktop_input", "desktop", false, "host"],
+    [HANDOFF, `host:desktop/${HANDOFF}`, "desktop", false, "host"],
   ]);
   const phone = capabilityToolDefs("phone");
   assert.deepEqual(phone.map((def) => [def.name, def.settingsKey, def.replaySafe]), [
-    ["phone_screen", "phone", true], ["phone_tap", "phone", false], ["phone_swipe", "phone", false], ["phone_type", "phone", false], ["phone_apps", "phone", true], ["phone_open", "phone", false],
+    ["phone_screen", "phone", true], ["phone_tap", "phone", false], ["phone_swipe", "phone", false], ["phone_type", "phone", false], ["phone_apps", "phone", true], ["phone_open", "phone", false], [HANDOFF, "phone", false],
   ]);
   for (const def of [...desktop, ...phone]) {
     assert.equal(def.parameters.type, "object", def.name);

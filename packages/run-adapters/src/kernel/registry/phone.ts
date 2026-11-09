@@ -3,6 +3,7 @@
 // model-visible phone tool, so these words are new.
 import type { ToolDef } from "./defs.js";
 import { answerOf, type Executor, type Hands, type PhonePoint, needsKindWords, shotAnswer } from "./hands.js";
+import { HANDOFF_TOOL, handoffDef, handoffExecutor } from "./handoff.js";
 
 /** How long a swipe takes when a call names no duration, and the longest one may. */
 export const PHONE_SWIPE_MS = 300;
@@ -27,6 +28,8 @@ export const PHONE_TOOL_DEFS: readonly ToolDef[] = Object.freeze([
   def("phone_type", "Type text into the field that has focus on the phone, as given. Tap the field first.", object({ text: { type: "string", minLength: 1 } }, ["text"]), false),
   def("phone_apps", "List the phone's installed apps, each by its id (and its name where the phone gives one), and which app is in front.", object({}, []), true),
   def("phone_open", "Open an app on the phone by its id (phone_apps lists them), bringing it to the front.", object({ id: { type: "string", minLength: 1 } }, ["id"]), false),
+  // The agent's hand-over of the phone to the person (handoff.ts), under the phone's settings key.
+  handoffDef("phone"),
 ]);
 
 const POINT_WORDS = "x and y are whole numbers from 0, in the screenshot's pixels";
@@ -77,4 +80,5 @@ export const PHONE_EXECUTORS: Readonly<Record<string, Executor>> = Object.freeze
     await phone.apps.open(args.id);
     return { text: `Opened ${args.id}.` };
   }),
+  [HANDOFF_TOOL]: handoffExecutor("phone"),
 });

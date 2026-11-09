@@ -76,3 +76,21 @@ export function fakeBrowser() {
     },
   };
 }
+
+/** A computer's hand-over to the person: ask records each request and answers `outcome` once `answer()` is called (at
+ *  once with `now: true`); an abort of the call's signal rejects it. */
+export function fakeHandoff({ outcome = "done", now = true } = {}) {
+  const calls = [];
+  let release;
+  const answered = new Promise((resolve) => (release = resolve));
+  if (now) release();
+  return {
+    calls,
+    answer: () => release(),
+    async ask(request, signal) {
+      calls.push(["ask", request]);
+      await Promise.race([answered, new Promise((_, reject) => signal?.addEventListener("abort", () => reject(signal.reason), { once: true }))]);
+      return { outcome };
+    },
+  };
+}

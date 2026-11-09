@@ -16,6 +16,8 @@ export type {
   ScreenPoint, Shot, ToolAnswer, ToolCall,
 } from "./hands.js";
 export { PHONE_EXECUTORS, PHONE_SWIPE_MAX_MS, PHONE_SWIPE_MS, PHONE_TOOL_DEFS } from "./phone.js";
+export { HANDOFF_DEFAULT_S, HANDOFF_MAX_S, HANDOFF_MIN_S, HANDOFF_TOOL } from "./handoff.js";
+export type { Handoff } from "./hands.js";
 export {
   BACKGROUND_DIR,
   BACKGROUND_INPUT_BYTES,

@@ -829,3 +829,52 @@ test("a run that mixes browser and monid charges, as serve books them, reads fro
   assert.deepEqual(rows.filter((row) => /^Tool cost/.test(row.summary ?? "")).map((row) => [row.summary, row.usage.usd]), [["Tool cost: monid charged $0.0030 for monid.run", 0.003]], "monid's own row; no browser Tool cost row");
   assert.deepEqual(rows.filter((row) => row.kind === "tool_use" && row.usage).map((row) => [row.tool_name, row.usage.usd]), [["snapshot", 0.0001], ["browser_read", 0.0017]]);
 });
+
+test("a kept session's non-final charge books a person's carried minutes off the session, not twice off the live call's hold", async (t) => {
+  const [{ BACKGROUND_CONTEXT: ctx }, durable, { createModels }] = await Promise.all([import("@earendil-works/chord/context"), import("@earendil-works/pi-durable"), import("@earendil-works/pi-ai/models")]);
+  t.mock.timers.enable({ apis: ["Date"], now: T0 });
+  let spent = 0;
+  useSpend({ cap: 1, spent: () => spent, add: (usd) => void (spent += usd ?? 0) });
+  t.after(() => useSpend(undefined));
+  const harness = await durable.Harness.open(new durable.MemoryStorage(), { models: createModels(), registry: durable.createRegistry(), onReport: () => {} }, ctx);
+  t.after(() => harness.close(ctx));
+  await harness.root(ctx, { agent: { model: { provider: "faux", modelId: "faux-1" } } });
+  const spend = browserSpend("browserbase", BROWSERBASE, 180, async () => undefined);
+  spend.watch(harness);
+  const base = paidHolds();
+  const S = spend.stretch;
+  const r = 0.12 / 3600;
+  const microUsd = (usd) => Math.ceil(Math.round(usd * 1e12) / 1e6) / 1e6;
+  const tag = "ar-run-booked-a";
+  const charge = (seconds, usd, final, at) => ({ conversationId: 1, tag, provider: "browserbase", at: new Date(at).toISOString(), seconds, usd, final, state: "priced" });
+  // The session's first charge at T0: its reserve held, its last charge now T0.
+  await harness.commit((tx) => spend.onCharge(charge(0, 0, false, T0), tx), ctx);
+  assert.ok(Math.abs(paidHolds() - base - S) < 1e-12, "the reserve alone");
+  // A person had the session for its first minute (T0..T0+60 s), given back: $0.002 carried.
+  t.mock.timers.tick(60_000);
+  spend.carry(tag, 60);
+  assert.ok(Math.abs(paidHolds() - base - (S + 60 * r)) < 1e-12, "the reserve and the carried minute");
+  // At T0+100 s the agent's browser call holds ranS - carried + two stretches = 40 s + 2 stretches.
+  t.mock.timers.tick(40_000);
+  let seen;
+  const tool = spend.capped({ name: "snapshot", execute: async () => {
+    // A non-final charge computed through T0+120 s bills the whole 120 s (r*120), of which the carried minute (r*60) is a
+    // person's. The call's hold left that carried minute out, so the charge must take only r*60 off the call's hold, not
+    // the whole r*120 (which would cut what the call still holds a second time).
+    t.mock.timers.tick(20_000);
+    await harness.commit((tx) => spend.onCharge(charge(120, 120 * r, false, T0 + 120_000), tx, { callId: "c1" }), ctx);
+    seen = paidHolds() - base;
+    return { content: [{ type: "text", text: "ran" }] };
+  } });
+  const api = { conversationId: 1, callId: "c1", commit: async (change) => harness.commit(change, ctx) };
+  await tool.execute({}, api, ctx);
+  // The call still runs: its hold is the two stretches it held minus the 20 s past the carried minute the charge billed
+  // (2S - 20 s), beside the session's one-stretch reserve; the carried minute is booked and dropped. The bug booked the
+  // whole r*120 off the call's hold, leaving 2S - 80 s.
+  const expected = microUsd(40 * r + 2 * S) - (120 * r - 60 * r) + S;
+  assert.ok(Math.abs(seen - expected) < 1e-9, `the call keeps 2S - 20 s beside the reserve (${expected}), not 2S - 80 s (${microUsd(40 * r + 2 * S) - 120 * r + S}): ${seen}`);
+  // The call returns, its hold let go; the release books the rest.
+  assert.ok(Math.abs(paidHolds() - base - S) < 1e-12, "the reserve alone once the call returns, the carried minute booked");
+  await harness.commit((tx) => spend.onCharge(charge(0, 0, true, T0 + 120_000), tx, { callId: "c1" }), ctx);
+  assert.ok(Math.abs(paidHolds() - base) < 1e-12, "nothing left held");
+});

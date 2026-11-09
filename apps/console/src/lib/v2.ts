@@ -108,17 +108,17 @@ export type Computers = Answer<"listComputers">;
 export type ComputerKindView = Computers["kinds"][number];
 /** A kind of computer an agent can be given. */
 export type ComputerKind = ComputerKindView["kind"];
-/** A provider of computers: its keys by name (saved or not, never a value), whether it is metered, and whether a run
- *  could have it now. */
+/** A provider of computers: its secrets ("computer:<provider>:<KEY>", set or not, where from and when, never a value),
+ *  the full names of those it requires, whether it is metered, and whether a run could have it now. */
 export type ComputerProvider = Answer<"saveComputerKeys">;
-export type ComputerKey = ComputerProvider["keys"][number];
+export type ComputerSecret = ComputerProvider["secrets"][number];
 /** PUT /v2/computers/{provider}/keys's body: declared names only; null removes one. */
 export type ComputerKeysBody = Body<"saveComputerKeys">;
 /** POST /v2/computers/{provider}/test's answer. */
 export type ComputerTest = Answer<"testComputer">;
 /** A run's `computer`: its kind, provider, state and why. */
 export type RunComputerField = NonNullable<Run["computer"]>;
-/** GET /v2/workspace/archil: Archil (Mode 2) on or off, its disk settings, and its keys by name, never a value. */
+/** GET /v2/workspace/archil: Archil (Mode 2) on or off, its disk settings, and its secret ("workspace:archil"), never a value. */
 export type Archil = Answer<"getWorkspaceArchil">;
 /** PUT /v2/workspace/archil's body. */
 export type ArchilBody = Body<"putWorkspaceArchil">;
