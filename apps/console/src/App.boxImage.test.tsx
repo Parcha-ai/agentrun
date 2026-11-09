@@ -26,13 +26,13 @@ const STATS = {
   per_agent: [{ agent_id: "calc", name: "Calculator", runs: 1 }], cost: { usd: null, basis: null, unknown_runs: 1 }, archived: { agents: 0, runs: 0 }, analytics: ANALYTICS,
 };
 
-function serve(docker: () => Docker) {
+function serve(docker: () => Docker, hold?: () => Promise<void> | undefined) {
   const asked: string[] = [];
   vi.stubGlobal("fetch", async (url: string) => {
     const u = new URL(url, "http://serve.test");
     asked.push(u.pathname);
     if (u.pathname === "/v2/auth/session") return json(200, { password_set: true, signed_in: true });
-    if (u.pathname === "/v2/capabilities") return json(200, capsWith(docker()));
+    if (u.pathname === "/v2/capabilities") { await hold?.(); return json(200, capsWith(docker())); }
     if (u.pathname === "/v2/health") return json(200, { status: "ok" });
     if (u.pathname === "/v2/stats") return json(200, STATS);
     if (u.pathname === "/v2/agents") return json(200, { agents: [], next_cursor: null });
@@ -78,6 +78,27 @@ describe("Mission Control while the Docker box's image is coming", () => {
     // Ready: no more reads of its own.
     await act(async () => { vi.advanceTimersByTime(30_000); });
     expect(s.reads()).toBe(before + 1);
+  });
+
+  it("starts no read again while one is still answering: a slow read's answer lands, and the banner goes", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    let docker: Docker = { available: true, state: "preparing", reason: BUILDING };
+    let release: (() => void) | undefined;
+    let held: Promise<void> | undefined;
+    const s = serve(() => docker, () => held);
+    const host = await mount();
+    await wait(() => !!banner(host), "the box banner");
+    const before = s.reads();
+    // The next read takes longer than the poll's period: the server answers ready only when it is released.
+    held = new Promise((r) => { release = r; });
+    docker = { available: true, state: "ready" };
+    await act(async () => { vi.advanceTimersByTime(10_000); });
+    await wait(() => s.reads() === before + 1, "the poll's read");
+    await act(async () => { vi.advanceTimersByTime(30_000); });
+    expect(s.reads(), "no read starts while one is in flight").toBe(before + 1);
+    held = undefined;
+    release!();
+    await wait(() => !banner(host), "the banner gone, from the slow read's answer");
   });
 
   it("with the box ready, there is no banner and no read again", async () => {
