@@ -46,7 +46,7 @@ test("box_allow round-trips the 'none' sentinel as well as a list", () => {
 });
 
 test("a built-in learning run's launch body reads without loss", () => {
-  // tl-jobs writes this exact body for a learning run (untangle/cutover-learning-run); the factory picks by its harness.
+  // The runner writes this exact body for a learning run; the factory picks by its harness.
   const body = { harness: "learning", input: { runId: "run-1" }, title: "Learn from run-1", place: { mode: "runner" } };
   const read = readLaunchBody(body);
   assert.deepEqual(read, { input: { runId: "run-1" }, title: "Learn from run-1", place: { mode: "runner" }, harness: "learning" });
