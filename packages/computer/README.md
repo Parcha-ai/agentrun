@@ -382,6 +382,19 @@ in the kernel's tool registry, keyed by these groups.
   required or not; never a value), `mounts` (the mount kinds its computers take; `[]` cannot mount the run's folder),
   `metered` (the vendor bills by time), and `capabilities`, the machine kind and groups of each configuration it
   offers. Its `kinds` are derived from those by `serves`, never written by hand.
+- An entry's `defaultImage` names the image a computer of each setting kind starts from when its setting names none,
+  each the constant its provider module owns. A kind with no entry has no default, and the caller refuses the setting in
+  words. Docker has none: serve builds its image itself.
+
+  | id | defaultImage |
+  | --- | --- |
+  | docker | none |
+  | daytona | sandbox: `DAYTONA_DEFAULT_SNAPSHOT` ("default") |
+  | modal | sandbox: `MODAL_DEFAULT_IMAGE` ("debian:bookworm-slim") |
+  | e2b | sandbox: `E2B_BASE_TEMPLATE` ("base"); desktop: `E2B_DESKTOP_TEMPLATE` ("desktop") |
+  | orgo | desktop: `ORGO_BASE_IMAGE` ("linux") |
+  | phone-harness | phone: `PHONE_IMAGE` ("android") |
+  | browserbase, kernel | browser: `BROWSER_IMAGE` ("chromium") |
 
   | id | label | kinds | keys (required unless marked) | mounts | metered |
   | --- | --- | --- | --- | --- | --- |

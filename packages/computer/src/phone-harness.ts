@@ -56,6 +56,8 @@ export const PHONE_GROUPS: readonly Group[] = ["screen", "input.touch", "input.k
 export const MOUNT: readonly MountKind[] = [];
 /** The one configuration it offers, as its capabilities() declare it: the kind registry's entry holds the same. */
 export const CAPABILITIES: readonly KindCapabilities[] = [{ kind: "android", groups: [...PHONE_GROUPS] }];
+/** The image a phone is read back by: a cloud Android has none to choose, so a setting that names none takes this. */
+export const PHONE_IMAGE = "android";
 /** The longest lifetime by default: a rented phone bills by the minute. */
 export const DEFAULT_MAX_LIFETIME_MS = 30 * 60_000;
 /** How long create waits for a phone to be ready by default: the service's own CLI waits 240 s. */
