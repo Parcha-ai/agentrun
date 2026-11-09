@@ -47,4 +47,5 @@ goes on. `runs timeline RUN_ID --follow` prints the timeline as it changes, one 
 `rows` by `id`, delete its `drop` ids, and drop everything first on a page with `reset: true`. It resumes a dropped
 connection where it left off and ends when the run ends, 0 completed, 1 failed or cancelled.
 
-The TypeScript client for this server is `@parcha/agentrun-client` (packages/client).
+The TypeScript client for this server is `@parcha/agentrun-client` (packages/client), and the Python client is
+`parcha-agentrun` (python/).
