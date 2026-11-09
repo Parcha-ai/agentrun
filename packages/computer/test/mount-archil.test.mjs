@@ -79,6 +79,18 @@ test("archilRefusals: an Archil spec takes network none, the run and epoch label
 	assert.deepEqual(archilRefusals({ ...SPEC, mount: { kind: "bind", path: "/x" } }), [], "a bind is not this rule's");
 });
 
+test("archilMount's preflight gives the helper back to root, 0755, a regular file never through a link, before it reads the helper's sha256", async () => {
+	// The E2B live run: E2B's template build left the helper -rwxrwxrwx at run time, though the recipe chmods it 0755
+	// and the build's own check passed. Root restores owner and mode first; the sha256 then proves it is the package's
+	// helper, so one another user changed while it was writable is still refused.
+	const root = fakeRoot();
+	await archilMount({ root, mount: MOUNT, self: { id: "c", name: "c" }, releaseOlder: released(), timeoutMs: 1000 });
+	const script = root.calls[0].argv[2];
+	const restore = script.indexOf('[ -f "$h" ] && [ ! -L "$h" ] && chown root:root "$h" && chmod 0755 "$h"');
+	assert.ok(restore > 0, script);
+	assert.ok(restore < script.indexOf("sha256sum"), "restored before the sha256 is read");
+});
+
 test("archilMount: preflight, the takeover, mount, then serve, each as root through the provider's own exec (no netlock: the tools' network is init's own namespace); the token on the mount's stdin alone", async () => {
 	const root = fakeRoot();
 	const done = await archilMount({ root, mount: MOUNT, releaseOlder: released(), timeoutMs: 1000 });
