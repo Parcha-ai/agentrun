@@ -452,6 +452,13 @@ test("connect reaches the phone over adb with its unlock code, which no result o
 	assert.ok(!JSON.stringify(refused).includes(ADB_CODE), "the unlock code is never in an error");
 	assert.ok(!JSON.stringify(refused).includes("ph_"), "nor any part of it");
 
+	// A reply that echoes the code twice: both are redacted.
+	const echo = await setup({ code: "ph_aaaaaaaaaaaaaaaaaaaaaaaaaa", unlockEcho: true });
+	const echoed = await echo.provider.connect((await echo.provider.create(SPEC)).value);
+	assert.equal(echoed.ok, false);
+	assert.match(echoed.error.message, /refused its unlock code: wrong code \[code\]: \[code\] is not this phone's$/);
+	assert.ok(!JSON.stringify(echoed).includes(ADB_CODE), "neither echo of the code is in the error");
+
 	const arm = await setup({ abi: "arm64-v8a" });
 	const armHello = (await arm.provider.connect((await arm.provider.create(SPEC)).value)).value.hello;
 	assert.equal(armHello.arch, "arm64");

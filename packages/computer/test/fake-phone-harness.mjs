@@ -87,13 +87,14 @@ const json = (status, body, headers = {}) => new Response(JSON.stringify(body), 
  * more: a row's page opens beside the list, which stays; `rowTapsMiss`, a tap on a Settings row does nothing. Either
  * leaves touch.tap with run 6's live words, and the case's words must tell them apart; `endLag`, a DELETE ends the
  * session asynchronously, as the live service did in run 7: it stays listed and readable as `closing` for endLag more
- * reads of it (GET /sessions/{id}), then is gone (404).
+ * reads of it (GET /sessions/{id}), then is gone (404); `unlockEcho`, a wrong unlock code is answered with the code it
+ * was given, twice, on the reply's first line.
  *
  * Tasks are as a live Android 15 keeps them (run 5): Settings' search is another package's activity
  * (com.android.settings.intelligence) on top of Settings' own task. A force-stop of Settings leaves it there, a plain
  * `am start` of Settings resumes that task, search in front, and only `--activity-clear-task` starts Settings afresh.
  */
-export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = false, loseRecovery = false, cancelPost, stall, onList, postAnswer, others = [], code, abi = "x86_64", launchHidden = false, launchNothing = false, twoPane = false, rowTapsMiss = false, endLag = 0, clock = fakeClock() } = {}) {
+export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = false, loseRecovery = false, cancelPost, stall, onList, postAnswer, others = [], code, abi = "x86_64", launchHidden = false, launchNothing = false, twoPane = false, rowTapsMiss = false, endLag = 0, unlockEcho = false, clock = fakeClock() } = {}) {
 	const requests = [];
 	const adbCalls = [];
 	const sessions = new Map(others.map((s) => [s.id, { ...s }]));
@@ -346,7 +347,8 @@ export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = fa
 		}
 		if (w[0] === "echo") return ok(`${w.slice(1).join(" ")}\n`);
 		if (w[0] === "unlock") {
-			if (w[1] !== expected) return ok("wrong code\n");
+			// unlockEcho: a vendor that echoes the code it was given, twice, on the reply's first line.
+			if (w[1] !== expected) return ok(unlockEcho ? `wrong code ${w[1]}: ${w[1]} is not this phone's\n` : "wrong code\n");
 			phone.unlockedNow = true;
 			return ok("unlocked\n");
 		}
