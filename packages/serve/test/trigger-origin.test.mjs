@@ -135,11 +135,12 @@ test("a schedule's run's first Timeline row names the schedule by its name, on a
   await writeFile(gate, "");
   const { rows } = await follow(api, firing.run_id, ["completed"]);
   assert.deepEqual(named(rows), [`Schedule utc-check: Tell me the time in UTC. Hold the answer until ${gate}.`], "the final rows name it");
-  assert.deepEqual(rows.find((r) => r.origin === "trigger").trigger, { id, source: "schedule", owner: true });
+  assert.deepEqual(rows.find((r) => r.origin === "trigger").trigger, { id, source: "schedule", owner: true, name: "utc-check" }, "the row carries the name it shows");
   assert.equal((await api("GET", `/runs/${firing.run_id}`)).body.title, "Schedule utc-check");
   assert.equal((await api("DELETE", `/triggers/${id}`)).status, 204);
   const after = (await api("GET", `/runs/${firing.run_id}/timeline`)).body.rows;
   assert.deepEqual(named(after), [`Schedule ${id}: Tell me the time in UTC. Hold the answer until ${gate}.`], "a deleted trigger's row names it by its id");
+  assert.deepEqual(after.find((r) => r.origin === "trigger").trigger, { id, source: "schedule", owner: true }, "and carries no name");
 });
 
 /** Whether `text` holds any 8 characters in a row of `secret`. */
@@ -156,7 +157,7 @@ async function streamed(baseUrl, token, runId) {
   return text;
 }
 
-test("a trigger named with a saved key's value: its runs' Timeline row shows the redaction mark in the key's place, never the key, on a page and in the stream", { timeout: 120_000 }, async (t) => {
+test("a trigger named with a saved key's value: its runs' Timeline row shows the redaction mark in the key's place, never the key, on a page and in the stream, and its trigger carries the name so redacted", { timeout: 120_000 }, async (t) => {
   withEnv(t, SEAL);
   const { api, baseUrl, token } = await serve(t);
   const key = ["not-a-secret", "trigger-name-key", randomBytes(6).toString("hex")].join("-");
@@ -170,6 +171,7 @@ test("a trigger named with a saved key's value: its runs' Timeline row shows the
   const { rows, pages } = await follow(api, firing.run_id, ["completed"]);
   const row = rows.find((r) => r.origin === "trigger");
   assert.equal(row.summary, "Schedule nightly [redacted]: Say the time.");
+  assert.deepEqual(row.trigger, { id, source: "schedule", owner: true, name: "nightly [redacted]" });
   const page = JSON.stringify((await api("GET", `/runs/${firing.run_id}/timeline`)).body);
   const stream = await streamed(baseUrl, token, firing.run_id);
   assert.ok(stream.includes("Schedule nightly [redacted]: Say the time."), stream.slice(0, 600));
