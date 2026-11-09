@@ -54,7 +54,8 @@ const json = (status, body, headers = {}) => new Response(JSON.stringify(body), 
  * The fake. Options: `readyAfter`, how many GETs a new session stays provisioning (default 1); `start`, what a create
  * meets ("ok", "busy", "limit", "credit", "error": the session fails while provisioning); `loseAnswer`, the POST is
  * admitted and then its answer is lost (fetch rejects); `others`, sessions on the account this provider never made;
- * `loseRecovery`, the GET that recovers a create by its key is lost too;
+ * `loseRecovery`, the GET that recovers a create by its key is lost too; `cancelPost`, called once a POST /sessions is
+ * admitted (a test aborts the create's signal in it), after which that fetch rejects as an aborted one does;
  * `code`, the unlock code the phone takes (default the one the API gives); `abi`, what getprop reports; `launchHidden`,
  * a launched app is reported in front (dumpsys) while the screen and the tree still show the launcher; `launchNothing`,
  * `am start` starts nothing at all.
@@ -63,7 +64,7 @@ const json = (status, body, headers = {}) => new Response(JSON.stringify(body), 
  * (com.android.settings.intelligence) on top of Settings' own task. A force-stop of Settings leaves it there, a plain
  * `am start` of Settings resumes that task, search in front, and only `--activity-clear-task` starts Settings afresh.
  */
-export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = false, loseRecovery = false, others = [], code, abi = "x86_64", launchHidden = false, launchNothing = false, clock = fakeClock() } = {}) {
+export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = false, loseRecovery = false, cancelPost, others = [], code, abi = "x86_64", launchHidden = false, launchNothing = false, clock = fakeClock() } = {}) {
 	const requests = [];
 	const adbCalls = [];
 	const sessions = new Map(others.map((s) => [s.id, { ...s }]));
@@ -98,6 +99,11 @@ export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = fa
 			};
 			sessions.set(id, session);
 			if (loseAnswer) throw new TypeError("fetch failed: the connection was reset");
+			if (cancelPost) {
+				// The caller cancels once the service has admitted the request: fetch rejects as it does on an abort.
+				cancelPost();
+				if (init.signal?.aborted) throw init.signal.reason ?? new DOMException("This operation was aborted", "AbortError");
+			}
 			return json(202, view(session));
 		}
 		if (method === "GET" && path === "/sessions") return json(200, [...sessions.values()].map(view));

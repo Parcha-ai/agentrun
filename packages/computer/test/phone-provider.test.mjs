@@ -224,6 +224,24 @@ test("a create whose answer and whose recovery were both lost leaves no orphan: 
 	assert.deepEqual(await ledger.list(), []);
 });
 
+test("a create cancelled after the service admitted its POST recovers the phone by its Idempotency-Key and ends it: none is left running", async () => {
+	const controller = new AbortController();
+	const { provider, fake, ledger } = await setup({ cancelPost: () => controller.abort() });
+	const created = await provider.create({ ...SPEC, labels: { run: "r1" } }, { signal: controller.signal });
+	assert.equal(created.ok, false, JSON.stringify(created));
+	assert.equal(created.error.code, "aborted");
+	assert.match(created.error.message, /sess_0001/, "the words name the phone that was made");
+	assert.match(created.error.message, /it was ended$/);
+	const key = fake.requests().find((r) => r.method === "POST").headers["idempotency-key"];
+	assert.deepEqual(
+		fake.requests().map((r) => `${r.method} ${r.path}`),
+		["POST /sessions", `GET /sessions/requests/${key}`, "DELETE /sessions/sess_0001"],
+		"recovered by its key, never posted again, and ended",
+	);
+	assert.equal(fake.sessions.size, 0, "no phone is left running");
+	assert.deepEqual(await ledger.list(), [], "and the ledger names none");
+});
+
 test("connect reaches the phone over adb with its unlock code, which no result or error ever holds; hello is the provider's", async () => {
 	const { provider, fake } = await setup();
 	const { value: ref } = await provider.create(SPEC);
