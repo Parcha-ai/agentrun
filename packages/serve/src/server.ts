@@ -52,6 +52,7 @@ import { listRunFiles as listRunFilesOverStore, readRunFile as readRunFileOverSt
 import { triggerTargets, type TriggerTargetDeps } from "./trigger-targets.js";
 import { listRuns as listRunsOverStore, readRun as readRunOverStore, runOfOrigin as runOfOriginOverStore } from "./store-reads/runs.js";
 import { runTimeline } from "./store-reads/journal.js";
+import { watchRun } from "./live/stream.js";
 import { stats as statsOverStore } from "./store-reads/stats.js";
 import { analytics as analyticsOverStore } from "./store-reads/analytics.js";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -1614,9 +1615,21 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const beat = setInterval(() => res.write(": keepalive\n\n"), 15_000);
     let open = true;
     res.once("close", () => void (open = false));
+    // The live wake: watchRun (live/stream.ts) signals a new journal commit or the run's end, so the page is re-read at
+    // once instead of only on a poll. A run with no watch (gone, or a store with no live) falls back to a 1s re-read; the
+    // page it serves is byte-identical either way.
+    const stream = await watchRun(store, runId).catch(() => undefined);
+    let notify: (() => void) | undefined;
+    stream?.start(() => notify?.());
+    const nextChange = (ms: number): Promise<void> =>
+      new Promise<void>((resolve) => {
+        const t = setTimeout(() => ((notify = undefined), resolve()), ms);
+        t.unref?.();
+        notify = () => (clearTimeout(t), (notify = undefined), resolve());
+      });
     try {
       for (let first = true; open; first = false) {
-        const page = await timelines.page(store, runId, cursor, first ? 0 : 15_000, limit);
+        const page = await timelines.page(store, runId, cursor, 0, limit);
         if (!open) break;
         if (first || !page.unchanged || page.final) res.write(`event: rows\nid: ${page.next_after}\ndata: ${JSON.stringify(page)}\n\n`);
         cursor = page.next_after;
@@ -1624,9 +1637,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
           res.write(`event: end\ndata: ${JSON.stringify({ reason: "terminal" })}\n\n`);
           break;
         }
+        // Until the next commit, the run's end, or 15s (the keepalive cadence; a run with no watch re-reads every 1s).
+        await Promise.race([nextChange(stream ? 15_000 : 1_000), ...(stream ? [stream.closed] : [])]);
       }
     } finally {
       clearInterval(beat);
+      await stream?.stop().catch(() => {});
       res.end();
     }
   }
@@ -2088,7 +2104,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       }
       case "getTimeline":
         await needRun(id);
-        return void timeline(req, res, url, id);
+        // Awaited, not dropped: a throw from the timeline (a run gone mid-stream, a bad page) reaches the router's catch,
+        // which answers; a floated rejection would hang the request with no answer.
+        return await timeline(req, res, url, id);
       case "sendMessage": {
         const run = await needRun(id);
         if (run.kind === "workflow") throw unsupported("messages.steer_workflow_runs", "A workflow run takes no messages here: its workflow runs to its end, or a cancel ends it.");
