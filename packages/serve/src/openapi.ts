@@ -633,7 +633,10 @@ const hookFiringsOf = (adapters: readonly TriggerAdapter[]) => closed({ firings:
 const TRIGGER_SECRET = { type: "string", pattern: "^whsec_[A-Za-z0-9+/]+={0,2}$", description: "A webhook trigger's signing secret, shown this once: `whsec_` and 32 random bytes in base64, as the Standard Webhooks spec gives it. Never in any GET; kept sealed under the seal key. Sign each request to /hooks/{trigger_id} with it." };
 /** github/1: Connect GitHub, the server's one GitHub App (github-connection.ts). */
 const GITHUB_MARK = { "x-agentrun-serve": "github/1" };
-const GITHUB_CONNECTION = closed({ app_id: { type: "string" }, slug: { type: "string", description: "The App's name on GitHub, as its URL has it." }, installations: { type: "array", items: closed({ id: { type: "integer" }, account: { type: "string", description: "The GitHub user or organization it is installed on." } }), description: "Where the App is installed, as its installation events and setup redirects say." } }, "The server's GitHub App: never a secret.");
+const GITHUB_CONNECTION = closed({ connected: { const: true }, app_id: { type: "string" }, slug: { type: "string", description: "The App's name on GitHub, as its URL has it." }, installations: { type: "array", items: closed({ id: { type: "integer" }, account: { type: "string", description: "The GitHub user or organization it is installed on." } }), description: "Where the App is installed, as its installation events and setup redirects say." } }, "The server's GitHub App: never a secret.");
+/** GET /integrations/github: whether a GitHub App is connected, always a 200 (not connected is an answer, never a 404 a
+ *  browser logs as an error), and the App when it is. */
+const GITHUB_STATUS = { oneOf: [closed({ connected: { const: false } }, "No GitHub App is connected to this server: Connect GitHub in Settings."), GITHUB_CONNECTION] };
 /** templates/1: template packages, listed and applied (templates.ts; the format is templates/README.md). */
 const TEMPLATE_MARK = { "x-agentrun-serve": "templates/1" };
 const NULLABLE_STRING = { type: ["string", "null"] };
@@ -1151,9 +1154,9 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
   },
   "/integrations/github": {
     get: {
-      operationId: "getGitHubConnection", tags: ["local"], summary: "The server's GitHub App, if one is connected: its id, slug and installations, never a secret",
+      operationId: "getGitHubConnection", tags: ["local"], summary: "Whether a GitHub App is connected, and if so its id, slug and installations, never a secret",
       description: "Its installations are first repaired from GitHub's own (GET /app/installations with the App's JWT), at most once a minute: an installation event missed or not checked (GitHub out of reach answers that event 503) is put right here, and a list that comes to hold none turns every github trigger off (`connection_lost`). GitHub out of reach leaves the list as it is.",
-      responses: { "200": json(GITHUB_CONNECTION, "The connection."), ...errors(401, 404, 429, 500) },
+      responses: { "200": json(GITHUB_STATUS, "`{connected: false}`, or the connection with `connected: true`."), ...errors(401, 429, 500) },
       ...GITHUB_MARK,
     },
     delete: {
@@ -1620,11 +1623,11 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
     },
     origin: {
       enum: ["server", "trigger"],
-      description: "On the row of a message the person did not write: `server`, one the server wrote into the run (a raised cap's follow-up, an approval's resume), a `phase` row \"AgentRun: <its first line>\"; `trigger`, a trigger's input (a started run's first message, or a firing's message), a `phase` row \"Trigger <trigger id>: <its first line>\". Either is where a person's message would be a `user_message` row, and counts, as a person's does, as the message its turn took. Absent on every other row.",
+      description: "On the row of a message the person did not write: `server`, one the server wrote into the run (a raised cap's follow-up, an approval's resume), a `phase` row \"AgentRun: <its first line>\"; `trigger`, a trigger's input (a started run's first message, or a firing's message), a `phase` row \"<its source: Schedule, Webhook, Slack or GitHub> <the trigger's name as it is now, or its id once it is gone>: <its first line>\". Either is where a person's message would be a `user_message` row, and counts, as a person's does, as the message its turn took. Absent on every other row.",
       "x-agentrun-serve": "origin/1",
     },
     trigger: {
-      ...closed({ id: { type: "string", description: "The trigger's id." }, source: { enum: [...TRIGGER_SOURCES], description: "What fired it, by the trigger's definition." }, owner: { type: "boolean", description: "True when the words are its owner's (a schedule's), false when they came from outside (a webhook's)." } }),
+      ...closedWith({ id: { type: "string", description: "The trigger's id." }, source: { enum: [...TRIGGER_SOURCES], description: "What fired it, by the trigger's definition." }, owner: { type: "boolean", description: "True when the words are its owner's (a schedule's), false when they came from outside (a webhook's)." } }, { name: { type: "string", description: "The trigger's name as it is now, redacted as the row is: the one its summary shows after its source, so a client drops exactly \"<source> <name>: \" whatever colons the name holds. Absent once the trigger is gone (the summary names its id)." } }),
       description: "On a trigger's row (`origin` `trigger`) alone: the trigger whose input the row is, so a client labels it by its source without reading its summary. Absent on every other row.",
       "x-agentrun-serve": "origin/1",
     },

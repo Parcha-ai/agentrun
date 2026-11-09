@@ -4,6 +4,8 @@ import { obj, str, type Obj } from "./util.js";
 /** What fired a trigger: its definition's kind, never what its payload says. */
 export const TRIGGER_SOURCES = ["schedule", "webhook", "slack", "github"] as const;
 export type TriggerSource = (typeof TRIGGER_SOURCES)[number];
+/** How a trigger's Timeline row names its source: "<label> <trigger>: <its first line>". */
+export const TRIGGER_LABELS: Readonly<Record<TriggerSource, string>> = { schedule: "Schedule", webhook: "Webhook", slack: "Slack", github: "GitHub" };
 
 /** Who wrote a user-role message that the person did not type. The model reads the message as it reads any; only its
  *  attribution differs, so the Timeline never shows it as "You".

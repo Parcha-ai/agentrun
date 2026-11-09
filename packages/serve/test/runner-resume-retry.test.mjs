@@ -9,11 +9,11 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { startRunner } from "../dist/runner/runner.js";
 import { sendCommand } from "../dist/runner/commands.js";
-import { commandRow, fauxLoops, observed, queue, recorder, sleep, stores, until } from "./runner-support.mjs";
+import { commandRow, fauxLoops, observed, queue, recorder, sleep, STEADY_LEASE, stores, until } from "./runner-support.mjs";
 
 const BACKOFF_MS = 300;
 const TRIES = 3;
-const TIMING = { leaseMs: 2_000, renewEveryMs: 500, stopMarginMs: 500, pollMs: 20, commandPollMs: 30, resumeTries: TRIES, resumeBackoffMs: BACKOFF_MS };
+const TIMING = { ...STEADY_LEASE, pollMs: 20, commandPollMs: 30, resumeTries: TRIES, resumeBackoffMs: BACKOFF_MS };
 const RAISE = { kind: "raise", body: { capUsd: 5 } };
 
 /** Faux loops that park on their first start, and whose next `failing` starts throw as a harness that cannot start. */

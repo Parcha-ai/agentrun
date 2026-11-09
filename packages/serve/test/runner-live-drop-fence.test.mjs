@@ -11,12 +11,13 @@ import { test } from "node:test";
 import { openSqliteStore } from "../dist/store/index.js";
 import { startRunner } from "../dist/runner/runner.js";
 import { suiteTools } from "../dist/runner/conformance/harness.js";
-import { piSpec } from "./conformance-pi.mjs";
+import { after } from "node:test";
+import { closeOpenSessions, piAdapterSubject } from "./conformance-pi-adapter.mjs";
 import { quiet, until } from "./live-support.mjs";
 import { queued, storeOn } from "./store-helpers.mjs";
 
 const { withLiveTicker } = await import("../dist/runner/live-ticker.js");
-const { createPiLoop } = await import("../dist/runner/loop.js");
+after(closeOpenSessions);
 
 /** A loop that runs until `end()` is called. */
 function heldLoop() {
@@ -73,7 +74,7 @@ test("on a runner, a run's live row is dropped before its release: none is left 
   store.release = async (claim, options) => (order.push("release"), release(claim, options));
   const { tools, letSlowGo } = suiteTools();
   t.after(() => letSlowGo());
-  ticker = withLiveTicker(store, createPiLoop(piSpec({ script: [{ call: "slow" }, { say: "done" }], tools, hooks: quiet })), { tickMs: 50 });
+  ticker = withLiveTicker(store, piAdapterSubject.createLoop({ script: [{ call: "slow" }, { say: "done" }], tools, hooks: quiet }), { tickMs: 50 });
   const released = [];
   runner = startRunner({ store, createLoop: ticker.createLoop, name: "runner-a", leaseMs: 5_000, renewEveryMs: 1_000, stopMarginMs: 1_000, pollMs: 50, commandPollMs: 200, onEvent: (event) => event.type === "released" && released.push(event) });
   await until(async () => (await server.live.read(["run-1"])).length === 1, "the run's live row while its tool runs", 30_000);

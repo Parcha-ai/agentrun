@@ -88,6 +88,18 @@ test("R2: once the claim's signal is aborted (the claim lost, or the runner shut
   assert.deepEqual((await sessions.read("node-1")).map((r) => r.data.n), [1], "nothing after the abort");
 });
 
+test("keys() lists every session key of the run: an earlier claim's, read before any open, and each this store opens after", async (t) => {
+  const { store, clock, sessions } = await claimed(t);
+  await (await sessions.open("node-1")).append([record(1)]);
+  await (await sessions.open("node-2")).append([record(2)]);
+  clock.now = T0 + LEASE + 1;
+  const next = await store.claim("run-1", "runner-b", { leaseMs: LEASE });
+  const reopened = await onClaim(store, next);
+  assert.deepEqual((await reopened.sessions.keys()).sort(), ["node-1", "node-2"], "the earlier claim's keys, before any open");
+  await reopened.sessions.open("node-3");
+  assert.deepEqual((await reopened.sessions.keys()).sort(), ["node-1", "node-2", "node-3"], "and one this store opened");
+});
+
 test("R3: a run reopened at the next epoch reads its sessions back and goes on from them", async (t) => {
   const { store, clock, sessions } = await claimed(t);
   const writer = await sessions.open("node-1");

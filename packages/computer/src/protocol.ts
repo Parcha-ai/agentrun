@@ -72,6 +72,8 @@ export interface HelloResult {
 	/** Go's name for the architecture: amd64, arm64. */
 	arch: string;
 	groups: Group[];
+	/** The DISPLAY a desktop's screen and input methods drive, such as ":99"; absent on any other computer. */
+	display?: string;
 }
 
 export type PingParams = Record<string, never>;
@@ -443,6 +445,43 @@ export interface ScreenReadResult {
 	eof: boolean;
 }
 
+/**
+ * The live view's frames (screen.watch): the next frame after the caller's ack, once the screen changed. `after` is
+ * the seq of the last frame the caller has whole, 0 for none; an older one gets the newest frame at once.
+ */
+export interface ScreenWatchParams {
+	after: number;
+	/** The longest wait for a change, in ms, 0 to 10000; default 2000. */
+	waitMs?: number;
+	/** The frame's width at most (scaled down, never up); default 1280. */
+	maxWidth?: number;
+	/** JPEG quality, 1 to 100; default 60. */
+	quality?: number;
+}
+
+/**
+ * changed false: no change within waitMs, and no frame. A frame carries its bytes as screen.shot carries its PNG: the
+ * first MAX_CHUNK_BYTES in data, the rest through screen.read by id.
+ */
+export interface ScreenWatchResult {
+	seq: number;
+	changed: boolean;
+	id?: string;
+	size?: number;
+	/** base64. */
+	data?: string;
+	eof?: boolean;
+	/** jpeg from computerd; png from a phone client that encodes its own frames. */
+	format?: "jpeg" | "png";
+	/** The frame's pixels. */
+	frameWidth?: number;
+	frameHeight?: number;
+	/** The screen's pixels: the input coordinate space. */
+	width: number;
+	height: number;
+	cursor?: Point;
+}
+
 /** The most actions one input.actions batch holds. */
 export const MAX_ACTIONS = 100;
 /**
@@ -561,6 +600,15 @@ export interface DeadlineExtendResult {
 	at: string;
 }
 
+/**
+ * mount.sync: asks the computer's resident Archil sync server (its socket, ARCHIL_SYNC_SOCKET) for one sync of
+ * /workspace, coalesced with any in flight, and answers its exit code: 0 is every write so far durable. A computer with
+ * no Archil mount has no server: not_found.
+ */
+export interface MountSyncResult {
+	exitCode: number;
+}
+
 /** Every method the daemon answers: its params and its result. */
 export interface DaemonMethods {
 	hello: { params: HelloParams; result: HelloResult };
@@ -588,6 +636,7 @@ export interface DaemonMethods {
 	"process.wait": { params: ProcessWaitParams; result: ProcessExit };
 	"screen.shot": { params: ScreenShotParams; result: ScreenShotResult };
 	"screen.read": { params: ScreenReadParams; result: ScreenReadResult };
+	"screen.watch": { params: ScreenWatchParams; result: ScreenWatchResult };
 	"input.actions": { params: InputActionsParams; result: InputActionsResult };
 	"apps.list": { params: Empty; result: AppsListResult };
 	/** The installed app. */
@@ -596,6 +645,7 @@ export interface DaemonMethods {
 	"apps.terminate": { params: AppsLaunchParams; result: Empty };
 	"apps.ui_tree": { params: Empty; result: UiTreeResult };
 	"deadline.extend": { params: DeadlineExtendParams; result: DeadlineExtendResult };
+	"mount.sync": { params: Empty; result: MountSyncResult };
 }
 
 export type DaemonMethod = keyof DaemonMethods;

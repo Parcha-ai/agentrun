@@ -55,6 +55,7 @@ import { DEFAULT_HARNESS } from "./harness.js";
 import { durableSessions } from "./sessions.js";
 import { SHELL_TOOLS } from "./background.js";
 import { readToolSettings, SERVE_OWN_TOOLS, TABLE_TOOLS } from "./tool-plane.js";
+import { deniedText, NOT_RUN, RAN_UNKNOWN, refusedText, type SettingFrom } from "./refusal-words.js";
 import { type Approvals, approvalsOf } from "./approvals.js";
 
 /** What the gate does with a tool's calls. */
@@ -327,34 +328,15 @@ export interface Gate {
   spill(callId: string, text: string): string;
 }
 
-/** Where a permission was set (permissionFrom's `from`): the agent's own tool settings, the server's, or the default; or
- *  "unattended": an ask the agent's approvals "never" allowed. */
-export type SettingFrom = "agent" | "server" | "default" | "unattended";
-/** Where a deny can come from: a setting in a layer, or the default. Never "unattended", which only ever allows. */
-export type DenyFrom = Exclude<SettingFrom, "unattended">;
-/** What every deny tells the model, plainly: the call never left, so nothing was charged for it. */
-export const NOT_RUN = "It was not run: nothing was sent and nothing was charged.";
-/** What a refusal says instead when an earlier attempt of the call may have been sent: an approved call cut mid-flight,
- *  or a replay-safe call the kernel runs again after a crash. Never a claim that nothing was charged. */
-export const RAN_UNKNOWN = "It had started before the deny, and whether it took effect is not known.";
-/** Where a deny was set, in words: the place a person changes it. */
-export const denyPlace = (from: SettingFrom = "server"): string => (from === "agent" ? "for this agent" : from === "default" ? "by default" : "on this server");
-/** The refusal of a call whose tool is set to deny; of one held to another tool's setting (`heldTo`, a shell tool's
- *  bash), naming the setting to change and where it was set (`from`: this agent's settings or this server's). */
-export const deniedText = (tool: string, heldTo?: string, from: SettingFrom = "server", ran: "no" | "unknown" = "no"): string => {
-  // `ran`: "unknown" for a call an earlier attempt of which may have been sent (an approved call cut mid-flight, or a
-  // replay-safe call run again after a crash): the words never claim it wasn't.
-  const what = ran === "no" ? NOT_RUN : RAN_UNKNOWN;
-  return heldTo && heldTo !== tool ? `Permission denied: ${tool} follows ${heldTo}'s setting, which is deny ${denyPlace(from)}. ${what} Don't retry it.` : `Permission denied: ${tool} is set to deny ${denyPlace(from)}. ${what} Don't retry it.`;
-};
+// The refusal words (SettingFrom, DenyFrom, NOT_RUN, RAN_UNKNOWN, denyPlace, deniedText, refusedText) live in
+// refusal-words.ts, shared with the runner's loops.
+export { type DenyFrom, deniedText, denyPlace, NOT_RUN, RAN_UNKNOWN, refusedText, type SettingFrom } from "./refusal-words.js";
 /** The refusal of an ask where no one can approve it: a server with accounts off, whose answer route takes no token. */
 export const noApproverText = (tool: string, ran: "no" | "unknown" = "no"): string => `Permission denied: ${tool} needs the owner's approval, and this server has accounts off (AGENTRUN_ACCOUNTS=0), so no one can give it: set the tool to allow or deny in the agent's Tools. ${ran === "no" ? NOT_RUN : RAN_UNKNOWN}`;
 /** Set by the server in a run's environment when no one can approve here (accounts off): the gate refuses each ask. */
 export const NO_APPROVER_ENV = "AGENTRUN_SERVE_NO_APPROVER";
 /** A parked call's answer: the run pauses here. */
 export const waitingText = (tool: string): string => `This ${tool} call waits for a person's approval; the run pauses here and continues with the result when they answer.`;
-/** A call a person denied, with their reason when they gave one. */
-export const refusedText = (tool: string, note?: string, ran: "no" | "unknown" = "no"): string => `The user denied this ${tool} call. ${ran === "no" ? NOT_RUN : RAN_UNKNOWN}${note ? ` Reason: ${note}` : ""}`;
 
 /** The Timeline row of a call that waits for an approval. */
 export const APPROVAL_ROW = "tool_approval_requested" as const;

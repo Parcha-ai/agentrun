@@ -4,7 +4,15 @@
 // a setting kind is computed from its capabilities alone (serves), never kept beside them: a provider that drops a
 // group stops serving the kind. The model's tools are not here: they live in the kernel's tool registry, keyed by
 // these groups.
+// The default images are values: each from the provider module that owns it. Those modules import this one for types
+// alone, so this is no import cycle.
+import { BROWSER_IMAGE } from "./browser.js";
+import { DAYTONA_DEFAULT_SNAPSHOT } from "./daytona.js";
+import { E2B_BASE_TEMPLATE, E2B_DESKTOP_TEMPLATE } from "./e2b.js";
+import { MODAL_DEFAULT_IMAGE } from "./modal.js";
 import type { MountKind } from "./mount.js";
+import { ORGO_BASE_IMAGE } from "./orgo.js";
+import { PHONE_IMAGE } from "./phone-harness.js";
 import type { ComputerKind, Group } from "./protocol.js";
 import type { ComputerCapabilities } from "./provider.js";
 import type { Result } from "./result.js";
@@ -87,6 +95,12 @@ export interface ProviderEntry {
 	 * once its file lands, and each built configuration's capabilities().
 	 */
 	capabilities: readonly KindCapabilities[];
+	/**
+	 * The image a computer of each setting kind starts from when its setting names none, each the constant its provider
+	 * module owns. A kind with no entry has no default, and the caller refuses the setting in words. Docker's sandbox has
+	 * none: serve builds its image itself (DOCKER_RECIPE).
+	 */
+	defaultImage?: Partial<Record<ComputerSettingKind, string>>;
 }
 
 const SANDBOX: KindCapabilities = { kind: "linux", groups: ["exec", "files", "processes"] };
@@ -99,8 +113,7 @@ function entry(fields: Omit<ProviderEntry, "kinds">): ProviderEntry {
 
 /**
  * Every provider Settings offers, each with its provider file in the registry;
- * a unit test then holds each to its module (CAPABILITIES, MOUNT). daytona, modal and e2b take archil mounts once D6
- * lands, and their entries follow their modules then.
+ * a unit test then holds each to its module (CAPABILITIES, MOUNT). daytona, modal and e2b take archil mounts.
  */
 export const PROVIDERS: readonly ProviderEntry[] = [
 	entry({ id: "docker", label: "Docker", keys: [], mounts: ["bind"], metered: false, capabilities: [SANDBOX, LINUX_DESKTOP] }),
@@ -112,9 +125,10 @@ export const PROVIDERS: readonly ProviderEntry[] = [
 			{ name: "DAYTONA_API_URL", required: false },
 			{ name: "DAYTONA_TARGET", required: false },
 		],
-		mounts: [],
+		mounts: ["archil"],
 		metered: true,
 		capabilities: [SANDBOX],
+		defaultImage: { sandbox: DAYTONA_DEFAULT_SNAPSHOT },
 	}),
 	entry({
 		id: "modal",
@@ -123,12 +137,29 @@ export const PROVIDERS: readonly ProviderEntry[] = [
 			{ name: "MODAL_TOKEN_ID", required: true },
 			{ name: "MODAL_TOKEN_SECRET", required: true },
 		],
-		mounts: [],
+		mounts: ["archil"],
 		metered: true,
 		capabilities: [SANDBOX],
+		defaultImage: { sandbox: MODAL_DEFAULT_IMAGE },
 	}),
-	entry({ id: "e2b", label: "E2B", keys: [{ name: "E2B_API_KEY", required: true }], mounts: [], metered: true, capabilities: [SANDBOX, LINUX_DESKTOP] }),
-	entry({ id: "orgo", label: "Orgo", keys: [{ name: "ORGO_API_KEY", required: true }], mounts: [], metered: true, capabilities: [LINUX_DESKTOP] }),
+	entry({
+		id: "e2b",
+		label: "E2B",
+		keys: [{ name: "E2B_API_KEY", required: true }],
+		mounts: ["archil"],
+		metered: true,
+		capabilities: [SANDBOX, LINUX_DESKTOP],
+		defaultImage: { sandbox: E2B_BASE_TEMPLATE, desktop: E2B_DESKTOP_TEMPLATE },
+	}),
+	entry({
+		id: "orgo",
+		label: "Orgo",
+		keys: [{ name: "ORGO_API_KEY", required: true }],
+		mounts: [],
+		metered: true,
+		capabilities: [LINUX_DESKTOP],
+		defaultImage: { desktop: ORGO_BASE_IMAGE },
+	}),
 	entry({
 		id: "phone-harness",
 		label: "Phone harness",
@@ -136,6 +167,7 @@ export const PROVIDERS: readonly ProviderEntry[] = [
 		mounts: [],
 		metered: true,
 		capabilities: [{ kind: "android", groups: ["screen", "input.touch", "input.keys", "apps", "apps.ui_tree"] }],
+		defaultImage: { phone: PHONE_IMAGE },
 	}),
 	entry({
 		id: "browserbase",
@@ -147,8 +179,17 @@ export const PROVIDERS: readonly ProviderEntry[] = [
 		mounts: [],
 		metered: true,
 		capabilities: [{ kind: "browser", groups: ["cdp", "stream"] }],
+		defaultImage: { browser: BROWSER_IMAGE },
 	}),
-	entry({ id: "kernel", label: "Kernel", keys: [{ name: "KERNEL_API_KEY", required: true }], mounts: [], metered: true, capabilities: [{ kind: "browser", groups: ["cdp", "stream"] }] }),
+	entry({
+		id: "kernel",
+		label: "Kernel",
+		keys: [{ name: "KERNEL_API_KEY", required: true }],
+		mounts: [],
+		metered: true,
+		capabilities: [{ kind: "browser", groups: ["cdp", "stream"] }],
+		defaultImage: { browser: BROWSER_IMAGE },
+	}),
 ];
 
 /** What testConnection is given: the provider's keys by their serve-side names, and the caller's signal. */

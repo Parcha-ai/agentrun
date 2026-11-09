@@ -7,6 +7,7 @@ import { commitWrites } from "@earendil-works/pi-durable/testing";
 
 const { callsOf, journalEntries, messagesOf } = await import("../dist/runner/journal-reader.js");
 const { KINDS } = await import("../dist/runner/journal-kinds.js");
+const { deniedText, endedBy, noteOf } = await import("../dist/runner/loop-contract.js");
 const { MAX_RESTARTS } = await import("../dist/runner/conformance/harness.js");
 const { RUN_RESUMED } = await import("@parcha/pi-durable-agent/timeline");
 const { cutAtLimit } = await import("../dist/runner/loop-contract.js");
@@ -19,6 +20,17 @@ const TURN_END = "reference.turn.end";
 const context = BACKGROUND_CONTEXT;
 const ROOT = 1;
 const MUTANT = process.env.CONFORMANCE_MUTANT ?? "";
+
+/** What the reference's model was told by its newest answer: a denied call's refusal, in the kernel's words. */
+function lastResult(entries) {
+  const answer = [...entries].reverse().find((entry) => entry.kind === KINDS.answer);
+  if (!answer || answer.data.approved) return "";
+  const ask = entries.find((entry) => entry.kind === KINDS.ask && entry.data.callId === answer.data.callId);
+  return deniedText(ask?.data.tool ?? "the call", answer.data.note);
+}
+
+/** A steer row as the message the reference records: its text, and who wrote it when the person did not. */
+const steerData = (steer) => ({ role: "steer", text: steer.body.text, ...(steer.body.origin ? { origin: steer.body.origin } : {}) });
 
 /** The subject the suite runs: reference loops for `setup`. */
 export const referenceSubject = {
@@ -59,11 +71,11 @@ function referenceLoop({ script, tools, hooks }, deps) {
   const writeSteers = async () => {
     // any-row-answers leaves steers in the inbox too, for the ask to take as an answer.
     const steers = MUTANT === "steer-at-end" || MUTANT === "any-row-answers" ? [] : takeSteers();
-    for (const steer of steers) await append(KINDS.message, { role: "steer", text: steer.body.text }, { take: [steer.id] });
+    for (const steer of steers) await append(KINDS.message, steerData(steer), { take: [steer.id] });
   };
-  /** The run ends stopped, why on its row (the end commit's summary), the stop row taken in the same commit. */
+  /** The run ends stopped, why on its row (the end commit's summary), the stop or cancel row taken in the same commit. */
   const writeStop = async () => {
-    const run = MUTANT === "stop-unwritten" ? { state: "stopped" } : { state: "stopped", summary: "stopped by a person" };
+    const run = MUTANT === "stop-unwritten" ? { state: "stopped" } : { state: "stopped", summary: endedBy(stopReason.cancel) };
     // The loop's end commit, as every loop writes it (KINDS.end): the live view reads the stop from it.
     await append(KINDS.end, run, { run, take: [stopReason.commandId] });
     return { state: "stopped" };
@@ -164,7 +176,7 @@ function referenceLoop({ script, tools, hooks }, deps) {
                 await waitForCommand();
               }
               inbox.splice(inbox.indexOf(answer), 1);
-              await append(KINDS.answer, { callId, approved: answer.kind === "approve" }, { take: [answer.id] });
+              await append(KINDS.answer, { callId, approved: answer.kind === "approve", ...noteOf(answer) }, { take: [answer.id] });
               if (answer.kind === "deny") continue;
             }
           }
@@ -178,7 +190,7 @@ function referenceLoop({ script, tools, hooks }, deps) {
           if (stopReason?.kind === "command") return writeStop();
           if (stopReason) return { state: "interrupted" };
         } else {
-          const text = "say" in next ? next.say : [...messagesOf(await journalEntries(journal, context))].reverse().find((m) => m.role === "steer")?.text ?? "";
+          const text = "say" in next ? next.say : "sayLastResult" in next ? lastResult(await journalEntries(journal, context)) : [...messagesOf(await journalEntries(journal, context))].reverse().find((m) => m.role === "steer")?.text ?? "";
           if (MUTANT === "steer-at-end") await writeSteersNow();
           const last = step === script.length - 1;
           // The run's last answer cut at the model's output limit is unfinished: the run ends failed, saying so (a mutant
@@ -196,7 +208,7 @@ function referenceLoop({ script, tools, hooks }, deps) {
       return { state: "ended" };
 
       async function writeSteersNow() {
-        for (const steer of takeSteers()) await append(KINDS.message, { role: "steer", text: steer.body.text }, { take: [steer.id] });
+        for (const steer of takeSteers()) await append(KINDS.message, steerData(steer), { take: [steer.id] });
       }
     },
     async command(command) {

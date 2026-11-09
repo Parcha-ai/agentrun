@@ -1,7 +1,9 @@
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
+import { RunDetail } from "@/components/RunDetail";
 import { Timeline } from "@/components/Timeline";
+import { messageFeatures, runFixture } from "@/fixtures";
 import { rowFailed, rowPaused } from "@/lib/timeline";
 import type { TimelineRow } from "@/lib/v2";
 
@@ -60,9 +62,9 @@ describe("the waiting row's chip, by what the run waits on", () => {
 });
 
 describe("the run page passes the run's pending.kind to its timeline", () => {
-  it("a run paused at its cap: its waiting row reads Paused at cap", async () => {
-    const { RunDetail } = await import("./RunDetail");
-    const { messageFeatures, runFixture } = await import("@/fixtures");
+  // RunDetail and the fixtures load with the file, never inside the test: a dynamic import here ran the whole run page's
+  // module graph against the test's own timeout, which a loaded suite run could exceed.
+  it("a run paused at its cap: its waiting row reads Paused at cap", () => {
     const f = runFixture("run.completed.idle.1");
     const run = { ...f.run, kind: "agentic", status: "input_required", state: "waiting", result: null, pending: { kind: "budget", cap_usd: 0.05, said: WORDS, at: "2026-11-05T17:09:00Z" } };
     const rows = [pausedRow(), waitingRow()];
