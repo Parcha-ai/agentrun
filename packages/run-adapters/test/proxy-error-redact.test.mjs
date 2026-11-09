@@ -174,3 +174,10 @@ test("events end at every line end the format has, LF, CRLF and a bare CR, where
     }
   }
 });
+
+test("an error answer the cut holds part of reaches the client character for character: the hold never splits a character in two", async (t) => {
+  // The window the host's redactor reads would end between the emoji's two halves.
+  const body = `a\u{1F600}${'x'.repeat(4095)}`;
+  const got = await answered(t, 500, body, (text) => text);
+  assert.equal(got.text, body);
+});
