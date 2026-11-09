@@ -70,7 +70,7 @@ test("five failed firings in a row turn the trigger off; each sends one signed t
   const clock = fakeClock("2026-06-01T00:00:00Z");
   const first = await serve(t, { data, triggerClock: clock });
   const { api } = first;
-  const { secret } = (await api("PUT", "/settings/webhook", { url: hook.url })).body;
+  const { signing_secret: secret } = (await api("PUT", "/settings/webhook", { url: hook.url })).body;
   await made(api, "flaky");
   const { body } = await api("POST", "/triggers", schedule("flaky", { every_s: 60, start_at: "2026-06-01T00:01:00Z" }));
   const id = body.id;

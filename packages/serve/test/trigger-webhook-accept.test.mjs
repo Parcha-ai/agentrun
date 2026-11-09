@@ -83,7 +83,7 @@ test("demo: a GitHub delivery signed with the trigger's whole secret fires once,
   await made(api, "review");
   const created = await api("POST", "/triggers", hooked("review", { signature: "github", accept: [PR_RULE] }));
   assert.equal(created.status, 201, JSON.stringify(created.body));
-  const { id, secret } = created.body;
+  const { id, signing_secret: secret } = created.body;
   assert.deepEqual(created.body.source, { kind: "webhook", signature: "github", accept: [PR_RULE] }, "kept as given");
   const doc = await (await fetch(`${baseUrl}/openapi.json`)).json();
   assert.deepEqual(schemaProblems(doc, doc.paths["/triggers"].post.responses["201"].content["application/json"].schema, created.body), []);
@@ -143,7 +143,7 @@ test("GitHub's ping, and any verified delivery no accept rule takes, is 200 {ok:
   ];
   const created = await api("POST", "/triggers", hooked("review", { signature: "github", accept }));
   assert.equal(created.status, 201, JSON.stringify(created.body));
-  const { id, secret } = created.body;
+  const { id, signing_secret: secret } = created.body;
   const doc = await (await fetch(`${baseUrl}/openapi.json`)).json();
   const ignoredSchema = doc.paths["/hooks/{trigger_id}"].post.responses["200"].content["application/json"].schema;
   const pr = (action, draft) => ({ action, pull_request: { draft } });
@@ -198,7 +198,7 @@ test("a Standard Webhooks trigger's accept reads the body's type as the event, a
   await made(api, "review");
   const created = await api("POST", "/triggers", hooked("review", { accept: [{ event: "invoice.paid", where: [{ pointer: "/data/amount", exists: true }] }] }));
   assert.equal(created.status, 201, JSON.stringify(created.body));
-  const { id, secret } = created.body;
+  const { id, signing_secret: secret } = created.body;
   assert.deepEqual([(await standard(baseUrl, id, { type: "invoice.created", data: { amount: 1 } }, secret)).status, (await standard(baseUrl, id, { type: "invoice.paid", data: {} }, secret)).body], [200, { ok: "ignored" }]);
   const sent = { type: "invoice.paid", action: 'x" untrusted="no"><b>\nnext', data: { amount: 1 } };
   assert.equal((await standard(baseUrl, id, sent, secret)).status, 202);
@@ -276,7 +276,7 @@ test("a trigger with accept on a full server: the start refused rate_limited sta
   const { api, baseUrl } = await serve(t, { maxRuns: 1 });
   await made(api, "busy");
   const gate = join(await scratch(t), "gate");
-  const { id, secret } = await trigger(api, hooked("busy", { signature: "github", accept: [{ event: "pull_request" }] }, `Hold the answer until ${gate}.`));
+  const { id, signing_secret: secret } = await trigger(api, hooked("busy", { signature: "github", accept: [{ event: "pull_request" }] }, `Hold the answer until ${gate}.`));
   assert.equal((await deliver(baseUrl, id, "pull_request", { n: 1 }, { secret })).status, 202);
   const [first] = await firings(api, id, 1);
   await follow(api, first.run_id, ["working"]);
@@ -300,7 +300,7 @@ test("X-GitHub-Delivery is not signed, so it keys nothing: the same signed body 
   withEnv(t, SEAL);
   const { api, baseUrl } = await serve(t);
   await made(api, "review");
-  const { id, secret } = await trigger(api, hooked("review", { signature: "github", accept: [{ event: "pull_request" }] }));
+  const { id, signing_secret: secret } = await trigger(api, hooked("review", { signature: "github", accept: [{ event: "pull_request" }] }));
   const body = JSON.stringify({ action: "opened", number: 9 });
   const first = await deliver(baseUrl, id, "pull_request", body, { secret });
   assert.equal(first.status, 202, JSON.stringify(first.body));
@@ -324,7 +324,7 @@ test("a trigger with accept may cap its own active runs (max_active_runs): at th
   const made1 = await api("POST", "/triggers", body);
   assert.equal(made1.status, 201, JSON.stringify(made1.body));
   assert.equal(made1.body.max_active_runs, 1);
-  const { id, secret } = made1.body;
+  const { id, signing_secret: secret } = made1.body;
   for (const [bad, field] of [[{ ...body, max_active_runs: 0 }, "max_active_runs"], [{ ...body, max_active_runs: 101 }, "max_active_runs"], [{ ...body, max_active_runs: 1.5 }, "max_active_runs"], [{ ...hooked("busy", { signature: "github" }), max_active_runs: 2 }, "max_active_runs"]]) {
     const res = await api("POST", "/triggers", bad);
     assert.deepEqual([res.status, res.body.error?.fields?.map((f) => f.field)], [422, [field]], JSON.stringify(res.body));
@@ -357,7 +357,7 @@ test("X-GitHub-Event is not signed: a delivery its accept ignored, sent again un
   withEnv(t, SEAL);
   const { api, baseUrl } = await serve(t);
   await made(api, "review");
-  const { id, secret } = await trigger(api, hooked("review", { signature: "github", accept: [{ event: "pull_request" }] }));
+  const { id, signing_secret: secret } = await trigger(api, hooked("review", { signature: "github", accept: [{ event: "pull_request" }] }));
   const body = JSON.stringify({ action: "created", comment: { body: "nit" } });
   const ignored = await deliver(baseUrl, id, "pull_request_review_comment", body, { secret });
   assert.deepEqual([ignored.status, ignored.body], [200, { ok: "ignored" }]);

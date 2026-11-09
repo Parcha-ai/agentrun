@@ -44,15 +44,16 @@ test("no planted secret shows in any GET, the store's bytes, the log or an expor
 
   const values = [];
   const ran = [];
+  // The ids the GETs below are filled with; a plant adds those it makes (a trigger's).
+  const ids = { agent_id: agentId, id: agentId, key_id: "monid" };
   for (const plant of registeredPlants()) {
-    values.push(...(await plant.write({ owner, api: server.api, server })));
+    values.push(...(await plant.write({ owner, api: server.api, server, ids })));
     ran.push(plant.name);
   }
   assert.ok(values.length >= 2, `the plants ran: ${ran.join(", ")}`);
 
   // Every GET of the served document, as the token and as the owner's session.
   const doc = (await server.api("GET", "/openapi.json")).body;
-  const ids = { agent_id: agentId, id: agentId, key_id: "monid" };
   const sources = [];
   const skipped = [];
   for (const [path, item] of Object.entries(doc.paths ?? {})) {

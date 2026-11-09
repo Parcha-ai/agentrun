@@ -37,7 +37,7 @@ test("a message_run target must be a capped run: refused at create and at PATCH 
   assert.equal(refused.status, 422);
   assert.deepEqual(refused.body.error.fields.map((f) => [f.field, f.reason]), [["target.run_id", "not_allowed"]]);
   assert.match(refused.body.error.fields[0].message, /no spend cap/);
-  const { id, secret } = (await first.api("POST", "/triggers", messaging(capped.run_id))).body;
+  const { id, signing_secret: secret } = (await first.api("POST", "/triggers", messaging(capped.run_id))).body;
   const patched = await first.api("PATCH", `/triggers/${id}`, { target: messaging(uncapped.run_id).target });
   assert.deepEqual([patched.status, patched.body.error.fields.map((f) => f.field)], [422, ["target.run_id"]]);
   await first.close();
@@ -62,7 +62,7 @@ test("a firing never answers a run that waits on a person: it is skipped with wh
   const run = (await api("POST", "/agents/asks/runs", { input: { content: "Pick a region." }, max_cost_usd: 1 })).body;
   await follow(api, run.run_id, ["input_required"]);
   assert.equal((await api("GET", `/runs/${run.run_id}`)).body.pending?.kind, "question");
-  const { id, secret } = (await api("POST", "/triggers", messaging(run.run_id))).body;
+  const { id, signing_secret: secret } = (await api("POST", "/triggers", messaging(run.run_id))).body;
   assert.equal((await post(baseUrl, id, "eu", secret)).status, 202);
   const [skipped] = await firings(api, id, 1);
   assert.deepEqual([skipped.status, skipped.reason, skipped.run_id], ["skipped", "The run is waiting on a person.", null], JSON.stringify(skipped));
@@ -78,12 +78,12 @@ test("a webhook trigger's create retried under its Idempotency-Key replays the s
   const body = { name: "on push", source: { kind: "webhook" }, target: { kind: "start_run", agent_id: "triage", input: { content: "Go." }, max_cost_usd: 0.5 } };
   const first = await api("POST", "/triggers", body, { "idempotency-key": "make-1" });
   assert.equal(first.status, 201);
-  assert.match(first.body.secret, /^whsec_/);
+  assert.match(first.body.signing_secret, /^whsec_/);
   assert.equal(first.body.note, undefined);
   const again = await api("POST", "/triggers", body, { "idempotency-key": "make-1" });
-  assert.deepEqual([again.status, again.headers.get("idempotent-replayed"), again.body.id, again.body.secret], [201, "true", first.body.id, undefined]);
+  assert.deepEqual([again.status, again.headers.get("idempotent-replayed"), again.body.id, again.body.signing_secret], [201, "true", first.body.id, undefined]);
   assert.match(again.body.note, /shown once.*\/secret/);
-  assert.ok(!(await readFile(join(data, ".idempotency.json"), "utf8")).includes(first.body.secret.slice("whsec_".length)), "the idempotency record holds no secret");
+  assert.ok(!(await readFile(join(data, ".idempotency.json"), "utf8")).includes(first.body.signing_secret.slice("whsec_".length)), "the idempotency record holds no secret");
   assert.equal((await api("GET", "/triggers")).body.triggers.length, 1, "one trigger");
   const other = await api("POST", "/triggers", { ...body, name: "other" }, { "idempotency-key": "make-1" });
   assert.deepEqual([other.status, other.body.error.code], [409, "idempotency_mismatch"]);
@@ -127,7 +127,7 @@ test("a run that comes to wait on a person between the firing's check and its do
   await made(api, "asks", { tools: ["ask_person"] });
   const run = (await api("POST", "/agents/asks/runs", { input: { content: `Pick a region once ${gate} exists.` }, max_cost_usd: 1 })).body;
   await follow(api, run.run_id, ["working"]);
-  const { id, secret } = (await api("POST", "/triggers", messaging(run.run_id))).body;
+  const { id, signing_secret: secret } = (await api("POST", "/triggers", messaging(run.run_id))).body;
   assert.equal((await post(server.baseUrl, id, "eu", secret)).status, 202);
   const [skipped] = await firings(api, id, 1);
   assert.deepEqual([skipped.status, skipped.reason], ["skipped", "The run is waiting on a person."], JSON.stringify(skipped));
@@ -250,7 +250,7 @@ test("a run that comes to wait on a tool call's approval between the firing's ch
   await made(api, "fetcher", { tools: ["web_fetch"] });
   const run = (await api("POST", "/agents/fetcher/runs", { input: { content: `Fetch http://public.example/ once ${gate} exists.` }, max_cost_usd: 1 })).body;
   await follow(api, run.run_id, ["working"]);
-  const { id, secret } = (await api("POST", "/triggers", messaging(run.run_id))).body;
+  const { id, signing_secret: secret } = (await api("POST", "/triggers", messaging(run.run_id))).body;
   assert.equal((await post(server.baseUrl, id, "eu", secret)).status, 202);
   const [skipped] = await firings(api, id, 1);
   assert.deepEqual([skipped.status, skipped.reason], ["skipped", "The run is waiting on a person."], JSON.stringify(skipped));
@@ -269,7 +269,7 @@ test("a firing never reaches a run paused at its spend cap (pending budget): it 
   const run = (await api("POST", "/agents/capped/runs", { input: { content: "Write one.md" }, max_cost_usd: 0.05 })).body;
   await follow(api, run.run_id, ["input_required"]);
   assert.equal((await api("GET", `/runs/${run.run_id}`)).body.pending?.kind, "budget");
-  const { id, secret } = (await api("POST", "/triggers", messaging(run.run_id))).body;
+  const { id, signing_secret: secret } = (await api("POST", "/triggers", messaging(run.run_id))).body;
   assert.equal((await post(baseUrl, id, "{}", secret)).status, 202);
   const [skipped] = await firings(api, id, 1);
   assert.deepEqual([skipped.status, skipped.reason], ["skipped", "The run is waiting on a person."], JSON.stringify(skipped));

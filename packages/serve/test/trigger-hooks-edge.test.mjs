@@ -36,7 +36,7 @@ test("no route but POST /v2/hooks/{id} (and capabilities, the document and healt
   withEnv(t, SEAL);
   const { api, baseUrl } = await serve(t);
   await made(api, "triage");
-  const { id, secret } = (await api("POST", "/triggers", hooked("triage"))).body;
+  const { id, signing_secret: secret } = (await api("POST", "/triggers", hooked("triage"))).body;
   const at = port(baseUrl);
   // mcpOAuthClient: the OAuth client metadata document an authorization server fetches, public by design (mcp-oauth.ts).
   const open = new Set(["getCapabilities", "getOpenapi", "getHealth", "receiveHook", "mcpOAuthClient"]);
@@ -88,7 +88,7 @@ test("malformed, duplicated or oversized webhook headers, a webhook-id past 255 
   withEnv(t, SEAL);
   const { api, baseUrl } = await serve(t);
   await made(api, "triage");
-  const { id, secret } = (await api("POST", "/triggers", hooked("triage"))).body;
+  const { id, signing_secret: secret } = (await api("POST", "/triggers", hooked("triage"))).body;
   const at = port(baseUrl);
   const body = "{}";
   const good = signed(secret, body);
@@ -124,7 +124,7 @@ test("the signature covers the exact bytes: a body serialised again differently 
   const lines = [];
   const { api, baseUrl, data } = await serve(t, { log: (line) => lines.push(line) });
   await made(api, "triage");
-  const { id, secret } = (await api("POST", "/triggers", hooked("triage"))).body;
+  const { id, signing_secret: secret } = (await api("POST", "/triggers", hooked("triage"))).body;
   const at = port(baseUrl);
   const sent = '{"a":1,"marker":"BODY-MARKER-1"}';
   const headers = signed(secret, sent);
@@ -156,7 +156,7 @@ test(`a message a run already took (${harness}), its firing left due by a restar
   await made(first.api, "chat", harness === "pi" ? {} : { harness });
   const run = (await first.api("POST", "/agents/chat/runs", { input: { content: "Say hello." }, max_cost_usd: 1 })).body;
   await follow(first.api, run.run_id, ["completed"]);
-  const { id, secret } = (await first.api("POST", "/triggers", { name: "inbox", source: { kind: "webhook" }, target: { kind: "message_run", run_id: run.run_id, input: { content: "A new event came in." } } })).body;
+  const { id, signing_secret: secret } = (await first.api("POST", "/triggers", { name: "inbox", source: { kind: "webhook" }, target: { kind: "message_run", run_id: run.run_id, input: { content: "A new event came in." } } })).body;
   const body = '{"ticket":7}';
   assert.equal((await call(port(first.baseUrl), { method: "POST", path: `/v2/hooks/${id}`, headers: signed(secret, body), body })).status, 202);
   const [sent] = await firings(first.api, id, 1);
@@ -186,7 +186,7 @@ async function refusedWhileBusy(api, baseUrl, go) {
   await made(api, "held", { harness: "claude-agent", instructions: `Hold the answer until ${go}.`, tools: ["web_fetch"] });
   const run = (await api("POST", "/agents/held/runs", { input: { content: "hi" }, max_cost_usd: 1 })).body;
   await follow(api, run.run_id, ["working"], { deadlineMs: 30_000 });
-  const { id, secret } = (await api("POST", "/triggers", { name: "inbox", source: { kind: "webhook" }, target: { kind: "message_run", run_id: run.run_id, input: { content: "A new event came in." } } })).body;
+  const { id, signing_secret: secret } = (await api("POST", "/triggers", { name: "inbox", source: { kind: "webhook" }, target: { kind: "message_run", run_id: run.run_id, input: { content: "A new event came in." } } })).body;
   const body = '{"ticket":8}';
   assert.equal((await call(port(baseUrl), { method: "POST", path: `/v2/hooks/${id}`, headers: signed(secret, body), body })).status, 202);
   for (const end = Date.now() + 30_000; ; await new Promise((resolve) => setTimeout(resolve, 50))) {

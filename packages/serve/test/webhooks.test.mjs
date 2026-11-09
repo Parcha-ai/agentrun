@@ -103,7 +103,7 @@ test("demo: a run that ends and a run that asks its person each POST a Standard 
   assert.deepEqual((await api("GET", "/settings/webhook")).body, { configured: false });
   const set = await api("PUT", "/settings/webhook", { url: hook.url });
   assert.equal(set.status, 201, JSON.stringify(set.body));
-  const { secret } = set.body;
+  const { signing_secret: secret } = set.body;
   assert.match(secret, /^whsec_[A-Za-z0-9+/]{43}=$/, "whsec_ and 32 bytes in base64");
   assert.deepEqual({ ...set.body, secret: undefined, updated_at: undefined }, { configured: true, url: hook.url, signing: "sealed", disabled: null, secret: undefined, updated_at: undefined });
   await meetsDocument(api, "/settings/webhook", "put", "201", set.body);
@@ -157,7 +157,7 @@ test("demo: a run that ends and a run that asks its person each POST a Standard 
   for (const where of [JSON.stringify(view.body), JSON.stringify(log), lines.join("\n"), ...filesIn(data)]) for (const form of forms) assert.ok(!Buffer.from(where).includes(form), "the secret is nowhere in the clear");
   assert.equal(statSync(join(data, "webhook.json")).mode & 0o777, 0o600);
   assert.equal(statSync(join(data, "webhook-outbox.json")).mode & 0o777, 0o600);
-  assert.equal((await api("PUT", "/settings/webhook", { url: hook.url })).body.secret, undefined, "a later PUT keeps the secret and never shows it");
+  assert.equal((await api("PUT", "/settings/webhook", { url: hook.url })).body.signing_secret, undefined, "a later PUT keeps the secret and never shows it");
 });
 
 test("a receiver that is down gets each try, then the message is logged as failed; one that fails then answers gets it on a try again, under the same webhook-id; a redirect is not followed", async (t) => {

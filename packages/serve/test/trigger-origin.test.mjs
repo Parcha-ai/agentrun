@@ -60,7 +60,7 @@ for (const harness of ["pi", "claude-agent"]) {
     await made(api, agentId, harness === "pi" ? {} : { harness });
     const created = await api("POST", "/triggers", { name: "on push", source: { kind: "webhook" }, target: { kind: "start_run", agent_id: agentId, input: { content: "Triage this event." }, max_cost_usd: 0.5 } });
     assert.equal(created.status, 201, JSON.stringify(created.body));
-    const { id, secret } = created.body;
+    const { id, signing_secret: secret } = created.body;
     assert.equal((await post(baseUrl, id, JSON.stringify({ note: RULE }), secret)).status, 202);
     const [fired] = await firings(api, id, 1);
     assert.equal(fired.status, "started", JSON.stringify(fired));
@@ -81,7 +81,7 @@ test("a webhook trigger's message to a run is the trigger's, owner false: the ru
   await follow(api, run.body.run_id, ["completed"]);
   const created = await api("POST", "/triggers", { name: "inbox", source: { kind: "webhook" }, target: { kind: "message_run", run_id: run.body.run_id, input: { content: "A new event came in." } } });
   assert.equal(created.status, 201, JSON.stringify(created.body));
-  const { id, secret } = created.body;
+  const { id, signing_secret: secret } = created.body;
   assert.equal((await post(baseUrl, id, "", secret)).status, 202, "an empty body is a webhook's too");
   const [sent] = await firings(api, id, 1);
   assert.deepEqual([sent.status, sent.run_id], ["sent", run.body.run_id], JSON.stringify(sent));
@@ -126,7 +126,7 @@ test("a webhook's message to a working run is refused busy and sent again on the
   await follow(api, run.body.run_id, ["working"], { deadlineMs: 30_000 });
   const created = await api("POST", "/triggers", { name: "inbox", source: { kind: "webhook" }, target: { kind: "message_run", run_id: run.body.run_id, input: { content: "A new event came in." } } });
   assert.equal(created.status, 201, JSON.stringify(created.body));
-  const { id, secret } = created.body;
+  const { id, signing_secret: secret } = created.body;
   assert.equal((await post(baseUrl, id, "{\"ticket\":7}", secret)).status, 202);
   const origin = { kind: "trigger", trigger_id: id, source: "webhook", owner: false };
   // Refused busy at least once (the engine tries again every 5 s), each try's marker withdrawn.
@@ -165,7 +165,7 @@ async function killedBeforeFirstMessage(t) {
   await made(api, "learner", { learning: true, tools: ["write"] });
   const created = await api("POST", "/triggers", { name: "on push", source: { kind: "webhook" }, target: { kind: "start_run", agent_id: "learner", input: { content: "Answer soon." }, max_cost_usd: 0.5 } });
   assert.equal(created.status, 201, JSON.stringify(created.body));
-  const { id, secret } = created.body;
+  const { id, signing_secret: secret } = created.body;
   assert.equal((await post(baseUrl, id, "{}", secret)).status, 202);
   let dir = "";
   for (const end = Date.now() + 60_000; !(dir = await readFile(signal, "utf8").catch(() => "")); await sleep(50)) assert.ok(Date.now() < end, "the run's seed copy was reached");

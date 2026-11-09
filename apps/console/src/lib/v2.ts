@@ -83,7 +83,7 @@ export type ToolKeysFeature = NonNullable<components["Features"]["tool_keys"]>;
 /** The webhook (GET /v2/settings/webhook, a serve extension). Never the secret. */
 export type Webhook = Answer<"getWebhook">;
 /** A PUT's answer: the webhook, and its secret the first time (201), shown this once. */
-export type WebhookSaved = Answer<"saveWebhook"> & { secret?: string };
+export type WebhookSaved = Answer<"saveWebhook"> & { signing_secret?: string };
 /** One try of a message (GET .../deliveries, newest first). */
 export type WebhookAttempt = Answer<"listWebhookDeliveries">["attempts"][number];
 /** `capabilities.features.webhooks`. */

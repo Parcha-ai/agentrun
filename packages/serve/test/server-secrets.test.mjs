@@ -25,7 +25,7 @@ test("a run that quotes a webhook trigger's signing secret, or the outbound webh
   const outbound = await api("PUT", "/settings/webhook", { url: "https://hooks.example/in" });
   assert.equal(outbound.status, 201, JSON.stringify(outbound.body));
   const quoted = (what, secret) => [[what, secret], [`${what} key`, secret.slice("whsec_".length)]];
-  for (const [what, secret] of [...quoted("the trigger's", trigger.body.secret), ...quoted("the outbound webhook's", outbound.body.secret)]) {
+  for (const [what, secret] of [...quoted("the trigger's", trigger.body.signing_secret), ...quoted("the outbound webhook's", outbound.body.signing_secret)]) {
     const file = join(await scratch(t), "key.txt");
     await writeFile(file, secret);
     const started = await api("POST", "/agents/quotes/runs", { input: { content: `Quote the key in ${file}` } });
@@ -69,12 +69,12 @@ test("a run whose message holds a webhook trigger's key or the outbound webhook'
   const trigger = await api("POST", "/triggers", { name: "on push", source: { kind: "webhook" }, target: { kind: "start_run", agent_id: "target", input: { content: "Hi." }, max_cost_usd: 0.5 } });
   assert.equal(trigger.status, 201, JSON.stringify(trigger.body));
   // A key whose base64 holds a /, as about half do: its unpadded and its escaped spellings differ from every other.
-  let hooked = trigger.body.secret;
-  for (let i = 0; i < 40 && !hooked.includes("/"); i++) hooked = (await api("POST", `/triggers/${trigger.body.id}/secret`)).body.secret;
+  let hooked = trigger.body.signing_secret;
+  for (let i = 0; i < 40 && !hooked.includes("/"); i++) hooked = (await api("POST", `/triggers/${trigger.body.id}/secret`)).body.signing_secret;
   assert.ok(hooked.includes("/"), "a secret with a / within 40 rotations");
   const outbound = await api("PUT", "/settings/webhook", { url: "https://hooks.example/in" });
   assert.equal(outbound.status, 201, JSON.stringify(outbound.body));
-  for (const [what, secret] of [["trigger", hooked], ["outbound", outbound.body.secret]]) {
+  for (const [what, secret] of [["trigger", hooked], ["outbound", outbound.body.signing_secret]]) {
     const forms = keyForms(secret);
     const shown = await pasted(api, `pastes-${what}`, forms);
     for (const [form, value] of Object.entries(forms)) assert.ok(!holdsRun(shown, value), `the ${what} secret's key as ${form} shows nowhere: ${shown.slice(0, 600)}`);
@@ -89,8 +89,8 @@ test("after a webhook trigger's secret is rotated, or the outbound webhook is de
   assert.equal(trigger.status, 201, JSON.stringify(trigger.body));
   const rotated = await api("POST", `/triggers/${trigger.body.id}/secret`);
   assert.equal(rotated.status, 200, JSON.stringify(rotated.body));
-  assert.notEqual(rotated.body.secret, trigger.body.secret);
-  const forms = { whole: trigger.body.secret, ...keyForms(trigger.body.secret) };
+  assert.notEqual(rotated.body.signing_secret, trigger.body.signing_secret);
+  const forms = { whole: trigger.body.signing_secret, ...keyForms(trigger.body.signing_secret) };
   const shown = await pasted(api, "pastes-old", forms);
   for (const [form, value] of Object.entries(forms)) assert.ok(!holdsRun(shown, value), `the old secret as ${form} shows nowhere: ${shown.slice(0, 600)}`);
   const outbound = await api("PUT", "/settings/webhook", { url: "https://hooks.example/in" });
@@ -98,8 +98,8 @@ test("after a webhook trigger's secret is rotated, or the outbound webhook is de
   assert.equal((await api("DELETE", "/settings/webhook")).status, 204);
   const again = await api("PUT", "/settings/webhook", { url: "https://hooks.example/in" });
   assert.equal(again.status, 201, JSON.stringify(again.body));
-  assert.notEqual(again.body.secret, outbound.body.secret);
-  const outboundForms = { whole: outbound.body.secret, ...keyForms(outbound.body.secret) };
+  assert.notEqual(again.body.signing_secret, outbound.body.signing_secret);
+  const outboundForms = { whole: outbound.body.signing_secret, ...keyForms(outbound.body.signing_secret) };
   const outboundShown = await pasted(api, "pastes-old-outbound", outboundForms);
   for (const [form, value] of Object.entries(outboundForms)) assert.ok(!holdsRun(outboundShown, value), `the old outbound secret as ${form} shows nowhere: ${outboundShown.slice(0, 600)}`);
 });
@@ -114,7 +114,7 @@ test("an ended run the next server holds no Run for, listed from its row and ser
   await follow(first.api, runId, ["failed"], { deadlineMs: 60_000 });
   await first.close();
   // Its error as a server that did not cut it kept it: the trigger's key in the clear, as written and as hex.
-  const forms = keyForms(trigger.body.secret);
+  const forms = keyForms(trigger.body.signing_secret);
   const metaFile = join(runDir(first.data, runId), "serve.json");
   const meta = JSON.parse(await readFile(metaFile, "utf8"));
   await writeFile(metaFile, `${JSON.stringify({ ...meta, error: { code: "run_failed", message: `The hook signed with ${forms.bare}, or ${forms.hex}.` } })}\n`);

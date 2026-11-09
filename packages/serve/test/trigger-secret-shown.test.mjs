@@ -1,8 +1,8 @@
-// A signing secret this server mints (a webhook trigger's, the outbound webhook's) is shown once, and only to the owner's
-// signed-in session, as the console's Triggers and Settings → Webhook screens are: the API token, which a run's process or
-// a script may hold, gets what it made with the secret's metadata alone and the words that send the person to the console.
-// A rotation is a secret write: the token is refused it in the secret-write words, and the secret it would replace still
-// signs.
+// A signing secret this server mints (a webhook trigger's, the outbound webhook's) is shown once, as `signing_secret`, and
+// only to the owner's signed-in session, as the console's Triggers and Settings → Webhook screens are: the API token, which
+// a run's process or a script may hold, gets what it made with the secret's metadata (`secret`, the one shape) and the
+// words that send the person to the console. A rotation is a secret write: the token is refused it in the secret-write
+// words, and the secret it would replace still signs.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { createRequire } from "node:module";
@@ -29,12 +29,15 @@ async function owned(t) {
   const set = await call(server.port, { method: "POST", path: "/v2/setup", headers: { "content-type": "application/json", origin }, body: { password: PASSWORD } });
   assert.equal(set.status, 201, set.text);
   const cookie = cookieOf(set);
-  /** A request from the owner's signed-in page: its cookie, its own origin and a JSON body, as the console sends. */
+  /** A request from the owner's signed-in page: its cookie, its own origin and the JSON type (with no body too), as the
+   *  console sends. */
   const page = async (method, path, body) => {
-    const res = await call(server.port, { method, path: `/v2${path}`, headers: { cookie, origin, ...(body === undefined ? {} : { "content-type": "application/json" }) }, body });
+    const res = await call(server.port, { method, path: `/v2${path}`, headers: { cookie, origin, ...(method === "GET" ? {} : { "content-type": "application/json" }) }, body });
     return { status: res.status, body: res.json ?? res.text, text: res.text };
   };
-  return { ...server, page };
+  /** A request with the API token itself, as a script sends it (the client sends a secret write from a session). */
+  const token = (method, path, body) => server.api(method, path, body, { authorization: `Bearer ${server.token}` });
+  return { ...server, page, token };
 }
 
 /** A body signed by `secret`, POSTed to trigger `id`'s hook with no token: its status. */
@@ -48,14 +51,15 @@ async function signed(baseUrl, id, secret) {
 }
 
 test("a webhook trigger made with the API token: the trigger with secret_set true and the console's words, never its secret", async (t) => {
-  const { api } = await owned(t);
+  const { api, token } = await owned(t);
   await made(api, "triage");
-  const created = await api("POST", "/triggers", hooked("triage"));
+  const created = await token("POST", "/triggers", hooked("triage"));
   assert.equal(created.status, 201, JSON.stringify(created.body));
   assert.match(created.body.id, /^trg_/);
   assert.equal(created.body.secret_set, true);
+  assert.deepEqual([created.body.secret.name, created.body.secret.set, created.body.secret.source], [`trigger:${created.body.id}`, true, "console"]);
   assert.equal(created.body.note, TRIGGER_WORDS);
-  assert.ok(!("secret" in created.body), JSON.stringify(created.body));
+  assert.ok(!("signing_secret" in created.body), JSON.stringify(created.body));
   assert.ok(!JSON.stringify(created.body).includes("whsec_"), "no secret anywhere in the token's answer");
 });
 
@@ -64,68 +68,73 @@ test("a webhook trigger made from the owner's signed-in session: its secret, sho
   await made(api, "triage");
   const created = await page("POST", "/triggers", hooked("triage"));
   assert.equal(created.status, 201, created.text);
-  assert.match(created.body.secret, /^whsec_/);
-  assert.equal(created.body.secret_set, true);
-  assert.equal(await signed(baseUrl, created.body.id, created.body.secret), 202);
+  assert.match(created.body.signing_secret, /^whsec_/);
+  assert.deepEqual(Object.keys(created.body.secret).sort(), ["changed_at", "name", "set", "source"]);
+  assert.deepEqual([created.body.secret.name, created.body.secret.set, created.body.secret.source], [`trigger:${created.body.id}`, true, "console"]);
+  assert.equal(await signed(baseUrl, created.body.id, created.body.signing_secret), 202);
   const read = await api("GET", `/triggers/${created.body.id}`);
-  assert.ok(!JSON.stringify(read.body).includes(created.body.secret), "GET never shows it again");
+  assert.ok(!JSON.stringify(read.body).includes("whsec_"), "GET never shows it again");
+  assert.deepEqual(read.body.secret, { name: `trigger:${created.body.id}`, set: true, source: "console", changed_at: null }, "GET says it is set, in the one shape");
+  const listed = (await api("GET", "/triggers")).body.triggers.find((one) => one.id === created.body.id);
+  assert.deepEqual(listed.secret, read.body.secret);
 });
 
 test("rotating a trigger's secret with the API token is refused in the secret-write words, and the secret stays; the owner's session rotates it", async (t) => {
-  const { api, page, baseUrl } = await owned(t);
+  const { api, page, token, baseUrl } = await owned(t);
   await made(api, "triage");
   const created = await page("POST", "/triggers", hooked("triage"));
   assert.equal(created.status, 201, created.text);
-  const refused = await api("POST", `/triggers/${created.body.id}/secret`);
+  const refused = await token("POST", `/triggers/${created.body.id}/secret`);
   assert.equal(refused.status, 403, JSON.stringify(refused.body));
   assert.ok(JSON.stringify(refused.body).includes(REFUSAL), JSON.stringify(refused.body));
   assert.ok(!JSON.stringify(refused.body).includes("whsec_"));
-  assert.equal(await signed(baseUrl, created.body.id, created.body.secret), 202, "the secret the token tried to replace still signs");
+  assert.equal(await signed(baseUrl, created.body.id, created.body.signing_secret), 202, "the secret the token tried to replace still signs");
   const rotated = await page("POST", `/triggers/${created.body.id}/secret`);
   assert.equal(rotated.status, 200, rotated.text);
-  assert.match(rotated.body.secret, /^whsec_/);
-  assert.notEqual(rotated.body.secret, created.body.secret);
-  assert.equal(await signed(baseUrl, created.body.id, rotated.body.secret), 202);
+  assert.match(rotated.body.signing_secret, /^whsec_/);
+  assert.notEqual(rotated.body.signing_secret, created.body.signing_secret);
+  assert.deepEqual([rotated.body.secret.name, rotated.body.secret.set], [`trigger:${created.body.id}`, true]);
+  assert.equal(await signed(baseUrl, created.body.id, rotated.body.signing_secret), 202);
 });
 
 test("the outbound webhook set with the API token: its secret's metadata and the console's words, never the value; GET reads the same shape", async (t) => {
-  const { api } = await owned(t);
-  const saved = await api("PUT", "/settings/webhook", { url: "https://hooks.example.com/agentrun" });
+  const { api, token } = await owned(t);
+  const saved = await token("PUT", "/settings/webhook", { url: "https://hooks.example.com/agentrun" });
   assert.equal(saved.status, 201, JSON.stringify(saved.body));
   assert.ok(!JSON.stringify(saved.body).includes("whsec_"), "no secret anywhere in the token's answer");
-  assert.ok(!("secret" in saved.body), JSON.stringify(saved.body));
+  assert.ok(!("signing_secret" in saved.body), JSON.stringify(saved.body));
   assert.equal(saved.body.note, WEBHOOK_WORDS);
-  const meta = saved.body.signing_secret;
+  const meta = saved.body.secret;
   assert.deepEqual(Object.keys(meta).sort(), ["changed_at", "name", "set", "source"]);
-  assert.deepEqual([meta.name, meta.set, meta.source], ["signing_secret", true, "console"]);
+  assert.deepEqual([meta.name, meta.set, meta.source], ["webhook:outbound", true, "console"]);
   assert.ok(!Number.isNaN(Date.parse(meta.changed_at)), meta.changed_at);
   const read = await api("GET", "/settings/webhook");
   assert.equal(read.status, 200);
-  assert.deepEqual(read.body.signing_secret, meta);
+  assert.deepEqual(read.body.secret, meta);
   assert.ok(!JSON.stringify(read.body).includes("whsec_"));
 });
 
 test("the outbound webhook set from the owner's session: its secret shown this once with its metadata; a later save keeps it and its time", async (t) => {
-  const { api, page } = await owned(t);
+  const { page, token } = await owned(t);
   const saved = await page("PUT", "/settings/webhook", { url: "https://hooks.example.com/agentrun" });
   assert.equal(saved.status, 201, saved.text);
-  assert.match(saved.body.secret, /^whsec_/);
-  assert.deepEqual([saved.body.signing_secret.set, saved.body.signing_secret.source], [true, "console"]);
+  assert.match(saved.body.signing_secret, /^whsec_/);
+  assert.deepEqual([saved.body.secret.name, saved.body.secret.set, saved.body.secret.source], ["webhook:outbound", true, "console"]);
   const again = await page("PUT", "/settings/webhook", { url: "https://hooks.example.com/agentrun-2" });
   assert.equal(again.status, 200, again.text);
-  assert.ok(!("secret" in again.body), "a later save mints none, so shows none");
-  assert.equal(again.body.signing_secret.changed_at, saved.body.signing_secret.changed_at, "the secret's own time, not the webhook's");
-  const byToken = await api("PUT", "/settings/webhook", { url: "https://hooks.example.com/agentrun-3" });
+  assert.ok(!("signing_secret" in again.body), "a later save mints none, so shows none");
+  assert.equal(again.body.secret.changed_at, saved.body.secret.changed_at, "the secret's own time, not the webhook's");
+  const byToken = await token("PUT", "/settings/webhook", { url: "https://hooks.example.com/agentrun-3" });
   assert.equal(byToken.status, 200, "a later save is no secret write: the token may change the URL");
   assert.ok(!JSON.stringify(byToken.body).includes("whsec_"));
-  assert.equal(byToken.body.signing_secret.changed_at, saved.body.signing_secret.changed_at);
+  assert.equal(byToken.body.secret.changed_at, saved.body.secret.changed_at);
 });
 
 test("no outbound webhook set: GET says so, with its secret not set", async (t) => {
   const { api } = await owned(t);
   const read = await api("GET", "/settings/webhook");
   assert.equal(read.status, 200);
-  assert.deepEqual(read.body, { configured: false, signing_secret: { name: "signing_secret", set: false, source: null, changed_at: null } });
+  assert.deepEqual(read.body, { configured: false, secret: { name: "webhook:outbound", set: false, source: null, changed_at: null } });
 });
 
 test("a template that makes a webhook trigger says so in its apply answer: the console's words under the trigger, never its secret", { timeout: 120_000 }, async (t) => {

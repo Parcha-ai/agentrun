@@ -35,7 +35,14 @@ import { secret } from "../dist/secrets.js";
 
 /** The secret writes (secret-writes.ts registers them on the server) the client sends from the owner's session, as the
  *  console does: the token can't make one. Another plane's tests add theirs here. */
-export const SECRET_WRITE_PATHS = [{ methods: ["PUT", "DELETE"], path: /^\/settings\/tool-keys\/[^/]+$/ }];
+export const SECRET_WRITE_PATHS = [
+  { methods: ["PUT", "DELETE"], path: /^\/settings\/tool-keys\/[^/]+$/ },
+  // A signing secret this server mints is shown to the owner's session alone (trigger-secrets-shown.ts): a webhook
+  // trigger's at its create and its rotation, the outbound webhook's at its first save. A test that reads one makes it so.
+  { methods: ["POST"], path: /^\/triggers$/ },
+  { methods: ["POST"], path: /^\/triggers\/[^/]+\/secret$/ },
+  { methods: ["PUT"], path: /^\/settings\/webhook$/ },
+];
 const secretWrite = (method, path) => SECRET_WRITE_PATHS.some((write) => write.methods.includes(method) && write.path.test(path.split("?")[0]));
 /** The owner's password the client sets on a server that has none yet, to make a secret write from its session. */
 const CLIENT_OWNER_PHRASE = `client-owner-${createHash("sha256").update(String(process.pid)).digest("hex").slice(0, 24)}`;
@@ -292,7 +299,7 @@ export function client(baseUrl, token) {
    *  once the raise is answered. */
   async function api(method, path, body, headers = {}, { raiseCheck = true } = {}) {
     // A secret write goes from the owner's session, as the console's does (secret-writes.ts): the token is refused one.
-    const session = secretWrite(method, path) && !headers.authorization ? await ownerSessionOf(baseUrl) : undefined;
+    const session = secretWrite(method, path) && !headers.authorization ? await ownerSessionOf(baseUrl, token) : undefined;
     const sent = { body };
     const res = await fetch(`${baseUrl}${path}`, {
       method,
@@ -313,16 +320,18 @@ export function client(baseUrl, token) {
 }
 
 /** The owner's session on the server at `baseUrl` (its /v2), for the client's secret writes: the client sets the owner's
- *  password the first time (or signs in with it, on a server it set up before a restart). Undefined where it can't (accounts
- *  off, or an owner the test set up with its own password): the write then goes with the token, which the server refuses,
- *  so such a test makes its own owner's session for it. */
-async function ownerSessionOf(baseUrl) {
+ *  password the first time (or signs in with it, on a server it set up before a restart). With accounts off, the console's
+ *  own session: the cookie the printed link (`/?token=`) sets, which on a loopback-bound server may write a secret
+ *  (secret-writes.ts LOOPBACK_CONSOLE_IS_OWNER). Undefined where it can't (an owner the test set up with its own password):
+ *  the write then goes with the token, which the server refuses, so such a test makes its own owner's session for it. */
+async function ownerSessionOf(baseUrl, token) {
   if (ownerCookies.has(baseUrl)) return ownerCookies.get(baseUrl);
   const origin = new URL(baseUrl).origin;
   const post = (path) => fetch(`${baseUrl}${path}`, { method: "POST", headers: { "content-type": "application/json", origin }, body: JSON.stringify({ password: CLIENT_OWNER_PHRASE }) });
   let res = await post("/setup");
   if (res.status !== 201) res = await post("/auth/sign-in");
-  if (res.status !== 200 && res.status !== 201) return undefined;
+  if (res.status !== 200 && res.status !== 201 && token) res = await fetch(`${origin}/?token=${encodeURIComponent(token)}`, { redirect: "manual" });
+  if (res.status !== 200 && res.status !== 201 && !(res.status === 303 && res.headers.getSetCookie().length)) return undefined;
   const cookie = res.headers.getSetCookie().map((line) => line.split(";")[0]).join("; ");
   const session = { cookie, origin };
   ownerCookies.set(baseUrl, session);

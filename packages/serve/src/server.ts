@@ -96,6 +96,7 @@ import { mcpServersOverStore } from "./mcp-servers-store.js";
 import { metaToolOf } from "./mcp-meta.js";
 import { MCP_SETTINGS_PAGE, signInCookie, startedHere } from "./mcp-oauth.js";
 import { WEBHOOK_EVENTS, Webhooks } from "./webhooks.js";
+import { templateTriggerSecret, triggerMade, triggerRotated, webhookSaved, withTriggerSecret } from "./trigger-secrets-shown.js";
 import { type SealedSettingsOverStore } from "./sealed-settings-store.js";
 import { type ServerSecrets } from "./server-secrets.js";
 import { openServerSecretsOverStore } from "./server-secrets-store.js";
@@ -1124,6 +1125,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       }));
   const host = options.host ?? "127.0.0.1";
   const owner = options.accounts ? new Owner(data, options.openSetup === true, (line) => void process.stdout.write(`${line}\n`), options.signInAddresses) : undefined;
+  /** Whether `req` may be shown a secret this server mints (trigger-secrets-shown.ts): the caller that may write one. */
+  const mayHoldSecrets = (req: IncomingMessage) => writesSecretsAllowed(req, { accounts: owner !== undefined, loopbackBound: isLoopback(host) });
+  /** A trigger's view with its minted secret's metadata, never the secret (trigger-secrets-shown.ts). */
+  const withSecretOf = <T extends { id: string; source: { kind: string } }>(view: T) => withTriggerSecret(view, adapters, (adapterId, scope, field) => triggerSettings.get(adapterId)?.get(scope, field) !== undefined);
   // The owner's open live views (browser-live.ts): each closes once no session that let it in holds.
   const viewers = new OpenViewers();
   // A saved key is read by name from here, past the checks that refuse a start and before any run (a recovered one too)
@@ -1497,7 +1502,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // A pin this server's agent store does not keep yet (tool-plane.ts AGENT_LAYER_PINS): said, with the setting that holds
     // the send to its destination meanwhile, the server's.
     const unkept: InputIssue[] = made.unkept.map(({ tool, pin }) => ({ field: `pins.${tool}`, reason: NOT_SET_UP, message: `${tool} is not pinned to ${pinWords(pin)} for this agent yet: this server's agent store keeps an agent's own pin from the store cutover on. Until then it asks unless granted. To hold its calls to that destination, pin it on this server, which holds every agent's calls of ${tool}.`, fix: `Add ${JSON.stringify({ [tool]: { pin } })} to this server's tool settings (Settings → Tools; PUT /v2/settings/tools replaces the whole map, so send it with the rest).` }));
-    return { template: pkg.name, version: pkg.version, agent_id: entry.agent.id, trigger_ids: ids, warnings: [...skipped, ...kept, ...unpinned, ...unkept, ...warnings] };
+    // A webhook trigger's secret is in no apply answer: each one's warning sends the person to the console for it.
+    const hooks = made.triggers.flatMap((trigger, i) => (isObject(trigger.source) && trigger.source.kind === "webhook" ? [templateTriggerSecret(i)] : []));
+    return { template: pkg.name, version: pkg.version, agent_id: entry.agent.id, trigger_ids: ids, warnings: [...skipped, ...kept, ...unpinned, ...unkept, ...warnings, ...hooks] };
   }
 
   /** A run create's issues told from the input this server checks (explain.ts): an agentic run's `{content: string}`,
@@ -2481,8 +2488,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         return send(res, 200, webhooks.view());
       case "saveWebhook": {
         // Never through `idempotent`: its record would keep the answer, and the first one holds the secret.
+        // Its minted secret to the owner's session alone (trigger-secrets-shown.ts); the token gets its metadata and the words.
         const saved = webhooks.save(await bodyOf(req));
-        return send(res, saved.created ? 201 : 200, { ...saved.view, ...(saved.secret ? { secret: saved.secret } : {}) });
+        return send(res, saved.created ? 201 : 200, webhookSaved(saved.view, saved.secret, mayHoldSecrets(req)));
       }
       case "deleteWebhook":
         webhooks.remove();
@@ -2494,7 +2502,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       case "redeliverWebhook":
         return send(res, 200, await webhooks.redeliver(id));
       case "listTriggers":
-        return send(res, 200, triggers.list());
+        return send(res, 200, { triggers: triggers.list().triggers.map(withSecretOf) });
       case "createTrigger": {
         const body = await bodyOf(req);
         // A webhook trigger's secret is in its first answer alone: the Idempotency-Key's record keeps the trigger and a
@@ -2507,7 +2515,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         });
         const replayed = answer.headers?.["idempotent-replayed"] === "true";
         const { note: _, ...first } = answer.body as Json;
-        return send(res, answer.status, secret && !replayed ? { ...first, secret } : answer.body, answer.headers);
+        // Its minted secret to the owner's session alone (trigger-secrets-shown.ts); the token gets secret_set and the words.
+        return send(res, answer.status, secret && !replayed ? triggerMade(first, secret, mayHoldSecrets(req), new Date().toISOString()) : answer.body, answer.headers);
       }
       case "listTemplates":
         return send(res, 200, { templates: templates.map(packageView) });
@@ -2522,9 +2531,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         return send(res, answer.status, answer.body, answer.headers);
       }
       case "rotateTriggerSecret":
-        return send(res, 200, await triggers.rotate(id));
+        // A secret write: the dispatch's one check let only the owner's session this far (trigger-secrets-shown.ts).
+        return send(res, 200, triggerRotated(id, (await triggers.rotate(id)).secret!, new Date().toISOString()));
       case "getTrigger":
-        return send(res, 200, triggers.get(id));
+        return send(res, 200, withSecretOf(triggers.get(id)));
       case "updateTrigger":
         return send(res, 200, await triggers.update(id, await bodyOf(req)));
       case "deleteTrigger":

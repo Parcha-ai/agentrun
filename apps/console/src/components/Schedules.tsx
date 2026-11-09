@@ -182,7 +182,7 @@ function ScheduleDetail({ v2, go, agentName, id, every }: PageProps & { id: stri
   const rotate = async () => {
     if (rotateOut.current) return;
     rotateOut.current = true; setRenewing(true); setSaid(null); setFresh(null);
-    try { setFresh((await v2.rotateTriggerSecret(id)).secret); } catch (e) { setSaid(problem(e, "the new secret")); } finally { rotateOut.current = false; setRenewing(false); }
+    try { setFresh((await v2.rotateTriggerSecret(id)).signing_secret); } catch (e) { setSaid(problem(e, "the new secret")); } finally { rotateOut.current = false; setRenewing(false); }
   };
   const runNow = async () => {
     if (firing.current) return;
@@ -498,7 +498,7 @@ function WebhookForm({ v2, go }: { v2: Client; go: (hash: string) => void }) {
         {back}
         <h1 className="mt-3 flex items-center gap-2 text-2xl font-semibold"><Webhook className="size-5 text-primary" aria-hidden />{made.name}</h1>
         <p className="mt-2 text-[13px] text-muted-foreground">Send each request to this URL, signed with this secret ({SIGNATURE_WORDS[made.source.kind === "webhook" ? made.source.signature ?? "standard" : "standard"]}). Each one starts a run.</p>
-        {made.secret ? <SecretOnce label="The webhook's URL and secret" url={hookUrlOf(made)} secret={made.secret} /> : (
+        {made.signing_secret ? <SecretOnce label="The webhook's URL and secret" url={hookUrlOf(made)} secret={made.signing_secret} /> : (
           <section aria-label="The webhook's URL and secret" className="mt-4 space-y-3 border p-4 text-[13px]">
             <Copyable title="URL" text={hookUrlOf(made)} label="Copy URL" hint={HOOK_URL_HINT} />
             {made.note && <p role="note">{made.note}</p>}
