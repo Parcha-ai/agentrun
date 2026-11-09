@@ -13,7 +13,9 @@ test("github_app is an auth type: with no credential, or with static headers bes
     [{ type: "github_app", headers: { "X-MCP-Tools": "add" } }, { type: "github_app", headers: { "x-mcp-tools": "add" } }],
   ]) {
     const issues = [];
-    assert.deepEqual(authOf(value, issues), want, JSON.stringify(value));
+    const auth = authOf(value, issues);
+    // Its headers are a map with no prototype (no inherited names): compared as plain fields.
+    assert.deepEqual({ ...auth, ...(auth?.headers ? { headers: { ...auth.headers } } : {}) }, want, JSON.stringify(value));
     assert.deepEqual(issues, [], JSON.stringify(value));
   }
 });
