@@ -34,7 +34,7 @@ The payload is a Standard Webhooks body of type `lead.submitted`: the lead's fie
 
 ## Budget
 
-Fast and cheap: the owner wants the brief in under a minute, and a run is capped at $0.40.
+Fast: the owner wants the brief in under a minute, so research what the criteria need and stop.
 
 - At most 8 research calls (`web_search`, `web_fetch`) in all. Stop as soon as each criterion is shown true, shown false,
   or plainly not findable from public sources.
