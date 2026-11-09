@@ -194,13 +194,15 @@ export function AgentToolSettings({ agent, harness, model, tools, choices, gates
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
   if (!rows.length) return null;
   const saved = (agent?.definition.tool_settings ?? {}) as ToolSettings;
+  // The agent's approvals in the form against the saved one: a change of it changes what a tool resolves to, once saved.
+  const approvalsChanged = unattended !== ((agent?.definition.approvals ?? "ask") === "never");
   const { byTool, rest } = issuesFor(issues, "definition.tool_settings", rows.map((t) => t.name));
   return (
     <section aria-label="Tool settings" ref={section}>
       <div className="mb-2"><span className="caps text-[12px] font-semibold">Tool settings</span></div>
       {/* What ask means here: an agentic run waits for the owner's approval at each call; a workflow's call node can't
           wait, so the server refuses the start (its asks blocker, runnable.ts), in the same words. */}
-      <p className="-mt-1 mb-2 text-[12px] text-muted-foreground">Each of these tools takes this server's setting (its default here) unless it is changed here. {callTools ? "A call node can't wait for an approval: a tool set to ask stops the run from starting. Set it to allow." : "A tool on ask makes the run wait for your approval at each call."}</p>
+      <p className="-mt-1 mb-2 text-[12px] text-muted-foreground">Each of these tools takes this server's setting (its default here) unless it is changed here. {callTools ? "A call node can't wait for an approval: a tool set to ask stops the run from starting. Set it to allow." : unattended ? "Never ask is on: a tool on ask runs without waiting for you. A tool set to deny still holds." : "A tool on ask makes the run wait for your approval at each call."}</p>
       <ToolTable label="This agent's tool settings" unattended={unattended} rows={rows} settings={value} fallbackOf={(t) => t.provider} issues={byTool} onEdit={(edit) => onChange(edit(value))}
         // The server's deny holds over this agent's own setting (rule A): the row stays at deny and says why.
         refused={(name) => serverDenies(name, gates, agent?.tools, mcpServers)} locked
@@ -212,7 +214,8 @@ export function AgentToolSettings({ agent, harness, model, tools, choices, gates
           // capabilities', for the server's provider on each harness with the server's default model. A change of any of
           // them resolves once saved.
           // A permission changes it too (deny: unavailable; ask: no search that can't wait for an approval).
-          const own = (value[t.name]?.provider ?? null) !== (saved[t.name]?.provider ?? null) || (value[t.name]?.permission ?? null) !== (saved[t.name]?.permission ?? null);
+          // So does the agent's approvals (Never ask lets a search that can't wait for an approval run): read under the saved one.
+          const own = (value[t.name]?.provider ?? null) !== (saved[t.name]?.provider ?? null) || (value[t.name]?.permission ?? null) !== (saved[t.name]?.permission ?? null) || approvalsChanged;
           // The agent's word holds only for the provider it was read for, the one the select shows: a server pick changed
           // since capabilities were read (another tab) leaves capabilities' word, which goes with the select.
           const read = agent?.tools?.find((x) => x.name === t.name);
