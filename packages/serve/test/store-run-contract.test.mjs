@@ -46,6 +46,11 @@ test("a run's own archive time: archive sets it, unarchive clears it, and a list
   await store.runs.archive("run-a", true);
   assert.equal((await store.runs.get("run-a")).archivedAt, clock.now, "archived at the store's clock");
 
+  const firstArchivedAt = clock.now;
+  clock.now += 5_000;
+  await store.runs.archive("run-a", true);
+  assert.equal((await store.runs.get("run-a")).archivedAt, firstArchivedAt, "re-archiving an already-archived run keeps the first time");
+
   assert.deepEqual((await store.runs.list({ archived: true })).map((r) => r.id), ["run-a"], "only the archived one");
   assert.deepEqual((await store.runs.list({ archived: false })).map((r) => r.id).sort(), ["run-b"], "only the ones that are not");
 

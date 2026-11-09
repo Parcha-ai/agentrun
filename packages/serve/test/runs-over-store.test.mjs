@@ -151,6 +151,18 @@ test("a trigger message (answers false) to a working run writes a steer marked a
   assert.equal(rows[0].body.answers, false);
 });
 
+test("a message to a run archived while a follow-up waited takes no message: 409 not_continuable, nothing written", async () => {
+  const store = await freshStore();
+  const id = await queuedRun(store);
+  // Archived after the moment was read, as a run archived while its follow-up waited for a place: the write re-reads it.
+  await store.runs.archive(id, true);
+  await assert.rejects(
+    () => message(store, moment({ working: false, awaitingAnswer: false }), "again"),
+    (e) => e.code === "not_continuable" && /This run is archived: unarchive it to continue it\./.test(e.message),
+  );
+  assert.equal((await commandsOf(store, id)).length, 0, "nothing written");
+});
+
 test("a trigger message is refused while the run waits on a person, nothing written (the hazard)", async () => {
   const store = await freshStore();
   const id = await queuedRun(store);
@@ -182,6 +194,93 @@ test("a message to a run paused at its cap is refused budget_reached, nothing wr
     (e) => e.code === "budget_reached" && /paused at its \$2 cap: raise the cap first\. It reached \$2\.00\./.test(e.message) && e.extra.details.cap_usd === 2,
   );
   assert.equal((await commandsOf(store, id)).length, 0);
+});
+
+/** A run of `agentId`/`revisionId` that a runner claimed and ended in `state` (ended: completed). */
+async function endedRun(store, id, state = "ended", { agentId = "a1", revisionId = "r1" } = {}) {
+  await store.runs.create({ id, agentId, revisionId });
+  await store.runs.update(await store.claim(id, "runner-a"), { state, summary: "The first answer." });
+  return id;
+}
+
+/** The moment of a run that has ended, as the run view reads it. */
+const endedMoment = (id, terminalKind, over = {}) => moment({ id, working: false, live: false, terminal: true, terminalKind, ...over });
+
+test("a message to a completed agentic run opens it again: back to running, released, its steer written in the same step (a follow-up turn)", async () => {
+  const store = await freshStore();
+  const id = await endedRun(store, "run-done");
+  const answer = await message(store, endedMoment(id, "completed"), "one more thing");
+  assert.equal(answer.mode, "follow_up");
+  const row = await store.runs.get(id);
+  assert.deepEqual({ state: row.state, runner: row.runner, endedAt: row.endedAt, summary: row.summary }, { state: "running", runner: null, endedAt: null, summary: null });
+  const rows = await commandsOf(store, id);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].kind, "steer");
+  assert.equal(rows[0].body.text, "one more thing");
+  assert.equal(rows[0].takenAt, null, "the steer waits for the runner that claims the reopened run");
+  assert.ok((await store.runs.claimable()).includes(id), "a runner may claim it at once");
+});
+
+test("a message to a completed workflow run is refused with the old words: 409 This run is finished., nothing written", async () => {
+  const store = await freshStore();
+  await store.agents.create({ id: "w1", name: "Workflow one" }, { id: "rw1", kind: "workflow", body: { workflow: { name: "w", nodes: [] } } });
+  const id = await endedRun(store, "run-wf", "ended", { agentId: "w1", revisionId: "rw1" });
+  const before = await store.runs.get(id);
+  await assert.rejects(
+    () => message(store, endedMoment(id, "completed", { kind: "workflow", agentId: "w1" }), "again"),
+    (e) => e.code === "not_continuable" && e.message === "This run is finished. Start a new run of the agent." && e.extra.next_action.path === "/agents/w1/runs",
+  );
+  assert.deepEqual(await store.runs.get(id), before, "the row is as it was");
+  assert.equal((await commandsOf(store, id)).length, 0, "nothing written");
+});
+
+test("a message to a failed run is refused with the old words: 409 This run failed., nothing written", async () => {
+  const store = await freshStore();
+  const id = await endedRun(store, "run-failed", "failed");
+  const before = await store.runs.get(id);
+  await assert.rejects(
+    () => message(store, endedMoment(id, "failed"), "again"),
+    (e) => e.code === "not_continuable" && e.message === "This run failed. Start a new run of the agent.",
+  );
+  assert.deepEqual(await store.runs.get(id), before, "the row is as it was");
+  assert.equal((await commandsOf(store, id)).length, 0, "nothing written");
+});
+
+test("a message to an archived completed agentic run stays closed: 409 unarchive it, never reopened, nothing written", async () => {
+  const store = await freshStore();
+  const id = await endedRun(store, "run-archived");
+  await store.runs.archive(id, true);
+  const before = await store.runs.get(id);
+  await assert.rejects(
+    () => message(store, endedMoment(id, "completed"), "again"),
+    (e) => e.code === "not_continuable" && e.message === "This run is archived: unarchive it to continue it.",
+  );
+  assert.deepEqual(await store.runs.get(id), before, "the row is as it was");
+  assert.equal((await commandsOf(store, id)).length, 0, "nothing written");
+});
+
+test("a message to a completed agentic run whose agent is archived stays closed: 409 unarchive it, never reopened, nothing written", async () => {
+  const store = await freshStore();
+  const id = await endedRun(store, "run-agent-archived");
+  await store.agents.archive("a1", true);
+  const before = await store.runs.get(id);
+  await assert.rejects(
+    () => message(store, endedMoment(id, "completed"), "again"),
+    (e) => e.code === "not_continuable" && e.message === "This run is archived: unarchive it to continue it.",
+  );
+  assert.deepEqual(await store.runs.get(id), before, "the row is as it was");
+  assert.equal((await commandsOf(store, id)).length, 0, "nothing written");
+});
+
+test("a message to a run that ended after its moment was read answers in the words of its real end, read again", async () => {
+  const store = await freshStore();
+  // Read while working; it has failed by the time the message is written.
+  const id = await endedRun(store, "run-raced", "failed");
+  await assert.rejects(
+    () => message(store, moment({ id, working: false }), "again", { momentNow: async () => endedMoment(id, "failed") }),
+    (e) => e.code === "not_continuable" && e.message === "This run failed. Start a new run of the agent.",
+  );
+  assert.equal((await commandsOf(store, id)).length, 0, "nothing written");
 });
 
 // ---- raiseCap -------------------------------------------------------------------------------------------------------
@@ -393,6 +492,17 @@ test("a cap mode with no cap is refused", async () => {
     () => startRun(store, startDeps(), entryOf(), { input: { content: "hi" }, cap_mode: "strict" }),
     (e) => e.code === "input_invalid" && /cap_mode says how a run's cap prices its requests, and this run has no cap/.test(e.message),
   );
+});
+
+test("a start of an agent archived while the start waited does not open a run: 409 agent_not_runnable, nothing written", async () => {
+  const store = await freshStore();
+  // Archived after the entry was fetched, as an agent archived while its start waited for a place: the write re-reads it.
+  await store.agents.archive("a1", true);
+  await assert.rejects(
+    () => startRun(store, startDeps(), entryOf(), { input: { content: "hi" } }),
+    (e) => e.code === "agent_not_runnable" && /The agent a1 is archived: unarchive it to run it\./.test(e.message),
+  );
+  assert.equal((await store.runs.list({ agentId: "a1" })).length, 0, "no run opened");
 });
 
 test("startRun under an origin key starts one run; a retry under the same key gets that run", async () => {

@@ -40,6 +40,10 @@ test("a minted id when none is given; list is newest first and leaves archived a
   await setAgentArchived(store, "bravo", true);
   assert.deepEqual((await listAgents(store)).map((e) => e.agent.id), [a.agent.id]);
   assert.equal((await getAgent(store, "bravo")).agent.archivedAt !== null, true);
+  const firstArchivedAt = (await getAgent(store, "bravo")).agent.archivedAt;
+  clock.now += 5_000;
+  await setAgentArchived(store, "bravo", true);
+  assert.equal((await getAgent(store, "bravo")).agent.archivedAt, firstArchivedAt, "re-archiving an already-archived agent keeps the first time");
   await setAgentArchived(store, "bravo", false);
   assert.equal((await getAgent(store, "bravo")).agent.archivedAt, null);
   await assert.rejects(setAgentArchived(store, "nobody", true), (e) => e instanceof ApiError && e.code === "not_found");

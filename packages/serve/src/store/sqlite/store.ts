@@ -416,7 +416,9 @@ class SqliteStore implements Store {
       archive: async (id, archived, why) =>
         db.transaction(async (tx) => {
           const at = now();
-          await tx.run("UPDATE agents SET archived_at = ? WHERE id = ?", archived ? at : null, id);
+          // Re-archiving an already-archived agent keeps the first time (COALESCE); unarchiving clears it.
+          if (archived) await tx.run("UPDATE agents SET archived_at = COALESCE(archived_at, ?) WHERE id = ?", at, id);
+          else await tx.run("UPDATE agents SET archived_at = NULL WHERE id = ?", id);
           if (!archived) return [];
           // Its triggers that are on, off in this same commit: a firing's fire reads the archive in its own transaction.
           const off = await tx.all<{ id: string; name: string }>(
@@ -739,7 +741,8 @@ class SqliteStore implements Store {
         return rows.map(runOf);
       },
       archive: async (runId, archived) => {
-        await db.write([{ sql: "UPDATE runs SET archived_at = ? WHERE id = ?", params: [archived ? now() : null, runId] }]);
+        // Re-archiving an already-archived run keeps the first time (COALESCE); unarchiving clears it.
+        await db.write([{ sql: archived ? "UPDATE runs SET archived_at = COALESCE(archived_at, ?) WHERE id = ?" : "UPDATE runs SET archived_at = NULL WHERE id = ?", params: archived ? [now(), runId] : [runId] }]);
       },
       reopen: async (runId, { kind, body = null }) =>
         db.transaction(async (tx) => {
