@@ -24,7 +24,7 @@ async function submit(page) {
 export default {
   name: "setup-link-follow",
   server: { env: { AGENTRUN_PUBLIC_URL: "https://agentrun-e2e.example.test" } },
-  async run({ server, context, page, origin }) {
+  async run({ server, context, page, errors, origin }) {
     // The server's first link, and its code.
     const [, firstLink, firstCode] = await server.line(/Set up this server: (\S+\/setup#code=([A-Za-z0-9_-]+))$/);
     // Five wrong tries void it: the server prints a new link. A person then opens the newest one.
@@ -57,6 +57,9 @@ export default {
     check(sent === newCode, `the page sent a code that is not the printed one (${String(sent).length} characters)`);
     check(status === 201, `the setup with the printed code answered ${status}`);
     await signedIn(page);
+    // The older link's refusal is the one error the page reports (its 403); nothing else.
+    check(errors.every((e) => /status of 403\b/.test(e)), `the page reported errors: ${errors.join(" | ")}`);
+    errors.length = 0;
     void context;
   },
 };
