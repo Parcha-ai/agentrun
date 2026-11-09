@@ -41,7 +41,7 @@ export interface Claim {
   readonly lost?: { readonly runner: string };
 }
 
-/** A command the server wrote for a run (stop, steer, approve, deny, raise): one row, read by the run's runner in id order
+/** A command the server wrote for a run (stop, cancel, steer, approve, deny, raise): one row, read by the run's runner in id order
  *  and marked taken, or refused with why. `body` is JSON. */
 export interface Command {
   readonly id: number;

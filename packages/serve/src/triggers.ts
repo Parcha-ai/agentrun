@@ -18,7 +18,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { MessageOrigin } from "@parcha/pi-durable-agent/timeline";
+import { type MessageOrigin, TRIGGER_LABELS, type TriggerSource } from "@parcha/pi-durable-agent/timeline";
 import { ApiError, type InputIssue, invalid } from "./errors.js";
 import { writeDurableSync } from "./files.js";
 import { EFFORTS } from "./model.js";
@@ -129,7 +129,7 @@ type Trigger = {
    *  that ended is dropped. At most ACTIVE_KEPT. */
   active_runs?: string[];
   /** Why it is off, when a failure streak turned it off; null once it is on again. */
-  disabled: { at: string; reason: "auto_paused" } | { at: string; reason: "source_unreadable"; detail: string } | null;
+  disabled: { at: string; reason: "auto_paused" } | { at: string; reason: "source_unreadable"; detail: string } | { at: string; reason: "connection_lost"; detail: string } | null;
 };
 /** What a trigger.failed webhook message says (webhooks.ts). */
 export type TriggerFailed = { trigger_id: string; name: string; firing_key: string; nominal_at: string; error: { code: string; message: string }; auto_paused: boolean };
@@ -140,9 +140,10 @@ export type TriggerClock = { now(): number; arm(fire: () => void, ms: number): {
 export type TriggerDeps = {
   /** What keeps a target from starting runs here, by field (its agent, its kind, its input). */
   targetIssues(target: Target): Promise<InputIssue[]>;
-  /** Starts the target's run with `input`, as POST /agents/{id}/runs would, under `origin`; its first message is the
-   *  trigger's (`from`, never the person's); ApiError when refused. */
-  start(target: Extract<Target, { kind: "start_run" }>, input: Json, origin: RunTrigger, from: MessageOrigin): Promise<{ run_id: string }>;
+  /** Starts the target's run with `input`, as POST /agents/{id}/runs would, under `origin`, titled `title` (its
+   *  trigger's, never its input's); its first message is the trigger's (`from`, never the person's); ApiError when
+   *  refused. */
+  start(target: Extract<Target, { kind: "start_run" }>, input: Json, origin: RunTrigger, from: MessageOrigin, title: string): Promise<{ run_id: string }>;
   /** Sends `input` to the target's run, as POST /runs/{id}/messages would, under `key` (the run's store takes a message
    *  once per key), as the trigger's (`from`); ApiError when refused. */
   message(target: Extract<Target, { kind: "message_run" }>, input: Json, key: string, from: MessageOrigin): Promise<void | { skipped: string }>;
@@ -151,6 +152,9 @@ export type TriggerDeps = {
   settings(adapterId: string): { mint(scope: string, field: string): string; remove(scope: string): void } | undefined;
   /** A run's status, or null when there is no such run. */
   statusOf(runId: string): Promise<string | null>;
+  /** The refusal of a trigger of source `kind` made or turned on here, when it cannot be (the connection it needs is not
+   *  there: GitHub not connected). Undefined, or no such dep, when it can. */
+  unavailable?(kind: string): ApiError | undefined;
   /** The run the agent store started under origin `key`, if one: a firing left due by a server that went down mid-start.
    *  `setup_lost`: that server went down before it set the run up, so the run never started (files.ts SETUP_LOST). */
   runOf(key: string): Promise<{ run_id: string; setup_lost: boolean } | null>;
@@ -300,6 +304,9 @@ export class Triggers {
     // A pushed source's own hook path is its id, beside the trigger ids a hook path also names: none looks like one.
     const shaped = this.adapters.find((a) => a.id.startsWith("trg_"));
     if (shaped) throw new Error(`a trigger source's id never starts as a trigger's does: ${shaped.id}`);
+    // A source's id is its kind, its firings' by and, for one pushed on the server's settings, its hook: one source each.
+    const twice = this.adapters.find((a, i) => this.adapters.findIndex((b) => b.id === a.id) !== i);
+    if (twice) throw new Error(`two trigger sources claim the id ${twice.id}${twice.push ? `, and its hook /v2/hooks/${twice.id}` : ""}: one source each`);
     let text: string | undefined;
     try {
       text = readFileSync(this.file, "utf8");
@@ -356,6 +363,7 @@ export class Triggers {
     // Checked as its runs are given it: the input, then the line saying what fired it (a name the trigger may yet take).
     if (target) issues.push(...(await this.deps.targetIssues(this.given(typeof body.name === "string" ? body.name.trim() : `trg_${"0".repeat(24)}`, source, target, now))));
     if (issues.length || !source || !target) throw invalid(issues);
+    if (body.enabled !== false) this.needAvailable(source.kind);
     const id = `trg_${randomBytes(12).toString("hex")}`;
     const enabled = body.enabled !== false;
     if (enabled) this.scopeFree(source, id);
@@ -381,9 +389,9 @@ export class Triggers {
   }
 
   /** The source of trigger `id` when it is hookable: what its pushed source's check and parse read (its filter). */
-  hookSource(id: string, kind: string): Source | undefined {
+  hookSource(id: string, kind?: string): Source | undefined {
     const trigger = this.unreadable ? undefined : this.triggers.find((t) => t.id === id);
-    return trigger !== undefined && trigger.source.kind === kind && this.adapter(trigger.source).delivery === "push" && trigger.enabled ? trigger.source : undefined;
+    return trigger !== undefined && (kind === undefined || trigger.source.kind === kind) && this.adapter(trigger.source).delivery === "push" && trigger.enabled ? trigger.source : undefined;
   }
 
   /** The triggers of the pushed source `kind` that are on and listen on `scope` (its adapter's scopeOf): the ones an
@@ -392,6 +400,33 @@ export class Triggers {
     const adapter = adapterIn(this.adapters, kind);
     if (this.unreadable || !adapter?.scopeOf) return [];
     return this.triggers.filter((t) => t.enabled && t.source.kind === kind && adapter.scopeOf!(t.source) === scope).map((t) => t.id);
+  }
+
+  /** The triggers of the pushed source `kind` that are on, with their sources: the ones an event of it may fire, each as
+   *  its adapter's takes says. */
+  listening(kind: string): { id: string; source: Source }[] {
+    if (this.unreadable) return [];
+    return this.triggers.filter((t) => t.enabled && t.source.kind === kind).map((t) => ({ id: t.id, source: t.source }));
+  }
+
+  /** Every trigger of source `kind` that is on, turned off in one write because the connection it needs is gone
+   *  (`disabled: {reason: "connection_lost", detail}`), and said; how many. They are kept: on again once it is back. */
+  turnOff(kind: string, detail: string): number {
+    const on = this.readable().filter((t) => t.enabled && t.source.kind === kind);
+    if (!on.length) return 0;
+    const at = iso(this.clock.now());
+    this.commit(() => {
+      for (const t of on) Object.assign(t, { enabled: false, next_at: null, disabled: { at, reason: "connection_lost", detail } });
+    });
+    for (const t of on) this.deps.say({ condition: "trigger_connection_lost", trigger: t.id, detail });
+    this.arm();
+    return on.length;
+  }
+
+  /** Refused as its connection says when a trigger of `kind` cannot be on here (unavailable). */
+  private needAvailable(kind: string): void {
+    const refusal = this.deps.unavailable?.(kind);
+    if (refusal) throw refusal;
   }
 
   /** A verified request for trigger `id` that its filter ignored, under the key its event would have: kept for its day
@@ -455,6 +490,7 @@ export class Triggers {
     if (problem) throw invalid([{ field: "source", reason: "invalid", message: `This ${adapter.label} no longer reads (${problem}): give it a new source.` }]);
     const next = !enabled ? null : source || !trigger.enabled ? this.nextIso(source ?? trigger.source, now) : trigger.next_at;
     if (enabled && next === null && adapter.delivery === "clock") throw invalid([{ field: "enabled", reason: "invalid", message: `This ${adapter.label} has no time left to fire at: give it a new source.` }]);
+    if (enabled && (!trigger.enabled || source)) this.needAvailable((source ?? trigger.source).kind);
     // On again, a trigger starts a new streak: a failure streak that turned it off is behind it.
     const again = enabled && !trigger.enabled ? { failures_in_a_row: 0, disabled: null } : {};
     if (enabled) this.scopeFree(source ?? trigger.source, trigger.id);
@@ -636,7 +672,7 @@ export class Triggers {
       if (now.trigger.target.kind === "message_run") return await this.send(triggerId, key);
       let started: { run_id: string };
       try {
-        started = await this.deps.start(now.trigger.target, this.inputOf(now.trigger, now.firing), { id: triggerId, firing_key: key }, this.originOf(now.trigger));
+        started = await this.deps.start(now.trigger.target, this.inputOf(now.trigger, now.firing), { id: triggerId, firing_key: key }, this.originOf(now.trigger), this.titleOf(now.trigger, now.firing));
       } catch (error) {
         // Stopping, the start may have been cut by the close: the firing stays due for the next start, whose origin key
         // finds a run this one made.
@@ -937,6 +973,16 @@ export class Triggers {
   private given(name: string, source: Source | undefined, target: Target, now: number): Target {
     const trigger = { name, source: source ?? { kind: this.adapters[0]!.id }, target } as Trigger;
     return { ...target, input: this.inputOf(trigger, { key: "", by: "manual", nominal_at: second(now), status: "due", at: iso(now) }) };
+  }
+
+  /** A run's title, from the trigger that starts it: "<its source> <its name>" (the word its Timeline row begins with,
+   *  pi-durable-agent's TRIGGER_LABELS), and the event its payload's tag names, when one does ("Webhook reviews:
+   *  pull_request opened"); never its input, which may be a sender's markup. */
+  private titleOf(trigger: Trigger, firing: Firing): string {
+    const source = TRIGGER_LABELS[trigger.source.kind as TriggerSource] ?? trigger.source.kind;
+    const event = firing.attrs?.event;
+    const action = firing.attrs?.action;
+    return `${source} ${trigger.name}${event ? `: ${event}${action ? ` ${action}` : ""}` : ""}`;
   }
 
   /** Who a firing's input is from (pi-durable-agent's MessageOrigin): the trigger, by its definition as it fires, never

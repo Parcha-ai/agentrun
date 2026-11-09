@@ -8,7 +8,7 @@ import { randomBytes } from "node:crypto";
 import { linkSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { type AdbTransport, adbCli, create, type PhoneHarnessProvider, type PhoneLedger, type PhoneLedgerEntry, type PhoneProviderOptions } from "../phone-harness.js";
+import { type AdbTransport, adbCli, create, PHONE_IMAGE, type PhoneHarnessProvider, type PhoneLedger, type PhoneLedgerEntry, type PhoneProviderOptions } from "../phone-harness.js";
 
 /** The environment this module reads, by name. */
 export const PHONE_ENV = {
@@ -235,7 +235,7 @@ export async function createDriftedProvider(options: PhoneModuleOptions = {}): P
 
 /** The image a run names: a cloud Android has none to choose, so it is read back as this name. */
 export function conformanceImage(): string {
-	return "android";
+	return PHONE_IMAGE;
 }
 
 export const conformanceNotes = [

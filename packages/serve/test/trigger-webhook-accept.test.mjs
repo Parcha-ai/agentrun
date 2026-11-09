@@ -89,7 +89,7 @@ test("demo: a GitHub delivery signed with the trigger's whole secret fires once,
   assert.deepEqual(schemaProblems(doc, doc.paths["/triggers"].post.responses["201"].content["application/json"].schema, created.body), []);
   assert.deepEqual((await api("GET", `/triggers/${id}`)).body.source, created.body.source);
 
-  const event = { action: "opened", number: 7, pull_request: { url: "https://api.github.com/repos/o/r/pulls/7", draft: false } };
+  const event = { action: "opened", number: 7, pull_request: { number: 7, url: "https://api.github.com/repos/o/r/pulls/7", draft: false } };
   const delivery = randomUUID();
   const first = await deliver(baseUrl, id, "pull_request", event, { secret, delivery });
   assert.equal(first.status, 202, JSON.stringify(first.body));
@@ -99,8 +99,10 @@ test("demo: a GitHub delivery signed with the trigger's whole secret fires once,
   const again = await deliver(baseUrl, id, "pull_request", event, { secret, delivery });
   assert.deepEqual([again.status, again.headers["idempotent-replayed"], again.body.key, again.body.run_id], [200, "true", first.body.key, fired.run_id]);
   assert.equal((await api("GET", "/agents/review/runs")).body.runs.length, 1, "one run");
+  // Titled from the trigger and the event its tag names, never from the payload's markup.
+  assert.equal((await api("GET", `/runs/${fired.run_id}`)).body.title, `Webhook ${created.body.name}: pull_request opened`);
   const { content } = JSON.parse(await readFile(join(runDir(data, fired.run_id), "serve.json"), "utf8")).input;
-  assert.ok(content.startsWith(`Review this pull request.\n\n<trigger-payload source="webhook" scheme="github" event="pull_request" action="opened" delivery="${delivery}" untrusted>\n${JSON.stringify(event)}\n</trigger-payload>`), content);
+  assert.ok(content.startsWith(`Review this pull request.\n\n<trigger-payload source="webhook" scheme="github" event="pull_request" action="opened" delivery="${delivery}" number="7" untrusted>\n${JSON.stringify(event)}\n</trigger-payload>`), content);
   await follow(api, fired.run_id, ["completed"]);
 });
 

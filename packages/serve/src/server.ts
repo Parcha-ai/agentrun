@@ -73,14 +73,16 @@ import { WEBHOOK_EVENTS, Webhooks } from "./webhooks.js";
 import { type SealedSettings } from "./sealed-settings.js";
 import { openServerSecrets, type ServerSecrets } from "./server-secrets.js";
 import { HOOK_TOLERANCE_S } from "./standard-webhooks.js";
+import { GitHubConnect, GitHubConnection, githubTargetOf, INSTALLED_PATH, startedHere as gitHubStartedHere, stateCookie } from "./github-connection.js";
+import { GITHUB_API, GITHUB_MCP_ONLY } from "./github.js";
 import { HookCut, receivePush } from "./push-handler.js";
 import type { TriggerAdapter } from "./trigger-adapter.js";
 import { TRIGGER_ADAPTERS } from "./trigger-adapters.js";
 import { webhook } from "./trigger-webhook.js";
 import { SCHEME_NAMES } from "./trigger-signatures.js";
-import { permissionFrom } from "./tool-gate.js";
+import { permissionFrom, pinWords } from "./tool-gate.js";
 import { CATCHUP_WINDOW_S, FAILURES_TO_PAUSE, HISTORY_KEPT, MIN_EVERY_S, PAYLOAD_KEPT_BYTES, type RunTrigger, SOURCE_KINDS, TARGET_KINDS, type TriggerClock, Triggers } from "./triggers.js";
-import { applyBodyOf, compiled, madeTriggerIssues, type Package, packageModel, packageView, readPackages } from "./templates.js";
+import { applyBodyOf, compiled, madeTriggerIssues, type Package, packageModel, packageView, readPackages, type TemplatesDeps } from "./templates.js";
 import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, definitionBodyIssues, ID, IDEMPOTENCY_TTL_S, inputIssues, isObject, type Json, stable, unknownFields } from "./validate.js";
 import { agentTools, browserKeyRow, isUnavailable, recheckPlane, settingsIssues, ToolSettings, type ToolSettingsMap, whyUnavailable, withDefaults } from "./tool-plane.js";
 import { MAX_FILES_PER_RUN, MAX_UPLOAD_BYTES, Uploads, UPLOADS_DIR } from "./uploads.js";
@@ -285,6 +287,13 @@ export type ServeOptions = {
   triggerClock?: TriggerClock;
   /** A test's seam: the trigger sources this server has (default the registry, trigger-adapters.ts). */
   triggerAdapters?: readonly TriggerAdapter[];
+  /** A test's seam: GitHub's API, which Connect GitHub converts its code with and asks of the App's installations
+   *  (default https://api.github.com: github.ts GITHUB_API). */
+  githubApi?: string;
+  /** A test's seam: the origin a github_app MCP server may have (default GitHub's hosted MCP: github.ts GITHUB_MCP_ORIGIN). */
+  githubMcpOrigin?: string;
+  /** A test's seam: how long a hook's body has to arrive, whole (default 30 s: push-handler.ts HOOK_BODY_MS). */
+  hookBodyMs?: number;
   /** A test's seam: the folder the template packages are read from, in place of the package's own (templates.ts). */
   templates?: string;
   /** The waits before each try again of a webhook delivery (default 5 s, 5 min, 30 min, 2 h, 5 h and 10 h: webhooks.ts RETRY_MS). */
@@ -425,6 +434,11 @@ export const ROUTES: readonly Route[] = [
   { method: "POST", pattern: /^\/templates\/([^/]+)\/apply$/, name: "applyTemplate" },
   // Answered before the bearer check: the request's signature is its credential.
   { method: "POST", pattern: /^\/hooks\/([^/]+)$/, name: "receiveHook" },
+  { method: "GET", pattern: /^\/integrations\/github$/, name: "getGitHubConnection" },
+  { method: "DELETE", pattern: /^\/integrations\/github$/, name: "disconnectGitHub" },
+  { method: "POST", pattern: /^\/integrations\/github\/connect$/, name: "connectGitHub" },
+  { method: "GET", pattern: /^\/integrations\/github\/callback$/, name: "gitHubCallback" },
+  { method: "GET", pattern: /^\/integrations\/github\/installed$/, name: "gitHubInstalled" },
   // Answered before routing (mcp.ts), with the token only: listed here for the document.
   { method: "POST", pattern: /^\/mcp$/, name: "callMcp" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/learning$/, name: "getAgentLearning" },
@@ -780,6 +794,10 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   // A stored key that does not open is said once at the start, never a refusal to start.
   toolKeys.view();
   const mcpServers = new McpServers(data, withSecrets(base, "own"), VERSION);
+  if (options.githubMcpOrigin) mcpServers.appOrigin = options.githubMcpOrigin;
+  /** Each run's GitHub token for a github_app MCP server, by run and server, minted at its launch (mcpSource.mint): in
+   *  this process's memory only, handed to the run over its pipe, and listed among the server's secrets while it lives. */
+  const runTokens = new Map<string, ({ token: string; expiresAt: number } | { unusable: string }) & { at: number }>();
   // What a run's grants are checked against, its pin made from and its credentials read from (runs.ts, runnable.ts).
   const mcpSource: McpServerSource = {
     server: (name) => {
@@ -790,8 +808,24 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         return undefined;
       }
     },
-    headers: (name) => mcpServers.headers(name),
+    headers: (name, runId) => {
+      // A github_app server saved at another origin than GitHub's hosted MCP (before that rule): refused, no token.
+      if (mcpServers.appServerElsewhere(name)) return { unopened: `${GITHUB_MCP_ONLY}: save it again at that address` };
+      const saved = mcpServers.headers(name);
+      if (runId === undefined || !mcpServers.takesAppToken(name) || !saved || "unopened" in saved) return saved;
+      // A github_app server: its static headers as written, with the token minted for this run's launch.
+      const minted = runTokens.get(`${runId}\n${name}`);
+      if (!minted) return { unopened: "no GitHub token was minted for this run's launch; it is minted again when the run resumes" };
+      return "unusable" in minted ? { unopened: minted.unusable } : { headers: { ...saved.headers, authorization: `Bearer ${minted.token}` }, expires_at: minted.expiresAt };
+    },
     refresh: (name) => mcpServers.headersForRun(name).then(() => undefined, () => undefined),
+    async mint(name, runId, input) {
+      if (!mcpServers.takesAppToken(name)) return;
+      const now = Date.now();
+      for (const [key, kept] of runTokens) if (kept.at + 2 * 60 * 60_000 < now) runTokens.delete(key);
+      const minted = await githubConnect.tokenFor(githubTargetOf(input)).catch((error: Error) => ({ unusable: `GitHub did not give this run a token: ${error.message}.` }));
+      runTokens.set(`${runId}\n${name}`, { ...minted, at: now });
+    },
   };
   // Each with whether it can be granted: a known meta tool can't (mcp-meta.ts).
   const mcpTools = (server: string) => {
@@ -1014,7 +1048,18 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     const provider = await making.catch((error: unknown) => { if (pricing === making) pricing = undefined; throw error; });
     return provider.priceOf(model);
   };
-  const runs = new Runs({ installs, dockerAllow: boxNetwork.allow, ...(egress?.volume ? { dockerVolume: egress.volume } : {}), ...(boxPaths ? { dockerPaths: boxPaths } : {}), agents, token, storedKeys, mcpServers: mcpSource, doorTokenFile, doorToken, learning, learningBudget, ...(documents ? { documents: resolve(documents) } : {}), fauxEnv: fauxEnvOf(options), toolSettings: () => settings.get(), ...(runBoxes ? { runBoxes } : {}), ...(remoteBoxes ? { remoteBoxes } : {}), ...(vmBoxes && vmRelayHalf ? { vmBoxes, vmLimits, vmRelay: vmRelayHalf } : {}), ...(remoteBoxes && daytonaApi(env) ? { remoteApi: daytonaApi(env)! } : {}), ...(remoteBoxes ? { boxAllow, onNoBoxList } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}), maxRuns, ...(options.box ? { box: { host: options.box, quarantine: await Quarantine.open(join(data, BOX_QUARANTINE)) } } : {}), ...(options.settleRetryMs ? { settleRetryMs: options.settleRetryMs } : {}), ...(options.readyTimeoutMs ? { readyTimeoutMs: options.readyTimeoutMs } : {}), ...(options.openTimeoutMs ? { openTimeoutMs: options.openTimeoutMs } : {}), ...(options.faux && options.fauxHandedNonce ? { fauxHandedNonce: options.fauxHandedNonce } : {}), ...(options.reflectTimeoutMs ? { reflectTimeoutMs: options.reflectTimeoutMs } : {}), ...(options.gradeTimeoutMs ? { gradeTimeoutMs: options.gradeTimeoutMs } : {}), ...(options.gradeModel ? { gradeModel: options.gradeModel } : {}), ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}), notify: (event, run, marker) => webhooks.emit(event, run, marker), serverSecrets, signIns, approvers: options.accounts === true });
+  let triggersRead = false;
+  /** A trigger's name as it is now, for its runs' rows (runs.ts servedTriggerRow): none before the triggers are read, for
+   *  a trigger gone, or while their file does not read. */
+  const triggerNameOf = (id: string): string | undefined => {
+    if (!triggersRead) return undefined;
+    try {
+      return triggers.get(id).name;
+    } catch {
+      return undefined;
+    }
+  };
+  const runs = new Runs({ installs, dockerAllow: boxNetwork.allow, ...(egress?.volume ? { dockerVolume: egress.volume } : {}), ...(boxPaths ? { dockerPaths: boxPaths } : {}), agents, token, storedKeys, mcpServers: mcpSource, doorTokenFile, doorToken, learning, learningBudget, ...(documents ? { documents: resolve(documents) } : {}), fauxEnv: fauxEnvOf(options), toolSettings: () => settings.get(), ...(runBoxes ? { runBoxes } : {}), ...(remoteBoxes ? { remoteBoxes } : {}), ...(vmBoxes && vmRelayHalf ? { vmBoxes, vmLimits, vmRelay: vmRelayHalf } : {}), ...(remoteBoxes && daytonaApi(env) ? { remoteApi: daytonaApi(env)! } : {}), ...(remoteBoxes ? { boxAllow, onNoBoxList } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}), maxRuns, ...(options.box ? { box: { host: options.box, quarantine: await Quarantine.open(join(data, BOX_QUARANTINE)) } } : {}), ...(options.settleRetryMs ? { settleRetryMs: options.settleRetryMs } : {}), ...(options.readyTimeoutMs ? { readyTimeoutMs: options.readyTimeoutMs } : {}), ...(options.openTimeoutMs ? { openTimeoutMs: options.openTimeoutMs } : {}), ...(options.faux && options.fauxHandedNonce ? { fauxHandedNonce: options.fauxHandedNonce } : {}), ...(options.reflectTimeoutMs ? { reflectTimeoutMs: options.reflectTimeoutMs } : {}), ...(options.gradeTimeoutMs ? { gradeTimeoutMs: options.gradeTimeoutMs } : {}), ...(options.gradeModel ? { gradeModel: options.gradeModel } : {}), ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}), notify: (event, run, marker) => webhooks.emit(event, run, marker), serverSecrets, triggerName: (id) => triggerNameOf(id), signIns, approvers: options.accounts === true });
   const daytona = daytonaApi(env);
   const relay = (remoteBoxes && daytona) || vmRelayHalf ? await startBoxRelay({ root: data, tokenOf: (id) => runs.relayToken(id), ...(remoteBoxes && daytona ? daytona : {}), ...(vmRelayHalf ? { vm: vmRelayHalf } : {}), serves: (id) => runs.servesBox(id), ensure: (id) => runs.ensureBox(id) }) : undefined;
   if (relay) stops.push(() => relay.close());
@@ -1091,9 +1136,21 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
 
   // Schedules: each firing starts its run as POST /agents/{id}/runs does, capped, under the firing's key (triggers.ts).
   // Firings an earlier server left due are driven again now, beside the recovery above.
+  // Connect GitHub: the server's one GitHub App, in the github source's sealed settings (github-connection.ts).
+  const github = new GitHubConnection(triggerSettings.get("github"));
+  const githubConnect = new GitHubConnect(github, { ...(options.publicUrl ? { publicUrl: options.publicUrl.replace(/\/+$/, "") } : {}), api: options.githubApi ?? GITHUB_API, say: (fields) => log?.(logLine("github", fields)) });
+  /** The connection a GitHub template or the console reads: the App's id, slug and installations, never a secret. */
+  const githubConnection = () => github.view();
+  /** What applying a template reads of the server (templates.ts TemplatesDeps). */
+  const templateDeps: TemplatesDeps = { githubConnection };
+  // A github_app MCP server lists its tools with an installation token of the App, and every token minted is one of the
+  // server's secrets while it may be in use.
+  mcpServers.appToken = (signal) => githubConnect.tokenForListing(signal);
+  secretStores.add("github-tokens", () => githubConnect.liveTokens());
   const triggers: Triggers = new Triggers(data, {
     clock: options.triggerClock,
     adapters,
+    unavailable: (kind) => (kind === "github" && !githubConnection() ? new ApiError("github_not_connected", "This server has no GitHub App: Connect GitHub in Settings, then make the trigger (or turn it on).") : undefined),
     say: (fields) => (log ? log(logLine("trigger", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("trigger", fields)}\n`)),
     async targetIssues(target) {
       if (target.kind === "message_run") {
@@ -1108,10 +1165,10 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       const uncapped = target.max_cost_usd === undefined && entry.revision.body.maxCostUsd === undefined ? [{ field: "target.max_cost_usd", reason: "missing", message: `Every run a trigger starts is capped: give the target a max_cost_usd or set the agent's (the agent ${target.agent_id} has none).` }] : [];
       return [...uncapped, ...(await explainRun(await inputIssuesOf(entry.revision, target.input), { input: target.input }, entry.revision)).map((issue) => ({ ...issue, field: `target.${issue.field}` }))];
     },
-    async start(target, input, trigger, from) {
+    async start(target, input, trigger, from, title) {
       const entry = await needAgent(target.agent_id);
       // The target's cap, else the agent's default as it stands now: a run a trigger starts is never uncapped.
-      const run = await startRunOf(entry, { input, ...(target.max_cost_usd !== undefined ? { max_cost_usd: target.max_cost_usd } : {}), ...(target.effort ? { effort: target.effort } : {}) }, { trigger, origin: { key: trigger.firing_key }, capped: true, from });
+      const run = await startRunOf(entry, { input, ...(target.max_cost_usd !== undefined ? { max_cost_usd: target.max_cost_usd } : {}), ...(target.effort ? { effort: target.effort } : {}) }, { trigger, origin: { key: trigger.firing_key }, capped: true, from, title });
       return { run_id: run.id };
     },
     async message(target, input, key, from) {
@@ -1146,8 +1203,16 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       return row ? runs.statusOfRow(row) : null;
     },
   });
+  // A repair of the GitHub installations (below) stops before the triggers close, in a start that fails as in close.
+  stops.push(() => githubConnect.close());
   stops.push(async () => triggers.close());
   triggers.start();
+  // A run read in before the triggers were names its trigger's id: shown again, naming each as it is now.
+  triggersRead = true;
+  runs.triggerChanged();
+  // The App's installations repaired from GitHub's own, once, as the server starts: events missed while it was down. It
+  // never rejects, and close (or a start that fails) aborts it and waits for it before the lock goes.
+  void githubConnect.reconcile((detail) => triggers.turnOff("github", detail), { force: true });
 
   // Setup's import of this machine's sessions: offered by a server on this machine only (no public address, listening
   // on loopback), counted once (a listing, no transcript kept), run once, each on a worker thread (import-worker.ts) so
@@ -1419,13 +1484,23 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     // An MCP server the package can do without is skipped, and said: its tools are not granted.
     const skipped: InputIssue[] = unsaved.map((need) => ({ field: `mcp.${need.server}`, reason: NOT_SET_UP, message: `No MCP server ${need.server} is saved on this server, so the agent was made without its tools (${need.tools.join(", ")}). Save it in Settings → MCP servers and apply again to grant them.` }));
     const harness = pkg.harness && (pkg.harness.find((id) => offers.some((offer) => offer.id === id && offer.available)) ?? pkg.harness[0]);
-    const model = override ?? (await packageModel(env, pkg.model, harness ?? DEFAULT_HARNESS));
+    const picked = override ? { model: override } : await packageModel(env, pkg.model, harness ?? DEFAULT_HARNESS);
+    const model = picked.model;
+    // Which model the agent got, where it is not the package's: a note, never a lack. The agent runs; only the package's
+    // choice was not an option here (not_set_up_here would read as a run refused until the host has something).
+    const modelWarnings: InputIssue[] = "warning" in picked && picked.warning ? [{ field: "model", reason: "not_an_option", message: picked.warning }] : [];
     const defaultTools = "place" in newAgentPlace(boxOffers) ? NEW_AGENT_TOOLS : [];
     // A grant never lifts a deny the owner set on this server: that tool keeps it, and the answer says so.
     const server = settings.get() as Parameters<typeof permissionFrom>[1];
     const denied = grants.filter((tool) => { const set = permissionFrom(tool, server); return set.from === "server" && set.permission === "deny"; });
     const kept: InputIssue[] = denied.map((tool) => ({ field: `grants.${tool}`, reason: "not_allowed", message: `${tool} is denied on this server (Settings → Tools), so the agent was not allowed it: its runs are refused it until the owner changes that setting.` }));
-    const made = compiled(pkg, parameters, { ...(harness ? { harness } : {}), ...(model ? { model } : {}), mcp: saved, defaultTools, grants: grants.filter((tool) => !denied.includes(tool)), ...(approvals ? { approvals } : {}) });
+    // The tools this server's own settings pin (or hold refused for a pin that does not read): a package's pin the agent
+    // store can't keep yet is covered there, so its grant stands; any other such tool is made deny (compiled).
+    // The agent's approvals: the apply's override, else the package's own (a template whose job runs on triggers says
+    // never), else ask. Deny and pins hold either way.
+    const chosenApprovals = approvals ?? pkg.approvals;
+    const serverPinned = new Set(Object.entries(settings.get()).filter(([, one]) => one?.pin || one?.brokenPin).map(([name]) => name));
+    const made = compiled(pkg, parameters, { ...(harness ? { harness } : {}), ...(model ? { model } : {}), mcp: saved, defaultTools, grants: grants.filter((tool) => !denied.includes(tool)), serverPinned, ...(chosenApprovals ? { approvals: chosenApprovals } : {}) }, templateDeps);
     // Every trigger is checked as POST /triggers checks it, its parameters filled, before anything is made: a schedule
     // from a parameter that does not read, or a date that has passed, refuses the apply (422 under triggers.<i>).
     const refusedTriggers = madeTriggerIssues(made.triggers, Date.now());
@@ -1434,10 +1509,15 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     for (const one of [made.agent, ...made.triggers]) if (Buffer.byteLength(JSON.stringify(one)) > MAX_BODY) throw new ApiError("payload_too_large", `the ${pkg.name} template, its parameters filled in, makes a body over ${MAX_BODY} bytes`, { details: { limit: "max_body_bytes" } });
     const { entry, warnings } = await createAgentOf(made.agent);
     const ids: string[] = [];
+    // Each webhook trigger's signing secret, minted as it is made: handed back in the apply's first answer alone, as POST
+    // /triggers hands back its own, so the owner can give it to the sender.
+    const secrets: { trigger_id: string; secret: string }[] = [];
     try {
       for (const [i, trigger] of made.triggers.entries()) {
         try {
-          ids.push((await triggers.create({ ...trigger, target: { ...(trigger.target as Json), agent_id: entry.agent.id } })).id);
+          const { id: madeId, secret } = await triggers.create({ ...trigger, target: { ...(trigger.target as Json), agent_id: entry.agent.id } });
+          ids.push(madeId);
+          if (secret) secrets.push({ trigger_id: madeId, secret });
         } catch (error) {
           if (error instanceof ApiError && error.code === "input_invalid" && error.extra.fields) throw told(new ApiError("input_invalid", error.message, { ...error.extra, fields: error.extra.fields.map((f) => ({ ...f, field: `triggers.${i}.${f.field}` })) }));
           throw error;
@@ -1454,7 +1534,12 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       await agents.setArchived("agent", entry.agent.id, true).catch((undo: Error) => log?.(logLine("template_undo_failed", { template: pkg.name, agent: entry.agent.id, message: undo.message })));
       throw error;
     }
-    return { template: pkg.name, version: pkg.version, agent_id: entry.agent.id, trigger_ids: ids, warnings: [...skipped, ...kept, ...warnings] };
+    // A pinned send whose destination parameter was not given is denied, never let go anywhere: said, by its gate name.
+    const unpinned: InputIssue[] = made.unpinned.map(({ tool, parameters: named }) => ({ field: `pins.${tool}`, reason: NOT_SET_UP, message: `${tool}'s arguments are fixed by ${named.map((one) => `the ${one} parameter`).join(" and ")}, which was not given, so the agent was made with ${tool} set to deny: it can't call it at all. Apply again with ${named.join(" and ")} set to let it.` }));
+    // A pin this server's agent store does not keep yet (tool-plane.ts AGENT_LAYER_PINS): said, with the setting that holds
+    // the send to its destination meanwhile, the server's.
+    const unkept: InputIssue[] = made.unkept.map(({ tool, pin }) => ({ field: `pins.${tool}`, reason: NOT_SET_UP, message: serverPinned.has(tool) ? `${tool} is not pinned to ${pinWords(pin)} for this agent yet (this server's agent store keeps an agent's own pin from the store cutover on); this server's own pin of ${tool} holds its calls meanwhile.` : `${tool} is not pinned to ${pinWords(pin)} for this agent yet: this server's agent store keeps an agent's own pin from the store cutover on. Until then the agent was made with ${tool} set to deny, so nothing it reads can send it elsewhere. Pin it on this server, which holds every agent's calls of ${tool}, and apply again to let it.`, ...(serverPinned.has(tool) ? {} : { fix: `Add ${JSON.stringify({ [tool]: { pin } })} to this server's tool settings (Settings → Tools; PUT /v2/settings/tools replaces the whole map, so send it with the rest).` }) }));
+    return { applied: { template: pkg.name, version: pkg.version, agent_id: entry.agent.id, trigger_ids: ids, warnings: [...skipped, ...kept, ...modelWarnings, ...unpinned, ...unkept, ...warnings] }, secrets };
   }
 
   /** A run create's issues told from the input this server checks (explain.ts): an agentic run's `{content: string}`,
@@ -1520,7 +1605,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
    *  gets that run (the agent store's run_origins). */
   /** `capped`: the run must have a cap (a trigger's), its own or else its agent's default. */
   /** `from`: who the run's first message is from when the person did not write it (a trigger's firing). */
-  async function startRunOf(entry: AgentEntry, body: Json, { trigger, origin, capped = false, from }: { trigger?: RunTrigger; origin?: RunOrigin; capped?: boolean; from?: MessageOrigin } = {}): Promise<Run> {
+  async function startRunOf(entry: AgentEntry, body: Json, { trigger, origin, capped = false, from, title: named }: { trigger?: RunTrigger; origin?: RunOrigin; capped?: boolean; from?: MessageOrigin; title?: string } = {}): Promise<Run> {
     const issues = runBodyIssues(body);
     if (issues.length) {
       // Told from the revision the run would start on (a pinned one, else the current), once it reads as one: a pin that
@@ -1548,7 +1633,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     // The title shows on the run's page, the runs list and Mission Control: built from its input as shown, each held
     // value redacted before a long one is cut (a cut key could no longer be found), and the run gets its input as given.
     const shown = redactedOutput(input, serverSecrets());
-    const title = revision.kind === "workflow" ? workflowTitle(entry.agent.name || entry.agent.id, isObject(shown) ? shown : {}) : typeof input.content === "string" ? input.content : (Object.values(input).find((v): v is string => typeof v === "string") ?? JSON.stringify(input));
+    // A trigger's run is titled from its trigger (triggers.ts titleOf), never from its input, which may be a sender's.
+    const title = named ?? (revision.kind === "workflow" ? workflowTitle(entry.agent.name || entry.agent.id, isObject(shown) ? shown : {}) : typeof input.content === "string" ? input.content : (Object.values(input).find((v): v is string => typeof v === "string") ?? JSON.stringify(input)));
     return runs.create(entry, revision, version, { input, title, place, ...(typeof body.effort === "string" ? { effort: body.effort } : {}), ...(cap !== undefined ? { maxCostUsd: cap } : {}), ...(capMode !== undefined ? { capMode } : {}), ...(trigger ? { trigger } : {}), ...(origin ? { origin } : {}), ...(from ? { from } : {}), ...(files.length ? { inputs: (work: string) => uploads.copyInto(work, files) } : {}) });
   }
 
@@ -1863,8 +1949,9 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     return { password: body.password as string, body };
   }
 
-  /** POST /v2/setup, POST /v2/auth/sign-in, POST /v2/auth/sign-out and GET /v2/auth/session, answered before any
-   *  credential: their own checks are the setup code (or the token), the password, and the session. */
+  /** POST /v2/setup, POST /v2/auth/sign-in, POST /v2/auth/sign-out, POST /v2/auth/sign-out-everywhere and GET
+   *  /v2/auth/session, answered before any credential: their own checks are the setup code (or the token), the password,
+   *  and the session. */
   async function ownerRoute(req: IncomingMessage, res: ServerResponse, path: string, me: Owner): Promise<void> {
     const method = path === "/auth/session" || path === "/setup/import" ? "GET" : "POST";
     if (req.method !== method) throw new ApiError("method_not_allowed", `${req.method} is not a method of /v2${path}`, {}, { allow: method });
@@ -1925,7 +2012,17 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         }
         return send(res, 200, { signed_in: true }, { "set-cookie": ownerCookie(req, me.session(), SESSION_S) });
       }
+      // This browser: its session revoked on the server (a copy of its cookie is no session either) and its cookie
+      // cleared; every other browser's session left as it is. A viewer watching with it is cut off.
       case "/auth/sign-out": {
+        fromPage(req);
+        if (!signedIn(req, me)) throw new ApiError("unauthenticated", "this browser is not signed in");
+        for (const value of heldSessions(req)) if (me.valid(value)) me.revoke(value);
+        viewers.recheck();
+        return send(res, 200, { signed_out: true }, { "set-cookie": ownerCookie(req, "", 0) });
+      }
+      // Every browser and phone: the sessions' epoch moves on, so every cookie made before is none, this one's too.
+      case "/auth/sign-out-everywhere": {
         fromPage(req);
         if (!signedIn(req, me)) throw new ApiError("unauthenticated", "this browser is not signed in");
         me.signOutEverywhere();
@@ -2004,7 +2101,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     // read (push-handler.ts).
     if (found.name === "receiveHook") {
       // A body cut at its cap or its time is answered, then its socket closed: never read to its end.
-      const answer = await receivePush({ adapters, hooked: (id, kind) => triggers.hookSource(id, kind), ignored: (id, eventId) => triggers.ignored(id, eventId), receive: (id, eventId, payload, attrs) => triggers.receive(id, eventId, payload, attrs), scoped: (kind, scope) => triggers.scoped(kind, scope), setting: (adapterId, scope, field) => triggerSettings.get(adapterId)?.get(scope, field), refused: authFailed, say: (fields) => (log ? log(logLine("trigger", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("trigger", fields)}\n`)) }, req, /^\/hooks\/([^/]+)$/.exec(path)![1]!);
+      const answer = await receivePush({ adapters, hooked: (id) => triggers.hookSource(id), ...(options.hookBodyMs !== undefined ? { bodyMs: options.hookBodyMs } : {}), ignored: (id, eventId) => triggers.ignored(id, eventId), listening: (kind) => triggers.listening(kind), notice: async (adapterId, event, body) => (adapterId === "github" && event === "installation" ? githubConnect.installationEvent(body, (detail) => triggers.turnOff("github", detail)) : undefined), receive: (id, eventId, payload, attrs) => triggers.receive(id, eventId, payload, attrs), scoped: (kind, scope) => triggers.scoped(kind, scope), setting: (adapterId, scope, field) => triggerSettings.get(adapterId)?.get(scope, field), refused: authFailed, say: (fields) => (log ? log(logLine("trigger", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("trigger", fields)}\n`)) }, req, /^\/hooks\/([^/]+)$/.exec(path)![1]!);
       return send(res, answer.status, answer.body, answer.headers ?? {});
     }
     // An MCP server's OAuth sign-in: the browser coming back from its authorization server carries no token (the state
@@ -2018,6 +2115,27 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       return void res.writeHead(302, { location, "cache-control": "no-store", "set-cookie": signInCookie(req.socket.localPort, state!, overHttps(req), 0) }).end();
     }
     if (found.name === "mcpOAuthClient") return send(res, 200, mcpServers.clientDocument(), { "cache-control": "public, max-age=3600" });
+    // Connect GitHub's two steps back from GitHub: the owner's browser, which carries no token. The callback's state is
+    // its check, with the cookie its start set in that browser; an installation is kept only as GitHub, asked with the
+    // App's own JWT, says it is the App's.
+    // Both answer the browser with where to go, never an error body: on to install the App, or to the console's GitHub
+    // settings, connected or with why not.
+    if (found.name === "gitHubCallback") {
+      const state = url.searchParams.get("state") ?? "";
+      // Another browser's (no cookie for this state) leaves the state as it is, for the browser that started it.
+      if (!state || !gitHubStartedHere(req.headers.cookie, req.socket.localPort, state)) return void res.writeHead(302, { location: githubConnect.failed("state_invalid", "the browser brought no cookie for this state"), "cache-control": "no-store" }).end();
+      const { location, installState } = await githubConnect.callback(url.searchParams.get("code"), state, stopping.signal);
+      // Its state's cookie goes; the install state's is set, for the installed redirect GitHub sends this browser to.
+      const cookies = [stateCookie(req.socket.localPort, state, overHttps(req), 0), ...(installState ? [stateCookie(req.socket.localPort, installState, overHttps(req), undefined, INSTALLED_PATH)] : [])];
+      return void res.writeHead(302, { location, "cache-control": "no-store", "set-cookie": cookies }).end();
+    }
+    if (found.name === "gitHubInstalled") {
+      // Bound only by the install state the callback sent GitHub and the cookie it set in this browser.
+      const state = url.searchParams.get("state");
+      const bound = state && gitHubStartedHere(req.headers.cookie, req.socket.localPort, state) ? state : null;
+      const location = await githubConnect.installed(url.searchParams.get("installation_id"), bound, stopping.signal);
+      return void res.writeHead(302, { location, "cache-control": "no-store", ...(bound ? { "set-cookie": stateCookie(req.socket.localPort, bound, overHttps(req), 0, INSTALLED_PATH) } : {}) }).end();
+    }
     if (found.name === "getHealth") {
       const health = await healthOf(data, minFreeBytes);
       return send(res, health.status === "ok" ? 200 : 503, health);
@@ -2410,6 +2528,28 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         const state = new URL(started.authorization_url).searchParams.get("state") ?? "";
         return send(res, 200, started, { "set-cookie": signInCookie(req.socket.localPort, state, overHttps(req)) });
       }
+      case "connectGitHub": {
+        const started = githubConnect.start(await bodyOf(req), ownOrigin(req));
+        // The callback finishes only in this browser: the cookie it brings back names this state.
+        return send(res, 200, started, { "set-cookie": stateCookie(req.socket.localPort, started.state, overHttps(req)) });
+      }
+      case "getGitHubConnection": {
+        // Repaired from GitHub's own first, at most once a minute: a missed installation event is put right here.
+        await githubConnect.reconcile((detail) => triggers.turnOff("github", detail));
+        // Always a 200: not connected is an answer, never an error a browser logs as one.
+        const view = githubConnection();
+        return send(res, 200, view ? { connected: true, ...view } : { connected: false });
+      }
+      case "disconnectGitHub": {
+        const view = githubConnection();
+        if (!view) throw new ApiError("not_found", "No GitHub App is connected to this server.");
+        const settingsUrl = github.settingsUrl();
+        github.remove();
+        // Kept, and off: an agent keeps its triggers, which go on again once GitHub is connected again.
+        const off = triggers.turnOff("github", "GitHub was disconnected from this server: connect it again in Settings, then turn the trigger on.");
+        log?.(logLine("github", { condition: "github_disconnected", app_id: view.app_id, triggers_off: off }));
+        return send(res, 200, { disconnected: true, triggers_off: off, note: `Delete the App itself on GitHub: ${settingsUrl}` });
+      }
       case "deleteMcpServer":
         mcpServers.remove(id);
         return void res.writeHead(204, { "cache-control": "no-store" }).end();
@@ -2503,20 +2643,33 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         const pkg = templates.find((t) => t.name === id);
         if (!pkg) throw new ApiError("not_found", `no template ${id}: GET /v2/templates lists them`);
         const body = await bodyOf(req);
+        // Its webhook triggers' secrets are in its first answer alone, as POST /triggers' is: the Idempotency-Key's record
+        // keeps the agent, the triggers and a note, so a retry under the key gets the same ones and never a secret.
+        let secrets: { trigger_id: string; secret: string }[] = [];
         const answer = await idempotent(req, `/templates/${pkg.name}/apply`, body, async () => {
-          const applied = await applyTemplate(pkg, body);
-          return { status: 201, body: applied, headers: { location: `/v2/agents/${applied.agent_id}` } };
+          const made = await applyTemplate(pkg, body);
+          secrets = made.secrets;
+          const note = secrets.length ? { note: `Its webhook triggers' secrets were shown once, in the first answer; POST /v2/triggers/{trigger_id}/secret makes a new one.` } : {};
+          return { status: 201, body: { ...made.applied, ...note }, headers: { location: `/v2/agents/${made.applied.agent_id}` } };
         });
-        return send(res, answer.status, answer.body, answer.headers);
+        const replayed = answer.headers?.["idempotent-replayed"] === "true";
+        if (!secrets.length || replayed) return send(res, answer.status, answer.body, answer.headers);
+        const { note: _, ...first } = answer.body as Json;
+        return send(res, answer.status, { ...first, webhook_secrets: secrets }, answer.headers);
       }
       case "rotateTriggerSecret":
         return send(res, 200, triggers.rotate(id));
       case "getTrigger":
         return send(res, 200, triggers.get(id));
-      case "updateTrigger":
-        return send(res, 200, await triggers.update(id, await bodyOf(req)));
+      case "updateTrigger": {
+        const updated = await triggers.update(id, await bodyOf(req));
+        // Its runs' rows name it as it is now (runs.ts servedTriggerRow).
+        runs.triggerChanged(id);
+        return send(res, 200, updated);
+      }
       case "deleteTrigger":
         triggers.remove(id);
+        runs.triggerChanged(id);
         return void res.writeHead(204, { "cache-control": "no-store" }).end();
       case "fireTrigger": {
         const key = req.headers["idempotency-key"];
@@ -2706,6 +2859,9 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     const installStopped = Promise.all(Object.values(installs).map((install) => install.stop()));
     // Aborted now, so nothing it writes races the next server on the same refresh token; drained before the lock goes.
     const mcpStopped = mcpServers.close();
+    // A repair of the GitHub installations under way stops waiting on GitHub and writes nothing from here: before the
+    // triggers close, so it never turns one off into a closed file.
+    const githubStopped = githubConnect.close();
     triggers.close();
     for (const [worker, { task }] of workers) {
       if (task === "plan") void worker.terminate();
@@ -2727,6 +2883,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     await new Promise((done) => (server.close(done), server.closeAllConnections()));
     agents.close();
     await mcpStopped;
+    await githubStopped;
     // The record stays: the next server rewrites it as it starts, and a stopped one whose time has passed is no stop.
     lock.release();
   }

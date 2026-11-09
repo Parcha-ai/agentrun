@@ -18,7 +18,11 @@ afterEach(() => { vi.unstubAllEnvs(); });
 
 describe("a schedule's when, in words", () => {
   it("names a cron line and its zone, one time in the viewer's own zone as every console time, and an interval in the largest whole unit", () => {
-    expect(whenWords({ kind: "schedule", cron: "30 1 * * *", timezone: "America/Los_Angeles" })).toBe("Cron 30 1 * * * · America/Los_Angeles");
+    // A cron line in words (cronstrue, 24-hour), its zone after it; the raw line is the page's title, not its words.
+    expect(whenWords({ kind: "schedule", cron: "30 1 * * *", timezone: "America/Los_Angeles" })).toBe("At 01:30 · America/Los_Angeles");
+    expect(whenWords({ kind: "schedule", cron: "0 8 * * 1", timezone: "UTC" })).toBe("At 08:00, only on Monday · UTC");
+    // One cronstrue can't read stays as it is.
+    expect(whenWords({ kind: "schedule", cron: "not a cron", timezone: "UTC" })).toBe("Cron not a cron · UTC");
     vi.stubEnv("TZ", "America/Los_Angeles");
     expect(whenWords({ kind: "schedule", at: "2026-11-05T09:30:00Z" })).toBe("Once, Nov 5, 1:30 AM");
     vi.stubEnv("TZ", "UTC");

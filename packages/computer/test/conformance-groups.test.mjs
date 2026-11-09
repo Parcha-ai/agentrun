@@ -48,7 +48,7 @@ const run = (provider, ids, extra = {}) => runConformance(provider, { image: IMA
 const NEW_CASES = [
 	"health.kind-consistent",
 	"screen.screenshot-size",
-	"screen.stream",
+	"screen.watch",
 	"input.click-lands",
 	"input.type-text",
 	"input.key-table-refuses-unknown",
@@ -60,7 +60,7 @@ const NEW_CASES = [
 	"apps.ui-tree-shape",
 	"lifetime.extend",
 ];
-const DESKTOP_CASES = ["health.kind-consistent", "provider.check-refuses", "screen.screenshot-size", "screen.stream", "input.click-lands", "input.type-text", "input.key-table-refuses-unknown", "input.actions-stops-at-first-failure"];
+const DESKTOP_CASES = ["health.kind-consistent", "provider.check-refuses", "screen.screenshot-size", "screen.watch", "input.click-lands", "input.type-text", "input.key-table-refuses-unknown", "input.actions-stops-at-first-failure"];
 const PHONE_CASES = ["health.kind-consistent", "provider.check-refuses", "screen.screenshot-size", "touch.tap", "touch.swipe", "touch.pinch", "apps.install-launch", "apps.ui-tree-shape"];
 
 test("the suite has the extension's 13 new cases, each at its level and with the needs the spec gives it", () => {
@@ -68,7 +68,7 @@ test("the suite has the extension's 13 new cases, each at its level and with the
 	assert.deepEqual(levels, {
 		"health.kind-consistent": ["core", []],
 		"screen.screenshot-size": ["core", ["screen"]],
-		"screen.stream": ["full", ["stream"]],
+		"screen.watch": ["core", ["screen"]],
 		"input.click-lands": ["core", ["input.pointer"]],
 		"input.type-text": ["core", ["input.keys"]],
 		"input.key-table-refuses-unknown": ["core", ["input.keys"]],
@@ -82,12 +82,13 @@ test("the suite has the extension's 13 new cases, each at its level and with the
 	});
 });
 
-test("coreGroups: computerd brings exec, files, processes and network none; a desktop adds screen and keyboard and pointer; a phone needs screen and touch", () => {
+test("coreGroups: computerd brings exec, files, processes and network none (a child daemon its vendor's agent too); a desktop adds screen and keyboard and pointer; a phone needs screen and touch", () => {
 	const linux = ["exec", "files", "processes", "network:none"];
+	const child = [...linux, "vendor-agent"];
 	assert.deepEqual(coreGroups("linux", "pid1"), linux);
-	assert.deepEqual(coreGroups("linux", "child"), linux);
+	assert.deepEqual(coreGroups("linux", "child"), child);
 	assert.deepEqual(coreGroups("desktop", "pid1"), [...linux, "screen", "input.pointer", "input.keys"]);
-	assert.deepEqual(coreGroups("desktop", "child"), [...linux, "screen", "input.pointer", "input.keys"]);
+	assert.deepEqual(coreGroups("desktop", "child"), [...child, "screen", "input.pointer", "input.keys"]);
 	assert.deepEqual(coreGroups("desktop", "none"), ["screen", "input.pointer", "input.keys"]);
 	assert.deepEqual(coreGroups("android", "none"), ["screen", "input.touch"]);
 	assert.deepEqual(coreGroups("ios", "none"), ["screen", "input.touch"]);
@@ -301,7 +302,7 @@ test("a linux computer with computerd as PID 1, as Docker declares, skips every 
 	const skipped = Object.fromEntries(report.results.filter((r) => r.status === "skip").map((r) => [r.id, [r.reason, r.undeclared]]));
 	assert.deepEqual(skipped, {
 		"screen.screenshot-size": ["the provider does not declare screen", ["screen"]],
-		"screen.stream": ["the provider has no stream()", ["stream"]],
+		"screen.watch": ["the provider does not declare screen", ["screen"]],
 		"input.click-lands": ["the provider does not declare input.pointer", ["input.pointer"]],
 		"input.type-text": ["the provider does not declare input.keys", ["input.keys"]],
 		"input.key-table-refuses-unknown": ["the provider does not declare input.keys", ["input.keys"]],
@@ -316,12 +317,12 @@ test("a linux computer with computerd as PID 1, as Docker declares, skips every 
 	assert.deepEqual(statuses(report)["health.kind-consistent"], "pass", reasons(report)["health.kind-consistent"]);
 	assert.deepEqual(statuses(report)["provider.check-refuses"], "pass", reasons(report)["provider.check-refuses"]);
 	assert.equal(report.core, "pass", formatReport(report));
-	assert.deepEqual(report.undeclared, ["screen", "stream", "input.pointer", "input.keys", "input.touch", "apps.install", "apps", "apps.ui_tree", "extend"]);
+	assert.deepEqual(report.undeclared, ["screen", "input.pointer", "input.keys", "input.touch", "apps.install", "apps", "apps.ui_tree", "extend"]);
 	const text = formatReport(report).trimEnd().split("\n");
-	assert.equal(text.at(-1), "core PASS 2/2 · 9 optional cases skipped, not declared · full 0/3 · screen stream input.pointer input.keys input.touch apps.install apps apps.ui_tree extend not declared");
+	assert.equal(text.at(-1), "core PASS 2/2 · 10 optional cases skipped, not declared · full 0/2 · screen input.pointer input.keys input.touch apps.install apps apps.ui_tree extend not declared");
 	// A case its kind does not require is never filed under core: a linux computer's report has no core screen line.
 	assert.deepEqual(text.filter((line) => /^core (screen|input|touch|apps) /.test(line)), [], text.join("\n"));
-	assert.ok(text.some((line) => /^optional screen +screenshot-size +- 1$/.test(line)), text.join("\n"));
+	assert.ok(text.some((line) => /^optional screen +screenshot-size watch +- 2$/.test(line)), text.join("\n"));
 	assert.ok(text.includes("  - screen.screenshot-size: the provider does not declare screen"), text.join("\n"));
 });
 
@@ -429,7 +430,12 @@ const BROKEN = [
 	// Review (lifetime boundaries go unchecked): the cap counts from create, and an extend never moves the deadline earlier.
 	["lifetime.extend", { broken: "extend-shortens" }, /^extend to 60 s, earlier than the current deadline: expected an error, got ok/],
 	["lifetime.extend", { broken: "extend-per-call" }, /^extend to 7170 s, past create \+ maxLifetimeMs \(7200000 ms\): expected an error, got ok/],
-	["screen.stream", { broken: "stream-http" }, /the stream at http:\/\/stream\.example\.test: its scheme: expected "https:", got "http:"/],
+	["screen.watch", { broken: "watch-stale" }, /a pointer move to \d+,\d+ gave no new frame/],
+	["screen.watch", { broken: "watch-size" }, /the first frame's (JPEG|PNG) is \d+x\d+, not the \d+x\d+ it says/],
+	// Review (missing cursors pass; unreadable frames pass): a move must show the cursor where it went, and a frame decodes.
+	["screen.watch", { broken: "watch-no-cursor" }, /a pointer move to \d+,\d+ gave no frame with the cursor there/],
+	["screen.watch", { broken: "watch-corrupt-png" }, /^the first frame's PNG does not decode: the screenshot's PNG does not inflate/],
+	["screen.watch", { broken: "watch-corrupt-jpeg" }, /^the first frame's JPEG does not decode: .*no scan/],
 ];
 
 for (const [id, options, words] of BROKEN) {
@@ -460,11 +466,11 @@ test("a Core case whose group the kind requires fails when it is not declared; a
 	assert.deepEqual(report.undeclared, []);
 
 	const desktopWithApps = fakeDevices({ extend: false, stream: false });
-	const optional = await run(desktopWithApps.provider, ["input.click-lands", "touch.tap", "apps.ui-tree-shape", "screen.stream"]);
-	assert.deepEqual(statuses(optional), { "input.click-lands": "pass", "touch.tap": "skip", "apps.ui-tree-shape": "skip", "screen.stream": "skip" });
+	const optional = await run(desktopWithApps.provider, ["input.click-lands", "touch.tap", "apps.ui-tree-shape", "screen.watch"]);
+	assert.deepEqual(statuses(optional), { "input.click-lands": "pass", "touch.tap": "skip", "apps.ui-tree-shape": "skip", "screen.watch": "pass" }, formatReport(optional));
 	assert.equal(optional.core, "pass", formatReport(optional));
-	assert.deepEqual(optional.undeclared, ["stream", "input.touch", "apps.ui_tree"]);
-	assert.match(formatReport(optional), /core PASS 1\/1 · 2 optional cases skipped, not declared · full 0\/1/);
+	assert.deepEqual(optional.undeclared, ["input.touch", "apps.ui_tree"]);
+	assert.match(formatReport(optional), /core PASS 2\/2 · 2 optional cases skipped, not declared/);
 	assert.match(formatReport(optional), /^core input +click-lands +✓ 1$/m, "a group its kind requires stays under core");
 	assert.match(formatReport(optional), /^optional touch +tap +- 1$/m);
 });

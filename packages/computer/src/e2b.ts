@@ -4,19 +4,40 @@
 // upload goes through envd's file API and init starts as a background command, dropped to a user with no capabilities;
 // connect() carries stdio over a background command's stdin and stdout. Every SDK fact used here is cited in the
 // README's E2B section, from e2b@2.63.0 (dist/index.mjs) and e2b-dev/infra@ff3922213 (envd).
-import { createHash, randomBytes, randomInt } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { PassThrough, Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { childCommands, type DaemonExpected, daemonDrift } from "./child.js";
+import { OWN_NETWORK_ONLY, readOwnNetwork, TOOL_USER } from "./isolation.js";
 import { DaemonClient } from "./client.js";
 import { DESKTOP_GROUPS, type DesktopOptions, desktopOf, startDisplay } from "./desktop.js";
 import { COMPUTER_LABEL, DAEMON_IN_COMPUTER, DEADLINE_LABEL, helloDrift, type ProbeReport, probeNetworkDrift, probeNotes, probeReportOf, WORK } from "./drift.js";
+import { releaseOlder } from "./janitor.js";
 import type { KindCapabilities } from "./kinds.js";
-import type { MountKind } from "./mount.js";
-import { listProcesses } from "./processes.js";
-import type { HelloResult, ProcessExit } from "./protocol.js";
+import { RUN_LABEL } from "./labels.js";
+import { checkMount, type MountKind, type MountReadBack, readBackOf } from "./mount.js";
+import {
+	ARCHIL_HELPER,
+	ARCHIL_MOUNT_LABEL,
+	ARCHIL_TOOL_UID,
+	type ArchilMount,
+	type ArchilRoot,
+	archilLabels,
+	archilMount,
+	archilRefusals,
+	archilRelease,
+	claimEpoch,
+	mountDrift,
+	type ProviderNote,
+	type RecordedArchil,
+	readArchilMount,
+	recordedArchil as recordedArchilOf,
+	recordedMount,
+	syncingClient,
+} from "./mount-archil.js";
+import type { HelloResult } from "./protocol.js";
 import {
 	type AttachedComputer,
 	type CallContext,
@@ -33,6 +54,7 @@ import {
 	type Refusal,
 } from "./provider.js";
 import { type ComputerError, type ComputerErrorCode, fail, ok, type Result } from "./result.js";
+import { daemonWatch, type ScreenWatch, type ScreenWatchHandlers, type WatchOptions } from "./screen-watch.js";
 import { countTested } from "./test-connection.js";
 import { waitUntil } from "./wait.js";
 
@@ -102,10 +124,9 @@ export interface E2BRunOptions {
 	signal?: AbortSignal;
 }
 
-/** The part of a connected Sandbox called here: commands, files and getHost (index.mjs:5917-5989, 6194-6196). */
+/** The part of a connected Sandbox called here: commands and files (index.mjs:5917-5989). */
 export interface E2BSandbox {
 	readonly sandboxId: string;
-	getHost(port: number): string;
 	readonly files: { write(path: string, data: ArrayBuffer, options: { user: "root"; requestTimeoutMs: number; signal?: AbortSignal }): Promise<unknown> };
 	readonly commands: {
 		run(command: string, options: E2BRunOptions & { background?: false }): Promise<E2BCommandResult>;
@@ -114,6 +135,8 @@ export interface E2BSandbox {
 			options: E2BRunOptions & { background: true; stdin?: boolean; retainOutput?: boolean; onStdout?: (data: string) => void; onStderr?: (data: string) => void },
 		): Promise<E2BCommandHandle>;
 		sendStdin(pid: number, data: Uint8Array, options: { requestTimeoutMs: number }): Promise<void>;
+		/** Ends a command's stdin, so it reads end of file (index.mjs:5071-5082). */
+		closeStdin(pid: number, options: { requestTimeoutMs: number }): Promise<void>;
 	};
 }
 
@@ -155,11 +178,15 @@ export interface E2BTimeouts {
 	pollMs: number;
 	/** How long create waits for the listing to show the new computer. */
 	listedMs: number;
+	/** Each root step of an Archil mount (the preflight, mount or revoke, serve), and its checkin at release. */
+	mountMs: number;
 }
 
 export interface E2BProviderOptions {
 	/** The E2B API key. The caller passes it; this provider never reads it from the environment or puts it in a computer. */
 	apiKey: string;
+	/** Told what is no failure of the call it came from: a release that did not let an Archil folder go cleanly. */
+	onNote?: ProviderNote;
 	/** The SDK's Sandbox class: the host's `e2b` package's, or a fake. */
 	Sandbox: E2BSandboxClass;
 	/** E2B's domain: the API is https://api.<domain>. Default e2b.app. */
@@ -172,13 +199,11 @@ export interface E2BProviderOptions {
 	desktop?: DesktopOptions;
 	/** The longest lifetime check takes: E2B Hobby's 1 h by default, Pro's 24 h at most. */
 	maxLifetimeMs?: number;
-	/** Who the daemon runs as, uid:gid in numbers, never root. Default 1000:1000. */
-	daemonUser?: string;
 	/**
-	 * Computers take public traffic, so stream() gives a URL a browser opens: every port in the computer is then open to
-	 * anyone with its address, so its network is open, never none. Default false: no stream, network none or open.
+	 * Who the daemon runs as, uid:gid in numbers, never root. Default 2510:2510 (TOOL_USER), a uid no process of E2B's
+	 * holds: init refuses to start while another process does.
 	 */
-	publicStream?: boolean;
+	daemonUser?: string;
 	timeouts?: Partial<E2BTimeouts>;
 	/**
 	 * The addresses the probe tries, to show none of them answers a computer with network none: host:port over TCP, or
@@ -241,6 +266,10 @@ const VERSION: string = JSON.parse(readFileSync(new URL("../package.json", impor
 const NAME = /^computer-[0-9a-f]{12}$/;
 const SANDBOX_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 const TEMPLATE = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/;
+/** E2B Desktop's template: a screen with an X server, the default for kind desktop. */
+export const E2B_DESKTOP_TEMPLATE = "desktop";
+/** E2B's plain template: no screen, the default for kind linux (a sandbox). */
+export const E2B_BASE_TEMPLATE = "base";
 const NAME_LABEL = `${COMPUTER_LABEL}.name`;
 /** The template create was asked for: E2B reports its id, and the alias only sometimes. */
 const IMAGE_LABEL = `${COMPUTER_LABEL}.image`;
@@ -268,10 +297,13 @@ const DEFAULTS: E2BTimeouts = {
 	goneMs: 120_000,
 	pollMs: 1_000,
 	listedMs: 15_000,
+	mountMs: 120_000,
 };
 
-/** The mount kinds an E2B computer takes: none yet (capabilities() declares no mount); the Archil mount comes with D6. */
-export const MOUNT: readonly MountKind[] = [];
+/** The mount kinds an E2B computer takes, as capabilities().mount declares them: the run's folder on an Archil disk. */
+export const MOUNT: readonly MountKind[] = ["archil"];
+/** The user an Archil computer's tools run as: the image's agentrun-tool, with no sudo and no capability. */
+const ARCHIL_USER = `${ARCHIL_TOOL_UID}:${ARCHIL_TOOL_UID}`;
 
 /** The machine kind and groups of each configuration: kind linux (the plain template), and kind desktop (the default). */
 export const CAPABILITIES: readonly KindCapabilities[] = [
@@ -303,24 +335,13 @@ const STAGING = "/tmp/agentrun-computerd-";
 const DEFAULT_PROBE_TARGETS = ["1.1.1.1:443", "8.8.8.8:443", "[2606:4700:4700::1111]:443", "1.1.1.1:53/udp", "[2606:4700:4700::1111]:53/udp"];
 /** A probe target: host:port, over TCP, or host:port/udp, a DNS query over UDP. */
 const TARGET = /^(?:\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9.-]+):[0-9]{1,5}(?:\/udp)?$/;
-/** The desktop template's VNC server and its noVNC page (@e2b/desktop@2.5.0 dist/index.mjs:426-437, 471, 502). */
-const VNC_PORT = 5900;
-const STREAM_PORT = 6080;
-const STREAM_PASSWORD_FILE = `${WORK}/.agentrun-stream-password`;
-const STREAM_WAIT_MS = 30_000;
-/** How long stream() waits for an old stream server to end after its kill. */
-const STREAM_STOP_MS = 10_000;
-const NOVNC = "/opt/noVNC/utils/novnc_proxy";
-/** The programs a stream runs, which the next stream() stops first. */
-const STREAM_PROGRAMS = ["x11vnc", NOVNC];
-const ALNUM = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
-const SPEC_FIELDS = new Set(["image", "lifetimeMs", "network", "labels"]);
+const SPEC_FIELDS = new Set(["image", "lifetimeMs", "network", "labels", "mount"]);
 const NUL = "a NUL byte cannot be sent to E2B";
-const ALLOWLIST =
-	"an E2B computer takes no allowlist yet: E2B's allowOut (CIDRs, addresses and domains) reads back, but an allowlist counts only once the live bypass cases pass (ruling 9); ask for network none or open";
 const FIXED = "an E2B computer's network is fixed at create: create a new computer";
 const PUBLIC =
-	"a public stream lets anyone with the computer's address reach any port in it, so its network is open: ask for open, or make the provider without publicStream for network none";
+	"publicStream is no longer an option: an E2B computer never takes public traffic, which would open every port in it to anyone with its address, and its screen is streamed through agentrun, never a vendor URL";
+/** envd's port in the sandbox (e2b@2.63.0 dist/index.mjs:1213, ConnectionConfig.envdPort). */
+const ENVD_PORT = 49983;
 const STOP = "an E2B computer has no stop that this provider declares: release it with delete";
 
 const isWhole = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value);
@@ -408,6 +429,7 @@ function labelProblem(key: string, value: unknown): string | undefined {
 	if (key.includes("\0") || value.includes("\0")) return `the label ${JSON.stringify(key)}: ${NUL}`;
 	if (key === "") return "a label name must be non-empty";
 	if (key === COMPUTER_LABEL || key.startsWith(`${COMPUTER_LABEL}.`)) return `the label ${key} is in the provider's own namespace (${COMPUTER_LABEL})`;
+	if (key === ARCHIL_MOUNT_LABEL) return `the label ${key} is the provider's own: it records an Archil computer's mount`;
 	return undefined;
 }
 
@@ -458,10 +480,10 @@ const clearOf = (created: number) => created + END_SLACK_MS + 1_000;
 
 /**
  * A sandbox's network as E2B reports it. None is no internet access (E2B: the same as denyOut 0.0.0.0/0,
- * index.d.mts:10179) with no allow list and no public traffic in; open is internet access with none of those either,
- * or, with publicStream, public traffic in. Anything else is another network in words, never one it might widen to.
+ * index.d.mts:10179) with no allow list and no public traffic in; open is internet access with none of those either.
+ * Anything else is another network in words, never one it might widen to.
  */
-function networkOf(info: E2BSandboxInfo, publicStream: boolean): NetworkPolicy {
+function networkOf(info: E2BSandboxInfo): NetworkPolicy {
 	const network = info.network ?? {};
 	if (network.egressProxy !== undefined && network.egressProxy !== null) return { other: "an egress proxy is set on it" };
 	if (Array.isArray(network.allowOut) && network.allowOut.length > 0) return { other: `an allowOut list (${network.allowOut.length} entries), which this provider never makes` };
@@ -469,13 +491,23 @@ function networkOf(info: E2BSandboxInfo, publicStream: boolean): NetworkPolicy {
 	const denied = Array.isArray(network.denyOut) ? network.denyOut : [];
 	const blocked = info.allowInternetAccess === false || denied.includes("0.0.0.0/0");
 	if (!blocked && denied.length > 0) return { other: `a denyOut list short of all traffic (${denied.join(", ")})` };
-	if (network.allowPublicTraffic !== false && !(publicStream && network.allowPublicTraffic === true && !blocked)) {
+	if (network.allowPublicTraffic !== false) {
 		return { other: network.allowPublicTraffic === true ? "public traffic is let in" : "E2B did not report allowPublicTraffic false: public traffic may be let in" };
 	}
 	return blocked ? "none" : "open";
 }
 
 const policyWords = (policy: NetworkPolicy) => (typeof policy === "string" ? policy : "other" in policy ? policy.other : JSON.stringify(policy));
+
+/** The Archil mount a computer's agentrun.mount label records (recordedArchilOf, shared), or undefined when it has none. */
+function recordedArchil(metadata: Record<string, string> | undefined): RecordedArchil | undefined {
+	if (metadata?.[ARCHIL_MOUNT_LABEL] === undefined) return undefined;
+	const mount = recordedMount(metadata);
+	return recordedArchilOf(metadata, mount === undefined ? { other: `the label ${ARCHIL_MOUNT_LABEL} records a mount this provider never makes` } : { mount });
+}
+
+/** One word for a shell: single-quoted. */
+const quote = (word: string) => `'${word.replaceAll("'", "'\\''")}'`;
 
 /** What create made before the sandbox: its deadlines, its metadata, and the daemon with its sha256. */
 interface Made {
@@ -535,8 +567,6 @@ function refProblem(ref: ComputerRef): string | undefined {
 export class E2BProvider implements ComputerProvider {
 	readonly id = "e2b";
 	readonly version = VERSION;
-	/** Only with publicStream: a URL that shows the screen live, through the template's noVNC. */
-	readonly stream?: (ref: ComputerRef, options?: { viewOnly?: boolean }, context?: CallContext) => Promise<Result<{ url: string }>>;
 	readonly #Sandbox: E2BSandboxClass;
 	readonly #connection: E2BConnectionOptions;
 	readonly #daemonPath: string;
@@ -545,25 +575,29 @@ export class E2BProvider implements ComputerProvider {
 	readonly #maxLifetimeMs: number;
 	readonly #uid: string;
 	readonly #gid: string;
-	readonly #publicStream: boolean;
 	readonly #timeouts: E2BTimeouts;
 	readonly #probeTargets: string[];
+	readonly #onNote: ProviderNote | undefined;
 	/** Each computer's last extend, by sandbox id, while one runs: the next waits for it. */
 	readonly #extending = new Map<string, Promise<void>>();
 
-	constructor({
-		apiKey,
-		Sandbox,
-		domain = DEFAULT_DOMAIN,
-		daemonPath = DEFAULT_DAEMON_PATH,
-		kind = "desktop",
-		desktop = {},
-		maxLifetimeMs = HOBBY_MAX_MS,
-		daemonUser = "1000:1000",
-		publicStream = false,
-		timeouts = {},
-		probeTargets = DEFAULT_PROBE_TARGETS,
-	}: E2BProviderOptions) {
+	constructor(options: E2BProviderOptions) {
+		// A caller who still names the option is told it is gone, whatever its value: it once let public traffic in.
+		if (typeof options === "object" && options !== null && Object.hasOwn(options, "publicStream")) throw new Error(PUBLIC);
+		const {
+			apiKey,
+			onNote,
+			Sandbox,
+			domain = DEFAULT_DOMAIN,
+			daemonPath = DEFAULT_DAEMON_PATH,
+			kind = "desktop",
+			desktop = {},
+			maxLifetimeMs = HOBBY_MAX_MS,
+			daemonUser = TOOL_USER,
+			timeouts = {},
+			probeTargets = DEFAULT_PROBE_TARGETS,
+		} = options;
+		this.#onNote = onNote;
 		if (typeof apiKey !== "string" || apiKey === "") throw new Error("an E2B API key is required");
 		const lacks = ["create", "connect", "getInfo", "setTimeout", "kill", "list"].filter((name) => typeof (Sandbox as unknown as Record<string, unknown>)?.[name] !== "function");
 		if (lacks.length > 0) throw new Error(`options.Sandbox must be the e2b SDK's Sandbox class; it lacks ${lacks.join(", ")}`);
@@ -594,22 +628,22 @@ export class E2BProvider implements ComputerProvider {
 		this.#desktop = kind === "desktop" ? desktopOf(desktop) : undefined;
 		this.#maxLifetimeMs = maxLifetimeMs;
 		[this.#uid, this.#gid] = [String(Number(user[1])), String(Number(user[2]))];
-		this.#publicStream = publicStream === true;
 		this.#timeouts = merged;
 		this.#probeTargets = [...probeTargets];
-		if (this.#publicStream && this.#desktop) this.stream = (ref, options, context) => this.#stream(ref, options, context);
 	}
 
 	/**
 	 * daemon child: E2B's envd is the sandbox's first process, under systemd with Restart=always (e2b-dev/infra
 	 * envd.service.tpl:26-30), and init is a background command it runs (#prepare), so init's exit leaves the sandbox. Its
-	 * cap is E2B's: Hobby's 1 h unless the provider was made with more, up to Pro's 24 h.
+	 * cap is E2B's: Hobby's 1 h unless the provider was made with more, up to Pro's 24 h. envd runs as root and answers on
+	 * 49983, so init starts with --own-network, and network none is all a computer takes until a proxy carries open out
+	 * of the daemon's own network.
 	 */
 	capabilities(): ComputerCapabilities {
 		return {
 			kind: this.#kind,
 			lifetime: "vendor",
-			network: this.#publicStream ? ["open"] : ["none", "open"],
+			network: ["none"],
 			networkReadBack: true,
 			isolation: "microvm",
 			os: "linux",
@@ -617,6 +651,8 @@ export class E2BProvider implements ComputerProvider {
 			groups: ["exec", "files", "processes", ...(this.#desktop ? DESKTOP_GROUPS : [])],
 			maxLifetimeMs: this.#maxLifetimeMs,
 			release: ["delete"],
+			mount: [...MOUNT],
+			vendorAgentPorts: [ENVD_PORT],
 		};
 	}
 
@@ -624,12 +660,19 @@ export class E2BProvider implements ComputerProvider {
 		const refusals: Refusal[] = [];
 		const refuse = (field: string, message: string) => refusals.push({ field, message });
 		const given = (typeof spec === "object" && spec !== null ? spec : {}) as unknown as Record<string, unknown>;
-		const { image, lifetimeMs, network, labels } = given;
-		if (typeof image !== "string" || !TEMPLATE.test(image)) refuse("image", 'an image is required: the name or id of an E2B template, such as "desktop" (E2B Desktop) or "base"');
+		const { image, lifetimeMs, network, labels, mount } = given;
+		refusals.push(...checkMount(mount, MOUNT), ...archilRefusals(given as unknown as ComputerSpec));
+		const daemonUser = `${this.#uid}:${this.#gid}`;
+		if ((mount as { kind?: unknown } | undefined)?.kind === "archil" && daemonUser !== ARCHIL_USER) {
+			refuse(
+				"mount",
+				`a computer with an Archil mount runs its tools as agentrun-tool, ${ARCHIL_USER}, the user its image makes with no way to root; this provider's daemon user is ${daemonUser}: make it with daemonUser ${ARCHIL_USER}`,
+			);
+		}
+		if (typeof image !== "string" || !TEMPLATE.test(image)) refuse("image", `an image is required: the name or id of an E2B template, such as "${E2B_DESKTOP_TEMPLATE}" (E2B Desktop) or "${E2B_BASE_TEMPLATE}"`);
 		refusals.push(...checkLifetime(lifetimeMs, this.capabilities()));
-		if (typeof network === "object" && network !== null && "allow" in network) refuse("network", ALLOWLIST);
-		else if (network !== "none" && network !== "open") refuse("network", 'network is required: "none" or "open"');
-		else if (network === "none" && this.#publicStream) refuse("network", PUBLIC);
+		if (network === "open" || (typeof network === "object" && network !== null && "allow" in network)) refuse("network", OWN_NETWORK_ONLY);
+		else if (network !== "none") refuse("network", 'network is required: "none"');
 		if (labels !== undefined) {
 			const entries = typeof labels === "object" && labels !== null && !Array.isArray(labels) ? Object.entries(labels) : undefined;
 			const bad = entries === undefined ? "labels must map names to strings" : entries.map(([key, value]) => labelProblem(key, value)).find(Boolean);
@@ -687,15 +730,19 @@ export class E2BProvider implements ComputerProvider {
 			[IMAGE_LABEL]: spec.image,
 			[MAX_LABEL]: maxDeadline,
 			[TIMEOUT_LABEL]: String(timeoutMs),
+			// An Archil computer's mount, kind and source, never the token: what list() reports and attach reads back against.
+			...(spec.mount?.kind === "archil" ? archilLabels(spec.mount) : {}),
 		};
 		const options: E2BCreateOptions = {
 			...this.#api(this.#timeouts.createMs),
 			timeoutMs,
 			metadata,
 			envs: {},
-			allowInternetAccess: spec.network === "open",
+			// An Archil computer's root reaches Archil, so its internet access stays on: its tools' network none is init's
+			// own, read back by the probe from inside, as the tool user, like every network none here.
+			allowInternetAccess: spec.network === "open" || spec.mount?.kind === "archil",
 			// Explicit: a project's default may let public traffic in (E2B docs, network/restrict-public-access).
-			network: { allowPublicTraffic: this.#publicStream },
+			network: { allowPublicTraffic: false },
 			// Explicit kill at the timeout, never a pause that keeps the computer (index.mjs:5674-5699).
 			lifecycle: { onTimeout: "kill" },
 		};
@@ -783,7 +830,7 @@ export class E2BProvider implements ComputerProvider {
 		signal?: AbortSignal,
 		diagnostic?: { readBack(info: E2BSandboxInfo): void; inside(connection: ComputerConnection): Promise<Result<void>> },
 	): Promise<Result<string[]>> {
-		const { requestMs, uploadMs, execMs } = this.#timeouts;
+		const { uploadMs, execMs } = this.#timeouts;
 		const info = await this.#info(ref.id, signal);
 		if (!info.ok) return info;
 		diagnostic?.readBack(info.value);
@@ -799,6 +846,27 @@ export class E2BProvider implements ComputerProvider {
 		if (install.value.exitCode !== 0) return fail("refused", `installing the daemon failed (exit ${install.value.exitCode}): ${`${install.value.stdout} ${install.value.stderr}`.trim().slice(0, 500)}`);
 		const read = /^sha256 ([0-9a-f]{64})$/m.exec(install.value.stdout)?.[1];
 		if (read !== sha256) return fail("refused", `it did not match its spec: daemon: uploaded sha256 ${sha256}, the installed binary reads back ${show(read)}`);
+		// The run's folder, after the daemon is in place (serve runs it) and before init starts: no tool program runs before
+		// it is mounted. A folder mounted for a computer create then gives up on is let go before the kill, never signalled.
+		if (spec.mount?.kind !== "archil") return this.#start(spec, ref, sandbox, commands, signal, diagnostic);
+		const root = this.#root(sandbox, ref.name);
+		const mounted = await this.#mountArchil(root, ref, { mount: spec.mount, run: spec.labels?.[RUN_LABEL] as string, epoch: claimEpoch(spec.labels) }, signal);
+		if (!mounted.ok) return mounted;
+		const started = await this.#start(spec, ref, sandbox, commands, signal, diagnostic);
+		if (!started.ok || signal?.aborted) await archilRelease({ root, client: undefined, timeoutMs: this.#timeouts.mountMs });
+		return started;
+	}
+
+	/** The rest of #prepare from the daemon's install on: init started, its first connection checked, the listing waited for. */
+	async #start(
+		spec: ComputerSpec,
+		ref: ComputerRef,
+		sandbox: E2BSandbox,
+		commands: ReturnType<typeof childCommands>,
+		signal?: AbortSignal,
+		diagnostic?: { readBack(info: E2BSandboxInfo): void; inside(connection: ComputerConnection): Promise<Result<void>> },
+	): Promise<Result<string[]>> {
+		const { requestMs } = this.#timeouts;
 		// No command timeout: envd kills a command when its timeout passes (e2b-dev/infra envd process/start.go:39-44).
 		// Never cancelled: envd keeps a command running when its stream ends (start.go:39-40); create disconnects after.
 		const init = await call(
@@ -820,7 +888,9 @@ export class E2BProvider implements ComputerProvider {
 					const inside = await diagnostic.inside(opened.value);
 					if (!inside.ok) return inside;
 				} else {
-					const inside = await this.#checkInside(opened.value, ref.name, spec.network as "none" | "open", true, signal);
+					const archil = spec.mount?.kind === "archil" ? { mount: { kind: "archil" as const, disk: spec.mount.disk, region: spec.mount.region, folder: spec.mount.folder }, epoch: claimEpoch(spec.labels) } : undefined;
+					const expected = archil === undefined ? undefined : { ...archil, expected: readBackOf({ ...archil.mount, token: "" }, archil.epoch) };
+					const inside = await this.#checkInside(opened.value, ref.name, spec.network as "none" | "open", true, signal, expected);
 					if (!inside.ok) return inside;
 					notes = inside.value;
 				}
@@ -838,9 +908,18 @@ export class E2BProvider implements ComputerProvider {
 	/**
 	 * Inside the computer: for a desktop just made, the X server started through the daemon and hello declaring the
 	 * display; then the daemon's own report (hello, credentials, home, binary) and, for network none, the probe, which
-	 * refuses on an answer and records a silent accept in the notes it returns (README, "Network none, read from inside").
+	 * refuses on an answer and records a silent accept in the notes it returns (README, "Network none, read from inside");
+	 * and, for an Archil computer, the mount read back from inside, held to the one expected. Its value says what was
+	 * read back of the mount (mount), apart from the notes.
 	 */
-	async #checkInside(connection: ComputerConnection, name: string, network: NetworkPolicy, starting: boolean, signal?: AbortSignal): Promise<Result<string[]>> {
+	async #checkInside(
+		connection: ComputerConnection,
+		name: string,
+		network: NetworkPolicy,
+		starting: boolean,
+		signal?: AbortSignal,
+		archil?: RecordedArchil,
+	): Promise<Result<string[]> & { mount?: MountReadBack }> {
 		let current = connection;
 		if (starting && this.#desktop) {
 			const shown = await startDisplay(connection.client, this.#desktop, { version: VERSION, vendor: "e2b", signal });
@@ -859,7 +938,67 @@ export class E2BProvider implements ComputerProvider {
 			drift.push(...probeNetworkDrift(probe.value));
 			notes.push(...probeNotes(probe.value, network));
 		}
-		return drift.length === 0 ? ok(notes) : fail("refused", `it did not match its spec: ${drift.join("; ")}`);
+		if (archil === undefined) return drift.length === 0 ? ok(notes) : fail("refused", `it did not match its spec: ${drift.join("; ")}`);
+		const mount = await this.#readMount(current, name, archil, signal);
+		if (!mount.ok) return mount;
+		drift.push(...mountDrift(archil.expected, mount.value));
+		const read = mount.value === undefined ? {} : { mount: mount.value };
+		return drift.length === 0 ? { ...ok(notes), ...read } : fail("refused", `it did not match its spec: ${drift.join("; ")}`);
+	}
+
+	/**
+	 * What is mounted at /workspace, read from inside through computerd (its /proc/self/mounts), exclusive when the
+	 * resident serve answers a sync; undefined when nothing is mounted there.
+	 */
+	#readMount(connection: ComputerConnection, name: string, archil: Pick<RecordedArchil, "mount" | "epoch">, signal?: AbortSignal): Promise<Result<MountReadBack | undefined>> {
+		return readArchilMount(connection.client, archil, { name, timeoutMs: this.#timeouts.helloMs, ...(signal ? { signal } : {}) });
+	}
+
+	/**
+	 * The root channel into a sandbox: a background command as root with stdin (index.mjs:5123-5146), its command line
+	 * the argv quoted, bounded by timeoutMs (envd kills it then). stdin, when given, goes in with sendStdin; then
+	 * closeStdin, so it reads end of file. What it printed is both streams, stdout first; a non-zero exit is a result.
+	 * An error is the SDK's, in words that never hold what stdin was given.
+	 */
+	#root(sandbox: E2BSandbox, name: string): ArchilRoot {
+		const { requestMs } = this.#timeouts;
+		return {
+			run: (argv, { stdin, timeoutMs, signal }) =>
+				call(
+					`root's ${argv[0] === ARCHIL_HELPER ? `agentrun-archil ${argv[1]}` : argv[0]} in ${name}`,
+					async () => {
+						// Stdin only for a step given one (mount and revoke's token). A step that reads none (serve, which detaches and
+						// exits at once; checkin; the preflight) may end before its stdin could be closed, and E2B then knows no such pid.
+						const handle = await sandbox.commands.run(argv.map(quote).join(" "), { background: true, stdin: stdin !== undefined, user: "root", timeoutMs, requestTimeoutMs: requestMs });
+						if (stdin !== undefined) {
+							try {
+								await sandbox.commands.sendStdin(handle.pid, new Uint8Array(Buffer.from(stdin, "utf8")), { requestTimeoutMs: requestMs });
+								await sandbox.commands.closeStdin(handle.pid, { requestTimeoutMs: requestMs });
+							} catch (error) {
+								await handle.kill().catch(() => false);
+								throw error;
+							}
+						}
+						try {
+							const done = await handle.wait();
+							return { exitCode: done.exitCode, output: `${done.stdout}${done.stderr}` };
+						} catch (error) {
+							const exited = error as Partial<E2BCommandResult> & { name?: string };
+							if (exited?.name === "CommandExitError" && typeof exited.exitCode === "number") return { exitCode: exited.exitCode, output: `${exited.stdout ?? ""}${exited.stderr ?? ""}` };
+							throw error;
+						} finally {
+							await handle.disconnect().catch(() => {});
+						}
+					},
+					timeoutMs + CALL_SLACK_MS,
+					signal,
+				),
+		};
+	}
+
+	/** The shared Archil steps (archilMount) through root, with the takeover of this provider's lower epochs. */
+	#mountArchil(root: ArchilRoot, computer: ComputerRef, { mount, run, epoch }: { mount: ArchilMount; run: string; epoch: number }, signal?: AbortSignal): Promise<Result<void>> {
+		return archilMount({ root, mount, self: computer, releaseOlder: () => releaseOlder(this, run, epoch, signal ? { signal } : {}), timeoutMs: this.#timeouts.mountMs, ...(signal ? { signal } : {}) });
 	}
 
 	#daemonExpected(): DaemonExpected {
@@ -901,8 +1040,10 @@ export class E2BProvider implements ComputerProvider {
 			found.push(`template: declared ${show(spec.image)}, read back ${show(info.templateId)} (${alias})`);
 		}
 		for (const [key, value] of Object.entries(metadata)) if (info.metadata?.[key] !== value) mismatch(`label ${key}`, value, info.metadata?.[key]);
-		const network = networkOf(info, this.#publicStream);
-		if (network !== spec.network) found.push(`network: declared ${policyWords(spec.network as NetworkPolicy)}, read back ${policyWords(network)}`);
+		const network = networkOf(info);
+		// An Archil computer's vendor network is open, for root to reach Archil; its tools' none is read from inside.
+		const vendor = spec.mount?.kind === "archil" ? "open" : (spec.network as NetworkPolicy);
+		if (network !== vendor) found.push(`network: declared ${policyWords(vendor)}${spec.mount?.kind === "archil" ? " (E2B's, for root to reach Archil)" : ""}, read back ${policyWords(network)}`);
 		if (info.lifecycle?.onTimeout !== undefined && info.lifecycle.onTimeout !== "kill") mismatch("lifecycle onTimeout", "kill", info.lifecycle.onTimeout);
 		if (info.lifecycle?.autoResume === true) mismatch("lifecycle autoResume", false, true);
 		if (info.state !== "running") mismatch("state", "running", info.state);
@@ -1120,6 +1261,11 @@ export class E2BProvider implements ComputerProvider {
 		return fail("refused", `${what} wrote what is not its report`);
 	}
 
+	/** The live view: screen.watch on a connection of the watch's own (daemonWatch); a linux computer has no screen. */
+	watch(ref: ComputerRef, handlers: ScreenWatchHandlers, options?: WatchOptions): Promise<Result<ScreenWatch>> {
+		return daemonWatch(this, ref, handlers, options);
+	}
+
 	async connect(ref: ComputerRef): Promise<Result<ComputerConnection>> {
 		const problem = refProblem(ref);
 		if (problem) return fail("invalid", problem);
@@ -1132,7 +1278,8 @@ export class E2BProvider implements ComputerProvider {
 		if (!opened.ok) return opened;
 		const { kind, groups } = this.capabilities();
 		const drifted = helloDrift(opened.value.hello, { version: VERSION, kind, groups, arch: ARCH });
-		if (drifted.length === 0) return opened;
+		// An Archil computer's client syncs the run's folder after every call that may change it, before it answers.
+		if (drifted.length === 0) return recordedArchil(found.value.metadata) === undefined ? opened : ok({ ...opened.value, client: syncingClient(opened.value.client) });
 		await opened.value.close();
 		return fail("refused", `the daemon in ${ref.name} does not match this provider: ${drifted.join("; ")}`);
 	}
@@ -1172,29 +1319,34 @@ export class E2BProvider implements ComputerProvider {
 		const found: string[] = [];
 		const deadline = deadlineOf(info);
 		if (deadline === undefined) found.push(`deadline: the label ${DEADLINE_LABEL} reads ${show(info.metadata[DEADLINE_LABEL])}, not the ISO time create writes`);
-		const network = networkOf(info, this.#publicStream);
+		const archil = recordedArchil(info.metadata);
+		const network = this.#toolsNetwork(info);
 		if (typeof network === "object") found.push(`network: ${policyWords(network)}, which this provider never makes`);
-		const labels = Object.fromEntries(Object.entries(info.metadata).filter(([key]) => key !== COMPUTER_LABEL && !key.startsWith(`${COMPUTER_LABEL}.`)));
+		const labels = Object.fromEntries(Object.entries(info.metadata).filter(([key]) => key !== COMPUTER_LABEL && !key.startsWith(`${COMPUTER_LABEL}.`) && key !== ARCHIL_MOUNT_LABEL));
 		const image = info.metadata[IMAGE_LABEL] ?? info.templateId;
 		const spec = { image, lifetimeMs: 1, network: typeof network === "object" ? "open" : network, labels } as ComputerSpec;
 		found.push(...this.check(spec).map(({ field, message }) => `${field}: ${message}, read back from the computer`));
 		let kind: AttachedComputer["spec"]["kind"];
 		let notes: string[] = [];
+		let mount: MountReadBack | undefined;
 		if (info.state === "running") {
 			const sandbox = await this.#connected(info, signal);
 			if (!sandbox.ok) return sandbox;
 			const opened = await this.#open(sandbox.value, name, signal);
 			if (!opened.ok) return opened;
 			try {
-				const inside = await this.#checkInside(opened.value, name, network, false, signal);
+				const inside = await this.#checkInside(opened.value, name, network, false, signal, archil);
 				if (!inside.ok && inside.error.code !== "refused") return inside;
 				if (!inside.ok) found.push(inside.error.message.replace(/^it did not match its spec: /, ""));
-				else notes = inside.value;
+				else {
+					notes = inside.value;
+					mount = inside.mount;
+				}
 			} finally {
 				await opened.value.close();
 			}
 			kind = opened.value.hello.kind;
-		}
+		} else if (archil !== undefined) found.push(`mount: ${name} is ${info.state}, so its mount cannot be read back from inside`);
 		if (found.length > 0) return fail("refused", `the computer ${name} does not match this provider, so attach refuses it and it is left as it is: ${found.join("; ")}`);
 		return ok({
 			...ref,
@@ -1206,6 +1358,7 @@ export class E2BProvider implements ComputerProvider {
 				workdir: WORK,
 				...(deadline === undefined ? {} : { deadline }),
 				...(kind === undefined ? {} : { kind }),
+				...(mount === undefined ? {} : { mount }),
 			},
 			...(notes.length > 0 ? { notes } : {}),
 		});
@@ -1285,12 +1438,15 @@ export class E2BProvider implements ComputerProvider {
 			}
 			const info = read.value;
 			if (info.state !== "running" && info.state !== "paused") continue;
+			// list runs nothing in a computer: an Archil computer's mount is the one its label records, under its epoch label.
+			const archil = recordedArchil(info.metadata);
 			infos.push({
 				ref: { id: info.sandboxId, name: info.metadata[NAME_LABEL] as string },
 				labels: { ...info.metadata },
 				deadline: deadlineOf(info),
 				state: info.state === "running" ? "running" : "stopped",
-				network: networkOf(info, this.#publicStream),
+				network: this.#toolsNetwork(info),
+				...(archil === undefined ? {} : { mount: archil.expected }),
 			});
 		}
 		return ok(infos);
@@ -1320,15 +1476,43 @@ export class E2BProvider implements ComputerProvider {
 	async network(ref: ComputerRef, policy?: NetworkSpec, { signal }: CallContext = {}): Promise<Result<NetworkPolicy>> {
 		const problem = refProblem(ref);
 		if (problem) return fail("invalid", problem);
-		if (policy !== undefined && policy !== "none" && policy !== "open") {
-			const allow = typeof policy === "object" && policy !== null && "allow" in policy;
-			return fail("refused", allow ? `${ALLOWLIST}; ${FIXED}` : `${FIXED}; a network is "none" or "open"`);
+		if (policy !== undefined && policy !== "none") {
+			const wider = policy === "open" || (typeof policy === "object" && policy !== null && "allow" in policy);
+			return fail("refused", wider ? `${OWN_NETWORK_ONLY}; ${FIXED}` : `${FIXED}; a network is "none"`);
 		}
 		const found = await this.#own(ref, signal);
 		if (!found.ok) return found;
-		const read = networkOf(found.value, this.#publicStream);
+		let read = this.#toolsNetwork(found.value);
+		// An Archil computer's E2B network is root's: its tools' none is read from inside, as the tool user: the daemon's own
+		// network namespace's live interfaces are lo alone, none can be raised (computerd probe), and no probe target answers.
+		if (read === "none" && recordedArchil(found.value.metadata) !== undefined && found.value.state === "running") {
+			const sandbox = await this.#connected(found.value, signal);
+			const opened = sandbox.ok ? await this.#open(sandbox.value, ref.name, signal) : sandbox;
+			if (!opened.ok) return opened;
+			try {
+				const drift = await readOwnNetwork(opened.value.client, this.#timeouts.helloMs, this.#bounded(this.#timeouts.helloMs, signal));
+				if (!drift.ok) return fail(drift.error.code, `${ref.name}: ${drift.error.message}`);
+				if (drift.value.length > 0) read = { other: drift.value.join("; ") };
+				const probe = await this.#probe(opened.value, ref.name, signal);
+				if (!probe.ok) return probe;
+				if (probe.value.reached.length > 0) read = { other: `its tools' network was created none, yet from inside an answer came back from ${probe.value.reached.join(", ")}` };
+			} finally {
+				await opened.value.close();
+			}
+		}
 		if (policy === undefined || policy === read) return ok(read);
 		return fail("refused", `${FIXED}: ${ref.name} reads back network ${policyWords(read)}, not ${policy}`);
+	}
+
+	/**
+	 * The tools' network as E2B's policy shows it: E2B's own, except for an Archil computer, whose open E2B network is
+	 * root's, to reach Archil: its tools' network is init's own, none, which network() and attach read from inside.
+	 */
+	#toolsNetwork(info: E2BSandboxInfo): NetworkPolicy {
+		const vendor = networkOf(info);
+		if (recordedArchil(info.metadata) === undefined) return vendor;
+		if (vendor === "open") return "none";
+		return { other: `an Archil computer whose E2B network reads ${policyWords(vendor)}, not the open one create makes for root to reach Archil` };
 	}
 
 	/**
@@ -1419,7 +1603,10 @@ export class E2BProvider implements ComputerProvider {
 	 * delete reads the sandbox back to check it is this provider's, then kills it, both never signalled, so a release
 	 * after an abort, or one aborted during the read, still sends the kill; it is idempotent: one E2B no longer has is ok.
 	 * E2B answers a kill before the sandbox is gone, so release then waits (#settle) until E2B reads it gone and no longer
-	 * lists it, within goneMs and the caller's signal, the one step the signal ends.
+	 * lists it, within goneMs and the caller's signal, the one step the signal ends. A running Archil computer lets go of
+	 * the run's folder first (archilRelease: the final sync through computerd, then checkin as root); the kill runs
+	 * whatever that answers. A folder not let go cleanly loses nothing (every call that changed it synced, and the next
+	 * claim revokes the hold), so it is said through onNote, and the release succeeds once the sandbox is gone.
 	 */
 	async release(ref: ComputerRef, how: "stop" | "delete", { signal }: CallContext = {}): Promise<Result<void>> {
 		const problem = refProblem(ref);
@@ -1429,9 +1616,25 @@ export class E2BProvider implements ComputerProvider {
 		const found = await this.#info(ref.id);
 		if (!found.ok) return found.error.code === "not_found" ? ok(undefined) : found;
 		if (!ours(found.value.metadata, ref.name)) return fail("not_found", `no E2B computer is ${ref.name} (${ref.id}): the sandbox is not this provider's, so it is left as it is`);
+		const letGo = recordedArchil(found.value.metadata) !== undefined && found.value.state === "running" ? await this.#letGo(found.value, ref.name, signal) : ok(undefined);
 		const killed = await this.#kill(ref.id);
-		if (!killed.ok) return killed;
-		return this.#settle(ref, signal);
+		const gone = killed.ok ? await this.#settle(ref, signal) : killed;
+		if (letGo.ok) return gone;
+		if (!gone.ok) return fail(gone.error.code, `${gone.error.message}; and ${letGo.error.message}`);
+		this.#onNote?.({ computer: ref.name, note: `${ref.name} was killed, and ${letGo.error.message}` });
+		return gone;
+	}
+
+	/** A running Archil computer's folder let go: the final sync through a connection when it answers, then checkin as root. */
+	async #letGo(info: E2BSandboxInfo, name: string, signal?: AbortSignal): Promise<Result<void>> {
+		const sandbox = await this.#connected(info, signal);
+		if (!sandbox.ok) return fail(sandbox.error.code, `the run's folder was not let go: ${sandbox.error.message}`);
+		const opened = await this.#open(sandbox.value, name, signal);
+		try {
+			return await archilRelease({ root: this.#root(sandbox.value, name), client: opened.ok ? opened.value.client : undefined, timeoutMs: this.#timeouts.mountMs, ...(signal ? { signal } : {}) });
+		} finally {
+			if (opened.ok) await opened.value.close();
+		}
 	}
 
 	/**
@@ -1492,89 +1695,5 @@ export class E2BProvider implements ComputerProvider {
 			await pause(Math.min(LISTED_POLL_MS, LISTED_POLL_MAX_MS, this.#timeouts.pollMs), signal);
 			if (signal?.aborted) return fail("aborted", "create was aborted while it waited for the listing");
 		}
-	}
-
-	/**
-	 * The template's VNC stream: x11vnc on the display, on loopback only, with a fresh password from a file the
-	 * computer's user alone reads, and noVNC in front of it (as @e2b/desktop@2.5.0 starts them, dist/index.mjs:463-506),
-	 * both started through the daemon, so they run as the computer's user and end with it. Each call starts them anew, so
-	 * a URL given before stops working. The URL carries the password (noVNC's `password` parameter): it is a bearer
-	 * secret, never logged and never in an error.
-	 */
-	async #stream(ref: ComputerRef, { viewOnly = false }: { viewOnly?: boolean } = {}, { signal }: CallContext = {}): Promise<Result<{ url: string }>> {
-		const problem = refProblem(ref);
-		if (problem) return fail("invalid", problem);
-		const desktop = this.#desktop as Required<DesktopOptions>;
-		const found = await this.#own(ref, signal);
-		if (!found.ok) return found;
-		if (found.value.state !== "running") return fail("refused", `${ref.name} is ${found.value.state}, not running`);
-		const sandbox = await this.#connected(found.value, signal);
-		if (!sandbox.ok) return sandbox;
-		const opened = await this.#open(sandbox.value, ref.name, signal);
-		if (!opened.ok) return opened;
-		const { client } = opened.value;
-		const bound = () => this.#bounded(this.#timeouts.helloMs, signal);
-		// RFB's password check uses its first 8 characters only (VNC authentication is DES keyed by them).
-		const password = Array.from({ length: 8 }, () => ALNUM[randomInt(ALNUM.length)]).join("");
-		try {
-			// Every page of the process table: the old servers may be past the first.
-			const listed = await listProcesses(client, { signal: bound() });
-			if (!listed.ok) return fail(listed.error.code, `listing the computer's processes: ${listed.error.message}`);
-			const old = listed.value.filter((one) => one.running && STREAM_PROGRAMS.includes(one.argv[0] as string));
-			for (const one of old) {
-				const killed = await client.call("process.signal", { id: one.id, signal: "KILL" }, { signal: bound() });
-				if (!killed.ok) return fail(killed.error.code, `stopping the old stream's ${one.argv[0]} (${one.id}): ${killed.error.message}`);
-			}
-			// A signal is only sent: an old server holds its port until it has ended, and a new one could not bind it.
-			for (const one of old) {
-				const ended = await client.call("process.wait", { id: one.id, timeoutMs: STREAM_STOP_MS }, { signal: this.#bounded(STREAM_STOP_MS + CALL_SLACK_MS, signal) });
-				if (!ended.ok) return fail(ended.error.code, `waiting for the old stream's ${one.argv[0]} (${one.id}) to end: ${ended.error.message}`);
-				if (ended.value.running) return fail("timeout", `the old stream's ${one.argv[0]} (${one.id}) did not end within ${seconds(STREAM_STOP_MS)} of its kill`);
-			}
-			const written = await client.call("files.write", { path: STREAM_PASSWORD_FILE, data: Buffer.from(`${password}\n`).toString("base64"), mode: 0o600 }, { signal: bound() });
-			if (!written.ok) return fail(written.error.code, `writing the stream's password file: ${written.error.message}`);
-			// x11vnc listens on the computer's own loopback, IPv4 alone, and noVNC reaches it there.
-			const listen = "localhost"; // key-gate: loopback-rule the VNC server listens inside the computer only
-			const vnc = ["x11vnc", "-display", desktop.display, "-forever", "-shared", "-listen", listen, "-noipv6", "-rfbport", String(VNC_PORT), "-passwdfile", STREAM_PASSWORD_FILE, ...(viewOnly ? ["-viewonly"] : [])];
-			const novnc = [NOVNC, "--vnc", `${listen}:${VNC_PORT}`, "--listen", String(STREAM_PORT), "--web", "/opt/noVNC"];
-			const servers: Array<{ id: string; program: string }> = [];
-			for (const argv of [vnc, novnc]) {
-				const started = await client.call("process.start", { argv, cwd: "/opt/noVNC/utils" }, { signal: bound() });
-				if (!started.ok) return fail(started.error.code, `starting ${argv[0]}: ${started.error.message}`);
-				servers.push({ id: started.value.id, program: argv[0] as string });
-			}
-			// Ready is both new servers running and both ports listening: with the old servers ended, the listeners are theirs.
-			const until = Date.now() + STREAM_WAIT_MS;
-			const ports = `netstat -tln 2>/dev/null | grep -q ':${VNC_PORT} ' && netstat -tln 2>/dev/null | grep -q ':${STREAM_PORT} '`;
-			for (;;) {
-				const up = await client.call("exec.run", { argv: ["sh", "-c", ports], timeoutMs: 5_000 }, { signal: bound() });
-				for (const server of servers) {
-					const state = await client.call("process.wait", { id: server.id, timeoutMs: 0 }, { signal: bound() });
-					if (!state.ok) return fail(state.error.code, `reading the new ${server.program} (${server.id}): ${state.error.message}`);
-					// Awaited here, inside the try: the finally closes the connection its read goes over.
-					if (!state.value.running) return await this.#serverEnded(client, server, state.value, bound());
-				}
-				if (up.ok && up.value.exitCode === 0) break;
-				if (Date.now() >= until) return fail("timeout", `the stream did not listen on ports ${VNC_PORT} and ${STREAM_PORT} within ${seconds(STREAM_WAIT_MS)}`);
-				await pause(250, signal);
-				if (signal?.aborted) return fail("aborted", "stream was aborted");
-			}
-		} finally {
-			await opened.value.close();
-		}
-		const url = new URL(`https://${sandbox.value.getHost(STREAM_PORT)}/vnc.html`);
-		url.searchParams.set("autoconnect", "true");
-		url.searchParams.set("resize", "scale");
-		if (viewOnly) url.searchParams.set("view_only", "true");
-		url.searchParams.set("password", password);
-		return ok({ url: url.href });
-	}
-
-	/** A new stream server that ended before the stream was up, in words, with its last lines of stderr. */
-	async #serverEnded(client: ComputerConnection["client"], server: { id: string; program: string }, exit: ProcessExit, signal: AbortSignal): Promise<Result<never>> {
-		const read = await client.call("process.read", { id: server.id, stream: "stderr", offset: 0 }, { signal });
-		const said = read.ok ? Buffer.from(read.value.data, "base64").toString("utf8").trim().split("\n").slice(-3).join("; ") : "";
-		const how = exit.signal ? `signal ${exit.signal}` : `exit code ${exit.exitCode}`;
-		return fail("e2b", `the stream's new ${server.program} ended with ${how} before the stream was up${said ? `: ${said}` : ""}`);
 	}
 }

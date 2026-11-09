@@ -276,6 +276,108 @@ func TestInitRefusesAnEgressSocketThatIsNotOneAbsolutePath(t *testing.T) {
 	}
 }
 
+// --own-network takes no value, once, and only with --user (init must start as root to make the namespace) and with no
+// --egress (a remote computer's network is none). That it then leaves init and its programs their own loopback alone is
+// internal/isolate's tests and the Docker live tests'.
+func TestInitRefusesOwnNetworkWithoutUserOrWithEgressOrTwice(t *testing.T) {
+	deadline := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
+	for _, args := range [][]string{
+		{"init", "--deadline", deadline, "--own-network"},
+		{"init", "--own-network", "--deadline", deadline},
+		{"init", "--deadline", deadline, "--own-network", "--egress", "/opt/agentrun/egress/egress.sock", "--user", "2510:2510"},
+		{"init", "--deadline", deadline, "--own-network", "--own-network", "--user", "2510:2510"},
+	} {
+		code, stderr := computerd(t, 30*time.Second, args...)
+		if code != 2 {
+			t.Errorf("computerd %q: exit %d; want 2, a refusal", args, code)
+		}
+		if !strings.Contains(stderr, "--own-network") {
+			t.Errorf("computerd %q: stderr does not say why in words: %q", args, stderr)
+		}
+	}
+}
+
+func TestInitWithOwnNetworkMustStartAsRoot(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("runs as root: init would drop this test's privileges; the drop is a live case")
+	}
+	deadline := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
+	code, stderr := computerd(t, 30*time.Second, "init", "--own-network", "--user", "2510:2510", "--deadline", deadline)
+	if code != 1 || !strings.Contains(stderr, "root") {
+		t.Fatalf("init --own-network as uid %d: exit %d, stderr %q; want a refusal that says init must start as root", os.Geteuid(), code, stderr)
+	}
+}
+
+// probe --sockets lists the unix sockets with a path it can connect to, the isolation fence's listing (no python3 in the
+// image needed): a socket this test listens on under /tmp is among them; without --sockets there is no list.
+func TestProbeSocketsListsAPathSocketItCanConnectTo(t *testing.T) {
+	dir, err := os.MkdirTemp("/tmp", "probe-sockets-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	path := filepath.Join(dir, "s")
+	listener, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	code, stdout, stderr := computerdOut(t, 60*time.Second, "probe", "--sockets")
+	if code != 0 {
+		t.Fatalf("probe --sockets: exit %d, stderr %q", code, stderr)
+	}
+	var report struct {
+		Sockets *struct {
+			Sockets []struct {
+				Path string `json:"path"`
+				Type string `json:"type"`
+			} `json:"sockets"`
+			Incomplete []string `json:"incomplete"`
+		} `json:"sockets"`
+	}
+	found := false
+	if err := json.Unmarshal([]byte(stdout), &report); err == nil && report.Sockets != nil {
+		for _, socket := range report.Sockets.Sockets {
+			found = found || (socket.Path == path && socket.Type == "stream")
+		}
+	}
+	if !found {
+		t.Fatalf("probe --sockets wrote %q; want %s among its sockets, a stream one", stdout, path)
+	}
+	code, stdout, _ = computerdOut(t, 30*time.Second, "probe")
+	if code != 0 || strings.Contains(stdout, `"sockets"`) {
+		t.Fatalf("probe without --sockets: exit %d, %q; want no sockets list", code, stdout)
+	}
+}
+
+func TestProbeListsTheLiveInterfacesOfItsNetwork(t *testing.T) {
+	code, stdout, stderr := computerdOut(t, 30*time.Second, "probe")
+	if code != 0 {
+		t.Fatalf("probe: exit %d, stderr %s", code, stderr)
+	}
+	var report struct {
+		Interfaces []string `json:"interfaces"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &report); err != nil {
+		t.Fatal(err)
+	}
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The live ones, up or addressed, in the kernel's order: a down interface with no address is quiet, not listed here.
+	want := []string{}
+	for _, iface := range ifaces {
+		addrs, _ := iface.Addrs()
+		if iface.Flags&net.FlagUp != 0 || len(addrs) > 0 {
+			want = append(want, iface.Name)
+		}
+	}
+	if strings.Join(report.Interfaces, ",") != strings.Join(want, ",") {
+		t.Fatalf("probe interfaces %q, want this network's live %q", report.Interfaces, want)
+	}
+}
+
 // probeListener listens on the IPv4 loopback and runs answer on each connection, closing it after.
 func probeListener(t *testing.T, answer func(net.Conn)) string {
 	t.Helper()
@@ -357,6 +459,46 @@ func TestProbeTakesAUDPTargetAsHostPortSlashUDP(t *testing.T) {
 	}
 	if err := json.Unmarshal([]byte(stdout), &report); err != nil || len(report.Reached) != 1 || report.Reached[0] != target {
 		t.Fatalf("probe wrote %q (%v); want %s reached", stdout, err, target)
+	}
+}
+
+// The probe's interfaces are the live ones (up or addressed) alone; quiet lists the rest (down, no address, as a
+// kernel's fallback tunnels are), and raised the quiet ones it could bring up as its user: none for a user with no
+// CAP_NET_ADMIN, which every program of a computer's is.
+func TestProbeReportsTheLiveInterfacesTheQuietOnesAndNoneItCouldRaise(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("as root the probe could raise an interface: the report's none is a non-root user's")
+	}
+	code, stdout, stderr := computerdOut(t, 30*time.Second, "probe")
+	if code != 0 {
+		t.Fatalf("probe: exit %d, stderr %q", code, stderr)
+	}
+	var report struct {
+		Interfaces []string  `json:"interfaces"`
+		Quiet      *[]string `json:"quiet"`
+		Raised     *[]string `json:"raised"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &report); err != nil {
+		t.Fatalf("probe wrote %q: %v", stdout, err)
+	}
+	if report.Quiet == nil || report.Raised == nil {
+		t.Fatalf("probe wrote %q; want quiet and raised, each a list", stdout)
+	}
+	if len(*report.Raised) != 0 {
+		t.Fatalf("probe raised %v as uid %d; want none", *report.Raised, os.Geteuid())
+	}
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, iface := range ifaces {
+		addrs, _ := iface.Addrs()
+		live := iface.Flags&net.FlagUp != 0 || len(addrs) > 0
+		listed := strings.Contains(","+strings.Join(report.Interfaces, ",")+",", ","+iface.Name+",")
+		quiet := strings.Contains(","+strings.Join(*report.Quiet, ",")+",", ","+iface.Name+",")
+		if live != listed || live == quiet {
+			t.Fatalf("%s (live %v): interfaces %v, quiet %v; want it in exactly the one its state says", iface.Name, live, report.Interfaces, *report.Quiet)
+		}
 	}
 }
 

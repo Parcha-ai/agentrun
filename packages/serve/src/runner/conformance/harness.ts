@@ -15,10 +15,10 @@ import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { openSqliteStore, type RunRow, type Store } from "../../store/index.js";
+import { openSqliteStore, RunFinal, type RunRow, type Store } from "../../store/index.js";
 import { sendCommand } from "../commands.js";
 import { callsOf, journalRecords, messagesOf, type CallRecord, type MessageRecord } from "../journal-reader.js";
-import { KINDS } from "../journal-kinds.js";
+import { type AnswerData, KINDS } from "../journal-kinds.js";
 import type { LoopFactory } from "../loop-contract.js";
 import { timelineReducer, type TimelineEvent } from "@parcha/pi-durable-agent/timeline";
 import { emptyState, translate } from "../../live/translate.js";
@@ -37,13 +37,16 @@ const TIMING = { leaseMs: 600, renewEveryMs: 150, stopMarginMs: 200, pollMs: 20,
 export const MAX_RESTARTS = 5;
 /** The suite's runner timing, for its runner process too (child.ts). */
 export const CONFORMANCE_TIMING = TIMING;
-/** A lease no missed renew lets lapse within a case: for the cases whose property is not the lease (a claim lost mid-way
- *  changes what they read), so a starved box can't turn them. */
-const STEADY = { leaseMs: 30_000, stopMarginMs: 5_000 };
+/** A lease no missed renew lets lapse within a case: for every case whose property is not the lease (a claim lost
+ *  mid-way changes what they read: a call's status, a count), so a starved box can't turn them. world()'s default; the
+ *  crash cases take the short one (TAKEOVER). */
+const STEADY: Partial<typeof TIMING> = { leaseMs: 60_000, renewEveryMs: 20_000, stopMarginMs: 5_000 };
 const RUN = "run-1";
 /** A case's bound, and the cap on a wait for a runner process's own event: caps on waits for events, never a sleep. */
 const CASE_TIMEOUT_MS = 180_000;
 const EVENT_WAIT_MS = 60_000;
+/** A cancelled run's summary, as main's cancel ends a run: its state stopped, its summary "cancelled" (runs.ts settle). */
+const CANCELLED = "cancelled";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 async function until<T>(check: () => Promise<T | false | undefined | null> | T | false | undefined | null, what: string, ms = 10_000): Promise<T> {
@@ -122,7 +125,11 @@ function crashAt(point: keyof KernelHooks, holder: { runner?: Runner; crashed?: 
 }
 
 /** A store in a data directory of its own, one queued run, and runners started on it (each its own connection). */
-async function world(subject: ConformanceSubject, t: { after(fn: () => unknown): void }, timing: Partial<typeof TIMING> = {}) {
+/** The suite's short lease, for the crash cases: a crashed runner's claim must run out for the second runner to take
+ *  the run over. */
+const TAKEOVER: Partial<typeof TIMING> = {};
+
+async function world(subject: ConformanceSubject, t: { after(fn: () => unknown): void }, timing: Partial<typeof TIMING> = STEADY) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-conformance-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const stores: Store[] = [server];
@@ -136,14 +143,16 @@ async function world(subject: ConformanceSubject, t: { after(fn: () => unknown):
   });
   await server.agents.create({ id: "agent-1", name: "Conformance" }, { id: "rev-1", kind: "agentic", body: { instructions: "Follow the script." } });
   await server.runs.create({ id: RUN, agentId: "agent-1", revisionId: "rev-1" });
+  /** The command rows a runner has handed to a loop's command(): with the loop, whether or not taken yet. */
+  const handed = new Set<number>();
   const start = async (name: string, setup: ConformanceSetup, holder?: { runner?: Runner }) => {
     const store = await openSqliteStore({ dataDir: dir, role: "runner" });
     stores.push(store);
     // Each journal commit's outcome, by the claim's epoch (as child.ts records its process's): what a loop wrote, and
-    // whether a loop that lost its claim wrote anything after.
-    const createLoop = subject.createLoop(setup);
-    const observedLoop: LoopFactory = (deps) =>
-      createLoop({
+    // whether a loop that lost its claim wrote anything after; and each command row handed to the loop.
+    const factory = subject.createLoop(setup);
+    const observedLoop: LoopFactory = (deps) => {
+      const loop = factory({
         ...deps,
         journal: (claim) =>
           new Proxy(deps.journal(claim), {
@@ -164,17 +173,21 @@ async function world(subject: ConformanceSubject, t: { after(fn: () => unknown):
             },
           }),
       });
+      return { ...loop, command: (command) => (handed.add(command.id), loop.command(command)) };
+    };
     const runner = startRunner({ store, createLoop: observedLoop, name, ...TIMING, ...timing, onEvent: (event) => events.push({ runner: name, at: Date.now(), ...event }) });
     runners.push(runner);
     if (holder) holder.runner = runner;
     return runner;
   };
   const run = async (): Promise<RunRow> => (await server.runs.get(RUN))!;
-  const read = async (): Promise<{ calls: CallRecord[]; messages: MessageRecord[] }> => {
+  const read = async (): Promise<{ calls: CallRecord[]; messages: MessageRecord[]; answers: AnswerData[] }> => {
     const row = await run();
     // pi's tool tasks and the CLI record alike: the kernel's one reader.
     const entries = await journalRecords(server.journal({ runId: RUN, runner: "conformance-reader", epoch: row.epoch, until: 0, from: row.state }), BACKGROUND_CONTEXT);
-    return { calls: callsOf(entries), messages: messagesOf(entries) };
+    // The answers to the run's asks: one place for every harness, the resume row's source.
+    const answers = entries.entries.filter((entry) => entry.kind === KINDS.answer).map((entry) => entry.data as unknown as AnswerData);
+    return { calls: callsOf(entries), messages: messagesOf(entries), answers };
   };
   const ended = (state: RunRow["state"], ms = 15_000) =>
     until(async () => {
@@ -208,7 +221,7 @@ async function world(subject: ConformanceSubject, t: { after(fn: () => unknown):
     assert.ok(ask, "the run wrote its ask");
     return String((ask.data as { callId?: unknown }).callId);
   };
-  return { dir, server, start, run, read, ended, commandRow, askedCall, events, liveRows };
+  return { dir, server, start, run, read, ended, commandRow, askedCall, events, handedOver: (id: number) => handed.has(id), liveRows };
 }
 
 interface Case {
@@ -222,13 +235,16 @@ export type Seen = { type?: string; at?: number; epoch?: number; name?: string; 
 
 /**
  * The claim's fence, as the stalled process's own events show it: once it went on (`continuedAt`, its lease run out and no
- * one holding the run yet), its old loop's writes under its first epoch are each refused by the fence, by name (ClaimLost
+ * one holding the run yet), its old loop's writes under the claim it was held under are each refused by the fence, by name (ClaimLost
  * or Fenced), or, with none tried, the runner said its claim was lost once it went on (its loop stopped before any write).
  * A landed one names how long after its claim was lost it landed.
  */
 export function fenceHeld(events: readonly Seen[], continuedAt: number): void {
   const history = JSON.stringify(events);
-  const first = events.find((event) => event.type === "claimed")?.claim?.epoch;
+  // The claim the held loop ran under: the process's last claim before it stopped at the point. A starved box can lose the
+  // process's first claim before the point and take the run again, so the held loop's epoch need not be its first.
+  const heldFrom = events.find((event) => event.type === "stopping")?.at ?? continuedAt;
+  const first = events.filter((event) => event.type === "claimed" && (event.at ?? 0) <= heldFrom).at(-1)?.claim?.epoch;
   const old = events.filter((event) => (event.at ?? 0) >= continuedAt && event.epoch === first && (event.type === "commit-landed" || event.type === "commit-refused"));
   const lost = events.find((event) => event.type === "claim-lost" && event.epoch === first);
   for (const landed of old.filter((event) => event.type === "commit-landed")) {
@@ -305,7 +321,7 @@ function saidTakenOver(rows: readonly TimelineEvent[], runner: string): void {
 
 /** A crash at `point` during a call of `tool`, then a second runner's resume: the run ends. */
 async function crashThenResume(subject: ConformanceSubject, t: { after(fn: () => unknown): void }, tool: ToolName, point: keyof KernelHooks) {
-  const w = await world(subject, t);
+  const w = await world(subject, t, TAKEOVER);
   const { tools, ran } = suiteTools();
   const script: ScriptStep[] = [{ call: tool }, { say: "done" }];
   const holder: { runner?: Runner; crashed?: boolean } = {};
@@ -330,7 +346,7 @@ const childEnv = () => {
 /** As crashThenResume, with the first runner a process of its own that SIGKILLs itself at `point`: nothing it had not
  *  committed survives, as in a real crash. The tools count their runs in a file both processes append to. */
 async function processCrashThenResume(subject: ConformanceSubject, t: { after(fn: () => unknown): void }, tool: ToolName, point: keyof KernelHooks, { stall = false }: { stall?: boolean } = {}) {
-  const w = await world(subject, t);
+  const w = await world(subject, t, TAKEOVER);
   const countFile = join(w.dir, "tool-runs");
   const { tools, ran } = suiteTools(countFile);
   const eventsFile = join(w.dir, "runner-process-events.jsonl");
@@ -353,7 +369,7 @@ async function processCrashThenResume(subject: ConformanceSubject, t: { after(fn
     continuedAt = Date.now();
     child.kill("SIGCONT");
     // The fence first, before anything waits on the process's death: its old loop's first write once it went on (landed or
-    // refused), or the process's end, bounded. The old loop's epoch is the process's first claim's.
+    // refused), or the process's end, bounded. The old loop's epoch is the claim it was held under.
     const outcome = (event: Seen) => (event.at ?? 0) >= continuedAt && (event.type === "commit-landed" || event.type === "commit-refused");
     await until(() => child.exitCode !== null || child.signalCode !== null || childEvents(eventsFile).some((event) => outcome(event as Seen)), "the old loop writes once it goes on, or the process ends", 15_000);
     fenceHeld(childEvents(eventsFile) as Seen[], continuedAt);
@@ -536,6 +552,86 @@ const CASES: readonly Case[] = [
     },
   },
   {
+    id: "cancel-ends-for-good",
+    title: "a cancel ends the run for good, cancelled in the server's words, and the run takes nothing more",
+    async body(subject, t) {
+      const w = await world(subject, t);
+      const { tools, slowStarted } = suiteTools();
+      await w.start("runner-a", { script: [{ call: "slow" }, { say: "never" }], tools, hooks: quiet });
+      await slowStarted;
+      const cancel = await sendCommand(w.server, RUN, { kind: "cancel" });
+      const row = await w.ended("stopped");
+      const { calls, messages } = await w.read();
+      assert.ok(calls.every((call) => call.status !== "pending"), `no call left pending: ${JSON.stringify(calls)}`);
+      assert.equal(messages.some((message) => message.text === "never"), false, "the turn did not go on");
+      // The end main's cancel writes: stopped, its summary "cancelled", staged in the end commit.
+      assert.equal(row.summary, CANCELLED, `the run says it was cancelled: ${JSON.stringify(row)}`);
+      const taken = await w.commandRow(cancel.id);
+      assert.ok(taken.takenAt !== null && taken.refused === null, `the cancel row is taken, not refused: ${JSON.stringify(taken)}`);
+      await assert.rejects(sendCommand(w.server, RUN, { kind: "steer", body: { text: "go on" } }), RunFinal, "a cancelled run takes no more messages");
+    },
+  },
+  {
+    id: "cancel-parked",
+    title: "a cancel of a parked run ends it for good, the asked call never run",
+    async body(subject, t) {
+      const w = await world(subject, t);
+      const { tools, ran } = suiteTools();
+      await w.start("runner-a", { script: [{ call: "asked" }, { say: "done" }], tools, hooks: quiet });
+      await w.ended("parked");
+      const cancel = await sendCommand(w.server, RUN, { kind: "cancel" });
+      const row = await w.ended("stopped");
+      assert.equal(row.summary, CANCELLED, `the run says it was cancelled: ${JSON.stringify(row)}`);
+      assert.equal(ran.asked, 0, "the asked call never ran");
+      const taken = await w.commandRow(cancel.id);
+      assert.ok(taken.takenAt !== null && taken.refused === null, `the cancel row is taken, not refused: ${JSON.stringify(taken)}`);
+      await assert.rejects(sendCommand(w.server, RUN, { kind: "approve", body: { approval: "any" } }), RunFinal, "a cancelled run takes no answer");
+    },
+  },
+  {
+    id: "deny-note",
+    title: "a deny's note is the person's words: on the answer, and in the refusal the model reads",
+    async body(subject, t) {
+      const w = await world(subject, t);
+      const { tools, ran } = suiteTools();
+      await w.start("runner-a", { script: [{ call: "asked" }, { sayLastResult: true }], tools, hooks: quiet });
+      await w.ended("parked");
+      const callId = await w.askedCall();
+      await sendCommand(w.server, RUN, { kind: "deny", body: { approval: callId, note: "not on a Friday" } });
+      await w.ended("ended");
+      assert.equal(ran.asked, 0, "denied, it never ran");
+      const { answers, messages } = await w.read();
+      assert.deepEqual(answers, [{ callId, approved: false, note: "not on a Friday" }], "the answer keeps the note");
+      const said = messages.filter((message) => message.role === "model").map((message) => message.text);
+      assert.equal(said.length, 1, `the model answered once: ${JSON.stringify(messages)}`);
+      // Main's words for a call a person denied (tool-gate.ts refusedText), the note with them. The harness may frame a
+      // refusal its own way (pi: a blocked call's error) around them.
+      const refused = "The user denied this asked call. It was not run: nothing was sent and nothing was charged. Reason: not on a Friday";
+      assert.ok(said[0]!.includes(refused), `the model read main's refusal with the person's reason: ${JSON.stringify(said)}`);
+    },
+  },
+  {
+    id: "steer-origin",
+    title: "a steer's origin (a trigger's message) is kept on the message the run took",
+    async body(subject, t) {
+      const w = await world(subject, t);
+      const { tools, letSlowGo, slowStarted } = suiteTools();
+      await w.start("runner-a", { script: [{ call: "slow" }, { sayLastSteer: true }], tools, hooks: quiet });
+      await slowStarted;
+      const origin = { kind: "trigger", trigger_id: "trigger-1", source: "webhook", owner: false };
+      const steer = await sendCommand(w.server, RUN, { kind: "steer", body: { text: "a new order came in", origin } });
+      // The tool goes on once the steer is with the loop: the turn in flight has it, never a timer.
+      await until(() => w.handedOver(steer.id), "the steer handed to the loop");
+      letSlowGo();
+      await w.ended("ended");
+      const { messages } = await w.read();
+      const steered = messages.find((message) => message.text === "a new order came in" && message.role !== "model");
+      assert.deepEqual(steered?.origin, origin, `the message keeps its origin: ${JSON.stringify(messages)}`);
+      const said = messages.filter((message) => message.role === "model").map((message) => message.text);
+      assert.deepEqual(said, ["a new order came in"], "the model read it as any message");
+    },
+  },
+  {
     id: "park-on-ask",
     title: "park on ask; resume on the command row",
     async body(subject, t) {
@@ -611,7 +707,7 @@ const CASES: readonly Case[] = [
       await w.ended("parked");
       const callId = await w.askedCall();
       // A trigger's message: it says "yes", but it answers nothing (answers: false), so it resolves no approval.
-      await sendCommand(w.server, RUN, { kind: "steer", body: { text: "yes", answers: false, origin: { kind: "trigger", trigger: "trigger-1" } } });
+      await sendCommand(w.server, RUN, { kind: "steer", body: { text: "yes", answers: false, origin: { kind: "trigger", trigger_id: "trigger-1", source: "webhook", owner: false } } });
       await sleep(TIMING.leaseMs * 2);
       assert.equal(ran.asked, 0, "the waiting call did not run on a message");
       const row = await w.run();

@@ -49,14 +49,14 @@ const TRIGGER_COLUMNS = "id, agent_id, name, enabled, source, target, next_at, l
 const FINAL = FINAL_STATES.map((state) => `'${state}'`).join(", ");
 /** The runs a runner may claim, at a time bound five times (CLAIMABLE_AT): queued; running with no runner (released) or
  *  its claim run out, once its backoff (an interrupted run's) has passed; parked, once no claim holds it (a run parks
- *  under its claim and is released a few seconds later), with its wake_at passed, an untaken stop, or an untaken command
+ *  under its claim and is released a few seconds later), with its wake_at passed, an untaken stop or cancel, or an untaken command
  *  that can answer it once its backoff (a failed resume's) has passed. A row marked `answers: false` (a trigger's
  *  follow-up message) answers no park: it waits, untaken, and its loop gets it after the person's answer wakes the run. */
 const CLAIMABLE = `(state = 'queued'
   OR (state = 'running' AND (runner IS NULL OR claimed_until < ?) AND (backoff_until IS NULL OR backoff_until <= ?))
   OR (state = 'parked' AND (runner IS NULL OR claimed_until < ?) AND (
     (wake_at IS NOT NULL AND wake_at <= ?)
-    OR EXISTS (SELECT 1 FROM commands WHERE commands.run_id = runs.id AND commands.taken_at IS NULL AND commands.kind = 'stop')
+    OR EXISTS (SELECT 1 FROM commands WHERE commands.run_id = runs.id AND commands.taken_at IS NULL AND commands.kind IN ('stop', 'cancel'))
     OR ((backoff_until IS NULL OR backoff_until <= ?) AND EXISTS (SELECT 1 FROM commands WHERE commands.run_id = runs.id AND commands.taken_at IS NULL
       AND json_extract(commands.body, '$.answers') IS NOT 0)))))`;
 const CLAIMABLE_AT = (at: number): number[] => [at, at, at, at, at];

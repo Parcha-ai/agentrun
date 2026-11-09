@@ -61,6 +61,7 @@ export const healthCases: Case[] = [
 			const who = daemon === "none" ? `a ${kind} computer` : `a ${kind} computer with daemon ${daemon}`;
 			for (const need of coreGroups(kind, daemon)) {
 				if (need === "network:none") t.assert(declared.network.includes("none"), `${who} must declare network none`);
+				else if (need === "vendor-agent") t.assert(Array.isArray(declared.vendorAgentPorts), `${who} must declare its vendor's agent's ports (vendorAgentPorts)`);
 				else t.assert((groups as string[]).includes(need), `${who} must declare ${need}`);
 			}
 		},

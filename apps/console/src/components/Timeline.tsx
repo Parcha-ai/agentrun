@@ -24,10 +24,23 @@ const awaitsApproval = (row: TimelineRow) => row.kind === "tool_approval_request
 const fromServer = (row: TimelineRow) => row.origin === "server";
 /** A trigger's message, a webhook's input or a schedule's (served `origin: "trigger"`): the trigger's, never the person's. */
 const fromTrigger = (row: TimelineRow) => row.origin === "trigger";
+/** A trigger row's summary split at its "<Source> <its name>: " prefix: `who`, the trigger in its own words as serve
+ *  names it now ("Webhook inbound-lead", "Schedule nightly", or the id once it is deleted), and `said`, the message. The
+ *  split is exactly at the name the row carries (`trigger.name`, serve's, after its one-word source), so a name or a
+ *  message with a colon in it keeps both whole; with no name (a trigger gone, named by its id) at the first ": ". A
+ *  summary with no prefix has no `who`. Nothing is looked up: the served row says it. */
+const triggerParts = (row: TimelineRow): { who: string | null; said: string } => {
+  const summary = row.summary ?? "";
+  const name = row.trigger?.name;
+  const at = name ? summary.indexOf(` ${name}: `) : -1;
+  if (name && at > 0 && !summary.slice(0, at).includes(" ")) return { who: summary.slice(0, at + 1 + name.length), said: summary.slice(at + name.length + 3).trimStart() };
+  const m = /^([^:]+):\s*/.exec(summary);
+  return m ? { who: m[1]!, said: summary.slice(m[0].length) } : { who: null, said: summary };
+};
 /** The title a row shows: its summary without the kind's own prefix ("Thinking: ", "You: ", a server message's
- *  "AgentRun: ", a trigger's "Trigger <its id>: "). */
+ *  "AgentRun: ", a trigger's "<Source> <its name>: ", e.g. "Webhook inbound-lead: ", which is that row's label). */
 const title = (row: TimelineRow) => {
-  const text = (row.summary ?? "").replace(fromServer(row) ? /^AgentRun:\s*/ : fromTrigger(row) ? /^Trigger [^:]+:\s*/ : /^(You|Thinking|Asked you|Waiting for you):\s*/, "");
+  const text = fromTrigger(row) ? triggerParts(row).said : (row.summary ?? "").replace(fromServer(row) ? /^AgentRun:\s*/ : /^(You|Thinking|Asked you|Waiting for you):\s*/, "");
   // A workflow run's input is a JSON object: show its fields, not its braces.
   if (row.kind === "user_message" && text.startsWith("{")) {
     try { return Object.entries(JSON.parse(text) as Record<string, unknown>).map(([k, v]) => `${k}: ${typeof v === "string" ? v : JSON.stringify(v)}`).join(" · "); } catch { /* not whole JSON: as is */ }
@@ -48,7 +61,7 @@ const BROWSER = new Set<string>(BROWSER_TOOL_NAMES);
 /** A tool's name as the label says it: an MCP server's tool as `<server> · <tool>`, a browser tool by its name, any
  *  other as the harness names it. */
 const toolName = (tool: string | null | undefined) => (tool ? (mcpToolLabel(tool) ?? (BROWSER.has(tool) ? nameOf(tool) : tool)) : tool);
-const label = (row: TimelineRow) => fromServer(row) ? "AgentRun" : fromTrigger(row) ? "Trigger" :
+const label = (row: TimelineRow) => fromServer(row) ? "AgentRun" : fromTrigger(row) ? (triggerParts(row).who ?? "Trigger") :
   ({ user_message: "You", thinking: "Thinking", tool_use: toolName(row.tool_name) ?? "Tool", tool_result: toolName(row.tool_name) ?? "Result", waiting: "Waiting for you", usage: "Usage", final_answer: "Answer", phase: "Phase", error: "Error", decision: "Decision", text_block: "Text", tool_approval_requested: "Your approval", learning: "Learning" } as Partial<Record<string, string>>)[row.kind] ?? row.kind;
 
 /** A waiting row's chip, by what the run waits on now (its `pending.kind`, the run page's to pass: a row carries no kind
@@ -82,8 +95,10 @@ function Row({ step, last, waitingChip }: { step: Step; last: boolean; waitingCh
       <div className="min-w-0 flex-1 border-b py-3">
         <button type="button" className="flex w-full items-start gap-3 text-left" onClick={() => setOpen((v) => !v)} aria-expanded={open} disabled={!detail}>
           <span className="min-w-0 flex-1">
-            <span className="flex items-center gap-2 text-[13px] text-muted-foreground">
-              {label(row)}
+            <span className="flex min-w-0 items-center gap-2 text-[13px] text-muted-foreground">
+              {/* A label can be long (a trigger's name, up to 200 characters, spaces or none): cut to the row's width, so it
+                  never widens the page or runs over the time; whole on hover. */}
+              <span data-label className="min-w-0 truncate" title={label(row)}>{label(row)}</span>
               {row.kind === "waiting" && <Chip tone="warning">{waitingChip ?? "Input required"}</Chip>}
               {awaitsApproval(row) && <Chip tone="warning">Approval required</Chip>}
               {failed && <Chip tone="error">Error</Chip>}
