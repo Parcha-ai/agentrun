@@ -118,7 +118,7 @@ test("a release at a park gives the run back with its state and wake_at; an ende
   clock.now += 60_000;
   const again = await store.claim("run-1", "runner-b", { leaseMs: 30_000 });
   assert.deepEqual([again?.epoch, (await store.runs.get("run-1")).state], [3, "running"], "its wake_at passed: claimed, running");
-  await store.release(again, { state: "ended" });
-  assert.deepEqual(await store.runs.get("run-1").then((r) => [r.state, r.wakeAt, r.endedAt]), ["ended", null, clock.now], "a release with no wakeAt clears it");
-  assert.equal(await store.claim("run-1", "runner-c", { leaseMs: 30_000 }), null, "an ended run is final");
+  // A release never makes a run final (the end commit does): given back running, with no wakeAt, it clears it.
+  await store.release(again, {});
+  assert.deepEqual(await store.runs.get("run-1").then((r) => [r.state, r.wakeAt, r.endedAt]), ["running", null, null], "a release with no wakeAt clears it");
 });

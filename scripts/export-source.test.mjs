@@ -402,3 +402,27 @@ test('a TSX source file is archived and scanned like any other source', async t 
     return true;
   });
 });
+
+test('the Python client is source: its .py files, pyproject.toml and py.typed are archived and scanned; its bytecode is left out', async t => {
+  const f = await fixture(t);
+  const sources = ['python/pyproject.toml', 'python/README.md', 'python/agentrun/__init__.py', 'python/agentrun/py.typed', 'python/tests/test_rules.py'];
+  for (const path of sources) await f.write(path, `# ${path}\n`);
+  await f.write('python/agentrun/__pycache__/_client.cpython-311.pyc', 'BYTECODE\n');
+  await f.write('python/tests/__pycache__/helpers.cpython-311.pyc', 'BYTECODE\n');
+  // What `pip install ./python` leaves beside the source: its build tree and its metadata.
+  await f.write('python/build/lib/agentrun/__init__.py', '# a copy\n');
+  await f.write('python/parcha_agentrun.egg-info/PKG-INFO', 'Metadata-Version: 2.1\n');
+  await f.run();
+  const listing = await f.listing();
+  for (const path of sources) assert.match(listing, new RegExp(`agentrun-dsl-source/${path.replace(/\./g, '\\.')}\\n`), path);
+  assert.doesNotMatch(listing, /__pycache__|\.pyc|python\/build\/|egg-info/);
+  const fakeSecret = ['ghp_', 'z'.repeat(36)].join('');
+  await f.write('python/agentrun/_key.py', `KEY = "${fakeSecret}"\n`);
+  await assert.rejects(f.run(), error => {
+    assert.match(error.stderr, /Source export blocked/);
+    return true;
+  });
+  await f.write('python/agentrun/_key.py', 'KEY = None\n');
+  await f.write('python/agentrun/native.so', 'ELF\n');
+  await assert.rejects(f.run(), /Unreviewed source-export file type: python\/agentrun\/native\.so/);
+});

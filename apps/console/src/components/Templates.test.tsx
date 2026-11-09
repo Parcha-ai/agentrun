@@ -73,6 +73,28 @@ describe("the Templates page", () => {
     expect(t.went).toEqual(["#/templates/pr-reviewer"]);
   });
 
+  it("never shows a display name's unfilled ${parameters.x}: the card reads … in its place, and Apply fills it as typed", async () => {
+    const CODE: TemplateView = { ...REVIEWER, name: "code-review", display_name: "Code review: ${parameters.repo}" };
+    const list = await open(undefined, { templates: [CODE] });
+    const card = list.host.querySelector("article")!;
+    expect(card.querySelector("h2")!.textContent).toBe("Code review: …");
+    expect(card.getAttribute("aria-label")).toBe("Code review: …");
+    expect(list.host.textContent).not.toContain("${");
+    act(() => root?.unmount()); document.body.innerHTML = "";
+    const apply = await open("code-review", { templates: [CODE] });
+    const title = () => apply.host.querySelector("h1")!.textContent ?? "";
+    expect(title()).toContain("Code review: …");
+    await apply.type(apply.host.querySelector('[data-field="parameters.repo"] input'), "acme/web");
+    expect(title()).toContain("Code review: acme/web");
+    expect(apply.host.textContent).not.toContain("${");
+  });
+
+  it("reads a placeholder named like an object's own property (constructor) as … too, and the list still shows", async () => {
+    const ODD: TemplateView = { ...REVIEWER, name: "odd", display_name: "Odd: ${parameters.constructor}", parameters: { constructor: { type: "string" as const, required: true, description: "x" } } };
+    const list = await open(undefined, { templates: [ODD, NOTES] });
+    expect([...list.host.querySelectorAll("article h2")].map((h) => h.textContent)).toEqual(["Odd: …", "meeting-notes"]);
+  });
+
   it("routes #/templates to the list and #/templates/<name> to its Apply screen", () => {
     expect(route("#/templates")).toEqual({ section: "templates" });
     expect(route("#/templates/pr-reviewer")).toEqual({ section: "templates", template: "pr-reviewer" });
@@ -166,6 +188,19 @@ describe("applying a template", () => {
     expect(row).toContain("PARALLEL_API_KEY is not saved on this server.");
     expect(row).toContain("Save PARALLEL_API_KEY on the Keys page, then apply again.");
     expect(t.went).toEqual([]);
+  });
+
+  it("titles what was applied with the values sent, not edits made while the apply was under way", async () => {
+    const CODE: TemplateView = { ...REVIEWER, name: "code-review", display_name: "Code review: ${parameters.repo}" };
+    let answer: (v: unknown) => void = () => {};
+    const t = await open("code-review", { templates: [CODE], apply: () => new Promise((r) => { answer = r; }) });
+    const repo = () => t.host.querySelector('[data-field="parameters.repo"] input');
+    await t.type(repo(), "acme/web");
+    await act(async () => { t.button(/^Apply/)!.click(); });
+    await t.type(repo(), "acme/api");
+    await act(async () => { answer({ template: "code-review", version: "1.0.0", agent_id: "cr-1", trigger_ids: [], warnings: [{ field: "mcp.github", reason: "not_set_up_here", message: "github is not set up here." }] }); });
+    await t.settle();
+    expect(t.host.querySelector('section[aria-label="Applied"] h1')!.textContent).toContain("Code review: acme/web applied");
   });
 
   it("opens the made agent at once when there are no warnings", async () => {

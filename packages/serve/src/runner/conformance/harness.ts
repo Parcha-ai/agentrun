@@ -20,6 +20,11 @@ import { sendCommand } from "../commands.js";
 import { callsOf, journalRecords, messagesOf, type CallRecord, type MessageRecord } from "../journal-reader.js";
 import { KINDS } from "../journal-kinds.js";
 import type { LoopFactory } from "../loop-contract.js";
+import { timelineReducer, type TimelineEvent } from "@parcha/pi-durable-agent/timeline";
+import { emptyState, translate } from "../../live/translate.js";
+
+/** The one row a person's stop gives on the live timeline (live/translate.ts STOPPED_BY_YOU), the same on every harness. */
+const STOPPED_BY_YOU = "Stopped by you";
 import { startRunner, type Runner } from "../runner.js";
 import type { ConformanceCase, ConformanceSetup, ConformanceSubject, KernelHooks, ScriptStep, SuiteTool, ToolName } from "./subject.js";
 
@@ -179,6 +184,21 @@ async function world(subject: ConformanceSubject, t: { after(fn: () => unknown):
       const row = await run();
       throw new Error(`${error.message}; the run is ${row.state} (runner ${row.runner}, epoch ${row.epoch}); the runners said ${JSON.stringify(events)}`);
     });
+  /** The run's timeline as its live view shows it: every stored commit through the live translate (live/translate.ts),
+   *  its events through the timeline's own reducer, as the console reads them. */
+  const liveRows = async (): Promise<TimelineEvent[]> => {
+    const row = await run();
+    const journal = server.journal({ runId: RUN, runner: "conformance-reader", epoch: row.epoch, until: 0, from: row.state });
+    const state = emptyState();
+    const reducer = timelineReducer();
+    for (let after = 0; ; ) {
+      const page = await journal.commitsAfter(after, 500, BACKGROUND_CONTEXT);
+      for (const commit of page.commits) reducer.apply(translate(state, commit) as never);
+      if (page.next === undefined) break;
+      after = page.next;
+    }
+    return reducer.rows();
+  };
   const commandRow = async (id: number) => (await server.commands(RUN, id - 1)).find((row) => row.id === id)!;
   /** The call the run asked a person about: its ask entry's callId, which an approve or deny names as its approval. */
   const askedCall = async (): Promise<string> => {
@@ -188,7 +208,7 @@ async function world(subject: ConformanceSubject, t: { after(fn: () => unknown):
     assert.ok(ask, "the run wrote its ask");
     return String((ask.data as { callId?: unknown }).callId);
   };
-  return { dir, server, start, run, read, ended, commandRow, askedCall, events };
+  return { dir, server, start, run, read, ended, commandRow, askedCall, events, liveRows };
 }
 
 interface Case {
@@ -198,14 +218,15 @@ interface Case {
 }
 
 /** One event of the runner process (child.ts): a claim, a lost claim, a commit's outcome by epoch, and when. */
-type Seen = { type?: string; at?: number; epoch?: number; name?: string; why?: string; claim?: { epoch: number } };
+export type Seen = { type?: string; at?: number; epoch?: number; name?: string; why?: string; claim?: { epoch: number } };
 
 /**
  * The claim's fence, as the stalled process's own events show it: once it went on (`continuedAt`, its lease run out and no
  * one holding the run yet), its old loop's writes under its first epoch are each refused by the fence, by name (ClaimLost
- * or Fenced), and at least one was tried. A landed one names how long after its claim was lost it landed.
+ * or Fenced), or, with none tried, the runner said its claim was lost once it went on (its loop stopped before any write).
+ * A landed one names how long after its claim was lost it landed.
  */
-function fenceHeld(events: readonly Seen[], continuedAt: number): void {
+export function fenceHeld(events: readonly Seen[], continuedAt: number): void {
   const history = JSON.stringify(events);
   const first = events.find((event) => event.type === "claimed")?.claim?.epoch;
   const old = events.filter((event) => (event.at ?? 0) >= continuedAt && event.epoch === first && (event.type === "commit-landed" || event.type === "commit-refused"));
@@ -214,7 +235,13 @@ function fenceHeld(events: readonly Seen[], continuedAt: number): void {
     const when = lost?.at !== undefined ? `${landed.at! - lost.at} ms after its claim was lost` : `${landed.at! - continuedAt} ms after it went on, its lease run out`;
     assert.fail(`an epoch-${first} commit landed ${when}: ${history}`);
   }
-  assert.ok(old.length > 0, `the old loop tried to write after it went on: ${history}`);
+  // Which way the fence is kept is the box's timing, and both keep it: the runner sees its claim lost and stops the loop
+  // before any write (a loaded box), or the loop's write is tried and refused. The store's refusal of a write past the
+  // lease is held on its own, deterministically (store-claim-lease).
+  if (old.length === 0) {
+    assert.ok(lost !== undefined && (lost.at ?? 0) >= continuedAt, `the old loop neither tried a write nor was stopped by its claim lost once it went on: ${history}`);
+    return;
+  }
   assert.ok(old.every((event) => event.name === "ClaimLost" || event.name === "Fenced"), `each was refused by the claim's fence, by name: ${history}`);
 }
 
@@ -241,14 +268,16 @@ function resumedOnceByB(events: readonly unknown[], row: RunRow): void {
   assert.ok(claims.length > 0, `runner-b claimed the run: ${history}`);
   // Every claim after its first is accounted for: a starved box can miss runner-b's renews, and then it takes the run
   // again. Each such claim comes after runner-b lost the one before (a renew that missed or was fenced), at a fresh epoch,
-  // and nothing of the lost epoch landed after its loss.
+  // and nothing of the lost epoch landed once the run was claimed again. (The runner says it lost a claim a stop margin
+  // before the store's lease runs out, so a commit already on its way can land in that margin, under a lease it still
+  // holds; the fence refuses the old epoch once the lease ran out, and so surely once the next claim holds the run.)
   for (let i = 1; i < claims.length; i += 1) {
     const before = claims[i - 1]!.claim!.epoch;
     const next = claims[i]!.claim!.epoch;
     assert.ok(next > before, `runner-b's claim ${i + 1} is at a fresh epoch (${next} after ${before}): ${history}`);
     const lostAt = ofB.findIndex((event) => event.type === "claim-lost" && event.epoch === before);
     assert.ok(lostAt >= 0 && lostAt < ofB.indexOf(claims[i]!), `runner-b lost its claim at epoch ${before} before it claimed again: ${history}`);
-    assert.deepEqual(ofB.slice(lostAt).filter((event) => event.type === "commit-landed" && event.epoch === before), [], `nothing of runner-b's lost epoch ${before} landed after its loss: ${history}`);
+    assert.deepEqual(ofB.slice(ofB.indexOf(claims[i]!)).filter((event) => event.type === "commit-landed" && event.epoch === before), [], `nothing of runner-b's lost epoch ${before} landed once it claimed the run again: ${history}`);
   }
   const last = claims[claims.length - 1]!.claim!.epoch;
   const releases = ofB.filter((event) => event.type === "released");
@@ -268,6 +297,12 @@ function childEvents(file: string): unknown[] {
   });
 }
 
+/** The run's live timeline says it went on after `runner` was lost: the loop that took it over wrote it (Claim.lost). */
+function saidTakenOver(rows: readonly TimelineEvent[], runner: string): void {
+  const said = rows.filter((row) => row.kind === "phase" && /^Resumed after its runner/.test(row.summary ?? "")).map((row) => row.summary);
+  assert.ok(said.includes(`Resumed after its runner (${runner}) was lost`), `the timeline says the run went on after ${runner} was lost: ${JSON.stringify(said)}`);
+}
+
 /** A crash at `point` during a call of `tool`, then a second runner's resume: the run ends. */
 async function crashThenResume(subject: ConformanceSubject, t: { after(fn: () => unknown): void }, tool: ToolName, point: keyof KernelHooks) {
   const w = await world(subject, t);
@@ -280,6 +315,7 @@ async function crashThenResume(subject: ConformanceSubject, t: { after(fn: () =>
   const row = await w.ended("ended", EVENT_WAIT_MS);
   await saidReleased(w.events);
   resumedOnceByB(w.events, row);
+  saidTakenOver(await w.liveRows(), "runner-a");
   return { ...(await w.read()), ran };
 }
 
@@ -333,6 +369,7 @@ async function processCrashThenResume(subject: ConformanceSubject, t: { after(fn
   const row = await w.ended("ended", EVENT_WAIT_MS);
   await saidReleased(w.events);
   resumedOnceByB([...childEvents(eventsFile), ...w.events], row);
+  saidTakenOver(await w.liveRows(), "runner-process");
   return { ...(await w.read()), ran, events: childEvents(eventsFile) as { type?: string; at?: number; epoch?: number; name?: string; claim?: { epoch: number } }[], continuedAt };
 }
 
@@ -489,6 +526,13 @@ const CASES: readonly Case[] = [
       assert.match(row.summary ?? "", /stopped/, `the run says why it stopped: ${JSON.stringify(row.summary)}`);
       assert.ok(row.endedAt !== null, "its end commit stamped ended_at");
       assert.ok((await w.commandRow(stop.id)).takenAt !== null, "the stop row is taken");
+      // The live timeline: one row says the person stopped it, worded the same on every harness, and nothing a person
+      // reads shows a harness's markup.
+      const rows = await w.liveRows();
+      const stops = rows.filter((one) => one.summary === STOPPED_BY_YOU);
+      assert.deepEqual(stops.map((one) => one.kind), ["phase"], `one row says the person stopped it: ${JSON.stringify(rows.map((one) => [one.kind, one.summary]))}`);
+      const leaked = rows.filter((one) => [one.summary, one.text, one.tool_result_preview, one.tool_input_preview].some((value) => typeof value === "string" && value.includes("<harness")));
+      assert.deepEqual(leaked.map((one) => [one.kind, one.summary, one.tool_result_preview]), [], "no row shows a harness's markup");
     },
   },
   {
@@ -579,7 +623,46 @@ const CASES: readonly Case[] = [
       assert.equal(ran.asked, 1, "approved, it ran once");
     },
   },
+  {
+    // An answer the model's output limit cut (stopReason "length") is unfinished: a run that ends on it never reads ended.
+    id: "length-ends-failed",
+    title: "a final answer the model cut at its output limit ends the run failed, saying so",
+    async body(subject, t) {
+      const w = await world(subject, t);
+      const { tools } = suiteTools();
+      await w.start("runner-a", { script: [{ say: "The answer is", cut: true }], tools, hooks: quiet });
+      const row = await settledRun(w);
+      assert.equal(row.state, "failed", `the run ends failed, never ended: ${JSON.stringify({ state: row.state, summary: row.summary })}`);
+      assert.match(row.summary ?? "", CUT_AT_LIMIT, "it says the model stopped at its output limit");
+      const { messages } = await w.read();
+      assert.deepEqual(messages.filter((message) => message.role === "model").map((message) => message.text), ["The answer is"], "its cut answer is kept as it came");
+    },
+  },
+  {
+    id: "length-mid-run",
+    title: "a cut answer the run goes on from changes nothing: the run's end reads its last answer",
+    async body(subject, t) {
+      const w = await world(subject, t);
+      const { tools } = suiteTools();
+      await w.start("runner-a", { script: [{ say: "Part of it", cut: true }, { say: "done" }], tools, hooks: quiet });
+      const row = await settledRun(w);
+      assert.deepEqual([row.state, row.summary], ["ended", null], "the run ends as its last answer says");
+      const { messages } = await w.read();
+      assert.deepEqual(messages.filter((message) => message.role === "model").map((message) => message.text), ["Part of it", "done"]);
+    },
+  },
 ];
+
+/** What a run whose answer was cut at the model's output limit says (loop-contract.ts cutAtLimit). */
+const CUT_AT_LIMIT = /^the model stopped at its output limit( \(\d+ tokens\))? before finishing its answer$/;
+
+/** The run once it is released in a final state, whichever: a case reads which. */
+async function settledRun(w: { run(): Promise<RunRow> }): Promise<RunRow> {
+  return until(async () => {
+    const row = await w.run();
+    return row.runner === null && (row.state === "ended" || row.state === "failed" || row.state === "stopped") && row;
+  }, "the run ends and is released");
+}
 
 /** Registers the six cases for `subject` with `test` (node:test). A case the subject cannot model is skipped with its
  *  reason, never passed. */
