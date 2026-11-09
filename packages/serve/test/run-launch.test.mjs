@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-const { launchBody, readLaunchBody, keepInputOrigin } = await import("../dist/run-launch.js");
+const { launchBody, readLaunchBody, keepInputOrigin, learningStartOf } = await import("../dist/run-launch.js");
 
 test("a launch body round-trips its per-run fields", () => {
   const launch = {
@@ -136,4 +136,22 @@ test("a launch body keeps the run's ready file ids in order, for the runner to c
 test("a launch body with no files reads none, never an empty list", () => {
   const read = readLaunchBody(launchBody({ input: { content: "hi" }, title: "t", place: { mode: "runner" } }));
   assert.equal(read.files, undefined);
+});
+
+test("a launch body round-trips the run's learning start (given notes + seed sha)", () => {
+  const learning = { given: ["a.md", "b.md"], seed: "seed-abc" };
+  const read = readLaunchBody(launchBody({ input: { content: "hi" }, title: "t", place: { mode: "runner" }, learning }));
+  assert.deepEqual(read.learning, learning);
+  assert.deepEqual(learningStartOf(read), learning);
+});
+
+test("a learning start with a failed seed round-trips as given empty, seed null", () => {
+  const read = readLaunchBody(launchBody({ input: { content: "hi" }, title: "t", place: { mode: "runner" }, learning: { given: [], seed: null } }));
+  assert.deepEqual(read.learning, { given: [], seed: null });
+});
+
+test("a launch body with no learning reads none", () => {
+  const read = readLaunchBody(launchBody({ input: { content: "hi" }, title: "t", place: { mode: "runner" } }));
+  assert.equal(read.learning, undefined);
+  assert.equal(learningStartOf(read), undefined);
 });

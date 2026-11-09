@@ -41,6 +41,10 @@ export interface RunLaunch {
   /** The uploaded file ids the run was started with, in order (the create body's file_ids, already checked ready): the
    *  runner copies them into the run's work/inputs/ at its claim, as the old start copied them before the process ran. */
   readonly files?: readonly string[];
+  /** The run's learning start, when its agent learns and the server's learning is on: the note files its # Learned section
+   *  names at start (`given`, the server's one decision, which the runner puts in the prompt), and the learning the run is
+   *  seeded from (`seed`, the learning commit's sha, or null when its seed could not be read). Absent when it does not learn. */
+  readonly learning?: { readonly given: readonly string[]; readonly seed: string | null };
   /** The trigger and firing that started the run, or none for a person's run. */
   readonly trigger?: RunTrigger;
   /** Who the first message is from, when not the person: kept only through the fail-safe below. */
@@ -98,10 +102,20 @@ export function launchBody(launch: RunLaunch): Json {
     ...(launch.documents !== undefined ? { documents: launch.documents } : {}),
     ...(launch.boxAllow !== undefined ? { box_allow: launch.boxAllow } : {}),
     ...(launch.files?.length ? { files: launch.files } : {}),
+    ...(launch.learning ? { learning: { given: launch.learning.given, seed: launch.learning.seed } } : {}),
     ...(launch.trigger ? { trigger: launch.trigger } : {}),
     ...(launch.inputOrigin ? { input_origin: launch.inputOrigin } : {}),
     ...(launch.followUp ? { follow_up: true } : {}),
   };
+}
+
+/** The learning start a launch body names, as read back: its given note files and its seed sha, or undefined when the body
+ *  names none (a run that does not learn). */
+function readLearning(value: unknown): { given: readonly string[]; seed: string | null } | undefined {
+  if (!isObject(value)) return undefined;
+  const given = Array.isArray(value.given) && value.given.every((f) => typeof f === "string") ? (value.given as string[]) : [];
+  const seed = typeof value.seed === "string" ? value.seed : null;
+  return { given, seed };
 }
 
 /** A launch body read back into a `RunLaunch`, with the input-origin fail-safe applied through the body's own trigger, or
@@ -128,8 +142,13 @@ export function readLaunchBody(stored: unknown): RunLaunch | undefined {
     ...(typeof stored.documents === "string" ? { documents: stored.documents } : {}),
     ...(boxAllow !== undefined ? { boxAllow } : {}),
     ...(Array.isArray(stored.files) && stored.files.every((id) => typeof id === "string") ? { files: stored.files as string[] } : {}),
+    ...(stored.learning !== undefined ? { learning: readLearning(stored.learning) ?? { given: [], seed: null } } : {}),
     ...(trigger ? { trigger } : {}),
     ...(inputOrigin ? { inputOrigin } : {}),
     ...(stored.follow_up === true ? { followUp: true } : {}),
   };
 }
+
+/** The run's learning start (its given note files and its seed sha), read from one place by learning's routes; undefined when
+ *  the run does not learn. */
+export const learningStartOf = (launch: RunLaunch): { given: readonly string[]; seed: string | null } | undefined => launch.learning;
