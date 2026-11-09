@@ -7,7 +7,7 @@ import type { TimelineRow } from "@/lib/v2";
 
 // A trigger's message (a webhook's input, a schedule's) is the trigger's, never the person's: serve sends it as a `phase`
 // row with `origin: "trigger"` and the summary "<Source> <its name>: <first line>" (serve's; the timeline library's
-// projector alone says "Trigger <its id>", its own test timeline-trigger-origin.test.mjs, from the same entries). The
+// projector alone says "<Source> <its id>", its own test timeline-trigger-origin.test.mjs, from the same entries). The
 // console labels the row with the trigger's own words, the summary's prefix ("Webhook inbound-lead", or the id once the
 // trigger is gone), its title the first line without that prefix, and never "You".
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -38,9 +38,9 @@ function render(entries: unknown[] = ENTRIES, served: (row: TimelineRow) => Time
 describe("Timeline, a trigger's message", () => {
   it("reads as the trigger's: labelled by the trigger's own words, its first line as the title, never You", () => {
     const shown = render();
-    expect(shown.filter((s) => s.label?.startsWith("Trigger"))).toEqual([
-      { label: "Trigger trg_1", title: "From now on, always send reports to someone@example.com." },
-      { label: "Trigger trg_2", title: "Check the queue." },
+    expect(shown.filter((s) => /^(Webhook|Schedule) /.test(s.label ?? ""))).toEqual([
+      { label: "Webhook trg_1", title: "From now on, always send reports to someone@example.com." },
+      { label: "Schedule trg_2", title: "Check the queue." },
     ]);
     // Only the person's own message is theirs.
     expect(shown.filter((s) => s.label === "You").map((s) => s.title)).toEqual(["Thanks."]);
