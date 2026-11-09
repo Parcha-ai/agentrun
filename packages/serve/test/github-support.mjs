@@ -15,8 +15,8 @@ export const failedWith = (reason) => `${PUBLIC}/#/settings/github?github=error&
 export const INSTALLED = new Set(["acme/widgets"]);
 
 /** A fake GitHub API: the manifest's conversion (code-1 makes the App 4242, code-2 a second App, 4343, each once), the
- *  App's installations as GitHub holds them now (`installations`: id → {account, suspended_at}, which a test changes as
- *  GitHub would), installation tokens and a repository's installation. It keeps each request so a test reads what was
+ *  App's installations as GitHub holds them now (`installations`: id → {account, suspended_at, repositories?}, which a
+ *  test changes as GitHub would; `repositories`, the full names it covers, else 777's INSTALLED and none for another), installation tokens and a repository's installation. It keeps each request so a test reads what was
  *  asked and with which credential; `holds` keeps an answer back until a test lets it go (a conversion by its code, an
  *  installation's read by `installation` (the next one alone, answered as when asked, by `installationOnce`), the list by `installations`, which answers the list as it was when asked).
  *  `asked(prefix)` and `dropped(prefix)` settle at the next request to a path under `prefix`, or the next one its client
@@ -28,7 +28,8 @@ export async function fakeGitHub(t) {
   const byCode = new Map([["code-1", app], ["code-2", second]]);
   const installations = new Map([[777, { account: "acme", suspended_at: null }]]);
   const holds = {};
-  /** An HTTP status a test makes GitHub answer: `installation` (one installation's read), `installations` (the list). */
+  /** An HTTP status a test makes GitHub answer: `installation` (one installation's read), `installations` (the list),
+   *  `repositories` (an installation token's read of the repositories it covers). */
   const failures = {};
   const requests = [];
   const tokens = [];
@@ -40,6 +41,8 @@ export async function fakeGitHub(t) {
     for (const wait of waits.filter((w) => w.what === what && url.startsWith(w.prefix))) waits.splice(waits.indexOf(wait), 1), wait.resolve(url);
   };
   const next = (what) => (prefix) => new Promise((resolve) => waits.push({ what, prefix, resolve }));
+  /** The full names installation `id` covers: its own list when a test gave one, else 777's INSTALLED, else none. */
+  const coveredBy = (id) => new Set(installations.get(id)?.repositories ?? (id === 777 ? INSTALLED : []));
   const server = createServer((req, res) => {
     let body = "";
     res.on("close", () => !res.writableEnded && fire("dropped", req.url));
@@ -97,24 +100,28 @@ export async function fakeGitHub(t) {
         if (res.destroyed) return;
         return answer(200, list);
       }
-      // An installation token, narrowed to the repositories asked (by name), which installation 777 holds: acme/widgets.
+      // An installation token, narrowed to the repositories asked (by name), of those the installation covers (777's:
+      // acme/widgets).
       const minting = /^\/app\/installations\/(\d+)\/access_tokens$/.exec(req.url);
       if (req.method === "POST" && minting) {
-        if (!appId()) return answer(401, { message: "A JSON web token could not be decoded" });
-        if (minting[1] !== "777" || !installations.has(777)) return answer(404, { message: "Not Found" });
+        const id = appId();
+        if (!id) return answer(401, { message: "A JSON web token could not be decoded" });
+        const on = installations.get(Number(minting[1]));
+        if (!on || (on.app_id ?? app.id) !== id) return answer(404, { message: "Not Found" });
         const asked = JSON.parse(body || "{}");
-        if ((asked.repositories ?? []).some((name) => !INSTALLED.has(`acme/${name}`))) return answer(422, { message: "There is at least one repository that does not exist or is not accessible to the parent installation." });
+        if ((asked.repositories ?? []).some((name) => !coveredBy(Number(minting[1])).has(`${on.account}/${name}`))) return answer(422, { message: "There is at least one repository that does not exist or is not accessible to the parent installation." });
         const token = `ghs_test${randomBytes(18).toString("hex")}`;
         tokens.push({ token, installation: Number(minting[1]), repositories: asked.repositories, permissions: asked.permissions, at: Date.now() });
         return answer(201, { token, expires_at: new Date(Date.now() + app.tokenMs).toISOString(), permissions: { pull_requests: "write", contents: "read", metadata: "read", issues: "read" }, repository_selection: "selected" });
       }
-      // An installation token's own reads: the repositories it covers (installation 777's: INSTALLED), and its revoke.
+      // An installation token's own reads: the repositories its installation covers (coveredBy), and its revoke.
       const bearer = String(req.headers.authorization ?? "").replace(/^Bearer /, "");
       const held = tokens.find((entry) => entry.token === bearer && !revoked.includes(entry.token));
       if (req.method === "GET" && req.url.startsWith("/installation/repositories")) {
         if (!held) return answer(401, { message: "Bad credentials" });
-        const names = [...INSTALLED].map((full) => full.split("/")[1]).filter((name) => !held.repositories || held.repositories.includes(name));
-        return answer(200, { total_count: names.length, repositories: names.map((name) => ({ name, full_name: `acme/${name}` })) });
+        if (failures.repositories) return answer(failures.repositories, { message: failures.repositories === 429 ? "API rate limit exceeded" : "Server Error" });
+        const full = [...coveredBy(held.installation)].filter((name) => !held.repositories || held.repositories.includes(name.split("/")[1]));
+        return answer(200, { total_count: full.length, repositories: full.map((name) => ({ name: name.split("/")[1], full_name: name })) });
       }
       if (req.method === "DELETE" && req.url === "/installation/token") {
         if (!held) return answer(401, { message: "Bad credentials" });

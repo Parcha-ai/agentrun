@@ -300,6 +300,34 @@ test("the token that lists a github_app server's tools as it is saved asks for t
   assert.ok(seen.some((request) => request.authorization === `Bearer ${listing.token}`), "the narrowed one listed the tools");
 });
 
+/** A connected server whose MCP server lists its tools with the App's tokens, before any is saved: the fake takes only a
+ *  token GitHub minted. */
+async function connectedForListing(t) {
+  let server;
+  const minted = () => server.github.tokens.map((entry) => `Bearer ${entry.token}`);
+  const fake = await startFakeMcp({ token: (authorization) => minted().includes(authorization) });
+  t.after(() => fake.close());
+  server = await connectable(t, { githubMcpOrigin: new URL(fake.url).origin });
+  await connect(server);
+  return { server, fake, entry: { url: fake.url, auth: { type: "github_app", headers: { "X-MCP-Tools": "add" } } } };
+}
+
+test("the token that lists a github_app server's tools comes from the first installation that covers a repository: one whose account has none selected is passed over, and each scout is revoked", { timeout: 60_000 }, async (t) => {
+  const { server, entry } = await connectedForListing(t);
+  const { installations, app } = server.github;
+  // acme's installation has no repository selected; other's, installed after it, has one.
+  installations.get(777).repositories = [];
+  installations.set(778, { account: "other", suspended_at: null, repositories: ["other/gadgets"] });
+  assert.equal((await deliver(server.baseUrl, app.webhook_secret, "installation", { action: "created", installation: { id: 778, account: { login: "other" }, app_id: 4242 } })).status, 200);
+  assert.deepEqual((await server.api("GET", "/integrations/github")).body.installations, [{ id: 777, account: "acme" }, { id: 778, account: "other" }]);
+  const preview = await server.api("POST", "/settings/mcp-servers/preview", entry);
+  assert.equal(preview.status, 200, JSON.stringify(preview.body));
+  assert.ok(preview.body.tools.some((tool) => tool.name === "add"));
+  const listing = listingTokens(server);
+  assert.deepEqual(listing.map((token) => [token.installation, token.repositories ?? null]), [[777, null], [778, null], [778, ["gadgets"]]], "a scout on each installation in turn, then the token narrowed to the second's repository");
+  assert.deepEqual(server.github.revoked, [listing[0].token, listing[1].token], "both scouts revoked");
+});
+
 test("a github_app server saved at an origin that is no longer GitHub's hosted MCP gets no token: its preview by name is refused, and a run's launch mints none", { timeout: 120_000 }, async (t) => {
   const { server } = await withGitHubMcp(t);
   await server.close();
