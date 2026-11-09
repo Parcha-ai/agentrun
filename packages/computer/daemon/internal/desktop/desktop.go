@@ -1,5 +1,5 @@
-// Package desktop is the daemon's X11 shim: screen.shot, screen.read and input.actions on the display computerd got
-// in DISPLAY, through the pure-Go client in package x11. Pixels come from GetImage on the root window, input from XTEST,
+// Package desktop is the daemon's X11 shim: screen.shot, screen.read, screen.watch (watch.go) and input.actions on the
+// display computerd got in DISPLAY, through the pure-Go client in package x11. Pixels come from GetImage on the root window, input from XTEST,
 // with no program started for any action: a batch is written as it runs, with one round trip after each action the
 // server may refuse, so a refused one stops the batch before the next.
 //
@@ -157,11 +157,12 @@ func (d *Display) Groups() []string {
 	return slices.Clone(Groups)
 }
 
-// Handlers are screen.shot, screen.read and input.actions.
+// Handlers are screen.shot, screen.read, screen.watch and input.actions.
 func (d *Display) Handlers() map[string]rpc.Handler {
 	return map[string]rpc.Handler{
 		"screen.shot":   d.shot,
 		"screen.read":   d.read,
+		"screen.watch":  d.watch,
 		"input.actions": d.actions,
 	}
 }
@@ -228,7 +229,7 @@ func (d *Display) shot(ctx context.Context, raw json.RawMessage) (any, error) {
 	if err := strict(raw, &params); err != nil {
 		return nil, err
 	}
-	img, cursor, err := d.shoot(ctx, params.Region)
+	img, cursor, err := d.shoot(ctx, "screen.shot", params.Region)
 	if err != nil {
 		return nil, err
 	}
@@ -251,9 +252,9 @@ func (d *Display) shot(ctx context.Context, raw json.RawMessage) (any, error) {
 	return ShotResult{ID: id, Size: len(data), Data: first, EOF: eof, Width: b.Dx(), Height: b.Dy(), Scale: 1, Cursor: cursor}, nil
 }
 
-// shoot holds the display while it reads the region and where the pointer is.
-func (d *Display) shoot(ctx context.Context, region []int) (*image.RGBA, *[2]int, error) {
-	if err := d.hold(ctx, "screen.shot"); err != nil {
+// shoot holds the display, for method, while it reads the region and where the pointer is.
+func (d *Display) shoot(ctx context.Context, method string, region []int) (*image.RGBA, *[2]int, error) {
+	if err := d.hold(ctx, method); err != nil {
 		return nil, nil, err
 	}
 	defer d.letGo()
@@ -314,12 +315,15 @@ func (d *Display) read(ctx context.Context, raw json.RawMessage) (any, error) {
 	}
 	// A shot held is served from what computerd keeps, with no display: the X server may have exited since screen.shot.
 	// Only a shot not held asks for the display, so a computer without one answers unsupported, not not_found.
-	result, ok, err := heldOf(ctx).read(params.ID, *params.Offset)
-	switch {
-	case err != nil:
-		return nil, err
-	case ok:
-		return result, nil
+	// A watch's frame is held apart (watchHeldOf), so neither evicts the other.
+	for _, h := range []*held{heldOf(ctx), watchHeldOf(ctx)} {
+		result, ok, err := h.read(params.ID, *params.Offset)
+		switch {
+		case err != nil:
+			return nil, err
+		case ok:
+			return result, nil
+		}
 	}
 	if _, err := d.connection(); err != nil {
 		return nil, err

@@ -10,7 +10,7 @@ import { basename, dirname, join } from "node:path";
 import { test } from "node:test";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import Ajv2020 from "ajv/dist/2020.js";
-import { CaseError, evalTemplate, fakeAnswer, gradeDeterministic, lastJsonBlock, markdownReport, readCases, startFake, verdictOf } from "../dist/template-eval.js";
+import { CaseError, callsOf, evalTemplate, fakeAnswer, gradeDeterministic, lastJsonBlock, markdownReport, readCases, startFake, verdictOf } from "../dist/template-eval.js";
 import { PackageError, readPackages, TEMPLATES_DIR } from "../dist/templates.js";
 import { scratch, serve } from "./support.mjs";
 
@@ -172,6 +172,20 @@ test("a fake MCP server answers from its fixture and records each call; tool_use
   const mismatch = await caseOf("mcp-mismatch");
   assert.equal(mismatch.pass, false);
   assert.match(graderOf(mismatch.runs[0], "updated.md").reason, /^0 calls of mcp:crm\/update_contact with \{"id":"8"\}; the grader expects exactly 1$/);
+});
+
+test("a background shell call keeps its own name in the grading record, as the gate's request does: never counted as bash", () => {
+  const rows = [
+    { kind: "tool_use", tool_use_id: "1", tool_name: "bash_background", tool_input_preview: "sleep 1" },
+    { kind: "tool_use", tool_use_id: "2", tool_name: "bash", tool_input_preview: "ls" },
+    { kind: "tool_use", tool_use_id: "3", tool_name: "mcp__hands__bash_output", tool_input_preview: "1" },
+    { kind: "tool_use", tool_use_id: "4", tool_name: "mcp__crm__get_contact", tool_input_preview: "{}" },
+  ];
+  assert.deepEqual(callsOf(rows, "pi", ["crm"]).map((c) => c.tool).slice(0, 2), ["bash_background", "bash"]);
+  assert.deepEqual(callsOf(rows, "claude-agent", ["crm"]).map((c) => c.tool), ["bash_background", "bash", "bash_output", "mcp:crm/get_contact"]);
+  const record = { answer: "", calls: callsOf(rows, "pi", ["crm"]), mcpCalls: [], files: [] };
+  assert.equal(gradeDeterministic({ file: "bg.md", type: "tool_used", tools: ["bash_background"], expect: "called" }, record, []).pass, true);
+  assert.equal(gradeDeterministic({ file: "sh.md", type: "tool_used", tools: ["bash"], count: 1 }, record, []).pass, true, "bash counts its own call alone");
 });
 
 test("a learned note seeded through the learning API reaches the run", { timeout: 600_000 }, async () => {

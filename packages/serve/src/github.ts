@@ -38,7 +38,7 @@ export function appJwt(appId: string, pem: string, nowMs = Date.now()): string {
 
 /** One call to GitHub's API at `api`: its status and its JSON (null when it answers none). A network failure or a wait
  *  past GITHUB_MS throws, saying which; what GitHub answered is the caller's to word, never passed on as it is. */
-export async function githubCall(api: string, path: string, options: { method?: "GET" | "POST" | "DELETE"; jwt?: string; body?: unknown; signal?: AbortSignal } = {}): Promise<{ status: number; json: unknown }> {
+export async function githubCall(api: string, path: string, options: { method?: "GET" | "POST" | "DELETE"; jwt?: string; body?: unknown; signal?: AbortSignal } = {}): Promise<{ status: number; json: unknown; headers: Headers }> {
   const signal = options.signal ? AbortSignal.any([options.signal, AbortSignal.timeout(GITHUB_MS)]) : AbortSignal.timeout(GITHUB_MS);
   let res: Response;
   try {
@@ -56,7 +56,7 @@ export async function githubCall(api: string, path: string, options: { method?: 
   try {
     json = JSON.parse(text);
   } catch {}
-  return { status: res.status, json };
+  return { status: res.status, json, headers: res.headers };
 }
 
 /** An installation token of the App `appId` (its private key `pem`) for one repository: `target.installation`, or the
