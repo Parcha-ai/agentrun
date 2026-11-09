@@ -67,6 +67,7 @@ async function readCalls(journal, context) {
 export function workflowSubject() {
   const crash = "the DSL engine admits an effect's intent before it dispatches the call (intentBeforeDispatch: false) and reconciles a crashed one as interrupted, so the suite's crash and fault cases have no point to land before the intent; the engine's own durability is proven by runner-workflow-loop.test.mjs";
   const person = "a workflow has no person turn; its only person-wait is the spend-cap raise (personWait: raise), proven in runner-workflow-loop.test.mjs";
+  const cut = "a workflow has no free-text model answer for an output limit to cut: its model nodes deliver a record through the submit tool, and the suite's `say` steps (a model's text answer) are left out of the workflow";
   return {
     name: "workflow",
     createLoop(setup) {
@@ -91,6 +92,7 @@ export function workflowSubject() {
       "fault-effects-once": crash, "fault-restarts-bounded": crash, "replay-safe-rerun": crash,
       "steer-mid-turn": person, "steer-origin": person, "deny-note": person, "park-on-ask": person, "cancel-parked": person,
       "approval-names-its-call": person, "approval-double-click": person, "message-never-answers": person,
+      "length-ends-failed": cut, "length-mid-run": cut,
     },
     readCalls,
   };
