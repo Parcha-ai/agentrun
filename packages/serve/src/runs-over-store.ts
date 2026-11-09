@@ -17,7 +17,7 @@ import { CAP_TOLERANCE, money } from "./cap.js";
 import { ApiError, type InputIssue, invalid, unsupported } from "./errors.js";
 import { harnessOfBody } from "./harness.js";
 import { redacted, redactedOutput } from "./key-refusal.js";
-import { givenOf, LEARNING_BUDGET, type LearningMode, type Seed, type Shown } from "./learning.js";
+import { givenOf, LEARNING_BUDGET, learnedOf, type LearningMode, type NoteUsed, type Seed, type Shown } from "./learning.js";
 import { type Place, resolvePlace } from "./place.js";
 import { launchBody, type RunLaunch } from "./run-launch.js";
 import type { ApprovalDecision, RunMoment } from "./run-view.js";
@@ -300,14 +300,15 @@ const noShown: Shown = { text: (text) => text, name: (name) => name, holds: () =
  *  server's learning off, a workflow revision, or its revision does not say learning), else the notes its # Learned section
  *  names (givenOf, the one decision the runner puts in the prompt) and the seed sha it starts from — or given empty and seed
  *  null when its seed cannot be read (a learning fault never refuses a run). */
-async function learningStartFor(deps: StartDeps, entry: AgentEntry, revision: Revision, rbody: StartBody): Promise<{ given: string[]; seed: string | null } | undefined> {
+async function learningStartFor(deps: StartDeps, entry: AgentEntry, revision: Revision, rbody: StartBody): Promise<{ given: NoteUsed[]; seed: string | null; section: string } | undefined> {
   const learns = deps.learning !== undefined && deps.learning !== "off" && revision.kind === "agentic" && rbody.learning === true;
   if (!learns || !deps.seedFor) return undefined;
   const seeded = await deps.seedFor(entry.agent.id);
-  if (!("seed" in seeded)) return { given: [], seed: null };
-  const read = Array.isArray(rbody.tools) && rbody.tools.includes("read");
-  const given = givenOf(seeded.seed, { budget: deps.learningBudget ?? LEARNING_BUDGET, read, shown: deps.shown ? deps.shown() : noShown }).map((note) => note.file);
-  return { given, seed: seeded.seed.sha };
+  if (!("seed" in seeded)) return { given: [], seed: null, section: "" };
+  const options = { budget: deps.learningBudget ?? LEARNING_BUDGET, read: Array.isArray(rbody.tools) && rbody.tools.includes("read"), shown: deps.shown ? deps.shown() : noShown };
+  // The notes and the # Learned text are the old start's one decision (learnedParts): givenOf and learnedOf over the same
+  // seed and options, so the runner lays exactly this section for exactly these notes and reads no learning folder.
+  return { given: givenOf(seeded.seed, options), seed: seeded.seed.sha, section: learnedOf(seeded.seed, options) ?? "" };
 }
 
 /** Starts a run of `entry`'s agent from a create body, as POST /agents/{id}/runs starts it: every check the old start made
