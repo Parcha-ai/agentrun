@@ -18,6 +18,7 @@ import { ROOT_CONVERSATION_ID, type StorageWrite } from "@earendil-works/pi-dura
 import type { LearningProposal } from "../store/store.js";
 import { gradedItems, gradePrompt, parseVerdict, UNREADABLE_REASON, type IndexEntry, type NoteText, type Verdict } from "../learn/grade.js";
 import { mergedNote, parseNoteFile } from "../learn/notes.js";
+import type { LearnedFile, NoteLearned, Tokens } from "../learning.js";
 import { learnedPlace } from "../learn/skills.js";
 import { notKept, said, STOPPED } from "../learning-words.js";
 import { journalEntries } from "./journal-reader.js";
@@ -79,7 +80,7 @@ export interface LearningLoopDeps {
   /** Main as the grader reads it, from the folder's snapshot; problems when the proposal can't be graded on it. */
   readMain(ws: unknown, proposal: KeptProposal): Promise<GradeMain | { readonly problems: readonly Problem[] }>;
   /** One grader call, through the kernel's model proxy and the cap, booked to the agent's learning meter. */
-  ask(request: { readonly prompt: string; readonly maxTokens: number }, signal: AbortSignal): Promise<{ readonly text: unknown; readonly usd: number | null }>;
+  ask(request: { readonly prompt: string; readonly maxTokens: number }, signal: AbortSignal): Promise<{ readonly text: unknown; readonly usd: number | null; readonly tokens?: Tokens | null }>;
   /** The folder's one write. */
   commit(ws: unknown, change: MergeChange): Promise<LearningCommitResult>;
   /** The clock (epoch ms), for a parked run's wake. */
@@ -88,9 +89,12 @@ export interface LearningLoopDeps {
 
 const ROOT = ROOT_CONVERSATION_ID;
 
-type GradedData = { readonly source: string; readonly verdict: Verdict; readonly usd: number | null; readonly graded: Readonly<Record<string, string>> };
-type DroppedData = { readonly source: string; readonly reason: string; readonly detail: string; readonly problems?: readonly Problem[] };
-type MergedData = { readonly source: string; readonly main: string; readonly commit: string; readonly files: readonly string[]; readonly detail: string };
+/** The journal's learning entries' data (journal-kinds.ts learningGraded, learningDropped, learningMerged), as the reader
+ *  of a run's learning end reads them (store-reads/learning.ts). What a grade spent: its dollars and tokens, each null when
+ *  any ask's are unknown. */
+export type GradedData = { readonly source: string; readonly verdict: Verdict; readonly usd: number | null; readonly tokens?: Tokens | null; readonly graded: Readonly<Record<string, string>> };
+export type DroppedData = { readonly source: string; readonly reason: string; readonly detail: string; readonly problems?: readonly Problem[]; readonly usd?: number | null; readonly tokens?: Tokens | null };
+export type MergedData = { readonly source: string; readonly main: string; readonly commit: string; readonly files: readonly string[]; readonly detail: string };
 type UnavailableData = { readonly source: string; readonly error: string };
 
 /** The graded item a proposal's file is judged as (grade.ts itemOf): a draft's README.md with its workflow.json, every
@@ -100,18 +104,18 @@ const itemOf = (file: string): string => {
   return place?.kind === "readme" ? `workflows/${place.name}/workflow.json` : file;
 };
 
-/** `proposal` with only what `verdict` keeps (grade.ts keptProposal's rule): a note or file its item keeps or holds. */
-function keptOf(proposal: KeptProposal, verdict: Verdict): KeptProposal {
+/** `proposal` with only what `verdict` keeps (a verdict per item): a note or file its item keeps or holds. */
+export function keptOf(proposal: KeptProposal, verdict: Verdict): KeptProposal {
   if (!verdict.items.length) return proposal;
   const kept = new Set(verdict.items.filter((item) => item.keep).map((item) => item.file));
   return { ...proposal, notes: proposal.notes.filter(({ file }) => kept.has(file)), files: (proposal.files ?? []).filter(({ file }) => kept.has(itemOf(file))) };
 }
 
-/** The merge of `merging` (what the verdict kept) as the server's grade made it (grade.ts mergeProposal): each note with
+/** The merge of `merging` (what the verdict kept), the one rule learningCommit's merge is made by: each note with
  *  the origin its item gives (`you` for the user's own words, else the run's) and held for its owner's OK when its item
  *  is pending; a skill's SKILL.md or a draft's README.md held when its item is (a draft's workflow.json is held by its
  *  README); and the seed the source run started from, so a skill's or draft's file changed on main since is a conflict. */
-function mergeChangeOf(runId: string, merging: KeptProposal, verdict: Verdict, graded: Readonly<Record<string, string>>): MergeChange {
+export function mergeChangeOf(runId: string, merging: KeptProposal, verdict: Verdict, graded: Readonly<Record<string, string>>): MergeChange {
   const judged = new Map(verdict.items.map((item) => [item.file, item]));
   const notes = merging.notes.map(({ file, text }) => ({ path: file, text: mergedNote(text, { origin: judged.get(file)?.origin ?? "run" }) }));
   const files = (merging.files ?? []).map(({ file, text }) => ({ path: file, text }));
@@ -125,24 +129,35 @@ function mergeChangeOf(runId: string, merging: KeptProposal, verdict: Verdict, g
   };
 }
 
-/** The merge's words, as the server's grade said them (learning-run.ts grade): the notes it added that runs read, the
- *  ones waiting for their owner's OK, its skill and draft (each pending when it waits), what the grader left out, and
- *  what the checks left out (the kept row's `left`). */
-function mergedWords(merging: KeptProposal, verdict: Verdict, checked: readonly Problem[]): string {
+/** What a merge of `merging` learned, as the server's grade named it on the run (learning-run.ts grade): the notes it
+ *  added that runs read, with what each supersedes; the ones waiting for their owner's OK; its skills and workflow
+ *  drafts, each pending when it waits. The merge's words and the reader of a run's learning end (store-reads/learning.ts)
+ *  both name it so. */
+export function learnedOf(merging: KeptProposal, verdict: Verdict): { learned: NoteLearned[]; pending: { file: string; name: string }[]; skills: LearnedFile[]; workflows: LearnedFile[] } {
   const waiting = new Set(verdict.items.filter((item) => item.pending).map((item) => item.file));
   const notes = merging.notes.flatMap(({ file, text }) => {
     const note = parseNoteFile(file, text);
     return Array.isArray(note) ? [] : [{ file, name: note.name, supersedes: note.supersedes }];
   });
-  const learned = notes.filter(({ file }) => !waiting.has(file));
-  const pending = notes.filter(({ file }) => waiting.has(file)).map(({ name }) => ({ name }));
-  const made = (suffix: string) => (merging.files ?? []).filter(({ file }) => file.endsWith(suffix)).map(({ file }) => ({ file, name: file.split("/")[1]!, ...(waiting.has(file) ? { pending: true as const } : {}) }));
+  const made = (suffix: string): LearnedFile[] => (merging.files ?? []).filter(({ file }) => file.endsWith(suffix)).map(({ file }) => ({ file, name: file.split("/")[1]!, ...(waiting.has(file) ? { pending: true as const } : {}) }));
+  return {
+    learned: notes.filter(({ file }) => !waiting.has(file)),
+    pending: notes.filter(({ file }) => waiting.has(file)).map(({ file, name }) => ({ file, name })),
+    skills: made("/SKILL.md"),
+    workflows: made("/workflow.json"),
+  };
+}
+
+/** The merge's words, as the server's grade said them: what it learned (learnedOf), what the grader left out, and what
+ *  the checks left out (the kept row's `left`). */
+function mergedWords(merging: KeptProposal, verdict: Verdict, checked: readonly Problem[]): string {
+  const { learned, pending, skills, workflows } = learnedOf(merging, verdict);
   const left = verdict.items.filter((item) => !item.keep).map((item) => ({ why: item.why }));
-  return said.merged(learned, pending, [...made("/SKILL.md"), ...made("/workflow.json")], left, checked as never);
+  return said.merged(learned, pending, [...skills, ...workflows], left, checked as never);
 }
 
 /** The skills and drafts a proposal names, by their item's file: what a merge the grader refused loses (notKept). */
-const lostOf = (proposal: KeptProposal) => (proposal.files ?? []).flatMap(({ file }) => {
+export const lostOf = (proposal: KeptProposal): LearnedFile[] => (proposal.files ?? []).flatMap(({ file }) => {
   const place = learnedPlace(file);
   return place && place.kind !== "readme" ? [{ file, name: place.name }] : [];
 });
@@ -223,11 +238,23 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
               run: source.runId, ...(source.instructions ? { instructions: source.instructions } : {}), active: main.active, superseded: main.superseded, proposed: proposal.notes,
               ...(proposal.files?.length ? { files: proposal.files } : {}), ...(proposal.asked ? { asked: proposal.asked } : {}), ...(proposal.triggered ? { triggered: proposal.triggered } : {}),
             });
+            // What the grade spends, as the server's grade counted it (grade.ts counter): each ask's dollars and tokens
+            // added, either unknown (null) once any ask's is, and an ask that fails spent what nobody knows.
             let usd: number | null = 0;
+            let tokens: Tokens | null = { input: 0, cache_read: 0, cache_write: 0, output: 0 };
             const ask = async () => {
               const timer = AbortSignal.timeout(GRADE_TIMEOUT_MS);
-              const answer = await learning.ask({ prompt, maxTokens: GRADE_MAX_TOKENS }, AbortSignal.any([deps.signal, timer]));
-              usd = usd === null || answer.usd === null ? null : usd + answer.usd;
+              let answer: Awaited<ReturnType<LearningLoopDeps["ask"]>>;
+              try {
+                answer = await learning.ask({ prompt, maxTokens: GRADE_MAX_TOKENS }, AbortSignal.any([deps.signal, timer]));
+              } catch (error) {
+                usd = null;
+                tokens = null;
+                throw error;
+              }
+              usd = usd === null || answer.usd === null || !Number.isFinite(answer.usd) ? null : usd + answer.usd;
+              const more = answer.tokens ?? null;
+              tokens = tokens === null || more === null ? null : { input: tokens.input + more.input, cache_read: tokens.cache_read + more.cache_read, cache_write: tokens.cache_write + more.cache_write, output: tokens.output + more.output };
               return answer.text;
             };
             let verdict: Verdict;
@@ -238,11 +265,11 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
             } catch (error) {
               const end = await halted();
               if (end) return end;
-              await append(KINDS.learningDropped, { source: source.runId, reason: "grade_failed", detail: said.stopped(STOPPED.noReview) } satisfies DroppedData, "ended");
+              await append(KINDS.learningDropped, { source: source.runId, reason: "grade_failed", detail: said.stopped(STOPPED.noReview), usd, tokens } satisfies DroppedData, "ended");
               void error;
               return { state: "ended" };
             }
-            graded = { source: source.runId, verdict, usd, graded: main.graded };
+            graded = { source: source.runId, verdict, usd, tokens, graded: main.graded };
             await append(KINDS.learningGraded, graded);
             // The verdict is durable before the merge, its side effect.
             await deps.flush();
@@ -262,7 +289,7 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
             return { state: "ended" };
           }
           if (result.reason === "conflict") {
-            await append(KINDS.learningDropped, { source: source.runId, reason: "stale", detail: said.stale(result.problems as never), problems: result.problems } satisfies DroppedData, "ended");
+            await append(KINDS.learningDropped, { source: source.runId, reason: "checker", detail: said.stale(result.problems as never), problems: result.problems } satisfies DroppedData, "ended");
             return { state: "ended" };
           }
           if (result.reason === "refused") {
