@@ -151,11 +151,13 @@ async function versionOf(db: Connection): Promise<number | null> {
   return (await db.get<{ schema_version: number }>("SELECT schema_version FROM store_meta WHERE singleton = 1"))?.schema_version ?? null;
 }
 
-/** The files only an earlier version kept at a data directory's top: its MCP servers, triggers, tool keys, trigger
- *  secrets, webhook and its outbox, kept idempotency answers, learning's usage ledger, and the per-run door's token.
- *  This version's own (.token, .server.json beside the store and its lock) and a leftover box-image.json are not among
- *  them: a directory holding those opens. */
-const EARLIER_ROOT_FILES = ["mcp-servers.json", "triggers.json", "tool-keys.json", "trigger-secrets.json", "webhook.json", "webhook-outbox.json", ".idempotency.json", "learning-usage.jsonl", ".door-token"];
+/** The files an earlier version kept at a data directory's top that this version no longer writes: its MCP servers,
+ *  triggers, tool keys and trigger secrets (all in the store now), and the per-run door's token (the per-run door is
+ *  gone). This version's own top-level files are not among them, so a directory holding them opens: .token and
+ *  .server.json beside the store and its lock, a leftover box-image.json, and the files this version still keeps beside
+ *  the store in the same format an earlier version did (the webhook config and its outbox, the kept idempotency answers,
+ *  and the learning usage ledger), which an earlier version's copy of reads the same. */
+const EARLIER_ROOT_FILES = ["mcp-servers.json", "triggers.json", "tool-keys.json", "trigger-secrets.json", ".door-token"];
 
 /** The files an earlier version kept in a data directory, relative to it: its store (a STORE_FILE with tables and no
  *  store_meta row), agent homes (<agent>/agent.sqlite, agents/<agent>/agent.sqlite), run databases (runs/<run>/run.sqlite,
