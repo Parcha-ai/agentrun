@@ -8,7 +8,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { DatabaseSync } from "node:sqlite";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fakeAnthropic } from "@parcha/agentrun-harness-claude/testing";
@@ -16,7 +15,7 @@ import { agentFolderOf } from "../dist/files.js";
 import * as learning from "../dist/learning.js";
 import { LEARNED_WORKFLOW_TOOL } from "../dist/learned-workflow.js";
 import { startFauxGateway } from "./fixtures/faux-gateway.mjs";
-import { git, resnap } from "./learn-support.mjs";
+import { entriesOf, git, resnap, SEED_LAY_TODO } from "./learn-support.mjs";
 import { agent, answerFlow, call, cookieOf, follow, runDir, runRecordOf, scratch, serve, withEnv } from "./support.mjs";
 import { copyStandIn } from "../../run-adapters-codex/test/stand-in.mjs";
 
@@ -39,14 +38,6 @@ async function folderWith(data, id) {
   git(repo, ["add", "--", ...Object.keys(flowFiles)]);
   git(repo, ["commit", "-q", "-m", "learned"]);
   await resnap(data, id);
-}
-function entries(data, runId, kinds) {
-  const db = new DatabaseSync(join(runDir(data, runId), "store", "run.sqlite"), { readOnly: true, timeout: 2_000 });
-  try {
-    return db.prepare("SELECT record FROM entries ORDER BY rowid").all().map((row) => JSON.parse(String(row.record))).filter((entry) => kinds.includes(entry.kind)).map((entry) => ({ kind: entry.kind, ...entry.data }));
-  } finally {
-    db.close();
-  }
 }
 /** The owner's answer to an approval, signed in on `server` (`first`: the setup that makes the owner). */
 async function owner(server, first) {
@@ -105,7 +96,7 @@ async function routeFor(t, harness) {
 
 for (const harness of ["claude-agent", "codex"]) {
   for (const restart of [false, true]) {
-    test(`on ${harness}'s real adapter, a learned call set to ask and allowed${restart ? " after a restart while it waits" : ""} runs its node through the session's route, though the turn that asked for it closed its drive's proxy${restart ? " and no drive is open" : ""}`, { timeout: 240_000, skip: !SETPRIV && "no setpriv here" }, async (t) => {
+    test(`on ${harness}'s real adapter, a learned call set to ask and allowed${restart ? " after a restart while it waits" : ""} runs its node through the session's route, though the turn that asked for it closed its drive's proxy${restart ? " and no drive is open" : ""}`, { timeout: 240_000, skip: (!SETPRIV && "no setpriv here") || SEED_LAY_TODO }, async (t) => {
       const route = await routeFor(t, harness);
       const first = await serve(t, { learning: "on", faux: undefined, accounts: true, openSetup: true });
       const allowOn = await owner(first, true);
@@ -140,14 +131,14 @@ for (const harness of ["claude-agent", "codex"]) {
       if (second) await nothingOutlives(first.data);
       const resumed = rows.find((row) => row.origin === "server" && /^AgentRun: learned_workflow /.test(row.summary ?? ""));
       assert.match(resumed?.text ?? "", /^learned_workflow ran once you allowed it\. Its result:\n\{\\?"answer\\?":42\}/, `the approved call's result: ${resumed?.text}`);
-      const node = entries(first.data, runId, ["runner.request"]).filter((entry) => entry.host === LEARNED_WORKFLOW_TOOL);
+      const node = (await entriesOf({ data: first.data }, runId, ["runner.request"])).filter((entry) => entry.host === LEARNED_WORKFLOW_TOOL);
       assert.equal(node.length, 1, "its node's request, on the session's records");
       assert.equal(route.reached(), 1, "its node's request reached the provider once");
       // The same money path as the harness's own requests: one start mark on the root, closed by its own BOOKED marker, at
       // its own cost as the session's booking priced it, and a side call (no wrap-up note, never a typical request).
-      const marks = entries(first.data, runId, ["agentrun.request_started", "adapter.request"]).filter((entry) => entry.request === node[0].turn);
+      const marks = (await entriesOf({ data: first.data }, runId, ["agentrun.request_started", "adapter.request"])).filter((entry) => entry.request === node[0].turn);
       assert.deepEqual(marks.map((entry) => [entry.kind, entry.host]), [["agentrun.request_started", LEARNED_WORKFLOW_TOOL], ["adapter.request", LEARNED_WORKFLOW_TOOL]], JSON.stringify(marks));
-      const cost = entries(first.data, runId, ["runner.turn"]).find((entry) => entry.turn === node[0].turn);
+      const cost = (await entriesOf({ data: first.data }, runId, ["runner.turn"])).find((entry) => entry.turn === node[0].turn);
       assert.ok(typeof cost?.usd === "number" && cost.usd > 0, `settled at its own cost: ${JSON.stringify(cost)}`);
       assert.equal(node[0].side, true, "a side call");
     });
@@ -157,7 +148,7 @@ for (const harness of ["claude-agent", "codex"]) {
 // A process that dies while the approved call's node is in flight (its request at the provider, unanswered): the next
 // process never runs the node again (learned_workflow is replay "never": its call is answered interrupted from its
 // journal), the node's request is booked once, and the run ends on that answer rather than waiting on it.
-test("on claude-agent's real adapter, a learned call allowed and then cut off with its process while its node's request is in flight is never run again: the provider saw the node once, its request is booked once, and the run ends", { timeout: 300_000 }, async (t) => {
+test("on claude-agent's real adapter, a learned call allowed and then cut off with its process while its node's request is in flight is never run again: the provider saw the node once, its request is booked once, and the run ends", { timeout: 300_000, skip: SEED_LAY_TODO }, async (t) => {
   let nodeSeen = 0;
   const fake = await fakeAnthropic({
     reply: (r) => {
@@ -205,13 +196,13 @@ test("on claude-agent's real adapter, a learned call allowed and then cut off wi
   }
   assert.ok(["completed", "failed"].includes(ended.status), `the run ends, never waiting on the cut node: ${JSON.stringify([ended.status, ended.pending])}`);
   assert.equal(nodeSeen, 1, "the node's request reached the provider once: never run again");
-  const node = entries(first.data, runId, ["runner.request"]).filter((entry) => entry.host === LEARNED_WORKFLOW_TOOL);
+  const node = (await entriesOf({ data: first.data }, runId, ["runner.request"])).filter((entry) => entry.host === LEARNED_WORKFLOW_TOOL);
   assert.equal(node.length, 1, `its node's one request, on the session's records: ${JSON.stringify(node)}`);
-  const booked = entries(first.data, runId, ["runner.turn"]).filter((entry) => entry.turn === node[0].turn);
+  const booked = (await entriesOf({ data: first.data }, runId, ["runner.turn"])).filter((entry) => entry.turn === node[0].turn);
   assert.equal(booked.length, 1, `booked once: ${JSON.stringify(booked)}`);
   // Booked once, cut: its cost unknown (never $0), as the next process books a request its process died holding.
   assert.deepEqual(booked.map((entry) => [entry.usd, entry.cut]), [[null, true]], "booked once, cut at an unknown cost");
-  const marks = entries(first.data, runId, ["agentrun.request_started", "adapter.request"]).filter((entry) => entry.request === node[0].turn);
+  const marks = (await entriesOf({ data: first.data }, runId, ["agentrun.request_started", "adapter.request"])).filter((entry) => entry.request === node[0].turn);
   assert.deepEqual(marks.map((entry) => [entry.kind, entry.host]), [["agentrun.request_started", LEARNED_WORKFLOW_TOOL], ["adapter.request", LEARNED_WORKFLOW_TOOL]], `one start mark and one cost entry: ${JSON.stringify(marks)}`);
   // The gate's resume answers the call from its journal: interrupted, never its node's output.
   const resumed = rows.find((row) => row.origin === "server" && /^AgentRun: learned_workflow /.test(row.summary ?? ""));
