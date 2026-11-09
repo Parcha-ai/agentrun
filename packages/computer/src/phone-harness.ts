@@ -649,6 +649,12 @@ export class PhoneHarnessProvider implements ComputerProvider {
 					if (this.#now() > Date.parse(entry.deadline)) await this.#ledger.remove(entry.id);
 					continue;
 				}
+				if (entries.some((one) => one.id === made.id)) {
+					// create has put the session's own entry and not yet removed its key: that entry is the phone, listed
+					// in its turn (and kept as it is, released or not), and the key is only dropped.
+					await this.#ledger.remove(listed.id);
+					continue;
+				}
 				entry = { id: made.id, labels: { ...entry.labels }, image: entry.image, deadline: this.#deadlineOf(made, Date.parse(entry.deadline)) };
 				await this.#ledger.put(entry);
 				await this.#ledger.remove(listed.id);
@@ -674,7 +680,7 @@ export class PhoneHarnessProvider implements ComputerProvider {
 				if (!read.ok) return read;
 				session = read.value;
 			}
-			if (!carries(entry.labels, labels)) continue;
+			if (!carries(entry.labels, labels) || out.some((info) => info.ref.id === entry.id)) continue;
 			out.push({
 				ref: { id: entry.id, name: entry.id },
 				labels: { ...entry.labels },
