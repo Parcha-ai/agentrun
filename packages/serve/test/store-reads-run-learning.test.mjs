@@ -32,7 +32,7 @@ const comparable = (body) => body && { ...body, at: "<time>", merged: typeof bod
 async function storedAs(t, golden, launchLearning) {
   const { store, dir } = await storeOn(t);
   await store.agents.create({ id: golden.agentId, name: golden.agentId }, { id: "rev-1", kind: "agentic", body: { instructions: golden.instructions } });
-  await store.runs.create({ id: golden.runId, agentId: golden.agentId, revisionId: "rev-1" }, { body: { learning: launchLearning } });
+  await store.runs.create({ id: golden.runId, agentId: golden.agentId, revisionId: "rev-1" }, { body: { input: { content: "Go." }, title: "t", place: { mode: "runner" }, learning: launchLearning } });
   const source = await store.claim(golden.runId, "runner-a", { leaseMs: 60_000 });
   const kept = { ...(golden.proposed.problems ? { left: golden.proposed.problems } : {}), state: "proposed", proposal: golden.proposal, detail: golden.proposed.detail };
   await store.runs.update(source, { state: "ended" }, { also: [{ table: "learning_proposals", row: { turn: {}, proposal: kept } }, { table: "learning_run", row: { id: `${golden.runId}-learning` } }] });

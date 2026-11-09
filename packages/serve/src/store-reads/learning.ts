@@ -8,6 +8,7 @@
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { currentLearning, holdsForOk, type Learning, LEARNING_REASONS, type NoteUsed, type Shown } from "../learning.js";
 import { runLearningBody } from "../learning-routes.js";
+import { learningStartOf, readLaunchBody, type RunLaunch } from "../run-launch.js";
 import { FINAL_STATES } from "../store/store.js";
 import type { AnalyticsFilter } from "./analytics.js";
 import { journalEntries } from "../runner/journal-reader.js";
@@ -106,18 +107,12 @@ export async function agentLearningCountsOverStore(store: Store, agentId: string
   return counts;
 }
 
-/** What a run's start decides about its learning, recorded on its launch (`body.learning`, the store launch's start
- *  path): the commit of its agent's learning folder it started from, and the notes it was given. */
-export type LaunchLearning = { readonly seed?: string; readonly given?: readonly NoteUsed[] };
-
-/** Run `runId`'s launch learning: its seed and given notes, or nothing when its launch records none. */
-async function launchLearningOf(store: Store, runId: string): Promise<LaunchLearning> {
-  const launch = await store.runs.launch(runId).catch(() => undefined);
-  const learning = (launch?.body as { learning?: unknown } | undefined)?.learning;
-  if (learning === null || typeof learning !== "object") return {};
-  const { seed, given } = learning as { seed?: unknown; given?: unknown };
-  const notes = Array.isArray(given) ? given.filter((note): note is NoteUsed => typeof note?.file === "string" && typeof note?.name === "string") : undefined;
-  return { ...(typeof seed === "string" ? { seed } : {}), ...(notes ? { given: notes } : {}) };
+/** Run `runId`'s learning start as its launch records it (run-launch.ts learningStartOf, the one reader): its given notes,
+ *  its seed sha and its # Learned section; undefined when the run does not learn or has no launch. */
+async function learningStartOfRun(store: Store, runId: string): Promise<RunLaunch["learning"]> {
+  const row = await store.runs.launch(runId).catch(() => undefined);
+  const launch = row ? readLaunchBody(row.body) : undefined;
+  return launch ? learningStartOf(launch) : undefined;
 }
 
 /** GET /runs/{id}/learning from the one store, in the shape the route gives (learning-routes.ts runLearningBody): the
@@ -127,9 +122,9 @@ async function launchLearningOf(store: Store, runId: string): Promise<LaunchLear
 export async function runLearningOverStore(store: Store, runId: string, shown: Shown, secrets: readonly string[]) {
   const end = await runLearningEnd(store, runId);
   if (!end) return null;
-  const started = await launchLearningOf(store, runId);
-  const learning = { ...end, ...(started.given ? { given: [...started.given] } : {}) } as Learning;
+  const started = await learningStartOfRun(store, runId);
+  const learning = { ...end, ...(started ? { given: started.given.map((note): NoteUsed => ({ file: note.file, name: note.name })) } : {}) } as Learning;
   const current = holdsForOk(learning) ? currentLearning(learning, undefined) : learning;
   const row = await store.runs.get(runId);
-  return runLearningBody({ id: runId, learning: current, seed: started.seed ?? null, settled: row !== undefined && FINAL_STATES.includes(row.state) }, shown, secrets);
+  return runLearningBody({ id: runId, learning: current, seed: started?.seed ?? null, settled: row !== undefined && FINAL_STATES.includes(row.state) }, shown, secrets);
 }
