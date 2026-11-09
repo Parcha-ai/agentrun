@@ -11,7 +11,7 @@
 // run's revision's tool settings, read through runGate (approvals "never" among them), the adapter loop asking it.
 import type { Context } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { ROOT_CONVERSATION_ID, type ToolExecutionApi } from "@earendil-works/pi-durable";
+import { defineExtension, ROOT_CONVERSATION_ID, type ToolExecutionApi } from "@earendil-works/pi-durable";
 import { beforeRequestOf, type CapModel, type CapRefused, checkRaise, followUpOf, parkOf } from "@parcha/agentrun-kernel/kernel/cap";
 import type { BeforeRequest, HostTool, SessionSpec, Wire } from "@parcha/agentrun-kernel";
 import type { Approvals } from "../approvals.js";
@@ -24,13 +24,15 @@ import type { Store } from "../store/store.js";
 import { isObject } from "../validate.js";
 import { type RunFiles, runGate } from "../tool-gate.js";
 import { loadToolSettings, recheckPlane, TOOL_PLANE_ENV } from "../tool-plane.js";
-import { type ToolHost, toolOf } from "../tools.js";
+import { ASK_TOOL, askPerson, type ToolHost, toolOf } from "../tools.js";
 import { type HostToolCtx, hostToolOf } from "../host-tools.js";
 import { WEB_FETCH_TOOL } from "../web-fetch.js";
 import { WEB_SEARCH_TOOL } from "../web-search.js";
 import { environmentLine } from "../environment.js";
 import { effortGuidance } from "../effort-guidance.js";
-import { laidLearned, learningFolderOf, pinnedWorkflows, readPin } from "../learning.js";
+import { laidLearned, learningFolderOf, pinnedWorkflows, readPin, secretsShown } from "../learning.js";
+import { layLearningSeed } from "./learning-seed.js";
+import { savedKeyValues } from "../server-keys.js";
 import { learningWorkspace } from "../learn/folder.js";
 import { learningEndOfRun } from "./learning-end.js";
 import { LEARNED_WORKFLOW_TOOL, learnedWorkflowTool } from "../learned-workflow.js";
@@ -218,8 +220,9 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
   const granted = body.tools ?? [];
 
   // The run's hands (run-hands.ts, the one way a claim opens them): its mode (Mode 2 where its Archil settings are saved),
-  // its Workspace with its uploaded files, the computer its place needs and the kernel's tools over them.
-  const hands = await claimRunHands({ ...deps, log }, claim, launch, runRow, context);
+  // its Workspace with its uploaded files, the computer its place needs and the kernel's tools over them. The claim's
+  // signal goes with them: a lost claim drops the run's Archil mount credential at once.
+  const hands = await claimRunHands({ ...deps, log }, claim, launch, runRow, context, run.signal);
   const { archil, ws, tools } = hands;
 
   // The run's model route: its model through routeOf (NEVER re-resolved — the launch's model, pinned at start), the catalog
@@ -228,6 +231,11 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
   // The runner's one redactor (run.redact) goes to the route's translation and to the session's model proxy: a provider's
   // error that echoes a secret reaches pi's record with none in it, on any route.
   const route = await deps.routeOf(launch.model ? `${launch.model.provider}/${launch.model.modelId}` : undefined, deps.env, "default", PI_WIRES, undefined, cut);
+  // ask_person is pi's own tool (tools.ts): a run granted it carries its native extension on the root agent through the pi
+  // adapter (PiAdapterOptions.extensions), so pi runs it as its own tool task under the session's gate and keeps its
+  // control.terminate — the turn ends on the person's question and the loop parks the run (endedOnTurnEndingTool). It stays
+  // out of the session's host tools and REPLAY, so a CLI harness still refuses it (runnable.ts). pi only.
+  const native = granted.includes(ASK_TOOL) ? [defineExtension({ name: "ask_person", tools: [askPerson] })] : [];
   const adapter = piAdapter({
     run,
     model: route.model,
@@ -236,6 +244,7 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
     ...(route.like ? { like: route.like } : {}),
     ...(route.price ? { price: route.price as never } : {}),
     ...(route.fetch ? { fetch: route.fetch } : {}),
+    ...(native.length ? { extensions: native } : {}),
   });
 
   // The gate before a call's intent: the run's revision's tool settings through runGate (approvals "never" turns the one
@@ -333,7 +342,20 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
   // on the one store the claim does), from the revision row's texts (the body keeps only each file's SHA-256): each
   // folder not there yet, never over a learned skill or an earlier claim's.
   await layOwnSkills(ws.workspace, (revisionRow.skills ?? {}) as Record<string, string>);
-  const instructions = await promptOf(laid, Object.keys(body.skills ?? {}), ws.workspace, { onDemand: readsFiles(granted) });
+  // A learning run's seed, read once from its learning folder where the run's place keeps it: its notes in .learning/
+  // and its learned skills beside the revision's own (runner/learning-seed.ts), cut of the server's secrets, the learned
+  // skills then in the skill list the prompt names. A learning fault lays nothing and the run goes on.
+  const seedLaid = start
+    ? await layLearningSeed({
+      work: ws.workspace,
+      seed: start.seed,
+      folder: () => (archil === undefined ? learningFolderOf(deps.data, runRow.agentId) : learningWorkspace({ mode: "archil", agentId: runRow.agentId, archil })),
+      own: Object.keys(revisionRow.skills ?? {}),
+      shown: async () => secretsShown(runnerSecrets(deps.env, await savedKeyValues(deps.store, deps.sealKey))),
+      log,
+    })
+    : undefined;
+  const instructions = await promptOf(laid, [...Object.keys(body.skills ?? {}), ...(seedLaid?.skills ?? [])], ws.workspace, { onDemand: readsFiles(granted) });
   const guidance = effortGuidance(launch.effort);
   const system = [environmentLine(), instructions, guidance].filter((line): line is string => Boolean(line));
 
@@ -372,6 +394,8 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
     adapter,
     session,
     input,
+    // A trigger's first input is its origin's, the launch's own owner flag kept (run-launch.ts keepInputOrigin).
+    ...(launch.inputOrigin ? { inputOrigin: launch.inputOrigin } : {}),
     // The gate's answer with its words (adapterRunGate, RunGate.decide): a deny names where it was set and that nothing was
     // sent or charged, and a pinned MCP tool's call outside its pin is refused before it is asked or sent.
     gate,

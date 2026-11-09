@@ -44,7 +44,7 @@ export interface RunHands {
 
 /** The run's hands for `claim`: its mode, Workspace, uploaded files, computer and tools, as an agentic run's spec opens
  *  them. `launch`: the run's launch (its files, place and computer choice); `runRow`: its agent and revision. */
-export async function claimRunHands(deps: RunHandsDeps, claim: Pick<Claim, "runId" | "epoch">, launch: RunLaunch, runRow: { readonly agentId: string; readonly revisionId: string }, context?: Context): Promise<RunHands> {
+export async function claimRunHands(deps: RunHandsDeps, claim: Pick<Claim, "runId" | "epoch">, launch: RunLaunch, runRow: { readonly agentId: string; readonly revisionId: string }, context?: Context, signal?: AbortSignal): Promise<RunHands> {
   const { BACKGROUND_CONTEXT } = await import("@earendil-works/chord/context");
   const ctx = context ?? BACKGROUND_CONTEXT;
   const log = deps.log;
@@ -61,8 +61,10 @@ export async function claimRunHands(deps: RunHandsDeps, claim: Pick<Claim, "runI
     // mounting computer never mints one.
     // The mint is lazy (archil-claim.ts token(), k2's run-tools.ts): only a mounting computer asks for it, so a Mode 2 run
     // with no computer makes no control-plane call. mountControl (a test's loopback control-plane fake) is spread into the
-    // mount, so no test reaches the real control plane. MOUNT_TTL_MS is the credential's safety net (7 days), not its lifetime.
-    : await archilClaim({ settings: archilSettings, keys: deps.store.sealedKeys, sealKey: deps.sealKey as Buffer, signal: new AbortController().signal, env: deps.env, mount: { runId: claim.runId, epoch: claim.epoch, ttlMs: MOUNT_TTL_MS, ...(deps.mountControl ?? {}) }, ...(deps.makeArchilDisk ? { makeDisk: deps.makeArchilDisk } : {}) } as never);
+    // mount, so no test reaches the real control plane. MOUNT_TTL_MS is the credential's safety net (its computer's 24 h bound), not its lifetime.
+    // `signal`, the claim's (aborted on a lost claim or the runner's shutdown, never on a person's stop): archilClaim drops its
+    // values and removes the credential on it at once; the release still revokes on every other outcome (idempotent).
+    : await archilClaim({ settings: archilSettings, keys: deps.store.sealedKeys, sealKey: deps.sealKey as Buffer, signal: signal ?? new AbortController().signal, env: deps.env, mount: { runId: claim.runId, epoch: claim.epoch, ttlMs: MOUNT_TTL_MS, ...(deps.mountControl ?? {}) }, ...(deps.makeArchilDisk ? { makeDisk: deps.makeArchilDisk } : {}) } as never);
   // The run's Workspace at the claim: Mode 1 the run's local folder (made here, the server's start made it before); Mode 2
   // the run's folder on the disk.
   const ws = archil === undefined
