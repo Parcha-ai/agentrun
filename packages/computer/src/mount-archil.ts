@@ -122,10 +122,13 @@ export function helperSha256(): string {
 }
 
 /** Prints, as root, what create checks of the image before anything else runs: the channel's uid, the helper's sha256,
- *  mode and owner, the archil client's version, the tool user's ids, and whether there is a sudo. */
+ *  mode and owner, the archil client's version, the tool user's ids, and whether there is a sudo. The helper is given
+ *  back to root, 0755, first (a regular file, never through a link): a provider's template build may leave the copy's
+ *  mode (E2B's left it 0777), and the sha256 read next proves it is the package's helper. */
 const PREFLIGHT = [
 	"# agentrun-computer: archil preflight",
 	"h=$1",
+	'[ -f "$h" ] && [ ! -L "$h" ] && chown root:root "$h" && chmod 0755 "$h"',
 	'echo "uid $(id -u)"',
 	"echo \"helper $(sha256sum \"$h\" 2>/dev/null | cut -c1-64) $(ls -ln \"$h\" 2>/dev/null | awk '{ print $1, $3, $4 }')\"",
 	'echo "archil $(/usr/bin/archil --version 2>/dev/null | head -n 1)"',
