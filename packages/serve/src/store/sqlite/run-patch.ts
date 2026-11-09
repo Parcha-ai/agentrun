@@ -10,7 +10,9 @@ import { writeLaunch } from "./run-launch.js";
 
 /** A learning run's launch body: the learning harness, the run that learned as its input, and where it runs (on the
  *  runner, no box: its only writes are the learning folder's one script). */
-export const learningLaunchOf = (runId: string) => ({ harness: "learning", input: { runId }, title: `Learning from ${runId}`, place: { mode: "runner" } });
+/** A learning run's launch: harness "learning", its input the run that learned, and `model`, the grade model when one is
+ *  named (gradeModelOf; none: the agent's own grades it, as main's). No cap: main caps no grade. */
+export const learningLaunchOf = (runId: string, model?: string) => ({ harness: "learning", input: { runId }, title: `Learning from ${runId}`, place: { mode: "runner" }, ...(model ? { model } : {}) });
 
 export type RunRecord = {
   id: string; agent_id: string; revision_id: string; state: RunState; epoch: number; runner: string | null; claimed_until: number | null;
@@ -89,7 +91,7 @@ export async function applyRunPatch(tx: Pick<SqliteExecutor, "run" | "get">, cla
         // Its launch row, with it: harness "learning" (the runner's loop factory picks the learning loop by it), its input
         // the run that learned. Written once, as the run is.
         if (!(await tx.get("SELECT 1 AS found FROM run_launch WHERE run_id = ?", each.row.id))) {
-          await writeLaunch(tx as SqliteExecutor, each.row.id, { body: learningLaunchOf(claim.runId) }, now);
+          await writeLaunch(tx as SqliteExecutor, each.row.id, { body: learningLaunchOf(claim.runId, each.row.model) }, now);
         }
         break;
     }

@@ -61,8 +61,9 @@ export async function ended(api, runId, until = ["completed"]) {
 /** Why a case on a run's own learning end (merged or dropped, its words, the verdict, what it learned or holds, the
  *  ledger's, usage's and stats' lines) waits: the server's grade wrote that end, and its reader of the runner's learning
  *  run is to come. The case is skipped with this reason (a failing todo is a `not ok` line, which a push refuses), and
- *  turns back on when it lands. */
-export const RUN_END_TODO = "E2s's reader: a run's learning end from learning_proposals and the learning run's journal";
+ *  turns back on when it lands. With LEARN_RUN_END_PROBE set, every such case runs (skip false), to see which pass against
+ *  the server as it stands while the switch lands; the marker goes from each case once it passes. */
+export const RUN_END_TODO = process.env.LEARN_RUN_END_PROBE ? false : "E2s's reader: a run's learning end from learning_proposals and the learning run's journal";
 
 /** The server's part of the run's learning done: what its end-of-run turn wrote is kept as its proposal. */
 export function proposedOf(view) {

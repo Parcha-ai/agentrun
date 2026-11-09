@@ -203,7 +203,8 @@ export type AlsoRow =
   | { readonly table: "learning_proposals"; readonly row: { turn: unknown; proposal: unknown } }
   /** The learning run that grades and merges the kept proposal: a queued run `id` of the run's agent and revision. Started
    *  once: the same id staged again (an end replayed after a crash) adds nothing. */
-  | { readonly table: "learning_run"; readonly row: { id: string } };
+  /** `model`: the grade model (gradeModelOf, as the server resolves it), on the learning run's launch; none, the agent's own. */
+  | { readonly table: "learning_run"; readonly row: { id: string; model?: string } };
 
 /** A run's kept learning (learning_proposals): what its end-of-run turn asked and answered, and the proposal checked from it. */
 export interface LearningProposal {
