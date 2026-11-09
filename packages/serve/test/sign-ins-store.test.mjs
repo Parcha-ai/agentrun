@@ -243,3 +243,30 @@ test("P2-1 a sole binder saves; its own re-bind (a later claim of the same run) 
   const again = await store.claim("run-a", "runner-a");
   assert.equal((await store.runs.update(again, { signInHanded: [hash] })).save, true, "a run is never its own blocker");
 });
+
+// P2-2 stale verify: signIns.verify(agentId, provider, at, { ifSavedAt }) stamps verified_at only while the sign-in's
+// saved_at is still the one the caller saw (a save that landed since — allowed while held, and it clears verified_at — must
+// never be re-stamped stale). It answers whether it stamped a row.
+
+test("P2-2 verify guarded by saved_at: a re-save between a run's check and its verify is never stamped stale", async (t) => {
+  const { store, clock } = await storeOn(t);
+  await agentWithRevision(store, "alpha", "alpha-rev");
+  const first = await saveSignIn(store, KEY, { agentId: "alpha", provider: "browserbase", pointer: "ctx-1" });
+  // A second save lands (a new pointer; it clears verified_at and moves saved_at).
+  clock.now += 10;
+  const again = await saveSignIn(store, KEY, { agentId: "alpha", provider: "browserbase", pointer: "ctx-2" });
+  assert.notEqual(again.saved_at, first.saved_at, "the re-save moved saved_at");
+  // A run verifies against the saved_at it saw (the first): it must not stamp the re-saved sign-in.
+  clock.now += 10;
+  const stale = await store.signIns.verify("alpha", "browserbase", clock.now, { ifSavedAt: first.saved_at });
+  assert.equal(stale, false, "guarded by the old saved_at, verify stamps nothing");
+  assert.equal((await store.signIns.get("alpha", "browserbase")).verifiedAt, null, "verified_at stays null for the re-saved sign-in");
+  // Against the current saved_at it stamps, and answers true.
+  const when = clock.now;
+  const ok = await store.signIns.verify("alpha", "browserbase", when, { ifSavedAt: again.saved_at });
+  assert.equal(ok, true, "the current saved_at stamps it");
+  assert.equal((await store.signIns.get("alpha", "browserbase")).verifiedAt, when);
+  // No ifSavedAt stamps unconditionally, as the plain call always did; a missing sign-in answers false.
+  assert.equal(await store.signIns.verify("alpha", "browserbase", when + 1), true, "an unguarded verify still stamps");
+  assert.equal(await store.signIns.verify("alpha", "nope", when), false, "a sign-in the agent does not have stamps nothing");
+});
