@@ -102,7 +102,8 @@ async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: Ses
     auth: { apiKey: { name: "AGENTRUN_SESSION_KEY", resolve: async () => ({ auth: { apiKey: proxy.key }, source: "session" }) } },
     // The proxy knows the session by `authorization: Bearer <key>` (the Anthropic policy's keyOf); pi-ai's own x-api-key
     // stays here, since the proxy forwards only its routes' listed headers.
-    models: [{ id: model, name: model, api: "anthropic-messages", provider: PROVIDER, baseUrl: proxy.url, headers: { authorization: `Bearer ${proxy.key}` }, reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 200_000, maxTokens: 32_000 }],
+    // Image input: a host tool's images (a screenshot) reach the model in its tool result.
+    models: [{ id: model, name: model, api: "anthropic-messages", provider: PROVIDER, baseUrl: proxy.url, headers: { authorization: `Bearer ${proxy.key}` }, reasoning: false, input: ["text", "image"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 200_000, maxTokens: 32_000 }],
     api: anthropicMessagesApi(),
   } as never));
   run.setModels(models);
@@ -130,16 +131,20 @@ async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: Ses
   });
   run.registry.install(extension);
   // The root conversation may exist already (the loop's session records live beside it, under it): its agent is set here,
-  // the session's model and this session's tools, on every open.
-  const agent = { model: { provider: PROVIDER, modelId: model }, extensions: [extension] };
+  // the session's model, the run's system text (pi's instructions, its parts as the CLI adapters join them) and this
+  // session's tools, on every open.
+  const instructions = spec.system.join("\n\n");
+  const agent = { model: { provider: PROVIDER, modelId: model }, extensions: [extension], ...(instructions ? { instructions } : {}) };
   const root: Conversation = await run.harness.root(context, { agent } as never);
   await root.configure(agent as never, context);
 
-  // The run's input submission, if one was placed: its state says where the session is.
+  // The run's input submission, if one was placed: its state says where the session is. Answered: idle. Open, or settled
+  // unanswered (a failed turn whose end the loop never read: a claim lost before the run's end landed): an open turn,
+  // whose end recover() reads, so a failed turn ends the run failed, never as a completed one.
   let input: Submission | undefined;
   const existing = await run.harness.commit((tx) => tx.submissionByRequest(root.id, INPUT_REQUEST), context);
   if (existing) input = await run.harness.submission(existing.id, context);
-  let state: AdapterSession["state"] = existing === undefined ? "new" : existing.status === "done" || existing.status === "unanswered" ? "idle" : "open_turn";
+  let state: AdapterSession["state"] = existing === undefined ? "new" : existing.status === "done" ? "idle" : "open_turn";
   let running: Promise<{ status: TurnStatus; error?: string }> | undefined;
   const watch = (submission: Submission) => {
     running = submission.wait(context).then(
@@ -155,7 +160,8 @@ async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: Ses
       },
     );
   };
-  if (input && state === "open_turn") watch(input);
+  // No watch here: recover() starts it. A watch from open would set state idle as soon as a settled (or fast-recovered)
+  // turn's wait returned, before the loop read state, and the loop would take the turn as never placed and so completed.
 
   return {
     get state() {
@@ -196,7 +202,7 @@ async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: Ses
   } satisfies AdapterSession;
 }
 
-/** A host tool as a pi tool: replay-safe or at most once, its answer the host's text. */
+/** A host tool as a pi tool: replay-safe or at most once, its answer the host's text and any images it shows. */
 function piTool(tool: HostTool, io: PiSessionIO) {
   return defineTool({
     name: tool.name,
@@ -207,7 +213,8 @@ function piTool(tool: HostTool, io: PiSessionIO) {
       io.onEvent({ type: "tool_start", callId: api.callId, name: tool.name, args });
       const answer = await tool.call(args ?? {}, { callId: api.callId, signal: toolContext.abortSignal ?? io.signal });
       io.onEvent({ type: "tool_end", callId: api.callId, name: tool.name, isError: Boolean(answer.isError), result: answer.text });
-      return { output: [{ type: "text" as const, text: answer.text }], ...(answer.isError ? { isError: true } : {}) } as never;
+      const images = (answer.images ?? []).map((image) => ({ type: "image" as const, data: image.data, mimeType: image.mimeType }));
+      return { output: [{ type: "text" as const, text: answer.text }, ...images], ...(answer.isError ? { isError: true } : {}) } as never;
     },
   });
 }
