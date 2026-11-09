@@ -171,10 +171,13 @@ export async function adapterRunGate(store: Pick<Store, "settings">, claim: Pick
   // A Workspace's paths are in the run's folder: its folder named as a computer names it, for the gate's path checks.
   const folder = typeof root === "string" ? root : COMPUTER_ROOT;
   const gate = runGate({ root: folder, work: folder }, claim.runId, revision, () => current, root);
-  return async (call) => {
+  const decide = async (call: Parameters<NonNullable<AdapterRunSpec["gate"]>>[0]) => {
     current = await storeSettings(store);
     return gate.decide(call.tool, call.args);
   };
+  // An ask is named as main's pending approval is (RunGate.askedAs: its settings key), beside the decision, which is
+  // unchanged.
+  return Object.assign(decide, { askedAs: (tool: string) => gate.askedAs(tool) });
 }
 
 /** The server's tool settings from the store now; a read that throws is unread (no value of it said). */
