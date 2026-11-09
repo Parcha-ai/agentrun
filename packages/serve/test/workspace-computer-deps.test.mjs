@@ -237,8 +237,13 @@ const DEFAULT_IMAGE = workspaceModule.DEFAULT_IMAGE ?? {};
 const DOCKER_DESKTOP_WORDS = "A Docker desktop needs an image with an X server; set one for desktops.";
 
 test("box_allow is a sandbox's egress list: a sandbox with none has no network, a browser or a desktop with none has its provider's own, and an explicit list applies to a Docker desktop", () => {
-  const spec = computerSpecOf({ AGENTRUN_DOCKER_IMAGE: "example.org/desktop@sha256:" + "a".repeat(64) });
+  const named = "example.org/desktop@sha256:" + "a".repeat(64);
+  const spec = computerSpecOf({ AGENTRUN_DOCKER_IMAGE: named });
   assert.equal(spec(entryOf("docker"), "sandbox", {}).network, "none", "a sandbox with no box_allow");
+  assert.equal(spec(entryOf("docker"), "sandbox", {}).image, named, "Docker's image: the one the owner named");
+  assert.equal(computerSpecOf({})(entryOf("docker"), "sandbox", {}).image, DEFAULT_IMAGE.docker.sandbox, "else the package's recipe");
+  assert.equal(spec(entryOf("docker"), "sandbox", {}).lifetimeMs, 24 * 60 * 60_000, "the leak bound: a day");
+  assert.deepEqual(spec(entryOf("docker"), "sandbox", { boxAllow: ["api.example.com"] }).network, { allow: ["api.example.com"] }, "a sandbox's allow-list");
   assert.equal(spec(entryOf("docker"), "sandbox", { boxAllow: "none" }).network, "none");
   assert.equal(spec(entryOf("browserbase"), "browser", {}).network, "open", "a browser with no box_allow: its provider's own network");
   assert.equal(spec(entryOf("kernel"), "browser", {}).network, "open");

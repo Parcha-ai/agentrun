@@ -19,7 +19,6 @@ import { DOCKER_IMAGE_ENV } from "../box-image.js";
 import type { ProviderFactories } from "../computer-keys.js";
 import type { FauxComputers } from "../faux-computers.js";
 import { envValue, type KeyEnv, keyReader } from "../key-meta.js";
-import { COMPUTER_LIFETIME_MS } from "../runner/computer.js";
 import { readLaunchBody } from "../run-launch.js";
 import type { Store } from "../store/index.js";
 import { type ClaimComputer, type ClaimLaunch, computerForClaim, type ComputerForClaimDeps, type OpenComputerView } from "./computer-for-claim.js";
@@ -28,6 +27,10 @@ import { computerProviderFactories, computerProviderMakers, type ProviderLoad } 
 import type { ComputerSettingKind, KindRegistry } from "./resolve-computer.js";
 
 type ComputerKindOf = Exclude<ComputerSettingKind, "none">;
+
+/** How long a run's computer lives whatever happens to the server: a bound on a leaked one, never its clean end (the old
+ *  box's lifetime). The clean end is the run's release. */
+export const COMPUTER_LIFETIME_MS = 24 * 60 * 60_000;
 
 /** Each provider's own image for each kind it makes, by provider id: the one table serve reads a computer's image from
  *  (until the computer package's registry carries its own). A kind a provider has none for here is refused in words.
