@@ -3,18 +3,31 @@
 // routes (sealed in the store), "env" for one the server's environment gives, "sign-in" for one an OAuth sign-in or a
 // Connect obtained, and null when it is not set. changed_at is the credential's own time: when its sealed row was last
 // written; null when it is not set, or comes from the environment.
+//
+// The environment wins: a variable named as the key, and not empty, is the key's value, over a saved one (source "env").
+// The server's environment is passed in (never process.env read here), so a test gives its own.
 import type { Store } from "./store/index.js";
 
 export type SecretSource = "env" | "console" | "sign-in" | null;
 export type KeyMeta = { name: string; set: boolean; source: SecretSource; changed_at: string | null };
+/** The server's environment, as the key routes read it. */
+export type KeyEnv = Readonly<Record<string, string | undefined>>;
 
-/** One secret a view shows: its name in the API, and the sealed-key row it is kept in. */
+/** One secret a view shows: its name in the API (and the environment variable that sets it), and the sealed-key row it
+ *  is kept in. */
 export type KeySlot = { readonly name: string; readonly row: string };
 
-/** Each slot's metadata, from the store's sealed-key rows (read once for all of them). */
-export async function keyMetaOf(store: { sealedKeys: Pick<Store["sealedKeys"], "all"> }, slots: readonly KeySlot[]): Promise<KeyMeta[]> {
+/** The environment's value for `name`, when it gives one. */
+export const envValue = (env: KeyEnv, name: string): string | undefined => {
+  const value = Object.hasOwn(env, name) ? env[name] : undefined;
+  return typeof value === "string" && value.trim() !== "" ? value : undefined;
+};
+
+/** Each slot's metadata: from the environment when it names the key, else from the store's sealed-key rows (read once). */
+export async function keyMetaOf(store: { sealedKeys: Pick<Store["sealedKeys"], "all"> }, slots: readonly KeySlot[], env: KeyEnv = {}): Promise<KeyMeta[]> {
   const rows = new Map((await store.sealedKeys.all()).map((row) => [row.name, row.updatedAt]));
   return slots.map((slot) => {
+    if (envValue(env, slot.name) !== undefined) return { name: slot.name, set: true, source: "env", changed_at: null };
     const at = rows.get(slot.row);
     return at === undefined ? { name: slot.name, set: false, source: null, changed_at: null } : { name: slot.name, set: true, source: "console", changed_at: new Date(at).toISOString() };
   });

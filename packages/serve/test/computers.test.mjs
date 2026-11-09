@@ -16,13 +16,31 @@ import { storeOn, T0 } from "./store-helpers.mjs";
 /** A key's changed_at: the store's clock when it was saved. */
 const CHANGED = new Date(T0).toISOString();
 
-async function setup(t, { mode = "local", settings, kinds = KINDS, ...given } = {}) {
+async function setup(t, { mode = "local", settings, kinds = KINDS, env, ...given } = {}) {
   const sealKey = "sealKey" in given ? given.sealKey : randomBytes(32);
   const { store } = await storeOn(t);
   const fake = fakeFactories();
-  const routes = createComputerRoutes({ store, sealKey, kinds, factories: fake.factories, ...(settings ? { settings } : {}), tools, mode });
+  const routes = createComputerRoutes({ store, sealKey, kinds, factories: fake.factories, ...(settings ? { settings } : {}), ...(env ? { env } : {}), tools, mode });
   return { store, sealKey, routes, ...fake };
 }
+
+test("an environment variable with a key's name overrides the saved one: source env, and the test and the claim take its value", async (t) => {
+  const { routes, built } = await setup(t, { env: { E2B_API_KEY: "good-from-env", PATH: "/usr/bin" } });
+  const view = await routes.view();
+  assert.deepEqual(providerOf(view, "sandbox", "e2b").keys, [{ name: "E2B_API_KEY", required: true, set: true, source: "env", changed_at: null }]);
+  assert.equal(providerOf(view, "desktop", "e2b").ready, true, "set by the environment, no save needed");
+  assert.deepEqual(await routes.test("e2b"), { ok: true, detail: "e2b: 2 computers" });
+  assert.deepEqual(built.at(-1), ["e2b", { apiKey: "good-from-env" }]);
+  await routes.saveKeys("e2b", { E2B_API_KEY: "bad-saved-value" });
+  assert.equal(providerOf(await routes.view(), "sandbox", "e2b").keys[0].source, "env", "the environment still wins over a saved value");
+  await routes.test("e2b");
+  assert.deepEqual(built.at(-1), ["e2b", { apiKey: "good-from-env" }], "and its value is the one used");
+  assert.equal(await routes.claimRefusal({ kind: "desktop", provider: "e2b" }), undefined);
+  assert.deepEqual(await routes.claimOptions({ kind: "desktop", provider: "e2b" }), { ok: true, options: { apiKey: "good-from-env" } });
+  assert.ok(!JSON.stringify(await routes.view()).includes("good-from-env"), "never a value");
+  const empty = await setup(t, { env: { E2B_API_KEY: "" } });
+  assert.equal(providerOf(await empty.routes.view(), "sandbox", "e2b").keys[0].set, false, "an empty variable sets nothing");
+});
 
 const kindOf = (view, kind) => view.kinds.find((one) => one.kind === kind);
 const providerOf = (view, kind, id) => kindOf(view, kind).providers.find((one) => one.id === id);

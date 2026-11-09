@@ -25,10 +25,23 @@ async function setup(t, { disk = new FakeArchilDisk(), ...given } = {}) {
   const sealKey = "sealKey" in given ? given.sealKey : randomBytes(32);
   const { store } = await storeOn(t);
   const made = [];
-  const routes = createArchilRoutes({ store, sealKey, makeDisk: (options) => { made.push(options); return disk; } });
+  const routes = createArchilRoutes({ store, sealKey, ...(given.env ? { env: given.env } : {}), makeDisk: (options) => { made.push(options); return disk; } });
   const call = (name, body) => archilRoute(routes, name, body === undefined ? {} : { body });
   return { store, sealKey, disk, made, call };
 }
+
+test("an ARCHIL_API_KEY environment variable overrides the saved key: source env, and the test lists the disk with it", async (t) => {
+  const disk = new FakeArchilDisk();
+  const { made, call } = await setup(t, { disk, env: { ARCHIL_API_KEY: "archil-env-key-0003" } });
+  assert.deepEqual((await call("getWorkspaceArchil")).keys, [{ name: "ARCHIL_API_KEY", set: true, source: "env", changed_at: null }]);
+  await call("putWorkspaceArchil", { ...SETTINGS, keys: { ARCHIL_API_KEY: API } });
+  assert.equal((await call("getWorkspaceArchil")).keys[0].source, "env", "the environment still wins over a saved value");
+  const keys = [];
+  const list = disk.listPage.bind(disk);
+  disk.listPage = async (...args) => { keys.push(made.at(-1).key()); return list(...args); };
+  assert.equal((await call("testWorkspaceArchil")).ok, true);
+  assert.deepEqual(keys, ["archil-env-key-0003"], "the environment's value is the one used");
+});
 const refused = (promise, field) => assert.rejects(promise, (error) => error instanceof ApiError && error.code === "input_invalid" && (field === undefined || error.extra.fields?.some((one) => one.field === field)), field);
 
 test("the four routes by their operation names", () => {

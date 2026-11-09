@@ -11,12 +11,12 @@
 // archilRoute holds the routes' rules, so serve's dispatch only calls it and sends the answer, or the ApiError's status.
 import { ARCHIL_API_KEY_ROW, type ArchilSettings, clearArchilSettings, loadArchilSettings, saveArchilSettings } from "./archil-settings.js";
 import { ApiError, type InputIssue, invalid } from "./errors.js";
-import { type KeyMeta, keyMetaOf } from "./key-meta.js";
+import { envValue, type KeyEnv, type KeyMeta, keyMetaOf } from "./key-meta.js";
 import { putSealedKey, removeSealedKey } from "./server-keys.js";
 import type { Store } from "./store/index.js";
 import { unknownFields } from "./validate.js";
 import { ArchilClaimRefused, archilClaim } from "./workspace/archil-claim.js";
-import { type ArchilDisk, type ArchilDiskOptions, pinnedImage } from "./workspace/archil-disk.js";
+import { type ArchilDisk, type ArchilDiskOptions, archilDisk, pinnedImage } from "./workspace/archil-disk.js";
 
 /** The routes, by their operation names. */
 export const ARCHIL_ROUTES: ReadonlySet<string> = new Set(["getWorkspaceArchil", "putWorkspaceArchil", "deleteWorkspaceArchil", "testWorkspaceArchil"]);
@@ -35,6 +35,8 @@ export interface ArchilRoutesOptions {
   readonly sealKey: Buffer | undefined;
   /** Makes the disk for the test (default archilDisk): a test's fake. */
   readonly makeDisk?: (options: ArchilDiskOptions) => ArchilDisk;
+  /** The server's environment: an ARCHIL_API_KEY variable overrides the saved key (source "env"). */
+  readonly env?: KeyEnv;
 }
 
 const OFF = "Archil is off on this server: save its disk, region and S3 URL (PUT /v2/workspace/archil)";
@@ -46,11 +48,11 @@ const statusOf = (error: unknown): number | undefined => {
 };
 
 export function createArchilRoutes(options: ArchilRoutesOptions) {
-  const { store, sealKey } = options;
+  const { store, sealKey, env = {} } = options;
 
   async function view(): Promise<ArchilView> {
     const settings = await loadArchilSettings(store);
-    return { on: settings !== undefined, ...(settings ?? {}), keys: await keyMetaOf(store, KEYS) };
+    return { on: settings !== undefined, ...(settings ?? {}), keys: await keyMetaOf(store, KEYS, env) };
   }
 
   /** The settings row replaced and the keys given sealed, once every field is right; nothing is saved when one is not. */
@@ -74,6 +76,8 @@ export function createArchilRoutes(options: ArchilRoutesOptions) {
       if (!KEYS.some((key) => key.name === name)) issues.push({ field: `keys.${name}`, reason: "not_allowed", message: `Archil takes ARCHIL_API_KEY alone, not ${name}: no disk token is kept, a computer's mount credential is minted per run from the account key` });
       else if (value !== null && !nonEmpty(value)) issues.push({ field: `keys.${name}`, reason: "wrong_type", message: `${name} is a non-empty string, or null to remove it` });
     }
+    // Kept until the server refuses to start without a seal key (the secrets plan's rule 2); then this branch can't be
+    // reached, and it goes.
     if (!sealKey && entries.some(([, value]) => value !== null)) issues.push({ field: "keys", reason: "unavailable", message: "this server was given no seal key, so it keeps no key: start it with AGENTRUN_SEAL_KEY" });
     if (issues.length) throw invalid(issues);
     const settings: ArchilSettings = { diskId: (given.diskId as string).trim(), region: (given.region as string).trim(), s3Url: given.s3Url as string, ...(given.image !== undefined ? { image: given.image as string } : {}) };
@@ -98,12 +102,20 @@ export function createArchilRoutes(options: ArchilRoutesOptions) {
     let disk: ArchilDisk;
     let secrets: ReadonlySet<string> = new Set();
     const done = new AbortController();
+    const fromEnv = envValue(env, KEYS[0]!.name);
     try {
-      const claim = await archilClaim({ settings: { diskId: settings.diskId, region: settings.region, s3Url: settings.s3Url }, keys: store.sealedKeys, sealKey, signal: done.signal, ...(options.makeDisk ? { makeDisk: options.makeDisk } : {}) });
-      disk = claim.disk;
-      secrets = new Set(claim.secrets);
+      if (fromEnv !== undefined) {
+        // The environment's key wins over a saved one: the disk made with it, as the claim makes it.
+        secrets = new Set([fromEnv]);
+        disk = (options.makeDisk ?? archilDisk)({ disk: settings.diskId, region: settings.region, s3BaseUrl: settings.s3Url, key: () => fromEnv });
+      } else {
+        const claim = await archilClaim({ settings: { diskId: settings.diskId, region: settings.region, s3Url: settings.s3Url }, keys: store.sealedKeys, sealKey, signal: done.signal, ...(options.makeDisk ? { makeDisk: options.makeDisk } : {}) });
+        disk = claim.disk;
+        secrets = new Set(claim.secrets);
+      }
     } catch (error) {
       if (error instanceof ArchilClaimRefused) return { ok: false, why: error.message };
+      if (fromEnv !== undefined) return { ok: false, why: `This server's Archil settings can't make its disk: ${[...secrets].reduce((out, value) => out.split(value).join("[the key]"), describe(error))}` };
       throw error;
     }
     const scrub = (text: string): string => [...secrets].reduce((out, value) => (value ? out.split(value).join("[the key]") : out), text);
