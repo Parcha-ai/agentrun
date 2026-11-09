@@ -5,7 +5,7 @@
 // with no URL. daemonWatch is the one implementation behind every provider's watch. A fake connection; no daemon.
 import assert from "node:assert/strict";
 import test from "node:test";
-import { daemonWatch, toAction } from "../dist/index.js";
+import { createActionMapper, daemonWatch, toAction } from "../dist/index.js";
 
 const SECRET_URL = "wss://live.vendor.example/desk/42?token=tok_SECRET42&password=pw_SECRET43";
 const REF = { id: "c1", name: "computer-000000000001" };
@@ -346,9 +346,58 @@ test("toAction holds what a viewer may send to bounds: it checks every field at 
 	// A modified click keeps its modifiers: the down only moves, and the up clicks with the keys held.
 	assert.deepEqual(actions(mouse("down", 2)), [{ type: "move", at: [10, 20] }]);
 	assert.deepEqual(actions(mouse("up", 2 | 8)), [{ type: "move", at: [10, 20] }, { type: "click", at: [10, 20], button: "left", keys: ["ctrl", "shift"] }]);
-	assert.deepEqual(actions({ ...mouse("up", 8), clickCount: 2 }), [{ type: "move", at: [10, 20] }, { type: "click", at: [10, 20], button: "left", count: 2, keys: ["shift"] }]);
+	// Each modified up is one click: a double-click is its two ups, never a count (which the desktop would repeat).
+	assert.deepEqual(actions({ ...mouse("up", 8), clickCount: 2 }), [{ type: "move", at: [10, 20] }, { type: "click", at: [10, 20], button: "left", keys: ["shift"] }]);
 	// A viewer never ends or switches the display.
 	refusal(key("Backspace", 2 | 1), "desktop", "key", /would end the display/);
 	for (const f of ["F1", "F7", "F12"]) refusal(key(f, 2 | 1), "desktop", "key", /would switch the display/);
 	assert.deepEqual(actions(key("F1")), [{ type: "key", keys: ["f1"] }], "F1 alone is a key");
+});
+
+test("createActionMapper keeps a press's strategy until its release: one click per modified press, and release() lets go of what it holds", () => {
+	const mouse = (action, modifiers = 0, clickCount = 1, button = 0) => ({ type: "mouse", action, x: 10, y: 20, button, buttons: 0, clickCount, modifiers });
+	const key = (k, modifiers = 0, action = "down") => ({ type: "key", action, key: k, code: k, modifiers });
+	const move = { type: "move", at: [10, 20] };
+	const mapped = (mapper, event) => {
+		const out = mapper.map(event);
+		assert.ok(Array.isArray(out), `${JSON.stringify(event)}: ${JSON.stringify(out)}`);
+		return out;
+	};
+	// A modifier released before the up still clicks once, with the keys held at the down.
+	let mapper = createActionMapper("desktop");
+	assert.deepEqual(mapped(mapper, mouse("down", 2)), [move]);
+	assert.deepEqual(mapped(mapper, mouse("up", 0)), [move, { type: "click", at: [10, 20], button: "left", keys: ["ctrl"] }]);
+	// A plain press stays plain when a modifier is pressed before its up.
+	assert.deepEqual(mapped(mapper, mouse("down", 0)), [move, { type: "down", button: "left" }]);
+	assert.deepEqual(mapped(mapper, mouse("up", 8)), [move, { type: "up", button: "left" }]);
+	// A modified double-click is exactly two clicks, and a triple three; no count is ever sent.
+	for (const presses of [2, 3]) {
+		mapper = createActionMapper("desktop");
+		const all = [];
+		for (let n = 1; n <= presses; n++) all.push(...mapped(mapper, mouse("down", 8, n)), ...mapped(mapper, mouse("up", 8, n)));
+		const clicks = all.filter((action) => action.type === "click");
+		assert.equal(clicks.length, presses, JSON.stringify(all));
+		assert.ok(clicks.every((click) => click.count === undefined && click.keys.join() === "shift"), JSON.stringify(clicks));
+	}
+	// release() lets go of every button and key this mapper holds down, then forgets them: a second release() is nothing.
+	mapper = createActionMapper("desktop");
+	mapped(mapper, mouse("down", 0, 1, 0));
+	mapped(mapper, mouse("down", 0, 1, 2));
+	mapped(mapper, key("s", 2));
+	mapped(mapper, mouse("down", 2, 1, 1));
+	const released = mapper.release();
+	assert.deepEqual(
+		released.filter((action) => action.type === "up").map((action) => action.button).sort(),
+		["left", "right"],
+		`the plain presses are let go; the modified one sent no down: ${JSON.stringify(released)}`,
+	);
+	// No key is ever left down: the protocol presses and releases a key within its action, so there is none to lift.
+	assert.ok(released.every((action) => action.type === "up"), JSON.stringify(released));
+	assert.deepEqual(mapper.release(), []);
+	// After release() an up is a plain up again (nothing remembered).
+	assert.deepEqual(mapped(mapper, mouse("up", 0, 1, 1)), [move, { type: "up", button: "middle" }]);
+	// map() refuses exactly as toAction does, and maps a phone's events as toAction does.
+	assert.deepEqual(createActionMapper("desktop").map({ type: "tap", x: 1, y: 2 }), toAction({ type: "tap", x: 1, y: 2 }, "desktop"));
+	assert.deepEqual(createActionMapper("android").map({ type: "tap", x: 1, y: 2 }), [{ type: "tap", at: [1, 2] }]);
+	assert.deepEqual(createActionMapper("ios").release(), []);
 });
