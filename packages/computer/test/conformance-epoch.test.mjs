@@ -15,11 +15,11 @@ const run = (options = {}) => {
 	return runConformance(fake.provider, { image: IMAGE, cases: conformanceCases.filter((c) => c.id === ID) }).then((report) => ({ report, fake }));
 };
 
-test("provider.release-older is one Full case of the provider group, on computers of its own", () => {
+test("provider.release-older is one Full case of the provider group, on four computers of its own at once", () => {
 	const found = conformanceCases.filter((c) => c.id === ID);
 	assert.deepEqual(
 		found.map((c) => [c.level, c.group, c.needs, c.computer]),
-		[["full", "provider", [], "none"]],
+		[["full", "provider", ["computers:4"], "none"]],
 	);
 });
 

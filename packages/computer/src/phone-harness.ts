@@ -1,21 +1,23 @@
-// The phone kind on the phone harness's cloud phones (phone-harness.com): a cloud Android rented by the minute through
-// its HTTPS API, and driven over adb. No computerd runs on a phone: connect() gives a client in this process that
-// answers the protocol's phone groups (screen, input.touch, input.keys, apps, apps.ui_tree) with adb commands, and
-// refuses the rest in words. A cloud iPhone (driven by the API's control URL) is a later change: platform "ios" is
-// refused for now.
+// The phone kind on the phone harness's cloud phones (phone-harness.com), through its HTTPS API: a cloud Android rented
+// by the minute and driven over adb (platform "android", the default), or the account's own cloud iPhone, on a flat
+// subscription once the vendor sets one up, driven by the session's control API (platform "ios", src/phone-control.ts).
+// No computerd runs on a phone: connect() gives a client in this process that answers the protocol's phone groups with
+// adb commands or with the iPhone's ops, and refuses the rest in words. The two platforms share everything else here:
+// the API, create with its Idempotency-Key and recovery, the ledger, attach, list and release.
 //
 // The library reads no environment: the API key and every setting are options (serve passes PHONE_HARNESS_API_KEY as
 // apiKey). The vendor keeps no labels on a session, so the provider keeps its own in a ledger (an option: serve's store,
 // in memory by default): list, attach, release and the janitor see only the sessions the ledger names, never another
-// session on the same account.
+// session on the same account. An iPhone's entry names its platform, and each provider sees only its own platform's.
 import { execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { createConnection } from "node:net";
-import { crc32, deflateSync } from "node:zlib";
 import { checkActions } from "./actions.js";
 import type { KindCapabilities } from "./kinds.js";
 import type { MountKind } from "./mount.js";
+import { controlClient, HeldShot } from "./phone-control.js";
+import { encodePng } from "./png.js";
 import {
 	type ComputerClient,
 	type DaemonErrorKind,
@@ -25,7 +27,6 @@ import {
 	type HelloResult,
 	type InputAction,
 	type InputActionsResult,
-	MAX_CHUNK_BYTES,
 	MAX_UI_NODES,
 	type Rect,
 	type UiNode,
@@ -51,11 +52,21 @@ import { listTested } from "./test-connection.js";
 /** The phone harness's API. */
 export const PHONE_HARNESS_URL = "https://api.phone-harness.com";
 /** What a cloud Android offers through this provider, as its capabilities and hello declare them. */
-export const PHONE_GROUPS: readonly Group[] = ["screen", "input.touch", "input.keys", "apps", "apps.ui_tree"];
+export const PHONE_GROUPS: readonly Group[] = ["screen", "input.touch", "input.keys", "apps", "apps.terminate", "apps.ui_tree"];
+/**
+ * What a cloud iPhone offers. Its control API has no op that ends an app, so apps.terminate is not declared; input.keys
+ * and apps.ui_tree are declared once a live run on a real iPhone shows its ops take them.
+ */
+export const IOS_GROUPS: readonly Group[] = ["screen", "input.touch", "apps"];
 /** A phone mounts no folder. */
 export const MOUNT: readonly MountKind[] = [];
-/** The one configuration it offers, as its capabilities() declare it: the kind registry's entry holds the same. */
-export const CAPABILITIES: readonly KindCapabilities[] = [{ kind: "android", groups: [...PHONE_GROUPS] }];
+/** The configurations it offers, one per platform, as its capabilities() declare them: the kind registry's entry holds the same. */
+export const CAPABILITIES: readonly KindCapabilities[] = [
+	{ kind: "android", groups: [...PHONE_GROUPS] },
+	{ kind: "ios", groups: [...IOS_GROUPS] },
+];
+/** A phone id as the vendor gives it in GET /me → available (iph-622c376ba7). */
+const DEVICE_ID = /^[A-Za-z0-9_-]{1,64}$/;
 /** The longest lifetime by default: a rented phone bills by the minute. */
 export const DEFAULT_MAX_LIFETIME_MS = 30 * 60_000;
 /** How long create waits for a phone to be ready by default: the service's own CLI waits 240 s. */
@@ -90,6 +101,11 @@ export interface PhoneLedgerEntry {
 	 * and network answer not_found, as for a deleted computer; a second release of it is ok.
 	 */
 	released?: string;
+	/**
+	 * "ios" for an iPhone; absent for an Android, as every entry was before iPhones. A provider sees only its own
+	 * platform's entries, so one ledger can hold both: an Android provider never lists, attaches or releases an iPhone.
+	 */
+	platform?: "ios";
 }
 
 /** The ledger's id for a create not answered yet. */
@@ -268,9 +284,14 @@ export function adbAnswer(raw: Buffer, what: string): Result<string> {
 export interface PhoneProviderOptions {
 	/** The phone harness API key; serve passes PHONE_HARNESS_API_KEY. Never logged, never in an error. */
 	apiKey: string;
-	/** Which phone: "android", a temporary cloud emulator (the default). "ios" is refused until it is built. */
+	/**
+	 * Which phone: "android", a temporary cloud emulator (the default), or "ios", the account's own cloud iPhone, which
+	 * the vendor sets up per account. One session at a time holds an iPhone.
+	 */
 	platform?: "android" | "ios";
-	/** The API's base URL; default PHONE_HARNESS_URL. */
+	/** Which of the account's iPhones (its id in GET /me → available); needed once the account holds several. iOS only. */
+	deviceId?: string;
+	/** The API's base URL; default PHONE_HARNESS_URL. An iPhone's control URL must be on its origin. */
 	baseUrl?: string;
 	/** fetch; default the global one. Tests give a fake. */
 	fetch?: typeof globalThis.fetch;
@@ -319,9 +340,22 @@ interface Session {
 	expires_at?: number;
 	error?: string;
 	adb?: { host?: string; port?: number; code?: string } | null;
+	/** An iPhone's control grant (docs, guides/iphone): a URL whose path is the grant, and its token. */
+	control?: { url?: unknown; token?: unknown; expires_at?: unknown } | null;
+	/** What the phone is: android or ios. */
+	platform?: string;
 	/** The Idempotency-Key the session was made under. */
 	request_key?: string;
 }
+
+/** What each platform is, as capabilities() and attach read it back. */
+const PLATFORMS = {
+	android: { kind: "android", groups: PHONE_GROUPS, user: SHELL_USER, image: "a cloud Android has no image to choose" },
+	// The user is ASSUMED: iOS's mobile user, 501:501, which apps run as. Nothing on the control API reports it; the first
+	// live run on a real iPhone reads what it can, and this follows. The provider names one iPhone (deviceId, or the
+	// account's only one), which one session at a time holds: one computer at once.
+	ios: { kind: "ios", groups: IOS_GROUPS, user: "501:501", image: "a cloud iPhone has no image to choose", maxComputers: 1 },
+} as const;
 
 export class PhoneHarnessProvider implements ComputerProvider {
 	readonly id = "phone-harness";
@@ -339,14 +373,19 @@ export class PhoneHarnessProvider implements ComputerProvider {
 	readonly #requestMs: number;
 	readonly #timeout: (ms: number) => AbortSignal;
 	readonly #daemonVersion: string;
+	readonly #platform: "android" | "ios";
+	readonly #deviceId: string | undefined;
 	/** How many open connections hold each endpoint's adb transport: the last to let go disconnects it. */
 	readonly #holders = new Map<string, number>();
 
 	constructor(options: PhoneProviderOptions) {
-		const { apiKey, platform = "android" } = options ?? ({} as PhoneProviderOptions);
+		const { apiKey, platform = "android", deviceId } = options ?? ({} as PhoneProviderOptions);
 		if (typeof apiKey !== "string" || apiKey === "") throw new Error("the phone-harness provider needs options.apiKey: serve passes PHONE_HARNESS_API_KEY");
-		if (platform === "ios") throw new Error('platform "ios" is not offered yet: the phone-harness provider rents a cloud Android; an iPhone is a later change');
-		if (platform !== "android") throw new Error(`platform ${show(platform)} is not one of android, ios`);
+		if (platform !== "android" && platform !== "ios") throw new Error(`platform ${show(platform)} is not one of android, ios`);
+		if (deviceId !== undefined && platform !== "ios") throw new Error('deviceId names one of the account\'s iPhones: give it with platform "ios"');
+		if (deviceId !== undefined && !(typeof deviceId === "string" && DEVICE_ID.test(deviceId))) throw new Error(`deviceId ${show(deviceId)} is not a phone id as GET /me gives one (letters, digits, - and _)`);
+		this.#platform = platform;
+		this.#deviceId = deviceId;
 		this.#apiKey = apiKey;
 		this.#baseUrl = (options.baseUrl ?? PHONE_HARNESS_URL).replace(/\/+$/, "");
 		this.#fetch = options.fetch ?? globalThis.fetch;
@@ -369,24 +408,29 @@ export class PhoneHarnessProvider implements ComputerProvider {
 	}
 
 	capabilities(): ComputerCapabilities {
+		const platform = PLATFORMS[this.#platform];
 		return {
-			kind: "android",
-			os: "android",
+			kind: platform.kind,
+			os: platform.kind,
 			daemon: "none",
 			lifetime: "vendor",
 			network: ["open"],
 			isolation: "vm",
-			groups: [...PHONE_GROUPS],
+			groups: [...platform.groups],
 			maxLifetimeMs: this.#maxLifetimeMs,
+			...("maxComputers" in platform ? { maxComputers: platform.maxComputers } : {}),
 			release: ["delete"],
 		};
 	}
 
 	check(spec: ComputerSpec): Refusal[] {
 		const refusals = checkLifetime(spec?.lifetimeMs, this.capabilities());
-		if (typeof spec?.image !== "string" || spec.image === "") refusals.push({ field: "image", message: "image is required: a name the phone is read back by (a cloud Android has no image to choose)" });
+		if (typeof spec?.image !== "string" || spec.image === "") refusals.push({ field: "image", message: `image is required: a name the phone is read back by (${PLATFORMS[this.#platform].image})` });
 		if (spec?.network !== "open") refusals.push({ field: "network", message: `network ${show(spec?.network)}: a cloud phone's network is open, and it cannot be closed or narrowed` });
-		if (spec?.user !== undefined) refusals.push({ field: "user", message: "user: a cloud phone has no user to choose; every command runs as the phone's shell user" });
+		if (spec?.user !== undefined) {
+			const message = this.#platform === "ios" ? "user: a cloud iPhone has no user to choose, and runs no command" : "user: a cloud phone has no user to choose; every command runs as the phone's shell user";
+			refusals.push({ field: "user", message });
+		}
 		for (const field of ["cpus", "memoryMb", "pids", "workdir"] as const) {
 			if (spec?.[field] !== undefined) refusals.push({ field, message: `${field}: a cloud phone's size and folders are the vendor's, and cannot be asked for` });
 		}
@@ -404,13 +448,14 @@ export class PhoneHarnessProvider implements ComputerProvider {
 	/**
 	 * One request, bounded by ms (default requestMs) and by the caller's signal. A failure is `uncertain` when the
 	 * service may have acted on the request all the same: no answer (lost, or cut off by its bound), or a 5xx other than
-	 * phones_busy, the service's own word that nothing was made.
+	 * phones_busy, the service's own word that nothing was made. A 409 profile_running is `held`: the phone is held by a
+	 * session, which may be the one this very request made (a gateway's retry of it is refused).
 	 */
 	async #api(
 		method: string,
 		path: string,
 		{ body, headers = {}, signal, ms = this.#requestMs }: { body?: unknown; headers?: Record<string, string>; signal?: AbortSignal; ms?: number } = {},
-	): Promise<Result<{ status: number; json: unknown }> & { uncertain?: boolean }> {
+	): Promise<Result<{ status: number; json: unknown }> & { uncertain?: boolean; held?: boolean }> {
 		const bound = this.#timeout(Math.max(1, Math.ceil(ms)));
 		const either = signal ? AbortSignal.any([signal, bound]) : bound;
 		const cut = (error: unknown): Result<never> & { uncertain?: boolean } => {
@@ -454,6 +499,8 @@ export class PhoneHarnessProvider implements ComputerProvider {
 			return fail("limit", `${where}: ${said}${Number.isFinite(retry) && retry > 0 ? `; try again in ${retry} s` : ""} (phones_busy)`);
 		}
 		if (answer.code === "session_limit") return fail("limit", `${where}: ${said} (session_limit)`);
+		// One session at a time holds an iPhone (docs, guides/iphone): a second start answers 409 profile_running.
+		if (answer.code === "profile_running") return { ...fail("limit", `${where}: ${said} (profile_running)`), held: true };
 		if (response.status === 404) return fail("not_found", `${where}: ${said} (404)`);
 		const failed = fail("phone", `${where}: ${said} (${response.status}${answer.code ? `, ${answer.code}` : ""})`);
 		// A 5xx is no refusal: a gateway may answer it for a request the service went on to act on.
@@ -489,6 +536,43 @@ export class PhoneHarnessProvider implements ComputerProvider {
 		return new Date(typeof session.expires_at === "number" && Number.isFinite(session.expires_at) ? session.expires_at * 1000 : fallback).toISOString();
 	}
 
+	/** Whether a ledger entry is this provider's platform's: an entry with none is an Android's. */
+	#mine(entry: PhoneLedgerEntry): boolean {
+		return (entry.platform ?? "android") === this.#platform;
+	}
+
+	/** The ledger's entry for id when it is this platform's; another platform's is not this provider's phone. */
+	async #own(id: string): Promise<PhoneLedgerEntry | undefined> {
+		const entry = await this.#ledger.get(id);
+		return entry !== undefined && this.#mine(entry) ? entry : undefined;
+	}
+
+	/**
+	 * Waits until each phone of this platform the ledger marks released is gone (its GET a 404, which forgets it), or
+	 * readyMs has passed, or signal fires. A read that fails otherwise stops the wait: create posts, and the vendor says.
+	 */
+	async #awaitReleased(signal?: AbortSignal): Promise<void> {
+		const until = this.#now() + this.#readyMs;
+		const ending = (await this.#ledger.list()).filter((entry) => this.#mine(entry) && entry.released !== undefined).map((entry) => entry.id);
+		for (const id of ending) {
+			for (;;) {
+				if (signal?.aborted || this.#now() >= until) return;
+				const read = await this.#session(id, signal);
+				if (!read.ok) {
+					if (read.error.code === "gone") await this.#ledger.remove(id);
+					break;
+				}
+				if (read.value.state !== "closing" && read.value.state !== "ready" && read.value.state !== "provisioning") break;
+				await this.#sleep(this.#pollMs);
+			}
+		}
+	}
+
+	/** An entry for this provider's platform: an iPhone's names it; an Android's is written as before. */
+	#entry(fields: Omit<PhoneLedgerEntry, "platform">): PhoneLedgerEntry {
+		return this.#platform === "ios" ? { ...fields, platform: "ios" } : fields;
+	}
+
 	// --- the provider ----------------------------------------------------------------------------------------------
 
 	create(spec: ComputerSpec, context: { signal?: AbortSignal } = {}): Promise<Result<CreatedComputer>> {
@@ -519,12 +603,21 @@ export class PhoneHarnessProvider implements ComputerProvider {
 		const refusals = this.check(spec);
 		if (refusals.length > 0) return fail("refused", refusals.map(({ field, message }) => `${field}: ${message}`).join("; "));
 		if (signal?.aborted) return fail("aborted", "create was aborted before the phone harness was asked");
+		// One session at a time holds an iPhone, and this provider's own released one stays closing a while (the end is
+		// asynchronous): wait for it to end, bounded by readyMs, before posting. Another holder still meets a limit in words.
+		if (this.#platform === "ios") await this.#awaitReleased(signal);
+		if (signal?.aborted) return fail("aborted", "create was aborted before the phone harness was asked");
 		const from = this.#now();
 		const requestKey = randomBytes(16).toString("hex");
-		const body = { platform: "android", kind: "emulator", timeout_seconds: Math.ceil(spec.lifetimeMs / 1000) };
+		const timeout_seconds = Math.ceil(spec.lifetimeMs / 1000);
+		// An iPhone is the account's own device: device_id names which, and may be left out while the account holds one.
+		const body =
+			this.#platform === "ios"
+				? { platform: "ios", kind: "device", ...(this.#deviceId === undefined ? {} : { device_id: this.#deviceId }), timeout_seconds }
+				: { platform: "android", kind: "emulator", timeout_seconds };
 		// The key goes into the ledger before the POST: whatever answers are lost, list() can find the phone by it.
 		const pending = pendingId(requestKey);
-		await this.#ledger.put({ id: pending, labels: { ...(spec.labels ?? {}) }, image: spec.image, deadline: new Date(from + spec.lifetimeMs).toISOString(), request: requestKey });
+		await this.#ledger.put(this.#entry({ id: pending, labels: { ...(spec.labels ?? {}) }, image: spec.image, deadline: new Date(from + spec.lifetimeMs).toISOString(), request: requestKey }));
 		const posted = await this.#api("POST", "/sessions", { body, headers: { "Idempotency-Key": requestKey }, ...(signal ? { signal } : {}) });
 		const cancelled = !posted.ok && posted.error.code === "aborted";
 		let first = posted.ok ? sessionOf(posted.value.json, "POST /sessions") : undefined;
@@ -540,6 +633,19 @@ export class PhoneHarnessProvider implements ComputerProvider {
 			if (!recovered.ok) return fail(cancelled ? "aborted" : "phone", `${why}; and the service has no session for the request: ${recovered.error.message}; ${kept}`);
 			first = sessionOf(recovered.value.json, `GET /sessions/requests/${requestKey}`);
 			if (!first.ok) return fail(cancelled ? "aborted" : "phone", `${why}; and its recovery answered no session: ${first.error.message}; ${kept}`);
+		} else if (!posted.ok && posted.held) {
+			// 409 profile_running is no proof nothing was made: a gateway's retry of this POST is refused by the session the
+			// first attempt made. Ask by the key once: a session found is this create's, and adopted.
+			const asked = await this.#api("GET", `/sessions/requests/${requestKey}`);
+			const found = asked.ok ? sessionOf(asked.value.json, `GET /sessions/requests/${requestKey}`) : undefined;
+			if (found?.ok) first = found;
+			else if (!asked.ok && asked.error.code !== "not_found") {
+				return fail("limit", `${posted.error.message}; and the service could not be asked for the request: ${asked.error.message}; the ledger keeps the request's key, so list() finds the phone if it was made`);
+			} else {
+				// Another session holds the phone, and none was made for this request: the key is forgotten.
+				await this.#ledger.remove(pending);
+				return posted;
+			}
 		} else if (!posted.ok) {
 			// The phone harness refused the request: nothing was made, and the key is forgotten.
 			await this.#ledger.remove(pending);
@@ -560,7 +666,7 @@ export class PhoneHarnessProvider implements ComputerProvider {
 			}
 		};
 		const named = await record(async () => {
-			await this.#ledger.put({ id, labels: { ...(spec.labels ?? {}) }, image: spec.image, deadline: this.#deadlineOf(first.value, from + spec.lifetimeMs) });
+			await this.#ledger.put(this.#entry({ id, labels: { ...(spec.labels ?? {}) }, image: spec.image, deadline: this.#deadlineOf(first.value, from + spec.lifetimeMs) }));
 			await this.#ledger.remove(pending);
 		});
 		if (!named.ok) return named;
@@ -593,7 +699,7 @@ export class PhoneHarnessProvider implements ComputerProvider {
 			await this.#sleep(this.#pollMs);
 		}
 		const deadline = this.#deadlineOf(session, from + spec.lifetimeMs);
-		const kept = await record(() => this.#ledger.put({ id, labels: { ...(spec.labels ?? {}) }, image: spec.image, deadline }));
+		const kept = await record(() => this.#ledger.put(this.#entry({ id, labels: { ...(spec.labels ?? {}) }, image: spec.image, deadline })));
 		if (!kept.ok) return kept;
 		const took = this.#now() - from;
 		if (this.#now() >= Date.parse(deadline)) {
@@ -605,13 +711,13 @@ export class PhoneHarnessProvider implements ComputerProvider {
 	async #attach(ref: { id: string } | { labels: Record<string, string> }, { signal }: CallContext = {}): Promise<Result<AttachedComputer>> {
 		let entry: PhoneLedgerEntry | undefined;
 		if ("id" in ref) {
-			entry = await this.#ledger.get(ref.id);
+			entry = await this.#own(ref.id);
 			if (entry === undefined) return fail("not_found", `${ref.id} is not a phone this provider made`);
 			if (entry.released !== undefined) return fail("not_found", `${ref.id} was released, and the service is ending it`);
 		} else {
 			// A pending entry is a create not answered yet, not a phone: list() adopts it once its phone is seen. A released
-			// one is ending.
-			const found = (await this.#ledger.list()).filter((one) => one.request === undefined && one.released === undefined && carries(one.labels, ref.labels));
+			// one is ending. Another platform's is another provider's.
+			const found = (await this.#ledger.list()).filter((one) => this.#mine(one) && one.request === undefined && one.released === undefined && carries(one.labels, ref.labels));
 			if (found.length === 0) return fail("not_found", `no phone of this provider carries the labels ${show(ref.labels)}`);
 			if (found.length > 1) return fail("invalid", `${found.length} phones of this provider (${found.map((one) => one.id).join(", ")}) carry the labels ${show(ref.labels)}: attach takes one`);
 			entry = found[0];
@@ -624,7 +730,8 @@ export class PhoneHarnessProvider implements ComputerProvider {
 		}
 		if (session.value.state !== "ready" && session.value.state !== "provisioning") return fail("gone", `${id} is ${session.value.state}`);
 		const deadline = new Date(this.#deadlineOf(session.value, Date.parse((entry as PhoneLedgerEntry).deadline)));
-		return ok({ id, name: id, spec: { image: (entry as PhoneLedgerEntry).image, user: SHELL_USER, network: "open", deadline, kind: "android" } });
+		const { kind, user } = PLATFORMS[this.#platform];
+		return ok({ id, name: id, spec: { image: (entry as PhoneLedgerEntry).image, user, network: "open", deadline, kind } });
 	}
 
 	/**
@@ -638,10 +745,11 @@ export class PhoneHarnessProvider implements ComputerProvider {
 	async #list(labels: Record<string, string>, { signal }: CallContext = {}): Promise<Result<ComputerInfo[]>> {
 		// The ledger is read before the account's sessions: a phone whose entry is read was made before the GET, so it is
 		// in its answer unless it is gone. An entry a create writes later is not seen by this list, and so not forgotten.
-		const entries = await this.#ledger.list();
+		// Another platform's entries are another provider's: never listed, adopted or forgotten here.
+		const entries = (await this.#ledger.list()).filter((entry) => this.#mine(entry));
 		const got = await this.#api("GET", "/sessions", signal ? { signal } : {});
 		if (!got.ok) return got;
-		if (!Array.isArray(got.value.json)) return fail("phone", `GET /sessions answered ${show(got.value.json).slice(0, 200)}, not a list`);
+		if (!Array.isArray(got.value.json)) return fail("phone", `GET /sessions answered ${secretless(got.value.json).slice(0, 200)}, not a list`);
 		const live = new Map<string, Session>();
 		for (const one of got.value.json) {
 			const session = sessionOf(one, "GET /sessions");
@@ -651,8 +759,9 @@ export class PhoneHarnessProvider implements ComputerProvider {
 		for (const listed of entries) {
 			let entry = listed;
 			if (entry.request !== undefined) {
-				// A create not answered yet: its phone is the account's session whose request_key is exactly its key.
-				const made = [...live.values()].find((session) => session.request_key === entry.request);
+				// A create not answered yet: its phone is the account's session whose request_key is exactly its key, and
+				// whose platform, when the listing names one, is this provider's.
+				const made = [...live.values()].find((session) => session.request_key === entry.request && (session.platform === undefined || session.platform === this.#platform));
 				if (made === undefined) {
 					// Still being made, or never made: after its deadline nothing of it can be alive, and it is forgotten.
 					if (this.#now() > Date.parse(entry.deadline)) await this.#ledger.remove(entry.id);
@@ -664,7 +773,7 @@ export class PhoneHarnessProvider implements ComputerProvider {
 					await this.#ledger.remove(listed.id);
 					continue;
 				}
-				entry = { id: made.id, labels: { ...entry.labels }, image: entry.image, deadline: this.#deadlineOf(made, Date.parse(entry.deadline)) };
+				entry = this.#entry({ id: made.id, labels: { ...entry.labels }, image: entry.image, deadline: this.#deadlineOf(made, Date.parse(entry.deadline)) });
 				await this.#ledger.put(entry);
 				await this.#ledger.remove(listed.id);
 			}
@@ -702,7 +811,7 @@ export class PhoneHarnessProvider implements ComputerProvider {
 	}
 
 	async #network(ref: ComputerRef, policy?: NetworkSpec): Promise<Result<NetworkPolicy>> {
-		const entry = await this.#ledger.get(ref.id);
+		const entry = await this.#own(ref.id);
 		if (entry === undefined) return fail("not_found", `${ref.id} is not a phone this provider made`);
 		if (entry.released !== undefined) return fail("not_found", `${ref.id} was released, and the service is ending it`);
 		if (policy === undefined || policy === "open") return ok("open");
@@ -711,7 +820,8 @@ export class PhoneHarnessProvider implements ComputerProvider {
 
 	async #release(ref: ComputerRef, how: "stop" | "delete"): Promise<Result<void>> {
 		if (how === "stop") return fail("unsupported", "a cloud phone has no stop: release it with delete, which ends the session");
-		const entry = await this.#ledger.get(ref.id);
+		// Another platform's entry is as no entry: refused, never sent a DELETE, and its entry left to its own provider.
+		const entry = await this.#own(ref.id);
 		if (entry?.released !== undefined) {
 			// Released already, and the service may still be ending it: ok. Its own GET says whether it is gone, and then it is
 			// forgotten; a phone the service still holds running is sent its DELETE again.
@@ -752,13 +862,62 @@ export class PhoneHarnessProvider implements ComputerProvider {
 		return fail("phone", `adb connected to the phone, and the adb server still lists it as ${last}, not a device`);
 	}
 
+	/** A session's control grant this provider can use: a URL on the API's own origin, and a token fit for a header. */
+	#grantOf(id: string, session: Session): Result<{ url: string; token: string }> {
+		const { url, token } = session.control ?? {};
+		// The token goes in a header: printable ASCII with no space, so nothing in it can break the header.
+		if (typeof url !== "string" || typeof token !== "string" || !/^[\x21-\x7e]{1,4096}$/.test(token)) {
+			return fail("phone", `the phone harness gave the iPhone ${id} no control grant this provider can use (a URL and a token)`);
+		}
+		let where: URL;
+		try {
+			where = new URL(url);
+		} catch {
+			return fail("phone", `the phone harness gave the iPhone ${id} a control URL that does not parse`);
+		}
+		const api = new URL(this.#baseUrl);
+		if (where.origin !== api.origin) {
+			return fail("phone", `the phone harness gave the iPhone ${id} a control URL on ${where.host}, not ${api.host}: its token is sent only to the API's own host`);
+		}
+		return ok({ url, token });
+	}
+
+	/**
+	 * An iPhone's connection: its session's control grant, on the API's own origin, opened with GET /ops. The token is
+	 * sent nowhere else, and named in no words: a grant on another origin is refused before any request.
+	 */
+	async #connectControl(id: string, session: Session): Promise<Result<ComputerConnection>> {
+		const grant = this.#grantOf(id, session);
+		if (!grant.ok) return grant;
+		// A grant that expires before its session (a 404 on an op) is renewed once from the session's own read.
+		const renew = async () => {
+			const read = await this.#session(id);
+			if (!read.ok) return read;
+			if (read.value.state !== "ready") return fail("gone", `${id} is ${read.value.state}, not ready`);
+			return this.#grantOf(id, read.value);
+		};
+		const client = controlClient({ ...grant.value, groups: IOS_GROUPS, fetch: this.#fetch, sleep: this.#sleep, timeout: this.#timeout, renew });
+		const opened = await client.open(this.#daemonVersion);
+		if (!opened.ok) {
+			client.close();
+			return opened;
+		}
+		const hello = opened.value;
+		if (hello.version !== this.version) {
+			client.close();
+			return fail("refused", `hello: the daemon reports version ${hello.version}, expected ${this.version}`);
+		}
+		return ok({ client, hello, close: async () => client.close() });
+	}
+
 	async #connect(ref: ComputerRef): Promise<Result<ComputerConnection>> {
-		const entry = await this.#ledger.get(ref.id);
+		const entry = await this.#own(ref.id);
 		if (entry === undefined) return fail("not_found", `${ref.id} is not a phone this provider made`);
 		if (entry.released !== undefined) return fail("not_found", `${ref.id} was released, and the service is ending it`);
 		const session = await this.#session(ref.id);
 		if (!session.ok) return session;
 		if (session.value.state !== "ready") return fail("gone", `${ref.id} is ${session.value.state}, not ready`);
+		if (this.#platform === "ios") return this.#connectControl(ref.id, session.value);
 		let link = session.value.adb;
 		if (!(link?.host && link.port && link.code)) {
 			const asked = await this.#api("POST", `/sessions/${encodeURIComponent(ref.id)}/adb`);
@@ -841,9 +1000,14 @@ export class PhoneHarnessProvider implements ComputerProvider {
 /** Whether labels carries every one of wanted. */
 const carries = (labels: Record<string, string>, wanted: Record<string, string>) => Object.entries(wanted ?? {}).every(([key, value]) => labels[key] === value);
 
+/** The keys of a vendor answer that hold a bearer: an iPhone's control URL and token, an Android's unlock code. */
+const SECRET_KEYS = new Set(["token", "url", "code"]);
+/** A vendor answer as words, its bearers hidden: an answer that is not what was asked is shown, and must hold none. */
+const secretless = (json: unknown) => JSON.stringify(json, (key, value) => (SECRET_KEYS.has(key) && typeof value === "string" ? "[hidden]" : value)) ?? String(json);
+
 function sessionOf(json: unknown, where: string): Result<Session> {
 	const s = json as Session | undefined;
-	if (typeof s !== "object" || s === null || typeof s.id !== "string" || typeof s.state !== "string") return fail("phone", `${where} answered ${show(json).slice(0, 200)}, not a session`);
+	if (typeof s !== "object" || s === null || typeof s.id !== "string" || typeof s.state !== "string") return fail("phone", `${where} answered ${secretless(json).slice(0, 200)}, not a session`);
 	return ok(s);
 }
 
@@ -886,7 +1050,7 @@ class AdbClient implements ComputerClient {
 	#hello: HelloResult | undefined;
 	#size: [number, number] = [0, 0];
 	#scale = 1;
-	#held: { id: string; bytes: Buffer } | undefined;
+	readonly #shot = new HeldShot();
 
 	/** The disconnect close started, which the connection's close waits for. */
 	#gone: Promise<unknown> = Promise.resolve();
@@ -922,7 +1086,7 @@ class AdbClient implements ComputerClient {
 	close(): void {
 		if (this.#closed) return;
 		this.#closed = true;
-		this.#held = undefined;
+		this.#shot.clear();
 		this.#gone = this.disconnect().catch(() => undefined);
 	}
 
@@ -963,9 +1127,9 @@ class AdbClient implements ComputerClient {
 			case "ping":
 				return ok({});
 			case "screen.shot":
-				return this.#shot(params.region);
+				return this.#screenShot(params.region);
 			case "screen.read":
-				return this.#read(params.id, params.offset);
+				return this.#shot.read(params.id, params.offset);
 			case "input.actions":
 				return this.#actions(params.actions, signal);
 			case "apps.list":
@@ -986,7 +1150,7 @@ class AdbClient implements ComputerClient {
 
 	// --- screen --------------------------------------------------------------------------------------------------
 
-	async #shot(region: unknown): Promise<Call> {
+	async #screenShot(region: unknown): Promise<Call> {
 		const raw = await this.#execOut("screencap");
 		if (!raw.ok) return raw;
 		const frame = decodeScreencap(raw.value);
@@ -1001,21 +1165,7 @@ class AdbClient implements ComputerClient {
 			}
 			rect = r as Rect;
 		}
-		const bytes = encodePng(rgba, width, rect);
-		const id = randomBytes(6).toString("hex");
-		this.#held = { id, bytes };
-		const data = bytes.subarray(0, MAX_CHUNK_BYTES);
-		return ok({ id, size: bytes.length, data: data.toString("base64"), eof: data.length === bytes.length, width: rect[2], height: rect[3], scale: this.#scale });
-	}
-
-	#read(id: unknown, offset: unknown): Call {
-		const held = this.#held;
-		if (held === undefined || held.id !== id) return refuse("not_found", `no shot ${show(id)} is held: take one with screen.shot`);
-		if (!(Number.isSafeInteger(offset) && (offset as number) >= 0 && (offset as number) <= held.bytes.length)) return refuse("invalid", `offset ${show(offset)} is not inside the shot's ${held.bytes.length} bytes`);
-		const data = held.bytes.subarray(offset as number, (offset as number) + MAX_CHUNK_BYTES);
-		const eof = (offset as number) + data.length >= held.bytes.length;
-		if (eof) this.#held = undefined;
-		return ok({ data: data.toString("base64"), eof });
+		return ok(this.#shot.hold(encodePng(rgba, width, rect), rect[2], rect[3], this.#scale));
 	}
 
 	// --- input ---------------------------------------------------------------------------------------------------
@@ -1217,27 +1367,8 @@ export function decodeScreencap(raw: Buffer): Result<{ width: number; height: nu
 	return ok({ width, height, rgba });
 }
 
-/** An 8-bit RGBA PNG, non-interlaced, of rect of a width-wide RGBA frame. */
-export function encodePng(rgba: Buffer, width: number, [x, y, w, h]: Rect): Buffer {
-	const rows = Buffer.alloc((w * 4 + 1) * h);
-	for (let row = 0; row < h; row++) {
-		const from = ((y + row) * width + x) * 4;
-		rgba.copy(rows, row * (w * 4 + 1) + 1, from, from + w * 4);
-	}
-	const chunk = (type: string, data: Buffer) => {
-		const length = Buffer.alloc(4);
-		length.writeUInt32BE(data.length);
-		const typed = Buffer.concat([Buffer.from(type, "latin1"), data]);
-		const crc = Buffer.alloc(4);
-		crc.writeUInt32BE(crc32(typed) >>> 0);
-		return Buffer.concat([length, typed, crc]);
-	};
-	const ihdr = Buffer.alloc(13);
-	ihdr.writeUInt32BE(w, 0);
-	ihdr.writeUInt32BE(h, 4);
-	ihdr.set([8, 6, 0, 0, 0], 8);
-	return Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk("IHDR", ihdr), chunk("IDAT", deflateSync(rows)), chunk("IEND", Buffer.alloc(0))]);
-}
+/** The PNG writer, now the library's own (src/png.ts), still exported here as it was. */
+export { encodePng };
 
 const ENTITIES: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'" };
 const unescape = (text: string) =>

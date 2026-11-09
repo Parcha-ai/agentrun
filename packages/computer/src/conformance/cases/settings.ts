@@ -1,17 +1,28 @@
 // A phone with no fixture: the stock Settings app, read back through apps.ui_tree. A cloud phone may take no files, so
 // no fixture app can be installed on it; the touch, keys and apps cases then drive Settings instead and check what
 // they did in its tree, with no model. Settings shows a list of rows, each a clickable row holding its title. A tap on
-// one opens a page that shows its title, and its search field shows the text typed into it.
+// one opens a page that shows its title, and its search field shows the text typed into it. A phone with no tree (a cloud
+// iPhone, until a live run shows its tree) is checked on Settings' screen instead: a swipe up its list changes the
+// screenshot. On a phone that is the owner's own and never wiped, the cases only navigate: they change no setting.
 import type { ComputerKind, Point, Rect, UiNode, UiTreeResult } from "../../protocol.js";
 import type { CaseContext } from "../types.js";
 
-/** The stock Settings app of each phone kind this suite knows. */
-export const PHONE_SETTINGS: Readonly<Partial<Record<ComputerKind, string>>> = { android: "com.android.settings" };
+/**
+ * The stock Settings app of each phone kind this suite knows. An iPhone's is its bundle id; whether the cloud iPhone's
+ * control API launches an app by bundle id or by its name is a question for the first live run on one.
+ */
+export const PHONE_SETTINGS: Readonly<Partial<Record<ComputerKind, string>>> = { android: "com.android.settings", ios: "com.apple.Preferences" };
 
 /** Whether the case checks what it did through Settings: a phone with apps and a UI tree that takes no fixture file. */
 export function throughSettings(t: CaseContext): boolean {
 	const { kind, groups } = t.provider.capabilities();
 	return PHONE_SETTINGS[kind] !== undefined && !groups.includes("files") && groups.includes("apps") && groups.includes("apps.ui_tree");
+}
+
+/** Whether the case checks what it did on Settings' screen: a phone with apps and a screen, and neither files nor a tree. */
+export function throughSettingsScreen(t: CaseContext): boolean {
+	const { kind, groups } = t.provider.capabilities();
+	return PHONE_SETTINGS[kind] !== undefined && !groups.includes("files") && !groups.includes("apps.ui_tree") && groups.includes("apps") && groups.includes("screen");
 }
 
 /** The kind's Settings app, or the case skips in words. */
@@ -22,10 +33,25 @@ export function settingsApp(t: CaseContext): string {
 
 const foreground = async (t: CaseContext) => (await t.call("apps.list", {})).foreground;
 
-/** Settings, fresh and in front: ended, launched, and waited for until it is the app in front. */
+/**
+ * An app out of the way: ended with apps.terminate when the phone declares it, else left by the home button
+ * (input.touch), which only navigates. A phone with neither skips the case in words.
+ */
+export async function leaveApp(t: CaseContext, app: string): Promise<void> {
+	const { groups } = t.provider.capabilities();
+	if (groups.includes("apps.terminate")) {
+		t.deepEqual(await t.call("apps.terminate", { id: app }), {}, `apps.terminate ${app}`);
+		return;
+	}
+	if (!groups.includes("input.touch")) return t.skip(`no way to leave ${app}: the phone declares neither apps.terminate nor input.touch`, { undeclared: ["apps.terminate", "input.touch"] });
+	const pressed = await t.call("input.actions", { actions: [{ type: "button", name: "home" }] });
+	t.assert(pressed.failed === undefined, `the home button, to leave ${app}: ${JSON.stringify(pressed.failed)}`);
+}
+
+/** Settings, fresh and in front: ended (or left, on a phone with no apps.terminate), launched, and waited for until it is the app in front. */
 export async function openSettings(t: CaseContext): Promise<string> {
 	const app = settingsApp(t);
-	t.deepEqual(await t.call("apps.terminate", { id: app }), {}, `apps.terminate ${app}`);
+	await leaveApp(t, app);
 	t.deepEqual(await t.call("apps.launch", { id: app }), {}, `apps.launch ${app}`);
 	// What is in front instead, the last time it was read, goes in the words: a live run showed only the wait.
 	let seen: string | null = null;

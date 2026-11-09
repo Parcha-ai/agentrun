@@ -44,8 +44,8 @@ test("SETTING_KINDS is the agreed table: machine kinds, required and optional gr
 	assert.deepEqual(SETTING_KINDS, {
 		none: { machineKinds: [], required: [], optional: [] },
 		sandbox: { machineKinds: ["linux"], required: ["exec", "files", "processes"], optional: [] },
-		desktop: { machineKinds: ["desktop"], required: ["screen", "input.pointer", "input.keys"], optional: ["exec", "files", "processes", "apps", "stream"] },
-		phone: { machineKinds: ["android", "ios"], required: ["screen", "input.touch", "apps"], optional: ["input.keys", "apps.install", "apps.ui_tree", "stream"] },
+		desktop: { machineKinds: ["desktop"], required: ["screen", "input.pointer", "input.keys"], optional: ["exec", "files", "processes", "apps", "apps.terminate", "stream"] },
+		phone: { machineKinds: ["android", "ios"], required: ["screen", "input.touch", "apps"], optional: ["input.keys", "apps.terminate", "apps.install", "apps.ui_tree", "stream"] },
 		browser: { machineKinds: ["browser"], required: ["cdp"], optional: ["stream", "downloads"] },
 	});
 	for (const kind of SETTINGS) {
@@ -130,6 +130,7 @@ const BUILT = {
 			const fake = fakePhoneHarness();
 			return new PhoneHarnessProvider({ apiKey: PHONE_KEY, fetch: fake.fetch, adb: fake.adb });
 		},
+		() => new PhoneHarnessProvider({ apiKey: PHONE_KEY, platform: "ios", fetch: fakePhoneHarness().fetch }),
 	],
 	orgo: [() => createOrgo({ apiKey: "fake-test-key", workspaceId: "ws-test", fetch: async () => new Response(null, { status: 500 }) })],
 };

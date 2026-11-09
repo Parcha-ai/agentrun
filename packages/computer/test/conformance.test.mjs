@@ -15,8 +15,8 @@ const IMAGE = "debian:bookworm-slim";
 const HERE = fileURLToPath(new URL(".", import.meta.url));
 const CLI = fileURLToPath(new URL("../dist/conformance/cli.js", import.meta.url));
 const GROUPS = ["health", "exec", "files", "process", "provider", "drift", "mount", "screen", "input", "touch", "apps", "lifetime"];
-const PROTOCOL_GROUPS = ["exec", "files", "processes", "screen", "input.pointer", "input.keys", "input.touch", "apps", "apps.install", "apps.ui_tree"];
-const CAPABILITIES = [...PROTOCOL_GROUPS, "network:none", "network:open", "network:allow", "lifetime:janitor", "user:root", "user:uid", "release:stop", "extend", "stream", "mount:bind", "mount:archil"];
+const PROTOCOL_GROUPS = ["exec", "files", "processes", "screen", "input.pointer", "input.keys", "input.touch", "apps", "apps.terminate", "apps.install", "apps.ui_tree"];
+const CAPABILITIES = [...PROTOCOL_GROUPS, "network:none", "network:open", "network:allow", "lifetime:janitor", "user:root", "user:uid", "release:stop", "extend", "stream", "mount:bind", "mount:archil", "computers:2", "computers:4"];
 /** Groups with no Core case: lifetime's extend and the mount of the run's folder are optional for every kind. */
 const OPTIONAL_GROUPS = ["lifetime", "mount"];
 
@@ -355,8 +355,9 @@ test("each case of the suite is data: a unique id in its group, a level, and nee
 		ids.add(c.id);
 		assert.ok(c.level === "core" || c.level === "full", `${c.id}: level ${c.level}`);
 		for (const need of c.needs) assert.ok(CAPABILITIES.includes(need), `${c.id} needs ${need}`);
-		// A Core case needs only what some kind may require: groups and network none, never an optional provider method.
-		if (c.level === "core") assert.ok(c.needs.every((need) => [...PROTOCOL_GROUPS, "network:none"].includes(need)), `${c.id}: a Core case needs only groups and network:none`);
+		// A Core case needs only what some kind may require: groups and network none, never an optional provider method; and
+		// how many computers it holds at once, which only a provider that declares fewer (maxComputers) cannot give.
+		if (c.level === "core") assert.ok(c.needs.every((need) => [...PROTOCOL_GROUPS, "network:none", "computers:2", "computers:4"].includes(need)), `${c.id}: a Core case needs only groups, network:none and computers:N`);
 		assert.equal(typeof c.run, "function");
 	}
 	// lifetime's one case is Full: extend is optional for every kind. So is every mount case, until the cutover decides.

@@ -16,8 +16,9 @@ export type CaseGroup = "health" | "exec" | "files" | "process" | "provider" | "
 /**
  * What a case needs: a group (declared by both the provider's capabilities().groups and the computer's hello), a
  * network the provider declares, the janitor as the keeper of deadlines, a spec.user the provider takes, a release that
- * stops a computer and keeps it, a mount kind capabilities().mount declares, or a provider method that is optional
- * (extend, stream), declared by being there.
+ * stops a computer and keeps it, a mount kind capabilities().mount declares, a provider method that is optional
+ * (extend, stream), declared by being there, or N computers held at once (computers:N, counting the run's shared one
+ * when the case uses it), which only a provider that declares maxComputers below N cannot give.
  */
 export type Capability =
 	| Group
@@ -31,7 +32,8 @@ export type Capability =
 	| "mount:bind"
 	| "mount:archil"
 	| "extend"
-	| "stream";
+	| "stream"
+	| `computers:${number}`;
 
 /**
  * A fresh run's folder for one mount kind, made by the provider's conformance module: the mount that reaches it, and its
@@ -142,8 +144,12 @@ export interface CaseContext {
 	present<T>(value: T | undefined | null, what: string): T;
 	/** Calls fn until it returns a value other than undefined or false, for up to ms (default patience). */
 	until<T>(fn: () => Promise<T | undefined | false>, what: string, ms?: number): Promise<T>;
-	/** Ends the case as a skip, with the reason. */
-	skip(reason: string): never;
+	/**
+	 * Ends the case as a skip, with the reason. With undeclared, the skip is owed to those groups, which the computer
+	 * does not declare: it is named in undeclared, as a skip for a need the case lists is, and Core does not count it.
+	 * A group in it that the computer declares makes the skip a plain one.
+	 */
+	skip(reason: string, options?: { undeclared?: Capability[] }): never;
 }
 
 export interface Case {
@@ -170,6 +176,11 @@ export interface CaseResult {
 	 * these does not fail Core; any other skip of a Core case does.
 	 */
 	undeclared?: Capability[];
+	/**
+	 * true when the case itself skipped as owed to undeclared (t.skip with undeclared), not the runner for a need the
+	 * case lists: the report shows it apart, so a reader sees why Core passed.
+	 */
+	owed?: true;
 }
 
 export interface ConformanceReport {

@@ -5,9 +5,14 @@
 // The phone is a small Android: a launcher and the stock Settings app, with a top list that scrolls, a page per item
 // (its title is the item's text), and a search screen whose field takes typed text. uiautomator dumps the screen as
 // Android does, screencap gives raw RGBA as `adb exec-out screencap` does, and `input` taps, swipes, types and presses
-// keys the way the provider sends them. Every adb call and every API request is recorded.
+// keys the way the provider sends them. Every adb call and every API request is recorded. An account given `iphones`
+// also holds those cloud iPhones (platform ios, kind device), driven by the control API of test/fake-iphone.mjs.
+import { randomBytes } from "node:crypto";
+import { fakeIphone, IOS_SCREEN } from "./fake-iphone.mjs";
 
 export const KEY = "fake-test-key";
+/** A cloud iPhone's id, in the vendor's shape (GET /me → available). */
+export const IPHONE_ID = "iph-622c376ba7";
 export const SETTINGS = "com.android.settings";
 /** Settings' search: another package, whose activity a live Android 15 puts on top of Settings' task (run 5). */
 export const SEARCH_PKG = "com.android.settings.intelligence";
@@ -80,31 +85,47 @@ const json = (status, body, headers = {}) => new Response(JSON.stringify(body), 
  * signal ends it; `onList`, given GET /sessions' snapshot once it is taken and before it is answered, answers the
  * list to send (a test makes a phone in between, or leaves a live one out, as a lagging listing would); `postAnswer`,
  * what POST /sessions answers in place of its 202: "503" (the phone is made, and a gateway answers 503), "empty" (the
- * phone is made, and the 202 holds no session), "503-unmade" (a 503, and nothing is made);
+ * phone is made, and the 202 holds no session), "503-unmade" (a 503, and nothing is made), "409-made" (the phone is
+ * made, and a gateway's retry of the POST answers 409 profile_running, named by that very session);
  * `code`, the unlock code the phone takes (default the one the API gives); `abi`, what getprop reports; `launchHidden`,
  * a launched app is reported in front (dumpsys) while the screen and the tree still show the launcher; `launchNothing`,
  * `am start` starts nothing at all; `twoPane`, Settings shows two panes, as Android does on a window 600 dp wide or
  * more: a row's page opens beside the list, which stays; `rowTapsMiss`, a tap on a Settings row does nothing. Either
  * leaves touch.tap with run 6's live words, and the case's words must tell them apart; `endLag`, a DELETE ends the
  * session asynchronously, as the live service did in run 7: it stays listed and readable as `closing` for endLag more
- * reads of it (GET /sessions/{id}), then is gone (404).
+ * reads of it (GET /sessions/{id}), then is gone (404). `iphones`, the ids of the cloud iPhones the account holds
+ * (default none: an iPhone start is refused in the vendor's words); `iphone`, the options of the one fake iPhone they
+ * share (test/fake-iphone.mjs); `onePerPhone` (default true), a second start on an iPhone a live session holds answers
+ * 409 profile_running, as the docs say; `controlOrigin`, the origin a control URL names (default the API's own).
  *
  * Tasks are as a live Android 15 keeps them (run 5): Settings' search is another package's activity
  * (com.android.settings.intelligence) on top of Settings' own task. A force-stop of Settings leaves it there, a plain
  * `am start` of Settings resumes that task, search in front, and only `--activity-clear-task` starts Settings afresh.
  */
-export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = false, loseRecovery = false, cancelPost, stall, onList, postAnswer, others = [], code, abi = "x86_64", launchHidden = false, launchNothing = false, twoPane = false, rowTapsMiss = false, endLag = 0, clock = fakeClock() } = {}) {
+export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = false, loseRecovery = false, cancelPost, stall, onList, postAnswer, others = [], code, abi = "x86_64", launchHidden = false, launchNothing = false, twoPane = false, rowTapsMiss = false, endLag = 0, iphones = [], iphone = {}, onePerPhone = true, controlOrigin, clock = fakeClock() } = {}) {
 	const requests = [];
 	const adbCalls = [];
 	const sessions = new Map(others.map((s) => [s.id, { ...s }]));
 	let next = 0;
+	const ios = fakeIphone(iphone);
+
+	/** Why POST /sessions of an iPhone is refused, in the vendor's words (docs, guides/iphone); undefined when it starts. */
+	function iphoneRefusal(body) {
+		if (body.kind !== "device" || iphones.length === 0) return json(400, { error: "no phone of that platform and kind is available to this account" });
+		if (body.device_id === undefined && iphones.length > 1) return json(400, { error: "device_id names which of your phones to start" });
+		const device = body.device_id ?? iphones[0];
+		if (!iphones.includes(device)) return json(400, { error: "no phone of that platform and kind is available to this account" });
+		const holder = [...sessions.values()].find((s) => s.device_id === device);
+		if (onePerPhone && holder) return json(409, { error: "that phone is running in another session", code: "profile_running", session: holder.id });
+		return undefined;
+	}
 
 	async function fetch(url, init = {}) {
 		const u = new URL(url);
 		const method = init.method ?? "GET";
 		const headers = Object.fromEntries(Object.entries(init.headers ?? {}).map(([k, v]) => [k.toLowerCase(), v]));
 		const body = init.body === undefined ? undefined : JSON.parse(init.body);
-		requests.push({ method, path: u.pathname, headers, body });
+		requests.push({ method, path: u.pathname, headers, body, origin: u.origin });
 		if (stall?.({ method, path: u.pathname })) {
 			// A request that never answers: only its signal ends it, as an aborted fetch rejects.
 			return new Promise((_, reject) => {
@@ -113,9 +134,14 @@ export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = fa
 				else init.signal?.addEventListener("abort", stop, { once: true });
 			});
 		}
+		// The control API takes a session's control token, never the API key.
+		const control = await ios.handle(method, u.pathname, headers, body);
+		if (control !== undefined) return control;
 		if (headers.authorization !== `Bearer ${KEY}`) return json(401, { error: "invalid API key" });
 		const path = u.pathname;
-		if (method === "GET" && path === "/me") return json(200, { id: "acct_1", available: [] });
+		if (method === "GET" && path === "/me") {
+			return json(200, { id: "acct_1", available: iphones.map((id) => ({ platform: "ios", kind: "device", id, label: "My iPhone", state: [...sessions.values()].some((s) => s.device_id === id) ? "running" : "available" })) });
+		}
 		if (method === "POST" && path === "/sessions") {
 			const key = headers["idempotency-key"];
 			if (!/^[A-Za-z0-9_-]{16,128}$/.test(key ?? "")) return json(400, { error: "bad Idempotency-Key" });
@@ -123,12 +149,18 @@ export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = fa
 			if (start === "limit") return json(409, { error: "the account's sessions are full", code: "session_limit", session_limit: 1 });
 			if (start === "credit") return json(403, { error: "insufficient credits", balance_cents: 0 });
 			if (postAnswer === "503-unmade") return json(503, { error: "the gateway timed out" });
+			const iOS = body?.platform === "ios";
+			if (iOS) {
+				const refused = iphoneRefusal(body);
+				if (refused) return refused;
+			}
 			const id = `sess_${(++next).toString().padStart(4, "0")}`;
 			const session = {
 				id,
 				state: "provisioning",
 				platform: body?.platform ?? "android",
 				kind: body?.kind ?? "emulator",
+				...(iOS ? { device: "iPhone", billing_mode: "disabled", device_id: body.device_id ?? iphones[0], origin: controlOrigin ?? u.origin } : {}),
 				timeout_seconds: body?.timeout_seconds ?? 300,
 				expires_at: clock.now() / 1000 + (body?.timeout_seconds ?? 300),
 				request_key: key,
@@ -145,6 +177,7 @@ export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = fa
 			// The phone is made, and the answer says otherwise: a 5xx from a gateway, or a 2xx with no session in it.
 			if (postAnswer === "503") return json(503, { error: "the gateway timed out" });
 			if (postAnswer === "empty") return json(202, {});
+			if (postAnswer === "409-made") return json(409, { error: "that phone is running in another session", code: "profile_running", session: id });
 			return json(202, view(session));
 		}
 		if (method === "GET" && path === "/sessions") {
@@ -170,6 +203,8 @@ export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = fa
 			if (!s) return json(404, { error: "no such session" });
 			if (method === "DELETE") {
 				// The end is asynchronous with endLag: the session stays, closing, for endLag more reads of it, then is gone.
+				// An iPhone's control grant ends with its session.
+				if (s.control) ios.grants.delete(s.control.grant);
 				if (endLag > 0) {
 					if (s.state !== "closing") Object.assign(s, { state: "closing", closingReads: endLag });
 					return json(200, view(s));
@@ -187,7 +222,13 @@ export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = fa
 			if (method === "GET") {
 				if (s.state === "provisioning" && ++s.gets >= readyAfter) {
 					if (start === "error") s.state = "error";
-					else Object.assign(s, { state: "ready", screen: { w: SCREEN.width, h: SCREEN.height } });
+					else if (s.platform === "ios") {
+						// A ready iPhone carries a control grant: a URL whose path is the grant, and a token for it (docs, guides/iphone).
+						const grant = randomBytes(12).toString("hex");
+						const token = `ctl_${randomBytes(16).toString("hex")}`;
+						ios.grants.set(grant, token);
+						Object.assign(s, { state: "ready", screen: { w: IOS_SCREEN.width, h: IOS_SCREEN.height }, control: { grant, token, expires_at: s.expires_at } });
+					} else Object.assign(s, { state: "ready", screen: { w: SCREEN.width, h: SCREEN.height } });
 				}
 				if (s.state === "error") s.error = "the emulator did not boot";
 				return json(200, view(s));
@@ -196,7 +237,11 @@ export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = fa
 		return json(404, { error: `no route ${method} ${path}` });
 	}
 
-	const view = ({ gets, closingReads, ...s }) => ({ ...s, ...(s.state === "provisioning" ? { progress: { phase: "booting" } } : {}) });
+	const view = ({ gets, closingReads, origin, control, device_id, ...s }) => ({
+		...s,
+		...(s.state === "provisioning" ? { progress: { phase: "booting" } } : {}),
+		...(control ? { control: { url: `${origin}/iphone/c/${control.grant}`, token: control.token, expires_at: control.expires_at } } : {}),
+	});
 
 	// --- the phone ---------------------------------------------------------------------------------------------------
 	/** touches: each `input motionevent` the phone took, with the clock's time it took it. */
@@ -523,7 +568,18 @@ export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = fa
 		adb,
 		clock,
 		phone,
+		/** The cloud iPhone the account's iPhones share (test/fake-iphone.mjs). */
+		iphone: ios,
 		sessions,
+		/** An iPhone session's control grant expires and the session holds a fresh one: the old grant answers 404. */
+		rotateGrant(id) {
+			const s = sessions.get(id);
+			ios.grants.delete(s.control.grant);
+			const grant = randomBytes(12).toString("hex");
+			const token = `ctl_${randomBytes(16).toString("hex")}`;
+			ios.grants.set(grant, token);
+			s.control = { ...s.control, grant, token };
+		},
 		/** Every API request, as { method, path, headers, body }. */
 		requests: () => requests,
 		/** Every spawned adb's argv. */

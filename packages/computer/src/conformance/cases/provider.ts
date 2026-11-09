@@ -176,7 +176,7 @@ export const providerCases: Case[] = [
 		t.deepEqual(t.ok(await connected.client.call("ping", {}), "ping"), {}, "ping in the attached computer");
 		t.ok(await t.provider.release(a, "delete"), "release a");
 		t.refused(await t.provider.attach({ id: a.id }), "attach to a deleted computer", ["not_found"]);
-	}),
+	}, { needs: ["computers:2"] }),
 	provider("list", async (t) => {
 		const labels = own(t, "list");
 		const before = Date.now();
@@ -315,7 +315,7 @@ export const providerCases: Case[] = [
 			const again = t.ok(await sweep(t.provider, { labels }), "a second sweep");
 			t.deepEqual({ deleted: again.deleted, kept: again.kept }, { deleted: [], kept: 1 }, "a second sweep, now");
 		},
-		{ level: "full", needs: ["lifetime:janitor", "release:stop"], computer: "shared" },
+		{ level: "full", needs: ["lifetime:janitor", "release:stop", "computers:4"], computer: "shared" },
 	),
 	// A takeover by label: computers of one run at epochs 1, 2 and 3 and one of another run at epoch 1; a claim at epoch 3
 	// releases 1 and 2 and keeps 3 and the other run's, and a claim at epoch 2 after it is fenced and releases nothing.
@@ -358,6 +358,6 @@ export const providerCases: Case[] = [
 			for (const ref of [e3, o1]) t.ok(await t.provider.release(ref, "delete"), `release ${ref.name}`);
 			t.deepEqual(await names(t, labels), [], "the case's computers after it");
 		},
-		{ level: "full", timeoutMs: 300_000 },
+		{ level: "full", timeoutMs: 300_000, needs: ["computers:4"] },
 	),
 ];

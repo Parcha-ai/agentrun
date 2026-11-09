@@ -40,7 +40,12 @@ export function formatReport(report: ConformanceReport): string {
 				.join(" ");
 			const [first = "", ...rest] = wrap(here.map((r) => r.id.slice(group.length + 1)));
 			lines.push(`${level} ${group.padEnd(9)} ${first.padEnd(NAMES_WIDTH)} ${counts}`, ...rest.map((more) => `${INDENT}${more}`));
-			for (const r of here) if (r.status !== "pass") lines.push(`  ${r.status === "fail" ? "✗" : "-"} ${r.id}: ${r.reason ?? ""}`);
+			for (const r of here) {
+				if (r.status === "pass") continue;
+				// A skip the case owed to groups the computer does not declare says so first: it is why Core may pass without it.
+				const owed = r.owed && r.undeclared ? `owed to undeclared ${r.undeclared.join(", ")}: ` : "";
+				lines.push(`  ${r.status === "fail" ? "✗" : "-"} ${r.id}: ${owed}${r.reason ?? ""}`);
+			}
 		}
 	}
 	if (cleanup.late.length > 0) lines.push(`cleanup - deleted after their case ended: ${cleanup.late.join(", ")}`);
@@ -56,12 +61,16 @@ export function formatReport(report: ConformanceReport): string {
 	for (const note of report.notes ?? []) lines.push(`note: ${note}`);
 	for (const { computer, note } of report.computerNotes ?? []) lines.push(`note ${computer}: ${note}`);
 	const core = results.filter((r) => levelOf(r) === "core");
-	const notDeclared = results.filter((r) => levelOf(r) === "optional").length;
+	const notDeclared = results.filter((r) => levelOf(r) === "optional" && !r.owed).length;
+	// Core cases that skipped themselves, owed to groups the computer does not declare: counted apart, with those groups.
+	const owed = results.filter((r) => levelOf(r) === "optional" && r.owed);
+	const owedTo = [...new Set(owed.flatMap((r) => r.undeclared ?? []))];
 	const full = results.filter((r) => r.level === "full");
 	const passed = (rs: CaseResult[]) => rs.filter((r) => r.status === "pass").length;
 	// A run that left Core cases out has no Core verdict: PARTIAL, never PASS.
 	let verdict = `core ${report.core.toUpperCase()} ${passed(core)}/${core.length}`;
 	if (notDeclared > 0) verdict += ` · ${notDeclared} optional ${notDeclared === 1 ? "case" : "cases"} skipped, not declared`;
+	if (owed.length > 0) verdict += ` · ${owed.length} Core ${owed.length === 1 ? "case" : "cases"} skipped, owed to undeclared ${owedTo.join(" ")}`;
 	if (notRun.length > 0) verdict += ` · ${notRun.length} Core ${notRun.length === 1 ? "case" : "cases"} not run`;
 	verdict += full.length > 0 ? ` · full ${passed(full)}/${full.length}` : " · full: none run";
 	if (report.undeclared.length > 0) verdict += ` · ${report.undeclared.join(" ")} not declared`;

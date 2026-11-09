@@ -72,6 +72,12 @@ export interface ComputerCapabilities {
 	groups: Group[];
 	/** The longest lifetime this provider instance gives a computer: the vendor's hard cap. check() refuses past it. */
 	maxLifetimeMs: number;
+	/**
+	 * The most computers this provider instance can hold at once, when the vendor fixes it (one session at a time holds a
+	 * cloud iPhone, so its provider holds 1). Absent: no such limit beyond the account's. The conformance runner ends its
+	 * shared computer before a case that makes its own, and skips in words a case that holds more at once.
+	 */
+	maxComputers?: number;
 	/** What spec.user may ask for instead of the non-root default: root ("0"), another uid. Absent: neither. */
 	user?: Array<"root" | "uid">;
 	/**

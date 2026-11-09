@@ -29,8 +29,8 @@ export interface SettingKindSpec {
 export const SETTING_KINDS: Readonly<Record<ComputerSettingKind, SettingKindSpec>> = {
 	none: { machineKinds: [], required: [], optional: [] },
 	sandbox: { machineKinds: ["linux"], required: ["exec", "files", "processes"], optional: [] },
-	desktop: { machineKinds: ["desktop"], required: ["screen", "input.pointer", "input.keys"], optional: ["exec", "files", "processes", "apps", "stream"] },
-	phone: { machineKinds: ["android", "ios"], required: ["screen", "input.touch", "apps"], optional: ["input.keys", "apps.install", "apps.ui_tree", "stream"] },
+	desktop: { machineKinds: ["desktop"], required: ["screen", "input.pointer", "input.keys"], optional: ["exec", "files", "processes", "apps", "apps.terminate", "stream"] },
+	phone: { machineKinds: ["android", "ios"], required: ["screen", "input.touch", "apps"], optional: ["input.keys", "apps.terminate", "apps.install", "apps.ui_tree", "stream"] },
 	browser: { machineKinds: ["browser"], required: ["cdp"], optional: ["stream", "downloads"] },
 };
 
@@ -135,7 +135,11 @@ export const PROVIDERS: readonly ProviderEntry[] = [
 		keys: [{ name: "PHONE_HARNESS_API_KEY", required: true }],
 		mounts: [],
 		metered: true,
-		capabilities: [{ kind: "android", groups: ["screen", "input.touch", "input.keys", "apps", "apps.ui_tree"] }],
+		// A cloud Android by the minute, and an iPhone on a flat subscription once the vendor sets one up for the account.
+		capabilities: [
+			{ kind: "android", groups: ["screen", "input.touch", "input.keys", "apps", "apps.terminate", "apps.ui_tree"] },
+			{ kind: "ios", groups: ["screen", "input.touch", "apps"] },
+		],
 	}),
 	entry({
 		id: "browserbase",

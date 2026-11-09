@@ -31,7 +31,15 @@ const LIFETIME_MS = 30 * 60_000;
 const GROUP_NAMES: ReadonlySet<string> = new Set(GROUPS);
 const CLOSE_MS = 10_000;
 
-class Skip extends Error {}
+class Skip extends Error {
+	constructor(
+		message: string,
+		/** The groups the skip is owed to, when the case says so. */
+		readonly undeclared?: Capability[],
+	) {
+		super(message);
+	}
+}
 
 const show = (value: unknown) => {
 	const text = value === undefined ? "undefined" : JSON.stringify(value);
@@ -218,6 +226,17 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 			sawHello(connected.value.hello);
 			return { ref: created.value, hello: connected.value.hello };
 		})().catch((error: unknown) => ({ error: `the provider threw: ${words(error)}` })));
+	/** Ends the run's shared computer, if one is made or being made; the next case that uses it makes it again. */
+	const endShared = async () => {
+		if (shared === undefined) return;
+		await shared;
+		const ref = sharedRef;
+		shared = undefined;
+		sharedRef = undefined;
+		if (ref !== undefined) await release(ref);
+	};
+	/** How many computers a case holds at once: its computers:N need, else 1. */
+	const heldBy = (c: Case) => Math.max(1, ...c.needs.filter((need) => need.startsWith("computers:")).map((need) => Number(need.slice("computers:".length))));
 
 	/** Why a case cannot run here, or undefined when everything it needs is declared. */
 	const missing = async (needs: Capability[]): Promise<string | undefined> => {
@@ -241,6 +260,11 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 				return `the provider does not declare ${need}`;
 			} else if (need === "release:stop" && !(Array.isArray(capabilities.release) && capabilities.release.includes("stop"))) {
 				return `the provider does not declare ${need}`;
+			} else if (need.startsWith("computers:")) {
+				const held = Number(need.slice("computers:".length));
+				if (capabilities.maxComputers !== undefined && held > capabilities.maxComputers) {
+					return `the case holds ${held} computers at once, and the provider holds at most ${capabilities.maxComputers} (maxComputers)`;
+				}
 			}
 		}
 		return undefined;
@@ -269,8 +293,12 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 			for (const need of lacking) if (!report.undeclared.includes(need)) report.undeclared.push(need);
 			return { ...result("skip", why), undeclared: lacking };
 		}
+		// A provider that holds few computers at once (maxComputers): the shared one is ended before a case of its own would
+		// pass the limit with it, and made again by the next case that uses it.
+		const usesShared = (c.computer ?? "shared") === "shared";
+		if (!usesShared && capabilities.maxComputers !== undefined && 1 + heldBy(c) > capabilities.maxComputers) await endShared();
 		// The shared computer is made, bounded on its own, before the case's time starts.
-		const sharedComputer = (c.computer ?? "shared") === "shared" ? await getShared() : undefined;
+		const sharedComputer = usesShared ? await getShared() : undefined;
 		const timeoutMs = c.timeoutMs ?? caseTimeoutMs;
 		const timer = new AbortController();
 		const timeout = setTimeout(() => timer.abort(new Error(`${c.id} did not finish within ${timeoutMs / 1000} s`)), timeoutMs);
@@ -450,8 +478,8 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 						await sleep(200);
 					}
 				},
-				skip(reason: string): never {
-					throw new Skip(reason);
+				skip(reason: string, options?: { undeclared?: Capability[] }): never {
+					throw new Skip(reason, options?.undeclared);
 				},
 			};
 			await c.run(t);
@@ -461,7 +489,13 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 			await Promise.race([prepareAndRun(), whenAborted(caseSignal)]);
 			return result("pass");
 		} catch (error) {
-			if (error instanceof Skip) return result("skip", error.message);
+			if (error instanceof Skip) {
+				// Owed only to groups, none of which the computer declares: else it is a plain skip, which Core counts.
+				const owed = error.undeclared ?? [];
+				if (owed.length === 0 || owed.some((need) => !GROUP_NAMES.has(need) || groups.includes(need as Group))) return result("skip", error.message);
+				for (const need of owed) if (!report.undeclared.includes(need)) report.undeclared.push(need);
+				return { ...result("skip", error.message), undeclared: [...owed], owed: true };
+			}
 			if (signal?.aborted && !timer.signal.aborted) return result("fail", "the run was aborted");
 			return result("fail", words(error));
 		} finally {

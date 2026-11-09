@@ -62,13 +62,13 @@ test("create(options) builds the phone-harness provider from its options alone: 
 		{ kind: caps.kind, os: caps.os, daemon: caps.daemon, lifetime: caps.lifetime, network: caps.network, release: caps.release, groups: caps.groups, isolation: caps.isolation },
 		{ kind: "android", os: "android", daemon: "none", lifetime: "vendor", network: ["open"], release: ["delete"], groups: PHONE_GROUPS, isolation: "vm" },
 	);
-	assert.deepEqual(PHONE_GROUPS, ["screen", "input.touch", "input.keys", "apps", "apps.ui_tree"]);
+	assert.deepEqual(PHONE_GROUPS, ["screen", "input.touch", "input.keys", "apps", "apps.terminate", "apps.ui_tree"]);
 	assert.equal(caps.maxLifetimeMs, 30 * 60_000, "30 min by default");
+	assert.equal(caps.maxComputers, undefined, "cloud Androids: as many at once as the account's limit lets");
 	assert.deepEqual(kindRefusals(caps), []);
 	assert.equal(provider.extend, undefined, "the phone harness has no extend");
 	await assert.rejects(create({ fetch: () => assert.fail("no call") }), /options\.apiKey/);
-	await assert.rejects(create({ apiKey: KEY, platform: "ios" }), /^Error: platform "ios" is not offered yet: the phone-harness provider rents a cloud Android; an iPhone is a later change$/);
-	await assert.rejects(create({ apiKey: KEY, platform: "windows" }), /platform "windows"/);
+	await assert.rejects(create({ apiKey: KEY, platform: "windows" }), /platform "windows" is not one of android, ios/);
 });
 
 test("check() refuses in words what a cloud phone cannot be, with no call", async () => {
@@ -844,6 +844,7 @@ test("the conformance module reads its own COMPUTER_PHONE_HARNESS_* names, never
 	assert.deepEqual(conformance.PHONE_ENV, {
 		key: "COMPUTER_PHONE_HARNESS_API_KEY",
 		platform: "COMPUTER_PHONE_HARNESS_PLATFORM",
+		device: "COMPUTER_PHONE_HARNESS_DEVICE",
 		adb: "COMPUTER_PHONE_HARNESS_ADB",
 		ledger: "COMPUTER_PHONE_HARNESS_LEDGER",
 		live: "AGENTRUN_COMPUTER_LIVE_PHONE_HARNESS",
