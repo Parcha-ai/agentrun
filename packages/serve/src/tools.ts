@@ -35,6 +35,8 @@ import { handedSignIn, hostSecrets } from "./secrets.js";
 import { redactedAnswer } from "./key-refusal.js";
 import { SIGN_IN_KEY, SIGN_IN_SAVED } from "./sign-ins.js";
 import { answerIn } from "./runner/hand-back.js";
+import type { LiveHandover, LiveViewerStore } from "./browser-live.js";
+import type { Claim } from "./store/store.js";
 
 export const ASK_TOOL = "ask_person";
 /** Under `--faux` only: a module whose default export gives the browser's `{ provider, driver }` for the run's
@@ -80,6 +82,19 @@ export type ToolHost = {
    *  runner applies, the live view's hand-back, the ask's expiry), read and written there, never as answer files
    *  (browser-person.ts personHands `answered`). */
   handoverInJournal?: boolean;
+  /** The run is on the runner: its live viewers are handed over through the store, not through files in its directory
+   *  (browser-live.ts putLiveViewer/dropLiveViewer). The browser tool's live-viewer writers hang off this: `put` hands a
+   *  session's viewer over (its token sealed under the run's `sealKey`), `drop` takes one (or all of the run's) back. The
+   *  three fields below are what builds these (the one store, the claim the row is written under, the seal key); a tool's
+   *  binding reads `liveViewers`, never them directly. Absent on the server path, where the viewer lives in the run's
+   *  directory (live.writeHandover/dropHandover). */
+  liveViewers?: { put(handover: LiveHandover): Promise<boolean>; drop(tag?: string): Promise<void> };
+  /** The one store, for the live-viewer seam above (and the sign-in verify the runner saves). */
+  store?: LiveViewerStore;
+  /** The claim this run is held under: the live-viewer rows are written under it (its epoch fences them). */
+  claim?: Claim;
+  /** The key the live-viewer tokens are sealed under before they go to the store (store/seal.ts). */
+  sealKey?: Buffer;
 };
 
 /** What a name stands for in the run: the pi tools it offers, and the extensions a conversation selects for them. */
