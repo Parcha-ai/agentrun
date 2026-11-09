@@ -20,7 +20,7 @@ export const SECRET_WRITE_REFUSAL = "Saving, replacing or removing a secret take
 /**
  * Whether the console a launcher opened on a loopback-bound server with no accounts (npx agentrun, no password: the
  * browser that followed the launch link, its cookie minted from the token by that link, held to this server's own origin
- * and a JSON body as every page write is) counts as the owner for a secret write. Decided (Miguel, 2026-11-09): yes. The
+ * and a JSON body as every page write is) counts as the owner for a secret write. The owner's ruling (2026-11-09): yes. The
  * API token still never writes a secret, loopback included; a server bound off loopback needs accounts on to take a
  * secret at all. This one line is the decision; mayWriteSecrets (the dispatch check, and GET /v2/auth/session's
  * secrets_writable) follows it.

@@ -383,22 +383,24 @@ export function client(baseUrl, token, { owner = false } = {}) {
 }
 
 /** The owner's session on the server at `baseUrl` (its /v2), for the client's secret writes. With accounts on, the client
- *  sets the owner's password the first time (or signs in with it, on a server it set up before a restart); with accounts
- *  off, it follows the launch link (`/?token=`, the 303 that sets the console's cookie), whose console is the owner's on a
- *  loopback server (secret-writes.ts). Undefined where neither works (an owner the test set up with its own password): the
- *  write then goes with the token, which the server refuses, so such a test makes its own owner's session for it. */
+ *  sets the owner's password the first time, with its token standing in for the setup code (so on any server, its setup
+ *  open or not), or signs in with it on a server it set up before a restart; with accounts off, it follows the launch link
+ *  (`/?token=`, the 303 that sets the console's cookie), whose console is the owner's on a loopback server
+ *  (secret-writes.ts). Where none works (an owner the test set up with its own password) it throws, saying so: a secret
+ *  write never falls back to the token, which the server refuses; such a test makes its own owner's session. */
 async function ownerSessionOf(baseUrl, token) {
   // By address and token: a server started again on a port another used has its own owner and cookie.
   const known = `${baseUrl} ${token ?? ""}`;
   if (ownerCookies.has(known)) return ownerCookies.get(known);
   const origin = new URL(baseUrl).origin;
-  const post = (path) => fetch(`${baseUrl}${path}`, { method: "POST", redirect: "manual", headers: { "content-type": "application/json", origin }, body: JSON.stringify({ password: CLIENT_OWNER_PHRASE }) });
-  let res = await post("/setup");
-  if (res.status !== 201) res = await post("/auth/sign-in");
-  if ((res.status !== 200 && res.status !== 201) && token) res = await fetch(`${origin}/?token=${encodeURIComponent(token)}`, { redirect: "manual" });
-  if (res.status !== 200 && res.status !== 201 && res.status !== 303) return undefined;
-  const cookie = res.headers.getSetCookie().map((line) => line.split(";")[0]).join("; ");
-  if (!cookie) return undefined;
+  const post = (path, headers = {}) => fetch(`${baseUrl}${path}`, { method: "POST", redirect: "manual", headers: { "content-type": "application/json", origin, ...headers }, body: JSON.stringify({ password: CLIENT_OWNER_PHRASE }) });
+  const tried = [];
+  const answer = async (what, res) => (tried.push(`${what}: ${res.status}`), res);
+  let res = await answer("setup", await post("/setup", token ? { authorization: `Bearer ${token}` } : {}));
+  if (res.status !== 201) res = await answer("sign-in", await post("/auth/sign-in"));
+  if (res.status !== 200 && res.status !== 201 && token) res = await answer("launch link", await fetch(`${origin}/?token=${encodeURIComponent(token)}`, { redirect: "manual" }));
+  const cookie = [200, 201, 303].includes(res.status) ? res.headers.getSetCookie().map((line) => line.split(";")[0]).join("; ") : "";
+  if (!cookie) throw new Error(`the test client has no owner's session on ${baseUrl} for a secret write (${tried.join(", ")}): the token never writes a secret, so a test whose owner has its own password signs in itself`);
   const session = { cookie, origin };
   ownerCookies.set(known, session);
   return session;
