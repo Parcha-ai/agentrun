@@ -1,5 +1,5 @@
 import { ClientError } from "./client";
-import type { Permission } from "./v2";
+import type { PendingMcpSecrets, Permission } from "./v2";
 
 /** A tool as a remote MCP server lists it (`tools/list`, through the server's preview). */
 /** A tool as a server lists it; on a saved server's read, with its permission as this server applies it to an agent that
@@ -8,7 +8,7 @@ export type McpTool = { name: string; title?: string; description?: string; inpu
 export type McpAuthType = "none" | "bearer" | "headers" | "oauth";
 /** A saved MCP server as GET /v2/settings/mcp-servers shows it: never a credential, only its state (`credential`: null
  *  for one that takes none). `prices`, per tool in USD, only when the server meters them. */
-export type McpServer = {
+export type McpServer = PendingMcpSecrets & {
   name: string; url: string; auth: { type: McpAuthType; headers?: string[] }; tools: McpTool[]; protocol?: string; listed_at?: string; updated_at?: string;
   credential: "sealed" | "seal_key_missing" | "unreadable" | "expired" | null;
   oauth?: { expires_at?: string; scopes: string[]; client: string; client_id?: string };

@@ -8,6 +8,7 @@ import { Settings, type SettingsPage } from "@/components/Settings";
 import { ToolsPage } from "@/components/ToolsPage";
 import { McpServersPage } from "@/components/McpServersPage";
 import { ModelKeyCard } from "@/components/ModelKeyCard";
+import { useSecretsWritable } from "@/lib/secrets";
 import { NoModelBanner } from "@/components/NoModelBanner";
 import { WebhookPage } from "@/components/WebhookPage";
 import { ScheduleNames } from "@/components/ScheduleChip";
@@ -192,6 +193,8 @@ function Starting() {
 }
 
 function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onSignedOut: () => void }) {
+  // Whether this session may paste, replace or remove a secret: the owner's password session alone (secrets_writable).
+  const secretsWritable = useSecretsWritable(v2);
   const [signOutError, setSignOutError] = useState<string | null>(null);
   const [where, setWhere] = useState(() => route());
   const [caps, setCaps] = useState<Capabilities | null>(null);
@@ -479,14 +482,14 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
         : where.section === "settings"
         ? <Settings active={where.settings ?? "keys"} offered={settingsOffered}>
             {where.settings === "tools" ? <ToolsPage v2={v2} choices={choices} gates={gates} onSaved={readCaps} onOpen={readCaps} />
-              : where.settings === "mcp" ? <McpServersPage v2={v2} atRest={caps?.features?.mcp_client?.at_rest} signIn={where.signIn} />
+              : where.settings === "mcp" ? <McpServersPage v2={v2} atRest={caps?.features?.mcp_client?.at_rest} signIn={where.signIn} writable={secretsWritable} />
               : where.settings === "webhook" ? <WebhookPage v2={v2} atRest={caps?.features?.webhooks?.at_rest} />
-              : <KeysPage v2={v2} atRest={caps?.features?.tool_keys?.at_rest} onChange={readCaps} />}
+              : <KeysPage v2={v2} atRest={caps?.features?.tool_keys?.at_rest} onChange={readCaps} writable={secretsWritable} />}
           </Settings>
         : where.section === "mission"
         // The first screen asks for a model key while the server says no agent that names no model runs here yet.
         ? <div className="flex h-full flex-col">
-            {caps?.models?.ready === false && <ModelKeyCard v2={v2} needs={caps.models.needs} model={caps.models.default} atRest={caps.features.tool_keys?.at_rest} onSaved={readCaps} />}
+            {caps?.models?.ready === false && <ModelKeyCard v2={v2} needs={caps.models.needs} model={caps.models.default} atRest={caps.features.tool_keys?.at_rest} onSaved={readCaps} writable={secretsWritable} />}
             <div className="min-h-0 flex-1">
               <MissionControl view={mission} error={missionError} onRetry={() => setMissionTry((n) => n + 1)}
                 scope={{ range: statsRange, onRange: setStatsRange, agent: statsAgent, onAgent: setStatsAgent, refreshing: missionReading && mission !== null }}

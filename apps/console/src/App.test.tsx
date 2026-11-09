@@ -71,7 +71,7 @@ describe("App, Mission Control when the stats can't be read", () => {
     const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
     vi.stubGlobal("fetch", async (url: string) => {
       const path = new URL(url, "http://serve.test").pathname;
-      if (path === "/v2/auth/session") return json(200, { password_set: true, signed_in: true });
+      if (path === "/v2/auth/session") return json(200, { password_set: true, signed_in: true, secrets_writable: true });
       if (path === "/v2/capabilities") return json(200, { harnesses: [], features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false } } });
       if (path === "/v2/stats") return json(404, { error: { code: "not_found", message: "no route GET /v2/stats", retryable: false } });
       if (path === "/v2/runs" || path === "/v2/agents") return json(200, { runs: [], agents: [], next_cursor: null });
@@ -94,7 +94,7 @@ describe("App, Mission Control after a failed read", () => {
     const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
     vi.stubGlobal("fetch", async (url: string) => {
       const path = new URL(url, "http://serve.test").pathname;
-      if (path === "/v2/auth/session") return json(200, { password_set: true, signed_in: true });
+      if (path === "/v2/auth/session") return json(200, { password_set: true, signed_in: true, secrets_writable: true });
       if (path === "/v2/capabilities") return json(200, { harnesses: [], features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false } } });
       if (path === "/v2/stats") return ++statsCalls === 1
         ? json(503, { error: { code: "store_busy", message: "the store is busy", retryable: true } })
@@ -119,7 +119,7 @@ describe("App, Mission Control after a failed read", () => {
 // Settings shows only on a server with the tool keys routes, so the console never offers a page its server lacks.
 describe("App, Settings", () => {
   const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
-  const keys = { keys: [{ id: "monid", label: "Monid", fields: [{ name: "MONID_API_KEY", set: false, source: null }], unlocks: ["monid.run"], harnesses: ["pi"] }], reenter: null };
+  const keys = { keys: [{ id: "monid", label: "Monid", fields: [{ name: "MONID_API_KEY", set: false, source: null, changed_at: null }], unlocks: ["monid.run"], harnesses: ["pi"] }], reenter: null };
   // capabilities.tools with a choice of provider (web_search, web_fetch), as a server with tool settings lists them.
   const choiceTools = [
     { name: "web_search", summary: "Search the web", nodes: true, calls: true, available: true, harnesses: ["pi"], providers: ["auto", "native", "exa-keyless", "parallel"], provider: "auto", default_provider: "auto", resolves: { pi: "exa-keyless", "claude-agent": "native", codex: "native" } },
@@ -130,7 +130,7 @@ describe("App, Settings", () => {
     vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
       const path = new URL(url, "http://serve.test").pathname;
       asked.push(`${init?.method ?? "GET"} ${path}`);
-      if (path === "/v2/auth/session") return json(200, { password_set: true, signed_in: true });
+      if (path === "/v2/auth/session") return json(200, { password_set: true, signed_in: true, secrets_writable: true });
       if (path.startsWith("/v2/settings/tool-keys/")) return new Response(null, { status: 204 });
       if (path === "/v2/capabilities") return json(200, { harnesses: [], tools, features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false }, ...features } });
       if (path === "/v2/settings/tools") return json(200, { web_search: { provider: "auto" }, web_fetch: { provider: "kernel" } });
@@ -157,7 +157,7 @@ describe("App, Settings", () => {
     let caps = 0;
     vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
       const path = new URL(url, "http://serve.test").pathname;
-      if (path === "/v2/auth/session") return json(200, { password_set: true, signed_in: true });
+      if (path === "/v2/auth/session") return json(200, { password_set: true, signed_in: true, secrets_writable: true });
       if (path === "/v2/capabilities") {
         const n = ++caps;
         const body = (tools: unknown[]) => json(200, { harnesses: [], tools, features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false } } });
@@ -217,7 +217,7 @@ describe("App, Settings", () => {
     expect(page.nav()).toContain("Settings");
     expect(page.host.querySelector('[aria-current="page"]')?.textContent?.trim()).toBe("Settings");
     expect(page.host.querySelector("h1")?.textContent).toBe("Keys");
-    expect(page.host.textContent).toContain("MONID_API_KEYnot set");
+    expect(page.host.textContent).toContain("MONID_API_KEYMissing");
   });
 
   it("opens Settings → Webhook at #/settings/webhook on a server with the webhook routes, with a tab to each settings page", async () => {
@@ -254,7 +254,7 @@ describe("App, Settings", () => {
     const button = (label: RegExp) => [...page.host.querySelectorAll("button")].find((b) => label.test((b.textContent ?? "").trim()))!;
     const caps = () => page.asked.filter((a) => a === "GET /v2/capabilities").length;
     expect(caps()).toBe(1);
-    await act(async () => { button(/^Add key$/).click(); }); await settle();
+    await act(async () => { button(/^Paste$/).click(); }); await settle();
     const input = page.host.querySelector('input[name="MONID_API_KEY"]') as HTMLInputElement;
     await act(async () => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "not-a-real-key-0123"); input.dispatchEvent(new Event("input", { bubbles: true })); });
     await act(async () => { button(/^Save$/).click(); }); await settle();
@@ -269,13 +269,13 @@ describe("App, the model key card on the first screen", () => {
   it("shows while models.ready is false, saves the key, reads the capabilities again, and goes once they say ready", async () => {
     const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
     const features = { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false }, tool_keys: { routes: true, at_rest: "sealed" } };
-    const keys = { keys: [{ id: "anthropic", kind: "model", label: "Anthropic", fields: [{ name: "ANTHROPIC_API_KEY", set: false, source: null }], unlocks: [], harnesses: ["pi"] }], reenter: null };
+    const keys = { keys: [{ id: "anthropic", kind: "model", label: "Anthropic", fields: [{ name: "ANTHROPIC_API_KEY", set: false, source: null, changed_at: null }], unlocks: [], harnesses: ["pi"] }], reenter: null };
     const asked: string[] = [];
     let ready = false;
     vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
       const path = new URL(url, "http://serve.test").pathname;
       asked.push(`${init?.method ?? "GET"} ${path}`);
-      if (path === "/v2/auth/session") return json(200, { password_set: true, signed_in: true });
+      if (path === "/v2/auth/session") return json(200, { password_set: true, signed_in: true, secrets_writable: true });
       if (path === "/v2/capabilities") return json(200, { harnesses: [], features, models: { source: "providers", default: ready ? "anthropic/claude-sonnet-5-5" : null, ready, needs: ready ? null : "key" } });
       if (path === "/v2/settings/tool-keys/anthropic") { ready = true; return new Response(null, { status: 204 }); }
       if (path === "/v2/settings/tool-keys") return json(200, keys);
@@ -316,7 +316,7 @@ describe("App, archiving a run and filtering the runs list", () => {
       const u = new URL(url, "http://serve.test");
       const method = init?.method ?? "GET";
       asked.push(`${method} ${u.pathname}${u.search}`);
-      if (u.pathname === "/v2/auth/session") return json(200, { password_set: true, signed_in: true });
+      if (u.pathname === "/v2/auth/session") return json(200, { password_set: true, signed_in: true, secrets_writable: true });
       if (u.pathname === "/v2/capabilities") return json(200, { harnesses: [], features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false } } });
       if (u.pathname === "/v2/agents") return json(200, { agents: [], next_cursor: null });
       if (u.pathname === "/v2/runs") {
@@ -367,7 +367,7 @@ describe("App, an agent's address", () => {
     const calc = { agent_id: "calc", kind: "agentic", revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: "Calc", instructions: "Answer.", harness: "pi", skills: [], tools: [] } };
     vi.stubGlobal("fetch", async (url: string) => {
       const path = new URL(url, "http://serve.test").pathname;
-      if (path === "/v2/auth/session") return json(200, { password_set: true, signed_in: true });
+      if (path === "/v2/auth/session") return json(200, { password_set: true, signed_in: true, secrets_writable: true });
       if (path === "/v2/capabilities") return json(200, { harnesses: [{ id: "pi", available: true }], features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false } } });
       if (path === "/v2/agents") return json(200, { agents: [calc], next_cursor: null });
       if (path === "/v2/agents/calc") return json(200, calc);
@@ -403,7 +403,7 @@ describe("App, the agents' names", () => {
       const u = new URL(url, "http://serve.test");
       const method = init?.method ?? "GET";
       const [, , what, id, sub] = u.pathname.split("/").map(decodeURIComponent);
-      if (what === "auth") return json(200, { password_set: true, signed_in: true });
+      if (what === "auth") return json(200, { password_set: true, signed_in: true, secrets_writable: true });
       if (what === "capabilities") return json(200, recorded("capabilities").body);
       if (what === "stats") return json(200, {});
       if (what === "agents" && !id && method === "POST") { active.push(made); return json(201, made); }
@@ -511,7 +511,7 @@ describe("App, the playground when its agents can't be read", () => {
     const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
     vi.stubGlobal("fetch", async (url: string) => {
       const path = new URL(url, "http://serve.test").pathname;
-      if (path === "/v2/auth/session") return json(200, { password_set: true, signed_in: true });
+      if (path === "/v2/auth/session") return json(200, { password_set: true, signed_in: true, secrets_writable: true });
       if (path === "/v2/capabilities") return json(200, { harnesses: [], features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false } } });
       if (path === "/v2/agents") return json(400, { error: { code: "invalid_cursor", message: "that cursor is not one this server gave", retryable: false } });
       return json(404, { error: { code: "not_found", message: path, retryable: false } });
@@ -536,7 +536,7 @@ describe("App, the no-model bar", () => {
     vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
       const path = new URL(url, "http://serve.test").pathname;
       asked.push(`${init?.method ?? "GET"} ${path}`);
-      if (path === "/v2/auth/session") return json(200, { password_set: true, signed_in: true });
+      if (path === "/v2/auth/session") return json(200, { password_set: true, signed_in: true, secrets_writable: true });
       if (path === "/v2/capabilities") return json(200, { harnesses: [], features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false }, ...(keys ? { tool_keys: { routes: true, at_rest: keys } } : {}) }, models: models() });
       if (path === "/v2/settings/tool-keys") return json(200, { keys: [], reenter: null });
       if (path === "/v2/stats") return stats ? json(200, stats) : json(404, { error: { code: "not_found", message: "no route GET /v2/stats", retryable: false } });
@@ -670,7 +670,7 @@ describe("App, the no-model bar", () => {
     let held = false;
     vi.stubGlobal("fetch", async (url: string) => {
       const path = new URL(url, "http://serve.test").pathname;
-      if (path === "/v2/auth/session") return json(200, { password_set: true, signed_in: true });
+      if (path === "/v2/auth/session") return json(200, { password_set: true, signed_in: true, secrets_writable: true });
       if (path === "/v2/capabilities") {
         const body = { harnesses: [], features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false }, tool_keys: { routes: true, at_rest: "sealed" } }, models: { source: "providers", default: ready ? "anthropic/claude-sonnet-5-5" : null, ready, needs: ready ? null : "key" } };
         if (held) { held = false; return new Promise<Response>((resolve) => { hold = resolve; }); }
@@ -760,7 +760,7 @@ describe("App, a run page's back arrow", () => {
   const calc = { agent_id: "calc", kind: "agentic", revision: "rv1", revisions: 1, archived_at: null, definition: { version: 1, name: "Calc", instructions: "Answer.", harness: "pi", skills: [], tools: [] } };
   const serve = () => vi.stubGlobal("fetch", async (url: string) => {
     const u = new URL(url, "http://serve.test");
-    if (u.pathname === "/v2/auth/session") return json(200, { password_set: true, signed_in: true });
+    if (u.pathname === "/v2/auth/session") return json(200, { password_set: true, signed_in: true, secrets_writable: true });
     if (u.pathname === "/v2/capabilities") return json(200, { harnesses: [], features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false } } });
     if (u.pathname === "/v2/agents") return json(200, { agents: [calc], next_cursor: null });
     if (u.pathname === "/v2/runs") return json(200, { runs: [run], next_cursor: null });

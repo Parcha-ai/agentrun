@@ -3,6 +3,7 @@
 // sends. Edit the server's document, then run node scripts/generate-clients.mjs; never a wire type here.
 
 import type { components, operations } from "./api.generated";
+import type { PendingKeyField } from "./secrets.pending";
 
 type Answer<Id extends keyof operations> = operations[Id]["answer"];
 type Body<Id extends keyof operations> = operations[Id]["body"];
@@ -74,9 +75,15 @@ export type RunFiles = components["RunFileList"];
 export type RunBrowser = Answer<"getRunBrowser">;
 
 /** Tool keys (GET /v2/settings/tool-keys, a serve extension). The server never sends a value. */
-export type ToolKeys = Answer<"listToolKeys">;
-export type ToolKey = ToolKeys["keys"][number];
+/** PENDING (secrets.pending.ts): the ruled secret read, until the switch slices' generated types replace these. */
+export type { SecretField, SessionSecrets } from "./secrets.pending";
+type ServedToolKeys = Answer<"listToolKeys">;
+/** A key's fields in the ruled secret shape (PENDING: swapped for the generated alias when the slices land). */
+export type ToolKey = Omit<ServedToolKeys["keys"][number], "fields"> & { fields: PendingKeyField[] };
+export type ToolKeys = Omit<ServedToolKeys, "keys"> & { keys: ToolKey[] };
 export type ToolKeyField = ToolKey["fields"][number];
+/** An MCP server's credential values as secret fields (PENDING). */
+export type { PendingMcpSecrets } from "./secrets.pending";
 /** A saved key's check with its provider. Null, or absent from a server that does not check, says nothing. */
 export type ToolKeyCheck = NonNullable<ToolKey["check"]>;
 /** Saved values that do not open on this server, and why. `fields` is empty when the whole file does not read. */

@@ -35,7 +35,7 @@ function server(write: (call: Call) => Response = () => new Response(null, { sta
 let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
 
-async function open(props: Omit<Parameters<typeof ModelKeyCard>[0], "v2">, v2: ReturnType<typeof createClient>) {
+async function open(props: Omit<Parameters<typeof ModelKeyCard>[0], "v2" | "writable">, v2: ReturnType<typeof createClient>) {
   const host = document.body.appendChild(document.createElement("div"));
   root = createRoot(host);
   act(() => root!.render(createElement(ModelKeyCard, { v2, writable: true, ...props })));

@@ -1,9 +1,11 @@
 import { Plug, TriangleAlert } from "lucide-react";
 import { type FormEvent, type ReactNode, useEffect, useRef, useState } from "react";
+import { SecretRow } from "@/components/SecretRow";
 import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
 import type { Client } from "@/lib/client";
 import { when } from "@/lib/format";
+import { SIGN_IN_TO_CHANGE } from "@/lib/secrets";
 import { type McpAuth, type McpPreview, mcpProblem, type McpRefresh, type McpServer, NO_SEAL_KEY } from "@/lib/mcp";
 
 type Problem = ReturnType<typeof mcpProblem>;
@@ -20,7 +22,8 @@ const CREDENTIAL: Record<string, [string, "success" | "warning" | "plain"]> = {
  *  server and nowhere else: its inputs are uncontrolled (React would mirror a value into the DOM), never filled from a
  *  read, and cleared once sent to be kept. `atRest` is capabilities' `features.mcp_client.at_rest`; `signIn`, the
  *  outcome an OAuth sign-in's way back names (`#/settings/mcp?server=&sign_in=`); `open` takes the browser to a sign-in. */
-export function McpServersPage({ v2, atRest, signIn, open = (url) => location.assign(url) }: { v2: Client; atRest?: "sealed" | "unavailable"; signIn?: SignIn; open?: (url: string) => void }) {
+/** `writable`: this is the owner's password session (session.secrets_writable), the one that may type a credential. */
+export function McpServersPage({ v2, atRest, signIn, writable, open = (url) => location.assign(url) }: { v2: Client; atRest?: "sealed" | "unavailable"; signIn?: SignIn; writable: boolean; open?: (url: string) => void }) {
   const [servers, setServers] = useState<McpServer[] | null>(null);
   const [unreadable, setUnreadable] = useState(false);
   const [loadError, setLoadError] = useState<Problem | null>(null);
@@ -52,6 +55,7 @@ export function McpServersPage({ v2, atRest, signIn, open = (url) => location.as
           </p>
         )}
         {cantStore && <p className="border bg-card p-4 font-mono text-[13px]" role="status">{NO_SEAL_KEY}</p>}
+        {!writable && <p className="border bg-card p-4 text-[13px]" role="status">{SIGN_IN_TO_CHANGE}</p>}
         {unreadable && <Warning>The file this server keeps its MCP servers in can't be read: restore it or remove it. Nothing is written over it.</Warning>}
         {loadError && (
           <div className="border p-4" role="alert">
@@ -60,9 +64,9 @@ export function McpServersPage({ v2, atRest, signIn, open = (url) => location.as
           </div>
         )}
         {/* A save that lands after its form was closed (Cancel, or another Change) closes no form opened since. */}
-        {form && <ServerForm key={form.saved?.name ?? "new"} v2={v2} saved={form.saved} cantStore={cantStore} signIn={startSignIn} onCancel={() => setForm(null)} onSaved={((mine) => () => { setForm((open) => (open === mine ? null : open)); load(); })(form)} />}
+        {form && <ServerForm key={form.saved?.name ?? "new"} v2={v2} saved={form.saved} cantStore={cantStore} writable={writable} signIn={startSignIn} onCancel={() => setForm(null)} onSaved={((mine) => () => { setForm((open) => (open === mine ? null : open)); load(); })(form)} />}
         {servers && (servers.length
-          ? <ul className="border">{servers.map((s) => <ServerRow key={s.name} v2={v2} server={s} signIn={startSignIn} onChange={() => setForm({ saved: s })} onChanged={load} />)}</ul>
+          ? <ul className="border">{servers.map((s) => <ServerRow key={s.name} v2={v2} server={s} writable={writable && !form} signIn={startSignIn} onChange={() => setForm({ saved: s })} onChanged={load} />)}</ul>
           : <p className="border px-3 py-4 font-mono text-[13px] text-muted-foreground">No MCP server is saved here yet.</p>)}
       </div>
     </div>
@@ -76,7 +80,7 @@ const Said = ({ problem }: { problem: Problem }) => (
   <div role="alert"><p className="font-mono text-[13px] text-destructive-text">{problem.text}</p>{problem.detail && <p className="mt-1 text-[12px] text-muted-foreground">{problem.detail}</p>}</div>
 );
 
-function ServerRow({ v2, server: s, signIn, onChange, onChanged }: { v2: Client; server: McpServer; signIn: (name: string, body: { url: string }) => Promise<void>; onChange: () => void; onChanged: () => void }) {
+function ServerRow({ v2, server: s, writable, signIn, onChange, onChanged }: { v2: Client; server: McpServer; writable: boolean; signIn: (name: string, body: { url: string }) => Promise<void>; onChange: () => void; onChanged: () => void }) {
   const [busy, setBusy] = useState(false);
   const [confirm, setConfirm] = useState(false);
   const [note, setNote] = useState<McpRefresh | null>(null);
@@ -97,6 +101,8 @@ function ServerRow({ v2, server: s, signIn, onChange, onChanged }: { v2: Client;
             <summary className="cursor-pointer font-mono text-[12px]">{s.tools.length} tool{s.tools.length === 1 ? "" : "s"}</summary>
             <ul className="mt-1 space-y-0.5">{s.tools.map((t) => <li key={t.name} className="font-mono text-[12px]">{t.name}{s.prices?.[t.name] !== undefined && <span className="text-muted-foreground"> · ${s.prices[t.name]} a call</span>}</li>)}</ul>
           </details>
+          {/* Its credential's values (the token, each header's), each as a secret row: Replace opens the server's form. */}
+          {!!s.secrets?.length && <ul className="mt-2 space-y-1.5">{s.secrets.map((f) => <SecretRow key={f.name} field={f} writable={writable} onPaste={f.source === "sign-in" ? undefined : onChange} />)}</ul>}
           {changes && <p className="mt-2 font-mono text-[12px]" role="status">{changes.length ? changes.join(" · ") : "No change: it lists the same tools."}</p>}
         </div>
         {!confirm && (
@@ -127,7 +133,7 @@ const AUTH: [McpAuth["type"], string][] = [["none", "None"], ["bearer", "Bearer 
 
 /** Add a server, or change a saved one (`saved`: its name stays, and a credential left empty is the sealed one kept).
  *  A new server is previewed before it can be saved; any change of its address or credential asks for another. */
-function ServerForm({ v2, saved, cantStore, signIn, onCancel, onSaved }: { v2: Client; saved?: McpServer; cantStore: boolean; signIn: (name: string, body: Parameters<Client["startMcpSignIn"]>[1]) => Promise<void>; onCancel: () => void; onSaved: () => void }) {
+function ServerForm({ v2, saved, cantStore, writable, signIn, onCancel, onSaved }: { v2: Client; saved?: McpServer; cantStore: boolean; writable: boolean; signIn: (name: string, body: Parameters<Client["startMcpSignIn"]>[1]) => Promise<void>; onCancel: () => void; onSaved: () => void }) {
   const form = useRef<HTMLFormElement>(null);
   const [name, setName] = useState(saved?.name ?? "");
   const [url, setUrl] = useState(saved?.url ?? "");
@@ -193,7 +199,7 @@ function ServerForm({ v2, saved, cantStore, signIn, onCancel, onSaved }: { v2: C
         <div className="flex flex-wrap gap-4">
           {AUTH.map(([id, label]) => (
             <label key={id} className="flex items-center gap-2 text-[13px]">
-              <input type="radio" name="mcp-auth" value={id} checked={type === id} disabled={cantStore && id !== "none"} onChange={() => { setType(id); edited(); }} className="accent-[hsl(var(--primary))]" />{label}
+              <input type="radio" name="mcp-auth" value={id} checked={type === id} disabled={(cantStore && id !== "none") || (!writable && (id === "bearer" || id === "headers"))} onChange={() => { setType(id); edited(); }} className="accent-[hsl(var(--primary))]" />{label}
             </label>
           ))}
         </div>
@@ -218,7 +224,7 @@ function ServerForm({ v2, saved, cantStore, signIn, onCancel, onSaved }: { v2: C
           <label className="block"><span className="caps mb-2 block text-[12px] font-semibold">Scopes (optional)</span><input name="mcp-scopes" placeholder="read write" defaultValue={saved?.oauth?.scopes.join(" ")} spellCheck={false} className={input} /></label>
           <div className="flex gap-2">
             <label className="block flex-1"><span className="caps mb-2 block text-[12px] font-semibold">Client ID (optional)</span><input name="mcp-client-id" spellCheck={false} className={input} /></label>
-            <label className="block flex-1"><span className="caps mb-2 block text-[12px] font-semibold">Client secret (optional)</span><input name="mcp-client-secret" {...secret} /></label>
+            {writable && <label className="block flex-1"><span className="caps mb-2 block text-[12px] font-semibold">Client secret (optional)</span><input name="mcp-client-secret" {...secret} /></label>}
           </div>
         </div>
       )}

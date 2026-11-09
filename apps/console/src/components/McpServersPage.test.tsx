@@ -53,7 +53,7 @@ async function open(v2: ReturnType<typeof createClient>, props: Record<string, u
   const host = document.body.appendChild(document.createElement("div"));
   root = createRoot(host);
   const opened: string[] = [];
-  act(() => root!.render(createElement(McpServersPage, { v2, atRest: "sealed", open: (u: string) => opened.push(u), ...props })));
+  act(() => root!.render(createElement(McpServersPage, { v2, atRest: "sealed", writable: true, open: (u: string) => opened.push(u), ...props })));
   const settle = async () => { for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
   await settle();
   const button = (label: RegExp, within: Element = host) => [...within.querySelectorAll("button")].find((b) => label.test((b.textContent ?? "").trim()));
