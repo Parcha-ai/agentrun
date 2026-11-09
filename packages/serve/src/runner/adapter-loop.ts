@@ -305,6 +305,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           },
           afterRequest: async (...args) => {
             try {
+              await hooks.beforeBooking?.();
               await port.afterRequest(...args);
             } finally {
               unbooked = Math.max(0, unbooked - 1);
@@ -591,6 +592,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
    *  unbooked reads at its hold and bound, the worst it can have cost. */
   async function bookingsSettled(): Promise<void> {
     if (unbooked === 0) return;
+    specNow?.hooks?.awaitingBookings?.();
     let timer: NodeJS.Timeout | undefined;
     await Promise.race([new Promise<void>((resolve) => bookedAll.push(resolve)), new Promise<void>((resolve) => (timer = setTimeout(resolve, CLOSE_MS)))]);
     clearTimeout(timer);

@@ -16,12 +16,15 @@ const TIMING = { ...STEADY_LEASE, pollMs: 20, commandPollMs: 30 };
 const quiet = { beforeIntent: async () => {}, beforeResult: async () => {} };
 after(closeOpenSessions);
 
-/** One run of `script` with each model request priced by `price`, to its end or park; its live timeline's rows. */
-async function pricedRun(t, script, price) {
+/** One run of `script` with each model request priced by `price`, to its end or park; its live timeline's rows.
+ *  `journalOf`: the claim's journal as the loop sees it (a test's commit hook); `hooks`: the kernel's, over quiet. */
+async function pricedRun(t, script, price, journalOf, hooks = {}) {
   const { server, runners: [store] } = await stores({ runners: 1 });
   await queue(server, "run-1");
   const { tools } = suiteTools();
-  const runner = startRunner({ store, createLoop: createAdapterLoop(piAdapterSpec({ script, tools, hooks: quiet }, { price })), name: "runner-a", ...TIMING });
+  const loop = createAdapterLoop(piAdapterSpec({ script, tools, hooks: { ...quiet, ...hooks } }, { price }));
+  const createLoop = journalOf ? (deps) => loop({ ...deps, journal: (claim) => journalOf(deps.journal(claim)) }) : loop;
+  const runner = startRunner({ store, createLoop, name: "runner-a", ...TIMING });
   t.after(() => runner.close());
   const row = await until(async () => {
     const now = await server.runs.get("run-1");
@@ -69,6 +72,29 @@ test("each answer carries its own request's booking, never another's", async (t)
   assert.ok(usage, `a usage row: ${JSON.stringify(rows.map((one) => [one.kind, one.summary]))}`);
   // The first request booked $0.25, the second $0.5: $0.75, never one read twice or none read at all.
   assert.equal(usage.usd, 0.75, `each answer carries its own request's booking: ${JSON.stringify(usage)}`);
+});
+
+test("an answer whose booking comes after pi has it carries that booking: its cost waits for it, never reads none", async (t) => {
+  // The proxy books a request once its client has the answer (host/proxy.ts). Each booking here lands only once the loop
+  // waits for it (the kernel's awaitingBookings hook): ordered by events, so an answer's cost read that does not wait for
+  // its booking always reads before it lands. (The bound only lets a booking no one waits for land late; it orders
+  // nothing the fix needs.)
+  let waiting = () => {};
+  let waited = new Promise((resolve) => (waiting = resolve));
+  const hooks = {
+    awaitingBookings: () => waiting(),
+    beforeBooking: async () => {
+      let timer;
+      await Promise.race([waited, new Promise((resolve) => (timer = setTimeout(resolve, 15_000)))]);
+      clearTimeout(timer);
+      waited = new Promise((resolve) => (waiting = resolve));
+    },
+  };
+  const { row, rows } = await pricedRun(t, [{ call: "read" }, { say: "done" }], () => 0.25, undefined, hooks);
+  assert.equal(row.state, "ended", JSON.stringify(row));
+  const usage = usageOf(rows);
+  assert.ok(usage, `a usage row: ${JSON.stringify(rows.map((one) => [one.kind, one.summary]))}`);
+  assert.equal(usage.usd, 0.5, `each answer carries its late booking: ${JSON.stringify(usage)}`);
 });
 
 test("a run whose model has no price shows its cost unknown on the live timeline, never $0", async (t) => {
