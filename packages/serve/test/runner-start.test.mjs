@@ -10,13 +10,17 @@
 //   - SIGTERM hands a held run back at once, for another runner to claim;
 //   - `--check` passes while its heartbeat file (runner-<name>.alive under --data) is younger than twice its renew
 //     interval, and fails in words when it is not;
-//   - a run's own process environment (what its agent's bash sees) holds none of the runner's secrets: the store URL with
-//     its password (the real test Postgres's, with AGENTRUN_TEST_PG_URL; on SQLite another AGENTRUN_STORE_* value), the
-//     seal key, the server's token and API key, the model key;
-//   - the run environment the runner hands its loops (runEnv: what a claimed run's tools, its model route and its
-//     computer read, in the runner's own process) holds none of the runner's own secrets, by name or by value, read or
-//     listed. The bash case cannot pin that: pi's bash tool runs on a fixed environment of its own (PWD, HOME, LANG,
-//     TMPDIR, TERM, PATH), so it never shows what runEnv kept.
+//   - a run's agent's bash under the started runner runs on pi's bash tool's own fixed environment (PWD, HOME, LANG,
+//     TMPDIR, TERM, PATH), which holds none of the runner's secrets: the store URL with its password (the real test
+//     Postgres's, with AGENTRUN_TEST_PG_URL; on SQLite another AGENTRUN_STORE_* value), the seal key, the server's token
+//     and API key, the model key. That pins the bash tool's environment, not the runner's strip: the bash never shows
+//     what the runner handed its loops;
+//   - the runner's strip itself, where its output goes: the run environment it hands its loops (runEnv: a claimed run's
+//     model route and computer read it in the runner's own process), and the environment a claimed run's host tools are
+//     handed (claim-secrets.ts over runEnv, as the dispatch builds each claim's ToolHost.env), each with none of the
+//     runner's own secrets by name or by value, read or listed. A CLI harness's process (codex, claude-agent, opencode)
+//     is spawned on its own allowlist (PATH, LANG, TZ and the harness's own names), never on the run environment, so
+//     there is nothing of runEnv's in it to pin.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
@@ -324,7 +328,7 @@ test("a box-placed run gets its Docker computer through the runner process (the 
   assert.deepEqual(await child.exited, { code: 0, signal: null });
 });
 
-test("a run's own process under the started runner holds none of the runner's secrets: its agent's bash `env` shows no store URL, seal key, token, API key or model key", async (t) => {
+test("a run's agent's bash under the started runner runs on pi's bash tool's fixed environment: its `env` shows no store URL, seal key, token, API key or model key", async (t) => {
   let asked = 0;
   const fake = await fakeAnthropic({ reply: () => (++asked === 1 ? { tool: { name: "bash", input: { command: "env" } } } : { text: "Done." }) });
   t.after(() => fake.close());
@@ -338,17 +342,40 @@ test("a run's own process under the started runner holds none of the runner's se
   assert.ok(!/AGENTRUN_STORE_|AGENTRUN_SEAL_KEY|AGENTRUN_TOKEN|AGENTRUN_API_KEY/.test(shown), "nor their names");
 });
 
-test("the run environment the runner hands its loops holds none of the runner's own secrets: no store URL or other AGENTRUN_STORE_ name, seal key, token or API key, by name or value, listed or not", () => {
-  // The store's connection as a runner holds it (the real test Postgres's URL, its password in it, on Postgres), beside
-  // another store name and the server's own secrets; a name the runner does not keep to itself passes through.
-  const url = onPostgres ? PG_URL : `postgres://runner:${"plantedstorepass"}@db.invalid:5432/agentrun`;
-  const own = { ...PLANT, AGENTRUN_STORE_URL: url, AGENTRUN_STORE_SCHEMA: "planted_schema", AGENTRUN_SEAL_KEY: SEAL };
-  const env = main.runEnv({ PATH: "/usr/bin:/bin", LANG: "C.UTF-8", AGENTRUN_RUNNER_NAME: "runner-env", ...own });
-  assert.equal(env.LANG, "C.UTF-8", "a name the runner does not keep to itself passes through");
-  // Every own name, enumerable or not: secrets.ts gives a run its pipe's secrets readable by name but not listed.
+/** The runner's own secrets as it holds them: the store's connection (the real test Postgres's URL, its password in it, on
+ *  Postgres), another store name, the seal key and the server's token and API key, beside the model key. */
+const RUNNER_OWN = {
+  ...PLANT,
+  AGENTRUN_STORE_URL: onPostgres ? PG_URL : `postgres://runner:${"plantedstorepass"}@db.invalid:5432/agentrun`,
+  AGENTRUN_STORE_SCHEMA: "planted_schema",
+  AGENTRUN_SEAL_KEY: SEAL,
+};
+/** The runner's own names (RUNNER_OWN's but the model key, which a run's model needs) found in `env`, by name (every own
+ *  name, enumerable or not: secrets.ts gives a run its pipe's secrets readable by name but not listed) or by value under
+ *  any name. */
+function runnerOwnIn(env) {
   const names = Object.getOwnPropertyNames(env);
-  assert.deepEqual(names.filter((name) => /^AGENTRUN_STORE_|^AGENTRUN_SEAL_KEY$|^AGENTRUN_TOKEN$|^AGENTRUN_API_KEY$/.test(name)), [], "none of the runner's own names");
   const values = names.map((name) => String(env[name])).join("\n");
-  const store = ["AGENTRUN_STORE_URL", "AGENTRUN_STORE_SCHEMA", "AGENTRUN_SEAL_KEY", "AGENTRUN_TOKEN", "AGENTRUN_API_KEY"];
-  assert.deepEqual(store.filter((name) => values.includes(own[name])), [], "none of their values under another name");
+  const own = ["AGENTRUN_STORE_URL", "AGENTRUN_STORE_SCHEMA", "AGENTRUN_SEAL_KEY", "AGENTRUN_TOKEN", "AGENTRUN_API_KEY"];
+  return {
+    names: names.filter((name) => /^AGENTRUN_STORE_|^AGENTRUN_SEAL_KEY$|^AGENTRUN_TOKEN$|^AGENTRUN_API_KEY$/.test(name)),
+    values: own.filter((name) => values.includes(RUNNER_OWN[name])),
+  };
+}
+
+test("the run environment the runner hands its loops holds none of the runner's own secrets: no store URL or other AGENTRUN_STORE_ name, seal key, token or API key, by name or value, listed or not", () => {
+  const env = main.runEnv({ PATH: "/usr/bin:/bin", LANG: "C.UTF-8", AGENTRUN_RUNNER_NAME: "runner-env", ...RUNNER_OWN });
+  assert.equal(env.LANG, "C.UTF-8", "a name the runner does not keep to itself passes through");
+  assert.deepEqual(runnerOwnIn(env), { names: [], values: [] }, "none of the runner's own names, nor their values under another name");
+});
+
+test("the environment a claimed run's host tools are handed holds none of the runner's own secrets: no store URL or other AGENTRUN_STORE_ name, seal key, token or API key, by name or value, listed or not", async () => {
+  // As the dispatch builds each claim's ToolHost.env (runner/adapter-run-spec.ts): claimSecrets over the run environment
+  // the runner hands its loops, for a revision whose tools unlock keys (none saved here, so none is added).
+  const { claimSecrets } = await import("../dist/runner/claim-secrets.js");
+  const runs = main.runEnv({ PATH: "/usr/bin:/bin", LANG: "C.UTF-8", AGENTRUN_RUNNER_NAME: "runner-tools", ...RUNNER_OWN });
+  const store = { sealedKeys: { get: async () => undefined } };
+  const tools = await claimSecrets({ store, sealKey: Buffer.from(SEAL, "base64"), env: runs }, { kind: "agentic", body: { tools: ["bash", "web_search", "monid.run"] } }, {});
+  assert.equal(tools.LANG, "C.UTF-8", "the run environment's other names reach the tools");
+  assert.deepEqual(runnerOwnIn(tools), { names: [], values: [] }, "none of the runner's own names, nor their values under another name");
 });
