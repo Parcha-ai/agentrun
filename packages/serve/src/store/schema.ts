@@ -12,7 +12,7 @@
 // journal tables, keyed by run_id (store/journal): one schema for every run's journal, so a query joins runs and their
 // journals.
 
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 6;
 
 const json = (column: string, nullable = false) => `${column} TEXT${nullable ? "" : " NOT NULL"} CHECK (${column} IS NULL OR json_valid(${column}))`;
 
@@ -318,7 +318,12 @@ export const STORE_DDL: readonly string[] = [
     -- When the sealed credential was last set: a save with a new credential or an OAuth sign-in moves it. A save that
     -- keeps the sealed one, a refresh of the tools, and a token refresh (the server keeping the sign-in) leave it.
     -- Null with no credential.
-    credential_changed_at INTEGER
+    credential_changed_at INTEGER,
+    -- When the sealed credential's access token runs out, on the store's own clock: stamped when the credential is
+    -- written (a save, a token refresh) as the store's now plus the writer's measure of the token's remaining life, so a
+    -- claim on any machine judges the token by the store's clock (McpServerRow.tokenLeftMs). Null when the writer gave no
+    -- measure (no token set, or a writer that has none).
+    token_until INTEGER
   ) STRICT`,
   `CREATE TABLE IF NOT EXISTS mcp_oauth_pending (
     state TEXT PRIMARY KEY,
