@@ -164,6 +164,20 @@ const noticeOf = (options: Pick<ServeOptions, "notice">) => (line: string): void
     // The line is told, not needed: the stop and the wait go on without it.
   }
 };
+
+/** The runner beside a server (the CLI start's, or a test's): the runs it holds, and its close, which stops them and
+ *  closes its store handle. */
+export type RunnerBeside = { held(): readonly unknown[]; close(): Promise<void> };
+
+/** What a stop of `serve` and the runner beside it waits on: the server's own (none: the runner owns every run's turn). */
+export function stoppingBeside(serve: Pick<Serve, "stopping">, _runner: RunnerBeside | undefined, _drainMs: number): { runs: number; boundMs: number } {
+  return serve.stopping();
+}
+
+/** The stop of a server and the runner beside it on `data` (the CLI's, once per stop): both closed at once. */
+export async function stopBeside(serve: Pick<Serve, "stopping" | "close">, runner: RunnerBeside | undefined, _options: { data: string; drainMs: number; notice?: (line: string) => void }): Promise<void> {
+  await Promise.all([runner?.close() ?? Promise.resolve(), serve.close()]);
+}
 /** Why a home's PUT or DELETE is 501 where `capabilities.home.writes` is false (workspace.ts writesHeld). */
 const HOME_WRITES_OFF = "This server can't write a home's files safely here: a write needs /proc/self/fd, as on Linux, which this platform lacks. Reads and the list still work.";
 /** Why a home's write or removal is refused when a link is on the way: the Workspace follows none. */

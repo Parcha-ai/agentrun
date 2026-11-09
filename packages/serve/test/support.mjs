@@ -291,7 +291,15 @@ export async function triggerStore(of) {
  *  dispatch (dispatch.ts): each claim's launch picks its harness loop — pi on the kernel's adapter loop with the run's pi
  *  spec, a learning run on the learning loop, its model route the faux model under `faux`. Returns a close() that stops the
  *  runner and closes its store handle. */
-export async function startInProcessRunner(data, { faux, githubApi, ...switches } = {}) {
+export async function startInProcessRunner(data, options = {}) {
+  const { close } = await startRunnerBeside(data, options);
+  return close;
+}
+
+/** startInProcessRunner's runner with its handle: `runner` (its held claims) and `close` (the runner's close, which drains
+ *  its runs for up to `drainMs`, runner.ts, then its store handle's). The runner a test's stop drains (server.ts
+ *  stopBeside), as the CLI start's beside its server. */
+export async function startRunnerBeside(data, { faux, githubApi, drainMs, ...switches } = {}) {
   const store = await openSqliteStore({ dataDir: data, role: "runner" });
   // The runner's env mirrors the server's faux (model.ts FAUX_ENV): its model route reads the faux model from it, so a run
   // never reaches the network. The seal key is the server's (seal-key.ts), read as the CLI's runner reads it: the one
@@ -309,15 +317,19 @@ export async function startInProcessRunner(data, { faux, githubApi, ...switches 
       store,
       // A test's fake GitHub, the server's githubApi seam: the runner mints the App's tokens there (never from the env).
       createLoop: dispatchRunner({ env, data, journal: (claim) => store.journal(claim), store, sealKey, routeOf, computerForClaim: computers.computerForClaim, computerDeps: computers.computerDeps, ...(githubApi ? { githubApi } : {}) }),
+      ...(drainMs !== undefined ? { drainMs } : {}),
     });
   } catch (error) {
     await store.close();
     throw error;
   }
-  return async () => {
-    await runner.close().catch(() => {});
-    await store.close().catch(() => {});
-  };
+  let closing;
+  const close = () =>
+    (closing ??= (async () => {
+      await runner.close().catch(() => {});
+      await store.close().catch(() => {});
+    })());
+  return { runner, close };
 }
 
 export async function serve(t, { harnesses: asked, runner: wantRunner = true, ...options } = {}) {

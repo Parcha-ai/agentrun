@@ -17,7 +17,7 @@ import { resetPassword } from "./owner.js";
 import type { ImageState } from "./box-image.js";
 import { banner, boxImageLine } from "./print.js";
 import type { LearningMode } from "./learning.js";
-import { DEFAULT_PORT, fauxEnvOf, type Serve, type ServeOptions, startServe } from "./server.js";
+import { DEFAULT_PORT, fauxEnvOf, type Serve, type ServeOptions, startServe, stopBeside, stoppingBeside } from "./server.js";
 import { SEAL_KEY_ENV } from "./tool-keys.js";
 
 /** A runner beside the server on the same data directory (the CLI start's server-and-runner, and the `runner` subcommand):
@@ -376,9 +376,12 @@ const record = join(resolve(data), SERVER_FILE);
 // not remove. One stop per press or process-manager stop; a later signal, or a stop past its deadline, stops at once
 // (stop-signals.ts). The stop is in place before the record is written: a SIGTERM sent the moment the record appears is
 // a clean stop that removes it, never the default end by signal that leaves it behind.
+// The runner beside, as the stop reads it: the runs it holds, and its close (its runs stopped, then its store handle).
+const beside = runnerProc ? { held: () => runnerProc!.runner.held(), close: () => runnerProc!.close() } : undefined;
+// One stop (server.ts stopBeside), and what it waits on, for the second press and the deadline (stoppingBeside).
 const stop = stopOnSignals({
-  close: () => (removeOwnRecord(record), Promise.all([runnerProc?.close() ?? Promise.resolve(), serve.close()]).then(() => undefined)),
-  stopping: () => serve.stopping(),
+  close: () => (removeOwnRecord(record), stopBeside(serve, beside, { data, drainMs: 0 })),
+  stopping: () => stoppingBeside(serve, beside, 0),
   done: (code) => (removeOwnRecord(record), process.exit(code)),
   say: (line) => console.error(line),
 });
