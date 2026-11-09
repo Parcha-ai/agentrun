@@ -230,34 +230,22 @@ describe("applying a template", () => {
     expect(t.host.querySelector('section[aria-label="Applied"] h1')!.textContent).toContain("Code review: acme/web applied");
   });
 
-  it("shows each webhook trigger's secret once beside its URL, with Copy and that it won't be shown again", async () => {
-    const SECRET = "CANARY-VALUE-5e1f0a2b9c";
-    const t = await open("pr-reviewer", { apply: async () => ({ template: "pr-reviewer", version: "1.0.0", agent_id: "pr-reviewer-1", trigger_ids: ["trg_hook", "trg_cron"], warnings: [],
-      webhook_secrets: [{ trigger_id: "trg_hook", secret: SECRET }] }) });
-    await t.type(t.host.querySelector('[data-field="parameters.repo"] input'), "acme/web");
-    await t.click(t.button(/^Apply/));
-    // A secret shown once keeps the screen: it never moves on past it.
-    expect(t.went).toEqual([]);
-    const made = t.host.querySelector('section[aria-label="Applied"]')!;
-    const once = made.querySelector('section[aria-label^="The webhook\'s URL and secret"]')!;
-    expect(once.textContent).toContain(`${location.origin}/v2/hooks/trg_hook`);
-    expect(once.textContent).toContain(SECRET);
-    expect(once.textContent).toContain("You won't see this secret again.");
-    expect([...once.querySelectorAll("button")].some((b) => /Copy secret/.test(b.textContent ?? ""))).toBe(true);
-    // Only the webhook trigger's: a schedule's (trg_cron) has no secret and is not listed.
-    expect(made.textContent).not.toContain("/v2/hooks/trg_cron");
-    expect(made.querySelector('a[href="#/agents/pr-reviewer-1"]')?.textContent).toContain("Open the agent");
-  });
-
-  it("on a retry of the same apply, shows the server's note in place of a secret it no longer sends", async () => {
-    const t = await open("pr-reviewer", { apply: async () => ({ template: "pr-reviewer", version: "1.0.0", agent_id: "pr-reviewer-1", trigger_ids: ["trg_hook"], warnings: [],
-      note: "This apply was made before: its webhook secrets were shown then and are not shown again." }) });
+  it("a webhook trigger the apply made: the server's warning in its words, with a link to that trigger for its signing secret", async () => {
+    const LEAD: TemplateView = { ...REVIEWER, name: "inbound-lead", triggers: [{ name: "lead-webhook", source: { kind: "webhook" } }, { name: "weekly", source: { kind: "schedule" } }] };
+    const SAYS = "This webhook trigger's signing secret is not in an apply answer. Open its trigger in the console to get it (Rotate).";
+    const t = await open("inbound-lead", { templates: [LEAD], apply: async () => ({ template: "inbound-lead", version: "1.0.0", agent_id: "lead-1", trigger_ids: ["trg_hook", "trg_cron"],
+      warnings: [{ field: "triggers.0.secret", reason: "not_allowed", message: SAYS }] }) });
     await t.type(t.host.querySelector('[data-field="parameters.repo"] input'), "acme/web");
     await t.click(t.button(/^Apply/));
     expect(t.went).toEqual([]);
     const made = t.host.querySelector('section[aria-label="Applied"]')!;
-    expect(made.textContent).toContain("This apply was made before: its webhook secrets were shown then and are not shown again.");
-    expect(made.textContent).not.toContain("CANARY-VALUE");
+    expect(made.textContent).toContain(SAYS);
+    const link = [...made.querySelectorAll("a")].find((a) => a.getAttribute("href") === "#/triggers/trg_hook");
+    expect(link?.textContent).toBe("Open lead-webhook to get its signing secret (Rotate)");
+    // Only the webhook's: the schedule (trg_cron) has no secret and gets no link.
+    expect(made.querySelector('a[href="#/triggers/trg_cron"]')).toBeNull();
+    // No secret is shown here any more.
+    expect(made.textContent).not.toContain("You won't see this secret again.");
   });
 
   it("opens the made agent at once when there are no warnings", async () => {
