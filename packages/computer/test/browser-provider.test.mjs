@@ -189,6 +189,23 @@ for (const [id, vendor] of Object.entries(VENDORS)) {
 		assert.equal(viewOnly.error.code, "unsupported");
 	});
 
+	test(`${id}: connect reads the browser before it hands over a held CDP URL: one released elsewhere is gone, in words with no URL`, async () => {
+		const fake = vendor.fake();
+		const holder = await vendor.make(fake);
+		const ref = value(await holder.create(spec()), "create");
+		// Another instance of the provider (its own URL cache) ends the browser; the holder still has its URL.
+		value(await (await vendor.make(fake)).release(ref, "delete"), "release through another instance");
+		const connected = await holder.connect(ref);
+		assert.equal(connected.ok, false, "a browser that is gone is not handed over");
+		assert.equal(connected.error.code, "gone", connected.error.message);
+		assert.ok(connected.error.message.includes(ref.id), connected.error.message);
+		assert.doesNotMatch(JSON.stringify(connected), SECRET);
+		// A browser the vendor never had is not_found, as before.
+		const never = await holder.connect({ id: `${ref.id}0`, name: `${ref.id}0` });
+		assert.equal(never.ok, false);
+		assert.equal(never.error.code, "not_found", never.error.message);
+	});
+
 	/** CDP URLs a driver must never be handed: none, not wss:, or not on the vendor's own domain. */
 	const unusable = (domain) => [
 		undefined,
