@@ -128,6 +128,19 @@ describe("applying a template", () => {
     expect(t.sent[1].body.parameters).toEqual({ repo: "acme/web", strict: true });
   });
 
+  it("starts a boolean with a default at that default, sends it as shown, and shows a text parameter's default as its hint", async () => {
+    const DEFAULTED: TemplateView = { ...REVIEWER, name: "defaulted", parameters: { ...REVIEWER.parameters,
+      comment: { type: "boolean", required: false, description: "Comment on the pull request", default: true },
+      cron: { type: "string", required: false, description: "When it runs", default: "0 8 * * 1" } } };
+    const t = await open("defaulted", { templates: [DEFAULTED] });
+    await t.type(t.host.querySelector('[data-field="parameters.repo"] input'), "acme/web");
+    expect(t.host.querySelector<HTMLInputElement>('[data-field="parameters.comment"] input[type="checkbox"]')!.checked).toBe(true);
+    expect(t.host.querySelector<HTMLInputElement>('[data-field="parameters.cron"] input')!.placeholder).toBe("0 8 * * 1");
+    await t.click(t.button(/^Apply/));
+    // The boolean as shown (its default); the untouched text left out, for the server to apply its own default.
+    expect(t.sent[0].body.parameters).toEqual({ repo: "acme/web", comment: true });
+  });
+
   it("places a 422's issues at their fields: a parameter under its input, a grant at its tool", async () => {
     const refusal = Object.assign(new ClientError(422, "input_invalid", "The template's input is not valid."), { fields: [
       { field: "parameters.repo", reason: "bad_format", message: "repo must look like owner/name." },
