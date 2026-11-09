@@ -194,7 +194,9 @@ test("an opencode run, claimed by the runner, runs its first turn through the di
   assert.ok(sent.includes(`Working directory: ${scratchFolder(dir, "agent-1", RUN)}`), `OpenCode's cwd is the run's scratch: ${sent.slice(0, 400)}`);
   // The run's computer came from the shared computerForClaim, and went with the run's release.
   assert.deepEqual(computers.asked.map((one) => [one.place, one.store]), [[{ mode: "runner" }, true]]);
-  assert.equal(computers.released(), 1);
+  // The release follows the run's end commit (the loop lets its resources go after it), so it is waited for, not raced.
+  await until(() => computers.released() === 1, "the computer's release");
+  assert.equal(computers.released(), 1, "released once");
 });
 
 test("a CLI's absolute path under its working directory is the run's folder: a write to <cwd>/x.txt lands as the workspace's x.txt, and a path outside both is refused", async (t) => {
