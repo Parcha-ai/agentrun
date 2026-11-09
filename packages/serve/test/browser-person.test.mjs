@@ -678,6 +678,134 @@ test("an ask whose waiting row cannot be written fails, and says so: nothing is 
   assert.equal(askShown(root, [{ kind: "waiting", session: "ar-run-51-1" }])?.id, second.interactionId, "the owner sees it");
 });
 
+test("an ask's waiting entry carries the whole hand-over, as the server reads it: id, session, instruction, done-when condition, asked and expiry times; and so does one a later process commits for an ask whose row never came", async (t) => {
+  const root = await scratch(t);
+  const entries = [];
+  const note = async (kind, data) => void entries.push({ kind, data });
+  const grant = async () => ({ drop() {} });
+  const first = personHands({ root, gates: () => ({ give: () => false }), pollMs: 60_000, personTime: grant, note });
+  t.after(() => first.close());
+  const asked = await first.handoff.request(ask(61, "ar-run-61-1"));
+  const record = openAsk(root);
+  assert.equal(record?.id, asked.interactionId, "the ask waits");
+  // The server's reader (browser-commands.ts waitingAsk) needs every one of these; the timeline reads `reason`.
+  const whole = { state: "waiting", id: asked.interactionId, session: "ar-run-61-1", instruction: "Do thing 61", completion_condition: "thing 61 is done", asked_at: record.asked_at, expires_at: record.expires_at, reason: "Do thing 61" };
+  const handovers = () => entries.filter((entry) => entry.kind === "agent.handover").map((entry) => entry.data);
+  assert.deepEqual(handovers(), [whole], "the ask's entry is the whole record");
+  first.close();
+  // A later process takes the ask up and finds no waiting row for it (the earlier one ended between record and row).
+  const later = personHands({ root, gates: () => ({ give: () => false }), pollMs: 60_000, personTime: grant, note, waiting: async () => 0 });
+  t.after(() => later.close());
+  assert.deepEqual(await later.handoff.request(ask(61, "ar-run-61-1")), { interactionId: asked.interactionId });
+  assert.deepEqual(handovers(), [whole, whole], "the row committed for it is the whole record too");
+});
+
+/** The run's process on the runner's path: its hand-over answers are entries of the run's journal (`journal`, the
+ *  hand-over entries' data in order, shared by every process of the run), read through `answered` (the first answer
+ *  for an ask is its answer), never the answer files. Its other rows are `rows`. */
+function journalHands(root, journal, { gates = () => ({ give: () => false }) } = {}) {
+  const rows = [];
+  /** Every note, in order, as the run's root entries the timeline reads. */
+  const entries = [];
+  const person = personHands({
+    root, gates, pollMs: 60_000,
+    personTime: async () => ({ drop() {} }),
+    note: async (kind, data) => {
+      entries.push({ kind, id: 100 + entries.length, conversationId: 1, data });
+      if (kind === "agent.handover") journal.push(data);
+      else rows.push(data.summary);
+    },
+    answered: async (id) => {
+      const first = journal.find((data) => data.id === id && ["done", "cancelled", "expired"].includes(data.state));
+      return first && { outcome: first.state, at: first.at, ...(first.reason ? { reason: first.reason } : {}) };
+    },
+  });
+  return { person, rows, entries };
+}
+const answers = (journal) => journal.filter((data) => data.state !== "waiting");
+const T0 = "2001-02-03T04:05:06.007Z";
+
+test("on the runner's path a journal answer resolves the agent's wait with that outcome, the first for the ask: an answer file is not read", async (t) => {
+  const root = await scratch(t);
+  const journal = [];
+  const { person, rows } = journalHands(root, journal);
+  t.after(() => person.close());
+  const { interactionId: id } = await person.handoff.request(ask(71, "ar-run-71-1"));
+  // An answer on disk (the server's old route): not this path's.
+  assert.deepEqual(answerAsk(root, "done"), { outcome: "done", first: true });
+  assert.equal(await person.handoff.outcome(id), "pending", "the answer file is not read");
+  journal.push({ state: "cancelled", id, session: "ar-run-71-1", at: T0 }, { state: "done", id, session: "ar-run-71-1", at: "2001-02-03T04:06:00.000Z" });
+  assert.equal(await person.handoff.outcome(id), "cancelled", "the journal's first answer");
+  assert.equal(await person.handoff.outcome(id), "cancelled");
+  assert.deepEqual(rows, ["You cancelled the agent's hand-over"], "its one row");
+  assert.equal(answers(journal).length, 2, "nothing more written");
+});
+
+test("on the runner's path an ask that lapsed is answered by its expiry in the journal, at the expiry's time, and the wait hears expired", async (t) => {
+  const root = await scratch(t);
+  const journal = [];
+  const before = journalHands(root, journal);
+  const { interactionId: id } = await before.person.handoff.request(ask(72, "ar-run-72-1"));
+  before.person.close();
+  // Past its expiry when the next process takes it up.
+  const file = join(root, "browser-ask", `${id}.json`);
+  writeFileSync(file, JSON.stringify({ ...JSON.parse(readFileSync(file, "utf8")), expires_at: T0 }), { mode: 0o600 });
+  const after = journalHands(root, journal);
+  t.after(() => after.person.close());
+  assert.equal(await after.person.handoff.outcome(id), "expired");
+  assert.deepEqual(answers(journal), [{ state: "expired", id, session: "ar-run-72-1", at: T0 }], "the expiry, at its own time");
+  assert.deepEqual(after.rows, ["The agent's hand-over expired before you answered it"]);
+  assert.equal(await after.person.handoff.outcome(id), "expired");
+  assert.equal(answers(journal).length, 1, "written once");
+});
+
+test("on the runner's path the person handing the browser back from the live view answers the session's ask done in the journal, once", async (t) => {
+  const root = await scratch(t);
+  const journal = [];
+  const { person, rows } = journalHands(root, journal);
+  t.after(() => person.close());
+  const tag = "ar-run-73-1";
+  const { interactionId: id } = await person.handoff.request(ask(73, tag));
+  const taken = await person.take(tag);
+  taken.started();
+  taken.end("given");
+  assert.equal(await person.handoff.outcome(id), "done");
+  const [answer, ...more] = answers(journal);
+  assert.deepEqual(more, [], "one answer");
+  assert.deepEqual({ ...answer, at: typeof answer?.at }, { state: "done", id, session: tag, at: "string" }, "the live view's hand-back, in the journal");
+  assert.ok(Number.isFinite(Date.parse(answer.at)), answer.at);
+  assert.deepEqual(rows, ["You took over the browser", "You handed the browser back"]);
+});
+
+test("on the runner's path the row an answer writes shows at the answered entry's time on the timeline: the person's, or the expiry's when the ask lapsed", async (t) => {
+  const { timelineOf } = await import("@parcha/pi-durable-agent/timeline");
+  /** The timeline row that says `summary`, over a run's entries: its kind and time. */
+  const rowSaying = (entries, summary) => {
+    const row = timelineOf(entries).find((each) => each.summary === summary);
+    return row && { kind: row.kind, timestamp: row.timestamp };
+  };
+  const root = await scratch(t);
+  const journal = [];
+  const answeredHands = journalHands(root, journal);
+  t.after(() => answeredHands.person.close());
+  const { interactionId: id } = await answeredHands.person.handoff.request(ask(74, "ar-run-74-1"));
+  journal.push({ state: "cancelled", id, session: "ar-run-74-1", at: T0 });
+  assert.equal(await answeredHands.person.handoff.outcome(id), "cancelled");
+  assert.deepEqual(rowSaying(answeredHands.entries, "You cancelled the agent's hand-over"), { kind: "phase", timestamp: T0 }, "the person's answer's time, on its row");
+
+  const lapsedRoot = await scratch(t);
+  const lapsedJournal = [];
+  const before = journalHands(lapsedRoot, lapsedJournal);
+  const { interactionId: lapsed } = await before.person.handoff.request(ask(75, "ar-run-75-1"));
+  before.person.close();
+  const file = join(lapsedRoot, "browser-ask", `${lapsed}.json`);
+  writeFileSync(file, JSON.stringify({ ...JSON.parse(readFileSync(file, "utf8")), expires_at: T0 }), { mode: 0o600 });
+  const after = journalHands(lapsedRoot, lapsedJournal);
+  t.after(() => after.person.close());
+  assert.equal(await after.person.handoff.outcome(lapsed), "expired");
+  assert.deepEqual(rowSaying([...before.entries, ...after.entries], "The agent's hand-over expired before you answered it"), { kind: "phase", timestamp: T0 }, "the expiry's time, on its row");
+});
+
 test("a take-over in the run's timeline reads as it happened (Manuel's walk of #1703): the take and the hand-back at their own times, the agent's call parked behind the hold between them, saying it waited for the person and how long", async (t) => {
   const { createDrivingGates } = await import("@parcha/pi-browser/live-view");
   const { HOST_PHASE, timelineOf } = await import("@parcha/pi-durable-agent/timeline");

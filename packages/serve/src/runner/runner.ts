@@ -12,7 +12,8 @@ import type { JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { ConversationId, EntryId, StorageWrite } from "@earendil-works/pi-durable";
 import { COMMAND_KINDS, endedReason } from "./commands.js";
-import { KINDS } from "./journal-kinds.js";
+import { KINDS, withdrawnAnswers } from "./journal-kinds.js";
+import { journalEntries } from "./journal-reader.js";
 import { type Claim, type Command, endedBy, type Journal, type Loop, type LoopEnd, type LoopFactory, type StopReason } from "./loop-contract.js";
 import { isFenced, type RunnerStore } from "./store-port.js";
 
@@ -51,6 +52,9 @@ export interface RunnerOptions {
    *  dropped (nothing written, nothing said). */
   endWaitMs?: number;
   onEvent?: (event: RunnerEvent) => void;
+  /** The runner's clock (epoch ms) for what it writes itself: a withdrawn answer's time in an end it writes. Default
+   *  Date.now. */
+  now?: () => number;
 }
 
 export type RunnerEvent =
@@ -92,6 +96,8 @@ interface Held {
 }
 
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
+/** The run states a run patch makes final: a commit that lands one is the run's end, and its release. */
+const FINAL = new Set<string>(["ended", "stopped", "failed"]);
 
 export function startRunner(options: RunnerOptions): Runner {
   const {
@@ -109,6 +115,7 @@ export function startRunner(options: RunnerOptions): Runner {
     interruptBackoffMs = 1_000,
     endWaitMs = 5_000,
     onEvent = () => {},
+    now = Date.now,
   } = options;
   if (!(stopMarginMs < leaseMs && renewEveryMs < leaseMs - stopMarginMs)) {
     throw new RangeError(`a claim of ${leaseMs} ms must be renewed (every ${renewEveryMs} ms) before its stop margin (${stopMarginMs} ms)`);
@@ -133,21 +140,40 @@ export function startRunner(options: RunnerOptions): Runner {
   let commandTimer: NodeJS.Timeout | undefined;
   let polling = false;
 
-  /** The run's journal with this runner's fence on its one write: after the claim is lost, commit throws ClaimLost. */
-  const fenced = (journal: Journal, fence: { lost: boolean }, runId: string): Journal =>
-    new Proxy(journal, {
+  /** The run's journal with this runner's fence on its one write: after the claim is lost, commit throws ClaimLost. A
+   *  commit that lands a final run patch (the loop's own end, which is the run's release) calls `ended` at once: from
+   *  then the run is ending, before the loop's teardown, so a renew answered Fenced by that end's epoch is never a lost
+   *  claim. */
+  const fenced = (journal: Journal, fence: { lost: boolean }, runId: string, ended: () => void): Journal => {
+    let finalStaged = false;
+    return new Proxy(journal, {
       get(target, property) {
         const value: unknown = Reflect.get(target, property, target);
         if (typeof value !== "function") return value;
+        if (property === "stage") {
+          return (staged: { run?: { state?: string } } | undefined, ...rest: unknown[]) => {
+            if (FINAL.has(staged?.run?.state ?? "")) finalStaged = true;
+            return value.call(target, staged, ...rest);
+          };
+        }
         if (property !== "commit") return value.bind(target);
         // pi's commit is async and pi chains on it (group commit, the publish queue): the refusal is a rejected promise,
         // so it fails that commit on the path pi already handles, never a throw out of a caller that is not async.
-        return (...args: unknown[]) =>
-          fence.lost
-            ? Promise.reject(new ClaimLost(`run ${runId}: this runner lost its claim; the commit is not written`))
-            : value.apply(target, args);
+        return (...args: unknown[]) => {
+          if (fence.lost) return Promise.reject(new ClaimLost(`run ${runId}: this runner lost its claim; the commit is not written`));
+          // A stage holds for the commit right after it (the loop's Gate, the runner's endRun): read once, then cleared, so
+          // a refused end staged again is read again.
+          const staged = finalStaged;
+          finalStaged = false;
+          const batches = Array.isArray(args[0]) ? args[0].length : 1;
+          return (value.apply(target, args) as Promise<{ stored?: number }>).then((result) => {
+            if (staged && (result?.stored ?? 0) >= batches) ended();
+            return result;
+          });
+        };
       },
     });
+  };
 
   const armDeadline = (held: Held, at: number) => {
     clearTimeout(held.deadline);
@@ -283,6 +309,14 @@ export function startRunner(options: RunnerOptions): Runner {
         conversationId = (await journal.mintId()) as unknown as ConversationId;
         writes.push({ type: "conversation", value: { id: conversationId } } as StorageWrite);
       }
+      // A stopped end withdraws every call still waiting for its answer (an ask with no answer), in this commit: the
+      // approval card of a run whose loop could not start reads answered, never waiting for good.
+      if (data.state === "stopped" && root) {
+        for (const answer of withdrawnAnswers(await journalEntries(journal, BACKGROUND_CONTEXT), new Date(now()).toISOString())) {
+          const answerId = (await journal.mintId()) as unknown as EntryId;
+          writes.push({ type: "entry", value: { id: answerId, conversationId, kind: KINDS.answer, data: answer as unknown as JsonValue } } as StorageWrite);
+        }
+      }
       const id = (await journal.mintId()) as unknown as EntryId;
       writes.push({ type: "entry", value: { id, conversationId, kind: KINDS.end, data: data as unknown as JsonValue } } as StorageWrite);
       journal.stage({ run: { state: data.state, summary: data.summary }, effect: id as unknown as number, ...(take.length ? { take: take.map((command) => ({ command, effect: id as unknown as number })) } : {}) });
@@ -406,13 +440,20 @@ export function startRunner(options: RunnerOptions): Runner {
     const abort = new AbortController();
     let firstDelivered!: () => void;
     const delivered = new Promise<void>((resolve) => (firstDelivered = resolve));
+    // Set below, once held is made: the loop's end commit lands only after start(), well after.
+    let ending: () => void = () => {};
     const loop = createLoop({
-      journal: (forClaim) => fenced(store.journal(forClaim), fence, forClaim.runId),
+      journal: (forClaim) => fenced(store.journal(forClaim), fence, forClaim.runId, () => ending()),
       flush: () => store.flush(),
       signal: abort.signal,
       delivered,
     });
     const held: Held = { claim, loop, fence, abort, cursor: 0, stopping: false, ending: false, sealed: false, renewing: false, delivering: false };
+    // The loop's own end landed: the run is ending from here, its teardown included (no renew, no lost claim).
+    ending = () => {
+      held.ending = true;
+      clearTimeout(held.deadline);
+    };
     runs.set(claim.runId, held);
     armDeadline(held, sentAt + leaseMs - stopMarginMs);
     emit({ type: "claimed", claim });

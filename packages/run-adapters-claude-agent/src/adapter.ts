@@ -12,7 +12,7 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { accessSync, constants, mkdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { READ_SKILL_FILE, readSkillFileTool, skillProblems, type AdapterSession, type AgentAdapter, type HostSkill, type HostTool, type SessionIO, type SessionSpec, type ToolImage, type TurnStatus } from "@parcha/agentrun-kernel";
+import { READ_SKILL_FILE, readSkillFileTool, skillProblems, type AdapterSession, type AgentAdapter, type GateCall, type HostSkill, type HostTool, type SessionIO, type SessionSpec, type ToolImage, type TurnStatus } from "@parcha/agentrun-kernel";
 import { abortedOutcome, openDrive, pendingSubmissions, Restart, SessionHalt, type Drive, type HostTool as KernelTool } from "@parcha/agentrun-kernel/kernel";
 import { toolSchemaProblems } from "@parcha/agentrun-kernel";
 import { NativeJournal, recoveryNote, settleTurn, transcriptOf } from "@parcha/agentrun-kernel/process";
@@ -449,11 +449,15 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
         sdk,
         ...(options.mcp ? { toolServerModules: options.mcp } : {}),
         ...(options.log ? { log: options.log } : {}),
+        // The host's gate, asked about each host-tool call before it is written or run.
+        ...(io.gate ? { gate: (call: GateCall) => io.gate!(call) } : {}),
       });
 
       const live = (event: unknown) => {
         const e = event as { type?: string; delta?: unknown; callId?: unknown; name?: unknown; isError?: unknown; result?: unknown; truncated?: unknown; args?: unknown; reason?: unknown };
         if (e?.type === "text" && typeof e.delta === "string") io.onEvent({ type: "text", delta: e.delta });
+        // The model's message ended inside the turn (the CLI resumes a cut answer itself): what it said so far is one message.
+        if (e?.type === "text_end") io.onEvent({ type: "text_end" });
         // An MCP call, recorded as a built-in's: the host hears of it once its intent is in the session's records.
         if (e?.type === "tool_start" && typeof e.callId === "string" && typeof e.name === "string" && mcpNames.has(e.name)) {
           calls.begin(e.callId);
@@ -492,11 +496,15 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
         state = "idle";
         running = (async () => {
           let outcome: { status: TurnStatus; error?: string } | undefined;
+          // A turn whose final answer the model cut at its output limit, the CLI's recovery of it spent, says so on its
+          // turn_end: stopReason "length", with the output tokens its result reports.
+          let stop: { stopReason?: "length"; outputTokens?: number } = {};
           for (let attempt = 0; !outcome; attempt += 1) {
             const current = drive;
             try {
               await harness.drive(current);
-              const ended = turnsIn(current).slice(before).at(-1)?.data as { status?: TurnStatus; error?: string } | undefined;
+              const ended = turnsIn(current).slice(before).at(-1)?.data as { status?: TurnStatus; error?: string; stopReason?: string; outputTokens?: unknown } | undefined;
+              if (ended?.stopReason === "length") stop = { stopReason: "length", ...(typeof ended.outputTokens === "number" ? { outputTokens: ended.outputTokens } : {}) };
               outcome = ended?.status ? { status: ended.status, ...(ended.error ? { error: ended.error } : {}) } : { status: "failed", error: "the turn ended with no outcome in the session's records" };
             } catch (error) {
               // Stopped by the session or its host: interrupted. Halted by anything else (a spend cap, the mirror, a refused
@@ -512,7 +520,7 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
               else outcome = { status: "failed", error: String((error as Error)?.message ?? error).slice(0, 500) };
             }
           }
-          io.onEvent({ type: "turn_end", status: outcome.status });
+          io.onEvent({ type: "turn_end", status: outcome.status, ...stop });
           return outcome;
         })();
         return running;

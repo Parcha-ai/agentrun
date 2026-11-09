@@ -138,8 +138,9 @@ const abortedCall = (entry: EntryLike) => {
 };
 
 /** Written on the root as a run's process opens to go on with a run its last process left unfinished: `after` is `crash`
- *  (that process died holding the run) or `server_stop` (it drained as the server stopped), `generation` the new
- *  process's, `at` when it opened. A phase row of its own, at that time; no request. */
+ *  (that process died holding the run), `server_stop` (it drained as the server stopped) or `runner_lost` (a runner took
+ *  the run over once the runner holding it, named by `runner`, let its lease run out), `generation` the new process's,
+ *  `at` when it opened. A phase row of its own, at that time; no request. */
 export const RUN_RESUMED = "agentrun.run_resumed";
 /** The end of a turn on another harness (claude-agent, codex), written on a run's root by serve as the turn's last entry:
  *  `{ key, status, ... }`. No row. The turn is over, so the next message is the person's next one, never a steer, even
@@ -807,7 +808,10 @@ function createProjector(options: TimelineOptions) {
     } else if (entry.kind === RUN_RESUMED) {
       const data = obj(entry.data);
       if (typeof data?.at === "number" && Math.abs(data.at) <= 8.64e15) stamp = data.at;
-      add(make("phase", conv, base, { summary: data?.after === "crash" ? "Resumed after a crash" : "Resumed after the server stopped" }));
+      // `runner_lost`: another runner (or the same one, its claim lost) took the run over once its runner's lease ran out.
+      const lostRunner = data?.after === "runner_lost" ? firstLine(str(data?.runner) ?? "").slice(0, 100) : undefined;
+      const summary = data?.after === "crash" ? "Resumed after a crash" : lostRunner !== undefined ? `Resumed after its runner${lostRunner ? ` (${lostRunner})` : ""} was lost` : "Resumed after the server stopped";
+      add(make("phase", conv, base, { summary }));
     } else if (entry.kind === "agent.handover") {
       const data = obj(entry.data);
       const [state, tag] = [str(data?.state), str(data?.session)];
@@ -815,9 +819,12 @@ function createProjector(options: TimelineOptions) {
       // never shows.
       const reason = str(data?.reason) && redactText(str(data?.reason)!);
       const session = tag && TAG.test(tag) ? tag : undefined;
+      // An answer that names its ask (`id`: the person's hand-back, a cancel, an expiry) is the hand-over's record: the
+      // run's process writes that action's own row, so this entry shows none. A done naming its session alone is a sign-in.
+      const answersAsk = state !== "waiting" && typeof data?.id === "string";
       if (state === "waiting") add(make("waiting", conv, base, { summary: `Waiting for you: ${reason ? firstLine(reason) : "sign in on the live browser"}`, session }));
-      else if (state === "done") add(make("user_message", conv, base, { summary: "You signed in", session }));
-      else if (state === "declined") add(make("user_message", conv, base, { summary: "You declined to sign in", session }));
+      else if (state === "done" && !answersAsk) add(make("user_message", conv, base, { summary: "You signed in", session }));
+      else if (state === "declined" && !answersAsk) add(make("user_message", conv, base, { summary: "You declined to sign in", session }));
     } else if (origin) {
       // A message the server wrote (a raised cap's follow-up, an approval's resume): the model reads it as it reads any,
       // and the row says it is the server's. Its whole text is redacted as a person's is (a resume's later lines hold the
