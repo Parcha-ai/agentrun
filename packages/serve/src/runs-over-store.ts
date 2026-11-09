@@ -253,7 +253,7 @@ export interface StartDeps {
   /** The run's model, pinned at start: resolved exactly as the old per-run process resolved it from the revision and agent
    *  (app.ts's runModels / wireModels over revision.body.model on its harness). The runner reads launch.model alone, so one
    *  resolution happens, here. Required. */
-  modelOf(entry: AgentEntry, revision: Revision): { provider: string; modelId: string } | undefined;
+  modelOf(entry: AgentEntry, revision: Revision): Promise<{ provider: string; modelId: string } | undefined>;
 }
 
 /** How a run is asked to start, beyond its create body: a trigger and its firing, an idempotency or firing origin, whether
@@ -308,7 +308,7 @@ export async function startRun(store: Pick<Store, "runs" | "runOfOrigin">, deps:
   const tooling = await toolingOf(revision);
   const plane: Plane = tooling ? planeFor(deps.planeEnv(), tooling, deps.toolSettings(), { capped: cap !== undefined, run: true }) : {};
   // The run's model, resolved once, at start (the runner reads launch.model only).
-  const model = deps.modelOf(entry, revision);
+  const model = await deps.modelOf(entry, revision);
   const launch: RunLaunch = {
     input,
     title: clip(redacted(title.trim().replace(/\s+/g, " "), deps.serverSecrets()), 80),

@@ -60,7 +60,7 @@ function storeError(error: unknown): never {
  *  request layer's gate (validate.ts AGENT_LAYER_PINS); here a pin that reaches this is kept canonical. */
 function toolSettingsOf(given: unknown): { toolSettings?: ToolSettings } {
   if (!isObject(given)) return {};
-  const issues = settingsIssues(given, "tool_settings");
+  const issues = settingsIssues(given, "tool_settings", "agent");
   if (issues.length) throw invalid(issues);
   const canonical = canonicalToolSettings(given as ToolSettingsMap);
   return Object.keys(canonical).length ? { toolSettings: canonical as ToolSettings } : {};
