@@ -17,7 +17,7 @@
 // - `cleanup(ctx, ids)`: run once the harness has read everything, with every plant's ids.
 import { randomBytes } from "node:crypto";
 
-/** @typedef {{ status: number, text: string, json?: unknown }} Answer */
+/** @typedef {{ status: number, text: string, json?: unknown, headers?: Record<string, string | string[]> }} Answer */
 /** @typedef {{ owner: (method: string, path: string, body?: unknown) => Promise<Answer>, token: (method: string, path: string, body?: unknown) => Promise<Answer>, api: Function, server: { port: number, data: string, token: string } }} PlantContext */
 /** @typedef {Record<string, string | string[]>} PlantIds */
 /** @typedef {{ values: string[], ids?: PlantIds, mints?: string[], cleanup?: (ctx: PlantContext, ids: Record<string, string[]>) => Promise<void> }} Planted */

@@ -17,6 +17,9 @@ import {
 } from "./mcp-probe.js";
 import { listMcpServers, openServerCredential, putPendingSignIn, removeMcpServer, saveMcpServer, takePendingSignIn } from "./mcp-store.js";
 import { checkPrivateHosts, privateOAuthHosts, savePrivateOAuthHosts } from "./mcp-private-hosts.js";
+// MCP's secret writes, registered with the one gate as the registry loads (the server's dispatch reads them).
+import "./mcp-secret-writes.js";
+import { type SecretMeta, secretMeta, secretName } from "./secret-writes.js";
 import { type ClientKind, MAX_PENDING, MCP_SETTINGS_PAGE, McpSignIns, type OAuthNetwork, type Pending, type PendingStore, reasonOf, SIGN_IN_AGAIN, systemNetwork, type TokenSet } from "./mcp-oauth.js";
 import { SEAL_KEY_ENV, sealKeyOf } from "./tool-keys.js";
 import { serverGate, type ToolSettingsMap } from "./tool-plane.js";
@@ -319,6 +322,7 @@ export class McpServersOverStore {
       url: row.url,
       ...listed,
       tools: listed.tools.map((tool) => ({ ...tool, ...serverGate(`mcp:${name}/${tool.name}`, settings) })),
+      ...(prices && Object.keys(prices).length ? { prices } : {}),
       ...(unmetered.length ? { not_metered: unmetered } : {}),
       auth: { type: row.auth, ...(row.auth === "headers" ? { headers: Object.keys((cred?.type === "headers" ? cred.headers : {}) as HeaderMap) } : {}) },
       credential: row.auth === "none" ? null : opened === "no_key" ? ("seal_key_missing" as const) : !cred ? ("unreadable" as const) : expired ? ("expired" as const) : ("sealed" as const),
@@ -353,7 +357,7 @@ export function mcpServersOverStore(store: McpServersStore, env: NodeJS.ProcessE
 /** The server's credential as every secret is read (SECRETS-PLAN.md): set or not, how it came ("console": pasted, a
  *  bearer token or headers; "sign-in": an OAuth sign-in; null: none), and the credential's own last change. Never a value.
  *  An MCP credential never comes from the server's environment. */
-function secretOf(row: McpServerRow): { name: string; set: boolean; source: "console" | "sign-in" | null; changed_at: string | null } {
+function secretOf(row: McpServerRow): SecretMeta {
   const set = row.sealed !== null && (row.auth === "bearer" || row.auth === "headers" || row.auth === "oauth");
-  return { name: `mcp:${row.name}`, set, source: !set ? null : row.auth === "oauth" ? "sign-in" : "console", changed_at: set && row.credentialChangedAt !== null ? new Date(row.credentialChangedAt).toISOString() : null };
+  return secretMeta(secretName("mcp", row.name), { set, source: row.auth === "oauth" ? "sign-in" : "console", changedAt: row.credentialChangedAt === null ? null : new Date(row.credentialChangedAt) });
 }
