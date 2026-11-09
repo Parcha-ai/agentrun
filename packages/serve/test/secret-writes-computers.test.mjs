@@ -9,10 +9,12 @@ import { test } from "node:test";
 import { openapiDocument } from "../dist/openapi.js";
 import { isSecretWriteOperation, markedOperations, registeredOperations, SECRET_WRITE_REFUSAL, unguardedOperations, writesSecret } from "../dist/secret-writes.js";
 import { call, cookieOf, serve, withEnv } from "./support.mjs";
+import { plantedValue } from "./fixtures/planted-secrets.mjs";
 
 const SEAL = { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") };
 const json = { "content-type": "application/json" };
-const planted = () => `not-a-secret-${randomBytes(12).toString("hex")}`;
+/** A value shaped like a vendor's key, from the planted-secret harness: never a real one. */
+const planted = () => plantedValue("computer-key");
 const SETTINGS = { diskId: "dsk-00000000000fake0", region: "aws-us-east-1", s3Url: "https://s3.archil.example" };
 const doc = openapiDocument(() => undefined);
 
