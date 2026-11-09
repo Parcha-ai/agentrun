@@ -3,7 +3,7 @@
 // through its Workspace: the snapshot when its main is the run's seed (no exec), else one read-only exec of the
 // learning script at that commit.
 import { type Base, type Change, checkProposal, type Problem } from "./check.js";
-import { type DraftReader } from "./skills.js";
+import { type DraftReader, WORKFLOWS_DIR } from "./skills.js";
 import { FolderBusy, folderAt, readLearning, readSnapshot, type Snapshot, snapshotAt, snapshotNotes, topOf } from "./folder.js";
 import { INDEX_FILE } from "./notes.js";
 import type { Workspace } from "../workspace/index.js";
@@ -49,8 +49,8 @@ export function makeProposalCheck(deps: { open: (agentId: string) => { workspace
   };
 }
 
-/** What a run is laid from at commit `seed` (a reopened run re-lays from its pin's): MEMORY.md, each active note and each
- *  active skill's files, by path, each body checked against its blob id. From the snapshot and its bodies when its
+/** What a run is laid from at commit `seed` (a reopened run re-lays from its pin's): MEMORY.md, each active note, each
+ *  active skill's files, and each active learned workflow's README.md and workflow.json, by path, each body checked against its blob id. From the snapshot and its bodies when its
  *  main is `seed` (no exec); else one read-only exec of the script's `read` at that commit (git's tree and blobs).
  *  A skill whose folder holds a tracked link (git mode 120000) at the seed is left out whole and named in `refused`
  *  (always there, empty when nothing is). `null` (a run that learns from an empty folder, no main yet): nothing. `gone`
@@ -64,6 +64,7 @@ export async function readSeed(lw: Workspace, seed: string | null): Promise<{ ok
     ...(snapshot.index.bytes ? [{ path: INDEX_FILE, oid: snapshot.index.oid }] : []),
     ...snapshot.notes.filter((note) => note.status === "active").map((note) => ({ path: note.file, oid: note.oid })),
     ...snapshot.skills.filter((skill) => skill.status === "active" && !skill.links?.length).flatMap((skill) => skill.files.map(({ path, oid }) => ({ path, oid }))),
+    ...snapshot.workflows.filter((flow) => flow.status === "active").flatMap((flow) => flow.files.filter(({ path }) => path === `${WORKFLOWS_DIR}/${flow.name}/README.md` || path === `${WORKFLOWS_DIR}/${flow.name}/workflow.json`).map(({ path, oid }) => ({ path, oid }))),
   ];
   try {
     const now = await readSnapshot(lw);

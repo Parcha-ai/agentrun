@@ -651,6 +651,25 @@ export interface SealedKeyRow {
   readonly updatedAt: number;
 }
 
+/** The tables the store keeps a sealed value in: each a plane of the server's secrets. */
+export type SealedPlane = "sealed_keys" | "mcp_servers" | "mcp_oauth_pending" | "trigger_settings" | "sign_ins" | "sign_in_tombstones" | "computer_viewers" | "run_launch";
+
+/** One sealed value the store keeps: its plane, where in it (its row's key, by column), the AAD it was sealed under (the
+ *  store's documented one for that table: store/seal.ts aadOf, or trigger_settings|<adapter>|<scope>|<field>), and its
+ *  sealed bytes. The store never opens it. */
+export interface SealedSecretRow {
+  readonly plane: SealedPlane;
+  readonly where: Readonly<Record<string, string>>;
+  readonly aad: string;
+  readonly sealed: Uint8Array;
+}
+
+/** Every sealed value the store keeps, across all its planes, in one read: what a runner's redaction set holds at each
+ *  claim (runner/store-secrets.ts), so a run's text that quotes any secret the server keeps is cut when it is written. */
+export interface SealedSecrets {
+  all(): Promise<SealedSecretRow[]>;
+}
+
 export interface SealedKeys {
   /** The sealed bytes saved under `name`, or undefined when none is. */
   get(name: string): Promise<Uint8Array | undefined>;
@@ -870,6 +889,8 @@ export interface Store {
   /** Each agent's saved browser sign-ins (design 2.1): one live row per agent and provider, its pointer sealed, with the
    *  forgotten pointers kept as tombstones. */
   readonly signIns: SignIns;
+  /** Every sealed value the store keeps, across all its planes, in one read (a runner's redaction set at each claim). */
+  readonly sealedSecrets: SealedSecrets;
   /** Claims the run for `runner` until now + `leaseMs`: the run's epoch + 1 when it is claimable (runs.claimable); null when
    *  another claim holds it, or it is final, or parked with nothing to wake it. A queued or parked run becomes running. */
   claim(runId: string, runner: string, options?: { leaseMs?: number }): Promise<Claim | null>;
@@ -1035,11 +1056,20 @@ export class StoreLaunchMissing extends Error {
   }
 }
 
-/** A row the store's constraints refuse (a duplicate id or name, a revision of an unknown agent, a bad kind). */
+/** Which of a table's rules refused a row, as both databases report it by code (never by its message's words). */
+export type ConstraintRule = "check" | "unique" | "foreign_key" | "not_null";
+
+/** A row the store's constraints refuse (a duplicate id or name, a revision of an unknown agent, a bad kind). When the
+ *  database said which rule refused it, `rule`; for a duplicate, `unique`: the table and the columns whose values were
+ *  taken already (a primary key's or a UNIQUE's), so a caller tells "the name is taken" from any other refusal. */
 export class StoreConstraint extends Error {
-  constructor(message: string) {
+  readonly rule?: ConstraintRule;
+  readonly unique?: { readonly table: string; readonly columns: readonly string[] };
+  constructor(message: string, details: { rule?: ConstraintRule; unique?: { table: string; columns: readonly string[] } } = {}) {
     super(message);
     this.name = "StoreConstraint";
+    if (details.rule) this.rule = details.rule;
+    if (details.unique) this.unique = details.unique;
   }
 }
 

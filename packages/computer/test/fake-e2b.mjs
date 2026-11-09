@@ -130,9 +130,6 @@ const newId = () => `i${String(++counter).padStart(19, "0")}`;
  *    reply fills;
  *  - killMs: how long a signalled process takes to end (default 30): process.signal only sends the signal, as the
  *    daemon's does, and process.wait waits up to its timeoutMs for the end.
- * The stream's servers hold their ports, x11vnc its -rfbport and noVNC its --listen (or a test's entry its port): one
- * started while a running process holds its port ends at once, unable to bind, and netstat lists a port only while a
- * running process holds it.
  *  - archil: answers of an Archil computer's root commands, by verb: { exitCode, output }, a function of
  *    (argv, stdin, box) giving one, or "hang"; by default the preflight prints the image's facts and every verb exits 0.
  * fake.events records, in order, every command run (by script or root verb), every daemon method and every kill, each
@@ -224,13 +221,6 @@ export function fakeE2B({
 
 	const gone = (sb) => sb === undefined || (sb.killed && !(sb.lingering?.reads > 0));
 
-	/** The port a stream server listens on, by its argv, or undefined for any other program. */
-	const portOf = (argv) => {
-		const after = (flag, fallback) => (argv.includes(flag) ? Number(argv[argv.indexOf(flag) + 1]) : fallback);
-		if (/(^|\/)x11vnc$/.test(argv[0])) return after("-rfbport", 5900);
-		if (/(^|\/)novnc_proxy$/.test(argv[0])) return after("--listen", 6080);
-		return undefined;
-	};
 	/** A process ends: its exit fields set, and every process.wait on it answered. */
 	const finish = (entry, fields) => {
 		if (!entry.running) return;
@@ -304,10 +294,6 @@ export function fakeE2B({
 				if (sb.box.probe === "no-accepted") delete report.accepted;
 				return out(`${JSON.stringify(report)}\n`);
 			}
-			if (argv[0] === "sh" && /netstat/.test(argv[2] ?? "")) {
-				const ports = [...argv[2].matchAll(/:(\d+) /g)].map((match) => Number(match[1]));
-				return out("", ports.length > 0 && ports.every((port) => sb.processes.some((p) => p.running && p.port === port)) ? 0 : 1);
-			}
 			return out(`${argv.join(" ")}\n`);
 		}
 		if (method === "process.start") {
@@ -315,11 +301,6 @@ export function fakeE2B({
 			if (params.argv[0] === "Xvfb") {
 				sb.xvfb = entry;
 				if (display === "dies") Object.assign(entry, { running: false, exitCode: 1, stderr: "(EE) Fatal server error:\n(EE) Cannot establish any listening sockets\n" });
-			}
-			const port = portOf(params.argv);
-			if (port !== undefined) {
-				if (sb.processes.some((p) => p.running && p.port === port)) Object.assign(entry, { running: false, exitCode: 1, stderr: `bind: port ${port}: address already in use\n` });
-				else entry.port = port;
 			}
 			sb.processes.push(entry);
 			return result({ id: entry.id, pid: entry.pid });
@@ -430,9 +411,6 @@ export function fakeE2B({
 		};
 		return {
 			sandboxId: sb.id,
-			getHost(port) {
-				return `${port}-${sb.id}.e2b.app`;
-			},
 			files: {
 				async write(path, data, opts) {
 					record("files.write", sb.id, path, opts);

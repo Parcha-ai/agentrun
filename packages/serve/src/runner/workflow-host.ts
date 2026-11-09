@@ -143,5 +143,7 @@ export function workflowHost(deps: WorkflowHostDeps): { readonly extensions: rea
     },
   };
 
-  return { extensions: [nodes.extension as unknown as Extension], host };
+  // The shared extensions (the nodes' tools and their gate) are installed in the run's registry too, as main's
+  // registry.install did: pi's node runner offers and runs a node's tool by its registration there.
+  return { extensions: [nodes.extension as unknown as Extension, ...deps.sharedExtensions], host };
 }

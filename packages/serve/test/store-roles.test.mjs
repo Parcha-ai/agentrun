@@ -8,7 +8,11 @@ import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { test } from "node:test";
+import { test as nodeTest } from "node:test";
+import { sqliteAdapterTests } from "./store-target.mjs";
+
+// Postgres's roles, owner lock and version refusal: store-postgres.test.mjs.
+const test = sqliteAdapterTests(nodeTest, "the store file's roles and owner lock");
 import { SchemaVersionUnknown, StoreOwned } from "../dist/store/store.js";
 import { SCHEMA_VERSION } from "../dist/store/schema.js";
 import { openSqliteStore } from "../dist/store/sqlite/store.js";

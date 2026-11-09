@@ -42,7 +42,7 @@ import { BOX_ALLOW_ENV, boxAllowOf, boxLimitsOf, boxNetworkOf, FAUX_BOX_ENV, fau
 import { Owner, passwordProblem, SESSION_MS } from "./owner.js";
 import { answerPage, byOwnerSession, heldSessions, isJson, overHttps, ownerCookie, ownOrigin, sendHostRefused, signedIn } from "./page.js";
 import { hostFix, hostName, loopbackNames } from "./host-check.js";
-import { handoverById, type LiveFamily, liveRest, OpenViewers, proxyLiveUpgrade, readHandover, readHandovers, serveViewerFile, viewerAnswers, viewerLink } from "./browser-live.js";
+import { computerViewerLink, handoverById, type LiveFamily, liveRest, liveViewerById, liveViewerFor, liveViewerLink, type LiveViewerStore, OpenViewers, proxyLiveUpgrade, readHandover, readHandovers, serveViewerFile, viewerAnswers, viewerLink } from "./browser-live.js";
 import { answerAsk } from "./browser-person.js";
 import { type ComputerOf, computerView } from "./computer-view.js";
 import { durationMs, logLine } from "./print.js";
@@ -292,7 +292,7 @@ export type ServeOptions = {
   triggerClock?: TriggerClock;
   /** The server's store (store/index.ts), where the triggers and their firings live, with the agents they run as. Without
    *  it the trigger routes answer unavailable and nothing fires. */
-  store?: Pick<Store, "triggers" | "runs" | "agents">;
+  store?: Pick<Store, "triggers" | "runs" | "agents"> & Partial<Pick<Store, "liveViewers">>;
   /** A test's seam: the trigger sources this server has (default the registry, trigger-adapters.ts). */
   triggerAdapters?: readonly TriggerAdapter[];
   /** A test's seam: GitHub's API, which Connect GitHub converts its code with and asks of the App's installations
@@ -1031,6 +1031,11 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   // Each agent's saved sign-ins (sign-ins.ts), under the seal key the tool keys are kept under: its vendor's calls on the
   // server's keys (under faux, the vendor's fake alone), a lease held while the run it names has not ended, and a
   // pointer never forgotten while a run it was handed is going (runs.ts handedTo; `runs` is made below, before any request).
+  // The runner's live viewers: the rows its browser puts in the store under each run's claim (store.liveViewers, each
+  // token sealed under this server's seal key). Read first; a run's own process's handover files after, while that path
+  // still exists here. Without the store's rows or the seal key, the files alone.
+  const viewerKey = sealKeyOf(withSecrets(base, "own")[SEAL_KEY_ENV]);
+  const viewerRows: { store: LiveViewerStore; key: Buffer } | undefined = options.store?.liveViewers && viewerKey ? { store: options.store as LiveViewerStore, key: viewerKey } : undefined;
   const signIns = new SignIns(data, sealKeyOf(withSecrets(base, "own")[SEAL_KEY_ENV]), vendorsOver(() => env, checkFetch), async (runId) => (await agents.request(() => agents.store.readRun(runId)))?.state === "running", { handedTo: (agentId: string, hash: string | undefined): Promise<string | undefined> => runs.handedTo(agentId, hash) });
   const webhooks = new Webhooks(data, env, (fields) => (log ? log(logLine("webhook", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("webhook", fields)}\n`)), options.webhookRetryMs);
   // The outbound webhook's secret, as it stands (set by a PUT, gone with a DELETE), and each it held before.
@@ -2325,9 +2330,17 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
           // server's keys now) never hides a computer that runs. Only the run's live process serves its view: a file one
           // that is gone left behind names none, whatever answers its port. The newest session whose viewer answers: an
           // older one still open is the next, one that went quiet none.
-          // TODO(cutover): read the store's viewers (browser-live.ts computerViewerLink, or liveViewerLink for /browser, over store.liveViewers,
-          // with the seal key) once the server holds the one Store; these run-directory files go with the per-run process.
+          // The runner's viewer first (the store's rows, under the run's live claim), then a per-run process's handover files.
           viewer: async () => {
+            if (viewerRows) {
+              if (family === "computer") {
+                const live = await computerViewerLink(viewerRows.store, viewerRows.key, run.id);
+                if (live) return live;
+              } else {
+                const live = await liveViewerLink(viewerRows.store, viewerRows.key, run.id);
+                if (live) return { kind: "browser" as const, viewer: live.viewer };
+              }
+            }
             for (const handover of runs.hasProcess(run.id) ? await readHandovers(run.dir) : []) if (await viewerAnswers(handover)) return { kind: "browser" as const, viewer: viewerLink(run.id, handover, family) };
             return undefined;
           },
@@ -2715,7 +2728,9 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     const run = await needRun(runId);
     const viewer = /^\/v\/([A-Za-z0-9_-]{22})$/.exec(rest)?.[1];
     // A viewer's page, for a viewer the run has open; its two files, while the run has one open.
-    const handover = !runs.hasProcess(run.id) || !liveRest(rest) ? undefined : viewer ? await handoverById(run.dir, viewer) : await readHandover(run.dir);
+    // The runner's viewer first (the store's rows for THIS run), then a per-run process's handover files.
+    const handover = (viewerRows ? await liveViewerFor(viewerRows.store, viewerRows.key, run.id, rest) : undefined)
+      ?? (!runs.hasProcess(run.id) || !liveRest(rest) ? undefined : viewer ? await handoverById(run.dir, viewer) : await readHandover(run.dir));
     if (!handover) throw new ApiError("not_found", `this run's ${family} has no live view at that address`);
     await serveViewerFile(req, res, rest);
   }
@@ -2799,7 +2814,9 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     let piping = false;
     void (async () => {
       const run = await runs.get(viewing[1]!);
-      const handover = run && runs.hasProcess(run.id) ? await handoverById(run.dir, viewing[3]!.slice(3, -3)) : undefined;
+      // The runner's viewer first (the store's rows for THIS run, by its path id), then a per-run process's handover file.
+      const viewerId = viewing[3]!.slice(3, -3);
+      const handover = !run ? undefined : (viewerRows ? await liveViewerById(viewerRows.store, viewerRows.key, run.id, viewerId) : undefined) ?? (runs.hasProcess(run.id) ? await handoverById(run.dir, viewerId) : undefined);
       if (!handover) return deny("404 Not Found");
       // Gone during the lookup (its close is past, and nothing would drop it from the viewers), or the server is closing
       // and has ended its viewers, or is about to.
