@@ -33,7 +33,7 @@ export async function claimSecrets(deps: ClaimSecretsDeps, revision: Revision, l
   const base = withoutSecrets(deps.env ?? {});
   // Every candidate secret into a working environment, then scoped to the run below so a key the run does not need is never
   // put on the environment its tools run under. The server process's own environment value wins over the store's by the same
-  // name (Miguel's rule 4: env always overrides a pasted value), so a key set where the server starts is not shadowed by a
+  // name (the secrets rule 4: env always overrides a pasted value), so a key set where the server starts is not shadowed by a
   // stale one saved in the store.
   const working: NodeJS.ProcessEnv = { ...base };
   for (const name of CANDIDATES) {
