@@ -90,11 +90,12 @@ function tracked(adapter) {
 /** The adapter loop's spec for the suite's setup: Codex as the runner's harnesses give it, its model through the
  *  session's proxy to the script, on the stand-in app-server. One sessions folder per loop: a resume on another runner
  *  opens the session from the run's journal. */
-export function codexSpec({ script, tools, hooks }, options = {}) {
+export function codexSpec({ script, tools, hooks, agentId }, options = {}) {
   const sessionsDir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-codex-conformance-"));
   dirs.push(sessionsDir);
   const harness = resolveHarness("codex");
   return async (_claim, run) => ({
+    ...(agentId ? { agentId } : {}),
     adapter: tracked(await harness.adapter(
       {
         run,
