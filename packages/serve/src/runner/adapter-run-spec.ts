@@ -33,6 +33,7 @@ import { openRunWorkspace } from "../workspace/run-workspace.js";
 import { runFolder } from "../workspace/paths.js";
 import { runTools, type ToolResults } from "../workspace/run-tools.js";
 import { INPUTS_DIR, UPLOADS_DIR, Uploads } from "../uploads.js";
+import { claimSecrets } from "./claim-secrets.js";
 import { join } from "node:path";
 import type { AdapterRun, AdapterRunSpec } from "./adapter-loop.js";
 import { piAdapter } from "./adapters/pi.js";
@@ -181,14 +182,20 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
         followUpOf: (raised: number) => followUpOf(raised),
       };
 
+  // The run's secrets for this claim, read from the one store (never this process's environment or a pipe): the keys its
+  // tools unlock and its model needs, scoped to the run as the old per-run environment was, so one run's keys never reach
+  // another's on this runner (claim-secrets.ts). MCP credentials are the other per-claim secret and come through mcp-claim.
+  const toolEnv = await claimSecrets({ store: deps.store, sealKey: deps.sealKey, env: deps.env }, revisionRow as unknown as Parameters<typeof claimSecrets>[1], launch);
+
   // The ToolHost the non-hand tools (browser, web, MCP, decisions, monid) bind through, carrying the runner's live-viewer
   // seam: the browser tool's live-viewer writers hand a session's viewer over through the store, not through files. This
   // is the seam tl-browser's live-viewer writers hang off (`liveViewers`).
   const host: ToolHost = {
-    // The run's directory and environment, as the old per-run process had them. `coding` is the runner's: the hands come
-    // from runTools (below), not from a coding source, so the non-hand tools that read it get the run's environment only.
+    // The run's directory and its per-claim environment (claim-secrets.ts: the run's keys from the store). `coding` is the
+    // runner's: the hands come from runTools (below), not from a coding source, so the non-hand tools that read it get the
+    // run's environment only.
     where: { root, work: root, ref: { id: claim.runId } } as unknown as ToolHost["where"],
-    env: deps.env,
+    env: toolEnv,
     coding: { tools: [], extension: { name: "coding", tools: [] } } as unknown as ToolHost["coding"],
     install: (extension) => run.registry.install(extension),
     onConversation: () => {},
