@@ -38,8 +38,9 @@ export type GithubAppAccessOf = (store: { readonly triggerSettings: Pick<Trigger
 export interface McpForClaimOptions {
   /** The claim this pass holds: the pin is written under its fence, and a refresh is confirmed against its epoch. */
   readonly claim: Claim;
-  /** The one store: the registry's rows, the run's pin row and its run row (the epoch), and the GitHub App's settings. */
-  readonly store: Pick<Store, "mcp" | "runs" | "triggerSettings">;
+  /** The one store: the registry's rows, the run's pin row and its run row (the epoch), the GitHub App's settings, and
+   *  where it is (Store.where: the claims waiting on a server's refresh lease meet by it). */
+  readonly store: Pick<Store, "mcp" | "runs" | "triggerSettings" | "where">;
   /** The runner's seal key (the server's): undefined when it was started without one (every sealed credential refused). */
   readonly sealKey: Buffer | undefined;
   /** The run's granted tools, by catalog name (`mcp:<server>/<tool>` among them), as its revision grants them. */

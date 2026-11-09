@@ -265,7 +265,7 @@ test("a run's launch refreshes a token near its expiry, once for launches at the
   // refreshed behind the launches (mcp-claim.ts: a valid token never holds a claim), one refresh serving both.
   const refreshes = () => as.log.filter((entry) => entry.form.grant_type === "refresh_token").length;
   const launches = await Promise.all([launchOn(t, server, key), launchOn(t, server, key)]);
-  await until(() => refreshes() >= 1 && launches.every(({ step }) => step.credentials.docs?.headers?.authorization !== `Bearer ${signedIn}`), "the token is refreshed behind the launches", 20_000);
+  await until(() => refreshes() >= 1 && launches.every(({ step }) => step.credentials.docs?.headers?.authorization !== `Bearer ${signedIn}`), "the token is refreshed behind the launches, the waiting launch woken when the refresh lets its lease go (well inside the 12 s lease)", 3_000);
   const [one, two] = launches.map(({ step }) => step.credentials.docs);
   assert.deepEqual(one.headers, two.headers);
   assert.match(one.headers.authorization, /^Bearer access-/);
