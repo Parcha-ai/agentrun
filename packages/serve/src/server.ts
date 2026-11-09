@@ -3030,57 +3030,88 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     readWaits.set(row.id, seen);
     return true;
   };
+  /** Why a run's notice is not done yet, said once for the run (until it is done): one that stays undone shows. */
+  const unreadSaid = new Set<string>();
+  const sayUnread = (id: string, error: string) => {
+    if (unreadSaid.has(id)) return;
+    unreadSaid.add(id);
+    log?.(logLine("webhook", { condition: "run_notice_unread", run: id, error }));
+  };
   /** A run's end, told once the run reads final. False when it is not done (a read that failed, or its notice not saved). */
   const tellEnd = async (id: string): Promise<boolean> => {
-    const now = await endNotice(id).catch(() => undefined);
+    const now = await endNotice(id).catch((error: Error) => (sayUnread(id, error.message), undefined));
     if (now === undefined) return false;
     readWaits.delete(id);
-    if (!now?.endedAt || toldEnds.get(id) === now.endedAt) return true;
-    if (webhooks.emit("run.ended", now.notice, now.endedAt) === "unsaved") return false;
+    if (!now?.endedAt || toldEnds.get(id) === now.endedAt) return (unreadSaid.delete(id), true);
+    if (webhooks.emit("run.ended", now.notice, now.endedAt) === "unsaved") return (sayUnread(id, "its run.ended is not saved yet"), false);
     toldEnds.set(id, now.endedAt);
+    unreadSaid.delete(id);
     return true;
   };
   /** A run's row as the store holds it now: undefined when there is no such run, UNREAD when the read failed. */
   const UNREAD = Symbol("unread");
   const rowNow = (id: string) => store.runs.get(id).catch((): typeof UNREAD => UNREAD);
   const letGo = (row: RunRow) => row.state === "parked" || (row.state === "running" && row.runner === null);
-  /** One change of the feed, handled: an end told, a wait told, or nothing to tell. False: not done, read again. A wait is
+  /** One change of the feed, handled: an end told, a wait told, or nothing to tell. One not done goes to endsLeft or
+   *  waitsLeft, by its run, which each read tries first until it is: a run that stays undone holds back no other. A wait is
    *  read from the run as it is now (a run gone since, or moved on, has none to tell). */
-  const handle = async (change: RunChange): Promise<boolean> => {
-    if (final(change)) return tellEnd(change.id);
-    if (change.state === "parked" || (change.state === "running" && change.runner === null)) {
-      const row = await rowNow(change.id);
-      if (row === UNREAD) return false;
-      return row === undefined || !letGo(row) || (await tellWait(row).catch(() => false));
+  const handle = async (change: RunChange): Promise<void> => {
+    if (final(change)) {
+      if (!(await tellEnd(change.id))) endsLeft.add(change.id);
+      return;
     }
-    return true;
+    if (change.state === "parked" || (change.state === "running" && change.runner === null)) {
+      if (!(await tellLetGo(change.id))) waitsLeft.add(change.id);
+    }
   };
-  /** Where the feed is read on from: past each page whose every change is handled. A change not done stops the read with
-   *  the cursor before its page, so the next read gives that page again; the changes before it on that page are told
-   *  again, which the ledger (and toldEnds, readWaits) answers as already told. None is dropped, and none is skipped. */
+  /** The wait of run `id` if it is let go now: false when not done (its read failed, or its wait not told). */
+  const tellLetGo = async (id: string): Promise<boolean> => {
+    const row = await rowNow(id);
+    if (row === UNREAD) return (sayUnread(id, "its row could not be read"), false);
+    if (row === undefined || !letGo(row)) return true;
+    const told = await tellWait(row).catch((error: Error) => (sayUnread(id, error.message), false));
+    if (told) unreadSaid.delete(id);
+    return told;
+  };
+  /** Where the feed is read on from: past each page once its changes are handled, each told or left in endsLeft or
+   *  waitsLeft. None is dropped (a run left is tried again on each read), none is skipped, and none is read twice. */
   let changesCursor: RunChangeCursor | undefined;
-  /** The runs whose wait the start could not tell (a read that failed, or a notice not saved): before the feed's head, so
-   *  no change of the feed brings them back. Each read tries them first, until each is done. */
+  /** The runs whose end, or whose wait, is not told yet (a read that failed, or a notice not saved): from the feed, or from
+   *  the start. Each read tries them first, until each is done. */
+  const endsLeft = new Set<string>();
   const waitsLeft = new Set<string>();
   const readChanges = async (): Promise<void> => {
+    for (const id of [...endsLeft]) {
+      if (closing) return;
+      if (await tellEnd(id)) endsLeft.delete(id);
+    }
     for (const id of [...waitsLeft]) {
       if (closing) return;
-      const row = await rowNow(id);
-      if (row === UNREAD) continue;
-      if (row === undefined || !letGo(row) || (await tellWait(row).catch(() => false))) waitsLeft.delete(id);
+      if (await tellLetGo(id)) waitsLeft.delete(id);
     }
     for (;;) {
+      if (closing) return;
       const page = await store.runs.changedSince(changesCursor, { limit: RUN_CHANGES_PAGE });
-      for (const change of page.changes) if (closing || !(await handle(change))) return;
+      for (const change of page.changes) await handle(change);
       changesCursor = page.next;
       if (page.changes.length < RUN_CHANGES_PAGE) return;
     }
   };
   let endsTimer: NodeJS.Timeout | undefined;
   let endsRead: Promise<void> = Promise.resolve();
+  /** Whether the start (startFollowing) is done: until it is, each turn runs it again before it reads the feed, so the ends
+   *  and waits from while no server was up are told whatever failed it. Said once. */
+  let started = false;
+  let startSaid = false;
   const followChanges = () => {
     if (closing) return;
-    endsRead = readChanges()
+    const turn = started
+      ? readChanges()
+      : startFollowing().then(
+          () => ((started = true), readChanges()),
+          (error: Error) => void (startSaid || ((startSaid = true), log?.(logLine("webhook", { condition: "catch_up_unread", error: error.message })))),
+        );
+    endsRead = turn
       .catch((error: Error) => log?.(logLine("webhook", { condition: "run_changes_unread", error: error.message })))
       .finally(() => {
         if (!closing) (endsTimer = setTimeout(followChanges, RUN_CHANGES_POLL_MS)).unref();
@@ -3099,12 +3130,11 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     }
     changesCursor = head;
     const rows = await store.runs.list({});
-    await webhooks.catchUp(rows.filter((row) => !row.importedFrom).map(endOf), endNotice);
-    for (const row of rows) if (!closing && letGo(row) && !(await tellWait(row).catch(() => false))) waitsLeft.add(row.id);
+    // An end catchUp cannot read is said there and left for each read to try (endsLeft): it is before the feed's head.
+    await webhooks.catchUp(rows.filter((row) => !row.importedFrom).map(endOf), (id) => endNotice(id).catch((error: Error) => (endsLeft.add(id), Promise.reject(error))));
+    for (const row of rows) if (!closing && letGo(row) && !(await tellWait(row).catch((error: Error) => (sayUnread(row.id, error.message), false)))) waitsLeft.add(row.id);
   };
-  void startFollowing()
-    .catch((error: Error) => log?.(logLine("webhook", { condition: "catch_up_unread", error: error.message })))
-    .finally(followChanges);
+  followChanges();
   const setupUrl = owner && !owner.hasPassword() ? owner.setupLink() : undefined;
   /** The server's stop: once (`close` keeps its promise). */
   let stopped: Promise<void> | undefined;
