@@ -294,8 +294,10 @@ export const STORE_DDL: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS mcp_oauth_pending (
     state TEXT PRIMARY KEY,
     server TEXT NOT NULL,
-    verifier_sealed BLOB NOT NULL,
-    cookie_binding TEXT NOT NULL,
+    -- The sign-in's secret parts, the PKCE verifier and the OAuth client (with its secret), sealed together (store/seal.ts,
+    -- AAD mcp_oauth_pending|<state>|sealed): bytes the store never opens, so no sign-in secret is ever in the clear here.
+    sealed BLOB NOT NULL,
+    -- The sign-in's non-secret working state the callback rebuilds (url, was, scope, kind, discovery, resource): no secret.
     ${json("working", true)},
     expires_at INTEGER NOT NULL
   ) STRICT`,

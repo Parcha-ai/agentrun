@@ -19,7 +19,8 @@ export interface SealedAt {
 /** The sealed columns the store has. */
 export const sealedAt = {
   mcpServer: (name: string): SealedAt => ({ table: "mcp_servers", row: name, column: "sealed" }),
-  oauthVerifier: (state: string): SealedAt => ({ table: "mcp_oauth_pending", row: state, column: "verifier" }),
+  /** A pending sign-in's sealed column: its PKCE verifier and the OAuth client (with its secret) as one sealed JSON blob. */
+  oauthPending: (state: string): SealedAt => ({ table: "mcp_oauth_pending", row: state, column: "sealed" }),
   sealedKey: (name: string): SealedAt => ({ table: "sealed_keys", row: name, column: "sealed" }),
   // A saved browser sign-in's pointer: the one sealed column of the agent-and-provider row, bound to both by a composite
   // row key. A ":" in either part is refused, so agent:provider names one pair only. A tombstone keeps the same sealed
