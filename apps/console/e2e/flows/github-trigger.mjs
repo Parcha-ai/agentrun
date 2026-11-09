@@ -3,9 +3,6 @@
 // connecting one needs GitHub itself: that half is the github-trigger-create flow, pending.)
 import { check } from "../harness.mjs";
 
-// Not connected is GET /v2/integrations/github answering 404, which the browser logs as an error: the one this page has.
-const notFound = (error) => /status of 404\b/.test(error);
-
 export default {
   name: "github-trigger-not-connected",
   signedIn: true,
@@ -18,7 +15,7 @@ export default {
     await page.getByRole("link", { name: "Settings → GitHub" }).click();
     await page.waitForURL(/#\/settings\/github$/);
     await page.getByRole("button", { name: "Connect GitHub" }).waitFor();
-    check(errors.every(notFound), `the page reported errors: ${errors.join(" | ")}`);
-    errors.length = 0;
+    // Not connected is GET /v2/integrations/github answering 200 {connected: false}: the page reports no error at all.
+    check(errors.length === 0, `the page reported errors: ${errors.join(" | ")}`);
   },
 };
