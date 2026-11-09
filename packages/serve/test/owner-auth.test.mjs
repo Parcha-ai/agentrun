@@ -222,7 +222,7 @@ test("reset-password clears the password and ends every session; the next visit 
   assert.equal((await call(server.port, { method: "POST", path: "/v2/auth/reset-password", headers: page(server), body: {} })).status, 404, "never an HTTP route");
 });
 
-test("every route, called with no credential, is a 401 but capabilities, the contract, health and an MCP server's OAuth callback and client document; the owner's session and the token are let into every one but the MCP endpoint, which takes the token only, approving a note, answering a tool call's approval, a run's live computer view or its hand-back, which take the session only, and a webhook trigger's hook, which takes its signature only", async (t) => {
+test("every route, called with no credential, is a 401 but capabilities, the contract, health, an MCP server's OAuth callback and client document, and GitHub's two browser legs back to Connect (a 302); the owner's session and the token are let into every one but the MCP endpoint, which takes the token only, approving a note, answering a tool call's approval, a run's live computer view or its hand-back, which take the session only, and a webhook trigger's hook, which takes its signature only", async (t) => {
   const server = await owned(t);
   for (const route of ROUTES) {
     const path = `/v2${route.pattern.source.replace(/^\^\\\//, "/").replace(/\$$/, "").replace(/\(\[\^\/\]\+\)/g, "x").replace(/\\\//g, "/").replace(/\\\./g, ".")}`;
@@ -235,6 +235,9 @@ test("every route, called with no credential, is a 401 but capabilities, the con
     // The browser back from an authorization server carries no token: its state and the cookie its start set are the
     // check (403 without the cookie).
     else if (["mcpOAuthCallback", "mcpOAuthClient"].includes(route.name)) assert.ok([200, 400, 403].includes(anonymous.status), `${route.method} ${path}: ${anonymous.status}`);
+    // So is the browser GitHub sends back after it makes the App (the callback) or installs it (installed): its state and
+    // the cookie Connect set are the check, and both legs only ever send it on (302), to the console with why on a failure.
+    else if (["gitHubCallback", "gitHubInstalled"].includes(route.name)) assert.equal(anonymous.status, 302, `${route.method} ${path}: ${anonymous.status}`);
     else assert.equal(anonymous.status, 401, `${route.method} ${path} with no credential: ${anonymous.text}`);
     for (const headers of [{ ...(writes ? page(server) : {}), cookie: server.cookie }, { ...(body ? json : {}), authorization: `Bearer ${server.token}` }]) {
       const res = await call(server.port, { method: route.method, path, headers, body });

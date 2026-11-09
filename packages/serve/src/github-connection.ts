@@ -269,18 +269,28 @@ export class GitHubConnect {
     if (!installationId || !/^\d{1,15}$/.test(installationId)) return this.failed("installation_unverified", "GitHub's redirect named no installation");
     const credentials = this.connection.credentials();
     if (!credentials || !this.connection.view()) return this.failed("installation_unverified", "no GitHub App is connected");
-    let answer: { status: number; json: unknown };
-    try {
-      answer = await githubCall(this.options.api, `/app/installations/${installationId}`, { jwt: appJwt(credentials.appId, credentials.pem, this.options.now?.() ?? Date.now()), ...(signal ? { signal } : {}) });
-    } catch (error) {
-      return this.failed("installation_unverified", (error as Error).message);
+    let account: string | undefined;
+    for (let asked = 1; ; asked++) {
+      // The list's version before GitHub is asked: a write meanwhile (an installation event, a repair) is newer than
+      // GitHub's answer, which is then asked for again, once.
+      const version = this.connection.version;
+      let answer: { status: number; json: unknown };
+      try {
+        answer = await githubCall(this.options.api, `/app/installations/${installationId}`, { jwt: appJwt(credentials.appId, credentials.pem, this.options.now?.() ?? Date.now()), ...(signal ? { signal } : {}) });
+      } catch (error) {
+        return this.failed("installation_unverified", (error as Error).message);
+      }
+      const found = isObject(answer.json) ? answer.json : {};
+      account = isObject(found.account) && typeof found.account.login === "string" ? found.account.login : undefined;
+      if (answer.status !== 200 || String(found.id) !== installationId || !account) return this.failed("installation_unverified", `GitHub does not know installation ${installationId} as this App's (HTTP ${answer.status})`);
+      // A suspended installation is not one the App can act in: never recorded.
+      if (found.suspended_at !== null && found.suspended_at !== undefined) return this.failed("installation_unverified", `installation ${installationId} is suspended on GitHub`);
+      // Checked for the App connected when it was asked: one disconnected, or replaced, meanwhile keeps nothing of it.
+      if (this.connection.view()?.app_id !== credentials.appId) return this.failed("installation_unverified", "GitHub was disconnected or connected again while the installation was checked");
+      if (this.connection.version === version) break;
+      if (asked >= 2) return this.failed("installation_unverified", "the installation list was written again while GitHub was asked twice");
     }
-    const found = isObject(answer.json) ? answer.json : {};
-    const account = isObject(found.account) && typeof found.account.login === "string" ? found.account.login : undefined;
-    if (answer.status !== 200 || String(found.id) !== installationId || !account) return this.failed("installation_unverified", `GitHub does not know installation ${installationId} as this App's (HTTP ${answer.status})`);
-    // Checked for the App connected when it was asked: one disconnected, or replaced, meanwhile keeps nothing of it.
-    if (this.connection.view()?.app_id !== credentials.appId) return this.failed("installation_unverified", "GitHub was disconnected or connected again while the installation was checked");
-    await this.connection.addInstallation({ id: Number(installationId), account });
+    await this.connection.addInstallation({ id: Number(installationId), account: account! });
     this.options.say({ condition: "github_installed", installation: installationId, account });
     return consoleAt(this.options.publicUrl, CONNECTED_PAGE);
   }
@@ -290,14 +300,14 @@ export class GitHubConnect {
    *  for deleted, suspended for suspend, there and not suspended for created and unsuspend. X-GitHub-Event is not
    *  signed, so another event's signed body sent as one is never taken. A removal that leaves no installation turns every
    *  github trigger off (`turnOff`), naming it; one added turns none on. */
-  installationEvent(doc: unknown, turnOff: (detail: string) => number): Promise<{ status: number; body: Json }> {
+  installationEvent(doc: unknown, turnOff: (detail: string) => number | Promise<number>): Promise<{ status: number; body: Json }> {
     if (this.stopping.signal.aborted) return Promise.reject(STOPPING());
     const checked = this.checkEvent(doc, turnOff);
     this.track(checked);
     return checked;
   }
 
-  private async checkEvent(doc: unknown, turnOff: (detail: string) => number): Promise<{ status: number; body: Json }> {
+  private async checkEvent(doc: unknown, turnOff: (detail: string) => number | Promise<number>): Promise<{ status: number; body: Json }> {
     const action = isObject(doc) && typeof doc.action === "string" ? doc.action.slice(0, 64) : "";
     const noted = { status: 200, body: { ok: "noted", action } };
     const view = this.connection.view();
@@ -373,7 +383,7 @@ export class GitHubConnect {
       }
     }
     const left = await this.connection.removeInstallation(id as number);
-    const off = left ? 0 : turnOff(`The GitHub App's last installation left, installation ${id} (${account}), was ${action === "deleted" ? "deleted" : "suspended"} on GitHub: install the App again, then turn the trigger on.`);
+    const off = left ? 0 : await turnOff(`The GitHub App's last installation left, installation ${id} (${account}), was ${action === "deleted" ? "deleted" : "suspended"} on GitHub: install the App again, then turn the trigger on.`);
     this.options.say({ condition: "github_installation_lost", installation: String(id), account, action, installations_left: String(left), triggers_off: String(off) });
     return noted;
   }
@@ -397,7 +407,7 @@ export class GitHubConnect {
    *  turns every github trigger off (`turnOff`); one dropped only shrinks it. GitHub out of reach leaves it as it is, and
    *  so does a list written meanwhile (an event, the installed redirect), asked once more first: GitHub's answer is
    *  older than that write. Never rejects; after close it does nothing. */
-  reconcile(turnOff: (detail: string) => number, { force = false }: { force?: boolean } = {}): Promise<void> {
+  reconcile(turnOff: (detail: string) => number | Promise<number>, { force = false }: { force?: boolean } = {}): Promise<void> {
     if (this.stopping.signal.aborted) return Promise.resolve();
     const repair = this.repair(turnOff, force).catch((error: unknown) => {
       if (!this.stopping.signal.aborted) this.options.say({ condition: "github_installations_unrepaired", reason: (error as Error).message });
@@ -413,7 +423,7 @@ export class GitHubConnect {
     await Promise.all([...this.pending]);
   }
 
-  private async repair(turnOff: (detail: string) => number, force: boolean): Promise<void> {
+  private async repair(turnOff: (detail: string) => number | Promise<number>, force: boolean): Promise<void> {
     const now = this.options.now?.() ?? Date.now();
     const view = this.connection.view();
     if (!view || !this.connection.credentials() || (!force && now - this.reconciled < 60_000)) return;
@@ -430,7 +440,7 @@ export class GitHubConnect {
       }
       const before = this.connection.view()?.installations ?? [];
       if (!(await this.connection.setInstallations(found))) return;
-      const off = !found.length && before.length ? turnOff("GitHub holds no installation of the App left (deleted or suspended there): install the App again, then turn the trigger on.") : 0;
+      const off = !found.length && before.length ? await turnOff("GitHub holds no installation of the App left (deleted or suspended there): install the App again, then turn the trigger on.") : 0;
       this.options.say({ condition: "github_installations_repaired", installations: String(found.length), was: String(before.length), triggers_off: String(off) });
       return;
     }
@@ -495,14 +505,30 @@ export class GitHubConnect {
     const first = view.installations[0];
     if (!first) return { unusable: "The GitHub App is not installed anywhere yet: install it on an account, then save the server." };
     try {
-      return await this.mint(first.id, appJwt(credentials.appId, credentials.pem, this.options.now?.() ?? Date.now()), undefined, { unusable: `GitHub gave no token for the App's installation on ${first.account}.` }, signal);
+      const jwt = appJwt(credentials.appId, credentials.pem, this.options.now?.() ?? Date.now());
+      const refused = { unusable: `GitHub gave no token for the App's installation on ${first.account}.` };
+      // Which repository is the installation's first: asked with a metadata-read token that never leaves this server
+      // (only GitHub's API sees it), revoked at once. The token the listing sends is narrowed to that one repository.
+      const scout = await this.mint(first.id, jwt, undefined, refused, signal, { metadata: "read" });
+      if ("unusable" in scout) return scout;
+      let repo: unknown;
+      try {
+        const listed = await githubCall(this.options.api, "/installation/repositories?per_page=1", { jwt: scout.token, ...(signal ? { signal } : {}) });
+        repo = isObject(listed.json) && Array.isArray(listed.json.repositories) && isObject(listed.json.repositories[0]) ? listed.json.repositories[0].name : undefined;
+      } finally {
+        await githubCall(this.options.api, "/installation/token", { method: "DELETE", jwt: scout.token }).catch(() => undefined);
+      }
+      if (typeof repo !== "string" || !repo) return { unusable: `The GitHub App's installation on ${first.account} covers no repository yet: add one to it, then save the server.` };
+      // The least a listing needs: metadata read, of one repository; never the App's write permissions, never all of them.
+      return await this.mint(first.id, jwt, [repo], refused, signal, { metadata: "read" });
     } catch (error) {
       return { unusable: `GitHub did not give a token: ${(error as Error).message}.` };
     }
   }
 
-  private async mint(installation: number, jwt: string, repositories: string[] | undefined, refused: { unusable: string }, signal?: AbortSignal): Promise<{ token: string; expiresAt: number } | { unusable: string }> {
-    const answer = await githubCall(this.options.api, `/app/installations/${installation}/access_tokens`, { method: "POST", jwt, ...(repositories ? { body: { repositories } } : {}), ...(signal ? { signal } : {}) });
+  private async mint(installation: number, jwt: string, repositories: string[] | undefined, refused: { unusable: string }, signal?: AbortSignal, permissions?: Record<string, string>): Promise<{ token: string; expiresAt: number } | { unusable: string }> {
+    const body = { ...(repositories ? { repositories } : {}), ...(permissions ? { permissions } : {}) };
+    const answer = await githubCall(this.options.api, `/app/installations/${installation}/access_tokens`, { method: "POST", jwt, ...(Object.keys(body).length ? { body } : {}), ...(signal ? { signal } : {}) });
     const minted = isObject(answer.json) ? answer.json : {};
     if (answer.status !== 201 || typeof minted.token !== "string" || typeof minted.expires_at !== "string") return refused;
     const expiresAt = Date.parse(minted.expires_at);
