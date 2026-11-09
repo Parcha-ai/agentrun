@@ -29,8 +29,9 @@ const { suiteTools, MAX_RESTARTS } = await import("../dist/runner/conformance/ha
 after(closeOpenSessions);
 const quiet = { beforeIntent: async () => {}, beforeResult: async () => {} };
 const STEADY = { leaseMs: 60_000, renewEveryMs: 20_000, stopMarginMs: 5_000, pollMs: 20, commandPollMs: 30 };
-/** A short lease, for the cases whose claim is lost or whose runner dies. */
-const SHORT = { leaseMs: 600, renewEveryMs: 150, stopMarginMs: 200, pollMs: 20, commandPollMs: 30 };
+/** The runner a case kills, or whose renews it fails: its lease outlasts a loaded machine's stalls (renewed every 150 ms,
+ *  so a living runner never loses it), and runs out a few seconds after the kill or the first failed renew. */
+const DIES = { leaseMs: 5_000, renewEveryMs: 150, stopMarginMs: 1_000, pollMs: 20, commandPollMs: 30 };
 const SETTINGS = { diskId: "dsk-00000000000fake0", region: "aws-us-east-1", s3Url: "https://s3.green.us-east-1.aws.prod.archil.com" };
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -145,7 +146,7 @@ test("failed: a run that ends failed (its adapter cannot open) has its token rem
 test("stopped: a person's stop ends the run stopped, and its token is removed", async (t) => {
   const w = await revokeRun(t, { script: [{ call: "slow" }, { say: "never" }] });
   w.start(STEADY);
-  await w.slowStarted;
+  await within(w.slowStarted, "the run's first claim never reached its slow call");
   await sendCommand(w.server, "run-1", { kind: "stop" });
   await w.settled("stopped");
   assert.deepEqual(w.minted, [1]);
@@ -205,8 +206,8 @@ test("a lost claim: a runner whose renews fail loses its claim, and its loop let
     },
   });
   const events = [];
-  w.start(SHORT, failingRenews, (event) => events.push(event));
-  await w.slowStarted;
+  w.start(DIES, failingRenews, (event) => events.push(event));
+  await within(w.slowStarted, "the run's first claim never reached its slow call");
   assert.equal(w.control.users.size, 1, "the run holds one token while it runs");
   failing = true;
   await until(() => events.some((event) => event.type === "claim-lost" && event.runId === "run-1"), "the claim was lost", () => JSON.stringify(events.slice(-5)));
@@ -232,8 +233,8 @@ for (const held of [false, true]) {
       extra: (claim, base) => (claim.epoch > 1 ? { session: { ...base.session, tools: base.session.tools.map((tool) => (tool.name === "slow" ? { ...tool, call: async () => ({ text: await quick.run() }) } : tool)) } } : {}),
       holdRelease: (epoch) => (epoch > 1 ? gate : undefined),
     });
-    const first = w.start(SHORT);
-    await w.slowStarted;
+    const first = w.start(DIES);
+    await within(w.slowStarted, "the run's first claim never reached its slow call");
     first.kill();
     assert.equal(w.control.users.size, 1, "the killed runner let nothing go");
     const [left] = [...w.control.users.keys()];
