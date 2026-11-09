@@ -19,6 +19,7 @@ import runToEnd from "./run-to-end.mjs";
 import takeOver from "./take-over.mjs";
 import templateApply from "./template-apply.mjs";
 import watchLive from "./watch-live.mjs";
+import serverDeny from "./server-deny.mjs";
 
 export const flows = [
   setupOpen,
@@ -29,4 +30,5 @@ export const flows = [
   runToEnd,
   watchLive,
   takeOver,
+  serverDeny,
 ];
