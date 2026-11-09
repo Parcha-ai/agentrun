@@ -46,6 +46,14 @@ const VENDORS = {
 		},
 		/** Whether every session the fake made was released. */
 		allReleased: (fake) => [...fake.sessions.values()].every((s) => s.status !== "RUNNING"),
+		/** Whether the fake still runs this session. */
+		running: (fake, id) => fake.sessions.get(id).status === "RUNNING",
+		/** The label query each list read asked by: Browserbase's q, a metadata key as list writes it (dots as "_"). */
+		asked: (fake) => fake.only("GET", "/v1/sessions").map((call) => call.query.q),
+		/** The query a list by this label asks, as list() asks it. */
+		query: (key, value) => `user_metadata['${key.replaceAll(".", "_")}']:'${value}'`,
+		/** The create label's value a create wrote. */
+		createdBy: (call) => call.body.userMetadata.agentrun_create,
 	},
 	kernel: {
 		fake: fakeKernel,
@@ -74,6 +82,11 @@ const VENDORS = {
 			fake.browsers.get(id).cdp = url;
 		},
 		allReleased: (fake) => [...fake.browsers.values()].every((b) => b.deletedAt !== undefined),
+		running: (fake, id) => fake.browsers.get(id).deletedAt === undefined,
+		/** The tag filter each list read asked by. */
+		asked: (fake) => fake.only("GET", "/browsers").map((call) => Object.entries(call.query).filter(([key]) => key.startsWith("tags[")).map(([key, v]) => `${key}=${v}`).join("&")),
+		query: (key, value) => `tags[${key}]=${value}`,
+		createdBy: (call) => call.body.tags["agentrun.create"],
 	},
 };
 
@@ -206,6 +219,56 @@ for (const [id, vendor] of Object.entries(VENDORS)) {
 		const never = await holder.connect({ id: `${ref.id}0`, name: `${ref.id}0` });
 		assert.equal(never.ok, false);
 		assert.equal(never.error.code, "not_found", never.error.message);
+	});
+
+	test(`${id}: the check behind a held CDP URL never puts the URL in its words: gone, or a vendor read that failed, which keeps the URL held`, async () => {
+		let failReads = false;
+		const fake = vendor.fake();
+		// A vendor whose read of one browser answers 500 while failReads is set.
+		const fetch = async (input, init) => {
+			const url = new URL(typeof input === "string" ? input : input.url);
+			if (failReads && (init?.method ?? "GET") === "GET" && /^\/(v1\/sessions|browsers)\/[^/]+$/.test(url.pathname)) return new Response(JSON.stringify({ error: "down" }), { status: 500 });
+			return fake.fetch(input, init);
+		};
+		const provider = await vendor.make(fake, { fetch });
+		const ref = value(await provider.create(spec()), "create");
+		const held = value(await provider.connect(ref), "connect").cdp.url;
+		assert.match(held, SECRET, "the fake's URL carries its signing secret");
+		failReads = true;
+		const failed = await provider.connect(ref);
+		assert.equal(failed.ok, false, "a browser not read is not handed over");
+		assert.ok(!["gone", "not_found"].includes(failed.error.code), `a vendor that did not answer is not a browser gone: ${failed.error.code}`);
+		for (const words of [failed.error.message, JSON.stringify(failed)]) {
+			assert.ok(!words.includes(held), "the held URL is not in the failure");
+			assert.doesNotMatch(words, /wss:|SECRET/);
+		}
+		failReads = false;
+		assert.equal(value(await provider.connect(ref), "connect once the vendor answers").cdp.url, held, "the held URL was kept");
+		value(await (await vendor.make(fake)).release(ref, "delete"), "release through another instance");
+		const gone = await provider.connect(ref);
+		assert.equal(gone.error.code, "gone");
+		for (const words of [gone.error.message, JSON.stringify(gone)]) {
+			assert.ok(!words.includes(held), "the held URL is not in the gone");
+			assert.doesNotMatch(words, /wss:|SECRET/);
+		}
+	});
+
+	test(`${id}: a lost create is looked for by the labels it was made with, through list's own label query, and another browser of the same run is left running`, async () => {
+		const knobs = {};
+		const fake = vendor.fake(knobs);
+		const provider = await vendor.make(fake);
+		const sibling = value(await provider.create(spec()), "a browser of the same run");
+		const before = vendor.asked(fake).length;
+		knobs.loseCreate = () => undefined;
+		const lost = await provider.create(spec());
+		assert.equal(lost.ok, false);
+		assert.match(lost.error.message, /released/, lost.error.message);
+		assert.ok(vendor.running(fake, sibling.id), "the run's other browser, which carries the same run labels, still runs");
+		const createdBy = vendor.createdBy(vendor.creates(fake)[1]);
+		const asked = vendor.asked(fake).slice(before);
+		assert.ok(asked.length > 0, "the lost create was looked for");
+		assert.ok(asked.every((q) => q === vendor.query("agentrun.create", createdBy)), `each read asks by the create label as list() maps a label key: ${asked.join(", ")}`);
+		assert.deepEqual(value(await provider.list({ "agentrun.run": "run-1" }), "list").map((info) => info.ref.id), [sibling.id]);
 	});
 
 	/** CDP URLs a driver must never be handed: none, not wss:, or not on the vendor's own domain. */
