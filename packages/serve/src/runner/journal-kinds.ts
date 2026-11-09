@@ -166,18 +166,44 @@ export interface AnswerData {
   /** The person's words with their answer (a decline's reason): the model reads it with the refusal, and the resume row
    *  shows it. Absent when they gave none. */
   readonly note?: string;
+  /** The allow a stop overrode (main's ApprovalAnswer.superseded): the call was approved but had not finished when its
+   *  run was stopped, so the stop withdrew it. Kept as it was given. */
+  readonly superseded?: { readonly decision: "allow"; readonly answeredAt?: string };
 }
 
-/** The withdrawn answers a stopped end writes for every call still waiting (an ask with no answer) in `entries`. */
-export function withdrawnAnswers(entries: readonly { readonly kind: string; readonly data?: unknown }[], answeredAt: string): AnswerData[] {
-  const answered = new Set(entries.filter((entry) => entry.kind === KINDS.answer).map((entry) => (entry.data as AnswerData).callId));
-  const waiting = new Set<string>();
+/** Whether `entries` hold a call's finished result: an agentrun.call.end not cut (a CLI's call), or a pi.tool-result
+ *  for it that pi did not write for an abort (pi's diagnostics code `aborted`). */
+function finished(entries: readonly { readonly kind: string; readonly data?: unknown; readonly model?: unknown }[], callId: string): boolean {
+  return entries.some((entry) => {
+    if (entry.kind === KINDS.callEnd) return (entry.data as CallEndData).callId === callId && (entry.data as CallEndData).status !== "interrupted";
+    if (entry.kind !== "pi.tool-result") return false;
+    const result = (entry.model as { toolCallId?: unknown }[] | undefined)?.[0];
+    const diagnostics = (entry.data as { diagnostics?: { code?: string }[] } | undefined)?.diagnostics ?? [];
+    return result?.toolCallId === callId && !diagnostics.some((diagnostic) => diagnostic.code === "aborted");
+  });
+}
+
+/** The withdrawn answers a stopped end writes in `entries`: for every call still waiting (an ask with no answer), and
+ *  for every approved call that had not finished (no result, or one its abort wrote), which the stop overrides, keeping
+ *  the allow it was given (main's supersede: an answer the run had not acted on to the end is withdrawn by the stop). A
+ *  call that finished before the stop keeps its allow and its result. */
+export function withdrawnAnswers(entries: readonly { readonly kind: string; readonly data?: unknown; readonly model?: unknown }[], answeredAt: string): AnswerData[] {
+  const answers = new Map<string, AnswerData>();
+  for (const entry of entries) if (entry.kind === KINDS.answer) answers.set((entry.data as AnswerData).callId, entry.data as AnswerData);
+  const out: AnswerData[] = [];
+  const seen = new Set<string>();
   for (const entry of entries) {
     if (entry.kind !== KINDS.ask) continue;
     const { callId } = entry.data as AskData;
-    if (!answered.has(callId)) waiting.add(callId);
+    if (seen.has(callId)) continue;
+    seen.add(callId);
+    const given = answers.get(callId);
+    if (!given) out.push({ callId, approved: false, decision: "withdrawn", answeredAt });
+    else if (given.approved && given.decision !== "withdrawn" && !finished(entries, callId)) {
+      out.push({ callId, approved: false, decision: "withdrawn", answeredAt, superseded: { decision: "allow", ...(given.answeredAt ? { answeredAt: given.answeredAt } : {}) } });
+    }
   }
-  return [...waiting].map((callId) => ({ callId, approved: false, decision: "withdrawn", answeredAt }));
+  return out;
 }
 
 export interface EndData {
