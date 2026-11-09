@@ -47,6 +47,10 @@ export type HoldEvent =
 /** The agent's ask, as the kernel registry's handoff port takes it (run-adapters kernel/registry Hands.handoff). */
 export type Handoff = { ask(request: HandoffRequest, signal?: AbortSignal): Promise<{ readonly outcome: AskOutcome }> };
 
+/** A run's desktop or phone and the person's hold on it: what computerForClaim returns as `held`, and what the run's spec
+ *  hands the adapter loop as AdapterRunSpec.computer. */
+export type HeldComputer = { readonly kind: "desktop" | "phone"; readonly hold: ComputerHold };
+
 /** One run's computer, held or not by a person. Its viewer side (state, take, give, away, touched, on, asked) is the
  *  shape tl-browser's run-side viewer calls (computer-live REGISTRATION.md ViewerHold). */
 export type ComputerHold = {

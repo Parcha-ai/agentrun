@@ -574,7 +574,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         computerNow = undefined;
         if (spec.computer) {
           const [journalOf, rootOf] = [harness, root];
-          computerNow = journalHold(spec.computer, (entries) => journalOf.commit(async (tx) => {
+          computerNow = journalHold(claim.runId, spec.computer, (entries) => journalOf.commit(async (tx) => {
             for (const entry of entries) await tx.appendEntry(rootOf.id, { kind: entry.kind, data: entry.data as unknown as JsonValue });
           }, context), now);
           await computerNow.up();

@@ -17,7 +17,7 @@ import { KEY_TABLE, type KeyTable, type ProviderSettings, providerOptions } from
 import { getSealedKey } from "../server-keys.js";
 import type { Store } from "../store/index.js";
 import type { MountCheck } from "./attach.js";
-import { type ComputerHold, computerHold, heldHands } from "./computer-hold.js";
+import { computerHold, type HeldComputer, heldHands } from "./computer-hold.js";
 import { type ServingRefusals, servedGroups } from "./computer-serves.js";
 import { type ProviderLedger, storeLedger } from "./computer-ledger.js";
 import { type ClaimSide, type ComputerSetting, type ComputerSettingKind, type KindRegistry, type LaunchedComputer, type ProviderEntry, resolveComputer } from "./resolve-computer.js";
@@ -93,7 +93,7 @@ export interface ComputerForClaimDeps {
 export interface ClaimComputer {
   readonly computer?: RunComputer;
   readonly hold?: RunHold;
-  readonly held?: { readonly kind: "desktop" | "phone"; readonly hold: ComputerHold };
+  readonly held?: HeldComputer;
   release(why?: ViewEnd): Promise<void>;
 }
 

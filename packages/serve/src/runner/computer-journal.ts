@@ -5,25 +5,52 @@
 //
 // Commits go one at a time, in the order the hold changed, each at the change's own time. A row the hold took or ended a
 // take for is taken by the commit that writes that change (its `by`); one the hold refuses is refused in words.
+//
+// onComputerHold is the change signal for whoever else in the runner's process shows the hold (tl-browser's run-side
+// viewer and its bar): it fires after each computer.hold change entry is committed, with that change's Timeline words.
 import { HOST_PHASE } from "@parcha/pi-durable-agent/timeline";
 import {
-  COMPUTER_HAND_BACK, COMPUTER_HANDOVER_KIND, COMPUTER_HOLD_KIND, COMPUTER_TAKE_OVER, holdWords, takeEndedWords, type ViewedKind,
+  COMPUTER_HAND_BACK, COMPUTER_HANDOVER_KIND, COMPUTER_HOLD_KIND, COMPUTER_TAKE_OVER, holdWords, takeEndedWords,
 } from "../computer-commands.js";
-import type { ComputerHold, HoldEvent } from "../workspace/computer-hold.js";
+import type { HeldComputer, HoldEnd, HoldEvent, HoldState } from "../workspace/computer-hold.js";
 import type { Command, CommandOutcome } from "./loop-contract.js";
 
 /** One root entry, as the run's journal takes it. */
 export type RootEntry = { readonly kind: string; readonly data: Record<string, unknown> };
 
-/** The run's computer, as the adapter loop records it: its kind and the person's hold on it. */
-export type RunComputerHold = { readonly kind: ViewedKind; readonly hold: ComputerHold };
+/** The run's computer, as the adapter loop records it: its kind and the person's hold on it (what computerForClaim
+ *  returns as `held`). */
+export type RunComputerHold = HeldComputer;
+
+/** A change of a run's hold, once its journal entry is committed: who drives now, how a take ended, and the change's
+ *  Timeline words (none for a change that has no row of its own: a take still pending, an end the ask's answer says). */
+export type ComputerHoldChange = { readonly state: HoldState; readonly ended?: HoldEnd; readonly message?: string };
+
+const listeners = new Map<string, Set<(change: ComputerHoldChange) => void>>();
+
+/** Calls `listener` after each change of run `runId`'s hold is committed to its journal, in order, in this process.
+ *  Returns the unsubscribe. */
+export function onComputerHold(runId: string, listener: (change: ComputerHoldChange) => void): () => void {
+  const set = listeners.get(runId) ?? new Set();
+  listeners.set(runId, set.add(listener));
+  return () => {
+    set.delete(listener);
+    if (set.size === 0 && listeners.get(runId) === set) listeners.delete(runId);
+  };
+}
+
+const signal = (runId: string, change: ComputerHoldChange): void => {
+  for (const listener of [...(listeners.get(runId) ?? [])]) {
+    try { listener(change); } catch { /* a listener's error is not the hold's */ }
+  }
+};
 
 /** Whether a command row is the person's turn with the run's computer. */
 export const isComputerCommand = (command: Pick<Command, "kind">): boolean => command.kind === COMPUTER_TAKE_OVER || command.kind === COMPUTER_HAND_BACK;
 
-/** The journal's side of the run's hold, for the pass whose Harness `commit` writes root entries (in one commit, in
+/** The journal's side of run `runId`'s hold, for the pass whose Harness `commit` writes root entries (in one commit, in
  *  order). `now` is the clock the up entry is stamped with. */
-export function journalHold(computer: RunComputerHold, commit: (entries: readonly RootEntry[]) => Promise<void>, now: () => number = Date.now) {
+export function journalHold(runId: string, computer: RunComputerHold, commit: (entries: readonly RootEntry[]) => Promise<void>, now: () => number = Date.now) {
   const { kind, hold } = computer;
   const words = holdWords(kind);
   /** Takes that reached the person: only those say "You took over" and how they ended. */
@@ -59,7 +86,17 @@ export function journalHold(computer: RunComputerHold, commit: (entries: readonl
     if (event.state === "agent" && event.ended && event.ended !== "answered" && reached.delete(event.take)) return [held, phase(words.ended[event.ended], event.at)];
     return [held];
   };
-  const off = hold.on((event) => void write(entriesOf(event)).catch(() => undefined));
+  /** The change a state event signals once committed, with its row's words when it has one. */
+  const changeOf = (event: HoldEvent, entries: readonly RootEntry[]): ComputerHoldChange | undefined => {
+    if (event.type !== "state") return undefined;
+    const message = entries.find((entry) => entry.kind === HOST_PHASE)?.data.summary;
+    return { state: event.state, ...(event.ended ? { ended: event.ended } : {}), ...(typeof message === "string" ? { message } : {}) };
+  };
+  const off = hold.on((event) => {
+    const entries = entriesOf(event);
+    const change = changeOf(event, entries);
+    void write(entries).then(() => change && signal(runId, change), () => undefined);
+  });
   return {
     /** The run's computer is up for this pass: the server shows it live, the agent driving. */
     up: (): Promise<void> => {

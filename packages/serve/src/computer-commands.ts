@@ -18,8 +18,13 @@
 // each writer writes, then re-reads the run's journal (a hand-back the runner already applied, or an end the run's own
 // hold wrote: the viewer's hand-back, idle, away, released), then the rows (the lowest-id row is the one the runner
 // applies), so each caller is told the truth.
+import type { Context } from "@earendil-works/chord";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { browserHandBack, handBackTarget } from "./browser-commands.js";
+import { settingOfDefinition } from "./computer-setting.js";
 import { ApiError } from "./errors.js";
-import { RunFinal, type Command, type Store } from "./store/index.js";
+import { FINAL_STATES, RunFinal, type Command, type Store } from "./store/index.js";
+import { runEntries } from "./store-reads/journal.js";
 import { type AskOutcome, HOLD_IDLE_MS, type HoldAsk, type HoldEnd, type HoldState } from "./workspace/computer-hold.js";
 
 /** The kinds of computer a person watches and takes: a screen. */
@@ -238,4 +243,78 @@ export async function handBackCommand(
     .sort((a, b) => a.id - b.id)[0];
   if (!first || first.id === mine!.id) return {};
   throw new ApiError("handoff_answered", takeEndedWords(computer, "given"), { details: { ended: "given" } });
+}
+
+// ---- The take-over's three calls, over the store alone (the route table agreed with tl-browser): our two routes call
+// them, and so do tl-browser's viewer (its in-WS Take over and Hand back) and its GET /v2/runs/{id}/computer (`hold`).
+
+/** Where the calls read the run's journal from (the store's, by default), and their clock: a test's own. */
+export type ComputerCallOptions = {
+  readonly entries?: () => Promise<readonly JournalEntry[]>;
+  readonly now?: () => number;
+  readonly context?: Context;
+};
+
+/** The slice of the store the three calls read and write. */
+export type ComputerCallStore = Pick<Store, "command" | "commands" | "runs" | "agents" | "readJournal">;
+
+/** What a take-over or a hand-back answers: who drives now, and the answer the agent gets when it answered its ask. */
+export type ComputerAnswer = { readonly hold: HoldState; readonly outcome?: AskOutcome };
+
+/** The kind of computer run `runId`'s revision asks for, when it is one a person watches and takes (a desktop or a phone). */
+export async function runViewedKind(store: Pick<Store, "runs" | "agents">, runId: string): Promise<ViewedKind | undefined> {
+  const run = await store.runs.get(runId);
+  const revision = run ? await store.agents.revision(run.revisionId) : undefined;
+  const body = revision?.body;
+  const setting = body && typeof body === "object" ? settingOfDefinition(body as { computer?: unknown; place?: unknown }) : undefined;
+  const kind = setting?.computer.kind;
+  return kind === "desktop" || kind === "phone" ? kind : undefined;
+}
+
+/** Whether run `runId` is over: no computer of an ended run is up. */
+export async function runOver(store: Pick<Store, "runs">, runId: string): Promise<boolean> {
+  const row = await store.runs.get(runId);
+  return !row || FINAL_STATES.includes(row.state);
+}
+
+/** Run `runId`'s journal entries: the options' own, or the store's. */
+export const entriesOf = (store: ComputerCallStore, runId: string, options: ComputerCallOptions = {}): Promise<readonly JournalEntry[]> =>
+  options.entries ? options.entries() : runEntries(store as Store, runId, options.context ?? BACKGROUND_CONTEXT) as unknown as Promise<readonly JournalEntry[]>;
+
+/** Who drives run `runId`'s computer now: the run's journal's hold, or pending while a take-over row waits for the runner.
+ *  The agent when the run is over or its computer is not up. */
+export async function computerHoldOf(store: ComputerCallStore, runId: string, options: ComputerCallOptions = {}): Promise<HoldState> {
+  const hold = holdIn(await entriesOf(store, runId, options));
+  if (!hold.up || (await runOver(store, runId))) return "agent";
+  return holdShown(hold, await store.commands(runId, 0)).state;
+}
+
+/** The owner takes run `runId`'s desktop or phone: a take-over row the runner applies, unless a take is pending or held
+ *  already (the same answer, nothing written). 404 for a run with no desktop or phone; 409 computer_not_live when it is
+ *  not up now. */
+export async function takeOverComputer(store: ComputerCallStore, runId: string, options: ComputerCallOptions = {}): Promise<ComputerAnswer> {
+  const kind = await runViewedKind(store, runId);
+  if (kind === undefined) throw new ApiError("not_found", "this run has no desktop or phone to take over (a browser is taken over in its live view)");
+  const hold = holdIn(await entriesOf(store, runId, options));
+  if (!hold.up || (await runOver(store, runId))) throw new ApiError("computer_not_live", `this run's ${kind} is not up now, so there is nothing to take over`);
+  const taken = await takeOverCommand(store, runId, kind, hold, await store.commands(runId, 0), options.now?.() ?? Date.now());
+  return { hold: taken.state };
+}
+
+/** The owner's hand-back of run `runId`'s computer, for every kind. A desktop or a phone: the agent's open ask answered
+ *  (`outcome`, done when not given), else the take in force ended; the first wins, a second is 409 (handBackCommand). A
+ *  browser: the answer to its agent's ask, the browser's own command (browserHandBack, the browser_hand_back row the /browser
+ *  route writes), so both routes give the one answer. */
+export async function handBackComputer(store: ComputerCallStore, runId: string, body: { readonly outcome?: "done" | "cancelled" } = {}, options: ComputerCallOptions = {}): Promise<ComputerAnswer> {
+  const now = options.now?.() ?? Date.now();
+  const fresh = () => entriesOf(store, runId, options);
+  const kind = await runViewedKind(store, runId);
+  if (kind === undefined) {
+    const entries = await fresh();
+    const target = handBackTarget(entries as Parameters<typeof handBackTarget>[0], await store.commands(runId, 0), now);
+    const answered = await browserHandBack(store, runId, body.outcome ?? "done", target, now, fresh as () => Promise<Parameters<typeof handBackTarget>[0]>);
+    return { hold: "agent", outcome: answered.outcome };
+  }
+  const answered = await handBackCommand(store, runId, kind, { entries: await fresh(), commands: await store.commands(runId, 0) }, body.outcome, fresh, now);
+  return { hold: await computerHoldOf(store, runId, options), ...(answered.outcome ? { outcome: answered.outcome } : {}) };
 }

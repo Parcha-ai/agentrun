@@ -82,21 +82,25 @@ async function setup(t, { computer = { kind: "desktop", provider: "e2b" } } = {}
     stores.push(store);
     runners.push(startRunner({ store, createLoop: loop, name: "runner-a", ...TIMING }));
   };
-  /** The run on a runner: its first look at the screen waits inside the shot until `letGo`. */
-  const start = async () => {
+  /** The run on a runner: its first look at the screen waits inside the shot until `letGo`; with `second`, its second look
+   *  waits too, until `letGoSecond`. */
+  const start = async ({ second = false } = {}) => {
     const hold = computerHold();
     let shotStarted;
     const inShot = new Promise((resolve) => (shotStarted = resolve));
     let letGo;
     const released = new Promise((resolve) => (letGo = resolve));
-    const held = heldHands({ screen: { shot: async () => { shotStarted(); await released; return { png: "AA==" }; } } }, hold);
+    let letGoSecond;
+    const releasedSecond = second ? new Promise((resolve) => (letGoSecond = resolve)) : Promise.resolve();
+    let shots = 0;
+    const held = heldHands({ screen: { shot: async () => { shots += 1; shotStarted(); await (shots === 1 ? released : releasedSecond); return { png: "AA==" }; } } }, hold);
     const look = { name: "look", replaySafe: true, run: async () => JSON.stringify(await held.screen.shot()) };
     // Two looks: the second is the agent's next call, parked while the person holds the desktop, so the run does not
     // end (and let its desktop go) under the person's hand.
     const spec = piAdapterSpec({ script: [{ call: "look" }, { call: "look" }, { say: "done" }], tools: { look }, hooks: quiet });
     await begin(createAdapterLoop(async (claim, run) => ({ ...(await spec(claim, run)), agentId: "agent-1", computer: { kind: "desktop", hold } })));
     await inShot;
-    return { hold, letGo };
+    return { hold, letGo, letGoSecond };
   };
   /** The run on a runner, its agent asking for the person on its desktop (computer_request_handoff's port, Hands.handoff):
    *  its tool's result is the answer's outcome. */
@@ -228,8 +232,12 @@ test("the agent's ask on its desktop: the run waits on it with pending kind comp
 
 test("the runner's change signal (onComputerHold): a take-over row, then a hand-back row, are seen pending, person, then agent ended given, each after its journal entry; unsubscribed, nothing more", async (t) => {
   const world = await setup(t);
-  const run = await world.start();
+  // The second look waits too, so the run is still going (its desktop up) after the hand-back.
+  const run = await world.start({ second: true });
   await world.until(world.live, "the desktop is live");
+  const still = [];
+  const stays = onComputerHold("run-1", (event) => still.push(event));
+  t.after(stays);
   const seen = [];
   const checks = [];
   const off = onComputerHold("run-1", (event) => {
@@ -250,11 +258,17 @@ test("the runner's change signal (onComputerHold): a take-over row, then a hand-
   ]);
   assert.deepEqual(await Promise.all(checks), [true, true, true], "each after its journal entry exists");
   off();
+  // A second take while the second look is in flight: another listener hears it, the unsubscribed one does not.
+  await world.until(async () => run.hold.state() === "agent" && (await world.hold()) === "agent", "the second look is in flight");
   await world.route("takeOverRunComputer");
-  await world.until(async () => (await world.hold()) === "person", "a second take, unheard");
+  await world.until(async () => still.length === 4, "the second take is signalled to the listener still subscribed");
+  assert.equal(still[3].state, "pending");
   assert.equal(seen.length, 3, "unsubscribed: no more calls");
+  run.letGoSecond();
+  await world.until(async () => (await world.hold()) === "person", "the person holds it again");
   await world.route("handBackRunComputer");
   await world.ended();
+  assert.equal(seen.length, 3);
 });
 
 test("a browser ask answered through /computer/hand-back is the one answer the /browser path reads: the agent's hand-over entry says done, and /browser's different answer is 409", async (t) => {
