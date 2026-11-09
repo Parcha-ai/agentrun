@@ -13,7 +13,7 @@
 // journal tables, keyed by run_id (store/journal): one schema for every run's journal, so a query joins runs and their
 // journals.
 
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 5;
 
 const json = (column: string, nullable = false) => `${column} TEXT${nullable ? "" : " NOT NULL"} CHECK (${column} IS NULL OR json_valid(${column}))`;
 
@@ -93,6 +93,25 @@ export const STORE_DDL: readonly string[] = [
   `CREATE INDEX IF NOT EXISTS runs_by_agent ON runs (agent_id, started_at)`,
   `CREATE INDEX IF NOT EXISTS runs_by_revision ON runs (revision_id, started_at)`,
   `CREATE INDEX IF NOT EXISTS runs_claimable ON runs (state, started_at)`,
+  // The run-change feed (Runs.changedSince): a row for each run reaching a final state or let go by its runner (parked, or
+  // running with no runner), written by the trigger below in the transaction of the write that made it, so no writer of a
+  // run's state or runner can miss it and none lands without its write. `seq` numbers them in commit order (one writer).
+  `CREATE TABLE IF NOT EXISTS run_changes (
+    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT NOT NULL,
+    state TEXT NOT NULL,
+    ended_at INTEGER,
+    epoch INTEGER NOT NULL,
+    runner TEXT
+  ) STRICT`,
+  // A change is a move of the state or the runner into a final state, parked, or running with none: a fence's touch of
+  // the row (epoch = epoch), a claim, a renew and a cost or summary write are none.
+  `CREATE TRIGGER IF NOT EXISTS runs_changed AFTER UPDATE OF state, runner ON runs
+    WHEN (OLD.state IS NOT NEW.state OR OLD.runner IS NOT NEW.runner)
+      AND (NEW.state IN ('ended', 'stopped', 'failed', 'parked') OR (NEW.state = 'running' AND NEW.runner IS NULL))
+    BEGIN
+      INSERT INTO run_changes (run_id, state, ended_at, epoch, runner) VALUES (NEW.id, NEW.state, NEW.ended_at, NEW.epoch, NEW.runner);
+    END`,
   // One run per imported session: Store.importRun is refused a session it already imported (as the old store's
   // UNIQUE (source, session) did).
   `CREATE UNIQUE INDEX IF NOT EXISTS runs_import ON runs (json_extract(imported_from, '$.source'), json_extract(imported_from, '$.session')) WHERE imported_from IS NOT NULL`,
