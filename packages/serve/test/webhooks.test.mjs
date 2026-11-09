@@ -579,13 +579,11 @@ test("a message pending when its server stops goes on from the next one, under t
   assert.equal(hook.got.length, 2, "the run, read as it already ended, is no new notice");
 });
 
-test("settings: an http or https URL with no user or password, and nothing else; no seal key, no webhook; DELETE removes it", async (t) => {
+test("settings: an http or https URL with no user or password, and nothing else; handed no seal key, the server seals under the one it made; DELETE removes it", async (t) => {
+  // A server never runs without a seal key (seal-key.ts): handed none, it makes one, so a webhook's secret is sealed.
   withEnv(t, {}, SEAL);
   const bare = await serve(t);
-  const refused = await bare.api("PUT", "/settings/webhook", { url: "https://example.com/hook" });
-  assert.equal(refused.status, 409);
-  assert.ok(JSON.stringify(refused.body).includes("no_sealing_key"), JSON.stringify(refused.body));
-  assert.deepEqual((await bare.api("GET", "/capabilities")).body.features.webhooks, { routes: true, events: ["run.needs_input", "run.ended", "trigger.failed"], signing: "standard-webhooks/v1", at_rest: "unavailable" });
+  assert.deepEqual((await bare.api("GET", "/capabilities")).body.features.webhooks, { routes: true, events: ["run.needs_input", "run.ended", "trigger.failed"], signing: "standard-webhooks/v1", at_rest: "sealed" });
 
   withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, SEAL);
   const hook = await receiver(t);
