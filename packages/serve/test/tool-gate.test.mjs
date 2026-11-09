@@ -368,7 +368,7 @@ test("two conflicting answers to one parked call at once, by the owner's session
   assert.ok(ran.length <= (won === "allow" ? 1 : 0) && ran.every((url) => url === PAGE), `the call ran at most once, and only if allowed: ${JSON.stringify(ran)}`);
 });
 
-test("web_fetch set to ask on claude-agent and codex at once: each run parks and is answered as on pi", { timeout: 240_000, skip: "waits on a claude-agent or codex run's web_fetch reaching the runner's gate: the run completes without the call being asked about or recorded" }, (t) => askedOn(t, ["claude-agent", "codex"]));
+test("web_fetch set to ask on claude-agent and codex at once: each run parks and is answered as on pi", { timeout: 240_000, skip: "waits on the CLI harnesses being offered their host tools (cli-run-spec offers claude-agent and codex no web_fetch)" }, (t) => askedOn(t, ["claude-agent", "codex"]));
 
 test("an ask answered after the server restarted while the run was parked still runs the call once, on pi and on codex; a cancel marks a call that waits canceled", { timeout: 180_000 }, async (t) => {
   const dialled = await network(t);
@@ -652,7 +652,7 @@ async function refusedOn(api, harnesses) {
   }
 }
 
-test("with accounts off, on claude-agent and codex: web_fetch set to ask is refused with words saying so, never parked, and the run goes on", { timeout: 120_000, skip: "waits on a claude-agent or codex run's web_fetch reaching the runner's gate: the run completes without the call being asked about or recorded" }, async (t) => {
+test("with accounts off, on claude-agent and codex: web_fetch set to ask is refused with words saying so, never parked, and the run goes on", { timeout: 120_000, skip: "waits on the CLI harnesses being offered their host tools (cli-run-spec offers claude-agent and codex no web_fetch)" }, async (t) => {
   const dialled = await network(t);
   const off = await serve(t, { ...GATE, accounts: false, openSetup: false });
   assert.equal((await off.api("PUT", "/settings/tools", { web_fetch: { permission: "ask" } })).status, 200);
