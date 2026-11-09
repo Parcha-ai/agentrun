@@ -342,6 +342,31 @@ test("a run whose cap was raised is no longer parked: the budget card clears and
   assert.equal(view.pending, null);
 });
 
+test("a workflow run paused in its process reads paused, and a resume after the pause clears it", async (t) => {
+  const { store } = await storeOn(t);
+  await agent(store, { kind: "workflow" });
+  await store.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: {}, title: "Paused workflow", place: { mode: "runner" } } });
+  const claim = await store.claim("run-1", "runner-a", { leaseMs: 60_000 });
+  const journal = store.journal(claim);
+  const u = { id: await journal.mintId(), conversationId: ROOT, kind: "pi.user", model: [{ role: "user", content: "run it", timestamp: T0 }] };
+  // Its process paused a step at a person's pause (agentrun.pause), not resumed; the runner parked it with the pause's words.
+  const pause = { id: await journal.mintId(), conversationId: ROOT, kind: "agentrun.pause", data: { takes: [] } };
+  await commitWrites(journal, [{ type: "conversation", value: { id: ROOT } }, { type: "entry", value: u }, { type: "entry", value: pause }], context);
+  await store.runs.update(claim, { state: "parked", summary: "Paused." });
+
+  const view = await viewOverStore(store, "run-1", deps);
+  assert.equal(view.status, "paused");
+  assert.equal(view.state, "idle");
+  const moment = await momentOverStore(store, "run-1");
+  assert.equal(moment.terminal, false);
+
+  // A raise/resume: an agentrun.resume after the pause clears it, and the resumed run is no longer paused.
+  const resume = { id: await journal.mintId(), conversationId: ROOT, kind: "agentrun.resume", data: {} };
+  await commitWrites(journal, [{ type: "entry", value: resume }], context);
+  await store.runs.update(claim, { state: "running", summary: null });
+  assert.notEqual((await viewOverStore(store, "run-1", deps)).status, "paused");
+});
+
 test("the moment of a run parked at its cap reads paused with the pause words, so raiseCap resumes it as main does", async (t) => {
   const { store } = await storeOn(t);
   await agent(store);
