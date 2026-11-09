@@ -70,7 +70,7 @@ async function revokeRun(t, { script, extra = () => ({}) }) {
     const base = await spec(claim, run);
     // As the builders make it: the server's settings, the account key, a mount credential for this run and claim epoch.
     const archil = await archilClaim({
-      settings: SETTINGS, keys: store.sealedKeys, sealKey: undefined, env: { ARCHIL_API_KEY: "fake-test-key-archil-account-0001" },
+      settings: SETTINGS, keys: store.sealedKeys, sealKey: undefined, env: { ARCHIL_API_KEY: "fake-test-key" },
       signal: new AbortController().signal, makeDisk: () => new FakeArchilDisk(),
       mount: { runId: claim.runId, epoch: claim.epoch, ttlMs: 60_000, baseUrl: control.baseUrl, fetch: control.fetch },
     });
