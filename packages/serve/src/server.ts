@@ -2907,7 +2907,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const handover = sealKey ? await liveViewerFor(store, sealKey, runId, rest) : undefined;
     const browserKind = handover !== undefined && (handover.kind ?? "browser") === "browser";
     if (handover === undefined || browserKind !== (family === "browser")) throw new ApiError("not_found", `this run's ${family} has no live view at that address`);
-    await serveViewerFile(req, res, rest);
+    // A desktop's or a phone's viewer gets the computer viewer's page (computer-viewer.ts), a browser's pi-browser's.
+    await serveViewerFile(req, res, rest, browserKind ? "browser" : "computer");
   }
 
   /** The origin of the address people open (`publicUrl`, AGENTRUN_PUBLIC_URL), lowercased; none, undefined. */
