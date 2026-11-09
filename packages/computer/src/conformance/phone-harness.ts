@@ -5,10 +5,10 @@
 // most 10 min.
 // The provider reads no environment: this module reads these names and passes them in as options.
 import { randomBytes } from "node:crypto";
-import { closeSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { linkSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { type AdbTransport, create, type PhoneHarnessProvider, type PhoneLedger, type PhoneLedgerEntry, type PhoneProviderOptions } from "../phone-harness.js";
+import { type AdbTransport, adbCli, create, type PhoneHarnessProvider, type PhoneLedger, type PhoneLedgerEntry, type PhoneProviderOptions } from "../phone-harness.js";
 
 /** The environment this module reads, by name. */
 export const PHONE_ENV = {
@@ -47,49 +47,108 @@ export function settingsFromEnv(env: Record<string, string | undefined> = proces
 	};
 }
 
-/** How long a writer waits for the ledger's lock, and how old a lock must be to be taken as left by a dead process. */
+/** How long a writer waits for a live writer's lock on the ledger. A write holds it for well under a millisecond. */
 const LOCK_WAIT_MS = 10_000;
-const LOCK_STALE_MS = 30_000;
+
+/** Whether the process pid is alive on this host: signal 0 tests it and sends nothing. */
+function alive(pid: number): boolean {
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch (error) {
+		// EPERM: it lives, under another user.
+		return (error as NodeJS.ErrnoException).code === "EPERM";
+	}
+}
+
+/** A lock file's words, `<pid> <token>`, or undefined when it is gone. */
+function lockWords(lockPath: string): string | undefined {
+	try {
+		return readFileSync(lockPath, "utf8");
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+		throw error;
+	}
+}
+
+/** Whether a lock's words name a holder that is gone: a pid no process holds, or no pid at all (a file left torn). */
+const leftByTheDead = (words: string) => {
+	const pid = Number(words.split(" ")[0]);
+	return !(Number.isSafeInteger(pid) && pid > 0) || !alive(pid);
+};
+
+/**
+ * Takes a file lock at lockPath, made whole with its holder's words (`<pid> <token>`): it is written to a file of its
+ * own, then hard-linked into place, which fails when the lock exists, so no reader ever sees it empty. Answers whether
+ * it was taken.
+ */
+function take(lockPath: string, words: string): boolean {
+	const temp = `${lockPath}.${randomBytes(6).toString("hex")}`;
+	writeFileSync(temp, words, { mode: 0o600 });
+	try {
+		linkSync(temp, lockPath);
+		return true;
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+		return false;
+	} finally {
+		unlinkSync(temp);
+	}
+}
+
+/**
+ * Removes the lock at lockPath if it still holds `dead`, the words of a holder found gone. Breakers take turns by a
+ * second lock (<lock>.break, also naming its holder), and the lock is read again under it. So a lock is broken once:
+ * a waiter that judged the same dead lock never removes the lock another has taken since.
+ */
+function breakDead(lockPath: string, dead: string, words: string): void {
+	const breaker = `${lockPath}.break`;
+	if (!take(breaker, words)) {
+		// Another waiter is breaking it. A breaker that died midway leaves its own lock, named by it: that one goes too.
+		const other = lockWords(breaker);
+		if (other !== undefined && leftByTheDead(other) && lockWords(breaker) === other) unlinkSync(breaker);
+		return;
+	}
+	try {
+		if (lockWords(lockPath) === dead) unlinkSync(lockPath);
+	} finally {
+		unlinkSync(breaker);
+	}
+}
 
 /**
  * A ledger in a JSON file (mode 0600), read whole on each call and written whole by rename, so a reader never sees half
  * a file. Writes (put, remove) are one at a time across processes: in this process through one queue, and between
- * processes by a lock file beside the ledger (<path>.lock, made with O_EXCL), so a write never drops another's entry.
+ * processes by a lock file beside the ledger (<path>.lock), so a write never drops another's entry.
+ *
+ * The lock names its holder (`<pid> <token>`), and is judged by that holder, not by its age. A live writer's lock is
+ * never taken, however old: a write waits for it, up to waitMs (10 s by default), then fails in words. A lock whose
+ * holder is gone (it crashed mid-write) is broken at once, by one waiter.
  */
-export function fileLedger(path: string): PhoneLedger {
+export function fileLedger(path: string, { waitMs = LOCK_WAIT_MS }: { waitMs?: number } = {}): PhoneLedger {
 	const lockPath = `${path}.lock`;
 	let queue: Promise<unknown> = Promise.resolve();
 	/** fn under the lock, after every earlier write of this process. */
 	const locked = <T>(fn: () => T): Promise<T> => {
 		const turn = queue.then(async () => {
 			mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-			const until = Date.now() + LOCK_WAIT_MS;
-			for (let wait = 2; ; wait = Math.min(wait * 2, 50)) {
-				try {
-					closeSync(openSync(lockPath, "wx", 0o600));
-					break;
-				} catch (error) {
-					if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-				}
-				try {
-					if (Date.now() - statSync(lockPath).mtimeMs > LOCK_STALE_MS) {
-						unlinkSync(lockPath);
-						continue;
-					}
-				} catch {
+			const words = `${process.pid} ${randomBytes(8).toString("hex")}\n`;
+			const until = Date.now() + waitMs;
+			for (let wait = 2; !take(lockPath, words); wait = Math.min(wait * 2, 50)) {
+				const held = lockWords(lockPath);
+				if (held === undefined) continue;
+				if (leftByTheDead(held)) {
+					breakDead(lockPath, held, words);
 					continue;
 				}
-				if (Date.now() > until) throw new Error(`the phone ledger ${path} stayed locked by another writer for ${LOCK_WAIT_MS / 1000} s (${lockPath})`);
+				if (Date.now() >= until) throw new Error(`the phone ledger ${path} stayed locked by another writer for ${waitMs / 1000} s (${lockPath})`);
 				await new Promise((resolve) => setTimeout(resolve, wait));
 			}
 			try {
 				return fn();
 			} finally {
-				try {
-					unlinkSync(lockPath);
-				} catch {
-					// Already gone: nothing to release.
-				}
+				// Only its own lock: never one a breaker let another take.
+				if (lockWords(lockPath) === words) unlinkSync(lockPath);
 			}
 		});
 		queue = turn.catch(() => undefined);
@@ -138,7 +197,9 @@ function optionsOf({ env = process.env, adb, ...rest }: PhoneModuleOptions): Pho
 	return {
 		apiKey: settings.apiKey,
 		...(settings.platform ? { platform: settings.platform } : {}),
-		adb: adb ?? settings.adb ?? "adb",
+		// The adb the run spawns starts from this environment with every adb variable dropped (adbCli's env), and this
+		// module's own names too: the API key has no business in adb's environment.
+		adb: adb ?? adbCli(settings.adb ?? "adb", { env: Object.fromEntries(Object.entries(env).filter(([name]) => !(Object.values(PHONE_ENV) as string[]).includes(name))) }),
 		ledger: fileLedger(settings.ledgerPath ?? join(tmpdir(), "agentrun-phone-ledger.json")),
 		maxLifetimeMs: RUN_MAX_LIFETIME_MS,
 		...rest,
