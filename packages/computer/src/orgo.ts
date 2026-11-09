@@ -39,6 +39,7 @@ import {
 	type Refusal,
 } from "./provider.js";
 import { type ComputerError, fail, ok, type Result } from "./result.js";
+import { daemonWatch, type ScreenWatch, type ScreenWatchHandlers, type WatchOptions } from "./screen-watch.js";
 import { listTested } from "./test-connection.js";
 
 /** The mount kinds an Orgo computer takes: none yet (an Archil mount needs an Orgo template that bakes the helper). */
@@ -630,6 +631,11 @@ export class OrgoProvider implements ComputerProvider {
 		const desktops = read.value?.desktops;
 		if (!Array.isArray(desktops)) return fail("orgo", `Orgo's workspace ${this.#workspaceId} lists no computers array`);
 		return ok(desktops.filter((one): one is OrgoComputer => typeof one?.id === "string" && typeof one.name === "string").map((one) => ({ ...one, workspace_id: this.#workspaceId })));
+	}
+
+	/** The live view: screen.watch on a connection of the watch's own (daemonWatch), never Orgo's VNC (proxy only). */
+	watch(ref: ComputerRef, handlers: ScreenWatchHandlers, options?: WatchOptions): Promise<Result<ScreenWatch>> {
+		return daemonWatch(this, ref, handlers, options);
 	}
 
 	async connect(ref: ComputerRef): Promise<Result<ComputerConnection>> {

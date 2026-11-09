@@ -57,6 +57,7 @@ import {
 	type Refusal,
 } from "./provider.js";
 import { type ComputerErrorCode, fail, ok, type Result } from "./result.js";
+import { daemonWatch, type ScreenWatch, type ScreenWatchHandlers, type WatchOptions } from "./screen-watch.js";
 import { connectionError } from "./test-connection.js";
 import { waitUntil } from "./wait.js";
 
@@ -1189,6 +1190,11 @@ export class ModalProvider implements ComputerProvider {
 		if (!found.ok) return found;
 		if (!ours(found.value.tags, ref.name)) return fail("not_found", `no Modal computer named ${ref.name} has the id ${ref.id}`);
 		return found;
+	}
+
+	/** The live view: screen.watch on a connection of the watch's own (daemonWatch); a sandbox has no screen. */
+	watch(ref: ComputerRef, handlers: ScreenWatchHandlers, options?: WatchOptions): Promise<Result<ScreenWatch>> {
+		return daemonWatch(this, ref, handlers, options);
 	}
 
 	async connect(ref: ComputerRef): Promise<Result<ComputerConnection>> {
