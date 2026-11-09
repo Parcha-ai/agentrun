@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "parcha-agentrun"
+version = "0.3.0a0"
+description = "A typed Python client for a self-hosted AgentRun server: a method per operation of its API, typed from its OpenAPI document, with waiting for a run and following its timeline. Standard library only."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+authors = [{ name = "Parcha Labs, Inc." }]
+keywords = ["agentrun", "agent", "client", "sdk", "api"]
+dependencies = []
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Typing :: Typed",
+    "Private :: Do Not Upload",
+]
+
+[project.urls]
+Homepage = "https://agentrun.ai"
+Repository = "https://github.com/Parcha-ai/agentrun"
+Issues = "https://github.com/Parcha-ai/agentrun/issues"
+
+[tool.setuptools]
+packages = ["agentrun"]
+
+[tool.setuptools.package-data]
+agentrun = ["py.typed"]
+
+# pyright, a root devDependency: `npx pyright -p python` from the repository's root. The package and the README's
+# consumer are strict; the tests are standard. tests/typecheck/bad.py must fail, line by line, so it is left out here
+# and checked on its own (scripts/python-client.test.mjs).
+[tool.pyright]
+include = ["agentrun", "tests/*.py", "tests/typecheck/ok.py"]
+pythonVersion = "3.10"
+typeCheckingMode = "standard"
+strict = ["agentrun", "tests/typecheck/ok.py"]
+reportUnnecessaryTypeIgnoreComment = "error"

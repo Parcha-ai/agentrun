@@ -92,4 +92,42 @@ describe("a server deny, in the agent editor", () => {
     expect(page.tick("bash").closest("label")!.textContent).toContain(LINE);
     expect(page.tick("read").disabled).toBe(false);
   });
+
+  // An MCP server as its read gives it: each tool with this server's permission in force.
+  const LINEAR = { name: "linear", url: "https://mcp.example.test/mcp", auth: { type: "none" }, credential: null, protocol: "2025-06-18", server_info: null, listed_at: "2026-11-08T00:00:00Z", updated_at: "2026-11-08T00:00:00Z",
+    tools: [
+      { name: "create_issue", input_schema: {}, permission: "deny", default_permission: "allow", permissions: ALL },
+      { name: "list_issues", input_schema: {}, permission: "allow", default_permission: "allow", permissions: ALL },
+    ] };
+  async function openMcp(agent: Agent) {
+    const host = mount();
+    act(() => root!.render(createElement(AgentEditor, { agent, caps: { ...caps, mcp: true, mcpHarnesses: ["pi"] }, providerChoices: toolChoices(RAW), permissionGates: toolGates(RAW), mcpServers: [LINEAR] as never, step: "tools", onSave: async () => null })));
+    await settle();
+    const row = (tool: string) => host.querySelector<HTMLTableRowElement>(`section[aria-label="Tool settings"] tr[data-tool="${tool}"]`)!;
+    const select = (tool: string) => row(tool).querySelector<HTMLSelectElement>(`select[aria-label="${tool} permission"]`)!;
+    const tick = (tool: string) => host.querySelector<HTMLInputElement>(`input[type="checkbox"][value="${tool}"]`)!;
+    return { host, row, select, tick };
+  }
+
+  it("an MCP tool picked from its server's read, not saved yet, is held at deny when that read says the server denies it", async () => {
+    const page = await openMcp(agentWith(["read", "mcp:linear/create_issue"]));
+    expect(page.select("mcp:linear/create_issue").disabled).toBe(true);
+    expect(page.select("mcp:linear/create_issue").value).toBe("deny");
+    expect(page.row("mcp:linear/create_issue").textContent).toContain(LINE);
+  });
+
+  it("the MCP picker doesn't offer a tool its server's read says this server denies, and says why", async () => {
+    const page = await openMcp(agentWith(["read"]));
+    expect(page.tick("mcp:linear/create_issue").disabled).toBe(true);
+    expect(page.tick("mcp:linear/create_issue").closest("label")!.textContent).toContain(LINE);
+    expect(page.tick("mcp:linear/list_issues").disabled).toBe(false);
+  });
+
+  it("the agent's read is newer than capabilities: a deny lifted since capabilities were read no longer holds the tool", async () => {
+    // Capabilities (read as the editor opened) still say bash is denied; the agent's read, after, says it is allowed.
+    const served: AgentTool[] = [{ name: "bash", permission: "allow", permission_from: "default", default_permission: "allow", permissions: ALL }];
+    const page = await open(agentWith(["read", "bash"], { tools: served }));
+    expect(page.select("bash").disabled).toBe(false);
+    expect(page.row("bash").textContent).not.toContain(LINE);
+  });
 });

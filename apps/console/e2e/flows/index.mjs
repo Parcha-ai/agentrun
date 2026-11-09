@@ -16,6 +16,7 @@ import connectGitHub from "./connect-github.mjs";
 import setupOpen from "./setup-open.mjs";
 import setupPublic from "./setup-public.mjs";
 import signIn from "./sign-in.mjs";
+import signedOutElsewhere from "./signed-out-elsewhere.mjs";
 import runToEnd from "./run-to-end.mjs";
 import takeOver from "./take-over.mjs";
 import templateApply from "./template-apply.mjs";
@@ -31,5 +32,6 @@ export const flows = [
   runToEnd,
   watchLive,
   takeOver,
+  signedOutElsewhere,
   serverDeny,
 ];

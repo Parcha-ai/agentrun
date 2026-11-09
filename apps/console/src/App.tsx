@@ -11,7 +11,7 @@ import { McpServersPage } from "@/components/McpServersPage";
 import { ModelKeyCard } from "@/components/ModelKeyCard";
 import { NoModelBanner } from "@/components/NoModelBanner";
 import { WebhookPage } from "@/components/WebhookPage";
-import { ScheduleNames } from "@/components/ScheduleChip";
+import { ScheduleNames, type TriggerKnown } from "@/components/ScheduleChip";
 import { SchedulesPage } from "@/components/Schedules";
 import { TemplatesPage } from "@/components/Templates";
 import { LiveRun } from "@/components/LiveRun";
@@ -126,8 +126,17 @@ function importLine(s: ImportState): string {
  *  ride out the server going away (lib/connection): they wait, and carry on once it answers. */
 export function App() {
   const [connection] = useState(createConnection);
-  const v2 = useMemo(() => createClient({ fetch: connection.fetch }), [connection]);
   const [auth, setAuth] = useState<AuthMode | null>(null);
+  // Signed out elsewhere (another tab's Sign out, an expiry): a read refused (401) is checked against the session, read
+  // again. A session that ended turns the console to the page a fresh load shows (a password's sign-in, saying why, or a
+  // server's link where it has no accounts); the address stays, so signing in again opens the same page. A refusal of a
+  // read made under an older session, the session good again since, changes nothing. One check at a time.
+  const [signedOutElsewhere, setSignedOutElsewhere] = useState(false);
+  const authNow = useRef<AuthMode | null>(null);
+  authNow.current = auth;
+  const checking = useRef(false);
+  const recheck = useRef<() => Promise<void>>(async () => {});
+  const v2 = useMemo(() => createClient({ fetch: connection.fetch, onSignedOut: () => void recheck.current() }), [connection]);
   // The setup code, taken from the address once and removed from it (and from the history entry).
   const [setupCode, setSetupCode] = useState(setupCodeOnce);
   // A setup link opened in this same tab once the page is up changes only the address's fragment: its code is taken
@@ -147,12 +156,23 @@ export function App() {
   }, [auth]);
   // Whether setup takes the server's printed code (its session read says so), so the form asks for it with no link.
   const [codeNeeded, setCodeNeeded] = useState(false);
-  const readSession = async () => {
+  /** The mode the server's session asks for now. */
+  const sessionMode = async () => {
     const r = await v2.session();
     setCodeNeeded(setupTakesCode(r));
     // A server without accounts: a protected read tells whether this browser is in already (a token it sends).
     const probe = r.status === 404 ? await v2.listAgents().then(() => 200, (e) => (e instanceof ClientError ? e.status : 0)) : undefined;
-    setAuth(authMode(r, probe));
+    return authMode(r, probe);
+  };
+  const readSession = async () => setAuth(await sessionMode());
+  recheck.current = async () => {
+    if (authNow.current !== "signed_in" || checking.current) return;
+    checking.current = true;
+    try {
+      const mode = await sessionMode();
+      if (mode !== "signed_in" && authNow.current === "signed_in") { setSignedOutElsewhere(true); setAuth(mode); }
+    } catch { /* the session could not be read: the console stays as it is, and the next refusal checks again */ }
+    finally { checking.current = false; }
   };
   useEffect(() => { readSession().catch(() => setAuth("sign_in")); }, [v2]); // eslint-disable-line react-hooks/exhaustive-deps
   // Setup's box, offered at once where the server can import this machine's sessions (on loopback, before an owner), its
@@ -182,8 +202,8 @@ export function App() {
   if (auth === null) return <ConnectionProvider connection={connection}><Starting /></ConnectionProvider>;
   if (auth !== "signed_in") {
     return (
-      <SignIn key={auth} mode={auth} code={setupCode} codeNeeded={codeNeeded} offer={offer} onSubmit={async (password, code, importSessions) => {
-        try { await (auth === "setup" ? v2.setup(password, code, importSessions) : v2.signIn(password)); setAuth("signed_in"); return null; }
+      <SignIn key={auth} mode={auth} code={setupCode} codeNeeded={codeNeeded} offer={offer} problem={signedOutElsewhere && auth === "sign_in" ? "You were signed out. Sign in to go on." : null} onSubmit={async (password, code, importSessions) => {
+        try { await (auth === "setup" ? v2.setup(password, code, importSessions) : v2.signIn(password)); setSignedOutElsewhere(false); setAuth("signed_in"); return null; }
         catch (e) {
           // Another browser set the owner up first: the page reads the session again, which now asks to sign in.
           if (e instanceof ClientError && e.status === 403 && auth === "setup") { await readSession().catch(() => {}); }
@@ -192,7 +212,7 @@ export function App() {
       }} />
     );
   }
-  return <ConnectionProvider connection={connection}><Console v2={v2} onSignedOut={() => setAuth("sign_in")} /></ConnectionProvider>;
+  return <ConnectionProvider connection={connection}><Console v2={v2} onSignedOut={() => { setSignedOutElsewhere(false); setAuth("sign_in"); }} /></ConnectionProvider>;
 }
 
 /** Before the console knows who is signed in: a quiet page, or, while the server can't be reached, that said with the
@@ -205,14 +225,14 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
   const [signOutError, setSignOutError] = useState<string | null>(null);
   const [where, setWhere] = useState(() => route());
   const [caps, setCaps] = useState<Capabilities | null>(null);
-  // The schedules' names, for the chip on a run a schedule started: read where the server has schedules, again on each
-  // page change (a schedule made or renamed shows by its name on its runs).
+  // The triggers' names and kinds, for the chip on a run a trigger started: read where the server has triggers, again on
+  // each page change (a trigger made or renamed shows by its name on its runs).
   const scheduling = caps?.features?.triggers?.routes === true;
-  const [scheduleNames, setScheduleNames] = useState<ReadonlyMap<string, string>>(new Map());
+  const [scheduleNames, setScheduleNames] = useState<ReadonlyMap<string, TriggerKnown>>(new Map());
   useEffect(() => {
     if (!scheduling) return;
     let live = true;
-    v2.listTriggers().then((r) => { if (live) setScheduleNames(new Map(r.triggers.map((t) => [t.id, t.name]))); }, () => {});
+    v2.listTriggers().then((r) => { if (live) setScheduleNames(new Map(r.triggers.map((t) => [t.id, { name: t.name, kind: t.source.kind }]))); }, () => {});
     return () => { live = false; };
   }, [v2, scheduling, where.section, where.trigger]);
   // Mission Control: the store's counts (GET /v2/stats) and the latest runs, read each time the page opens.
@@ -516,7 +536,7 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
             live={(id) => <LiveRun key={id} v2={v2} runId={id} caps={caps} agentName={agentName} />} />
         : where.section === "agents"
         ? where.agent === undefined ? <AgentsPage key={refreshed} v2={v2} archived={!!where.archived} go={go} />
-          : where.agent !== null && !where.edit ? <AgentPage key={where.agent} v2={v2} agentId={where.agent} tab={where.tab} notes={where.notes} learning={learningCap} defaultModel={editorCaps.defaultModel} modelSource={c?.models?.source} routePrefix={c?.models?.route_prefix} harnesses={editorCaps.harnesses} efforts={efforts} limits={caps?.limits} go={go} />
+          : where.agent !== null && !where.edit ? <AgentPage key={where.agent} v2={v2} agentId={where.agent} tab={where.tab} notes={where.notes} learning={learningCap} defaultModel={editorCaps.defaultModel} modelSource={c?.models?.source} routePrefix={c?.models?.route_prefix} harnesses={editorCaps.harnesses} efforts={efforts} limits={caps?.limits} places={placesOf(caps)} go={go} />
           // A new decision agent's judge names the server's decision provider (agentForm's decisionProvider).
           : <AgentEditPage key={`${where.agent ?? "new"}:${where.tool ?? ""}`} v2={v2} choices={choices} gates={gates} focusTool={where.tool} caps={{ ...editorCaps, modelSource: c?.models?.source, routePrefix: c?.models?.route_prefix, decisionProvider: decisionProvider((caps as unknown as { workflows?: Parameters<typeof decisionProvider>[0] } | null)?.workflows), places: placesOf(caps), mcp: !!caps?.features?.mcp_client, mcpHarnesses: caps?.features?.mcp_client?.harnesses }} agentId={where.agent} go={go} />
         : where.run ? <LiveRun key={where.run} v2={v2} runId={where.run} caps={caps} agentName={agentName} />
