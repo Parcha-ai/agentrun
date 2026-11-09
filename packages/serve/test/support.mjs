@@ -395,14 +395,15 @@ export function storeRun(data, runId) {
 }
 
 /** Run `runId` as its claim and its process say it: the record the process keeps in its store (its status, `detail` and
- *  the epoch it ran under as `generation`), and its holder from the run's row (the process's `pid`, its door as
- *  `serve`); `{}` when there is neither yet. */
+ *  the epoch it ran under as `generation`), and its holder from the run's row — the runner that claimed it, whose name the
+ *  runner mints as `<hostname>:<pid>:<uuid>` (runner.ts), so its `pid` is the process now running it; `{}` when there is
+ *  neither yet. */
 export function runRecordOf(data, runId) {
   let claim;
   try {
     const db = new DatabaseSync(join(data, "store.sqlite"), { readOnly: true, timeout: 5_000 });
     try {
-      claim = db.prepare("SELECT claim_epoch, claim_holder FROM runs WHERE id = ?").get(runId);
+      claim = db.prepare("SELECT epoch, runner FROM runs WHERE id = ?").get(runId);
     } finally {
       db.close();
     }
@@ -410,9 +411,9 @@ export function runRecordOf(data, runId) {
     claim = undefined;
   }
   let holder;
-  if (typeof claim?.claim_holder === "string" && claim.claim_holder.startsWith("{")) {
-    const named = JSON.parse(claim.claim_holder);
-    holder = { ...named, ...(named.door ? { serve: named.door } : {}) };
+  if (typeof claim?.runner === "string") {
+    const pid = Number(/:(\d+):[^:]+$/.exec(claim.runner)?.[1]);
+    if (Number.isInteger(pid)) holder = { pid, runner: claim.runner };
   }
   let record = {};
   const file = join(runDir(data, runId), "store", "run.sqlite");
@@ -427,7 +428,7 @@ export function runRecordOf(data, runId) {
     }
   }
   const { holder: _kept, ...rest } = record;
-  return { ...rest, ...(holder ? { holder } : {}), ...(claim ? { epoch: Number(claim.claim_epoch) } : {}) };
+  return { ...rest, ...(holder ? { holder } : {}), ...(claim ? { epoch: Number(claim.epoch) } : {}) };
 }
 
 /** Create agent `id` and start one run of it with `content`. */
