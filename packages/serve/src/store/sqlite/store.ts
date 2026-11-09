@@ -2,7 +2,7 @@
 // The only code with SQL in it, besides the schema and the run patch. The file is on local disk, never on Archil: one
 // connection per process, and SQLite's one writer lock serializes the server's and every runner's commits. A unit of work
 // with more than one statement is one transaction (connection.transaction, BEGIN IMMEDIATE): all of it or none of it.
-import { existsSync, mkdirSync, readdirSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { claimFence } from "../fence.js";
@@ -18,6 +18,7 @@ import {
   SignInHandedTo, SignInMissing, SIGN_IN_TOMBSTONES_KEPT, type SignIns, type SignInRow, type SignInTombstoneRow, type ViewerKind,
 } from "../store.js";
 import { Connection, type SqliteExecutor, type SqliteValue, type Statement } from "./connection.js";
+import { inMemory } from "./memory.js";
 import { applyRunPatch, refuseLeftovers, RUN_COLUMNS, runOf, type RunRecord } from "./run-patch.js";
 import { readLaunch, writeLaunch } from "./run-launch.js";
 
@@ -197,6 +198,16 @@ function isThisVersionsStore(file: string): boolean {
   }
 }
 
+/** In-memory stores opened in this process: each is its own data, so each gets its own `where`. */
+let memoryStores = 0;
+
+/** A SQLite store's identity (Store.where): its database file's real path, so two instances over one file (two roles, a
+ *  path given two ways) share it; an in-memory database is its own data, never another's. */
+function whereOf(file: string): string {
+  if (inMemory(file)) return `sqlite:memory:${++memoryStores}`;
+  return `sqlite:${realpathSync(file)}`;
+}
+
 /** Opens the store in `dataDir` (its file is STORE_FILE there), or at `file` (the store's own tests). As the server (the
  *  default): makes the data directory, takes the owner lock (StoreOwned when another server holds it) and, on a store with
  *  no schema yet, sets schema SCHEMA_VERSION up in one durable commit. As a runner: makes and sets up nothing. Either
@@ -238,7 +249,7 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
     await connection.close().catch(() => undefined);
     throw error;
   }
-  return new SqliteStore(connection, options.now ?? Date.now);
+  return new SqliteStore(connection, options.now ?? Date.now, whereOf(file));
 }
 
 /** How many released claims a store remembers, to refuse their journals. */
@@ -268,6 +279,7 @@ class SqliteStore implements Store {
   readonly signIns: SignIns;
   readonly #db: Connection;
   readonly #now: () => number;
+  readonly where: string;
   /** Each claim's one journal, until it is closed. */
   readonly #journals = new Map<string, RunStorage>();
   /** Each run's claim this store released last (its epoch): journal() refuses that claim, or an older one, rather than
@@ -277,9 +289,10 @@ class SqliteStore implements Store {
    *  epoch check in its own transaction. The map refuses early; the epoch is what guarantees it. */
   readonly #released = new Map<string, number>();
 
-  constructor(db: Connection, now: () => number) {
+  constructor(db: Connection, now: () => number, where: string) {
     this.#db = db;
     this.#now = now;
+    this.where = where;
 
     const insertAgent = (tx: SqliteExecutor, agent: { id: string; name: string; description?: string | null }, at: number) =>
       tx.run("INSERT INTO agents (id, name, description, created_at) VALUES (?, ?, ?, ?)", agent.id, agent.name, agent.description ?? null, at);
