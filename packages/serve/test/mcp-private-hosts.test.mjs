@@ -10,7 +10,7 @@ import { randomBytes } from "node:crypto";
 import { test } from "node:test";
 import { queued, storeOn, T0 } from "./store-helpers.mjs";
 
-const { checkPrivateHosts, MCP_PRIVATE_HOSTS_KEY, privateOAuthHosts, savePrivateOAuthHosts } = await import("../dist/mcp-private-hosts.js");
+const { checkPrivateHosts, MCP_PRIVATE_HOSTS_KEY, PRIVATE_HOSTS_SESSION_ONLY, privateHostsRoute, privateOAuthHosts, savePrivateOAuthHosts } = await import("../dist/mcp-private-hosts.js");
 const { refreshed } = await import("../dist/mcp-oauth.js");
 const { mcpServersOverStore } = await import("../dist/mcp-servers-store.js");
 const { mcpClaim } = await import("../dist/runner/mcp-claim.js");
@@ -235,55 +235,28 @@ test("the runner's refresh reads the setting from the store: unlisted, the call 
   listed.release();
 });
 
-const ROUTE = "/v2/settings/mcp-servers/oauth/private-hosts";
-/** The owner's password, made up for these tests. */
-const PHRASE = "the owner signs in with this phrase";
+test("the route: GET reads the list (none by default); a PUT not from the owner's signed-in page is 403 before its body is read and changes nothing; bad input is 422 in words; a PUT from the page replaces the list in the store", async (t) => {
+  const { store } = await storeOn(t);
+  const registry = mcpServersOverStore(store, { AGENTRUN_SEAL_KEY: KEY.toString("base64") }, "test");
+  assert.deepEqual(await privateHostsRoute(registry, { method: "GET" }), { hosts: [] }, "refused by default");
 
-test("the API: anyone the server lets in reads the list (none by default); only the owner's signed-in page writes it, CSRF-checked; a token's write is 403 and changes nothing; bad input is 422 in words", { timeout: 60_000 }, async (t) => {
-  const { serve, call, cookieOf } = await import("./support.mjs");
-  const server = await serve(t, { accounts: true, openSetup: true });
-  const origin = `http://127.0.0.1:${server.port}`; // key-gate: denylist this test server's own loopback origin, which the page's writes carry
-  const owner = await call(server.port, { method: "POST", path: "/v2/setup", headers: { "content-type": "application/json", origin }, body: { password: PHRASE } });
-  assert.equal(owner.status, 201, owner.text);
-  const page = { "content-type": "application/json", cookie: cookieOf(owner), origin };
-  const token = { "content-type": "application/json", authorization: `Bearer ${server.token}` };
+  let read = 0;
+  const body = (value) => async () => (read++, value);
+  await assert.rejects(privateHostsRoute(registry, { method: "PUT", body: body({ hosts: [AS] }), bySession: false }), (error) => error.code === "forbidden" && error.message === PRIVATE_HOSTS_SESSION_ONLY);
+  assert.equal(read, 0, "a token's body is never read");
+  assert.match(PRIVATE_HOSTS_SESSION_ONLY, /owner's password sign-in in the console, never a token/);
+  assert.deepEqual(await privateOAuthHosts(store), [], "nothing changed");
 
-  const empty = await call(server.port, { path: ROUTE, headers: token });
-  assert.equal(empty.status, 200, empty.text);
-  assert.deepEqual(empty.json, { hosts: [] }, "refused by default");
-  assert.deepEqual((await call(server.port, { path: ROUTE, headers: { cookie: cookieOf(owner) } })).json, { hosts: [] }, "the page reads it too");
+  await assert.rejects(privateHostsRoute(registry, { method: "PUT", body: body({ hosts: ["*.corp.test", "as.corp.test:8443", "169.254.169.254"] }), bySession: true }), (error) => { // key-gate: denylist the link-local metadata address the route refuses
+    assert.equal(error.code, "input_invalid");
+    assert.deepEqual(error.extra.fields.map((field) => field.field), ["hosts[0]", "hosts[1]", "hosts[2]"]);
+    assert.match(error.extra.fields[2].message, /can't be allowed/);
+    return true;
+  });
+  assert.deepEqual(await privateOAuthHosts(store), [], "nothing changed");
 
-  const byToken = await call(server.port, { method: "PUT", path: ROUTE, headers: token, body: { hosts: [AS] } });
-  assert.equal(byToken.status, 403, byToken.text);
-  assert.equal(byToken.json.error.code, "forbidden");
-  assert.match(byToken.json.error.message, /takes the owner's password sign-in in the console, never a token/);
-  const both = await call(server.port, { method: "PUT", path: ROUTE, headers: { ...page, authorization: `Bearer ${server.token}` }, body: { hosts: [AS] } });
-  assert.equal(both.status, 403, "a token beside the session is still a token");
-  const crossSite = await call(server.port, { method: "PUT", path: ROUTE, headers: { ...page, origin: "https://other.example.test" }, body: { hosts: [AS] } });
-  assert.equal(crossSite.status, 401, "the cookie stands for no write from another origin");
-  const notJson = await call(server.port, { method: "PUT", path: ROUTE, headers: { ...page, "content-type": "text/plain" }, body: JSON.stringify({ hosts: [AS] }) });
-  assert.equal(notJson.status, 401, "nor for a write without a JSON body");
-  assert.deepEqual((await call(server.port, { path: ROUTE, headers: token })).json, { hosts: [] }, "nothing changed");
-
-  const bad = await call(server.port, { method: "PUT", path: ROUTE, headers: page, body: { hosts: ["*.corp.test", "as.corp.test:8443", "169.254.169.254"] } }); // key-gate: denylist the link-local metadata address the API refuses
-  assert.equal(bad.status, 422, bad.text);
-  assert.equal(bad.json.error.code, "input_invalid");
-  assert.deepEqual(bad.json.error.fields.map((field) => field.field), ["hosts[0]", "hosts[1]", "hosts[2]"]);
-  assert.match(bad.json.error.fields[2].message, /can't be allowed/);
-
-  const set = await call(server.port, { method: "PUT", path: ROUTE, headers: page, body: { hosts: ["AS.Corp.test.", "fd12:3456::7"] } });
-  assert.equal(set.status, 200, set.text);
-  assert.deepEqual(set.json, { hosts: [AS, "[fd12:3456::7]"] });
-  assert.deepEqual((await call(server.port, { path: ROUTE, headers: token })).json, { hosts: [AS, "[fd12:3456::7]"] });
-  const cleared = await call(server.port, { method: "PUT", path: ROUTE, headers: page, body: { hosts: [] } });
-  assert.deepEqual(cleared.json, { hosts: [] });
-});
-
-test("the API with accounts off: no owner's password session exists, so every write is 403 and the list stays empty", { timeout: 60_000 }, async (t) => {
-  const { serve, call } = await import("./support.mjs");
-  const server = await serve(t);
-  const res = await call(server.port, { method: "PUT", path: ROUTE, headers: { "content-type": "application/json", authorization: `Bearer ${server.token}` }, body: { hosts: [AS] } });
-  assert.equal(res.status, 403, res.text);
-  assert.match(res.json.error.message, /this server has no accounts/);
-  assert.deepEqual((await call(server.port, { path: ROUTE, headers: { authorization: `Bearer ${server.token}` } })).json, { hosts: [] });
+  assert.deepEqual(await privateHostsRoute(registry, { method: "PUT", body: body({ hosts: ["AS.Corp.test.", "fd12:3456::7"] }), bySession: true }), { hosts: [AS, "[fd12:3456::7]"] });
+  assert.deepEqual(await store.settings.get(MCP_PRIVATE_HOSTS_KEY), { hosts: [AS, "[fd12:3456::7]"] }, "kept in the store's settings");
+  assert.deepEqual(await privateHostsRoute(registry, { method: "GET" }), { hosts: [AS, "[fd12:3456::7]"] });
+  assert.deepEqual(await privateHostsRoute(registry, { method: "PUT", body: body({ hosts: [] }), bySession: true }), { hosts: [] });
 });

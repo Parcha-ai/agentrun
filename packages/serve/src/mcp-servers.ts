@@ -6,23 +6,18 @@
 // server's token set (mcp-oauth.ts) is sealed the same way, bound to `mcp:<server>:oauth`, and refreshed here. No read
 // returns a credential. No redirect is followed: a credential goes only to the URL the person gave.
 import { createHmac } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { seal, unseal } from "@parcha/pi-durable-agent";
 import { ApiError, invalid, type InputIssue } from "./errors.js";
 import { writeDurableSync } from "./server-fs.js";
 import { metaToolOf } from "./mcp-meta.js";
-import { checkPrivateHosts, privateOAuthHosts, savePrivateOAuthHosts } from "./mcp-private-hosts.js";
-import type { Settings } from "./store/index.js";
 import { type ClientKind, MCP_SETTINGS_PAGE, McpSignIns, type OAuthNetwork, systemNetwork, reasonOf, refreshed, refused, SIGN_IN_AGAIN, type TokenSet } from "./mcp-oauth.js";
 import { SEAL_KEY_ENV, sealKeyOf } from "./tool-keys.js";
 import { serverGate, type ToolSettingsMap } from "./tool-plane.js";
 import { isObject, unknownFields } from "./validate.js";
 
 export const MCP_SERVERS_FILE = "mcp-servers.json";
-/** Where this registry keeps the store.settings row of the private-network OAuth hosts the owner allows
- *  (MCP_PRIVATE_HOSTS_KEY) until the server runs on the one store: `{ "<key>": <value> }`, 0600, written whole. */
-export const MCP_PRIVATE_HOSTS_FILE = "mcp-private-hosts.json";
 const FORMAT = "mcp-servers/1";
 export const MCP_SERVER_NAME = /^[a-z][a-z0-9-]{0,31}$/;
 /** The names AgentRun's own tools are called by, which no MCP server takes: claude-agent calls the kernel's host tools
@@ -94,13 +89,8 @@ export class McpServers {
   private readonly inflight = new Set<Promise<unknown>>();
 
   /** `network`: how an MCP server off loopback's authorization server is reached (mcp-oauth.ts); tests give their own. */
-  /** The private-network OAuth hosts' row, as store.settings holds it (MCP_PRIVATE_HOSTS_FILE): read and written only
-   *  through mcp-private-hosts.ts, as the store-backed registry reads and writes store.settings. */
-  private readonly settings: { settings: Pick<Settings, "get" | "put"> };
-
   constructor(data: string, env: NodeJS.ProcessEnv, private readonly version: string, private readonly network: OAuthNetwork = systemNetwork) {
-    this.settings = { settings: settingsFile(join(data, MCP_PRIVATE_HOSTS_FILE)) };
-    this.signIns = new McpSignIns(network, undefined, () => privateOAuthHosts(this.settings));
+    this.signIns = new McpSignIns(network);
     this.file = join(data, MCP_SERVERS_FILE);
     this.key = sealKeyOf(env[SEAL_KEY_ENV]);
     this.sealCheck = this.key && createHmac("sha256", this.key).update(`agentrun-serve ${FORMAT} key check`).digest("base64url");
@@ -140,19 +130,6 @@ export class McpServers {
     this.inflight.add(work);
     void work.then(() => this.inflight.delete(work), () => this.inflight.delete(work));
     return work;
-  }
-
-  /** GET .../oauth/private-hosts: the private-network hosts an authorization server may be on (none by default). */
-  async privateHosts(): Promise<{ hosts: string[] }> {
-    return { hosts: await privateOAuthHosts(this.settings) };
-  }
-
-  /** PUT .../oauth/private-hosts: the list replaced, or 422 in words (checkPrivateHosts). */
-  async setPrivateHosts(body: Record<string, unknown>): Promise<{ hosts: string[] }> {
-    const hosts = checkPrivateHosts(body);
-    if (this.stopped.signal.aborted) throw new ApiError("unavailable", "This server is stopping: nothing is written now.");
-    await savePrivateOAuthHosts(this.settings, hosts);
-    return { hosts };
   }
 
   list() {
@@ -343,7 +320,7 @@ export class McpServers {
       // Tried twice when the authorization server does not answer (a timeout, a 5xx, the network): only a refusal is final.
       for (let tries = 0; set.tokens.refresh_token && !next && !no && tries < 2 && !this.stopped.signal.aborted; tries++) {
         try {
-          next = await refreshed(set, kept.url, this.stopped.signal, this.network, { own: this.signIns.own, allowed: await privateOAuthHosts(this.settings) });
+          next = await refreshed(set, kept.url, this.stopped.signal, this.network, { own: this.signIns.own });
         } catch (error) {
           no = await refused(error);
         }
@@ -719,21 +696,3 @@ const causeCode = (error: unknown): string | undefined => {
   for (let at = error; isObject(at); at = (at as { cause?: unknown }).cause) if (typeof at.code === "string" && /^E[A-Z]+$/.test(at.code)) return at.code;
   return undefined;
 };
-
-/** One store.settings-shaped row file: `{ "<key>": <value> }`, read at each get (a missing file is no row; one that does
- *  not read is no row, so the private-hosts list reads as none allowed), written whole and synced at each put. */
-function settingsFile(path: string): Pick<Settings, "get" | "put"> {
-  const read = (): Record<string, unknown> => {
-    if (!existsSync(path)) return {};
-    try {
-      const value: unknown = JSON.parse(readFileSync(path, "utf8"));
-      return isObject(value) ? value : {};
-    } catch {
-      return {};
-    }
-  };
-  return {
-    get: async (key) => (Object.hasOwn(read(), key) ? read()[key] : undefined),
-    put: async (key, value) => writeDurableSync(path, `${JSON.stringify({ ...read(), [key]: value }, null, 2)}\n`),
-  };
-}
