@@ -12,6 +12,7 @@ import { startRunner } from "../dist/runner/runner.js";
 import { suiteTools } from "../dist/runner/conformance/harness.js";
 import { closeOpenSessions, piAdapterSpec } from "./conformance-pi-adapter.mjs";
 import { scriptedModel } from "./faux-pi-model.mjs";
+import { STEADY_LEASE } from "./runner-support.mjs";
 
 /** The input a B run's loop sends (conformance-pi-adapter's piAdapterSpec) and its request id (runner/loop.ts). */
 export const INPUT = "Follow the script.";
@@ -49,7 +50,8 @@ export async function doorStream(script, options = {}) {
 export const settled = (types) => types.includes("run_end") && types.filter((type) => type === "submission").length >= 2;
 
 export const RUN = "run-1";
-const TIMING = { leaseMs: 600, renewEveryMs: 150, stopMarginMs: 200, pollMs: 20, commandPollMs: 30 };
+// Every live test runs one runner that is never meant to lose its claim: the sweep's steady lease (runner-support.mjs).
+const TIMING = { ...STEADY_LEASE, pollMs: 20, commandPollMs: 30 };
 export const quiet = { beforeIntent: async () => {}, beforeResult: async () => {} };
 export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 

@@ -5,9 +5,9 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { startRunner } from "../dist/runner/runner.js";
 import { sendCommand } from "../dist/runner/commands.js";
-import { observed, queue, recorder, stores, until } from "./runner-support.mjs";
+import { observed, queue, recorder, STEADY_LEASE, stores, until } from "./runner-support.mjs";
 
-const TIMING = { leaseMs: 2_000, renewEveryMs: 500, stopMarginMs: 500, pollMs: 20, commandPollMs: 40 };
+const TIMING = { ...STEADY_LEASE, pollMs: 20, commandPollMs: 40 };
 
 test("a command whose loop.command() rejects once is handed on again at the next poll, not skipped", async (t) => {
   const opened = await stores({ runners: 1 });

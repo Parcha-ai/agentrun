@@ -120,14 +120,19 @@ const json = (value: unknown): string => JSON.stringify(value ?? null);
 
 type McpServerRecord = {
   name: string; url: string; auth: string; protocol: string | null; tools: string; prices: string; server_info: string | null; instructions: string | null; sealed: Uint8Array | null;
-  refresh_holder: string | null; refresh_until: number | null; created_at: number; updated_at: number; listed_at: number | null; credential_changed_at: number | null;
+  refresh_holder: string | null; refresh_until: number | null; created_at: number; updated_at: number; listed_at: number | null; credential_changed_at: number | null; token_until: number | null;
 };
 type McpPinRecord = { run_id: string; body: string; pinned_at: number };
-const MCP_SERVER_COLUMNS = "name, url, auth, protocol, tools, prices, server_info, instructions, sealed, refresh_holder, refresh_until, created_at, updated_at, listed_at, credential_changed_at";
-const mcpServerOf = (r: McpServerRecord): McpServerRow => ({
+const MCP_SERVER_COLUMNS = "name, url, auth, protocol, tools, prices, server_info, instructions, sealed, refresh_holder, refresh_until, created_at, updated_at, listed_at, credential_changed_at, token_until";
+/** The row as read at `at`, the store's own clock: its refresh lease judged by that clock (refreshLapsed), the one
+ *  leaseRefresh writes and grants it by, with its rule: a lease has run out once its refresh_until is before now. */
+const mcpServerOf = (r: McpServerRecord, at: number): McpServerRow => ({
   name: r.name, url: r.url, auth: r.auth, protocol: r.protocol, tools: JSON.parse(r.tools), prices: JSON.parse(r.prices),
   serverInfo: r.server_info === null ? null : JSON.parse(r.server_info), instructions: r.instructions,
-  sealed: r.sealed === null ? null : Uint8Array.from(r.sealed), refreshHolder: r.refresh_holder, refreshUntil: r.refresh_until, createdAt: r.created_at, updatedAt: r.updated_at, listedAt: r.listed_at, credentialChangedAt: r.credential_changed_at,
+  sealed: r.sealed === null ? null : Uint8Array.from(r.sealed), refreshHolder: r.refresh_holder, refreshUntil: r.refresh_until,
+  refreshLapsed: r.refresh_until !== null && r.refresh_until < at,
+  tokenLeftMs: r.token_until === null ? null : r.token_until - at,
+  createdAt: r.created_at, updatedAt: r.updated_at, listedAt: r.listed_at, credentialChangedAt: r.credential_changed_at,
 });
 const mcpPinOf = (r: McpPinRecord): McpPinRow => ({ runId: r.run_id, body: JSON.parse(r.body), pinnedAt: r.pinned_at });
 
@@ -141,9 +146,9 @@ type TriggerSettingRecord = { adapter: string; scope: string; field: string; sea
 const triggerSettingOf = (r: TriggerSettingRecord): TriggerSettingRow => ({ adapter: r.adapter, scope: r.scope, field: r.field, sealed: r.sealed, updatedAt: r.updated_at });
 type McpOauthRecord = { state: string; server: string; sealed: Uint8Array; working: string | null; expires_at: number };
 const mcpOauthOf = (r: McpOauthRecord): McpOauthPendingRow => ({ state: r.state, server: r.server, sealed: Uint8Array.from(r.sealed), working: r.working === null ? null : JSON.parse(r.working), expiresAt: r.expires_at });
-type SignInRecord = { agent_id: string; provider: string; name: string; pointer_sealed: Uint8Array; saved_at: number; verified_at: number | null };
-const SIGN_IN_COLUMNS = "agent_id, provider, name, pointer_sealed, saved_at, verified_at";
-const signInOf = (r: SignInRecord): SignInRow => ({ agentId: r.agent_id, provider: r.provider, name: r.name, pointerSealed: Uint8Array.from(r.pointer_sealed), savedAt: r.saved_at, verifiedAt: r.verified_at });
+type SignInRecord = { agent_id: string; provider: string; name: string; pointer_sealed: Uint8Array; saved_at: number; save: number; verified_at: number | null };
+const SIGN_IN_COLUMNS = "agent_id, provider, name, pointer_sealed, saved_at, save, verified_at";
+const signInOf = (r: SignInRecord): SignInRow => ({ agentId: r.agent_id, provider: r.provider, name: r.name, pointerSealed: Uint8Array.from(r.pointer_sealed), savedAt: r.saved_at, save: r.save, verifiedAt: r.verified_at });
 type SignInTombstoneRecord = { agent_id: string; provider: string; pointer_sealed: Uint8Array; forgotten_at: number };
 const signInTombstoneOf = (r: SignInTombstoneRecord): SignInTombstoneRow => ({ agentId: r.agent_id, provider: r.provider, pointerSealed: Uint8Array.from(r.pointer_sealed), forgottenAt: r.forgotten_at });
 
@@ -753,11 +758,13 @@ class SqliteStore implements Store {
 
     const server = async (executor: Pick<SqliteExecutor, "get">, name: string) => {
       const row = await executor.get<McpServerRecord>(`SELECT ${MCP_SERVER_COLUMNS} FROM mcp_servers WHERE name = ?`, name);
-      return row && mcpServerOf(row);
+      return row && mcpServerOf(row, now());
     };
     this.mcp = {
-      put: async ({ name, url, auth, protocol = null, tools, prices = null, serverInfo = null, instructions = null, sealed = null, listedAt, updatedAt, credentialChangedAt }) => {
+      put: async ({ name, url, auth, protocol = null, tools, prices = null, serverInfo = null, instructions = null, sealed = null, listedAt, updatedAt, credentialChangedAt, tokenLeftMs = null }) => {
         const at = now();
+        // The access token's end on this store's clock: the writer's measure of its life laid on now (token_until).
+        const tokenUntil = sealed !== null && typeof tokenLeftMs === "number" && Number.isFinite(tokenLeftMs) ? at + tokenLeftMs : null;
         // updated_at defaults to now (a save or a sign-in); a refresh passes the kept one so it is not read as an edit.
         // listed_at is the tools' listing time, now unless given.
         const updated = updatedAt ?? at;
@@ -766,18 +773,21 @@ class SqliteStore implements Store {
         // time given back); null with none. A token refresh (keepRefreshed) never moves it.
         const credentialAt = sealed === null ? null : credentialChangedAt === undefined ? at : credentialChangedAt;
         const [result] = await db.write([{
-          sql: `INSERT INTO mcp_servers (name, url, auth, protocol, tools, prices, server_info, instructions, sealed, created_at, updated_at, listed_at, credential_changed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          sql: `INSERT INTO mcp_servers (name, url, auth, protocol, tools, prices, server_info, instructions, sealed, created_at, updated_at, listed_at, credential_changed_at, token_until) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (name) DO UPDATE SET url = excluded.url, auth = excluded.auth, protocol = excluded.protocol, tools = excluded.tools,
-              prices = excluded.prices, server_info = excluded.server_info, instructions = excluded.instructions, sealed = excluded.sealed, refresh_holder = NULL, refresh_until = NULL, updated_at = excluded.updated_at, listed_at = excluded.listed_at, credential_changed_at = excluded.credential_changed_at
+              prices = excluded.prices, server_info = excluded.server_info, instructions = excluded.instructions, sealed = excluded.sealed, refresh_holder = NULL, refresh_until = NULL, updated_at = excluded.updated_at, listed_at = excluded.listed_at, credential_changed_at = excluded.credential_changed_at, token_until = excluded.token_until
             RETURNING ${MCP_SERVER_COLUMNS}`,
-          params: [name, url, auth, protocol, json(tools), json(prices), serverInfo === null ? null : json(serverInfo), instructions, sealed, at, updated, listed, credentialAt],
+          params: [name, url, auth, protocol, json(tools), json(prices), serverInfo === null ? null : json(serverInfo), instructions, sealed, at, updated, listed, credentialAt, tokenUntil],
         }]);
-        return mcpServerOf(result!.rows[0] as McpServerRecord);
+        return mcpServerOf(result!.rows[0] as McpServerRecord, at);
       },
       remove: async (name) => {
         await db.write([{ sql: "DELETE FROM mcp_servers WHERE name = ?", params: [name] }]);
       },
-      servers: async () => (await db.all<McpServerRecord>(`SELECT ${MCP_SERVER_COLUMNS} FROM mcp_servers ORDER BY name`)).map(mcpServerOf),
+      servers: async () => {
+        const at = now();
+        return (await db.all<McpServerRecord>(`SELECT ${MCP_SERVER_COLUMNS} FROM mcp_servers ORDER BY name`)).map((row) => mcpServerOf(row, at));
+      },
       server: (name) => server(db, name),
       pin: async (runId) => {
         const row = await db.get<McpPinRecord>("SELECT run_id, body, pinned_at FROM mcp_pins WHERE run_id = ?", runId);
@@ -809,16 +819,18 @@ class SqliteStore implements Store {
       },
       // One statement compares the credential and writes: no read between, so no other write lands in a gap. The lease is
       // cleared only by its own holder (a waiter that took a lapsed lease keeps it, and reads ours at its re-read).
-      keepRefreshed: (name, { seen, sealed, holder }) =>
+      keepRefreshed: (name, { seen, sealed, holder, tokenLeftMs = null }) =>
         db.transaction(async (tx) => {
           const at = now();
+          // The refreshed token's end on this store's clock (token_until), from the refresher's measure of its life.
+          const tokenUntil = typeof tokenLeftMs === "number" && Number.isFinite(tokenLeftMs) ? at + tokenLeftMs : null;
           const written = await tx.runCounted(
-            `UPDATE mcp_servers SET sealed = ?,
+            `UPDATE mcp_servers SET sealed = ?, token_until = ?,
               refresh_until = CASE WHEN refresh_holder = ? THEN NULL ELSE refresh_until END,
               refresh_holder = CASE WHEN refresh_holder = ? THEN NULL ELSE refresh_holder END,
               updated_at = ${d.greatest}(?, updated_at + 1)
              WHERE name = ? AND ${d.nullSafeEquals("sealed")}`,
-            sealed, holder, holder, at, name, seen,
+            sealed, tokenUntil, holder, holder, at, name, seen,
           );
           return { kept: written === 1, row: await server(tx, name) };
         }, { deadlineMs: STORE_WRITE_DEADLINE_MS, fromCall: true }),
@@ -1026,27 +1038,40 @@ class SqliteStore implements Store {
     this.signIns = {
       save: async ({ agentId, provider, name, pointerSealed }) => {
         const at = now();
-        // A fresh save clears verified_at: the pointer is new, and no run has verified it yet.
+        // A fresh save clears verified_at (the pointer is new, and no run has verified it yet) and numbers the save.
         const [result] = await db.write([{
-          sql: `INSERT INTO sign_ins (agent_id, provider, name, pointer_sealed, saved_at, verified_at) VALUES (?, ?, ?, ?, ?, NULL)
-            ON CONFLICT (agent_id, provider) DO UPDATE SET name = excluded.name, pointer_sealed = excluded.pointer_sealed, saved_at = excluded.saved_at, verified_at = NULL
+          sql: `INSERT INTO sign_ins (agent_id, provider, name, pointer_sealed, saved_at, save, verified_at) VALUES (?, ?, ?, ?, ?, 1, NULL)
+            ON CONFLICT (agent_id, provider) DO UPDATE SET name = excluded.name, pointer_sealed = excluded.pointer_sealed, saved_at = excluded.saved_at, save = sign_ins.save + 1, verified_at = NULL
             RETURNING ${SIGN_IN_COLUMNS}`,
           params: [agentId, provider, name, pointerSealed, at],
         }]);
         return signInOf(result!.rows[0] as SignInRecord);
       },
+      saveIfAbsent: ({ agentId, provider, name, pointerSealed }) =>
+        db.transaction(async (tx) => {
+          // One transaction: the insert that wins or the live row that won before it, never a replace.
+          const inserted = await tx.all<SignInRecord>(
+            `INSERT INTO sign_ins (agent_id, provider, name, pointer_sealed, saved_at, save, verified_at) VALUES (?, ?, ?, ?, ?, 1, NULL)
+              ON CONFLICT (agent_id, provider) DO NOTHING RETURNING ${SIGN_IN_COLUMNS}`,
+            agentId, provider, name, pointerSealed, now(),
+          );
+          if (inserted[0]) return { saved: true, row: signInOf(inserted[0]) };
+          const live = await tx.get<SignInRecord>(`SELECT ${SIGN_IN_COLUMNS} FROM sign_ins WHERE agent_id = ? AND provider = ?`, agentId, provider);
+          return { saved: false, row: signInOf(live!) };
+        }),
       list: async (agentId) =>
         (await db.all<SignInRecord>(`SELECT ${SIGN_IN_COLUMNS} FROM sign_ins WHERE agent_id = ? ORDER BY provider`, agentId)).map(signInOf),
       get: async (agentId, provider) => {
         const row = await db.get<SignInRecord>(`SELECT ${SIGN_IN_COLUMNS} FROM sign_ins WHERE agent_id = ? AND provider = ?`, agentId, provider);
         return row && signInOf(row);
       },
-      verify: async (agentId, provider, at, { ifSavedAt } = {}) => {
-        // With ifSavedAt, stamp only while saved_at is still that one (WHERE saved_at = ?): a save that landed since the
-        // caller checked (allowed while held; it clears verified_at) moved saved_at on, so verify never stamps it stale.
+      verify: async (agentId, provider, at, { ifSave } = {}) => {
+        // With ifSave, stamp only while the row is still that save (WHERE save = ?): a save that landed since the caller
+        // checked (allowed while held; it clears verified_at) numbered itself on, in the same millisecond or not, so verify
+        // never stamps it stale.
         const [result] = await db.write([{
-          sql: `UPDATE sign_ins SET verified_at = ? WHERE agent_id = ? AND provider = ?${ifSavedAt === undefined ? "" : " AND saved_at = ?"}`,
-          params: ifSavedAt === undefined ? [at, agentId, provider] : [at, agentId, provider, ifSavedAt],
+          sql: `UPDATE sign_ins SET verified_at = ? WHERE agent_id = ? AND provider = ?${ifSave === undefined ? "" : " AND save = ?"}`,
+          params: ifSave === undefined ? [at, agentId, provider] : [at, agentId, provider, ifSave],
         }]);
         return result!.changes > 0;
       },

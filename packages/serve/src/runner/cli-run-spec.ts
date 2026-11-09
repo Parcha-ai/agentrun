@@ -37,6 +37,7 @@ import { INPUTS_DIR, UPLOADS_DIR, Uploads } from "../uploads.js";
 import { isObject } from "../validate.js";
 import { runFolder, scratchFolder } from "../workspace/paths.js";
 import { openRunWorkspace } from "../workspace/run-workspace.js";
+import { layOwnSkills } from "../workspace/revision-skills.js";
 import { runTools, type ToolResults } from "../workspace/run-tools.js";
 import { archilClaim, MOUNT_TTL_MS } from "../workspace/archil-claim.js";
 import { loadArchilSettings } from "../archil-settings.js";
@@ -189,6 +190,8 @@ export async function cliRunSpecFromLaunch(launch: RunLaunch, run: AdapterRun, d
   const start = learningStartOf(launch);
   const laid = start ? laidLearned(body.instructions ?? "", start.section) : (body.instructions ?? "");
   const check = await entry.skillCheck?.();
+  // The revision's own skills laid before they are read, as the pi spec lays them (adapter-run-spec.ts).
+  await layOwnSkills(ws.workspace, (revisionRow.skills ?? {}) as Record<string, string>);
   const { system: instructions, native } = await systemOf(laid, Object.keys(body.skills ?? {}), ws.workspace, check, { onDemand: readsFiles(granted) });
   const guidance = effortGuidance(launch.effort);
 
@@ -200,8 +203,20 @@ export async function cliRunSpecFromLaunch(launch: RunLaunch, run: AdapterRun, d
   const chosen = await modelsOf(entry, env, ref);
   const built = await entry.adapter(env, { model: chosen.model, models: chosen.models, unpriced: chosen.unpriced, ...(native.length ? { skills: native } : {}) });
   // The harness's own session options, its private directory and its working directory (SessionIO's dir and cwd, which
-  // every CLI adapter reads), set on its open here, so the loop lends the session nothing of its own.
-  const adapter: typeof built = { ...built, open: (spec, io) => built.open(spec, { ...io, dir, cwd: scratch }) };
+  // every CLI adapter reads), set on its open here, so the loop lends the session nothing of its own. A turn that ends on
+  // the CLI's own error names the harness first, as main words it (harness-app.ts: `<harness>: <error>`), so the run's
+  // error and its Timeline row say which CLI said it.
+  const adapter: typeof built = {
+    ...built,
+    open: async (spec, io) => {
+      const session = await built.open(spec, { ...io, dir, cwd: scratch });
+      const turnEnd = session.turnEnd.bind(session);
+      return Object.assign(session, { turnEnd: async () => {
+        const end = await turnEnd();
+        return end.error ? { ...end, error: `${name}: ${end.error}` } : end;
+      } });
+    },
+  };
 
   // The run's cap (its launch's maxCostUsd): the kernel's check before each paid request, at the catalog price of the
   // model that bills the run, and what a refusal does to the run, with the kernel's raise rule.

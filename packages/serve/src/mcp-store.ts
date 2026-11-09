@@ -9,6 +9,7 @@ import {
   type Mcp, type McpCredential, type McpOauth, type McpServerRow, openMcpCredential, type OpenedMcpCredential,
   sealColumn, sealedAt, sealMcpCredential, unsealColumn,
 } from "./store/index.js";
+import { tokenLeftOf } from "./mcp-probe.js";
 
 /** The most server-supplied text (server_info JSON, instructions) a row holds: both come from the remote server
  *  (untrusted), so they are bounded at save, never stored unbounded. */
@@ -44,6 +45,9 @@ export async function saveMcpServer(
     serverInfo: boundedServerInfo(server.serverInfo), instructions: boundedInstructions(server.instructions), sealed,
     ...(server.listedAt !== undefined ? { listedAt: server.listedAt } : {}), ...(server.updatedAt !== undefined ? { updatedAt: server.updatedAt } : {}),
     ...(server.credentialChangedAt !== undefined ? { credentialChangedAt: server.credentialChangedAt } : {}),
+    // Its access token's remaining life, measured here on the clock that stamped its set: the store stamps the token's end
+    // on its own clock from it, the one every claim judges the token by.
+    tokenLeftMs: tokenLeftOf(server.credential),
   });
 }
 

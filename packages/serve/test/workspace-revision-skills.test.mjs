@@ -6,7 +6,7 @@ import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync,
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
-import { layRevisionSkills, localWorkspace } from "../dist/workspace/index.js";
+import { layOwnSkills, layRevisionSkills, localWorkspace } from "../dist/workspace/index.js";
 
 const dirs = [];
 after(() => { for (const dir of dirs) rmSync(dir, { recursive: true, force: true }); });
@@ -46,3 +46,24 @@ test("a link at .agents/ or .agents/skills/ is never written through: ESCAPE, an
   await assert.rejects(layRevisionSkills(localWorkspace(work), { "cite/SKILL.md": "# Cite\n" }), (error) => error?.code === "ESCAPE");
   assert.deepEqual(readdirSync(outside), []);
 });
+
+test("at a claim, a revision's own skills are laid where they are missing, never over what is there: a learned skill and an earlier claim's folder stay", async () => {
+  const { work } = scratch();
+  const ws = localWorkspace(work);
+  // Nothing there yet (a fresh run): every file is written.
+  await layOwnSkills(ws, { "review/SKILL.md": "# Review\n", "review/REVIEW.md": "Rules.\n" });
+  assert.equal(readFileSync(join(work, ".agents/skills/review/SKILL.md"), "utf8"), "# Review\n");
+  assert.equal(readFileSync(join(work, ".agents/skills/review/REVIEW.md"), "utf8"), "Rules.\n");
+  // A learned skill laid at the run's start, and the run's own edit of its skill since: both stay at the next claim.
+  mkdirSync(join(work, ".agents/skills/learned-one"), { recursive: true });
+  writeFileSync(join(work, ".agents/skills/learned-one/SKILL.md"), "# Learned\n");
+  writeFileSync(join(work, ".agents/skills/review/SKILL.md"), "# Review, as the run left it\n");
+  await layOwnSkills(ws, { "review/SKILL.md": "# Review\n", "review/REVIEW.md": "Rules.\n", "cite/SKILL.md": "# Cite\n" });
+  assert.deepEqual(readdirSync(join(work, ".agents/skills")).sort(), ["cite", "learned-one", "review"]);
+  assert.equal(readFileSync(join(work, ".agents/skills/review/SKILL.md"), "utf8"), "# Review, as the run left it\n", "a folder already there is left as it is");
+  assert.equal(readFileSync(join(work, ".agents/skills/learned-one/SKILL.md"), "utf8"), "# Learned\n");
+  assert.equal(readFileSync(join(work, ".agents/skills/cite/SKILL.md"), "utf8"), "# Cite\n", "a missing one is laid");
+  // A path leaving .agents/skills/ writes nothing.
+  await assert.rejects(layOwnSkills(ws, { "../escape/SKILL.md": "x" }), (error) => error.code === "ESCAPE");
+});
+

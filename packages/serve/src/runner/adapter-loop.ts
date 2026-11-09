@@ -889,11 +889,12 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       await hooks.beforeIntent(kernelCall);
       const decision = (await spec.gate?.(kernelCall)) ?? "allow";
       if (typeof decision === "object") return { deny: decision.deny };
-      // Main's words for a tool set to deny (tool-gate's deniedText, from its one copy in refusal-words.ts).
-      if (decision === "deny") return { deny: setToDenyText(call.tool) };
-      if (decision === "allow") return "allow";
-      // Asked about by the name the gate gives (its settings key, as main's pending approval is named), else the call's.
+      // The call by the name the gate gives it (its settings key, as main's pending approval is named), else its own: the
+      // one name its refusal and its ask carry, never its wire name.
       const asked = spec.gate?.askedAs?.(call.tool) ?? call.tool;
+      // Main's words for a tool set to deny (tool-gate's deniedText, from its one copy in refusal-words.ts).
+      if (decision === "deny") return { deny: setToDenyText(asked) };
+      if (decision === "allow") return "allow";
       const answer = await answerOf(call, spec.approvalPrice?.(kernelCall) ?? null, asked);
       if (answer === "park") return { park: true };
       return answer.approved ? "allow" : { deny: deniedText(asked, answer.note) };

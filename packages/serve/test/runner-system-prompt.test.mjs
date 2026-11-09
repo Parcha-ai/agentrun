@@ -19,3 +19,12 @@ test("with no effort the system prompt is the environment line and the instructi
   const { spec } = await specFor(t, { body: { instructions: "Do it." } });
   assert.deepEqual(spec.session.system, [environmentLine(), "Do it."]);
 });
+
+test("the revision's own skills are laid in the run's .agents/skills/ at the claim and named in the prompt from there", async (t) => {
+  const skills = { "cite/SKILL.md": "---\nname: cite\ndescription: Cite every claim to its source.\n---\nCite.\n", "cite/ref.md": "Primary first.\n" };
+  // With read granted, a skill is a line naming its SKILL.md, read from the run's folder: no folder, no prompt.
+  const { spec } = await specFor(t, { body: { instructions: "Follow the plan.", tools: ["read"] }, skills });
+  const prompt = spec.session.system.join("\n");
+  assert.match(prompt, /- cite: Cite every claim to its source\. \(\.agents\/skills\/cite\/SKILL\.md\)/);
+});
+

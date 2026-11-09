@@ -4,9 +4,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { startRunner } from "../dist/runner/runner.js";
-import { observed, queue, recorder, sleep, stores } from "./runner-support.mjs";
+import { observed, queue, recorder, sleep, STEADY_LEASE, stores } from "./runner-support.mjs";
 
-const TIMING = { leaseMs: 2_000, renewEveryMs: 500, stopMarginMs: 500, pollMs: 20, commandPollMs: 50 };
+const TIMING = { ...STEADY_LEASE, pollMs: 20, commandPollMs: 50 };
 const BACKOFF_MS = 150;
 
 /** Loops whose every start ends interrupted at once, as a Session that closes on its own. */

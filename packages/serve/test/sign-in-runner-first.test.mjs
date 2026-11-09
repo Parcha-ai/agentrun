@@ -154,6 +154,50 @@ test("a beaten create whose delete the vendor refuses is said in the run's log, 
   assert.ok(!said.join("").match(/ctx-|https?:|\/v1\//), `no pointer or URL: ${said.join(" | ")}`);
 });
 
+test("two first creates that both land: exactly one object survives, saved; the other is deleted at the vendor; both runs are handed the survivor, one of them to save, and neither ends unreadable", async (t) => {
+  const r = await runner(t);
+  // Both creates are out at the vendor at once and come back together; run c2 checks for a saved sign-in and then waits
+  // to write its own until run c has saved and been handed its own: the window a look-then-save leaves open.
+  const made = [];
+  const removed = [];
+  let bothAsked;
+  const asked = new Promise((resolve) => (bothAsked = resolve));
+  const vendors = {
+    create: async () => {
+      const pointer = `ctx-race-${made.length + 1}-${randomBytes(4).toString("hex")}`;
+      made.push(pointer);
+      if (made.length === 2) bothAsked();
+      await asked;
+      return pointer;
+    },
+    remove: async (vendor, ref) => void removed.push([vendor, ref]),
+  };
+  let cDone;
+  const cHanded = new Promise((resolve) => (cDone = resolve));
+  let c2Reached;
+  const c2AtWrite = new Promise((resolve) => (c2Reached = resolve));
+  const gated = (wait, reached) => {
+    const signIns = Object.create(r.store.signIns);
+    for (const name of ["save", "saveIfAbsent"]) signIns[name] = async (...args) => { reached?.(); await wait; return r.store.signIns[name](...args); };
+    signIns.get = async (...args) => { const row = await r.store.signIns.get(...args); reached?.(); return row; };
+    return { runs: r.store.runs, signIns };
+  };
+  const forC = gated(c2AtWrite);
+  const forC2 = gated(cHanded, c2Reached);
+  const [c, c2] = await Promise.all([
+    signIns.runSignIn(forC, KEY, r.claims["run-c"], "browserbase", { vendors }).then((handed) => (cDone(), handed)),
+    signIns.runSignIn(forC2, KEY, r.claims["run-c2"], "browserbase", { vendors }),
+  ]);
+  const survivor = await r.saved("c", "browserbase");
+  assert.equal(made.length, 2, "both creates landed");
+  assert.ok(made.includes(survivor), "the saved one is one of them");
+  assert.deepEqual(removed, [["browserbase", made.find((pointer) => pointer !== survivor)]], "the other went at the vendor, and only it");
+  assert.deepEqual([c?.ref, c2?.ref], [survivor, survivor], "both runs are handed the survivor");
+  assert.equal([c, c2].filter((handed) => handed?.save === true).length, 1, "one of them to save");
+  assert.equal([c, c2].find((handed) => handed?.save === true)?.ref, survivor, "the saving run writes back into the survivor, never its own deleted object");
+  for (const run of ["run-c", "run-c2"]) assert.equal(await signIns.handedSignInReadsBack(r.store, KEY, await r.store.runs.get(run)), true, `${run} reads its sign-in back`);
+});
+
 test("the made sign-in's sessions open on its profile with save on, and their release verifies it", { timeout: 120_000 }, async (t) => {
   const r = await runner(t);
   const lifecycle = hostLifecycle();

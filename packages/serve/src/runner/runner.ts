@@ -552,10 +552,15 @@ export function startRunner(options: RunnerOptions): Runner {
       polling = false;
     }
   };
+  /** The poll's claim in flight, if any: close() waits for it, so a runner whose close resolved claims nothing after it. */
+  let claiming: Promise<void> | undefined;
   const poll = () => {
     if (closed || killed) return;
     beat();
-    void claimMore().finally(() => {
+    const claimed = claimMore();
+    claiming = claimed;
+    void claimed.finally(() => {
+      if (claiming === claimed) claiming = undefined;
       if (!closed && !killed) pollTimer = setTimeout(poll, pollMs);
     });
   };
@@ -578,6 +583,9 @@ export function startRunner(options: RunnerOptions): Runner {
       closed = true;
       clearTimeout(pollTimer);
       clearTimeout(commandTimer);
+      // A claim the poll already has in flight lands first: one it makes now is given back at once (claimMore, closed),
+      // all before close resolves, so nothing is claimed by this runner after it (a raise sent then wakes no claim here).
+      await claiming;
       const live = [...runs.values()].filter((held) => !held.fence.lost);
       for (const held of live) {
         if (!held.ending) {
