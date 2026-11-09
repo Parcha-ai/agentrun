@@ -138,6 +138,9 @@ export interface AdapterLoopOptions {
   readonly now?: () => number;
 }
 
+/** The most of a harness's own turn error a failed run's summary keeps. */
+const TURN_ERROR_MAX = 500;
+
 /** A host check's refusal as the cap's rule reads it (AdapterRunSpec.cap.park). */
 const refusalOf = (refusal: Refusal) => ({ message: refusal.refuse, forGood: refusal.forGood ?? true, ...(refusal.figures ? { figures: refusal.figures } : {}) });
 
@@ -675,7 +678,13 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           }
           if (park?.outcome === "parked") return await parkAtCap(harness, root, gate, { pending: park.pending, words: park.words });
           data = { state: "failed", summary: park?.outcome === "failed" ? park.error : refused.refuse };
-        } else if (outcome.status !== "completed") data = { state: "failed", summary: `the run gave no answer (${outcome.status})` };
+        } else if (outcome.status !== "completed") {
+          // A turn that ended on its harness's own error (a CLI's: a codex run whose MCP door could not be reached) fails
+          // the run in those words, bounded; serve redacts a run's summary as it serves it, as every summary. With none,
+          // the loop's own words.
+          const said = outcome.error?.trim();
+          data = { state: "failed", summary: said ? said.slice(0, TURN_ERROR_MAX) : `the run gave no answer (${outcome.status})` };
+        }
         else {
           // An answer cut at the model's output limit is unfinished: the run fails, saying so, never ended (loop.ts cutLast,
           // the direct loop's rule: the words are loop-contract's cutAtLimit).
