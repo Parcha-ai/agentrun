@@ -564,3 +564,17 @@ test("the installed redirect never records a suspended installation", { timeout:
   assert.deepEqual([res.status, res.headers.get("location")], [302, failedWith("installation_unverified")]);
   assert.ok(!server.lines.some((line) => line.includes("condition=github_installed")), "nothing recorded");
 });
+
+test("a server started with no AGENTRUN_SEAL_KEY still has one (ensureSealKey makes it under its config home): GitHub's sealed settings take the App, and Connect never answers github_no_seal_key", { timeout: 60_000 }, async (t) => {
+  // A config home of the test's own: the key ensureSealKey makes is written there, never in the real one.
+  withEnv(t, { XDG_CONFIG_HOME: await scratch(t) }, ["AGENTRUN_SEAL_KEY"]);
+  const github = await fakeGitHub(t);
+  const server = await serve(t, { publicUrl: PUBLIC, githubApi: github.url });
+  const started = await startConnect(server);
+  assert.equal(started.status, 200, JSON.stringify(started.body));
+  const back = await callback(server, "code-1", started.body.state, String(started.headers.get("set-cookie") ?? "").split(";")[0]);
+  assert.equal(back.status, 302);
+  assert.ok(back.location.includes("/installations/new"), `on to install the App: ${back.location}`);
+  const rows = await (await storeOf(t, server)).triggerSettings.get("github");
+  assert.ok(rows.some((r) => r.field === "private_key"), "the App's key kept, sealed");
+});
