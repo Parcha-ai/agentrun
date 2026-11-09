@@ -270,3 +270,39 @@ test("P2-2 verify guarded by saved_at: a re-save between a run's check and its v
   assert.equal(await store.signIns.verify("alpha", "browserbase", when + 1), true, "an unguarded verify still stamps");
   assert.equal(await store.signIns.verify("alpha", "nope", when), false, "a sign-in the agent does not have stamps nothing");
 });
+
+// P2-4 Browserbase settle hold (main parity): Browserbase writes a saved context back after its session ends, so the
+// saver's save lease must outlast the run leaving 'running' (ended OR parked) by BROWSERBASE_SETTLE_MS, or the next run
+// saves over a write-back in flight. Other vendors free the lease the instant the run leaves running. The settle window is
+// the serve layer's policy, passed to the store as signInSettleMs; the store stays vendor-agnostic.
+const SETTLE_MS = 10_000; // = sign-ins-store.ts's BROWSERBASE_SETTLE_MS (main's value)
+
+/** A fresh store where "holder" binds the sign-in then leaves running (ends or parks); `offset` ms later on the store clock
+ *  "next" binds the same sign-in under `settleMs`. Answers next's save. */
+async function bindAfterHolderLeft(t, { offset, park = false, settleMs = SETTLE_MS }) {
+  const { store, clock } = await storeOn(t);
+  await agentWithRevision(store, "alpha", "alpha-rev");
+  const hash = pointerHash("ctx-1");
+  await store.runs.create({ id: "holder", agentId: "alpha", revisionId: "alpha-rev" });
+  const held = await store.claim("holder", "runner-h");
+  assert.equal((await store.runs.update(held, { signInHanded: [hash] }, { signInSettleMs: settleMs })).save, true, "the first holder saves");
+  await store.release(held, park ? { state: "parked" } : { state: "ended" });
+  clock.now += offset;
+  await store.runs.create({ id: "next", agentId: "alpha", revisionId: "alpha-rev" });
+  const next = await store.claim("next", "runner-n");
+  return (await store.runs.update(next, { signInHanded: [hash] }, { signInSettleMs: settleMs })).save;
+}
+
+test("P2-4 Browserbase settle: a bind within the window of a just-ended holder does not save; after it, it does", async (t) => {
+  assert.equal(await bindAfterHolderLeft(t, { offset: 1 }), false, "+1ms: a context write-back may be in flight, so no save");
+  assert.equal(await bindAfterHolderLeft(t, { offset: SETTLE_MS + 1 }), true, "+SETTLE+1ms: settled, the next run saves");
+});
+
+test("P2-4 the settle hold covers a park too, not only an end", async (t) => {
+  assert.equal(await bindAfterHolderLeft(t, { offset: 1, park: true }), false, "+1ms after a park: still settling");
+  assert.equal(await bindAfterHolderLeft(t, { offset: SETTLE_MS + 1, park: true }), true, "+SETTLE+1ms after a park: freed");
+});
+
+test("P2-4 other vendors keep no settle window: the save lease frees the instant the holder leaves running", async (t) => {
+  assert.equal(await bindAfterHolderLeft(t, { offset: 1, settleMs: 0 }), true, "no settle: a bind right after the holder ends saves");
+});
