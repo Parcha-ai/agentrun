@@ -476,6 +476,51 @@ test("the client answers the phone groups over adb: a screenshot, touch, keys, b
 	assert.match((await client.call("exec.run", { argv: ["id"], timeoutMs: 1000 })).error.message, /a phone has no shell in the computer protocol/);
 });
 
+// The hang guard only bounds a failure: on a pass the batch answers in microtasks, with no timer.
+test("a cancelled input batch stops at the action it is on: a wait ends when the signal fires, and no later command runs", { timeout: 10_000 }, async () => {
+	// A wait the cancel interrupts: once armed, the clock's sleep never ends by itself, so only the signal can end it.
+	const clock = fakeClock();
+	let armed = false;
+	let began;
+	const waiting = new Promise((resolve) => (began = resolve));
+	const sleep = (ms) => (armed ? (began(ms), new Promise(() => {})) : clock.sleep(ms));
+	const { provider, fake } = await setup({ clock }, { sleep });
+	const { value: ref } = await provider.create(SPEC);
+	const { client } = (await provider.connect(ref)).value;
+	armed = true;
+	const controller = new AbortController();
+	const call = client.call("input.actions", { actions: [{ type: "wait", ms: 5000 }, { type: "tap", at: [100, 300] }] }, { signal: controller.signal });
+	assert.equal(await waiting, 5000, "the wait began");
+	controller.abort();
+	const waited = await call;
+	assert.equal(waited.ok, true, JSON.stringify(waited));
+	assert.equal(waited.value.done, 0);
+	assert.deepEqual([waited.value.failed?.index, waited.value.failed?.kind], [0, "aborted"]);
+	assert.match(waited.value.failed.message, /^action 0: .*aborted/);
+	assert.equal(fake.shells().filter((command) => command.startsWith("input tap")).length, 0, "no tap ran");
+
+	// A cancel during a command: the batch stops before the next one.
+	const other = fakePhoneHarness();
+	const cancel = new AbortController();
+	const adb = {
+		server: other.adb.server,
+		run: async (args, options) => {
+			const ran = await other.adb.run(args, options);
+			if (args.at(-1)?.startsWith("input tap")) cancel.abort();
+			return ran;
+		},
+	};
+	const second = await create({ apiKey: KEY, fetch: other.fetch, adb, ledger: memoryLedger(), now: other.clock.now, sleep: other.clock.sleep });
+	const { value: phone2 } = await second.create(SPEC);
+	const { client: client2 } = (await second.connect(phone2)).value;
+	const tapped = await client2.call("input.actions", { actions: [{ type: "tap", at: [100, 300] }, { type: "tap", at: [100, 300] }, { type: "button", name: "back" }] }, { signal: cancel.signal });
+	assert.equal(tapped.ok, true, JSON.stringify(tapped));
+	assert.equal(tapped.value.done, 1);
+	assert.deepEqual([tapped.value.failed?.index, tapped.value.failed?.kind], [1, "aborted"]);
+	assert.equal(other.shells().filter((command) => command.startsWith("input tap")).length, 1, "one tap ran, the second did not");
+	assert.equal(other.shells().filter((command) => command.startsWith("input keyevent")).length, 0, "nor the button after it");
+});
+
 test("typing into Settings' search reads back from the tree", async () => {
 	const { provider } = await setup();
 	const { value: ref } = await provider.create(SPEC);
