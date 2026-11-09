@@ -69,10 +69,10 @@ test("a name nothing maps fails closed: it asks, and where no one can approve it
 
 /** A run's gate on `harness`, its server settings `settings` (none: the default), and how one call enters it: undefined
  *  when it may run, else its answer (refused, or parked), with the requests a park kept. */
-async function enterOn(t, harness, settings, name, args) {
+async function enterOn(t, harness, settings, name, args, mcpServers) {
   const [root, work, data] = [await scratch(t), await scratch(t), await scratch(t)];
   if (settings) await writeFile(join(data, "tool-settings.json"), JSON.stringify(settings));
-  const runGate = new RunGate({ root, work, data, runId: "r1", harness });
+  const runGate = new RunGate({ root, work, data, runId: "r1", harness, ...(mcpServers ? { mcpServers } : {}) });
   const kept = [];
   const park = { commit: async (change) => change({ appendEntry: async (_conversation, entry) => void kept.push(entry) }) };
   return { entered: await runGate.enter(name, args, "c1", park), kept, policy: runGate.policy(name) };
@@ -94,6 +94,18 @@ test("read_skill_file is refused when the server denies read, in the deny words 
     assert.equal(policy, "deny", harness);
     assert.deepEqual(entered, { text: deniedText("read"), isError: true }, harness);
   }
+});
+
+test("on OpenCode, an agent's MCP tool whose wire name is read_skill_file (server read, tool skill_file) keeps its own key and setting: never read's", async (t) => {
+  assert.equal(keyOf("opencode", "read_skill_file", ["read"]), "mcp:read/skill_file", "the run's MCP server named read owns the name");
+  assert.equal(keyOf("opencode", "read_skill_file", ["other"]), "read", "another server's: the adapter's own read of a skill's file");
+  assert.equal(keyOf("codex", "read_skill_file", ["read"]), "read", "codex names no MCP tool <server>_<tool>");
+  assert.equal(keyOf("codex", "mcp__hands__read_skill_file", ["read"]), "read", "hands is the host's own server, never an agent's");
+  // Set to ask, as an MCP tool's default is: it parks for a person's approval, under its own key, and never runs as read.
+  const { entered, kept, policy } = await enterOn(t, "opencode", { "mcp:read/skill_file": { permission: "ask" } }, "read_skill_file", { q: 1 }, ["read"]);
+  assert.equal(policy, "ask");
+  assert.notEqual(entered, undefined, "it does not run");
+  assert.deepEqual(kept.map((entry) => entry.data?.tool), ["mcp:read/skill_file"], "parked by its own key");
 });
 
 test("the key only: read_skill_file's own path is no read path to the gate, so one that looks like it leaves the work folder is not refused here (the skill reader's own bounds are its own)", async (t) => {
