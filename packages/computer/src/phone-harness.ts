@@ -184,9 +184,11 @@ export const ADB_SERVER_PORT = 5037;
  * loopback at port (adb's own default), spoken to by its socket protocol.
  */
 export function adbCli(path = "adb", { port = ADB_SERVER_PORT }: { port?: number } = {}): AdbTransport {
+	// Every spawned adb names the server the socket requests go to: without -P it would take its own default, 5037 or
+	// ANDROID_ADB_SERVER_PORT, and start or ask another server.
 	const run: AdbTransport["run"] = (args, { timeoutMs, signal, input }) =>
 		new Promise((resolve) => {
-			const child = execFile(path, args, { encoding: "buffer", timeout: timeoutMs, killSignal: "SIGKILL", maxBuffer: 64 * 1024 * 1024, ...(signal ? { signal } : {}) }, (error, stdout, stderr) => {
+			const child = execFile(path, ["-P", String(port), ...args], { encoding: "buffer", timeout: timeoutMs, killSignal: "SIGKILL", maxBuffer: 64 * 1024 * 1024, ...(signal ? { signal } : {}) }, (error, stdout, stderr) => {
 				const code = (error as NodeJS.ErrnoException | null)?.code;
 				if (code === "ENOENT") {
 					return resolve(fail("not_found", `the phone provider needs adb (Android platform-tools) on this machine: ${path} is not there; install platform-tools or give the provider's adb option`));
@@ -400,20 +402,21 @@ export class PhoneHarnessProvider implements ComputerProvider {
 	}
 
 	/**
-	 * One request, bounded by ms (default requestMs) and by the caller's signal. A request cut off by its bound is
-	 * `thrown`, like a lost answer: the service may have acted on it.
+	 * One request, bounded by ms (default requestMs) and by the caller's signal. A failure is `uncertain` when the
+	 * service may have acted on the request all the same: no answer (lost, or cut off by its bound), or a 5xx other than
+	 * phones_busy, the service's own word that nothing was made.
 	 */
 	async #api(
 		method: string,
 		path: string,
 		{ body, headers = {}, signal, ms = this.#requestMs }: { body?: unknown; headers?: Record<string, string>; signal?: AbortSignal; ms?: number } = {},
-	): Promise<Result<{ status: number; json: unknown }> & { thrown?: boolean }> {
+	): Promise<Result<{ status: number; json: unknown }> & { uncertain?: boolean }> {
 		const bound = this.#timeout(Math.max(1, Math.ceil(ms)));
 		const either = signal ? AbortSignal.any([signal, bound]) : bound;
-		const cut = (error: unknown): Result<never> & { thrown?: boolean } => {
+		const cut = (error: unknown): Result<never> & { uncertain?: boolean } => {
 			if (signal?.aborted) return fail("aborted", `${method} ${path} was aborted`);
-			if (bound.aborted) return { ...fail("timeout", `${method} ${path}: the phone harness did not answer within ${Math.round(ms / 100) / 10} s`), thrown: true };
-			return { ...fail("unreachable", `${method} ${path}: the phone harness could not be reached: ${this.#clean((error as Error)?.message ?? String(error))}`), thrown: true };
+			if (bound.aborted) return { ...fail("timeout", `${method} ${path}: the phone harness did not answer within ${Math.round(ms / 100) / 10} s`), uncertain: true };
+			return { ...fail("unreachable", `${method} ${path}: the phone harness could not be reached: ${this.#clean((error as Error)?.message ?? String(error))}`), uncertain: true };
 		};
 		let response: Response;
 		try {
@@ -452,7 +455,9 @@ export class PhoneHarnessProvider implements ComputerProvider {
 		}
 		if (answer.code === "session_limit") return fail("limit", `${where}: ${said} (session_limit)`);
 		if (response.status === 404) return fail("not_found", `${where}: ${said} (404)`);
-		return fail("phone", `${where}: ${said} (${response.status}${answer.code ? `, ${answer.code}` : ""})`);
+		const failed = fail("phone", `${where}: ${said} (${response.status}${answer.code ? `, ${answer.code}` : ""})`);
+		// A 5xx is no refusal: a gateway may answer it for a request the service went on to act on.
+		return response.status >= 500 ? { ...failed, uncertain: true } : failed;
 	}
 
 	async #session(id: string, signal?: AbortSignal, ms?: number): Promise<Result<Session>> {
@@ -520,24 +525,27 @@ export class PhoneHarnessProvider implements ComputerProvider {
 		// The key goes into the ledger before the POST: whatever answers are lost, list() can find the phone by it.
 		const pending = pendingId(requestKey);
 		await this.#ledger.put({ id: pending, labels: { ...(spec.labels ?? {}) }, image: spec.image, deadline: new Date(from + spec.lifetimeMs).toISOString(), request: requestKey });
-		let posted = await this.#api("POST", "/sessions", { body, headers: { "Idempotency-Key": requestKey }, ...(signal ? { signal } : {}) });
+		const posted = await this.#api("POST", "/sessions", { body, headers: { "Idempotency-Key": requestKey }, ...(signal ? { signal } : {}) });
 		const cancelled = !posted.ok && posted.error.code === "aborted";
-		if (!posted.ok && (posted.thrown || cancelled)) {
-			// The request may have been admitted though its answer was lost or cancelled: ask by its key, never POST again.
-			// The ask is create's own, not under the caller's signal, which may have fired; a phone it finds is ended below.
+		let first = posted.ok ? sessionOf(posted.value.json, "POST /sessions") : undefined;
+		// Only a refusal (a 4xx, or phones_busy) says nothing was made. No answer, a cancel, a 5xx, or a 2xx with no
+		// session in it leaves the request uncertain: the service may have made the phone.
+		const uncertain = posted.ok ? !first?.ok : posted.uncertain === true || cancelled;
+		if (uncertain) {
+			// Ask by its key, never POST again, before the key is forgotten. The ask is create's own, not under the
+			// caller's signal, which may have fired; a phone it finds is recorded, and ended below if create was cancelled.
+			const why = !posted.ok ? posted.error.message : `POST /sessions answered ${posted.value.status} with no session (${first?.ok === false ? first.error.message : "no words"})`;
+			const kept = "the ledger keeps the request's key, so list() finds the phone if it was made";
 			const recovered = await this.#api("GET", `/sessions/requests/${requestKey}`);
-			if (!recovered.ok) {
-				return fail(cancelled ? "aborted" : "phone", `${posted.error.message}; and the service has no session for the request: ${recovered.error.message}; the ledger keeps the request's key, so list() finds the phone if it was made`);
-			}
-			posted = recovered;
-		}
-		if (!posted.ok) {
+			if (!recovered.ok) return fail(cancelled ? "aborted" : "phone", `${why}; and the service has no session for the request: ${recovered.error.message}; ${kept}`);
+			first = sessionOf(recovered.value.json, `GET /sessions/requests/${requestKey}`);
+			if (!first.ok) return fail(cancelled ? "aborted" : "phone", `${why}; and its recovery answered no session: ${first.error.message}; ${kept}`);
+		} else if (!posted.ok) {
 			// The phone harness refused the request: nothing was made, and the key is forgotten.
 			await this.#ledger.remove(pending);
 			return posted;
 		}
-		const first = sessionOf(posted.value.json, "POST /sessions");
-		if (!first.ok) return first;
+		if (first === undefined || !first.ok) return fail("phone", "POST /sessions answered no session");
 		const id = first.value.id;
 		/** A ledger write about the phone, or the phone ended in words: a phone its ledger cannot record would bill unseen. */
 		const record = async (write: () => void | Promise<void>): Promise<Result<void>> => {
@@ -641,6 +649,12 @@ export class PhoneHarnessProvider implements ComputerProvider {
 					if (this.#now() > Date.parse(entry.deadline)) await this.#ledger.remove(entry.id);
 					continue;
 				}
+				if (entries.some((one) => one.id === made.id)) {
+					// create has put the session's own entry and not yet removed its key: that entry is the phone, listed
+					// in its turn (and kept as it is, released or not), and the key is only dropped.
+					await this.#ledger.remove(listed.id);
+					continue;
+				}
 				entry = { id: made.id, labels: { ...entry.labels }, image: entry.image, deadline: this.#deadlineOf(made, Date.parse(entry.deadline)) };
 				await this.#ledger.put(entry);
 				await this.#ledger.remove(listed.id);
@@ -666,7 +680,7 @@ export class PhoneHarnessProvider implements ComputerProvider {
 				if (!read.ok) return read;
 				session = read.value;
 			}
-			if (!carries(entry.labels, labels)) continue;
+			if (!carries(entry.labels, labels) || out.some((info) => info.ref.id === entry.id)) continue;
 			out.push({
 				ref: { id: entry.id, name: entry.id },
 				labels: { ...entry.labels },

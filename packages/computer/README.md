@@ -1874,7 +1874,9 @@ the API's control URL) is a later change: `platform: "ios"` is refused in words.
   mount, no extend.
 - **create** asks for `timeout_seconds` = the lifetime, and the phone harness ends the session then, whatever happens.
   The lifetime includes the boot, so a phone ready past its deadline fails `timeout`.
-  - Each POST carries an Idempotency-Key, and a create whose answer was lost is found by it, never sent twice.
+  - Each POST carries an Idempotency-Key, and a create whose answer is uncertain is found by it, never sent twice.
+    Only a refusal (a 4xx, or `phones_busy`) says nothing was made. No answer, a 5xx, or a 2xx with no session is
+    uncertain: create asks `GET /sessions/requests/<key>` before it forgets the key, and records the phone it finds.
   - A create cancelled during its POST is recovered by its key all the same, and the phone the service made is ended.
   - A phone that fails, or is not ready within `readyMs` (240 s), is ended.
   - Each request has a bound of its own, `requestMs` (30 s), beside the caller's signal, and a readiness read takes no
@@ -1902,7 +1904,8 @@ the API's control URL) is a later change: `platform: "ios"` is refused in words.
     forgets a phone the listing leaves out only once that phone's own `GET /sessions/<id>` is a 404.
 - **adb** is an option too: a transport, `{ run(args, { input }), server(service) }` (tests give a fake), or the path of
   the `adb` CLI (Android platform-tools; default `adb` on PATH), whose server it starts and speaks to on the loopback
-  (port 5037, adb's own). Without it, connect says so in words.
+  (port 5037, adb's own, or `adbCli(path, { port })`). Every spawned adb names that port with `-P`, so the CLI and the
+  socket requests reach one server. Without adb, connect says so in words.
 - **testConnection** is list(): one `GET /sessions` joined to the ledger, and a GET of any phone the listing leaves out.
   It rents nothing and reaches no phone: ok with the
   count of this provider's phones, `unauthorized` for a refused key, `unreachable` when the phone harness is not

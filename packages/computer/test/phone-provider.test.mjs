@@ -178,6 +178,35 @@ test("a session the service ended is gone to attach and list, and the ledger for
 	assert.deepEqual(await ledger.list(), [], "and list the other");
 });
 
+test("list names a phone once while create swaps its pending key for the session's entry", async () => {
+	// The list runs inside create's put of the session's entry: the ledger holds the entry and the pending key at once.
+	const base = memoryLedger();
+	let provider;
+	let during;
+	let listing = false;
+	const ledger = {
+		...base,
+		put: async (entry) => {
+			await base.put(entry);
+			// Once, at create's first put of a session's entry: the list's own puts come back here and pass through.
+			if (entry.request === undefined && !listing) {
+				listing = true;
+				during = await provider.list({ run: "r1" });
+			}
+		},
+	};
+	provider = (await setup({}, { ledger })).provider;
+	const created = await provider.create({ ...SPEC, labels: { run: "r1" } });
+	assert.equal(created.ok, true, JSON.stringify(created));
+	assert.equal(during.ok, true, JSON.stringify(during));
+	assert.deepEqual(
+		during.value.map((info) => info.ref.id),
+		[created.value.id],
+		"one phone, once",
+	);
+	assert.deepEqual((await provider.list({ run: "r1" })).value.map((info) => info.ref.id), [created.value.id]);
+});
+
 test("list loses no phone a create records while list runs, and forgets one only once its own GET says it is gone", async () => {
 	// A create finishes between list's GET /sessions and its read of the ledger.
 	let provider;
@@ -294,6 +323,33 @@ test("a POST that stalls is cut off by its bound and recovered by its Idempotenc
 	const key = fake.requests()[0].headers["idempotency-key"];
 	assert.deepEqual(fake.requests().map((r) => `${r.method} ${r.path}`), ["POST /sessions", `GET /sessions/requests/${key}`]);
 	assert.ok(made.every((one) => one.ms === 30_000), "the POST and the recovery each have a bound");
+});
+
+test("a create answered 5xx, or 2xx with no session, is uncertain: recovered by its Idempotency-Key and recorded, never posted again", async () => {
+	for (const postAnswer of ["503", "empty"]) {
+		const { provider, fake, ledger } = await setup({ postAnswer });
+		const created = await provider.create({ ...SPEC, labels: { run: "r1" } });
+		assert.equal(created.ok, true, `${postAnswer}: ${JSON.stringify(created)}`);
+		const posts = fake.requests().filter((r) => r.method === "POST" && r.path === "/sessions");
+		assert.equal(posts.length, 1, `${postAnswer}: one POST`);
+		assert.ok(fake.requests().some((r) => r.path === `/sessions/requests/${posts[0].headers["idempotency-key"]}`), `${postAnswer}: recovered by its key`);
+		assert.deepEqual((await ledger.list()).map((entry) => [entry.id, entry.request]), [[created.value.id, undefined]], `${postAnswer}: the ledger names the phone, and no pending key`);
+		assert.deepEqual([...fake.sessions.keys()], [created.value.id]);
+	}
+	// A 503 after which the service has no session for the key: a failure in words, and the ledger keeps the key, so
+	// list() finds the phone if the service makes it yet.
+	const unmade = await setup({ postAnswer: "503-unmade" });
+	const failed = await unmade.provider.create(SPEC);
+	assert.equal(failed.ok, false);
+	assert.equal(failed.error.code, "phone");
+	assert.match(failed.error.message, /^POST \/sessions: the gateway timed out \(503\); and the service has no session for the request: .*; the ledger keeps the request's key/);
+	const key = unmade.fake.requests()[0].headers["idempotency-key"];
+	assert.deepEqual((await unmade.ledger.list()).map((entry) => entry.request), [key]);
+	// phones_busy is the service's word that nothing was made: a refusal, with no recovery.
+	const busy = await setup({ start: "busy" });
+	assert.equal((await busy.provider.create(SPEC)).error.code, "limit");
+	assert.equal(busy.fake.requests().some((r) => r.path.startsWith("/sessions/requests/")), false);
+	assert.deepEqual(await busy.ledger.list(), []);
 });
 
 test("a create whose answer was lost is recovered by its Idempotency-Key, never by a second POST", async () => {
