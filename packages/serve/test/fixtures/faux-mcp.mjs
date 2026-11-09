@@ -14,7 +14,8 @@ export default function reply(context, faux) {
   const asked = textOf(context.messages.findLast((m) => m.role === "user"));
   // The tool gate's resume of a call a person answered: what it says after its first line.
   if (asked.startsWith("[tool approval]")) return faux.message(`Resumed: ${asked.slice(asked.indexOf("\n") + 1)}`);
-  const call = /^Call (\S+) with (\{.*\})$/s.exec(asked);
+  // On its first line; what follows (a trigger's payload, a repository named) is the run's own.
+  const call = /^Call (\S+) with (\{[^\n]*\})(?:\n|$)/.exec(asked);
   if (call) return faux.message(faux.toolCall(call[1], JSON.parse(call[2])), { stopReason: "toolUse" });
   if (asked === "Report the MCP credentials") {
     return import(new URL("../../dist/secrets.js", import.meta.url).href).then(({ mcpCredentials }) => faux.message(`Held: ${JSON.stringify(Object.keys(mcpCredentials()).sort())}`));

@@ -12,6 +12,7 @@
 //                                                            or a function of the run's { setupCodeFile } saying so
 //   signedIn                                                 the page starts signed in (the owner set first if it has none)
 //   pending                                                  what the flow waits on; it doesn't run until then
+import connectGitHub from "./connect-github.mjs";
 import setupOpen from "./setup-open.mjs";
 import setupPublic from "./setup-public.mjs";
 import signIn from "./sign-in.mjs";
@@ -19,6 +20,7 @@ import signedOutElsewhere from "./signed-out-elsewhere.mjs";
 import runToEnd from "./run-to-end.mjs";
 import takeOver from "./take-over.mjs";
 import templateApply from "./template-apply.mjs";
+import templateUnattended from "./template-unattended.mjs";
 import watchLive from "./watch-live.mjs";
 import serverDeny from "./server-deny.mjs";
 
@@ -26,11 +28,13 @@ export const flows = [
   setupOpen,
   setupPublic,
   signIn,
-  { name: "connect-github", pending: "waits on #1980 (Connect GitHub, its CSP form-action fix)" },
+  connectGitHub,
   templateApply,
+  templateUnattended,
   runToEnd,
   watchLive,
   takeOver,
   signedOutElsewhere,
   serverDeny,
+  { name: "box-image-banner", pending: "waits on a server whose Docker box image is still being built or pulled (capabilities.places.boxes state preparing): the e2e servers have no Docker daemon to build one" },
 ];

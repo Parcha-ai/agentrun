@@ -18,6 +18,7 @@ import (
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/methods"
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/process"
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/rpc"
+	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/x11/x11fake"
 )
 
 type reply struct {
@@ -105,6 +106,26 @@ func TestHelloWithADisplayThatIsNotThereIsALinuxComputer(t *testing.T) {
 	var hello methods.HelloResult
 	if r.Error != nil || json.Unmarshal(r.Result, &hello) != nil || hello.Kind != "linux" || strings.Join(hello.Groups, ",") != "exec,files,processes" {
 		t.Fatalf("hello %+v %s", r.Error, r.Result)
+	}
+}
+
+// A desktop's hello says the display it drives (its DISPLAY), so a reader needs no /proc/<pid>/environ: once init drops
+// to its programs' uid the kernel makes it non-dumpable and its environ root's, which the Orgo live run read as none.
+func TestHelloOfADesktopSaysItsDisplayAndALinuxComputerSaysNone(t *testing.T) {
+	_, name := x11fake.Listen(t, nil)
+	r := callWith(t, methods.Options{Display: desktop.New(name)}, `{"jsonrpc":"2.0","id":1,"method":"hello","params":{"client":"test"}}`)
+	var hello struct {
+		Kind    string  `json:"kind"`
+		Display *string `json:"display"`
+	}
+	if r.Error != nil || json.Unmarshal(r.Result, &hello) != nil || hello.Kind != "desktop" || hello.Display == nil || *hello.Display != name {
+		t.Fatalf("hello of a desktop on %s: %+v %s", name, r.Error, r.Result)
+	}
+	for _, options := range []methods.Options{{}, {Display: desktop.New(":4242")}} {
+		r := callWith(t, options, `{"jsonrpc":"2.0","id":1,"method":"hello","params":{"client":"test"}}`)
+		if r.Error != nil || strings.Contains(string(r.Result), `"display"`) {
+			t.Fatalf("hello of a computer with no display: %+v %s; want no display", r.Error, r.Result)
+		}
 	}
 }
 
