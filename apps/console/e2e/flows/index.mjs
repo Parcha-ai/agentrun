@@ -21,6 +21,8 @@ import takeOver from "./take-over.mjs";
 import templateApply from "./template-apply.mjs";
 import watchLive from "./watch-live.mjs";
 import serverDeny from "./server-deny.mjs";
+import computersKeys from "./computers-keys.mjs";
+import workspaceArchil from "./workspace-archil.mjs";
 
 export const flows = [
   setupOpen,
@@ -33,4 +35,6 @@ export const flows = [
   takeOver,
   signedOutElsewhere,
   serverDeny,
+  computersKeys,
+  workspaceArchil,
 ];
