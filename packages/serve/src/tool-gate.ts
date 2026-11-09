@@ -44,6 +44,7 @@ import type { Context } from "@earendil-works/chord";
 import { type Cursor, defineExtension, type Extension, type Harness, ROOT_CONVERSATION_ID, type ToolRegistration, type Tx, wrapTool } from "@earendil-works/pi-durable";
 import { DESKTOP_TOOL_DEFS, type Drive, EffectFailure, INTERRUPTED_TEXT, openDrive, PHONE_TOOL_DEFS } from "@parcha/agentrun-kernel/kernel";
 import { boundResult } from "@parcha/agentrun-kernel/process";
+import { READ_SKILL_FILE } from "@parcha/agentrun-kernel";
 import { BARRIER, type DurableRun, MESSAGE_ORIGIN_KIND, syncNow, type SyncTarget } from "@parcha/pi-durable-disk";
 import { dataOfRun, readJson, RUN_META } from "./files.js";
 import { LEARNED_DIR } from "./learning.js";
@@ -109,7 +110,7 @@ const HOST_TOOLS_SERVER = "hands";
  *  by. A settings key is itself (a table tool, `monid.<tool>`, `mcp:<server>/<tool>`); a CLI's own tool is the table's it
  *  is; an MCP alias, `mcp__<server>__<tool>` (claude-agent's host tools `mcp__hands__<wire name>`, mapped as their
  *  wire name) and a harness's own (its facts' toolAlias: OpenCode's `<server>_<tool>`), is `mcp:<server>/<tool>`; a catalog's wire name (`monid_run`) is its
- *  catalog name; the browser's registrations are `browser`. OpenCode's `<server>_<tool>` maps only for a server of
+ *  catalog name; the browser's registrations are `browser`; an adapter's read_skill_file is `read`. OpenCode's `<server>_<tool>` maps only for a server of
  *  `mcpServers` (the run's configured MCP servers), never by its shape, since a host tool's name has the same shape.
  *  Undefined: nothing maps it, and the gate asks. The key only: an MCP call enters the gate once, in the MCP gateway for a
  *  registration it marks (GATED_BY_GATEWAY), else where its tool is wrapped. */
@@ -117,6 +118,9 @@ export function settingsKeyOf(harness: string, name: string, mcpServers: readonl
   // A tool that runs a command in the box (bash_background and the rest) is held to bash's key: before the table's own names.
   if (Object.hasOwn(SHELL_FAMILY, name)) return SHELL_FAMILY[name];
   if (TABLE_TOOLS.includes(name) || SERVE_OWN_TOOLS.includes(name) || isCatalogTool(name)) return name;
+  // An adapter's own read of a skill's file (codex's and OpenCode's read_skill_file, from the session's copy of the run's
+  // skills) is a read: held to read's key, so a server's read deny refuses it and the default allows it, on every harness.
+  if (name === READ_SKILL_FILE) return "read";
   // A desktop's or a phone's tool is its kind's key, as the browser's registrations are `browser`.
   const kind = KIND_TOOLS.get(name);
   if (kind !== undefined) return kind;
