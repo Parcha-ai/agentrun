@@ -918,21 +918,43 @@ test("the phone answers screen.watch: PNG frames of the whole screen, read about
 	await provider.release(ref, "delete");
 });
 
-test("watchScreen on a phone gives its PNG frames whole, and its act() taps the phone", async () => {
-	const { watchScreen } = await import("../dist/index.js");
+test("the phone's watch() gives its PNG frames whole and upright, landscape too, and its input() taps where the frame says", async () => {
+	const { toAction } = await import("../dist/index.js");
 	const { provider, fake } = await setup();
 	const { value: ref } = await provider.create(SPEC);
-	const { value: connection } = await provider.connect(ref);
-	const watch = watchScreen(connection);
-	const frames = watch.frames[Symbol.asyncIterator]();
-	const { value: frame } = await frames.next();
-	assert.equal(frame.format, "png");
-	assert.deepEqual(png(Buffer.from(frame.bytes)), { width: SCREEN.width, height: SCREEN.height });
-	const tapped = await watch.act([{ type: "tap", at: [10, 20] }]);
-	assert.deepEqual(tapped, { ok: true, value: { done: 1 } });
-	assert.ok(fake.shells().some((command) => /^input tap 10 20$/.test(command)), fake.shells().join("\n"));
-	await watch.close();
-	assert.deepEqual(await frames.next(), { done: true, value: undefined });
-	await connection.close();
+	const frames = [];
+	let ack;
+	let arrived;
+	const handlers = {
+		frame(frame, given) {
+			frames.push(frame);
+			ack = given;
+			arrived?.();
+		},
+		ended(error) {
+			assert.fail(`ended: ${JSON.stringify(error)}`);
+		},
+	};
+	const next = () => new Promise((resolve) => (arrived = resolve));
+	const waiting = next();
+	const watched = await provider.watch(ref, handlers);
+	assert.equal(watched.ok, true, JSON.stringify(watched));
+	await waiting;
+	assert.equal(frames[0].format, "png");
+	assert.deepEqual([frames[0].width, frames[0].height], [SCREEN.width, SCREEN.height]);
+	assert.deepEqual(png(Buffer.from(frames[0].bytes)), { width: SCREEN.width, height: SCREEN.height });
+	// Turned to landscape: screencap gives the display upright, so the frame's width and height are the turned ones,
+	// and a tap in them reaches input tap as it is (no rotation of ours).
+	fake.phone.landscape = true;
+	const turned = next();
+	ack();
+	await turned;
+	assert.deepEqual([frames[1].width, frames[1].height], [SCREEN.height, SCREEN.width]);
+	assert.deepEqual(png(Buffer.from(frames[1].bytes)), { width: SCREEN.height, height: SCREEN.width });
+	const tap = toAction({ type: "tap", x: SCREEN.height - 20, y: SCREEN.width - 10 }, "android");
+	assert.equal(tap.ok, true, JSON.stringify(tap));
+	assert.deepEqual(await watched.value.input(tap.value), { ok: true, value: { done: 1 } });
+	assert.ok(fake.shells().includes(`input tap ${SCREEN.height - 20} ${SCREEN.width - 10}`), fake.shells().join("\n"));
+	await watched.value.close();
 	await provider.release(ref, "delete");
 });
