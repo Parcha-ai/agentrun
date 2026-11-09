@@ -75,7 +75,7 @@ test("every shipped package's cases load, and each case's fake MCP servers serve
       }
     }
   }
-  assert.equal(count, 34, "the five packages' cases");
+  assert.equal(count, 35, "the five packages' cases");
 });
 
 test("a case that does not check fails before anything runs, each problem named", async (t) => {
