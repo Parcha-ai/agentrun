@@ -9,7 +9,7 @@ import { ToolsPage } from "@/components/ToolsPage";
 import { GitHubPage } from "@/components/GitHubPage";
 import { McpServersPage } from "@/components/McpServersPage";
 import { ModelKeyCard } from "@/components/ModelKeyCard";
-import { useSecrets, useSecretsWritable } from "@/lib/secrets";
+import { useSecrets } from "@/lib/secrets";
 import { NoModelBanner } from "@/components/NoModelBanner";
 import { BoxImageBanner } from "@/components/BoxImageBanner";
 import { WebhookPage } from "@/components/WebhookPage";
@@ -228,8 +228,6 @@ function Starting() {
 function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onSignedOut: () => void }) {
   // Whether this session may paste, replace or remove a secret: the owner's password session alone (secrets_writable).
   const { writable: secretsWritable, whyNot: secretsWhyNot } = useSecrets(v2);
-  // Computers and Workspace (c1-qa-plans' e-computers) still read the base's default until the next commit.
-  const computersWritable = useSecretsWritable(v2);
   const [signOutError, setSignOutError] = useState<string | null>(null);
   const [where, setWhere] = useState(() => route());
   const [caps, setCaps] = useState<Capabilities | null>(null);
@@ -531,8 +529,8 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
             {where.settings === "tools" ? <ToolsPage v2={v2} choices={choices} gates={gates} onSaved={readCaps} onOpen={readCaps} />
               : where.settings === "mcp" ? <McpServersPage v2={v2} atRest={caps?.features?.mcp_client?.at_rest} signIn={where.signIn} writable={secretsWritable} whyNot={secretsWhyNot} />
               : where.settings === "github" ? <GitHubPage v2={v2} returned={where.github} />
-              : where.settings === "computers" ? <ComputersPage v2={v2} writable={computersWritable} />
-              : where.settings === "workspace" ? <WorkspacePage v2={v2} writable={computersWritable} />
+              : where.settings === "computers" ? <ComputersPage v2={v2} writable={secretsWritable} whyNot={secretsWhyNot} />
+              : where.settings === "workspace" ? <WorkspacePage v2={v2} writable={secretsWritable} whyNot={secretsWhyNot} />
               : where.settings === "webhook" ? <WebhookPage v2={v2} atRest={caps?.features?.webhooks?.at_rest} />
               : <KeysPage v2={v2} atRest={caps?.features?.tool_keys?.at_rest} onChange={readCaps} writable={secretsWritable} whyNot={secretsWhyNot} />}
           </Settings>
