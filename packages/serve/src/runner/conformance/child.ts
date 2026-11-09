@@ -30,6 +30,11 @@ const at = async (point: keyof KernelHooks) => {
   if (config.stopOnce && !stopped) {
     stopped = true;
     said({ type: "stopping", point });
+    // For the suite's own test: a pause between saying it stops and stopping, the whole process held (as a loaded box can
+    // hold it), so the case must wait until the process is stopped before it lets it go on (harness.ts processStopped),
+    // never take the word for it.
+    const gap = Number(process.env.AGENTRUN_TEST_STOP_GAP_MS ?? 0);
+    for (const until = Date.now() + gap; Date.now() < until; );
     process.kill(process.pid, "SIGSTOP");
     said({ type: "continued", point });
     return;
