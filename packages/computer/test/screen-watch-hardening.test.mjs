@@ -105,13 +105,13 @@ test("redactWords takes out every secret shape a vendor or a device may echo", (
 		["api_key=sk_live_abc123456 refused", /sk_live_abc123456/],
 		["access_token=eyJhbGciOiJIUzI1NiJ9.e30.x refused", /eyJhbGci/],
 		["Authorization: Bearer abcdefghijklmnop refused", /abcdefghijklmnop/],
-		["the key " + ["sk", "proj", "ABCDEF1234567890"].join("-") + " is not valid", new RegExp(["sk", "proj", "ABCDEF1234567890"].join("-"))],
+		["the key sk-proj-ABCDEF1234567890 is not valid", /sk-proj-ABCDEF1234567890/],
 		// 20 characters after ghp_: inside redactWords' rule (16 or more), and short of a real token's 36, so the
 		// source export's github_token rule (30 or more) does not take this fixture for a key.
 		["the token ghp_ABCDEFGHIJKLMNOPQRST expired", /ghp_ABCDEFGHIJ/],
-		[`fetch of user:${"hunter2"}@${"db.internal"} failed`, /hunter2/],
+		["fetch of user:hunter2@db.internal failed", /hunter2/],
 		["failed to connect to 'live.phone-harness.com:22220'", /phone-harness\.com:22220/],
-		[`no route to ${[10, 1, 2, 3].join(".")}:5555`, /10\.1\.2\.3:5555/],
+		["no route to 10.1.2.3:5555", /10\.1\.2\.3:5555/],
 		["the code ph_abcdefghijklmnopqrstuvwxyz is wrong", /ph_abcdefghij/],
 	]) {
 		assert.doesNotMatch(redactWords(words), gone, words);
