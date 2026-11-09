@@ -452,7 +452,7 @@ export function folderSuite(backend, make) {
 
   test(`${backend}: readSeed gives what a run is laid from at its seed: MEMORY.md, the active notes and the active skills' files; at main with no exec, at an older commit with one read exec and the same files; null is empty; a missing commit is gone, a broken folder unavailable`, async () => {
     const { ws } = await make();
-    assert.deepEqual(await readSeed(ws, null), { ok: true, files: [], refused: [] });
+    assert.deepEqual(await readSeed(ws, null), { ok: true, files: [], refused: [], held: [] });
     await learningInit(ws);
     const files = { "check-units.md": UNITS, "ask-first.md": mergedNote(note("Ask first", "Ask which currency"), { origin: "run", pending: true }) };
     const one = await commitChange(ws, await readSnapshot(ws), { by: { run: "run-r", reason: "Learned." }, writes: [...Object.entries(files).map(([path, text]) => ({ path, text })), { path: "MEMORY.md", text: indexOf(files) }, { path: "skills/weekly-report/SKILL.md", text: SKILL }, { path: "skills/weekly-report/reference.md", text: "A table.\n" }, { path: "skills/held-one/SKILL.md", text: held(SKILL.replace("weekly-report", "held-one")) }] });
@@ -460,11 +460,13 @@ export function folderSuite(backend, make) {
     const atMain = await execsOf(() => readSeed(ws, one.main));
     assert.deepEqual(atMain.ops, [], "the seed is main: the snapshot and its bodies, no exec");
     const expected = [{ path: "MEMORY.md", text: indexOf(files) }, { path: "check-units.md", text: UNITS }, { path: "skills/weekly-report/SKILL.md", text: SKILL }, { path: "skills/weekly-report/reference.md", text: "A table.\n" }];
-    assert.deepEqual(atMain.result, { ok: true, files: expected, refused: [] }, "a pending note and a held skill are never laid");
+    // Held: every entry at the seed's top, the pending note's file among them (never laid, but main holds it).
+    const held = ["MEMORY.md", "ask-first.md", "check-units.md", "skills"];
+    assert.deepEqual({ ...atMain.result, held: [...atMain.result.held].sort() }, { ok: true, files: expected, refused: [], held }, "a pending note and a held skill are never laid");
     await commitChange(ws, await readSnapshot(ws), personChange("retired", "check-units.md", { ...files, "check-units.md": retire(UNITS) }));
     const older = await execsOf(() => readSeed(ws, one.main));
     assert.deepEqual(older.ops, ["read"]);
-    assert.deepEqual(older.result, { ok: true, files: expected, refused: [] }, "the same files, read by git at the seed");
+    assert.deepEqual({ ...older.result, held: [...older.result.held].sort() }, { ok: true, files: expected, refused: [], held }, "the same files, read by git at the seed");
     assert.deepEqual([(await readSeed(ws, "0".repeat(40))).reason], ["gone"]);
     const broken = wrap(ws, { read: async () => { throw Object.assign(new Error("the disk is gone"), { name: "WorkspaceError", code: "UNAVAILABLE" }); }, exec: async () => { throw Object.assign(new Error("gone"), { name: "WorkspaceError", code: "UNAVAILABLE" }); } });
     assert.deepEqual([(await readSeed(broken, one.main)).reason], ["unavailable"]);
@@ -484,7 +486,7 @@ export function folderSuite(backend, make) {
     const rebuilt = await learningRepair(ws);
     const seed = rebuilt.main;
     forgetBodies();
-    const want = { ok: true, files: [{ path: "MEMORY.md", text: "" }, { path: "skills/beta/SKILL.md", text: B }], refused: [{ skill: "alpha", why: "a link at skills/alpha/linked.md" }] };
+    const want = { ok: true, files: [{ path: "MEMORY.md", text: "" }, { path: "skills/beta/SKILL.md", text: B }], refused: [{ skill: "alpha", why: "a link at skills/alpha/linked.md" }], held: ["MEMORY.md", "skills"] };
     const atMain = await execsOf(() => readSeed(ws, seed));
     assert.deepEqual(atMain.ops, [], "from the snapshot, no exec");
     assert.deepEqual(atMain.result, want);
