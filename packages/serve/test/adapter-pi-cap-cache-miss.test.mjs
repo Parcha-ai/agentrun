@@ -63,7 +63,7 @@ test("a cache miss on a request admitted at its expected cost books its real cos
     hooks: quiet,
     gate: () => "allow",
   });
-  const { row, asked, store } = await capRun(t, { specOf, cap: specCap(CAP), beforeRequest: beforeRequestOf({ capUsd: () => CAP, modelOf: () => SONNET, previousOf: () => WARM }) });
+  const { row, asked, store } = await capRun(t, { specOf, cap: specCap(CAP), runCap: ({ capUsd: () => CAP, modelOf: () => SONNET, previousOf: () => WARM }) });
   const first = asked[0];
   assert.equal(first?.answer?.refuse, undefined, `the first request is admitted: ${JSON.stringify(first?.answer)}`);
   const second = asked.find((a, i) => i > 0 && a.answer?.refuse);

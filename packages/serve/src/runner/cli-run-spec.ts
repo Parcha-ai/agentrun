@@ -17,8 +17,8 @@ import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
-import { beforeRequestOf, type CapModel, type CapRefused, checkRaise, followUpOf, parkOf } from "@parcha/agentrun-kernel/kernel/cap";
-import type { BeforeRequest, SessionSpec } from "@parcha/agentrun-kernel";
+import { type CapModel, type CapRefused, checkRaise, followUpOf, parkOf } from "@parcha/agentrun-kernel/kernel/cap";
+import type { SessionSpec } from "@parcha/agentrun-kernel";
 import type { AdapterNeeds } from "../adapters.js";
 import { thinkingFor } from "../adapters.js";
 import type { Approvals } from "../approvals.js";
@@ -39,7 +39,7 @@ import { runTools, type ToolResults } from "../workspace/run-tools.js";
 import { archilClaim, MOUNT_TTL_MS } from "../workspace/archil-claim.js";
 import { loadArchilSettings } from "../archil-settings.js";
 import type { Workspace } from "../workspace/workspace.js";
-import type { AdapterRun, AdapterRunSpec } from "./adapter-loop.js";
+import type { AdapterRun, AdapterRunSpec, RunCapConfig } from "./adapter-loop.js";
 import { adapterRunGate, type AdapterSpecDeps } from "./adapter-run-spec.js";
 import { resolveHarness } from "./adapters/index.js";
 import { entriesOf } from "./loop.js";
@@ -198,14 +198,15 @@ export async function cliRunSpecFromLaunch(launch: RunLaunch, run: AdapterRun, d
   const listed = chosen.models.getModel(priced.provider, priced.modelId) as { cost?: Partial<CapPrice>; maxTokens?: number } | undefined;
   const capModel = capModelOf(priced.modelId, facts.wire, listed, chosen.unpriced.has(priced.modelId) || listed === undefined);
   const capUsd = launch.maxCostUsd;
-  const beforeRequest: BeforeRequest | undefined = capUsd === undefined
-    ? undefined
-    : beforeRequestOf({
-        capUsd: () => launch.maxCostUsd,
-        // One model per CLI session: every request it sends is the run's model, whatever id its provider names it by.
-        modelOf: () => capModel,
-        ...(launch.capMode === "strict" ? { mode: "strict" as const } : {}),
-      });
+  // The run's one cap, as the loop's runCap reads it (adapter-loop.ts RunCapConfig): the launch's cap figure (undefined
+  // uncapped), the model that bills this CLI run priced WITH tiers, strict where the launch says. The loop builds the
+  // kernel runCap from these over the run's own sessions; the spec carries no beforeRequest of its own.
+  const runCap: RunCapConfig = {
+    capUsd: () => launch.maxCostUsd,
+    // One model per CLI session: every request it sends is the run's model, whatever id its provider names it by.
+    modelOf: () => capModel,
+    ...(launch.capMode === "strict" ? { mode: "strict" as const } : {}),
+  };
   const cap = capUsd === undefined
     ? undefined
     : {
@@ -241,7 +242,7 @@ export async function cliRunSpecFromLaunch(launch: RunLaunch, run: AdapterRun, d
     input,
     ...(runner.record ? { record: runner.record } : {}),
     gate,
-    ...(beforeRequest ? { beforeRequest } : {}),
+    runCap,
     ...(cap ? { cap } : {}),
     agentId: runRow.agentId,
     workRoot: root,

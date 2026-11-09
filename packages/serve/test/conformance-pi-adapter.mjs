@@ -101,6 +101,8 @@ export function piAdapterSpec({ script, tools, hooks, agentId }, options = {}) {
     adapter: tracked(piAdapter({ run, model: MODEL, provider: { api: "anthropic-messages", origin: "https://faux.invalid", credential: () => `not-a-secret-${"x"}` }, fetch: options.fetch ?? scriptedOrigin(script, options.requests), price: () => 0 })),
     session: { key: "root", label: "root", system: ["Follow the script."], tools: hostTools(tools), context: "fresh" },
     input: "Follow the script.",
+    // The run's one cap, uncapped: every paid request still books through it (the adapter loop's only booking path).
+    runCap: { capUsd: () => undefined, modelOf: () => undefined },
     hooks,
     gate: (call) => (tools[call.tool]?.ask ? "ask" : "allow"),
   });
