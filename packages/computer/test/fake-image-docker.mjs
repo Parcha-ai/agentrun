@@ -11,6 +11,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after } from "node:test";
+import { fakeProgram } from "./fake-program.mjs";
 
 const dirs = [];
 after(() => {
@@ -97,7 +98,8 @@ export function fakeImageDocker(marks = {}) {
 	const state = join(dir, "state");
 	mkdirSync(join(state, "images"), { recursive: true });
 	const docker = join(dir, "docker");
-	writeFileSync(docker, `#!${process.execPath}\n${PROGRAM.replace("__STATE__", JSON.stringify(state))}`, { mode: 0o755 });
+	// Run in this process behind a real program at `docker` (fake-program.mjs); a build reads its recipe from stdin whole.
+	fakeProgram(docker, PROGRAM.replace("__STATE__", JSON.stringify(state)), { wholeStdin: (argv) => argv[0] === "build" });
 	const mark = (name, text = "") => writeFileSync(join(state, name), text);
 	for (const [name, text] of Object.entries(marks)) mark(name, text);
 	return {
