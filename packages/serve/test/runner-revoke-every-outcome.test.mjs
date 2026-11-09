@@ -246,9 +246,14 @@ for (const held of [false, true]) {
     // The run's end: its claim's release, whose revoke removes tok-2 and then looks for the run's earlier epochs.
     await w.released(w.minted.at(-1), "tok-2 was never removed at the run's end");
     const calls = w.control.requests.map((one) => `${one.method}${one.query?.identifier ? ` ${one.query.identifier}` : ""}${one.body?.nickname ? ` ${one.body.nickname}` : ""}`);
-    // The dead claim's token (agentrun:run-1:1), removed by the next claim (epoch 2) before it mints its own; then the
-    // run's end removes that one, and its revoke reads the list for an earlier epoch's left.
-    assert.deepEqual(calls, ["GET", "POST agentrun:run-1:1", "GET", `DELETE ${left}`, "POST agentrun:run-1:2", "DELETE tok-2", "GET"], "the next claim's removal of the dead one's token comes before its own mint, and the run's end removes its own");
+    // Each claim reads the list before its mint and once more after it. The dead claim's token (agentrun:run-1:1) is
+    // removed by the next claim (epoch 2) before it mints its own; then the run's end removes that one, and its revoke
+    // reads the list for an earlier epoch's left.
+    assert.deepEqual(calls, [
+      "GET", "POST agentrun:run-1:1", "GET",
+      "GET", `DELETE ${left}`, "POST agentrun:run-1:2", "GET",
+      "DELETE tok-2", "GET",
+    ], "the next claim's removal of the dead one's token comes before its own mint, and the run's end removes its own");
     assert.equal(w.control.users.size, 0, "no token left with the control plane");
   });
 }
