@@ -250,8 +250,10 @@ test('the computer image recipe (the root helper, its Dockerfile and its two bui
     assert.ok(listing.includes(`agentrun-dsl-source/${path}\n`), path);
     assert.equal(receipt.files.find(file => file.path === path)?.kind, 'text', path);
   }
-  await f.write('packages/computer/box/build-e2b.py', '# fixture\n');
-  await assert.rejects(f.run(), /Unreviewed source-export file type: packages\/computer\/box\/build-e2b\.py/);
+  // Any .py is text now (the Python client), so the file that must still stop the export has no reviewed type: no
+  // extension and not one of the recipe's names.
+  await f.write('packages/computer/box/agentrun-other', '# fixture\n');
+  await assert.rejects(f.run(), /Unreviewed source-export file type: packages\/computer\/box\/agentrun-other/);
 });
 
 test('inventory generation works without build output and does not produce an archive', async t => {
