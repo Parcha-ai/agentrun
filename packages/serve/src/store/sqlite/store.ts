@@ -11,7 +11,7 @@ import { claimFence } from "../fence.js";
 import { RunStorage } from "../journal/storage.js";
 import { DDL, SCHEMA_VERSION } from "../schema.js";
 import {
-  AgentArchived, CommandTaken, Fenced, SchemaVersionUnknown, STORE_WRITE_DEADLINE_MS, StoreConstraint, StoreFromEarlierVersion, TriggerFull, type AgentRow, type Agents,
+  AgentArchived, CommandTaken, ExternalBodyConflict, Fenced, SchemaVersionUnknown, STORE_WRITE_DEADLINE_MS, StoreConstraint, StoreFromEarlierVersion, TriggerFull, type AgentRow, type Agents,
   type AlsoRow, type Claim, type Command, type FiringChange, type FiringRow, type FiringStatus, type ImportRunInput, type Journal, type NewRevision, type RevisionRow, type RunPatch, type RunRow, type Runs,
   type JournalReads, type UpdatedRun,
   type ReleasedState, type RunState, type Store, type StoreRole, type TemplatePackage, type Templates, type TriggerDef, type TriggerPatch, type TriggerRow, type Triggers, type TriggerScope,
@@ -24,6 +24,7 @@ import type { Dialect } from "../dialect.js";
 import { Connection, type SqliteExecutor, type SqliteValue, type Statement, type StoreConnection } from "./connection.js";
 import { applyRunPatch, refuseLeftovers, RUN_COLUMNS, runOf, SIGN_IN_HANDED_LOCK, type RunRecord } from "./run-patch.js";
 import { readLaunch, writeLaunch } from "./run-launch.js";
+import { canonical } from "../agent-body.js";
 
 /** A claim's length when the caller names none. */
 export const DEFAULT_LEASE_MS = 30_000;
@@ -692,6 +693,37 @@ class SqliteStore implements Store {
         }
         const [result] = await db.write([{ sql: insert, params: [id, agentId, revisionId, now()] }]);
         return runOf(result!.rows[0] as RunRecord);
+      },
+      createInline: async ({ agent, revision, run, launch }) => {
+        const insert = `INSERT INTO runs (id, agent_id, revision_id, state, epoch, started_at) VALUES (?, ?, ?, 'queued', 0, ?) RETURNING ${RUN_COLUMNS}`;
+        return db.transaction(async (tx) => {
+          const at = now();
+          // Hold the external reference, so two first uses of the same expert serialize (SQLite's one writer already does).
+          await d.lockKey(tx, `external:${agent.ref}`);
+          // The agent, one per external reference: written on its first run, read on every later one.
+          await tx.run(`${d.insertOrIgnore} INTO agents (id, name, description, created_at, external_ref) VALUES (?, ?, ?, ?, ?)${d.onConflictIgnore}`,
+            agent.id, agent.name, agent.description ?? null, at, agent.ref);
+          const mapped = (await tx.get<{ id: string; current_revision: string | null }>("SELECT id, current_revision FROM agents WHERE external_ref = ?", agent.ref))!;
+          // The revision, one per version: a version already stored keeps its body (a different body is refused); a new
+          // version is written, made current, and brings the agent's name and description up to it (the source is the truth).
+          const existing = await tx.get<{ id: string; body: string }>("SELECT id, body FROM revisions WHERE agent_id = ? AND external_version = ?", mapped.id, revision.version);
+          let revisionId: string;
+          if (existing) {
+            if (canonical(JSON.parse(existing.body)) !== canonical(revision.body)) throw new ExternalBodyConflict(agent.ref, revision.version);
+            revisionId = existing.id;
+          } else {
+            revisionId = revision.id;
+            await tx.run("INSERT INTO revisions (id, agent_id, parent_id, kind, body, skills, note, package, external_version, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+              revisionId, mapped.id, mapped.current_revision, revision.kind, json(revision.body),
+              revision.skills === undefined || revision.skills === null ? null : json(revision.skills), null, null, revision.version, at);
+            await tx.run("UPDATE agents SET current_revision = ?, name = ?, description = ? WHERE id = ?", revisionId, agent.name, agent.description ?? null, mapped.id);
+          }
+          // The run, its origin and its launch, in the same transaction as the agent and the revision.
+          const row = await tx.get<RunRecord>(insert, run.id, mapped.id, revisionId, at);
+          if (run.origin) await tx.run("INSERT INTO run_origins (key, run_id, fingerprint, created_at) VALUES (?, ?, ?, ?)", run.origin.key, run.id, run.origin.fingerprint ?? null, at);
+          await writeLaunch(tx, run.id, launch, at);
+          return runOf(row!);
+        });
       },
       get: async (id) => {
         const row = await db.get<RunRecord>(`SELECT ${RUN_COLUMNS} FROM runs WHERE id = ?`, id);

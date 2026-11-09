@@ -418,6 +418,15 @@ export class AgentArchived extends Error {
   }
 }
 
+/** An inline-agent run whose body differs from the one already stored for its external reference and version: refused,
+ *  nothing written (Runs.createInline). A version's body is immutable; a changed body needs a new version. */
+export class ExternalBodyConflict extends Error {
+  override name = "ExternalBodyConflict";
+  constructor(readonly ref: string, readonly version: string) {
+    super(`a different body is already stored for ${ref} version ${version}`);
+  }
+}
+
 export interface Agents {
   /** Creates the agent, or renames it (name, description) when it exists. */
   put(agent: { id: string; name: string; description?: string | null }): Promise<void>;
@@ -511,6 +520,17 @@ export interface Runs {
    *  (StoreConstraint), and nothing is written. With `launch`, its launch row is written in the same transaction too (all
    *  or nothing). */
   create(run: { id: string; agentId: string; revisionId: string; origin?: RunOrigin }, launch?: RunLaunchInput): Promise<RunRow>;
+  /** A run whose agent is given inline and mapped to a source system by `agent.ref` and `revision.version`. In one
+   *  transaction: the agent (one per `ref`, written on its first run, its name and description brought up to the version
+   *  whose first use this is) and the revision (one per `version`, made current on its first use) are written or read, then
+   *  the run, its origin and its launch. Idempotent — a later run under the same (`ref`, `version`) reuses that revision and
+   *  changes nothing; a different body under an existing version is refused (ExternalBodyConflict), nothing written. */
+  createInline(input: {
+    agent: { id: string; name: string; description?: string | null; ref: string };
+    revision: { id: string; version: string; kind: string; body: unknown; skills?: unknown };
+    run: { id: string; origin?: RunOrigin };
+    launch: RunLaunchInput;
+  }): Promise<RunRow>;
   get(id: string): Promise<RunRow | undefined>;
   /** The run's launch row (the runner reads it at its claim; the server for views). StoreLaunchMissing when the run has
    *  none (it was not started with one), never a default. */
