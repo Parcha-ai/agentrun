@@ -220,9 +220,19 @@ export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = fa
 			]);
 		}
 		if (phone.screen === "page") {
+			// As phone probe 3 read it live on Android 15: the page's title is no text in the tree, only the collapsing
+			// toolbar's content-desc. The toolbar is inside the page's scrollable container, above the page's own items.
 			return node("android.widget.FrameLayout", { bounds: box(full), ...pkg }, [
-				node("android.widget.ImageButton", { "content-desc": "Navigate up", clickable: "true", bounds: box([0, 16, 56, 56]), ...pkg }),
-				node("android.widget.TextView", { text: phone.page, "resource-id": "com.android.settings:id/collapsing_toolbar", bounds: box([72, 24, 260, 40]), ...pkg }),
+				node("android.widget.ScrollView", { "resource-id": "com.android.settings:id/content_parent", scrollable: "true", bounds: box([0, 16, SCREEN.width, SCREEN.height - 16]), ...pkg }, [
+					node("android.widget.FrameLayout", { "resource-id": "com.android.settings:id/collapsing_toolbar", "content-desc": phone.page, bounds: box([0, 16, SCREEN.width, 180]), ...pkg }, [
+						node("android.view.ViewGroup", { "resource-id": "com.android.settings:id/action_bar", bounds: box([0, 16, SCREEN.width, 56]), ...pkg }, [
+							node("android.widget.ImageButton", { "content-desc": "Navigate up", clickable: "true", bounds: box([0, 16, 56, 56]), ...pkg }),
+						]),
+					]),
+					...["Internet", "Airplane mode"].map((title, i) =>
+						node("android.widget.LinearLayout", { clickable: "true", bounds: box([0, 200 + i * ROW, SCREEN.width, ROW]), ...pkg }, [node("android.widget.TextView", { text: title, "resource-id": "android:id/title", bounds: box([72, 216 + i * ROW, 240, 32]), ...pkg })]),
+					),
+				]),
 			]);
 		}
 		// As phone probe 2 read it live: a SearchView holding an AutoCompleteTextView, focused, in Settings' search package.
