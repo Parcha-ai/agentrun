@@ -10,16 +10,23 @@ const AGENT_NAME = `KYB due diligence (${RISK} risk appetite)`;
 export default {
   name: "template-apply",
   signedIn: true,
-  pending: "waits on #1975 (the Templates page and its Apply screen)",
   async run({ page, base, api }) {
     await page.goto(`${base}/#/templates`);
-    // The list: the kyb card by its title, the package's display name with "…" for its unfilled parameter.
+    // The list: the kyb card by its title, the package's display name with "…" for its unfilled parameter. No card shows a
+    // raw ${parameters.x}: the server fills those only at apply.
     const card = page.locator('article[aria-label^="KYB due diligence"]');
+    await card.waitFor();
+    check(!(await page.locator("main").innerText()).includes("${"), "the Templates page shows a raw ${…} placeholder");
+    check(await card.locator("h2").innerText() === "KYB due diligence (… risk appetite)", `the kyb card reads ${JSON.stringify(await card.locator("h2").innerText())}`);
     await card.getByRole("button", { name: "Apply", exact: true }).click();
     await page.waitForURL((url) => url.hash === `#/templates/${TEMPLATE}`);
 
-    // The Apply screen: the required parameter, then Apply.
+    // The Apply screen: no raw placeholder; the title fills as the required parameter is typed, then Apply.
+    const title = page.getByRole("heading", { level: 1 });
+    await title.waitFor();
+    check(!(await page.locator("main").innerText()).includes("${"), "the Apply screen shows a raw ${…} placeholder");
     await page.locator('[data-field="parameters.risk_appetite"] input').fill(RISK);
+    await title.getByText(`KYB due diligence (${RISK} risk appetite)`, { exact: false }).waitFor();
     const answered = page.waitForResponse((r) => r.request().method() === "POST" && new URL(r.url()).pathname === `/v2/templates/${TEMPLATE}/apply`);
     await page.getByRole("button", { name: "Apply", exact: true }).click();
     const response = await answered;
