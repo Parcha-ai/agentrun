@@ -19,6 +19,7 @@ import { builtinHarness } from "./harness-table.js";
 import { cutStrings, redacted, withoutLoopback } from "./key-refusal.js";
 import { pointerHash, type SignIns } from "./sign-ins.js";
 import { MIN_SECRET } from "./learn/secrets.js";
+import { KINDS } from "./runner/journal-kinds.js";
 
 /** The run's newest usage row, which carries its cost. */
 const usageOf = (rows: readonly TimelineEvent[]) => rows.findLast((r) => r.kind === "usage");
@@ -163,6 +164,61 @@ export type Approval = { id: string; tool: string; call_id: string; args_json: s
 export type ApprovalAnswer = { decision: "allow" | "deny" | "canceled" | "withdrawn"; note?: string; answered_at: string; args_shown?: string; by?: "message"; superseded?: { decision: string; answered_at: string; note?: string; by?: "message" } };
 /** A call withdrawn with its run (a cancel, or a stop while it waited): never run, and an answer after is 409. */
 export const withdrawn = (answer: ApprovalAnswer | undefined) => answer?.decision === "canceled" || answer?.decision === "withdrawn";
+
+// --- The approvals a store-backed run waits (or waited) on, read from its journal, where the file-backed path read them
+// from the run's own store entries (runs.ts noteApprovals). The runner writes an `agentrun.ask` entry for each tool call
+// the gate parked the run on, and an `agentrun.answer` entry for the person's answer, taken by the commit that takes the
+// approve or deny row. These build the Approval map and the answers the status, pending and moment views read, so the
+// card and the answered state a person sees stay the same. An approval is keyed by the call's id throughout (the answer
+// command names the call), so the card's id is the call's id. ---
+
+/** An `agentrun.ask` entry's data: the tool call the gate parked for a person, as the runner wrote it. */
+type AskEntry = { callId: string; tool: string; args: unknown; requestedAt: string; price?: number | "not metered" | null };
+/** An `agentrun.answer` entry's data: the person's answer the runner wrote, or a withdrawal when the run was stopped or
+ *  cancelled while the call waited. */
+type AnswerEntry = { callId: string; approved: boolean; decision: "allow" | "deny" | "withdrawn"; answeredAt: string; note?: string };
+/** The least a journal entry a reader here reads is: its kind and its data. */
+type JournalEntry = { kind?: string; data?: unknown };
+const dataOf = <T>(entry: JournalEntry): T => entry.data as T;
+
+/** The tool calls a run waits (or waited) for a person's approval on, from its journal's `agentrun.ask` entries, by the
+ *  call's id: a re-ask of the same call keeps the first request, as the gate's park did; one with an answer is resolved,
+ *  so the run waits on it no more (the file path's `resolved` once its process acted). The card's id and call id are both
+ *  the call's id, and its arguments are kept as JSON (shown cut and redacted by the view), as the file path kept them. */
+export function asksOf(entries: readonly JournalEntry[]): Map<string, Approval> {
+  const answered = new Set<string>();
+  for (const entry of entries) if (entry.kind === KINDS.answer) { const d = dataOf<AnswerEntry>(entry); if (typeof d?.callId === "string") answered.add(d.callId); }
+  const map = new Map<string, Approval>();
+  for (const entry of entries) {
+    if (entry.kind !== KINDS.ask) continue;
+    const d = dataOf<AskEntry>(entry);
+    if (typeof d?.callId !== "string" || map.has(d.callId)) continue;
+    map.set(d.callId, {
+      id: d.callId,
+      tool: d.tool,
+      call_id: d.callId,
+      args_json: JSON.stringify(d.args ?? {}) ?? "{}",
+      requested_at: d.requestedAt,
+      ...(typeof d.price === "number" || d.price === "not metered" ? { price: d.price } : {}),
+      ...(answered.has(d.callId) ? { resolved: true as const } : {}),
+    });
+  }
+  return map;
+}
+
+/** The answers a run got to its asks, from its journal's `agentrun.answer` entries, by the call's id (the key the moment
+ *  and the pending views read as run.meta.approvals): a person's allow or deny with any note, or a withdrawal taken when
+ *  the run was stopped or cancelled while the call waited. The first answer for a call stands. */
+export function answersOf(entries: readonly JournalEntry[]): Record<string, ApprovalAnswer> {
+  const out: Record<string, ApprovalAnswer> = {};
+  for (const entry of entries) {
+    if (entry.kind !== KINDS.answer) continue;
+    const d = dataOf<AnswerEntry>(entry);
+    if (typeof d?.callId !== "string" || d.callId in out) continue;
+    out[d.callId] = { decision: d.decision, ...(d.note !== undefined ? { note: d.note } : {}), answered_at: d.answeredAt };
+  }
+  return out;
+}
 
 /** The run's meta the status and pending views read: a structural subset of RunMeta, so the server passes its live
  *  run.meta and the store-backed view a value built from the run's row. */

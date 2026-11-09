@@ -22,6 +22,10 @@ import {
   type RunViewMeta,
   type State,
   type Status,
+  approvalOf,
+  asksOf,
+  answersOf,
+  redactorOf,
   servedRunErrorWith,
   servedReviewWith,
   statusOf,
@@ -165,7 +169,13 @@ async function storeRunOf(store: Store, runId: string, deps: ViewDeps): Promise<
   const unshown = pointers === "unreadable";
   const values = unshown ? [] : [...deps.serverSecrets(), ...pointers.refs.filter((ref) => ref.length >= MIN_SECRET)];
 
-  const meta: RunViewMeta = { ...(launch?.maxCostUsd !== undefined ? { max_cost_usd: launch.maxCostUsd } : {}) };
+  // The tool-call approvals the run waits (or waited) on, from its journal: each call the gate parked for a person, and
+  // the answers given, which the status, pending and moment views read the same as the file path read them from the run's
+  // store entries.
+  const approvals = asksOf(records.entries);
+  const answers = answersOf(records.entries);
+
+  const meta: RunViewMeta = { ...(launch?.maxCostUsd !== undefined ? { max_cost_usd: launch.maxCostUsd } : {}), ...(Object.keys(answers).length ? { approvals: answers } : {}) };
   const outcome = terminal ? STATUS_OF[row.state as Exclude<RunReadState, "running">] : undefined;
   const view: RunView = {
     id: row.id,
@@ -181,6 +191,7 @@ async function storeRunOf(store: Store, runId: string, deps: ViewDeps): Promise<
     updatedAt: iso(updatedAtMs),
     rows,
     turns,
+    ...(approvals.size ? { approvals } : {}),
     meta,
   };
   return { row, runRow, launch, rows, version, harness, learningEnd, view, unshown, values, live, updatedAtMs, lastProgressAt };
@@ -228,7 +239,11 @@ export async function viewOverStore(store: Store, runId: string, deps: ViewDeps)
   const result = status === "completed" ? { output: null, final_answer: servedAnswer(finalAnswer) } : null;
   const error = status === "failed" ? (unshown ? { code: "run_failed", message: WITHHELD_SIGN_IN, retryable: false } : servedRunErrorWith(shownWords, errorOfRow(row.summary ?? null))) : null;
   const review = endedAtMs === null ? null : servedReviewWith(shownWords, unshown, reviewAt(reviewOfRow(row.state, row.summary ?? null), iso(endedAtMs)));
-  const pending: Pending = status === "input_required" && state === "waiting" ? pendingOf(run.rows) : null;
+  // The card the run shows while it waits: a tool call parked for a person's approval (approvalOf, its arguments shown
+  // through the run's redactor), else the question its turn ended on (pendingOf). The budget and browser cards join this
+  // chain next, in the order the file-backed view (runs.ts) picks them.
+  const redactor = redactorOf(values);
+  const pending: Pending = status === "input_required" && state === "waiting" ? (approvalOf(view, redactor) ?? pendingOf(run.rows)) : null;
   const settled = terminal;
 
   return {

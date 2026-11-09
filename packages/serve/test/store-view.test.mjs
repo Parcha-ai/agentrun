@@ -175,6 +175,59 @@ test("a run that asked the person a question reads input_required with a questio
   assert.equal(moment.waitsOnPerson, true);
 });
 
+test("a run parked on a tool-call approval reads input_required with the approval pending card", async (t) => {
+  const { store } = await storeOn(t);
+  await agent(store);
+  await store.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { message: "Fetch it." }, title: "Approve run", place: { mode: "runner" } } });
+  const claim = await store.claim("run-1", "runner-a", { leaseMs: 60_000 });
+  const journal = store.journal(claim);
+  const u = { id: await journal.mintId(), conversationId: ROOT, kind: "pi.user", model: [{ role: "user", content: "Fetch it.", timestamp: T0 }] };
+  const a = { id: await journal.mintId(), conversationId: ROOT, kind: "pi.assistant", model: [{ role: "assistant", stopReason: "tool_use", content: [{ type: "toolCall", id: "c1", name: "web_fetch", arguments: { url: "https://example.test" } }], timestamp: T0 + 1_000 }] };
+  // The gate parked the call for a person's approval (the final agentrun.ask shape), and the run let go of its claim.
+  const ask = { id: await journal.mintId(), conversationId: ROOT, kind: "agentrun.ask", data: { callId: "c1", tool: "web_fetch", args: { url: "https://example.test" }, requestedAt: iso(T0 + 1_500), price: 0.02 } };
+  await commitWrites(journal, [{ type: "conversation", value: { id: ROOT } }, { type: "entry", value: u }, { type: "entry", value: a }, { type: "entry", value: ask }], context);
+  await store.release(claim);
+
+  const view = await viewOverStore(store, "run-1", deps);
+  assert.equal(view.status, "input_required");
+  assert.equal(view.state, "waiting");
+  assert.deepEqual(view.pending, { kind: "approval", id: "c1", tool: "web_fetch", call_id: "c1", args_preview: '{"url":"https://example.test"}', requested_at: iso(T0 + 1_500), price: 0.02 });
+  assert.equal(view.result, null);
+  assert.equal(view.error, null);
+  assert.equal(view.ended_at, null);
+  const moment = await momentOverStore(store, "run-1");
+  assert.equal(moment.waitingApprovalId, "c1");
+  assert.deepEqual([...moment.approvalIds], ["c1"]);
+  assert.equal(moment.answeredApprovals, undefined);
+  assert.equal(moment.awaitingAnswer, true);
+  assert.equal(moment.waitsOnPerson, true);
+});
+
+test("an answered approval folds into the moment by its decision and clears the pending card", async (t) => {
+  const { store } = await storeOn(t);
+  await agent(store);
+  await store.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { message: "Fetch it." }, title: "Answer run", place: { mode: "runner" } } });
+  const claim = await store.claim("run-1", "runner-a", { leaseMs: 60_000 });
+  const journal = store.journal(claim);
+  const u = { id: await journal.mintId(), conversationId: ROOT, kind: "pi.user", model: [{ role: "user", content: "Fetch it.", timestamp: T0 }] };
+  const a = { id: await journal.mintId(), conversationId: ROOT, kind: "pi.assistant", model: [{ role: "assistant", stopReason: "tool_use", content: [{ type: "toolCall", id: "c1", name: "web_fetch", arguments: { url: "https://example.test" } }], timestamp: T0 + 1_000 }] };
+  const ask = { id: await journal.mintId(), conversationId: ROOT, kind: "agentrun.ask", data: { callId: "c1", tool: "web_fetch", args: { url: "https://example.test" }, requestedAt: iso(T0 + 1_500), price: 0.02 } };
+  // The person declined the call (the final agentrun.answer shape), and the run then finished without it.
+  const answer = { id: await journal.mintId(), conversationId: ROOT, kind: "agentrun.answer", data: { callId: "c1", approved: false, decision: "deny", answeredAt: iso(T0 + 2_000), note: "Not this one." } };
+  await commitWrites(journal, [{ type: "conversation", value: { id: ROOT } }, { type: "entry", value: u }, { type: "entry", value: a }, { type: "entry", value: ask }, { type: "entry", value: answer }], context);
+  await store.runs.update(claim, { state: "ended", outcome: "completed", summary: "Done without it.", costUsd: 0, endedAt: T0 + 5_000 });
+
+  const moment = await momentOverStore(store, "run-1");
+  assert.equal(moment.waitingApprovalId, undefined);
+  assert.deepEqual([...moment.approvalIds], ["c1"]);
+  assert.deepEqual(moment.answeredApprovals, { c1: { decision: "deny" } });
+
+  // The approval no longer shows as pending: the run has moved past it.
+  const view = await viewOverStore(store, "run-1", deps);
+  assert.equal(view.status, "completed");
+  assert.equal(view.pending, null);
+});
+
 test("a failed run's view serves its error from the row, with an unknown cost", async (t) => {
   const { store } = await storeOn(t);
   await agent(store);
