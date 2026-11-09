@@ -47,7 +47,8 @@ import { answerAsk } from "./browser-person.js";
 import { durationMs, logLine } from "./print.js";
 import { knownToolCostOf, type RunMoment, type State, type Status, toolCostOf, WITHHELD_SIGN_IN } from "./run-view.js";
 import { approve, archiveRun, cancel, message, raiseCap, type StartDeps, type StartOptions, startRun, stop as stopRunOverStore, WAITS_ON_A_PERSON } from "./runs-over-store.js";
-import { momentOverStore, summaryOverStore, type ViewDeps, viewOverStore } from "./store-view.js";
+import { momentOverStore, summaryOverStore, type ViewDeps, viewOverStore, withheldOverStore } from "./store-view.js";
+import { listRunFiles as listRunFilesOverStore, readRunFile as readRunFileOverStore, runBrowserState, runGraphView, type RunReadsDeps } from "./run-reads-over-store.js";
 import { triggerTargets, type TriggerTargetDeps } from "./trigger-targets.js";
 import { listRuns as listRunsOverStore, readRun as readRunOverStore, runOfOrigin as runOfOriginOverStore } from "./store-reads/runs.js";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -103,7 +104,7 @@ import { agentTools, browserKeyRow, isUnavailable, recheckPlane, settingsIssues,
 import { MAX_FILES_PER_RUN, MAX_UPLOAD_BYTES, Uploads, UPLOADS_DIR } from "./uploads.js";
 import { entryAt, listFiles, sendFile as sendWorkspaceFile, viewOf } from "./run-files.js";
 import { writesHeld } from "./workspace.js";
-import { agentHomeFolder, isWorkspaceError, localWorkspace, runFolder, type Workspace } from "./workspace/index.js";
+import { agentHomeFolder, isWorkspaceError, localWorkspace, runFolder, serverRunWorkspace, type Workspace } from "./workspace/index.js";
 // server-lock.ts is gone: the store's EXCLUSIVE connection is the one-server lock (StoreOwned refuses a second server).
 
 export const CONTRACT = "agentrun.v2/0";
@@ -1049,6 +1050,18 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // request) use the server's public address, else its own.
   const viewDepsFor = (origin: string): ViewDeps => ({ origin, serverSecrets, signIns });
   const ownOriginOf = (): string => options.publicUrl ?? url;
+  // The run read routes (a run's files, its browser state, its workflow graph) over the one store (run-reads-over-store):
+  // a run's files through the server's read-only Workspace of its folder (serverRunWorkspace, no runner claim), its view
+  // and withheld verdict from store-view. The live browser viewer reads the runner's published handover once that lands
+  // (brw-viewer-store); until then `liveViewer` is unset and the live branch is never taken. The timeline route keeps its
+  // own stub (store-reads journal + SSE) until E2c's timeline lands.
+  const runReadsDeps: RunReadsDeps = {
+    runWorkspace: (_store, runId) => serverRunWorkspace(store, runId, { data, sealKey }),
+    env,
+    runView: (_store, runId) => viewOverStore(store, runId, viewDepsFor(ownOriginOf())),
+    withheld: (_store, runId) => withheldOverStore(store, runId, viewDepsFor(ownOriginOf())),
+    context: ctx,
+  };
   const triggerDeps: TriggerTargetDeps = {
     start: startDeps,
     getAgent: async (agentId: string) => (await getAgent(store, agentId)) ?? undefined,
@@ -1241,12 +1254,13 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     if (!entry) throw new ApiError("not_found", `no agent ${id}`);
     return entry;
   }
-  /** An agent view's extra fields (agents-store agentView): its saved sign-ins and its learning count. The run counts
-   *  (runs.count/live) are E3's run reads; the switch does not pass them yet — they default to zero. TODO(E3): pass
-   *  { runs: { count, live } } from the store. */
-  const agentExtra = async (entry: AgentEntry): Promise<{ signIns: object[]; learning?: { pending: number } }> => {
+  /** An agent view's extra fields (agents-store agentView): its saved sign-ins, its learning count, and its run counts.
+   *  The run counts read the store's runs (store-reads/runs.ts listRuns): `count` is every run the agent has, `live` those
+   *  still running (runReadState 'running': queued, running or parked), the same numbers the file-backed view showed. */
+  const agentExtra = async (entry: AgentEntry): Promise<{ signIns: object[]; learning?: { pending: number }; runs: { count: number; live: number } }> => {
     const learning = await learningOfAgent(entry);
-    return { signIns: await signIns.view(entry.agent.id), ...(learning ? { learning } : {}) };
+    const runs = await listRunsOverStore(store, { agent: entry.agent.id }, ctx);
+    return { signIns: await signIns.view(entry.agent.id), ...(learning ? { learning } : {}), runs: { count: runs.length, live: runs.filter((run) => run.state === "running").length } };
   };
   // A run's live moment from the store (store-view momentOf), for the one acceptance each act a run takes reads. The run
   // routes read from the store + the run view now, not a live Run.
@@ -2093,8 +2107,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       }
       case "getRunBrowser": {
         await needRun(id);
-        // TODO(E2c): runBrowserOverStore (live viewer via live/stream watchRun + the run's kept plane).
-        return runReadsTodo();
+        // The run's browser state over the store: its runner's live viewer when it serves one (liveViewer, unset until
+        // the runner publishes the handover), else its kept plane re-checked, as a launch would, for `off`/`none`.
+        return send(res, 200, await runBrowserState(store, id, runReadsDeps));
       }
       case "handBackRunBrowser": {
         await needRun(id);
@@ -2104,8 +2119,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       }
       case "listRunFiles": {
         await needRun(id);
-        // TODO(E2c): listRunFilesOverStore (run-workspace.ts over the run's launch place).
-        return runReadsTodo();
+        // A run's files through the server's read-only Workspace of its folder (serverRunWorkspace); a run with no folder
+        // lists none. Same shape and cap the file route answered.
+        return send(res, 200, await listRunFilesOverStore(store, id, runReadsDeps));
       }
       // An archived agent's home is read and written as any other's: as its definition is.
       case "listHomeFiles": {
@@ -2169,19 +2185,24 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       }
       case "getRunGraph":
         await needRun(id);
-        // TODO(E2c): runGraphOverStore (the workflow graph from the run's journal, store-reads).
-        return runReadsTodo();
+        // The workflow run's graph from its journal over the store (run-reads-over-store): an agentic run has none (404),
+        // a run whose output is withheld is refused (403), as the route refused it.
+        return send(res, 200, await runGraphView(store, id, runReadsDeps));
       case "pauseRun":
-      case "resumeRun":
-        // RULED (A1): pause/resume are not a run act over the store — the cap's raise resumes a paused run; a run has no
-        // manual pause. 501, as the document says.
-        await needRun(id);
-        throw unsupported("runs.pause_resume", "A run is not paused or resumed by hand: raise its cap to bring a run paused at its cap back; there is no manual pause.");
+      case "resumeRun": {
+        const run = await needRun(id);
+        // RULED (A1): an agentic run is not paused or resumed by hand — the cap's raise brings a run paused at its cap back;
+        // there is no manual pause. 501, as the document says.
+        if (run.kind === "agentic") throw unsupported("runs.pause_resume", "A run is not paused or resumed by hand: raise its cap to bring a run paused at its cap back; there is no manual pause.");
+        // A workflow run's pause and resume are real, and come with the runner's pause/resume command kinds and E2c's
+        // journal writers: until those land this is a named TODO, refused as unsupported here (not as a permanent no).
+        throw unsupported("runs.pause_resume", "TODO(pause): a workflow run's pause and resume are being wired (the runner's pause/resume and the store's writers); not available on this build yet.");
+      }
       case "readRunFile": {
         await needRun(id);
-        checkedPath(decodedPath(second!), "the run's own, not a file it wrote");
-        // TODO(E2c): readRunFileOverStore (run-workspace.ts ranged read over the run's launch place).
-        return runReadsTodo();
+        // One of a run's files through the server's read-only Workspace, streamed as the file route streams it; the path
+        // check and 404 words are the reader's own.
+        return readRunFileOverStore(store, id, second!, req, res, url, runReadsDeps);
       }
       case "createFile": {
         // A `path` in the query, or a body that is not JSON: the file sent in one call, its bytes the body. Else the

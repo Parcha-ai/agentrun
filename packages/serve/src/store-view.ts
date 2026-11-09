@@ -329,5 +329,14 @@ export async function momentOverStore(store: Store, runId: string, deps: ViewDep
   return momentOf(run.view, factsOf(run), run.live);
 }
 
+/** Whether a run's served output is withheld: this server can't read the browser sign-in it was handed, so nothing it said
+ *  is shown (storeRunOf's `unshown`). The run read routes refuse a withheld run's graph, as the file-backed route did; a
+ *  run with no such mark, or no such run, is not withheld. Reads anew on each call: a run withheld while its key was missing
+ *  is shown once it opens, as the view is. */
+export async function withheldOverStore(store: Store, runId: string, deps: ViewDeps): Promise<boolean> {
+  const run = await storeRunOf(store, runId, deps);
+  return run?.unshown ?? false;
+}
+
 /** Re-export so a caller need not reach into run-view for the type. */
 export type { RunMoment } from "./run-view.js";
