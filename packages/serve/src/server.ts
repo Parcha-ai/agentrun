@@ -1419,7 +1419,11 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     // An MCP server the package can do without is skipped, and said: its tools are not granted.
     const skipped: InputIssue[] = unsaved.map((need) => ({ field: `mcp.${need.server}`, reason: NOT_SET_UP, message: `No MCP server ${need.server} is saved on this server, so the agent was made without its tools (${need.tools.join(", ")}). Save it in Settings → MCP servers and apply again to grant them.` }));
     const harness = pkg.harness && (pkg.harness.find((id) => offers.some((offer) => offer.id === id && offer.available)) ?? pkg.harness[0]);
-    const model = override ?? (await packageModel(env, pkg.model, harness ?? DEFAULT_HARNESS));
+    const picked = override ? { model: override } : await packageModel(env, pkg.model, harness ?? DEFAULT_HARNESS);
+    const model = picked.model;
+    // Which model the agent got, where it is not the package's: a note, never a lack. The agent runs; only the package's
+    // choice was not an option here (not_set_up_here would read as a run refused until the host has something).
+    const modelWarnings: InputIssue[] = "warning" in picked && picked.warning ? [{ field: "model", reason: "not_an_option", message: picked.warning }] : [];
     const defaultTools = "place" in newAgentPlace(boxOffers) ? NEW_AGENT_TOOLS : [];
     // A grant never lifts a deny the owner set on this server: that tool keeps it, and the answer says so.
     const server = settings.get() as Parameters<typeof permissionFrom>[1];
@@ -1470,7 +1474,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     // A pin this server's agent store does not keep yet (tool-plane.ts AGENT_LAYER_PINS): said, with the setting that holds
     // the send to its destination meanwhile, the server's.
     const unkept: InputIssue[] = made.unkept.map(({ tool, pin }) => ({ field: `pins.${tool}`, reason: NOT_SET_UP, message: serverPinned.has(tool) ? `${tool} is not pinned to ${pinWords(pin)} for this agent yet (this server's agent store keeps an agent's own pin from the store cutover on); this server's own pin of ${tool} holds its calls meanwhile.` : `${tool} is not pinned to ${pinWords(pin)} for this agent yet: this server's agent store keeps an agent's own pin from the store cutover on. Until then the agent was made with ${tool} set to deny, so nothing it reads can send it elsewhere. Pin it on this server, which holds every agent's calls of ${tool}, and apply again to let it.`, ...(serverPinned.has(tool) ? {} : { fix: `Add ${JSON.stringify({ [tool]: { pin } })} to this server's tool settings (Settings → Tools; PUT /v2/settings/tools replaces the whole map, so send it with the rest).` }) }));
-    return { applied: { template: pkg.name, version: pkg.version, agent_id: entry.agent.id, trigger_ids: ids, warnings: [...skipped, ...kept, ...unpinned, ...unkept, ...warnings] }, secrets };
+    return { applied: { template: pkg.name, version: pkg.version, agent_id: entry.agent.id, trigger_ids: ids, warnings: [...skipped, ...kept, ...modelWarnings, ...unpinned, ...unkept, ...warnings] }, secrets };
   }
 
   /** A run create's issues told from the input this server checks (explain.ts): an agentic run's `{content: string}`,

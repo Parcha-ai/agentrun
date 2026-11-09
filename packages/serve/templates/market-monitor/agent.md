@@ -28,7 +28,7 @@ parameters:
   lookback_days: { type: integer, description: "how many days back a run looks; leave it out for 7, the weekly schedule's gap. Set it to your schedule's gap when you change cron (1 for daily), or runs repeat each other's items" }
   cron: { type: string, default: "0 8 * * 1", description: "when the digest runs, as a cron line (minute hour day-of-month month day-of-week): Monday 08:00 unless you set it; set lookback_days to its gap" }
   timezone: { type: string, default: UTC, description: "the IANA time zone the cron line is read in (Europe/Madrid, America/New_York): UTC unless you set it" }
-budget: { per_run_usd: 1.00 }
+budget: { per_run_usd: 5.00 }
 learning: true
 # Runs unattended (its job runs on triggers): no tool asks; deny and the pins above still hold.
 approvals: never

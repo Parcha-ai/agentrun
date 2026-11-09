@@ -7,8 +7,8 @@ import { secret } from "./secrets.js";
 import "./quiet-sqlite-warning.js";
 import { parseArgs } from "node:util";
 import { spawn } from "node:child_process";
-import { chmodSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { accessSync, chmodSync, constants as fsConstants, statSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { defaultData, removeOwnRecord, SERVER_FILE, writeDurableSync } from "./files.js";
 import { startedWith } from "./adapters.js";
 import { REPEAT_MS, stopOnSignals } from "./stop-signals.js";
@@ -141,6 +141,22 @@ if (process.argv[2] === "eval-template") {
   if (given.server !== undefined && given.faux !== undefined) usage("--faux is the model of the server it starts itself, and --server names another server.");
   const token = given.server === undefined ? undefined : secret("AGENTRUN_API_KEY") || secret("AGENTRUN_TOKEN");
   if (given.server !== undefined && !token) usage("--server needs that server's token in AGENTRUN_API_KEY.");
+  // The report is written after every case ran, so where it goes is checked now, before anything runs or is paid for.
+  if (given.report !== undefined) {
+    const folder = dirname(resolve(given.report));
+    const writable = (() => {
+      try {
+        accessSync(folder, fsConstants.W_OK);
+        const existing = statSync(resolve(given.report), { throwIfNoEntry: false });
+        // A report already there is written over: it must be a file this command can write.
+        if (existing) accessSync(resolve(given.report), fsConstants.W_OK);
+        return statSync(folder).isDirectory() && !(existing?.isDirectory() ?? false);
+      } catch {
+        return false;
+      }
+    })();
+    if (!writable) usage(`--report's folder ${folder} is not a folder this command can write in, or the report's path is a folder or a file it can't write.`);
+  }
   // The first Ctrl-C (or a stop) cancels the run in progress and cleans up what the eval made, as its end does: a run
   // left going would go on spending. A second one leaves at once; one within a second of the first is the same Ctrl-C,
   // reaching this process twice (stop-signals.ts REPEAT_MS).

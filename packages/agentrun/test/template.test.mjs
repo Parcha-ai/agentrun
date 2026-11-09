@@ -55,11 +55,11 @@ test("template eval runs a package's cases on a server of its own and exits as t
   assert.match(refused.stderr, /evals\/nope: no such case/);
 });
 
-test("template eval passes a stop sent to it alone on to the eval, which cancels its run and cleans up: 130, no report", { timeout: 300_000 }, async (t) => {
+for (const spelling of [["template", "eval"], ["eval-template"]]) test(`agentrun ${spelling.join(" ")} passes a stop sent to it alone on to the eval, which cancels its run and cleans up: 130, no report`, { timeout: 300_000 }, async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "agentrun-template-eval-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const holding = join(dir, "holding");
-  const child = spawn(process.execPath, [BIN, "template", "eval", EVALPKG, "--case", "held", "--faux", EVAL_FAUX, "--report", join(dir, "stopped.json")], { env: { ...evalEnv(dir), AGENTRUN_TEST_EVAL_HOLD: holding }, stdio: ["ignore", "pipe", "pipe"] });
+  const child = spawn(process.execPath, [BIN, ...spelling, EVALPKG, "--case", "held", "--faux", EVAL_FAUX, "--report", join(dir, "stopped.json")], { env: { ...evalEnv(dir), AGENTRUN_TEST_EVAL_HOLD: holding }, stdio: ["ignore", "pipe", "pipe"] });
   let err = "";
   child.stderr.on("data", (chunk) => (err += chunk));
   child.stdout.resume();

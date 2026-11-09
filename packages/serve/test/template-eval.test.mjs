@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
-import { cpSync, existsSync, readFileSync, watch, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, readFileSync, watch, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { test } from "node:test";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
@@ -270,15 +270,22 @@ async function refusing(t, baseUrl, refuses) {
   return `http://127.0.0.1:${proxy.address().port}/v2`; // key-gate: loopback-rule the test's proxy listens on loopback
 }
 
-test("a run whose wait fails is cancelled before the eval goes on, never left going", { timeout: 300_000 }, async (t) => {
+test("a run whose wait fails keeps its result and is cancelled before the eval goes on, never left going", { timeout: 300_000 }, async (t) => {
   // The held case's run never answers on its own: only a cancel ends it.
   process.env.AGENTRUN_TEST_EVAL_HOLD = join(await scratch(t), "holding");
   t.after(() => delete process.env.AGENTRUN_TEST_EVAL_HOLD);
   const { api, baseUrl, token } = await serve(t, { faux: FAUX, templates: FIXTURES });
   const report = await evalTemplate({ dir: PKG, cases: ["held"], server: { baseUrl: await refusing(t, baseUrl, (req) => /\/runs\/[^/]+\/timeline/.test(req.url)), token } });
-  assert.match(report.cases[0].error, /timeline: 500 refused by the test proxy/);
+  // The run was started, so it is paid for: it keeps a result (its id, its cost as the server says it), failed with why,
+  // never dropped from the case.
+  const [one] = report.cases[0].runs;
+  assert.equal(report.cases[0].pass, false);
+  assert.ok(one, JSON.stringify(report.cases[0]));
+  assert.match(one.error, /^after the run started: .*timeline: 500 refused by the test proxy/);
+  assert.deepEqual([one.status, one.pass], ["unknown", false]);
   const runs = (await api("GET", "/runs?archived=true")).body.runs;
   assert.equal(runs.length, 1);
+  assert.equal(one.run_id, runs[0].run_id);
   assert.equal((await api("GET", `/runs/${runs[0].run_id}`)).body.status, "cancelled", "the run the eval started is cancelled");
 });
 
@@ -389,6 +396,10 @@ test("agentrun-serve eval-template: exit 0 when every case passes, 1 when one fa
   assert.match(heldErr, /stopping: cancelling the run in progress[\s\S]*stopped; no report\./);
   assert.throws(() => readFileSync(join(dir, "stopped.json")), { code: "ENOENT" });
 
+  // A report path that exists and can't be written: refused before anything runs.
+  const readOnly = join(dir, "read-only.json");
+  writeFileSync(readOnly, "{}");
+  chmodSync(readOnly, 0o444);
   for (const [args, said] of [
     [[PKG, "--case", "nope", "--faux", FAUX], /evals\/nope: no such case/],
     [[PKG, "--runs", "0"], /--runs takes a whole number/],
@@ -397,6 +408,8 @@ test("agentrun-serve eval-template: exit 0 when every case passes, 1 when one fa
     [[PKG, "--grader-model", "nomodel", "--faux", FAUX], /--grader-model is "provider\/model-id"/],
     [[join(PKG, "evals")], /is not a valid package/],
     [[], /it takes one package folder/],
+    [[PKG, "--faux", FAUX, "--report", join(dir, "no-such-folder", "report.json")], /--report's folder .*no-such-folder is not a folder this command can write in/],
+    [[PKG, "--faux", FAUX, "--report", readOnly], /--report's folder .* or a file it can't write/],
   ]) {
     const refused = await run(args);
     assert.equal(refused.code, 2, `${args.join(" ")}: ${refused.err}`);
