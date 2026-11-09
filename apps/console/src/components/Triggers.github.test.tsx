@@ -30,7 +30,7 @@ type Call = { method: string; path: string; body: unknown; key: string | null };
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
 // `connected`: true (200 with the App), false (404, no App), or "answer" (200 {connected: false}: the later shape of no App).
-function server({ triggers = [NIGHTLY, PRS], connected = true, create }: { triggers?: Trigger[]; connected?: boolean | "answer"; create?: (call: Call) => Response } = {}) {
+function server({ triggers = [NIGHTLY, PRS], connected = true, create }: { triggers?: Trigger[]; connected?: boolean | "answer"; create?: (call: Call) => Response | Promise<Response> } = {}) {
   const calls: Call[] = [];
   triggers = triggers.map((t) => structuredClone(t));
   const fetch = (async (url: string, init?: RequestInit) => {
@@ -131,5 +131,18 @@ describe("Triggers: GitHub", () => {
     await t.fill();
     await t.click(/^Create GitHub trigger$/);
     expect(t.text()).toContain(NOT_CONNECTED.error.message);
+  });
+
+  it("a create that answers after the person left the form opens nothing", async () => {
+    let answer!: (r: Response) => void;
+    const s = server({ create: () => new Promise<Response>((r) => { answer = r; }) });
+    const t = await open(s.v2, { trigger: null, kind: "github" });
+    await t.fill();
+    await t.click(/^Create GitHub trigger$/);
+    // Left the form (Cancel, the back link, the sidebar): the page goes, and the create answers after.
+    act(() => root?.unmount());
+    await act(async () => { answer(json(201, { ...PRS, id: "trg_new" })); });
+    await t.settle();
+    expect(t.went).not.toContain("#/triggers/trg_new");
   });
 });
