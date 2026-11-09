@@ -533,6 +533,50 @@ test("a stop while an MCP call is parked withdraws it: no pending approval, the 
   }
 });
 
+test("a person's cancel of a run parked on an MCP call ends it cancelled: nothing pending, the call withdrawn and never sent, a later allow refused", { timeout: 120_000 }, async (t) => {
+  const { server, answer, fake, extra, content } = await parkingServer(t, "pi");
+  const { api } = server;
+  const runId = await started(api, "cancelled-pi", ["mcp:fake/add"], content, { extra });
+  const pending = await parked(api, runId);
+  const cancel = await api("POST", `/runs/${runId}/cancel`, {});
+  assert.deepEqual([cancel.status, cancel.body.cancel_requested], [202, true], JSON.stringify(cancel.body));
+  const { rows } = await follow(api, runId, ["cancelled"], { deadlineMs: 60_000 });
+  const view = (await api("GET", `/runs/${runId}`)).body;
+  assert.deepEqual([view.status, view.state, view.pending], ["cancelled", "idle", null]);
+  assert.ok(rows.some((row) => row.kind === "tool_approval_requested" && /^Withdrawn when the run was /.test(row.summary ?? "")), "the call reads withdrawn");
+  assert.equal((await answer.refused(runId, pending.id, { decision: "allow" }))[0], 409, "a later allow");
+  assert.equal(calls(fake).length, 0, "the server saw nothing");
+});
+
+test("a person's cancel of a run parked on an MCP call reads its call withdrawn when the run was cancelled, and a later allow is refused so (main's words)", { timeout: 120_000, skip: "a cancel's withdrawal is written as a stop's (decision withdrawn, not canceled)" }, async (t) => {
+  const { server, answer, extra, content } = await parkingServer(t, "pi");
+  const { api } = server;
+  const runId = await started(api, "cancelled-words-pi", ["mcp:fake/add"], content, { extra });
+  const pending = await parked(api, runId);
+  assert.equal((await api("POST", `/runs/${runId}/cancel`, {})).status, 202);
+  const { rows } = await follow(api, runId, ["cancelled"], { deadlineMs: 60_000 });
+  assert.match(rows.find((row) => row.kind === "tool_approval_requested")?.summary ?? "", /^Withdrawn when the run was cancelled: mcp:fake\/add /);
+  assert.deepEqual(await answer.refused(runId, pending.id, { decision: "allow" }), [409, `The tool call ${pending.id} was already canceled with its run.`]);
+});
+
+test("a person's stop of a run parked on an MCP call leaves it input_required and idle with nothing pending, its end's outcome stopped (main's stop)", { timeout: 120_000, skip: "route-1: reopen-stopped (base round 116)" }, async (t) => {
+  const { server, answer, fake, extra, content } = await parkingServer(t, "pi");
+  const { api } = server;
+  const runId = await started(api, "stopped-literal-pi", ["mcp:fake/add"], content, { extra });
+  const pending = await parked(api, runId);
+  const stop = await api("POST", `/runs/${runId}/stop`, {});
+  assert.deepEqual([stop.status, stop.body.stopped], [200, true], JSON.stringify(stop.body));
+  const { rows } = await stoppedRun(server, runId, "pi");
+  const row = await server.store.runs.get(runId);
+  const { entries } = await journalRecords(server.store.journal({ runId, runner: "reader", epoch: row.epoch, until: 0, from: row.state }), BACKGROUND_CONTEXT);
+  assert.equal(entries.findLast((entry) => entry.kind === "agentrun.end")?.data?.outcome, "stopped", "the end's outcome");
+  const view = (await api("GET", `/runs/${runId}`)).body;
+  assert.deepEqual([view.status, view.state, view.pending], ["input_required", "idle", null]);
+  assert.match(rows.find((one) => one.kind === "tool_approval_requested")?.summary ?? "", /^Withdrawn when the run was stopped: mcp:fake\/add /);
+  await refusedAsWithdrawn(answer, runId, pending.id, "pi");
+  assert.equal(calls(fake).length, 0, "the server saw nothing");
+});
+
 test("a stop while an approved MCP call runs cuts it at the server: the fake sees its request closed and never finishes the work, nothing resumes, the row reads Withdrawn, and a later allow is 409; on pi and claude-agent", { timeout: 300_000 }, async (t) => {
   for (const harness of PARK_HARNESSES) {
     const { server, answer, fake, extra, content } = await parkingServer(t, harness, { tool: "slow_write", input: { line: "never", seconds: 20 } });
