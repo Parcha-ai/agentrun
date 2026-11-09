@@ -29,6 +29,19 @@ test("runs.update to a final state refuses the run's other untaken rows with the
   }
 });
 
+test("a release never makes a run final: only the end commit does, so no final run is left holding an untaken row", async (t) => {
+  const { store } = await storeOn(t);
+  await queued(store);
+  const claim = await store.claim("run-1", "runner-a", { leaseMs: 30_000 });
+  const steer = await store.command("run-1", { kind: "steer", body: { text: "and then" } });
+  for (const state of ["ended", "stopped", "failed"]) {
+    await assert.rejects(store.release(claim, { state }), (error) => error instanceof TypeError && /never makes a run final/.test(error.message), `a release to ${state} is refused`);
+  }
+  const row = await store.runs.get("run-1");
+  assert.deepEqual([row.state, row.runner, row.endedAt], ["running", "runner-a", null], "the run is as the claim left it");
+  assert.equal((await commandRow(store, steer.id)).takenAt, null, "its steer is still waiting for the loop");
+});
+
 /** A test-only trigger on the store's file that aborts any write refusing a command row: the end and its refusals must
  *  stand or fall together, so with the trigger the whole end rolls back (the run not final, its stop untaken). Were the
  *  refusals a write of their own after the end, the run would land final while they failed. */

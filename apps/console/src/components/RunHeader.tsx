@@ -2,7 +2,7 @@ import { Archive, ArchiveRestore, ArrowLeft, Ban, CircleDollarSign, Square } fro
 import { useState } from "react";
 import { agentHash } from "@/components/AgentPage";
 import { LearningChips } from "@/components/LearningChips";
-import { capWords, RaiseCap, suggestedCap } from "@/components/NeedsYou";
+import { capWords, leastCap, RaiseCap, suggestedCap } from "@/components/NeedsYou";
 import { ScheduleChip } from "@/components/ScheduleChip";
 import { StatusBadge } from "@/components/StatusBadge";
 import { Button } from "@/components/ui/button";
@@ -39,7 +39,7 @@ export function RunHeader({ run, agentName, actions = {}, costText }: { run: Run
   const [raising, setRaising] = useState(false);
   const budget = run.pending?.kind === "budget" ? run.pending : null;
   return (
-    <header className="border-b px-5 py-4 md:px-8">
+    <header className="border-b px-5 py-4 max-sm:py-3 md:px-8">
       <nav className="caps flex min-w-0 items-center gap-2 text-[11px] text-muted-foreground" aria-label="Breadcrumb">
         {/* Back where the person came from in the console (the runs list, the agent's page), else to the run's agent. */}
         <button type="button" aria-label="Back" title="Back" onClick={() => goBack(agentHash(run.agent_id))} className="-m-1 shrink-0 p-1 hover:text-foreground">
@@ -49,11 +49,13 @@ export function RunHeader({ run, agentName, actions = {}, costText }: { run: Run
         <span aria-hidden>/</span>
         <span className="truncate">Run {runLabel(run.run_id)}</span>
       </nav>
-      <div className="mt-3 flex flex-col items-start gap-x-6 gap-y-3 sm:flex-row">
-        <div className="min-w-0 flex-1 self-stretch">
+      {/* On a phone the title's column and the facts' box step aside (display: contents), so the facts and the actions
+          share one wrapping row under a two-line title. 640 px and up keep the column and the actions beside it. */}
+      <div data-phone-row className="mt-3 flex flex-col items-start gap-x-6 gap-y-3 max-sm:mt-2 max-sm:flex-row max-sm:flex-wrap max-sm:items-center max-sm:gap-x-3 max-sm:gap-y-2 sm:flex-row">
+        <div className="min-w-0 flex-1 self-stretch max-sm:contents">
           {/* A workflow run's title can be its input as JSON: then the agent's name reads better. */}
-          <h1 className="break-words text-2xl font-semibold leading-tight" title={run.title}>{run.kind === "workflow" && /^[[{]/.test(run.title.trim()) ? agentName : run.title}</h1>
-          <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-2 text-[12px] text-muted-foreground">
+          <h1 className="break-words text-2xl font-semibold leading-tight max-sm:line-clamp-2 max-sm:basis-full max-sm:text-lg" title={run.title}>{run.kind === "workflow" && /^[[{]/.test(run.title.trim()) ? agentName : run.title}</h1>
+          <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-2 text-[12px] text-muted-foreground max-sm:contents">
             <StatusBadge run={run} />
             {archived && <Chip tone="muted">Archived</Chip>}
             <span className="font-mono">{run.kind} · rev {run.agent_version}{ranIn && ` · ${ranIn}`}</span>
@@ -64,7 +66,7 @@ export function RunHeader({ run, agentName, actions = {}, costText }: { run: Run
             <LearningChips run={run} link />
             <ScheduleChip run={run} />
           </div>
-          {run.status === "completed" && run.review && <p className="mt-2 text-[13px] text-warning-text">Needs review: {run.review.reason}</p>}
+          {run.status === "completed" && run.review && <p className="mt-2 text-[13px] text-warning-text max-sm:mt-0 max-sm:basis-full">Needs review: {run.review.reason}</p>}
         </div>
         {(view.canStop || view.canCancel || actions.onArchive || raisable) && (
           <div className="flex shrink-0 items-center gap-2">
@@ -101,7 +103,7 @@ export function RunHeader({ run, agentName, actions = {}, costText }: { run: Run
       {raisable && raising && (
         <div className="mt-3 max-w-xl">
           {/* Keyed on the pause, as the banner's form is: a new pause (or the first, on a working run) brings its suggestion. */}
-          <RaiseCap key={budget ? `${run.run_id}:${budget.at}` : `${run.run_id}:working`} cap={cap!} suggested={suggestedCap(budget)} paused={!!budget} onRaise={actions.onRaiseCap!} />
+          <RaiseCap key={budget ? `${run.run_id}:${budget.at}` : `${run.run_id}:working`} cap={cap!} suggested={suggestedCap(budget)} least={leastCap(budget)} paused={!!budget} onRaise={actions.onRaiseCap!} />
         </div>
       )}
     </header>

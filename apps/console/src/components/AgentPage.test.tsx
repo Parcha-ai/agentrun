@@ -6,6 +6,7 @@ import { agentFixture, archivedAgents, editorCaps, recorded, runFixture, runName
 import type { Agent } from "@/lib/agentForm";
 import { ClientError, type FieldIssue } from "@/lib/client";
 import { ANALYTICS, statsWith } from "./AgentAnalytics.sample";
+import type { Places } from "@/lib/place";
 import type { Run, TimelinePage } from "@/lib/v2";
 
 // An agent's own page: its current revision's settings in the header, its runs, and a workflow agent's graph, read-only.
@@ -38,10 +39,10 @@ type Answer = { run: Run } | { refused: string };
 const recordedPages = new Map(runNames.map((n) => recorded<TimelinePage>(`${n}.timeline`).body).map((p) => [p.run_id, p]));
 /** A final page with no rows, at the run's own status: what a run without a recorded timeline is followed through. */
 const endedPage = (r: Run): TimelinePage => ({ cost: { usd: null, basis: "estimate", charge_state: null, cap_usd: null }, run_id: r.run_id, status: r.status, state: r.state, rows: [], drop: [], reset: true, unchanged: false, final: true, has_more: false, next_after: 1 });
-type Opts = { runs?: Run[]; next?: string | null; more?: () => Promise<{ runs: Run[]; next_cursor: string | null }>; tab?: string; answer?: Answer; stats?: () => Promise<unknown>; models?: { default: string; source: string; route_prefix?: string | null }; harnesses?: { id: string; default_model?: string | null; available?: boolean; reason?: string }[]; hold?: Promise<unknown>; strict?: boolean; timeline?: (id: string, o: { after?: number }) => Promise<TimelinePage>; reread?: (id: string) => Promise<Run>; agentError?: unknown };
+type Opts = { runs?: Run[]; next?: string | null; more?: () => Promise<{ runs: Run[]; next_cursor: string | null }>; tab?: string; answer?: Answer; stats?: () => Promise<unknown>; models?: { default: string; source: string; route_prefix?: string | null }; harnesses?: { id: string; default_model?: string | null; available?: boolean; reason?: string }[]; hold?: Promise<unknown>; strict?: boolean; timeline?: (id: string, o: { after?: number }) => Promise<TimelinePage>; reread?: (id: string) => Promise<Run>; agentError?: unknown; places?: Places | null };
 /** By default the server's stats carry the sample analytics. `followed` lists the latest run's reads (its
  *  timeline's pages and its record), apart from the page's own reads in `asked`. */
-async function open(agent: Agent, { runs = runsOf("invoice-checker"), next = null, more, tab, answer = { run: recorded<Run>("start.run").body }, stats = async () => statsWith(ANALYTICS), models, harnesses, hold, strict = false, timeline, reread, agentError }: Opts = {}) {
+async function open(agent: Agent, { runs = runsOf("invoice-checker"), next = null, more, tab, answer = { run: recorded<Run>("start.run").body }, stats = async () => statsWith(ANALYTICS), models, harnesses, hold, strict = false, timeline, reread, agentError, places }: Opts = {}) {
   const went: string[] = [];
   const asked: string[] = [];
   const followed: string[] = [];
@@ -69,7 +70,7 @@ async function open(agent: Agent, { runs = runsOf("invoice-checker"), next = nul
   };
   const host = document.body.appendChild(document.createElement("div"));
   root = createRoot(host);
-  const props = { v2: v2 as never, agentId: agent.agent_id, defaultModel: models?.default ?? editorCaps.defaultModel, modelSource: models?.source, routePrefix: models?.route_prefix, harnesses, efforts, go: (h: string) => went.push(h), tab };
+  const props = { v2: v2 as never, agentId: agent.agent_id, defaultModel: models?.default ?? editorCaps.defaultModel, modelSource: models?.source, routePrefix: models?.route_prefix, harnesses, efforts, go: (h: string) => went.push(h), tab, places };
   act(() => root!.render(strict ? createElement(StrictMode, null, createElement(AgentPage, props)) : createElement(AgentPage, props)));
   const settle = async () => { for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
   await settle();
@@ -538,6 +539,21 @@ describe("AgentPage, where it runs", () => {
     expect((await open(runner)).fact("Runs")).toBe("On the server");
     act(() => root?.unmount()); document.body.innerHTML = "";
     expect((await open(base)).fact("Runs")).toBe("Where this server's default place is");
+  });
+  // A revision that names no place runs where the server resolves it at each run (#1790): default_place, or the runner for
+  // one with a runner-only tool. The page names that place, marked as the server's default; a named place is never marked.
+  const PLACES = (defaultPlace: Places["defaultPlace"]): Places => ({ modes: ["runner", "sandbox"], boxes: [{ id: "docker", available: true }], defaultPlace });
+  it("names the server's default place for an agent that names none, and marks it as the default", async () => {
+    const base = agentFixture("invoice-checker");
+    expect((await open(base, { places: PLACES({ mode: "sandbox", box: "docker" }) })).fact("Runs")).toBe("In a docker box (server default)");
+    act(() => root?.unmount()); document.body.innerHTML = "";
+    expect((await open(base, { places: PLACES({ mode: "runner" }) })).fact("Runs")).toBe("On the server (server default)");
+    act(() => root?.unmount()); document.body.innerHTML = "";
+    const browser = { ...base, definition: { ...base.definition, tools: ["browser"] } };
+    expect((await open(browser, { places: PLACES({ mode: "sandbox", box: "docker" }) })).fact("Runs")).toBe("On the server (server default)");
+    act(() => root?.unmount()); document.body.innerHTML = "";
+    const runner = { ...base, definition: { ...base.definition, place: { mode: "runner" } } };
+    expect((await open(runner, { places: PLACES({ mode: "sandbox", box: "docker" }) })).fact("Runs")).toBe("On the server");
   });
 });
 

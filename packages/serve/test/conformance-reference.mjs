@@ -9,6 +9,7 @@ const { callsOf, journalEntries, messagesOf } = await import("../dist/runner/jou
 const { KINDS } = await import("../dist/runner/journal-kinds.js");
 const { cutAtLimit, deniedText, endedBy, noteOf } = await import("../dist/runner/loop-contract.js");
 const { MAX_RESTARTS } = await import("../dist/runner/conformance/harness.js");
+const { RUN_RESUMED } = await import("@parcha/pi-durable-agent/timeline");
 
 /** A task that kept faulting: the run fails, saying so. */
 class RestartsRanOut extends Error {}
@@ -77,7 +78,8 @@ function referenceLoop({ script, tools, hooks }, deps) {
   /** The run ends stopped, why on its row (the end commit's summary), the stop or cancel row taken in the same commit. */
   const writeStop = async () => {
     const run = MUTANT === "stop-unwritten" ? { state: "stopped" } : { state: "stopped", summary: endedBy(stopReason.cancel) };
-    await append(TURN_END, {}, { run, take: [stopReason.commandId] });
+    // The loop's end commit, as every loop writes it (KINDS.end): the live view reads the stop from it.
+    await append(KINDS.end, run, { run, take: [stopReason.commandId] });
     return { state: "stopped" };
   };
 
@@ -129,6 +131,8 @@ function referenceLoop({ script, tools, hooks }, deps) {
   return {
     async start(claim) {
       journal = deps.journal(claim);
+      // Taken over from a runner whose lease ran out mid-run: said on the run's timeline (a mutant leaves it unsaid).
+      if (claim.lost && MUTANT !== "takeover-unsaid") await append(RUN_RESUMED, { after: "runner_lost", runner: claim.lost.runner, at: Date.now() });
       let entries = await journalEntries(journal, context);
       // Recovery: an intent with no result. A replay-safe call runs again; any other is interrupted, never run twice.
       for (const call of callsOf(entries).filter((c) => c.status === "pending")) {
