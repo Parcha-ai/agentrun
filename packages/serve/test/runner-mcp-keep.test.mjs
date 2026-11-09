@@ -32,17 +32,21 @@ const setOf = (access, refresh, expires) => ({
 const sealedSet = (set) => sealMcpCredential(KEY, "fake", { type: "oauth", set }, MCP_URL);
 const EXPIRED = () => setOf(OLD, `not-a-secret-${"refresh-1"}`, T0 - SECOND);
 
-/** The authorization server: each refresh counted, answered with FRESH once `answer()` is called. */
+/** The authorization server: each refresh counted, answered with FRESH once `answer()` is called. `fetched(n)` resolves
+ *  once the n-th refresh has been sent. */
 function network() {
   let answer;
   const answered = new Promise((resolve) => (answer = resolve));
   let sent;
   const reached = new Promise((resolve) => (sent = resolve));
+  const counted = [];
   const net = {
     fetches: 0, reached, answer,
+    fetched: (n) => new Promise((resolve) => (net.fetches >= n ? resolve() : counted.push({ n, resolve }))),
     lookup: async () => ["93.184.216.34"],
     fetch: async () => {
       net.fetches += 1;
+      for (const one of counted.filter((one) => net.fetches >= one.n)) one.resolve();
       sent();
       await answered;
       return new Response(JSON.stringify({ access_token: FRESH, token_type: "Bearer", refresh_token: `not-a-secret-${"refresh-2"}`, expires_in: 3600 }), { status: 200, headers: { "content-type": "application/json" } });
@@ -51,14 +55,18 @@ function network() {
   return net;
 }
 
-/** The step's timer: its waits kept, fired only when the test says. */
+/** The step's timer: its waits kept, fired only when the test says. `armed` resolves once a wait is armed on it. */
 function manualTimer() {
   const armed = [];
+  let firstArmed;
+  const armedOnce = new Promise((resolve) => (firstArmed = resolve));
   const timer = (fire, ms) => {
     const one = { fire, ms, cleared: false };
     armed.push(one);
+    firstArmed();
     return { clear: () => void (one.cleared = true) };
   };
+  timer.armed = armedOnce;
   timer.fireAll = () => armed.filter((one) => !one.cleared).forEach((one) => ((one.cleared = true), one.fire()));
   timer.pending = () => armed.filter((one) => !one.cleared).length;
   return timer;
@@ -121,8 +129,16 @@ test("a keep held past the old 12 s lease: a claim waiting on the lease never ta
   clock.now += 13 * SECOND;
   const timer = manualTimer();
   const b = stepOf(store, two, { network: net, timer });
-  // The other claim reaches its wait on the lease (its wait armed on the step's timer), or, its lease taken, its refresh.
-  for (let i = 0; i < 2_000 && timer.pending() === 0 && net.fetches === 1; i++) await new Promise((resolve) => setImmediate(resolve));
+  // The other claim reaches its wait on the lease (its wait armed on the step's timer), or, its lease taken, its refresh:
+  // whichever happens first, by the event itself, however slow the store is. The bound is only a failing run's.
+  let bound;
+  const reached = await Promise.race([
+    timer.armed.then(() => "waits"),
+    net.fetched(2).then(() => "refreshed"),
+    new Promise((resolve) => (bound = setTimeout(() => resolve("neither"), 30_000))),
+  ]);
+  clearTimeout(bound);
+  assert.equal(reached, "waits", "the waiting claim reached its wait on the lease, not a refresh of its own");
   assert.equal(net.fetches, 1, "the waiting claim sent no refresh of its own: the lease still held");
   assert.ok(timer.pending() > 0, "it waits on the lease");
   held.release();

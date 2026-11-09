@@ -44,6 +44,7 @@ import type { Workspace } from "../workspace/workspace.js";
 import type { ComputerSetting } from "../computer-setting.js";
 import type { AdapterRun, AdapterRunSpec, RunCapConfig } from "./adapter-loop.js";
 import { adapterRunGate, type AdapterSpecDeps, hostToolCtxOf, learnedWorkflowHostTool } from "./adapter-run-spec.js";
+import { signInReads } from "../sign-ins-store.js";
 import { claimSecrets } from "./claim-secrets.js";
 import { LEARNED_WORKFLOW_TOOL } from "../learned-workflow.js";
 import { TOOL_PLANE_ENV } from "../tool-plane.js";
@@ -229,17 +230,20 @@ export async function cliRunSpecFromLaunch(launch: RunLaunch, run: AdapterRun, d
 
   // The run's tools: the kernel registry's hands on its Workspace (and computer), beside the learned_workflow tool when the
   // pin names learned workflows. A CLI harness's session has a model port, so learned_workflow runs for real on the
-  // session's proxied models (learnedWorkflowHostTool onSessionPort), each node a request on the run's one route labelled
+  // session's proxied models (learnedWorkflowHostTool), each node a request on the run's one route labelled
   // learned_workflow, booked on the run's one ledger. Its call nodes run the agent's tools' effects on the run's scoped
   // keys (claim-secrets.ts), the run's plane threaded for the web tools among them. (web_fetch/web_search/monid as the CLI's
   // own host tools are still a TODO, as the pi spec binds them.)
   const results: ToolResults = new Map();
   let learnedTool: Awaited<ReturnType<typeof learnedWorkflowHostTool>>;
+  // The keys the claim hands the run (its learned workflow's call nodes run on them): never learned (learningEndOfRun).
+  let handedKeys: string[] = [];
   if (granted.includes(LEARNED_WORKFLOW_TOOL)) {
     const toolEnv = await claimSecrets({ store: deps.store, sealKey: deps.sealKey, env: deps.env }, revisionRow as unknown as Parameters<typeof claimSecrets>[1], launch);
+    handedKeys = runnerSecrets(toolEnv);
     delete toolEnv[TOOL_PLANE_ENV];
     if (launch.plane && Object.keys(launch.plane).length) toolEnv[TOOL_PLANE_ENV] = JSON.stringify(launch.plane);
-    learnedTool = await learnedWorkflowHostTool({ run, granted, plane: launch.plane, env: toolEnv, work: root, ctx: hostToolCtxOf(run, context, results, root), onSessionPort: true });
+    learnedTool = await learnedWorkflowHostTool({ run, granted, plane: launch.plane, env: toolEnv, work: root, ctx: hostToolCtxOf(run, context, results, root) });
   }
   const session: SessionSpec = {
     key: `run:${claim.runId}`,
@@ -260,6 +264,10 @@ export async function cliRunSpecFromLaunch(launch: RunLaunch, run: AdapterRun, d
     store: deps.store,
     data: deps.data,
     ...(deps.env ? { env: deps.env } : {}),
+    // What the run must never learn beside the runner's secrets: the keys its claim handed it, and its sign-in's pointers,
+    // read back from the store's sign-ins under the seal key (learning-run.ts refused, on the runner).
+    signIns: signInReads(deps.store, deps.sealKey),
+    handed: handedKeys,
     learningFolder: archil === undefined
       ? (agentId: string) => learningFolderOf(deps.data, agentId)
       : (agentId: string) => learningWorkspace({ mode: "archil", agentId, archil }),

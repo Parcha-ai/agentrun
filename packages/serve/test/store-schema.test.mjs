@@ -41,6 +41,7 @@ test("the schema has every table, and every time column is an INTEGER", async (t
     }
     assert.deepEqual(times.filter(([, , type]) => type !== "INTEGER"), [], "every time is INTEGER epoch ms");
     assert.ok(times.some(([table, name]) => table === "runs" && name === "wake_at"), "runs.wake_at");
+    assert.ok(times.some(([table, name]) => table === "runs" && name === "left_running_at"), "runs.left_running_at (the Browserbase settle window reads it)");
     assert.ok((await columnsOf("revisions")).some((column) => column.name === "package"), "revisions.package");
     assert.ok((await columnsOf("commands")).some((column) => column.name === "refused"), "commands.refused");
     assert.ok(times.some(([table, name]) => table === "mcp_servers" && name === "credential_changed_at"), "mcp_servers.credential_changed_at");

@@ -54,21 +54,24 @@ describe("the Daytona provider's commands in a root container", { skip: LIVE ? f
 		for (const name of names) execFileSync("docker", ["rm", "--force", name], { stdio: "ignore" });
 	});
 
-	/** A root container of image with the daemon at the staging path, as the toolbox's upload leaves it. */
+	/**
+	 * A root container of image with the daemon at the staging path, as the toolbox's upload leaves it, given the two
+	 * capabilities init --own-network needs, as Daytona's root (the open runner runs it privileged) holds.
+	 */
 	function sandbox(image) {
 		const name = `computer-daytona-${randomBytes(6).toString("hex")}`;
 		names.push(name);
 		const arch = docker("version", "--format", "{{.Server.Arch}}").trim();
 		const daemon = fileURLToPath(new URL(`../../dist/computerd-linux-${arch}`, import.meta.url));
-		docker("run", "--detach", "--name", name, image, "sleep", "600");
+		docker("run", "--detach", "--name", name, "--cap-add", "SYS_ADMIN", "--cap-add", "NET_ADMIN", image, "sleep", "600");
 		docker("cp", daemon, `${name}:${STAGING}`);
 		return { name, arch, sha: createHash("sha256").update(readFileSync(daemon)).digest("hex") };
 	}
 
 	for (const { image, suid, copy } of IMAGES) {
-		it(`${image}: installs the daemon, init drops itself to 1000:1000 with no capabilities on every thread, and the bridge speaks the protocol`, async () => {
+		it(`${image}: installs the daemon, init drops itself to 1000:1000 with no capabilities and the filter on every thread, and the bridge speaks the protocol`, async () => {
 			const { name, arch, sha } = sandbox(image);
-			const commands = daytonaCommands({ staging: STAGING, deadline: new Date(Date.now() + 300_000).toISOString() });
+			const commands = daytonaCommands({ staging: STAGING, deadline: new Date(Date.now() + 300_000).toISOString(), user: "1000:1000" });
 			const installed = execFileSync("docker", ["exec", "-i", name, "sh"], { input: commands.install, encoding: "utf8" });
 			assert.equal(installed.trim(), `sha256 ${sha}`, "the install prints the installed binary's sha256");
 			assert.equal(docker("exec", name, "stat", "-c", "%u:%g %a", "/opt/agentrun/computerd").trim(), "0:0 755");
@@ -116,6 +119,7 @@ describe("the Daytona provider's commands in a root container", { skip: LIVE ? f
 				assert.equal(each.Gid, "1000\t1000\t1000\t1000", `thread ${tid} Gid`);
 				assert.equal(each.Groups, "", `thread ${tid} Groups`);
 				assert.equal(each.NoNewPrivs, "1", `thread ${tid} NoNewPrivs`);
+				assert.equal(each.Seccomp, "2", `thread ${tid} Seccomp: the filter that refuses vsock and io_uring`);
 				for (const set of CAPS) assert.equal(each[set], "0000000000000000", `thread ${tid} ${set}`);
 			}
 

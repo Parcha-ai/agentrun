@@ -253,6 +253,9 @@ export class Triggers {
     // A pushed source's own hook path is its id, beside the trigger ids a hook path also names: none looks like one.
     const shaped = this.adapters.find((a) => a.id.startsWith("trg_"));
     if (shaped) throw new Error(`a trigger source's id never starts as a trigger's does: ${shaped.id}`);
+    // A source's id is its kind, its firings' by and, for one pushed on the server's settings, its hook: one source each.
+    const twice = this.adapters.find((a, i) => this.adapters.findIndex((b) => b.id === a.id) !== i);
+    if (twice) throw new Error(`two trigger sources claim the id ${twice.id}${twice.push ? `, and its hook /v2/hooks/${twice.id}` : ""}: one source each`);
   }
 
   /** At the server's start: every enabled trigger whose source no longer reads turned off, each failure's trigger.failed
@@ -324,11 +327,13 @@ export class Triggers {
     return (await this.hookSource(id, kind)) !== undefined;
   }
 
-  /** The source of trigger `id` when it is hookable: what its pushed source's check and parse read (its filter). */
-  async hookSource(id: string, kind: string): Promise<Source | undefined> {
+  /** The source of trigger `id` when it is hookable: what its pushed source's check and parse read (its filter). With no
+   *  `kind`, the source of any pushed trigger `id` that is on, so the hook's resolution can read its kind to find its
+   *  adapter (push-handler.ts): a path that names no such trigger is checked against the decoy, and learns no id. */
+  async hookSource(id: string, kind?: string): Promise<Source | undefined> {
     const row = await this.store.triggers.get(id);
     const trigger = row && asTrigger(row);
-    return trigger !== undefined && trigger.source.kind === kind && this.adapter(trigger.source)?.delivery === "push" && trigger.enabled ? trigger.source : undefined;
+    return trigger !== undefined && (kind === undefined || trigger.source.kind === kind) && this.adapter(trigger.source)?.delivery === "push" && trigger.enabled ? trigger.source : undefined;
   }
 
   /** The triggers of the pushed source `kind` that are on and listen on `scope` (its adapter's scopeOf): the ones an

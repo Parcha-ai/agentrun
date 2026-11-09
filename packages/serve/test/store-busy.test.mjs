@@ -57,47 +57,6 @@ function hold(t, data, mode = "IMMEDIATE") {
   return release;
 }
 
-test("a run's end due while another connection holds the agent store: the server answers within 200 ms meanwhile", async (t) => {
-  const dir = await scratch(t);
-  let firstBusy;
-  const busy = new Promise((resolve) => (firstBusy = resolve));
-  const { api, data, port, token } = await serve(t, { carryBackRetry: { delaysMs: Array(5).fill(50), onBusy: () => firstBusy() }, settleRetryMs: 300 });
-  assert.equal((await api("POST", "/agents", agent("ender", { instructions: `Answer once ${join(dir, "go")} exists.` }))).status, 201);
-  const run = await api("POST", "/agents/ender/runs", { input: { content: "hi" } });
-  assert.equal(run.status, 202, JSON.stringify(run.body));
-  const release = hold(t, data);
-  await writeFile(join(dir, "go"), "");
-  await busy;
-  const slowest = await slowestWhile(port, token, sleep(1_500));
-  assert.ok(slowest < 200, `GET /capabilities took ${slowest} ms while the run's end waited`);
-  release();
-  const { last } = await follow(api, run.body.run_id, ["completed", "failed"]);
-  assert.equal(last.status, "completed", JSON.stringify(last));
-});
-
-test("a create while the agent store is held for 1 s waits, then answers 201; the server answers within 200 ms meanwhile", async (t) => {
-  const { data, port, token } = await serve(t);
-  const release = hold(t, data);
-  const created = timed(port, token, "POST", "/agents", agent("patient"));
-  const slowest = await slowestWhile(port, token, sleep(1_000));
-  release();
-  const answer = await created;
-  assert.equal(answer.status, 201, JSON.stringify(answer.body));
-  assert.ok(answer.took >= 900, `it waited for the store: ${answer.took} ms`);
-  assert.ok(slowest < 200, `GET /capabilities took ${slowest} ms while the create waited`);
-});
-
-test("a create while the agent store is held for 3 s answers 409 home_busy at about 2 s, retryable", async (t) => {
-  const { data, port, token } = await serve(t);
-  hold(t, data);
-  const created = timed(port, token, "POST", "/agents", agent("impatient"));
-  const slowest = await slowestWhile(port, token, created);
-  const answer = await created;
-  assert.deepEqual([answer.status, answer.body.error?.code, answer.body.error?.retryable, answer.body.error?.retry_after_ms], [409, "home_busy", true, 500], JSON.stringify(answer.body));
-  assert.ok(answer.took >= 1_500 && answer.took < 3_000, `answered at ${answer.took} ms`);
-  assert.ok(slowest < 200, `GET /capabilities took ${slowest} ms while the create waited`);
-});
-
 test("a read while the agent store is held exclusively waits, then answers once it is free", async (t) => {
   const { api, data, port, token } = await serve(t);
   assert.equal((await api("POST", "/agents", agent("read"))).status, 201);

@@ -16,7 +16,7 @@
 // - A snapshot that is not main's (a write that stopped between its compare and swap and its snapshot, or a hand commit
 //   in a local folder) is rebuilt from main whole (learningRepair: the script's read, then its snapshot op), the next
 //   time a write finds main moved under it.
-// The snapshot's shape is SNAPSHOT.md's, v1 (tl-learning, 2026-11-09): what the learning routes and a run's seed read.
+// The snapshot's shape is SNAPSHOT.md's, v1: what the learning routes and a run's seed read.
 import { createHash, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -611,7 +611,7 @@ async function runScript(ws: Workspace, args: readonly string[], stdin?: Uint8Ar
   const argv = ["sh", SCRIPT_FILE, ...args];
   folderTestHooks.exec?.(argv);
   const raw = await ws.exec(argv, { env: scriptEnv(), timeoutMs: SCRIPT_TIMEOUT_MS, ...(stdin ? { stdin } : {}) }).catch((error: unknown) => { throw folderFailure(error); });
-  // The port's ExecResult, in one line (ws-c3 renames code to exitCode).
+  // The port's ExecResult, in one line (code is renamed exitCode).
   const result = { code: raw.code, stdout: raw.stdout, stderr: raw.stderr, timedOut: raw.timedOut, truncated: raw.truncated };
   if (result.timedOut || result.code === null) throw new Error(`the learning script's ${args[0]} did not finish${result.timedOut ? ` in ${SCRIPT_TIMEOUT_MS / 1000} s` : ""}: ${result.stderr.trim().slice(0, 500)}`);
   // A cut stdout is never parsed: the folder is unavailable for this call.

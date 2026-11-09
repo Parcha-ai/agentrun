@@ -63,7 +63,7 @@ function fakeProvider(root, record, groups, machine = "linux") {
       const read = await computer.readBack();
       return { ok: true, value: { id: "c1", name: "c1", spec: { image: "i", user: "1000:1000", network: "none", ...(read.ok ? { mount: read.value } : {}) } } };
     },
-    // tl-computer's watch of the screen: what feeds the run's proxied live view.
+    // The provider's watch of the screen: what feeds the run's proxied live view.
     watch(ref, { signal }) {
       record.watched = [...(record.watched ?? []), [ref.id, signal instanceof AbortSignal]];
       return { frames: [] };
@@ -77,7 +77,7 @@ function fakeProvider(root, record, groups, machine = "linux") {
 
 const SPEC = () => ({ image: "agentrun/computer:test", lifetimeMs: 60_000, network: "none" });
 
-/** A stand-in for tl-browser's openComputerView (computer-live.ts), in its exact type: records each open and each close,
+/** A stand-in for openComputerView (computer-live.ts), in its exact type: records each open and each close,
  *  and answers `refusal` when given. Test fixture only. */
 function views(refusal) {
   const opened = [];

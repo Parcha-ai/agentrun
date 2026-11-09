@@ -81,6 +81,20 @@ test("the printed link sets an HttpOnly, SameSite=Strict cookie that is not the 
   assert.equal(https.headers["set-cookie"][0].split(";")[0], cookie, "the same cookie for the same token");
 });
 
+// Connect GitHub posts the App's manifest in a form to github.com (the console's githubFormAction takes https on github.com
+// and nothing else). The console's CSP must let exactly that form go: a browser enforces form-action, and jsdom never does.
+const formActionOf = (csp) => (csp.split(";").map((d) => d.trim().split(/\s+/)).find(([name]) => name === "form-action") ?? []).slice(1);
+const formMayPost = (sources, url) => sources.some((source) => source !== "'none'" && new URL(url).origin === source);
+test("the console's CSP lets a form post to https://github.com, as Connect GitHub's manifest form does, and to nowhere else", async (t) => {
+  const { port, cookie } = await served(t);
+  const csp = (await call(port, { headers: { cookie } })).headers["content-security-policy"];
+  const sources = formActionOf(csp);
+  assert.deepEqual(sources, ["https://github.com"], "form-action names github.com alone");
+  assert.ok(formMayPost(sources, "https://github.com/settings/apps/new?state=s1"), "the manifest form to a user's App");
+  assert.ok(formMayPost(sources, "https://github.com/organizations/acme/settings/apps/new?state=s1"), "the manifest form to an organization's App");
+  for (const other of ["http://github.com/settings/apps/new", "https://evil.example/settings/apps/new", "https://api.github.com/x", "https://github.com.evil.example/"]) assert.ok(!formMayPost(sources, other), `no form to ${other}`);
+});
+
 test("with the cookie: / is the console under the CSP, and the cookie reads /v2 for it; /api is the store's, for the cookie or the token; a wrong cookie is no cookie", async (t) => {
   const { port, cookie, token } = await served(t);
   const page = await call(port, { headers: { cookie } });

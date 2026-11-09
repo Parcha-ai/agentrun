@@ -35,12 +35,12 @@ import { learningWorkspace } from "../learn/folder.js";
 import { learningEndOfRun } from "./learning-end.js";
 import { LEARNED_WORKFLOW_TOOL, learnedWorkflowTool } from "../learned-workflow.js";
 import { PORT_PROVIDER } from "../port-models.js";
-import { createModels } from "@earendil-works/pi-ai/models";
 import { promptOf, readsFiles } from "../skills.js";
 import { openRunWorkspace } from "../workspace/run-workspace.js";
 import { COMPUTER_ROOT, runFolder } from "../workspace/paths.js";
 import { runTools, type ToolResults } from "../workspace/run-tools.js";
 import { INPUTS_DIR, UPLOADS_DIR, Uploads } from "../uploads.js";
+import { signInReads } from "../sign-ins-store.js";
 import { claimSecrets } from "./claim-secrets.js";
 import { join } from "node:path";
 import { type AdapterRun, type AdapterRunSpec, hostLifecycle, type RunCapConfig } from "./adapter-loop.js";
@@ -103,7 +103,7 @@ export interface AdapterSpecDeps {
   readonly sealKey: Buffer;
   /** The run's model route (model-route.ts routeOf), the one route the pi adapter and the cap read, on a wire of `wires`
    *  (the caller's; pi speaks both of main's, PI_WIRES). */
-  readonly routeOf: (model: string | undefined, env: NodeJS.ProcessEnv, tier?: Tier, wires?: readonly Wire[]) => Promise<ModelRoute>;
+  readonly routeOf: (model: string | undefined, env: NodeJS.ProcessEnv, tier?: Tier, wires?: readonly Wire[], upstream?: typeof fetch, redact?: (text: string) => string) => Promise<ModelRoute>;
   /** The run's log line (what its Workspace and computer have to say that is not a run failure). */
   readonly log?: (message: string) => void;
   /** The one shared claim-time computer (computer-for-claim.ts), for both the pi and the CLI spec: none for a runner place.
@@ -172,10 +172,13 @@ export async function adapterRunGate(store: Pick<Store, "settings">, claim: Pick
   // A Workspace's paths are in the run's folder: its folder named as a computer names it, for the gate's path checks.
   const folder = typeof root === "string" ? root : COMPUTER_ROOT;
   const gate = runGate({ root: folder, work: folder }, claim.runId, revision, () => current, root);
-  return async (call) => {
+  const decide = async (call: Parameters<NonNullable<AdapterRunSpec["gate"]>>[0]) => {
     current = await storeSettings(store);
     return gate.decide(call.tool, call.args);
   };
+  // An ask is named as main's pending approval is (RunGate.askedAs: its settings key), beside the decision, which is
+  // unchanged.
+  return Object.assign(decide, { askedAs: (tool: string) => gate.askedAs(tool) });
 }
 
 /** The server's tool settings from the store now; a read that throws is unread (no value of it said). */
@@ -189,8 +192,10 @@ async function storeSettings(store: Pick<Store, "settings">): Promise<Awaited<Re
 
 export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRun, deps: AdapterSpecDeps, claim: Claim): Promise<AdapterRunSpec> {
   const context = BACKGROUND_CONTEXT;
-  // The spec's log lines carry error text (a release, a workspace's end): cut of every secret the runner's env holds.
-  const cut = secretRedactor(runnerSecrets(deps.env));
+  // The runner's one redactor (the loop's, LoopDeps.redact), for every text a secret could reach: the spec's log lines
+  // (a release, a workspace's end), the model route's translation and the session's model proxy. A spec built with no
+  // runner around it cuts every secret the runner's env holds.
+  const cut = run.redact ?? secretRedactor(runnerSecrets(deps.env));
   const log = (line: string) => (deps.log ?? (() => {}))(cut(line));
   const runRow = await deps.store.runs.get(claim.runId);
   if (!runRow) throw new Error(`run ${claim.runId}: its row is gone from the store`);
@@ -249,11 +254,14 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
   // The run's model route: its model through routeOf (NEVER re-resolved — the launch's model, pinned at start), the catalog
   // price with tiers for the cap, and the proxy's price (pi-ai calculateCost, tiered).
   // pi speaks both of main's wires: an OpenAI-family model's route is OpenAI's Responses itself.
-  const route = await deps.routeOf(launch.model ? `${launch.model.provider}/${launch.model.modelId}` : undefined, deps.env, "default", PI_WIRES);
+  // The runner's one redactor (run.redact) goes to the route's translation and to the session's model proxy: a provider's
+  // error that echoes a secret reaches pi's record with none in it, on any route.
+  const route = await deps.routeOf(launch.model ? `${launch.model.provider}/${launch.model.modelId}` : undefined, deps.env, "default", PI_WIRES, undefined, cut);
   const adapter = piAdapter({
     run,
     model: route.model,
     provider: route.provider,
+    redact: cut,
     ...(route.like ? { like: route.like } : {}),
     ...(route.price ? { price: route.price as never } : {}),
     ...(route.fetch ? { fetch: route.fetch } : {}),
@@ -307,7 +315,7 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
 
   // The ToolHost the non-hand tools (browser, web, MCP, decisions, monid) bind through, carrying the runner's live-viewer
   // seam: the browser tool's live-viewer writers hand a session's viewer over through the store, not through files. This
-  // is the seam tl-browser's live-viewer writers hang off (`liveViewers`).
+  // is the seam the browser's live-viewer writers hang off (`liveViewers`).
   const host: ToolHost = {
     // The run's directory and its per-claim environment (claim-secrets.ts: the run's keys from the store). `coding` is the
     // runner's: the hands come from runTools (below), not from a coding source, so the non-hand tools that read it get the
@@ -369,6 +377,10 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
     store: deps.store,
     data: deps.data,
     ...(deps.env ? { env: deps.env } : {}),
+    // What the run must never learn beside the runner's secrets: the keys its claim handed it, and its sign-in's pointers,
+    // read back from the store's sign-ins under the seal key (learning-run.ts refused, on the runner).
+    signIns: signInReads(deps.store, deps.sealKey),
+    handed: runnerSecrets(toolEnv),
     learningFolder: archil === undefined
       ? (agentId: string) => learningFolderOf(deps.data, agentId)
       : (agentId: string) => learningWorkspace({ mode: "archil", agentId, archil }),
@@ -409,16 +421,6 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
   };
 }
 
-/** learned_workflow on a pi run is listed so the dispatch offers main's tool set, but it is not run yet: its model nodes
- *  run on the session's proxied models (run.ledger.models), which pi's adapter has no port for yet (its session exposes
- *  none). Until that port lands it is refused in words, never run as a stub. A CLI harness's session HAS a model port, so
- *  its learned_workflow runs for real (learnedWorkflowHostTool onSessionPort). web_fetch, web_search and monid carry no
- *  such gate: the adapter loop books their paid requests on the run's one ledger (adapter-loop.ts bookedIn,
- *  paid-calls.ts), held at Parallel's or monid's price and settled at the charge, exactly as main does, so they run. */
-function settleLearnedWorkflow(name: string): { refused: string } | undefined {
-  return name === LEARNED_WORKFLOW_TOOL ? { refused: "This tool is not available on the runner yet, so its call was not run." } : undefined;
-}
-
 /** The host-tool ctx a non-hand tool is wrapped with (host-tools.ts hostToolOf): the run's own Harness (its commit,
  *  snapshot, conversation and task reads), the results map, and the run's folder as the api env's cwd (a tool reads no
  *  file environment, so an error names a path relative to it). Shared by the pi spec's bindNonHandTools and the CLI spec's
@@ -441,11 +443,11 @@ export function hostToolCtxOf(run: AdapterRun, context: Context, results: ToolRe
 }
 
 /** The run's learned_workflow tool as a HostTool, listed when its pin names learned workflows (as main lists it, so the
- *  tool set the model sees matches main). `onSessionPort`: the run's session has a model port (the CLI harnesses), so its
+ *  tool set the model sees matches main). Every run's session — pi's and every CLI harness's — has a model port, so its
  *  model nodes run on the session's proxied models (run.ledger.models, port-models.ts: read at each request, labelled
- *  learned_workflow), booked on the run's one ledger and priced by the harness's own policy; false (pi, no port yet)
- *  lists it refused in words (settleLearnedWorkflow). A pin whose learned-workflows file is not on the runner is skipped
- *  (its own seam), never failing the run. Its call nodes run the agent's tools' effects on `env`, the run's scoped keys. */
+ *  learned_workflow), each a request on the run's one route, booked on the run's one ledger and priced by the session's
+ *  policy. A pin whose learned-workflows file is not on the runner is skipped (its own seam), never failing the run. Its
+ *  call nodes run the agent's tools' effects on `env`, the run's scoped keys. */
 export async function learnedWorkflowHostTool(opts: {
   readonly run: AdapterRun;
   readonly granted: readonly string[];
@@ -453,25 +455,19 @@ export async function learnedWorkflowHostTool(opts: {
   readonly env: NodeJS.ProcessEnv;
   readonly work: string;
   readonly ctx: HostToolCtx;
-  readonly onSessionPort: boolean;
 }): Promise<HostTool | undefined> {
   if (!opts.granted.includes(LEARNED_WORKFLOW_TOOL)) return undefined;
   const flows = await pinnedWorkflows(opts.work, await readPin(opts.work)).catch(() => []);
   if (!flows.length) return undefined;
-  const base = { workflows: flows, granted: opts.granted, ...(opts.plane ? { plane: opts.plane } : {}), env: opts.env, work: opts.work };
-  if (!opts.onSessionPort) {
-    const tool = learnedWorkflowTool({ ...base, models: createModels() as never, modelOf: () => undefined });
-    return hostToolOf(LEARNED_WORKFLOW_TOOL, tool as never, { ...opts.ctx, settle: settleLearnedWorkflow }) ?? undefined;
-  }
   const models = await opts.run.ledger.models(LEARNED_WORKFLOW_TOOL);
-  const tool = learnedWorkflowTool({ ...base, models: models as never, modelOf: () => ({ provider: PORT_PROVIDER, modelId: "session" }) });
+  const tool = learnedWorkflowTool({ workflows: flows, granted: opts.granted, ...(opts.plane ? { plane: opts.plane } : {}), env: opts.env, work: opts.work, models: models as never, modelOf: () => ({ provider: PORT_PROVIDER, modelId: "session" }) });
   return hostToolOf(LEARNED_WORKFLOW_TOOL, tool as never, opts.ctx) ?? undefined;
 }
 
 /** The run's non-hand tools as HostTool[], bound through the ToolHost seam and wrapped as the hands are (host-tools.ts
  *  hostToolOf): web_fetch, web_search and monid, each by its catalog name under the adapter loop's one gate (`spec.gate`;
  *  `gated` is undefined here, as for the hands). Their paid requests are booked by the adapter loop on the run's one ledger
- *  (bookedIn), as main books them, so they run. The browser (tl-browser, through host.liveViewers), MCP (tl-mcp's
+ *  (bookedIn), as main books them, so they run. The browser (through host.liveViewers), MCP (the MCP claim step's
  *  mcpForClaim(claim, store, sealKey, pin) -> { sessionMcp, redactions, release }), the learned workflow and decisions are
  *  each a named todo, added as their seams land. */
 async function bindNonHandTools(host: ToolHost, granted: readonly string[], run: AdapterRun, context: Context, results: ToolResults, root: string, plane: RunLaunch["plane"]): Promise<AdapterRunSpec["session"]["tools"]> {
@@ -491,10 +487,10 @@ async function bindNonHandTools(host: ToolHost, granted: readonly string[], run:
     }
   }
 
-  // learned_workflow, listed when the run's pin names learned workflows (as main lists it). On pi it is listed but refused
-  // (onSessionPort false: pi's adapter exposes no session port for its model nodes yet); a CLI run lists it for real on the
-  // session's proxied models (cli-run-spec.ts). The agent's scoped keys (host.env) are its call nodes'.
-  const learned = await learnedWorkflowHostTool({ run, granted, plane, env: host.env, work: root, ctx, onSessionPort: false });
+  // learned_workflow, listed when the run's pin names learned workflows (as main lists it): its model nodes run on the pi
+  // session's proxied models (run.ledger.models, pi's adapter now exposes a session port), each a request on the run's one
+  // route labelled learned_workflow. The agent's scoped keys (host.env) are its call nodes'.
+  const learned = await learnedWorkflowHostTool({ run, granted, plane, env: host.env, work: root, ctx });
   if (learned) tools.push(learned);
 
   // TODO (decisions, option (a)): a pi run's decision tools book on the run's ONE cap (runCap's run.decisions), which the

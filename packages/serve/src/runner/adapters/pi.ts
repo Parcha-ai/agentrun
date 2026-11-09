@@ -62,6 +62,9 @@ export interface PiAdapterOptions {
   readonly price?: (model: string, usage: never) => number | null;
   /** The proxy's upstream fetch (a test's scripted origin). */
   readonly fetch?: typeof fetch;
+  /** The runner's one redactor, which a provider's error passes through in the session's proxy before pi has it
+   *  (ModelProxyOptions.redact; the proxy's own cut of the credential comes first). */
+  readonly redact?: (text: string) => string;
 }
 
 const PROVIDER = "agentrun-session";
@@ -92,6 +95,7 @@ async function openPi(options: PiAdapterOptions, spec: SessionSpec, io: PiSessio
     ...(options.price ? { price: options.price as never } : {}),
     ...(options.provider.headers ? { headers: options.provider.headers } : {}),
     ...(options.fetch ? { fetch: options.fetch } : {}),
+    ...(options.redact ? { redact: options.redact } : {}),
   }, randomBytes(32).toString("base64url"));
   // An open that fails from here (the claim lost while the session opened) closes the proxy: its server would hold the
   // runner's process open.
@@ -193,6 +197,8 @@ async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: Ses
   // unanswered (a failed turn whose end the loop never read: a claim lost before the run's end landed): an open turn,
   // whose end recover() reads, so a failed turn ends the run failed, never as a completed one.
   let input: Submission | undefined;
+  /** The session closed (its proxy with it): its port gives no route. */
+  let closed = false;
   const existing = await run.harness.commit((tx) => tx.submissionByRequest(root.id, INPUT_REQUEST), context);
   if (existing) input = await run.harness.submission(existing.id, context);
   let state: AdapterSession["state"] = existing === undefined ? "new" : existing.status === "done" ? "idle" : "open_turn";
@@ -241,8 +247,13 @@ async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: Ses
       await root.abort(context).catch(() => undefined);
     },
     async close() {
+      closed = true;
       await proxy.close().catch(() => undefined);
     },
+    // The session's own model route for a request the host sends beside pi's (a learned workflow's model node): its proxy
+    // with a side key minted for `label`, pi's model and the provider's wire (never a literal), so the request goes through
+    // the same policy, origin, credential, price and booking as pi's own, labelled. None once the session is closed.
+    port: (label: string) => (closed ? undefined : { url: proxy.url, key: proxy.sideKey(label), model, api }),
     // A steer: pi places it in the turn in flight, at its next boundary. `id`: its request id (the command's), so the
     // commit that places it is the one that takes its row. `origin` (a trigger's message): its input is the host's user
     // entry (KINDS.input) with that origin, in the same submission, so the attribution lands with the message or not at all.

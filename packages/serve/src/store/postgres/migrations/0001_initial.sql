@@ -53,6 +53,7 @@ CREATE TABLE runs (
   archived_at BIGINT,
   imported_from TEXT COLLATE "C" CHECK (imported_from IS NULL OR imported_from::json IS NOT NULL),
   sign_in_handed TEXT COLLATE "C" CHECK (sign_in_handed IS NULL OR sign_in_handed::json IS NOT NULL),
+  left_running_at BIGINT,
   started_at BIGINT NOT NULL,
   ended_at BIGINT
 );
