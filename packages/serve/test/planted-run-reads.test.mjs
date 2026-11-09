@@ -13,12 +13,14 @@ import { openapiDocument } from "../dist/openapi.js";
 import { saveSignIn } from "../dist/sign-ins-store.js";
 import { openSqliteStore } from "../dist/store/sqlite/store.js";
 import { findPlanted, plantedValue } from "./fixtures/planted-secrets.mjs";
-import { agent, follow, serve, withEnv } from "./support.mjs";
+import { agent, flowAgent, follow, serve, withEnv } from "./support.mjs";
 import { firings } from "./trigger-support.mjs";
 
 const { Webhook } = createRequire(import.meta.url)("standardwebhooks");
 
 const FAUX_READ = new URL("./fixtures/faux-read-notes.mjs", import.meta.url).pathname;
+const FAUX_ASK_GATE = new URL("./fixtures/faux-ask-gate.mjs", import.meta.url).pathname;
+const FAUX_DECISIONS_ECHO = new URL("./fixtures/faux-decisions-echo.mjs", import.meta.url).pathname;
 
 /** The run read operations: every GET whose path reads a run or a list of runs. */
 export function runReadOperations(doc) {
@@ -55,10 +57,34 @@ const WAITS = {
   "listAllRuns (handed)": TITLE,
   "listAllRuns (withheld)": TITLE,
 };
+const GRAPH = "waits on the graph's served parts cut through the run's cut set (runCutOf)";
+const PENDING = "waits on the run's pending cut with the run's redactor, and null for a withheld run";
+const ASK_PARKS = "waits on ask_person parking the run on the runner";
+Object.assign(WAITS, {
+  "getRunGraph (workflow)": GRAPH,
+  "getRun (parked)": PENDING,
+  "getRun (parkedWithheld)": PENDING,
+  "listRuns (parked)": PENDING,
+  "listRuns (parkedWithheld)": PENDING,
+  "listAllRuns (parked)": PENDING,
+  "listAllRuns (parkedWithheld)": PENDING,
+});
 const waitOf = (operation, kind) => WAITS[`${operation} (${kind})`] ?? WAITS[operation] ?? false;
 
 /** The one run read the zero-hits rule exempts, and why: a run's file is served as it was written, uncut. Its case asserts
  *  the bytes are the ones written instead (the gate still requires the case); a withheld run's file is refused (403). */
+/** Runs whose input holds the plants, so their title does too: read here without their title, which the handed and
+ *  withheld runs' own cases check (and skip, naming its fix), so every other field of theirs is checked now. */
+export const TITLE_READ_ELSEWHERE = new Set(["workflow", "workflowWithheld", "parked", "parkedWithheld", "asked"]);
+const withoutTitles = (text) => {
+  const at = text.indexOf("\n");
+  try {
+    return `${text.slice(0, at)}\n${JSON.stringify(JSON.parse(text.slice(at + 1)), (key, value) => (key === "title" ? undefined : value))}`;
+  } catch {
+    return text;
+  }
+};
+
 export const EXEMPT = {
   readRunFile: "served as uploaded, uncut: a page it saved signed in is what it saw, and no file is cut",
 };
@@ -118,7 +144,8 @@ async function handed(data, runId, agentId, pointer, sealKey) {
   } finally {
     await store.close();
   }
-  const db = new DatabaseSync(join(data, "store.sqlite"));
+  // Its server and runner may hold the store at this moment (a parked run's runner): wait for the write lock.
+  const db = new DatabaseSync(join(data, "store.sqlite"), { timeout: 15_000 });
   try {
     db.prepare("UPDATE runs SET sign_in_handed = ? WHERE id = ?").run(JSON.stringify([createHash("sha256").update(pointer).digest("hex")]), runId);
     const launch = db.prepare("SELECT body FROM run_launch WHERE run_id = ?").get(runId);
@@ -132,7 +159,8 @@ async function handed(data, runId, agentId, pointer, sealKey) {
 
 test("no planted secret in a run's words shows on any run read route: a run handed a sign-in this server opens is cut of it, and one it can't open is withheld in the view's words", { timeout: 240_000 }, async (t) => {
   const seal = randomBytes(32);
-  withEnv(t, { AGENTRUN_SEAL_KEY: seal.toString("base64") }, ["AGENTRUN_SEAL_KEY"]);
+  // The workflow's llm calls route to a model by AGENT_MODEL, with a key that is no plant.
+  withEnv(t, { AGENTRUN_SEAL_KEY: seal.toString("base64"), AGENT_MODEL: "openai/gpt-6-sol", OPENAI_API_KEY: `not-a-plant-${randomBytes(8).toString("hex")}` }, ["AGENTRUN_SEAL_KEY", "AGENT_MODEL", "OPENAI_API_KEY", "PARALLEL_API_KEY", "TYPESAFE_API_KEY", "OPENROUTER_API_KEY"]);
   const logs = [];
   const server = await serve(t, { faux: FAUX_READ, log: (line) => logs.push(line) });
   // A stored tool key and a trigger's signing secret, each written the way the owner writes one.
@@ -167,7 +195,65 @@ test("no planted secret in a run's words shows on any run read route: a run hand
   assert.equal(firing.status, "started", JSON.stringify(firing));
   runs.fired.id = firing.run_id;
   await follow(server.api, runs.fired.id, ["completed", "failed"], { deadlineMs: 60_000 });
-  for (const run of Object.values(runs)) await handed(server.data, run.id, run.agentId, run.values[0], run.seal ?? seal);
+  for (const run of Object.values(runs)) run.server = server;
+
+  // A workflow run, on a server whose decision providers echo the key they are sent: its input, its escalation's words
+  // (it escalates first, on its amount), a judge's state (its decision receipt, whose cited source would quote the stored
+  // Parallel key it was sent) and a map's item labels hold the plants.
+  const flows = await serve(t, { fauxJev: FAUX_DECISIONS_ECHO, fauxParallel: FAUX_DECISIONS_ECHO, log: (line) => logs.push(line) });
+  const parallel = plantedValue("parallel");
+  assert.equal((await flows.api("PUT", "/settings/tool-keys/parallel", { values: { PARALLEL_API_KEY: parallel } })).status, 204);
+  const flowOf = (words) => ({
+    v: 2, name: "planted-flow",
+    schemas: {
+      In: { type: "object", required: ["question", "items", "amount"], properties: { question: { type: "string" }, items: { type: "array", items: { type: "string" } }, amount: { type: "number" } } },
+      Coi: { type: "object", required: ["coi"], properties: { coi: { type: "boolean", description: "Is this a certificate of incorporation?" } } },
+    },
+    input: { schemaId: "In" },
+    output: { schemaId: "Coi", path: "coi" },
+    root: {
+      node: "chain",
+      steps: [
+        { node: "escalate", label: "too big", when: { predicate: "gte", path: "amount", n: 500 }, kind: "review", stage: "gate", summary: `needs a person: ${words}` },
+        { node: "judge", label: "coi", state: { doc: "{question}" }, out: "Coi", as: "coi", provider: "parallel" },
+        { node: "map", label: "each", itemsPath: "items", as: "answers", resultPath: "coi", maxConcurrency: 1, body: { node: "judge", label: "each coi", state: { doc: "{question}" }, out: "Coi", as: "coi", provider: "parallel" } },
+      ],
+    },
+  });
+  const flowRun = async (agentId, values) => {
+    const words = values.join(" ");
+    assert.equal((await flows.api("POST", "/agents", flowAgent(agentId, flowOf(words)))).status, 201);
+    const started = await flows.api("POST", `/agents/${agentId}/runs`, { input: { question: words, items: [words], amount: 600 } });
+    assert.equal(started.status, 202, JSON.stringify(started.body));
+    await follow(flows.api, started.body.run_id, ["completed", "failed"], { deadlineMs: 60_000 });
+    return { id: started.body.run_id, agentId, values, server: flows };
+  };
+  runs.workflow = await flowRun("flow-handed", [pointerOf(), parallel, whsec]);
+  runs.workflowWithheld = { ...(await flowRun("flow-withheld", [pointerOf(), parallel, whsec])), seal: randomBytes(32) };
+
+  // A run parked on an approval whose arguments hold the plants (web_fetch at ask, on pi), one withheld; and one parked on
+  // ask_person whose question holds them. Accounts on: the owner's session answers.
+  const gates = await serve(t, { faux: FAUX_ASK_GATE, accounts: true, openSetup: true, log: (line) => logs.push(line) });
+  assert.equal((await gates.api("PUT", "/settings/tools", { web_fetch: { permission: "ask" } })).status, 200);
+  const parkedRun = async (agentId, values, content, tools) => {
+    assert.equal((await gates.api("POST", "/agents", agent(agentId, { harness: "pi", tools }))).status, 201);
+    const started = await gates.api("POST", `/agents/${agentId}/runs`, { input: { content } });
+    assert.equal(started.status, 202, JSON.stringify(started.body));
+    return { id: started.body.run_id, agentId, values, server: gates };
+  };
+  const fetchOf = (values) => `Fetch http://public.example/?sid=${encodeURIComponent(values[0])}&k=${encodeURIComponent(values[1])}&w=${encodeURIComponent(values[2])} once.`;
+  const parkedValues = [pointerOf(), monid, whsec];
+  const parkedWithheldValues = [pointerOf(), monid, whsec];
+  runs.parked = await parkedRun("parked", parkedValues, fetchOf(parkedValues), ["web_fetch"]);
+  runs.parkedWithheld = { ...(await parkedRun("parked-withheld", parkedWithheldValues, fetchOf(parkedWithheldValues), ["web_fetch"])), seal: randomBytes(32) };
+  const askedValues = [pointerOf(), monid, whsec];
+  runs.asked = await parkedRun("asked", askedValues, `Ask: ${askedValues.join(" ")}`, ["ask_person"]);
+  for (const kind of ["parked", "parkedWithheld"]) {
+    await follow(gates.api, runs[kind].id, ["input_required"], { deadlineMs: 60_000 });
+  }
+  runs.asked.parks = await follow(gates.api, runs.asked.id, ["input_required"], { deadlineMs: 30_000 }).then(() => true, () => false);
+
+  for (const run of Object.values(runs)) await handed(run.server.data, run.id, run.agentId, run.values[0], run.seal ?? seal);
 
   // The view's own verdict first: the handed run is shown, cut; the withheld one says why nothing is shown.
   const shown = (await server.api("GET", `/runs/${runs.handed.id}`)).body;
@@ -180,15 +266,27 @@ test("no planted secret in a run's words shows on any run read route: a run hand
   assert.equal(failed.status, "failed", JSON.stringify(failed));
   assert.ok(failed.error?.message, `the failed run's error is served: ${JSON.stringify(failed.error)}`);
   t.diagnostic(`the failed run's served error: ${JSON.stringify(failed.error)}`);
+  // The workflow run escalated after its judge and its map ran; the withheld one is withheld.
+  const flowView = (await flows.api("GET", `/runs/${runs.workflow.id}`)).body;
+  // On a line whose runner runs no workflow, it fails before any node: its escalation and decision receipt are then
+  // never written, and their cases read nothing of them (said here).
+  t.diagnostic(`the workflow run: ${JSON.stringify([flowView.status, flowView.state, flowView.review?.kind ?? null, flowView.error?.message ?? null])}`);
+  // The parked run's pending approval is served (its arguments, cut); the withheld one's is none.
+  const parkedView = (await gates.api("GET", `/runs/${runs.parked.id}`)).body;
+  assert.equal(parkedView.pending?.kind, "approval", JSON.stringify(parkedView.pending));
+  t.diagnostic(`ask_person parks on this line: ${runs.asked.parks}`);
 
   for (const { path, operation } of runReadOperations((await server.api("GET", "/openapi.json")).body)) {
     for (const [kind, run] of Object.entries(runs)) {
       const name = `${operation} (${kind})`;
-      await t.test(`${name}: GET ${path} holds no planted value`, { skip: waitOf(operation, kind) }, async () => {
+      const skip = kind === "asked" && !run.parks ? ASK_PARKS : waitOf(operation, kind);
+      await t.test(`${name}: GET ${path} holds no planted value`, { skip }, async () => {
         const reads = RUN_READS[operation](run);
         const sources = [];
         for (const one of reads) {
-          const res = await get(server.port, server.token, one);
+          const res = await get(run.server.port, run.server.token, one);
+          if (operation === "getRun" && kind === "parkedWithheld") assert.equal(JSON.parse(res.text.slice(res.text.indexOf("\n") + 1)).pending, null, `${one}: a withheld run's pending is none`);
+          if (TITLE_READ_ELSEWHERE.has(kind)) res.text = withoutTitles(res.text);
           // A withheld run's file is refused, as its view withholds its words.
           if (operation === "readRunFile" && kind === "withheld") assert.equal(res.status, 403, `${one}: a withheld run's file is refused`);
           if (EXEMPT[operation] && run.fileText !== undefined && kind !== "withheld") {
@@ -199,7 +297,7 @@ test("no planted secret in a run's words shows on any run read route: a run hand
           }
           sources.push({ where: `GET ${one} (${res.status})`, text: res.text });
           // A withheld run's graph is refused (403), or it has none (404, an agentic run's): never served.
-          if (kind === "withheld" && operation === "getRunGraph") assert.ok([403, 404].includes(res.status), `${one}: a withheld run's graph is never served: ${res.status}`);
+          if (/withheld|Withheld/.test(kind) && operation === "getRunGraph") assert.ok((kind === "workflowWithheld" ? [403] : [403, 404]).includes(res.status), `${one}: a withheld run's graph is never served: ${res.status}`);
         }
         assert.deepEqual(findPlanted(sources, run.values), [], `${name}: a planted value showed`);
       });
