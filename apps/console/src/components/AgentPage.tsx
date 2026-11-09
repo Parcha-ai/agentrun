@@ -15,7 +15,7 @@ import { Chip } from "@/components/ui/chip";
 import { GraphLegend, WorkflowGraph } from "@/components/WorkflowGraph";
 import { type Agent, runsWhere } from "@/lib/agentForm";
 import { type Client, ClientError } from "@/lib/client";
-import { cost, runEnded, soFar, when } from "@/lib/format";
+import { cost, runEnded, soFar, when, runTitle } from "@/lib/format";
 import { appendRuns } from "@/lib/idempotency";
 import { harnessDefault, type HarnessInfo, modelLabel, NO_MODEL_YET } from "@/lib/models";
 import { placeLabel, type Places } from "@/lib/place";
@@ -189,7 +189,7 @@ function RunsTab({ agent, v2 }: TabProps) {
           <li key={r.run_id} className="border-b last:border-b-0">
             <a href={`#/runs/${encodeURIComponent(r.run_id)}`} className="flex flex-wrap items-center gap-x-4 gap-y-1 px-4 py-3 hover:bg-accent">
               <StatusBadge run={r} />
-              <span className="min-w-0 flex-1 truncate text-[14px]" title={r.title}>{r.title}</span>
+              <span className="min-w-0 flex-1 truncate text-[14px]" title={runTitle(r)}>{runTitle(r)}</span>
               <LearningChips run={r} />
               {r.effort && <Chip>effort {r.effort}</Chip>}
               <span className="font-mono text-[12px] text-muted-foreground">{when(r.created_at)}</span>
