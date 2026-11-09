@@ -42,8 +42,9 @@ import { BOX_ALLOW_ENV, boxAllowOf, boxLimitsOf, boxNetworkOf, FAUX_BOX_ENV, fau
 import { Owner, passwordProblem, SESSION_MS } from "./owner.js";
 import { answerPage, byOwnerSession, heldSessions, isJson, overHttps, ownerCookie, ownOrigin, sendHostRefused, signedIn } from "./page.js";
 import { hostFix, hostName, loopbackNames } from "./host-check.js";
-import { handoverById, type LiveHandover, liveRest, OpenViewers, proxyLiveUpgrade, readHandover, readHandovers, serveViewerFile, viewerAnswers, viewerLink } from "./browser-live.js";
+import { handoverById, liveRest, OpenViewers, proxyLiveUpgrade, readHandover, readHandovers, serveViewerFile, viewerAnswers, viewerLink } from "./browser-live.js";
 import { answerAsk } from "./browser-person.js";
+import { type ComputerOf, computerView } from "./computer-view.js";
 import { durationMs, logLine } from "./print.js";
 import { type CarryBackRetry, knownToolCostOf, type Run, Runs, STATUSES, type Status, statusOf, toolCostOf, WAITS_ON_A_PERSON, WITHHELD_SIGN_IN } from "./runs.js";
 import { runLines } from "./usage-lines.js";
@@ -97,8 +98,9 @@ const workerArgs = (args: readonly string[]): string[] =>
 export const DEFAULT_PORT = 7340;
 const VERSION: string = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8")).version;
 const IDEMPOTENCY_FILE = ".idempotency.json";
-/** A run's live browser viewer, under the run's path (browser-live.ts): its run id, then its page, files or WebSocket. */
-const LIVE_PATH = /^\/v2\/runs\/([^/]+)\/browser\/live(\/.*)$/;
+/** A run's live computer viewer, under the run's path (browser-live.ts): its run id, then its page, files or WebSocket. One
+ *  family for every computer kind; the browser is kind browser. */
+const LIVE_PATH = /^\/v2\/runs\/([^/]+)\/computer\/live(\/.*)$/;
 const MAX_BODY = 1 << 20;
 const MAX_MESSAGE = 20_000;
 const MAX_WAIT_MS = 25_000;
@@ -444,6 +446,18 @@ export const ROUTES: readonly Route[] = [
 
 /** Where agent `agentId`'s host-owned path is read on this server: its route, when ROUTES has one (the learning API, for
  *  learning/); sign-ins/ only as the agent's `sign_ins`, never a pointer. */
+/** A run's computer as GET /computer reads it with no viewer open: kind browser where its agent has the browser tool, its
+ *  kept plane's (a run from before the plane names none, and is Browserbase's where it grants the tool) checked again as a
+ *  launch would be; off, saying why, where it has none or its browser resolves unavailable here.
+ *  TODO(tl-computer): the agent's own `computer: {kind, provider?}` setting once definitions carry it (desktop, phone). */
+function computerOf(run: Run, env: NodeJS.ProcessEnv): ComputerOf {
+  const granted = run.tooling?.tools.includes("browser") === true;
+  const kept = run.meta.tool_plane?.browser ?? (granted ? "browserbase" : undefined);
+  const browser = kept === undefined ? undefined : recheckPlane({ browser: kept }, env).browser;
+  if (browser === undefined) return { off: "this run's agent has no computer" };
+  return isUnavailable(browser) ? { off: whyUnavailable(browser) } : { kind: "browser" };
+}
+
 /** A run's files (its work/), refused while it is hidden (runs.ts meta.unshown: this server can't read the browser
  *  sign-in it was handed), as its graph is: a page it saved signed in is what it saw, and no file is cut. */
 function filesShown(run: Run): void {
@@ -594,8 +608,8 @@ function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: Ha
       /** A tool setting's `permission` (definition.tool_settings, /v2/settings/tools): allow, ask or deny, which the tool
        *  gate holds every tool call to (tool-gate.ts); an ask is answered at POST /runs/{id}/approvals/{approval_id}. */
       tool_permissions: true,
-      /** The owner watches a run's browser live (GET /runs/{id}/browser, browser-live.ts), takes it over from the viewer and
-       *  hands it back, and answers the agent's ask for them (POST /runs/{id}/browser/hand-back, browser-person.ts). */
+      /** The owner watches a run's computer live (GET /runs/{id}/computer, browser-live.ts), takes it over from the viewer and
+       *  hands it back, and answers the agent's ask for them (POST /runs/{id}/computer/hand-back, browser-person.ts). */
       browser_live: { read_only: false, take_over: true, ask: true },
       /** An agent's browser stays signed in between its runs (sign-ins.ts): with a seal key to keep each pointer under, and a
        *  browser vendor here (Browserbase's or Kernel's; local Chrome keeps none). */
@@ -1990,11 +2004,11 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       authFailed(`/v2${path}`, "approve_without_session");
       throw new ApiError("forbidden", owner ? "Approving a note takes the owner's password sign-in in the console, never a token." : "Approving a note takes the owner's password sign-in, and this server has no accounts (AGENTRUN_ACCOUNTS=0).");
     }
-    // A run's live browser view is a full-control credential for its browser: the owner's signed-in page alone, as approving
-    // a note is (never a token a run, an MCP client or a script may hold).
+    // A run's live computer view is a full-control credential for its computer: the owner's signed-in page alone, as
+    // approving a note is (never a token a run, an MCP client or a script may hold).
     if ((found.name === "getRunComputer" || found.name === "handBackRunComputer") && !byOwnerSession(req) && req.headers.authorization !== undefined) {
-      authFailed(`/v2${path}`, "browser_without_session");
-      throw new ApiError("forbidden", owner ? "A run's live browser takes the owner's password sign-in in the console, never a token." : "A run's live browser takes the owner's password sign-in, and this server has no accounts (AGENTRUN_ACCOUNTS=0).");
+      authFailed(`/v2${path}`, "computer_without_session");
+      throw new ApiError("forbidden", owner ? "A run's live computer takes the owner's password sign-in in the console, never a token." : "A run's live computer takes the owner's password sign-in, and this server has no accounts (AGENTRUN_ACCOUNTS=0).");
     }
     // Answering a tool call that waits for approval (tool-gate.ts) is the same: the owner's signed-in page alone, never a
     // token, which the run's own process, an agent's MCP client or a script may hold.
@@ -2168,20 +2182,22 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       }
       case "getRunComputer": {
         const run = await needRun(id);
-        // The run's open viewer first: its process holds the keys it started with, so a key deleted here since (the server's
-        // keys now) never hides a browser that runs. Only the run's live process serves its view: a file one that is gone
-        // left behind names none, whatever answers its port. The newest session whose viewer answers: an older one still open
-        // is the next, one that went quiet none.
-        let live: LiveHandover | undefined;
-        for (const handover of runs.hasProcess(run.id) ? await readHandovers(run.dir) : []) if ((live = (await viewerAnswers(handover)) ? handover : undefined)) break;
-        if (live) return send(res, 200, { state: "live", viewer: viewerLink(run.id, live) }, { "cache-control": "no-store" });
-        // None open: whether the run has a browser at all, its kept plane's (a run from before the plane names none, and is
-        // Browserbase's where it grants the tool), checked again as a launch would be. None, or unavailable, is `off`, saying why.
-        const granted = run.tooling?.tools.includes("browser") === true;
-        const kept = run.meta.tool_plane?.browser ?? (granted ? "browserbase" : undefined);
-        const browser = kept === undefined ? undefined : recheckPlane({ browser: kept }, env).browser;
-        if (browser === undefined || isUnavailable(browser)) return send(res, 200, { state: "off", reason: browser === undefined ? "this run's agent has no browser tool" : whyUnavailable(browser) }, { "cache-control": "no-store" });
-        return send(res, 200, { state: "none" }, { "cache-control": "no-store" });
+        const view = await computerView({
+          // The run's open viewer first: its process holds the keys it started with, so a key deleted here since (the
+          // server's keys now) never hides a computer that runs. Only the run's live process serves its view: a file one
+          // that is gone left behind names none, whatever answers its port. The newest session whose viewer answers: an
+          // older one still open is the next, one that went quiet none.
+          // TODO(tl-untangle cutover): read the store's viewers (browser-live.ts liveViewerLink over store.liveViewers,
+          // with the seal key) once the server holds the one Store; these run-directory files go with the per-run process.
+          viewer: async () => {
+            for (const handover of runs.hasProcess(run.id) ? await readHandovers(run.dir) : []) if (await viewerAnswers(handover)) return { kind: "browser" as const, viewer: viewerLink(run.id, handover) };
+            return undefined;
+          },
+          computer: () => computerOf(run, env),
+          // TODO(tl-places computer-hold): the run's hold (ViewerHold.state()) once the server can read it; the browser's
+          // driving gate lives in the run's process, which hands the server no hold, so the agent drives here until then.
+        });
+        return send(res, 200, view, { "cache-control": "no-store" });
       }
       case "handBackRunComputer": {
         // The owner's answer to the agent's ask for them in its browser (browser-person.ts): the first answer wins, the same
@@ -2192,7 +2208,10 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         if (body.outcome !== "done" && body.outcome !== "cancelled") issues.push({ field: "outcome", reason: body.outcome === undefined ? "missing" : "not_an_option", message: "outcome is done or cancelled" });
         if (issues.length) throw invalid(issues);
         const answered = answerAsk(run.dir, body.outcome as "done" | "cancelled");
-        if (!answered) throw new ApiError("not_found", "this run's agent has not asked for you in its browser");
+        if (!answered) {
+          const computer = computerOf(run, env);
+          throw new ApiError("not_found", `this run's agent has not asked for you in its ${"kind" in computer ? computer.kind : "computer"}`);
+        }
         if (answered.outcome !== body.outcome) throw new ApiError("handoff_answered", answered.outcome === "expired" ? "The agent's hand-over expired before this answer: the agent was told it expired." : `The agent's hand-over was already answered ${answered.outcome}.`, { details: { outcome: answered.outcome } });
         if (answered.first) runs.remark(run.id);
         return send(res, 200, { outcome: answered.outcome }, { "cache-control": "no-store" });
@@ -2498,20 +2517,20 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     res.end(text);
   }
 
-  /** A run's live viewer's page and files (browser-live.ts): the owner's signed-in page alone, GET or HEAD, for a viewer the
-   *  run's live process has handed over. The bytes are this server's own copy of pi-browser's viewer, never the run's port's:
+  /** A run's live viewer's page and files (browser-live.ts, /v2/runs/{id}/computer/live/*): the owner's signed-in page
+   *  alone, GET or HEAD, for a viewer the run's live process has handed over. The bytes are this server's own copy of pi-browser's viewer, never the run's port's:
    *  only the viewer's WebSocket reaches the run. */
   async function liveRoute(req: IncomingMessage, res: ServerResponse, runId: string, rest: string): Promise<void> {
     if (req.method !== "GET" && req.method !== "HEAD") throw new ApiError("method_not_allowed", `${req.method} is not a method of a run's live view`, {}, { allow: "GET, HEAD" });
     if (!byOwnerSession(req)) {
-      authFailed(`/v2/runs/${runId}/browser/live`, req.headers.authorization === undefined ? "no_credential" : "browser_without_session");
-      throw req.headers.authorization === undefined ? new ApiError("unauthenticated", "a run's live browser view takes the owner's password sign-in in the console") : new ApiError("forbidden", "a run's live browser view takes the owner's password sign-in in the console, never a token");
+      authFailed(`/v2/runs/${runId}/computer/live`, req.headers.authorization === undefined ? "no_credential" : "computer_without_session");
+      throw req.headers.authorization === undefined ? new ApiError("unauthenticated", "a run's live computer view takes the owner's password sign-in in the console") : new ApiError("forbidden", "a run's live computer view takes the owner's password sign-in in the console, never a token");
     }
     const run = await needRun(runId);
     const viewer = /^\/v\/([A-Za-z0-9_-]{22})$/.exec(rest)?.[1];
     // A viewer's page, for a viewer the run has open; its two files, while the run has one open.
     const handover = !runs.hasProcess(run.id) || !liveRest(rest) ? undefined : viewer ? await handoverById(run.dir, viewer) : await readHandover(run.dir);
-    if (!handover) throw new ApiError("not_found", "this run's browser has no live view at that address");
+    if (!handover) throw new ApiError("not_found", "this run's computer has no live view at that address");
     await serveViewerFile(req, res, rest);
   }
 
@@ -2573,7 +2592,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   // keeps Node's 5-minute request timeout, which an upload of a large file needs; the token-less hook route has its own
   // 30 s for its body (push-handler.ts HOOK_BODY_MS), so dribbling senders hold no socket for long.
   server.headersTimeout = 10_000;
-  // The one upgrade this server takes: a run's live browser viewer's WebSocket (browser-live.ts). Every other is refused.
+  // The one upgrade this server takes: a run's live computer viewer's WebSocket (browser-live.ts). Every other is refused.
   server.on("upgrade", (req: IncomingMessage, socket: Duplex, head: Buffer) => {
     socket.on("error", () => socket.destroy());
     const raw = (req.url ?? "/").split("?")[0]!;

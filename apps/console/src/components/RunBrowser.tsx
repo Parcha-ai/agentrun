@@ -4,7 +4,7 @@ import { ClientError } from "@/lib/client";
 import { httpHref } from "@/lib/safeUrl";
 import type { RunBrowser } from "@/lib/v2";
 
-/** The run's browser, read from GET /v2/runs/{id}/browser and read again every `every` ms while the run is `going`: not
+/** The run's computer, read from GET /v2/runs/{id}/computer and read again every `every` ms while the run is `going`: not
  *  over (completed, failed, cancelled), so a paused or waiting run is read on too. Null until the first answer, and while
  *  it is `off`. `off` is read from the server's keys now, but a going run's process holds the key it launched with and may
  *  still open a browser, so it is read on; a caller the route refuses (401, 403) is read no more. An ended run has
@@ -93,12 +93,12 @@ export function BrowserPanel({ runId, browser, opens, followUp }: {
 }
 
 /** The served viewer as the iframe's src: resolved against this page's origin (it is a same-origin path, its token in the
- *  fragment), an http(s) URL (httpHref), on this origin, under this run's own live-view path. Anything else: undefined. */
+ *  fragment), an http(s) URL (httpHref), on this origin, under this run's own live-view path (/computer/live/). Anything else: undefined. */
 export function framedViewer(viewer: string, runId: string): string | undefined {
   let resolved: string;
   try { resolved = new URL(viewer, location.origin).href; } catch { return undefined; }
   const href = httpHref(resolved);
   if (!href) return undefined;
   const url = new URL(href);
-  return url.origin === location.origin && url.pathname.startsWith(`/v2/runs/${encodeURIComponent(runId)}/browser/live/`) ? href : undefined;
+  return url.origin === location.origin && url.pathname.startsWith(`/v2/runs/${encodeURIComponent(runId)}/computer/live/`) ? href : undefined;
 }

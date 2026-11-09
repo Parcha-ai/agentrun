@@ -6,8 +6,8 @@
 // and the token dies with it (pi-browser kills it then); a session's release never touches another's file, so an old
 // session's release that crosses a new one's launch (a relaunch) leaves the new one handed over.
 //
-// The server reads the newest for the owner alone (GET /v2/runs/{id}/browser) and answers the viewer under the run's path
-// (/v2/runs/{id}/browser/live/*). The viewer's code (its page, script and style) is always this server's own, the files of
+// The server reads the newest for the owner alone (GET /v2/runs/{id}/computer, the browser as kind browser) and answers the
+// viewer under the run's path (/v2/runs/{id}/computer/live/*), the one live family for every computer kind. The viewer's code (its page, script and style) is always this server's own, the files of
 // the pi-browser it has installed, never anything a run's port answers: a run's port only ever carries the viewer's
 // WebSocket, data and no code, proxied to that port alone and only from this server's own origin. The page is served
 // under a CSP whose frame-ancestors is 'self' (the console's own origin). The token is never in a record, a timeline row, a run's view, its files (work/ alone is served), the model's
@@ -163,7 +163,7 @@ export const liveViewerById = async (store: LiveViewerStore, sealKey: Buffer, ru
   (await readLiveViewers(store, sealKey, runId)).find((handover) => handover.id === id);
 
 /** Where the viewer answers through the server, for run `runId`: the owner's link, its token in the fragment. */
-export const viewerLink = (runId: string, handover: LiveHandover): string => `/v2/runs/${encodeURIComponent(runId)}/browser/live/v/${handover.id}#t=${handover.token}`;
+export const viewerLink = (runId: string, handover: LiveHandover): string => `/v2/runs/${encodeURIComponent(runId)}/computer/live/v/${handover.id}#t=${handover.token}`;
 
 /** The run's viewer answers at its port for this session: its page is there (200), not released (404). Bounded: a dead
  *  process's port answers nothing, or another listener's 404. */
@@ -177,6 +177,23 @@ export function viewerAnswers(handover: LiveHandover, ms = 1_000): Promise<boole
     req.on("error", () => resolve(false));
     req.end();
   });
+}
+
+/** The owner's link to run `runId`'s viewer as the server reads it over the store: the newest its runner put whose port
+ *  answers (`answers`, viewerAnswers), with its computer's kind; undefined when none does. Kind browser: the store's rows
+ *  are the browser's sessions until computer_viewers carries a kind. */
+export async function liveViewerLink(store: LiveViewerStore, sealKey: Buffer, runId: string, answers: (handover: LiveHandover) => Promise<boolean> = viewerAnswers): Promise<{ kind: "browser"; viewer: string } | undefined> {
+  for (const handover of await readLiveViewers(store, sealKey, runId)) if (await answers(handover)) return { kind: "browser", viewer: viewerLink(runId, handover) };
+  return undefined;
+}
+
+/** The viewer run `runId`'s live route serves at `rest`, read over the store: a viewer's page ("/v/<id>") by its own path
+ *  id, the viewer's files while the run has one open (its newest); undefined at any other address, or with none open (the
+ *  route's 404). The WebSocket's upgrade reads liveViewerById with the id in its path. */
+export async function liveViewerFor(store: LiveViewerStore, sealKey: Buffer, runId: string, rest: string): Promise<LiveHandover | undefined> {
+  if (!liveRest(rest)) return undefined;
+  const viewer = /^\/v\/([A-Za-z0-9_-]{22})$/.exec(rest)?.[1];
+  return viewer ? liveViewerById(store, sealKey, runId, viewer) : liveViewer(store, sealKey, runId);
 }
 
 /** The viewer's page and files under the run's path ("/v/<id>", "/viewer.js", "/viewer.css"): this server's own copy of
