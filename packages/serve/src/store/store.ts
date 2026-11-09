@@ -62,6 +62,9 @@ export interface AgentRow {
   readonly currentRevision: string | null;
   readonly createdAt: number;
   readonly archivedAt: number | null;
+  /** The reference of the agent this one mirrors in another system ("<source>:<kind>:<id>"), or null for one made here. An
+   *  agent with a reference is read-only from here: it is written on the first run that names it and never edited. */
+  readonly externalRef: string | null;
 }
 
 /** A template's package, kept on the revision made from it. */
@@ -84,6 +87,8 @@ export interface NewRevision {
   /** The optional note the revision is committed with (the v2 note), or none. */
   readonly note?: string;
   readonly package?: TemplatePackage;
+  /** The version this revision maps in an externally owned agent, set only on an inline-agent run's revision. */
+  readonly externalVersion?: string;
 }
 
 export interface RevisionRow {
@@ -100,6 +105,8 @@ export interface RevisionRow {
   readonly note: string | null;
   readonly package: TemplatePackage | null;
   readonly createdAt: number;
+  /** The version this revision maps in the agent's owning system (one revision per version), or null for one committed here. */
+  readonly externalVersion: string | null;
 }
 
 /** How an ended run (state 'ended') ended apart from being done: 'escalated' (it finished its work and waits for a person,

@@ -45,8 +45,8 @@ export type SqliteStoreOptions = (
   busyTimeoutMs?: number;
 };
 
-type AgentRecord = { id: string; name: string; description: string | null; current_revision: string | null; created_at: number; archived_at: number | null };
-type RevisionRecord = { id: string; agent_id: string; parent_id: string | null; kind: string; body: string; skills: string | null; note: string | null; package: string | null; created_at: number };
+type AgentRecord = { id: string; name: string; description: string | null; current_revision: string | null; created_at: number; archived_at: number | null; external_ref: string | null };
+type RevisionRecord = { id: string; agent_id: string; parent_id: string | null; kind: string; body: string; skills: string | null; note: string | null; package: string | null; created_at: number; external_version: string | null };
 type CommandRecord = { id: number; run_id: string; kind: string; body: string; created_at: number; taken_at: number | null; refused: string | null; tries: number };
 type TriggerRecord = {
   id: string; agent_id: string; name: string; enabled: number; source: string; target: string; next_at: number | null; last_run_id: string | null;
@@ -83,8 +83,8 @@ function triggerSet(patch: TriggerPatch, at: number): { set: string; params: Sql
   return { set: pairs.map(([column]) => `${column} = ?`).join(", "), params: pairs.map(([, value]) => value) };
 }
 
-const AGENT_COLUMNS = "id, name, description, current_revision, created_at, archived_at";
-const REVISION_COLUMNS = "id, agent_id, parent_id, kind, body, skills, note, package, created_at";
+const AGENT_COLUMNS = "id, name, description, current_revision, created_at, archived_at, external_ref";
+const REVISION_COLUMNS = "id, agent_id, parent_id, kind, body, skills, note, package, created_at, external_version";
 const COMMAND_COLUMNS = "id, run_id, kind, body, created_at, taken_at, refused, tries";
 const TRIGGER_COLUMNS = "id, agent_id, name, enabled, source, target, next_at, last_run_id, catchup_window_s, failures_in_a_row, disabled, max_active_runs, created_at, updated_at";
 const FINAL = FINAL_STATES.map((state) => `'${state}'`).join(", ");
@@ -104,10 +104,10 @@ const CLAIMABLE_AT = (at: number): number[] => [at, at, at, at, at];
 /** What a claim sets: the next epoch, the runner and its lease, running, no backoff. */
 const CLAIM_SET = "epoch = epoch + 1, runner = ?, claimed_until = ?, state = 'running', backoff_until = NULL";
 
-const agentOf = (r: AgentRecord): AgentRow => ({ id: r.id, name: r.name, description: r.description, currentRevision: r.current_revision, createdAt: r.created_at, archivedAt: r.archived_at });
+const agentOf = (r: AgentRecord): AgentRow => ({ id: r.id, name: r.name, description: r.description, currentRevision: r.current_revision, createdAt: r.created_at, archivedAt: r.archived_at, externalRef: r.external_ref });
 const revisionOf = (r: RevisionRecord): RevisionRow => ({
   id: r.id, agentId: r.agent_id, parent: r.parent_id, kind: r.kind, body: JSON.parse(r.body), skills: r.skills === null ? null : JSON.parse(r.skills),
-  note: r.note, package: r.package === null ? null : (JSON.parse(r.package) as TemplatePackage), createdAt: r.created_at,
+  note: r.note, package: r.package === null ? null : (JSON.parse(r.package) as TemplatePackage), createdAt: r.created_at, externalVersion: r.external_version,
 });
 const commandOf = (r: CommandRecord): Command => ({ id: r.id, runId: r.run_id, kind: r.kind, body: JSON.parse(r.body), createdAt: r.created_at, takenAt: r.taken_at, refused: r.refused, tries: r.tries });
 const triggerOf = (r: TriggerRecord): TriggerRow => ({

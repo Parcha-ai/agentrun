@@ -13,7 +13,7 @@
 // journal tables, keyed by run_id (store/journal): one schema for every run's journal, so a query joins runs and their
 // journals.
 
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 4;
 
 const json = (column: string, nullable = false) => `${column} TEXT${nullable ? "" : " NOT NULL"} CHECK (${column} IS NULL OR json_valid(${column}))`;
 
@@ -26,14 +26,19 @@ export const STORE_DDL: readonly string[] = [
 
   // Agents and their revisions. A revision made from a template keeps its package: {name, version (SemVer), source
   // builtin|git, ref, sha, parameters}.
+  // `external_ref`: when the agent mirrors one owned by another system, its reference there, "<source>:<kind>:<id>" (e.g.
+  // "grep:expert:42"), unique across agents. The agent is written on the first run that names it and is read-only from here;
+  // null for an agent created here.
   `CREATE TABLE IF NOT EXISTS agents (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
     description TEXT,
     current_revision TEXT,
     created_at INTEGER NOT NULL,
-    archived_at INTEGER
+    archived_at INTEGER,
+    external_ref TEXT
   ) STRICT`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS agents_external ON agents (external_ref) WHERE external_ref IS NOT NULL`,
   // A revision's skills (the P4 fold of the old agent store's skill table): the revision's own skill files, a JSON object
   // keyed by the skill's path under `.agents/skills/` to its text. The body's `skills` map keeps the path to the text's
   // SHA-256 (so two revisions with the same files are one body, and a view can show each file's size), and this column
@@ -50,9 +55,13 @@ export const STORE_DDL: readonly string[] = [
     ${json("skills", true)},
     ${json("package", true)},
     note TEXT,
+    external_version TEXT,
     created_at INTEGER NOT NULL
   ) STRICT`,
   `CREATE INDEX IF NOT EXISTS revisions_by_agent ON revisions (agent_id, created_at)`,
+  // `external_version`: for a revision of an externally owned agent, the version it maps there (one revision per version),
+  // unique per agent; null for a revision committed here.
+  `CREATE UNIQUE INDEX IF NOT EXISTS revisions_external_version ON revisions (agent_id, external_version) WHERE external_version IS NOT NULL`,
 
   // Runs: a parked run holds no claim (its runner flushed and released it); it is claimable again when a command row lands
   // or wake_at passes.
