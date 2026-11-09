@@ -160,6 +160,21 @@ test("--check: a running runner's heartbeat passes; a name that never ran fails 
   assert.match(never.err.join("\n"), /runner-never has no heartbeat/);
 });
 
+test("the runner says ready only once its stop signals are handled: a SIGTERM sent on reading the line always closes it", async () => {
+  // In this process, on a signal no one else listens to: the ready callback must find the handler already installed.
+  const before = process.listenerCount("SIGUSR2");
+  let handledAtReady = -1;
+  let closed = false;
+  const running = main.runUntilSignalled({ close: async () => void (closed = true) }, ["SIGUSR2"], () => {
+    handledAtReady = process.listenerCount("SIGUSR2") - before;
+  });
+  assert.equal(handledAtReady, 1, "the handler was installed before ready was said");
+  process.emit("SIGUSR2");
+  await running;
+  assert.equal(closed, true, "the signal closed it");
+  assert.equal(process.listenerCount("SIGUSR2"), before, "and its handler is gone");
+});
+
 test("the heartbeat check, on an injected clock and file times: younger than twice the renew interval passes, older fails in words", (t) => {
   const dir = scratch(t, "agentrun-runner-beat-");
   const check = (now) => main.checkRunner({ dataDir: dir, name: "runner-x", now: () => now });
