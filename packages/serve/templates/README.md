@@ -31,7 +31,9 @@ market-monitor, release-notes) runs unattended (`approvals: never`), so its writ
 which the tool gate checks before it allows or asks anything (a review can only COMMENT, a send only reaches the channel
 set at apply, a draft issue is only ever created), or, where no pin can bound it, by a stated rule (a test lists both).
 Until the agent store's cutover an agent keeps no pin of its own: apply then makes a pinned write `deny`, unless this
-server's own settings pin that tool, so nothing a template grants runs without its pin.
+server's own settings pin that tool, so a pinned write never runs without its pin. The unpinned writes a package offers
+for the owner's grant (code-review's pending-review comment, inbound-lead's CRM record) are the rule-bounded ones above,
+and once granted they run unasked under `never`.
 
 **A pinned send goes only where the owner set.** A package may pin a send's destination to a parameter (`pin` in its
 `mcp` entry): apply writes it into the agent's tool settings, and the server's tool gate refuses any call of that tool
