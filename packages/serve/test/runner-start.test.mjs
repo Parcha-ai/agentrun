@@ -161,18 +161,19 @@ test("--check: a running runner's heartbeat passes; a name that never ran fails 
 });
 
 test("the runner says ready only once its stop signals are handled: a SIGTERM sent on reading the line always closes it", async () => {
-  // In this process, on a signal no one else listens to: the ready callback must find the handler already installed.
-  const before = process.listenerCount("SIGUSR2");
+  // In this process, on a signal no one else listens to (SIGWINCH: not SIGUSR2, which a test runner's --report-on-signal
+  // answers with a report file): the ready callback must find the handler already installed. Emitted, never sent.
+  const before = process.listenerCount("SIGWINCH");
   let handledAtReady = -1;
   let closed = false;
-  const running = main.runUntilSignalled({ close: async () => void (closed = true) }, ["SIGUSR2"], () => {
-    handledAtReady = process.listenerCount("SIGUSR2") - before;
+  const running = main.runUntilSignalled({ close: async () => void (closed = true) }, ["SIGWINCH"], () => {
+    handledAtReady = process.listenerCount("SIGWINCH") - before;
   });
   assert.equal(handledAtReady, 1, "the handler was installed before ready was said");
-  process.emit("SIGUSR2");
+  process.emit("SIGWINCH");
   await running;
   assert.equal(closed, true, "the signal closed it");
-  assert.equal(process.listenerCount("SIGUSR2"), before, "and its handler is gone");
+  assert.equal(process.listenerCount("SIGWINCH"), before, "and its handler is gone");
 });
 
 test("the heartbeat check, on an injected clock and file times: younger than twice the renew interval passes, older fails in words", (t) => {

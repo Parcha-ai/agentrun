@@ -17,6 +17,13 @@ import { journalEntries } from "./journal-reader.js";
 import { type Claim, type Command, endedBy, type Journal, type Loop, type LoopEnd, type LoopFactory, type StopReason } from "./loop-contract.js";
 import { isFenced, type RunnerStore } from "./store-port.js";
 
+/** Most runs a runner holds at once, unless told (RunnerOptions.loops). */
+export const RUNNER_LOOPS = 300;
+/** How often a runner renews the claims it holds, unless told (RunnerOptions.renewEveryMs). */
+export const RUNNER_RENEW_EVERY_MS = 10_000;
+/** A runner's name when none is given: its host, its process and a part of a random id. */
+export const runnerName = (): string => `${hostname()}:${process.pid}:${randomUUID().slice(0, 8)}`;
+
 /** The untaken row a run ends on when no loop can: a cancel before a stop (it ends the run for good, in its words). */
 const endingRow = (untaken: readonly Command[]): Command | undefined => untaken.find((row) => row.kind === "cancel") ?? untaken.find((row) => row.kind === "stop");
 
@@ -55,6 +62,10 @@ export interface RunnerOptions {
   /** The runner's clock (epoch ms) for what it writes itself: a withdrawn answer's time in an end it writes. Default
    *  Date.now. */
   now?: () => number;
+  /** Called at each poll for runs (every pollMs, whether or not it holds any) and each renewal pass: the runner's own
+   *  loop is turning. The runner process writes its heartbeat from it (runner/main.ts), so a check sees a runner that is
+   *  idle and well, and not one whose loop has stopped. A throw is the caller's. */
+  onBeat?: () => void;
 }
 
 export type RunnerEvent =
@@ -103,10 +114,10 @@ export function startRunner(options: RunnerOptions): Runner {
   const {
     store,
     createLoop,
-    name = `${hostname()}:${process.pid}:${randomUUID().slice(0, 8)}`,
-    loops = 300,
+    name = runnerName(),
+    loops = RUNNER_LOOPS,
     leaseMs = 30_000,
-    renewEveryMs = 10_000,
+    renewEveryMs = RUNNER_RENEW_EVERY_MS,
     stopMarginMs = 5_000,
     pollMs = 1_000,
     commandPollMs = 500,
@@ -116,7 +127,15 @@ export function startRunner(options: RunnerOptions): Runner {
     endWaitMs = 5_000,
     onEvent = () => {},
     now = Date.now,
+    onBeat = () => {},
   } = options;
+  const beat = () => {
+    try {
+      onBeat();
+    } catch {
+      // The caller's: a heartbeat it could not write never stops the runner.
+    }
+  };
   if (!(stopMarginMs < leaseMs && renewEveryMs < leaseMs - stopMarginMs)) {
     throw new RangeError(`a claim of ${leaseMs} ms must be renewed (every ${renewEveryMs} ms) before its stop margin (${stopMarginMs} ms)`);
   }
@@ -202,6 +221,7 @@ export function startRunner(options: RunnerOptions): Runner {
    *  if none lands. */
   const renewAll = async () => {
     if (killed) return;
+    beat();
     const due = [...runs.values()].filter((held) => !held.renewing && !held.fence.lost && !held.ending);
     if (due.length === 0) return;
     for (const held of due) held.renewing = true;
@@ -513,6 +533,7 @@ export function startRunner(options: RunnerOptions): Runner {
   };
   const poll = () => {
     if (closed || killed) return;
+    beat();
     void claimMore().finally(() => {
       if (!closed && !killed) pollTimer = setTimeout(poll, pollMs);
     });
