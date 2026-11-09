@@ -261,14 +261,16 @@ function resumedOnceByB(events: readonly unknown[], row: RunRow): void {
   assert.ok(claims.length > 0, `runner-b claimed the run: ${history}`);
   // Every claim after its first is accounted for: a starved box can miss runner-b's renews, and then it takes the run
   // again. Each such claim comes after runner-b lost the one before (a renew that missed or was fenced), at a fresh epoch,
-  // and nothing of the lost epoch landed after its loss.
+  // and nothing of the lost epoch landed once the run was claimed again. (The runner says it lost a claim a stop margin
+  // before the store's lease runs out, so a commit already on its way can land in that margin, under a lease it still
+  // holds; the fence refuses the old epoch once the lease ran out, and so surely once the next claim holds the run.)
   for (let i = 1; i < claims.length; i += 1) {
     const before = claims[i - 1]!.claim!.epoch;
     const next = claims[i]!.claim!.epoch;
     assert.ok(next > before, `runner-b's claim ${i + 1} is at a fresh epoch (${next} after ${before}): ${history}`);
     const lostAt = ofB.findIndex((event) => event.type === "claim-lost" && event.epoch === before);
     assert.ok(lostAt >= 0 && lostAt < ofB.indexOf(claims[i]!), `runner-b lost its claim at epoch ${before} before it claimed again: ${history}`);
-    assert.deepEqual(ofB.slice(lostAt).filter((event) => event.type === "commit-landed" && event.epoch === before), [], `nothing of runner-b's lost epoch ${before} landed after its loss: ${history}`);
+    assert.deepEqual(ofB.slice(ofB.indexOf(claims[i]!)).filter((event) => event.type === "commit-landed" && event.epoch === before), [], `nothing of runner-b's lost epoch ${before} landed once it claimed the run again: ${history}`);
   }
   const last = claims[claims.length - 1]!.claim!.epoch;
   const releases = ofB.filter((event) => event.type === "released");
