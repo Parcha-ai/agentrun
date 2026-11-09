@@ -18,6 +18,7 @@
 //                                         as stmt, or as step (one statement, its changes and rows, its `expect` checked)
 //                                         in between
 //   close
+import { closeSync, openSync } from "node:fs";
 import { parentPort } from "node:worker_threads";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { inMemory } from "./memory.js";
@@ -162,6 +163,10 @@ function errorOf(error: unknown): WorkerError {
  *  directory, named after no file). */
 function takeOwnerLock(file: string): void {
   if (inMemory(file)) return;
+  // The lock is the server's alone, as server.lock was: made 0600 (no umask takes from that) before SQLite opens it, which
+  // would make it 0644 under a 022 umask. A held one's bytes and times are left as they are (opened to append, never
+  // written).
+  closeSync(openSync(`${file}.owner`, "a", 0o600));
   const lock = new DatabaseSync(`${file}.owner`);
   try {
     lock.exec("PRAGMA busy_timeout = 0");
