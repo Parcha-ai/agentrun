@@ -97,8 +97,8 @@ export type RunSignIn = { provider: Vendor; ref: string; save: boolean };
  * As the old launch did, the run keeps that it was handed the pointer (its hash added to sign_in_handed, under the claim)
  * before it is handed it, so a forget sees the run: one it could not keep (a stale or lost claim: Fenced) is handed none.
  * The pointer is read again after that write: a forget that landed between the two moved it to a tombstone, and the run
- * is handed none. It saves to it unless another running run holds it (the store's handed holder); a run resumed on the
- * pointer it held keeps saving. None, too, with no seal key, a pointer that does not open, a browser that keeps none, or
+ * is handed none. It saves to it as the store answers that same write (the save lease, in its transaction: never two
+ * runs of one sign-in at once, a Browserbase one held for its settle window past a run that left running). None, too, with no seal key, a pointer that does not open, a browser that keeps none, or
  * an agent that saved none for the vendor. Never throws, and never names the pointer.
  */
 export async function runSignIn(store: Pick<Store, "runs" | "signIns">, sealKey: Buffer | undefined, claim: Claim, resolution: string): Promise<RunSignIn | undefined> {
@@ -110,14 +110,14 @@ export async function runSignIn(store: Pick<Store, "runs" | "signIns">, sealKey:
     const opened = await openSavedPointer(store, sealKey, run.agentId, vendor);
     if (opened === undefined || opened === "unreadable") return undefined;
     const hash = pointerHash(opened.pointer);
-    const holder = await store.signIns.handedHolder(hash);
-    const save = holder === undefined || holder === claim.runId;
     const before = run.signInHanded ?? [];
-    // Always written, even when the hash is there already: the write is the claim's fence.
-    await store.runs.update(claim, { signInHanded: before.includes(hash) ? [...before] : [...before, hash] });
+    // Always written, even when the hash is there already: the write is the claim's fence. Whether this run saves to the
+    // sign-in is the store's answer to this same write (its save lease, in the write's transaction), so two binds of one
+    // sign-in never both save; Browserbase's lease outlives a run that left running by its settle window.
+    const { save } = await store.runs.update(claim, { signInHanded: before.includes(hash) ? [...before] : [...before, hash] }, { signInSettleMs: settleFor(vendor) });
     const now = await openSavedPointer(store, sealKey, run.agentId, vendor);
     if (now === undefined || now === "unreadable" || now.pointer !== opened.pointer) return undefined;
-    return { provider: vendor, ref: opened.pointer, save };
+    return { provider: vendor, ref: opened.pointer, save: save === true };
   } catch {
     return undefined;
   }
@@ -126,20 +126,22 @@ export async function runSignIn(store: Pick<Store, "runs" | "signIns">, sealKey:
 /**
  * A run on the runner saved its sign-in at `at` (a session that saved to it ended): the sign-in's verified_at, as main's
  * lease end fills it from the run's saved mark. Only under the run's own claim, for what it was handed to save: the
- * agent is the run's own (never the caller's word), its saved pointer is still the one handed (a sign-in saved afresh
- * since is not this save's), its hash is in the run's sign_in_handed, and the claim still holds the run (a fenced write
- * first: a stale or lost claim verifies nothing). True when verified. Never throws, and never names the pointer.
+ * agent is the run's own (never the caller's word), its saved pointer is still the one handed, its hash is in the run's
+ * sign_in_handed, and the claim still holds the run (a fenced write first: a stale or lost claim verifies nothing). The
+ * stamp is conditioned on the saved_at read with the pointer (ifSavedAt), so a sign-in saved afresh meanwhile is never
+ * marked by this save. True when the store stamped. Never throws, and never names the pointer.
  */
 export async function verifyRunSignIn(store: Pick<Store, "runs" | "signIns">, sealKey: Buffer | undefined, claim: Claim, signIn: RunSignIn, at: number): Promise<boolean> {
   if (!signIn.save || !sealKey || !Number.isFinite(at)) return false;
   try {
     const run = await store.runs.get(claim.runId);
     if (!run || !run.signInHanded?.includes(pointerHash(signIn.ref))) return false;
-    const opened = await openSavedPointer(store, sealKey, run.agentId, signIn.provider);
-    if (opened === undefined || opened === "unreadable" || opened.pointer !== signIn.ref) return false;
+    // The saved sign-in, read once: its pointer is the one handed, and its saved_at is what the stamp is conditioned on,
+    // so an owner's fresh save between this read and the stamp is never marked verified by this run's save.
+    const row = await store.signIns.get(run.agentId, signIn.provider);
+    if (!row || open(sealKey, run.agentId, signIn.provider, row.pointerSealed) !== signIn.ref) return false;
     await store.runs.update(claim, { signInHanded: [...run.signInHanded] });
-    await store.signIns.verify(run.agentId, signIn.provider, at);
-    return true;
+    return await store.signIns.verify(run.agentId, signIn.provider, at, { ifSavedAt: row.savedAt });
   } catch {
     return false;
   }
