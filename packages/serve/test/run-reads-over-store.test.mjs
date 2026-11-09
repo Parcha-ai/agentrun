@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { after, test } from "node:test";
 
 const { openSqliteStore } = await import("../dist/store/index.js");
-const { localWorkspace } = await import("../dist/workspace/index.js");
+const { localWorkspace, runFolder, serverRunWorkspace } = await import("../dist/workspace/index.js");
 const { launchBody } = await import("../dist/run-launch.js");
 const { BACKGROUND_CONTEXT } = await import("@earendil-works/chord/context");
 const { listRunFiles, readRunFile, runBrowserState, runGraphView, runTimelines } = await import("../dist/run-reads-over-store.js");
@@ -54,6 +54,25 @@ test("listRunFiles lists none for a run with no folder", async () => {
   await store.runs.create({ id: "run-1", agentId: "a1", revisionId: "r1" });
   const answer = await listRunFiles(store, "run-1", deps());
   assert.deepEqual(answer, { run_id: "run-1", files: [], complete: true, truncated: false });
+});
+
+test("listRunFiles reads a run's files through the real serverRunWorkspace (Mode 1, read-only)", async () => {
+  const dir = tempDir("agentrun-rrsw-");
+  const store = await openSqliteStore({ file: join(dir, "store.sqlite"), role: "server" });
+  after(() => store.close().catch(() => undefined));
+  await store.agents.create({ id: "a1", name: "Agent one" }, { id: "r1", kind: "agentic", body: { instructions: "Answer.", tools: [] } });
+  await store.runs.create({ id: "run-1", agentId: "a1", revisionId: "r1" });
+  // The run's folder under the data dir, with a file, as its runner would leave it.
+  const folder = runFolder(dir, "a1", "run-1");
+  mkdirSync(folder, { recursive: true });
+  writeFileSync(join(folder, "out.txt"), "hello");
+  // The switch's wiring: runWorkspace = (store, runId) => serverRunWorkspace(store, runId, { data, sealKey }).
+  const runWorkspace = (s, r) => serverRunWorkspace(s, r, { data: dir, sealKey: undefined });
+  const answer = await listRunFiles(store, "run-1", deps({ runWorkspace }));
+  assert.deepEqual(answer.files.map((f) => f.path), ["out.txt"]);
+  // Read-only: the server reads a run's files; only its runner writes them.
+  const workspace = await runWorkspace(store, "run-1");
+  await assert.rejects(() => workspace.write("x.txt", new Uint8Array([1])));
 });
 
 // ---- readRunFile ----------------------------------------------------------------------------------------------------
