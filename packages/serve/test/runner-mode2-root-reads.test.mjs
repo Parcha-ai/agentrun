@@ -205,7 +205,7 @@ for (const [name, harness, build] of [["pi's spec", undefined, adapterRunSpecFro
     assert.match(control.requests[1].body?.nickname ?? "", new RegExp(RUN), "named for the run");
     assert.equal(control.requests[1].body?.ttl, "604800s", "its safety-net lifetime, MOUNT_TTL_MS (7 days), in case the removal never comes");
     await spec.release();
-    assert.deepEqual(callsOf(control).slice(2), [`DELETE ${disk}/users/token?identifier=tok-1`], "removed once at the end: the computer's release and the run's end revoke it, idempotently");
+    assert.deepEqual(callsOf(control).slice(2), [`DELETE ${disk}/users/token?identifier=tok-1`, `GET ${disk}`], "removed once at the end (the computer's release and the run's end revoke it, idempotently), then the run's earlier epochs looked for");
     assert.deepEqual(outbound, [], "nothing left this machine");
   });
 }

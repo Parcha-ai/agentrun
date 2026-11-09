@@ -137,7 +137,9 @@ export async function archilClaim(options: ArchilClaimOptions): Promise<ArchilCl
     released = true;
     held.clear();
   };
-  /** Removes the credential minted, by its identifier: idempotent. */
+  /** Removes the credential minted, by its identifier: idempotent. Then the run's earlier epochs once more: Archil's list,
+   *  read right after another caller's mint, may not hold that user yet (mint-4), so the reclaim before this claim's mint
+   *  can miss an earlier claim's; by the run's end the list holds it. Best effort: one still missed ends at its ttl. */
   const revoke = async (): Promise<void> => {
     const credential = live ?? (await minted?.catch(() => undefined));
     if (credential === undefined) return;
@@ -145,6 +147,9 @@ export async function archilClaim(options: ArchilClaimOptions): Promise<ArchilCl
     if (live === credential) live = undefined;
     minted = undefined;
     held.delete(credential.token);
+    const mount = options.mount;
+    // No signal: a lost claim's is aborted already, and this remove is what its loss asks for.
+    if (mount !== undefined) await removeOlderMountTokens(credentialOptions, mount.runId, mount.epoch).catch(() => undefined);
   };
   // A lost claim (or a stopped runner): the values dropped, and the credential removed at once, not left for the ttl.
   const lost = (): void => {

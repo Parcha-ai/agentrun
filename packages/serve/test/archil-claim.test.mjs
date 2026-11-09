@@ -88,7 +88,7 @@ test("archil claim: the mount credential is minted when a mount first asks, once
   assert.deepEqual([...claim.secrets].sort(), [API, TOKEN].sort());
   await claim.revoke();
   await claim.revoke();
-  assert.deepEqual(fake.requests.slice(2).map((one) => [one.method, one.query.identifier]), [["DELETE", "tok-1"]], "removed once by its identifier; a second revoke has nothing to remove");
+  assert.deepEqual(fake.requests.slice(2).map((one) => [one.method, one.query.identifier]), [["DELETE", "tok-1"], ["GET", undefined]], "removed once by its identifier, then the run's earlier epochs looked for; a second revoke has nothing to remove");
   assert.equal(fake.users.size, 0);
   assert.ok(!claim.secrets.has(TOKEN), "the token is no longer held");
 });
@@ -199,10 +199,11 @@ test("archil claim: a lost claim removes the run's mount credential at once, not
   await claim.token();
   assert.equal(fake.users.size, 1);
   controller.abort(new Error("the claim was fenced"));
-  // The remove is a request on its way: wait for it to land (bounded), not for a time.
-  for (let tries = 0; fake.users.size > 0 && tries < 2000; tries += 1) await new Promise((resolve) => setTimeout(resolve, 5));
+  // The remove, and the list read after it, are requests on their way: wait for both to land (bounded), not for a time.
+  const settled = () => fake.users.size === 0 && fake.requests.at(-1)?.method === "GET";
+  for (let tries = 0; !settled() && tries < 2000; tries += 1) await new Promise((resolve) => setTimeout(resolve, 5));
   assert.equal(fake.users.size, 0, "removed when the claim was lost");
-  assert.deepEqual(fake.requests.at(-1).method, "DELETE");
+  assert.deepEqual(fake.requests.slice(-2).map((one) => one.method), ["DELETE", "GET"], "its own removed, then the run's earlier epochs looked for");
   assert.equal(claim.secrets.size, 0);
 });
 
