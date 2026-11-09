@@ -342,6 +342,19 @@ async function takenAgain(w, handed, cookie) {
   fresh.destroy();
 }
 
+test("a viewer watching with a session the owner signed out of is cut off, and a copy of that cookie opens no new viewer", { timeout: 120_000 }, async (t) => {
+  const w = await watched(t);
+  const handed = JSON.parse(readFileSync(w.file, "utf8"));
+  const copied = w.cookie;
+  const ws = await watching(w, handed, copied);
+  const out = await call(w.server.port, { method: "POST", path: "/v2/auth/sign-out", headers: { ...json, origin: w.origin, cookie: w.cookie }, body: {} });
+  assert.equal(out.status, 200, out.text);
+  await closesWithin(ws, 2_000, "the viewer's socket closes at this browser's sign-out");
+  const again = await liveWs(w, `/v2/runs/${w.runId}/browser/live/v/${handed.id}/ws`, { cookie: copied });
+  assert.notEqual(again.status, 101, "a copy of the signed-out cookie opens no viewer");
+  again.ws?.destroy?.();
+});
+
 test("a viewer already watching is cut off when the owner signs out everywhere: its socket and its way to the run close at once", { timeout: 120_000 }, async (t) => {
   const w = await watched(t);
   const handed = JSON.parse(readFileSync(w.file, "utf8"));
