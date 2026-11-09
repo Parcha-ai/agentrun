@@ -37,7 +37,7 @@ import { SIGN_IN_KEY, SIGN_IN_SAVED } from "./sign-ins.js";
 import { answerIn } from "./runner/hand-back.js";
 import type { LiveHandover, LiveViewerStore } from "./browser-live.js";
 import type { Claim, Store } from "./store/store.js";
-import { runSignIn } from "./sign-ins-store.js";
+import { type RunSignIn, runSignIn, verifyRunSignIn } from "./sign-ins-store.js";
 
 export const ASK_TOOL = "ask_person";
 /** Under `--faux` only: a module whose default export gives the browser's `{ provider, driver }` for the run's
@@ -244,6 +244,16 @@ export const asHanded = <P extends { create(spec: { profile?: { name: string; sa
 export const savedOnRelease = (row: { session: { resourceId: string | null; releaseReason: string | null } }, change: string): boolean =>
   change === "released" && row.session.resourceId !== null && row.session.releaseReason !== null && !["lost", "create_failed"].includes(row.session.releaseReason);
 
+/** On the runner, the per-session hook that verifies the run's saved sign-in: a session that saved to it (savedOnRelease,
+ *  in a run handed it to save) verifies it under the run's claim, at the session's own end (its time, else now), as the
+ *  saved mark main reads at the lease's end. Answers whether it verified (sign-ins-store.ts verifyRunSignIn). */
+export const runSignInSaved = (store: Pick<Store, "runs" | "signIns">, sealKey: Buffer | undefined, claim: Claim, kept: RunSignIn) =>
+  async (row: { session: { resourceId: string | null; releaseReason: string | null; endedAt?: string | null } }, change: string): Promise<boolean> => {
+    if (!kept.save || !savedOnRelease(row, change)) return false;
+    const ended = row.session.endedAt ? Date.parse(row.session.endedAt) : Number.NaN;
+    return verifyRunSignIn(store, sealKey, claim, kept, Number.isFinite(ended) ? ended : Date.now());
+  };
+
 /** A hosted browser driven through Stagehand, on pi-browser's durable adapter: Browserbase or Kernel (headless), the one
  *  the run's plane names (tool-plane.ts: picked, else Browserbase where the server holds its keys, else Kernel), kept
  *  for the run's life; a plane that names none (a run kept from before the pick) is Browserbase. Its sessions' custody
@@ -356,8 +366,10 @@ const browserTool: ToolEntry = {
     const downloads = typeof (parts.provider as { downloads?: unknown } | undefined)?.downloads === "object";
     const files = downloads ? { workspace: () => host.where.work } : { files: workspaceFiles(host.where.work) };
     // A session that saved to the sign-in, let go: its time, for the sign-in's verified_at when the run's lease ends.
+    // On the runner, the store's verified_at under the run's claim (runSignInSaved), never a mark in the run's directory.
+    const verify = kept?.save && host.claim && host.store ? runSignInSaved(host.store, host.sealKey, host.claim, kept as RunSignIn) : undefined;
     const saved = kept?.save
-      ? (row: Parameters<typeof savedOnRelease>[0], change: string) => void (savedOnRelease(row, change) && writeFileSync(join(host.where.root, SIGN_IN_SAVED), new Date().toISOString(), { mode: 0o600 }))
+      ? (row: Parameters<typeof savedOnRelease>[0], change: string) => void (verify ? verify(row, change) : savedOnRelease(row, change) && writeFileSync(join(host.where.root, SIGN_IN_SAVED), new Date().toISOString(), { mode: 0o600 }))
       : undefined;
     // Both hosts of a session's changes: the live view's hand-over, and the sign-in's saved mark.
     const onSessions = async (row: Parameters<typeof savedOnRelease>[0] & Parameters<typeof onSession>[0], change: string) => {

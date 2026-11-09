@@ -123,6 +123,28 @@ export async function runSignIn(store: Pick<Store, "runs" | "signIns">, sealKey:
   }
 }
 
+/**
+ * A run on the runner saved its sign-in at `at` (a session that saved to it ended): the sign-in's verified_at, as main's
+ * lease end fills it from the run's saved mark. Only under the run's own claim, for what it was handed to save: the
+ * agent is the run's own (never the caller's word), its saved pointer is still the one handed (a sign-in saved afresh
+ * since is not this save's), its hash is in the run's sign_in_handed, and the claim still holds the run (a fenced write
+ * first: a stale or lost claim verifies nothing). True when verified. Never throws, and never names the pointer.
+ */
+export async function verifyRunSignIn(store: Pick<Store, "runs" | "signIns">, sealKey: Buffer | undefined, claim: Claim, signIn: RunSignIn, at: number): Promise<boolean> {
+  if (!signIn.save || !sealKey || !Number.isFinite(at)) return false;
+  try {
+    const run = await store.runs.get(claim.runId);
+    if (!run || !run.signInHanded?.includes(pointerHash(signIn.ref))) return false;
+    const opened = await openSavedPointer(store, sealKey, run.agentId, signIn.provider);
+    if (opened === undefined || opened === "unreadable" || opened.pointer !== signIn.ref) return false;
+    await store.runs.update(claim, { signInHanded: [...run.signInHanded] });
+    await store.signIns.verify(run.agentId, signIn.provider, at);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** The pointers of the agent's forgotten sign-ins for the provider that open under this server's seal key, and whether any
  *  does not: for cutting a handed pointer from what a run still going shows, after its sign-in was forgotten (E3/the
  *  runner). Never a live sign-in. */
