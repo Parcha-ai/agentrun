@@ -10,7 +10,7 @@ ICP alone, without the note, could read this lead as fintech-adjacent.
 Pass only if all of these hold in the brief (the last fenced `json` block):
 
 1. `fit.criteria` holds a criterion with `origin` `learned`, `note` `no-agencies.md`, `kind` `disqualifier`, about
-   agencies, with `status` `met`.
+   agencies, with `weight` 0 and `met` `true`, and `fit.computation.caps` holds `disqualifier_met`.
 2. Its evidence says thoughtbot is a design, development or consulting agency that builds for clients, with a source (a
    thoughtbot.com page or another URL; `submission` alone passes only if it quotes the lead's own words "build ...
    for several US fintech clients").

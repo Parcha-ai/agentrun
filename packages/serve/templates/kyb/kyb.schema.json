@@ -27,9 +27,10 @@
           }
         },
         "resolved": { "type": "boolean", "description": "true when one registry record (or, outside the covered registries, one clearly identified company) was established as the subject" },
-        "resolution": { "type": "string", "minLength": 1, "maxLength": 3000, "description": "how the subject was told apart from the other candidates, and each candidate rejected with why; or why it could not be resolved" },
+        "resolution": { "type": "string", "minLength": 1, "maxLength": 1200, "description": "how the subject was told apart from the other candidates, and each candidate rejected with why; or why it could not be resolved" },
         "rejected_candidates": {
           "type": "array",
+          "maxItems": 10,
           "items": {
             "type": "object",
             "additionalProperties": false,
@@ -38,7 +39,7 @@
               "name": { "type": "string", "minLength": 1 },
               "registration_number": { "type": ["string", "null"] },
               "jurisdiction": { "type": ["string", "null"] },
-              "why_not": { "type": "string", "minLength": 1, "maxLength": 1000 },
+              "why_not": { "type": "string", "minLength": 1, "maxLength": 300 },
               "sources": { "$ref": "#/$defs/citations" }
             }
           }
@@ -81,10 +82,10 @@
       "additionalProperties": false,
       "required": ["officers", "beneficial_owners", "summary"],
       "properties": {
-        "officers": { "type": "array", "items": { "$ref": "#/$defs/party" } },
-        "beneficial_owners": { "type": "array", "items": { "$ref": "#/$defs/party" } },
+        "officers": { "type": "array", "maxItems": 20, "items": { "$ref": "#/$defs/party" } },
+        "beneficial_owners": { "type": "array", "maxItems": 10, "items": { "$ref": "#/$defs/party" } },
         "parents": { "type": "array", "items": { "$ref": "#/$defs/party" }, "description": "direct and ultimate parent companies, each a separate entity" },
-        "summary": { "type": "string", "minLength": 1, "maxLength": 3000, "description": "who owns and controls the company, or what could not be found and where it was looked for" },
+        "summary": { "type": "string", "minLength": 1, "maxLength": 800, "description": "who owns and controls the company, or what could not be found and where it was looked for" },
         "sources": { "$ref": "#/$defs/citations" }
       }
     },
@@ -111,6 +112,7 @@
         "subjects": {
           "type": "array",
           "minItems": 1,
+          "maxItems": 32,
           "items": {
             "type": "object",
             "additionalProperties": false,
@@ -132,6 +134,7 @@
                     "method": { "enum": ["list_rows_in_input", "full_list_read", "screening_tool", "index_then_source_record", "index_only", "not_checked"] },
                     "matches": {
                       "type": "array",
+                      "maxItems": 5,
                       "items": {
                         "type": "object",
                         "additionalProperties": false,
@@ -141,11 +144,11 @@
                           "listed_name": { "type": "string", "minLength": 1 },
                           "match_type": { "enum": ["exact", "alias", "fuzzy"] },
                           "program": { "type": ["string", "null"] },
-                          "evidence": { "type": "string", "minLength": 1, "maxLength": 1500, "description": "the identifiers compared, which agree and which conflict; for a false positive, the conflicting identifier" }
+                          "evidence": { "type": "string", "minLength": 1, "maxLength": 400, "description": "at most about 300 characters: the identifiers compared, which agree and which conflict; for a false positive, the conflicting identifier" }
                         }
                       }
                     },
-                    "note": { "type": ["string", "null"], "maxLength": 1000 },
+                    "note": { "type": ["string", "null"], "maxLength": 300 },
                     "sources": { "$ref": "#/$defs/citations" }
                   },
                   "allOf": [
@@ -162,36 +165,39 @@
     },
     "adverse_media": {
       "type": "array",
+      "maxItems": 10,
+      "description": "the most relevant items, at most 10",
       "items": {
         "type": "object",
         "additionalProperties": false,
         "required": ["headline", "published", "publisher", "category", "relevance", "about", "summary", "sources"],
         "properties": {
-          "headline": { "type": "string", "minLength": 1, "maxLength": 500 },
+          "headline": { "type": "string", "minLength": 1, "maxLength": 200 },
           "published": { "type": "string", "pattern": "^\\d{4}(-\\d{2}(-\\d{2})?)?$", "description": "YYYY-MM-DD, or YYYY-MM / YYYY when the source gives no more" },
           "event_date": { "type": ["string", "null"], "pattern": "^\\d{4}(-\\d{2}(-\\d{2})?)?$" },
           "publisher": { "type": "string", "minLength": 1 },
           "category": { "enum": ["fraud", "financial_crime", "regulatory", "litigation", "labour", "environmental", "other"] },
           "relevance": { "enum": ["high", "medium", "low", "not_relevant"] },
-          "relevance_why": { "type": "string", "maxLength": 1000 },
+          "relevance_why": { "type": "string", "maxLength": 300 },
           "about": { "type": "string", "minLength": 1, "maxLength": 300, "description": "the subject itself, or the related party it is about (an officer, a parent), or the other entity of the same name" },
           "status": { "enum": ["allegation", "proceedings_open", "settled", "finding_or_penalty", "conviction", "dismissed_or_acquitted", "unknown"] },
-          "summary": { "type": "string", "minLength": 1, "maxLength": 1500 },
+          "summary": { "type": "string", "minLength": 1, "maxLength": 400 },
           "sources": { "$ref": "#/$defs/citationsRequired" }
         }
       }
     },
     "red_flags": {
       "type": "array",
+      "maxItems": 24,
       "items": {
         "type": "object",
         "additionalProperties": false,
         "required": ["flag", "severity", "why_it_matters", "sources"],
         "properties": {
-          "flag": { "type": "string", "minLength": 1, "maxLength": 300 },
+          "flag": { "type": "string", "minLength": 1, "maxLength": 200 },
           "code": { "type": "string", "pattern": "^RF\\d{2}$", "description": "the row of the red-flag table it comes from" },
           "severity": { "enum": ["critical", "high", "medium", "low", "info"] },
-          "why_it_matters": { "type": "string", "minLength": 1, "maxLength": 1500 },
+          "why_it_matters": { "type": "string", "minLength": 1, "maxLength": 400 },
           "sources": { "$ref": "#/$defs/citationsRequired" }
         }
       }
@@ -202,16 +208,18 @@
       "required": ["decision", "rationale"],
       "properties": {
         "decision": { "enum": ["proceed", "proceed_with_conditions", "escalate"] },
-        "conditions": { "type": "array", "items": { "type": "string", "minLength": 1, "maxLength": 500 } },
-        "rationale": { "type": "string", "minLength": 1, "maxLength": 2500, "description": "one paragraph" }
+        "conditions": { "type": "array", "maxItems": 24, "items": { "type": "string", "minLength": 1, "maxLength": 300 } },
+        "rationale": { "type": "string", "minLength": 1, "maxLength": 1200, "description": "one paragraph" }
       },
       "if": { "type": "object", "properties": { "decision": { "const": "proceed_with_conditions" } } },
       "then": { "type": "object", "required": ["conditions"], "properties": { "conditions": { "type": "array", "minItems": 1 } } }
     },
-    "limitations": { "type": "array", "items": { "type": "string", "minLength": 1, "maxLength": 1000 } },
+    "limitations": { "type": "array", "maxItems": 20, "items": { "type": "string", "minLength": 1, "maxLength": 300 } },
     "sources": {
       "type": "array",
       "minItems": 1,
+      "maxItems": 64,
+      "description": "one entry per URL or input record, no duplicates",
       "items": {
         "type": "object",
         "additionalProperties": false,
@@ -219,15 +227,15 @@
         "properties": {
           "id": { "$ref": "#/$defs/sourceId" },
           "url": { "type": "string", "minLength": 1, "maxLength": 2048, "description": "the URL read, or for a record handed in the run's input, `input:` and what it is" },
-          "title": { "type": "string", "minLength": 1, "maxLength": 500 },
+          "title": { "type": "string", "minLength": 1, "maxLength": 200 },
           "kind": { "enum": ["registry", "sanctions_list", "regulator", "court", "filing", "domain_record", "news", "company_site", "aggregator", "input", "other"] },
           "read_on": { "$ref": "#/$defs/date" },
           "found": { "type": "boolean", "description": "false for a search that found nothing (kept as the proof of where you looked)" },
-          "note": { "type": ["string", "null"], "maxLength": 500 }
+          "note": { "type": ["string", "null"], "maxLength": 300 }
         }
       }
     },
-    "report_markdown": { "type": "string", "minLength": 200, "maxLength": 60000 }
+    "report_markdown": { "type": "string", "minLength": 100, "maxLength": 3000, "description": "a short narrative: the verdict paragraph, the top red flags one line each, and the limitations. Never restates the identity, ownership, sanctions or media rows: the console renders those from the fields above" }
   },
   "$defs": {
     "date": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
@@ -239,7 +247,7 @@
       "additionalProperties": false,
       "required": ["value", "sources"],
       "properties": {
-        "value": { "type": ["string", "null"], "maxLength": 1000 },
+        "value": { "type": ["string", "null"], "maxLength": 300 },
         "note": { "type": ["string", "null"], "maxLength": 500 },
         "sources": { "$ref": "#/$defs/citations" }
       },

@@ -4,7 +4,17 @@
   "title": "Inbound lead brief",
   "type": "object",
   "additionalProperties": false,
-  "required": ["lead", "person", "company", "flags", "fit", "next_step", "unknowns", "posted", "sources"],
+  "required": [
+    "lead",
+    "person",
+    "company",
+    "flags",
+    "fit",
+    "next_step",
+    "unknowns",
+    "posted",
+    "sources"
+  ],
   "$defs": {
     "source": {
       "description": "where a fact came from: \"submission\", \"learned:<note file>\", or the http(s) URL of a page fetched or a search result",
@@ -14,14 +24,32 @@
     "fact": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["claim", "source"],
+      "required": [
+        "claim",
+        "source"
+      ],
       "properties": {
-        "claim": { "type": "string", "minLength": 1, "maxLength": 500 },
-        "source": { "$ref": "#/$defs/source" }
+        "claim": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+        },
+        "source": {
+          "$ref": "#/$defs/source"
+        }
       }
     },
     "text_or_null": {
-      "anyOf": [{ "type": "string", "minLength": 1, "maxLength": 500 }, { "type": "null" }]
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+        },
+        {
+          "type": "null"
+        }
+      ]
     }
   },
   "properties": {
@@ -29,44 +57,148 @@
       "description": "the submission as received, each field copied, null when absent; never filled from research",
       "type": "object",
       "additionalProperties": false,
-      "required": ["name", "email", "company", "title", "message_summary"],
+      "required": [
+        "name",
+        "email",
+        "company",
+        "title",
+        "message_summary"
+      ],
       "properties": {
-        "name": { "$ref": "#/$defs/text_or_null" },
-        "email": { "$ref": "#/$defs/text_or_null" },
-        "company": { "$ref": "#/$defs/text_or_null" },
-        "title": { "$ref": "#/$defs/text_or_null" },
-        "message_summary": { "$ref": "#/$defs/text_or_null" },
-        "crm_record_id": { "anyOf": [{ "type": "string", "pattern": "^[0-9]{1,20}$" }, { "type": "null" }] }
+        "name": {
+          "$ref": "#/$defs/text_or_null"
+        },
+        "email": {
+          "$ref": "#/$defs/text_or_null"
+        },
+        "company": {
+          "$ref": "#/$defs/text_or_null"
+        },
+        "title": {
+          "$ref": "#/$defs/text_or_null"
+        },
+        "message_summary": {
+          "$ref": "#/$defs/text_or_null"
+        },
+        "crm_record_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9]{1,20}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
       }
     },
     "person": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["role", "seniority", "profile_url", "facts"],
+      "required": [
+        "role",
+        "seniority",
+        "profile_url",
+        "facts"
+      ],
       "properties": {
-        "role": { "$ref": "#/$defs/text_or_null" },
-        "seniority": { "enum": ["c_level", "vp", "director", "manager", "individual_contributor", "founder", "student", "unknown"] },
+        "role": {
+          "$ref": "#/$defs/text_or_null"
+        },
+        "seniority": {
+          "enum": [
+            "c_level",
+            "vp",
+            "director",
+            "manager",
+            "individual_contributor",
+            "founder",
+            "student",
+            "unknown"
+          ]
+        },
         "profile_url": {
           "description": "a public professional profile (LinkedIn, the company's team page) that a source shows is this person; null when none was found",
-          "anyOf": [{ "type": "string", "pattern": "^https?://\\S+$" }, { "type": "null" }]
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^https?://\\S+$"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
-        "facts": { "type": "array", "maxItems": 10, "items": { "$ref": "#/$defs/fact" } }
+        "facts": {
+          "type": "array",
+          "maxItems": 10,
+          "items": {
+            "$ref": "#/$defs/fact"
+          }
+        }
       }
     },
     "company": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["name", "domain", "what_it_does", "size", "region", "industry", "funding", "tech_signals", "facts"],
+      "required": [
+        "name",
+        "domain",
+        "what_it_does",
+        "size",
+        "region",
+        "industry",
+        "funding",
+        "tech_signals",
+        "facts"
+      ],
       "properties": {
-        "name": { "$ref": "#/$defs/text_or_null" },
-        "domain": { "anyOf": [{ "type": "string", "pattern": "^[a-z0-9.-]+\\.[a-z]{2,}$" }, { "type": "null" }] },
-        "what_it_does": { "$ref": "#/$defs/text_or_null" },
-        "size": { "$ref": "#/$defs/text_or_null" },
-        "region": { "$ref": "#/$defs/text_or_null" },
-        "industry": { "$ref": "#/$defs/text_or_null" },
-        "funding": { "$ref": "#/$defs/text_or_null" },
-        "tech_signals": { "type": "array", "maxItems": 10, "items": { "type": "string", "minLength": 1, "maxLength": 200 } },
-        "facts": { "type": "array", "maxItems": 15, "items": { "$ref": "#/$defs/fact" } }
+        "name": {
+          "$ref": "#/$defs/text_or_null"
+        },
+        "domain": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-z0-9.-]+\\.[a-z]{2,}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "what_it_does": {
+          "$ref": "#/$defs/text_or_null"
+        },
+        "size": {
+          "$ref": "#/$defs/text_or_null"
+        },
+        "region": {
+          "$ref": "#/$defs/text_or_null"
+        },
+        "industry": {
+          "$ref": "#/$defs/text_or_null"
+        },
+        "funding": {
+          "$ref": "#/$defs/text_or_null"
+        },
+        "tech_signals": {
+          "type": "array",
+          "maxItems": 10,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          }
+        },
+        "facts": {
+          "type": "array",
+          "maxItems": 15,
+          "items": {
+            "$ref": "#/$defs/fact"
+          }
+        }
       }
     },
     "flags": {
@@ -75,20 +207,41 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["kind", "detail"],
+        "required": [
+          "kind",
+          "detail"
+        ],
         "properties": {
-          "kind": { "enum": ["disposable_email", "personal_email", "competitor", "student", "suspicious_input", "mismatch"] },
-          "detail": { "type": "string", "minLength": 1, "maxLength": 300 }
+          "kind": {
+            "enum": [
+              "disposable_email",
+              "personal_email",
+              "competitor",
+              "student",
+              "suspicious_input",
+              "mismatch"
+            ]
+          },
+          "detail": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 300
+          }
         }
       }
     },
     "fit": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["score", "confidence", "criteria", "reasons_for", "reasons_against"],
+      "required": [
+        "criteria",
+        "computation",
+        "score",
+        "confidence",
+        "reasons_for",
+        "reasons_against"
+      ],
       "properties": {
-        "score": { "type": "integer", "minimum": 0, "maximum": 100 },
-        "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
         "criteria": {
           "type": "array",
           "minItems": 1,
@@ -96,45 +249,314 @@
           "items": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["criterion", "kind", "origin", "status", "evidence", "source"],
+            "required": [
+              "criterion",
+              "kind",
+              "weight",
+              "met",
+              "origin",
+              "evidence",
+              "source"
+            ],
             "properties": {
-              "criterion": { "type": "string", "minLength": 1, "maxLength": 200 },
-              "kind": { "enum": ["must", "nice", "disqualifier"] },
-              "origin": { "enum": ["icp", "learned"] },
-              "note": { "type": "string", "description": "the learned note's file, when origin is learned", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*\\.md$" },
-              "status": { "enum": ["met", "missed", "unknown"] },
-              "evidence": { "type": "string", "minLength": 1, "maxLength": 500, "description": "what shows the status; for unknown, what was looked for and not found" },
-              "source": { "anyOf": [{ "$ref": "#/$defs/source" }, { "type": "null" }], "description": "null only when the status is unknown" }
+              "criterion": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+                "description": "one checkable statement; a disqualifier names what rules a lead out (\"is a gambling, betting or casino operator\"), never its negation"
+              },
+              "kind": {
+                "enum": [
+                  "must",
+                  "nice",
+                  "disqualifier"
+                ]
+              },
+              "weight": {
+                "enum": [
+                  0,
+                  1,
+                  2
+                ],
+                "description": "must 2, nice 1, disqualifier 0"
+              },
+              "met": {
+                "enum": [
+                  true,
+                  false,
+                  "unknown"
+                ],
+                "description": "true: a source shows the criterion holds for this lead (for a disqualifier: the lead IS the thing that rules it out); false: a source shows it doesn't; unknown: nothing found either way"
+              },
+              "origin": {
+                "enum": [
+                  "icp",
+                  "learned"
+                ]
+              },
+              "note": {
+                "type": "string",
+                "description": "the learned note's file, when origin is learned",
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*\\.md$"
+              },
+              "evidence": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 500,
+                "description": "what shows `met`; for unknown, what was looked for and not found"
+              },
+              "source": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/source"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "null only when met is unknown"
+              }
+            },
+            "allOf": [
+              {
+                "if": {
+                  "properties": {
+                    "kind": {
+                      "const": "must"
+                    }
+                  }
+                },
+                "then": {
+                  "properties": {
+                    "weight": {
+                      "const": 2
+                    }
+                  }
+                }
+              },
+              {
+                "if": {
+                  "properties": {
+                    "kind": {
+                      "const": "nice"
+                    }
+                  }
+                },
+                "then": {
+                  "properties": {
+                    "weight": {
+                      "const": 1
+                    }
+                  }
+                }
+              },
+              {
+                "if": {
+                  "properties": {
+                    "kind": {
+                      "const": "disqualifier"
+                    }
+                  }
+                },
+                "then": {
+                  "properties": {
+                    "weight": {
+                      "const": 0
+                    }
+                  }
+                }
+              }
+            ]
+          },
+          "description": "every ICP and learned criterion the score is computed from: the score is a computation over this list (RUBRIC.md section 3), never a judgment"
+        },
+        "computation": {
+          "description": "the score's working, RUBRIC.md section 3, filled in from `criteria` before `score` is written; `score` equals `computation.score`",
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "total_weight",
+            "met_weight",
+            "raw",
+            "caps",
+            "score"
+          ],
+          "properties": {
+            "total_weight": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "the sum of `weight` over the must and nice criteria"
+            },
+            "met_weight": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "the sum of `weight` over the must and nice criteria whose met is true"
+            },
+            "raw": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 100,
+              "description": "round(100 \u00d7 met_weight / total_weight), halves up; 0 when total_weight is 0"
+            },
+            "caps": {
+              "type": "array",
+              "maxItems": 3,
+              "uniqueItems": true,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "rule",
+                  "cap"
+                ],
+                "properties": {
+                  "rule": {
+                    "enum": [
+                      "must_missed",
+                      "disqualifier_met",
+                      "competitor_or_student"
+                    ]
+                  },
+                  "cap": {
+                    "type": "integer"
+                  }
+                },
+                "allOf": [
+                  {
+                    "if": {
+                      "properties": {
+                        "rule": {
+                          "const": "must_missed"
+                        }
+                      }
+                    },
+                    "then": {
+                      "properties": {
+                        "cap": {
+                          "const": 60
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "if": {
+                      "properties": {
+                        "rule": {
+                          "enum": [
+                            "disqualifier_met",
+                            "competitor_or_student"
+                          ]
+                        }
+                      }
+                    },
+                    "then": {
+                      "properties": {
+                        "cap": {
+                          "const": 10
+                        }
+                      }
+                    }
+                  }
+                ]
+              },
+              "description": "each cap rule that holds, once: must_missed (a must with met false) 60, disqualifier_met (a disqualifier with met true) 10, competitor_or_student (that flag) 10"
+            },
+            "score": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 100,
+              "description": "the least of raw and every cap listed"
             }
           }
         },
-        "reasons_for": { "type": "array", "maxItems": 6, "items": { "type": "string", "minLength": 1, "maxLength": 300 } },
-        "reasons_against": { "type": "array", "maxItems": 6, "items": { "type": "string", "minLength": 1, "maxLength": 300 } }
+        "score": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100,
+          "description": "written last: computation.score"
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "reasons_for": {
+          "type": "array",
+          "maxItems": 6,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 300
+          }
+        },
+        "reasons_against": {
+          "type": "array",
+          "maxItems": 6,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 300
+          }
+        }
       }
     },
     "next_step": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["action", "reason"],
+      "required": [
+        "action",
+        "reason"
+      ],
       "properties": {
-        "action": { "enum": ["book_call", "nurture", "disqualify"] },
-        "reason": { "type": "string", "minLength": 1, "maxLength": 500 }
+        "action": {
+          "enum": [
+            "book_call",
+            "nurture",
+            "disqualify"
+          ]
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+        }
       }
     },
     "unknowns": {
       "description": "what the brief couldn't establish and would change the score, each one line",
       "type": "array",
       "maxItems": 10,
-      "items": { "type": "string", "minLength": 1, "maxLength": 200 }
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 200
+      }
     },
     "posted": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["to", "done", "detail"],
+      "required": [
+        "to",
+        "done",
+        "detail"
+      ],
       "properties": {
-        "to": { "enum": ["crm", "slack", "none"] },
-        "done": { "type": "boolean" },
-        "detail": { "type": "string", "minLength": 1, "maxLength": 300, "description": "the record or channel written, or why nothing was" }
+        "to": {
+          "enum": [
+            "crm",
+            "slack",
+            "none"
+          ]
+        },
+        "done": {
+          "type": "boolean"
+        },
+        "detail": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 300,
+          "description": "the record or channel written, or why nothing was"
+        }
       }
     },
     "sources": {
@@ -144,10 +566,20 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["url", "title"],
+        "required": [
+          "url",
+          "title"
+        ],
         "properties": {
-          "url": { "type": "string", "pattern": "^https?://\\S+$" },
-          "title": { "type": "string", "minLength": 1, "maxLength": 200 }
+          "url": {
+            "type": "string",
+            "pattern": "^https?://\\S+$"
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          }
         }
       }
     }

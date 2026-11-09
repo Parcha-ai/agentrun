@@ -18,17 +18,36 @@ code-review/
 ```
 
 Links and other special files are refused anywhere in the folder, and its only folders are `skills/`, `rules/` and
-`evals/`. Evals are checked for their layout only: no eval runs here.
+`evals/`. The server checks evals for their layout only and runs none; `agentrun template eval DIR` runs them ([Running
+the evals](#running-the-evals)).
 
 ## The packages this server ships
 
 None needs a sandbox: each reads and writes through web tools and MCP servers the owner saves.
 
-**Writes ask.** Every package reads content someone else wrote (web pages, pull requests, form submissions), and the
-tool gate cannot pin a write's recipient or record. So no package puts a write or a send in its `allow`: each asks
-until the owner grants it at apply (`grants`), and then it is the owner's choice, made on the screen that lists it. A
-package's `allow` holds only the reads its unattended runs need. A test classifies every MCP tool a shipped package
-lists as a read or a write, and refuses a write at `allow`.
+**Writes are bounded.** Every package reads content someone else wrote (web pages, pull requests, form submissions),
+so no package puts a write in its own `allow`. A package whose job runs on triggers (code-review, inbound-lead,
+market-monitor, release-notes) runs unattended (`approvals: never`), so its writes don't ask: each is held by its pin,
+which the tool gate checks before it allows or asks anything (a review can only COMMENT, a send only reaches the channel
+set at apply, a draft issue is only ever created), or, where no pin can bound it, by a stated rule (a test lists both).
+Until the agent store's cutover an agent keeps no pin of its own: apply then makes a pinned write `deny`, unless this
+server's own settings pin that tool, so a pinned write never runs without its pin. The unpinned writes a package offers
+for the owner's grant (code-review's pending-review comment, inbound-lead's CRM record) are the rule-bounded ones above,
+and once granted they run unasked under `never`.
+
+**A pinned send goes only where the owner set.** A package may pin a send's destination to a parameter (`pin` in its
+`mcp` entry): apply writes it into the agent's tool settings, and the server's tool gate refuses any call of that tool
+whose destination is not the pinned one, before it is sent or asked about, even once the owner granted the tool. So
+a page that talks the agent into posting elsewhere gets a refusal, never a post. A pin fixes where a send goes, not
+what it says, and it does not reach a write to a record (a CRM contact): that one is held by its skill's own check.
+`market-monitor` pins `slack_send_message`'s `channel_id` and `GMAIL_SEND_EMAIL`'s `recipient_email` to its `channel`
+parameter (and keeps `cc`, `bcc` and `extra_recipients` out), and `inbound-lead` pins `slack_send_message`'s
+`channel_id` to its `slack_channel`. `market-monitor`'s `channel` takes a Slack channel id or an email address: each
+pin applies only to its own tool, so a channel id leaves no address `GMAIL_SEND_EMAIL` can send to and an address no
+channel Slack can post in, and its skill sends with the tool that matches the destination's kind. A send whose
+destination parameter apply was not given is set to deny, so it never runs. Until the agent store's cutover an agent
+keeps no pin of its own: apply says so (`pins.<tool>`), with the pin to set on the server meanwhile, and the sends ask
+unless granted.
 
 **Scope the credentials.** An allowed read reaches whatever the saved credential reaches. Save `github` with a
 fine-grained token for the one repository the agent works on, `hubspot` with the scopes its tools need, and so on: once
@@ -36,7 +55,7 @@ the owner grants a write, text the agent read could try to copy what that read r
 
 | Package | What it does | Started by | Needs |
 |---|---|---|---|
-| `code-review` | Reviews a pull request for real bugs and posts one comment review | a run naming a PR, or a GitHub webhook trigger the owner adds | the GitHub MCP server `github` to read and post; with none, a diff in the message |
+| `code-review` | Reviews a pull request for real bugs and posts one comment review, never an approval (its write is pinned to COMMENT). A fork's PR is reviewed when a writer comments `@<bot> review`, read through the base repository's PR, never by cloning the fork | a run naming a PR, or a GitHub webhook trigger the owner adds | the GitHub MCP server `github` to read and post; with none, a diff in the message |
 | `kyb` | Business due diligence: identity, owners, sanctions against the lists themselves, adverse media, a verdict, every claim cited | a run naming a company | nothing; web tools only |
 | `market-monitor` | A weekly digest of what changed at the companies you watch, posted to one Slack channel or address | a weekly schedule (its `cron` and `timezone` parameters, Monday 08:00 UTC by default), or a run | optional: Slack (`slack`) or Gmail (`gmail`) MCP, to send |
 | `inbound-lead` | Researches a form or CRM lead, scores it against your ICP, writes back to HubSpot or posts to Slack | a webhook (needs the seal key): your form tool or relay signs Standard Webhooks bodies of type `lead.submitted`, each lead its own run (3 at once); or a run | optional: HubSpot (`hubspot`) or Slack (`slack`) MCP |
@@ -44,7 +63,8 @@ the owner grants a write, text the agent read could try to copy what that read r
 
 ## Eval cases
 
-Each `evals/<case>/` is one test of the package's agent. No eval runs on the server; a runner reads this layout.
+Each `evals/<case>/` is one test of the package's agent. No eval runs on the server; the eval runner reads this layout
+([Running the evals](#running-the-evals)).
 
 - `prompt.md`: its body is the run's input, written as the agent receives it (a webhook case as the trigger delivers
   it: the trigger's words, then the body in `<trigger-payload ... untrusted>`). Front matter: `description`, `runs`
@@ -70,6 +90,74 @@ Each `evals/<case>/` is one test of the package's agent. No eval runs on the ser
   - `file_exists`: `path` in the run's work folder.
   - `schema`: `schema`, a JSON Schema file in the package, which the answer's last fenced `json` block meets.
 
+## Running the evals
+
+`agentrun template eval DIR` (the server's `agentrun-serve eval-template DIR`) runs a package's cases as real runs of its
+agent and grades each run, so a package's quality bar is measured. **Real runs cost money**: each run is capped at its
+case's `max_cost_usd`, and each `llm` grade is a run of its own, capped at $0.50.
+
+| Flag | |
+|---|---|
+| `--case NAME` | A case to run; repeat it. Without one, every case. |
+| `--runs N` | Runs of each case, in place of each case's `runs`. |
+| `--server URL` | Run on that server instead, with its token as the CLI finds one (`AGENTRUN_API_KEY`, the CLI's config, or the data directory's for the server on this machine). The token goes to the runner over the launcher's pipe and is never printed. |
+| `--grader-model PROVIDER/MODEL` | The `llm` graders' model. Absent: the server's default. |
+| `--report FILE` | The whole report as JSON: per case, per run and per grader, its pass, its reason and its cost. A summary goes to stdout either way, progress to stderr. |
+| `--faux MODULE` | Answer every model request from the module, as the server's `--faux` does: no key, no network. |
+
+It exits 0 when every case passed, 1 when one failed, and 2 when nothing ran: a flag, the package or a case is wrong.
+A Ctrl-C cancels the run in progress and cleans up as the end does (a second one leaves at once), and exits 130 with no
+report.
+Before anything runs, every case named is read and checked whole: the prompt's front matter, `case.yaml` against the
+package (its parameters and grants as an apply checks them), each fake MCP server's fixture, each learned note as the
+learning API checks one, and each grader's fields (an unknown field, a pattern that does not compile, a schema that
+does not compile, a tool the package does not have).
+
+**Where it runs.** By default on a server of its own, started in the command's process over a temp data directory that
+holds a copy of the package alone and is removed at the end: the eval never touches your server, and needs the model
+keys a server needs. With `--server`, everything goes through that server's v2 API: the package it ships by this name
+must be this folder's (the agent an apply makes holds this folder's instructions and skill files, else the case fails
+saying so), a case with a fake MCP server needs a server on this machine and fails rather than replace an MCP server
+saved by the same name, and the agents the eval made are archived at the end.
+
+**A case**, run by run:
+
+1. Each `mcp` fixture is served as an MCP server on this machine's loopback and saved under its name with no
+   credential; it records every call, with its arguments. It is removed after the case.
+2. The package is applied with the case's `parameters` and `grants`: a fresh agent for each run, so what one run
+   learns never reaches the next.
+3. The `learning` folder's notes are written to the agent's learning folder (`PUT .../learning/files/{file}`); the
+   server builds `MEMORY.md` from them, so the folder's own `MEMORY.md` is not sent.
+4. A run starts with the prompt's body as its input and `max_cost_usd` as its cap, and is waited for (30 minutes at
+   most, then cancelled and failed). A run that ends waiting on its person's answer (an `ask_person` question, a tool
+   call's approval) is graded as it stands, then cancelled. One paused at its cap, stopped, failed or cancelled fails,
+   its `llm` graders not run.
+5. Each grader grades what the run left: its final answer, its tool calls (its timeline; and each fake's own log, with
+   the whole arguments), and the files of its work folder.
+
+A case passes when every grader passes on every run.
+
+**The graders**, as the runner reads them:
+
+- `schema`: the answer's last fenced `json` block (```` ```json ```` or a longer fence), parsed and checked against the
+  schema, draft 2020-12 with `format` checked.
+- `regex`: `pattern` with `flags` (some of `i`, `m`, `s`, `u`, `v`) over the whole answer, or over `target`, a field of
+  the last `json` block (`a.b` for a nested one; a string as it is, anything else as its JSON). An answer with no such
+  field fails the grader, whatever `expect` says.
+- `tool_used`: the calls of `tool` (or any of `tools`) by gate name (`write`, `web_fetch`, `mcp:<server>/<tool>`). A
+  faked MCP tool's calls are its fake's log, the calls that reached it; any other tool's are the timeline's. With
+  `count`, exactly that many calls; else `expect: called`, one or more, or `not_called`, none. `args` keeps the calls
+  that carry each of its arguments (an object's own fields compared the same way, any other value equal), and is
+  allowed on a faked MCP tool only: the timeline keeps a call's input as a preview.
+- `file_exists`: `path`, relative to the run's work folder, among its files.
+- `llm`: a run of a grader agent on the same server, with no tools, a fixed instruction and the `--grader-model`. It is
+  given the rubric, the run's input, its answer, its tool calls and the calls each fake received, and with `target`
+  that field besides (the whole answer stays, for anything else the rubric checks). Never another grader, the case's
+  description or anything the case expects. It answers `{pass, reason}` in a fenced `json` block; any other answer
+  fails the grader.
+
+The report gives each run's cost and each `llm` grade's, as their run records say, and the total.
+
 ## agent.md
 
 | Field | |
@@ -80,15 +168,16 @@ Each `evals/<case>/` is one test of the package's agent. No eval runs on the ser
 | `description` | Required. Also the agent's description. |
 | `license`, `author` (`{name, email?, url?}`), `repository` | Optional, shown in the list. |
 | `harness` | A preference list (`[pi, claude-agent]`): apply takes the first this server runs, else the first. Absent: the server's default. |
-| `model` | `{tier: fast \| balanced \| strong, prefer?: "provider/model-id"}`. Apply uses `prefer` when this server runs it on the chosen harness (it has the provider's key, or a gateway); otherwise the server's model for the tier: `AGENT_MODEL_FAST`, `AGENT_MODEL` (balanced) or `AGENT_MODEL_STRONG`, each else the default of a model key the server holds. `overrides.model` in the apply wins over both. Absent: the server's default. |
+| `model` | `{tier: fast \| balanced \| strong, prefer?: "provider/model-id"}`. Apply uses `prefer` when this server runs it on the chosen harness (it holds that provider's key and reaches models directly, not through a gateway); otherwise the server's model for the tier: `AGENT_MODEL_FAST`, `AGENT_MODEL` (balanced) or `AGENT_MODEL_STRONG`, each else the default of a model key the server holds. `overrides.model` in the apply wins over both. On a server that reaches its models through a gateway (`AGENT_MODEL_BASE_URL`), `prefer` is not used, since the gateway never said it serves it, and a tier model that is the gateway's own id (no `provider/`) is left out, so the agent runs on the server's default; each is said in a `model` warning. Absent: the server's default. |
 | `effort` | The thinking level: `low`, `medium`, `high`, `xhigh` or `max`. |
 | `tools` | The tools the agent is granted, never an MCP tool (`mcp` grants those). Absent: those the server gives a new agent (its box's shell, where it has a box). |
-| `mcp` | `[{server, tools, required?, allow?}]`: MCP servers by the name a server saves them under (Settings → MCP servers), the tools of each the agent uses (each one tool by its name, `A-Z a-z 0-9 _ . -`; never `*`), and `allow`, those of its tools the package asks the owner to allow (`GET /v2/templates` shows each tool with `asks: allow` or `ask`, for a consent screen). Where the server has one saved, apply grants `mcp:<server>/<tool>` for each, beside the other tools, at the owner's own setting: a package never sets a permission. Only the apply's `grants`, the owner's answer, are set to `allow`. Where it has none, apply skips it with a warning (`mcp.<server>`), or, when `required` is true, refuses with `409 agent_not_runnable` and makes nothing. |
+| `mcp` | `[{server, tools, required?, allow?, pin?}]`: MCP servers by the name a server saves them under (Settings → MCP servers), the tools of each the agent uses (each one tool by its name, `A-Z a-z 0-9 _ . -`; never `*`), and `allow`, those of its tools the package asks the owner to allow (`GET /v2/templates` shows each tool with `asks: allow` or `ask`, for a consent screen). Where the server has one saved, apply grants `mcp:<server>/<tool>` for each, beside the other tools, at the owner's own setting: a package never sets a permission. Only the apply's `grants`, the owner's answer, are set to `allow`. Where it has none, apply skips it with a warning (`mcp.<server>`), or, when `required` is true, refuses with `409 agent_not_runnable` and makes nothing. `pin`, optional: `{<tool>: {<argument>: <value>}}`, for tools of the entry, 1 to 8 top-level arguments each, every value a scalar (text, which may be or hold `${parameters.<name>}`, a number, `true`/`false`, or `null` for an argument that must be left out) or a list of 1 to 16 of them, the argument one of the list (`event: [null, COMMENT]`), kept with each value once, null first, then by its JSON text. Apply writes it, filled, as the tool's `pin` in the agent's `tool_settings` (text that is one placeholder alone takes the parameter's value and type), whatever the tool's permission, and the gate refuses any call not as pinned. Until the agent store's cutover an agent keeps no pin of its own: apply writes none, and warns `pins.mcp:<server>/<tool>` with the pin, filled, to set on the server (Settings → Tools), which holds every agent's calls of the tool; the send asks unless granted. A pin whose parameter apply is not given sets the tool to `deny` instead, granted or not, with a `pins.mcp:<server>/<tool>` warning. `GET /v2/templates` shows each tool's `pin`, unfilled. |
 | `computer` | `default` only, for now: the agent runs where this server puts a new one. |
-| `parameters` | By name: `{type: string \| number \| integer \| boolean, required?, pattern? (strings), default?, description}`. Apply takes them in `parameters`, and one left out takes its `default`. `display_name`, the body, a trigger's `target.input` and a schedule's `cron` and `timezone` name them as `${parameters.<name>}`, nowhere else. A parameter a schedule uses has a default, and the package's own schedule is checked with it; apply checks every trigger with the parameters given before it makes anything, so a bad cron or zone is a `422` under `triggers.<i>`. |
+| `parameters` | By name: `{type: string \| number \| integer \| boolean, required?, pattern? (strings), default?, description}`. Apply takes them in `parameters`, and one left out takes its `default`. `display_name`, the body, a trigger's `target.input`, a schedule's `cron` and `timezone` and an `mcp` entry's `pin` values name them as `${parameters.<name>}`, nowhere else. A parameter a schedule uses has a default, and the package's own schedule is checked with it; apply checks every trigger with the parameters given before it makes anything, so a bad cron or zone is a `422` under `triggers.<i>`. |
 | `secrets` | Variable names (never values) the server must hold: a model or tool key Settings saves (`OPENROUTER_API_KEY`, `PARALLEL_API_KEY`, ...), set where it starts or saved there. Any other name is refused: the server could neither save it nor hand it to a run. Apply refuses with `409 agent_not_runnable`, making nothing, when one is missing. |
 | `budget` | `{per_run_usd}`: each run's cap (the agent's `max_cost_usd`). Required when the package has triggers. |
 | `learning` | `true` or `false`: whether the agent's runs learn. |
+| `approvals` | `ask` (the default: the agent asks its person before a tool runs) or `never` (it runs unattended). The package's recommendation, shown as `approvals_default` for the apply screen; a template whose job runs on triggers says `never`. Deny settings and pins hold either way. |
 | `triggers` | `POST /v2/triggers` bodies with no `agent_id` (the target is a `start_run`), each with a `name`, unique in the package: the key an upgrade will match triggers by. |
 | `output` | `{schema: <file>}`: the JSON Schema of the agent's answer, a file in the package. It ships beside each SKILL.md, as a rule does, so the agent reads it there: the skill names it. |
 | `checks` | Names of structural checks of a run's answer; none runs yet. |
@@ -109,7 +198,8 @@ apply. A trigger's date is checked for its form only: one that has passed is ref
 2. The agent is made through `POST /v2/agents`' own function: named by `display_name` (else the package's name),
    described as the package, its MCP tools granted where their server is saved, each at the owner's setting (a
    third-party tool asks by default) and those in `grants` set to `allow`, never one the owner denies on this server
-   (it stays denied, with a `grants.<tool>` warning), its body held to `POST /v2/agents`' 1 MiB limit (`413`), its instructions
+   (it stays denied, with a `grants.<tool>` warning), each pinned tool with its pin filled (or set to `deny`, with a
+   `pins.<tool>` warning, when its parameter was not given), its body held to `POST /v2/agents`' 1 MiB limit (`413`), its instructions
    the body with the parameters filled in, its skills and rules as its skill files, its harness and model chosen as
    above, `thinking` from `effort`, `max_cost_usd` from `budget`.
 3. Each trigger is made on the agent through `POST /v2/triggers`' own function. One that still fails (the store, say)
