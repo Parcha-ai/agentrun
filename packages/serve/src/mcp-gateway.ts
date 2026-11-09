@@ -15,7 +15,8 @@
 //  - Every call passes the run's tool gate first (tool-gate.ts), as `mcp:<server>/<tool>`: a denied one is refused, and
 //    one set to ask is parked: its answer is the gate's waiting text, marked parked (isParked), and the harness ends the
 //    turn, as for any tool. Nothing is sent. Once a person allows it, the gate runs it through the executor this gateway
-//    registers (`mcp:`), once, and resumes the session with its result.
+//    registers (`mcp:`), once, and resumes the session with its result. A pinned tool's call whose arguments are not as
+//    its settings pin them is refused there too, unsent and unasked.
 //  - A tool its owner priced (the server's `prices`) is held at that price under the run's cap and booked as the run's
 //    tool cost, as any paid call (cap.ts paidCall): refused unsent when the cap cannot take it. A tool with no price runs,
 //    marked "not metered" on the run's root (TOOL_UNMETERED), outside the run's cost.

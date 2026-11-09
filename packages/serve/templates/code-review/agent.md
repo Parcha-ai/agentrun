@@ -16,6 +16,8 @@ mcp:
     tools: [pull_request_read, get_file_contents, search_code, get_repository_tree, pull_request_review_write, add_comment_to_pending_review]
     required: false
     allow: [pull_request_read, get_file_contents, search_code, get_repository_tree]
+    # Its review write posts COMMENT reviews only: never APPROVE or REQUEST_CHANGES, and never resolve_thread.
+    pin: { pull_request_review_write: { method: [create, submit_pending, delete_pending], event: [null, COMMENT] } }
 parameters:
   repo: { type: string, required: true, pattern: "^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9._-]+$", description: "the GitHub repository to review, as owner/name" }
   focus: { type: string, description: "optional: one line on what matters most here (\"auth and money paths\"), read before the repo's own rules" }

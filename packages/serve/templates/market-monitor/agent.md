@@ -15,10 +15,12 @@ mcp:
     tools: [slack_send_message]
     required: false
     allow: []
+    pin: { slack_send_message: { channel_id: "${parameters.channel}" } }
   - server: gmail
     tools: [GMAIL_SEND_EMAIL]
     required: false
     allow: []
+    pin: { GMAIL_SEND_EMAIL: { recipient_email: "${parameters.channel}", cc: null, bcc: null, extra_recipients: null } }
 parameters:
   competitors: { type: string, required: true, pattern: "^[^\\n]{2,2000}$", description: "the companies to watch, comma-separated, each a name and its domain: \"Acme (acme.com), Globex (globex.io)\"" }
   topics: { type: string, pattern: "^[^\\n]{0,500}$", description: "optional market keywords, comma-separated (\"payments orchestration, KYB\"): market news on them is in scope too" }

@@ -18,6 +18,7 @@ mcp:
   - server: slack
     tools: [slack_send_message]
     required: false
+    pin: { slack_send_message: { channel_id: "${parameters.slack_channel}" } }
 parameters:
   icp: { type: string, required: true, description: "your ideal customer in your own words: industry, company size, region, buying signals, and what disqualifies a lead (e.g. 'B2B fintech, 50-2000 people, US or EU, has a compliance team; never gambling operators')" }
   post_to: { type: string, required: true, pattern: "^(crm|slack|none)$", description: "where each brief goes: crm (a note and the score field on the HubSpot contact), slack (a message in one channel) or none (the run's answer only)" }
