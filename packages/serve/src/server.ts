@@ -1014,7 +1014,18 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     const provider = await making.catch((error: unknown) => { if (pricing === making) pricing = undefined; throw error; });
     return provider.priceOf(model);
   };
-  const runs = new Runs({ installs, dockerAllow: boxNetwork.allow, ...(egress?.volume ? { dockerVolume: egress.volume } : {}), ...(boxPaths ? { dockerPaths: boxPaths } : {}), agents, token, storedKeys, mcpServers: mcpSource, doorTokenFile, doorToken, learning, learningBudget, ...(documents ? { documents: resolve(documents) } : {}), fauxEnv: fauxEnvOf(options), toolSettings: () => settings.get(), ...(runBoxes ? { runBoxes } : {}), ...(remoteBoxes ? { remoteBoxes } : {}), ...(vmBoxes && vmRelayHalf ? { vmBoxes, vmLimits, vmRelay: vmRelayHalf } : {}), ...(remoteBoxes && daytonaApi(env) ? { remoteApi: daytonaApi(env)! } : {}), ...(remoteBoxes ? { boxAllow, onNoBoxList } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}), maxRuns, ...(options.box ? { box: { host: options.box, quarantine: await Quarantine.open(join(data, BOX_QUARANTINE)) } } : {}), ...(options.settleRetryMs ? { settleRetryMs: options.settleRetryMs } : {}), ...(options.readyTimeoutMs ? { readyTimeoutMs: options.readyTimeoutMs } : {}), ...(options.openTimeoutMs ? { openTimeoutMs: options.openTimeoutMs } : {}), ...(options.faux && options.fauxHandedNonce ? { fauxHandedNonce: options.fauxHandedNonce } : {}), ...(options.reflectTimeoutMs ? { reflectTimeoutMs: options.reflectTimeoutMs } : {}), ...(options.gradeTimeoutMs ? { gradeTimeoutMs: options.gradeTimeoutMs } : {}), ...(options.gradeModel ? { gradeModel: options.gradeModel } : {}), ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}), notify: (event, run, marker) => webhooks.emit(event, run, marker), serverSecrets, signIns, approvers: options.accounts === true });
+  let triggersRead = false;
+  /** A trigger's name as it is now, for its runs' rows (runs.ts servedTriggerRow): none before the triggers are read, for
+   *  a trigger gone, or while their file does not read. */
+  const triggerNameOf = (id: string): string | undefined => {
+    if (!triggersRead) return undefined;
+    try {
+      return triggers.get(id).name;
+    } catch {
+      return undefined;
+    }
+  };
+  const runs = new Runs({ installs, dockerAllow: boxNetwork.allow, ...(egress?.volume ? { dockerVolume: egress.volume } : {}), ...(boxPaths ? { dockerPaths: boxPaths } : {}), agents, token, storedKeys, mcpServers: mcpSource, doorTokenFile, doorToken, learning, learningBudget, ...(documents ? { documents: resolve(documents) } : {}), fauxEnv: fauxEnvOf(options), toolSettings: () => settings.get(), ...(runBoxes ? { runBoxes } : {}), ...(remoteBoxes ? { remoteBoxes } : {}), ...(vmBoxes && vmRelayHalf ? { vmBoxes, vmLimits, vmRelay: vmRelayHalf } : {}), ...(remoteBoxes && daytonaApi(env) ? { remoteApi: daytonaApi(env)! } : {}), ...(remoteBoxes ? { boxAllow, onNoBoxList } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}), maxRuns, ...(options.box ? { box: { host: options.box, quarantine: await Quarantine.open(join(data, BOX_QUARANTINE)) } } : {}), ...(options.settleRetryMs ? { settleRetryMs: options.settleRetryMs } : {}), ...(options.readyTimeoutMs ? { readyTimeoutMs: options.readyTimeoutMs } : {}), ...(options.openTimeoutMs ? { openTimeoutMs: options.openTimeoutMs } : {}), ...(options.faux && options.fauxHandedNonce ? { fauxHandedNonce: options.fauxHandedNonce } : {}), ...(options.reflectTimeoutMs ? { reflectTimeoutMs: options.reflectTimeoutMs } : {}), ...(options.gradeTimeoutMs ? { gradeTimeoutMs: options.gradeTimeoutMs } : {}), ...(options.gradeModel ? { gradeModel: options.gradeModel } : {}), ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}), notify: (event, run, marker) => webhooks.emit(event, run, marker), serverSecrets, triggerName: (id) => triggerNameOf(id), signIns, approvers: options.accounts === true });
   const daytona = daytonaApi(env);
   const relay = (remoteBoxes && daytona) || vmRelayHalf ? await startBoxRelay({ root: data, tokenOf: (id) => runs.relayToken(id), ...(remoteBoxes && daytona ? daytona : {}), ...(vmRelayHalf ? { vm: vmRelayHalf } : {}), serves: (id) => runs.servesBox(id), ensure: (id) => runs.ensureBox(id) }) : undefined;
   if (relay) stops.push(() => relay.close());
@@ -1108,10 +1119,10 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       const uncapped = target.max_cost_usd === undefined && entry.revision.body.maxCostUsd === undefined ? [{ field: "target.max_cost_usd", reason: "missing", message: `Every run a trigger starts is capped: give the target a max_cost_usd or set the agent's (the agent ${target.agent_id} has none).` }] : [];
       return [...uncapped, ...(await explainRun(await inputIssuesOf(entry.revision, target.input), { input: target.input }, entry.revision)).map((issue) => ({ ...issue, field: `target.${issue.field}` }))];
     },
-    async start(target, input, trigger, from) {
+    async start(target, input, trigger, from, title) {
       const entry = await needAgent(target.agent_id);
       // The target's cap, else the agent's default as it stands now: a run a trigger starts is never uncapped.
-      const run = await startRunOf(entry, { input, ...(target.max_cost_usd !== undefined ? { max_cost_usd: target.max_cost_usd } : {}), ...(target.effort ? { effort: target.effort } : {}) }, { trigger, origin: { key: trigger.firing_key }, capped: true, from });
+      const run = await startRunOf(entry, { input, ...(target.max_cost_usd !== undefined ? { max_cost_usd: target.max_cost_usd } : {}), ...(target.effort ? { effort: target.effort } : {}) }, { trigger, origin: { key: trigger.firing_key }, capped: true, from, title });
       return { run_id: run.id };
     },
     async message(target, input, key, from) {
@@ -1148,6 +1159,9 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   });
   stops.push(async () => triggers.close());
   triggers.start();
+  // A run read in before the triggers were names its trigger's id: shown again, naming each as it is now.
+  triggersRead = true;
+  runs.triggerChanged();
 
   // Setup's import of this machine's sessions: offered by a server on this machine only (no public address, listening
   // on loopback), counted once (a listing, no transcript kept), run once, each on a worker thread (import-worker.ts) so
@@ -1520,7 +1534,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
    *  gets that run (the agent store's run_origins). */
   /** `capped`: the run must have a cap (a trigger's), its own or else its agent's default. */
   /** `from`: who the run's first message is from when the person did not write it (a trigger's firing). */
-  async function startRunOf(entry: AgentEntry, body: Json, { trigger, origin, capped = false, from }: { trigger?: RunTrigger; origin?: RunOrigin; capped?: boolean; from?: MessageOrigin } = {}): Promise<Run> {
+  async function startRunOf(entry: AgentEntry, body: Json, { trigger, origin, capped = false, from, title: named }: { trigger?: RunTrigger; origin?: RunOrigin; capped?: boolean; from?: MessageOrigin; title?: string } = {}): Promise<Run> {
     const issues = runBodyIssues(body);
     if (issues.length) {
       // Told from the revision the run would start on (a pinned one, else the current), once it reads as one: a pin that
@@ -1548,7 +1562,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     // The title shows on the run's page, the runs list and Mission Control: built from its input as shown, each held
     // value redacted before a long one is cut (a cut key could no longer be found), and the run gets its input as given.
     const shown = redactedOutput(input, serverSecrets());
-    const title = revision.kind === "workflow" ? workflowTitle(entry.agent.name || entry.agent.id, isObject(shown) ? shown : {}) : typeof input.content === "string" ? input.content : (Object.values(input).find((v): v is string => typeof v === "string") ?? JSON.stringify(input));
+    // A trigger's run is titled from its trigger (triggers.ts titleOf), never from its input, which may be a sender's.
+    const title = named ?? (revision.kind === "workflow" ? workflowTitle(entry.agent.name || entry.agent.id, isObject(shown) ? shown : {}) : typeof input.content === "string" ? input.content : (Object.values(input).find((v): v is string => typeof v === "string") ?? JSON.stringify(input)));
     return runs.create(entry, revision, version, { input, title, place, ...(typeof body.effort === "string" ? { effort: body.effort } : {}), ...(cap !== undefined ? { maxCostUsd: cap } : {}), ...(capMode !== undefined ? { capMode } : {}), ...(trigger ? { trigger } : {}), ...(origin ? { origin } : {}), ...(from ? { from } : {}), ...(files.length ? { inputs: (work: string) => uploads.copyInto(work, files) } : {}) });
   }
 
@@ -2513,10 +2528,15 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         return send(res, 200, triggers.rotate(id));
       case "getTrigger":
         return send(res, 200, triggers.get(id));
-      case "updateTrigger":
-        return send(res, 200, await triggers.update(id, await bodyOf(req)));
+      case "updateTrigger": {
+        const updated = await triggers.update(id, await bodyOf(req));
+        // Its runs' rows name it as it is now (runs.ts servedTriggerRow).
+        runs.triggerChanged(id);
+        return send(res, 200, updated);
+      }
       case "deleteTrigger":
         triggers.remove(id);
+        runs.triggerChanged(id);
         return void res.writeHead(204, { "cache-control": "no-store" }).end();
       case "fireTrigger": {
         const key = req.headers["idempotency-key"];
