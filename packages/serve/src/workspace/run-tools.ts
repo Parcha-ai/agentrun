@@ -163,13 +163,12 @@ const SAYS_PATH: ReadonlySet<string> = new Set(["write", "edit"]);
 
 /**
  * `registry`'s tools that `names` names, in that order, bound to `run`: each as the kernel's HostTool, which an adapter's
- * session takes. A call passes the run's gate first (`gated`: the gate and the park it takes; none for the gate's own
- * run of an approved call): a refused one runs nothing, a parked one says it waits. Then the registry runs it on the
- * run's hands, and its answer is the text a model reads (executors.ts answerText): the output, the failure's words, the
- * diagnostics; in a failure, a write's or an edit's answer a path in the run's folder is named relative to it. A
- * failure the registry throws is the answer's text. `results` keeps each answer by its call id.
+ * session takes. The run's gate is the adapter loop's (its spec.gate), asked before a call reaches here. The registry
+ * runs a call on the run's hands, and its answer is the text a model reads (executors.ts answerText): the output, the
+ * failure's words, the diagnostics; in a failure, a write's or an edit's answer a path in the run's folder is named
+ * relative to it. A failure the registry throws is the answer's text. `results` keeps each answer by its call id.
  */
-export function bindTools(run: RunHands, registry: RunRegistry, names: readonly string[], options: { readonly gated?: { readonly gate: RunGate; readonly park: Park }; readonly results?: ToolResults } = {}): HostTool[] {
+export function bindTools(run: RunHands, registry: RunRegistry, names: readonly string[], options: { readonly results?: ToolResults } = {}): HostTool[] {
   const defs = new Map(registry.list().map((def) => [def.name, def] as const));
   const works = [...new Set(run.names.flatMap((name) => [name, realOf(name)]))];
   return names.flatMap((name): HostTool[] => {
@@ -180,14 +179,7 @@ export function bindTools(run: RunHands, registry: RunRegistry, names: readonly 
       description: def.description,
       inputSchema: def.parameters as Record<string, unknown>,
       replay: def.replaySafe ? "safe" : "never",
-      async call(args, { callId, signal, attempt }) {
-        // A replay (the kernel's attempt above 0) may follow an attempt that was sent: the gate's refusal then says so.
-        const refused = await options.gated?.gate.enter(name, args, callId, options.gated.park, (attempt ?? 0) > 0 ? { replayed: true } : {});
-        if (refused) {
-          const answer = { text: refused.text, isError: refused.isError === true };
-          options.results?.set(callId, answer);
-          return refused.parked ? { ...answer, parked: true as const } : answer;
-        }
+      async call(args, { callId, signal }) {
         let given: PiAnswer;
         try {
           given = await registry.invoke(name, args, { hands: run.hands, signal });
@@ -212,9 +204,9 @@ export type RunTools = {
   /** The run's registry: the kernel's definitions, words and limits, over this run's hands and executors. */
   readonly registry: Registry;
   readonly hands: Hands;
-  /** The registry's tools `names` names, as the kernel's HostTool an adapter's session takes, each call through the
-   *  run's gate (`gated`; none for the gate's own run of an approved call), each answer kept in `results` (bindTools). */
-  hostTools(names: readonly string[], gated?: { readonly gate: RunGate; readonly park: Park }, results?: ToolResults): HostTool[];
+  /** The registry's tools `names` names, as the kernel's HostTool an adapter's session takes, each answer kept in
+   *  `results` (bindTools). The second slot is unused (the gate is the adapter loop's); it goes once its callers drop it. */
+  hostTools(names: readonly string[], unused?: { readonly gate: RunGate; readonly park: Park }, results?: ToolResults): HostTool[];
   /** The run's end, before the computer is let go: its background processes ended (TERM, then KILL 3 s later; none with
    *  no computer), then bash's full outputs and TMPDIR swept. */
   end(): Promise<void>;
@@ -252,7 +244,7 @@ export async function runTools(workspace: Workspace, computer: RunComputer | und
     workspace: run.workspace,
     registry,
     hands: run.hands,
-    hostTools: (names, gated, results) => bindTools(run, registry, names, { ...(gated ? { gated } : {}), ...(results ? { results } : {}) }),
+    hostTools: (names, _unused, results) => bindTools(run, registry, names, results ? { results } : {}),
     async end() {
       await endBackground(run.hands);
       await run.sweep();
