@@ -13,6 +13,9 @@ import { fakeDocker } from "../../computer/test/fake-docker.mjs";
 const dirs = [];
 after(() => { for (const dir of dirs) rmSync(dir, { recursive: true, force: true }); });
 
+/** The registry an image the owner names comes from here: a run of one of its images the host lacks pulls it. */
+export const NAMED_PREFIX = "registry.example/";
+
 /** The host: `dir` (put it first on PATH), `calls()` (every docker call's argv, in order), `images()` (what the host has,
  *  by tag: its labels, and `pulledByRun` for one a run pulled), and the computer fake (`fake`: its daemonPath and cache). */
 export function dockerHost() {
@@ -53,7 +56,7 @@ if (args[0] === "pull") {
 }
 if (args[0] === "run" && !args.includes("node")) {
   const all = load();
-  const image = args.find((arg) => arg.startsWith("agentrun-computer:") || arg.includes("ubuntu:"));
+  const image = args.find((arg) => arg.startsWith("agentrun-computer:") || arg.startsWith(${JSON.stringify(NAMED_PREFIX)}));
   if (image !== undefined && !all[image]) {
     if (unpullable(image)) { process.stderr.write("Unable to find image '" + image + "' locally\\n"); denied(image); }
     all[image] = { labels: {}, pulledByRun: true }; save(all);

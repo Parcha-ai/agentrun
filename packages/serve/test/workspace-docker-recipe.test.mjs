@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { after, test } from "node:test";
 import { DOCKER_RECIPE, providerFor, recipeTag } from "@parcha/agentrun-computer";
 import { computerDepsFrom, localWorkspace } from "../dist/workspace/index.js";
-import { dockerHost } from "./docker-host-fake.mjs";
+import { dockerHost, NAMED_PREFIX } from "./docker-host-fake.mjs";
 
 const dirs = [];
 after(() => { for (const dir of dirs) rmSync(dir, { recursive: true, force: true }); });
@@ -42,7 +42,7 @@ async function dockerSandbox(t, env = {}) {
 }
 
 const ran = (calls) => calls.filter((args) => args[0] === "run" && !args.includes("node"));
-const imageOfRun = (args) => args.find((arg) => arg.startsWith("agentrun-computer:") || arg.includes("ubuntu:"));
+const imageOfRun = (args) => args.find((arg) => arg.startsWith("agentrun-computer:") || arg.startsWith(NAMED_PREFIX));
 
 test("a fresh host BUILDS the recipe's image for a Docker sandbox and starts it: the recipe's tag is never pulled", async (t) => {
   const { host, claim } = await dockerSandbox(t);
@@ -67,7 +67,7 @@ test("a second sandbox on the same host finds the recipe's image built: no secon
 });
 
 test("an image the owner names (AGENTRUN_DOCKER_IMAGE) is pulled, never built", async (t) => {
-  const named = "ubuntu:22.04";
+  const named = `${NAMED_PREFIX}library/base:22.04`;
   const { host, claim } = await dockerSandbox(t, { AGENTRUN_DOCKER_IMAGE: named });
   const answer = await claim();
   assert.equal(answer.computer?.kind, "sandbox");
