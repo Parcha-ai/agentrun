@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
 import { closeOpenSessions, piAdapterSpec, scriptedOrigin } from "./conformance-pi-adapter.mjs";
-import { beforeRequestOf, cap, quiet, rootEntries, SONNET, sleep, TIMING } from "./adapter-pi-cap-support.mjs";
+import { beforeRequestOf, cap, quiet, rootEntries, SONNET, sleep, STEADY, TIMING } from "./adapter-pi-cap-support.mjs";
 
 after(closeOpenSessions);
 const { startRunner } = await import("../dist/runner/runner.js");
@@ -46,7 +46,9 @@ async function cappedRun(t, script) {
     cap: runCap,
     beforeRequest: beforeRequestOf({ capUsd: () => capUsd, modelOf: () => SONNET }),
   }), { restartLimit: MAX_RESTARTS });
-  const startOne = () => runners.push(startRunner({ store, createLoop: loop, name: `runner-${runners.length}`, ...TIMING }));
+  // A lease no stall of a loaded machine outlasts: the run moves between runners here by its park's release, never by a
+  // lease that ran out, and a claim lost and retaken would hand the resume to a loop these tests do not count.
+  const startOne = () => runners.push(startRunner({ store, createLoop: loop, name: `runner-${runners.length}`, ...STEADY }));
   startOne();
   const settled = async (state, ms = 20_000) => {
     const from = Date.now();
