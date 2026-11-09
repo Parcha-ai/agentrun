@@ -1,6 +1,6 @@
 import { Fragment, type ReactNode, useEffect, useRef } from "react";
 import { Button } from "@/components/ui/button";
-import { HARNESS_ORDER, issuesFor, providerHelp, providerLabel, resolution, type ToolChoice, type ToolGate, withPermission, withProvider } from "@/lib/toolSettings";
+import { HARNESS_ORDER, issuesFor, PIN_BROKEN, PIN_HOLDS, pinLine, providerHelp, providerLabel, resolution, type ToolChoice, type ToolGate, withPermission, withProvider } from "@/lib/toolSettings";
 import { cn } from "@/lib/utils";
 import type { Agent } from "@/lib/agentForm";
 import { grantOf, type McpServer } from "@/lib/mcp";
@@ -20,6 +20,15 @@ export function toolRows(choices: readonly ToolChoice[], gates: readonly ToolGat
   });
 }
 
+/** A tool's pin, as a setting holds it: its words under `label` ("Pinned", "Pinned for this agent"), then that calls outside
+ *  it are refused (`also`: the server pins the tool too, and both hold); or, for a pin that doesn't read, that every call is
+ *  refused. Nothing for a setting with no pin. */
+export function PinNote({ setting, label = "Pinned", also = false }: { setting?: ToolSetting; label?: string; also?: boolean }) {
+  if (setting?.pin_broken) return <p className="max-w-[640px] text-[12px] text-warning-text" role="note">{PIN_BROKEN}</p>;
+  if (!setting?.pin) return null;
+  return <p className="max-w-[640px] text-[12px] text-muted-foreground" role="note"><span className="text-foreground">{label}:</span> {pinLine(setting.pin)}. {PIN_HOLDS}{also ? " This server pins it too; both hold." : ""}</p>;
+}
+
 /** Said once above a table where ask can't be answered: accounts off. */
 export const ASK_OFF = "Ask is off on this server: approving a call takes the owner's password sign-in, and this server runs with accounts off.";
 
@@ -29,7 +38,7 @@ export const ASK_OFF = "Ask is off on this server: approving a call takes the ow
  *  (`fallbackOf` for a provider, `permissionFallbackOf` for a permission: the built-in default for the server's, the
  *  server's for an agent's) is marked; a provider's row can be reset, a permission goes back by choosing its default.
  *  Ask, where it can't be answered here (`ask_needs`), is offered disabled, with why. */
-export function ToolTable({ label, rows, settings, fallbackOf, permissionFallbackOf = (g) => g.default_permission, resolvesOf, issues, busy = false, onEdit }: {
+export function ToolTable({ label, rows, settings, fallbackOf, permissionFallbackOf = (g) => g.default_permission, resolvesOf, issues, busy = false, noteOf, onEdit }: {
   label: string;
   rows: ToolRow[];
   settings: ToolSettings;
@@ -38,6 +47,8 @@ export function ToolTable({ label, rows, settings, fallbackOf, permissionFallbac
   resolvesOf: (row: ToolChoice, provider: string) => ReactNode;
   issues: Record<string, string[]>;
   busy?: boolean;
+  /** Said under a row, across the table (a tool's pin). */
+  noteOf?: (name: string) => ReactNode;
   /** A person's change of one key's one field, as an edit of the whole map: applied to the map as it is when it is
    *  saved (a read-modify-write), so every other key and field is written back as it was. */
   onEdit: (edit: (current: ToolSettings) => ToolSettings) => void;
@@ -96,6 +107,7 @@ export function ToolTable({ label, rows, settings, fallbackOf, permissionFallbac
                       {set && <Button size="sm" variant="ghost" disabled={busy} aria-label={`Reset ${name} to its default`} onClick={() => pick(undefined)}>Reset</Button>}
                     </td>
                   </tr>
+                  {noteOf?.(name) ? <tr data-note={name}><td colSpan={heads.length + 1} className="px-3 pb-2.5">{noteOf(name)}</td></tr> : null}
                   {issues[name]?.length ? (
                     <tr><td colSpan={heads.length + 1} className="px-3 pb-2.5">{issues[name].map((m) => <p key={m} className="font-mono text-[12px] text-destructive-text" role="alert">{m}</p>)}</td></tr>
                   ) : null}
@@ -121,7 +133,7 @@ export const PerHarness = ({ choice }: { choice: ToolChoice }) => <>{HARNESS_ORD
 /** The agent editor's tool settings: per capability with a provider choice that this agent grants, or that the server's
  *  pick leaves unavailable (the agent's own pick may be what makes it run, before it is granted), its provider, the
  *  server's pick its default, and what it resolves to on the agent's harness and model. Nothing at all when none has one. */
-export function AgentToolSettings({ agent, harness, model, tools, choices, gates = [], mcpServers, focus, callTools, value, issues, onChange }: {
+export function AgentToolSettings({ agent, harness, model, tools, choices, gates = [], mcpServers, serverSettings, focus, callTools, value, issues, onChange }: {
   agent: Agent | null;
   /** The harness, model and tools in the form, saved or not (no model: the server's default). */
   harness: string;
@@ -134,7 +146,9 @@ export function AgentToolSettings({ agent, harness, model, tools, choices, gates
    *  (the server's in force, and those offered) from its server's read, which neither capabilities nor the agent's read
    *  list. */
   mcpServers?: readonly McpServer[];
-  /** A tool to focus the permission of as this opens (a legacy name at its settings key's row). */
+  /** This server's tool settings (GET /v2/settings/tools), for its pins: where it pins a tool the agent pins too, both hold. */
+  serverSettings?: ToolSettings;
+  /** A tool to focus the permission of as this opens. */
   focus?: string;
   /** A workflow agent's: the tools its call nodes call (callNodeTools). Its rows are those alone, each with a permission as
    *  this server lists it; no catalog tool, which no call node runs. */
@@ -189,6 +203,17 @@ export function AgentToolSettings({ agent, harness, model, tools, choices, gates
           wait, so the server refuses the start (its asks blocker, runnable.ts), in the same words. */}
       <p className="-mt-1 mb-2 text-[12px] text-muted-foreground">Each of these tools takes this server's setting (its default here) unless it is changed here. {callTools ? "A call node can't wait for an approval: a tool set to ask stops the run from starting. Set it to allow." : "A tool on ask makes the run wait for your approval at each call."}</p>
       <ToolTable label="This agent's tool settings" rows={rows} settings={value} fallbackOf={(t) => t.provider} issues={byTool} onEdit={(edit) => onChange(edit(value))}
+        // A pin: the agent's own, the server's beside it where it pins the tool too; the server's alone where only it does.
+        noteOf={(name) => {
+          const own = value[name];
+          const server = serverSettings?.[name];
+          const owned = !!(own?.pin || own?.pin_broken);
+          if (!owned && !server?.pin && !server?.pin_broken) return null;
+          return <>
+            {owned && <PinNote setting={own} label="Pinned for this agent" also={!!server?.pin} />}
+            {(!owned || server?.pin_broken) && <PinNote setting={server} label="Pinned on this server" />}
+          </>;
+        }}
         // The agent's own setting for every tool of its MCP server when the form has one; else the server's permission for
         // this agent when its read says it (GET /agents/{id}), else capabilities' or the MCP server read's.
         permissionFallbackOf={(g) => ownWildcard(g.name) ?? read(g.name)?.default_permission ?? g.permission}

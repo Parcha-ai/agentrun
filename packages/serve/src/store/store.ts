@@ -499,15 +499,14 @@ export interface TriggerSettings {
   removeScope(adapter: string, scope: string): Promise<void>;
 }
 
-/** An MCP OAuth sign-in in flight (store schema `mcp_oauth_pending`): its state the key, the server it is for, the PKCE
- *  verifier sealed (store/seal.ts, AAD mcp_oauth_pending|<state>|verifier) as bytes the store never opens, the cookie it is
- *  bound to, the non-secret working state the callback needs (`working`: the client, discovery, kind, scope, resource and
- *  url, plain JSON — not sealed), and when it expires (ms). */
+/** An MCP OAuth sign-in in flight (store schema `mcp_oauth_pending`): its state the key, the server it is for, its secret
+ *  parts (the PKCE verifier and the OAuth client, with its secret) sealed together (store/seal.ts, AAD
+ *  mcp_oauth_pending|<state>|sealed) as bytes the store never opens, the non-secret working state the callback needs
+ *  (`working`: discovery, kind, scope, resource and url, plain JSON — no secret), and when it expires (ms). */
 export interface McpOauthPendingRow {
   readonly state: string;
   readonly server: string;
-  readonly verifierSealed: Uint8Array;
-  readonly cookieBinding: string;
+  readonly sealed: Uint8Array;
   readonly working: unknown;
   readonly expiresAt: number;
 }
@@ -515,18 +514,16 @@ export interface McpOauthPendingRow {
 export interface McpOauth {
   /** Saves a pending sign-in, inserted or replaced by its state. */
   put(pending: McpOauthPendingRow): Promise<void>;
-  /** The pending sign-in `state`, or undefined; with `now`, one whose expiry has passed (expiresAt <= now) reads as gone. */
-  get(state: string, now?: number): Promise<McpOauthPendingRow | undefined>;
-  /** The pending sign-in `state` goes. */
-  remove(state: string): Promise<void>;
   /** Deletes the pending sign-in `state` and returns it, in one statement (atomic, single-use): the row if it was there and
    *  is not past its expiry (`now`, else the store's clock), else undefined. The row is deleted whether or not it had
-   *  expired, so a replay and an expired state both read as gone and cannot be retried. The one take path for the OAuth
-   *  callback: two concurrent takes of one state can never both get the row, which a get()+remove() split could not
-   *  promise. The verifier comes back sealed; the caller opens it at its own AAD, so the store opens nothing. */
+   *  expired, so a replay and an expired state both read as gone and cannot be retried. The one way to read a pending
+   *  sign-in: two concurrent takes of one state can never both get the row, which a get()+remove() split could not
+   *  promise. The secret parts come back sealed; the caller opens them at their own AAD, so the store opens nothing. */
   take(state: string, now?: number): Promise<McpOauthPendingRow | undefined>;
   /** Removes every pending sign-in whose expiry is at or before `now`; answers how many went. */
   sweepExpired(now: number): Promise<number>;
+  /** How many pending sign-ins are still live (expiry after `now`): the server caps the rows in flight by it. */
+  count(now: number): Promise<number>;
 }
 
 /** A running run's live view as the store keeps it: `state` is JSON (the tool it runs now, its partial text). */

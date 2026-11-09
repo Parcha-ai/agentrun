@@ -8,6 +8,7 @@
 // computer-keys.ts (providerOptions, testConnection), which maps a key's name onto the option it fills.
 import { KEY_TABLE, type KeyTable, type OptionsAnswer, type ProviderFactories, type ProviderSettings, providerOptions, testConnection } from "./computer-keys.js";
 import { COMPUTER_KINDS, type ComputerKind, type ComputerSetting } from "./computer-setting.js";
+import { inArchilMode } from "./archil-settings.js";
 import { ApiError, invalid } from "./errors.js";
 import { getSealedKey, putSealedKey, removeSealedKey, sealedKeyNames } from "./server-keys.js";
 import type { Store } from "./store/index.js";
@@ -58,12 +59,15 @@ export interface ComputerRoutesOptions {
   readonly keyTable?: KeyTable;
   /** The model-visible tools a kind brings (the kernel registry's capabilityToolDefs), by name. */
   readonly tools: (kind: ComputerKind) => readonly string[];
-  readonly mode: FolderMode;
+  /** This server's folder mode, or how to read it at each call (folderModeOf: the Archil settings row), so turning
+   *  Archil on or off takes effect without building the routes again. */
+  readonly mode: FolderMode | (() => FolderMode | Promise<FolderMode>);
 }
 
 /** A provider's key, as Settings shows it. */
 export type KeyView = { name: string; required: boolean; saved: boolean };
-export type ProviderView = { id: string; name: string; keys: KeyView[]; ready: boolean; why?: string };
+/** A provider as Settings shows it: `metered` straight from the kind registry (its computers are billed by the vendor). */
+export type ProviderView = { id: string; name: string; metered: boolean; keys: KeyView[]; ready: boolean; why?: string };
 export type KindView = { kind: ComputerKind; offered: boolean; why?: string; groups: string[]; tools: string[]; providers: ProviderView[] };
 export type TestView = { ok: true; detail: string } | { ok: false; why: string };
 
@@ -102,12 +106,14 @@ const keysWhy = (provider: ProviderEntry, missing: readonly string[]): string =>
 /** The routes' work over the server's store: GET /v2/computers (view), PUT /v2/computers/{provider}/keys (saveKeys), POST
  *  /v2/computers/{provider}/test (test), and the claim's refusal (claimRefusal). */
 export function createComputerRoutes(options: ComputerRoutesOptions) {
-  const { store, sealKey, kinds, factories, settings = {}, keyTable = KEY_TABLE, tools, mode } = options;
+  const { store, sealKey, kinds, factories, settings = {}, keyTable = KEY_TABLE, tools } = options;
   const providerOf = (id: string) => kinds.PROVIDERS.find((one) => one.id === id);
+  const modeNow = async (): Promise<FolderMode> => (typeof options.mode === "function" ? options.mode() : options.mode);
 
   /** Each kind, whether this server offers it and why not, the capability groups and tools it brings, and each provider
    *  that serves it, with its keys (saved or not, never a value) and whether a run could have it now. */
   async function view(): Promise<{ kinds: KindView[] }> {
+    const mode = await modeNow();
     const saved = new Set(await sealedKeyNames(store));
     return {
       kinds: COMPUTER_KINDS.map((kind): KindView => {
@@ -116,7 +122,7 @@ export function createComputerRoutes(options: ComputerRoutesOptions) {
         const providers = serving.map((provider): ProviderView => {
           const missing = missingKeys(provider, saved);
           const why = modeRefusal(kind, provider, mode) ?? (missing.length ? keysWhy(provider, missing) : undefined);
-          return { id: provider.id, name: provider.label, keys: provider.keys.map((key) => ({ name: key.name, required: key.required, saved: saved.has(key.name) })), ready: why === undefined, ...(why ? { why } : {}) };
+          return { id: provider.id, name: provider.label, metered: provider.metered, keys: provider.keys.map((key) => ({ name: key.name, required: key.required, saved: saved.has(key.name) })), ready: why === undefined, ...(why ? { why } : {}) };
         });
         const offered = kind === "none" || serving.some((provider) => modeRefusal(kind, provider, mode) === undefined);
         const why = offered ? undefined : serving.length ? `no provider of a ${kind} computer can reach this server's run folders` : `no provider serves a ${kind} computer`;
@@ -177,7 +183,7 @@ export function createComputerRoutes(options: ComputerRoutesOptions) {
       const words = [...new Set(provider.capabilities.flatMap((capabilities) => kinds.servingRefusals(capabilities, computer.kind)))];
       return `${provider.label} does not serve a ${computer.kind} computer${words.length ? ` (${words.join("; ")})` : ""}: set this agent's computer to one it serves (Settings → Computers)`;
     }
-    const refused = modeRefusal(computer.kind, provider, mode);
+    const refused = modeRefusal(computer.kind, provider, await modeNow());
     if (refused) return refused;
     const missing = missingKeys(provider, new Set(await sealedKeyNames(store)));
     return missing.length ? keysWhy(provider, missing) : undefined;
@@ -197,6 +203,10 @@ export function createComputerRoutes(options: ComputerRoutesOptions) {
 }
 
 export type ComputerRoutes = ReturnType<typeof createComputerRoutes>;
+
+/** This server's folder mode, read from the store at each call: "disk" (Mode 2) while the Archil settings row is saved
+ *  (PUT /v2/workspace/archil), else "local" (Mode 1). createComputerRoutes' `mode`. */
+export const folderModeOf = (store: { settings: Pick<Store["settings"], "get"> }) => async (): Promise<FolderMode> => ((await inArchilMode(store)) ? "disk" : "local");
 
 /** Settings → Computers' routes, by their operation names: GET /v2/computers, PUT /v2/computers/{provider}/keys and POST
  *  /v2/computers/{provider}/test. */
