@@ -18,6 +18,7 @@ import { type Extension, type Harness, ROOT_CONVERSATION_ID } from "@earendil-wo
 import { chargedCost, type DecisionProvider, DecisionProviderError, type LoadImage, type Workflow, type WorkflowDeps } from "@parcha/agentrun-dsl";
 import type { DecisionModelPrice } from "@parcha/agentrun-decisions";
 import { type BeforeRequest, modelPortFor, type Refusal, runBooking, type RunSessions } from "@parcha/agentrun-kernel";
+import { anthropicPolicy } from "@parcha/agentrun-harness-claude";
 import { type ModelProxy, type ProviderPolicy, type ProxyUsage, startModelProxy } from "@parcha/agentrun-kernel/host";
 import { beforeRequestOf, type Cap, type CapMode, type CapModel, CapRefused, checkRaise, createCap, type DecisionCapRequest, followUpOf, parkOf, type RaiseState } from "@parcha/agentrun-kernel/kernel/cap";
 import { completer } from "../llm.js";
@@ -26,6 +27,7 @@ import { completer } from "../llm.js";
 import { askedBefore, JEV_INPUT_USD, PARALLEL_DECISION_USD } from "../decision-cap.js";
 import { llmTiers, nodeTiers, type Tier, workflowNodes } from "../model.js";
 import { type EffectRun, toolOf } from "../tools.js";
+import { type ModelRoute, routeOf } from "./model-route.js";
 import { journalSessions } from "./sessions.js";
 import { type BudgetData, type EndData, KINDS, type RaiseData } from "./journal-kinds.js";
 import type { CapRefusal, WorkflowCapRule, WorkflowHostHooks, WorkflowRunSpec } from "./workflow-loop.js";
@@ -63,13 +65,37 @@ export interface WorkflowProvider {
   readonly fetch?: typeof fetch;
 }
 
+/** A tier's provider from the runner's model route (model-route.ts routeOf), the one way the runner resolves a model
+ *  (the pi adapter's path): the route's provider, model and price for the proxy's booking, and the catalog's cost and
+ *  output ceiling as the cap prices the hold. So a workflow model node and a pi turn book the same model the same way. */
+export function routeProviderOf(env: NodeJS.ProcessEnv): (tier: Tier) => Promise<WorkflowProvider> {
+  return async (tier) => providerFromRoute(await routeOf(undefined, env, tier));
+}
+
+/** A WorkflowProvider from a resolved model route: its provider for the proxy, its price for the booking, and its catalog
+ *  cost and output ceiling as the cap's model (the hold). The proxy's policy speaks the route's Messages API. */
+export function providerFromRoute(route: ModelRoute): WorkflowProvider {
+  return {
+    modelId: route.model,
+    api: route.provider.api,
+    origin: route.provider.origin,
+    credential: route.provider.credential,
+    ...(route.provider.headers ? { headers: route.provider.headers } : {}),
+    policy: anthropicPolicy({ model: route.model, tools: [] }),
+    price: (route.price ?? (() => null)) as (model: string, usage: ProxyUsage) => number | null,
+    capModel: { id: route.model, api: route.provider.api, price: route.cost ?? null, outputCeiling: route.outputCeiling ?? null },
+    ...(route.fetch ? { fetch: route.fetch } : {}),
+  };
+}
+
 /** What the claim-time builder reads and wires. */
 export interface WorkflowSpecDeps {
   readonly store: Pick<Store, "runs" | "agents" | "flush">;
   readonly env?: NodeJS.ProcessEnv;
-  /** Resolves the provider and cap model for each tier the workflow names (byTier's model, its provider, its price). The
-   *  runner's dispatch gives the production resolver (the run's models and keys); a test gives a scripted one. */
-  readonly providerOf: (tier: Tier) => WorkflowProvider | Promise<WorkflowProvider>;
+  /** Resolves the provider and cap model for each tier the workflow names (byTier's model, its provider, its price).
+   *  Absent: the runner's model route (routeProviderOf), so a workflow and a pi run resolve models one way; a test gives a
+   *  scripted one. */
+  readonly providerOf?: (tier: Tier) => WorkflowProvider | Promise<WorkflowProvider>;
   /** The run's decision providers (jev, parallel, openrouter) and the one a node that names none gets, as the server
    *  resolves them for the run (decisions.ts decisionProvidersOf); absent, or resolving to none, the workflow runs no
    *  decision node. A test gives a scripted resolver. */
@@ -129,6 +155,8 @@ function capRuleOf(capUsd: number): WorkflowCapRule {
  *  provider, and returns the spec. The model proxies and the booking are started per claim (release closes them). */
 export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string }) => Promise<WorkflowRunSpec> {
   const now = deps.now ?? Date.now;
+  // The run's models resolve the one way the runner resolves any (routeProviderOf over routeOf), unless a test gives its own.
+  const providerOf = deps.providerOf ?? routeProviderOf(deps.env ?? process.env);
   return async (claim) => {
     const claimed = await readClaim(deps, claim.runId);
     const tiers = tiersOf(claimed.workflow);
@@ -136,7 +164,7 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string 
     // Each tier's provider and cap model, resolved once; the proxies start here (before the Harness opens, since the models
     // catalog the Harness takes points at them), their hooks deferred to the booking wired at harnessReady.
     const providers = new Map<Tier, WorkflowProvider>();
-    for (const tier of tiers) providers.set(tier, await deps.providerOf(tier));
+    for (const tier of tiers) providers.set(tier, await providerOf(tier));
 
     const proxies: ModelProxy[] = [];
     const models = createModels();

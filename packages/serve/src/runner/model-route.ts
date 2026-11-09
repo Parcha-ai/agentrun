@@ -36,12 +36,14 @@ export interface ModelRoute {
   readonly fetch?: typeof fetch;
   /** The catalog's cost of the model, tiers included: what the cap prices a request at before it leaves. */
   readonly cost?: RouteCost;
+  /** The model's most output tokens (its catalog ceiling): the cap's output bound, null when the catalog names none. */
+  readonly outputCeiling?: number | null;
 }
 
 /** The origin a route with its own fetch names: nothing is ever sent there, its fetch answers every request. */
 export const ROUTE_ORIGIN = "https://model-route.invalid";
 
-type PiModel = { id: string; provider: string; api: string; baseUrl?: string; cost: RouteCost };
+type PiModel = { id: string; provider: string; api: string; baseUrl?: string; cost: RouteCost; maxTokens?: number };
 type PiModels = { getModel(provider: string, id: string): unknown; streamSimple(model: never, context: never, options?: never): AsyncIterable<PiEvent> };
 type PiEvent = { type: string; contentIndex?: number; delta?: string; partial?: { content?: { type: string; id?: string; name?: string }[] }; toolCall?: { id: string; name: string; arguments: unknown }; reason?: string; message?: PiMessage; error?: PiMessage };
 type PiMessage = { usage?: RouteUsage; stopReason?: string; errorMessage?: string };
@@ -58,7 +60,7 @@ export async function routeOf(model: string | undefined, env: NodeJS.ProcessEnv 
     const usage = { ...used, totalTokens: used.input + used.output + used.cacheRead + used.cacheWrite, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
     return calculateCost(target as never, usage as never).total;
   };
-  const route = { model: chosen.model.modelId, price, cost: target.cost };
+  const route = { model: chosen.model.modelId, price, cost: target.cost, outputCeiling: target.maxTokens ?? null };
   // An Anthropic model speaks Messages itself: the network, at its catalog origin, its key read by name per request.
   if (chosen.model.provider === "anthropic") {
     return { ...route, provider: { api: "anthropic-messages", origin: target.baseUrl ?? "https://api.anthropic.com", credential: () => env.ANTHROPIC_API_KEY ?? env.ANTHROPIC_AUTH_TOKEN ?? "" } };
