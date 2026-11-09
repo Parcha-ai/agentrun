@@ -51,7 +51,37 @@ export const KINDS = {
   learningDropped: "agentrun.learning.dropped",
   /** The learning folder could not be reached: the run parks and tries again after a backoff. */
   learningUnavailable: "agentrun.learning.unavailable",
+  /** A browser hand-over (pi-browser's browser_request_handoff), on the root. The run's browser host commits the ask, the
+   *  whole of it (HandoverAsked); its answer is an entry too (HandoverAnswered): the person's (a browser_hand_back row
+   *  the loop applies, taking the row in that commit), or the ask's expiry. The first answer for an ask is its answer. */
+  handover: "agent.handover",
 } as const;
+
+/** How a browser hand-over ended: the person's two answers, or its expiry. */
+export type HandoverOutcome = "done" | "cancelled" | "expired";
+
+/** A browser hand-over asked (KINDS.handover): the whole ask, as the server's reader needs it, the instruction again as
+ *  `reason` (the timeline's words). */
+export interface HandoverAsked {
+  readonly state: "waiting";
+  readonly id: string;
+  readonly session: string;
+  readonly instruction: string;
+  readonly completion_condition: string;
+  readonly asked_at: string;
+  readonly expires_at: string;
+  readonly reason?: string;
+}
+
+/** A browser hand-over answered (KINDS.handover): how, and when: the person's own time (their row's), or the expiry's
+ *  when it lapsed first. `reason`: why, for the agent, when the run's cap ended it. */
+export interface HandoverAnswered {
+  readonly state: HandoverOutcome;
+  readonly id: string;
+  readonly session?: string;
+  readonly at: string;
+  readonly reason?: string;
+}
 
 /** A raise taken (KINDS.raise): the cap the run goes on under, and the raise rows taken with it. */
 export interface RaiseData {
@@ -92,17 +122,47 @@ export interface MessageData {
   readonly origin?: MessageOrigin;
 }
 
+/** What an approval costs, as main's card shows it (tool-gate.ts ApprovalPrice): dollars, or "not metered". */
+export type ApprovalPrice = number | "not metered";
+
+/** A call the gate asked a person about: what main's approval card shows (tool-gate.ts ApprovalRequest). A parked call
+ *  has no call.start yet, so its input is here. Optional for an ask written before these fields. */
 export interface AskData {
   readonly callId: string;
   readonly tool: string;
+  /** The call's input as the gate saw it; null when it had none. */
+  readonly args?: unknown;
+  /** When it was asked (ISO), from the loop's clock; a re-ask on a resume keeps the first. */
+  readonly requestedAt?: string;
+  /** Its approval price (the spec's approvalPrice); null when it has none. */
+  readonly price?: ApprovalPrice | null;
 }
+
+/** How an ask was answered: approved, denied, or withdrawn (a stop or cancel while the call waited). */
+export type AnswerDecision = "allow" | "deny" | "withdrawn";
 
 export interface AnswerData {
   readonly callId: string;
   readonly approved: boolean;
+  /** allow, deny, or withdrawn: main's resolved entry. Optional for an answer written before it. */
+  readonly decision?: AnswerDecision;
+  /** When it was answered (ISO), from the loop's clock (or the runner's, for an end it writes itself). */
+  readonly answeredAt?: string;
   /** The person's words with their answer (a decline's reason): the model reads it with the refusal, and the resume row
    *  shows it. Absent when they gave none. */
   readonly note?: string;
+}
+
+/** The withdrawn answers a stopped end writes for every call still waiting (an ask with no answer) in `entries`. */
+export function withdrawnAnswers(entries: readonly { readonly kind: string; readonly data?: unknown }[], answeredAt: string): AnswerData[] {
+  const answered = new Set(entries.filter((entry) => entry.kind === KINDS.answer).map((entry) => (entry.data as AnswerData).callId));
+  const waiting = new Set<string>();
+  for (const entry of entries) {
+    if (entry.kind !== KINDS.ask) continue;
+    const { callId } = entry.data as AskData;
+    if (!answered.has(callId)) waiting.add(callId);
+  }
+  return [...waiting].map((callId) => ({ callId, approved: false, decision: "withdrawn", answeredAt }));
 }
 
 export interface EndData {

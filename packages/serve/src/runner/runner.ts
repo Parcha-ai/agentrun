@@ -12,7 +12,8 @@ import type { JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { ConversationId, EntryId, StorageWrite } from "@earendil-works/pi-durable";
 import { COMMAND_KINDS, endedReason } from "./commands.js";
-import { KINDS } from "./journal-kinds.js";
+import { KINDS, withdrawnAnswers } from "./journal-kinds.js";
+import { journalEntries } from "./journal-reader.js";
 import { type Claim, type Command, endedBy, type Journal, type Loop, type LoopEnd, type LoopFactory, type StopReason } from "./loop-contract.js";
 import { isFenced, type RunnerStore } from "./store-port.js";
 
@@ -51,6 +52,9 @@ export interface RunnerOptions {
    *  dropped (nothing written, nothing said). */
   endWaitMs?: number;
   onEvent?: (event: RunnerEvent) => void;
+  /** The runner's clock (epoch ms) for what it writes itself: a withdrawn answer's time in an end it writes. Default
+   *  Date.now. */
+  now?: () => number;
 }
 
 export type RunnerEvent =
@@ -109,6 +113,7 @@ export function startRunner(options: RunnerOptions): Runner {
     interruptBackoffMs = 1_000,
     endWaitMs = 5_000,
     onEvent = () => {},
+    now = Date.now,
   } = options;
   if (!(stopMarginMs < leaseMs && renewEveryMs < leaseMs - stopMarginMs)) {
     throw new RangeError(`a claim of ${leaseMs} ms must be renewed (every ${renewEveryMs} ms) before its stop margin (${stopMarginMs} ms)`);
@@ -282,6 +287,14 @@ export function startRunner(options: RunnerOptions): Runner {
       if (conversationId === undefined) {
         conversationId = (await journal.mintId()) as unknown as ConversationId;
         writes.push({ type: "conversation", value: { id: conversationId } } as StorageWrite);
+      }
+      // A stopped end withdraws every call still waiting for its answer (an ask with no answer), in this commit: the
+      // approval card of a run whose loop could not start reads answered, never waiting for good.
+      if (data.state === "stopped" && root) {
+        for (const answer of withdrawnAnswers(await journalEntries(journal, BACKGROUND_CONTEXT), new Date(now()).toISOString())) {
+          const answerId = (await journal.mintId()) as unknown as EntryId;
+          writes.push({ type: "entry", value: { id: answerId, conversationId, kind: KINDS.answer, data: answer as unknown as JsonValue } } as StorageWrite);
+        }
       }
       const id = (await journal.mintId()) as unknown as EntryId;
       writes.push({ type: "entry", value: { id, conversationId, kind: KINDS.end, data: data as unknown as JsonValue } } as StorageWrite);
