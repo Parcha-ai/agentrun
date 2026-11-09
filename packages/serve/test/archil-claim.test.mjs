@@ -33,7 +33,7 @@ const rowsOf = (key = KEY, values = { [ARCHIL_API_KEY_ROW]: API }) =>
   new Map(Object.entries(values).map(([name, value]) => [name, sealColumn(key, sealedAt.sealedKey(name), value)]));
 
 /** A claim over `rows`, with the disk it makes captured instead of made (no call leaves the process). */
-async function claimOf({ rows = rowsOf(), settings = SETTINGS, sealKey = KEY, signal = new AbortController().signal, mount } = {}) {
+async function claimOf({ rows = rowsOf(), settings = SETTINGS, sealKey = KEY, signal = new AbortController().signal, mount, env } = {}) {
   const asked = [];
   const made = [];
   const claim = await archilClaim({
@@ -43,6 +43,7 @@ async function claimOf({ rows = rowsOf(), settings = SETTINGS, sealKey = KEY, si
     signal,
     makeDisk: (options) => { made.push(options); return { id: options.disk, made: true }; },
     ...(mount ? { mount } : {}),
+    ...(env ? { env } : {}),
   });
   return { claim, asked, made };
 }
@@ -90,6 +91,19 @@ test("archil claim: the mount credential is minted when a mount first asks, once
   assert.deepEqual(fake.requests.slice(2).map((one) => [one.method, one.query.identifier]), [["DELETE", "tok-1"]], "removed once by its identifier; a second revoke has nothing to remove");
   assert.equal(fake.users.size, 0);
   assert.ok(!claim.secrets.has(TOKEN), "the token is no longer held");
+});
+
+test("archil claim: an ARCHIL_API_KEY in the server's environment is the account key, for the disk and the mint alike; no row is read", async (t) => {
+  const { fake, mount } = await controlOn(t);
+  const ENV_KEY = "fake-test-key-archil-from-env-0001";
+  const { claim, asked, made } = await claimOf({ mount, rows: new Map(), env: { ARCHIL_API_KEY: ENV_KEY } });
+  assert.equal(await made[0].key(), ENV_KEY, "the disk's key");
+  await claim.token();
+  assert.deepEqual(fake.requests.map((one) => one.authorization), [`Bearer ${ENV_KEY}`, `Bearer ${ENV_KEY}`], "the same key lists and mints");
+  assert.deepEqual(asked, [], "no saved row is read");
+  // An empty variable is no key: the saved one is read.
+  const saved = await claimOf({ mount, env: { ARCHIL_API_KEY: "  " } });
+  assert.equal(await saved.made[0].key(), API);
 });
 
 test("archil claim: a revoke with nothing minted removes nothing", async (t) => {
