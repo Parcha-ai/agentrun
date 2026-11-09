@@ -21,8 +21,13 @@ const aad = (adapterId: string, scope: string, field: string) => `trigger_settin
 /** The store slice this layer reads and writes. */
 type SealedSettingsStore = { readonly triggerSettings: Pick<TriggerSettings, "get" | "put" | "removeScope">; flush(): Promise<void> };
 
-/** The row a minted field's last replaced value is kept sealed under: read into the redaction list, never a setting. */
-const retiredField = (field: string) => `${field}.retired`;
+/** The scope a retired value of `scope` is kept under, its `n`th: one a scope's removal never matches. */
+const retiredScope = (scope: string, n: number) => `retired:${scope}:${n}`;
+/** The scope and number a retired row's scope names, or undefined for a live row's. */
+const retiredScopeOf = (scope: string): { scope: string; n: number } | undefined => {
+  const match = /^retired:(.+):(\d+)$/.exec(scope);
+  return match ? { scope: match[1]!, n: Number(match[2]) } : undefined;
+};
 
 /** A (scope, field) pair as one key. */
 const pair = (scope: string, field: string) => `${scope}\0${field}`;
@@ -30,8 +35,11 @@ const pair = (scope: string, field: string) => `${scope}\0${field}`;
 class SealedSettingsOverStore {
   /** Opened, by scope and field: read once at load, then kept with every write. */
   private readonly opened: Record<string, Record<string, string>> = {};
-  /** Values this store held open and no longer does (rotated or removed): in memory, for the server's redaction list. */
+  /** Values this store held and no longer does (replaced, or their scope removed): each kept sealed in a retired row too
+   *  (retire), read back at load, so the server's redaction list holds them across a restart. Never a setting. */
   private readonly retired = new Set<string>();
+  /** The last retired row's number for each scope, so the next one is new: `retired:<scope>:<n>`. */
+  private readonly retiredCount = new Map<string, number>();
   /** The (scope, field) pairs kept here that did not open under this server's seal key at load: unset until set again. */
   private readonly unopened = new Set<string>();
 
@@ -50,9 +58,18 @@ class SealedSettingsOverStore {
     if (!this.key && rows.length) this.say({ condition: "trigger_settings_no_seal_key", adapter: this.adapterId, effect: `this server was handed no ${SEAL_KEY_ENV}: none of its sealed settings is read` });
     for (const row of rows) {
       if (!this.key) continue;
+      const retiredOf = retiredScopeOf(row.scope);
+      if (retiredOf) this.retiredCount.set(retiredOf.scope, Math.max(this.retiredCount.get(retiredOf.scope) ?? 0, retiredOf.n));
       try {
-        (this.opened[row.scope] ??= {})[row.field] = unseal(this.key, Buffer.from(row.sealed, "base64"), aad(this.adapterId, row.scope, row.field)).toString("utf8");
+        const value = unseal(this.key, Buffer.from(row.sealed, "base64"), aad(this.adapterId, row.scope, row.field)).toString("utf8");
+        // A retired row is read into the redaction list alone, never as a setting.
+        if (retiredOf) this.retired.add(value);
+        else (this.opened[row.scope] ??= {})[row.field] = value;
       } catch {
+        if (retiredOf) {
+          this.say({ condition: "trigger_setting_retired_unopened", adapter: this.adapterId, scope: row.scope, field: row.field, effect: `a retired value that does not open under ${SEAL_KEY_ENV} is not cut from what runs said` });
+          continue;
+        }
         this.unopened.add(pair(row.scope, row.field));
         this.say({ condition: "trigger_setting_unopened", adapter: this.adapterId, scope: row.scope, field: row.field, effect: `it does not open under ${SEAL_KEY_ENV}: unset until it is set again` });
       }
@@ -81,21 +98,29 @@ class SealedSettingsOverStore {
   private async put(scope: string, field: string, value: string): Promise<void> {
     this.writable();
     const was = this.opened[scope]?.[field];
-    const replaced = was !== undefined && was !== value ? was : undefined;
-    const row = (name: string, text: string) => ({ adapter: this.adapterId, scope, field: name, sealed: seal(this.key!, Buffer.from(text, "utf8"), aad(this.adapterId, scope, name)).toString("base64") });
-    // A minted secret replaced (a rotation) is kept sealed as its field's last retired value, so the next server still cuts
-    // it from what a run said before: one per field, replaced at the next rotation, removed with its scope. Every value
-    // replaced stays in this process's list (retired) all the same.
-    if (replaced !== undefined && this.spec.fields[field]?.mint) {
-      await this.store.triggerSettings.put(row(retiredField(field), replaced));
-      (this.opened[scope] ??= {})[retiredField(field)] = replaced;
-    }
-    await this.store.triggerSettings.put(row(field, value));
+    // The value it replaces is kept retired first: a write that fails after it leaves the old one cut, never lost.
+    if (was !== undefined && was !== value) await this.retire(scope, field, was);
+    await this.store.triggerSettings.put(this.row(scope, field, value));
     await this.store.flush();
-    if (replaced !== undefined) this.retired.add(replaced);
     (this.opened[scope] ??= {})[field] = value;
     this.unopened.delete(pair(scope, field));
   }
+
+  /** `value`, once `scope`'s `field`, kept sealed in a retired row of its own: scope `retired:<scope>:<n>` (a scope's
+   *  removal, by (adapter, scope), never matches it), sealed under its own AAD, its updated_at the time it was retired.
+   *  Read into the redaction list at every load; kept until no run that started before it is left (not pruned yet). */
+  private async retire(scope: string, field: string, value: string): Promise<void> {
+    const n = (this.retiredCount.get(scope) ?? 0) + 1;
+    await this.store.triggerSettings.put(this.row(retiredScope(scope, n), field, value));
+    this.retiredCount.set(scope, n);
+    this.retired.add(value);
+  }
+
+  /** `value` as `scope`'s `field` row, sealed under that row's own AAD. */
+  private row(scope: string, field: string, value: string) {
+    return { adapter: this.adapterId, scope, field, sealed: seal(this.key!, Buffer.from(value, "utf8"), aad(this.adapterId, scope, field)).toString("base64") };
+  }
+
 
   /** `scope`'s `field`, opened; undefined when it is not set, or does not open here. */
   get(scope: string, field: string): string | undefined {
@@ -114,9 +139,10 @@ class SealedSettingsOverStore {
     const unopened = [...this.unopened].filter((key) => key.startsWith(`${scope}\0`));
     if (!(scope in this.opened) && !unopened.length) return;
     for (const key of unopened) this.unopened.delete(key);
+    // Each value it held is retired before its live rows go: a run that quoted it before the removal stays cut.
+    if (this.key) for (const [field, value] of Object.entries(this.opened[scope] ?? {})) await this.retire(scope, field, value);
     await this.store.triggerSettings.removeScope(this.adapterId, scope);
     await this.store.flush();
-    for (const value of Object.values(this.opened[scope] ?? {})) this.retired.add(value);
     delete this.opened[scope];
   }
 
