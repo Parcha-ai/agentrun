@@ -123,7 +123,7 @@ async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: Ses
 
   const tools = spec.tools.map((tool) => piTool(tool, io));
   // A refused call's words (the gate's deny, main's), by call: its result is those words alone, as main gives them.
-  const refusals = new Map<string, string>();
+  const refusals = refusalWords();
   const extension = defineExtension({
     name: `agentrun-session-${spec.key}`,
     tools,
@@ -134,7 +134,7 @@ async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: Ses
           const answer = await io.gate({ callId: call.id, tool: call.name, args: (call.arguments ?? {}) as Record<string, unknown> }, hookContext);
           if (answer === "allow") return undefined;
           if ("deny" in answer) {
-            refusals.set(call.id, answer.deny);
+            refusals.refuse(call.id, answer.deny);
             return { block: answer.deny };
           }
           // Parked: held until pi closes the Session, so the call never reaches its intent in this process.
@@ -146,13 +146,7 @@ async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: Ses
         },
         // A call the gate refused: its result is main's words alone, an error, never pi's framing of a blocked call (its
         // diagnostic, which the model reads as "<harness>[error] Tool call blocked: ..."). Every other result is pi's.
-        afterTool: async (call, result) => {
-          const words = refusals.get(call.id);
-          const blocked = result.diagnostics?.some((diagnostic) => diagnostic.code === "blocked");
-          if (words === undefined || !blocked) return undefined;
-          refusals.delete(call.id);
-          return { output: [{ type: "text" as const, text: words }], isError: true } as never;
-        },
+        afterTool: async (call, result) => refusals.resultOf(call.id, result) as never,
       }),
       // An answer's cost is the runner's booking of its request, never pi's $0 for a model it has no price for: set on
       // the answer before pi stores it, so the answer, pi.usage and the live timeline carry it; unknown stays unknown.
@@ -238,6 +232,29 @@ async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: Ses
       await root.submit({ type: "input", content: text, whenBusy: mode, ...(id ? { requestId: id } : {}), ...entry } as never, context);
     },
   } satisfies AdapterSession;
+}
+
+/** A refused call's words by call (the gate's deny, main's words), held from the refusal (beforeTool's block) to the
+ *  call's result (afterTool): a blocked result becomes those words alone, an error, as main gives a refused call's
+ *  result, never pi's framing of a blocked call. Every other result is pi's own. `held`: the words still held. */
+export function refusalWords() {
+  const words = new Map<string, string>();
+  return {
+    refuse(callId: string, text: string): void {
+      words.set(callId, text);
+    },
+    resultOf(callId: string, result: { readonly diagnostics?: readonly { readonly code?: string }[] }): { output: { type: "text"; text: string }[]; isError: true } | undefined {
+      const text = words.get(callId);
+      // Let go on every result: the call has its one result now, whatever it is.
+      words.delete(callId);
+      const blocked = result.diagnostics?.some((diagnostic) => diagnostic.code === "blocked");
+      if (text === undefined || !blocked) return undefined;
+      return { output: [{ type: "text", text }], isError: true };
+    },
+    get held(): number {
+      return words.size;
+    },
+  };
 }
 
 /** A host tool as a pi tool: replay-safe or at most once, its answer the host's text and any images it shows. */
