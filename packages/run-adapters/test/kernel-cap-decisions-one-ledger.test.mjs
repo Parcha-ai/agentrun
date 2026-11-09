@@ -23,9 +23,26 @@ async function modelSpent(store, usd) {
 
 /** The run's decisions under a cap of `capUsd`, on this claim, over the run's sessions `store`. */
 async function decisionsOf(store, capUsd) {
-  void store;
-  return cap.createCap({ capUsd: () => capUsd, mode: "expected", now: () => T0 });
+  const run = cap.runCap({ sessions: store, capUsd: () => capUsd, mode: "expected", now: () => T0, modelOf: () => undefined });
+  return run.decisions(await store.open(cap.DECISION_SESSION));
 }
+
+test("on the run's one cap a decision is held as main holds it: 256 output tokens a question (expected), its model's most (strict), its fees and images, none with no cap", async () => {
+  const MODEL = { id: "openai/gpt-6-sol", api: "openrouter", price: { input: 1.25, output: 10 }, outputCeiling: 4_096 };
+  const asked = { kind: "decision", inputTokens: 1_000, questions: 3, images: 2, requestUsd: 0.002, imageUsd: 0.0005 };
+  for (const [mode, model] of [["expected", MODEL], ["expected", { ...MODEL, outputCeiling: null }], ["strict", MODEL]]) {
+    // The decision cap's own figure (createCap, held to main's holdOf by serve's kernel-cap-decision-parity).
+    const alone = await cap.createCap({ capUsd: () => 100, mode, now: () => T0 }).admit({ ...asked, id: "d", model });
+    const store = memorySessionStore();
+    const decisions = await cap.runCap({ sessions: store, capUsd: () => 100, mode, now: () => T0, modelOf: () => undefined }).decisions(await store.open(cap.DECISION_SESSION));
+    const admitted = await decisions.admit({ ...asked, id: "d", model });
+    near(admitted.heldUsd, alone.heldUsd, `${mode}, most output ${model.outputCeiling}`);
+  }
+  const store = memorySessionStore();
+  const uncapped = await cap.runCap({ sessions: store, capUsd: () => undefined, modelOf: () => undefined }).decisions(await store.open(cap.DECISION_SESSION));
+  const admitted = await uncapped.admit({ ...asked, id: "d", model: "unreadable" });
+  assert.equal(admitted.heldUsd, 0, "with no cap nothing is priced, an unreadable price refuses nothing");
+});
 
 const near = (actual, expected, what) => assert.ok(typeof actual === "number" && Math.abs(actual - expected) < 1e-9, `${what}: ${actual}, not ${expected}`);
 
