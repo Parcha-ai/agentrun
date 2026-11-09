@@ -45,8 +45,8 @@ function claim(root, saved = SAVED) {
     },
   };
 }
-/** Resolved against the registry once the remote sandboxes mount from Archil (KINDS is today's table, where they mount
- *  nothing). */
+/** Resolved against the registry with the remote sandboxes mounting from Archil (ARCHIL_KINDS; since module D6 the
+ *  module's own table, KINDS, says the same). */
 const resolve = (setting, mode, root = scratch(), saved, kinds = ARCHIL_KINDS) => resolveComputer(setting, mode, kinds, claim(root, saved));
 const KIND_REGISTRY = ARCHIL_KINDS;
 const shape = (resolved) => ("refused" in resolved ? resolved : { kind: resolved.kind, provider: resolved.provider, mounts: resolved.mounts, ports: resolved.ports });
@@ -88,11 +88,9 @@ test("Mode 2: Docker's sandbox is refused; a remote sandbox mounts from Archil; 
   assert.deepEqual(shape(await resolve({ kind: "desktop", provider: "orgo" }, 2)), { kind: "desktop", provider: "orgo", mounts: false, ports: ["screen", "input"] });
 });
 
-test("today's table, where no remote sandbox mounts yet: Mode 2 refuses each sandbox in words, and an E2B desktop runs unmounted", async () => {
-  assert.deepEqual(await resolve({ kind: "sandbox", provider: "daytona" }, 2, scratch(), SAVED, KINDS), {
-    refused: "A Daytona sandbox can't mount the run's folder from Archil: pick another sandbox for this agent's computer in Settings → Computers.",
-  });
-  assert.equal((await resolve({ kind: "desktop", provider: "e2b" }, 2, scratch(), SAVED, KINDS)).mounts, false);
+test("the module's own table takes archil mounts on Daytona, Modal and E2B (module D6): Mode 2 mounts a Daytona sandbox and an E2B desktop", async () => {
+  assert.deepEqual(shape(await resolve({ kind: "sandbox", provider: "daytona" }, 2, scratch(), SAVED, KINDS)), { kind: "sandbox", provider: "daytona", mounts: true, ports: ["files", "exec", "processes"] });
+  assert.equal((await resolve({ kind: "desktop", provider: "e2b" }, 2, scratch(), SAVED, KINDS)).mounts, true);
 });
 
 test("a setting the registry does not give is refused in words that name the setting, the registry's own reasons in them", async () => {
