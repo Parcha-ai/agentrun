@@ -56,13 +56,28 @@ test("Mode 2 with no computer: a command runs 295 s at most (Archil's exec)", as
   assert.deepEqual([run.shell, run.maxExecS, run.hands.maxExecS], ["local", 295, 295]);
 });
 
+test("Mode 2 with no computer never asks the folder's mount: on Archil that mints the run's mount credential, which only a computer that mounts the folder may ask for", async () => {
+  const workspace = localWorkspace(scratch());
+  let asked = 0;
+  const watched = new Proxy(workspace, {
+    get(target, key) {
+      if (key === "mountSpec") return async () => { asked += 1; return target.mountSpec(); };
+      const value = Reflect.get(target, key, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  const run = await runHands(watched, undefined, { mode: 2, context: ctx });
+  assert.equal(asked, 0, "no mount asked, so no credential minted");
+  assert.equal(run.cwd, "/workspace", "on Archil the folder has no path of this machine: it goes by the computer's name");
+});
+
 test("a computer: the Workspace attached through the mount check given; the folder is /workspace (its path here an alias); bash and read go through the computer", async () => {
   const root = scratch();
   writeFileSync(join(root, "a.txt"), "hello\n");
   const computer = realProcesses(fakeComputer(root), root);
   const checks = [];
   const check = { readBackOf: (spec) => (checks.push(spec), readBackOf(spec)) };
-  const run = await runHands(localWorkspace(root), { computer, check }, { mode: 1, context: ctx });
+  const run = await runHands(localWorkspace(root), { kind: "sandbox", computer, check }, { mode: 1, context: ctx });
   assert.deepEqual([run.shell, run.maxExecS, run.cwd], ["computer", 600, "/workspace"]);
   assert.deepEqual(checks, [{ kind: "bind", path: root }], "attach ran the check given");
   computer.clear();

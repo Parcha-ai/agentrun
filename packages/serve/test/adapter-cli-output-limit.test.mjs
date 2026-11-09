@@ -55,6 +55,7 @@ async function runOnce(t, text, end) {
     adapter: standInCli(text, end),
     session: { key: "root", label: "root", system: [], tools: [], context: "fresh" },
     input: "Answer.",
+    runCap: { capUsd: () => undefined, modelOf: () => undefined },
     record: "loop",
     hooks: quiet,
   }));

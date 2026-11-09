@@ -7,12 +7,13 @@
 //   - pi runs on the kernel's adapter loop with the run's pi spec (adapterRunSpecFromLaunch);
 //   - a CLI harness (claude-agent, codex, opencode) runs on the adapter loop with its own adapter;
 //   - anything else fails the run in words (the dispatch's UnknownHarness).
-import { DEFAULT_HARNESS, HARNESSES } from "../harness.js";
 import type { RunLaunch } from "../run-launch.js";
+import { resolveHarness } from "./adapters/index.js";
 import { adapterRunSpecFromLaunch, type AdapterSpecDeps } from "./adapter-run-spec.js";
 import { createAdapterLoop } from "./adapter-loop.js";
 import { cliRunSpecFromLaunch } from "./cli-run-spec.js";
 import { learningLoopOf } from "./learning-dispatch.js";
+import { messagesRoute } from "./model-route.js";
 import type { LoopFactory } from "./loop-contract.js";
 import { createWorkflowLoop, isWorkflowRevision } from "./workflow-loop.js";
 import { workflowSpecOf } from "./workflow-spec.js";
@@ -36,18 +37,24 @@ export function resolveRunnerLoop(deps: AdapterSpecDeps): (harness: string, laun
       return learningLoopOf({
         store: deps.store,
         data: deps.data,
-        routeOf: (grade) => deps.routeOf(grade.model, deps.env),
+        // The grader speaks Messages alone (learning-ask.ts), so its route is asked on that wire only.
+        routeOf: async (grade) => messagesRoute(await deps.routeOf(grade.model, deps.env, "default", ["anthropic-messages"])),
         ...(deps.log ? { log: deps.log } : {}),
       });
     }
-    if (harness === DEFAULT_HARNESS) {
-      return createAdapterLoop((claim, adapterRun) => adapterRunSpecFromLaunch(launch, adapterRun, deps, claim));
-    }
-    if ((HARNESSES as readonly string[]).includes(harness)) {
-      // A CLI harness (claude-agent, codex, opencode) runs on the adapter loop with its own adapter and record: "loop"
-      // (cli-run-spec.ts, the non-pi equivalent of adapterRunSpecFromLaunch: it resolves the harness through
-      // resolveHarness, builds its host tools and its system prompt with the harness's skillCheck).
-      return createAdapterLoop((claim, adapterRun) => cliRunSpecFromLaunch(launch, adapterRun, deps, claim));
+    // The harness's own entry decides which spec builds the run, by the entry's facts and never the harness's name: an entry
+    // whose visible record the loop keeps (record: "loop") runs the CLI spec (cli-run-spec.ts), one that keeps its own (pi)
+    // runs the pi spec (adapterRunSpecFromLaunch). A harness with no entry is unknown here: the dispatch fails it in words.
+    const runner = resolveHarness(harness);
+    if (runner) {
+      // A run that learns supplies its own end-of-run step (reflect + proposal over its store) from its spec builder now,
+      // where the run's Archil claim is: a Mode 2 run's learning folder is on its claim's disk, not this machine's local
+      // path (adapter-run-spec.ts / cli-run-spec.ts endOfRun). The loop prefers the spec's step over its deps' (stepOf); a
+      // run that does not learn supplies none. The same for the pi and the CLI spec.
+      return createAdapterLoop((claim, adapterRun) =>
+        runner.record === "loop"
+          ? cliRunSpecFromLaunch(launch, adapterRun, deps, claim)
+          : adapterRunSpecFromLaunch(launch, adapterRun, deps, claim));
     }
     return undefined;
   };

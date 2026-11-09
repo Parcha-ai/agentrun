@@ -327,7 +327,8 @@ async function rotatedAcross(t, { expiresAt, stop }) {
   const { store, oauth, claim } = await oauthSetUp(t, { expiresAt });
   const hold = oauth.holdNext();
   const signal = new AbortController();
-  const bounds = { requestMs: 3_000, tries: 1 };
+  // The fake answers when the test says so (hold.answer()), so this bound only catches a hang; a tight one fails under load.
+  const bounds = { requestMs: 60_000, tries: 1 };
   const first = claimOf(store, claim, ["mcp:fake/add"], { now: () => T0, signal: signal.signal, bounds });
   // Behind a token still valid, the step returns before the refresh is answered; an expired one is awaited.
   const step = expiresAt > T0 ? await first : undefined;
@@ -364,7 +365,7 @@ test("M17: claims waiting on another claim's refresh read the server's row O(1) 
       return typeof value === "function" ? value.bind(target) : value;
     },
   });
-  const counted = { mcp, runs: store.runs };
+  const counted = { where: store.where, mcp, runs: store.runs, settings: store.settings };
   const hold = oauth.holdNext();
   const CLAIMS = 300;
   const steps = Array.from({ length: CLAIMS }, () => claimOf(counted, claim, ["mcp:fake/add"], { now: () => T0, bounds: { requestMs: 5_000, tries: 1 } }));

@@ -403,6 +403,14 @@ export class TriggerFull extends Error {
   }
 }
 
+/** A run of an archived agent, or a trigger of it made on or turned on: refused, nothing written (Agents.archive). */
+export class AgentArchived extends Error {
+  override name = "AgentArchived";
+  constructor(readonly agentId: string) {
+    super(`the agent ${agentId} is archived`);
+  }
+}
+
 export interface Agents {
   /** Creates the agent, or renames it (name, description) when it exists. */
   put(agent: { id: string; name: string; description?: string | null }): Promise<void>;
@@ -410,7 +418,11 @@ export interface Agents {
   create(agent: { id: string; name: string; description?: string | null }, firstRevision: NewRevision): Promise<void>;
   get(id: string): Promise<AgentRow | undefined>;
   list(options?: { archived?: boolean }): Promise<AgentRow[]>;
-  archive(id: string, archived: boolean): Promise<void>;
+  /** Archives the agent, or unarchives it. Archived, every trigger of it that is on is turned off in the same transaction
+   *  (`disabled` set to `why`, JSON; its scope rows dropped), and those are the answer: from its commit no firing starts a
+   *  run of the agent (triggers.fire refuses it, AgentArchived), and none of its triggers is made on or turned on.
+   *  Unarchived, none turns on again: the answer is empty. */
+  archive(id: string, archived: boolean, why?: unknown): Promise<{ id: string; name: string }[]>;
   /** Adds a revision and makes it the agent's current one, in one commit. */
   addRevision(revision: NewRevision & { agentId: string }): Promise<void>;
   /** Makes `revisionId`, one of the agent's own, its current one. StoreConstraint when it is not a revision of `agentId`. */
@@ -435,20 +447,23 @@ export interface Triggers {
   /** Every trigger, oldest first. */
   all(): Promise<TriggerRow[]>;
   /** The trigger and, while it is enabled, its scope rows (`scopes`), in one transaction: a scope another enabled trigger
-   *  holds is refused (StoreConstraint on trigger_scopes), nothing written. */
+   *  holds is refused (StoreConstraint on trigger_scopes), nothing written; one made on for an archived agent too
+   *  (AgentArchived). */
   create(trigger: NewTrigger, scopes?: readonly TriggerScope[]): Promise<TriggerRow>;
   /** The fields given changed, `updatedAt` set: undefined when there is no such trigger. With `scopes`, its scope rows
-   *  rewritten in the same transaction (none while it is off); a patch that turns it off drops them. */
+   *  rewritten in the same transaction (none while it is off); a patch that turns it off drops them. One that leaves it
+   *  on for an archived agent, turned on or moved there, is refused (AgentArchived), nothing written. */
   update(id: string, patch: TriggerPatch, scopes?: readonly TriggerScope[]): Promise<TriggerRow | undefined>;
   /** The trigger, its scope rows and its firings gone. */
   remove(id: string): Promise<void>;
-  /** Enables the trigger and writes its scope rows, in one transaction. */
+  /** Enables the trigger and writes its scope rows, in one transaction; refused for an archived agent's (AgentArchived). */
   enable(triggerId: string, scopes: readonly TriggerScope[]): Promise<void>;
   /** Disables the trigger (with why, JSON) and deletes its scope rows, in one transaction. */
   disable(triggerId: string, why?: unknown): Promise<void>;
   /** The firing starts a run: the queued run, the `started` firing that names it (the due firing's row, or a new one) and
    *  the trigger's last_run_id, with its failure streak reset, in one transaction; with `launch`, the run's launch row in
-   *  that same transaction (the store's one writeLaunch). */
+   *  that same transaction (the store's one writeLaunch). A run of an archived agent is refused in it (AgentArchived),
+   *  nothing written: a firing claimed before the archive committed starts no run after it. */
   fire(firing: Firing, run: { id: string; agentId: string; revisionId: string }, options?: { launch?: RunLaunchInput }): Promise<RunRow>;
   /** The enabled triggers listening on (`kind`, `scope`): its scope rows. */
   scoped(kind: string, scope: string): Promise<string[]>;
@@ -537,6 +552,9 @@ export interface McpServerRow {
   /** When the tools were last listed (ms): a refresh moves this, not updatedAt, so a refresh is not read as an owner edit.
    *  Null for a row written before this column. */
   readonly listedAt: number | null;
+  /** When the sealed credential was last set (ms): a new credential's save or a sign-in, never a token refresh. Null with
+   *  no credential. */
+  readonly credentialChangedAt: number | null;
 }
 
 /** A run's MCP pin: what it may call, per granted server (url, tools, prices), written once at its first claim. */
@@ -554,7 +572,7 @@ export const MCP_REFRESH_LEASE_MS = MCP_REFRESH_CALL_MS + 4_000;
 export interface Mcp {
   /** The server's write: the server's row, inserted or replaced by name (its first save's time kept). An owner's save
    *  clears any refresh lease, so a refresh in flight is refused (RefreshLeaseLost) and never overwrites it. */
-  put(server: { name: string; url: string; auth: string; protocol?: string | null; tools: unknown; prices?: unknown; serverInfo?: unknown; instructions?: string | null; sealed?: Uint8Array | null; listedAt?: number; updatedAt?: number }): Promise<McpServerRow>;
+  put(server: { name: string; url: string; auth: string; protocol?: string | null; tools: unknown; prices?: unknown; serverInfo?: unknown; instructions?: string | null; sealed?: Uint8Array | null; listedAt?: number; updatedAt?: number; credentialChangedAt?: number | null }): Promise<McpServerRow>;
   remove(name: string): Promise<void>;
   /** The registry's rows, by name. */
   servers(): Promise<McpServerRow[]>;
@@ -614,6 +632,30 @@ export interface SealedKeys {
   remove(name: string): Promise<void>;
   /** Every saved key, by name (its bytes never opened here). */
   all(): Promise<SealedKeyRow[]>;
+}
+
+/** One session a provider runs, with the labels we gave it and the rest of the provider's entry for it (store schema
+ *  `computer_ledger`). */
+export interface ComputerLedgerRow {
+  readonly provider: string;
+  readonly sessionId: string;
+  readonly labels: Readonly<Record<string, string>>;
+  /** The provider's other fields for the session, as it gave them (a phone's image and deadline). */
+  readonly detail: Readonly<Record<string, unknown>>;
+  readonly updatedAt: number;
+}
+
+/** The labels of the sessions a provider runs with none of its own (a phone provider's), so its list, an attach by
+ *  labels and the janitor outlive a restart. */
+export interface ComputerLedger {
+  /** Saves `labels` and `detail` for `provider`'s session `sessionId`, inserted or replaced in place. */
+  put(provider: string, sessionId: string, labels: Readonly<Record<string, string>>, detail: Readonly<Record<string, unknown>>): Promise<void>;
+  /** The session's row, or undefined when none is kept. */
+  get(provider: string, sessionId: string): Promise<ComputerLedgerRow | undefined>;
+  /** Every session of `provider`, by its id. */
+  list(provider: string): Promise<ComputerLedgerRow[]>;
+  /** The session's row goes. */
+  remove(provider: string, sessionId: string): Promise<void>;
 }
 
 /** A trigger source's sealed setting as a row (store schema `trigger_settings`): its adapter, scope ("server" for the one
@@ -767,6 +809,11 @@ export interface LiveViewers {
 export type StoreRole = "server" | "runner";
 
 export interface Store {
+  /** Where this store's data is, as an identity two instances over the same data share and two over different data never
+   *  do: "sqlite:" and the database file's real path, or "sqlite:memory:<n>" for an in-memory one (each its own data);
+   *  a store over a database server names its host, database and schema, never a user, a password or a credential.
+   *  What waits on another claim's work in this process keys on it (mcp-claim.ts), not on an object. */
+  readonly where: string;
   readonly agents: Agents;
   readonly templates: Templates;
   readonly triggers: Triggers;
@@ -779,6 +826,8 @@ export interface Store {
   readonly settings: Settings;
   /** The model and provider keys the server holds, sealed (store/seal.ts): bytes the store never opens. */
   readonly sealedKeys: SealedKeys;
+  /** The labels of the sessions a provider runs with none of its own (a phone provider's). */
+  readonly computerLedger: ComputerLedger;
   /** Each trigger source's sealed settings (design 2.1): a value per adapter, scope and field. */
   readonly triggerSettings: TriggerSettings;
   /** MCP OAuth sign-ins in flight (design 2.1): one row per pending sign-in, its verifier sealed. */

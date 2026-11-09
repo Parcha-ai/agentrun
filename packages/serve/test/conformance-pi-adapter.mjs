@@ -59,14 +59,15 @@ export function scriptedOrigin(script, requests = []) {
   };
 }
 
-/** The suite's tools as the host's tools (HostTool): replay-safe or at most once, each calling the suite's own. */
+/** The suite's tools as the host's tools (HostTool): replay-safe or at most once, each calling the suite's own. A tool
+ *  with `images` answers with them beside its text (a screenshot). */
 export function hostTools(tools) {
   return Object.values(tools).map((tool) => ({
     name: tool.name,
     description: `The suite's ${tool.name} tool.`,
     inputSchema: { type: "object", properties: {} },
     replay: tool.replaySafe ? "safe" : "never",
-    call: async (args, context) => ({ text: String(await tool.run(args ?? {}, context.signal)) }),
+    call: async (args, context) => ({ text: String(await tool.run(args ?? {}, context.signal)), ...(tool.images ? { images: tool.images } : {}) }),
   }));
 }
 
@@ -98,9 +99,11 @@ function tracked(adapter) {
 export function piAdapterSpec({ script, tools, hooks, agentId }, options = {}) {
   return (_claim, run) => ({
     ...(agentId ? { agentId } : {}),
-    adapter: tracked(piAdapter({ run, model: MODEL, provider: { api: "anthropic-messages", origin: "https://faux.invalid", credential: () => `not-a-secret-${"x"}` }, fetch: options.fetch ?? scriptedOrigin(script, options.requests), price: () => 0 })),
-    session: { key: "root", label: "root", system: ["Follow the script."], tools: hostTools(tools), context: "fresh" },
+    adapter: tracked(piAdapter({ run, model: MODEL, provider: { api: "anthropic-messages", origin: "https://faux.invalid", credential: () => `not-a-secret-${"x"}` }, fetch: options.fetch ?? scriptedOrigin(script, options.requests), price: options.price ?? (() => 0) })),
+    session: { key: "root", label: "root", system: options.system ?? ["Follow the script."], tools: hostTools(tools), context: "fresh" },
     input: "Follow the script.",
+    // The run's one cap, uncapped: every paid request still books through it (the adapter loop's only booking path).
+    runCap: { capUsd: () => undefined, modelOf: () => undefined },
     hooks,
     gate: (call) => (tools[call.tool]?.ask ? "ask" : "allow"),
   });

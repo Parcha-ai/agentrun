@@ -4,6 +4,7 @@
 // transaction: the run's end and its outbox rows commit with the journal's last entry, or none of them do. The fence is
 // the first statement: `WHERE id = ? AND epoch = ?` changing no row throws Fenced, and the caller's transaction rolls back.
 import { endedReason, FINAL_STATES, Fenced, type AlsoRow, type Claim, type ImportedFrom, type RunOutcome, type RunPatch, type RunRow, type RunState } from "../store.js";
+import { type Dialect, SQLITE } from "../dialect.js";
 import type { SqliteExecutor, SqliteValue } from "./connection.js";
 import { claimFence } from "../fence.js";
 import { writeLaunch } from "./run-launch.js";
@@ -13,6 +14,10 @@ import { writeLaunch } from "./run-launch.js";
 /** A learning run's launch: harness "learning", its input the run that learned, and `model`, the grade model when one is
  *  named (gradeModelOf; none: the agent's own grades it, as main's). No cap: main caps no grade. */
 export const learningLaunchOf = (runId: string, model?: string) => ({ harness: "learning", input: { runId }, title: `Learning from ${runId}`, place: { mode: "runner" }, ...(model ? { model } : {}) });
+
+/** The lock a write of a run's sign_in_handed and a sign-in's forget both take (Dialect.lockKey): the forget's check of
+ *  the running runs' hashes and a launch's write of them are serialized, as SQLite's one writer serializes them. */
+export const SIGN_IN_HANDED_LOCK = "sign_in_handed";
 
 export type RunRecord = {
   id: string; agent_id: string; revision_id: string; state: RunState; epoch: number; runner: string | null; claimed_until: number | null;
@@ -32,8 +37,8 @@ export const runOf = (r: RunRecord): RunRow => ({
 /** Applies `patch` to the claim's run, then writes `also`, through `tx` (an open transaction's handle). Fenced, with nothing
  *  of it written once the caller rolls back, when the run's epoch is not the claim's or the claim's lease ran out before
  *  `now` (the store's clock, read in the transaction). A final state with no `endedAt` is stamped `now`, and releases the
- *  run in the same statement. */
-export async function applyRunPatch(tx: Pick<SqliteExecutor, "run" | "get">, claim: Pick<Claim, "runId" | "epoch">, patch: RunPatch, also: readonly AlsoRow[], now: number): Promise<RunRow> {
+ *  run in the same statement. `dialect`: the connection's (store/dialect.ts), SQLite's by default. */
+export async function applyRunPatch(tx: Pick<SqliteExecutor, "run" | "get">, claim: Pick<Claim, "runId" | "epoch">, patch: RunPatch, also: readonly AlsoRow[], now: number, dialect: Dialect = SQLITE): Promise<RunRow> {
   const sets: string[] = [];
   const params: SqliteValue[] = [];
   const set = (column: string, value: SqliteValue) => (sets.push(`${column} = ?`), params.push(value));
@@ -57,6 +62,8 @@ export async function applyRunPatch(tx: Pick<SqliteExecutor, "run" | "get">, cla
   // run out (claimed_until on this store's clock, the one that set it).
   const assignments = sets.length ? sets.join(", ") : "epoch = epoch";
   const fence = claimFence(claim, now);
+  // A write of the handed hashes and a sign-in's forget (which checks them) never interleave (SIGN_IN_HANDED_LOCK).
+  if (patch.signInHanded !== undefined) await dialect.lockKey(tx, SIGN_IN_HANDED_LOCK);
   const row = await tx.get<RunRecord>(`UPDATE runs SET ${assignments} WHERE ${fence.where} RETURNING ${RUN_COLUMNS}`, ...params, ...fence.params);
   if (!row) throw new Fenced(claim.runId, claim.epoch);
   // Released, the run holds nothing a runner showed: its run_live row goes in the same transaction, so a run read ended
@@ -96,7 +103,7 @@ export async function applyRunPatch(tx: Pick<SqliteExecutor, "run" | "get">, cla
         // Its launch row, with it: harness "learning" (the runner's loop factory picks the learning loop by it), its input
         // the run that learned. Written once, as the run is.
         if (!(await tx.get("SELECT 1 AS found FROM run_launch WHERE run_id = ?", each.row.id))) {
-          await writeLaunch(tx as SqliteExecutor, each.row.id, { body: learningLaunchOf(claim.runId, each.row.model) }, now);
+          await writeLaunch(tx, each.row.id, { body: learningLaunchOf(claim.runId, each.row.model) }, now);
         }
         break;
     }
