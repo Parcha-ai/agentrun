@@ -1,7 +1,7 @@
 // A call that waited for a person's approval reads in order over the one store (store-view.ts timelineOverStore): the call
 // held, then the approval row, then what came of it, from the run's agentrun.ask and agentrun.answer entries, as the
 // file-backed path reads it (runs.ts withApprovals). A Deny's words are "You declined <tool>[: <note>]", an Allow's note is
-// kept on its row, and an empty result reads "(no output)". The runner writes an answer as { callId, approved, note? }.
+// shown nowhere (as on main), and an empty result reads "(no output)". The runner writes an answer as { callId, approved, note? }.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
@@ -52,13 +52,14 @@ function readFor(rows, id) {
   return { own: own.map((row) => [row.kind, row.summary]), after: rows.slice(last + 1, last + 3) };
 }
 
-test("an allowed call reads held, then your approval, then that it ran, with the person's note kept", async (t) => {
+test("an allowed call reads held, then your approval, then that it ran; a note sent with the allow is shown nowhere", async (t) => {
   const store = await runWith(t, [fetchCall("c1", { approved: true, note: "only the home page" }, { text: "fetched", isError: false })]);
   const rows = await timelineOverStore(store, "run-1", deps);
   const { own, after } = readFor(rows, "c1");
   assert.deepEqual(own, [["tool_use", "Held for your approval"], ["tool_result", "Held for your approval"]], JSON.stringify(rows.map((r) => [r.kind, r.summary])));
   assert.deepEqual([after[0]?.kind, after[0]?.summary], ["tool_approval_requested", 'Asked your approval: web_fetch {"url":"https://example.test"}']);
-  assert.deepEqual([after[1]?.kind, after[1]?.origin, after[1]?.summary], ["phase", "server", "AgentRun: web_fetch ran once you allowed it; its result went to the agent. Your note: only the home page"]);
+  assert.deepEqual([after[1]?.kind, after[1]?.origin, after[1]?.summary], ["phase", "server", "AgentRun: web_fetch ran once you allowed it; its result went to the agent"]);
+  assert.equal(JSON.stringify(rows).includes("only the home page"), false, "the allow's note is on no row");
   assert.equal(after[1]?.text, "web_fetch ran once you allowed it. Its result:\nfetched");
 });
 

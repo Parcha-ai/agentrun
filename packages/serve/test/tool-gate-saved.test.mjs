@@ -55,7 +55,7 @@ test("a parked write shows no Saved row while it waits, none after a deny (and n
   const LINKED = "use scratch instead, see https://files.example/doc?sig=s3cr3tQueryValue&id=7";
   // The cut is by code points: an emoji straddling it is kept whole or dropped, never halved.
   const ASTRAL = `${"a".repeat(198)}😀bbb`;
-  // A note sent with an Allow is kept: on the resume row, and in the message the model reads.
+  // A note sent with an Allow goes nowhere, as on main: not on the resume row, not in the message the model reads.
   const ALLOW_NOTE = "only the home page";
   const runs = await Promise.all([["allow"], ["deny", NOTE], ["deny", KEYED], ["deny", LINKED], ["deny", ASTRAL], ["allow", ALLOW_NOTE]].map(async ([decision, note], i) => ({ decision, note, ...(await parkedWrite(api, `saved-${i}`)) })));
   for (const run of runs) {
@@ -70,8 +70,11 @@ test("a parked write shows no Saved row while it waits, none after a deny (and n
     const resume = rows.filter((r) => r.origin === "server" && /^AgentRun: (write |You declined write)/.test(r.summary ?? ""));
     assert.equal(resume.length, 1, `${at}: one resume row: ${JSON.stringify(rows.map((r) => r.summary))}`);
     if (run.decision === "allow") {
-      assert.equal(resume[0].summary, `AgentRun: write ran once you allowed it; its result went to the agent${run.note ? `. Your note: ${run.note}` : ""}`, at);
-      if (run.note) assert.match(rows.findLast((r) => r.kind === "final_answer")?.text ?? "", new RegExp(`Their note with it: ${run.note}`), `${at}: the model read the note`);
+      assert.equal(resume[0].summary, "AgentRun: write ran once you allowed it; its result went to the agent", at);
+      if (run.note) {
+        assert.equal(JSON.stringify(serverRows(rows)).includes(run.note), false, `${at}: the allow's note is on no row`);
+        assert.equal((rows.findLast((r) => r.kind === "final_answer")?.text ?? "").includes(run.note), false, `${at}: the model never read the allow's note`);
+      }
       assert.equal(await readFile(file, "utf8"), "hello", `${at}: the file was written`);
       assert.deepEqual(savedRows(rows).map((r) => r.summary), [], `${at}: the parked call's own Saved row is gone; the resume row says it ran`);
       continue;
