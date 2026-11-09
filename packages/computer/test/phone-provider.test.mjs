@@ -904,9 +904,11 @@ test("the phone answers screen.watch: PNG frames of the whole screen, read about
 	const again = await client.call("screen.watch", { after: 1 });
 	assert.equal(again.value.seq, 2);
 	assert.equal(screencaps(), reads);
-	// maxWidth scales the frame; the size stays the screen's.
-	const scaled = await client.call("screen.watch", { after: 0, maxWidth: 180 });
+	// maxWidth scales the frame; the size stays the screen's. (A connection's watch keeps its frames' scale: a new one asks.)
+	const { value: other } = await provider.connect(ref);
+	const scaled = await other.client.call("screen.watch", { after: 0, maxWidth: 180 });
 	assert.deepEqual([scaled.value.frameWidth, scaled.value.frameHeight, scaled.value.width, scaled.value.height], [180, 320, SCREEN.width, SCREEN.height]);
+	await other.close();
 	for (const params of [{}, { after: -1 }, { after: 99 }, { after: 0, waitMs: 10_001 }, { after: 0, maxWidth: 0 }, { after: 0, quality: 101 }]) {
 		const refused = await client.call("screen.watch", params);
 		assert.equal(refused.ok, false, JSON.stringify(params));
