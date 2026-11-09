@@ -131,6 +131,16 @@ describe("AgentEditor, the Computer step", () => {
     expect(providerRadio(host, "docker")!.closest("label")!.textContent).not.toContain("Metered");
   });
 
+  it("under a metered provider, one line says its minutes aren't counted in a run's spending cap; not under one that isn't", () => {
+    const LINE = "This provider bills by the minute, and those minutes aren't counted in a run's spending cap.";
+    const { host, click } = mount({ agent: agent(), caps: listed, step: "computer" });
+    click(kindRadio(host, "desktop"));
+    expect(providerRadio(host, "orgo")!.closest("label")!.textContent).toContain(LINE);
+    expect(providerRadio(host, "e2b")!.closest("label")!.textContent).not.toContain(LINE);
+    click(kindRadio(host, "sandbox"));
+    expect(providerRadio(host, "docker")!.closest("label")!.textContent).not.toContain(LINE);
+  });
+
   it("none is saved with no provider, and shows no provider list", async () => {
     const { host, click, save, saved } = mount({ agent: agent({ computer: { kind: "sandbox", provider: "docker" }, place: { mode: "sandbox", box: "docker" } }), caps: listed, step: "computer" });
     expect(kindRadio(host, "sandbox")!.checked).toBe(true);
