@@ -53,12 +53,11 @@ const WAITS = {
   "listRuns (withheld)": TITLE,
   "listAllRuns (handed)": TITLE,
   "listAllRuns (withheld)": TITLE,
-  "readRunFile (withheld)": "waits on the run file routes refusing a withheld run (403), the merge job's files check",
 };
 const waitOf = (operation, kind) => WAITS[`${operation} (${kind})`] ?? WAITS[operation] ?? false;
 
 /** The one run read the zero-hits rule exempts, and why: a run's file is served as it was written, uncut. Its case asserts
- *  the bytes are the ones written instead (the gate still requires the case). */
+ *  the bytes are the ones written instead (the gate still requires the case); a withheld run's file is refused (403). */
 export const EXEMPT = {
   readRunFile: "served as uploaded, uncut: a page it saved signed in is what it saw, and no file is cut",
 };
@@ -189,7 +188,9 @@ test("no planted secret in a run's words shows on any run read route: a run hand
         const sources = [];
         for (const one of reads) {
           const res = await get(server.port, server.token, one);
-          if (EXEMPT[operation] && run.fileText !== undefined) {
+          // A withheld run's file is refused, as its view withholds its words.
+          if (operation === "readRunFile" && kind === "withheld") assert.equal(res.status, 403, `${one}: a withheld run's file is refused`);
+          if (EXEMPT[operation] && run.fileText !== undefined && kind !== "withheld") {
             // Exempt (EXEMPT): served as it was written, byte for byte, never a planted value it didn't hold.
             assert.equal(res.status, 200, one);
             assert.ok(res.body.equals(Buffer.from(run.fileText)), `${one}: the bytes written`);
