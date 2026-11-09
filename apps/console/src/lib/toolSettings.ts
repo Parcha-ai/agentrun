@@ -1,4 +1,4 @@
-import type { Permission, ToolSetting, ToolSettings } from "./v2";
+import type { AgentTool, Permission, ToolSetting, ToolSettings } from "./v2";
 
 /** The harnesses a capability resolves for, in the order the console shows them. */
 export const HARNESS_ORDER = ["pi", "claude-agent", "codex", "opencode"] as const;
@@ -46,6 +46,17 @@ export function toolChoices(raw: unknown): ToolChoice[] {
  *  default), the owner's default, those it may be set to, and `ask_needs: "password"` where ask can't be answered here
  *  (accounts off: approving a call takes the owner's password sign-in). */
 export type ToolGate = { name: string; permission: Permission; default_permission: Permission; permissions: Permission[]; ask_needs?: "password" };
+
+/** Said wherever a tool the server's table denies shows: the server's deny is absolute (it holds over an agent's own
+ *  allow or ask and over Never ask). */
+export const SERVER_DENY = "Refused on this server for every agent, whatever the agent's own setting or Never ask.";
+
+/** Whether this server denies `name` for every agent: its agent read says so (permission deny, from the server), or the
+ *  server's table does (capabilities' permission in force). */
+export const serverDenies = (name: string, gates: readonly ToolGate[], read?: readonly AgentTool[]): boolean => {
+  const own = read?.find((t) => t.name === name);
+  return (own?.permission === "deny" && own.permission_from === "server") || gates.some((g) => g.name === name && g.permission === "deny");
+};
 
 const PERMISSIONS: readonly string[] = ["allow", "ask", "deny"];
 const isPermission = (v: unknown): v is Permission => typeof v === "string" && PERMISSIONS.includes(v);
