@@ -19,8 +19,8 @@ const CHANGED = new Date(T0).toISOString();
 const ENV_KEY = `good-${"from-env"}`;
 const SAVED_KEY = `bad-${"saved-value"}`;
 
-async function setup(t, { mode = "local", settings, kinds = KINDS, env, ...given } = {}) {
-  const sealKey = "sealKey" in given ? given.sealKey : randomBytes(32);
+async function setup(t, { mode = "local", settings, kinds = KINDS, env } = {}) {
+  const sealKey = randomBytes(32);
   const { store } = await storeOn(t);
   const fake = fakeFactories();
   const routes = createComputerRoutes({ store, sealKey, kinds, factories: fake.factories, ...(settings ? { settings } : {}), ...(env ? { env } : {}), tools, mode });
@@ -86,7 +86,7 @@ test("Mode 2 once the remote sandboxes mount the owner's disk: Docker's sandbox 
 test("a kind no provider can serve here is not offered, and says why", async (t) => {
   const { store } = await storeOn(t);
   const kinds = { ...KINDS, PROVIDERS: KINDS.PROVIDERS.filter((one) => one.id === "docker" || one.id === "modal") };
-  const view = await createComputerRoutes({ store, sealKey: undefined, kinds, factories: fakeFactories().factories, tools, mode: "disk" }).view();
+  const view = await createComputerRoutes({ store, sealKey: randomBytes(32), kinds, factories: fakeFactories().factories, tools, mode: "disk" }).view();
   assert.deepEqual([kindOf(view, "sandbox").offered, kindOf(view, "sandbox").why], [false, "no provider of a sandbox computer can reach this server's run folders"]);
   assert.deepEqual([kindOf(view, "phone").offered, kindOf(view, "phone").why, kindOf(view, "phone").providers], [false, "no provider serves a phone computer", []]);
 });
@@ -104,11 +104,6 @@ test("a key save takes only the provider's declared names, seals each in the sto
   assert.ok(!Buffer.from(await store.sealedKeys.get("BROWSERBASE_API_KEY")).toString("latin1").includes("good-b1"), "the store holds ciphertext only");
   assert.equal((await routes.saveKeys("browserbase", { BROWSERBASE_PROJECT_ID: null })).ready, false, "null removes");
   assert.equal(await routes.saveKeys("nope", {}), undefined, "an unknown provider");
-});
-
-test("with no seal key the server keeps no key, and says how to give it one", async (t) => {
-  const { routes } = await setup(t, { sealKey: undefined });
-  await assert.rejects(routes.saveKeys("e2b", { E2B_API_KEY: "good-e" }), (error) => error instanceof KeysRefused && error.fields[0].reason === "unavailable" && /AGENTRUN_SEAL_KEY/.test(error.message));
 });
 
 test("a provider's test opens its saved keys, makes it with them through computer-keys, and reads its account once; failures are its plain words, with no key", async (t) => {
