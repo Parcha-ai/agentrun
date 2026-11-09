@@ -464,6 +464,26 @@ describe("a one-time schedule that has run", () => {
     expect(t.button(/^Delete$/)).toBeDefined();
   });
 
+  it("Done only for the firing of its own time that started a run: an edited new time, a Run now, a firing due or failed are not done", async () => {
+    const notDone: Trigger[] = [
+      // Edited to a new time after it ran: its last firing is for the old time.
+      { ...ONCE, id: "trg_edited", source: { kind: "schedule", at: "2026-11-20T09:00:00Z" } },
+      // A paused one time in the future, run by hand.
+      { ...ONCE, id: "trg_manual", source: { kind: "schedule", at: "2026-11-20T09:00:00Z" }, last_firing: firing({ by: "manual", nominal_at: "2026-11-09T21:00:00Z" }) },
+      // Its time's firing waits (the server was full), or failed: no run started.
+      { ...ONCE, id: "trg_due", last_firing: firing({ nominal_at: "2026-11-09T20:43:00Z", status: "due" }) },
+      { ...ONCE, id: "trg_failed", last_firing: firing({ nominal_at: "2026-11-09T20:43:00Z", status: "failed", error: { code: "run_failed", message: "no model", retryable: false } }) },
+    ];
+    const list = await open(server({ triggers: notDone }).v2, {});
+    for (const t of notDone) expect(list.host.querySelector(`[data-trigger="${t.id}"]`)!.textContent).not.toContain("Done · ran");
+    act(() => root?.unmount()); document.body.innerHTML = "";
+    for (const t of notDone) {
+      const page = await open(server({ triggers: [t] }).v2, { trigger: t.id });
+      expect(page.button(/^Resume$/), t.id).toBeDefined();
+      act(() => root?.unmount()); document.body.innerHTML = "";
+    }
+  });
+
   it("a paused recurring schedule keeps Resume", async () => {
     const t = await open(server({ triggers: [PAUSED] }).v2, { trigger: "trg_paused" });
     expect(t.button(/^Resume$/)).toBeDefined();
