@@ -51,6 +51,9 @@ export interface RunnerOptions {
    *  dropped (nothing written, nothing said). */
   endWaitMs?: number;
   onEvent?: (event: RunnerEvent) => void;
+  /** For tests: the claim deadline's clock (the deadline a claim not renewed in time is lost at, and the time its claimed
+   *  until is reckoned from). Default: the real one. Nothing else in the runner reads it. */
+  clock?: { now(): number; setTimeout(fn: () => void, ms: number): unknown; clearTimeout(handle: unknown): void };
 }
 
 export type RunnerEvent =
@@ -87,7 +90,7 @@ interface Held {
   delivering: boolean;
   /** The delivery under way, which the end waits for (up to endWaitMs) before it writes. */
   inFlight?: Promise<void>;
-  deadline?: NodeJS.Timeout;
+  deadline?: unknown;
   done?: Promise<void>;
 }
 
@@ -111,6 +114,7 @@ export function startRunner(options: RunnerOptions): Runner {
     interruptBackoffMs = 1_000,
     endWaitMs = 5_000,
     onEvent = () => {},
+    clock = { now: () => Date.now(), setTimeout: (fn: () => void, ms: number) => setTimeout(fn, ms), clearTimeout: (handle: unknown) => clearTimeout(handle as NodeJS.Timeout) },
   } = options;
   if (!(stopMarginMs < leaseMs && renewEveryMs < leaseMs - stopMarginMs)) {
     throw new RangeError(`a claim of ${leaseMs} ms must be renewed (every ${renewEveryMs} ms) before its stop margin (${stopMarginMs} ms)`);
@@ -171,8 +175,8 @@ export function startRunner(options: RunnerOptions): Runner {
   };
 
   const armDeadline = (held: Held, at: number) => {
-    clearTimeout(held.deadline);
-    held.deadline = setTimeout(() => loseClaim(held, "not-renewed"), Math.max(0, at - Date.now()));
+    clock.clearTimeout(held.deadline);
+    held.deadline = clock.setTimeout(() => loseClaim(held, "not-renewed"), Math.max(0, at - clock.now()));
   };
 
   /** The claim is gone (fenced) or about to run out unrenewed: write nothing more, and stop the loop. */
@@ -181,7 +185,7 @@ export function startRunner(options: RunnerOptions): Runner {
     // is no lost claim, and its loop has already stopped.
     if (held.fence.lost || held.ending || killed) return;
     held.fence.lost = true;
-    clearTimeout(held.deadline);
+    clock.clearTimeout(held.deadline);
     emit({ type: "claim-lost", runId: held.claim.runId, epoch: held.claim.epoch, why });
     stopLoop(held, { kind: "claim-lost" });
     held.abort.abort(new ClaimLost(`run ${held.claim.runId}: claim lost (${why})`));
@@ -200,7 +204,7 @@ export function startRunner(options: RunnerOptions): Runner {
     const due = [...runs.values()].filter((held) => !held.renewing && !held.fence.lost && !held.ending);
     if (due.length === 0) return;
     for (const held of due) held.renewing = true;
-    const sentAt = Date.now();
+    const sentAt = clock.now();
     try {
       const results = await store.renewMany(due.map((held) => held.claim), { leaseMs });
       results.forEach((result, i) => {
@@ -319,7 +323,7 @@ export function startRunner(options: RunnerOptions): Runner {
     // Whether the runner asked the loop to stop before it ended (only stopLoop sets this).
     const stoppedBefore = held.stopping;
     held.ending = true;
-    clearTimeout(held.deadline);
+    clock.clearTimeout(held.deadline);
     const { claim } = held;
     // A command still with the loop: its refusal is written before anything of the end, never after the release. A loop
     // that does not answer within endWaitMs has its answer dropped (the claim is sealed first).
@@ -439,7 +443,7 @@ export function startRunner(options: RunnerOptions): Runner {
     // The loop's own end landed: the run is ending from here, its teardown included (no renew, no lost claim).
     ending = () => {
       held.ending = true;
-      clearTimeout(held.deadline);
+      clock.clearTimeout(held.deadline);
     };
     runs.set(claim.runId, held);
     armDeadline(held, sentAt + leaseMs - stopMarginMs);
@@ -467,7 +471,7 @@ export function startRunner(options: RunnerOptions): Runner {
       if (free <= 0) return;
       // One store call claims the batch, each run at its own epoch + 1 (store.runs.claimMany): filling 300 loops, or
       // taking a dead runner's runs over, is one transaction, not 300.
-      const sentAt = Date.now();
+      const sentAt = clock.now();
       const claims = await store.runs.claimMany(name, free, { leaseMs });
       for (const claim of claims) {
         const before = runs.get(claim.runId);
@@ -517,7 +521,7 @@ export function startRunner(options: RunnerOptions): Runner {
     clearTimeout(pollTimer);
     clearTimeout(commandTimer);
     clearInterval(renewTimer);
-    for (const held of runs.values()) clearTimeout(held.deadline);
+    for (const held of runs.values()) clock.clearTimeout(held.deadline);
   };
 
   return {
