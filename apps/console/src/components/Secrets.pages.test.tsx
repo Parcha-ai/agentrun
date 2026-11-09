@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { KeysPage } from "./KeysPage";
 import { McpServersPage } from "./McpServersPage";
 import { ModelKeyCard } from "./ModelKeyCard";
-import { createClient } from "@/lib/client";
+import { createClient, type FieldIssue } from "@/lib/client";
 import type { McpServer } from "@/lib/mcp";
 import { NO_ACCOUNTS, secretsWhyNot, secretsWritableOf, SIGN_IN_TO_CHANGE } from "@/lib/secrets";
 import type { ToolKeys } from "@/lib/v2";
@@ -36,14 +36,15 @@ const KEYS: ToolKeys = {
   ] as KeyIn[]).map(servedKey),
   reenter: null,
 };
+// Each server holds ONE secret, `secret` ("mcp:<server>"): its bearer token, its headers' values, or a sign-in.
 const MCP: McpServer = {
   name: "linear", url: "https://mcp.example.test/mcp", auth: { type: "headers", headers: ["X-Api-Key"] }, credential: "sealed", tools: [], protocol: "2025-06-18",
   listed_at: "2026-11-09T09:00:00Z", updated_at: "2026-11-09T09:00:00Z",
-  // A server holding several secrets (its headers' values) carries `secrets`, each "mcp:<server>:<field>".
-  secrets: [{ name: "mcp:linear:X-Api-Key", set: true, source: "console", changed_at: "2026-11-09T09:00:00Z" }],
+  secret: { name: "mcp:linear", set: true, source: "console", changed_at: "2026-11-09T09:00:00Z" },
 };
-// One holding one (its bearer token) carries `secret`, "mcp:<server>".
-const BEARER: McpServer = { ...MCP, name: "fake", auth: { type: "bearer" }, secrets: undefined, secret: { name: "mcp:fake", set: true, source: "console", changed_at: "2026-11-09T09:00:00Z" } };
+const BEARER: McpServer = { ...MCP, name: "fake", auth: { type: "bearer" }, secret: { name: "mcp:fake", set: true, source: "console", changed_at: "2026-11-09T09:00:00Z" } };
+// A sign-in's server: its secret is from the sign-in, which is its only write (no paste).
+const OAUTH: McpServer = { ...MCP, name: "gh", auth: { type: "oauth" }, credential: "expired", oauth: { scopes: [], client: "dynamic" }, secret: { name: "mcp:gh", set: true, source: "sign-in", changed_at: "2026-11-09T09:00:00Z" } } as McpServer;
 
 describe("the session that may write secrets", () => {
   it("is the one whose read says secrets_writable: true, accounts on or off, and no other", () => {
@@ -115,31 +116,54 @@ describe("the model key card, off the password session", () => {
 });
 
 describe("MCP servers and their credentials", () => {
-  const v2 = () => client((path) => (path === "/v2/settings/mcp-servers" ? { servers: [MCP, BEARER] } : {}));
+  const v2 = () => client((path) => (path === "/v2/settings/mcp-servers" ? { servers: [MCP, BEARER, OAUTH] } : {}));
+  const radio = (host: Element, value: string) => host.querySelector<HTMLInputElement>(`input[name="mcp-auth"][value="${value}"]`)!;
 
-  it("shows each saved credential value as a secret row; off the password session, no way to type one", async () => {
-    const host = await mount(createElement(McpServersPage, { v2: v2(), atRest: "sealed", writable: false }));
-    const row = host.querySelector('[data-secret="mcp:linear:X-Api-Key"]')!;
-    expect(row.textContent).toContain("Pasted here");
-    expect(labels(row)).toEqual([]);
-    expect(host.textContent).toContain(SIGN_IN_TO_CHANGE);
-    await act(async () => { [...host.querySelectorAll("button")].find((b) => b.textContent?.trim() === "Add server")!.click(); });
-    const radio = (value: string) => host.querySelector<HTMLInputElement>(`input[name="mcp-auth"][value="${value}"]`)!;
-    expect([radio("none").disabled, radio("bearer").disabled, radio("headers").disabled]).toEqual([false, true, true]);
-    expect(host.querySelector('input[name="mcp-client-secret"]')).toBeNull();
-  });
-
-  it("a server's one secret is its row too, said as what it is, never by its name", async () => {
+  it("one row per server's secret, said as what it is, with no second line of its own", async () => {
     const host = await mount(createElement(McpServersPage, { v2: v2(), atRest: "sealed", writable: true }));
+    for (const name of ["linear", "fake", "gh"]) expect(host.querySelectorAll(`[data-server="${name}"] [data-secret]`)).toHaveLength(1);
     expect(host.querySelector('[data-secret="mcp:fake"]')!.textContent).toContain("Bearer token");
+    expect(host.querySelector('[data-secret="mcp:linear"]')!.textContent).toContain("Headers");
+    expect(host.querySelector('[data-server="linear"]')!.textContent!.match(/Pasted/g)).toHaveLength(1);
+    expect(host.textContent).not.toContain("last changed");
     expect(host.textContent).not.toContain("mcp:");
   });
 
-  it("on the password session, Replace on a saved credential opens its server's form", async () => {
-    const host = await mount(createElement(McpServersPage, { v2: v2(), atRest: "sealed", writable: true }));
-    const row = host.querySelector('[data-secret="mcp:linear:X-Api-Key"]')!;
+  it("bearer and headers: Replace opens the server's form on the password session; off it, no way to type one", async () => {
+    const on = await mount(createElement(McpServersPage, { v2: v2(), atRest: "sealed", writable: true }));
+    const row = on.querySelector('[data-secret="mcp:linear"]')!;
     expect(labels(row)).toEqual(["Replace"]);
     await act(async () => { [...row.querySelectorAll("button")].find((b) => b.textContent?.trim() === "Replace")!.click(); });
-    expect(host.querySelector('input[name="mcp-header-value-0"]')).not.toBeNull();
+    expect(on.querySelector('input[name="mcp-header-value-0"]')).not.toBeNull();
+    act(() => root?.unmount()); document.body.innerHTML = "";
+
+    const off = await mount(createElement(McpServersPage, { v2: v2(), atRest: "sealed", writable: false }));
+    expect(labels(off.querySelector('[data-secret="mcp:linear"]')!)).toEqual([]);
+    expect(off.textContent).toContain(SIGN_IN_TO_CHANGE);
+    await act(async () => { [...off.querySelectorAll("button")].find((b) => b.textContent?.trim() === "Add server")!.click(); });
+    expect(["none", "bearer", "headers", "oauth"].map((v) => radio(off, v).disabled)).toEqual([false, true, true, true]);
+    expect(off.querySelector('input[name="mcp-client-secret"]')).toBeNull();
+  });
+
+  it("OAuth: no Paste or Replace; its one Sign in is the write, on the password session only", async () => {
+    const on = await mount(createElement(McpServersPage, { v2: v2(), atRest: "sealed", writable: true }));
+    const gh = on.querySelector('[data-server="gh"]')!;
+    expect(labels(gh.querySelector('[data-secret="mcp:gh"]')!)).toEqual([]);
+    expect(gh.querySelector('[data-secret="mcp:gh"]')!.textContent).toContain("From sign-in");
+    expect(labels(gh).filter((l) => /^Sign in/.test(l ?? ""))).toEqual(["Sign in again"]);
+    act(() => root?.unmount()); document.body.innerHTML = "";
+
+    const off = await mount(createElement(McpServersPage, { v2: v2(), atRest: "sealed", writable: false, whyNot: "token" }));
+    expect(labels(off.querySelector('[data-server="gh"]')!).filter((l) => /^Sign in/.test(l ?? ""))).toEqual([]);
+    expect(off.textContent).toContain("Open the console from the server's link to change secrets.");
+  });
+});
+
+describe("a refused field's reason", () => {
+  it("is one the server's document names (InputIssue.reason), never any string", () => {
+    const named: FieldIssue = { field: "auth.url", reason: "not_https", message: "An MCP server's address is https." };
+    // @ts-expect-error a reason the server's document doesn't name
+    const made_up: FieldIssue = { field: "auth.url", reason: "made_up", message: "no such reason" };
+    expect([named.reason, made_up.reason]).toEqual(["not_https", "made_up"]);
   });
 });
