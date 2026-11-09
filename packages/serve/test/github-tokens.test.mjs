@@ -244,3 +244,16 @@ test("an org-level event with no repository reaching a github_app run's target m
   assert.match((await server.api("GET", `/runs/${fired.run_id}`)).body.result?.final_answer, /No GitHub repository/);
   assert.deepEqual(runTokens(server), [], "no token");
 });
+
+test("a repository named in the owner's words ends where the sentence does: trailing punctuation and a .git are not its name", async () => {
+  const { githubTargetOf } = await import("../dist/github-connection.js");
+  for (const [words, repo] of [
+    ["Review https://github.com/acme/widgets.", "acme/widgets"],
+    ["Is it https://github.com/acme/widgets?", "acme/widgets"],
+    ["(see https://github.com/acme/widgets), then", "acme/widgets"],
+    ["Clone https://github.com/acme/widgets.git; then", "acme/widgets"],
+    ["Look at https://github.com/acme/widgets!", "acme/widgets"],
+    ["Use https://github.com/acme/my.widgets: it has it", "acme/my.widgets"],
+    ["https://github.com/acme/widgets/pull/7", "acme/widgets"],
+  ]) assert.deepEqual(githubTargetOf(words), { repo }, words);
+});

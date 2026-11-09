@@ -536,3 +536,32 @@ test("a confirmed suspension of the last installation the server tracks takes Gi
   assert.deepEqual([trigger.enabled, trigger.disabled], [true, null], JSON.stringify(trigger));
   assert.deepEqual((await server.api("GET", "/integrations/github")).body.installations, [{ id: 777, account: "acme" }], "still listed");
 });
+
+test("the installed redirect takes GitHub's answer only when no write came meanwhile: an installation a newer verified deletion removed is not restored by the older answer", { timeout: 60_000 }, async (t) => {
+  const server = await connectable(t);
+  const started = await startConnect(server);
+  const back = await callback(server, "code-1", started.body.state, String(started.headers.get("set-cookie") ?? "").split(";")[0]);
+  const { webhook_secret: secret } = server.github.app;
+  // Active when the redirect's check asks (its answer held); deleted on GitHub, and its event verified, before it comes.
+  const hold = held();
+  server.github.holds.installationOnce = hold.promise;
+  const asked = server.github.asked("/app/installations/777");
+  const installed = install(server, 777, back);
+  await asked;
+  server.github.installations.delete(777);
+  assert.equal((await deliver(server.baseUrl, secret, "installation", { action: "deleted", installation: { id: 777, account: { login: "acme" }, app_id: 4242 } })).status, 200);
+  hold.release();
+  const res = await installed;
+  assert.deepEqual([res.status, res.headers.get("location")], [302, failedWith("installation_unverified")], "checked again: GitHub no longer has it");
+  assert.ok(!server.lines.some((line) => line.includes("condition=github_installed")), "nothing recorded");
+});
+
+test("the installed redirect never records a suspended installation", { timeout: 60_000 }, async (t) => {
+  const server = await connectable(t);
+  const started = await startConnect(server);
+  const back = await callback(server, "code-1", started.body.state, String(started.headers.get("set-cookie") ?? "").split(";")[0]);
+  server.github.installations.set(777, { account: "acme", suspended_at: "2026-06-01T00:00:00Z" });
+  const res = await install(server, 777, back);
+  assert.deepEqual([res.status, res.headers.get("location")], [302, failedWith("installation_unverified")]);
+  assert.ok(!server.lines.some((line) => line.includes("condition=github_installed")), "nothing recorded");
+});
