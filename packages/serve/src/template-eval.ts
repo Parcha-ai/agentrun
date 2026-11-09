@@ -743,6 +743,7 @@ const caseCost = (runs: readonly RunResult[]) => Math.round(runs.reduce((sum, r)
 async function runOnce(ctx: Ctx, one: EvalCase, n: number, fakes: readonly Fake[]): Promise<RunResult> {
   const { api, pkg, options, made } = ctx;
   const stopped = () => options.signal?.throwIfAborted();
+  await serverPins(ctx, one);
   const applied = expectOk(`applying ${pkg.name}`, await api("POST", `/templates/${pkg.name}/apply`, { parameters: one.parameters, grants: one.grants }));
   const agentId = String(applied.agent_id);
   made.agents.push(agentId);
@@ -838,6 +839,22 @@ async function sameAsLocal(ctx: Ctx, one: EvalCase, agent: Json): Promise<void> 
   if (!isObject(agent.definition) || agent.definition.instructions !== (local.definition as Json).instructions) differs.push("instructions");
   if (!same(theirs, ours)) differs.push("skill files");
   if (differs.length) throw new ApiFailure(`the server's ${pkg.name} package is not this folder's: it differs in ${[...new Set(differs)].sort().join(", ")}. The eval would measure the server's copy: run it without --server, or on a server that ships this version`);
+}
+
+/** The pins a case's apply fills (from its parameters) set on the in-process server before it applies, as an owner sets
+ *  them (deploy/walk.md): until the store cutover an agent's own pin is not kept (AGENT_LAYER_PINS), and the apply makes a
+ *  pinned write the server does not pin deny, so a case that grants one could never reach its fake. The server's pin
+ *  then holds the call to the case's own target, as it does in production. Another server's (--server) settings are its
+ *  owner's, left as they are: there an unpinned write stays deny and its case says so. */
+async function serverPins(ctx: Ctx, one: EvalCase): Promise<void> {
+  const { api, pkg, options } = ctx;
+  if (options.server) return;
+  const { parameters } = applyBodyOf(pkg, { parameters: one.parameters, grants: one.grants });
+  const { unkept } = compiled(pkg, parameters, { mcp: pkg.mcp, defaultTools: [], grants: [], pins: false });
+  if (!unkept.length) return;
+  const settings = expectOk("reading the server's tool settings", await api("GET", "/settings/tools"));
+  for (const { tool, pin } of unkept) settings[tool] = { ...(isObject(settings[tool]) ? settings[tool] : {}), pin };
+  expectOk("pinning the case's writes on the server", await api("PUT", "/settings/tools", settings));
 }
 
 /** A run of `agentId` started, and kept in `made.runs` until it is known to have ended. */
