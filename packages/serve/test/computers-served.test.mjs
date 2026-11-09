@@ -7,12 +7,17 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { randomBytes } from "node:crypto";
 import { FAUX_VIEW_PATH } from "../dist/faux-computers.js";
-import { serve as served, withEnv } from "./support.mjs";
+import { SECRET_WRITE_PATHS, serve as served, withEnv } from "./support.mjs";
 
-/** A served server with a seal key, so it keeps the keys it is given. */
+// A computer key's save and the Archil account key are secret writes (computers.ts, archil-routes.ts): the client sends
+// them from the owner's session, as the console does, and the token is refused them (secret-writes-computers.test.mjs).
+SECRET_WRITE_PATHS.push({ methods: ["PUT"], path: /^\/computers\/[^/]+\/keys$/ }, { methods: ["PUT"], path: /^\/workspace\/archil$/ });
+
+/** A served server with a seal key, so it keeps the keys it is given, and an owner its client signs in as on its first
+ *  secret write. */
 async function serve(t, options) {
   withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") });
-  return served(t, options);
+  return served(t, { ...options, accounts: true, openSetup: true });
 }
 
 test("served under --faux: the three faux providers, a key that makes faux-sandbox ready, faux-broken's words", async (t) => {
