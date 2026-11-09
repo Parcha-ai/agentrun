@@ -47,6 +47,8 @@ export interface ConformanceSetup {
   readonly script: readonly ScriptStep[];
   readonly tools: Readonly<Record<ToolName, SuiteTool>>;
   readonly hooks: KernelHooks;
+  /** The run's agent, for the subject's spec to name (AdapterRunSpec.agentId): the end-of-run step is asked with it. */
+  readonly agentId?: string;
 }
 
 export type ConformanceCase =
@@ -66,6 +68,7 @@ export type ConformanceCase =
   | "approval-names-its-call"
   | "approval-double-click"
   | "message-never-answers"
+  | "end-of-run-answer"
   | "fault-effects-once"
   | "fault-restarts-bounded"
   | "length-ends-failed"
@@ -79,6 +82,9 @@ export interface ConformanceSubject {
   /** Where a runner process finds this subject (an importable module and its export), for the cases whose crash is a real
    *  process's death. Without it those cases are skipped, saying so. */
   readonly process?: { readonly module: string; readonly export: string };
+  /** The facts its adapter declares (AdapterFacts), the cases they rule out derived from them (harness.ts, `factsRuleOut`):
+   *  a fact the adapter changes moves its cases with it, never a list kept by hand. */
+  readonly facts?: { readonly id: string; readonly steer: boolean; readonly rerunsStarted?: false };
   /** Cases this harness cannot model yet, each with why: reported as skipped with that reason, never as passed. */
   readonly unsupported?: Partial<Record<ConformanceCase, string>>;
 }

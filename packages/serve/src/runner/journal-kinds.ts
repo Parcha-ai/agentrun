@@ -43,6 +43,11 @@ export const KINDS = {
    *  passes over it. Both parks are kept for now: the workflow loop's moves onto agentrun.budget when it runs on the
    *  kernel cap. */
   workflowParked: "agentrun.workflow.parked",
+  /** A CLI run's end-of-run turn (the loop's record): its prompt (`role: "person"`) and its answer (`role: "model"`, the
+   *  text in `model` as pi's answer carries it), the entry and the answer of the submission its request id names, the
+   *  same submission pi's adapter writes, so the step reads both alike. Neither a call nor a message: the reader passes
+   *  over it, and the turn is never on the run's visible record. */
+  endOfRunTurn: "agentrun.end-of-run.turn",
   /** A learning run's grade: the verdict and what it spent, written before its merge (a resumed run never asks again). */
   learningGraded: "agentrun.learning.graded",
   /** A learning run's merge: the new main and its commit, with the run's end. */
