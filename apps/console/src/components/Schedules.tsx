@@ -179,7 +179,9 @@ function ScheduleDetail({ v2, go, agentName, id, every, now }: PageProps & { id:
   const gh = isGitHubTrigger(trigger) ? trigger : null;
   if (!hook && !gh && !isScheduleTrigger(trigger)) return <NotASchedule />;
   const runs = trigger as Schedule | WebhookTrigger | GitHubTrigger;
-  // A one-time schedule that has run: Done, with when it ran, and nothing to resume.
+  // A one-time schedule whose time has passed: Done with when it ran (a started firing of its own time, the server's word:
+  // nothing to resume), or that its time passed. Resume stays unless the server says it ran: the browser's clock alone
+  // may run ahead of the server's.
   const done = onceState(trigger, now(), firings);
 
   const act = async (what: "pause" | "delete", work: () => Promise<unknown>, failed: string) => {
@@ -224,7 +226,7 @@ function ScheduleDetail({ v2, go, agentName, id, every, now }: PageProps & { id:
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <Button size="sm" variant="solid" onClick={() => void runNow()} disabled={busy === "fire"}><Zap aria-hidden /> {busy === "fire" ? "Starting" : "Run now"}</Button>
-          {!done && <Button size="sm" onClick={() => void toggle()} disabled={busy !== null}>{trigger.enabled ? <><Pause aria-hidden /> Pause</> : <><Play aria-hidden /> Resume</>}</Button>}
+          {!(done && "ran" in done) && <Button size="sm" onClick={() => void toggle()} disabled={busy !== null}>{trigger.enabled ? <><Pause aria-hidden /> Pause</> : <><Play aria-hidden /> Resume</>}</Button>}
           {!hook && !gh && <Button size="sm" onClick={() => go(`${hashOf(id)}/edit`)}><Pencil aria-hidden /> Edit</Button>}
           {hook && (!rotating ? <Button size="sm" onClick={() => setRotating(true)} disabled={busy !== null || renewing}><KeyRound aria-hidden /> Rotate secret</Button> : (
             <span className="flex items-center gap-2 border border-warning/50 px-2 py-1 text-[12px]" role="alertdialog" aria-label="Make a new secret?">
