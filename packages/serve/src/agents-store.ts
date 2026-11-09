@@ -55,6 +55,13 @@ function storeError(error: unknown): never {
   throw error;
 }
 
+/** Refuses a write to an externally owned agent: one that mirrors an agent in another system (its `externalRef` set) is
+ *  read-only here — its source is the truth, which writes a new version by running it. Edits, set-current and archive are
+ *  refused (403 forbidden); reads work as for any agent. */
+function refuseExternal(agent: AgentRow): void {
+  if (agent.externalRef !== null) throw new ApiError("forbidden", `The agent ${agent.id} is managed by its source and is read-only here; change it there and run it again.`);
+}
+
 /** A definition's tool settings as a revision body keeps them, through the one copy: checked by tool-plane's settingsIssues
  *  (a refusal is an input error) and made canonical by canonicalToolSettings (sorted keys, empty tools dropped, a pin's
  *  arguments sorted). `{ toolSettings }` when any survive, `{}` when none. Whether an agent may set its own pin is the
@@ -207,6 +214,7 @@ export async function commitAgent(
   { ifCurrent, check, contract = false }: { ifCurrent?: string | null; check?: (revision: NewRevision) => Promise<void>; contract?: boolean } = {},
 ): Promise<AgentEntry> {
   const entry = (await getAgent(store, read.agent.id)) ?? read;
+  refuseExternal(entry.agent);
   if (ifCurrent !== undefined && (entry.revision?.id ?? null) !== ifCurrent) {
     throw new ApiError("precondition_failed", "the agent's current revision moved since the If-Match it was read at: read the agent again");
   }
@@ -248,6 +256,7 @@ export async function commitAgent(
 
 /** Makes `revisionId`, one of the agent's own, its current one (POST /agents/{id}/current). */
 export async function setCurrentRevision(store: AgentsStore, entry: AgentEntry, revisionId: string): Promise<AgentEntry> {
+  refuseExternal(entry.agent);
   await store.agents.setCurrent(entry.agent.id, revisionId).catch((error) => {
     if (error instanceof StoreConstraint) throw new ApiError("not_found", "that revision is not a revision of that agent");
     throw error;
@@ -257,7 +266,9 @@ export async function setCurrentRevision(store: AgentsStore, entry: AgentEntry, 
 
 /** Archives or unarchives an agent. */
 export async function setAgentArchived(store: AgentsStore, id: string, archived: boolean): Promise<void> {
-  if (!(await store.agents.get(id))) throw new ApiError("not_found", "there is no such agent");
+  const agent = await store.agents.get(id);
+  if (!agent) throw new ApiError("not_found", "there is no such agent");
+  refuseExternal(agent);
   await store.agents.archive(id, archived);
 }
 

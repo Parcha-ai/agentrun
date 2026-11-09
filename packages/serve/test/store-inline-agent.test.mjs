@@ -7,6 +7,7 @@ import { test } from "node:test";
 import { storeOn } from "./store-helpers.mjs";
 
 const { ExternalBodyConflict } = await import("../dist/store/index.js");
+const { getAgent, commitAgent, setCurrentRevision, setAgentArchived } = await import("../dist/agents-store.js");
 
 const BODY = { instructions: "Answer the question.", tools: [], skills: {} };
 const launchOf = (content = "hi") => ({ body: { input: { content }, title: content, place: { mode: "runner" } } });
@@ -116,4 +117,49 @@ test("a different expert reference is a different agent", async (t) => {
   await store.runs.createInline(inline({ id: "42", version: "1", runId: "run-a" }));
   await store.runs.createInline(inline({ id: "43", version: "1", runId: "run-b" }));
   assert.equal((await store.agents.list()).length, 2, "two agents");
+});
+
+// ---- an externally owned agent is read-only through /v2/agents --------------------------------------------------------
+
+/** The entry of the agent an inline run just mapped (its one agent), for the serve-layer agent writers. */
+async function externalEntry(store) {
+  await store.runs.createInline(inline({ id: "42", version: "1", runId: "run-a" }));
+  const [agent] = await store.agents.list();
+  return (await getAgent(store, agent.id));
+}
+
+test("an edit of an external agent through the definition route is refused, forbidden", async (t) => {
+  const { store } = await storeOn(t);
+  const entry = await externalEntry(store);
+  await assert.rejects(
+    () => commitAgent(store, entry, { definition: { instructions: "Changed here." }, skills: {} }),
+    (e) => e.code === "forbidden" && /managed by its source/.test(e.message),
+  );
+});
+
+test("setting the current revision of an external agent is refused, forbidden", async (t) => {
+  const { store } = await storeOn(t);
+  const entry = await externalEntry(store);
+  await assert.rejects(
+    () => setCurrentRevision(store, entry, entry.revision.id),
+    (e) => e.code === "forbidden" && /managed by its source/.test(e.message),
+  );
+});
+
+test("archiving an external agent is refused, forbidden", async (t) => {
+  const { store } = await storeOn(t);
+  const entry = await externalEntry(store);
+  await assert.rejects(
+    () => setAgentArchived(store, entry.agent.id, true),
+    (e) => e.code === "forbidden" && /managed by its source/.test(e.message),
+  );
+  assert.equal((await store.agents.get(entry.agent.id)).archivedAt, null, "nothing archived");
+});
+
+test("reads of an external agent work as for any agent", async (t) => {
+  const { store } = await storeOn(t);
+  const entry = await externalEntry(store);
+  const read = await getAgent(store, entry.agent.id);
+  assert.equal(read.agent.externalRef, "grep:expert:42");
+  assert.equal(read.revision.id, entry.revision.id);
 });
