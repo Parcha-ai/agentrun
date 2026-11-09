@@ -412,6 +412,8 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
     adapter,
     session,
     input,
+    // A trigger's first input is its origin's, the launch's own owner flag kept (run-launch.ts keepInputOrigin).
+    ...(launch.inputOrigin ? { inputOrigin: launch.inputOrigin } : {}),
     // The gate's answer with its words (adapterRunGate, RunGate.decide): a deny names where it was set and that nothing was
     // sent or charged, and a pinned MCP tool's call outside its pin is refused before it is asked or sent.
     gate,

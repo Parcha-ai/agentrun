@@ -19,7 +19,7 @@ import { type Conversation, type ConversationId, createRegistry, Harness, LiveDo
 import { type AdapterSession, type AgentAdapter, type BeforeRequest, type HostTool, modelPortFor, type Refusal, RUNNER_RECORDS, type SessionRecord, type SessionSpec, sessionSpendOf } from "@parcha/agentrun-kernel";
 import type { KernelHooks, ToolCall } from "./conformance/subject.js";
 import { type AnswerData, type ApprovalPrice, type AskData, type BudgetData, type CallEndData, type CallStartData, type CallStatus, type EndData, KINDS, type MessageData, type RaiseData, withdrawnAnswers } from "./journal-kinds.js";
-import { originOf, RUN_RESUMED } from "@parcha/pi-durable-agent/timeline";
+import { type MessageOrigin, originOf, RUN_RESUMED } from "@parcha/pi-durable-agent/timeline";
 import { type AlsoRow, type Claim, ClaimRefused, type Command, type CommandOutcome, deniedText, endedBy, type EndOfRunAnswer, type EndOfRunTurn, type Loop, type LoopDeps, type LoopEnd, type LoopFactory, noteOf, type StopReason } from "./loop-contract.js";
 import { deniedText as setToDenyText } from "../refusal-words.js";
 import { ADAPTER_API } from "../turn-end.js";
@@ -60,6 +60,9 @@ export interface AdapterRunSpec {
   readonly session: SessionSpec;
   /** The person's first message, sent once, on the run's first claim. */
   readonly input: string;
+  /** Who wrote the first message when the person did not: a trigger's (its launch's inputOrigin, with the launch's own
+   *  owner flag). The first input is then written as that origin's, never the person's. */
+  readonly inputOrigin?: MessageOrigin;
   /** Who keeps the run's visible record (its calls and messages, as the one reader reads them). Absent: the adapter
    *  (pi's own tasks and entries). "loop": a harness whose records are resume log only (a CLI's session): the loop writes
    *  the person's input, each host-tool call's start (after the gate, before the call) and end, and what the model said
@@ -220,6 +223,9 @@ interface CliRecord {
   flushText(): Promise<void>;
   /** The person's input, written once for the run (a resumed claim that finds it writes it again never). */
   person(text: string): Promise<void>;
+  /** The first input when someone other than the person wrote it (a trigger's): the host's input entry with its origin, as
+   *  pi's steer writes one, once for the run like the person's. */
+  input(text: string, origin: MessageOrigin): Promise<void>;
   /** A call's start, before it runs (once per call id). */
   start(callId: string, tool: string, input: unknown, replaySafe: boolean): Promise<void>;
   /** A started call's end (once). */
@@ -245,7 +251,7 @@ async function openCliRecord(harness: Harness, journal: Gate["journal"], context
     const data = (entry.data ?? {}) as { callId?: unknown; role?: unknown };
     if (entry.kind === KINDS.callStart && typeof data.callId === "string") started.set(data.callId, started.get(data.callId) ?? false);
     else if (entry.kind === KINDS.callEnd && typeof data.callId === "string") started.set(data.callId, true);
-    else if (entry.kind === KINDS.message && data.role === "person") personWritten = true;
+    else if ((entry.kind === KINDS.message && data.role === "person") || entry.kind === KINDS.input) personWritten = true;
   }
   for (const [callId, ended] of started) {
     if (ended) continue;
@@ -282,6 +288,12 @@ async function openCliRecord(harness: Harness, journal: Gate["journal"], context
       inTurn(async () => {
         if (personWritten) return;
         await append(KINDS.message, { role: "person", text: input });
+        personWritten = true;
+      }),
+    input: (input, origin) =>
+      inTurn(async () => {
+        if (personWritten) return;
+        await harness.commit((tx) => tx.appendEntry(root.id, { kind: KINDS.input, data: { origin } as unknown as JsonValue, model: [{ role: "user", content: input }] } as never), context);
         personWritten = true;
       }),
     async start(callId, tool, input, replaySafe) {
@@ -776,8 +788,10 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         if (followedUp) {
           // The follow-up is the turn this claim runs.
         } else if (session!.state === "new") {
-          await record?.person(spec.input);
-          await session!.send(spec.input);
+          // A trigger's first input is its origin's (the launch's), never written as the person's.
+          if (spec.inputOrigin) await record?.input(spec.input, spec.inputOrigin);
+          else await record?.person(spec.input);
+          await session!.send(spec.input, spec.inputOrigin ? { origin: spec.inputOrigin } : undefined);
         }
         else if (session!.state === "open_turn") await session!.recover();
         const turn = placed ? session!.turnEnd() : Promise.resolve({ status: "completed" as const });

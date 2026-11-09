@@ -292,6 +292,8 @@ export async function cliRunSpecFromLaunch(launch: RunLaunch, run: AdapterRun, d
     adapter,
     session,
     input,
+    // A trigger's first input is its origin's, the launch's own owner flag kept (run-launch.ts keepInputOrigin).
+    ...(launch.inputOrigin ? { inputOrigin: launch.inputOrigin } : {}),
     ...(runner.record ? { record: runner.record } : {}),
     gate,
     runCap,
