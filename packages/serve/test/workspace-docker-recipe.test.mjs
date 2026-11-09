@@ -1,90 +1,32 @@
 // A Docker sandbox on a fresh host, through the composer (workspace/computer-deps.ts computerDepsFrom): the run's image is
 // the computer package's recipe (DOCKER_RECIPE), which no registry has, so it is BUILT here (`docker build -`, tagged
 // agentrun-computer:<hash>) when Docker lacks it, never pulled; an image the owner names (AGENTRUN_DOCKER_IMAGE) is pulled.
-// The real Docker provider (providerFor("docker")) runs over a fake docker first on PATH: the computer package's fake for
-// containers, behind a host of our own that keeps the images (inspect, build, pull, and run's own pull of an image it
-// lacks), as Docker does: the recipe's tag is in no registry, so a pull of it, or a run of it unbuilt, is refused.
+// The real Docker provider (providerFor("docker")) runs over a host that keeps its images (docker-host-fake.mjs, first on
+// PATH, over the computer package's fake docker), as Docker does: the recipe's tag is in no registry, so a pull of it, or a
+// run of it unbuilt, is refused.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { after, test } from "node:test";
 import { DOCKER_RECIPE, providerFor, recipeTag } from "@parcha/agentrun-computer";
-import { fakeDocker } from "../../computer/test/fake-docker.mjs";
 import { computerDepsFrom, localWorkspace } from "../dist/workspace/index.js";
+import { dockerHost } from "./docker-host-fake.mjs";
 
 const dirs = [];
 after(() => { for (const dir of dirs) rmSync(dir, { recursive: true, force: true }); });
-const scratch = (name) => {
-  const dir = realpathSync(mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), name)));
-  dirs.push(dir);
-  return dir;
-};
 const RECIPE_TAG = recipeTag(DOCKER_RECIPE);
 
-/** A host's images over the computer package's fake docker: a `docker` first on PATH that keeps which images the host has
- *  (none to begin with), answers `version`, `image inspect` (the labels), `build` (the tag and labels it is given) and
- *  `pull` (refused for the recipe's repository, which no registry has), and refuses a `run` of an image it lacks that no
- *  registry has, as Docker's own pull for run is refused. Every other call is the fake's. `calls()`: each call's argv. */
-function dockerHost() {
-  const fake = fakeDocker();
-  const dir = scratch("agentrun-docker-host-");
-  const images = join(dir, "images.json");
-  const log = join(dir, "calls.jsonl");
-  writeFileSync(images, "{}");
-  writeFileSync(log, "");
-  const program = join(dir, "docker");
-  writeFileSync(program, `#!${process.execPath}
-const { appendFileSync, readFileSync, writeFileSync } = require("node:fs");
-const { spawnSync } = require("node:child_process");
-const args = process.argv.slice(2);
-appendFileSync(${JSON.stringify(log)}, JSON.stringify(args) + "\\n");
-const load = () => JSON.parse(readFileSync(${JSON.stringify(images)}, "utf8"));
-const save = (all) => writeFileSync(${JSON.stringify(images)}, JSON.stringify(all));
-const unpullable = (image) => image.startsWith("agentrun-computer:");
-const denied = (image) => { process.stderr.write("Error response from daemon: pull access denied for " + image.split(":")[0] + ", repository does not exist or may require 'docker login'\\n"); process.exit(1); };
-if (args[0] === "version") { process.stdout.write("amd64\\n"); process.exit(0); }
-if (args[0] === "image" && args[1] === "inspect") {
-  const all = load(); const image = args.at(-1);
-  if (!all[image]) { process.stderr.write("Error response from daemon: No such image: " + image + "\\n"); process.exit(1); }
-  process.stdout.write(JSON.stringify(all[image].labels) + "\\n"); process.exit(0);
-}
-if (args[0] === "build") {
-  readFileSync(0);
-  const tag = args[args.indexOf("--tag") + 1];
-  const labels = Object.fromEntries(args.flatMap((arg, i) => (args[i - 1] === "--label" ? [[arg.slice(0, arg.indexOf("=")), arg.slice(arg.indexOf("=") + 1)]] : [])));
-  const all = load(); all[tag] = { labels }; save(all);
-  process.stdout.write("sha256:" + "b".repeat(64) + "\\n"); process.exit(0);
-}
-if (args[0] === "pull") {
-  const image = args.at(-1);
-  if (unpullable(image)) denied(image);
-  const all = load(); all[image] = { labels: {} }; save(all);
-  process.stdout.write(image + "\\n"); process.exit(0);
-}
-if (args[0] === "run" && !args.includes("node")) {
-  const all = load();
-  const image = args.find((arg) => arg.startsWith("agentrun-computer:") || arg.includes("ubuntu:"));
-  if (image !== undefined && !all[image]) {
-    if (unpullable(image)) { process.stderr.write("Unable to find image '" + image + "' locally\\n"); denied(image); }
-    all[image] = { labels: {}, pulledByRun: true }; save(all);
-  }
-}
-const ran = spawnSync(${JSON.stringify(fake.program)}, args, { stdio: "inherit" });
-process.exit(ran.status ?? 1);
-`, { mode: 0o755 });
-  const calls = () => readFileSync(log, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line));
-  return { fake, dir, program, calls, images: () => JSON.parse(readFileSync(images, "utf8")) };
-}
-
-/** A Mode 1 Docker sandbox through the composer on a host made by dockerHost, with `env` the server's environment. */
+/** A Mode 1 Docker sandbox through the composer on a fresh host (dockerHost), with `env` the server's environment. */
 async function dockerSandbox(t, env = {}) {
   const host = dockerHost();
   const path = process.env.PATH;
   process.env.PATH = `${host.dir}:${path}`;
   t.after(() => { process.env.PATH = path; });
-  const root = join(scratch("agentrun-docker-run-"), "work");
+  const dir = realpathSync(mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-docker-run-")));
+  dirs.push(dir);
+  const root = join(dir, "work");
   mkdirSync(root);
   const store = {
     agents: { revision: async () => undefined },
