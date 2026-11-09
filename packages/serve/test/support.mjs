@@ -210,8 +210,12 @@ function withAgents(store) {
       return typeof value === "function" ? value.bind(target) : value;
     },
   });
-  return { triggers, runs: store.runs };
+  return { triggers, runs: store.runs, liveViewers: store.liveViewers };
 }
+
+/** The store a server serve() started on `data` was handed (its triggers', and the runners' live viewers): a test's
+ *  runner side writes into it as tl-places' runner does. */
+export const storeOfData = (data) => stores.get(data)?.store;
 
 /** Trigger stores handed to servers a test starts itself (startServe, not serve()): closed when the file's tests are done,
  *  after every server a test closes in its own hooks. */
