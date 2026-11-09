@@ -131,6 +131,16 @@ describe("Settings → GitHub", () => {
     expect(alert.querySelector("a")).toBeNull();
   });
 
+  it("a wrong-origin refusal with a public URL served is one line, the linked one: the server's words are not said twice", async () => {
+    const { v2 } = server({ connection: null }, { connect: () => refusal(409, "github_wrong_origin", "Open this server at https://agentrun.example.test to connect GitHub.", { public_url: "https://agentrun.example.test" }) });
+    const p = await page(v2);
+    await p.click(/^Connect GitHub$/);
+    const alert = p.host.querySelector('[role="alert"]') as HTMLElement;
+    expect(alert.querySelectorAll("p")).toHaveLength(1);
+    expect(alert.textContent).toBe("Open this server at https://agentrun.example.test/ to connect GitHub.");
+    expect(alert.querySelector("a")?.getAttribute("href")).toBe("https://agentrun.example.test/");
+  });
+
   it("a wrong-origin refusal whose public URL is no http(s) URL links nothing", async () => {
     const { v2 } = server({ connection: null }, { connect: () => refusal(409, "github_wrong_origin", WRONG_ORIGIN, { public_url: "javascript:alert(1)" }) });
     const p = await page(v2);

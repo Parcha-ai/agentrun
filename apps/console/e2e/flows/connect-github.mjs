@@ -63,8 +63,8 @@ export default {
       const code = (await refusal.json().catch(() => null))?.error?.code;
       check(code === "github_wrong_origin", `a start from another origin was refused as ${code}`);
       const alert = there.getByRole("alert");
-      const words = await alert.innerText();
-      check(words.includes(`Open this server at ${origin} to connect GitHub.`), `the refusal says: ${words}`);
+      const lines = (await alert.innerText()).split("\n").map((line) => line.trim()).filter(Boolean);
+      check(lines.length === 1 && lines[0] === `Open this server at ${origin} to connect GitHub.`, `the refusal is one line, the linked one; it says: ${lines.join(" | ")}`);
       const link = alert.getByRole("link");
       const href = await link.getAttribute("href");
       check(href?.startsWith(origin), `the refusal links ${href}, not the public URL ${origin}`);

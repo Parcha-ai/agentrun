@@ -487,3 +487,30 @@ test("a server that closes while an installation event's check waits on GitHub s
   assert.deepEqual(server.lines.filter((line) => /github_installation_lost|connection_lost/.test(line)), [], "the deletion not taken");
   assert.deepEqual(unhandled, [], "no unhandled rejection");
 });
+
+test("a verified deletion of the last installation the server tracks is confirmed with GitHub's own list before any trigger turns off: GitHub still listing others, the list becomes GitHub's and the triggers stay on", { timeout: 60_000 }, async (t) => {
+  const server = await connectable(t);
+  await made(server.api, "review");
+  await connect(server);
+  const id = (await server.api("POST", "/triggers", { name: "a", source: { kind: "github", accept: [{ event: "pull_request" }] }, target: target("review") })).body.id;
+  const { webhook_secret: secret } = server.github.app;
+  // The server tracks 777 alone; GitHub holds two others it missed the events of.
+  server.github.installations.delete(777);
+  server.github.installations.set(778, { account: "other", suspended_at: null });
+  server.github.installations.set(779, { account: "third", suspended_at: null });
+  const deleted = await deliver(server.baseUrl, secret, "installation", { action: "deleted", installation: { id: 777, account: { login: "acme" }, app_id: 4242 } });
+  assert.equal(deleted.status, 200, JSON.stringify(deleted.body));
+  const trigger = (await server.api("GET", `/triggers/${id}`)).body;
+  assert.deepEqual([trigger.enabled, trigger.disabled], [true, null], JSON.stringify(trigger));
+  assert.deepEqual((await server.api("GET", "/integrations/github")).body.installations, [{ id: 778, account: "other" }, { id: 779, account: "third" }], "GitHub's list");
+  assert.deepEqual(server.lines.filter((line) => /connection_lost|github_installation_lost/.test(line)), [], "nothing turned off");
+});
+
+test("PATCH keeps a trigger's source kind: a webhook given a github source is refused on source.kind, with or without a GitHub App", { timeout: 60_000 }, async (t) => {
+  const server = await connectable(t);
+  await made(server.api, "review");
+  const made1 = await server.api("POST", "/triggers", { name: "w", source: { kind: "webhook" }, target: target("review") });
+  assert.equal(made1.status, 201, JSON.stringify(made1.body));
+  const moved = await server.api("PATCH", `/triggers/${made1.body.id}`, { source: { kind: "github", accept: [{ event: "pull_request" }] }, enabled: true });
+  assert.deepEqual([moved.status, moved.body.error?.fields?.map((f) => f.field)], [422, ["source.kind"]], JSON.stringify(moved.body));
+});
