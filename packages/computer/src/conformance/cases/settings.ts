@@ -2,7 +2,7 @@
 // no fixture app can be installed on it; the touch, keys and apps cases then drive Settings instead and check what
 // they did in its tree, with no model. Settings shows a list of rows, each a clickable row holding its title. A tap on
 // one opens a page that shows its title, and its search field shows the text typed into it.
-import type { ComputerKind, Rect, UiNode, UiTreeResult } from "../../protocol.js";
+import type { ComputerKind, Point, Rect, UiNode, UiTreeResult } from "../../protocol.js";
 import type { CaseContext } from "../types.js";
 
 /** The stock Settings app of each phone kind this suite knows. */
@@ -35,6 +35,37 @@ export async function openSettings(t: CaseContext): Promise<string> {
 		throw new Error(`${error instanceof Error ? error.message : String(error)} (in front: ${seen ?? "nothing"})`);
 	}
 	return app;
+}
+
+/**
+ * What a tap on a row met, in words for a failure: the screen in px and in dp (px over the shot's scale; Settings shows
+ * two panes from 600 dp wide), what is in front, the tap point and the row's bounds, whether the row's title shows
+ * outside the list (a page opened beside it), and whether the next row is still shown. A part that cannot be read
+ * says so; none of it throws.
+ */
+export async function tapScene(t: CaseContext, { at, row, next, tree }: { at: Point; row: Row; next: Row; tree: UiTreeResult | undefined }): Promise<string> {
+	const unread = (error: unknown) => `unread (${error instanceof Error ? error.message : String(error)})`;
+	let screen: string;
+	try {
+		const { width, height, scale } = await t.call("screen.shot", {});
+		screen = `screen ${width}x${height} px${scale > 0 ? `, ${Math.round(width / scale)}x${Math.round(height / scale)} dp` : ""}`;
+	} catch (error) {
+		screen = `screen ${unread(error)}`;
+	}
+	let front: string;
+	try {
+		front = (await foreground(t)) ?? "nothing";
+	} catch (error) {
+		front = unread(error);
+	}
+	const tap = `the tap at ${at} on the row's bounds ${JSON.stringify(row.bounds)}`;
+	if (tree === undefined) return `${screen}; in front: ${front}; ${tap}; no tree was read`;
+	const list = listOf(tree);
+	const inList = new Set(list === undefined ? [] : nodesOf(list));
+	const outside = nodesOf(tree.root).find((node) => node.text === row.text && !inList.has(node));
+	const title = `its title outside the list: ${outside === undefined ? "no" : `yes, at ${JSON.stringify(outside.bounds)}`}`;
+	const shown = `the row ${JSON.stringify(next.text)}: ${textsOf(tree).includes(next.text) ? "still shown" : "gone"}`;
+	return `${screen}; in front: ${front}; ${tap}; ${title}; ${shown}`;
 }
 
 /** Every node of a tree, depth first. */

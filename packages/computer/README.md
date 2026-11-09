@@ -1902,7 +1902,9 @@ Conformance (`src/conformance/phone-harness.ts`) reads `COMPUTER_PHONE_HARNESS_A
 
 With no fixture app (it takes no files), the touch, keys and apps cases drive the stock Settings app and read back
 through `apps.ui_tree` (`src/conformance/cases/settings.ts`):
-- `touch.tap`: a tap on a row opens its page, which shows the row's title, and back comes back;
+- `touch.tap`: a tap on a row opens its page, which shows the row's title, and back comes back. When the page does not
+  come, its words say what it saw: the screen in px and dp, what is in front, the tap point and the row's bounds,
+  whether the title shows outside the list, and whether the next row is still shown;
 - `touch.swipe`: a swipe up moves the list up;
 - `input.type-text` and `input.key-table-refuses-unknown`: the text read back from the search field;
 - `apps.launch-terminate`, which needs the apps group alone: Settings is listed; once launched it is in front, and
