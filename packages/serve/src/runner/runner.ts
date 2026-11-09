@@ -59,6 +59,10 @@ export interface RunnerOptions {
   /** How long a run's end waits for a command still with its loop before it writes its end; an answer after that is
    *  dropped (nothing written, nothing said). */
   endWaitMs?: number;
+  /** How long close() lets each held run go on to its own end (a turn in flight finishes, its outcome journaled, as a
+   *  run's own process drained on the server's stop) before it stops the rest for a shutdown, to resume. Its commands
+   *  still reach it meanwhile (a person's stop ends it at once). Default 0: every loop stopped at once. */
+  drainMs?: number;
   onEvent?: (event: RunnerEvent) => void;
   /** The runner's clock (epoch ms) for what it writes itself: a withdrawn answer's time in an end it writes. Default
    *  Date.now. */
@@ -84,7 +88,8 @@ export interface Runner {
   readonly name: string;
   /** The claims this runner holds and has not lost. */
   held(): Claim[];
-  /** Stops claiming, stops every loop where it can resume, flushes and releases their runs. */
+  /** Stops claiming, lets each held run go on to its own end for up to drainMs, then stops every loop left where it can
+   *  resume, flushes and releases their runs. */
   close(): Promise<void>;
   /** As if the process froze or died: every timer stops, nothing is stopped, flushed or released (a test's crash). */
   kill(): void;
@@ -130,6 +135,7 @@ export function startRunner(options: RunnerOptions): Runner {
     resumeBackoffMs = 5_000,
     interruptBackoffMs = 1_000,
     endWaitMs = 5_000,
+    drainMs = 0,
     onEvent = () => {},
     redact = secretRedactor(runnerSecrets(process.env)),
     now = Date.now,
@@ -161,6 +167,8 @@ export function startRunner(options: RunnerOptions): Runner {
   /** Each run's ends in a row, on this runner, as interrupted on its own: its next release's backoff doubles with them. */
   const interruptedInARow = new Map<string, number>();
   let closed = false;
+  /** close() is letting its held runs go on to their own ends (drainMs): nothing is claimed, commands still reach them. */
+  let draining = false;
   let killed = false;
   let pollTimer: NodeJS.Timeout | undefined;
   let commandTimer: NodeJS.Timeout | undefined;
@@ -302,8 +310,9 @@ export function startRunner(options: RunnerOptions): Runner {
   };
   /** One read of every held run's new command rows a tick (store.commandsOf), never one per run, each run's then handed
    *  to its loop; the next tick is set once this read is done. */
+  const delivering = () => !killed && (!closed || draining);
   const deliverAll = () => {
-    if (closed || killed) return;
+    if (!delivering()) return;
     void (async () => {
       const due = [...runs.values()].filter((held) => !(held.delivering || held.stopping || held.ending || held.fence.lost));
       if (due.length === 0) return;
@@ -314,7 +323,7 @@ export function startRunner(options: RunnerOptions): Runner {
         for (const held of due) emit({ type: "error", runId: held.claim.runId, step: "commands", message: message(error) });
       }
     })().finally(() => {
-      if (!closed && !killed) commandTimer = setTimeout(deliverAll, commandPollMs);
+      if (delivering()) commandTimer = setTimeout(deliverAll, commandPollMs);
     });
   };
 
@@ -566,6 +575,17 @@ export function startRunner(options: RunnerOptions): Runner {
       if (closed || killed) return;
       closed = true;
       clearTimeout(pollTimer);
+      draining = drainMs > 0;
+      // The drain: each held run goes on to its own end (an answer, a park, a person's stop: their commands still reach
+      // them), its claims renewed, for up to drainMs; a turn in flight then finishes, never cut and paid again on the
+      // resume. Whatever is still going at the bound is stopped below, for a shutdown, where it can resume.
+      const going = [...runs.values()].filter((held) => !held.fence.lost && !held.ending);
+      if (draining && going.length > 0) {
+        let bound: NodeJS.Timeout | undefined;
+        await Promise.race([Promise.all(going.map((held) => held.done)), new Promise<void>((resolve) => (bound = setTimeout(resolve, drainMs)))]);
+        clearTimeout(bound);
+      }
+      draining = false;
       clearTimeout(commandTimer);
       const live = [...runs.values()].filter((held) => !held.fence.lost);
       for (const held of live) {
