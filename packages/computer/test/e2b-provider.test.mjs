@@ -124,6 +124,25 @@ test("an E2B desktop is kind desktop with daemon child, the desktop groups, netw
 	assert.equal(typeof provider.extend, "function");
 });
 
+test("an E2B computer never takes public traffic: the provider takes no publicStream, has no stream(), and the conformance module reads no such setting", async () => {
+	// A screen is streamed through agentrun alone, never through a vendor's URL: publicStream let public traffic in,
+	// which opened every port in the computer to anyone with its address. The option is gone, not refused for now.
+	for (const publicStream of [true, false]) {
+		assert.throws(() => setup({ publicStream }), (error) => /publicStream is no longer an option/.test(error.message) && !error.message.includes(KEY), `publicStream: ${publicStream}`);
+	}
+	for (const kind of ["desktop", "linux"]) {
+		const { provider } = setup({ kind });
+		assert.ok(!("stream" in provider), `${kind}: no stream()`);
+	}
+	const { provider, fake } = setup();
+	assert.equal((await provider.create(SPEC)).ok, true);
+	assert.equal(createOpts(fake).network.allowPublicTraffic, false, "public traffic off");
+	assert.equal(ENV.publicStream, undefined, "no setting names a public stream");
+	assert.ok(!Object.values(ENV).includes("COMPUTER_E2B_PUBLIC_STREAM"));
+	// The conformance module reads only its ENV's names (providers.test.mjs), so the old setting is never read.
+	assert.deepEqual(settingsFromEnv({ [ENV.key]: KEY, COMPUTER_E2B_PUBLIC_STREAM: "1" }), { apiKey: KEY }, "the old setting gives no option");
+});
+
 test("kind linux is the plain template: no display, groups exec, files and processes", () => {
 	const { provider } = setup({ kind: "linux" });
 	const caps = provider.capabilities();
