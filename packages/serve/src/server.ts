@@ -49,6 +49,7 @@ import { durationMs, logLine } from "./print.js";
 import { knownToolCostOf, redactorOf, type RunMoment, type State, type Status, toolCostOf } from "./run-view.js";
 import { approve, archiveRun, cancel, message, raiseCap, type StartDeps, type StartOptions, startRun, stop as stopRunOverStore, WAITS_ON_A_PERSON } from "./runs-over-store.js";
 import { momentOverStore, summaryOverStore, type ViewDeps, viewOverStore, withheldOverStore } from "./store-view.js";
+import { runCutOf } from "./run-cut.js";
 import { readLaunchBody } from "./run-launch.js";
 import { listRunFiles as listRunFilesOverStore, readRunFile as readRunFileOverStore, runBrowserState, runGraphView, type RunReadsDeps, runTimelines } from "./run-reads-over-store.js";
 import { triggerTargets, type TriggerTargetDeps } from "./trigger-targets.js";
@@ -1164,10 +1165,14 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // The route frames the SSE around its `page`, which long-polls the journal, byte-identical to the old live run's page.
   const timelines = runTimelines({
     context: ctx,
-    // Every row cut of each secret this server never shows (serverSecrets, read for each page: one rotated or saved since
-    // is cut at once), in every spelling of it, as the run view's answer and title are: a run's Timeline is read from its
-    // journal, which keeps what the run said whole.
-    timelineRows: (forStore, runId, context) => runTimeline(forStore, runId, context, { redact: redactorOf(serverSecrets()) }),
+    // Every row cut by the run's one cut (run-cut.ts runCutOf, read for each page: a secret rotated or saved since is cut
+    // at once), the set its view's words and title are cut of: each secret this server never shows and each browser
+    // sign-in pointer the run was handed. A run whose hand can't be read back here is withheld: none of its rows. A run's
+    // Timeline is read from its journal, which keeps what the run said whole.
+    timelineRows: async (forStore, runId, context) => {
+      const cut = await runCutOf({ serverSecrets, signIns }, forStore, runId);
+      return cut === "withheld" ? [] : runTimeline(forStore, runId, context, { redact: redactorOf(cut) });
+    },
     runView: (forStore, runId) => viewOverStore(forStore, runId, viewDepsFor(ownOriginOf())),
   });
   const triggerDeps: TriggerTargetDeps = {

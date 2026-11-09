@@ -46,6 +46,7 @@ import { notesReadOf, runLearningEnd, type RunLearning, withNotes } from "./stor
 import { runReflect, runTimeline } from "./store-reads/journal.js";
 import { type RunReadState, readRun } from "./store-reads/runs.js";
 import { keptVendor, type Plane } from "./tool-plane.js";
+import { runCutOf } from "./run-cut.js";
 import { Turns } from "./turns.js";
 import { harnessOfBody } from "./harness.js";
 import { browserAsk as browserAskOf, BROWSER_HANDOVER_KIND } from "./browser-commands.js";
@@ -191,10 +192,9 @@ async function storeRunOf(store: Store, runId: string, deps: ViewDeps): Promise<
   // The sign-in cut: the pointers the run was handed read back, so a run whose words could repeat one is cut of it, or
   // withheld when this server cannot read back what it was handed (rowShown's choke point). A run with no mark is cut of
   // the server's secrets alone.
-  const browser = launch?.plane ? keptVendor(launch.plane as Plane).browser : undefined;
-  const pointers = await handedPointers(deps.signIns, row.agent, browser, handedOf(runRow));
-  const unshown = pointers === "unreadable";
-  const values = unshown ? [] : [...deps.serverSecrets(), ...pointers.refs.filter((ref) => ref.length >= MIN_SECRET)];
+  const cut = await runCutOf(deps, store, runId);
+  const unshown = cut === "withheld";
+  const values = cut === "withheld" ? [] : cut;
 
   // The tool-call approvals the run waits (or waited) on, from its journal: each call the gate parked for a person, and
   // the answers given, which the status, pending and moment views read the same as the file path read them from the run's
@@ -308,7 +308,7 @@ export async function viewOverStore(store: Store, runId: string, deps: ViewDeps)
     sha: null,
     status,
     state,
-    title: launch?.title ?? "",
+    title: unshown ? WITHHELD_SIGN_IN : redacted(launch?.title ?? "", values),
     place: launch?.place ?? { mode: "runner" },
     // The runner holding the run now, when one does (a running run with a live claim): its id, the claim's count (up one each
     // claim, carried on every write the runner makes), and when the claim runs out. Null when no runner holds the run, so a
