@@ -180,4 +180,7 @@ test("waiting firings, one per trigger, are read with one store query a tick, ne
   }
   assert.equal(reads.waiting - before.waiting, 3, "one waiting read a tick");
   assert.equal(reads.perFiring - before.perFiring, 0, "no read per waiting firing while none has room");
+  // And no drive: the third tick's turn done (the timer armed again), no waiting firing was started while none had room.
+  await armed(clock, T0 + 2_000);
+  assert.equal(calls.start.length, N, "no waiting firing started while none has room");
 });
