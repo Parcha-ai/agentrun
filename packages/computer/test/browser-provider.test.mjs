@@ -143,7 +143,9 @@ for (const [id, vendor] of Object.entries(VENDORS)) {
 		const provider = await vendor.make(fake);
 		const created = value(await provider.create(spec()), "create");
 		assert.deepEqual(Object.keys(created).sort(), ["id", "name"]);
-		assert.deepEqual(vendor.held(fake, created.id), vendor.heldLabels, "the labels, as the vendor holds them");
+		const { agentrun_create: byMetadata, "agentrun.create": byTags, ...held } = vendor.held(fake, created.id);
+		assert.deepEqual(held, vendor.heldLabels, "the labels, as the vendor holds them");
+		assert.match(byMetadata ?? byTags, /^[0-9a-f]{16}$/, "beside them, the create label: a value of this create's own");
 		assert.equal(vendor.lifetime(fake, created.id) !== undefined, true, "the lifetime rides the create");
 		value(await provider.create(spec({ labels: { "agentrun.run": "run-2" } })), "another run's");
 		const byId = value(await provider.attach({ id: created.id }), "attach by id");
@@ -362,7 +364,8 @@ test("browserbase: a label's dots ride as underscores in userMetadata, which Bro
 	const provider = await VENDORS.browserbase.make(fake);
 	const labels = { "agentrun.conformance": "abc123", "agentrun.conformance.case": "labels", job: "j-42" };
 	const created = value(await provider.create(spec({ labels })), "create with dotted label keys");
-	assert.deepEqual(fake.sessions.get(created.id).userMetadata, { agentrun_conformance: "abc123", agentrun_conformance_case: "labels", job: "j-42" });
+	const { agentrun_create: _, ...held } = fake.sessions.get(created.id).userMetadata;
+	assert.deepEqual(held, { agentrun_conformance: "abc123", agentrun_conformance_case: "labels", job: "j-42" });
 	const listed = value(await provider.list({ "agentrun.conformance": "abc123" }), "list by a dotted label");
 	assert.deepEqual(listed.map((info) => info.ref), [created]);
 	assert.deepEqual(listed[0].labels, labels, "the labels read back as they were given");

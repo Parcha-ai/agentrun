@@ -2,6 +2,7 @@
 // none). The provider answers hello and ping itself, from the vendor's API; connect hands over the vendor's signed CDP
 // URL, which a driver dials. That URL and the live view's are secrets: they live in memory (a UrlStore), and never reach
 // a ref, a list, an error's words or a report.
+import { randomBytes } from "node:crypto";
 import type { CallOptions } from "./client.js";
 import type { ComputerClient, DaemonMethod, DaemonMethods, Group, HelloResult } from "./protocol.js";
 import type { ComputerCapabilities, ComputerSpec, Refusal } from "./provider.js";
@@ -88,6 +89,65 @@ export const carries = (held: unknown, labels: Record<string, string>) =>
 export const labelsOf = (held: unknown): Record<string, string> =>
 	typeof held === "object" && held !== null ? Object.fromEntries(Object.entries(held).filter((entry): entry is [string, string] => typeof entry[1] === "string")) : {};
 
+/**
+ * The label every create writes beside the spec's, a value of its own: a create whose reply is lost, or whose caller
+ * cancels it, finds the browser it made by this label alone and releases it. The provider's own: check() refuses it in a
+ * spec, and no list or attach shows it.
+ */
+export const CREATE_LABEL = "agentrun.create";
+
+/** Labels without the provider's create label. */
+export const withoutCreateLabel = (labels: Record<string, string>): Record<string, string> => {
+	const { [CREATE_LABEL]: _, ...rest } = labels;
+	return rest;
+};
+
+/** A create label's value: 16 hex digits, fresh per create. */
+export const createLabelValue = () => randomBytes(8).toString("hex");
+
+/**
+ * Whether a create that threw may still have made a browser: anything but the vendor's own 4xx answer (a refusal, which
+ * makes nothing). A request not answered, aborted, cut short, or answered 5xx or with a body that is no browser may
+ * have been admitted.
+ */
+export function createUncertain(error: unknown): boolean {
+	const status = (error as { status?: unknown } | null)?.status;
+	return !(typeof status === "number" && status >= 400 && status < 500);
+}
+
+/** How long a lost create's browser is looked for, in all, and how often: a vendor may list it a moment late. */
+export const RECOVER_MS = 30_000;
+const RECOVER_TRIES = 3;
+const RECOVER_GAP_MS = 2_000;
+
+/**
+ * After a create whose outcome is unknown: the browsers carrying its create label, found under a signal of the
+ * recovery's own (the caller's may be what ended the create), each released. The words say what became of them, for the
+ * create's failure; they never carry a URL.
+ */
+export async function recoverCreate(
+	what: string,
+	find: (signal: AbortSignal) => Promise<Result<string[]>>,
+	release: (id: string) => Promise<Result<void>>,
+	sleep: (ms: number) => Promise<void>,
+): Promise<string> {
+	const signal = AbortSignal.timeout(RECOVER_MS);
+	let found: Result<string[]> = ok([]);
+	for (let tries = 0; tries < RECOVER_TRIES; tries++) {
+		if (tries > 0) await sleep(RECOVER_GAP_MS);
+		found = await find(signal);
+		if (!found.ok || found.value.length > 0 || signal.aborted) break;
+	}
+	if (!found.ok) return `the ${what} it may have made could not be looked for (${found.error.message}); its labels let a sweep find it`;
+	if (found.value.length === 0) return `no ${what} carries its create label, so none was made or the vendor does not list it yet; its labels let a sweep find it`;
+	const words: string[] = [];
+	for (const id of found.value) {
+		const released = await release(id);
+		words.push(released.ok ? `the ${what} it made (${id}) was released` : `the ${what} it made (${id}) was not released (${released.error.code}), and its labels let a sweep find it`);
+	}
+	return words.join("; ");
+}
+
 const SPEC_FIELDS = new Set(["image", "lifetimeMs", "network", "labels"]);
 
 /**
@@ -109,6 +169,7 @@ export function checkBrowser(spec: ComputerSpec, capabilities: ComputerCapabilit
 	if (labels !== undefined) {
 		const problem = labelsProblem(labels);
 		if (problem) refusals.push({ field: "labels", message: problem });
+		else if (Object.hasOwn(labels as object, CREATE_LABEL)) refusals.push({ field: "labels", message: `the label ${CREATE_LABEL} is the provider's own: each create writes it, so a lost create finds its browser` });
 	}
 	for (const [field, value] of Object.entries(given)) {
 		if (!SPEC_FIELDS.has(field) && value !== undefined) refusals.push({ field, message: `a ${vendor} browser does not take ${field}` });

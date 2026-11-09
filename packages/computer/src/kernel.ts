@@ -18,8 +18,12 @@ import {
 	browserClient,
 	browserHello,
 	BrowserVendorError,
+	CREATE_LABEL,
 	carries,
+	causeOf,
 	checkBrowser,
+	createLabelValue,
+	createUncertain,
 	DEFAULT_CONFIRM,
 	defaultSleep,
 	httpsBase,
@@ -29,11 +33,14 @@ import {
 	memoryUrls,
 	queryable,
 	type ReleaseConfirm,
+	recoverCreate,
 	releaseConfirmed,
 	restCall,
 	type RestReply,
 	type UrlStore,
+	vendorFail,
 	vendorFailure,
+	withoutCreateLabel,
 } from "./browser.js";
 import type { KindCapabilities } from "./kinds.js";
 import type { MountKind } from "./mount.js";
@@ -170,18 +177,24 @@ export class KernelProvider implements ComputerProvider {
 		const refusals = this.check(spec);
 		if (refusals.length > 0) return fail("refused", refusals.map(({ field, message }) => `${field}: ${message}`).join("; "));
 		if (signal?.aborted) return fail("aborted", "create was aborted before Kernel was called");
-		const body = { ...settings, timeout_seconds: Math.ceil(spec.lifetimeMs / 1000), tags: { ...spec.labels } };
+		const createdBy = createLabelValue();
+		const body = { ...settings, timeout_seconds: Math.ceil(spec.lifetimeMs / 1000), tags: { ...spec.labels, [CREATE_LABEL]: createdBy } };
 		let made: RestReply;
 		try {
 			made = await this.#request("POST", "/browsers", { body, ...(signal ? { signal } : {}) });
 		} catch (error) {
-			return vendorFailure("kernel", NAME, "POST /browsers", error);
+			const failed = vendorFailure("kernel", NAME, "POST /browsers", error);
+			if (failed.ok || !createUncertain(error)) return failed;
+			// The browser may have been made though its answer never came: found by its create label, never made again.
+			return vendorFail(failed.error.code, `${failed.error.message}; ${await this.#recover(createdBy)}`, causeOf(failed));
 		}
 		const browser = (made.json ?? {}) as KernelBrowser;
 		const id = text(browser.session_id);
 		const url = text(browser.cdp_ws_url);
-		if (made.status === 404 || idProblem(id, NAME) !== undefined) {
-			return vendorFailure("kernel", NAME, "POST /browsers", new BrowserVendorError(NAME, "POST /browsers", made.status, "no_session"));
+		if (made.status === 404) return vendorFailure("kernel", NAME, "POST /browsers", new BrowserVendorError(NAME, "POST /browsers", made.status, "no_session"));
+		if (idProblem(id, NAME) !== undefined) {
+			const failed = vendorFailure("kernel", NAME, "POST /browsers", new BrowserVendorError(NAME, "POST /browsers", made.status, "no_session"));
+			return failed.ok ? failed : fail(failed.error.code, `${failed.error.message}; ${await this.#recover(createdBy)}`);
 		}
 		const unusable = cdpUrlProblem(url, NAME, CDP_DOMAIN);
 		if (unusable !== undefined) {
@@ -193,6 +206,23 @@ export class KernelProvider implements ComputerProvider {
 		const live = text(browser.browser_live_view_url);
 		if (live !== "") this.#live.set(id, live);
 		return ok(refOf(id));
+	}
+
+	/** The browsers a create tagged createdBy made, released: what recoverCreate says of them. */
+	#recover(createdBy: string): Promise<string> {
+		const find = async (signal: AbortSignal): Promise<Result<string[]>> => {
+			const call = "GET /browsers";
+			let page: RestReply;
+			try {
+				page = await this.#request("GET", "/browsers", { query: new URLSearchParams({ status: "active", [`tags[${CREATE_LABEL}]`]: createdBy, limit: "100", offset: "0" }), signal });
+			} catch (error) {
+				return vendorFailure("kernel", NAME, call, error);
+			}
+			if (page.status === 404 || !Array.isArray(page.json)) return vendorFailure("kernel", NAME, call, new BrowserVendorError(NAME, call, page.status, "not_a_list"));
+			const ids = (page.json as KernelBrowser[]).filter((row) => !row?.deleted_at && labelsOf(row?.tags)[CREATE_LABEL] === createdBy).map((row) => text(row.session_id));
+			return ok([...new Set(ids.filter((one) => one !== ""))]);
+		};
+		return recoverCreate("browser", find, (id) => this.release(refOf(id), "delete"), this.#sleep);
 	}
 
 	/**
@@ -287,7 +317,7 @@ export class KernelProvider implements ComputerProvider {
 				const id = text(row?.session_id);
 				if (id !== "" && !row.deleted_at && carries(row.tags, labels) && !seen.has(id)) {
 					seen.add(id);
-					found.push({ id, tags: labelsOf(row.tags) });
+					found.push({ id, tags: withoutCreateLabel(labelsOf(row.tags)) });
 				}
 			}
 			if (page.headers.get("x-has-more") !== "true") return ok(found);

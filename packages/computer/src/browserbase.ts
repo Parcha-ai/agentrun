@@ -22,8 +22,12 @@ import {
 	browserClient,
 	browserHello,
 	BrowserVendorError,
+	CREATE_LABEL,
 	carries,
+	causeOf,
 	checkBrowser,
+	createLabelValue,
+	createUncertain,
 	DEFAULT_CONFIRM,
 	defaultSleep,
 	httpsBase,
@@ -33,10 +37,13 @@ import {
 	memoryUrls,
 	queryable,
 	type ReleaseConfirm,
+	recoverCreate,
 	releaseConfirmed,
 	restCall,
 	type UrlStore,
+	vendorFail,
 	vendorFailure,
+	withoutCreateLabel,
 } from "./browser.js";
 import type { KindCapabilities } from "./kinds.js";
 import type { MountKind } from "./mount.js";
@@ -81,7 +88,8 @@ export const labelKey = (metadataKey: string) => metadataKey.replaceAll("_", "."
 /** Labels as userMetadata. */
 const toMetadata = (labels: Record<string, string> = {}) => Object.fromEntries(Object.entries(labels).map(([key, value]) => [metadataKey(key), value]));
 /** userMetadata as labels: its string entries, each key read back. */
-const fromMetadata = (held: unknown): Record<string, string> => Object.fromEntries(Object.entries(labelsOf(held)).map(([key, value]) => [labelKey(key), value]));
+const fromMetadata = (held: unknown): Record<string, string> =>
+	withoutCreateLabel(Object.fromEntries(Object.entries(labelsOf(held)).map(([key, value]) => [labelKey(key), value])));
 
 /** Why labels cannot ride a Browserbase session's userMetadata, in words naming the label; undefined when they can. */
 export function browserbaseLabelsProblem(labels: unknown): string | undefined {
@@ -256,20 +264,26 @@ export class BrowserbaseProvider implements ComputerProvider {
 		const refusals = this.check(spec);
 		if (refusals.length > 0) return fail("refused", refusals.map(({ field, message }) => `${field}: ${message}`).join("; "));
 		if (signal?.aborted) return fail("aborted", "create was aborted before Browserbase was called");
+		const createdBy = createLabelValue();
 		const body = {
 			...settings,
 			timeout: Math.ceil(spec.lifetimeMs / 1000),
 			keepAlive: true,
-			userMetadata: toMetadata(spec.labels),
+			userMetadata: toMetadata({ ...spec.labels, [CREATE_LABEL]: createdBy }),
 			...(this.#projectId ? { projectId: this.#projectId } : {}),
 		};
 		let made: BrowserbaseSession;
 		try {
 			made = await this.#api.create(body, signal);
 		} catch (error) {
-			return vendorFailure("browserbase", NAME, "POST /v1/sessions", error);
+			const failed = vendorFailure("browserbase", NAME, "POST /v1/sessions", error);
+			if (failed.ok || !createUncertain(error)) return failed;
+			// The session may have been made though its answer never came: found by its create label, never made again.
+			return vendorFail(failed.error.code, `${failed.error.message}; ${await this.#recover(createdBy)}`, causeOf(failed));
 		}
-		if (idProblem(made?.id, NAME) !== undefined) return fail("browserbase", "Browserbase POST /v1/sessions answered with no session id, so there is no session to connect to or release");
+		if (idProblem(made?.id, NAME) !== undefined) {
+			return fail("browserbase", `Browserbase POST /v1/sessions answered with no session id, so there is no session to connect to; ${await this.#recover(createdBy)}`);
+		}
 		const unusable = cdpUrlProblem(made.connectUrl, NAME, CDP_DOMAIN);
 		if (unusable !== undefined) {
 			// The session is made and billed (keepAlive, up to its timeout): released here, not left to a later sweep.
@@ -278,6 +292,22 @@ export class BrowserbaseProvider implements ComputerProvider {
 		}
 		this.#urls.set(made.id, made.connectUrl as string);
 		return ok(refOf(made));
+	}
+
+	/** The sessions a create labelled createdBy made, released: what recoverCreate says of them. */
+	#recover(createdBy: string): Promise<string> {
+		const key = metadataKey(CREATE_LABEL);
+		const find = async (signal: AbortSignal): Promise<Result<string[]>> => {
+			let pages: BrowserbaseSession[][];
+			try {
+				pages = await Promise.all((["RUNNING", "PENDING"] as const).map((status) => this.#api.list({ status, q: `user_metadata['${key}']:'${createdBy}'` }, signal)));
+			} catch (error) {
+				return vendorFailure("browserbase", NAME, "GET /v1/sessions", error);
+			}
+			const ids = pages.flat().filter((s) => typeof s?.id === "string" && s.userMetadata?.[key] === createdBy).map((s) => s.id);
+			return ok([...new Set(ids)]);
+		};
+		return recoverCreate("session", find, (id) => this.release({ id, name: id }, "delete"), this.#sleep);
 	}
 
 	/**
