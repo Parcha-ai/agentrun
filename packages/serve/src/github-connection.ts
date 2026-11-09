@@ -123,9 +123,12 @@ export class GitHubConnection {
   }
 
   /** The App GitHub made, kept: its client secret is never. Its installations start empty. */
-  async save(app: { id: string; slug: string; clientId: string; pem: string; webhookSecret: string; settingsUrl: string }): Promise<void> {
+  async save(app: { id: string; slug: string; clientId: string; pem: string; webhookSecret: string; settingsUrl: string; api: string }): Promise<void> {
     const settings = this.settings!;
     this.written++;
+    // GitHub's API the App was made on: where a runner mints the App's tokens (runner/github-app.ts), never an address read
+    // from a run's environment.
+    await settings.set(SCOPE, FIELDS.apiUrl, app.api);
     await settings.set(SCOPE, FIELDS.privateKey, app.pem);
     await settings.set(SCOPE, FIELDS.webhookSecret, app.webhookSecret);
     await settings.set(SCOPE, FIELDS.clientId, app.clientId);
@@ -245,7 +248,7 @@ export class GitHubConnect {
     const owner = isObject(app.owner) && typeof app.owner.login === "string" ? app.owner : undefined;
     const settingsUrl = owner?.type === "Organization" ? `${GITHUB_WEB}/organizations/${owner.login}/settings/apps/${app.slug}` : `${GITHUB_WEB}/settings/apps/${app.slug}`;
     try {
-      await this.connection.save({ id: String(app.id), slug: app.slug, clientId: app.client_id, pem: app.pem, webhookSecret: app.webhook_secret, settingsUrl });
+      await this.connection.save({ id: String(app.id), slug: app.slug, clientId: app.client_id, pem: app.pem, webhookSecret: app.webhook_secret, settingsUrl, api: this.options.api });
     } catch (error) {
       return { location: this.failed("conversion_failed", `the App's credentials were not kept (${(error as Error).message})`) };
     }

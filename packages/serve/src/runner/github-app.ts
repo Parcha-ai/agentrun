@@ -19,7 +19,7 @@ export async function githubAppAccess(
   store: { readonly triggerSettings: Pick<TriggerSettings, "get"> },
   sealKey: Buffer | undefined,
   firstInput: unknown,
-  { api = GITHUB_API, now = Date.now }: { api?: string; now?: () => number } = {},
+  { api, now = Date.now }: { api?: string; now?: () => number } = {},
 ): Promise<GithubAppAccess | undefined> {
   if (!sealKey) return undefined;
   const rows = (await store.triggerSettings.get(ADAPTER)).filter((row) => row.scope === GITHUB_SCOPE);
@@ -36,5 +36,7 @@ export async function githubAppAccess(
   const pem = open(GITHUB_FIELDS.privateKey);
   if (!appId || !pem) return undefined;
   const target = githubTargetOf(isObject(firstInput) ? firstInput.content : firstInput);
-  return { mint: (to) => mintInstallationToken(api, appId, pem, to, now()), target };
+  // GitHub's API the App was made on (kept with it), else github.com's: a test's `api` first.
+  const base = api ?? open(GITHUB_FIELDS.apiUrl) ?? GITHUB_API;
+  return { mint: (to) => mintInstallationToken(base, appId, pem, to, now()), target };
 }

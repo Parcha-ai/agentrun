@@ -36,7 +36,7 @@ export const github: TriggerAdapter = {
   delivery: "push",
   owner: false,
   // The connection's App, the server's one: its secrets, and what is no secret beside them (github-connection.ts).
-  settings: { scope: "server", fields: { [FIELDS.appId]: { public: true }, [FIELDS.slug]: { public: true }, [FIELDS.clientId]: { public: true }, [FIELDS.settingsUrl]: { public: true }, [FIELDS.installations]: { public: true }, [FIELDS.privateKey]: { format: "pem" }, [FIELDS.webhookSecret]: {} } },
+  settings: { scope: "server", fields: { [FIELDS.apiUrl]: { public: true }, [FIELDS.appId]: { public: true }, [FIELDS.slug]: { public: true }, [FIELDS.clientId]: { public: true }, [FIELDS.settingsUrl]: { public: true }, [FIELDS.installations]: { public: true }, [FIELDS.privateKey]: { format: "pem" }, [FIELDS.webhookSecret]: {} } },
   describe: '{kind: "github", accept: [{event, actions?, where?}]}',
   fires: "a GitHub event the server's GitHub App delivers to /hooks/github that its `accept` takes (`github`)",
   firedBy: "`github`: an event the server's GitHub App delivered that the trigger's accept took, its key from the trigger and the SHA-256 of the signed body.",
