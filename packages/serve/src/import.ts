@@ -857,7 +857,7 @@ async function revisionFor(
  *  it wherever it is, as it cuts the environment's keys. Not among them: a key-shaped value this server did not make (a
  *  `whsec_` from elsewhere). The per-run door token is gone (the runner cutover deleted it). A webhook secret that does not
  *  open is said to `say`: the import goes on, and does not cut it. */
-export async function ownSecrets(store: Store, data: string, env: NodeJS.ProcessEnv, say: (fields: Record<string, string>) => void = () => {}): Promise<string[]> {
+export async function ownSecrets(store: { triggerSettings: Pick<Store["triggerSettings"], "get" | "put" | "removeScope">; flush(): Promise<void> }, data: string, env: NodeJS.ProcessEnv, say: (fields: Record<string, string>) => void = () => {}): Promise<string[]> {
   const webhook = webhookSecretIn(data, env);
   if (webhook && "signing" in webhook) say({ condition: webhook.signing, name: SEAL_KEY_ENV, file: join(data, WEBHOOK_FILE), effect: "this server's webhook secret cannot be read, so the import does not cut it" });
   return (await openServerSecretsOverStore(store, data, env, TRIGGER_ADAPTERS, say)).secrets.values();
