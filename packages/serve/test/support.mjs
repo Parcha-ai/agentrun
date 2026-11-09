@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { createHash } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { after } from "node:test";
 import { fileURLToPath } from "node:url";
 import { claudeAgentExecutable } from "@parcha/agentrun-harness-claude";
@@ -21,7 +21,26 @@ import { startRunner } from "../dist/runner/runner.js";
 import { dispatchRunner } from "../dist/runner/harness-loops.js";
 import { routeOf } from "../dist/runner/model-route.js";
 import { FAUX_ENV, withoutFaux } from "../dist/model.js";
-import { SEAL_KEY_ENV, sealKeyOf } from "../dist/tool-keys.js";
+import { SEAL_KEY_ENV } from "../dist/tool-keys.js";
+import { ensureSealKey, sealKeyHome } from "../dist/seal-key.js";
+import { secret } from "../dist/secrets.js";
+
+// Every test process keeps the seal key a server makes at its first start (seal-key.ts) under a config home of its own,
+// never this machine's ~/.config: a server never starts without one, and a test must write nothing outside its own dirs.
+{
+  const config = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-config-"));
+  process.env.XDG_CONFIG_HOME = config;
+  process.on("exit", () => rmSync(config, { recursive: true, force: true }));
+}
+
+/** The secret writes (secret-writes.ts registers them on the server) the client sends from the owner's session, as the
+ *  console does: the token can't make one. Another plane's tests add theirs here. */
+export const SECRET_WRITE_PATHS = [{ methods: ["PUT", "DELETE"], path: /^\/settings\/tool-keys\/[^/]+$/ }];
+const secretWrite = (method, path) => SECRET_WRITE_PATHS.some((write) => write.methods.includes(method) && write.path.test(path.split("?")[0]));
+/** The owner's password the client sets on a server that has none yet, to make a secret write from its session. */
+const CLIENT_OWNER_PHRASE = `client-owner-${createHash("sha256").update(String(process.pid)).digest("hex").slice(0, 24)}`;
+/** Each server's owner session cookie, by its base URL: set once, when the client first makes a secret write. */
+const ownerCookies = new Map();
 
 export const FAUX = new URL("./fixtures/faux-model.mjs", import.meta.url).pathname;
 
@@ -198,10 +217,10 @@ const sharing = new Map();
 export async function startInProcessRunner(data, { faux } = {}) {
   const store = await openSqliteStore({ dataDir: data, role: "runner" });
   // The runner's env mirrors the server's faux (model.ts FAUX_ENV): its model route reads the faux model from it, so a run
-  // never reaches the network. The seal key, when the server has one, seals the live-viewer tokens the browser tool writes;
-  // a server with none never serves a live view, so a stand-in is enough to satisfy the spec.
+  // never reaches the network. The seal key is the server's (seal-key.ts), read as the CLI's runner reads it: the one
+  // handed over, else the one kept under this process's config home. It seals the live-viewer tokens the browser writes.
   const env = { ...withoutFaux(process.env), ...(faux ? { [FAUX_ENV]: resolve(faux) } : {}) };
-  const sealKey = sealKeyOf(env[SEAL_KEY_ENV]) ?? Buffer.alloc(32);
+  const sealKey = ensureSealKey(secret(SEAL_KEY_ENV), { configHome: sealKeyHome(process.env) }).key;
   let runner;
   try {
     runner = startRunner({
@@ -272,10 +291,15 @@ export function client(baseUrl, token) {
   /** `raiseCheck: false`: no raise guard read after this request (raisedReadsQueued), for a test whose server goes away
    *  once the raise is answered. */
   async function api(method, path, body, headers = {}, { raiseCheck = true } = {}) {
+    // A secret write goes from the owner's session, as the console's does (secret-writes.ts): the token is refused one.
+    const session = secretWrite(method, path) && !headers.authorization ? await ownerSessionOf(baseUrl) : undefined;
+    const sent = session ? { ...session, ...(body === undefined ? { body: {} } : { body }) } : { body };
     const res = await fetch(`${baseUrl}${path}`, {
       method,
-      headers: { ...(token ? { authorization: `Bearer ${token}` } : {}), ...(body === undefined ? {} : { "content-type": "application/json" }), ...headers },
-      body: body === undefined ? undefined : JSON.stringify(body),
+      headers: session
+        ? { "content-type": "application/json", cookie: session.cookie, origin: session.origin, ...headers }
+        : { ...(token ? { authorization: `Bearer ${token}` } : {}), ...(body === undefined ? {} : { "content-type": "application/json" }), ...headers },
+      body: sent.body === undefined ? undefined : JSON.stringify(sent.body),
     });
     const text = await res.text();
     let json;
@@ -286,6 +310,23 @@ export function client(baseUrl, token) {
     if (raiseCheck && method === "PATCH" && res.status === 200 && json?.resumed === true) await raisedReadsQueued(baseUrl, token, path);
     return { status: res.status, headers: res.headers, body: json ?? text };
   };
+}
+
+/** The owner's session on the server at `baseUrl` (its /v2), for the client's secret writes: the client sets the owner's
+ *  password the first time (or signs in with it, on a server it set up before a restart). Undefined where it can't (accounts
+ *  off, or an owner the test set up with its own password): the write then goes with the token, which the server refuses,
+ *  so such a test makes its own owner's session for it. */
+async function ownerSessionOf(baseUrl) {
+  if (ownerCookies.has(baseUrl)) return ownerCookies.get(baseUrl);
+  const origin = new URL(baseUrl).origin;
+  const post = (path) => fetch(`${baseUrl}${path}`, { method: "POST", headers: { "content-type": "application/json", origin }, body: JSON.stringify({ password: CLIENT_OWNER_PHRASE }) });
+  let res = await post("/setup");
+  if (res.status !== 201) res = await post("/auth/sign-in");
+  if (res.status !== 200 && res.status !== 201) return undefined;
+  const cookie = res.headers.getSetCookie().map((line) => line.split(";")[0]).join("; ");
+  const session = { cookie, origin };
+  ownerCookies.set(baseUrl, session);
+  return session;
 }
 
 /** A guard on every pause a test reads: a run paused at its cap that serves its figures serves `least_cap_usd` with them,

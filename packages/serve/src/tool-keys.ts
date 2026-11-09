@@ -23,6 +23,12 @@ import { toolsView } from "./tools.js";
 import { MODEL_KEYS } from "./model.js";
 import { TOOL_KEY_ROWS } from "./key-words.js";
 import { isObject, unknownFields } from "./validate.js";
+import { registerSecretWrite } from "./secret-writes.js";
+
+// Every value a person saves here is a secret (a tool's key, a model provider's key; BROWSERBASE_PROJECT_ID is kept the
+// same way): saving one, replacing it or removing it takes the owner's session (secret-writes.ts), never the token.
+registerSecretWrite("saveToolKey", () => true);
+registerSecretWrite("deleteToolKey", () => true);
 
 export const TOOL_KEYS_FILE = "tool-keys.json";
 export const SEAL_KEY_ENV = "AGENTRUN_SEAL_KEY";
