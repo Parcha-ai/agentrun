@@ -45,7 +45,7 @@ import { hostFix, hostName, loopbackNames } from "./host-check.js";
 import { handoverById, type LiveHandover, liveRest, liveViewer, liveViewerById, liveViewerFor, liveViewerLink, OpenViewers, proxyLiveUpgrade, readHandover, readHandovers, serveViewerFile, viewerAnswers, viewerLink } from "./browser-live.js";
 import { browserHandBack, handBackTarget } from "./browser-commands.js";
 import { durationMs, logLine } from "./print.js";
-import { knownToolCostOf, type RunMoment, type State, type Status, toolCostOf, WITHHELD_SIGN_IN } from "./run-view.js";
+import { knownToolCostOf, redactorOf, type RunMoment, type State, type Status, toolCostOf, WITHHELD_SIGN_IN } from "./run-view.js";
 import { approve, archiveRun, cancel, message, raiseCap, type StartDeps, type StartOptions, startRun, stop as stopRunOverStore, WAITS_ON_A_PERSON } from "./runs-over-store.js";
 import { momentOverStore, summaryOverStore, type ViewDeps, viewOverStore, withheldOverStore } from "./store-view.js";
 import { listRunFiles as listRunFilesOverStore, readRunFile as readRunFileOverStore, runBrowserState, runGraphView, type RunReadsDeps, runTimelines } from "./run-reads-over-store.js";
@@ -1097,7 +1097,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // The route frames the SSE around its `page`, which long-polls the journal, byte-identical to the old live run's page.
   const timelines = runTimelines({
     context: ctx,
-    timelineRows: (forStore, runId, context) => runTimeline(forStore, runId, context),
+    // Every row cut of each secret this server never shows (serverSecrets, read for each page: one rotated or saved since
+    // is cut at once), in every spelling of it, as the run view's answer and title are: a run's Timeline is read from its
+    // journal, which keeps what the run said whole.
+    timelineRows: (forStore, runId, context) => runTimeline(forStore, runId, context, { redact: redactorOf(serverSecrets()) }),
     runView: (forStore, runId) => viewOverStore(forStore, runId, viewDepsFor(ownOriginOf())),
   });
   const triggerDeps: TriggerTargetDeps = {
