@@ -13,8 +13,8 @@ import { ApiError } from "../dist/errors.js";
 import { agentWithRevision, storeOn, T0 } from "./store-helpers.mjs";
 
 const KEY = randomBytes(32);
-/** The secret metadata shape a sign-in saved at T0 for Browserbase reads beside the old view's fields (sign-ins-secrets.ts). */
-const META = { name: "browserbase", set: true, source: "sign-in", changed_at: new Date(T0).toISOString() };
+/** The secret a sign-in of alpha's saved at T0 for Browserbase carries beside the old view's fields (sign-ins-secrets.ts). */
+const META = { secret: { name: "sign-in:alpha:browserbase", set: true, source: "sign-in", changed_at: new Date(T0).toISOString() } };
 /** A vendor port that records removals, or refuses them. */
 function fakeVendors({ refuse = false } = {}) {
   const removed = [];

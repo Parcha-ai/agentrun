@@ -7,8 +7,8 @@
 // body. So this plane registers no secret-field predicate with secret-writes.ts, marks no field `x-agentrun-secret`, and
 // gives the planted-secret harness no write route. browserBodyCredentials is the check that keeps it so.
 //
-// Rule 3, the views: each saved sign-in reads the one secret metadata shape every plane gives (signInSecretMeta), beside
-// its own state (held | ready | unreadable). Never the pointer, a prefix, a length or a hash.
+// Rule 3, the views: each saved sign-in carries its one secret under `secret`, in the metadata shape every plane gives
+// (signInSecretMeta), beside its own state (held | ready | unreadable). Never the pointer, a prefix, a length or a hash.
 
 /** Where a saved sign-in's credential came from: a person signing in during a run. */
 export const SIGN_IN_SOURCE = "sign-in";
@@ -18,11 +18,15 @@ export const SIGN_IN_SOURCE = "sign-in";
  *  TODO(secret-writes): take this type from tl-tools' metadata helper when it lands, and drop this copy. */
 export type SecretMeta = { name: string; set: boolean; source: "env" | "console" | "sign-in" | null; changed_at: string | null };
 
-/** A saved sign-in as metadata: named by its provider (browserbase | kernel), set (a row exists only with a sealed pointer,
- *  whether or not it opens here), from a sign-in, changed when its pointer was saved (the row's saved_at; a run verifying
- *  it, verified_at, keeps the same pointer and changes nothing). */
-export function signInSecretMeta(row: { provider: string; savedAt: number }): SecretMeta {
-  return { name: row.provider, set: true, source: SIGN_IN_SOURCE, changed_at: new Date(row.savedAt).toISOString() };
+/** A secret's name, "<plane>:<id>" with the id's parts joined by ":" (SECRETS-PLAN.md, settled naming).
+ *  TODO(secret-writes): take secretName from tl-tools' metadata helper when it lands, and drop this copy. */
+export const secretName = (plane: string, ...id: string[]): string => [plane, ...id].join(":");
+
+/** A saved sign-in's secret as metadata: named `sign-in:<agentId>:<provider>`, set (a row exists only with a sealed
+ *  pointer, whether or not it opens here), from a sign-in, changed when its pointer was saved (the row's saved_at; a run
+ *  verifying it, verified_at, keeps the same pointer and changes nothing). */
+export function signInSecretMeta(row: { agentId: string; provider: string; savedAt: number }): SecretMeta {
+  return { name: secretName("sign-in", row.agentId, row.provider), set: true, source: SIGN_IN_SOURCE, changed_at: new Date(row.savedAt).toISOString() };
 }
 
 /** The browser plane's secret body fields, by operationId, for secret-writes.ts's one gate: none, since no browser route

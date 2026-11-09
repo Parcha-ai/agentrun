@@ -20,8 +20,13 @@ import { plantedSignIn } from "./sign-ins-planted.mjs";
 import { agentWithRevision, storeOn, T0 } from "./store-helpers.mjs";
 
 const KEY = randomBytes(32);
-/** The contract's SignIn fields (vendored, required by it) and the shared secret metadata shape, and no other. */
-const SIGN_IN_KEYS = ["changed_at", "held_by", "key", "name", "provider", "set", "source", "state", "verified_at"];
+/** The contract's SignIn fields (vendored, required by it) and `secret`, the one secret it holds, and no other. */
+const SIGN_IN_KEYS = ["held_by", "key", "provider", "secret", "state", "verified_at"];
+/** The shared secret metadata shape (SECRETS-PLAN.md, SecretMeta), and no other. */
+const SECRET_KEYS = ["changed_at", "name", "set", "source"];
+/** Each view's keys and its secret's, as one sorted list to compare. */
+const keysOf = (view) => [...Object.keys(view).sort(), ...Object.keys(view.secret ?? {}).sort().map((key) => `secret.${key}`)];
+const ALL_KEYS = [...SIGN_IN_KEYS, ...SECRET_KEYS.map((key) => `secret.${key}`)];
 const vendors = { remove: async () => undefined };
 
 // ---- Rule 1: the writes ---------------------------------------------------------------------------------------------
@@ -60,7 +65,7 @@ test("rule 1: the check catches a browser route that takes a credential (a forge
 
 // ---- Rule 3: the views ----------------------------------------------------------------------------------------------
 
-test("rule 3: each sign-in reads the shared metadata shape beside its state; changed_at is its saved_at, not a run's verify", async (t) => {
+test("rule 3: each sign-in carries its secret's metadata under `secret`, beside its state; changed_at is its saved_at, not a run's verify", async (t) => {
   const { store, clock } = await storeOn(t);
   await agentWithRevision(store, "alpha", "alpha-rev");
   await saveSignIn(store, KEY, { agentId: "alpha", provider: "browserbase", pointer: "bb-ctx-view-1" });
@@ -70,53 +75,54 @@ test("rule 3: each sign-in reads the shared metadata shape beside its state; cha
   clock.now += 60_000;
   await store.signIns.verify("alpha", "browserbase", clock.now);
   const [view] = await signInsOverStore(store, KEY, vendors).view("alpha");
-  assert.deepEqual(Object.keys(view).sort(), SIGN_IN_KEYS);
-  assert.deepEqual(
-    { name: view.name, set: view.set, source: view.source, changed_at: view.changed_at, state: view.state },
-    { name: "browserbase", set: true, source: "sign-in", changed_at: new Date(savedAt).toISOString(), state: "ready" },
-  );
+  assert.deepEqual(keysOf(view), ALL_KEYS);
+  assert.deepEqual(view.secret, { name: "sign-in:alpha:browserbase", set: true, source: "sign-in", changed_at: new Date(savedAt).toISOString() });
+  assert.equal(view.state, "ready");
   assert.equal(SIGN_IN_SOURCE, "sign-in");
   assert.equal(view.verified_at, new Date(clock.now).toISOString());
   // Saved again (a new pointer): changed_at is the new save's.
   clock.now += 1_000;
   await saveSignIn(store, KEY, { agentId: "alpha", provider: "browserbase", pointer: "bb-ctx-view-2" });
   const [again] = await signInsOverStore(store, KEY, vendors).view("alpha");
-  assert.equal(again.changed_at, new Date(clock.now).toISOString());
+  assert.equal(again.secret.changed_at, new Date(clock.now).toISOString());
   // Nothing of the pointer: not it, a prefix, its length or its hash.
   for (const shown of [view, again]) {
     const text = JSON.stringify(shown);
     for (const pointer of ["bb-ctx-view-1", "bb-ctx-view-2"]) {
       assert.ok(!text.includes(pointer) && !text.includes(pointer.slice(0, 8)), "no pointer or prefix");
       assert.ok(!text.includes(pointerHash(pointer)) && !text.includes(pointerHash(pointer).slice(0, 12)), "no hash");
-      assert.ok(!Object.values(shown).includes(pointer.length), "no length");
+      assert.ok(![...Object.values(shown), ...Object.values(shown.secret)].includes(pointer.length), "no length");
     }
   }
 });
 
-test("rule 3: a sign-in that does not open here is still set, from a sign-in, at its saved_at; one per provider, each named by it", async (t) => {
+test("rule 3: a sign-in that does not open here is still set, from a sign-in, at its saved_at; one per provider, each named sign-in:<agent>:<provider>", async (t) => {
   const { store, clock } = await storeOn(t);
   await agentWithRevision(store, "alpha", "alpha-rev");
   await saveSignIn(store, KEY, { agentId: "alpha", provider: "browserbase", pointer: "bb-ctx-1" });
   clock.now += 5_000;
   await saveSignIn(store, KEY, { agentId: "alpha", provider: "kernel", pointer: "agentrun-kernel-1" });
   const other = await signInsOverStore(store, randomBytes(32), vendors).view("alpha");
-  assert.deepEqual(other.map((v) => [v.name, v.set, v.source, v.changed_at, v.state]), [
-    ["browserbase", true, "sign-in", new Date(T0).toISOString(), "unreadable"],
-    ["kernel", true, "sign-in", new Date(T0 + 5_000).toISOString(), "unreadable"],
+  assert.deepEqual(other.map((v) => [v.secret.name, v.secret.set, v.secret.source, v.secret.changed_at, v.state]), [
+    ["sign-in:alpha:browserbase", true, "sign-in", new Date(T0).toISOString(), "unreadable"],
+    ["sign-in:alpha:kernel", true, "sign-in", new Date(T0 + 5_000).toISOString(), "unreadable"],
   ]);
-  for (const view of other) assert.deepEqual(Object.keys(view).sort(), SIGN_IN_KEYS);
+  for (const view of other) assert.deepEqual(keysOf(view), ALL_KEYS);
 });
 
-test("rule 3: the served SignIn schema carries the shared shape, marked as this server's, and required", () => {
+test("rule 3: the served SignIn schema carries `secret`, the shared shape, marked as this server's, and required", () => {
   const doc = openapiDocument(() => undefined);
   const signIn = doc.components.schemas.SignIn;
   assert.deepEqual(Object.keys(signIn.properties).sort(), SIGN_IN_KEYS);
-  for (const field of ["name", "set", "source", "changed_at"]) {
-    assert.equal(signIn.properties[field]["x-agentrun-serve"], "secrets/1", field);
-    assert.ok(signIn.required.includes(field), `${field} is always sent`);
-  }
-  assert.deepEqual(signIn.properties.source.enum, ["env", "console", "sign-in", null]);
+  assert.equal(signIn.properties.secret["x-agentrun-serve"], "secrets/1");
+  assert.ok(signIn.required.includes("secret"), "secret is always sent");
   assert.equal(signIn.additionalProperties, false);
+  const secret = signIn.properties.secret;
+  assert.deepEqual(Object.keys(secret.properties).sort(), SECRET_KEYS);
+  assert.deepEqual([...secret.required].sort(), SECRET_KEYS);
+  assert.equal(secret.additionalProperties, false);
+  assert.deepEqual(secret.properties.source.enum, ["env", "console", "sign-in", null]);
+  assert.match("sign-in:alpha:browserbase", new RegExp(secret.properties.name.pattern));
 });
 
 // ---- Rule 3 and 5 over the server: a planted pointer is found nowhere -----------------------------------------------
@@ -189,8 +195,8 @@ test("rule 3 and 5: a planted pointer reaches no GET answer in the document, no 
   assert.equal(got.status, 200);
   assert.equal(got.body.sign_ins.length, 1);
   const [view] = got.body.sign_ins;
-  assert.deepEqual(Object.keys(view).sort(), SIGN_IN_KEYS);
-  assert.deepEqual([view.name, view.set, view.source, view.changed_at, view.state], ["browserbase", true, "sign-in", new Date(savedAt).toISOString(), "ready"]);
+  assert.deepEqual(keysOf(view), ALL_KEYS);
+  assert.deepEqual([view.secret.name, view.secret.set, view.secret.source, view.secret.changed_at, view.state], ["sign-in:planted:browserbase", true, "sign-in", new Date(savedAt).toISOString(), "ready"]);
 
   // Every GET the owner can call, from the document the server serves.
   const doc = await (await fetch(`${baseUrl}/openapi.json`)).json();
