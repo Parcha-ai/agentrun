@@ -18,7 +18,7 @@ import { parseDocument } from "yaml";
 import { checkNote } from "./learn/index.js";
 import { NOTE_FILE } from "./learn/notes.js";
 import { MCP_SERVER_NAME } from "./mcp-servers.js";
-import { settingsKeyOf } from "./tool-gate.js";
+import { settingsKeyOf, shellToolOf } from "./tool-gate.js";
 import { ASK_TOOL, BOUND_TOOLS } from "./tools.js";
 import { applyBodyOf, compiled, type Package, PackageError, packageView, readPackage } from "./templates.js";
 import { isObject, type Json, MODEL_REF } from "./validate.js";
@@ -566,12 +566,14 @@ async function waitRun(api: Api, runId: string, deadline: number, signal?: Abort
 }
 
 /** The calls in a run's rows: each tool_use row by its gate name, with its result's status and preview. */
-function callsOf(rows: readonly Json[], harness: string, servers: readonly string[]): ToolCall[] {
+/** A run's tool calls, each named as a grader names it: the gate's own rule (RunGate.enter), its settings key, but a
+ *  shell tool held to bash's setting (bash_background, bash_output, ...) keeps its own name, so its grader sees it. */
+export function callsOf(rows: readonly Json[], harness: string, servers: readonly string[]): ToolCall[] {
   const results = new Map(rows.filter((row) => row.kind === "tool_result" && row.tool_use_id).map((row) => [String(row.tool_use_id), row]));
   return rows.filter((row) => row.kind === "tool_use" && typeof row.tool_name === "string").map((row) => {
     const name = row.tool_name as string;
     const result = results.get(String(row.tool_use_id));
-    return { tool: settingsKeyOf(harness, name, servers) ?? name, name, preview: (row.tool_input_preview as string | null) ?? null, status: (result?.tool_status as string | undefined) ?? null, result: (result?.tool_result_preview as string | undefined) ?? null };
+    return { tool: shellToolOf(name) ?? settingsKeyOf(harness, name, servers) ?? name, name, preview: (row.tool_input_preview as string | null) ?? null, status: (result?.tool_status as string | undefined) ?? null, result: (result?.tool_result_preview as string | undefined) ?? null };
   });
 }
 

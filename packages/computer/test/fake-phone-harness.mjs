@@ -401,13 +401,18 @@ export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = fa
 		return { exitCode: 127, stdout: Buffer.alloc(0), stderr: `/system/bin/sh: ${w[0]}: inaccessible or not found\n` };
 	}
 
+	/**
+	 * A raw screencap, upright as Android's is: the display's own orientation, so a phone turned to landscape
+	 * (phone.landscape) gives its height as the width and its width as the height. `wm size` stays the portrait size.
+	 */
 	function screencap() {
+		const [width, height] = phone.landscape ? [SCREEN.height, SCREEN.width] : [SCREEN.width, SCREEN.height];
 		const header = Buffer.alloc(16);
-		header.writeUInt32LE(SCREEN.width, 0);
-		header.writeUInt32LE(SCREEN.height, 4);
+		header.writeUInt32LE(width, 0);
+		header.writeUInt32LE(height, 4);
 		header.writeUInt32LE(1, 8);
 		header.writeUInt32LE(0, 12);
-		const pixels = Buffer.alloc(SCREEN.width * SCREEN.height * 4);
+		const pixels = Buffer.alloc(width * height * 4);
 		for (let i = 0; i < pixels.length; i += 4) pixels.set([phone.foreground !== LAUNCHER && !launchHidden ? 30 : 200, 60, 90, 255], i);
 		return Buffer.concat([header, pixels]);
 	}

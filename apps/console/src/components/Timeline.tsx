@@ -24,10 +24,20 @@ const awaitsApproval = (row: TimelineRow) => row.kind === "tool_approval_request
 const fromServer = (row: TimelineRow) => row.origin === "server";
 /** A trigger's message, a webhook's input or a schedule's (served `origin: "trigger"`): the trigger's, never the person's. */
 const fromTrigger = (row: TimelineRow) => row.origin === "trigger";
+/** A trigger row's summary without its "<Source> <its name>: " prefix: exactly that, by the name the row carries
+ *  (`trigger.name`, serve's, as its summary shows it after its one-word source), so a name or a message with a colon in
+ *  it keeps the message whole; with no name (a trigger gone, named by its id) up to the first ": ". */
+const triggerSaid = (row: TimelineRow) => {
+  const summary = row.summary ?? "";
+  const name = row.trigger?.name;
+  const at = name ? summary.indexOf(` ${name}: `) : -1;
+  if (name && at > 0 && !summary.slice(0, at).includes(" ")) return summary.slice(at + name.length + 3).trimStart();
+  return summary.replace(/^[^:]+:\s*/, "");
+};
 /** The title a row shows: its summary without the kind's own prefix ("Thinking: ", "You: ", a server message's
- *  "AgentRun: ", a trigger's "Trigger <its id>: "). */
+ *  "AgentRun: ", a trigger's "<Source> <its name>: ", e.g. "Webhook inbound-lead: "). */
 const title = (row: TimelineRow) => {
-  const text = (row.summary ?? "").replace(fromServer(row) ? /^AgentRun:\s*/ : fromTrigger(row) ? /^Trigger [^:]+:\s*/ : /^(You|Thinking|Asked you|Waiting for you):\s*/, "");
+  const text = fromTrigger(row) ? triggerSaid(row) : (row.summary ?? "").replace(fromServer(row) ? /^AgentRun:\s*/ : /^(You|Thinking|Asked you|Waiting for you):\s*/, "");
   // A workflow run's input is a JSON object: show its fields, not its braces.
   if (row.kind === "user_message" && text.startsWith("{")) {
     try { return Object.entries(JSON.parse(text) as Record<string, unknown>).map(([k, v]) => `${k}: ${typeof v === "string" ? v : JSON.stringify(v)}`).join(" · "); } catch { /* not whole JSON: as is */ }

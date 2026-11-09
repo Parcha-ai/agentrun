@@ -7,11 +7,11 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { startRunner } from "../dist/runner/runner.js";
 import { sendCommand } from "../dist/runner/commands.js";
-import { commandRow, fauxLoops, observed, queue, recorder, sleep, stores, until } from "./runner-support.mjs";
+import { commandRow, fauxLoops, observed, queue, recorder, sleep, STEADY_LEASE, stores, until } from "./runner-support.mjs";
 
 // A lease no stall of a loaded machine outlasts: a run moves between runners here by its park's release, never by a lease
 // that ran out, and a claim lost and retaken would move the epochs these tests read.
-const TIMING = { leaseMs: 60_000, renewEveryMs: 1_000, stopMarginMs: 5_000, pollMs: 20, commandPollMs: 30 };
+const TIMING = { ...STEADY_LEASE, pollMs: 20, commandPollMs: 30 };
 const RAISE = { kind: "raise", body: { capUsd: 5 } };
 
 const parkedAndReleased = (server, id) =>
@@ -58,8 +58,15 @@ test("a raise written while no runner is up waits in the store; the next runner'
   const after = startRunner({ store: observed(second, record), createLoop: faux.createLoop, name: "runner-b", ...TIMING });
   t.after(() => after.close());
   await until(async () => (await server.runs.get("run-1")).state === "ended", "the next runner's loop completes the run");
-  // The park's release bumped the epoch: the next claim is 3.
-  assert.deepEqual([record.claims.at(-1).runner, record.claims.at(-1).epoch], ["runner-b", 3]);
+  // Claims and releases as they came, for any failure below.
+  const history = JSON.stringify({
+    claims: record.claims.map(({ runner, epoch, from }) => ({ runner, epoch, from })),
+    releases: record.calls.filter((call) => call.op === "release").map(({ runId, order }) => ({ runId, order })),
+  });
+  // runner-a holds the run once (its park) and claims nothing after its close resolved (runner.ts close waits for a
+  // claim in flight); runner-b claims it once, woken from its park by the raise. Not an epoch count: the property.
+  assert.deepEqual(record.claims.filter((claim) => claim.runner === "runner-a").map((claim) => claim.from), ["queued"], `runner-a claimed the run once, before its park: ${history}`);
+  assert.deepEqual(record.claims.filter((claim) => claim.runner === "runner-b").map((claim) => claim.from), ["parked"], `runner-b claimed it once, from its park: ${history}`);
   assert.deepEqual(faux.loops.flatMap((loop) => loop.received.map((command) => command.id)), [raise.id], "the raise reached one loop, once");
   assert.ok((await commandRow(server, "run-1", raise.id)).takenAt !== null, "taken");
   await assert.rejects(sendCommand(server, "run-1", RAISE), { name: "RunFinal" }, "the same raise again changes nothing: the run is final");
