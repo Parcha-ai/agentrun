@@ -13,7 +13,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { mcpGateway, mcpPinOf } from "../dist/mcp-gateway.js";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
-import { agent, answerFlow, flowAgent, follow, runDir, serve as serveOf, withEnv } from "./support.mjs";
+import { agent, answerFlow, flowAgent, follow, runDir, scratch, serve as serveOf, withEnv } from "./support.mjs";
 
 const TOKEN = `not-a-secret-${"mcp-meta-bearer-0123"}`;
 const REASON = "it runs other actions by name, so a grant can't name the real action. Use the server's direct tools instead.";
@@ -92,14 +92,17 @@ test("a grant of a meta tool is 422 on a harness that doesn't bind MCP tools too
 });
 
 test("a run of a revision saved granting what is now a meta tool is 409 naming it under details.not_grantable with the reason, never under unbound", async (t) => {
-  const { api, data } = await serve(t);
+  const data = join(await scratch(t), "agents");
+  withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") });
+  const first = await serveOf(t, { data });
   // Klavis's generic execute_action is granted on a host that is not Klavis's; the server then moves to Klavis's host.
-  await saved(t, api, "strata", ["execute_action"]);
-  assert.equal((await api("POST", "/agents", agent("strata-old", { tools: ["mcp:strata/execute_action"] }))).status, 201);
-  const file = join(data, "mcp-servers.json");
-  const doc = JSON.parse(await readFile(file, "utf8"));
-  doc.servers.strata.url = "https://strata.klavis.ai/mcp/?strata_id=x";
-  await writeFile(file, JSON.stringify(doc));
+  await saved(t, first.api, "strata", ["execute_action"]);
+  assert.equal((await first.api("POST", "/agents", agent("strata-old", { tools: ["mcp:strata/execute_action"] }))).status, 201);
+  // Its row at Klavis's host in the store, as the next server to start on this data reads it.
+  const row = await first.store.mcp.server("strata");
+  await first.store.mcp.put({ name: row.name, url: "https://strata.klavis.ai/mcp/?strata_id=x", auth: row.auth, protocol: row.protocol, tools: row.tools, prices: row.prices, serverInfo: row.serverInfo, instructions: row.instructions, sealed: row.sealed });
+  await first.close();
+  const { api } = await serveOf(t, { data });
   const run = await api("POST", "/agents/strata-old/runs", { input: { content: "Hello." } });
   assert.equal(run.status, 409, JSON.stringify(run.body));
   assert.equal(run.body.error.code, "agent_not_runnable");

@@ -6,7 +6,7 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
-import { readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { readdir, readFile, rm } from "node:fs/promises";
 import { createServer } from "node:http";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -333,16 +333,14 @@ test("claude-agent: a run killed mid-call resumes with the call reported interru
 });
 
 test("pi: a saved credential that can't be opened refuses the call before anything is sent, in words; a server that takes no credential is unaffected", { timeout: 90_000 }, async (t) => {
-  const { api, data } = await serve(t, { faux: FAUX_MCP });
+  const { api, store } = await serve(t, { faux: FAUX_MCP });
   const fake = await addFake(t, api);
   const open = await startFakeMcp({});
   t.after(() => open.close());
   assert.equal((await api("PUT", "/settings/mcp-servers/open", { url: open.url, auth: { type: "none" } })).status, 200);
-  // The sealed bearer damaged at rest, as one sealed under another seal key reads.
-  const file = join(data, "mcp-servers.json");
-  const doc = JSON.parse(await readFile(file, "utf8"));
-  doc.servers.fake.auth.sealed.authorization = Buffer.from("not what was sealed").toString("base64");
-  await writeFile(file, JSON.stringify(doc));
+  // The sealed bearer damaged at rest in the store, as one sealed under another seal key reads.
+  const row = await store.mcp.server("fake");
+  await store.mcp.put({ name: row.name, url: row.url, auth: row.auth, protocol: row.protocol, tools: row.tools, prices: row.prices, serverInfo: row.serverInfo, instructions: row.instructions, sealed: Buffer.from("not what was sealed") });
   assert.equal((await api("POST", "/agents", agent("unopened", { tools: ["mcp:fake/add", "mcp:open/add"], tool_settings: { ...ALLOW_FAKE, "mcp:open/*": { permission: "allow" } } }))).status, 201);
   const before = fake.log.length;
   const runId = await runOf(api, "unopened", 'Call mcp__fake__add with {"a":2,"b":3}');
@@ -499,13 +497,11 @@ test("codex: a run killed mid-call shows the call's row while it runs and its in
 });
 
 test("codex: a call refused before anything is sent lists its call row before its failed result, as a sent call does", { timeout: 90_000 }, async (t) => {
-  const { api, data } = await codexServe(t);
+  const { api, store } = await codexServe(t);
   await addFake(t, api);
   // The sealed bearer damaged at rest: the gateway refuses the call at once, unsent.
-  const file = join(data, "mcp-servers.json");
-  const doc = JSON.parse(await readFile(file, "utf8"));
-  doc.servers.fake.auth.sealed.authorization = Buffer.from("not what was sealed").toString("base64");
-  await writeFile(file, JSON.stringify(doc));
+  const row = await store.mcp.server("fake");
+  await store.mcp.put({ name: row.name, url: row.url, auth: row.auth, protocol: row.protocol, tools: row.tools, prices: row.prices, serverInfo: row.serverInfo, instructions: row.instructions, sealed: Buffer.from("not what was sealed") });
   assert.equal((await api("POST", "/agents", agent("codex-refused", { harness: "codex", tools: ["mcp:fake/add"], tool_settings: ALLOW_FAKE }))).status, 201);
   const runId = await runOf(api, "codex-refused", 'mcp fake add {"a":2,"b":3}');
   const { rows, last } = await follow(api, runId, ["completed", "failed"], { deadlineMs: 60_000 });
