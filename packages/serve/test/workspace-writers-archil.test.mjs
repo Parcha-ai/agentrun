@@ -65,13 +65,13 @@ function kept() {
 
 test("the run's files list from the disk with their times, and a file is served whole in ranged reads", async () => {
   const { work } = fresh();
-  const before = Date.now() - 2000;
   await work.write("report.md", "# Report\n");
   await work.write("out/data.csv", "a,b\n");
   await work.write(".agents/skills/x/SKILL.md", "hidden");
   const { files, deep } = await listFiles(work, 2000);
   assert.deepEqual([files.map((f) => [f.path, f.size_bytes]), deep], [[["out/data.csv", 4], ["report.md", 9]], false]);
-  for (const file of files) assert.ok(Date.parse(file.modified_at) >= before, `${file.path}: ${file.modified_at}`);
+  // Each file's time is the disk's own for it, as stat reads it.
+  for (const file of files) assert.equal(Date.parse(file.modified_at), Math.trunc((await work.stat(file.path)).mtimeMs), file.path);
   const res = kept();
   await sendFile({ method: "GET" }, res, new URL("files/report.md", "https://agentrun.invalid/"), work, "report.md", "a tool");
   assert.deepEqual([res.head.status, res.head.headers["content-length"], res.ended], [200, 9, true]);

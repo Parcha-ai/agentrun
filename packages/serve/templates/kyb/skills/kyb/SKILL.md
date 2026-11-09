@@ -195,7 +195,7 @@ source is the company's own site says so ("the company states").
 
 ### 9. Return
 
-Exactly one fenced `json` block that meets `kyb.schema.json`, and nothing after it. Its `report_markdown` is the
+Exactly one fenced `json` block that meets `kyb.schema.json` (beside this SKILL.md: read it before you answer), and nothing after it. Its `report_markdown` is the
 report an analyst files, in this order:
 
 1. **Summary**: the company in one line, the verdict, the two or three facts that decided it.

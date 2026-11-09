@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
 import http from "node:http";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -736,4 +736,132 @@ test("a page's dialog opened before the owner takes over never covers Take over:
   assert.equal(await onTop("dialog-accept"), "dialog-accept");
   await press("dialog-accept");
   assert.ok(await until(() => web.received.some((m) => m.type === "dialog" && m.accept === true)), "the owner answered the dialog");
+});
+
+test("watch only reads as watching: its own banner (never that input is held), no toolbar, the page filling the window at its own shape, and an end that reads clearly; a take-over viewer keeps its toolbar and its clicks land exactly", { skip: NO_CHROME, timeout: 100_000 }, async (t) => {
+  const TOKEN = randomBytes(32).toString("base64url");
+  const web = await viewerServer(TOKEN);
+  const root = await mkdtemp(path.join(tmpdir(), "lv-viewer-"));
+  const provider = cdpProvider({ chrome: { executablePath: CHROME, profileRoot: root } });
+  let ref = null;
+  const tabs = [];
+  t.after(async () => { for (const tab of tabs) tab.close(); if (ref) await within(20_000, provider.release(ref)); await within(5_000, web.close()); await within(5_000, rm(root, { recursive: true, force: true })); }, { timeout: 40_000 });
+  ref = await within(60_000, provider.create({ tag: "lv-viewer-watch", maxLifetimeS: 600, idleTimeoutS: 60, proxies: false, verified: false, captcha: false, viewport: { width: 1000, height: 700 }, metadata: {} }, new AbortController().signal));
+  assert.ok(ref, "the browser started");
+  const attached = await within(30_000, provider.attach(ref));
+  const open = async (width, height) => {
+    const tab = await openTab(attached.sdkCdpUrl, "about:blank");
+    tabs.push(tab);
+    await tab.send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false });
+    await tab.navigate(`${web.base}/v/${web.id}#t=${TOKEN}`);
+    return tab;
+  };
+  const SHOT = process.env.VIEWER_SHOTS;
+  const shoot = async (tab, name) => { if (!SHOT) return; const { data } = await tab.send("Page.captureScreenshot", { format: "png" }); await writeFile(path.join(SHOT, `${name}.png`), Buffer.from(data, "base64")); };
+  const looks = (tab) => tab.evaluate(`(() => {
+    const shown = (id) => { const el = document.getElementById(id); if (!el || el.hidden) return false; const s = getComputedStyle(el); const r = el.getBoundingClientRect(); return s.display !== "none" && s.visibility !== "hidden" && r.width > 0 && r.height > 0; };
+    const c = document.getElementById("screen").getBoundingClientRect();
+    const st = document.getElementById("stage").getBoundingClientRect();
+    const n = document.getElementById("notice");
+    return { text: document.body.innerText, back: shown("back"), reload: shown("reload"), url: shown("url"), canvas: { w: c.width, h: c.height }, stage: { w: st.width, h: st.height }, notice: shown("notice") ? n.textContent : "", noticeSize: parseFloat(getComputedStyle(n).fontSize) };
+  })()`);
+  // A frame of 1000x500 CSS pixels (a 2:1 picture).
+  const maker = await openTab(attached.sdkCdpUrl, "about:blank");
+  tabs.push(maker);
+  const jpeg = Buffer.from(await maker.evaluate(`(async () => { const c = new OffscreenCanvas(200, 100); c.getContext("2d").fillRect(0, 0, 200, 100); const b = await c.convertToBlob({ type: "image/jpeg" }); return Array.from(new Uint8Array(await b.arrayBuffer())); })()`));
+
+  const watching = await open(1400, 900);
+  assert.ok(await until(() => web.received.length >= 1), "the viewer spoke");
+  web.send({ type: "ready", drive: "idle", readOnly: true });
+  web.send({ type: "page", url: "https://example.com/", title: "Example" });
+  web.sendFrame(jpeg, 1000, 500);
+  web.send({ type: "status", drive: "agent" });
+  await settle(400);
+  let seen = await looks(watching);
+  await shoot(watching, "after-watch-only-1400x900");
+  web.send({ type: "page", url: `https://example.com/a/very/long/path/${"segment/".repeat(30)}end?query=1`, title: "Example" });
+  await settle(150);
+  await shoot(watching, "after-watch-only-long-url");
+  web.send({ type: "page", url: "https://example.com/", title: "Example" });
+  await settle(150);
+  assert.match(seen.text, /View only: you're watching the agent's browser; your clicks and keys are not sent\./, "the view-only banner");
+  assert.doesNotMatch(seen.text, /Your input is held/, "never take-over's held-input wording");
+  assert.deepEqual([seen.back, seen.reload, seen.url], [false, false, false], "no toolbar: nothing in it works in view only");
+  // Where the agent is, as text: the page's URL, its whole in the tooltip, never a field or a focus stop.
+  const where = await watching.evaluate(`(() => { const el = document.getElementById("where"); const r = el.getBoundingClientRect(); return { text: el.textContent, title: el.title, tag: el.tagName, editable: el.isContentEditable, tabIndex: el.tabIndex, shown: r.width > 0 && r.height > 0 }; })()`);
+  assert.deepEqual(where, { text: "https://example.com/", title: "https://example.com/", tag: "SPAN", editable: false, tabIndex: -1, shown: true }, "the page's URL, read-only text");
+  // The "no picture yet" notice a watcher can see never promises that input works.
+  const still = await watching.evaluate(`document.getElementById("still").textContent`);
+  assert.doesNotMatch(still, /Typing and clicking still work/, `the no-picture notice in view only (${still})`);
+  assert.match(still, /no picture until it is shown/, "it still says why there is no picture");
+  // The page fills the window at its own shape: as wide as the stage, or as tall, whichever binds first.
+  const fit = (s) => Math.min(s.w / 2, s.h);
+  assert.ok(Math.abs(seen.canvas.h - fit(seen.stage)) <= 2 && Math.abs(seen.canvas.w - 2 * fit(seen.stage)) <= 2, `the canvas fills the stage at 2:1 (${JSON.stringify(seen)})`);
+  assert.ok(seen.canvas.w > 1000, "bigger than the frame it was drawn from");
+  // It follows the window.
+  await watching.send("Emulation.setDeviceMetricsOverride", { width: 800, height: 900, deviceScaleFactor: 1, mobile: false });
+  await settle(300);
+  seen = await looks(watching);
+  assert.ok(Math.abs(seen.canvas.w - seen.stage.w) <= 2 && Math.abs(seen.canvas.h - seen.stage.w / 2) <= 2, `a narrow window: the canvas is as wide as the stage (${JSON.stringify(seen.canvas)} in ${JSON.stringify(seen.stage)})`);
+  // The end reads clearly.
+  web.send({ type: "ended" });
+  assert.ok(await until(async () => /This session has ended/.test((await looks(watching)).notice)), "the end is shown");
+  assert.ok((await looks(watching)).noticeSize >= 18, "large enough to read at a glance, not a small line");
+  await shoot(watching, "after-ended");
+  watching.close();
+  web.closeSockets();
+
+  const taking = await open(1400, 900);
+  assert.ok(await until(() => web.sockets() === 1), "the take-over viewer connected");
+  const before = web.received.length;
+  web.send({ type: "ready", drive: "idle", takeOver: true, held: true });
+  web.sendFrame(jpeg, 1000, 500);
+  await settle(400);
+  seen = await looks(taking);
+  await shoot(taking, "after-take-over-1400x900");
+  assert.deepEqual([seen.back, seen.reload, seen.url], [true, true, true], "a take-over viewer keeps its toolbar");
+  assert.doesNotMatch(seen.text, /View only/, "and no view-only banner");
+  // A click a quarter in from the canvas's top-left lands a quarter into the page.
+  const at = await taking.evaluate(`(() => { const r = document.getElementById("screen").getBoundingClientRect(); return { x: r.left + r.width / 4, y: r.top + r.height / 4 }; })()`);
+  await taking.send("Input.dispatchMouseEvent", { type: "mousePressed", x: at.x, y: at.y, button: "left", clickCount: 1 });
+  await taking.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: at.x, y: at.y, button: "left", clickCount: 1 });
+  assert.ok(await until(() => web.received.slice(before).some((m) => m.type === "mouse" && m.action === "down")), "the click is sent while held");
+  const down = web.received.slice(before).find((m) => m.type === "mouse" && m.action === "down");
+  assert.ok(Math.abs(down.x - 250) <= 2 && Math.abs(down.y - 125) <= 2, `the click lands where it was made on the page (${down.x}, ${down.y})`);
+});
+
+test("a take-over that never started says so in its own words; one that did start and ends says the browser went back", { skip: NO_CHROME, timeout: 100_000 }, async (t) => {
+  const TOKEN = randomBytes(32).toString("base64url");
+  const web = await viewerServer(TOKEN);
+  const root = await mkdtemp(path.join(tmpdir(), "lv-viewer-"));
+  const provider = cdpProvider({ chrome: { executablePath: CHROME, profileRoot: root } });
+  let ref = null;
+  const tabs = [];
+  t.after(async () => { for (const tab of tabs) tab.close(); if (ref) await within(20_000, provider.release(ref)); await within(5_000, web.close()); await within(5_000, rm(root, { recursive: true, force: true })); }, { timeout: 40_000 });
+  ref = await within(60_000, provider.create({ tag: "lv-viewer-notstarted", maxLifetimeS: 600, idleTimeoutS: 60, proxies: false, verified: false, captcha: false, viewport: { width: 1000, height: 700 }, metadata: {} }, new AbortController().signal));
+  assert.ok(ref, "the browser started");
+  const attached = await within(30_000, provider.attach(ref));
+  const viewer = await openTab(attached.sdkCdpUrl, `${web.base}/v/${web.id}#t=${TOKEN}`);
+  tabs.push(viewer);
+  assert.ok(await until(() => web.received.length >= 1), "the viewer spoke");
+  web.send({ type: "ready", drive: "agent", takeOver: true, held: false });
+  const notice = () => viewer.evaluate(`document.getElementById("notice").hidden ? "" : document.getElementById("notice").textContent`);
+  const press = async () => {
+    const box = await viewer.evaluate(`(() => { const r = document.getElementById("hands").getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
+    await viewer.send("Input.dispatchMouseEvent", { type: "mousePressed", x: box.x, y: box.y, button: "left", clickCount: 1 });
+    await viewer.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: box.x, y: box.y, button: "left", clickCount: 1 });
+  };
+  assert.ok(await until(async () => (await viewer.evaluate(`document.getElementById("hands").hidden`)) === false), "Take over shows");
+  await press();
+  assert.ok(await until(() => web.received.some((m) => m.type === "take")), "Take over sends take");
+  assert.ok(await until(async () => /Taking over/.test(await notice())), "taking over");
+  // The agent's step ran on, and the hold ended before it ever went live.
+  web.send({ type: "hold", held: false, reason: "idle" });
+  assert.ok(await until(async () => /^Your take-over did not start: /.test(await notice())), `a take that never started says so (${await notice()})`);
+  assert.doesNotMatch(await notice(), /went back to the agent/, "never that the browser went back: the person never had it");
+  // A take that did go live and then ends says the browser went back, as before.
+  await press();
+  web.send({ type: "hold", held: true });
+  web.send({ type: "hold", held: false, reason: "idle" });
+  assert.ok(await until(async () => /The browser went back to the agent: no input came from you for a while/.test(await notice())), "a held take's end says the browser went back");
 });

@@ -22,7 +22,7 @@ import { type Agent, decisionProvider, toolOffers } from "@/lib/agentForm";
 import { RUN_STATUSES, RunsList } from "@/components/RunsList";
 import { type Section, Shell } from "@/components/Shell";
 import { SignIn } from "@/components/SignIn";
-import { type AuthMode, authMode, signInProblem, takeSetupCode } from "@/lib/auth";
+import { type AuthMode, authMode, setupTakesCode, signInProblem, takeSetupCode } from "@/lib/auth";
 import { approvalRefusal } from "@/lib/approval";
 import { trackHistory } from "@/lib/back";
 import { allPages, type Capabilities, ClientError, createClient, type ImportOffer, type ImportState, problemOf, type RunsFilter } from "@/lib/client";
@@ -42,7 +42,7 @@ const MODEL_CHECK_MS = 10_000;
 
 /** `agent`: an agent's page (at `tab`), or with `edit` its editor; null is a new agent's editor. `runsOf`, `status` and
  *  `archived` (for runs): the runs list's filters. `settings`: a settings page. */
-type Where = { section: Section; run?: string; schedule?: string | null; agent?: string | null; edit?: boolean; tool?: string; tab?: string; notes?: string[]; runsOf?: string; archived?: boolean; status?: RunStatus; settings?: SettingsPage; signIn?: ReturnType<typeof signInOf> };
+type Where = { section: Section; run?: string; trigger?: string | null; kind?: "schedule" | "webhook"; agent?: string | null; edit?: boolean; tool?: string; tab?: string; notes?: string[]; runsOf?: string; archived?: boolean; status?: RunStatus; settings?: SettingsPage; signIn?: ReturnType<typeof signInOf> };
 /** The page an address opens. Exported for its test. */
 export function route(h: string = location.hash): Where {
   let m = h.match(/^#\/runs\/([^/?]+)$/);
@@ -58,11 +58,12 @@ export function route(h: string = location.hash): Where {
   if (m) return { section: "agents", agent: decodeURIComponent(m[1]), ...(m[2] === "edit" ? { edit: true } : m[2] ? { tab: m[2] } : {}) };
   if (h.startsWith("#/agents")) return { section: "agents", archived: /[?&]archived=true\b/.test(h) };
   if (h.startsWith("#/playground")) return { section: "playground" };
-  // Schedules: the list, a new one, one schedule, and its editor.
-  if (h === "#/schedules/new") return { section: "schedules", schedule: null };
-  m = h.match(/^#\/schedules\/([^/?]+)(\/edit)?$/);
-  if (m) return { section: "schedules", schedule: decodeURIComponent(m[1]), ...(m[2] ? { edit: true } : {}) };
-  if (h.startsWith("#/schedules")) return { section: "schedules" };
+  // Triggers: the list, a new schedule, a new webhook, one trigger, and a schedule's editor.
+  if (h === "#/triggers/new") return { section: "triggers", trigger: null, kind: "schedule" };
+  if (h === "#/triggers/new-webhook") return { section: "triggers", trigger: null, kind: "webhook" };
+  m = h.match(/^#\/triggers\/([^/?]+)(\/edit)?$/);
+  if (m) return { section: "triggers", trigger: decodeURIComponent(m[1]), ...(m[2] ? { edit: true } : {}) };
+  if (h.startsWith("#/triggers")) return { section: "triggers" };
   // Settings, a page per address: #/settings/keys (and #/settings), #/settings/tools and #/settings/webhook; a later one is one
   // more name here.
   // #/settings/mcp, with an OAuth sign-in's outcome when the server sends the browser back there.
@@ -119,9 +120,27 @@ export function App() {
   const v2 = useMemo(() => createClient({ fetch: connection.fetch }), [connection]);
   const [auth, setAuth] = useState<AuthMode | null>(null);
   // The setup code, taken from the address once and removed from it (and from the history entry).
-  const [setupCode] = useState(setupCodeOnce);
+  const [setupCode, setSetupCode] = useState(setupCodeOnce);
+  // A setup link opened in this same tab once the page is up changes only the address's fragment: its code is taken
+  // then too, and removed from the address and its history entry, as at load.
+  useEffect(() => {
+    if (auth !== "setup") return;
+    const take = () => {
+      const { code, rest } = takeSetupCode(location.hash);
+      if (code === null) return;
+      history.replaceState(null, "", `${location.pathname}${location.search}${rest}`);
+      setSetupCode(code);
+    };
+    window.addEventListener("hashchange", take);
+    // And one opened before setup showed (while the session read was on its way), whose change came before this listened.
+    take();
+    return () => window.removeEventListener("hashchange", take);
+  }, [auth]);
+  // Whether setup takes the server's printed code (its session read says so), so the form asks for it with no link.
+  const [codeNeeded, setCodeNeeded] = useState(false);
   const readSession = async () => {
     const r = await v2.session();
+    setCodeNeeded(setupTakesCode(r));
     // A server without accounts: a protected read tells whether this browser is in already (a token it sends).
     const probe = r.status === 404 ? await v2.listAgents().then(() => 200, (e) => (e instanceof ClientError ? e.status : 0)) : undefined;
     setAuth(authMode(r, probe));
@@ -154,7 +173,7 @@ export function App() {
   if (auth === null) return <ConnectionProvider connection={connection}><Starting /></ConnectionProvider>;
   if (auth !== "signed_in") {
     return (
-      <SignIn key={auth} mode={auth} code={setupCode} offer={offer} onSubmit={async (password, code, importSessions) => {
+      <SignIn key={auth} mode={auth} code={setupCode} codeNeeded={codeNeeded} offer={offer} onSubmit={async (password, code, importSessions) => {
         try { await (auth === "setup" ? v2.setup(password, code, importSessions) : v2.signIn(password)); setAuth("signed_in"); return null; }
         catch (e) {
           // Another browser set the owner up first: the page reads the session again, which now asks to sign in.
@@ -186,7 +205,7 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
     let live = true;
     v2.listTriggers().then((r) => { if (live) setScheduleNames(new Map(r.triggers.map((t) => [t.id, t.name]))); }, () => {});
     return () => { live = false; };
-  }, [v2, scheduling, where.section, where.schedule]);
+  }, [v2, scheduling, where.section, where.trigger]);
   // Mission Control: the store's counts (GET /v2/stats) and the latest runs, read each time the page opens.
   const [mission, setMission] = useState<MissionView | null>(null);
   const [missionError, setMissionError] = useState<Problem | null>(null);
@@ -300,7 +319,7 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
   // The settings pages this server has: tool keys (their routes), tools (a capability with a choice of provider, or a
   // permission to set), MCP servers (every server has them), and the webhook (its routes).
   const settingsOffered: SettingsPage[] = [...(caps?.features?.tool_keys?.routes ? ["keys" as const] : []), ...(choices.length || gates.length ? ["tools" as const] : []), "mcp" as const, ...(caps?.features?.webhooks?.routes ? ["webhook" as const] : [])];
-  const nav = (s: Section) => go({ runs: "#/runs", agents: "#/agents", playground: "#/playground", mission: "#/", schedules: "#/schedules", settings: `#/settings/${settingsOffered[0] ?? "keys"}` }[s]);
+  const nav = (s: Section) => go({ runs: "#/runs", agents: "#/agents", playground: "#/playground", mission: "#/", triggers: "#/triggers", settings: `#/settings/${settingsOffered[0] ?? "keys"}` }[s]);
   // One click on a template makes its agent (once) on the first harness with a model, runs it, and opens the run.
   // Try it keeps its start's key until a start lands: a click after a lost answer is the same start, not a second run.
   const templateKeys = useRef(keeper()).current;
@@ -443,7 +462,7 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
   }, [v2, modelsReady]);
   return (
     <ScheduleNames.Provider value={scheduleNames}>
-    <Shell active={where.section} settings={settingsOffered.length > 0} schedules={scheduling} onNavigate={nav} onSignOut={() => {
+    <Shell active={where.section} settings={settingsOffered.length > 0} triggers={scheduling} onNavigate={nav} onSignOut={() => {
       // The card comes back only once the server ended the session: a sign-out that did not reach it says so instead.
       v2.signOut().then(onSignedOut, (e) => setSignOutError(e instanceof ClientError ? e.message : "The sign-out did not reach the server. Try again."));
     }} banners={<>
@@ -478,8 +497,8 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
                   keyCard={keyCardSavesModel} /> : undefined} />
             </div>
           </div>
-        : where.section === "schedules"
-        ? <SchedulesPage v2={v2} view={{ schedule: where.schedule, edit: where.edit }} go={go} agentName={agentName} minEvery={caps?.features?.triggers?.min_every_s} />
+        : where.section === "triggers"
+        ? <SchedulesPage v2={v2} view={{ trigger: where.trigger, kind: where.kind, edit: where.edit }} go={go} agentName={agentName} minEvery={caps?.features?.triggers?.min_every_s} />
         : where.section === "playground"
         ? agents && <Playground agents={agents.filter((a) => !a.archived_at)} revisions={revs} efforts={efforts} origin={location.origin} agentId={pick ?? undefined} onAgent={setPick} onSend={send} limits={caps?.limits} removeUpload={v2.deleteUpload} onOpenRun={(id) => go(`#/runs/${encodeURIComponent(id)}`)}
             live={(id) => <LiveRun key={id} v2={v2} runId={id} caps={caps} agentName={agentName} />} />

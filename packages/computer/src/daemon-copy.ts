@@ -7,13 +7,15 @@
 import { createHash, randomBytes } from "node:crypto";
 import { closeSync, constants, fchmodSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, type Stats, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fail, ok, type Result } from "./result.js";
 
-/** The default directory for the copies: agentrun-computer under XDG_CACHE_HOME when it is absolute, else ~/.cache. */
-export function defaultDaemonCache(env: Record<string, string | undefined> = process.env): string {
-	const xdg = env.XDG_CACHE_HOME;
-	return join(xdg !== undefined && isAbsolute(xdg) ? xdg : join(homedir(), ".cache"), "agentrun-computer");
+/**
+ * The default directory for the copies: ~/.cache/agentrun-computer. The library reads no environment, XDG_CACHE_HOME
+ * included: a caller that keeps its cache elsewhere passes the provider's daemonCache.
+ */
+export function defaultDaemonCache(): string {
+	return join(homedir(), ".cache", "agentrun-computer");
 }
 
 /** The file operations daemonCopy uses: node:fs's own, or, in a test, a wrapper of them that fails one call. */

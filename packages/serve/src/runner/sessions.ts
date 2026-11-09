@@ -29,7 +29,7 @@ const fenced = (error: unknown): boolean => {
 
 /** The sessions of the run whose one Harness is `harness` (on store.journal(claim)); `context`: the loop's, whose signal is
  *  the claim's; `store`: its flush makes every record appended so far survive a lost box (sync). */
-export function journalSessions(harness: Harness, context: Context, store: Pick<Store, "flush">): SessionStore {
+export function journalSessions(harness: Harness, context: Context, store: Pick<Store, "flush">): SessionStore & { keys(): Promise<string[]> } {
   const holders = new Map<string, number>();
   const known = new Map<string, ConversationId>();
   // One creation per key at a time: two first opens at once share it, so a key names one conversation.
@@ -52,14 +52,20 @@ export function journalSessions(harness: Harness, context: Context, store: Pick<
     }
   };
 
+  /** Every key the root names, read once: from then on this store's own opens add theirs (the claim fences any other
+   *  writer of the run's journal while it holds). */
+  let scanned = false;
+  const scanKeys = async () => {
+    await scan(ROOT_CONVERSATION_ID, (entry) => {
+      const data = entry.data as Partial<SessionKeyData> | undefined;
+      // The first entry of a key names its conversation.
+      if (entry.kind === KINDS.sessionKey && typeof data?.key === "string" && data.conversation != null && !known.has(data.key)) known.set(data.key, data.conversation as unknown as ConversationId);
+    });
+    scanned = true;
+  };
+
   const find = async (key: string): Promise<ConversationId | undefined> => {
-    if (!known.has(key)) {
-      await scan(ROOT_CONVERSATION_ID, (entry) => {
-        const data = entry.data as Partial<SessionKeyData> | undefined;
-        // The first entry of a key names its conversation.
-        if (entry.kind === KINDS.sessionKey && typeof data?.key === "string" && data.conversation != null && !known.has(data.key)) known.set(data.key, data.conversation as unknown as ConversationId);
-      });
-    }
+    if (!known.has(key)) await scanKeys();
     return known.get(key);
   };
 
@@ -116,6 +122,11 @@ export function journalSessions(harness: Harness, context: Context, store: Pick<
 
   return {
     read,
+    /** Every session key of the run: the run's one booking sums their spend (runBooking). */
+    async keys() {
+      if (!scanned) await scanKeys();
+      return [...known.keys()];
+    },
     async open(key) {
       alive(key);
       const holder = (holders.get(key) ?? 0) + 1;

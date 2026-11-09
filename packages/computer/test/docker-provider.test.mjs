@@ -274,6 +274,25 @@ test("create() removes a container that is not running and says why", async () =
 	assert.deepEqual(remove, removal(valuesOf(run, "--name")[0]));
 });
 
+test("a computer whose lifetime ended before docker run finished says so, with both times, and is removed", async () => {
+	// Init exits 0 at its deadline, and here the deadline passed while docker run was still running: a Docker host that
+	// held the start, or a lifetime too short for it.
+	const exited = { State: { Running: false, Status: "exited", ExitCode: 0, Error: "" } };
+	const { provider, calls } = fakeDocker({ patch: exited });
+	const result = await provider.create({ ...SPEC, lifetimeMs: 1 });
+	assert.equal(result.ok, false);
+	assert.equal(result.error.code, "timeout");
+	assert.match(result.error.message, /^the computer computer-[0-9a-f]{12}'s lifetime of 0\.001 s ended before docker run finished \(it took \d+(\.\d+)? s\), so init ended it and it was removed$/);
+	const [, run, , ...remove] = calls();
+	assert.deepEqual(remove, removal(valuesOf(run, "--name")[0]));
+	// Exit 0 with lifetime left, or another exit after the deadline, is not that: the words stay Docker's state.
+	for (const [patch, lifetimeMs] of [[exited, 600_000], [{ State: { ...exited.State, ExitCode: 1 } }, 1]]) {
+		const other = await fakeDocker({ patch }).provider.create({ ...SPEC, lifetimeMs });
+		assert.equal(other.error.code, "docker", JSON.stringify(other));
+		assert.match(other.error.message, new RegExp(`was not running after its start \\(status exited, exit code ${patch.State.ExitCode}\\), so it was removed$`));
+	}
+});
+
 test("create() with no daemon binary is not_found, with no docker call", async () => {
 	const { calls } = fakeDocker();
 	const provider = new DockerProvider({ daemonPath: join(tmpdir(), "computer-no-such-daemon", "computerd"), docker: "docker-that-is-not-called" });

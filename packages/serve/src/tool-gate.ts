@@ -55,6 +55,8 @@ import { DEFAULT_HARNESS } from "./harness.js";
 import { durableSessions } from "./sessions.js";
 import { SHELL_TOOLS } from "./background.js";
 import { readToolSettings, SERVE_OWN_TOOLS, TABLE_TOOLS } from "./tool-plane.js";
+import { NOT_RUN, RAN_UNKNOWN, refusedText } from "./refusal-words.js";
+import { type Approvals, approvalsOf } from "./approvals.js";
 
 /** What the gate does with a tool's calls. */
 export const PERMISSIONS = ["allow", "ask", "deny"] as const;
@@ -133,8 +135,8 @@ export function settingsKeyOf(harness: string, name: string, mcpServers: readonl
 
 /** A pinned argument's scalar: `null` holds for a call that leaves the argument out (or gives null). */
 export type PinScalar = string | number | boolean | null;
-/** A pinned argument's value: one scalar the call must carry, or a list of 1 to MAX_PIN_CHOICES ("one of"), whose order
- *  is the author's and shows in the refusal. */
+/** A pinned argument's value: one scalar the call must carry, or a list of 1 to MAX_PIN_CHOICES ("one of"), kept and
+ *  said in its one form (canonicalChoices). */
 export type PinValue = PinScalar | readonly PinScalar[];
 /** A setting's `pin`: an MCP tool's top-level arguments, by name, each fixed to one value or one of a list. */
 export type Pin = Readonly<Record<string, PinValue>>;
@@ -146,6 +148,16 @@ export const MAX_PIN_CHOICES = 16;
  *  gate reads it: a permission by settings key, and an MCP tool's pin. */
 export type PermissionSettings = Readonly<Record<string, { permission?: Permission; /** Not as written: a value not offered, read as its fail-closed stand-in (tool-plane.ts readToolSettings). Never shown. */ fallback?: true; pin?: Pin; /** A pin in the server's file that does not read (tool-plane.ts readToolSettings): every call of the tool is refused. Never shown. */ brokenPin?: true } | undefined>>;
 
+/** A one-of list in its one form: each value once, null first, then by its JSON text; any other value as it is. The
+ *  same meaning is the same text (a revision's id) and the same words (a refusal). */
+export const canonicalChoices = (value: PinValue): PinValue => {
+  if (!Array.isArray(value)) return value;
+  const texts = [...new Set(value.filter((one) => one !== null).map((one) => JSON.stringify(one)))].sort();
+  return [...(value.includes(null) ? [null] : []), ...texts.map((text) => JSON.parse(text) as PinScalar)];
+};
+/** `pin` in its one form: its arguments sorted, each one-of list in its form (canonicalChoices). */
+export const canonicalPin = (pin: Pin): Pin => Object.fromEntries(Object.keys(pin).sort().map((arg) => [arg, canonicalChoices(pin[arg]!)]));
+
 /** Whether a call's argument `given` is the pinned scalar `one`: the same JSON scalar (strict equality), or, for null,
  *  left out or null. */
 const isOne = (given: unknown, one: PinScalar): boolean => (one === null ? given === undefined || given === null : given === one);
@@ -153,9 +165,9 @@ const isOne = (given: unknown, one: PinScalar): boolean => (one === null ? given
 const holds = (given: unknown, value: PinValue): boolean => (Array.isArray(value) ? value.some((one) => isOne(given, one)) : isOne(given, value as PinScalar));
 /** A scalar in a refusal's words: text as it is, null as `absent`, any other as JSON. */
 const scalarWords = (one: PinScalar): string => (one === null ? "absent" : typeof one === "string" ? one : JSON.stringify(one));
-/** A pin in words, as the refusal says it: `channel_id = C0123`, `cc absent` for a null, `event in (absent | COMMENT)`
- *  for a list, in its order. */
-export const pinWords = (pin: Pin): string => Object.entries(pin).map(([arg, value]) => (Array.isArray(value) ? `${arg} in (${value.map(scalarWords).join(" | ")})` : value === null ? `${arg} absent` : `${arg} = ${scalarWords(value as PinScalar)}`)).join(", ");
+/** A pin in words, as the refusal says it, in its one form (canonicalPin): `channel_id = C0123`, `cc absent` for a null,
+ *  `event in (absent | COMMENT)` for a list. */
+export const pinWords = (pin: Pin): string => Object.entries(canonicalPin(pin)).map(([arg, value]) => (Array.isArray(value) ? `${arg} in (${value.map(scalarWords).join(" | ")})` : value === null ? `${arg} absent` : `${arg} = ${scalarWords(value as PinScalar)}`)).join(", ");
 /** What holds both of two layers' pins of one argument (`own`, the agent's, and `theirs`, the server's): a scalar where
  *  either is one and the other holds it, else the agent's list kept to the server's, in the agent's order; undefined when
  *  nothing holds both. */
@@ -190,9 +202,32 @@ export function pinRefusal(name: string, args: unknown, server: PermissionSettin
 }
 
 /** `name`'s permission in force and the layer it came from, most specific first: the agent's exact key, the agent's
- *  server wildcard, the server's exact key, the server's server wildcard, then the default. A call's arguments are
- *  held only by a pin (pinRefusal), which adds to a setting and is never a permission. */
-export function permissionFrom(name: string, server: PermissionSettings, agent: PermissionSettings = {}): { permission: Permission; from: "agent" | "server" | "default" } {
+ *  server wildcard, the server's exact key, the server's server wildcard, then the default. A call's arguments
+ *  are held only by a pin (pinRefusal), which adds to a setting and is never a permission. `approvals` "never" (an agent run unattended) turns the ask that is left into an allow, from
+ *  "unattended", as the last step, and only where nothing stands behind that ask (standsBehind): never past a deny in any
+ *  layer, nor an ask that stands in for a setting that does not read. Nor is anything RunGate.enter refuses before it
+ *  decides between running and parking ever lifted (a template's pin, among them). Without never, the answer is as it
+ *  always was. */
+export function permissionFrom(name: string, server: PermissionSettings, agent: PermissionSettings = {}, approvals: Approvals = "ask"): { permission: Permission; from: SettingFrom } {
+  const { permission, from } = settingOf(name, server, agent);
+  if (approvals !== "never" || permission !== "ask" || standsBehind(name, server, agent)) return { permission, from };
+  return { permission: "allow", from: "unattended" };
+}
+
+/** Whether something stands behind `name`'s ask that approvals "never" must not lift: in either layer, under any key the
+ *  tool is read by (its own, its MCP server's wildcard; a shell tool's, bash's), a deny, a value that is no permission,
+ *  or a setting marked as not read as written (`fallback`). The ask a layer above gives does not hide a deny below it. */
+function standsBehind(name: string, server: PermissionSettings, agent: PermissionSettings): boolean {
+  const held = Object.hasOwn(SHELL_FAMILY, name) ? SHELL_FAMILY[name]! : name;
+  return [agent, server].some((layer) => permissionKeys(held).some((key) => {
+    const setting = layer[key];
+    if (setting?.permission === undefined) return false;
+    return setting.permission === "deny" || setting.fallback === true || !(PERMISSIONS as readonly string[]).includes(setting.permission);
+  }));
+}
+
+/** permissionFrom before approvals: what the layers and the default say. */
+function settingOf(name: string, server: PermissionSettings, agent: PermissionSettings): { permission: Permission; from: SettingFrom } {
   // A shell tool's permission is bash's (SHELL_FAMILY), from bash's layer, wherever it is read: the gate, capabilities, an
   // agent's tools. A watcher (SHELL_WATCHERS) runs unasked only under an ask set as written in a layer: an ask that stands
   // in for anything else (a value not offered, nothing set) stays an ask. No key of its own is read, so none lifts bash's.
@@ -221,7 +256,7 @@ function settingFrom(name: string, server: PermissionSettings, agent: Permission
 
 /** `name`'s permission in force (permissionFrom): the one rule every path reads, the gate's, the tool plane's and a
  *  workflow's call nodes'. */
-export const permissionOf = (name: string, server: PermissionSettings, agent: PermissionSettings = {}): Permission => permissionFrom(name, server, agent).permission;
+export const permissionOf = (name: string, server: PermissionSettings, agent: PermissionSettings = {}, approvals: Approvals = "ask"): Permission => permissionFrom(name, server, agent, approvals).permission;
 
 /** A call's answer as the model reads it: its text, and whether it failed. */
 export type ToolAnswer = { text: string; isError: boolean };
@@ -284,13 +319,13 @@ export interface Gate {
   spill(callId: string, text: string): string;
 }
 
-/** Where a permission was set (permissionFrom's `from`): the agent's own tool settings, the server's, or the default. */
-export type SettingFrom = "agent" | "server" | "default";
-/** What every deny tells the model, plainly: the call never left, so nothing was charged for it. */
-export const NOT_RUN = "It was not run: nothing was sent and nothing was charged.";
-/** What a refusal says instead when an earlier attempt of the call may have been sent: an approved call cut mid-flight,
- *  or a replay-safe call the kernel runs again after a crash. Never a claim that nothing was charged. */
-export const RAN_UNKNOWN = "It had started before the deny, and whether it took effect is not known.";
+/** Where a permission was set (permissionFrom's `from`): the agent's own tool settings, the server's, or the default; or
+ *  "unattended": an ask the agent's approvals "never" allowed. */
+export type SettingFrom = "agent" | "server" | "default" | "unattended";
+/** Where a deny can come from: a setting in a layer, or the default. Never "unattended", which only ever allows. */
+export type DenyFrom = Exclude<SettingFrom, "unattended">;
+// The refusal words (NOT_RUN, RAN_UNKNOWN, refusedText) live in refusal-words.ts, shared with the runner's loops.
+export { NOT_RUN, RAN_UNKNOWN, refusedText } from "./refusal-words.js";
 /** Where a deny was set, in words: the place a person changes it. */
 export const denyPlace = (from: SettingFrom = "server"): string => (from === "agent" ? "for this agent" : from === "default" ? "by default" : "on this server");
 /** The refusal of a call whose tool is set to deny; of one held to another tool's setting (`heldTo`, a shell tool's
@@ -307,8 +342,6 @@ export const noApproverText = (tool: string, ran: "no" | "unknown" = "no"): stri
 export const NO_APPROVER_ENV = "AGENTRUN_SERVE_NO_APPROVER";
 /** A parked call's answer: the run pauses here. */
 export const waitingText = (tool: string): string => `This ${tool} call waits for a person's approval; the run pauses here and continues with the result when they answer.`;
-/** A call a person denied, with their reason when they gave one. */
-export const refusedText = (tool: string, note?: string, ran: "no" | "unknown" = "no"): string => `The user denied this ${tool} call. ${ran === "no" ? NOT_RUN : RAN_UNKNOWN}${note ? ` Reason: ${note}` : ""}`;
 
 /** The Timeline row of a call that waits for an approval. */
 export const APPROVAL_ROW = "tool_approval_requested" as const;
@@ -405,8 +438,8 @@ export function resumeText(request: Pick<ApprovalRequest, "tool" | "call_id">, s
 
 /** The gate of the run `runId` at `where` (its directory, under the data directory's runs/), on its pinned revision:
  *  an agentic run's parks an asked call; a workflow's model node cannot. */
-export function runGate(where: { root: string; work: string }, runId: string, revision: { kind: string; body: { toolSettings?: unknown; harness?: string } }): RunGate {
-  return new RunGate({ root: where.root, work: where.work, data: dataOfRun(where.root), runId, harness: revision.body.harness ?? DEFAULT_HARNESS }, (revision.body.toolSettings ?? {}) as PermissionSettings, revision.kind === "agentic", process.env[NO_APPROVER_ENV] !== "1");
+export function runGate(where: { root: string; work: string }, runId: string, revision: { kind: string; body: { toolSettings?: unknown; harness?: string; approvals?: Approvals } }): RunGate {
+  return new RunGate({ root: where.root, work: where.work, data: dataOfRun(where.root), runId, harness: revision.body.harness ?? DEFAULT_HARNESS }, (revision.body.toolSettings ?? {}) as PermissionSettings, revision.kind === "agentic", process.env[NO_APPROVER_ENV] !== "1", approvalsOf(revision.body.approvals));
 }
 
 /** The gate in a run's process, park mode: its policy, the turn's origin, the calls that wait, and the answers acted on. */
@@ -432,28 +465,32 @@ export class RunGate {
 
   /** `where.data`: the server's data directory, its tool settings beside the store; `overrides`: the pinned revision's
    *  own; `parks`: whether an asked call parks the run (an agentic run's), which a workflow's model node cannot;
-   *  `approvers`: whether anyone can answer an ask here (the owner's password session: accounts on). */
-  constructor(private readonly where: { root: string; work: string; data: string; runId: string; harness?: string; mcpServers?: readonly string[] }, private readonly overrides: PermissionSettings = {}, private readonly parks = true, private readonly approvers = true) {}
+   *  `approvers`: whether anyone can answer an ask here (the owner's password session: accounts on); `approvals`: the
+   *  pinned revision's (definition.approvals): "never" runs the agent unattended, an ask allowed (permissionFrom). */
+  constructor(private readonly where: { root: string; work: string; data: string; runId: string; harness?: string; mcpServers?: readonly string[] }, private readonly overrides: PermissionSettings = {}, private readonly parks = true, private readonly approvers = true, private readonly approvals: Approvals = "ask") {}
 
   /** A tool's permission now (permissionOf): the revision's own over the server's setting, read at each call, so a change
-   *  reaches a live run at its next call. */
+   *  reaches a live run at its next call; under approvals "never", an ask is an allow. */
   readonly policy = (tool: string): Permission => this.setting(tool).permission;
-  /** Where the permission `policy` gives `tool` was set: the agent's own tool settings, the server's, or the default. */
+  /** Where the permission `policy` gives `tool` was set: the agent's own tool settings, the server's, or the default; or
+   *  "unattended", an ask the agent's approvals allowed. */
   readonly denyFrom = (tool: string): SettingFrom => this.setting(tool).from;
   private setting(tool: string): { permission: Permission; from: SettingFrom } {
     const key = settingsKeyOf(this.where.harness ?? DEFAULT_HARNESS, tool, this.where.mcpServers);
-    // A name nothing maps fails closed: it asks (refused where no one can approve), never allows.
+    // A name nothing maps fails closed: it asks (refused where no one can approve), never allows, under approvals "never"
+    // too: no setting of it was read, so none says it may run.
     if (key === undefined) return { permission: "ask", from: "default" };
     const server = this.serverSettings();
     // No settings ever read: every tool asks, the shell watchers too (fail closed: an ask nothing read is never lifted),
-    // or keeps the revision's own deny.
+    // or keeps the revision's own deny. Approvals "never" lifts none of these asks: the server's settings may hold a deny
+    // no read has seen.
     if (server === undefined) {
       const own = permissionFrom(key, {}, this.overrides);
       return own.permission === "deny" ? own : { permission: "ask", from: "default" };
     }
     // A shell tool under every harness's name for it is read as its own name, by bash's key (permissionFrom): a watcher's
     // ask is allow only where bash's ask is set as written.
-    return permissionFrom(shellToolOf(tool) ?? key, server, this.overrides);
+    return permissionFrom(shellToolOf(tool) ?? key, server, this.overrides, this.approvals);
   }
 
   /** Why a pin refuses the call of `key` with `args` now (pinRefusal): the revision's own pins and the server's, read at
@@ -497,6 +534,9 @@ export class RunGate {
     // The end-of-run turn writes no file under work/.learning/, whatever the tool's permission: its notes are kept only
     // from its answer (NOTE_ONLY_TEXT). Any other turn's write there follows its permission, as anywhere.
     if ((key === "write" || key === "edit") && this.turnOrigin() === "reflect" && underLearning(this.where.work, args)) return { text: NOTE_ONLY_TEXT, isError: true };
+    // Every refusal that does not come from the permission (the reflect turn's above, the deny and a pin's below) stays
+    // ABOVE the allow's return further down. An allow here may be an ask the agent's approvals "never" turned into one
+    // (permissionFrom's last step), and an allowed call runs at once: nothing after that return refuses it.
     const verdict = this.policy(name);
     const ran = options.replayed ? "unknown" : "no";
     if (verdict === "deny") return { text: deniedText(tool, key, this.denyFrom(name), ran), isError: true };

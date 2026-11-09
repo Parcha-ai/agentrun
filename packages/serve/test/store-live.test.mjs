@@ -37,7 +37,9 @@ test("one put of 300 rows is one transaction: another connection reading meanwhi
 
 test("a stale claim's row is skipped, never written, beside the batch's live rows", async (t) => {
   const { store, clock } = await storeOn(t);
-  const [stale, other] = await claimed(store, 2);
+  const [stale, first] = await claimed(store, 2);
+  // The other run's claim renewed past the clock's move: a row is written only under a live lease.
+  const other = await store.renew(first, { leaseMs: 120_000 });
   clock.now += 61_000;
   const current = await store.claim(stale.runId, "runner-b", { leaseMs: 60_000 });
   assert.equal(current.epoch, 2);
