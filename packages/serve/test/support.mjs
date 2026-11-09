@@ -218,7 +218,7 @@ function withAgents(store) {
       return typeof value === "function" ? value.bind(target) : value;
     },
   });
-  return { triggers, runs: store.runs, agents };
+  return { triggers, runs: store.runs, agents, liveViewers: store.liveViewers };
 }
 
 /** Trigger stores handed to servers a test starts itself (startServe, not serve()): closed when the file's tests are done,
