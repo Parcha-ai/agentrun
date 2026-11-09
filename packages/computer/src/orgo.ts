@@ -171,7 +171,7 @@ const ORGO_AGENT_PORTS = [5999, 6080, 8080];
  * root's D-Bus buses connectable by the tool user). Prints `locked <path>` for each. Orgo's desktop runs as root, so
  * nothing of its own loses a socket.
  */
-const LOCKDOWN_SCRIPT = [
+export const LOCKDOWN_SCRIPT = [
 	"# agentrun-computer: orgo-lockdown",
 	"x=$1",
 	"find /tmp /run /var/run /dev/shm -type s 2>/dev/null | sort -u | while read -r s; do",

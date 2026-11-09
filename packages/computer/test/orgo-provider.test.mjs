@@ -3,6 +3,7 @@
 // Orgo VM, on Orgo's own X display, so the desktop is the same wire as every computer. No key is read from the
 // environment, none leaves the Authorization header, and nothing reaches the network.
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -393,4 +394,76 @@ test("Orgo extend: Orgo's end moved in whole hours with an Idempotency-Key, then
 	assert.equal(box.extended.length, 1, "init's deadline did not move");
 	assert.equal(JSON.parse(box.labels).deadline, extended.value.deadline.toISOString(), "nor the labels file");
 	assert.equal(fakes.api.requests.filter((request) => request.path === `/computers/${ref.id}/extend`).length, extends_, "nor Orgo's end");
+});
+
+/** The janitor's deadline a name carries (its -d part, base-36 seconds), in ms. */
+const nameDeadline = (name) => Number.parseInt(name.slice(name.lastIndexOf("-d") + 2), 36) * 1000;
+
+test("Orgo extend: two at once are taken in turn, and the name's deadline never moves back: a shorter extend whose rename would land after a longer one's leaves the longer's", async () => {
+	let longDone;
+	const longer = new Promise((resolve) => (longDone = resolve));
+	// The shorter call's rename waits until the longer call has finished: without turns, it lands last and moves the
+	// name's deadline back, and the janitor, which trusts the name, deletes the desktop early.
+	const fakes = setup({}, { api: { hold: ({ method, body }) => (method === "PATCH" && nameDeadline(body.name) < Date.now() + 1.5 * HOUR ? longer : undefined) } });
+	const { ref, record, box } = seeded(fakes, { max: new Date(Date.now() + 3 * HOUR).toISOString() });
+	const long = fakes.provider.extend(ref, 2 * HOUR).then((result) => (longDone(), result));
+	const short = fakes.provider.extend(ref, HOUR);
+	const [a, b] = await Promise.all([long, short]);
+	assert.equal(a.ok, true, JSON.stringify(a));
+	assert.equal(b.ok, false, JSON.stringify(b));
+	assert.equal(b.error.code, "refused", "the shorter, taken after the longer, would move the deadline earlier");
+	assert.equal(nameDeadline(record.name), Math.ceil(a.value.deadline.getTime() / 1000) * 1000, "the name keeps the longer deadline");
+	assert.equal(box.init.deadline, a.value.deadline.toISOString(), "and init");
+	assert.equal(JSON.parse(box.labels).deadline, a.value.deadline.toISOString(), "and the labels file");
+});
+
+test("Orgo extend: the name's deadline is the one init took, not the one asked, when the daemon answers another time", async () => {
+	// The daemon takes 90 s more than asked (as an init that rounds its deadline up would).
+	const fakes = setup({}, { channel: { box: { extendAt: (at) => new Date(Date.parse(at) + 90_000).toISOString() } } });
+	const { ref, record, box } = seeded(fakes, { max: new Date(Date.now() + 3 * HOUR).toISOString() });
+	const asked = Date.now() + 2 * HOUR;
+	const extended = await fakes.provider.extend(ref, 2 * HOUR);
+	assert.equal(extended.ok, true, JSON.stringify(extended));
+	const took = extended.value.deadline.getTime();
+	assert.ok(took >= asked + 89_000, "the result is the deadline init took");
+	assert.equal(box.init.deadline, extended.value.deadline.toISOString());
+	assert.equal(nameDeadline(record.name), Math.ceil(took / 1000) * 1000, "the name's deadline is init's, so the janitor ends it when init does");
+	assert.equal(JSON.parse(box.labels).deadline, extended.value.deadline.toISOString(), "and the labels file's");
+	assert.equal(JSON.parse(box.labels).name, record.name);
+});
+
+test("Orgo lockdown: the script fails when a socket's chown fails, though a later socket locks; and when the scan fails", () => {
+	const stubs = mkdtempSync(join(dir, "lockdown-"));
+	const sorts = spawnSync("sh", ["-c", "command -v sort"], { encoding: "utf8" }).stdout.trim();
+	const stub = (name, body) => writeFileSync(join(stubs, name), `#!/bin/sh\n${body}\n`, { mode: 0o755 });
+	stub("chown", '[ "$2" = /run/a.sock ] && exit 1; exit 0');
+	stub("chmod", "exit 0");
+	const run = (findBody) => {
+		stub("find", findBody);
+		return spawnSync("sh", ["-c", orgo.LOCKDOWN_SCRIPT, "sh", "/tmp/.X11-unix/X99"], { encoding: "utf8", env: { PATH: `${stubs}:${sorts.slice(0, sorts.lastIndexOf("/"))}:/usr/bin:/bin` } });
+	};
+	// The first socket's chown fails, the second's goes through: the script must not answer 0.
+	const chown = run("printf '%s\\n' /run/a.sock /run/b.sock; exit 0");
+	assert.notEqual(chown.status, 0, `the script answered 0 with a socket left open: ${chown.stdout}`);
+	assert.match(chown.stdout, /^locked \/run\/b\.sock$/m, "the socket it could lock is locked");
+	assert.doesNotMatch(chown.stdout, /^locked \/run\/a\.sock$/m);
+	// The scan itself fails partway: the script must not answer 0 on what it found before.
+	const scan = run("printf '%s\\n' /run/b.sock; exit 1");
+	assert.notEqual(scan.status, 0, `the script answered 0 after its scan failed: ${scan.stdout}`);
+	// Every socket locked: 0, each named.
+	const fine = run("printf '%s\\n' /run/b.sock /run/c.sock /tmp/.X11-unix/X99; exit 0");
+	assert.equal(fine.status, 0, fine.stdout + fine.stderr);
+	assert.deepEqual(fine.stdout.trim().split("\n"), ["locked /run/b.sock", "locked /run/c.sock"]);
+});
+
+test("Orgo create: a lockdown that leaves a socket open refuses the create in words, and the computer is deleted", async () => {
+	const fakes = setup({}, { channel: { lockdown: { exitCode: 1, output: "failed /run/dbus/system_bus_socket\nlocked /tmp/dbus-3fd5ustF2v\n" } } });
+	const made = await fakes.provider.create(SPEC);
+	assert.equal(made.ok, false, JSON.stringify(made));
+	assert.equal(made.error.code, "refused");
+	assert.match(made.error.message, /making Orgo's desktop sockets root's alone .* failed \(exit 1\)/);
+	assert.match(made.error.message, /\/run\/dbus\/system_bus_socket/);
+	assert.match(made.error.message, /was deleted/);
+	assert.equal(only(fakes.api).deleted, true, "the computer is deleted");
+	assert.equal(fakes.channel.calls.some((call) => call.kind === "init"), false, "init never started");
 });
