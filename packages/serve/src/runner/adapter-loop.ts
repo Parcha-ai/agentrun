@@ -298,6 +298,18 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
   let held: { detach(): void } | undefined;
   /** This claim's spec, once known: a raise is checked by its cap's rule, and the end's patch is read from it. */
   let specNow: AdapterRunSpec | undefined;
+  /** Whether this claim's tool host was let go (its beforeRelease run), once. */
+  let hostReleased = false;
+  /** A tool host's beforeRelease, once per claim: before a park's seal and before the end's commit (the end is the
+   *  claim's release), so what it writes (a browser release's charge, its paid booking on run.ledger.paid) lands in its
+   *  own commits under the live claim, just before. A hook that throws is logged; the run's end or park stands. */
+  const releaseHost = async (on: Harness | undefined): Promise<void> => {
+    if (hostReleased || !on) return;
+    hostReleased = true;
+    for (const stop of specNow?.lifecycle?.beforeRelease ?? []) {
+      await Promise.resolve().then(() => stop(on)).catch((error: unknown) => console.warn(`[runner] a tool host's beforeRelease failed: ${(error as Error)?.message ?? String(error)}`));
+    }
+  };
   /** The current pass's spec's release, until it is called (closeSession). */
   let releaseNow: (() => Promise<void>) | undefined;
   /** While the end-of-run turn runs: a steer is left for the end, and its writes and edits under work/.learning/ are
@@ -639,6 +651,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         const turn = placed ? session!.turnEnd() : Promise.resolve({ status: "completed" as const });
         const end = await Promise.race([turn.then(() => "answered" as const), parking.then(() => "parked" as const), stopping.then(() => "stop" as const), harness.closed.then(() => "closed" as const)]);
         if (end === "parked") {
+          // Let the tool host go first (a browser's release, booked under the live claim), then seal.
+          await releaseHost(harness);
           gate.seal(new Parked());
           return { state: "parked" };
         }
@@ -710,14 +724,9 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       deps.signal.removeEventListener("abort", signalAbort);
       held?.detach();
       deps.live?.(() => undefined);
-      // A tool host's beforeRelease: the claim lets the run go (its end, a park, a shutdown), the Harness still open. A
-      // restart within the claim is no release. A hook that throws is logged; the run's end stands.
-      const releasing = harness;
-      if (releasing) {
-        for (const stop of specNow?.lifecycle?.beforeRelease ?? []) {
-          await Promise.resolve().then(() => stop(releasing)).catch((error: unknown) => console.warn(`[runner] a tool host's beforeRelease failed: ${(error as Error)?.message ?? String(error)}`));
-        }
-      }
+      // A tool host's beforeRelease, when no end or park let it go first (a shutdown, a lost claim): the Harness still open.
+      // A restart within the claim is no release. What it writes after a lost claim is refused by the fence, as any write.
+      await releaseHost(harness);
       await closeSession();
     }
   }
@@ -967,6 +976,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       throw error;
     }
     await parkedAt;
+    await releaseHost(on);
     theGate.seal(new Parked());
     return { state: "parked" };
   }
@@ -984,7 +994,9 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
   /** The end commit: an `agentrun.end` entry carrying the run row's final patch (the spec's end patch in it), the rows
    *  staged with it (the end-of-run step's), and the rows it takes. */
   async function writeEnd(on: Harness, conversation: Conversation, theGate: Gate, base: EndData, take: readonly number[], also: readonly AlsoRow[] = []): Promise<LoopEnd> {
-    // The end is the run's release: nothing of this claim lands after it, so its requests' bookings come first.
+    // The end is the run's release: nothing of this claim lands after it, so the tool host is let go first (its writes in
+    // their own commits, the end's patch reading the cost they book), and its requests' bookings come first.
+    await releaseHost(on);
     await bookingsSettled();
     const patch = await endPatchOf(base);
     const data: EndData = { ...base, ...(patch.outcome !== undefined ? { outcome: patch.outcome } : {}), ...(patch.costUsd !== undefined ? { costUsd: patch.costUsd } : {}), ...(patch.metrics !== undefined ? { metrics: patch.metrics } : {}) };
