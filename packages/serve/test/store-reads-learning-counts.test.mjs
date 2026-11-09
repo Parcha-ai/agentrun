@@ -114,6 +114,16 @@ test("GET /stats's learning counts from the store are today's counts over the sa
   }
 });
 
+test("an agent's learning view counts from the store are today's (its runs' counts, less runs), each agent's own", async (t) => {
+  const store = await fixture(t);
+  const agentCounts = (...args) => fn(learningReads, "agentLearningCountsOverStore")(...args);
+  for (const agentId of ["agent-1", "agent-2", "agent-dropped", "agent-failed"]) {
+    const { runs: _, ...expected } = await today(store, { agent: agentId });
+    assert.deepEqual(await agentCounts(store, agentId), expected, agentId);
+  }
+  assert.deepEqual(await agentCounts(store, "agent-1"), { merged: 1, dropped: { empty: 2 }, in_progress: 1 }, "agent-1's: merged, in progress, two dropped before a proposal");
+});
+
 test("the store's counts tell each case apart: merged, dropped by reason, in progress; the rest left out", async (t) => {
   const store = await fixture(t);
   assert.deepEqual(await learningCountsOverStore(store, {}), { runs: 7, merged: 1, dropped: { grader: 1, grade_failed: 1, empty: 2, cancelled: 1 }, in_progress: 1 }, "no filter");
