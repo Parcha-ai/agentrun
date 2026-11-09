@@ -140,7 +140,12 @@ async function cliRun(t, { settings = {} } = {}) {
     const entries = (await journalRecords(server.journal({ runId: "run-1", runner: "reader", epoch: row.epoch, until: 0, from: row.state }), BACKGROUND_CONTEXT)).entries;
     return { row, entries };
   };
-  return { ...(await settled()), seen, fake, server, settled };
+  /** The runner goes (closed while the run is parked: it holds no claim) and another starts on the same store. */
+  const replaceRunner = async () => {
+    await runner.close();
+    runner = startRunner({ store, createLoop: loop, name: "runner-b", ...STEADY });
+  };
+  return { ...(await settled()), seen, fake, server, settled, replaceRunner };
 }
 
 const toolCalls = (fake) => fake.log.filter((entry) => entry.method === "tools/call");
@@ -197,4 +202,17 @@ test("C3: a call set to deny is refused in the gate's words, nothing sent", asyn
   const { seen, fake } = await cliRun(t, { settings: { "mcp:fake/add": { permission: "deny" } } });
   assert.deepEqual(seen.answer, { content: [{ type: "text", text: "Permission denied: mcp:fake/add is set to deny." }], isError: true });
   assert.equal(toolCalls(fake).length, 0, "nothing sent");
+});
+
+test("C5: a parked call across a new runner: the runner that parked it goes, another claims it at the owner's Allow and runs it exactly once", async (t) => {
+  const run = await cliRun(t);
+  assert.equal(run.row.state, "parked", JSON.stringify(run.row));
+  await run.replaceRunner();
+  await run.server.command("run-1", { kind: "approve", body: { approval: CALL_ID } });
+  for (const from = Date.now(); (await run.server.runs.get("run-1")).state !== "ended" && Date.now() - from < 20_000; ) await sleep(20);
+  const { row } = await run.settled();
+  assert.equal(row.state, "ended", JSON.stringify(row));
+  assert.equal(row.runner, null);
+  assert.equal(toolCalls(run.fake).length, 1, "run exactly once");
+  assert.ok(run.seen.followUps?.[0]?.endsWith("They allowed it, and it ran. Its result:\n5"), run.seen.followUps?.[0]);
 });
