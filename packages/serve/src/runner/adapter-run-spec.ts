@@ -23,7 +23,7 @@ import { learningStartOf, type RunLaunch } from "../run-launch.js";
 import type { Store } from "../store/store.js";
 import { isObject } from "../validate.js";
 import { type RunFiles, runGate } from "../tool-gate.js";
-import { loadToolSettings, TOOL_PLANE_ENV } from "../tool-plane.js";
+import { loadToolSettings, recheckPlane, TOOL_PLANE_ENV } from "../tool-plane.js";
 import { type ToolHost, toolOf } from "../tools.js";
 import { type HostToolCtx, hostToolOf } from "../host-tools.js";
 import { WEB_FETCH_TOOL } from "../web-fetch.js";
@@ -85,6 +85,16 @@ export type ComputerForClaim = typeof claimComputer;
 
 /** The wires pi speaks on the runner: main's pi's (provider.ts), Anthropic's Messages and OpenAI's Responses. */
 export const PI_WIRES: readonly Wire[] = Object.freeze(["anthropic-messages", "openai-responses"]);
+
+/** The browser's catalog name (tools.ts TOOLS.browser). */
+const BROWSER_TOOL = "browser";
+/** Whether the runner offers the browser at all. Its calls read the tool task's own api (memo, taskId among them), which a
+ *  host tool's api does not give, so every call would fail: off until the native route lands. */
+export const BROWSER_ON_RUNNER = false; // TODO(costsofar-4 native route): pi-browser as a durable pi extension in the claim's registry; flip with host.ledger.paid present
+/** Whether the runner lists the browser for a run whose revision grants `granted`, fail closed: only on the native route
+ *  (BROWSER_ON_RUNNER), and only with the run's ledger booking on its ToolHost (host.ledger.paid), so no browser call is
+ *  held on this process's own spend. */
+export const browserListed = (host: Pick<ToolHost, "ledger">, granted: readonly string[]): boolean => BROWSER_ON_RUNNER && host.ledger?.paid !== undefined && granted.includes(BROWSER_TOOL);
 
 /** What the runner hands the spec builder, beside the claim and the loop's own Harness (the AdapterRun): the store (its
  *  agent and run reads, and the live-viewer seam the browser tool writes through), the data directory a Mode 1 run folder
@@ -322,6 +332,10 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
     store: deps.store,
     claim,
     sealKey: deps.sealKey,
+    // The run's one ledger, as the adapter loop made it over the run's sessions and handed it on the AdapterRun: the
+    // browser holds and settles its calls here (host.ledger.paid), never on this process's own spend, and a refusal at the
+    // cap parks the run (pause). browserListed reads it to fail closed.
+    ledger: run.ledger,
     liveViewers: {
       put: (handover: LiveHandover) => putLiveViewer(deps.store, deps.sealKey, claim, handover),
       drop: (tag?: string) => dropLiveViewer(deps.store, claim, tag),
@@ -459,6 +473,10 @@ export async function learnedWorkflowHostTool(opts: {
  *  each a named todo, added as their seams land. */
 async function bindNonHandTools(host: ToolHost, granted: readonly string[], run: AdapterRun, context: Context, results: ToolResults, root: string, plane: RunLaunch["plane"]): Promise<AdapterRunSpec["session"]["tools"]> {
   const names = granted.filter((name) => name === WEB_FETCH_TOOL || name === WEB_SEARCH_TOOL || name.startsWith("monid."));
+  // Fail closed (browserListed): the browser binds only on the native route (BROWSER_ON_RUNNER) and with the claim's
+  // one-ledger booking on its ToolHost (host.ledger.paid); otherwise none of its tools is listed. No early return on an
+  // empty `names`: learned_workflow binds below without a web tool, so a learned run with no web tool still lists it.
+  const browser = browserListed(host, granted);
   // The host-tool ctx the non-hand tools are wrapped with (hostToolCtxOf): the run's own Harness and the run's folder as
   // the api env's cwd. The gate is the adapter loop's own (spec.gate); web_fetch/web_search/monid carry no settle, so the
   // loop books their paid requests on the run's one ledger (bookedIn) and they run.
@@ -474,11 +492,27 @@ async function bindNonHandTools(host: ToolHost, granted: readonly string[], run:
     }
   }
 
-  // learned_workflow, listed when the run's pin names learned workflows (as main lists it): its model nodes run on the pi
-  // session's proxied models (run.ledger.models, pi's adapter now exposes a session port), each a request on the run's one
-  // route labelled learned_workflow. The agent's scoped keys (host.env) are its call nodes'.
+  // learned_workflow, listed when the run's pin names learned workflows (as main lists it): its model nodes run on the
+  // session's proxied models (run.ledger.models), each a request on the run's one route labelled learned_workflow. The
+  // agent's scoped keys (host.env) are its call nodes'.
   const learned = await learnedWorkflowHostTool({ run, granted, plane, env: host.env, work: root, ctx });
   if (learned) tools.push(learned);
+
+  // The browser (tl-browser): tools.ts's own binding on this run's ToolHost (its store, claim and seal key, its live viewers
+  // through the store, its sign-in read under the claim), its vendor the launch's plane checked again against the keys
+  // this claim read from the store, as main's launch hands its process the plane (runs.ts TOOL_PLANE_ENV). Each of its
+  // tools as a HostTool under the loop's one gate, with its own replay policy.
+  if (browser) {
+    const checked = plane ? recheckPlane(plane, host.env) : {};
+    const env = { ...host.env };
+    delete env[TOOL_PLANE_ENV];
+    if (Object.keys(checked).length) env[TOOL_PLANE_ENV] = JSON.stringify(checked);
+    const binding = await toolOf(BROWSER_TOOL)!.bind({ ...host, env });
+    for (const registration of binding.tools) {
+      const tool = hostToolOf(BROWSER_TOOL, registration, ctx, (registration as { replay?: string }).replay === "safe" ? "safe" : "never");
+      if (tool) tools.push(tool);
+    }
+  }
 
   // TODO (decisions, option (a)): a pi run's decision tools book on the run's ONE cap (runCap's run.decisions), which the
   // adapter loop makes from its own sessions and hands the spec at open — the loop passes { decisions, models } the same way
