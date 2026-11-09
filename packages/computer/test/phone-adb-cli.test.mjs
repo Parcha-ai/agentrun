@@ -82,23 +82,30 @@ const POISON = {
 	ANDROID_SERIAL: "another-device",
 	ADB_VENDOR_KEYS: "/elsewhere",
 };
-/** A stand-in adb that records the names of the adb variables it was given (and one unrelated one), then exits code. */
+/**
+ * A stand-in adb that records the name of every variable it was given, then exits code. Each test hands the spawn an
+ * environment of its own, so the record is exactly the cleaned input: nothing of the test runner's environment (CI sets
+ * its own AGENTRUN_* names) reaches it, and the assertion reads none of it.
+ */
 function envRecorder(name, code = 0) {
 	const log = join(dir, `${name}.log`);
 	const script = join(dir, name);
-	writeFileSync(
-		script,
-		`#!${process.execPath}\nconst names = Object.keys(process.env).filter((n) => /ADB|ANDROID_SERIAL|AGENTRUN_|COMPUTER_PHONE_HARNESS/.test(n)).sort();\nrequire("node:fs").writeFileSync(${JSON.stringify(log)}, JSON.stringify(names));\nprocess.exit(${code});\n`,
-	);
+	writeFileSync(script, `#!${process.execPath}\nrequire("node:fs").writeFileSync(${JSON.stringify(log)}, JSON.stringify(Object.keys(process.env).sort()));\nprocess.exit(${code});\n`);
 	chmodSync(script, 0o755);
 	return { script, names: () => JSON.parse(readFileSync(log, "utf8")) };
 }
+/** The names a cleaned spawn keeps of an input: every adb variable, and those listed as gone, dropped. */
+const kept = (input, gone = []) => Object.keys(input).filter((name) => !/^(ADB_|ANDROID_ADB_|ANDROID_SERIAL$)/.test(name) && !gone.includes(name)).sort();
+/** The conformance module's own names, which its spawned adb never gets. */
+const MODULE_NAMES = ["COMPUTER_PHONE_HARNESS_API_KEY", "COMPUTER_PHONE_HARNESS_PLATFORM", "COMPUTER_PHONE_HARNESS_ADB", "COMPUTER_PHONE_HARNESS_LEDGER", "AGENTRUN_COMPUTER_LIVE_PHONE_HARNESS"];
 
 test("adbCli spawns adb from the environment it is given, with every ADB_*, ANDROID_ADB_* and ANDROID_SERIAL variable dropped", async () => {
 	const adb = envRecorder("adb-env");
-	const ran = await adbCli(adb.script, { env: { ...POISON, PATH: process.env.PATH, AGENTRUN_UNRELATED: "kept" } }).run(["-t", "1", "shell", "echo ok"], { timeoutMs: 10_000 });
+	const env = { ...POISON, AGENTRUN_UNRELATED: "kept", LANG: "C" };
+	const ran = await adbCli(adb.script, { env }).run(["-t", "1", "shell", "echo ok"], { timeoutMs: 10_000 });
 	assert.equal(ran.ok, true, JSON.stringify(ran));
-	assert.deepEqual(adb.names(), ["AGENTRUN_UNRELATED"], "every adb variable is dropped, and the rest of the environment is kept");
+	assert.deepEqual(adb.names(), kept(env), "exactly the input, every adb variable dropped");
+	assert.deepEqual(kept(env), ["AGENTRUN_UNRELATED", "LANG"]);
 });
 
 test("the conformance module's provider spawns adb from its environment with every adb variable and its own settings dropped: the API key never reaches adb", async () => {
@@ -107,7 +114,6 @@ test("the conformance module's provider spawns adb from its environment with eve
 	const fake = fakePhoneHarness();
 	const env = {
 		...POISON,
-		PATH: process.env.PATH,
 		AGENTRUN_UNRELATED: "kept",
 		COMPUTER_PHONE_HARNESS_API_KEY: KEY,
 		COMPUTER_PHONE_HARNESS_ADB: adb.script,
@@ -120,37 +126,29 @@ test("the conformance module's provider spawns adb from its environment with eve
 	const connected = await provider.connect(created.value);
 	assert.equal(connected.ok, false);
 	assert.match(connected.error.message, /adb start-server failed/);
-	assert.deepEqual(adb.names(), ["AGENTRUN_UNRELATED"], "no adb variable, and none of the module's own (the key among them)");
+	assert.deepEqual(adb.names(), kept(env, MODULE_NAMES), "exactly the input, with no adb variable and none of the module's own (the key among them)");
+	assert.deepEqual(kept(env, MODULE_NAMES), ["AGENTRUN_UNRELATED"]);
 	await provider.release(created.value, "delete");
 });
 
 test("the conformance module's adb option, given as a path, spawns that adb from the same cleaned environment", async () => {
-	// The environment is the process's own (the module's default): what a spawned adb would inherit untouched.
+	// The module's environment holds every adb variable and its own settings, the key among them; adb comes as a path.
 	const adb = envRecorder("adb-option", 1);
 	const fake = fakePhoneHarness();
-	const set = {
+	const env = {
 		...POISON,
 		AGENTRUN_UNRELATED: "kept",
 		COMPUTER_PHONE_HARNESS_API_KEY: KEY,
 		COMPUTER_PHONE_HARNESS_LEDGER: join(dir, "option-ledger.json"),
 		AGENTRUN_COMPUTER_LIVE_PHONE_HARNESS: "1",
 	};
-	const saved = Object.fromEntries(Object.keys(set).map((name) => [name, process.env[name]]));
-	Object.assign(process.env, set);
-	try {
-		const provider = await conformance.createProvider({ adb: adb.script, fetch: fake.fetch, now: fake.clock.now, sleep: fake.clock.sleep });
-		const created = await provider.create({ image: "android", lifetimeMs: 60_000, network: "open" });
-		assert.equal(created.ok, true, JSON.stringify(created));
-		const connected = await provider.connect(created.value);
-		assert.match(connected.error?.message ?? "", /adb start-server failed/);
-		assert.deepEqual(adb.names(), ["AGENTRUN_UNRELATED"], "the path given as the adb option gets no adb variable and not the key");
-		await provider.release(created.value, "delete");
-	} finally {
-		for (const [name, value] of Object.entries(saved)) {
-			if (value === undefined) delete process.env[name];
-			else process.env[name] = value;
-		}
-	}
+	const provider = await conformance.createProvider({ env, adb: adb.script, fetch: fake.fetch, now: fake.clock.now, sleep: fake.clock.sleep });
+	const created = await provider.create({ image: "android", lifetimeMs: 60_000, network: "open" });
+	assert.equal(created.ok, true, JSON.stringify(created));
+	const connected = await provider.connect(created.value);
+	assert.match(connected.error?.message ?? "", /adb start-server failed/);
+	assert.deepEqual(adb.names(), kept(env, MODULE_NAMES), "the path given as the adb option gets exactly the cleaned input: no adb variable, not the key");
+	await provider.release(created.value, "delete");
 });
 
 test("the conformance module's adb option, given as a transport, is used as it is", async () => {
