@@ -215,6 +215,12 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
   const inbox: Command[] = [];
   let wakeInbox: () => void = () => {};
   let stopReason: StopReason | undefined;
+  /** An error's text as the run's end, its row or the runner's log may say it: cut of every secret the runner holds
+   *  (LoopDeps.redact), since a provider's or a computer's error may echo one. */
+  const said = (error: unknown): string => {
+    const text = (error as Error)?.message ?? String(error);
+    return deps.redact ? deps.redact(text) : text;
+  };
   let stopped: () => void = () => {};
   const stopping = new Promise<void>((resolve) => (stopped = resolve));
   let parked: () => void = () => {};
@@ -592,9 +598,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       // not be written (pi's Harness could not open): the runner stores that one failed with why. Returning "failed" with
       // no end would leave it running, released and claimed again at once.
       if (claim.from !== "parked" && harness && root && gate && !gate.sealed) {
-        // Why, cut of every secret the runner holds (an error's text may echo one): it is stored in the end and the row.
-        const why = (error as Error)?.message ?? String(error);
-        const ended = await writeEnd(harness, root, gate, { state: "failed", summary: deps.redact ? deps.redact(why) : why }, [], specNow ? await cutRows(claim, specNow, "faulted") : []).catch(() => undefined);
+        // Why, cut of every secret the runner holds (said): it is stored in the end and the row.
+        const ended = await writeEnd(harness, root, gate, { state: "failed", summary: said(error) }, [], specNow ? await cutRows(claim, specNow, "faulted") : []).catch(() => undefined);
         if (ended) return ended;
       }
       throw error;
@@ -728,7 +733,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     // The pass's resources go once nothing more is written through them (AdapterRunSpec.release), once each.
     const release = releaseNow;
     releaseNow = undefined;
-    await release?.().catch((error: unknown) => console.warn(`[runner] its run's release failed: ${(error as Error)?.message ?? String(error)}`));
+    await release?.().catch((error: unknown) => console.warn(`[runner] its run's release failed: ${said(error)}`));
   }
 
   /** The end-of-run step (LoopDeps.endOfRun), asked once: the rows to stage with the end; `stopped` when a person's stop
@@ -746,7 +751,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       const rows = await deps.endOfRun({ runId: claim.runId, agentId: spec.agentId, claim, outcome, signal: deps.signal, ask: (prompt, opts) => askEndOfRun(claim, prompt, opts.deadlineMs, opts.again === true) });
       return cut() ?? { kind: "rows", also: rows?.also ?? [] };
     } catch (error) {
-      return cut() ?? (console.warn(`[runner] ${claim.runId}: its end-of-run step failed: ${(error as Error).message}`), { kind: "rows", also: [] });
+      return cut() ?? (console.warn(`[runner] ${claim.runId}: its end-of-run step failed: ${said(error)}`), { kind: "rows", also: [] });
     }
   }
 
@@ -766,7 +771,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       }
       return rows?.also ?? [];
     } catch (error) {
-      console.warn(`[runner] ${claim.runId}: its end-of-run step failed: ${(error as Error).message}`);
+      console.warn(`[runner] ${claim.runId}: its end-of-run step failed: ${said(error)}`);
       return [];
     } finally {
       clearTimeout(timer);
@@ -831,7 +836,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       }
       return patch ?? {};
     } catch (error) {
-      console.warn(`[runner] its end's patch failed: ${(error as Error).message}`);
+      console.warn(`[runner] its end's patch failed: ${said(error)}`);
       return {};
     } finally {
       clearTimeout(timer);

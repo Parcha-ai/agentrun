@@ -46,6 +46,7 @@ import { resolveHarness } from "./adapters/index.js";
 import { entriesOf } from "./loop.js";
 import type { Claim } from "./loop-contract.js";
 import { runMetrics } from "./metrics.js";
+import { runnerSecrets, secretRedactor } from "./redact.js";
 
 /** The launch as the shared claim-time computer reads it (workspace/computer-for-claim.ts ClaimLaunch). */
 export interface ClaimLaunch {
@@ -139,7 +140,10 @@ type CapPrice = { input: number; output: number; cacheRead: number; cacheWrite: 
 export async function cliRunSpecFromLaunch(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, claim: Claim): Promise<AdapterRunSpec> {
   void run;
   const context = BACKGROUND_CONTEXT;
-  const log = deps.log ?? (() => {});
+  // The spec's log lines carry error text (a release, a computer, a workspace's end): cut of every secret the runner's env
+  // holds.
+  const cut = secretRedactor(runnerSecrets(deps.env));
+  const log = (line: string) => (deps.log ?? (() => {}))(cut(line));
   const runRow = await deps.store.runs.get(claim.runId);
   if (!runRow) throw new Error(`run ${claim.runId}: its row is gone from the store`);
   const revisionRow = await deps.store.agents.revision(runRow.revisionId);

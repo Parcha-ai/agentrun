@@ -41,6 +41,7 @@ import { entriesOf } from "./loop.js";
 import type { Claim, Journal } from "./loop-contract.js";
 import { runMetrics } from "./metrics.js";
 import type { ModelRoute, RouteCost } from "./model-route.js";
+import { runnerSecrets, secretRedactor } from "./redact.js";
 
 /** What the runner hands the spec builder, beside the claim and the loop's own Harness (the AdapterRun): the store (its
  *  agent and run reads, and the live-viewer seam the browser tool writes through), the data directory a Mode 1 run folder
@@ -101,7 +102,9 @@ type RevisionBody = {
  */
 export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRun, deps: AdapterSpecDeps, claim: Claim): Promise<AdapterRunSpec> {
   const context = BACKGROUND_CONTEXT;
-  const log = deps.log ?? (() => {});
+  // The spec's log lines carry error text (a release, a workspace's end): cut of every secret the runner's env holds.
+  const cut = secretRedactor(runnerSecrets(deps.env));
+  const log = (line: string) => (deps.log ?? (() => {}))(cut(line));
   const runRow = await deps.store.runs.get(claim.runId);
   if (!runRow) throw new Error(`run ${claim.runId}: its row is gone from the store`);
   const revisionRow = await deps.store.agents.revision(runRow.revisionId);
