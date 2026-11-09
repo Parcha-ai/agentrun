@@ -956,7 +956,13 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   if (image) imageLog(image.state());
   const adapters = options.triggerAdapters ?? TRIGGER_ADAPTERS;
   const openapi = openapiDocument((operationId) => ROUTES.find((r) => r.name === operationId)?.capability, adapters);
-  const agents = new Agents(data);
+  // The one store (module A), opened here as this data root's single owner: its EXCLUSIVE lock is the one-server lock (no
+  // server-lock.ts), and it refuses a data directory an earlier version wrote, in words, to start fresh (no oldHomes/
+  // oldLayout checks, no migration). Every agent, run, setting and sign-in is a row; the server writes and reads rows, and
+  // a runner (its own process, sharing only this store) runs every run.
+  const store = await openSqliteStore({ dataDir: data, role: "server" });
+  stops.push(() => store.close());
+  const sealKey = sealKeyOf(withSecrets(base, "own")[SEAL_KEY_ENV]);
   ({ secrets: secretStores, settings: triggerSettings } = openServerSecrets(data, env, adapters, (fields) => (log ? log(logLine("trigger", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("trigger", fields)}\n`))));
   secretStores.add("server", () => [token, doorToken]);
   // Each agent's saved sign-ins (sign-ins.ts), under the seal key the tool keys are kept under: its vendor's calls on the
