@@ -15,7 +15,7 @@ import { REPEAT_MS, stopOnSignals } from "./stop-signals.js";
 import { canOpen } from "./host.js";
 import { resetPassword } from "./owner.js";
 import type { ImageState } from "./box-image.js";
-import { banner, boxImageLine } from "./print.js";
+import { banner, boxImageLine, durationMs } from "./print.js";
 import type { LearningMode } from "./learning.js";
 import { DEFAULT_PORT, fauxEnvOf, type Serve, type ServeOptions, startServe, stopBeside, stoppingBeside } from "./server.js";
 import { SEAL_KEY_ENV } from "./tool-keys.js";
@@ -23,7 +23,7 @@ import { SEAL_KEY_ENV } from "./tool-keys.js";
 /** A runner beside the server on the same data directory (the CLI start's server-and-runner, and the `runner` subcommand):
  *  its own store handle (role runner), and the runner's dispatch (dispatch.ts) for each claimed run — pi on the kernel's
  *  adapter loop, a learning run on the learning loop. Returns the runner and a close() that stops it and closes its store. */
-async function runnerBeside(dataDir: string, loops?: number, switches: NodeJS.ProcessEnv = {}): Promise<{ runner: Awaited<ReturnType<typeof import("./runner/runner.js")["startRunner"]>>; close: () => Promise<void> }> {
+async function runnerBeside(dataDir: string, loops?: number, switches: NodeJS.ProcessEnv = {}, drainMs = 0): Promise<{ runner: Awaited<ReturnType<typeof import("./runner/runner.js")["startRunner"]>>; close: () => Promise<void> }> {
   const { startRunner } = await import("./runner/runner.js");
   const { dispatchRunner } = await import("./runner/harness-loops.js");
   const { routeOf } = await import("./runner/model-route.js");
@@ -58,7 +58,9 @@ async function runnerBeside(dataDir: string, loops?: number, switches: NodeJS.Pr
   const runs = Object.assign(runEnv(process.env), switches);
   const computers = computerDepsFrom({ env: runs, store, sealKey });
   const createLoop = dispatchRunner({ env: runs, data: dataDir, journal: (claim) => store.journal(claim), store, sealKey, routeOf, computerForClaim: computers.computerForClaim, computerDeps: computers.computerDeps });
-  const runner = startRunner({ store, createLoop, ...(loops !== undefined ? { loops } : {}) });
+  // Its close drains (runner.ts drainMs): each run it holds goes on to its own end, up to --drain-timeout, before the rest
+  // are stopped to resume, as a run's own process drained on the server's stop.
+  const runner = startRunner({ store, createLoop, drainMs, ...(loops !== undefined ? { loops } : {}) });
   return { runner, close: async () => { await runner.close(); await store.close(); } };
 }
 
@@ -352,9 +354,12 @@ try {
 // every run, sharing only the store. With --no-runner the server runs alone, so the operator starts one or more separate
 // `agentrun runner --data DIR` processes on the same data directory instead.
 let runnerProc: Awaited<ReturnType<typeof runnerBeside>> | undefined;
+// How long a stop lets the runner's runs finish their turn (--drain-timeout, 30 s by default, as its usage says; the
+// server checked it is a duration as it started).
+const drainMs = durationMs(values["drain-timeout"] ?? "30s") ?? 30_000;
 if (!values["no-runner"]) {
   try {
-    runnerProc = await runnerBeside(data, undefined, fauxEnvOf(serveOptions));
+    runnerProc = await runnerBeside(data, undefined, fauxEnvOf(serveOptions), drainMs);
   } catch (error) {
     console.error(`agentrun-serve: the runner could not start: ${(error as Error).message}`);
     await serve.close();
@@ -376,12 +381,13 @@ const record = join(resolve(data), SERVER_FILE);
 // not remove. One stop per press or process-manager stop; a later signal, or a stop past its deadline, stops at once
 // (stop-signals.ts). The stop is in place before the record is written: a SIGTERM sent the moment the record appears is
 // a clean stop that removes it, never the default end by signal that leaves it behind.
-// The runner beside, as the stop reads it: the runs it holds, and its close (its runs stopped, then its store handle).
+// The runner beside, as the stop reads it: the runs it holds, and its close (it drains them, then its store handle goes).
 const beside = runnerProc ? { held: () => runnerProc!.runner.held(), close: () => runnerProc!.close() } : undefined;
-// One stop (server.ts stopBeside), and what it waits on, for the second press and the deadline (stoppingBeside).
+// One stop (server.ts stopBeside): main's drain line, the stopping mark a start meanwhile waits on, the runner's drain
+// while the API answers, then the server's close. What it waits on, for the second press and the deadline: stoppingBeside.
 const stop = stopOnSignals({
-  close: () => (removeOwnRecord(record), stopBeside(serve, beside, { data, drainMs: 0 })),
-  stopping: () => stoppingBeside(serve, beside, 0),
+  close: () => (removeOwnRecord(record), stopBeside(serve, beside, { data, drainMs })),
+  stopping: () => stoppingBeside(serve, beside, drainMs),
   done: (code) => (removeOwnRecord(record), process.exit(code)),
   say: (line) => console.error(line),
 });

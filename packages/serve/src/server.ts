@@ -61,7 +61,8 @@ import { watchRun } from "./live/stream.js";
 import { stats as statsOverStore } from "./store-reads/stats.js";
 import { analytics as analyticsOverStore } from "./store-reads/analytics.js";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { type AgenticBody, type NewRevision, openSqliteStore, type RevisionPlace, type RunRow, type Store, StoreBusy, StoreConstraint, type WorkflowBody } from "./store/index.js";
+import { type AgenticBody, type NewRevision, openSqliteStore, type RevisionPlace, type RunRow, type Store, StoreBusy, StoreConstraint, StoreOwned, type WorkflowBody } from "./store/index.js";
+import { markRunning, markStopping, stoppingOf } from "./server-lock.js";
 import { FINAL_STATES } from "./store/store.js";
 import { runModelRef } from "./model.js";
 // The v2 run statuses, as the run view names them (run-view.ts Status), for the list filter's validation. */
@@ -132,7 +133,9 @@ import { FAUX_VIEW_PATH, type FauxComputers, fauxComputers } from "./faux-comput
 import { runComputerField } from "./run-computer.js";
 import { writesHeld } from "./workspace.js";
 import { agentHomeFolder, computerProviderFactories, computerProviderMakers, isWorkspaceError, localWorkspace, runFolder, serverRunWorkspace, storeLedger, type Workspace } from "./workspace/index.js";
-// server-lock.ts is gone: the store's EXCLUSIVE connection is the one-server lock (StoreOwned refuses a second server).
+// The store's EXCLUSIVE connection is the one-server lock (StoreOwned refuses a second server); server-lock.ts keeps only
+// the record (server.state) a stopping server's start reads, to wait for that stop rather than be refused.
+import { processAlive } from "@parcha/agentrun-kernel/host";
 
 export const CONTRACT = "agentrun.v2/0";
 
@@ -153,7 +156,7 @@ const FILE_LIST_CAP = 2_000;
 /** What a stopping server's record allows past its runs' kill bound, the cap a start waits under: the runs' carry backs,
  *  retried while the agent store is held (about 15.5 s), their boxes' cleanup (up to a minute), and the deliveries', the
  *  listener's and the stores' stop. A start stops waiting sooner once the stopping server's process is gone. */
-const STOP_MARGIN_MS = 120_000;
+export const STOP_MARGIN_MS = 120_000;
 /** A wait, as the stop's lines give it: whole seconds, rounded up, one at least. */
 const seconds = (ms: number) => `${Math.max(1, Math.ceil(ms / 1000))} s`;
 /** Where the stop's lines go (ServeOptions.notice). Best-effort: a notice that throws never stops a close or a start. */
@@ -165,18 +168,59 @@ const noticeOf = (options: Pick<ServeOptions, "notice">) => (line: string): void
   }
 };
 
-/** The runner beside a server (the CLI start's, or a test's): the runs it holds, and its close, which stops them and
- *  closes its store handle. */
+/** The runner beside a server (the CLI start's, or a test's): the runs it holds, and its close, which drains them
+ *  (runner.ts drainMs) and closes its store handle. */
 export type RunnerBeside = { held(): readonly unknown[]; close(): Promise<void> };
 
-/** What a stop of `serve` and the runner beside it waits on: the server's own (none: the runner owns every run's turn). */
-export function stoppingBeside(serve: Pick<Serve, "stopping">, _runner: RunnerBeside | undefined, _drainMs: number): { runs: number; boundMs: number } {
-  return serve.stopping();
+/** What a stop of `serve` and the runner beside it waits on: the server's own, and each run that runner holds, given the
+ *  drain and a second to finish its turn (main's bound: a run process's drain and its exit). */
+export function stoppingBeside(serve: Pick<Serve, "stopping">, runner: RunnerBeside | undefined, drainMs: number): { runs: number; boundMs: number } {
+  const own = serve.stopping();
+  const held = runner?.held().length ?? 0;
+  return { runs: own.runs + held, boundMs: Math.max(own.boundMs, held > 0 ? drainMs + 1_000 : 0) };
 }
 
-/** The stop of a server and the runner beside it on `data` (the CLI's, once per stop): both closed at once. */
-export async function stopBeside(serve: Pick<Serve, "stopping" | "close">, runner: RunnerBeside | undefined, _options: { data: string; drainMs: number; notice?: (line: string) => void }): Promise<void> {
-  await Promise.all([runner?.close() ?? Promise.resolve(), serve.close()]);
+/**
+ * The stop of a server and the runner beside it on `data` (the CLI's, once per stop): it says how long it waits and for
+ * how many runs (main's words, through `notice`), marks the data root's server stopping (server-lock.ts server.state) so a
+ * start meanwhile waits for it (openStoreAfterStop), lets the runner drain its runs' turns while the API still answers,
+ * then closes the server, whose store lock the next start takes.
+ */
+export async function stopBeside(serve: Pick<Serve, "stopping" | "close">, runner: RunnerBeside | undefined, { data, drainMs, notice }: { data: string; drainMs: number; notice?: (line: string) => void }): Promise<void> {
+  const { runs, boundMs } = stoppingBeside(serve, runner, drainMs);
+  if (runs > 0) noticeOf({ notice })(`stopping: waiting up to ${seconds(boundMs)} for ${runs === 1 ? "1 run to finish its turn" : `${runs} runs to finish their turn`}`);
+  try {
+    markStopping(data, Date.now() + boundMs + STOP_MARGIN_MS);
+  } catch {
+    // The mark is for a start that comes meanwhile: the stop goes on without it.
+  }
+  await runner?.close();
+  await serve.close();
+}
+
+/**
+ * The store, opened as this data root's one server (its EXCLUSIVE lock). When another server holds it and its record says
+ * it is stopping (server-lock.ts stoppingOf: a CLI's stop marks it as its runner drains its runs' turns), this start waits
+ * for that stop, saying so once, as long as that server's process lives and under its record's `until`; a server that is
+ * not stopping is refused at once (StoreOwned), as is one still holding the store at its `until`.
+ */
+async function openStoreAfterStop(data: string, options: Pick<ServeOptions, "notice">): Promise<Store> {
+  try {
+    return await openSqliteStore({ dataDir: data, role: "server" });
+  } catch (error) {
+    if (!(error instanceof StoreOwned)) throw error;
+    const stopping = stoppingOf(data);
+    if (!stopping) throw error;
+    noticeOf(options)(`the server on this data root (pid ${stopping.pid}) is stopping; waiting for it, up to ${seconds(stopping.until - Date.now())}`);
+    for (;;) {
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      try {
+        return await openSqliteStore({ dataDir: data, role: "server" });
+      } catch (again) {
+        if (!(again instanceof StoreOwned) || Date.now() >= stopping.until || !processAlive(stopping.pid)) throw again;
+      }
+    }
+  }
 }
 /** Why a home's PUT or DELETE is 501 where `capabilities.home.writes` is false (workspace.ts writesHeld). */
 const HOME_WRITES_OFF = "This server can't write a home's files safely here: a write needs /proc/self/fd, as on Linux, which this platform lacks. Reads and the list still work.";
@@ -854,8 +898,11 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // EXCLUSIVE lock is the one-server lock (no server-lock.ts), and it refuses a data directory an earlier version wrote, in
   // words, to start fresh (no oldHomes/oldLayout checks, no migration). Every agent, run, setting and sign-in is a row; the
   // server writes and reads rows, and a runner (its own process, sharing only this store) runs every run.
-  const store = await openSqliteStore({ dataDir: data, role: "server" });
+  // A start while the last server on this root stops (its runner draining) waits for it (openStoreAfterStop); the record
+  // then says this one runs, for the next start to read.
+  const store = await openStoreAfterStop(data, options);
   stops.push(() => store.close());
+  markRunning(data);
   // Which fields are the server's is read from what it is started with alone: handed the saved keys too, ToolKeys would
   // call each the server's, and none could be deleted. The keys are sealed rows in the store; load() reads them once here.
   const toolKeys = toolKeysOverStore(store, withSecrets(base, "own"), (fields) => (log ? log(logLine("tool_keys", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("tool_keys", fields)}\n`)));

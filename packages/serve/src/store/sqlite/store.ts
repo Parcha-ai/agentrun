@@ -196,7 +196,17 @@ function earlierVersionIn(dataDir: string): string[] {
 function isThisVersionsStore(file: string): boolean {
   const db = new DatabaseSync(file, { readOnly: true });
   try {
-    const tables = db.prepare("SELECT name FROM sqlite_schema WHERE type = 'table'").all() as { name: string }[];
+    let tables: { name: string }[];
+    try {
+      tables = db.prepare("SELECT name FROM sqlite_schema WHERE type = 'table'").all() as { name: string }[];
+    } catch (error) {
+      // Held by a server (its EXCLUSIVE owner lock: SQLITE_BUSY or SQLITE_LOCKED, as worker.ts reads them): a store only
+      // this version takes that lock on. The owner lock then refuses this start in words (StoreOwned), or a start waits
+      // for that server's stop.
+      const code = (error as { errcode?: number }).errcode;
+      if (typeof code === "number" && ((code & 0xff) === 5 || (code & 0xff) === 6)) return true;
+      throw error;
+    }
     if (tables.length === 0) return true;
     if (!tables.some((table) => table.name === "store_meta")) return false;
     return db.prepare("SELECT schema_version FROM store_meta WHERE singleton = 1").get() !== undefined;
