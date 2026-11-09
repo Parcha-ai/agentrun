@@ -30,7 +30,10 @@ const { putSealedKey } = await import("../dist/server-keys.js");
 /** The faux System One service (serves OpenRouter's Decisions catalog and answers decisions), pointed at under --faux. */
 const FAUX_SYSTEM_ONE = fileURLToPath(new URL("../../decisions/dist/testing/faux-system-one.js", import.meta.url));
 
-const TIMING = { leaseMs: 1_000, renewEveryMs: 250, stopMarginMs: 300, pollMs: 20, commandPollMs: 30 };
+// A lease no stall of a loaded machine outlasts (the steady lease): each case runs one runner, and none is about a lost
+// claim, so none may lose one. On a 1 s lease a loaded box retook the run seven times mid-check (epoch 8) and a run that
+// should have parked on its decision ended. The next claim the money cases read is a raise's, never a lapse.
+const TIMING = { leaseMs: 60_000, renewEveryMs: 1_000, stopMarginMs: 5_000, pollMs: 20, commandPollMs: 30 };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /** A one-judge-node workflow: it reads {doc} and asks one noul question (the boolean `is_coi`). */
