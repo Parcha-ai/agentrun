@@ -90,6 +90,9 @@ export type TriggerClock = { now(): number; arm(fire: () => void, ms: number): {
 export type TriggerDeps = {
   /** Where the triggers and their firings live. */
   store: Pick<Store, "triggers" | "runs">;
+  /** The refusal of a trigger of source `kind` made or turned on here, when it cannot be (the connection it needs is not
+   *  there: GitHub not connected). Undefined, or no such dep, when it can. */
+  unavailable?(kind: string): ApiError | undefined;
   /** What keeps a target from starting runs here, by field (its agent, its kind, its input). */
   targetIssues(target: Target): Promise<InputIssue[]>;
   /** Starts the target's run with `input`, as POST /agents/{id}/runs would, under `origin`; its first message is the
@@ -277,6 +280,7 @@ export class Triggers {
     const agentId = await this.agentOf(target);
     const id = `trg_${randomBytes(12).toString("hex")}`;
     const enabled = body.enabled !== false;
+    if (enabled) this.needAvailable(source.kind);
     // A scope belongs to one trigger: told before anything is minted or written (the store's scope rows are the backstop).
     if (enabled) await this.scopeFree(source, id);
     // Its secrets are kept before the trigger is: one that cannot be kept (no seal key) makes none.
@@ -319,6 +323,31 @@ export class Triggers {
     const adapter = adapterIn(this.adapters, kind);
     if (!adapter?.scopeOf) return [];
     return this.store.triggers.scoped(kind, scope);
+  }
+
+  /** The triggers of the pushed source `kind` that are on, with their sources: the ones a server-wide source whose
+   *  triggers choose their own events (its adapter's takes) reads, for each event. */
+  async listening(kind: string): Promise<{ id: string; source: Source }[]> {
+    return (await this.store.triggers.all()).map(asTrigger).filter((t) => t.enabled && t.source.kind === kind).map((t) => ({ id: t.id, source: t.source }));
+  }
+
+  /** Every trigger of source `kind` that is on, turned off because the connection it needs is gone (`disabled: {reason:
+   *  "connection_lost", detail}`), and said; how many. They are kept: on again once it is back. */
+  async turnOff(kind: string, detail: string): Promise<number> {
+    const on = (await this.store.triggers.all()).map(asTrigger).filter((t) => t.enabled && t.source.kind === kind);
+    const at = iso(this.clock.now());
+    for (const t of on) {
+      await this.store.triggers.update(t.id, { enabled: false, nextAt: null, disabled: { at, reason: "connection_lost", detail } });
+      this.deps.say({ condition: "trigger_connection_lost", trigger: t.id, detail });
+    }
+    if (on.length) await this.arm();
+    return on.length;
+  }
+
+  /** Refused as its connection says when a trigger of `kind` cannot be on here (unavailable). */
+  private needAvailable(kind: string): void {
+    const refusal = this.deps.unavailable?.(kind);
+    if (refusal) throw refusal;
   }
 
   /** A verified request for trigger `id` that its filter ignored, under the key its event would have: an `ignored` row
@@ -378,6 +407,7 @@ export class Triggers {
     // On again, a trigger starts a new streak: a failure streak that turned it off is behind it.
     const again: TriggerPatch = enabled && !trigger.enabled ? { failuresInARow: 0, disabled: null } : {};
     const scopeSource = source ?? trigger.source;
+    if (enabled && (!trigger.enabled || source)) this.needAvailable(scopeSource.kind);
     if (enabled) await this.scopeFree(scopeSource, trigger.id);
     // A trigger belongs to its target's agent: aimed at another agent (or another agent's run), it moves to that agent,
     // whose one name per trigger and list of triggers it joins.
