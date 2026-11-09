@@ -4,17 +4,16 @@ the timeline route's two forms, the long-polled JSON page and the event stream, 
 from __future__ import annotations
 
 import codecs
-import json
 import math
 import re
 import socket
 import time
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, Iterator, List, NoReturn, Optional, cast
+from typing import Any, Callable, Dict, Iterator, List, NoReturn, Optional, Tuple, Union, cast
 
 from ._errors import AgentRunError, AgentRunRefused, AgentRunTimeout, AgentRunUnreachable, AgentRunUsage
 from ._generated import Run, TimelinePage
-from ._http import CHUNK, MAX_RETRY_AFTER, Exchange, Late, Response, StreamedResponse, backoff, pause, segment_of
+from ._http import CHUNK, MAX_RETRY_AFTER, Exchange, Late, Response, StreamedResponse, backoff, parse_json, pause, segment_of
 
 Send = Callable[[Exchange], Response]
 
@@ -40,12 +39,9 @@ def seconds_of(value: object, name: str) -> float:
 def _get_json(send: Send, path: str, route: str, deadline: float) -> Dict[str, Any]:
     """GET `path` as a JSON object, tried again as any GET is, ending by `deadline`."""
     response = send(Exchange("GET", path, route, retryable=True, deadline=deadline, timeout=MAX_WAIT_MS / 1000 + IDLE))
-    try:
-        value = json.loads((response.data or b"").decode("utf-8"))
-    except ValueError:
-        value = None
-    if isinstance(value, dict):
-        return cast(Dict[str, Any], value)
+    value = _object_or_none(response.data or b"")
+    if value is not None:
+        return value
     raise AgentRunRefused(route, response.status, "bad_answer", None, f"The server's answer to {route} is not a JSON object.")
 
 
@@ -76,23 +72,33 @@ def wait_run(send: Send, run_id: str, timeout: Optional[float]) -> Run:
                 late()
             wait_ms = 0 if first else MAX_WAIT_MS if math.isinf(left) else min(MAX_WAIT_MS, math.ceil(left * 1000))
             first = False
-            page = _get_json(send, f"/runs/{run_path}/timeline?after={after}&wait_ms={wait_ms}", TIMELINE, deadline)
-            next_after = page.get("next_after")
-            if not isinstance(next_after, int) or isinstance(next_after, bool) or not isinstance(page.get("status"), str):
+            # The page is read in _step only: this frame, which raises, holds what it says, never what the server sent.
+            step = _step(_get_json(send, f"/runs/{run_path}/timeline?after={after}&wait_ms={wait_ms}", TIMELINE, deadline), ended)
+            if step is None:
                 raise AgentRunRefused(TIMELINE, 200, "bad_answer", None, f"The server's answer to {TIMELINE} is not a timeline page.")
-            after = next_after
-            if ended(page["status"], page.get("final") is True):
-                run = _get_json(send, f"/runs/{run_path}", RUN, deadline)
-                last = cast(Run, run)
+            after, says_ended, every = step
+            if says_ended:
+                last = cast(Run, _get_json(send, f"/runs/{run_path}", RUN, deadline))
                 # A message can reopen the run between the two reads: then it is waited for again.
-                if ended(run.get("status"), True):
+                if ended(last.get("status"), True):
                     return last
-            if page.get("unchanged") and not page.get("has_more"):
-                poll = page.get("poll_after_ms")
-                every = poll / 1000 if isinstance(poll, (int, float)) and not isinstance(poll, bool) and poll >= 0 else 1.0
+            if every is not None:
                 pause(min(every, max(0.001, deadline - time.monotonic())))
     except Late:
         late()
+
+
+def _step(page: Dict[str, Any], ended: Callable[[object, bool], bool]) -> Optional[Tuple[int, bool, Optional[float]]]:
+    """What a timeline page says for a wait: the change number to poll after, whether the run ended or waits on a
+    person, and how long to pause before the next poll (None: poll at once); None for a page that is not one."""
+    next_after = page.get("next_after")
+    if not isinstance(next_after, int) or isinstance(next_after, bool) or not isinstance(page.get("status"), str):
+        return None
+    every: Optional[float] = None
+    if page.get("unchanged") and not page.get("has_more"):
+        poll = page.get("poll_after_ms")
+        every = poll / 1000 if isinstance(poll, (int, float)) and not isinstance(poll, bool) and poll >= 0 else 1.0
+    return next_after, ended(page["status"], page.get("final") is True), every
 
 
 @dataclass
@@ -146,14 +152,10 @@ def events(stream: StreamedResponse) -> Iterator[Event]:
                     retry = int(value)
 
 
-def _object_of(data: str, what: str) -> Dict[str, Any]:
-    try:
-        value = json.loads(data)
-    except ValueError:
-        value = None
-    if isinstance(value, dict):
-        return cast(Dict[str, Any], value)
-    raise AgentRunRefused(TIMELINE, 200, "bad_answer", None, f"The server sent a {what} event that is not a JSON object.")
+def _object_or_none(data: Union[bytes, str]) -> Optional[Dict[str, Any]]:
+    """`data` as a JSON object, or None. Parsed by parse_json, so nothing raised later is chained to a parse error."""
+    value = parse_json(data)
+    return cast(Dict[str, Any], value) if isinstance(value, dict) else None
 
 
 def follow_run(send: Send, base_url: str, run_id: str, after: object, last_event_id: object, idle_timeout: object) -> Iterator[TimelinePage]:
@@ -211,21 +213,34 @@ def _follow(send: Send, base_url: str, path: str, last: Optional[str], idle: flo
                 try:
                     if not re.match(r"text/event-stream\b", response.headers.get("content-type") or "", re.IGNORECASE):
                         raise AgentRunRefused(TIMELINE, response.status, "bad_answer", None, f"The server answered {TIMELINE} with something other than an event stream.")
+                    bad: Optional[str] = None
+                    event: Optional[Event] = None
+                    value: Optional[Dict[str, Any]] = None
                     for event in events(stream):
                         if event.retry is not None:
                             # Capped as a Retry-After is: a server's retry is never a reason to wait longer.
                             retry = min(event.retry / 1000, MAX_RETRY_AFTER)
                         if event.id is not None:
                             last = event.id
+                        if event.event not in ("rows", "end"):
+                            continue
+                        value = _object_or_none(event.data)
+                        if value is None:
+                            bad = "rows" if event.event == "rows" else "end"
+                            break
                         if event.event == "rows":
                             progress = True
                             # The idle timeout measures the server's silence: no read waits while the page is out.
-                            yield cast(TimelinePage, _object_of(event.data, "rows"))
-                        if event.event == "end":
-                            if _object_of(event.data, "end").get("reason") == "terminal":
-                                return
+                            yield cast(TimelinePage, value)
+                        elif value.get("reason") == "terminal":
+                            return
+                        else:
                             reconnect = True
                             break
+                    if bad is not None:
+                        # What the server sent stays out of the frame that raises.
+                        event = value = None
+                        raise AgentRunRefused(TIMELINE, 200, "bad_answer", None, f"The server sent a {bad} event that is not a JSON object.")
                 finally:
                     stream.close()
         except AgentRunError:

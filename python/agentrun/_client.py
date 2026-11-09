@@ -25,6 +25,7 @@ from ._http import (
     UNTRUSTED,
     Exchange,
     Failure,
+    NOT_JSON,
     Late,
     Origin,
     Response,
@@ -32,6 +33,7 @@ from ._http import (
     attempt,
     backoff,
     failure_of,
+    parse_json,
     pause,
     retry_after_of,
     segment_of,
@@ -138,30 +140,44 @@ def _secret_at(method: str, url: str) -> Optional[Operation]:
     return None
 
 
+def _read_whole(response: Response) -> Optional[Failure]:
+    """Reads a success's body whole, or gives the Failure of a body cut midway. The Failure is returned, not raised, so
+    the caller raises it chained to nothing: an IncompleteRead holds the part of the body that came."""
+    try:
+        response.read()
+    except Exception as error:  # noqa: BLE001 - every failure of a try is its outcome, as a code
+        return failure_of(error, response.timed_out)
+    return None
+
+
 def _bad_answer(route: str, status: int, what: str) -> AgentRunRefused:
     return AgentRunRefused(route, status, "bad_answer", None, f"The server's answer to {route} is not {what}.")
 
 
 def _read_answer(op: Operation, route: str, response: Response, stream: bool, timeout: float, scrub: Optional[Callable[[Any], Any]]) -> Any:
     """A success's body as the operation answers: JSON parsed (a secret body's values cut from it), text as a str, a
-    file's bytes as they came, or a StreamedResponse for a download asked to stream."""
+    file's bytes as they came, or a StreamedResponse for a download asked to stream. What the server sent is read in
+    _answer_of: this frame, which raises, never holds it."""
     if op.answer == "bytes" and scrub is None:
         return response.stream(timeout) if stream else response.read()
     if op.answer == "none":
         response.close()
         return None
+    answer = _answer_of(op, response, scrub)
+    if answer is NOT_JSON:
+        raise _bad_answer(route, response.status, "JSON")
+    return answer
+
+
+def _answer_of(op: Operation, response: Response, scrub: Optional[Callable[[Any], Any]]) -> Any:
+    """The body as _read_answer returns it, or NOT_JSON for one that should be JSON and is not."""
     data = response.read()
     if response.status == 204 or not data:
         return None if "json" in op.answer else "" if op.answer == "text" else data
     kind = response.headers.get("content-type") or ""
     if scrub is not None or ("json" in op.answer and (JSON_TYPE.match(kind) or op.answer == "json")):
-        if not JSON_TYPE.match(kind):
-            raise _bad_answer(route, response.status, "JSON")
-        try:
-            value = json.loads(data.decode("utf-8"))
-        except ValueError:
-            raise _bad_answer(route, response.status, "JSON") from None
-        return scrub(value) if scrub is not None else value
+        value = parse_json(data) if JSON_TYPE.match(kind) else NOT_JSON
+        return value if value is NOT_JSON or scrub is None else scrub(value)
     if "text" in op.answer and (re.match(r"text/", kind, re.IGNORECASE) or "bytes" not in op.answer):
         return data.decode("utf-8", errors="replace")
     return data
@@ -306,10 +322,9 @@ class AgentRun(Resources):
                 response = self._follow(x, seconds)
                 self._reached = True
                 if response.ok and not x.streamed:
-                    try:
-                        response.read()
-                    except Exception as error:  # noqa: BLE001 - every failure of a try is its outcome, as a code
-                        raise failure_of(error, response.timed_out) from None
+                    cut = _read_whole(response)
+                    if cut is not None:
+                        raise cut
             except Failure as failure:
                 if (failure.late and last) or time.monotonic() >= deadline:
                     raise Late() from None
@@ -345,35 +360,46 @@ class AgentRun(Resources):
             if response.status not in REDIRECT:
                 return response
             response.close()
-            location = response.headers.get("location")
-            here = f"{self._origin.scheme}://{urlsplit(self.base_url).netloc}{target}"
-            following = _joined(here, location) if location and URL_TEXT.fullmatch(location) else None
-            # A Location Python cannot read is a redirect this client does not follow: the key stays home.
-            parts = _split(following) if following is not None else None
-            home = parts is not None and following is not None and _origin_of(following) == self._origin
-            if not home or x.method != "GET" or hops >= MAX_HOPS:
-                how = "this client does not follow" if home else "to another origin"
+            following = self._redirect_target(response, target)
+            if following is None or x.method != "GET" or hops >= MAX_HOPS:
+                how = "this client does not follow" if following is not None else "to another origin"
                 raise AgentRunRefused(x.route, response.status, "redirect", None, f"The server answered {x.route} with a redirect {how} ({response.status}); not followed, so the API key stays with {self.base_url}.")
-            assert parts is not None
-            target = f"{parts.path or '/'}{f'?{parts.query}' if parts.query else ''}"
+            target = following
         raise AssertionError("unreachable")  # pragma: no cover
+
+    def _redirect_target(self, response: Response, target: str) -> Optional[str]:
+        """Where a redirect from `target` leads, as the next request's path and query, when it stays within the base
+        URL's origin; else None. A Location Python cannot read is one this client does not follow: the key stays
+        home. The Location is read here only, so no frame that raises holds it."""
+        location = response.headers.get("location")
+        here = f"{self._origin.scheme}://{urlsplit(self.base_url).netloc}{target}"
+        following = _joined(here, location) if location and URL_TEXT.fullmatch(location) else None
+        parts = _split(following) if following is not None else None
+        if parts is None or following is None or _origin_of(following) != self._origin:
+            return None
+        return f"{parts.path or '/'}{f'?{parts.query}' if parts.query else ''}"
+
+    def _error_object(self, x: Exchange, response: Response) -> Tuple[Optional[ServerError], bool]:
+        """A refusal's error object, every copy of the key and of a secret body's values cut from it, and whether its
+        body could not be read. The body is read and parsed here only: it never reaches a frame that raises."""
+        try:
+            data = response.read()
+        except Exception:  # noqa: BLE001 - a body that cannot be read is no error object
+            return None, True
+        parsed = parse_json(data)
+        found: object = cast(Dict[str, Any], parsed).get("error") if isinstance(parsed, dict) else None
+        if not isinstance(found, dict):
+            return None, False
+        return scrubber_of([self._key.reveal(), *x.secrets])(cast(ServerError, found)), False
 
     def _refusal(self, x: Exchange, response: Response, last: bool, deadline: float) -> AgentRunError:
         """A refused answer as its outcome. The server's error object is kept with every copy of the key cut from it;
         after a secret body, with the body's values cut too, only its code, and a code that held one is no code. Its
         text is never read into a message. A read that ends at the exchange's deadline (a wait's timeout) is Late: late
         work is never reported as a refusal or a bad key."""
-        error: Optional[ServerError] = None
-        try:
-            parsed: object = json.loads(response.read().decode("utf-8"))
-            found: object = cast(Dict[str, Any], parsed).get("error") if isinstance(parsed, dict) else None
-            if isinstance(found, dict):
-                error = scrubber_of([self._key.reveal(), *x.secrets])(cast(ServerError, found))
-        except Exception:  # noqa: BLE001 - a body that cannot be read or parsed is no error object
-
-            if (response.timed_out and last) or time.monotonic() >= deadline:
-                raise Late() from None
-            error = None
+        error, unread = self._error_object(x, response)
+        if unread and ((response.timed_out and last) or time.monotonic() >= deadline):
+            raise Late()
         named: object = error.get("code") if error is not None else None
         code = named if isinstance(named, str) and re.fullmatch(r"[a-z0-9_]+", named) else None
         if x.secret:

@@ -8,6 +8,7 @@ from __future__ import annotations
 import errno
 import http.client
 import io
+import json
 import math
 import re
 import socket
@@ -17,7 +18,7 @@ import time
 from dataclasses import dataclass, field
 from email.message import Message
 from email.utils import parsedate_to_datetime
-from typing import Any, Iterator, List, Mapping, Optional, Sequence, Tuple, Type, cast
+from typing import Any, Iterator, List, Mapping, Optional, Sequence, Tuple, Type, Union, cast
 from urllib.parse import quote
 
 from ._errors import AgentRunUsage
@@ -52,6 +53,20 @@ class Secret(str):
 
     def __reduce__(self) -> Any:
         raise TypeError("a secret is not pickled")
+
+
+NOT_JSON: Any = object()
+"""What parse_json gives for text that is not JSON."""
+
+
+def parse_json(data: Union[bytes, str]) -> Any:
+    """`data` parsed as JSON, or NOT_JSON. A parse error is swallowed here and never re-raised: a JSONDecodeError holds
+    the whole text in its `doc`, so no error of this client is ever chained to one, and the text stays in this frame,
+    which is gone by the time any error is raised."""
+    try:
+        return json.loads(data.decode("utf-8") if isinstance(data, bytes) else data)
+    except ValueError:  # JSONDecodeError and UnicodeDecodeError both
+        return NOT_JSON
 
 
 class Late(Exception):
@@ -268,6 +283,9 @@ class Response:
         self._answer.close()
         self._connection.close()
 
+    def __repr__(self) -> str:
+        return f"Response(status={self.status})"
+
 
 class StreamedResponse:
     """A download's answer with its body unread, as `stream=True` gives it: read it, or iterate it in chunks, then close
@@ -421,5 +439,9 @@ def attempt(origin: Origin, method: str, target: str, headers: Sequence[Tuple[st
     except Exception as error:  # noqa: BLE001 - every failure of a try is its outcome, as a code
         if connection is not None:
             connection.close()
-        raise failure_of(error, clock.expired) from None
-    return Response(connection, answer, clock)
+        failed = failure_of(error, clock.expired)
+    else:
+        return Response(connection, answer, clock)
+    # Raised here, past the except: a Failure is never chained to what failed, which can hold what the server sent
+    # (a BadStatusLine its line, an IncompleteRead its partial body).
+    raise failed
