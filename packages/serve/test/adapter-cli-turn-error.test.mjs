@@ -79,6 +79,15 @@ test("a CLI error that quotes a held secret is served without it: the run's view
   }
 });
 
+test("a CLI error cut at its bound never splits a character: an emoji straddling the cut leaves no lone surrogate", async (t) => {
+  const row = await runOnce(t, "failed", `${"x".repeat(499)}\u{1F600} and more words past the bound`);
+  assert.equal(row.state, "failed", JSON.stringify(row));
+  // A lone surrogate is stored as U+FFFD (the store writes UTF-8): the summary keeps whole characters only.
+  const summary = row.summary ?? "";
+  assert.ok(summary.isWellFormed() && !summary.includes("�"), `the summary keeps whole characters: ends ${JSON.stringify(summary.slice(-3))}`);
+  assert.ok(summary.startsWith("x".repeat(499)), "the words before the cut are kept");
+});
+
 test("a CLI turn that fails with no words of its own still ends the run failed in the loop's words", async (t) => {
   const row = await runOnce(t, "failed", undefined);
   assert.equal(row.state, "failed", JSON.stringify(row));
