@@ -219,6 +219,15 @@ export const LIVE_CSP = "default-src 'self'; script-src 'self'; style-src 'self'
 const LIVE_REST = /^\/(v\/[A-Za-z0-9_-]{22}|viewer\.js|viewer\.css)$/;
 export const liveRest = (rest: string): boolean => LIVE_REST.test(rest);
 
+/** The viewer run `runId`'s live route serves at `rest`, read over the store: a viewer's page ("/v/<id>") by its own path
+ *  id, the viewer's files while the run has one open (its newest); undefined at any other address, or with none open (the
+ *  route's 404). The WebSocket's upgrade reads liveViewerById with the id in its path. */
+export async function liveViewerFor(store: LiveViewerStore, sealKey: Buffer, runId: string, rest: string): Promise<LiveHandover | undefined> {
+  if (!liveRest(rest)) return undefined;
+  const viewer = /^\/v\/([A-Za-z0-9_-]{22})$/.exec(rest)?.[1];
+  return viewer ? liveViewerById(store, sealKey, runId, viewer) : liveViewer(store, sealKey, runId);
+}
+
 export async function serveViewerFile(req: IncomingMessage, res: ServerResponse, rest: string): Promise<void> {
   const { viewerAssets } = await import("@parcha/pi-browser/live-view");
   const [type, body] = rest === "/viewer.js" ? ["text/javascript; charset=utf-8", viewerAssets.js] : rest === "/viewer.css" ? ["text/css; charset=utf-8", viewerAssets.css] : ["text/html; charset=utf-8", viewerAssets.html];
