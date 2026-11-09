@@ -6,7 +6,7 @@
 // run whose launch names harness "learning", which the runner's dispatch runs on the learning loop). A run that does
 // not learn is asked nothing and keeps nothing.
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
@@ -21,6 +21,7 @@ const { runReflect } = await import("../dist/store-reads/journal.js");
 const { runLearningEnd } = await import("../dist/store-reads/learning.js");
 const { seedOf } = await import("../dist/learning.js");
 const { said } = await import("../dist/learning-words.js");
+const { saveToolSettings, ToolSettings } = await import("../dist/tool-plane.js");
 const endModule = await import("../dist/runner/learning-end.js").catch(() => ({}));
 const learningEndOfRun = (...args) => (typeof endModule.learningEndOfRun === "function" ? endModule.learningEndOfRun(...args) : assert.fail("learningEndOfRun is not there"));
 
@@ -35,8 +36,8 @@ after(closeOpenSessions);
 const NOTE = "---\nname: Retry slowly\ndescription: Back off between retries\ntype: reference\n---\nWait a little longer after each failed call.\n";
 const REFLECTED = `\`\`\`note retry-slowly.md\n${NOTE}\`\`\`\n\nReflected.`;
 
-/** A store in a directory of its own, agent-1 of `body`, and run-1 launched with `launch`. */
-async function world(t, body, launchOf) {
+/** A store in a directory of its own, agent-1 of `body`, and run-1 launched with `launch`; `setup(server, dir)` first. */
+async function world(t, body, launchOf, setup = async () => {}) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-learning-end-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const stores = [];
@@ -48,6 +49,7 @@ async function world(t, body, launchOf) {
     rmSync(dir, { recursive: true, force: true });
   });
   await server.agents.create({ id: "agent-1", name: "Learns" }, { id: "rev-1", kind: "agentic", body });
+  await setup(server, dir);
   const launch = await launchOf(dir);
   await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: launch });
   const until = async (check, what) => {
@@ -132,4 +134,20 @@ test("a run that does not learn, through the same runner, is asked nothing and k
   assert.equal(turn.reflect, undefined, "no end-of-run turn");
   assert.deepEqual(turn.users, ["Follow the script."], "only the job's message");
   assert.ok(!(await w.server.learning.proposal("run-1")), "no learning kept");
+});
+
+test("the tools the end-of-run prompt offers a workflow draft follow the server's tool settings in the store, never a settings file in the data directory", async (t) => {
+  // The store denies web_search; a stale file in the data directory allows it. The prompt offers what the store says.
+  const w = await world(t, { instructions: "Answer.", tools: ["read", "web_search"], learning: true }, async (dir) => {
+    const seed = await seedOf(dir, "agent-1");
+    return runner(() => ({ given: [], seed: seed.sha, section: "", seedNotes: 0 }))(dir);
+  }, async (server, dir) => {
+    await saveToolSettings(server, { web_search: { permission: "deny" } });
+    writeFileSync(join(dir, ToolSettings.FILE), JSON.stringify({ web_search: { permission: "allow" } }));
+  });
+  await w.start((deps) => learningEndOfRun(w.launch, deps));
+  const row = await w.ended();
+  const prompt = (await w.turnOf(row)).users[1] ?? "";
+  assert.match(prompt, /It has no call node on a tool\./, `the store's deny leaves web_search out of the draft's tools: ${prompt.slice(prompt.indexOf("call node") - 80, prompt.indexOf("call node") + 120)}`);
+  assert.ok(!prompt.includes("web_search"), "the file's allow is never read");
 });
