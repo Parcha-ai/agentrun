@@ -4,7 +4,8 @@
 // URLs are secrets: they stay in memory and never reach a ref, a list, an error's words or a report.
 //
 // Calls: POST /browsers (create, with timeout_seconds and tags), GET /browsers/{id} (read; 404 or deleted_at once
-// deleted), GET /browsers?status=active&tags[key]=value&limit&offset (list, paged by X-Has-More and X-Next-Offset), and
+// deleted), GET /browsers?status=all&tags[key]=value&limit&offset (list, every state, the deleted dropped by deleted_at;
+// paged by X-Has-More and X-Next-Offset), and
 // DELETE /browsers/{id} (release). The key is a bearer token.
 //
 // Kernel's timeout_seconds is an idle timeout: Kernel ends a browser that long after its last CDP or live-view
@@ -211,13 +212,12 @@ export class KernelProvider implements ComputerProvider {
 	/**
 	 * The browsers a lost create made, released: what recoverCreate says of them. They are found as list finds any, by the
 	 * tags the create wrote (its create label first, so the query names it, then the run's), through #browsers: another
-	 * browser of the same run carries a create label of its own and is left alone. Every state is read (status=all, as
-	 * Kernel's filter takes one value: active, deleted or all) and the deleted dropped, so a browser still starting,
-	 * which status=active may not list yet, is found and released too.
+	 * browser of the same run carries a create label of its own and is left alone. #browsers reads every state not
+	 * deleted, so a browser still starting is found and released too.
 	 */
 	#recover(labels: Record<string, string>): Promise<string> {
 		const find = async (signal: AbortSignal): Promise<Result<string[]>> => {
-			const found = await this.#browsers(labels, signal, "all");
+			const found = await this.#browsers(labels, signal);
 			return found.ok ? ok(found.value.map((b) => b.id)) : found;
 		};
 		return recoverCreate("browser", find, (id) => this.release(refOf(id), "delete"), this.#sleep);
@@ -288,13 +288,14 @@ export class KernelProvider implements ComputerProvider {
 	}
 
 	/**
-	 * The live browsers with all of these labels, every page read. Kernel is asked for active browsers by the first label
-	 * a query carries as it is; the match is the provider's own, so a lane that drops the filter never hands back
-	 * another's. A page that cannot be read fails the whole list: a release trusts it. status is Kernel's filter: "active"
-	 * for list and attach, "all" for a lost create's recovery, which must miss no browser that is not deleted (one still
-	 * starting among them); a row with deleted_at is never kept either way.
+	 * The live browsers with all of these labels, every page read. Kernel is asked by the first label a query carries as
+	 * it is, in every state (status=all: its filter takes one value, active, deleted or all, and active may leave out a
+	 * browser still starting, which bills), and a row with deleted_at is dropped here; so list and attach show a starting
+	 * browser, as Browserbase lists a PENDING session, and a lost create's recovery misses none. The match is the
+	 * provider's own, so a lane that drops the filter never hands back another's. A page that cannot be read fails the
+	 * whole list: a release trusts it.
 	 */
-	async #browsers(labels: Record<string, string>, signal?: AbortSignal, status: "active" | "all" = "active"): Promise<Result<Array<{ id: string; tags: Record<string, string> }>>> {
+	async #browsers(labels: Record<string, string>, signal?: AbortSignal): Promise<Result<Array<{ id: string; tags: Record<string, string> }>>> {
 		const problem = labelsProblem(labels);
 		if (problem) return fail("invalid", problem);
 		if (Object.keys(labels).length === 0) return fail("invalid", "list and attach take at least one label: a Kernel organization holds browsers this provider did not make");
@@ -303,7 +304,7 @@ export class KernelProvider implements ComputerProvider {
 		const seen = new Set<string>();
 		const call = "GET /browsers";
 		for (let offset = 0, pages = 0; pages < MAX_PAGES; pages++) {
-			const query = new URLSearchParams({ status, ...(first === undefined ? {} : { [`tags[${first[0]}]`]: first[1] }), limit: "100", offset: String(offset) });
+			const query = new URLSearchParams({ status: "all", ...(first === undefined ? {} : { [`tags[${first[0]}]`]: first[1] }), limit: "100", offset: String(offset) });
 			let page: RestReply;
 			try {
 				page = await this.#request("GET", "/browsers", { query, ...(signal ? { signal } : {}) });

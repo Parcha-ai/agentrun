@@ -439,6 +439,19 @@ test("kernel: a lost create whose browser is still starting, which status=active
 	assert.ok(statuses.length > 0 && statuses.every((s) => s === "all"), `the recovery reads every state, and keeps those not deleted: ${statuses.join(", ")}`);
 });
 
+test("kernel: list and attach by labels show a browser still starting, as Browserbase lists a PENDING session; a deleted one never", async () => {
+	const fake = fakeKernel();
+	const provider = await VENDORS.kernel.make(fake);
+	const starting = value(await provider.create(spec()), "create");
+	fake.browsers.get(starting.id).starting = true;
+	const gone = value(await provider.create(spec({ labels: { "agentrun.run": "run-1", job: "j-43" } })), "create");
+	value(await provider.release(gone, "delete"), "release");
+	assert.deepEqual(value(await provider.list({ "agentrun.run": "run-1" }), "list").map((info) => info.ref.id), [starting.id]);
+	assert.equal(value(await provider.attach({ labels: { job: "j-42" } }), "attach by labels").id, starting.id);
+	const statuses = fake.only("GET", "/browsers").map((call) => call.query.status);
+	assert.ok(statuses.every((s) => s === "all"), `list reads every state and keeps those not deleted: ${statuses.join(", ")}`);
+});
+
 test("browserbase: a label's dots ride as underscores in userMetadata, which Browserbase refuses a dot in; list and attach read them back as labels", async () => {
 	const fake = fakeBrowserbase();
 	const provider = await VENDORS.browserbase.make(fake);

@@ -1797,7 +1797,9 @@ downloads, but the protocol has no method that reads them, so the group waits fo
 pi-browser's Browserbase and Kernel providers call today. `check()` refuses an image other than `chromium`, a lifetime past
 the cap, a network other than open, and any size, user, workdir or mount, before a vendor call. `list` and attach by
 labels take at least one label (a vendor account holds sessions no provider made), ask the vendor by status and by the
-first label a query carries as it is, and match every label themselves. A release is idempotent: one already ended or
+first label a query carries as it is, and match every label themselves. They show every browser that has not ended:
+Browserbase's `RUNNING` and `PENDING`, Kernel's `status=all` with the deleted dropped (Kernel's filter takes one value,
+and `active` may leave out a browser still starting). A release is idempotent: one already ended or
 unknown to the vendor is released.
 
 A vendor call is one request, never retried where a retry could open a second paid browser, and a failure names the
@@ -1807,10 +1809,9 @@ cause (`causeOf(result)`), not enumerable, so it is in no JSON.
 
 Each create writes one more label beside the spec's, `agentrun.create` (`CREATE_LABEL`), with a value of its own. A
 create whose outcome is unknown (its reply lost, cut short, answered 5xx or with no browser, or the caller's signal
-aborted it) never sends a second create: it asks the vendor for the browsers carrying that label in every state not
-ended (Browserbase `RUNNING` and `PENDING`; Kernel `status=all`, the deleted dropped, so one still starting is found),
-under a signal of its own bounded at `RECOVER_MS`, releases each, and its failure says so. A 4xx refusal made nothing, so nothing is looked
-for. The label is the provider's own: `check()` refuses it in a spec, and no list or attach shows it.
+aborted it) never sends a second create: it finds the browsers carrying that label as list does, in every state not
+ended, under a signal of its own bounded at `RECOVER_MS`, releases each, and its failure says so. A 4xx refusal made
+nothing, so nothing is looked for. The label is the provider's own: `check()` refuses it in a spec, and no list or attach shows it.
 
 The conformance CLI runs the browser case set for a provider of kind browser: the health cases, then `browser.*`
 (check past the cap, attach by id and by labels, list, CDP `Browser.getVersion` and `Runtime.evaluate` on a `data:`
