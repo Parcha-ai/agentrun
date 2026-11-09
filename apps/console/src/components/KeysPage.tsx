@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
 import { type Client, ClientError } from "@/lib/client";
 import { when } from "@/lib/format";
-import { SIGN_IN_TO_CHANGE } from "@/lib/secrets";
+import { type SecretsWhyNot, WHY_NOT_WORDS } from "@/lib/secrets";
 import type { ApiError, ToolKey, ToolKeyCheck, ToolKeyField, ToolKeys, ToolKeysReenter } from "@/lib/v2";
 
 const REASON: Record<ToolKeysReenter["reason"], string> = {
@@ -38,7 +38,7 @@ export const KEY_GROUPS = [{ kind: "model", label: "Models", name: "Model keys" 
  *  capabilities' `features.tool_keys.at_rest`; `onChange` follows each save and removal (the server's tools and models
  *  may change with its keys). */
 /** `writable`: this is the owner's password session (session.secrets_writable), the one that may paste a key. */
-export function KeysPage({ v2, atRest, onChange, writable }: { v2: Client; atRest?: "sealed" | "unavailable"; onChange?: () => void; writable: boolean }) {
+export function KeysPage({ v2, atRest, onChange, writable, whyNot = "sign_in" }: { v2: Client; atRest?: "sealed" | "unavailable"; onChange?: () => void; writable: boolean; whyNot?: SecretsWhyNot }) {
   const [view, setView] = useState<ToolKeys | null>(null);
   const [loadError, setLoadError] = useState<ApiError | null>(null);
   const [noSealing, setNoSealing] = useState(false);
@@ -98,7 +98,7 @@ export function KeysPage({ v2, atRest, onChange, writable }: { v2: Client; atRes
           <h1 className="mt-1 text-2xl font-semibold">Keys</h1>
           <p className="mt-2 text-[14px] text-muted-foreground">A model provider's key, which every agent runs on, and a tool's key, for every agent that uses the tool, kept on this server. A saved key is never shown again.</p>
         </div>
-        {!writable && <p className="border bg-card p-4 text-[13px]" role="status">{SIGN_IN_TO_CHANGE}</p>}
+        {!writable && <p className="border bg-card p-4 text-[13px]" role="status">{WHY_NOT_WORDS[whyNot]}</p>}
         {loadError && <ReadError inline error={loadError} onRetry={load} />}
         {reenter && (
           <section className="flex gap-3 border border-warning/50 bg-warning/5 p-4" role="alert" aria-label="Keys to enter again">

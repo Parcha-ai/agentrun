@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
 import type { Client } from "@/lib/client";
 import { when } from "@/lib/format";
-import { SIGN_IN_TO_CHANGE } from "@/lib/secrets";
+import { type SecretsWhyNot, WHY_NOT_WORDS } from "@/lib/secrets";
 import { type McpAuth, type McpPreview, mcpProblem, type McpRefresh, type McpServer, NO_SEAL_KEY } from "@/lib/mcp";
 
 type Problem = ReturnType<typeof mcpProblem>;
@@ -23,7 +23,7 @@ const CREDENTIAL: Record<string, [string, "success" | "warning" | "plain"]> = {
  *  read, and cleared once sent to be kept. `atRest` is capabilities' `features.mcp_client.at_rest`; `signIn`, the
  *  outcome an OAuth sign-in's way back names (`#/settings/mcp?server=&sign_in=`); `open` takes the browser to a sign-in. */
 /** `writable`: this is the owner's password session (session.secrets_writable), the one that may type a credential. */
-export function McpServersPage({ v2, atRest, signIn, writable, open = (url) => location.assign(url) }: { v2: Client; atRest?: "sealed" | "unavailable"; signIn?: SignIn; writable: boolean; open?: (url: string) => void }) {
+export function McpServersPage({ v2, atRest, signIn, writable, whyNot = "sign_in", open = (url) => location.assign(url) }: { v2: Client; atRest?: "sealed" | "unavailable"; signIn?: SignIn; writable: boolean; whyNot?: SecretsWhyNot; open?: (url: string) => void }) {
   const [servers, setServers] = useState<McpServer[] | null>(null);
   const [unreadable, setUnreadable] = useState(false);
   const [loadError, setLoadError] = useState<Problem | null>(null);
@@ -55,7 +55,7 @@ export function McpServersPage({ v2, atRest, signIn, writable, open = (url) => l
           </p>
         )}
         {cantStore && <p className="border bg-card p-4 font-mono text-[13px]" role="status">{NO_SEAL_KEY}</p>}
-        {!writable && <p className="border bg-card p-4 text-[13px]" role="status">{SIGN_IN_TO_CHANGE}</p>}
+        {!writable && <p className="border bg-card p-4 text-[13px]" role="status">{WHY_NOT_WORDS[whyNot]}</p>}
         {unreadable && <Warning>The file this server keeps its MCP servers in can't be read: restore it or remove it. Nothing is written over it.</Warning>}
         {loadError && (
           <div className="border p-4" role="alert">
