@@ -1699,6 +1699,9 @@ const LEARNING_SHORT = {
 const CONSOLE_URL = (what: string): Json => ({ type: "string", format: "uri", description: `The ${what}'s page in this server's console, at the address people open it (the server's public URL when it has one, else the address this request reached it at): the link to give a person.`, "x-agentrun-serve": "consoleurl/1" });
 /** The RUN_FIELDS every run's view and summary hold (runs.ts): required, beside the contract's. */
 export const RUN_FIELDS_SENT = ["revision", "kind", "archived_at"];
+/** The field every saved sign-in is sent with beside the contract's, required: `secret`, its one secret's metadata
+ *  (secrets/1, sign-ins-secrets.ts). */
+export const SIGN_IN_FIELDS_SENT = ["secret"];
 /** DefinitionInput's contract fields this server does not require (validate.ts): a workflow revision has no
  *  instructions, and the server mints or keeps version, skills and tools when a write leaves them out. */
 export const DEFINITION_INPUT_OPTIONAL = ["instructions", "version", "skills", "tools"];
@@ -2395,6 +2398,19 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
       signIn.else = { if: { properties: { state: { const: "unreadable" } } }, then: { properties: { held_by: { oneOf: [ref("schemas/Id"), { type: "null" }] } } }, else: signIn.else, "x-agentrun-serve": "signins/1" };
       fields.push("SignIn.else");
     }
+  }
+  // secrets/1: each saved sign-in carries its one secret under `secret`, in the secret metadata shape every plane gives
+  // (sign-ins-secrets.ts), always sent: named sign-in:<agent_id>:<provider>, set, from a sign-in, changed when its pointer
+  // was saved. Never the pointer.
+  const signInSchema = schemas.SignIn as Json & { properties: Record<string, Json>; required: string[] };
+  if (signInSchema.properties.secret === undefined) {
+    signInSchema.properties.secret = {
+      $ref: "#/components/schemas/SecretMeta",
+      description: "The sign-in's one secret, its vendor pointer, as metadata alone (SecretMeta): named `sign-in:<agent_id>:<provider>`, set, from a `sign-in`, changed when its pointer was saved (not a run's verify, `verified_at`). Never the pointer, a prefix, a length or a hash.",
+      "x-agentrun-serve": "secrets/1",
+    };
+    fields.push("SignIn.secret");
+    signInSchema.required = [...signInSchema.required, ...SIGN_IN_FIELDS_SENT];
   }
   // A workflow run pauses here (POST /runs/{run_id}/pause): its status reads `paused` until it is resumed.
   const runStatus = schemas.RunStatus as Json & { enum?: string[] };
