@@ -7,7 +7,8 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { test } from "node:test";
-import { createComputerRoutes, KeysRefused } from "../dist/computers.js";
+import { clearArchilSettings, saveArchilSettings } from "../dist/archil-settings.js";
+import { createComputerRoutes, folderModeOf, KeysRefused } from "../dist/computers.js";
 import { getSealedKey } from "../dist/server-keys.js";
 import { ARCHIL_KINDS, fakeFactories, KINDS, tools } from "./fixtures/computer-kinds.mjs";
 import { storeOn } from "./store-helpers.mjs";
@@ -133,6 +134,19 @@ test("at the claim: a computer this server cannot give is refused in words that 
   assert.equal(await routes.claimRefusal({ kind: "desktop", provider: "orgo" }), "Orgo needs ORGO_API_KEY saved: save it in Settings → Computers (PUT /v2/computers/orgo/keys)");
   await routes.saveKeys("phone-harness", { PHONE_HARNESS_API_KEY: "good-p" });
   assert.equal(await routes.claimRefusal({ kind: "phone", provider: "phone-harness" }), undefined);
+});
+
+test("the folder mode is read at each call (folderModeOf): turning Archil on or off takes effect without building the routes again", async (t) => {
+  const { store } = await storeOn(t);
+  const routes = createComputerRoutes({ store, sealKey: randomBytes(32), kinds: ARCHIL_KINDS, factories: fakeFactories().factories, tools, mode: folderModeOf(store) });
+  const docker = async () => (await routes.view()).kinds.find((one) => one.kind === "sandbox").providers.find((one) => one.id === "docker");
+  assert.equal((await docker()).ready, true, "Mode 1: Docker's sandbox");
+  assert.equal(await routes.claimRefusal({ kind: "sandbox", provider: "docker" }), undefined);
+  await saveArchilSettings(store, { diskId: "dsk-00000000000fake0", region: "aws-us-east-1", s3Url: "https://s3.archil.example" });
+  assert.match((await docker()).why, /can't mount the owner's disk/, "Mode 2 at the next call");
+  assert.match(await routes.claimRefusal({ kind: "sandbox", provider: "docker" }), /can't mount the owner's disk/);
+  await clearArchilSettings(store);
+  assert.equal((await docker()).ready, true, "Mode 1 again");
 });
 
 test("at the claim in Mode 2: Docker's sandbox is refused", async (t) => {
