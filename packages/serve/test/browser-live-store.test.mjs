@@ -7,7 +7,7 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { test } from "node:test";
-import { dropLiveViewer, liveViewer, liveViewerById, liveViewerFor, liveViewerLink, putLiveViewer, readLiveViewers, viewerLink } from "../dist/browser-live.js";
+import { dropLiveViewer, liveViewer, liveViewerById, computerViewerLink, liveViewerFor, liveViewerLink, putLiveViewer, readLiveViewers, viewerLink } from "../dist/browser-live.js";
 import { aadOf, sealColumn, sealedAt } from "../dist/store/seal.js";
 import { fakeLiveViewersStore } from "./live-viewers-support.mjs";
 
@@ -187,11 +187,13 @@ test("the owner's link over the store is under the run's /computer/live/ path, k
   await putLiveViewer(store, KEY, claim, older);
   store.advance(1_000);
   await putLiveViewer(store, KEY, claim, newer);
-  assert.equal(viewerLink(RUN, newer), `/v2/runs/${RUN}/computer/live/v/${newer.id}#t=${newer.token}`);
-  assert.deepEqual(await liveViewerLink(store, KEY, RUN, async () => true), { kind: "browser", viewer: `/v2/runs/${RUN}/computer/live/v/${newer.id}#t=${newer.token}` });
-  assert.deepEqual(await liveViewerLink(store, KEY, RUN, async (h) => h.id === older.id), { kind: "browser", viewer: `/v2/runs/${RUN}/computer/live/v/${older.id}#t=${older.token}` }, "the newest whose port answers");
-  assert.equal(await liveViewerLink(store, KEY, RUN, async () => false), undefined, "none answers: none");
-  assert.equal(await liveViewerLink(store, randomBytes(32), RUN, async () => true), undefined, "no seal opens: none");
+  assert.equal(viewerLink(RUN, newer, "computer"), `/v2/runs/${RUN}/computer/live/v/${newer.id}#t=${newer.token}`);
+  assert.equal(viewerLink(RUN, newer), `/v2/runs/${RUN}/browser/live/v/${newer.id}#t=${newer.token}`, "the browser's own address by default, as on the base");
+  assert.deepEqual(await liveViewerLink(store, KEY, RUN, async () => true), { viewer: `/v2/runs/${RUN}/browser/live/v/${newer.id}#t=${newer.token}` }, "runBrowserState's dep: the browser's own link");
+  assert.deepEqual(await computerViewerLink(store, KEY, RUN, async () => true), { kind: "browser", viewer: `/v2/runs/${RUN}/computer/live/v/${newer.id}#t=${newer.token}` });
+  assert.deepEqual(await computerViewerLink(store, KEY, RUN, async (h) => h.id === older.id), { kind: "browser", viewer: `/v2/runs/${RUN}/computer/live/v/${older.id}#t=${older.token}` }, "the newest whose port answers");
+  assert.equal(await computerViewerLink(store, KEY, RUN, async () => false), undefined, "none answers: none");
+  assert.equal(await computerViewerLink(store, randomBytes(32), RUN, async () => true), undefined, "no seal opens: none");
   assert.equal((await liveViewerFor(store, KEY, RUN, `/v/${older.id}`))?.id, older.id);
   assert.equal((await liveViewerFor(store, KEY, RUN, "/viewer.js"))?.id, newer.id);
   assert.equal((await liveViewerFor(store, KEY, RUN, "/viewer.css"))?.id, newer.id);
@@ -209,7 +211,7 @@ test("the readers take any computer kind's row of the run: a desktop row put at 
   const desktop = handover("cmp-desktop-1");
   assert.equal(await store.liveViewers.put(claim, { kind: "desktop", tag: desktop.tag, port: desktop.port, id: desktop.id, sealed: sealColumn(KEY, sealedAt.liveViewer(RUN, "desktop", desktop.tag), desktop.token) }), true);
   assert.deepEqual(await readLiveViewers(store, KEY, RUN), [read(desktop, 2_000, "desktop"), read(browser, 1_000)]);
-  assert.deepEqual(await liveViewerLink(store, KEY, RUN, async () => true), { kind: "desktop", viewer: `/v2/runs/${RUN}/computer/live/v/${desktop.id}#t=${desktop.token}` });
+  assert.deepEqual(await computerViewerLink(store, KEY, RUN, async () => true), { kind: "desktop", viewer: `/v2/runs/${RUN}/computer/live/v/${desktop.id}#t=${desktop.token}` });
   assert.deepEqual(await liveViewerById(store, KEY, RUN, desktop.id), read(desktop, 2_000, "desktop"));
   assert.equal((await liveViewerFor(store, KEY, RUN, `/v/${desktop.id}`))?.kind, "desktop");
   assert.equal((await liveViewerFor(store, KEY, RUN, "/viewer.js"))?.id, desktop.id, "the newest, whatever its kind");

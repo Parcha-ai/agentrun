@@ -195,9 +195,11 @@ export function pinRefusal(name: string, args: unknown, server: PermissionSettin
   return { text: `${name} may only be called with ${pinWords(pin)}: its destination is fixed by ${by}. ${what}`, mismatched };
 }
 
-/** `name`'s permission in force and the layer it came from, most specific first: the agent's exact key, the agent's
- *  server wildcard, the server's exact key, the server's server wildcard, then the default. A call's arguments
- *  are held only by a pin (pinRefusal), which adds to a setting and is never a permission. `approvals` "never" (an agent run unattended) turns the ask that is left into an allow, from
+/** `name`'s permission in force and the layer it came from. A deny set on this server, under the tool's own key or its MCP
+ *  server's wildcard (bash's for a shell tool), is absolute: it refuses on this server over any setting of the agent's.
+ *  Otherwise most specific first: the agent's exact key, the agent's server wildcard, the server's exact key, the
+ *  server's server wildcard, then the default. A call's arguments are held only by a pin (pinRefusal), which adds to a
+ *  setting and is never a permission. `approvals` "never" (an agent run unattended) turns the ask that is left into an allow, from
  *  "unattended", as the last step, and only where nothing stands behind that ask (standsBehind): never past a deny in any
  *  layer, nor an ask that stands in for a setting that does not read. Nor is anything RunGate.enter refuses before it
  *  decides between running and parking ever lifted (a template's pin, among them). Without never, the answer is as it
@@ -208,10 +210,17 @@ export function permissionFrom(name: string, server: PermissionSettings, agent: 
   return { permission: "allow", from: "unattended" };
 }
 
-/** Whether something stands behind `name`'s ask that approvals "never" must not lift: in either layer, under any key the
- *  tool is read by (its own, its MCP server's wildcard; a shell tool's, bash's), a deny, a value that is no permission,
- *  or a setting marked as not read as written (`fallback`). The ask a layer above gives does not hide a deny below it. */
+/** Marks the server's settings map when its file is present but does not read (tool-plane.ts ToolSettings.get): every
+ *  tool then takes its defaults, and the deny the file may hold can't be seen, so nothing lifts an ask over it. A symbol:
+ *  carried by a spread, never by JSON (it is never served) nor by Object.entries (no reader takes it for a tool). */
+export const SETTINGS_UNREAD: unique symbol = Symbol("agentrun.tool-settings.unread");
+
+/** Whether something stands behind `name`'s ask that approvals "never" must not lift: the server's settings unread
+ *  (SETTINGS_UNREAD: a deny may be in the file), or in either layer, under any key the tool is read by (its own, its MCP
+ *  server's wildcard; a shell tool's, bash's), a deny, a value that is no permission, or a setting marked as not read as
+ *  written (`fallback`). The ask a layer above gives does not hide a deny below it. */
 function standsBehind(name: string, server: PermissionSettings, agent: PermissionSettings): boolean {
+  if ((server as { readonly [SETTINGS_UNREAD]?: true })[SETTINGS_UNREAD] === true) return true;
   const held = Object.hasOwn(SHELL_FAMILY, name) ? SHELL_FAMILY[name]! : name;
   return [agent, server].some((layer) => permissionKeys(held).some((key) => {
     const setting = layer[key];
@@ -234,8 +243,14 @@ function settingOf(name: string, server: PermissionSettings, agent: PermissionSe
 }
 
 /** permissionFrom's own read, and whether the permission is `written`: a valid one set in a layer as it reads there, not
- *  a stand-in. A value that is no permission at all reads ask, never the value. */
+ *  a stand-in. A value that is no permission at all reads ask, never the value. A deny set on this server is absolute:
+ *  where the server's own answer for the tool (its most specific key set there: the tool's own, else its MCP server's
+ *  wildcard) is deny, that is the answer, from the server, before the agent's own settings are read, so no ask or allow
+ *  of the agent's reaches past it. The server's own exact allow under its wildcard deny is its answer, as before.
+ *  Otherwise the agent's own setting comes first, then the server's, then the default. */
 function settingFrom(name: string, server: PermissionSettings, agent: PermissionSettings): { permission: Permission; from: "agent" | "server" | "default"; written: boolean } {
+  const own = permissionKeys(name).map((key) => server[key]).find((setting) => setting?.permission !== undefined);
+  if (own?.permission === "deny") return { permission: "deny", from: "server", written: own.fallback !== true };
   for (const [from, layer] of [["agent", agent], ["server", server]] as const) {
     for (const key of permissionKeys(name)) {
       const setting = layer[key];
@@ -431,9 +446,11 @@ export function resumeText(request: Pick<ApprovalRequest, "tool" | "call_id">, s
 }
 
 /** The gate of the run `runId` at `where` (its directory, under the data directory's runs/), on its pinned revision:
- *  an agentic run's parks an asked call; a workflow's model node cannot. */
-export function runGate(where: { root: string; work: string }, runId: string, revision: { kind: string; body: { toolSettings?: unknown; harness?: string; approvals?: Approvals } }): RunGate {
-  return new RunGate({ root: where.root, work: where.work, data: dataOfRun(where.root), runId, harness: revision.body.harness ?? DEFAULT_HARNESS }, (revision.body.toolSettings ?? {}) as PermissionSettings, revision.kind === "agentic", process.env[NO_APPROVER_ENV] !== "1", approvalsOf(revision.body.approvals));
+ *  an agentic run's parks an asked call; a workflow's model node cannot. `serverSettings`: where the server's tool
+ *  settings are read from, read at each call as the gate reads them; absent, the file beside the run's data directory (the
+ *  old per-run process). The runner gives the one store's (tool-plane.ts loadToolSettings), read once at the claim. */
+export function runGate(where: { root: string; work: string }, runId: string, revision: { kind: string; body: { toolSettings?: unknown; harness?: string; approvals?: Approvals } }, serverSettings?: () => ReturnType<typeof readToolSettings>): RunGate {
+  return new RunGate({ root: where.root, work: where.work, data: dataOfRun(where.root), runId, harness: revision.body.harness ?? DEFAULT_HARNESS }, (revision.body.toolSettings ?? {}) as PermissionSettings, revision.kind === "agentic", process.env[NO_APPROVER_ENV] !== "1", approvalsOf(revision.body.approvals), serverSettings);
 }
 
 /** The gate in a run's process, park mode: its policy, the turn's origin, the calls that wait, and the answers acted on. */
@@ -461,11 +478,25 @@ export class RunGate {
    *  own; `parks`: whether an asked call parks the run (an agentic run's), which a workflow's model node cannot;
    *  `approvers`: whether anyone can answer an ask here (the owner's password session: accounts on); `approvals`: the
    *  pinned revision's (definition.approvals): "never" runs the agent unattended, an ask allowed (permissionFrom). */
-  constructor(private readonly where: { root: string; work: string; data: string; runId: string; harness?: string; mcpServers?: readonly string[] }, private readonly overrides: PermissionSettings = {}, private readonly parks = true, private readonly approvers = true, private readonly approvals: Approvals = "ask") {}
+  constructor(private readonly where: { root: string; work: string; data: string; runId: string; harness?: string; mcpServers?: readonly string[] }, private readonly overrides: PermissionSettings = {}, private readonly parks = true, private readonly approvers = true, private readonly approvals: Approvals = "ask", private readonly readServerSettings?: () => ReturnType<typeof readToolSettings>) {}
 
   /** A tool's permission now (permissionOf): the revision's own over the server's setting, read at each call, so a change
    *  reaches a live run at its next call; under approvals "never", an ask is an allow. */
   readonly policy = (tool: string): Permission => this.setting(tool).permission;
+
+  /** The gate's answer for one call before its intent, for a loop that parks and answers asks itself (the runner's adapter
+   *  loop): run it, ask a person, or refuse it with the words the model reads. The same order as `enter`, past the end-of-run
+   *  turn's write check (the loop's own): the deny (with where it was set, and that nothing was sent or charged), then a
+   *  pin, then the allow, then the ask, so an allow that approvals "never" made is decided only after every refusal. */
+  decide(name: string, args: unknown): "allow" | "ask" | { deny: string } {
+    const key = settingsKeyOf(this.where.harness ?? DEFAULT_HARNESS, name, this.where.mcpServers) ?? name;
+    const tool = shellToolOf(name) ?? key;
+    const verdict = this.policy(name);
+    if (verdict === "deny") return { deny: deniedText(tool, key, this.denyFrom(name), "no") };
+    const pinned = this.pinned(key, args, "no");
+    if (pinned) return { deny: pinned.text };
+    return verdict === "allow" ? "allow" : "ask";
+  }
   /** Where the permission `policy` gives `tool` was set: the agent's own tool settings, the server's, or the default; or
    *  "unattended", an ask the agent's approvals allowed. */
   readonly denyFrom = (tool: string): SettingFrom => this.setting(tool).from;
@@ -498,7 +529,7 @@ export class RunGate {
   /** The server's settings now: read at each call, so a change reaches a live run; a file that does not read keeps the
    *  last good (undefined: none read yet). Each problem is said once, by file and field, never a value. */
   private serverSettings(): PermissionSettings | undefined {
-    const read = readToolSettings(this.where.data);
+    const read = this.readServerSettings ? this.readServerSettings() : readToolSettings(this.where.data);
     for (const line of read.problems) {
       if (this.told.has(line)) continue;
       this.told.add(line);

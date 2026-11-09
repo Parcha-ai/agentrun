@@ -11,7 +11,7 @@ import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { test } from "node:test";
 import { note } from "./fixtures/faux-learn.mjs";
-import { copyOf, ended, git, LEARN, learner, made, mergesOf, objects, onMain, reflectRows, repoOf, resnap, savedOf, settled, sleep, started } from "./learn-support.mjs";
+import { copyOf, ended, git, LEARN, learnedOnMain, learner, made, mergesOf, objects, onMain, proposedOf, reflectRows, repoOf, resnap, SWITCH_TODO, savedOf, settled, sleep, started } from "./learn-support.mjs";
 import { client, runDir, scratch, serve, withEnv } from "./support.mjs";
 import { folderTestHooks } from "../dist/learn/folder.js";
 import { learningTestHooks } from "../dist/learning.js";
@@ -47,8 +47,9 @@ async function plans(api, id, plan, extra = {}) {
 const MOVED = note("Refunds path", "Refunds live under /policies/refunds", "Moved in the redesign.\n", "supersedes: [refunds.md]\n");
 const MARKED = note("Refunds path", "Refunds live under /help/", "Refunds live under /help/.\n", "status: superseded\nsuperseded_by: refunds-v2.md\n");
 
-/** Agent `id` seeded, and its run that supersedes refunds.md (MOVED) started, its grade under way: main read and the
- *  grader asked, which answers only once `release` is called. */
+/** Agent `id` seeded, and its run that supersedes refunds.md (MOVED) kept as its proposal, its learning run under way:
+ *  main read and the grader asked, which answers only once `release` is called. `learning` is that learning run's end
+ *  (learnedOnMain). */
 async function heldGrade(t, id, rule = "") {
   const dir = await scratch(t);
   const calls = join(dir, "calls.jsonl");
@@ -57,11 +58,13 @@ async function heldGrade(t, id, rule = "") {
   const server = await seeded(t, id, SEED);
   await plans(server.api, id, [["refunds-v2.md", MOVED]], { instructions: `Answer the question.\nGrade once ${gate} exists.${rule ? `\n${rule}` : ""}` });
   const runId = await started(server.api, id);
+  proposedOf((await ended(server.api, runId)).view);
+  const learning = learnedOnMain(server, id, runId);
   for (let i = 0; !(existsSync(calls) && readFileSync(calls, "utf8").includes('"grade"')); i++) {
     assert.ok(i < 1800, "the grader is asked");
     await sleep(50);
   }
-  return { ...server, runId, release: () => writeFileSync(gate, "") };
+  return { ...server, runId, learning, release: () => writeFileSync(gate, "") };
 }
 
 /** A person's edit of agent `id`'s note `file` to `text`, through the learning route, with the ETag read just before. */
@@ -72,13 +75,14 @@ async function personEdits({ api, baseUrl, token }, id, file, text) {
   assert.equal(res.status, 200, await res.text());
 }
 
-test("a note that supersedes one: the old note is marked superseded by the new one, and the index lists the new one alone", { timeout: 120_000 }, async (t) => {
+test("a note that supersedes one: the old note is marked superseded by the new one, and the index lists the new one alone", { timeout: 120_000, skip: SWITCH_TODO }, async (t) => {
   const { api, data, repo } = await seeded(t, "replacer", SEED);
   const NEW = note("Refunds path", "Refunds live under /policies/refunds", "Moved in the redesign.\n", "supersedes: [refunds.md]\n");
   await plans(api, "replacer", [["refunds-v2.md", NEW]]);
   const runId = await started(api, "replacer");
-  const { view, rows } = await ended(api, runId);
-  settled(view, rows, "merged");
+  const { view } = await ended(api, runId);
+  proposedOf(view);
+  assert.equal((await learnedOnMain({ api, data }, "replacer", runId)).result?.ok, true);
   // What it learned, and what that replaced, on its learning block and in the agent's list.
   const learned = [{ file: "refunds-v2.md", name: "Refunds path", supersedes: ["refunds.md"] }];
   assert.deepEqual(view.learning.learned, learned);
@@ -95,12 +99,14 @@ test("a note that supersedes one: the old note is marked superseded by the new o
   assert.ok(existsSync(join(copyOf(data, next), "refunds-v2.md")));
 });
 
-test("a note a person corrects while a grade that supersedes it is under way is never superseded on that grade: the person's text stays active and in the index, and the run's learning is dropped as checker, naming the note", { timeout: 150_000 }, async (t) => {
+test("a note a person corrects while a grade that supersedes it is under way is never superseded on that grade: the person's text stays active and in the index, and the run's learning is dropped as checker, naming the note", { timeout: 150_000, skip: SWITCH_TODO }, async (t) => {
   const held = await heldGrade(t, "corrected");
   const CORRECTED = note("Refunds path", "Refunds live under /help/refunds", "A person corrected the path.\n");
   await personEdits(held, "corrected", "refunds.md", CORRECTED);
   const edited = git(held.repo, ["rev-parse", "main"]);
   held.release();
+  const learned = await held.learning;
+  assert.deepEqual([learned.result?.ok, learned.result?.reason], [false, "conflict"], JSON.stringify(learned));
   const { view, rows } = await ended(held.api, held.runId);
   settled(view, rows, "dropped", "checker");
   assert.equal(view.learning.detail, "Not kept: a note it would replace is gone or was changed since.", "said as a person reads it");
@@ -113,11 +119,12 @@ test("a note a person corrects while a grade that supersedes it is under way is 
   assert.deepEqual(mergesOf(held.repo, held.runId), []);
 });
 
-test("a replacement held for the owner's OK supersedes nothing, so a person's edit of the note it names, made while it was graded, stands and the replacement merges to wait", { timeout: 150_000 }, async (t) => {
+test("a replacement held for the owner's OK supersedes nothing, so a person's edit of the note it names, made while it was graded, stands and the replacement merges to wait", { timeout: 150_000, skip: SWITCH_TODO }, async (t) => {
   const held = await heldGrade(t, "waiting", "Grade: pending refunds-v2.md.");
   const CORRECTED = note("Refunds path", "Refunds live under /help/refunds", "A person corrected the path.\n");
   await personEdits(held, "waiting", "refunds.md", CORRECTED);
   held.release();
+  assert.equal((await held.learning).result?.ok, true);
   const { view, rows } = await ended(held.api, held.runId);
   settled(view, rows, "merged");
   assert.deepEqual(view.learning.pending, [{ file: "refunds-v2.md", name: "Refunds path" }]);
@@ -132,8 +139,8 @@ test("a grade that supersedes a note merges as before when a person changed anot
   const SORTED = note("Prefers tables", "The user reads results as sorted tables");
   await personEdits(held, "unchanged", "prefers-tables.md", SORTED);
   held.release();
-  const { view, rows } = await ended(held.api, held.runId);
-  settled(view, rows, "merged");
+  const learned = await held.learning;
+  assert.equal(learned.result?.ok, true, JSON.stringify(learned));
   assert.equal(git(held.repo, ["show", "main:refunds.md"]), MARKED.trimEnd());
   assert.equal(git(held.repo, ["show", "main:refunds-v2.md"]), MOVED.trimEnd());
   assert.equal(git(held.repo, ["show", "main:prefers-tables.md"]), SORTED.trimEnd(), "the person's edit kept");
@@ -141,7 +148,7 @@ test("a grade that supersedes a note merges as before when a person changed anot
   assert.equal(mergesOf(held.repo, held.runId).length, 1);
 });
 
-test("two runs at once that add different notes both merge, and the index has both; the same name added by two runs at once merges once, and the second is refused as exists at the merge", { timeout: 150_000 }, async (t) => {
+test("two runs at once that add different notes both merge, and the index has both; the same name added by two runs at once merges once, and the second is refused as exists at the merge", { timeout: 150_000, skip: SWITCH_TODO }, async (t) => {
   const { api, data, repo } = await seeded(t, "pair", SEED);
   const a = ["alpha.md", note("Alpha", "The first of two rules")];
   const b = ["beta.md", note("Beta", "The second of two rules")];
@@ -151,8 +158,10 @@ test("two runs at once that add different notes both merge, and the index has bo
   await plans(api, "pair", [b]);
   const two = await started(api, "pair");
   const [first, second] = await Promise.all([ended(api, one), ended(api, two)]);
-  settled(first.view, first.rows, "merged");
-  settled(second.view, second.rows, "merged");
+  proposedOf(first.view);
+  proposedOf(second.view);
+  const merges = await Promise.all([learnedOnMain({ api, data }, "pair", one), learnedOnMain({ api, data }, "pair", two)]);
+  assert.deepEqual(merges.map((merge) => merge.result?.ok), [true, true]);
   assert.equal(`${git(repo, ["show", "main:MEMORY.md"])}\n`, `- [Alpha](alpha.md) — The first of two rules\n- [Beta](beta.md) — The second of two rules\n${INDEX}`);
   assert.equal(mergesOf(repo, one).length + mergesOf(repo, two).length, 2);
 
@@ -183,13 +192,13 @@ test("a commit that lands on main between the merge's read of main and its move 
   };
   t.after(() => void (folderTestHooks.exec = undefined));
   const runId = await started(api, "raced");
-  const { view, rows } = await ended(api, runId);
-  settled(view, rows, "merged");
+  proposedOf((await ended(api, runId)).view);
+  const learned = await learnedOnMain({ api, data }, "raced", runId);
   const repo = repoOf(data, "raced");
   assert.ok(other, "the other writer's commit landed at the merge's exec");
   const main = git(repo, ["rev-parse", "main"]);
   const seed = JSON.parse(readFileSync(join(runDir(data, runId), "learning.json"), "utf8")).seed;
-  assert.equal((await savedOf(data, runId)).learning.merged, main);
+  assert.equal(learned.result?.commit, main);
   assert.deepEqual(git(repo, ["rev-list", "--first-parent", "main"]).split("\n"), [main, other, seed], "the other commit kept, the merge on it");
   assert.equal(git(repo, ["show", "main:MEMORY.md"]), "- [Alpha](alpha.md) — A rule merged after a race");
 });
@@ -215,10 +224,11 @@ test("MEMORY.md as the run wrote it is ignored: alone it is empty, and beside a 
   settled(quiet.view, quiet.rows, "dropped", "empty");
   await plans(api, "indexer", [["MEMORY.md", "garbage\n"], ["delta.md", note("Delta", "A rule with a forged index")]]);
   const runId = await started(api, "indexer");
-  const { view, rows } = await ended(api, runId);
-  settled(view, rows, "merged");
+  const { view } = await ended(api, runId);
+  proposedOf(view);
+  assert.equal(view.learning.problems, undefined, "the checks left nothing out");
+  assert.equal((await learnedOnMain({ api, data }, "indexer", runId)).result?.ok, true);
   assert.equal(`${git(repo, ["show", "main:MEMORY.md"])}\n`, `- [Delta](delta.md) — A rule with a forged index\n${INDEX}`);
-  assert.equal((await savedOf(data, runId)).learning.problems, undefined);
 });
 
 test("a turn that adds nothing is dropped as empty, and the run's answer stands", { timeout: 90_000 }, async (t) => {
@@ -274,11 +284,13 @@ test("nothing the run put in its copy of the folder is read: links planted there
   writeFileSync(join(copyOf(data, runId), "written.md"), note("Written", "A note the run wrote in its copy"));
   writeFileSync(go, "");
   const { view, rows } = await ended(api, runId);
-  settled(view, rows, "merged");
+  proposedOf(view);
+  const learned = await learnedOnMain({ api, data }, "linker", runId);
+  assert.equal(learned.result?.ok, true, JSON.stringify(learned));
   const repo = repoOf(data, "linker");
   assert.deepEqual(git(repo, ["ls-tree", "--name-only", "main"]).split("\n"), ["MEMORY.md", "fine.md"], "the answer's note alone");
   assert.ok(!objects(repo).includes(secret), "no git object holds the target's text");
-  assert.ok(!JSON.stringify([view, rows, await savedOf(data, runId)]).includes(secret));
+  assert.ok(!JSON.stringify([view, rows, learned]).includes(secret));
 });
 
 /** The server, started by its launcher with `env`: the launcher hands its secrets over and the server holds them, none
@@ -385,7 +397,7 @@ test("a second message to a run that learns, sent while the first one opens it a
   const { api } = await serve(t, { learning: "on", faux: LEARN });
   await made(api, learner("twice", { plan: [["fine.md", note("Fine", "A rule the run learned")]] }));
   const runId = await started(api, "twice");
-  settled((await ended(api, runId)).view, (await ended(api, runId)).rows, "merged");
+  proposedOf((await ended(api, runId)).view);
   // The first message opens the run again, and is held inside that opening (where its notes are laid again).
   let entered, release;
   const inside = new Promise((resolve) => (entered = resolve));

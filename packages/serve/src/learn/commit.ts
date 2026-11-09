@@ -193,7 +193,7 @@ async function personOf(change: Extract<LearningChange, { kind: "person" }>, sna
   };
 }
 
-/** Main as the grader reads it (the runner's learning loop `readMain`, grade.ts readForGrade): every active note's index
+/** Main as the grader reads it (the runner's learning loop `readMain`): every active note's index
  *  line, the whole text of each note the proposal supersedes, and the blob each of those was read at (`graded`, which
  *  the merge checks); or `problems` when the proposal cannot join main as it is (learn/check.ts mergeProblems). From
  *  the folder's snapshot and its bodies: no git, no exec. */

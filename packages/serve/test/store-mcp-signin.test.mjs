@@ -28,7 +28,7 @@ async function signIns(t, key = randomBytes(32)) {
   t.after(() => oauth.close());
   const reg = () => {
     const r = mcpServersOverStore(store, env(key), "1.0.0");
-    r.attach(`http://127.0.0.1:${PORT}`, `http://127.0.0.1:${PORT}`); // key-gate: this server's own loopback address in a test, never an endpoint
+    r.attach(`http://127.0.0.1:${PORT}`, `http://127.0.0.1:${PORT}`); // key-gate: this server own loopback address in a test, never an endpoint
     return r;
   };
   return { store, file, oauth, mcp, reg, key };

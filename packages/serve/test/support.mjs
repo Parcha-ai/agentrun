@@ -15,6 +15,7 @@ import { processAlive } from "@parcha/agentrun-kernel/host";
 import { openStoreReader } from "@parcha/pi-durable-agent";
 import { startServe } from "../dist/index.js";
 import { readRunDbSync } from "../dist/run-db.js";
+import { openSqliteStore } from "../dist/store/sqlite/store.js";
 
 export const FAUX = new URL("./fixtures/faux-model.mjs", import.meta.url).pathname;
 
@@ -173,15 +174,79 @@ export async function harnessData(t) {
  *  directory: its owner's after-hook closes them before it removes the directory. */
 const sharing = new Map();
 
+/** Each data directory's trigger store (createServer's `store`), shared by every server serve() starts on it (a restart
+ *  reads the triggers the first one made) and closed once the last of them has stopped. */
+const stores = new Map();
+async function storeFor(data) {
+  let held = stores.get(data);
+  if (!held) {
+    const dir = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "agentrun-store-"));
+    held = { store: await openSqliteStore({ file: join(dir, "store.sqlite"), role: "server" }), dir, servers: 0 };
+    stores.set(data, held);
+  }
+  held.servers += 1;
+  return held;
+}
+async function storeDone(data, held) {
+  held.servers -= 1;
+  if (held.servers > 0 || stores.get(data) !== held) return;
+  stores.delete(data);
+  await held.store.close();
+  await rm(held.dir, { recursive: true, force: true });
+}
+
+/** `store` as a test server's triggers see it: a trigger's agent is put in the store first when it is not there, since
+ *  until the cutover the server keeps its agents in its own files and the store holds only what the triggers write. Test
+ *  support only: the store itself refuses a trigger for an agent it does not hold (store-trigger-schema.test.mjs). */
+function withAgents(store) {
+  const ensure = async (agentId) => {
+    if (typeof agentId === "string" && !(await store.agents.get(agentId))) await store.agents.put({ id: agentId, name: agentId });
+  };
+  const triggers = new Proxy(store.triggers, {
+    get(target, key) {
+      const value = Reflect.get(target, key, target);
+      if (key === "create") return async (trigger, ...rest) => (await ensure(trigger?.agentId), value.call(target, trigger, ...rest));
+      if (key === "update") return async (id, patch, ...rest) => (await ensure(patch?.agentId), value.call(target, id, patch, ...rest));
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  return { triggers, runs: store.runs };
+}
+
+/** Trigger stores handed to servers a test starts itself (startServe, not serve()): closed when the file's tests are done,
+ *  after every server a test closes in its own hooks. */
+const loose = [];
+after(async () => {
+  for (const { store, dir } of loose.splice(0)) {
+    await store.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+/** A store for a server a test starts with startServe (`{ ...options, store: await triggerStore() }`), as serve() gives its
+ *  own: the triggers' rows, a trigger's agent put there first. `of`: the same store again for a restart on the same data. */
+export async function triggerStore(of) {
+  if (of) return of;
+  const dir = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "agentrun-store-"));
+  const store = await openSqliteStore({ file: join(dir, "store.sqlite"), role: "server" });
+  loose.push({ store, dir });
+  return withAgents(store);
+}
+
 /** A server for test `t`, stopped after it, before its scratch directory goes. On the real models (`faux: undefined`) its
  *  data holds Claude Code and Codex as the first-use installs put them (linkHarnesses; `harnesses: { cli, codex }` to vary
- *  them); `harnesses` says so for any server, `false` for none. */
-export async function serve(t, { harnesses: asked, ...options } = {}) {
+ *  them); `harnesses` says so for any server, `false` for none. Its triggers live in a store of their own, one per data
+ *  directory (`store: false` for none): until the server opens its own store (the cutover), a firing that starts a run
+ *  needs the run port's insert into it (E2). */
+export async function serve(t, { harnesses: asked, store: stored, ...options } = {}) {
   const harnesses = asked ?? (Object.hasOwn(options, "faux") && options.faux === undefined);
   const dir = options.data ? undefined : await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "agentrun-serve-"));
   const data = options.data ?? join(dir, "agents");
   if (harnesses) await linkHarnesses(data, harnesses === true ? {} : harnesses);
-  const server = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s", ...options });
+  const held = stored === false ? undefined : await storeFor(data);
+  const server = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s", ...options, ...(held ? { store: withAgents(held.store) } : {}) }).catch(async (error) => {
+    if (held) await storeDone(data, held);
+    throw error;
+  });
   // A server on another's data (a restart's): its owner's hook closes it before the directory goes.
   if (dir) sharing.set(data, new Set());
   else sharing.get(data)?.add(server);
@@ -197,11 +262,12 @@ export async function serve(t, { harnesses: asked, ...options } = {}) {
       for (const other of sharing.get(data) ?? []) await other.close();
       sharing.delete(data);
     }
+    if (held) await storeDone(data, held);
     const sudo = dockerState ? (await import("./fixtures/sudo-stand-in.mjs")).sudoStandIn(dockerState).calls() : [];
     if (dir) await writableTree(dir).then(() => rm(dir, { recursive: true, force: true }));
     if (sudo.length) throw new Error(`a box command ran sudo on this machine (the stand-in refused it): ${sudo.join("; ")}`);
   });
-  return { ...server, data, api: client(server.baseUrl, server.token) };
+  return { ...server, data, api: client(server.baseUrl, server.token), ...(held ? { store: held.store } : {}) };
 }
 
 export function client(baseUrl, token) {

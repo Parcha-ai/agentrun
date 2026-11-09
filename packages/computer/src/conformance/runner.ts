@@ -7,8 +7,10 @@ import type { MountKind } from "../mount.js";
 import { type ComputerClient, type ExecRunParams, type Group, GROUPS, type HelloResult } from "../protocol.js";
 import type { ComputerConnection, ComputerProvider, ComputerRef, ComputerSpec, CreatedComputer } from "../provider.js";
 import { type ComputerErrorCode, fail, ok, type Result } from "../result.js";
-import { conformanceCases } from "./cases/index.js";
+import { casesFor } from "./cases/index.js";
+import { type CdpSocket, dialCdp } from "./cdp.js";
 import { type StartedFixture, startFixture } from "./fixture.js";
+import { kindCases, kindRunProblem, kindVerdict } from "./kind.js";
 import {
 	type Capability,
 	type Case,
@@ -24,6 +26,7 @@ import {
 
 /** The label every computer of a run carries, with the run's id. */
 export const RUN_LABEL = "agentrun.conformance";
+/** The lifetime a run's computers ask for, at most the provider's own cap: a metered phone's cap is its hard stop. */
 const LIFETIME_MS = 30 * 60_000;
 const GROUP_NAMES: ReadonlySet<string> = new Set(GROUPS);
 const CLOSE_MS = 10_000;
@@ -91,8 +94,13 @@ function whenAborted(signal: AbortSignal): Promise<never> {
  * or is named in the cleanup, and a computer that arrives after its case ended is deleted when it arrives.
  */
 export async function runConformance(provider: ComputerProvider, options: ConformanceOptions): Promise<ConformanceReport> {
-	const { image, only, signal, cases = conformanceCases, drifted, mountFor, onResult, notes, caseTimeoutMs = 180_000, patience = 30_000, cleanupTimeoutMs = 60_000, fixture } = options;
+	// Given no cases, the run takes its computer's suite: a browser's own cases, as the CLI does, else the suite's.
+	const { image, only, kind, signal, cases = casesFor(provider.capabilities().kind), drifted, mountFor, onResult, notes, caseTimeoutMs = 180_000, patience = 30_000, cleanupTimeoutMs = 60_000, fixture } = options;
+	if (kind !== undefined && only !== undefined) throw new TypeError("a run takes kind and only apart: a kind runs its own cases");
+	const kindProblem = kind === undefined ? undefined : kindRunProblem(kind);
+	if (kindProblem !== undefined) throw new TypeError(kindProblem);
 	const fetcher = options.fetch ?? ((url: string, init?: { signal?: AbortSignal; method?: string }) => fetch(url, init));
+	const dialer = options.cdp ?? dialCdp;
 	const clock: Clock = options.clock ?? { now: () => Date.now(), sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)) };
 	const run = randomBytes(6).toString("hex");
 	const runLabels = { [RUN_LABEL]: run };
@@ -101,7 +109,7 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 	const groups: Group[] = Array.isArray(capabilities.groups) ? capabilities.groups : [];
 	/** What this kind of computer must declare: a case missing one fails, where a case missing an optional one skips. */
 	const required: ReadonlySet<Capability> = new Set(coreGroups(capabilities.kind, capabilities.daemon));
-	const selected = only === undefined ? cases : cases.filter((c) => only.includes(c.group) || only.includes(c.id));
+	const selected = kind !== undefined ? kindCases(kind, cases) : only === undefined ? cases : cases.filter((c) => only.includes(c.group) || only.includes(c.id));
 	const report: ConformanceReport = {
 		provider: provider.id,
 		providerVersion: provider.version,
@@ -109,7 +117,8 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 		daemonMode: capabilities.daemon,
 		image,
 		daemon: null,
-		...(only === undefined ? {} : { only, coreNotRun: cases.filter((c) => c.level === "core" && !selected.includes(c)).map((c) => c.id) }),
+		...(only === undefined ? {} : { only }),
+		...(only === undefined && kind === undefined ? {} : { coreNotRun: cases.filter((c) => c.level === "core" && !selected.includes(c)).map((c) => c.id) }),
 		results: [],
 		core: "fail",
 		undeclared: [],
@@ -134,7 +143,7 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 	const network = required.has("network:none") || capabilities.network.includes("none") ? "none" : "open";
 	const spec = (extra: Partial<ComputerSpec> = {}): ComputerSpec => ({
 		image,
-		lifetimeMs: LIFETIME_MS,
+		lifetimeMs: Number.isSafeInteger(capabilities.maxLifetimeMs) && capabilities.maxLifetimeMs > 0 ? Math.min(LIFETIME_MS, capabilities.maxLifetimeMs) : LIFETIME_MS,
 		network,
 		...extra,
 		labels: { ...extra.labels, ...runLabels },
@@ -213,7 +222,10 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 	/** Why a case cannot run here, or undefined when everything it needs is declared. */
 	const missing = async (needs: Capability[]): Promise<string | undefined> => {
 		for (const need of needs) {
-			if (GROUP_NAMES.has(need)) {
+			// stream is a group (a live view, the provider's) and a provider method: a case that needs it needs stream().
+			if (need === "extend" || need === "stream") {
+				if (typeof provider[need] !== "function") return `the provider has no ${need}()`;
+			} else if (GROUP_NAMES.has(need)) {
 				if (!groups.includes(need as Group)) return `the provider does not declare ${need}`;
 				const got = await getShared();
 				if ("hello" in got && !(Array.isArray(got.hello.groups) && got.hello.groups.includes(need as Group))) {
@@ -221,8 +233,6 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 				}
 			} else if (need.startsWith("mount:")) {
 				if (!capabilities.mount?.includes(need.slice("mount:".length) as MountKind)) return `the provider does not declare ${need}`;
-			} else if (need === "extend" || need === "stream") {
-				if (typeof provider[need] !== "function") return `the provider has no ${need}()`;
 			} else if (need.startsWith("network:")) {
 				if (!capabilities.network.includes(need.slice("network:".length) as "none")) return `the provider does not declare ${need}`;
 			} else if (need === "lifetime:janitor" && capabilities.lifetime !== "janitor") {
@@ -267,6 +277,7 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 		const caseSignal = signal ? AbortSignal.any([signal, timer.signal]) : timer.signal;
 		const refs: Array<{ ref: ComputerRef; by: ComputerProvider }> = [];
 		const connections: ComputerConnection[] = [];
+		const sockets: CdpSocket[] = [];
 		let started: Promise<StartedFixture> | undefined;
 		/** The fixture's stop, set as soon as it is launched: one that never logs ready is stopped as well. */
 		let stopFixture: (() => Promise<void>) | undefined;
@@ -370,6 +381,12 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 					return started;
 				},
 				fetch: (url, init) => fetcher(url, { ...init, signal: init?.signal ?? caseSignal }),
+				async cdp(url) {
+					const socket = await dialer(url, { signal: caseSignal });
+					if (ended) socket.close();
+					else sockets.push(socket);
+					return socket;
+				},
 				clock,
 				async drifted() {
 					if (drifted === undefined) return t.skip("no drifted provider was given: a provider module exports createDriftedProvider() for the drift cases");
@@ -456,6 +473,7 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 				if (stopFixture === undefined) await bounded(started.catch(() => {}), CLOSE_MS);
 				if (stopFixture !== undefined) await bounded(stopFixture().catch(() => {}), CLOSE_MS);
 			}
+			for (const socket of sockets) socket.close();
 			for (const connection of connections) await bounded(connection.close().catch(() => {}), CLOSE_MS);
 			for (const { ref, by } of refs) await release(ref, by);
 			// A folder that cannot be removed is left, as a fixture that cannot be stopped is: it is not the case's verdict.
@@ -491,6 +509,7 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 	const corePassed = core.every((r) => r.status === "pass") && clean;
 	if ((report.coreNotRun ?? []).length === 0) report.core = core.length > 0 && corePassed ? "pass" : "fail";
 	else report.core = corePassed && report.results.every((r) => r.status !== "fail") ? "partial" : "fail";
+	if (kind !== undefined) report.kindVerdict = kindVerdict(kind, capabilities, report, selected);
 	return report;
 }
 

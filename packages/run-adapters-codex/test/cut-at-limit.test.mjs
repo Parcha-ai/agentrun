@@ -64,6 +64,28 @@ test('a content-filter stop stays filtered: the turn fails in the filter words, 
   assert.equal(events.some((event) => event.stopReason !== undefined), false, 'no stop reason');
 });
 
+test("the session's next turn after a cut one asks the model again: the proxy admits its answer requests once the turn opens", { timeout: 60_000 }, async (t) => {
+  const dir = mkdtempSync(join(ROOT, 'n-'));
+  const sent = [];
+  const ends = [incomplete('max_output_tokens'), { type: 'response.completed', response: { status: 'completed', usage } }];
+  const fetch = async (input) => {
+    sent.push(String(input instanceof Request ? input.url : input));
+    return new Response(stream(sent.length === 1 ? 'The answer is' : 'All of it.', ends[Math.min(sent.length - 1, 1)]), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+  };
+  const adapter = codexAdapter({ model: 'luna-test', provider: { origin: 'https://provider.invalid', credential: () => 'k' }, price: () => 0.001, sessionsDir: join(dir, 'sessions'), standIn: { command: process.execPath, args: [FAKE], env: { FAKE_CODEX_MODEL: 'responses' } }, fetch });
+  const store = memorySessionStore();
+  const events = [];
+  const models = { beforeRequest: async () => ({ turn: 0 }), afterRequest: async () => {} };
+  const session = await adapter.open({ key: 's1', label: 'root', system: [], tools: [], context: 'fresh' }, { writer: await store.open('s1'), models, signal: new AbortController().signal, onEvent: (event) => events.push(event) });
+  t.after(() => session.close());
+  await session.send('go');
+  await session.turnEnd();
+  await session.send('go on');
+  assert.deepEqual(await session.turnEnd(), { status: 'completed' });
+  assert.equal(sent.length, 2, 'one request for each turn');
+  assert.deepEqual(events.filter((event) => event.type === 'turn_end'), [{ type: 'turn_end', status: 'completed', stopReason: 'length', outputTokens: 7 }, { type: 'turn_end', status: 'completed' }]);
+});
+
 test('a whole answer ends the turn as before: completed, no stop reason', { timeout: 60_000 }, async (t) => {
   const { outcome, events, sent } = await turnOn(t, { type: 'response.completed', response: { status: 'completed', usage } });
   assert.equal(sent.length, 1);

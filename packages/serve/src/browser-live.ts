@@ -6,8 +6,9 @@
 // and the token dies with it (pi-browser kills it then); a session's release never touches another's file, so an old
 // session's release that crosses a new one's launch (a relaunch) leaves the new one handed over.
 //
-// The server reads the newest for the owner alone (GET /v2/runs/{id}/computer, the browser as kind browser) and answers the
-// viewer under the run's path (/v2/runs/{id}/computer/live/*), the one live family for every computer kind. The viewer's code (its page, script and style) is always this server's own, the files of
+// The server reads the newest for the owner alone (GET /v2/runs/{id}/browser, and GET /v2/runs/{id}/computer, the computer
+// family's, the browser as kind browser there) and answers the viewer under the run's path (/v2/runs/{id}/browser/live/*,
+// and /v2/runs/{id}/computer/live/*, one route for both). The viewer's code (its page, script and style) is always this server's own, the files of
 // the pi-browser it has installed, never anything a run's port answers: a run's port only ever carries the viewer's
 // WebSocket, data and no code, proxied to that port alone and only from this server's own origin. The page is served
 // under a CSP whose frame-ancestors is 'self' (the console's own origin). The token is never in a record, a timeline row, a run's view, its files (work/ alone is served), the model's
@@ -171,7 +172,7 @@ export const liveViewerById = async (store: LiveViewerStore, sealKey: Buffer, ru
 export type LiveFamily = "computer" | "browser";
 /** Where the viewer answers through the server, for run `runId`, under `family`'s address: the owner's link, its token in
  *  the fragment. */
-export const viewerLink = (runId: string, handover: LiveHandover, family: LiveFamily = "computer"): string => `/v2/runs/${encodeURIComponent(runId)}/${family}/live/v/${handover.id}#t=${handover.token}`;
+export const viewerLink = (runId: string, handover: LiveHandover, family: LiveFamily = "browser"): string => `/v2/runs/${encodeURIComponent(runId)}/${family}/live/v/${handover.id}#t=${handover.token}`;
 
 /** The run's viewer answers at its port for this session: its page is there (200), not released (404). Bounded: a dead
  *  process's port answers nothing, or another listener's 404. */
@@ -187,12 +188,59 @@ export function viewerAnswers(handover: LiveHandover, ms = 1_000): Promise<boole
   });
 }
 
-/** The owner's link to run `runId`'s viewer as the server reads it over the store: the newest its runner put whose port
- *  answers (`answers`, viewerAnswers), whatever its computer's kind, with that kind (the row's); undefined when none does. */
-export async function liveViewerLink(store: LiveViewerStore, sealKey: Buffer, runId: string, answers: (handover: LiveHandover) => Promise<boolean> = viewerAnswers): Promise<{ kind: ViewerKind; viewer: string } | undefined> {
-  for (const handover of await readLiveViewers(store, sealKey, runId)) if (await answers(handover)) return { kind: handover.kind ?? "browser", viewer: viewerLink(runId, handover) };
+/** The newest viewer of run `runId` its runner put over the store whose port answers (`answers`, viewerAnswers), whatever
+ *  its computer's kind; undefined when none does. */
+async function answeringViewer(store: LiveViewerStore, sealKey: Buffer, runId: string, answers: (handover: LiveHandover) => Promise<boolean>): Promise<LiveHandover | undefined> {
+  for (const handover of await readLiveViewers(store, sealKey, runId)) if (await answers(handover)) return handover;
   return undefined;
 }
+
+/** The owner's link to run `runId`'s viewer as the server reads it over the store, under the browser's own address
+ *  (/browser/live): the newest its runner put whose port answers (`answers`, viewerAnswers), as `{ viewer }`; undefined
+ *  when none does. What run-reads-over-store's runBrowserState takes as its `liveViewer` dep. */
+export async function liveViewerLink(store: LiveViewerStore, sealKey: Buffer, runId: string, answers: (handover: LiveHandover) => Promise<boolean> = viewerAnswers): Promise<{ viewer: string } | undefined> {
+  const handover = await answeringViewer(store, sealKey, runId, answers);
+  return handover && { viewer: viewerLink(runId, handover, "browser") };
+}
+
+/** The same viewer for GET /computer: its link under the computer family's address (/computer/live), with its computer's
+ *  kind, the row's. */
+export async function computerViewerLink(store: LiveViewerStore, sealKey: Buffer, runId: string, answers: (handover: LiveHandover) => Promise<boolean> = viewerAnswers): Promise<{ kind: ViewerKind; viewer: string } | undefined> {
+  const handover = await answeringViewer(store, sealKey, runId, answers);
+  return handover && { kind: handover.kind ?? "browser", viewer: viewerLink(runId, handover, "computer") };
+}
+
+/** The tool host's live-viewer seam on the runner (ToolHost.liveViewers: put and drop under the run's claim, the token
+ *  sealed). */
+export type ViewerSeam = { put(handover: LiveHandover): Promise<unknown>; drop(tag?: string): Promise<void> };
+
+/** Where the browser tool hands its sessions' viewers over: through `seam` on the runner (the store, under its claim),
+ *  else, on the old per-run process, the run directory `root`'s files. `changed`: a session launched (its viewer put) or
+ *  released (its own hand-over dropped, never another's); `reopened`: a kept session's viewer opened again after a
+ *  restart; `released`: the run let its sessions go, every hand-over of it dropped. */
+export function sessionHandovers(root: string, seam?: ViewerSeam) {
+  const put = (handover: LiveHandover): Promise<unknown> => (seam ? seam.put(handover) : writeHandover(root, handover));
+  const drop = (tag?: string): Promise<void> => (seam ? seam.drop(tag) : dropHandover(root, tag));
+  return {
+    changed: async (row: { session: { tag: string }; liveView: { fullscreen: string } | null }, change: string): Promise<void> => {
+      if (change === "released") return drop(row.session.tag);
+      const handover = row.liveView ? handoverOf(row.liveView.fullscreen, row.session.tag) : undefined;
+      if (handover) await put(handover);
+    },
+    reopened: async (tag: string, fullscreen: string | null | undefined): Promise<void> => {
+      const handover = fullscreen ? handoverOf(fullscreen, tag) : undefined;
+      if (handover) await put(handover);
+    },
+    released: (): Promise<void> => drop(),
+  };
+}
+
+/** The viewer's page and files under the run's path ("/v/<id>", "/viewer.js", "/viewer.css"): this server's own copy of
+ *  pi-browser's viewer, never the run's port's answer, under this route's own CSP, framed by this server's own origin alone.
+ *  The page reads the viewer's id from its path and its token from the fragment, as pi-browser's own does. */
+export const LIVE_CSP = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'";
+const LIVE_REST = /^\/(v\/[A-Za-z0-9_-]{22}|viewer\.js|viewer\.css)$/;
+export const liveRest = (rest: string): boolean => LIVE_REST.test(rest);
 
 /** The viewer run `runId`'s live route serves at `rest`, read over the store: a viewer's page ("/v/<id>") by its own path
  *  id, the viewer's files while the run has one open (its newest); undefined at any other address, or with none open (the
@@ -202,13 +250,6 @@ export async function liveViewerFor(store: LiveViewerStore, sealKey: Buffer, run
   const viewer = /^\/v\/([A-Za-z0-9_-]{22})$/.exec(rest)?.[1];
   return viewer ? liveViewerById(store, sealKey, runId, viewer) : liveViewer(store, sealKey, runId);
 }
-
-/** The viewer's page and files under the run's path ("/v/<id>", "/viewer.js", "/viewer.css"): this server's own copy of
- *  pi-browser's viewer, never the run's port's answer, under this route's own CSP, framed by this server's own origin alone.
- *  The page reads the viewer's id from its path and its token from the fragment, as pi-browser's own does. */
-export const LIVE_CSP = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'";
-const LIVE_REST = /^\/(v\/[A-Za-z0-9_-]{22}|viewer\.js|viewer\.css)$/;
-export const liveRest = (rest: string): boolean => LIVE_REST.test(rest);
 
 export async function serveViewerFile(req: IncomingMessage, res: ServerResponse, rest: string): Promise<void> {
   const { viewerAssets } = await import("@parcha/pi-browser/live-view");

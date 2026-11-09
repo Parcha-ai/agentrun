@@ -92,6 +92,19 @@ describe("the run page's Browser tab", () => {
     expect(p.tabButton()).toBeUndefined();
   });
 
+  it("signed out (401) while watching: the tab stays and says why, with no frame left and nothing read again", async () => {
+    let n = 0;
+    const p = await page(async () => { n += 1; if (n === 1) return { state: "live", kind: "browser", viewer: VIEWER, hold: "agent" }; throw new ClientError(401, "unauthenticated", "sign in first", false); });
+    await p.open();
+    await settle(120);
+    const reads = n;
+    await settle(120);
+    expect(n).toBe(reads);
+    expect(p.tabButton()?.textContent).toBe("Browser");
+    expect(p.frame()).toBeNull();
+    expect(p.host.querySelector('section[aria-label="Browser"]')?.textContent).toContain("Signed out: sign in to watch.");
+  });
+
   it("a 404 is a failed read like any other: it reads again, and the tab comes once the route answers", async () => {
     let n = 0;
     const p = await page(async () => { n += 1; if (n === 1) throw new ClientError(404, "not_found", "no", false); return { state: "live", kind: "browser", viewer: VIEWER, hold: "agent" }; });
@@ -318,7 +331,7 @@ describe("the run page's Browser tab", () => {
     ["another origin", `https://elsewhere.example/v2/runs/${RUN}/computer/live/v/AbCd#t=SECRET-TOKEN-foreign-111`],
     ["another run's path", `/v2/runs/someone-elses-run/computer/live/v/AbCd#t=SECRET-TOKEN-other-222`],
     ["no http(s) URL", `javascript:alert(1)//#t=SECRET-TOKEN-script-333`],
-    ["the old browser path", `/v2/runs/${RUN}/browser/live/v/AbCd#t=SECRET-TOKEN-old-444`],
+    ["the browser's own path (the console reads /computer)", `/v2/runs/${RUN}/browser/live/v/AbCd#t=SECRET-TOKEN-old-444`],
   ] as const) {
     it(`a viewer on ${what} is never framed: no iframe, a line in its place, and the value nowhere`, async () => {
       const p = await page(async () => ({ state: "live", kind: "browser", viewer, hold: "agent" }), working, "browser");
