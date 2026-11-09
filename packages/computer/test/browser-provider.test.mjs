@@ -231,6 +231,40 @@ for (const [id, vendor] of Object.entries(VENDORS)) {
 		}
 	});
 
+	test(`${id}: a create whose reply is lost, or whose caller cancels it, finds the browser it made by its create label and releases it`, async () => {
+		for (const cancel of [false, true]) {
+			const controller = new AbortController();
+			const fake = vendor.fake({ loseCreate: () => (cancel ? controller.abort() : undefined) });
+			const provider = await vendor.make(fake);
+			const made = await provider.create(spec(), { signal: controller.signal });
+			const what = cancel ? "a cancelled create" : "a create whose reply was lost";
+			assert.equal(made.ok, false, what);
+			if (cancel) assert.equal(made.error.code, "aborted", made.error.message);
+			assert.equal(vendor.creates(fake).length, 1, `${what}: one create, never a second`);
+			assert.ok(vendor.allReleased(fake), `${what}: the browser it made is released, not left billing to its timeout`);
+			assert.match(made.error.message, /released/, made.error.message);
+			assert.doesNotMatch(JSON.stringify(made), SECRET);
+			// The create label each create carries is the provider's own: no list or attach shows it.
+			const { body } = vendor.creates(fake)[0];
+			assert.equal(Object.keys(body.userMetadata ?? body.tags).length, 3, "the spec's two labels and the create label");
+		}
+		// A create the vendor refused (a 4xx) made nothing: nothing is looked for.
+		const refused = vendor.fake({ failCreate: 422 });
+		const failed = await (await vendor.make(refused)).create(spec());
+		assert.equal(failed.ok, false);
+		assert.equal(refused.calls.filter((c) => c.method === "GET").length, 0, "no search after a refusal");
+	});
+
+	test(`${id}: the create label is the provider's own: check() refuses it in a spec, and list and attach never show it`, async () => {
+		const fake = vendor.fake();
+		const provider = await vendor.make(fake);
+		assert.ok(provider.check(spec({ labels: { "agentrun.create": "mine" } })).some((r) => r.field === "labels" && /agentrun\.create/.test(r.message)));
+		const ref = value(await provider.create(spec()), "create");
+		const [info] = value(await provider.list({ "agentrun.run": "run-1" }), "list");
+		assert.deepEqual(info.labels, { "agentrun.run": "run-1", job: "j-42" });
+		assert.equal(info.ref.id, ref.id);
+	});
+
 	test(`${id}: connect hands over a CDP URL only when it is wss: on the vendor's own domain; one the vendor reads back otherwise is refused in words with no URL`, async () => {
 		for (const url of unusable(vendor.domain).filter((u) => u !== undefined && u !== "")) {
 			const fake = vendor.fake();

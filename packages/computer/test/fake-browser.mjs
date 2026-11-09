@@ -42,6 +42,16 @@ function browsers() {
 }
 
 /**
+ * A create whose browser is made and whose reply never reaches the caller: knobs.loseCreate(id) runs once the browser
+ * exists (a test may abort the caller's signal there), then the request fails as fetch fails, aborted if its signal was.
+ */
+async function lost(loseCreate, id, init) {
+	await loseCreate(id);
+	if (init?.signal?.aborted) throw new DOMException("This operation was aborted", "AbortError");
+	throw new TypeError("fetch failed");
+}
+
+/**
  * A fake CDP dialer for every browser a fake vendor made: it opens only a running browser's URL, and answers
  * Browser.getVersion, Target.createTarget, Target.attachToTarget, Target.closeTarget, Page.enable, Page.navigate (a data:
  * URL's HTML becomes the page, and Page.loadEventFired follows the answer, as Chrome sends it) and Runtime.evaluate
@@ -144,7 +154,7 @@ function recorder(base) {
 /**
  * A fake Browserbase. knobs: failCreate (a status the create answers, with ECHO in its body), releaseLag (reads that
  * still say RUNNING after a release), product and title (what the fake browser says), navigate ("throws" or
- * "errorText": a navigate that fails).
+ * "errorText": a navigate that fails), loseCreate (see lost).
  */
 export function fakeBrowserbase(knobs = {}) {
 	const rec = recorder(BROWSERBASE_URL);
@@ -193,6 +203,7 @@ export function fakeBrowserbase(knobs = {}) {
 			};
 			sessions.set(sid, s);
 			known.add(s.connectUrl, () => s.status === "RUNNING");
+			if (knobs.loseCreate) return lost(knobs.loseCreate, sid, init);
 			return json(201, view(s));
 		}
 		if (call.method === "GET" && call.path === "/v1/sessions") {
@@ -225,7 +236,7 @@ export function fakeBrowserbase(knobs = {}) {
 
 /**
  * A fake Kernel. knobs: failCreate (a status the create answers, with ECHO in its body), pageSize (rows per list page),
- * and the fake browser's product, title and navigate, as fakeBrowserbase's.
+ * loseCreate (see lost), and the fake browser's product, title and navigate, as fakeBrowserbase's.
  */
 export function fakeKernel(knobs = {}) {
 	const rec = recorder(KERNEL_URL);
@@ -263,6 +274,7 @@ export function fakeKernel(knobs = {}) {
 			};
 			browsersById.set(bid, b);
 			known.add(b.cdp, () => b.deletedAt === undefined);
+			if (knobs.loseCreate) return lost(knobs.loseCreate, bid, init);
 			return json(200, view(b));
 		}
 		if (call.method === "GET" && call.path === "/browsers") {
