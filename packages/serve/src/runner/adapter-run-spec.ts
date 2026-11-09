@@ -388,7 +388,7 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
   // The revision's own skills are laid in the run's .agents/skills/ before they are read (main's server start laid them;
   // on the one store the claim does), from the revision row's texts (the body keeps only each file's SHA-256): each
   // folder not there yet, never over a learned skill or an earlier claim's.
-  await layOwnSkills(ws.workspace, (revisionRow.skills ?? {}) as Record<string, string>);
+  await layOwnSkills(ws.workspace, (revisionRow.skills ?? {}) as Record<string, string>, { computer: (launch as { computer?: ComputerSetting }).computer?.kind });
   const instructions = await promptOf(laid, Object.keys(body.skills ?? {}), ws.workspace, { onDemand: readsFiles(granted) });
   const guidance = effortGuidance(launch.effort);
   const system = [environmentLine(), instructions, guidance].filter((line): line is string => Boolean(line));
