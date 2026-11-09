@@ -50,7 +50,7 @@ async function paidRun(t, status) {
   };
   const asked = [];
   const spec = piAdapterSpec({ script: [{ call: "search" }, { say: "done" }], tools: { search }, hooks: quiet });
-  const loop = createAdapterLoop(async (claim, run) => ({ ...(await spec(claim, run)), beforeRequest: (request) => void asked.push(request.spentUsd) }), { restartLimit: MAX_RESTARTS });
+  const loop = createAdapterLoop(async (claim, run) => ({ ...(await spec(claim, run)), runCap: { capUsd: () => undefined, modelOf: () => undefined, judged: (request) => void asked.push(request.spentUsd) } }), { restartLimit: MAX_RESTARTS });
   runner = startRunner({ store, createLoop: loop, name: "runner-a", ...TIMING });
   const deadline = Date.now() + 20_000;
   for (;;) {

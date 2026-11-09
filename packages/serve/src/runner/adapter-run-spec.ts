@@ -13,8 +13,8 @@ import type { Context } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { ROOT_CONVERSATION_ID, type ToolExecutionApi } from "@earendil-works/pi-durable";
 import type { ComputerProvider } from "@parcha/agentrun-computer";
-import { beforeRequestOf, type CapModel, type CapRefused, checkRaise, followUpOf, parkOf } from "@parcha/agentrun-kernel/kernel/cap";
-import type { BeforeRequest, HostTool, SessionSpec } from "@parcha/agentrun-kernel";
+import { type CapModel, type CapRefused, checkRaise, followUpOf, parkOf } from "@parcha/agentrun-kernel/kernel/cap";
+import type { HostTool, SessionSpec } from "@parcha/agentrun-kernel";
 import type { Approvals } from "../approvals.js";
 import type { LiveHandover, LiveViewerStore } from "../browser-live.js";
 import { dropLiveViewer, putLiveViewer } from "../browser-live.js";
@@ -168,17 +168,15 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
   const serverSettings = await loadToolSettings(deps.store);
   const gate = runGate({ root, work: root }, claim.runId, revision, () => serverSettings);
 
-  // The run's cap (its launch's maxCostUsd): the host's check before each paid request (beforeRequestOf), and what a
-  // refusal does to the run (parkOf), with the kernel's raise rule.
+  // The run's cap (its launch's maxCostUsd): the run's one cap the loop builds over its sessions (runCap: one rule before
+  // each paid request), and what a refusal does to the run (parkOf), with the kernel's raise rule.
   const capUsd = launch.maxCostUsd;
   const capModel = capModelOf(route);
-  const beforeRequest: BeforeRequest | undefined = capUsd === undefined
-    ? undefined
-    : beforeRequestOf({
-        capUsd: () => launch.maxCostUsd,
-        modelOf: (id) => (id === route.model ? capModel : undefined),
-        ...(launch.capMode === "strict" ? { mode: "strict" as const } : {}),
-      });
+  const runCap = {
+    capUsd: () => launch.maxCostUsd,
+    modelOf: (id: string) => (id === route.model ? capModel : undefined),
+    ...(launch.capMode === "strict" ? { mode: "strict" as const } : {}),
+  };
   const cap = capUsd === undefined
     ? undefined
     : {
@@ -257,7 +255,7 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
     // The gate's answer with its words (RunGate.decide): a deny names where it was set and that nothing was sent or charged,
     // and a pinned MCP tool's call outside its pin is refused before it is asked or sent, as the old per-run gate did.
     gate: (call) => gate.decide(call.tool, call.args),
-    ...(beforeRequest ? { beforeRequest } : {}),
+    runCap,
     ...(cap ? { cap } : {}),
     // The tool host's install lifecycle (its bindings' onConversation/beforeResume/beforeRelease), run by the adapter loop.
     lifecycle: life,
