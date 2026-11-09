@@ -217,6 +217,8 @@ export const STORE_DDL: readonly string[] = [
     ${json("tools")},
     ${json("prices")},
     sealed BLOB,
+    refresh_holder TEXT,
+    refresh_until INTEGER,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL
   ) STRICT`,
@@ -232,6 +234,14 @@ export const STORE_DDL: readonly string[] = [
     ${json("body")},
     pinned_at INTEGER NOT NULL
   ) STRICT`,
+
+  // A running run's live view (the tool it runs now, its partial text): one row, outside the journal, overwritten in place
+  // by its runner's tick and dropped at its end.
+  `CREATE TABLE IF NOT EXISTS run_live (
+    run_id TEXT PRIMARY KEY REFERENCES runs (id),
+    ${json("state")},
+    updated_at INTEGER NOT NULL
+  ) STRICT`,
 ];
 
 /** pi-durable's journal tables (its SqliteStorage schema, version 2, the `sleeping` task status included; MIT, see NOTICE),
@@ -246,8 +256,9 @@ export const PI_TABLE = {
   submissions: "pi_submissions",
   documents: "pi_documents",
   documentRevisions: "pi_document_revisions",
+  commitWrites: "pi_commit_writes",
 } as const;
-export const PI_TABLES = ["pi_record_ids", "pi_metadata", "pi_conversations", "pi_entries", "pi_tasks", "pi_submissions", "pi_documents", "pi_document_revisions"] as const;
+export const PI_TABLES = ["pi_record_ids", "pi_metadata", "pi_conversations", "pi_entries", "pi_tasks", "pi_submissions", "pi_documents", "pi_document_revisions", "pi_commit_writes"] as const;
 
 const P = PI_TABLE;
 export const PI_DDL: readonly string[] = [
@@ -293,9 +304,12 @@ export const PI_DDL: readonly string[] = [
     status TEXT NOT NULL CHECK (status IN ('pending', 'running', 'waiting', 'sleeping', 'completing', 'terminal')),
     abort_requested INTEGER NOT NULL CHECK (abort_requested IN (0, 1)),
     background INTEGER NOT NULL CHECK (background IN (0, 1)),
+    seq INTEGER NOT NULL,
     record TEXT NOT NULL CHECK (json_valid(record)),
     PRIMARY KEY (run_id, id)
   ) STRICT`,
+  // seq: the commit that last wrote the row (the live view reads a run commit by commit, journal.commitsAfter).
+  `CREATE INDEX IF NOT EXISTS pi_tasks_by_seq ON ${P.tasks} (run_id, seq)`,
   `CREATE INDEX IF NOT EXISTS pi_tasks_by_status ON ${P.tasks} (run_id, status, id)`,
   `CREATE INDEX IF NOT EXISTS pi_tasks_by_conversation ON ${P.tasks} (run_id, conversation_id, id)`,
   `CREATE INDEX IF NOT EXISTS pi_tasks_by_kind ON ${P.tasks} (run_id, kind, id)`,
@@ -307,9 +321,11 @@ export const PI_DDL: readonly string[] = [
     conversation_id INTEGER NOT NULL,
     request_id TEXT,
     status TEXT NOT NULL CHECK (status IN ('queued', 'placed', 'done', 'unanswered')),
+    seq INTEGER NOT NULL,
     record TEXT NOT NULL CHECK (json_valid(record)),
     PRIMARY KEY (run_id, id)
   ) STRICT`,
+  `CREATE INDEX IF NOT EXISTS pi_submissions_by_seq ON ${P.submissions} (run_id, seq)`,
   `CREATE INDEX IF NOT EXISTS pi_submissions_by_request ON ${P.submissions} (run_id, conversation_id, request_id)`,
   `CREATE INDEX IF NOT EXISTS pi_submissions_by_conversation ON ${P.submissions} (run_id, conversation_id, id)`,
   `CREATE INDEX IF NOT EXISTS pi_submissions_by_status ON ${P.submissions} (run_id, status, id)`,
@@ -340,6 +356,17 @@ export const PI_DDL: readonly string[] = [
     PRIMARY KEY (run_id, document_id, seq)
   ) STRICT`,
   `CREATE INDEX IF NOT EXISTS pi_document_revisions_by_kind ON ${P.documentRevisions} (run_id, document_id, kind, seq DESC)`,
+  // Each commit's own writes of the rows pi keeps only as they are now (a task, a submission, a document that keeps only
+  // its latest value), as that commit wrote them, in its own transaction: journal.commitsAfter reads a run commit by
+  // commit, so a replay equals the live view. Kept with the run (never pruned at its end), as its journal is.
+  `CREATE TABLE IF NOT EXISTS ${P.commitWrites} (
+    run_id TEXT NOT NULL,
+    seq INTEGER NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('task', 'submission', 'document')),
+    id INTEGER NOT NULL,
+    value TEXT NOT NULL CHECK (json_valid(value)),
+    PRIMARY KEY (run_id, seq, kind, id)
+  ) STRICT`,
 ];
 
 /** Everything the server's setup runs, in order. */

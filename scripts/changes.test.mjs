@@ -592,3 +592,43 @@ test('a release commit that changes the files the command publishes and keeps it
   const pass = local();
   assert.equal(pass.status, 0, pass.stderr);
 }));
+
+// A package that came in behind the workspace version (added after a release bumped the rest) catches up in an ordinary pull
+// request: it moves to the version the root package.json already holds at the merge base. A release moves the root too.
+const setRoot = (root, version) => writeFile(join(root, 'package.json'), JSON.stringify({ name: 'workspace', private: true, version }));
+const behind = async (root, git) => {
+  await setRoot(root, '0.1.0-beta.13');
+  await withVersion(root, git);
+  const path = join(root, 'packages/pi-vision/package.json');
+  await writeFile(path, JSON.stringify({ ...JSON.parse(await readFile(path, 'utf8')), version: '0.1.0-beta.12' }));
+  await commitAll(git, 'pi-vision came in behind the workspace');
+  return (await git('rev-parse', 'HEAD')).stdout.trim();
+};
+test('releaseRace: a package that moves to the workspace version the base already holds is catching up, not a release', () => repo(async (root, git) => {
+  const base = await behind(root, git);
+  await writeFile(join(root, 'changes/catch-up.md'), fragment('@parcha/pi-vision', 'fix', 'Catch up.'));
+  const path = join(root, 'packages/pi-vision/package.json');
+  await writeFile(path, JSON.stringify({ ...JSON.parse(await readFile(path, 'utf8')), version: '0.1.0-beta.13' }));
+  assert.deepEqual(await releaseRace(root, base), { release: false, bumped: [], unfolded: [] });
+  // A move to any other version is still a bump.
+  await writeFile(path, JSON.stringify({ ...JSON.parse(await readFile(path, 'utf8')), version: '0.1.0-beta.14' }));
+  assert.deepEqual(await releaseRace(root, base), { release: true, bumped: ['pi-vision'], unfolded: ['catch-up.md'] });
+}));
+test('the command line passes a package catching up to the workspace version beside a fragment, and still fails a release of every package with one', () => repo(async (root, git) => {
+  const base = await behind(root, git);
+  await mkdir(join(root, 'scripts'));
+  await copyScript(root);
+  const local = () => spawnSync(process.execPath, [join(root, 'scripts/changes.mjs'), '--check', '--base', base], { cwd: root, encoding: 'utf8' });
+  await writeFile(join(root, 'changes/catch-up.md'), fragment('@parcha/pi-vision', 'fix', 'Catch up.'));
+  const path = join(root, 'packages/pi-vision/package.json');
+  await writeFile(path, JSON.stringify({ ...JSON.parse(await readFile(path, 'utf8')), version: '0.1.0-beta.13' }));
+  const pass = local();
+  assert.equal(pass.status, 0, pass.stderr);
+  // The release: the root and every package at the next version, with the fragment unfolded.
+  await setRoot(root, '0.1.0-beta.14');
+  await bump(root, '0.1.0-beta.14');
+  assert.deepEqual(await releaseRace(root, base), { release: true, bumped: ['dsl', 'pi-vision'], unfolded: ['catch-up.md'] });
+  const fail = local();
+  assert.equal(fail.status, 1);
+  assert.match(fail.stderr, /release commit carries unfolded fragments: catch-up\.md; refold on current main/);
+}));

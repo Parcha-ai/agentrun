@@ -202,6 +202,7 @@ export function referenceText(commands, hash) {
       lines.push('');
       for (const f of entry.flags) lines.push(`- \`${f.name}${f.value ? ` ${f.value}` : ''}\` (${f.type}${f.required ? ', required' : ''}${f.own ? ', this CLI\'s own' : ''})${cell(f.description) ? `: ${cell(f.description)}` : ''}`);
     }
+    if (entry.bodyFill) lines.push('', `Built from flags alone, the body also has: ${Object.entries(entry.bodyFill).map(([name, value]) => `\`${name}\` \`${JSON.stringify(value)}\``).join(', ')}.`);
   }
   lines.push('');
   return lines.join('\n');

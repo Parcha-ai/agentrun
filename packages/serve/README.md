@@ -61,11 +61,12 @@ An edit is a new revision: `PUT $AGENTRUN_BASE_URL/agents/calc/definition` with
 
 | Flag | Default | What |
 | --- | --- | --- |
-| `--data DIR` | `~/.local/share/agentrun/agents` | The agent store (`DIR/store.sqlite`) and its runs (`DIR/disk/agents/<agent>/runs/<id>/`). The token is `DIR/.token`, mode 0600, made once and kept, unless `AGENTRUN_TOKEN` gives it. |
+| `--data DIR` | `~/.local/share/agentrun/agents` | The agent store (`DIR/store.sqlite`) and its runs (`DIR/disk/agents/<agent>/runs/<id>/`). The token is `DIR/.token`, mode 0600, made once and kept, unless `AGENTRUN_TOKEN` gives it: then a `DIR/.token` from an earlier start is removed. |
 | `--listen ADDR` | `127.0.0.1` | The address to listen on. On any other, every `Host` name is served and the token is the only lock: put TLS in front of it. |
 | `--port N` | the first free port from `7340` | The port. `0` is any free port. |
 | `--open` | off | Open the console in this machine's browser once the server listens; not in CI, nor on Linux with no display. |
 | `--faux MODULE` | none | Answer every model request from the module's default export (below). |
+| `--faux-browser MODULE` | none | With `--faux` only: the `browser` tool's provider and driver from the module's default export, a fake browser with no vendor and no key ([below](#the-faux-model)). The console's real-browser tests run on it. |
 | `--allow-host NAME` | none | Another `Host` name to accept on a loopback address, on any port. Repeat it. |
 | `--max-runs N` | `AGENTRUN_MAX_RUNS`, else as many pi runs as fit | The most runs at once, beside the memory each run's harness reserves ([capacity](#capacity-and-health)). Over either, a new run is `429 rate_limited`. |
 | `--documents DIR` | `AGENTRUN_SERVE_DOCUMENTS` | A read-only directory of documents a workflow's `pdf_pages` calls read by file name, confined to it. |
@@ -1025,7 +1026,8 @@ saying why. Kernel's browsers run headless, and keep no downloads, so a run on K
 run's process over its pipe, as the rest do. A session's custody (its lease, its tag, what it was
 doing) is kept in the run's own store, so a run opened again on its directory reconciles the sessions it held. Each
 page it reads is filed under the run's `work/evidence/`, each read in a file of its own (`0001-browser_read.md`, ...),
-reads at once included. There is no recording. The owner watches the browser live, read-only (below). When the run is let go (its work done, or a SIGTERM)
+reads at once included. There is no recording. The owner watches the browser live, takes it over and hands it back, and
+the agent can ask them to (below). When the run is let go (its work done, or a SIGTERM)
 the sessions it still holds are released at their vendor. An agent's browser stays signed in from one run to the next
 ([saved sign-ins](#saved-sign-ins)).
 
@@ -1049,23 +1051,59 @@ every browser call is refused. Under a cap the browser's time is held before it 
 
 #### The browser's live view
 
-The owner watches a run's browser live from the console, read-only: the same view for every vendor (pi-browser's own viewer,
-a screencast of the page the agent is on), never the vendors' own live-view links, which stay in the run's process. As a
-session opens, the run's process serves its viewer on a loopback port of its own and hands it to the server in one file in
-the run's directory, outside `work/` (`browser-live/<session>.json`, one file per session, 0600), which goes when that
-session ends: a session's end never touches another's, so a relaunch's old session never hides its new one's view. `GET /v2/runs/{id}/browser`
-answers `{state: "live", viewer}` while a session is open (`viewer`, a link on this server with its token in the fragment),
-`{state: "none"}` when the run has a browser but no session is open, and `{state: "off", reason}` when it has none: its agent
-has no `browser` tool, or its browser resolves unavailable here (the tool plane's words, `a local Chrome is not set up on this
-server`, or for Kernel with no key, that it needs a Kernel key). It takes the owner's password session in the console: a token, which a run's process, an MCP client or a
-script may hold, is `403`. The viewer's page and its WebSocket are under `/v2/runs/{id}/browser/live/`, proxied to that run's
-port alone: the page is framed by this server's own origin alone (`frame-ancestors 'self'`, the console's `'none'` everywhere
-else), and the WebSocket is taken only from this server's own origin (as the request reaches it, or the public address,
-`AGENTRUN_PUBLIC_URL`, for a TLS proxy that rewrites `Host`) with the owner's session, and on a loopback address only at
-one of its names, as every route is (a rebound name is refused, whatever its `Origin`). One viewer at a time: a second is
-refused (`viewer_in_use`). The viewer drops input before the browser (`held read_only`); a browser with no page yet (Kernel's
-headless one starts with none) shows "No page yet" until one opens. The token dies with the session: the answer says `none`
-and the old link opens nothing. The token is in no record, timeline row, run view, run file, home, log or the model's context.
+The owner watches a run's browser live from the console, and takes it over: the same view for every vendor (pi-browser's
+own viewer, a screencast of the page the agent is on), never the vendors' own live-view links, which stay in the run's
+process. As a session opens, the run's process runs its viewer on a loopback port of its own and hands it to the server in
+one file in the run's directory, outside `work/` (`browser-live/<session>.json`, one file per session, 0600), which goes
+when that session ends: a session's end never touches another's, so a relaunch's old session never hides its new one's
+view. A session a restarted process keeps (it was still running at the vendor) gets its viewer handed over again by the
+new process, with a new token, and nobody holding the browser. `GET /v2/runs/{id}/browser` answers `{state: "live", viewer}` while a session is open (`viewer`, a link on this server
+with its token in the fragment), `{state: "none"}` when the run has a browser but no session is open, and
+`{state: "off", reason}` when it has none: its agent has no `browser` tool, or its browser resolves unavailable here (the
+tool plane's words, `a local Chrome is not set up on this server`, or for Kernel with no key, that it needs a Kernel key). It takes the owner's
+password session in the console: a token, which a run's process, an MCP client or a script may hold, is `403`.
+
+The viewer lives under `/v2/runs/{id}/browser/live/`. Its page, script and style are this server's own (the files of the
+pi-browser it has installed), framed by this server's own origin alone (`frame-ancestors 'self'`, the console's `'none'`
+everywhere else); only its WebSocket goes to the run's port, taken only from this server's own origin (as the request
+reaches it, or the public address, `AGENTRUN_PUBLIC_URL`, for a TLS proxy that rewrites `Host`) with the owner's session,
+and on a loopback address only at one of its names, as every route is (a rebound name is refused, whatever its `Origin`).
+One viewer at a time: a second is refused (`viewer_in_use`). A browser with no page yet (Kernel's headless one starts with
+none) shows "No page yet" until one opens. The token dies with the session: the answer says `none` and the old link opens
+nothing. The token is in no record, timeline row, run view, run file, home, log or the model's context.
+
+**Take over, hand back.** The viewer watches until the owner presses **Take over** in it; until then the run drops its
+input before the browser (`held not_taken`). Take over holds the browser for the owner until they press **Hand back**,
+the viewer has been gone 2 minutes, or 15 minutes pass with no input from them. While they hold it, their input is the only
+input; the agent's browser calls wait inside the tool (they do not fail), then go on with the page's old element ids
+dropped, and the model is told in plain words that the person had the browser and the page may have changed. A call that
+was under way at the take acts no more: each change of hands moves the session's epoch, and an act from before it is
+refused, each action of a run checked on its own; the act already in the browser (a run's code is one batch there) ends
+first, and only then does the owner's input reach the browser. The run stays `working`; its timeline says "You took over the browser" and how it came back ("You handed the
+browser back", or that it went back to the agent after the idle or away window), each row at the time it happened, and a
+browser call that waited for the hand-back reads "Waited for you 11 s, then opened …". The owner's time counts: Take over holds
+the next 15 minutes of session time at the provider's price under the run's cap first, and with no room it is refused in
+the cap's words, shown in the viewer. A take-over that input keeps alive is held again every 15 minutes, and with no room
+the browser goes back to the agent at the cap ("The browser went back to the agent at the run's spend cap", in the viewer
+and on the timeline, with the cap's words). A take-over and an ask on the same session share one hold; an ask that joins it holds the extra stretch its own expiry needs
+(refused in the cap's words without room), and a re-hold the cap refuses ends both: the take-over goes back to the agent,
+and the ask expires, the agent told the cap's words. When the
+browser comes back, what was held up front goes, and the time the person had stays held, at the provider's price, until
+the session's next charge books it: take-overs given back with no browser call between them still meet the cap.
+
+**The agent asks.** The agent may ask the owner to do something in its browser (`browser_request_handoff`: an instruction
+and how it will know it is done, such as signing in). Its person's time is held the same way first; with no room no ask is
+made, and the tool's result says why. The run then reads `input_required`/`waiting` with
+`pending: {kind: "browser", instruction, completion_condition, asked_at, expires_at}`, its timeline shows "Waiting for you:
+<instruction>", and the webhook's `run.needs_input` says `pending.kind: "browser"`; the agent's turn waits inside the tool
+call. The owner takes over in the viewer, does it, and answers `POST /v2/runs/{id}/browser/hand-back` with
+`{outcome: "done"}` or `{outcome: "cancelled"}` (the owner's password session alone, as above). The first answer wins: the
+same answer again is `200`, a different one `409 handoff_answered` with the answer it has. Any answer hands the browser back
+to the agent. Unanswered for 15 minutes, the ask expires: the agent hears `expired`, and a later answer is `409` with
+`outcome: "expired"`. The ask's record is one 0600 file in the run's directory (`browser-ask/`, never `work/`): the
+instruction, the done-when condition and the ask's times, never the viewer's link or token. A run's process that dies
+while the ask waits is started again, as a working run's is, and the new process takes the wait up: it reads the owner's
+answer, or writes the expiry. The record goes when the run ends, or when its process lets its browser sessions go.
 
 ### Saved sign-ins
 
@@ -1452,7 +1490,9 @@ queues a wait it stands at that the outbox does not name (one the run came to wh
 ```
 
 A message is thin: ids, the status, the title and a link to the run on the page; never a tool's arguments, an output
-or an input, which the API reads (`GET /v2/runs/{id}`). `pending.kind` is `question` (an `ask_person`) or `stopped`.
+or an input, which the API reads (`GET /v2/runs/{id}`). `pending.kind` is `question` (an `ask_person`),
+`approval` (a tool call that waits for a person's approval), `stopped`, `budget` (a run paused at its cap) or `browser`
+(the agent asked for the owner in its browser).
 
 Messages are signed by the [Standard Webhooks](https://www.standardwebhooks.com) spec, so a receiver verifies them
 with any of its libraries: `webhook-id` (the same on every try of a message, so it is the receiver's idempotency key),
@@ -1651,7 +1691,7 @@ rules of an apply are in [templates/README.md](https://github.com/Parcha-ai/agen
 | `DELETE /agents/{id}/sign-ins/{key}` | This server's own route (`x-agentrun-serve: "signins/1"`): forgets one of the agent's [saved sign-ins](#saved-sign-ins), at its vendor and here. `409 sign_in_held` while a run holds its save lease, or while a run it was handed is still going. |
 | `POST /agents/{id}/runs`, `GET /agents/{id}/runs` | A run of the current revision, or of `revision`. An agentic run's input is `{content: string}`; a workflow run's is what its workflow's input schema takes. `file_ids` names [uploaded](#uploads) files, copied into the run's `work/inputs/` before it starts and named in its first message. The agent's runs, newest first. |
 | `GET /runs` | Every agent's runs, newest first, a page of at most 100; `agent`, `revision` and `status` narrow it, and `archived=true` lists only archived ones. A failed run's summary carries its `error`, and a waiting run's its `pending`. |
-| `GET /runs/{id}` | The run: its revision, kind, status, state, result, error, `pending` (this server's own, `pending/1`: what it waits on, by `kind`, such as `{kind: "question", question, asked_at}` for a question it asked a person; else null) and cost (`basis: estimate`; $0 before its first model request, a cancelled run's included). |
+| `GET /runs/{id}` | The run: its revision, kind, status, state, result, error, `pending` (this server's own, `pending/1`: what it waits on, by `kind`, such as `{kind: "question", question, asked_at}` for a question it asked a person, or `{kind: "browser", instruction, completion_condition, asked_at, expires_at}` for its agent's ask for the owner in its browser; else null) and cost (`basis: estimate`; $0 before its first model request, a cancelled run's included). |
 | `GET /runs/{id}/timeline` | JSON pages with the change-number cursor (`after`, `next_after`, `reset`, `drop`, `has_more`, `final`, `wait_ms` long poll, and this server's own `limit`, 1 to 500 rows a page, default 500), or server-sent events with `Accept: text/event-stream` (`id` is the cursor, `Last-Event-ID` resumes). Rows sort by `seq`; the usage row (`Cost so far`), the run's running total, is always the last row, and moves to the end when a row comes after it. |
 | `POST /runs/{id}/messages` | To an agentic run: `steer` while the agent works, `answer` when it asked the person, `follow_up` after a stop or after it completed: a completed run opens again, the same run on its own session and store, takes a place under `--max-runs` (`429` when none is free), and completes again. A failed or cancelled run, an archived run and a run of an archived agent are `409 not_continuable`; a workflow run takes none (`501`). |
 | `POST /runs/{id}/stop`, `POST /runs/{id}/cancel` | Stop ends an agentic run's turn and leaves the run `input_required` and idle. Cancel ends a run `cancelled` once its process has exited. |
@@ -1667,6 +1707,7 @@ rules of an apply are in [templates/README.md](https://github.com/Parcha-ai/agen
 | `GET /settings/mcp-servers`, `POST /settings/mcp-servers/preview`, `GET`, `PUT` and `DELETE /settings/mcp-servers/{name}`, `POST .../{name}/refresh`, `POST .../{name}/oauth/start`, `GET /settings/mcp-servers/oauth/callback` and `GET .../oauth/client.json` | [MCP servers](#mcp-servers), this server's own routes (`x-agentrun-serve: "mcpservers/1"`): preview a remote MCP server's tools, save it with its credential sealed, read it back without the credential, refresh its tools, forget it, or [sign in to it with OAuth](#signing-in-with-oauth) (the callback and the client document take no token). |
 | `GET /settings/tools`, `PUT /settings/tools` | This server's own: the providers of `web_search`, `web_fetch` and `browser` ([search and fetch](#search-and-fetch)). |
 | `GET /runs/{id}/browser` | This server's own (`x-agentrun-serve: "liveview/1"`): the run's live browser view for the owner, `{state: "off", reason}`, `{state: "none"}` or `{state: "live", viewer}` ([the live view](#the-browsers-live-view)). |
+| `POST /runs/{id}/browser/hand-back` | This server's own (`liveview/2`): the owner's answer to the agent's ask for them in its browser, `{outcome: "done" \| "cancelled"}`; the first answer wins, a different one is `409 handoff_answered` ([the live view](#the-browsers-live-view)). |
 | `GET`, `PUT` and `DELETE /settings/webhook`, `POST /settings/webhook/test`, `GET /settings/webhook/deliveries` and `POST .../deliveries/{webhook_id}/redeliver` | [Webhooks](#webhooks), this server's own routes (`x-agentrun-serve: "webhook/1"`): the URL run notices are POSTed to, signed by the Standard Webhooks spec; never its secret but once. |
 | `GET` and `POST /triggers`, `GET`, `PATCH` and `DELETE /triggers/{id}`, `POST /triggers/{id}/fire`, `GET /triggers/{id}/firings`, `POST /triggers/{id}/secret`, `POST /hooks/{id}` (no token: [signed](#webhook-triggers)) | [Schedules](#schedules), this server's own routes (`x-agentrun-serve: "trigger/1"`): schedules that start an agent's capped runs, each firing once, and their history. |
 | `GET /templates`, `POST /templates/{name}/apply` | [Templates](#templates), this server's own routes (`x-agentrun-serve: "templates/1"`): the template packages it ships, and an apply that makes one's agent and triggers, all or nothing. |
@@ -2594,8 +2635,8 @@ export default function reply(context, faux) {
 }
 ```
 
-`startServe({ faux, fauxBrowser, fauxWeb })` (the tests', not the CLI's) also names modules whose default exports give
-the `browser` tool's `{ provider, driver }` in place of Browserbase's or Kernel's (pi-browser's fake backend, told the
+`startServe({ faux, fauxBrowser, fauxWeb })` also names modules whose default exports give
+the `browser` tool's `{ provider, driver }` (`fauxBrowser`, which the CLI takes as `--faux-browser MODULE`; the others are the tests' alone) in place of Browserbase's or Kernel's (pi-browser's fake backend, told the
 vendor the run's plane names and the saved sign-in the run was handed: `test/fixtures/faux-browser.mjs`), `web_fetch`'s direct fetch's `{ lookup, fetchImpl }` in place of the system's resolver and
 undici (a table of names and pages, `test/fixtures/faux-web.mjs`), and, as `fauxMonid`, the fetch the monid tools send
 through in place of monid's API (`test/fixtures/faux-monid.mjs`). Each is honored only with `faux`.
@@ -2631,11 +2672,19 @@ carries no cost at all, as from a provider that does not price the model. The te
   in the run's `work/`. An agent's saved sign-in stays at the vendor; this server keeps a sealed pointer to it, which a
   run's process gets over its pipe and its tools and model never see. Anyone holding the vendor's key can open that
   context or profile there.
-- A run's live browser view is a full-control credential for its session: its token lives in the run's process, in one 0600
-  file in the run's directory (never `work/`) while the session is open, and in the owner's answer to `GET /runs/{id}/browser`,
-  which takes the owner's password session alone. The viewer is served and its WebSocket taken only under the run's path, from
-  this server's own origin, framed by it alone; its input never reaches the browser; the vendors' own live-view links never leave
-  the run's process.
+- A run's live browser view is a full-control credential for its session: once taken over, it drives the browser. Its
+  token lives in the run's process, in one 0600 file in the run's directory (never `work/`) while the session is open, and in
+  the owner's answer to `GET /runs/{id}/browser`, which takes the owner's password session alone, as the hand-back does. The
+  viewer's WebSocket is taken only under the run's path, from this server's own origin, with the owner's session; its page is
+  framed by this server's own origin alone; outside a take-over its input is dropped by the run before the browser; the
+  vendors' own live-view links never leave the run's process.
+- The viewer's code always comes from this server: its page, script and style are the files of the pi-browser this server has
+  installed, served under `script-src 'self'`, never anything a run's port answers. A run's port only ever carries the
+  viewer's WebSocket, which is data, so whatever answers on a run's port never runs script on the console's origin.
+- The owner's time in a run's browser counts toward its cap and is held before it starts: a take-over, and an agent's ask,
+  hold 15 minutes of session time at the provider's price (once per session, shared by a take-over and an ask on it),
+  refused in the cap's words without room. A take-over that steady input keeps alive past 15 minutes is held again every
+  15 minutes; with no room the browser goes back to the agent, in the cap's words.
 - It binds 127.0.0.1 by default, and there refuses a request whose `Host` names something other than this machine
   (DNS rebinding): `localhost`, `127.0.0.1`, `[::1]`, the `AGENTRUN_PUBLIC_URL` name and each `--allow-host` name are
   served, on any port, so a tunnel (`ssh -L 8080:localhost:7340`) or a proxy in front works; any other name is `403`, a

@@ -38,7 +38,8 @@ import {
 } from "@earendil-works/pi-durable";
 import { PI_TABLE as T } from "../schema.js";
 import type { Connection } from "../sqlite/connection.js";
-import { applyRunPatch } from "../sqlite/run-patch.js";
+import { claimFence } from "../fence.js";
+import { applyRunPatch, refuseLeftovers } from "../sqlite/run-patch.js";
 import { type Claim, CommandTaken, Fenced, type Journal, type Staged } from "../store.js";
 
 /** A run's claim, as the journal is opened under it: the run and the epoch its claim holds. */
@@ -70,6 +71,13 @@ function readsOf(db: JournalConnection): Pick<SqliteExecutor, "get" | "all"> {
 const FIRST_ID = 2;
 
 type StoredTask = TaskRecord<JsonValue, JsonValue, JsonValue>;
+
+/** A document a commit changed, as the live view reads it: its value at that seq, or `retired` with none. */
+export type JournalDocument = { readonly id: DocumentId; readonly kind: string; readonly conversationId?: ConversationId } & ({ readonly value: JsonValue; readonly retired?: undefined } | { readonly retired: true; readonly value?: undefined });
+/** One stored commit of the run, with only the records it wrote. */
+export type JournalCommit = { readonly seq: Seq; readonly entries: EntryRecord[]; readonly documents: JournalDocument[]; readonly tasks: StoredTask[]; readonly submissions: SubmissionRecord[] };
+/** A page of commits (journal.commitsAfter): `next` to read on from, when more may follow. */
+export type JournalPage = { readonly commits: JournalCommit[]; readonly next?: number };
 type Row = Record<string, SqliteValue>;
 type DocumentContent = { readonly kind: "base"; readonly version: number; readonly value: JsonValue } | { readonly kind: "delta"; readonly version: number; readonly ops: unknown };
 type DocumentAction = { create?: DocumentRecord; content?: DocumentContent; copy?: { readonly id: DocumentId; readonly at: DocumentPoint }; retire: boolean };
@@ -252,9 +260,11 @@ export class RunStorage implements Journal {
 
   /**
    * Stage what a commit writes beside its batches, in its one transaction, under its fence:
-   * - the run row's patch and other rows (`also`, such as an outbox row for a run moment): written by the next commit
-   *   that stores a batch, then cleared; a commit refused before it stored a batch, or one that failed, keeps them. A
-   *   later stage replaces them.
+   * - the run row's patch and other rows (`also`, such as an outbox row for a run moment), with `effect`, the id of the
+   *   record they land with (a park's ask, an end's entry), matched as a take's effect is (an id its batch newly
+   *   allocates; an effect that updates a record carries a marker entry minted for it): written only by the commit that
+   *   newly writes that record, then cleared, so a run never reads parked or ended without what caused it; until then
+   *   they wait. A later stage that names a patch or rows replaces them.
    * - the commands it takes (`take`: each with the id of the record that is its effect, an id its effect's batch newly
    *   allocates): a take is written only by the commit that newly writes that record, so a command is taken with its own
    *   effect or not at all, never by another path's update of an existing record. An effect that changes or retires a
@@ -265,6 +275,9 @@ export class RunStorage implements Journal {
    *   CommandTaken.
    */
   stage(staged: Staged): void {
+    if ((staged.run !== undefined || staged.also !== undefined) && !Number.isSafeInteger(Number(staged.effect))) {
+      throw new Error(`run ${this.#runId}: a staged run patch or rows name no effect (the id of the record they land with)`);
+    }
     for (const take of staged.take ?? []) {
       if (!Number.isSafeInteger(take?.command) || !Number.isSafeInteger(Number(take?.effect))) throw new Error(`run ${this.#runId}: a staged take names no command and effect ids: ${JSON.stringify(take)}`);
       // Refused here, never left waiting forever: an effect must be an id this journal minted and has not yet written,
@@ -275,7 +288,7 @@ export class RunStorage implements Journal {
     }
     for (const take of staged.take ?? []) this.#takes.set(take.command, Number(take.effect));
     // A stage that names a run patch or rows replaces the ones staged before; one that only takes leaves them.
-    if (staged.run !== undefined || staged.also !== undefined) this.#staged = { ...(staged.run !== undefined ? { run: staged.run } : {}), ...(staged.also !== undefined ? { also: staged.also } : {}) };
+    if (staged.run !== undefined || staged.also !== undefined) this.#staged = { ...(staged.run !== undefined ? { run: staged.run } : {}), ...(staged.also !== undefined ? { also: staged.also } : {}), effect: Number(staged.effect) };
   }
 
   /**
@@ -303,11 +316,16 @@ export class RunStorage implements Journal {
     const staged = this.#staged;
     // The takes this commit writes: those whose effect a stored batch of it holds.
     const taking: number[] = [];
+    // Whether a stored batch of this commit writes the staged patch's effect: only then does the patch land.
+    let patching = false;
     // Queued at once, with nothing awaited before it (a fresh journal reads its namespace inside the transaction), so a
     // store close asked after this commit waits for it. The transaction holds the store's one connection: its work awaits
     // only its own statements, never a model or a tool.
     await this.#transaction(async (tx) => {
-      if ((await tx.runCounted("UPDATE runs SET epoch = epoch WHERE id = ? AND epoch = ?", this.#runId, this.#epoch)) === 0) {
+      // The claim's fence (store/fence.ts): its epoch, and its lease not run out on the store's clock, read here inside the
+      // transaction so the check and the commit are one.
+      const fence = claimFence({ runId: this.#runId, epoch: this.#epoch }, this.#now());
+      if ((await tx.runCounted(`UPDATE runs SET epoch = epoch WHERE ${fence.where}`, ...fence.params)) === 0) {
         throw new Fenced(this.#runId, this.#epoch);
       }
       const metadata = await this.#readMetadata(tx);
@@ -336,8 +354,9 @@ export class RunStorage implements Journal {
         await this.#applyBatch(tx, writes, documentActions, seq);
         seqs.push(seq);
         candidateNextId = Math.max(candidateNextId, this.#candidateNextId(writes));
-        // A take whose effect this stored batch newly writes is this commit's.
+        // A take whose effect this stored batch newly writes is this commit's, and so is the staged patch.
         for (const [command, effect] of this.#takes) if (fresh.has(effect) && !taking.includes(command)) taking.push(command);
+        if (staged?.effect !== undefined && fresh.has(staged.effect)) patching = true;
       }
       if (seqs.length > 0) {
         await tx.run(
@@ -347,7 +366,7 @@ export class RunStorage implements Journal {
         // The run patch's fenced UPDATE (0 rows: Fenced), then its rows (store/sqlite/run-patch.ts, as runs.update writes
         // them), then the takes.
         const now = this.#now();
-        if (staged?.run !== undefined || (staged?.also ?? []).length > 0) {
+        if (patching && (staged?.run !== undefined || (staged?.also ?? []).length > 0)) {
           await applyRunPatch(tx, { runId: this.#runId, epoch: this.#epoch }, staged?.run ?? {}, staged?.also ?? [], now);
         }
         for (const commandId of taking) {
@@ -355,6 +374,8 @@ export class RunStorage implements Journal {
             throw new CommandTaken(this.#runId, commandId);
           }
         }
+        // A run patch that made the run final: its other untaken rows are refused in this commit, after its own takes.
+        if (patching) await refuseLeftovers(tx, this.#runId, staged?.run?.state, now);
       }
     });
     this.#nextId = Math.max(this.#nextId, candidateNextId);
@@ -366,7 +387,8 @@ export class RunStorage implements Journal {
         if (id !== undefined) this.#minted.delete(id);
       }
     }
-    if (seqs.length > 0 && this.#staged === staged) this.#staged = undefined;
+    // Landed with its effect: no longer staged (a patch whose effect this commit did not store waits).
+    if (patching && this.#staged === staged) this.#staged = undefined;
     // Taken with their effects, now durable: no longer waiting.
     for (const command of taking) this.#takes.delete(command);
     // COMMIT returned: the stored batches are durable (to the store's synchronous level; flush makes them so on disk).
@@ -415,6 +437,29 @@ export class RunStorage implements Journal {
   async #applyBatch(executor: SqliteExecutor, writes: readonly StorageWrite[], documentActions: Map<number, DocumentAction>, seq: Seq): Promise<void> {
     for (const write of writes) await this.#applyTableWrite(executor, write, seq);
     await this.#applyDocumentActions(executor, documentActions, seq);
+    await this.#logWrites(executor, writes, documentActions, seq);
+  }
+
+  /** This commit's own writes of the rows kept only as they are now (tasks, submissions, latest-only documents), as it
+   *  wrote them, in its transaction (pi_commit_writes): the last write of a row within the commit is the one kept. */
+  async #logWrites(executor: SqliteExecutor, writes: readonly StorageWrite[], documentActions: Map<number, DocumentAction>, seq: Seq): Promise<void> {
+    const log = (kind: string, id: number, value: unknown) =>
+      executor.run(`INSERT INTO ${T.commitWrites} (run_id, seq, kind, id, value) VALUES (?, ?, ?, ?, ?) ON CONFLICT (run_id, seq, kind, id) DO UPDATE SET value = excluded.value`, this.#runId, seq as unknown as number, kind, id, encodeJson(value as JsonValue));
+    for (const write of writes) {
+      if (write.type === "task" || write.type === "submission") await log(write.type, write.value.id as unknown as number, write.value);
+    }
+    for (const id of documentActions.keys()) {
+      const row = await executor.get<Row>(`SELECT record FROM ${T.documents} WHERE run_id = ? AND id = ?`, this.#runId, id);
+      if (row === undefined) continue;
+      const record = parseJson<DocumentRecord & { retiredAt?: number }>(row.record!);
+      if (!isCurrentOnly(record)) continue;
+      if (record.retiredAt === (seq as unknown as number)) {
+        await log("document", id, { retired: true });
+        continue;
+      }
+      const stored = await this.#materializeDocument(executor, id, "current");
+      if (stored) await log("document", id, { value: (stored as unknown as { value: JsonValue }).value });
+    }
   }
 
   async mintId<I extends Id<string>>(): Promise<I> {
@@ -644,6 +689,71 @@ export class RunStorage implements Journal {
     return page(rows.map((row) => parseJson<DocumentRecord>(row.record!)), limit);
   }
 
+  /**
+   * The run's commits after `afterSeq`, in seq order, at most `limit`, for the live view: each with its own entries, the
+   * documents it changed (each's value at that seq, a latest-only one's as that commit wrote it; a retired one marked
+   * `retired`, with no value), and the tasks and submissions it wrote, as it wrote them (pi_commit_writes), so a replay
+   * equals the live view. One
+   * transaction, so the page is one committed state. `next`: the last seq returned, when commits may follow it. A
+   * run's seqs are consecutive from 1 (each stored batch takes the next), so a commit that wrote only a conversation is
+   * one too, with nothing listed.
+   */
+  async commitsAfter(afterSeq: number, limit: number, _context: Context): Promise<JournalPage> {
+    this.#assertOpen();
+    // One snapshot in a deferred read transaction: a reader never takes the writer's lock.
+    return this.#admitRead(() =>
+      this.#db.transaction(async (tx) => {
+        const metadata = await this.#readMetadata(tx);
+        const last = Number(metadata.next_seq) - 1;
+        const from = Math.max(0, Math.floor(Number(afterSeq) || 0));
+        const upto = Math.min(last, from + Math.max(0, Math.floor(limit)));
+        const commits: JournalCommit[] = [];
+        for (let seq = from + 1; seq <= upto; seq++) commits.push(await this.#commitAt(tx, seq));
+        return upto < last && commits.length > 0 ? { commits, next: upto } : { commits };
+      }, { read: true }),
+    );
+  }
+
+  async #commitAt(tx: SqliteExecutor, seq: number): Promise<JournalCommit> {
+    const run = this.#runId;
+    const entries = (await tx.all<Row>(`SELECT record FROM ${T.entries} WHERE run_id = ? AND commit_seq = ? ORDER BY id`, run, seq)).map((row) => parseJson<EntryRecord>(row.record!));
+    // This commit's own writes, as it wrote them (pi_commit_writes), never the rows as later commits left them.
+    const logged = await tx.all<{ kind: string; id: number; value: string }>(`SELECT kind, id, value FROM ${T.commitWrites} WHERE run_id = ? AND seq = ? ORDER BY kind, id`, run, seq);
+    const tasks = logged.filter((row) => row.kind === "task").map((row) => parseJson<StoredTask>(row.value));
+    const submissions = logged.filter((row) => row.kind === "submission").map((row) => parseJson<SubmissionRecord>(row.value));
+    const latestOnly = new Map(logged.filter((row) => row.kind === "document").map((row) => [row.id, parseJson<{ value?: JsonValue; retired?: true }>(row.value)]));
+    const changed = await tx.all<{ id: number }>(
+      `SELECT document_id AS id FROM ${T.documentRevisions} WHERE run_id = ? AND seq = ?
+        UNION SELECT id FROM ${T.documents} WHERE run_id = ? AND (created_at = ? OR retired_at = ?) ORDER BY id`,
+      run, seq, run, seq, seq,
+    );
+    const documents: JournalDocument[] = [];
+    // A latest-only document's revision of this commit is gone once a later commit wrote it: its log row names it.
+    const ids = [...new Set([...changed.map((row) => row.id), ...latestOnly.keys()])].sort((a, b) => a - b);
+    for (const id of ids) {
+      const row = await tx.get<Row>(`SELECT record FROM ${T.documents} WHERE run_id = ? AND id = ?`, run, id);
+      if (row === undefined) continue;
+      const record = parseJson<DocumentRecord & { retiredAt?: number }>(row.record!);
+      const scope = record.scope as { kind: string; conversationId?: ConversationId };
+      const head = { id: record.id, kind: record.kind, ...(scope.kind === "conversation" ? { conversationId: scope.conversationId } : {}) };
+      if (isCurrentOnly(record)) {
+        // A document that keeps only its latest value: as this commit wrote it (its log row), if it wrote it.
+        const written = latestOnly.get(id);
+        if (written?.retired) documents.push({ ...head, retired: true });
+        else if (written) documents.push({ ...head, value: written.value as JsonValue });
+        continue;
+      }
+      if (record.retiredAt === seq) {
+        documents.push({ ...head, retired: true });
+        continue;
+      }
+      // Its value at this seq (a document that keeps its history).
+      const stored = await this.#materializeDocument(tx, id, seq as unknown as DocumentPoint);
+      if (stored) documents.push({ ...head, value: (stored as unknown as { value: JsonValue }).value });
+    }
+    return { seq: seqOf(seq), entries, documents, tasks, submissions };
+  }
+
   /** Every later operation rejects; reads admitted and commits asked before it end first (a commit's outcome is its
    *  caller's, never the close's). The store's connection stays open: the store owns it. */
   close(_context: Context): Promise<void> {
@@ -824,11 +934,11 @@ export class RunStorage implements Journal {
         const value = write.value as StoredTask;
         await this.#claimId(executor, value.id as unknown as number, "task");
         await executor.run(
-          `INSERT INTO ${T.tasks} (run_id, id, conversation_id, kind, status, abort_requested, background, record)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          `INSERT INTO ${T.tasks} (run_id, id, conversation_id, kind, status, abort_requested, background, seq, record)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(run_id, id) DO UPDATE SET conversation_id = excluded.conversation_id, kind = excluded.kind,
             status = excluded.status, abort_requested = excluded.abort_requested,
-            background = excluded.background, record = excluded.record`,
+            background = excluded.background, seq = excluded.seq, record = excluded.record`,
           run,
           value.id as unknown as number,
           value.conversationId as unknown as number,
@@ -836,6 +946,7 @@ export class RunStorage implements Journal {
           (value.state as { status: string }).status,
           value.abortRequested ? 1 : 0,
           value.background ? 1 : 0,
+          seq as unknown as number,
           encodeJson(value),
         );
         break;
@@ -844,14 +955,15 @@ export class RunStorage implements Journal {
         const value = write.value as SubmissionRecord & { requestId?: string };
         await this.#claimId(executor, value.id as unknown as number, "submission");
         await executor.run(
-          `INSERT INTO ${T.submissions} (run_id, id, conversation_id, request_id, status, record) VALUES (?, ?, ?, ?, ?, ?)
+          `INSERT INTO ${T.submissions} (run_id, id, conversation_id, request_id, status, seq, record) VALUES (?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(run_id, id) DO UPDATE SET conversation_id = excluded.conversation_id,
-            request_id = excluded.request_id, status = excluded.status, record = excluded.record`,
+            request_id = excluded.request_id, status = excluded.status, seq = excluded.seq, record = excluded.record`,
           run,
           value.id as unknown as number,
           value.conversationId as unknown as number,
           value.requestId === undefined ? null : encodeIndexedString(value.requestId),
           value.status,
+          seq as unknown as number,
           encodeJson(value),
         );
         break;
