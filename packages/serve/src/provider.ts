@@ -60,8 +60,9 @@ export function gatewayBase(setting: string, value: string): string {
   }
   if (url.username || url.password) throw wrong("names a user");
   if (url.search || url.hash || /[?#]/.test(value)) throw wrong("has a query or a fragment");
-  // The URL parser resolves dot segments, so they are looked for in the text as given.
-  const path = value.slice(value.indexOf("//") + 2).replace(/^[^/]*/, "");
+  // The URL parser resolves dot segments, so they are looked for in the text as given: the path after the scheme, every
+  // slash after it (the parser takes `https:/host` and `https:host` as `https://host`), and the host.
+  const path = value.replace(/^[a-z][a-z0-9+.-]*:[/]*/i, "").replace(/^[^/]*/, "");
   if (path.split("/").some((segment) => /^(\.|%2e){1,2}$/i.test(segment))) throw wrong("has a . or .. path segment");
   if (url.protocol !== "https:" && !(url.protocol === "http:" && LOOPBACK.has(url.hostname))) throw wrong(`is ${url.protocol.replace(/:$/, "")}, not https`);
   return `${url.origin}${url.pathname.replace(/\/+$/, "").replace(/\/v1$/, "")}`;

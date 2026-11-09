@@ -6,7 +6,20 @@ import { readFileSync } from "node:fs";
 import { Readable, Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { DaemonClient } from "./client.js";
-import { COMPUTER_LABEL, DAEMON_IN_COMPUTER, DEADLINE_LABEL, DEFAULT_CPUS, DEFAULT_MEMORY_MB, helloDrift, WORK } from "./drift.js";
+import {
+	COMPUTER_LABEL,
+	DAEMON_IN_COMPUTER,
+	DEADLINE_LABEL,
+	DEFAULT_CPUS,
+	DEFAULT_MEMORY_MB,
+	helloDrift,
+	type ProbeReport,
+	probeNetworkDrift,
+	probeNotes,
+	probeReportOf,
+	WORK,
+} from "./drift.js";
+import type { MountKind } from "./mount.js";
 import {
 	type AttachedComputer,
 	type CallContext,
@@ -16,6 +29,7 @@ import {
 	type ComputerProvider,
 	type ComputerRef,
 	type ComputerSpec,
+	type CreatedComputer,
 	checkLifetime,
 	type NetworkPolicy,
 	type NetworkSpec,
@@ -127,9 +141,106 @@ export interface ModalProviderOptions {
 	/** Who a computer runs as when its spec does not say: uid:gid in numbers, never root or root's group. Default 1000:1000. */
 	user?: string;
 	timeouts?: Partial<ModalTimeouts>;
-	/** host:port addresses the probe tries to connect to, to show a computer with network none reaches nothing. */
+	/**
+	 * The addresses the probe tries, to show none of them answers a computer with network none: host:port over TCP, or
+	 * host:port/udp, a DNS query over UDP.
+	 */
 	probeTargets?: string[];
 }
+
+/** The mount kinds a Modal computer takes: none yet (capabilities() declares no mount); the Archil mount comes with D6. */
+export const MOUNT: readonly MountKind[] = [];
+
+/** The SDK's default server (modal-client@64880502:js/src/config.ts:143). */
+export const MODAL_DEFAULT_SERVER_URL = "https://api.modal.com:443";
+
+/** What modalClient gives the SDK's ModalClient: the token, explicitly, so the SDK fills none of it in. */
+export interface ModalClientParams {
+	tokenId: string;
+	tokenSecret: string;
+}
+
+/** The SDK's ModalClient constructor, or a stand-in for one. */
+export type ModalClientConstructor = new (params: ModalClientParams) => unknown;
+
+/** What modalClient takes: the token, the server it goes to, and the SDK's client class. */
+export interface ModalClientOptions {
+	/** The Modal token's id and secret. Serve passes its MODAL_TOKEN_ID and MODAL_TOKEN_SECRET; the conformance module the token it reads. */
+	tokenId: string;
+	tokenSecret: string;
+	/** The server the token goes to; default the SDK's, https://api.modal.com:443. */
+	serverUrl?: string;
+	/** The SDK's ModalClient; imported from the host's modal package by default. */
+	ModalClient?: ModalClientConstructor;
+}
+
+/** What create() takes: the provider's options, the client's in place of the SDK. */
+export interface ModalCreateOptions extends Omit<ModalProviderOptions, "sdk">, ModalClientOptions {}
+
+/** Not a literal, so no type checker or bundler resolves the SDK from this package. */
+const MODAL_PACKAGE: string = "modal";
+
+/** The construction now running, or the last one: the next waits for it, so two never overlap. */
+let constructing: Promise<unknown> = Promise.resolve();
+
+/**
+ * A Modal client given the token passed in, and nothing of the environment: a tokenId and tokenSecret passed to
+ * ModalClient replace what the environment or the profile held, and clear any OAuth credentials (client.ts:124-148), so a
+ * MODAL_TOKEN_ID or ~/.modal.toml on the host is never used. The key goes only to options.serverUrl, else the SDK's
+ * default (config.ts:143). ModalClient cannot take a server explicitly: it declares `endpoint` (client.ts:51) and never
+ * reads it, and the control-plane client is made from the profile's serverUrl (client.ts:131, 175, 281), which getProfile
+ * takes from MODAL_SERVER_URL before any profile's server_url (config.ts:140-143), the profile being MODAL_PROFILE's or the
+ * active one in MODAL_CONFIG_PATH or ~/.modal.toml (config.ts:76-82, 126-137).
+ *
+ * So this is the library's one touch of the environment, a guard and not a setting (README, Settings): an ambient
+ * MODAL_SERVER_URL is refused, and MODAL_SERVER_URL is set to the chosen server only while the client is constructed,
+ * and put back after, so no profile can redirect the key. process.env is the whole process's: constructions run one at a
+ * time, each waiting for the last, so none sees another's server. The modal package is the host's: it is imported only
+ * here.
+ */
+export async function modalClient({ tokenId, tokenSecret, serverUrl = MODAL_DEFAULT_SERVER_URL, ModalClient }: ModalClientOptions): Promise<ModalSdk> {
+	if (typeof tokenId !== "string" || tokenId === "" || typeof tokenSecret !== "string" || tokenSecret === "") {
+		throw new Error("the Modal provider needs options.tokenId and options.tokenSecret, a Modal token: it reads none from the environment, so the caller passes it");
+	}
+	if (typeof serverUrl !== "string" || !URL.canParse(serverUrl)) throw new Error("options.serverUrl is the Modal server's URL, such as https://api.modal.com:443");
+	const ambient = `the Modal provider refuses to start while MODAL_SERVER_URL is set: the SDK would send the key there. Unset it, and pass the server as options.serverUrl if it is not ${MODAL_DEFAULT_SERVER_URL}`;
+	if (process.env.MODAL_SERVER_URL) throw new Error(ambient);
+	const Client = ModalClient ?? ((await import(MODAL_PACKAGE)) as { ModalClient: ModalClientConstructor }).ModalClient;
+	// getProfile reads MODAL_SERVER_URL from process.env when the client is constructed (client.ts:123), and the
+	// control-plane client is made then (client.ts:175); afterwards process.env is as it was. One construction at a time.
+	const turn = constructing.then(() => {
+		if (process.env.MODAL_SERVER_URL) throw new Error(ambient);
+		const before = process.env.MODAL_SERVER_URL;
+		process.env.MODAL_SERVER_URL = serverUrl;
+		try {
+			return new Client({ tokenId, tokenSecret }) as ModalSdk;
+		} finally {
+			if (before === undefined) delete process.env.MODAL_SERVER_URL;
+			else process.env.MODAL_SERVER_URL = before;
+		}
+	});
+	constructing = turn.catch(() => undefined);
+	return turn;
+}
+
+/**
+ * A ModalProvider from its options alone: the client as modalClient makes it from the token and server passed in, the
+ * app (required), and the daemon copied from options.daemonImage when given, else uploaded (options.daemonPath, else this
+ * package's build): given both, the image wins and no upload path is passed on, as the class takes one or the other. It
+ * reads no environment but the guard modalClient keeps: serve passes its MODAL_TOKEN_ID, MODAL_TOKEN_SECRET and
+ * AGENTRUN_BOX_APP, the conformance module the settings it reads. The app and the token are checked before any client
+ * is made, and neither is ever echoed.
+ */
+export async function create(options: ModalCreateOptions): Promise<ModalProvider> {
+	const { tokenId, tokenSecret, serverUrl, ModalClient, daemonImage, daemonPath, ...rest } = options ?? ({} as ModalCreateOptions);
+	if (typeof rest.app !== "string" || rest.app.trim() === "") throw new Error("options.app, the Modal app its sandboxes live in, is required");
+	const daemon = daemonImage !== undefined ? { daemonImage } : daemonPath !== undefined ? { daemonPath } : {};
+	const sdk = await modalClient({ tokenId, tokenSecret, ...(serverUrl === undefined ? {} : { serverUrl }), ...(ModalClient ? { ModalClient } : {}) });
+	return new ModalProvider({ ...rest, ...daemon, sdk });
+}
+
+/** The conformance CLI's module for Modal: its live switch, the run's 30-minute cap and the drifted twin. */
+export const conformance = () => import("./conformance/modal.js");
 
 const VERSION: string = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
 const NAME = /^computer-[0-9a-f]{12}$/;
@@ -159,7 +270,8 @@ const isRootUser = (value: unknown) => typeof value === "string" && ROOT_USER.te
  */
 const ROOT =
 	"a Modal computer does not run as root: each connection is Modal's exec of the daemon's stdio bridge, which runs /opt/agentrun/computerd outside the daemon with Modal's own root capabilities, and a root computer user, though init leaves it no capability, owns /, /opt and /opt/agentrun, so it could replace what that exec runs; ask for another uid, such as 1000:1000";
-const TARGET = /^(?:\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9.-]+):[0-9]{1,5}$/;
+/** A probe target: host:port, over TCP, or host:port/udp, a DNS query over UDP. */
+const TARGET = /^(?:\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9.-]+):[0-9]{1,5}(?:\/udp)?$/;
 /** Modal's own default request (guide/sandbox-resources, "Pay for what you use"): a spec's sizes are limits, as in Docker. */
 const CPU_REQUEST = 0.125;
 const MEMORY_REQUEST_MIB = 128;
@@ -255,8 +367,11 @@ export function modalCommands({
 		stdio: [daemon, "stdio"],
 	};
 }
-/** Public anycast resolvers, by address: with no network, not even DNS works (guide/sandbox-networking). */
-const DEFAULT_PROBE_TARGETS = ["1.1.1.1:443", "8.8.8.8:443", "[2606:4700:4700::1111]:443"];
+/**
+ * Public anycast resolvers, by address: with no network, not even DNS works (guide/sandbox-networking). TCP to 443, and
+ * DNS over UDP to 53, the classic path out where TCP is dropped, over IPv4 and IPv6.
+ */
+const DEFAULT_PROBE_TARGETS = ["1.1.1.1:443", "8.8.8.8:443", "[2606:4700:4700::1111]:443", "1.1.1.1:53/udp", "[2606:4700:4700::1111]:53/udp"];
 /** How long close waits for the stdio bridge to exit once its stdin has ended. Modal has no kill for an exec. */
 const CLOSE_WAIT_MS = 5_000;
 const SPEC_FIELDS = new Set(["image", "lifetimeMs", "network", "cpus", "memoryMb", "pids", "labels", "workdir", "user"]);
@@ -277,14 +392,6 @@ interface Recorded {
 	memoryMb: number;
 	workdir: string;
 	runtime: "vm";
-}
-
-/** What `computerd probe` reports from inside the computer. */
-interface ProbeReport {
-	uid: number;
-	gid: number;
-	kernel: string;
-	reached: string[];
 }
 
 const isNumber = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
@@ -476,25 +583,13 @@ function recordedNetwork(tags: Record<string, string>): NetworkPolicy {
 	return { other: `the tag ${SPEC_TAG} names no network this provider makes` };
 }
 
-function probeOf(stdout: string): ProbeReport | undefined {
-	try {
-		const value = JSON.parse(Buffer.from(stdout, "base64").toString("utf8")) as Partial<ProbeReport> | null;
-		if (isWhole(value?.uid) && isWhole(value?.gid) && typeof value?.kernel === "string" && Array.isArray(value?.reached) && value.reached.every((one) => typeof one === "string")) {
-			return value as ProbeReport;
-		}
-	} catch {
-		// Not the probe's JSON: undefined.
-	}
-	return undefined;
-}
-
 /** Every way the probe's report differs from what the computer should be. */
 function probeDrift(probe: ProbeReport, expected: { user?: string; network?: NetworkSpec }): string[] {
 	const found: string[] = [];
 	const user = `${probe.uid}:${probe.gid}`;
 	if (expected.user !== undefined && user !== expected.user) found.push(`user: declared ${expected.user}, read back ${user} (the uid:gid the daemon's programs run as)`);
 	if (/gvisor/i.test(probe.kernel)) found.push(`runtime: declared vm, read back gVisor (the kernel reports ${JSON.stringify(probe.kernel)})`);
-	if (expected.network === "none" && probe.reached.length > 0) found.push(`network: declared none, read back a connection to ${probe.reached.join(", ")}`);
+	if (expected.network === "none") found.push(...probeNetworkDrift(probe));
 	return found;
 }
 
@@ -512,8 +607,9 @@ function tagDrift(given: Record<string, string>, read: Record<string, string>): 
  * with daemonImage, it comes in as a layer of the computer's image (COPY --from) and is the command itself. A
  * connection is `computerd stdio` through exec, so a computer with network none is still reached, and needs no network
  * to get its daemon either way. Modal ends each sandbox at its timeout, so the lifetime is the vendor's. Modal reads no
- * network policy back, so the daemon's probe stands for one: network none is honoured only when the probe reaches none
- * of its addresses, and an allowlist is refused until the live bypass cases pass.
+ * network policy back, so the daemon's probe stands for one: network none is honoured only when none of its addresses
+ * answers (an address that accepts and sends nothing back is named in the read-back's notes), and an allowlist is
+ * refused until the live bypass cases pass.
  */
 export class ModalProvider implements ComputerProvider {
 	readonly id = "modal";
@@ -558,7 +654,7 @@ export class ModalProvider implements ComputerProvider {
 		}
 		if (!Array.isArray(probeTargets) || probeTargets.length === 0) throw new Error("probeTargets must name at least one address for the probe");
 		const bad = probeTargets.find((target) => typeof target !== "string" || !TARGET.test(target));
-		if (bad !== undefined) throw new Error(`the probe target ${JSON.stringify(bad)} is not host:port`);
+		if (bad !== undefined) throw new Error(`the probe target ${JSON.stringify(bad)} is not host:port or host:port/udp`);
 		this.#sdk = sdk;
 		this.#appName = app;
 		this.#daemonImage = daemonImage;
@@ -635,7 +731,7 @@ export class ModalProvider implements ComputerProvider {
 		return refusals;
 	}
 
-	async create(spec: ComputerSpec, { signal }: CallContext = {}): Promise<Result<ComputerRef>> {
+	async create(spec: ComputerSpec, { signal }: CallContext = {}): Promise<Result<CreatedComputer>> {
 		const refusals = this.check(spec);
 		if (refusals.length > 0) return fail("refused", refusals.map(({ field, message }) => `${field}: ${message}`).join("; "));
 		let daemon: { bytes: Buffer; sha256: string } | undefined;
@@ -710,7 +806,7 @@ export class ModalProvider implements ComputerProvider {
 			const after = await this.#terminate(sandbox, name, signal);
 			return fail("aborted", `create was aborted after Modal made the sandbox; the computer ${name} ${after}`);
 		}
-		if (checked.ok) return ok(ref);
+		if (checked.ok) return ok(checked.value.length > 0 ? { ...ref, notes: checked.value } : ref);
 		const after = await this.#terminate(sandbox, name, signal);
 		return fail(checked.error.code, `the computer ${name} ${after}: ${checked.error.message}`);
 	}
@@ -769,8 +865,11 @@ export class ModalProvider implements ComputerProvider {
 		return untilFinished(() => sandbox.poll(), { name, boundMs: releaseMs, callMs, minMs: Math.min(releasePollMs, RELEASE_POLL_MAX_MS), maxMs: RELEASE_POLL_MAX_MS, signal });
 	}
 
-	/** The drift check after create: the sandbox runs, its tags read back as given, and the daemon and probe match. */
-	async #checkCreated(sandbox: ModalSandbox, ref: ComputerRef, tags: Record<string, string>, recorded: Recorded, signal?: AbortSignal): Promise<Result<void>> {
+	/**
+	 * The drift check after create: the sandbox runs, its tags read back as given, and the daemon and probe match. Its
+	 * value is the probe's notes, what it recorded that does not refuse the computer.
+	 */
+	async #checkCreated(sandbox: ModalSandbox, ref: ComputerRef, tags: Record<string, string>, recorded: Recorded, signal?: AbortSignal): Promise<Result<string[]>> {
 		const polled = await call(`poll of ${ref.name}`, () => sandbox.poll(), this.#timeouts.callMs, signal);
 		if (!polled.ok) return polled;
 		if (polled.value !== null) return fail("refused", `it had finished, with exit code ${polled.value}, before its drift check`);
@@ -784,7 +883,7 @@ export class ModalProvider implements ComputerProvider {
 			...helloDrift(inside.value.hello, this.#expected()),
 			...probeDrift(inside.value.probe, { user: recorded.user, network: recorded.network }),
 		];
-		return found.length === 0 ? ok(undefined) : fail("refused", `it did not match its spec: ${found.join("; ")}`);
+		return found.length === 0 ? ok(probeNotes(inside.value.probe, recorded.network)) : fail("refused", `it did not match its spec: ${found.join("; ")}`);
 	}
 
 	/** One connection's hello and the probe through it, the connection closed after. */
@@ -816,8 +915,8 @@ export class ModalProvider implements ComputerProvider {
 		if (exitCode !== 0) {
 			return fail("refused", `the probe in ${name} exited with ${exitCode}: ${Buffer.from(stderr, "base64").toString("utf8").trim().slice(0, 300)}`);
 		}
-		const report = probeOf(stdout);
-		if (report === undefined) return fail("refused", `the probe in ${name} wrote what is not its report: ${Buffer.from(stdout, "base64").toString("utf8").slice(0, 200)}`);
+		const report = probeReportOf(stdout);
+		if ("not" in report) return fail("refused", `the probe in ${name} ${report.not}`);
 		return ok(report);
 	}
 
@@ -998,7 +1097,8 @@ export class ModalProvider implements ComputerProvider {
 			return fail("refused", `the computer ${name} does not match this provider, so attach refuses it and it is left as it is: ${found.join("; ")}`);
 		}
 		const { image, network, cpus, memoryMb, workdir } = recorded;
-		return ok({ ...ref, spec: { image, user: `${probe.uid}:${probe.gid}`, network, cpus, memoryMb, workdir, deadline, kind: hello.kind } });
+		const notes = probeNotes(probe, network);
+		return ok({ ...ref, spec: { image, user: `${probe.uid}:${probe.gid}`, network, cpus, memoryMb, workdir, deadline, kind: hello.kind }, ...(notes.length > 0 ? { notes } : {}) });
 	}
 
 	/**
@@ -1056,7 +1156,8 @@ export class ModalProvider implements ComputerProvider {
 
 	/**
 	 * Modal reads no policy back. Open is open, nothing being wider; none is read back by the probe from inside, and is
-	 * another network in words when a connection reached any of its addresses. A change is refused: it is fixed at create.
+	 * another network in words when any of its addresses answered (an address that only accepted, and sent nothing back,
+	 * leaves it none). A change is refused: it is fixed at create.
 	 */
 	async network(ref: ComputerRef, policy?: NetworkSpec, { signal }: CallContext = {}): Promise<Result<NetworkPolicy>> {
 		const problem = refProblem(ref);
@@ -1077,7 +1178,7 @@ export class ModalProvider implements ComputerProvider {
 			const inside = await this.#inside(found.value.sandbox, ref.name, signal);
 			if (!inside.ok) return inside;
 			const { reached } = inside.value.probe;
-			if (reached.length > 0) read = { other: `created with network none, yet a connection from inside reached ${reached.join(", ")}` };
+			if (reached.length > 0) read = { other: `created with network none, yet from inside an answer came back from ${reached.join(", ")}` };
 		}
 		if (policy === undefined || policy === read) return ok(read);
 		return fail("refused", `${ref.name} was asked to keep network ${policy}, and reads back: ${typeof read === "string" ? read : JSON.stringify(read)}`);

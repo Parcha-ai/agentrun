@@ -5,6 +5,9 @@
     "previewMcpServer": ["url", "auth.type", "name"],
     "startMcpOAuth": ["url", "scopes.[]", "client_id"]
   },
+  "bodyFill": {
+    "callMcp": { "id": 1 }
+  },
   "multiSegment": {
     "readRunFile": "path",
     "readHomeFile": "path",
@@ -16,6 +19,7 @@
     "approveLearningFile": "It takes the owner's password session in the console; the server refuses every token on it.",
     "answerApproval": "Only the owner's password session answers a tool call's approval, on the console's own origin; the server refuses every token on it.",
     "getRunBrowser": "A run's live browser view is a full-control credential for its session; only the owner's password session reads it, in the console. The server refuses every token on it.",
+    "handBackRunBrowser": "Handing a run's browser back answers its agent's ask; only the owner's password session does it, in the console. The server refuses every token on it.",
     "receiveHook": "A sender fires it with a request signed by the trigger's secret and no token; the CLI sends the server's token, so it has no command.",
     "restoreLearningFile": "Restoring a retired learning file takes the owner's password session in the console, as an approval does; the server refuses every token on it.",
     "mcpOAuthCallback": "The owner's browser reaches it, sent back by the authorization server with the cookie the start set there; it takes no token, and the CLI has no such cookie, so it has no command."
@@ -78,6 +82,8 @@
     "fireTrigger": ["triggers", "fire"],
     "listTriggerFirings": ["triggers", "firings"],
     "rotateTriggerSecret": ["triggers", "rotate-secret"],
+    "listTemplates": ["template", "list"],
+    "applyTemplate": ["template", "apply"],
     "listToolKeys": ["tool-keys", "list"],
     "saveToolKey": ["tool-keys", "save"],
     "deleteToolKey": ["tool-keys", "delete"],

@@ -16,7 +16,7 @@ import { processAlive } from "@parcha/agentrun-kernel/host";
 import { doorKey, doorTook } from "@parcha/pi-durable-disk";
 import { RUN_STATUS_TABLE } from "@parcha/pi-durable-disk/internals";
 import { AgentHomeError, type Revision, runDirIn, type RevisionKind, type RunOrigin, type RunRow, type RunState, type StoredMetrics } from "@parcha/pi-durable-agent";
-import { chargedTool, isMessageRow, MESSAGE_ORIGIN, type MessageOrigin, NOTE_SUFFIX, originOf, registerLabel, registerTurnEnding, REQUEST_STARTED, type RunMetrics, runMetricsWithDecisions, scrubUrls, type TimelineEvent, timelineOf, timelineReducer } from "@parcha/pi-durable-agent/timeline";
+import { chargedTool, endedUsage, isMessageRow, MESSAGE_ORIGIN, type MessageOrigin, NOTE_SUFFIX, originOf, registerLabel, registerTurnEnding, REQUEST_STARTED, type RunMetrics, runMetricsWithDecisions, scrubUrls, type TimelineEvent, timelineOf, timelineReducer } from "@parcha/pi-durable-agent/timeline";
 import { HARNESS_LOG_EVENT, harnessModelKeys, thinkingFor } from "./adapters.js";
 import { runLink } from "./console-links.js";
 import { harnessOfBody } from "./harness.js";
@@ -26,6 +26,7 @@ import type { RunTrigger } from "./triggers.js";
 import { hostMemory, memoryFull, neverFits, runMibOf, runsMemoryMib } from "./host.js";
 import { type AgentEntry, type Agents, storeBusy, storeError, whenFree } from "./agents.js";
 import { dropHandover } from "./browser-live.js";
+import { asked, askShown, dropAsks, HANDOFF_TOOL, type PendingAsk } from "./browser-person.js";
 import { DATA_ENV, dataOfRun, FOLLOW_UP_OPEN_ENV, LAUNCH_LOST, readJson, RUN_CANCELLED, RUN_DOOR_TOKEN, RUN_LAUNCHING, RUN_META, runDoorToken, SETUP_LOST, writeDurableSync, writeWhole } from "./files.js";
 import { MCP_PIN, mcpCredentialsOf, mcpNameOf, type McpPin, mcpPinOf, type McpServerSource } from "./mcp-gateway.js";
 import { META_REASON, metaToolOf } from "./mcp-meta.js";
@@ -48,13 +49,14 @@ import { BUDGET_PAUSE, budgetPausedIn, capStoppedIn, clearBudgetPause, raiseFini
 import { durationMs } from "./print.js";
 import { handsParallel, keptFromBefore, keptVendor, type Plane, planeFor, recheckPlane, relaunchPlane, TOOL_PLANE_ENV, type Tooling, type ToolSettingsMap } from "./tool-plane.js";
 import { APPROVAL_ENTRY, APPROVAL_ROW, NO_APPROVER_ENV, type PendingApproval, permissionOf, previewOf, RESUME_PREFIX, resumeHead, TURN_ORIGIN_FILE } from "./tool-gate.js";
+import { approvalsOf } from "./approvals.js";
 import { ChangeClock, type Page, RowLog } from "./rows.js";
 import { TOOL_KEYS } from "./tool-keys.js";
 import { isObject, type Json } from "./validate.js";
 import { RequestBounds } from "./bounds.js";
 import { firstMessage } from "./run-manifest.js";
 import { REFLECT_REQUEST, Turns } from "./turns.js";
-import { DECISION_KEYS, handover, handoverSignIn, hostSecrets, mcpHandover, mcpSecretValues, secret, SECRET_NAMES, SECRETS_FD_ENV, SECRETS_LEN_ENV, type StoredKeys, withoutSecrets, withSecrets } from "./secrets.js";
+import { DECISION_KEYS, handover, handoverSignIn, mcpHandover, mcpSecretValues, secret, SECRET_NAMES, SECRETS_FD_ENV, SECRETS_LEN_ENV, type StoredKeys, withoutSecrets, withSecrets } from "./secrets.js";
 import { type HandedSignIn, pointerHash, type SignIns } from "./sign-ins.js";
 import { MIN_SECRET } from "./learn/secrets.js";
 import { cutStrings, keyRefusal, redacted, redactedAnswer, redactedLive, redactedOutput, runKeyOf, withoutLoopback } from "./key-refusal.js";
@@ -580,10 +582,31 @@ const meaningful = (rows: readonly TimelineEvent[]) => rows.findLast((r) => show
 /** What a run waits on, as `pending` says it (one field for every kind; a tool call waiting on approval is another):
  *  the question a waiting run asked, read from its last meaningful row (withAsks' waiting row), the same row its
  *  status reads, never from a scan of its timeline. */
-type Pending = { kind: "question"; question: string; asked_at: string } | PendingApproval | { kind: "budget"; cap_usd: number; spent_usd?: number; needs_usd?: number; least_cap_usd?: number; suggested_cap_usd?: number; overshoot_bound_usd?: number; said: string; at: string; node?: string | null } | null;
+type Pending = { kind: "question"; question: string; asked_at: string } | PendingApproval | { kind: "budget"; cap_usd: number; spent_usd?: number; needs_usd?: number; least_cap_usd?: number; suggested_cap_usd?: number; overshoot_bound_usd?: number; said: string; at: string; node?: string | null } | { kind: "browser"; instruction: string; completion_condition: string; asked_at: string; expires_at: string } | null;
 const pendingOf = (rows: readonly TimelineEvent[]): Pending => {
   const last = meaningful(rows);
   return last?.kind === "waiting" ? { kind: "question", question: last.text ?? last.summary ?? "", asked_at: last.timestamp } : null;
+};
+/** The ask its agent made for the person in its browser (browser-person.ts) that the run waits on, once its waiting row
+ *  is in the run's rows. */
+const browserAsk = (run: Run): PendingAsk | undefined => (run.dir ? askShown(run.dir, run.rows) : undefined);
+/** Whether the run's agent waits on an ask a process must still take up: unanswered, expired or not; or answered, while
+ *  the agent's hand-off call has no saved result yet (the owner answered after its process went: the answer is on disk,
+ *  but only a process that takes the ask up hands it to the agent). */
+const askWaits = (run: Run): boolean => run.dir !== undefined && (askShown(run.dir, run.rows, "waiting") !== undefined || (handoffOpen(run.rows) && asked(run.dir)));
+/** Whether a hand-off call of the agent's (HANDOFF_TOOL) has no saved result: the call is still under way, or was cut off
+ *  with its process. A cut-off call shows an "interrupted" result row, which is no result (no output: tool_result_size_bytes
+ *  null, as the timeline marks it); the next process resumes the call and saves its real one. */
+const handoffOpen = (rows: readonly TimelineEvent[]): boolean => {
+  const done = new Set(rows.filter((row) => row.kind === "tool_result" && row.tool_name === HANDOFF_TOOL && row.tool_result_size_bytes !== null).map((row) => row.tool_use_id));
+  return rows.some((row) => row.kind === "tool_use" && row.tool_name === HANDOFF_TOOL && !done.has(row.tool_use_id));
+};
+/** A run whose agent asked for the person in its browser waits on their hand-back: what it asked them to do, when it is
+ *  done, and when the ask expires. Never the session's tag or the live view's link. The two texts are the model's, so
+ *  redacted with the run's redactor (`redact`), as a tool call's arguments are: a held value it echoes never shows. */
+const browserPending = (run: Run, redact: (text: string) => string): Pending | undefined => {
+  const ask = browserAsk(run);
+  return ask && { kind: "browser", instruction: redact(ask.instruction), completion_condition: redact(ask.completion_condition), asked_at: ask.asked_at, expires_at: ask.expires_at };
 };
 /** Notes the tool calls that wait for approval in `entries` (the run's stored entries), and those whose answer its process
  *  acted on. */
@@ -1034,6 +1057,9 @@ export function statusOf(run: Run): { status: Status; state: State } {
   // (raisedToGo: from the moment the raise is taken, through its paused process's let-go and the follow-up's tries), since
   // nothing waits on a person; for a message only if that follow-up will not go.
   if (refusedAt(run) !== undefined) return pausedAt(run) !== undefined ? { status: "input_required", state: "waiting" } : raisedToGo(run) ? { status: "queued", state: "working" } : { status: "input_required", state: "idle" };
+  // Its agent asked for the person in its browser (browser-person.ts): its turn is still open, the tool call waiting for
+  // the hand-back, and the run waits on the person until they answer or the ask expires.
+  if (browserAsk(run)) return { status: "input_required", state: "waiting" };
   if (run.working) return { status: "working", state: "working" };
   if (meaningful(run.rows)?.kind === "waiting") return { status: "input_required", state: "waiting" };
   return { status: "working", state: "idle" };
@@ -1071,7 +1097,7 @@ export type StartOptions = { input: Json; title: string; place: Place; effort?: 
  *  tried again; `readyTimeoutMs`: how long a request to a run waits for its door (a run's first message, sent by its
  *  start, always waits READY_TIMEOUT_MS); `openTimeoutMs`: how long a launched process has to open its run (READY_TIMEOUT_MS,
  *  the first message's wait, by default; never the request's wait); `log` takes a run's start and end (print.ts). */
-export type RunsOptions = { /** The installs of the harnesses that install on first use (harness-install.ts HarnessInstall), by harness: a run on one waits for its install before it launches. Absent, none is waited for. */ installs?: Readonly<Record<string, { readonly installed: boolean; readonly installingWords: string; needed(): Promise<boolean>; ensure(): Promise<void> }>>; /** What a run's Docker box reaches, as the server resolved it (run-box.ts boxNetworkOf): the list, or none. Absent, none. */ dockerAllow?: readonly string[] | "none"; /** On a Mac, the server's proxy container's volume a run's Docker box mounts (box-egress-vm.ts). */ dockerVolume?: string; /** A server in a container: where its Docker has the data directory (box-paths.ts), which a run's Docker box mounts from. Absent on a host. */ dockerPaths?: BoxPaths; agents: Agents; token: string; /** The server's saved tool keys, read by name for its runs alone (secrets.ts). */ storedKeys?: StoredKeys; /** The server's saved MCP servers (mcp-servers.ts): a run's pin and its credentials come from them at each launch. */ mcpServers?: McpServerSource; documents?: string; doorTokenFile: string; doorToken: string; /** The test switches a run's process gets (server.ts fauxEnvOf): empty outside tests. */ fauxEnv?: NodeJS.ProcessEnv; runBoxes?: BoxProvider; /** The server's Daytona provider, with its key: remote boxes are made, seeded, pulled and destroyed with it, here alone (box-relay.ts). */ remoteBoxes?: BoxProvider; /** Daytona's API and the same key, for what the provider does not do: a kept box's idle stop, and its wake at a start (daytona-api.ts). */ remoteApi?: DaytonaApi; /** The server's VM box provider, with its client: a VM run's box is made, seeded, pulled and ended with it, here alone, as a Daytona one is (box-relay-vm.ts); it has no network. */ vmBoxes?: BoxProvider; /** A VM box's limits (run-box.ts RemoteLimits), from the box settings. */ vmLimits?: RemoteLimits; /** The relay's VM half, which lets go of a run's programs at its end. */ vmRelay?: { drop(runId: string): void }; /** The hosts a remote box may reach (run-box.ts boxAllowOf); `none`, or absent, for none. */ boxAllow?: readonly string[] | "none"; /** Called once, with the provider's refusal's code and words, when it cannot keep that list here: from then on each remote box is made with no network. */ onNoBoxList?: (code: string, message: string) => void; toolSettings?: () => ToolSettingsMap; /** Whether anyone can answer a tool call's approval here (accounts on); false, the run's gate refuses each ask (tool-gate.ts). */ approvers?: boolean; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; box?: { host: BoxHost; quarantine: Quarantine }; settleRetryMs?: number; readyTimeoutMs?: number; openTimeoutMs?: number; /** Under --faux only (server.ts): the nonce handed to each run's process in place of its launch's. */ fauxHandedNonce?: string; reflectTimeoutMs?: number; gradeTimeoutMs?: number; /** The grader's model (`--grade-model`), before AGENTRUN_SERVE_GRADE_MODEL and the strong tier (grade.ts gradeModelOf). */ gradeModel?: string; /** How much of what a run learned its instructions hold, in bytes (`--learning-budget`, learning.ts learnedOf). */ learningBudget?: number; log?: (event: string, fields: Record<string, string | number>) => void; notify?: RunNotify; learning?: LearningMode; /** Each agent's saved sign-ins (sign-ins.ts): absent, no run gets one. */ signIns?: SignIns; /** The secrets this server makes and keeps sealed while it runs (each webhook trigger's), read at each check, so a rotation is seen at once: what a run's learning refuses and cuts, as it does the saved keys. */ ownSecrets?: () => readonly string[] };
+export type RunsOptions = { /** The installs of the harnesses that install on first use (harness-install.ts HarnessInstall), by harness: a run on one waits for its install before it launches. Absent, none is waited for. */ installs?: Readonly<Record<string, { readonly installed: boolean; readonly installingWords: string; needed(): Promise<boolean>; ensure(): Promise<void> }>>; /** What a run's Docker box reaches, as the server resolved it (run-box.ts boxNetworkOf): the list, or none. Absent, none. */ dockerAllow?: readonly string[] | "none"; /** On a Mac, the server's proxy container's volume a run's Docker box mounts (box-egress-vm.ts). */ dockerVolume?: string; /** A server in a container: where its Docker has the data directory (box-paths.ts), which a run's Docker box mounts from. Absent on a host. */ dockerPaths?: BoxPaths; agents: Agents; token: string; /** The server's saved tool keys, read by name for its runs alone (secrets.ts). */ storedKeys?: StoredKeys; /** The server's saved MCP servers (mcp-servers.ts): a run's pin and its credentials come from them at each launch. */ mcpServers?: McpServerSource; documents?: string; doorTokenFile: string; doorToken: string; /** The test switches a run's process gets (server.ts fauxEnvOf): empty outside tests. */ fauxEnv?: NodeJS.ProcessEnv; runBoxes?: BoxProvider; /** The server's Daytona provider, with its key: remote boxes are made, seeded, pulled and destroyed with it, here alone (box-relay.ts). */ remoteBoxes?: BoxProvider; /** Daytona's API and the same key, for what the provider does not do: a kept box's idle stop, and its wake at a start (daytona-api.ts). */ remoteApi?: DaytonaApi; /** The server's VM box provider, with its client: a VM run's box is made, seeded, pulled and ended with it, here alone, as a Daytona one is (box-relay-vm.ts); it has no network. */ vmBoxes?: BoxProvider; /** A VM box's limits (run-box.ts RemoteLimits), from the box settings. */ vmLimits?: RemoteLimits; /** The relay's VM half, which lets go of a run's programs at its end. */ vmRelay?: { drop(runId: string): void }; /** The hosts a remote box may reach (run-box.ts boxAllowOf); `none`, or absent, for none. */ boxAllow?: readonly string[] | "none"; /** Called once, with the provider's refusal's code and words, when it cannot keep that list here: from then on each remote box is made with no network. */ onNoBoxList?: (code: string, message: string) => void; toolSettings?: () => ToolSettingsMap; /** Whether anyone can answer a tool call's approval here (accounts on); false, the run's gate refuses each ask (tool-gate.ts). */ approvers?: boolean; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; box?: { host: BoxHost; quarantine: Quarantine }; settleRetryMs?: number; readyTimeoutMs?: number; openTimeoutMs?: number; /** Under --faux only (server.ts): the nonce handed to each run's process in place of its launch's. */ fauxHandedNonce?: string; reflectTimeoutMs?: number; gradeTimeoutMs?: number; /** The grader's model (`--grade-model`), before AGENTRUN_SERVE_GRADE_MODEL and the strong tier (grade.ts gradeModelOf). */ gradeModel?: string; /** How much of what a run learned its instructions hold, in bytes (`--learning-budget`, learning.ts learnedOf). */ learningBudget?: number; log?: (event: string, fields: Record<string, string | number>) => void; notify?: RunNotify; learning?: LearningMode; /** Each agent's saved sign-ins (sign-ins.ts): absent, no run gets one. */ signIns?: SignIns; /** Every secret this server never shows (server.ts serverSecrets), read at each call, so one made or rotated is cut at once: the host's and the keys saved on it, read through `stored` when given (learning's view keeps the saved keys it read), its tokens, and each it holds (server-secrets.ts). What a run shows, its title among it, and what its learning keeps are cut of it. */ serverSecrets: (stored?: StoredKeys) => string[] };
 /** Told of a run's moment each time it is seen (webhooks.ts' emit, which queues each one once): a wait it reached, and an
  *  end once the agent store has it. `marker` names the moment (the person's turn it waits at, the end's time), the same
  *  when another server sees it again. It says what came of it: `unsaved`, not in the outbox on disk yet. */
@@ -1216,8 +1242,9 @@ export async function lastLogLine(run: Pick<Run, "dir">): Promise<string> {
   }
 }
 
-/** Seams for tests, each unset in a server: `personsTurn` holds a person's turn just after its origin went. */
-export const runsTestHooks: { personsTurn?: (runDir: string) => Promise<void> | void } = {};
+/** Seams for tests, each unset in a server: `personsTurn` holds a person's turn just after its origin went;
+ *  `beforeRestartCheck` holds a settle that found the run's process gone just before it decides whether to open it again. */
+export const runsTestHooks: { personsTurn?: (runDir: string) => Promise<void> | void; beforeRestartCheck?: (runDir: string) => Promise<void> | void } = {};
 
 export class Runs {
   private readonly runs = new Map<string, Run>();
@@ -1456,7 +1483,8 @@ export class Runs {
         run.cancel = true;
         run.finishing = "cancelled";
       }
-      // A process an earlier server started that is gone took its browser's view with it.
+      // A process an earlier server started that is gone took its browser's view with it. Its agent's ask, if one waits,
+      // stays for the run's next process to take up (browser-person.ts).
       if (!lives) void dropHandover(dir).catch(() => undefined);
       if (run.meta.unshown && !lives && !run.outcome) {
         // Its process gone: never opened again. The start's recovery settles it, failed (settleOnce reads `finishing`).
@@ -1666,9 +1694,11 @@ export class Runs {
   private show(run: Run): void {
     // The decisions' rows are the served view's only: the run's own rows, which its cost is read from, stay its model nodes'.
     // Their summary and text are redacted whole, then cut (decision-rows.ts): a provider's error can quote a held key.
-    const own = run.decisions === undefined ? run.rows : withDecisions(run.rows, run.decisions, this.decisionShown(run));
+    // An ended run's usage row says its cost, never "so far": its rows may have been read while it ran.
+    const ended = TERMINAL.has(statusOf(run).status);
+    const own = run.decisions === undefined ? run.rows : withDecisions(run.rows, run.decisions, this.decisionShown(run), { ended });
     // An error row reads as the run's error does (errorWords): a refused key in plain words, no loopback address.
-    const served = own.map((row) => (row.kind === "error" ? this.servedError(run, row) : row));
+    const served = own.map((row) => (row.kind === "error" ? this.servedError(run, row) : ended ? endedUsage(row) : row));
     // A run paused at its cap says so after the refusal, as the row its status reads.
     const said = pausedAt(run);
     const rows = said === undefined || run.meta.max_cost_usd === undefined ? served : withPaused(served);
@@ -1687,6 +1717,13 @@ export class Runs {
   /** A live process: the child this server started, or one an earlier server started that still serves the run. */
   private live(run: Run): boolean {
     return Boolean(run.child || run.orphan);
+  }
+
+  /** Run `id`'s status read again now: the owner answered its browser ask (browser-person.ts), so it is working again
+   *  before its process has read the answer. */
+  remark(id: string): void {
+    const run = this.runs.get(id);
+    if (run) this.mark(run);
   }
 
   /** Whether run `id` has a process serving it now: the child this server started, or an adopted one that is alive. A
@@ -1790,7 +1827,7 @@ export class Runs {
   }
 
   /** shown() for a run this server holds no Run for (an ended one a list reads from its row and serve.json alone): cut of
-   *  this server's secrets and tokens and of what the run was handed of its agent's sign-in (handedPointers); `withheld`
+   *  every secret this server never shows (serverSecrets) and of what the run was handed of its agent's sign-in (handedPointers); `withheld`
    *  when that can't be read back here, as a load would hide the run. */
   private async rowShown(agentId: string, meta: Partial<RunMeta> | null, damaged = false): Promise<((text: string) => string) | "withheld"> {
     // Its serve.json there but unreadable: what it was handed went with it (load hides such a run, its revision granting
@@ -1799,7 +1836,7 @@ export class Runs {
     const browser = isObject(meta?.tool_plane) ? keptVendor(meta.tool_plane as Plane).browser : undefined;
     const pointers = await this.handedPointers(agentId, browser, handedMark(meta?.sign_in_handed));
     if (pointers === "unreadable") return "withheld";
-    const values = [...hostSecrets(process.env, this.options.storedKeys), ...pointers.refs.filter((ref) => ref.length >= MIN_SECRET), this.options.token, this.options.doorToken];
+    const values = [...this.options.serverSecrets(), ...pointers.refs.filter((ref) => ref.length >= MIN_SECRET)];
     return (text) => withoutLoopback(redacted(text, values));
   }
 
@@ -1867,18 +1904,10 @@ export class Runs {
     return this.redactor(run)(await lastLogLine(run));
   }
 
-  /** Every secret value `run`'s errors never show, as learning's checker holds them (learning-run.ts refused): this
-   *  server's secrets wherever its launcher put them and the keys saved on it, what each launch handed the run, and the
-   *  server's own tokens and the secrets it makes (ownSecrets: each webhook trigger's, read now, so a rotation is cut at
-   *  once). */
+  /** Every secret value `run`'s errors never show, as learning's checker holds them (learning-run.ts refused): every one
+   *  this server never shows (serverSecrets, read now, so one rotated is cut at once) and what each launch handed the run. */
   private refusedValues(run: Run): string[] {
-    return [...this.serverSecrets(), ...(run.handed ?? [])];
-  }
-
-  /** The values this server holds, whatever run: its secrets wherever its launcher put them and the keys saved on it, its
-   *  own tokens, and the secrets it makes (ownSecrets). */
-  private serverSecrets(): string[] {
-    return [...hostSecrets(process.env, this.options.storedKeys), this.options.token, this.options.doorToken, ...(this.options.ownSecrets?.() ?? [])];
+    return [...this.options.serverSecrets(), ...(run.handed ?? [])];
   }
 
   /** A run's model error in a person's words when its provider refused the run's key (key-refusal.ts): the key its
@@ -2284,12 +2313,12 @@ export class Runs {
     run.waited = waiting;
     if (run.log.setState(`${status}/${state}/${run.settled}`)) run.updatedAt = new Date().toISOString();
     // What it waits on: an ask_person question (waiting), else a stopped turn, for the person's next message.
-    if (status === "input_required") this.notice(run, "run.needs_input", noticeMark(run), { kind: state !== "waiting" ? "stopped" : waitingApproval(run) ? "approval" : pausedAt(run) !== undefined || budgetWaiting(run) ? "budget" : "question" });
+    if (status === "input_required") this.notice(run, "run.needs_input", noticeMark(run), { kind: state !== "waiting" ? "stopped" : waitingApproval(run) ? "approval" : pausedAt(run) !== undefined || budgetWaiting(run) ? "budget" : browserAsk(run) ? "browser" : "question" });
   }
 
   /** Tells webhooks.ts (`notify`) of a moment of the run under `marker`: a wait it reached (mark), or an end the agent store
    *  has (settle, persistLater, reopen). What it already queued it queues no more. */
-  private notice(run: Run, event: "run.needs_input" | "run.ended", marker: string | undefined, pending?: { kind: "question" | "approval" | "stopped" | "budget" }): Emitted | undefined {
+  private notice(run: Run, event: "run.needs_input" | "run.ended", marker: string | undefined, pending?: { kind: "question" | "approval" | "stopped" | "budget" | "browser" }): Emitted | undefined {
     if (!this.options.notify || !marker) return undefined;
     try {
       return this.options.notify(event, { run_id: run.id, agent_id: run.agentId, status: statusOf(run).status, title: run.meta.title, ...(pending ? { pending } : {}) }, marker);
@@ -2962,6 +2991,8 @@ export class Runs {
       // Its live browser view went with it, however it ended (browser-live.ts): a process killed before it let its
       // sessions go leaves its hand-over behind, naming a port another listener may take.
       void dropHandover(run.dir).catch(() => undefined);
+      // Its agent's ask, if one waits, stays: the run's next process takes it up (browser-person.ts), and the run ends
+      // with it gone (carryBack).
       this.reportedBack(run);
       void this.settle(run, code, true);
     });
@@ -3180,12 +3211,15 @@ export class Runs {
       ended = end && { outcome: end.outcome };
     }
     if (!ended) {
-      // Work left and no process: opened again. A run that waits for the person waits without one, until a message.
+      // Work left and no process: opened again. A run that waits for the person waits without one, until a message; but
+      // one whose agent waits on its ask for the person in its browser is mid-turn (the tool call waits inside it), and its
+      // next process takes the wait up: it reads the owner's answer, or writes the ask's expiry (browser-person.ts).
       // A raised run whose follow-up is still to go let its process go as a paused one does: its sign-in's lease goes too.
+      if (gone) await runsTestHooks.beforeRestartCheck?.(run.dir);
       // A workflow run paused at its cap that let its process go waits for a raise, which opens it again (raiseCap).
       // One whose raise serve.json kept and a crash cut short: finished now (finishRaise opens it again), never left waiting.
       if (run.kind === "workflow" && gone && budgetWaiting(run) && (await this.finishRaise(run, { settling: true }))) return this.refresh(run);
-      const stalled = run.kind === "workflow" ? !budgetWaiting(run) : statusOf(run).status !== "input_required" && !raisedToGo(run);
+      const stalled = run.kind === "workflow" ? !budgetWaiting(run) : (statusOf(run).status !== "input_required" && !raisedToGo(run)) || askWaits(run);
       // Its sign-in's save lease stays with it until it ends (carryBack), through a relaunch or a restart: a session it
       // opened before its process went may still be live at the vendor, and would write back over another run's. One
       // that let go cleanly to wait for its person released its sessions first, so its lease goes now.
@@ -3248,6 +3282,8 @@ export class Runs {
   /** Ends the run in the agent store, once: how it ended, its cost, a line for the list and its metrics. A store held by
    *  another writer is tried again with backoff; past the last try the run stays unsettled, and the next start carries it back. */
   private async carryBack(run: Run, outcome: Status, state?: Ended, summary?: string): Promise<void> {
+    // Its agent's asks for the person in its browser end with it: nobody is left to take them up.
+    if (run.dir) dropAsks(run.dir);
     // Its reads ended with its end's read (settleOnce): their guard goes. A follow-up's process starts it again from none.
     this.reads.forget(run.id);
     // Ended, it saves to its agent's sign-in no more; but a process that went without letting its sessions go may have
@@ -3310,6 +3346,8 @@ export class Runs {
       run.finishing = undefined;
       run.settled = true;
       run.updatedAt = new Date().toISOString();
+      // Its rows as an ended run's (its usage row says its cost) before its status wakes a reader: see below.
+      this.show(run);
       this.refresh(run);
       this.persistLater(run, persist);
       return;
@@ -3324,6 +3362,10 @@ export class Runs {
     run.finishing = undefined;
     run.settled = true;
     run.updatedAt = new Date().toISOString();
+    // Its rows were last shown while it ran (its end's read), so its usage row said "so far". Shown again as an ended run's
+    // before refresh() marks its status: a reader following with a cursor gets the row's change with the final page,
+    // never a final page over the running wording.
+    this.show(run);
     this.refresh(run);
     this.notice(run, "run.ended", run.endedAt);
     // Only once the run has ended as it would without learning: a slow or failing check never holds the job.
@@ -3472,7 +3514,7 @@ export class Runs {
       const at = new Date().toISOString();
       const meta: RunMeta = {
         // Shown on the run list and its view: no held secret a person pasted into the message it is taken from.
-        title: clip(redacted(options.title.trim().replace(/\s+/g, " "), this.serverSecrets()), 80),
+        title: clip(redacted(options.title.trim().replace(/\s+/g, " "), this.options.serverSecrets()), 80),
         created_at: at,
         input: options.input,
         place: options.place,
@@ -3951,7 +3993,9 @@ export class Runs {
     if (paused !== undefined) throw new ApiError("budget_reached", `The run is paused at its ${money(run.meta.max_cost_usd ?? 0)} cap: raise the cap first. ${paused}`, { details: { cap_usd: run.meta.max_cost_usd ?? null } });
     // A harness that cannot take a message mid-turn (any but pi, harness.ts) queues it for the turn's end: a new turn of
     // the same run, which the contract calls follow_up, never a steer it does not do.
-    const working = status === "queued" || (status === "working" && state === "working");
+    // A run whose agent waits on the person in its browser (browser-person.ts) is mid-turn: a message is no answer to it
+    // (the hand-back is), and goes to that turn as one to a working run does.
+    const working = status === "queued" || (status === "working" && state === "working") || browserAsk(run) !== undefined;
     const mode = working ? (steers ? "steer" : "follow_up") : status === "input_required" && state === "waiting" ? "answer" : "follow_up";
     // A message that may not answer (a trigger's): one that would is refused here, past every wait, before it is sent.
     if (mode === "answer" && !answers) throw waitingRefusal();
@@ -4357,10 +4401,13 @@ export class Runs {
       // Cut as its rows and answer are (shown): an error can quote what the run said, or a process's last line.
       error: status === "failed" ? this.servedRunError(run, run.error ?? { code: "run_failed", message: "The run failed.", retryable: false }) : null,
       review: endedAt === null ? null : this.servedReview(run, reviewAt(run.meta.review ?? (row ? reviewOfRow(row, run.meta) : null), endedAt)),
-      pending: status === "input_required" && state === "waiting" ? (approvalOf(run, this.redactor(run)) ?? budgetPending(run, this.spentNow(run)) ?? workflowBudgetPending(run) ?? pendingOf(run.rows)) : null,
+      pending: status === "input_required" && state === "waiting" ? (approvalOf(run, this.redactor(run)) ?? budgetPending(run, this.spentNow(run)) ?? workflowBudgetPending(run) ?? browserPending(run, this.redactor(run)) ?? pendingOf(run.rows)) : null,
       cost: this.cost(run),
       // How its cap prices a request (cap.ts CapMode): its own, else expected; null with no cap.
       cap_mode: run.meta.max_cost_usd === undefined ? null : (run.meta.cap_mode ?? "expected"),
+      // Whether it ran unattended (its revision's approvals, as it started: a run keeps the revision it started on): never,
+      // an ask allowed at its gate; ask, the default.
+      approvals: approvalsOf(run.tooling?.approvals),
       archived_at: stored?.archivedAt ?? null,
       imported_from: run.imported ?? null,
       trigger: run.meta.trigger ?? null,

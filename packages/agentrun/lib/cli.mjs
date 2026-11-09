@@ -1,7 +1,8 @@
 // `npx @parcha/agentrun agents list`: the server's API from the terminal. Every command is an operation of the server's
 // OpenAPI document, read from the generated table (commands.generated.mjs); nothing here is written per command. Waiting for
 // a run and following it live (runs start --wait, runs wait, runs timeline --follow) are follow.mjs's; the commands that
-// read a secret from stdin (login, logout, tool-keys set) are login.mjs's, and skill install is skill.mjs's.
+// read a secret from stdin (login, logout, tool-keys set) are login.mjs's, skill install is skill.mjs's, and template
+// validate, which checks a package folder on this machine, is template.mjs's.
 import { closeSync, constants, fstatSync, openSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
@@ -10,9 +11,10 @@ import { COMMANDS, SECRET_ROUTES } from "./commands.generated.mjs";
 import { FLAGS, REQUEST_MS, WAIT, followTimeline, timerMs, waitRun } from "./follow.mjs";
 import { SECRETS, guarded } from "./login.mjs";
 import { SKILL_INSTALL } from "./skill.mjs";
+import { TEMPLATE_VALIDATE } from "./template.mjs";
 
 /** The hand-written commands that run as they are given (`run`), beside the table's. */
-const LOCAL = [...SECRETS, SKILL_INSTALL];
+const LOCAL = [...SECRETS, SKILL_INSTALL, TEMPLATE_VALIDATE];
 export const NOUNS = new Set(["api", "help", ...[...COMMANDS, ...LOCAL].map((entry) => entry.command[0])]);
 const DEFAULT_BASE_URL = "http://127.0.0.1:7340/v2"; // key-gate: loopback-rule the default address of the server started on this machine
 const START = "start it with `npx @parcha/agentrun`, or pass --base-url (or set AGENTRUN_BASE_URL) to the address the server printed";
@@ -74,6 +76,9 @@ const helpOf = (entry, flags) => {
 };
 const defaultType = (types) => (types.includes("application/json") ? "application/json" : types.includes("*/*") ? "application/octet-stream" : types[0]);
 
+/** What a body made of flags alone carries besides them, as help says it. */
+const fillLine = (fill) => `Built from flags alone, the body also has: ${Object.entries(fill).map(([name, value]) => `${name} ${JSON.stringify(value)}`).join(", ")}.`;
+
 function commandHelp(entry) {
   const flags = [...entry.query, ...entry.headers, ...entry.bodyFlags].map((f) => {
     const value = f.type === "boolean" ? "" : ` ${f.enum ? f.enum.join("|") : f.type.toUpperCase()}`;
@@ -83,7 +88,8 @@ function commandHelp(entry) {
     flags.push([BODY, entry.secretBody ? "the body, from stdin or a file only: it holds a secret" : "the body, inline, from a file or from stdin; flags win over a JSON body's fields"]);
     flags.push(["--body-type TYPE", `the body's type: ${entry.bodyTypes.join(", ")} (default ${defaultType(entry.bodyTypes)}); any other than JSON is sent as given`]);
   }
-  const help = helpOf(entry, [...flags, ...(FLAGS[entry.operationId]?.help ?? [])]);
+  const filled = entry.bodyFill ? `\n\n${fillLine(entry.bodyFill)}` : "";
+  const help = `${helpOf(entry, [...flags, ...(FLAGS[entry.operationId]?.help ?? [])])}${filled}`;
   // The document's working body, ready to paste: single-quoted for a POSIX shell.
   return entry.example === undefined ? help : `${help}\n\nExample:\n  ${usageOf(entry)} --body '${JSON.stringify(entry.example).replace(/'/g, "'\\''")}'`;
 }
@@ -406,7 +412,8 @@ async function command(entry, argv, env, io) {
   if (fields.length && !JSON_TYPE.test(type)) throw usageError(`--${flag(fields[0][0])} is a field of the JSON body, and this body is ${type}.`);
   if (JSON_TYPE.test(type ?? "") && body !== undefined && !jsonOf(body)) throw usageError("--body is not JSON.");
   if (fields.length) {
-    const object = body === undefined ? {} : jsonOf(body).value;
+    // Built from flags alone, the body also carries what the table fills (bodyFill: a JSON-RPC request's jsonrpc and id).
+    const object = body === undefined ? { ...entry.bodyFill } : jsonOf(body).value;
     if (object === null || typeof object !== "object" || Array.isArray(object)) throw usageError("--body is not a JSON object, so it cannot take the flags' fields.");
     body = JSON.stringify({ ...object, ...Object.fromEntries(fields) });
   }

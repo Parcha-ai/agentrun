@@ -10,12 +10,13 @@
 // With them, in the same write, the ledger: the end and the wait each run's notices were queued for. A run's moment is
 // queued once, by whichever server sees it, and a start queues each end the agent store holds that the ledger does not
 // (catchUp): a kill between the store's end and the outbox write loses no run.ended, and sends none twice.
-import { createHash, createHmac, randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { seal, unseal } from "@parcha/pi-durable-agent";
 import { ApiError, invalid } from "./errors.js";
 import { writeDurableSync } from "./files.js";
+import { mintSecret, signatureOf } from "./standard-webhooks.js";
 import { SEAL_KEY_ENV, sealKeyOf } from "./tool-keys.js";
 import type { TriggerFailed } from "./triggers.js";
 import { isObject, unknownFields } from "./validate.js";
@@ -49,7 +50,7 @@ const MAX_URL = 2048;
  *  held here only, its outbox write failed; `off`, no webhook set, or one a 410 turned off, so nothing is to be sent;
  *  `closed`, the server is stopping. */
 export type Emitted = "queued" | "unsaved" | "off" | "closed";
-export type RunNotice = { run_id: string; agent_id: string; status: string; title: string; pending?: { kind: "question" | "approval" | "stopped" | "budget" } };
+export type RunNotice = { run_id: string; agent_id: string; status: string; title: string; pending?: { kind: "question" | "approval" | "stopped" | "budget" | "browser" } };
 type Config = { url: string; secret: string; updated_at: string; disabled?: { at: string; reason: string } };
 type Message = { id: string; type: MessageType; body: string; created_at: string; status: "pending" | "delivered" | "failed"; attempts: number; next_at: number | null };
 /** What the outbox queued of one run: its end (its time), and the wait it stands at (its mark), kept until the run moves
@@ -61,9 +62,7 @@ type Signing = "sealed" | "seal_key_missing" | "unreadable";
 
 const aad = `${FORMAT}|secret`;
 const iso = (ms: number) => new Date(ms).toISOString();
-/** The signature header of `body`, sent as message `id` at `timestamp` (Unix seconds), under `secret` (`whsec_...`). */
-export const signatureOf = (secret: string, id: string, timestamp: string, body: string) =>
-  `v1,${createHmac("sha256", Buffer.from(secret.slice("whsec_".length), "base64")).update(`${id}.${timestamp}.${body}`).digest("base64")}`;
+export { signatureOf } from "./standard-webhooks.js";
 
 /** The webhook as `file` keeps it, if it holds one. */
 function configIn(file: string): Config | undefined {
@@ -139,6 +138,28 @@ export class Webhooks {
     this.base = base.replace(/\/+$/, "");
   }
 
+  /** The secret, opened here, and each one this server held before it since it started (removed by a DELETE, or
+   *  replaced), for the server's list of its own secrets (server-secrets.ts): a run that echoes an old one is cut all the
+   *  same. None that is not there, or does not open. */
+  signingSecrets(): string[] {
+    const now = this.signingSecret();
+    return [...(now ? [now] : []), ...this.retired];
+  }
+  /** The secrets this webhook signed with before, in memory alone, for this process's life. */
+  private readonly retired = new Set<string>();
+
+  /** The secret, opened here; undefined when there is none, or it does not open. */
+  private signingSecret(): string | undefined {
+    if (this.signing === undefined) {
+      const config = this.config();
+      const opened = config && this.secret(config);
+      this.signing = { value: opened && "secret" in opened ? opened.secret : undefined };
+    }
+    return this.signing.value;
+  }
+  /** signingSecret's last reading: read again after any write of the webhook's file, which only this server makes. */
+  private signing?: { value: string | undefined };
+
   /** GET: the URL, whether the secret signs here, and why the webhook is off, if it is; never the secret. */
   view() {
     const config = this.config();
@@ -157,7 +178,7 @@ export class Webhooks {
     if (issues.length) throw invalid(issues);
     const was = this.config();
     if (!was && !this.key) throw new ApiError("no_sealing_key", `This server was handed no seal key (${SEAL_KEY_ENV}), so it keeps no webhook secret: it never keeps one in the clear.`);
-    const secret = was ? undefined : `whsec_${randomBytes(32).toString("base64")}`;
+    const secret = was ? undefined : mintSecret();
     this.write({ url: url!.href, secret: was?.secret ?? seal(this.key!, Buffer.from(secret!, "utf8"), aad).toString("base64"), updated_at: new Date().toISOString() });
     return { created: !was, view: this.view(), ...(secret ? { secret } : {}) };
   }
@@ -165,7 +186,10 @@ export class Webhooks {
   /** DELETE: the webhook gone, and its pending messages with it; the log of attempts stays. */
   remove(): void {
     if (!this.config()) return;
+    const was = this.signingSecret();
     rmSync(this.file, { force: true });
+    if (was) this.retired.add(was);
+    this.signing = undefined;
     this.held = undefined;
     this.drop("the webhook was removed");
   }
@@ -278,8 +302,12 @@ export class Webhooks {
 
   /** Throws when the write fails: what was held stays held. */
   private write(config: Config): void {
+    const was = this.signingSecret();
     writeDurableSync(this.file, `${JSON.stringify({ v: 1, ...config }, null, 2)}\n`);
     this.held = undefined;
+    this.signing = undefined;
+    // A write that replaces the secret keeps the one it replaced (signingSecrets).
+    if (was && was !== this.signingSecret()) this.retired.add(was);
   }
 
   /** The outbox as the last server left it. A file of another version is not read, and the log says which it was. */

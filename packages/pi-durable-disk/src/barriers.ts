@@ -21,17 +21,22 @@ export type BarrierStatus = "active" | "planned";
 export interface BarrierRow {
   /** Where the effect is written. */
   readonly store: StoreId;
-  /** The file, under packages/, that calls `syncNow()` for it. */
+  /** The file, under packages/, that calls `syncNow()` for it (or `call`). */
   readonly site: string;
   /** For a chokepoint whose sync is reached through a hook: the file and text that call it. */
   readonly via?: { readonly file: string; readonly text: string };
+  /** For a store whose sync is not `syncNow()` (the one store's `flush()`, behind its Store interface): the exact code
+   *  line in `site` that is the barrier, checked as code only (never in a comment), in place of a `syncNow(…)` call. */
+  readonly call?: string;
   readonly status: BarrierStatus;
   /**
    * An active barrier's proof: its box-loss end-to-end test, the one file (relative to the repository) that loses a box
-   * while the effect it guards is in flight and shows the effect is not sent again. `null` while it has none: the run
+   * while the effect it guards is in flight and shows the effect is not sent again; or a list of files that together are
+   * the proof, the box-loss test among them (one shows the sync holds through a box loss, the others that the site syncs
+   * before the effect and that the effect then runs once). Each file must exist. `null` while it has none: the run
    * journal may not go NORMAL then (NORMAL_PRECONDITIONS.barrierProofs).
    */
-  readonly proof?: string | null;
+  readonly proof?: string | readonly string[] | null;
   readonly why: string;
 }
 
@@ -109,6 +114,19 @@ export const BARRIERS = {
     proof: "packages/pi-durable-disk/test/barriers-crash.test.ts",
     why: "the release: what the run committed is durable before its claim is sealed and let go",
   },
+  storeIntentFlush: {
+    store: "one-store",
+    site: "serve/src/runner/side-effects.ts",
+    call: "if (!call.replaySafe) await call.flush();",
+    status: "active",
+    proof: [
+      "packages/serve/test/store-flush.test.mjs",
+      "packages/serve/test/runner-loop-flush.test.mjs",
+      "packages/serve/test/harness-conformance-reference.test.mjs",
+      "packages/serve/test/harness-conformance-pi.test.mjs",
+    ],
+    why: "a runner loop's effects that are not replay-safe, each flushed in the one store's journal before it runs: a tool call that is not replay-safe (its intent flushed before the call), and each model-request attempt (flushed once per attempt, after its request checkpoint, before the request leaves)",
+  },
 } as const satisfies Record<string, BarrierRow>;
 
 export type BarrierName = keyof typeof BARRIERS;
@@ -123,6 +141,10 @@ export interface StoreRow {
   readonly synchronous: "journal" | "FULL" | "NORMAL";
   /** `barriers`: its side effects pass the barriers whose `store` is this one. `none`: no tool and no model runs on it. */
   readonly effects: "barriers" | "none";
+  /** The source directory, under packages/, of the interface others reach it through (the one store's Store): a file
+   *  outside it that imports from it and runs a tool or a model is the store's user, and counts as `opens` does for the
+   *  effects check. */
+  readonly interface?: string;
   readonly what: string;
 }
 
@@ -169,6 +191,13 @@ export const STORES = {
     synchronous: "FULL",
     effects: "none",
     what: "the server's lock file on its data root: an exclusive lock, no data",
+  },
+  "one-store": {
+    opens: ["serve/src/store/sqlite/worker.ts"],
+    synchronous: "NORMAL",
+    effects: "barriers",
+    interface: "serve/src/store/",
+    what: "the one store (store.sqlite in the data directory) and its owner lock: WAL at NORMAL, flush() one FULL commit; the runner's loops run tools and models through its Store interface, each effect that is not replay-safe after its intent and a flush()",
   },
 } as const satisfies Record<string, StoreRow>;
 

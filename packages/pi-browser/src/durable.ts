@@ -671,7 +671,7 @@ function portFor<D extends PageDriver>(c: Custody<D>, api: ToolExecutionApi, con
       for (;;) {
         const { state } = await api.waitForTask(task, context);
         if (state.outcome.status === "completed" && state.outcome.result) {
-          const { outcome } = state.outcome.result;
+          const { outcome, reason } = state.outcome.result;
           // A sign-in just happened and the person has handed back: kept now, so a crash after it does not lose it.
           const current = currentRecord(await stateOf(c, scope), scope.plane);
           if (current) await captureSession(c, current.tag, true);
@@ -679,7 +679,7 @@ function portFor<D extends PageDriver>(c: Custody<D>, api: ToolExecutionApi, con
           if ((await stateOf(c, scope)).notice?.includes(told)) {
             await editState(c, scope, (sessions) => { sessions.notice = sessions.notice?.replace(told, "").replace(/\s+/g, " ").trim() || null; });
           }
-          return { outcome };
+          return { outcome, ...(reason ? { reason } : {}) };
         }
         const next = await find();
         if (next === undefined || next === task) throw HANDOFF_ENDED;
@@ -904,12 +904,11 @@ function siteTool<D extends PageDriver>(c: Custody<D>, sites: NonNullable<Browse
   });
 }
 
-/** pi-durable 1.2 on: a Session that a storage error failed ends with reason "failed" (`closed`), and close begins at
- *  once (`subscribeClose`). Before 1.2 a Session has no such end, and a failed commit poisons it with no sign. */
+/** A Session that a storage error failed ends `{ kind: "failed" }` (`closed`, pi-durable's SessionEnd), and close begins
+ *  at once (`subscribeClose`). */
 function endingOf(harness: Harness): Custody<PageDriver>["ending"] {
-  const closed = (harness as unknown as { closed?: Promise<{ reason: string }> }).closed;
-  if (typeof closed?.then !== "function") return null;
-  const ending = { closing: false, failed: closed.then((end) => end.reason === "failed", () => false) };
+  const closed = harness.closed;
+  const ending = { closing: false, failed: closed.then((end) => end.kind === "failed", () => false) };
   try { harness.subscribeClose(() => { ending.closing = true; }); } catch { ending.closing = true; }
   return ending;
 }

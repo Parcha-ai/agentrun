@@ -27,22 +27,39 @@ export type ToolSettings = Record<string, ToolSetting>;
 /** GET /v2/agents/{id}'s `tools`: each tool the agent grants, with its permission and provider in force. */
 export type AgentTool = NonNullable<components["Agent"]["tools"]>[number];
 
+/** One issue in a refusal or a warning, at its field (`parameters.repo`, `secrets.KEY`), with the server's `fix` when it
+ *  names one. */
+export type InputIssue = components["InputIssue"];
+
+/** A template the server offers (GET /v2/templates): what it makes, and what it needs to make it. */
+export type TemplateView = Answer<"listTemplates">["templates"][number];
+/** Applying a template (POST /v2/templates/{name}/apply): its parameters, and the gate names of the tools the owner grants. */
+export type TemplateApply = Body<"applyTemplate">;
+/** What an apply made: the agent, its triggers, and its warnings. */
+export type TemplateApplied = Answer<"applyTemplate">;
+
 /** `so_far_usd` and `unpriced` (serve's costsofar/1), present only while `usd` is null. */
 export type Cost = components["Cost"];
 
 export type Run = components["Run"];
 
-/** A schedule (GET /v2/triggers/{id}). */
+/** A trigger of any kind (GET /v2/triggers/{id}): a schedule or a webhook. */
 export type Trigger = Answer<"getTrigger">;
-/** When a schedule fires (serve's trigger/1). */
+/** What fires a trigger (serve's trigger/1): a schedule's times, or a webhook's signed requests. */
 export type TriggerSource = Trigger["source"];
 /** What a firing does: start a run of `agent_id` with `input`, capped at `max_cost_usd`. */
 export type TriggerTarget = Extract<Trigger["target"], { kind: "start_run" }>;
 /** One firing: by the schedule or by hand (Run now), for `nominal_at`, and what came of it. */
 export type Firing = NonNullable<Trigger["last_firing"]>;
 export type FiringStatus = Firing["status"];
-/** A create's or an edit's body. */
+/** An edit's body. */
 export type TriggerInput = Body<"updateTrigger">;
+/** A create's body (POST /v2/triggers). */
+export type TriggerCreate = Body<"createTrigger">;
+/** A create's answer: the trigger, and a webhook's `secret` that once, or `note` in its place on a retry under the same key. */
+export type TriggerMade = Answer<"createTrigger">;
+/** A webhook trigger's new signing secret (POST /v2/triggers/{id}/secret), shown that once. */
+export type TriggerSecret = Answer<"rotateTriggerSecret">;
 /** A question the run asked a person (ask_person): a message answers it. */
 export type PendingQuestion = Extract<NonNullable<Run["pending"]>, { kind: "question" }>;
 /** A tool call set to ask, waiting for the owner's approval (approvals/1): POST /v2/runs/{id}/approvals/{id} answers it. */

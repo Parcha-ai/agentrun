@@ -26,7 +26,7 @@ import { cutStrings, redacted } from "./key-refusal.js";
 import { withoutFaux } from "./model.js";
 import { servedOnly } from "./served-only.js";
 import type { Run, RunsOptions, Status } from "./runs.js";
-import { hostSecrets, secret, SECRET_NAMES, withSecrets } from "./secrets.js";
+import { secret, SECRET_NAMES, withSecrets } from "./secrets.js";
 import { notKept, said, STOPPED } from "./learning-words.js";
 import { ended, lineNotesOf, type NoteFiles, notesLineOf, notesOf, type Outcome, outcomeOf, outcomes, record } from "./usage.js";
 import { isObject, type Json } from "./validate.js";
@@ -270,7 +270,7 @@ function once(running: Map<string, Promise<void>>, key: string, work: () => Prom
 }
 
 /** What learning needs of the server's options: the data directory and the agents, its tokens, the switch, and its bounds. */
-export type LearningOptions = Pick<RunsOptions, "agents" | "token" | "doorToken" | "storedKeys" | "ownSecrets" | "learning" | "learningBudget" | "reflectTimeoutMs" | "gradeTimeoutMs" | "gradeModel">;
+export type LearningOptions = Pick<RunsOptions, "agents" | "token" | "doorToken" | "storedKeys" | "serverSecrets" | "learning" | "learningBudget" | "reflectTimeoutMs" | "gradeTimeoutMs" | "gradeModel">;
 /** What the kernel (runs.ts) hands learning: its runs, and the parts of a run's life learning moves. */
 export type LearningKernel = {
   /** Run `id` when the kernel holds it; read from the agent store the first time (`get`). */
@@ -526,13 +526,13 @@ export class LearningRuns {
     return learning ? { state: learning.state, reason: learning.reason } : null;
   }
 
-  /** The host's secrets as they are now, as a reader cuts them (secretsShown): the ones this server holds, the keys
-   *  saved on it, and its tokens, as the learning routes cut them. Built again only once they change. Every run's view
-   *  and every row of a list asks it, so the saved keys, which are read from their file and opened one by one, are read
-   *  once and kept until a person saves or deletes one (keysChanged). */
+  /** The secrets this server never shows as they are now (serverSecrets), as a reader cuts them (secretsShown), as the
+   *  learning routes cut them. Built again only once they change. Every run's view and every row of a list asks it, so
+   *  the saved keys, which are read from their file and opened one by one, are read once and kept until a person saves
+   *  or deletes one (keysChanged); the rest is read each time. */
   shown(): Shown {
     const saved = (this.saved ??= new Map(SECRET_NAMES.map((name) => [name, this.options.storedKeys?.(name)])));
-    const values = [...hostSecrets(process.env, (name) => saved.get(name)), this.options.token, this.options.doorToken, ...(this.options.ownSecrets?.() ?? [])];
+    const values = this.options.serverSecrets((name) => saved.get(name));
     const key = values.join("\0");
     if (this.cut?.key !== key) this.cut = { key, shown: secretsShown(values) };
     return this.cut.shown;
@@ -788,7 +788,9 @@ export class LearningRuns {
     // The server's settings, beside the agent store, as the run's gate reads them, and the agent's own.
     const server = readToolSettings(this.options.agents.dir).settings;
     const agent = (known.revision.body.toolSettings ?? {}) as never;
-    return learnedDraftTools(known.revision.body.tools, (name) => permissionFrom(name, server as never, agent).permission, undefined, (name) => permissionFrom(name, server as never, agent).from);
+    // Unattended (approvals "never"): a tool set to ask is allowed at its run's gate, so a draft may name it.
+    const approvals = known.revision.body.approvals === "never" ? "never" : "ask";
+    return learnedDraftTools(known.revision.body.tools, (name) => permissionFrom(name, server as never, agent, approvals).permission, undefined, (name) => permissionFrom(name, server as never, agent, approvals).from);
   }
 
   private async propose(run: Run): Promise<void> {
@@ -903,13 +905,13 @@ export class LearningRuns {
     }
   }
 
-  /** What a run's learning refuses, and cuts from what it says: the secrets this server holds, wherever its launcher put
-   *  them, the keys saved on it, what each launch handed the run, every value its errors and answers never show
-   *  (runs.ts' `handed`: its browser sign-in's pointer among them, read back after a restart), and its own tokens. */
+  /** What a run's learning refuses, and cuts from what it says: every secret this server never shows (serverSecrets),
+   *  what each launch handed the run, and every value its errors and answers never show (runs.ts' `handed`: its browser
+   *  sign-in's pointer among them, read back after a restart). */
   private refused(run: Run): string[] {
     // The run's own door token too: its process holds it, so its notes may.
     const own = run.doorToken ?? runDoorToken(run.dir);
-    return [...hostSecrets(process.env, this.options.storedKeys), ...(this.handed.get(run.id) ?? []), ...(run.handed ?? []), this.options.token, this.options.doorToken, ...(this.options.ownSecrets?.() ?? []), ...(own ? [own] : [])];
+    return [...this.options.serverSecrets(), ...(this.handed.get(run.id) ?? []), ...(run.handed ?? []), ...(own ? [own] : [])];
   }
 
   /** This server's environment for a call of its own (a grade's screen and grader): its secrets readable, never a

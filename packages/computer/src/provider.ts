@@ -1,4 +1,5 @@
 // The provisioner: one per vendor. It makes, finds and ends computers; the daemon inside does the work.
+import type { MountKind, MountReadBack, MountSpec } from "./mount.js";
 import type { ComputerClient, ComputerKind, ComputerOs, Group, HelloResult } from "./protocol.js";
 import type { Result } from "./result.js";
 
@@ -16,6 +17,26 @@ export interface ComputerSpec {
 	workdir?: string;
 	/** uid or uid:gid, in numbers. Unset, the provider's non-root default; root ("0") only when asked here. */
 	user?: string;
+	/**
+	 * The run's folder, mounted read-write at /workspace (WORKSPACE), of a kind capabilities().mount declares; check()
+	 * refuses any other kind before a vendor call. An Archil token is never in a label, a read-back or an error.
+	 */
+	mount?: MountSpec;
+}
+
+/** One kind of allowlist entry a provider takes: how many a list may hold, and the ports an entry opens. */
+export interface AllowRule {
+	max: number;
+	/** The ports an entry opens: these, or "any". */
+	ports: number[] | "any";
+}
+
+/** What a network allowlist may hold, for a provider that declares network "allow". */
+export interface AllowCapability {
+	domains?: AllowRule;
+	cidrs?: AllowRule;
+	/** Whether one allowlist may hold domains and CIDRs together. */
+	mixed: boolean;
 }
 
 /**
@@ -31,6 +52,8 @@ export interface ComputerCapabilities {
 	/** Who ends a computer at its deadline: the vendor, or our janitor by label. */
 	lifetime: "vendor" | "janitor";
 	network: Array<"none" | "open" | "allow">;
+	/** With network "allow": what an allowlist may hold and which ports it opens. */
+	allow?: AllowCapability;
 	/**
 	 * Whether network() reads the policy back from outside the computer, from the vendor's own report of it. false: the
 	 * vendor has no read-back, so only a probe from inside the computer stands for one, and an allowlist counts only
@@ -39,6 +62,11 @@ export interface ComputerCapabilities {
 	networkReadBack?: boolean;
 	isolation: "container" | "gvisor" | "microvm" | "vm" | "machine";
 	os: ComputerOs;
+	/**
+	 * With release "stop": true when a stop ends in deletion (Daytona with autoDeleteMinutes 0), so release(ref, "stop")
+	 * leaves no computer, listed or attachable. Absent or false: a stopped computer is kept, listed stopped, until deleted.
+	 */
+	stopDeletes?: boolean;
 	daemon: DaemonMode;
 	/** What each computer offers, as hello repeats it. */
 	groups: Group[];
@@ -51,6 +79,8 @@ export interface ComputerCapabilities {
 	 * declare it refuses release(ref, "stop") in words and leaves the computer as it was.
 	 */
 	release: Array<"stop" | "delete">;
+	/** The kinds of spec.mount this provider takes: bind (a host folder), archil (a folder of an Archil disk). Absent: none. */
+	mount?: MountKind[];
 }
 
 /** The os and daemon modes each kind may have; no other pair is valid. */
@@ -106,7 +136,10 @@ export type NetworkPolicy = NetworkSpec | { other: string };
 
 /** The spec a computer runs with, read back from the computer itself, not from what was asked. */
 export interface ReadBackSpec {
+	/** The image as create was asked for it, read back from the computer (Docker's config, Daytona's label). */
 	image: string;
+	/** What the vendor resolved the image to, by its own name, when it reports one (a Daytona snapshot). */
+	snapshot?: string;
 	/** uid:gid in numbers: "0:0" is root. */
 	user: string;
 	network: NetworkPolicy;
@@ -118,11 +151,27 @@ export interface ReadBackSpec {
 	deadline?: Date;
 	/** What the computer says it is, from its hello; absent when it could not be asked (a stopped computer). */
 	kind?: ComputerKind;
+	/** What is mounted at /workspace, never a token; absent when nothing is. */
+	mount?: MountReadBack;
+}
+
+/**
+ * What a read-back recorded that does not refuse the computer, in words, one line each: under network none, the probe
+ * targets that accepted a connection and sent nothing back ("network: none; accepted with no answer (no bytes came
+ * back): 1.1.1.1:443, ..."). Recorded, never refused and never hidden. Absent when there is nothing to record.
+ */
+export type ReadBackNotes = string[];
+
+/** What create returns: the computer's ref, and what its read-back recorded that does not refuse it. */
+export interface CreatedComputer extends ComputerRef {
+	notes?: ReadBackNotes;
 }
 
 /** A computer attach found: its ref, and the spec read back from it, so a caller sees what it attached to (root, open). */
 export interface AttachedComputer extends ComputerRef {
 	spec: ReadBackSpec;
+	/** What attach's read-back recorded that does not refuse the computer (see ReadBackNotes). */
+	notes?: ReadBackNotes;
 }
 
 /** One computer as list() reads it back. */
@@ -133,6 +182,8 @@ export interface ComputerInfo {
 	deadline: Date | undefined;
 	state: "running" | "stopped";
 	network: NetworkPolicy;
+	/** What is mounted at /workspace, read back, never a token; absent when nothing is. */
+	mount?: MountReadBack;
 }
 
 export interface CallContext {
@@ -151,7 +202,7 @@ export interface ComputerProvider {
 	readonly version: string;
 	capabilities(): ComputerCapabilities;
 	check(spec: ComputerSpec): Refusal[];
-	create(spec: ComputerSpec, context?: { signal?: AbortSignal }): Promise<Result<ComputerRef>>;
+	create(spec: ComputerSpec, context?: { signal?: AbortSignal }): Promise<Result<CreatedComputer>>;
 	/**
 	 * Finds one computer this provider made, by its id or by labels, with the spec read back from it; none or several is
 	 * an error in words.
@@ -176,4 +227,10 @@ export interface ComputerProvider {
 	extend?(ref: ComputerRef, ttlMs: number, context?: CallContext): Promise<Result<{ deadline: Date }>>;
 	/** A URL that shows the screen live, the vendor's own. Optional. */
 	stream?(ref: ComputerRef, options?: { viewOnly?: boolean }, context?: CallContext): Promise<Result<{ url: string; expiresAt?: Date }>>;
+	/**
+	 * Removes what this provider's computers left behind outside the computers themselves (Docker: an egress proxy and its
+	 * volume whose computer is gone or whose deadline has passed), with all of these labels, and returns what it removed,
+	 * by name. Optional; the janitor's sweep calls it after the computers, which release their own parts.
+	 */
+	sweepLeftovers?(context: { labels: Record<string, string>; now: Date; signal?: AbortSignal }): Promise<Result<string[]>>;
 }

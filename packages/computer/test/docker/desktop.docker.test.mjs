@@ -1,17 +1,17 @@
 // The conformance suite on a Docker desktop (AGENTRUN_COMPUTER_LIVE_DOCKER=1 only): the X11 shim in computerd against
 // Xvfb in test/fixtures/desktop/Dockerfile, with computerd-fixture (daemon/cmd/fixture) as the cases' fixture app. Needs
 // `npm run build` and `npm run build:daemon` first, Go on PATH (for the fixture and the drift case's daemon), and
-// alpine:3.20 pulled; the image is built from it. The after hook removes any container with this run's label.
+// alpine:3.20 pulled; the image is built from it with ensureImage, the provider's image path. The after hook removes
+// any container with this run's label.
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { chmodSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { after, before, describe, it } from "node:test";
-import { conformanceCases, formatReport, runConformance } from "../../dist/index.js";
-import { dockerConformance } from "../../dist/conformance/docker.js";
+import { conformanceCases, ensureImage, formatReport, runConformance } from "../../dist/index.js";
+import { createDriftedProvider, createProvider } from "../../dist/conformance/docker.js";
 
 const LIVE = process.env.AGENTRUN_COMPUTER_LIVE_DOCKER === "1";
 const DOCKERFILE = fileURLToPath(new URL("../fixtures/desktop/Dockerfile", import.meta.url));
@@ -23,15 +23,14 @@ const EXTENSION = ["screen", "input", "touch", "apps", "lifetime"];
 describe("the conformance suite on a Docker desktop", { skip: LIVE ? false : "set AGENTRUN_COMPUTER_LIVE_DOCKER=1 to run on real Docker" }, () => {
 	let report;
 	let run;
-	let close = () => {};
 	let dir;
 	const made = new Set();
 
 	before(async () => {
-		const recipe = readFileSync(DOCKERFILE);
-		const image = `agentrun-computer-desktop:${createHash("sha256").update(recipe).digest("hex").slice(0, 12)}`;
-		// No build context: the image is the Dockerfile alone.
-		execFileSync("docker", ["build", "--quiet", "--tag", image, "-"], { input: recipe, stdio: ["pipe", "ignore", "inherit"] });
+		// The provider's own image path: the Dockerfile alone, built once and tagged with its hash.
+		const built = await ensureImage({ recipe: readFileSync(DOCKERFILE, "utf8") });
+		assert.ok(built.ok, built.ok || built.error.message);
+		const image = built.value;
 		const arch = docker("version", "--format", "{{.Server.Arch}}").trim();
 		dir = mkdtempSync(join(tmpdir(), "computer-desktop-"));
 		chmodSync(dir, 0o755);
@@ -41,9 +40,8 @@ describe("the conformance suite on a Docker desktop", { skip: LIVE ? false : "se
 			env: { ...process.env, CGO_ENABLED: "0", GOOS: "linux", GOARCH: arch },
 			stdio: "inherit",
 		});
-		const conformance = dockerConformance({ desktop: {} });
-		const { provider, drifted } = conformance;
-		close = conformance.close;
+		const provider = await createProvider({ desktop: {} });
+		const drifted = () => createDriftedProvider({ desktop: {} });
 		const create = provider.create.bind(provider);
 		provider.create = async (spec, context) => {
 			run ??= spec.labels?.["agentrun.conformance"];
@@ -56,7 +54,6 @@ describe("the conformance suite on a Docker desktop", { skip: LIVE ? false : "se
 	});
 
 	after(() => {
-		close();
 		if (dir !== undefined) rmSync(dir, { recursive: true, force: true });
 		for (const name of new Set([...made, ...(run ? labelled(run) : [])])) {
 			try {

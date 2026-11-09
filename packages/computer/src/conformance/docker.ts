@@ -1,71 +1,79 @@
-// Docker for the suite: the provider with the daemon for Docker's architecture, and one whose daemon reports another
-// version, built with Go when the drift case first asks for it.
-import { execFile, execFileSync } from "node:child_process";
-import { chmodSync, existsSync, mkdtempSync, rmSync } from "node:fs";
+// Docker for the conformance CLI (`--provider docker`): the provider as create() builds it from the settings this module
+// reads (COMPUTER_DOCKER_DAEMON, COMPUTER_DOCKER_DAEMON_CACHE, COMPUTER_DOCKER_USER), and its drifted twin, the same
+// provider with a daemon of another version, built with Go for Docker's architecture when the drift case first asks. The
+// provider reads no environment: this module reads these names and passes them in as options. With desktop, both are
+// desktops (kind desktop) on an image with an X server, such as test/fixtures/desktop/Dockerfile's. For the mount cases,
+// mountFor("bind") makes a run folder on this host, owned by the computer's user.
+import { chownSync, mkdtempSync, realpathSync } from "node:fs";
+import { readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
-import { type DockerDesktopOptions, DockerProvider } from "../docker.js";
-import type { ComputerProvider } from "../provider.js";
+import { create, type DockerCreateOptions, dockerArch, type DockerProvider } from "../docker.js";
+import type { MountKind } from "../mount.js";
+import { buildDriftDaemon } from "./drift-daemon.js";
+import type { RunFolder } from "./types.js";
 
-export interface DockerConformance {
-	provider: ComputerProvider;
-	drifted: () => Promise<ComputerProvider>;
-	/** Removes the drifted daemon's build, if one was made. */
-	close(): void;
-}
+/** The environment this module reads, by name. */
+export const DOCKER_ENV = {
+	/** The daemon binary for Docker's architecture; default this package's dist/computerd-linux-<arch>. */
+	daemon: "COMPUTER_DOCKER_DAEMON",
+	/** The directory of the provider's 0755 copy of the daemon; default ~/.cache/agentrun-computer. See DockerProviderOptions.daemonCache. */
+	daemonCache: "COMPUTER_DOCKER_DAEMON_CACHE",
+	/** Who a computer runs as when its spec does not say, uid or uid:gid in numbers; see DockerProviderOptions.user. */
+	user: "COMPUTER_DOCKER_USER",
+} as const;
 
-export interface DockerConformanceOptions {
-	/** The docker CLI. */
-	docker?: string;
-	/** The longest `docker version` may take before it is killed and the run fails; default 30 s. */
-	timeoutMs?: number;
-	/** Desktop computers (kind desktop) on an image with an X server, such as test/fixtures/desktop/Dockerfile's. */
-	desktop?: DockerDesktopOptions;
-}
+/** The names this module reads, under the conformance modules' common name (ConformanceModule.ENV). */
+export const ENV = DOCKER_ENV;
 
-/** Throws in words when Docker cannot be asked its architecture, in bounded time, or the daemon for it is not built. */
-export function dockerConformance({ docker = "docker", timeoutMs = 30_000, desktop }: DockerConformanceOptions = {}): DockerConformance {
-	let arch: string;
-	try {
-		arch = execFileSync(docker, ["version", "--format", "{{.Server.Arch}}"], {
-			encoding: "utf8",
-			stdio: ["ignore", "pipe", "pipe"],
-			timeout: timeoutMs,
-			killSignal: "SIGKILL",
-		}).trim();
-	} catch (error) {
-		const why = (error as NodeJS.ErrnoException).code === "ETIMEDOUT" ? `${docker} version did not answer within ${timeoutMs / 1000} s, so it was killed` : (error as Error).message.split("\n")[0];
-		throw new Error(`cannot ask Docker its architecture (${docker} version): ${why}`);
-	}
-	const daemonPath = fileURLToPath(new URL(`../computerd-linux-${arch}`, import.meta.url));
-	if (!existsSync(daemonPath)) throw new Error(`no daemon for Docker's ${arch} at ${daemonPath}: run npm run build:daemon -w @parcha/agentrun-computer`);
-	const provider = new DockerProvider({ daemonPath, docker, ...(desktop ? { desktop } : {}) });
-	let dir: string | undefined;
-	let built: Promise<ComputerProvider> | undefined;
-	const drifted = () =>
-		(built ??= new Promise<ComputerProvider>((resolve, reject) => {
-			dir = mkdtempSync(join(tmpdir(), "computer-drift-"));
-			// A computer's user, with no capabilities, must be able to reach and run the mounted binary.
-			chmodSync(dir, 0o755);
-			const out = join(dir, "computerd");
-			const flags = `-s -w -X main.version=${provider.version}-drift`;
-			execFile(
-				"go",
-				["build", "-trimpath", "-ldflags", flags, "-o", out, "./cmd/computerd"],
-				{ cwd: fileURLToPath(new URL("../../daemon", import.meta.url)), env: { ...process.env, CGO_ENABLED: "0", GOOS: "linux", GOARCH: arch } },
-				(error, _stdout, stderr) => {
-					if (error) {
-						const why = (error as NodeJS.ErrnoException).code === "ENOENT" ? "go was not found on PATH" : stderr.trim() || error.message;
-						return reject(new Error(`building a daemon of another version for the drift case: ${why}`));
-					}
-					chmodSync(out, 0o755);
-					resolve(new DockerProvider({ daemonPath: out, docker, ...(desktop ? { desktop } : {}) }));
-				},
-			);
-		}));
-	const close = () => {
-		if (dir !== undefined) rmSync(dir, { recursive: true, force: true });
+/** The provider's options this module reads from env, each only when its name is set. */
+export function settingsFromEnv(env: Record<string, string | undefined> = process.env): DockerCreateOptions {
+	return {
+		...(env[DOCKER_ENV.daemon] ? { daemonPath: env[DOCKER_ENV.daemon] } : {}),
+		...(env[DOCKER_ENV.daemonCache] ? { daemonCache: env[DOCKER_ENV.daemonCache] } : {}),
+		...(env[DOCKER_ENV.user] ? { user: env[DOCKER_ENV.user] } : {}),
 	};
-	return { provider, drifted, close };
+}
+
+export interface DockerModuleOptions extends Pick<DockerCreateOptions, "docker" | "timeoutMs" | "desktop"> {
+	/** Where the settings are read; default process.env. */
+	env?: Record<string, string | undefined>;
+}
+
+/** The provider the CLI runs; throws in words when Docker cannot be asked its architecture, or its daemon is not built. */
+export function createProvider({ env = process.env, ...options }: DockerModuleOptions = {}): Promise<DockerProvider> {
+	return create({ ...settingsFromEnv(env), ...options });
+}
+
+/** The same provider with a daemon that reports another version, for the drift.version case. */
+export async function createDriftedProvider({ env = process.env, ...options }: DockerModuleOptions = {}): Promise<DockerProvider> {
+	const daemonPath = await buildDriftDaemon(await dockerArch(options));
+	return create({ ...settingsFromEnv(env), ...options, daemonPath });
+}
+
+/**
+ * A run folder for a bind, and none for any other kind: a new directory under the temp dir, by its canonical path, owned
+ * by the computer's user (the provider's, as createProvider builds it) as the provider requires. This process owns it
+ * already when it is that user; as root, it gives the folder to that user, as a caller does: the provider never changes
+ * the folder. The runner closes it when its case ends.
+ */
+export async function mountFor(kind: MountKind, { env = process.env, ...options }: DockerModuleOptions = {}): Promise<RunFolder | undefined> {
+	if (kind !== "bind") return undefined;
+	const { user } = await createProvider({ env, ...options });
+	const dir = realpathSync(mkdtempSync(join(tmpdir(), "computer-run-")));
+	const [uid = -1, gid = -1] = user.split(":").map(Number);
+	if (process.getuid?.() === 0) chownSync(dir, uid, gid);
+	return {
+		mount: { kind: "bind", path: dir },
+		read: async (path) => {
+			try {
+				return await readFile(join(dir, path));
+			} catch (error) {
+				if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+				throw error;
+			}
+		},
+		write: (path, data) => writeFile(join(dir, path), data, { mode: 0o644 }),
+		close: () => rm(dir, { recursive: true, force: true }),
+	};
 }

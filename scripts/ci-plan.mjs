@@ -10,7 +10,7 @@
 // weights come from scripts/ci-timings.json (seconds on a GitHub-hosted runner, from CI's own logs: `node
 // scripts/ci-timings.mjs`). A file it does not list weighs its suite's median; nothing is dropped for a missing weight.
 // The plan is a pure function of the checkout, so every job of a run computes the same one.
-//   node scripts/ci-plan.mjs [--pool <name>]   prints the test shards and their modelled seconds (the pi legs': pi-leg.mjs --plan --shard)
+//   node scripts/ci-plan.mjs [--pool <name>]   prints the test shards and their modelled seconds
 import { spawnSync } from 'node:child_process';
 import { existsSync, globSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';

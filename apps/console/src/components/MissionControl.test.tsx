@@ -252,11 +252,11 @@ describe("MissionControl, the counts as links and the latest runs in full", () =
     // A run still working has no duration yet, and an unknown cost is left out, never $0.
     expect(html).not.toContain("$0.0000");
   });
-  it("shows a latest run's cost so far and how many charges have no price, and an unknown cost with nothing known not at all", () => {
+  it("shows a latest (ended) run's known cost and how many charges have no price, and an unknown cost with nothing known not at all", () => {
     const unknown = { usd: null, basis: "estimate" as const, charge_state: null, cap_usd: null };
     const stopped: Run = { ...run("run-9", "completed", "idle", "Check invoice INV-2291"), cost: { ...unknown, so_far_usd: 0.0123, unpriced: 1 } };
     const html = render({ ...view, recent: [stopped, { ...run("run-2", "completed", "idle", "Summarize the standup"), cost: unknown }] });
-    expect(html).toContain("so far $0.0123 est. · 1 not priced");
+    expect(html).toContain("$0.0123 est. known · 1 not priced");
     expect(html).not.toContain("Unknown");
   });
   it("puts what needs you first, and before a first run of your own, the start-here panel in place of the counts", () => {

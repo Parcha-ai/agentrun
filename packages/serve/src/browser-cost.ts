@@ -27,6 +27,7 @@ import { TOOL_COST } from "@parcha/pi-durable-agent/timeline";
 import { BARRIER, syncNow } from "@parcha/pi-durable-disk";
 import { addSpend, keepHold, paidCall, runCap, SPEND_CAP_REACHED } from "./cap.js";
 import { runJournal } from "./paid-calls.js";
+import { logLine } from "./print.js";
 import { forModel } from "./result.js";
 
 /** The run journal's record of a browser session about to be created at its provider: its tag (pi-browser's, which a
@@ -64,6 +65,8 @@ export function browserPrice(provider: string, env: NodeJS.ProcessEnv): { usdPer
 }
 
 type Hold = ReturnType<typeof keepHold>;
+/** Up to the millionth of a dollar, so the cap's words name a figure never below the hold. */
+const microUsd = (usd: number) => Math.ceil(Math.round(usd * 1e12) / 1e6) / 1e6;
 /** A browser charge as its TOOL_COST holds it. */
 type Booked = { tool: "browser"; charged_by: string; call: string | null; usd: number | null; seconds: number; tag: string; conversation: number; at: string; final: boolean };
 type Open = { cid: number; reserve: Hold; at: number; call: string | null };
@@ -71,13 +74,51 @@ type Open = { cid: number; reserve: Hold; at: number; call: string | null };
 type Row = { tag: string; conversationId: number; state: string; resourceId: string | null };
 
 /** One run's browser bookings, for its one provider at `price` with pi-browser's idle window `idleS`. `release` lets go of
- *  a conversation's session (pi-browser's release, "close"). */
-export function browserSpend(provider: string, price: { usdPerHour: number | null; minimumS: number }, idleS: number, release: (conversation: Pick<Conversation, "id" | "commit">, context: Context) => Promise<void>) {
+ *  a conversation's session (pi-browser's release, "close"). `log` takes the line that says a charge went uncounted
+ *  (default: the server's stderr). */
+export function browserSpend(provider: string, price: { usdPerHour: number | null; minimumS: number }, idleS: number, release: (conversation: Pick<Conversation, "id" | "commit">, context: Context) => Promise<void>, log: (line: string) => void = (line) => void process.stderr.write(`agentrun-serve: ${line}\n`)) {
   const rate = price.usdPerHour;
   const usdOf = (seconds: number) => ((rate ?? 0) * seconds) / 3600;
   const stretchS = price.minimumS + idleS + RELEASE_ALLOWANCE_S;
   const stretch = usdOf(stretchS);
   const sessions = new Map<string, Open>();
+  /** A person's time on a session that has ended but is not booked yet (personTime's holds are dropped as it ends), held
+   *  at its price, each stretch from `from` to `to` (ms), until a charge books it (as far as that charge's own through), or
+   *  the session leaves the inventory. The minutes are held once: a call's hold leaves out what is carried (capped). */
+  const carried = new Map<string, Array<{ hold: Hold; from: number; to: number }>>();
+  const dropCarried = (tag: string) => { for (const { hold } of carried.get(tag) ?? []) hold.drop(); carried.delete(tag); };
+  /** A person's time on a session that is still under way (a take-over, an ask): each stretch its holds cover, from `from`
+   *  to `to` (ms), while held. The part of it already run is in its hold, so a call's hold leaves it out, as carried time;
+   *  a charge that books it takes it off the hold. */
+  const active = new Map<string, Set<{ hold: Hold; from: number; to: number }>>();
+  /** The carried time a charge through `through` (ms) books goes; a stretch that runs past it keeps what is after it. A
+   *  person's stretch still under way keeps only what is after it, held until its holder drops it. */
+  const bookCarried = (tag: string, through: number) => {
+    for (const stretch of active.get(tag) ?? []) {
+      if (stretch.from >= through) continue;
+      stretch.from = Math.min(through, stretch.to);
+      stretch.hold.usd = microUsd(usdOf((stretch.to - stretch.from) / 1000));
+    }
+    const kept = (carried.get(tag) ?? []).filter((stretch) => {
+      if (stretch.to <= through) {
+        stretch.hold.drop();
+        return false;
+      }
+      if (stretch.from < through) {
+        stretch.from = through;
+        stretch.hold.usd = microUsd(usdOf((stretch.to - through) / 1000));
+      }
+      return true;
+    });
+    if (kept.length) carried.set(tag, kept);
+    else carried.delete(tag);
+  };
+  /** What is carried for `tag` and falls after `since` (ms): the part of a session's run since its last charge that a call's
+   *  hold must not count again. */
+  const carriedSince = (tag: string, since: number, now: number) =>
+    (carried.get(tag) ?? []).reduce((sum, { from, to }) => sum + usdOf(Math.max(0, to - Math.max(from, since)) / 1000), 0) +
+    // A person who has the browser now: what of their held time has run is held already, as carried time is.
+    [...(active.get(tag) ?? [])].reduce((sum, { from, to }) => sum + usdOf(Math.max(0, Math.min(to, now) - Math.max(from, since)) / 1000), 0);
   /** Each call under way, by its id: its conversation and its hold. */
   const calls = new Map<string, { cid: number; hold: Hold }>();
   const take = (hold: Hold | undefined, usd: number) => void (hold && (hold.usd = Math.max(0, hold.usd - usd)));
@@ -98,6 +139,11 @@ export function browserSpend(provider: string, price: { usdPerHour: number | nul
     const usd = data.usd ?? 0;
     const session = sessions.get(data.tag);
     addSpend(data.usd);
+    // Its charge books the session's time since its last one, a person's included, up to its own through: what was carried
+    // for it until then goes (all of it, at the release's), and a person's time after that through stays held. A charge
+    // computed before a person's time ended, and committed after, so leaves the rest held.
+    if (data.final) dropCarried(data.tag);
+    else bookCarried(data.tag, Date.parse(data.at));
     if (data.final) {
       // A session the provider ended before its first charge has no reserve: its release comes out of its call's hold.
       take(session?.reserve ?? [...calls.values()].find((c) => c.cid === data.conversation)?.hold, usd);
@@ -138,6 +184,7 @@ export function browserSpend(provider: string, price: { usdPerHour: number | nul
    *  ends it. */
   function tracked(rows: Readonly<Record<string, Row>>): void {
     for (const [tag, open] of sessions) if (!Object.hasOwn(rows, tag)) (open.reserve.drop(), sessions.delete(tag));
+    for (const tag of [...carried.keys()]) if (!Object.hasOwn(rows, tag)) dropCarried(tag);
     for (const row of Object.values(rows)) {
       if (rate === 0 || row.state !== "releasing" || row.resourceId !== null || sessions.has(row.tag)) continue;
       const usd = usdOf(CREATE_DEADLINE_S + stretchS);
@@ -149,15 +196,44 @@ export function browserSpend(provider: string, price: { usdPerHour: number | nul
   /** Applies each browser charge `harness` commits, and each change of pi-browser's inventory (the document of kind
    *  `inventory`), once the commit is in: the charges first, so a release billed and ended in one commit is billed from
    *  its reserve before it goes. */
-  function watch(harness: Pick<Session, "subscribeCommits">, inventory = "browser.inventory"): void {
-    harness.subscribeCommits((publication) => {
-      for (const change of publication.changes) {
-        const data = change.type === "entry" && change.value.kind === TOOL_COST ? (change.value.data as Partial<Booked> | undefined) : undefined;
-        if (data?.tool === "browser" && typeof data.tag === "string") booked(data as Booked);
-      }
-      for (const change of publication.changes) {
-        if (change.type === "document" && change.record.kind === inventory && change.value) tracked(((change.value as { rows?: Record<string, Row> }).rows) ?? {});
-      }
+  function watch(harness: Pick<Session, "observeCommits" | "closed">, inventory = "browser.inventory"): void {
+    // pi 1.5 detaches an observer whose advance throws, for good: every later charge would then go uncounted, silently.
+    // So nothing leaves advance. A charge it fails to count makes the run's spend unknown (spent null), which a capped
+    // run's next paid request or call is refused on, as it refuses any unknown spend; an uncapped run goes on, with one
+    // line that says so. pi ends a commit observer only when its Session closes (session.js close: a normal close ends
+    // it `failed` with "session closed", a failed Session `failed` with its error), and the Session's own end
+    // (`closed`, settled by that same close once its Storage closed) says which, tagged by kind: `closed` keeps the
+    // count, silently, on every close path; `failed` (the store failed, or could not close) leaves it unknown. A
+    // listener error, which only a throw out of advance could cause, is unknown at once.
+    let said = false;
+    const uncounted = (why: string) => {
+      addSpend(null);
+      if (said) return;
+      said = true;
+      log(logLine("browser_spend_uncounted", { said: `a browser charge was not counted in this process (${why.slice(0, 200)}): the run's spend is unknown from here` }));
+    };
+    harness.observeCommits({
+      advance: (publication) => {
+        try {
+          for (const change of publication.changes) {
+            const data = change.type === "entry" && change.value.kind === TOOL_COST ? (change.value.data as Partial<Booked> | undefined) : undefined;
+            if (data?.tool === "browser" && typeof data.tag === "string") booked(data as Booked);
+          }
+          for (const change of publication.changes) {
+            if (change.type === "document" && change.kind === "change" && change.record.kind === inventory) tracked(((change.value as { rows?: Record<string, Row> }).rows) ?? {});
+          }
+        } catch (error) {
+          uncounted(String((error as Error)?.message ?? error));
+        }
+      },
+      end: (end) => {
+        const why = (kind: string, error: unknown) => `its commits stopped reaching the count: ${kind}${error === undefined ? "" : `, ${String((error as Error)?.message ?? error)}`}`;
+        if (end.kind === "listener_error") return uncounted(why(end.kind, end.error));
+        harness.closed.then(
+          (ended) => void (ended.kind === "failed" && uncounted(why("the Session failed", ended.error))),
+          (error: unknown) => uncounted(why("the Session's end is unknown", error)),
+        );
+      },
     });
   }
 
@@ -169,9 +245,13 @@ export function browserSpend(provider: string, price: { usdPerHour: number | nul
         const cap = runCap();
         if (cap !== undefined && rate === null) return refuse(`${SPEND_CAP_REACHED}: This browser call was not sent. ${provider}'s session time has no price here (${priceEnvOf(provider)} gives one), so the run's cap of $${cap} cannot be kept: the run is out of budget.`, api, context);
         const now = Date.now();
-        const ranS = [...sessions.values()].filter((s) => s.cid === api.conversationId).reduce((sum, s) => sum + Math.max(0, now - s.at) / 1000, 0);
+        const mine = [...sessions].filter(([, s]) => s.cid === api.conversationId);
+        const ranS = mine.reduce((sum, [, s]) => sum + Math.max(0, now - s.at) / 1000, 0);
+        // A person's time in that run is held already, carried or still under way: the call holds the rest of it, so the
+        // minutes count once.
+        const carriedUsd = mine.reduce((sum, [tag, s]) => sum + carriedSince(tag, s.at, now), 0);
         // Up to the millionth of a dollar, so the cap's words name a figure never below the hold.
-        const usd = Math.ceil(Math.round((usdOf(ranS) + 2 * stretch) * 1e12) / 1e6) / 1e6;
+        const usd = microUsd(Math.max(0, usdOf(ranS) - carriedUsd) + 2 * stretch);
         const basis = `${provider}'s session time at $${rate} an hour: the ${Math.round(ranS)} s its session ran since its last charge, and twice the next stretch of ${stretchS} s (its ${price.minimumS} s minimum, the ${idleS} s idle window and ${RELEASE_ALLOWANCE_S} s for its release)`;
         const paid = await paidCall("this browser call", async () => keepHold(usd), () => undefined, { usd, basis });
         if ("refused" in paid) return refuse(paid.refused, api, context);
@@ -203,5 +283,48 @@ export function browserSpend(provider: string, price: { usdPerHour: number | nul
     return forModel(JSON.stringify({ error: why }), { isError: true });
   }
 
-  return { onCharge, watch, reopened, capped, opening, stretch };
+  /** A person's time with a session, held up front under the run's cap (a take-over from the live view, an agent's ask for a person): the next
+   *  `seconds` of session time at the provider's price, the most the person's time may last before it expires, held before it starts and refused
+   *  in the cap's words when the cap has no room for it. The hold is the caller's to drop when the person's time ends; the time itself is booked
+   *  as any session time is, at the session's next charge. A free provider's time holds nothing. With `tag` (its session)
+   *  and `from` (ms, where the stretch it holds starts; now by default), the stretch is known while held: a call meanwhile
+   *  leaves out what of it has run, and a charge that books it takes it off the hold. */
+  async function personTime(what: string, seconds: number, options: { pauses?: boolean; tag?: string; from?: number } = {}): Promise<{ refused: string } | { drop(): void }> {
+    const cap = runCap();
+    if (cap !== undefined && rate === null) return { refused: `${SPEND_CAP_REACHED}: ${what} did not start. ${provider}'s session time has no price here (${priceEnvOf(provider)} gives one), so the run's cap of $${cap} cannot be kept.` };
+    // Up to the millionth of a dollar, so the cap's words name a figure never below the hold.
+    const usd = Math.ceil(Math.round(usdOf(seconds) * 1e12) / 1e6) / 1e6;
+    const basis = `${provider}'s session time at $${rate} an hour for the ${Math.round(seconds / 60)} minutes it may last`;
+    // A refusal pauses the run at its next request (paidCall) only for the agent's own step (an ask); `pauses: false` for a
+    // person's take-over, which is no step of the agent's.
+    const paid = await paidCall(what, async () => keepHold(usd), () => undefined, { usd, basis }, { pauses: options.pauses });
+    if ("refused" in paid) return { refused: paid.refused };
+    const hold = paid.result;
+    const tag = options.tag;
+    if (tag === undefined || !rate) return hold;
+    const from = options.from ?? Date.now();
+    const stretch = { hold, from, to: from + seconds * 1000 };
+    active.set(tag, (active.get(tag) ?? new Set()).add(stretch));
+    return {
+      drop: () => {
+        const on = active.get(tag);
+        if (on?.delete(stretch) && !on.size) active.delete(tag);
+        hold.drop();
+      },
+    };
+  }
+
+  /** The person's time on session `tag` that just ended (`seconds` of it), held at the provider's price until the session's
+   *  next charge books it: the time is spent at the provider, so it is held, never refused. A free or unpriced provider's
+   *  holds nothing (an unpriced one under a cap was refused before any of it started). */
+  function carry(tag: string, seconds: number): void {
+    if (!rate || !(seconds > 0)) return;
+    // Never further back than the session's last charge, which booked the time before it.
+    const to = Date.now();
+    const from = Math.max(to - seconds * 1000, sessions.get(tag)?.at ?? -Infinity);
+    if (!(to > from)) return;
+    carried.set(tag, [...(carried.get(tag) ?? []), { hold: keepHold(microUsd(usdOf((to - from) / 1000))), from, to }]);
+  }
+
+  return { onCharge, watch, reopened, capped, opening, personTime, carry, stretch };
 }

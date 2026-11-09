@@ -9,7 +9,10 @@ import { pathToFileURL } from "node:url";
 import type { ModelCost, ModelThinkingLevel, Provider, ProviderStreams } from "@earendil-works/pi-ai";
 import { DEFAULT_HARNESS } from "./harness.js";
 import { HARNESS_TABLE_ENV, harnessOf } from "./harness-table.js";
-import { gatewayBase, WIRES } from "./provider.js";
+import { gatewayBase } from "./provider.js";
+// Leaves, which the key rows below read as this module loads, in any import order (wires.ts, adapter-facts.ts).
+import { ADAPTER_FACTS } from "./adapter-facts.js";
+import { WIRES } from "./wires.js";
 import { authContextOf } from "./secrets.js";
 
 /** The child's environment names the faux module by absolute path. */
@@ -53,14 +56,23 @@ export const MODEL_NODES = ["agent", "decide", "extract", "report"] as const;
  *  Claude Sonnet 5.5 and codex's and opencode's GPT-6 Sol, each through OpenRouter's own endpoint for the harness (adapters.ts), the ids
  *  a live run took through OpenRouter on 2026-10-29. The row order is the order a default is taken in: a direct
  *  provider's key wins over OpenRouter's. */
-export const MODEL_KEYS = [
-  { id: "anthropic", label: "Anthropic", field: "ANTHROPIC_API_KEY", model: "anthropic/claude-sonnet-5-5", harnesses: [DEFAULT_HARNESS, "claude-agent"] },
-  { id: "openai", label: "OpenAI", field: "OPENAI_API_KEY", model: "openai/gpt-6.1-sol", harnesses: [DEFAULT_HARNESS, "codex", "opencode"] },
-  { id: "openrouter", label: "OpenRouter", field: "OPENROUTER_API_KEY", model: "openrouter/openai/gpt-6-sol", harnesses: [DEFAULT_HARNESS, "claude-agent", "codex", "opencode"], models: { "claude-agent": "anthropic/claude-sonnet-5.5", codex: "openai/gpt-6-sol", opencode: "openai/gpt-6-sol" } },
-] as const;
+export const MODEL_KEYS: readonly { id: string; label: string; field: string; model: string; harnesses: readonly string[]; byVendor?: Readonly<Record<string, string>> }[] = Object.freeze([
+  { id: "anthropic", label: "Anthropic", field: "ANTHROPIC_API_KEY", model: "anthropic/claude-sonnet-5-5", harnesses: onVendor("anthropic") },
+  { id: "openai", label: "OpenAI", field: "OPENAI_API_KEY", model: "openai/gpt-6.1-sol", harnesses: onVendor("openai") },
+  // OpenRouter serves both wires: every harness runs on its key, an adapter harness on its wire's vendor's model there.
+  { id: "openrouter", label: "OpenRouter", field: "OPENROUTER_API_KEY", model: "openrouter/openai/gpt-6-sol", harnesses: [DEFAULT_HARNESS, ...ADAPTER_FACTS.map((facts) => facts.id)], byVendor: { anthropic: "anthropic/claude-sonnet-5.5", openai: "openai/gpt-6-sol" } },
+]);
 
-/** `row`'s default for `harness`: its own (`models`), else the row's. */
-const rowModel = (row: (typeof MODEL_KEYS)[number], harness: string): string => (row as { models?: Partial<Record<string, string>> }).models?.[harness] ?? row.model;
+/** pi, and the adapter harnesses whose wire (their facts') runs `vendor`'s models: those that talk to its own API. */
+function onVendor(vendor: string): readonly string[] {
+  return [DEFAULT_HARNESS, ...ADAPTER_FACTS.filter((facts) => WIRES[facts.wire].vendor === vendor).map((facts) => facts.id)];
+}
+
+/** `row`'s default for `harness`: the one for its wire's vendor (`byVendor`, OpenRouter's), else the row's. */
+const rowModel = (row: (typeof MODEL_KEYS)[number], harness: string): string => {
+  const facts = ADAPTER_FACTS.find((f) => f.id === harness);
+  return (facts && row.byVendor?.[WIRES[facts.wire].vendor]) ?? row.model;
+};
 
 /** What a person does when no model runs here: add a model provider's key in the console, or set one where AgentRun
  *  starts (MODEL_KEYS' fields), OpenRouter's named first, as its one key runs every harness. The order a default is
@@ -152,6 +164,13 @@ export async function chooseModel(env: NodeJS.ProcessEnv, ref: string | undefine
   // In a person's words (a first run from npx sees them): what to add and where. Operator detail is the README's.
   const none = tier === "default" ? "No model yet" : `No model yet for this workflow's ${tier} tier`;
   if (env.AGENT_MODEL_BASE_URL) {
+    // A gateway its key may not go to (the one base rule, gatewayBase) runs no model, in its words: capabilities read it
+    // not ready, a save warns, and a run is refused before its process starts, so the key is never handed to one.
+    try {
+      gatewayBase("AGENT_MODEL_BASE_URL", env.AGENT_MODEL_BASE_URL);
+    } catch (error) {
+      return { why: (error as Error).message, host: true, needs: "key" };
+    }
     if (!named) return { why: `${none}: name the gateway's model in AGENT_MODEL where AgentRun starts, or add a model key in Settings → Model keys.`, host: true, needs: "key" };
     // A revision's model, and a key's default (MODEL_KEYS: "provider/model"), go as the gateway takes its ids (bare: the
     // part after the provider), that provider pricing them; the host's own AGENT_MODEL or tier id goes as configured.
@@ -444,7 +463,7 @@ export const anthropicRefusal = (models: { getProvider(id: string): object | und
  *  for an Anthropic model; every other provider runs as it does without the setting. Never throws. */
 export async function providerModels(env: NodeJS.ProcessEnv) {
   const { builtinModels } = await import("@earendil-works/pi-ai/providers/all");
-  // With the models serve lists beside pi-ai's catalog (local-models.ts): OpenRouter's particle-1.
+  // With the prices serve sets over pi-ai's catalog (local-models.ts): OpenRouter's particle-1 at its list price.
   const models = withLocalModels(builtinModels({ authContext: authContextOf(env) }));
   if (!env.ANTHROPIC_BASE_URL) return models;
   const [{ createProvider }, { anthropicMessagesApi }] = await Promise.all([import("@earendil-works/pi-ai/models"), import("@earendil-works/pi-ai/api/anthropic-messages.lazy")]);

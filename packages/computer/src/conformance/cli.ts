@@ -1,15 +1,16 @@
-// `npm run conformance -w @parcha/agentrun-computer -- --provider docker | ./module.js [--image <image>] [--only <groups>] [--json]`
+// `npm run conformance -w @parcha/agentrun-computer -- --provider <id> | ./module.js [--image <image>] [--only <groups>] [--json]`
+// An id is resolved through the provider registry (../providers.ts) and nothing else, so a new computer needs no edit here.
 // Exits 0 when Core passes, 1 when it fails, 2 on a usage error, and 3 when --only left Core cases out and every case
 // that ran passed: a partial run is never a Core pass, so no script reads its exit code as one.
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { isCommand } from "../entry.js";
 import type { ComputerProvider } from "../provider.js";
+import { type ConformanceModule, isProviderId, type ProviderEnv, providerIds, providerModule } from "../providers.js";
 import { conformanceCases } from "./cases/index.js";
-import { dockerConformance } from "./docker.js";
 import { formatReport } from "./report.js";
 import { runConformance } from "./runner.js";
-import type { Case, CaseResult } from "./types.js";
+import type { Case, CaseResult, ConformanceOptions } from "./types.js";
 
 /** A stream as main writes to it: done is called once the text is handed on, as Writable.write's callback is. */
 export interface Writer {
@@ -28,15 +29,21 @@ export interface CliIo {
 	signal?: AbortSignal;
 	/** Print each case to stderr as it ends. */
 	progress?: boolean;
-	/** For --provider docker: the longest `docker version` may take; default 30 s. */
-	dockerTimeoutMs?: number;
+	/**
+	 * Given to the module's createProvider(), createDriftedProvider() and conformanceImage(), which may ignore them; its env
+	 * is where a conformance module reads its settings (default process.env). A provider file with no conformance module
+	 * is given them, but the env, as create()'s options. A test gives a fake SDK or a shorter bound through it.
+	 */
+	providerOptions?: { env?: ProviderEnv } & Record<string, unknown>;
 }
 
-const USAGE = `usage: npm run conformance -w @parcha/agentrun-computer -- --provider docker|<module.js> [--image <image>] [--only <group|case>,...] [--fixture <path>] [--json]
-  --provider  docker, or a module that exports createProvider() (and, for the drift case, createDriftedProvider())
-  --image     the image every computer starts from (default debian:bookworm-slim)
-  --only      run only these groups (health, exec, files, process, provider, drift, screen, input, touch, apps,
-              lifetime) or case ids; a run that leaves Core cases out is partial: no Core verdict, and exit 3 when
+const USAGE = `usage: npm run conformance -w @parcha/agentrun-computer -- --provider ${providerIds.join("|")}|<module.js> [--image <image>] [--only <group|case>,...] [--fixture <path>] [--json]
+  --provider  a computer in the registry (${providerIds.join(", ")}), or a module path: a provider file that exports
+              create(options), or a conformance module that exports createProvider() (and, for the drift case,
+              createDriftedProvider(); for the mount cases, mountFor(kind), a fresh run folder for that mount kind)
+  --image     the image every computer starts from (default the module's conformanceImage(), else debian:bookworm-slim)
+  --only      run only these groups (health, exec, files, process, provider, drift, mount, screen, input, touch,
+              apps, lifetime) or case ids; a run that leaves Core cases out is partial: no Core verdict, and exit 3 when
               every case that ran passed
   --fixture   the fixture the screen, input, touch and apps cases check effects with: computerd-fixture for a
               desktop, the fixture APK for an Android phone
@@ -48,7 +55,7 @@ class Usage extends Error {}
 
 interface Args {
 	provider: string;
-	image: string;
+	image?: string;
 	only?: string[];
 	fixture?: string;
 	json: boolean;
@@ -72,7 +79,7 @@ function parse(argv: string[], cases: Case[]): Args {
 		else if (flag === "--help" || flag === "-h") args.help = true;
 		else throw new Usage(`unknown option ${flag}`);
 	}
-	if (args.help) return { provider: "", image: "", json: false, help: true };
+	if (args.help) return { provider: "", json: false, help: true };
 	if (args.provider === undefined) throw new Usage("--provider is required");
 	const groups = [...new Set(cases.map((c) => c.group))];
 	for (const name of args.only ?? []) {
@@ -82,7 +89,7 @@ function parse(argv: string[], cases: Case[]): Args {
 	}
 	return {
 		provider: args.provider,
-		image: args.image ?? "debian:bookworm-slim",
+		...(args.image === undefined ? {} : { image: args.image }),
 		...(args.only ? { only: args.only } : {}),
 		...(args.fixture ? { fixture: args.fixture } : {}),
 		json: args.json,
@@ -90,23 +97,85 @@ function parse(argv: string[], cases: Case[]): Args {
 	};
 }
 
-/** The provider a module makes, and its drifted twin when it offers one. */
-async function load(path: string): Promise<{ provider: ComputerProvider; drifted?: () => Promise<ComputerProvider> }> {
-	let module: { createProvider?: unknown; createDriftedProvider?: unknown };
-	try {
-		module = await import(pathToFileURL(path).href);
-	} catch (error) {
-		throw new Usage(`cannot load the provider module ${path}: ${(error as Error).message.split("\n")[0]}`);
+const DEFAULT_IMAGE = "debian:bookworm-slim";
+
+interface Target {
+	provider: ComputerProvider;
+	drifted?: () => Promise<ComputerProvider>;
+	/** The module's run folders for the mount cases: mountFor(kind). */
+	mountFor?: ConformanceOptions["mountFor"];
+	/** The module's image for a run that names none. */
+	image?: string;
+	/** The module's notes for the report. */
+	notes?: string[];
+}
+
+/** A bare name, which is an id; a module path has a slash or an extension. */
+// Any bare name, whatever its case: "Docker" is an unknown provider, not a module path.
+const BARE = /^[A-Za-z][A-Za-z0-9-]*$/;
+
+/**
+ * The conformance module for --provider: a registry id's provider file, or the module at a path. A provider file's
+ * conformance() module is run when it has one, else its create() alone, given the CLI's options but the env (a provider
+ * reads no environment), with no drifted twin.
+ */
+async function conformanceModule(name: string, cwd: string): Promise<{ label: string; module: Partial<ConformanceModule> }> {
+	let label = name;
+	let module: Record<string, unknown>;
+	if (isProviderId(name)) {
+		module = { ...(await providerModule(name)) };
+	} else if (BARE.test(name)) {
+		throw new Usage(`unknown computer provider ${JSON.stringify(name)}: the registry holds ${providerIds.join(", ")}; or give a module path, such as ./my-provider.js`);
+	} else {
+		label = resolve(cwd, name);
+		try {
+			module = await import(pathToFileURL(label).href);
+		} catch (error) {
+			throw new Usage(`cannot load the provider module ${label}: ${(error as Error).message.split("\n")[0]}`);
+		}
 	}
-	const { createProvider, createDriftedProvider } = module;
-	if (typeof createProvider !== "function") throw new Usage(`${path} does not export createProvider()`);
-	const provider = (await createProvider()) as ComputerProvider;
+	if (typeof module.conformance === "function") return { label, module: await module.conformance() };
+	if (typeof module.createProvider !== "function" && typeof module.create === "function") {
+		const create = module.create as (options: object) => ComputerProvider | Promise<ComputerProvider>;
+		return {
+			label,
+			module: {
+				createProvider: (options: object = {}) => {
+					const { env: _env, ...rest } = options as { env?: ProviderEnv };
+					return create(rest);
+				},
+			},
+		};
+	}
+	return { label, module: module as Partial<ConformanceModule> };
+}
+
+/**
+ * The provider a conformance module makes, its drifted twin and its run folders (mountFor) when it offers them, and what
+ * it says of its run: conformanceImage(), the image when --image names none, and conformanceNotes, strings for the report.
+ */
+async function load(label: string, module: Partial<ConformanceModule>, options: object): Promise<Target> {
+	const { createProvider, createDriftedProvider, conformanceImage, mountFor } = module;
+	if (typeof createProvider !== "function") throw new Usage(`${label} does not export createProvider() or create()`);
+	const provider = (await createProvider(options)) as ComputerProvider;
 	const lacks = PROVIDER_METHODS.filter((name) => typeof provider?.[name] !== "function");
 	if (lacks.length > 0 || typeof provider.id !== "string") {
-		throw new Usage(`${path}: createProvider() did not return a ComputerProvider: it lacks ${[...lacks, ...(typeof provider?.id === "string" ? [] : ["id"])].join(", ")}`);
+		throw new Usage(`${label}: createProvider() did not return a ComputerProvider: it lacks ${[...lacks, ...(typeof provider?.id === "string" ? [] : ["id"])].join(", ")}`);
 	}
-	if (typeof createDriftedProvider !== "function") return { provider };
-	return { provider, drifted: async () => (await createDriftedProvider()) as ComputerProvider };
+	const target: Target = { provider };
+	if (typeof createDriftedProvider === "function") target.drifted = async () => (await createDriftedProvider(options)) as ComputerProvider;
+	if (typeof mountFor === "function") target.mountFor = (kind) => mountFor(kind, options);
+	if (conformanceImage !== undefined) {
+		const image = typeof conformanceImage === "function" ? await conformanceImage(options) : undefined;
+		if (typeof image !== "string" || image === "") throw new Usage(`${label}: conformanceImage() did not return an image`);
+		target.image = image;
+	}
+	const notes: unknown = module.conformanceNotes;
+	if (notes !== undefined) {
+		if (!Array.isArray(notes) || !notes.every((note) => typeof note === "string")) throw new Usage(`${label}: conformanceNotes is not an array of strings`);
+		target.notes = notes;
+	}
+	return target;
 }
 
 export async function main(argv: string[], io: CliIo = {}): Promise<number> {
@@ -122,16 +191,12 @@ export async function main(argv: string[], io: CliIo = {}): Promise<number> {
 		await write(stdout, `${USAGE}\n`);
 		return 0;
 	}
-	let close = () => {};
-	let target: { provider: ComputerProvider; drifted?: () => Promise<ComputerProvider> };
+	const cwd = io.cwd ?? process.env.INIT_CWD ?? process.cwd();
+	const options = io.providerOptions ?? {};
+	let target: Target;
 	try {
-		if (args.provider === "docker") {
-			const docker = dockerConformance(io.dockerTimeoutMs === undefined ? {} : { timeoutMs: io.dockerTimeoutMs });
-			target = docker;
-			close = docker.close;
-		} else {
-			target = await load(resolve(io.cwd ?? process.env.INIT_CWD ?? process.cwd(), args.provider));
-		}
+		const { label, module } = await conformanceModule(args.provider, cwd);
+		target = await load(label, module, options);
 	} catch (error) {
 		await write(stderr, `${(error as Error).message}\n`);
 		if (error instanceof Usage) {
@@ -140,22 +205,20 @@ export async function main(argv: string[], io: CliIo = {}): Promise<number> {
 		}
 		return 1;
 	}
-	try {
-		const onResult = progress ? (r: CaseResult) => stderr.write(`${r.status === "pass" ? "✓" : r.status === "fail" ? "✗" : "-"} ${r.id}\n`) : undefined;
-		const report = await runConformance(target.provider, {
-			image: args.image,
-			cases,
-			...(args.only ? { only: args.only } : {}),
-			...(args.fixture ? { fixture: resolve(io.cwd ?? process.env.INIT_CWD ?? process.cwd(), args.fixture) } : {}),
-			...(signal ? { signal } : {}),
-			...(target.drifted ? { drifted: target.drifted } : {}),
-			...(onResult ? { onResult } : {}),
-		});
-		await write(stdout, args.json ? `${JSON.stringify(report, null, 2)}\n` : formatReport(report));
-		return report.core === "pass" ? 0 : report.core === "partial" ? 3 : 1;
-	} finally {
-		close();
-	}
+	const onResult = progress ? (r: CaseResult) => stderr.write(`${r.status === "pass" ? "✓" : r.status === "fail" ? "✗" : "-"} ${r.id}\n`) : undefined;
+	const report = await runConformance(target.provider, {
+		image: args.image ?? target.image ?? DEFAULT_IMAGE,
+		...(target.notes && target.notes.length > 0 ? { notes: target.notes } : {}),
+		cases,
+		...(args.only ? { only: args.only } : {}),
+		...(args.fixture ? { fixture: resolve(cwd, args.fixture) } : {}),
+		...(signal ? { signal } : {}),
+		...(target.drifted ? { drifted: target.drifted } : {}),
+		...(target.mountFor ? { mountFor: target.mountFor } : {}),
+		...(onResult ? { onResult } : {}),
+	});
+	await write(stdout, args.json ? `${JSON.stringify(report, null, 2)}\n` : formatReport(report));
+	return report.core === "pass" ? 0 : report.core === "partial" ? 3 : 1;
 }
 
 if (isCommand(import.meta)) {

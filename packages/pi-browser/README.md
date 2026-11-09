@@ -10,8 +10,8 @@ Your agent gets its own browser, and you can take over and hand it back.
 
 If the process dies, a pi-durable host recovers the session and does not repeat an action. See [For hosts](#for-hosts).
 
-Part of [AgentRun](https://github.com/Parcha-ai/agentrun). Node `>=22.19.0`, pi 1.1 to 1.3 (the range of its
-pi-durable and chord peers; the coding-agent entry also runs on pi 1.0.4). ESM only: the
+Part of [AgentRun](https://github.com/Parcha-ai/agentrun). Node `>=22.19.0`, pi 1.5.0 exactly (its
+pi-durable and chord peers). ESM only: the
 package has `import` entries and no `require` entry.
 
 ## Install
@@ -19,10 +19,10 @@ package has `import` entries and no `require` entry.
 ```sh
 pi install npm:@parcha/pi-browser@latest    # the pi coding agent's extension
 npm install @parcha/pi-browser@latest       # the library: providers, driver, durable adapter
-npm install @parcha/pi-browser@latest @earendil-works/pi-durable@1.3.0 @earendil-works/chord@1.3.0 @earendil-works/pi-ai@1.3.0   # a pi-durable host: its peers, pinned to 1.3.0 (unpinned, npm takes 1.4.0 and stops with ERESOLVE)
+npm install @parcha/pi-browser@latest @earendil-works/pi-durable@1.5.0 @earendil-works/chord@1.5.0 @earendil-works/pi-ai@1.5.0   # a pi-durable host: its peers, pinned to 1.5.0
 ```
 
-`pi install` loads the extension. A Chrome starts on the model's first browser call, and not before. pi 1.4 is not supported yet; a later release widens the range.
+`pi install` loads the extension. A Chrome starts on the model's first browser call, and not before.
 
 ## Quick start
 
@@ -165,6 +165,27 @@ one that keeps sending is closed), its `ready` carries `readOnly: true` and the 
 keeps no session open. A browser with no page to show (a headless one that starts with none, or whose last page closed) sends `no_page`, and the page says "No page yet"
 until one opens.
 
+`takeOver: { take(tag) }` makes the view drive only once the person takes the browser. The page shows **Take over** and **Hand back** in its own bar and sends `take`
+and `give`; outside a hold every input, navigation and dialog answer is dropped on the server (`held not_taken`). A `take` asks the host's `take(tag)` first, which may
+refuse in its own words (a spend cap with no room for the person's time; the viewer shows `take_refused` with them), or answers `{ end(why), started?(), cancel?() }` (`started` as the hold goes live, `cancel` instead of `end` when no hold starts after all: the session released, the viewer gone, or the browser held already, which the viewer is told as `take_refused`); the session's gate then
+holds the browser for the person (`drivingGates(tag).take()`) until their `give`, `holdIdleMs` with no input (15 minutes), `holdAwayMs` with no viewer connected
+(2 minutes), or the session's release, and `end` is called once with why (`given`, `answered`, `cap`, `idle`, `away`, `released`). A host gives the
+browser back at its spend cap with `drivingGates(tag).give("cap", words)`: the viewer's `hold` end carries the words as `message`. The viewer is told `hold` as it starts
+and ends; `ready` carries `takeOver: true` and whether it holds now, so a viewer that reconnects within the away window still holds it. While held, every model call
+waits inside its tool (it does not fail; an abort ends the wait with nothing done), and past the hold's end until the person's last command has returned (a Back
+between reading the history and moving; at most `settleMs`, 10 s, after which that command is let go and moves nothing more), then goes on with its old element ids dropped and told plainly that the person had
+the browser and the page may have changed. Its result's `details` then say how long it waited (`waited_for_person_ms`), so a timeline shows the call waited for the
+person rather than acting while they had the browser; a call stopped while it waits did nothing and carries none. Each change of hands moves the gate's epoch (`drivingGates(tag).epoch()`), and a driver a call took before it is refused at
+its next act (a `FenceRefusal`), so an agent action from before the person took over never reaches the page: a `run` of
+several actions has all of them checked against the snapshot first (`checkActions`: a stale id anywhere sends none), then is
+sent one action at a time, each checked against the epoch. One stopped partway (a take, or a later action failing) says
+`effect: "partial"` with `completed`, how many ran. An act already sent (a `run`'s code is one batch inside
+the browser, out of reach once sent) ends first: a take while a model call runs is held at once, no call starts, and the
+hold goes live (`holding()`, the viewer's `hold`, the person's input taken) once that call returns. A host gives the browser back itself with
+`drivingGates(tag).give("answered")` (an agent's handoff that was answered). A watching take-over viewer keeps no session from its idle release; a held one is kept by
+its hold. `viewerAssets` (from `@parcha/pi-browser/live-view`) are the viewer's page, script and style, for a host that serves the page from its own origin and
+passes only the WebSocket to the live view.
+
 Limits: JS dialogs show with accept and dismiss. A file chooser and downloads are not supported.
 
 ## Saved sign-ins
@@ -263,9 +284,7 @@ Stagehand, undici, zod and the two HTML packages are dependencies. Four optional
 | `@earendil-works/pi-durable` and `@earendil-works/chord` | `/durable`, the adapter for a pi-durable Harness. |
 | `@browserbasehq/sdk` | the Browserbase provider. Kernel needs no SDK. |
 
-The pi peers are `@earendil-works/pi-durable` and `chord` `>=1.1.0 <1.4.0`, and `@earendil-works/pi-coding-agent` at any version, as pi's package guidance asks of the packages it supplies. The suite passes on pi 1.1, 1.2 and 1.3, and the coding-agent entry's tests also pass on a pi 1.0.4 family.
-
-pi 1.0.4 or 1.1.x users: pin `@earendil-works/pi-codemode` to the same version as `@earendil-works/pi-coding-agent` (`@1.0.4`, or `@1.1.0`), because pi-codemode 1.2.0 removed an export those versions import, or use pi 1.2.
+The pi peers are `@earendil-works/pi-durable` and `chord` `1.5.0` exactly, and `@earendil-works/pi-coding-agent` at any version, as pi's package guidance asks of the packages it supplies. CI tests pi 1.5.0.
 
 ## Entries
 

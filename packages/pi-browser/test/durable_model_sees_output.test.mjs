@@ -31,11 +31,11 @@ test("every durable tool result reaches the model with its text: browser, web, s
     },
     evidence,
   });
-  // The result each tool hands to pi-durable, whichever version CI installs: only 1.2 reads `output`, so the transcript the model reads cannot catch its removal on 1.1.
+  // The result each tool hands to pi-durable: its blocks under `output` (pi 1.5's key), and no `content` beside them.
   const returned = [];
   for (const tool of [...browser.tools, ...web.tools]) {
     const execute = tool.execute;
-    tool.execute = async (...args) => { const result = await execute.apply(tool, args); returned.push({ tool: tool.name, content: result.content, output: result.output }); return result; };
+    tool.execute = async (...args) => { const result = await execute.apply(tool, args); returned.push({ tool: tool.name, content: "content" in result, output: result.output }); return result; };
   }
   const calls = [
     ["snapshot", {}], ["run", { code: "await page.click('a')" }], ["screenshot", {}], ["browser_read", {}],
@@ -67,8 +67,8 @@ test("every durable tool result reaches the model with its text: browser, web, s
   for (const r of seen) assert.ok(r.text.trim().length > 0, `${r.tool} reached the model with no text`);
   assert.deepEqual(returned.map((r) => r.tool), calls.map(([name]) => name), "every call went through a wrapped tool");
   for (const r of returned) {
-    assert.ok(Array.isArray(r.output) && r.output.length > 0, `${r.tool} returned no output for pi-durable 1.2`);
-    assert.deepEqual(r.output, r.content, `${r.tool}: output is the text the model is shown`);
+    assert.ok(Array.isArray(r.output) && r.output.length > 0, `${r.tool} returned no output`);
+    assert.equal(r.content, false, `${r.tool}: output only, the key pi 1.5 shows the model`);
   }
   assert.equal(seen[2].images, 1, "the screenshot keeps its image");
   assert.deepEqual(seen.map((r) => r.isError), [false, false, false, false, true, false, false, false, false], "only the run with neither code nor actions is a failure");

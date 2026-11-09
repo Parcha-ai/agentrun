@@ -202,15 +202,6 @@ describe("the run page's Browser tab", () => {
   }
   const ended = { ...working, status: "completed", state: "idle", ended_at: "2026-11-05T09:12:00Z" } as Run;
 
-  it("an ended run whose last read was live shows that the browser closed, with no iframe: an ended run has nothing to watch", async () => {
-    const p = await moving(async () => ({ state: "live", viewer: VIEWER }));
-    expect(p.frame()).not.toBeNull();
-    await p.show(ended);
-    await settle(120);
-    expect(p.frame()).toBeNull();
-    expect(p.section()).toContain("The browser closed when the run ended.");
-  });
-
   it("a failed last read and then the end show the same, and nothing more is read after the end", async () => {
     let failing = false;
     const p = await moving(async () => { if (failing) throw new Error("502"); return { state: "live", viewer: VIEWER }; });

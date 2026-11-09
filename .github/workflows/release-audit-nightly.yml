@@ -24,6 +24,13 @@ jobs:
       - run: npm install --global npm@11.21.0 --ignore-scripts
       - run: npm ci --ignore-scripts
       - run: npm run build
+      # @parcha/agentrun-computer publishes the daemon, dist/computerd-linux-amd64 and -arm64, which Go builds;
+      # verify-packages stops without them, before the audit.
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: packages/computer/daemon/go.mod
+          cache: false
+      - run: npm run build:daemon -w @parcha/agentrun-computer
       - run: node scripts/verify-packages.mjs
       - name: Keep the audit report
         if: always()

@@ -1,4 +1,4 @@
-// The sweep around a live Modal run, with the conformance module's settings and client (COMPUTER_MODAL_*, never MODAL_*):
+// The sweep around a live Modal run, with the provider's settings and client (COMPUTER_MODAL_*, never MODAL_*):
 //
 //   node packages/computer/dist/conformance/modal-sweep.js --before <file>
 //   node packages/computer/dist/conformance/modal-sweep.js --after <file>
@@ -16,14 +16,15 @@
 // runs, 2 on a usage error, a before file it cannot read or of another app or server, a missing token or app, or a
 // listing Modal refused (nothing is terminated then).
 //
-// It reads COMPUTER_MODAL_TOKEN_ID, COMPUTER_MODAL_TOKEN_SECRET, COMPUTER_MODAL_APP and COMPUTER_MODAL_SERVER_URL, and
-// builds its client as the conformance module does (modalClient): the token passed explicitly, the server pinned, an
-// ambient MODAL_SERVER_URL refused. It needs no AGENTRUN_COMPUTER_LIVE_MODAL: it makes nothing.
+// It reads COMPUTER_MODAL_TOKEN_ID, COMPUTER_MODAL_TOKEN_SECRET, COMPUTER_MODAL_APP and COMPUTER_MODAL_SERVER_URL as the
+// conformance module does (settingsFromEnv in ./modal.ts), and builds its client as the provider does (modalClient): the
+// token passed explicitly, the server pinned, an ambient MODAL_SERVER_URL refused. It needs no
+// AGENTRUN_COMPUTER_LIVE_MODAL: it makes nothing.
 import { readFileSync, writeFileSync } from "node:fs";
 import { COMPUTER_LABEL } from "../drift.js";
 import { isCommand } from "../entry.js";
-import { type ModalSandbox, type ModalSdk, untilFinished } from "../modal.js";
-import { MODAL_ENV, type ModalModuleOptions, modalClient, modalServerUrl } from "./modal.js";
+import { MODAL_DEFAULT_SERVER_URL, type ModalClientConstructor, type ModalSandbox, type ModalSdk, modalClient, untilFinished } from "../modal.js";
+import { MODAL_ENV, settingsFromEnv } from "./modal.js";
 
 /** A stream as main writes to it: done is called once the text is handed on. */
 export interface Writer {
@@ -34,7 +35,7 @@ export interface SweepIo {
 	/** Where the settings are read; default process.env. */
 	env?: Record<string, string | undefined>;
 	/** The SDK's ModalClient; imported from the host's modal package by default. */
-	ModalClient?: ModalModuleOptions["ModalClient"];
+	ModalClient?: ModalClientConstructor;
 	stdout?: Writer;
 	stderr?: Writer;
 	/** How long --after reads one terminated sandbox back before it counts as still there; default 60 s. */
@@ -161,14 +162,14 @@ export async function main(argv: string[], io: SweepIo = {}): Promise<number> {
 	let before: Set<string> | undefined;
 	let app: string;
 	let sdk: ModalSdk;
-	const serverUrl = modalServerUrl(env);
+	let serverUrl: string;
 	try {
 		args = parse(argv);
 		const recorded = args.mode === "after" ? readBefore(args.file) : undefined;
-		const named = env[MODAL_ENV.app];
-		if (named === undefined || named === "") throw new Error(`the sweep needs ${MODAL_ENV.app} in the environment: the app the run's sandboxes are in`);
-		app = named;
-		sdk = await modalClient({ env, ...(io.ModalClient ? { ModalClient: io.ModalClient } : {}) });
+		const settings = settingsFromEnv(env);
+		app = settings.app;
+		serverUrl = settings.serverUrl ?? MODAL_DEFAULT_SERVER_URL;
+		sdk = await modalClient({ tokenId: settings.tokenId, tokenSecret: settings.tokenSecret, serverUrl, ...(io.ModalClient ? { ModalClient: io.ModalClient } : {}) });
 		if (recorded !== undefined) {
 			const other = otherPlace(args.file, recorded, app, serverUrl);
 			if (other !== undefined) throw new Error(other);
