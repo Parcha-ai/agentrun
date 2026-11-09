@@ -16,14 +16,14 @@ import { putSealedKey, removeSealedKey } from "./server-keys.js";
 import type { Store } from "./store/index.js";
 import { unknownFields } from "./validate.js";
 import { ArchilClaimRefused } from "./workspace/archil-claim.js";
-import { archilApiKey } from "./workspace/archil-key.js";
+import { ARCHIL_API_KEY_ENV, archilApiKey } from "./workspace/archil-key.js";
 import { type ArchilDisk, type ArchilDiskOptions, archilDisk, pinnedImage } from "./workspace/archil-disk.js";
 
 /** The routes, by their operation names. */
 export const ARCHIL_ROUTES: ReadonlySet<string> = new Set(["getWorkspaceArchil", "putWorkspaceArchil", "deleteWorkspaceArchil", "testWorkspaceArchil"]);
 
 /** The key the owner gives, by the name the API takes, and the sealed-key row it is kept in. */
-const KEYS: readonly { readonly name: string; readonly row: string }[] = [{ name: "ARCHIL_API_KEY", row: ARCHIL_API_KEY_ROW }];
+const KEYS: readonly { readonly name: string; readonly row: string }[] = [{ name: ARCHIL_API_KEY_ENV, row: ARCHIL_API_KEY_ROW }];
 
 /** The Archil settings as the owner reads them: the key in the shared secret shape (key-meta.ts), never a value. */
 export type ArchilView = { on: boolean; diskId?: string; region?: string; s3Url?: string; image?: string; keys: KeyMeta[] };
