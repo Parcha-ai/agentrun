@@ -1,9 +1,11 @@
-// The store's readers of a run's approvals on a FINAL run: a call it asked about that has no answer in its journal (the
-// shape a stopped end leaves when its journal would not take the withdrawal, written on the run's row alone) reads
-// withdrawn wherever it is read: the timeline's approval row (the view's and the served one), nothing pending, and the
-// run's moment (what an answer is checked against: no approval waiting, a repeat allow refused in main's words). A LIVE
-// parked run's unanswered call still reads waiting, and a call the stop's end withdrew reads as it did. A stop's
-// withdrawal over an allow it overrode (its `superseded`) is the call's answer, not the allow before it.
+// The store's readers of a run's approvals: a call the run asked about that has no answer in its journal reads withdrawn
+// once the run ENDED after it (an agentrun.end follows the ask in its journal; the shape a stopped end leaves when its
+// journal would not take the withdrawal, written on the run's row alone), wherever it is read: the timeline's approval
+// row (the view's and the served one), nothing pending, and the run's moment (what an answer is checked against: no
+// approval waiting, a repeat allow refused in main's words). It stays withdrawn when the run is reopened after its end,
+// while a call asked in the reopened turn waits. A LIVE parked run's unanswered call still reads waiting, and a call the
+// stop's end withdrew reads as it did. A stop's withdrawal over an allow it overrode (its `superseded`) is the call's
+// answer, not the allow before it.
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
 import { closeOpenSessions, piAdapterSpec, scriptedOrigin } from "./conformance-pi-adapter.mjs";
@@ -119,6 +121,19 @@ test("a call the stop's end withdrew reads as it did", { timeout: 60_000 }, asyn
   assert.match(seen.row, /^Withdrawn when the run was stopped: add /);
   assert.match(seen.served, /^Withdrawn when the run was stopped: add /);
   assert.equal(seen.waiting, null);
+});
+
+test("a call asked before the run's end reads withdrawn after a reopen, while a call asked in the reopened turn waits", () => {
+  const askOf = (callId) => ({ kind: "agentrun.ask", data: { callId, tool: "add", args: { a: 2, b: 3 }, requestedAt: "2026-11-09T00:00:00.000Z" } });
+  const end = { kind: "agentrun.end", data: { state: "ended" } };
+  // Ended with c1 unanswered, then reopened by a message: c2 is asked in the new turn, no end after it.
+  const answers = answersOf([askOf("c1"), end, { kind: "agentrun.message", data: { role: "person", text: "go on" } }, askOf("c2")]);
+  assert.equal(answers.c1?.decision, "withdrawn", "the call asked before the end");
+  assert.equal(answers.c2, undefined, "the call asked in the reopened turn waits");
+  const asks = new Map(["c1", "c2"].map((id) => [id, { id, tool: "add", call_id: id, args_json: "{\"a\":2,\"b\":3}", requested_at: "2026-11-09T00:00:00.000Z" }]));
+  const rows = withApprovalRows(["c1", "c2"].map((id, i) => ({ id: `r${i}`, seq: i, kind: "tool_use", tool_use_id: id, tool_name: "add", summary: "add", text: "" })), asks, answers, (text) => text);
+  const said = rows.filter((one) => one.kind === "tool_approval_requested").map((one) => one.summary.split(":")[0]);
+  assert.deepEqual(said, ["Withdrawn when the run was stopped", "Waiting for your approval"]);
 });
 
 test("a stop's withdrawal over an allow it overrode is the call's answer, keeping the allow it superseded", () => {
