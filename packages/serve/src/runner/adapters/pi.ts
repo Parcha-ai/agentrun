@@ -245,9 +245,10 @@ export function refusalWords() {
     },
     resultOf(callId: string, result: { readonly diagnostics?: readonly { readonly code?: string }[] }): { output: { type: "text"; text: string }[]; isError: true } | undefined {
       const text = words.get(callId);
+      // Let go on every result: the call has its one result now, whatever it is.
+      words.delete(callId);
       const blocked = result.diagnostics?.some((diagnostic) => diagnostic.code === "blocked");
       if (text === undefined || !blocked) return undefined;
-      words.delete(callId);
       return { output: [{ type: "text", text }], isError: true };
     },
     get held(): number {

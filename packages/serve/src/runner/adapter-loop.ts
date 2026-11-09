@@ -77,12 +77,15 @@ export function turnsOf(records: readonly SessionRecord[]): number[] {
   return records.filter((record) => record.kind === RUNNER_RECORDS.turn).map((record) => (record.data as { turn?: unknown }).turn).filter((turn): turn is number => typeof turn === "number");
 }
 
-/** The booking of the request that just answered, from the session's records: the latest runner.turn record, its
- *  booked figure (null when unknown); "none" when there is no booking. `given`: the bookings already given to an answer. */
-export function bookingOfAnswer(records: readonly SessionRecord[], _given: ReadonlySet<number>): { turn: number; usd: number | null } | "none" | "ambiguous" {
-  const last = [...records].reverse().find((record) => record.kind === RUNNER_RECORDS.turn);
-  if (!last) return "none";
-  const turn = last.data as { turn?: unknown; usd?: unknown; bookedUsd?: unknown };
+/** The booking of the request that just answered, from the session's records: the one runner.turn record no answer was
+ *  given yet (`given`), its booked figure (null when unknown); "none" when there is none. pi makes one model request at
+ *  a time, so there is one; more than one (requests in flight together) cannot be told apart, and the answer's cost is
+ *  "ambiguous" (read unknown), never another request's figure. */
+export function bookingOfAnswer(records: readonly SessionRecord[], given: ReadonlySet<number>): { turn: number; usd: number | null } | "none" | "ambiguous" {
+  const open = records.filter((record) => record.kind === RUNNER_RECORDS.turn && !given.has((record.data as { turn?: unknown }).turn as number));
+  if (open.length === 0) return "none";
+  if (open.length > 1) return "ambiguous";
+  const turn = open[0]!.data as { turn?: unknown; usd?: unknown; bookedUsd?: unknown };
   const figure = turn.bookedUsd !== undefined ? turn.bookedUsd : turn.usd;
   return { turn: typeof turn.turn === "number" ? turn.turn : -1, usd: typeof figure === "number" && Number.isFinite(figure) ? figure : null };
 }
