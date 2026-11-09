@@ -15,9 +15,10 @@ import { registerSecretWrite, secretName } from "./secret-writes.js";
 import { getSealedKey, putSealedKey, removeSealedKey, sealedKeyNames } from "./server-keys.js";
 import type { Store } from "./store/index.js";
 
-// A key save is a secret write (secret-writes.ts): any named key, a value or a null (a removal counts), so the server's one
-// dispatch check keeps it to the owner's session. The view and the connection test write none.
-registerSecretWrite("saveComputerKeys", (body) => typeof body === "object" && body !== null && !Array.isArray(body) && Object.keys(body).length > 0);
+// Every request to a computer's keys is a secret write (secret-writes.ts), whatever its body (a value, a null, an empty
+// body or none), as saveToolKey's is: the server's one dispatch check keeps it to the owner's session before any provider
+// is looked up, so a token learns nothing of which providers exist. The view and the connection test write none.
+registerSecretWrite("saveComputerKeys", () => true);
 
 /** A setting kind as the kind registry's SETTING_KINDS gives it. */
 export interface SettingKindSpec {

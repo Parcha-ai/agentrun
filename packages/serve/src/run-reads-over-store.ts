@@ -116,8 +116,8 @@ export async function runGraphView(store: Store, runId: string, deps: RunReadsDe
   const launch = await store.runs.launch(runId).then((row) => readLaunchBody(row.body), (error) => (error instanceof StoreLaunchMissing ? undefined : Promise.reject(error)));
   // The run's model-node cost from its rows once it ended (0 before), as the old graph read it from run.rows.
   const rows = ended ? await runTimeline(store, runId, deps.context) : [];
-  // Every part it serves is cut by the run's one cut, as the file path's servedGraph cut it (graph-served.ts servedPart):
-  // its nodes (their labels, items, inputs, states, escalation words), its decisions and its calls.
+  // Every field it serves is cut by the run's one cut (graph-served.ts servedGraphView): its nodes, decisions and calls by
+  // servedPart, and every other field (its workflow, its structure, any added later) whole.
   const cut = await deps.cutValues(store, runId);
   if (cut === "unreadable") throw new ApiError("forbidden", WITHHELD_SIGN_IN);
   return servedGraphView(await runGraph({

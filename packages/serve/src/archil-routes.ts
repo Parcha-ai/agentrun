@@ -28,13 +28,10 @@ const KEYS: readonly { readonly name: string; readonly row: string }[] = [{ name
 /** The key names the Archil settings take, as the document names them. */
 export const ARCHIL_KEY_NAMES: readonly string[] = KEYS.map((key) => key.name);
 
-// A PUT that gives or removes the account key is a secret write (secret-writes.ts): the server's one dispatch check keeps
-// it to the owner's session. The disk, region, S3 URL and image alone stay editable with the API token, and turning
-// Archil off keeps the key, so neither is registered.
-registerSecretWrite("putWorkspaceArchil", (body) => {
-  const keys = typeof body === "object" && body !== null ? (body as { keys?: unknown }).keys : undefined;
-  return typeof keys === "object" && keys !== null && (keys as Record<string, unknown>).ARCHIL_API_KEY !== undefined;
-});
+// Every PUT of the Archil settings is a secret write (secret-writes.ts), whatever its body: the account key, and the disk,
+// region and S3 URL too, which say where every run's files go, so a token never re-points them. The server's one dispatch
+// check keeps it to the owner's session. Turning Archil off keeps the key, so it is not registered.
+registerSecretWrite("putWorkspaceArchil", () => true);
 
 /** The account key as its one SecretMeta: named "workspace:archil", set by ARCHIL_API_KEY or its sealed row. */
 const SECRET = { secret: secretName("workspace", "archil"), env: ARCHIL_API_KEY_ENV, row: ARCHIL_API_KEY_ROW };
