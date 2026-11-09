@@ -2,6 +2,7 @@ import { Archive, ArrowLeft, ArrowRight, Check, Eye, FileText, History, Monitor,
 import { useEffect, useRef, useState } from "react";
 import { LearningField } from "@/components/LearningSwitch";
 import { McpToolPicker } from "@/components/McpToolPicker";
+import { ComputerSetting } from "@/components/ComputerSetting";
 import { PlaceSetting } from "@/components/PlaceSetting";
 import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
@@ -13,6 +14,8 @@ import { markdown, when } from "@/lib/format";
 import { harnessDefault, modelLabel, NO_DEFAULT } from "@/lib/models";
 import type { McpServer } from "@/lib/mcp";
 import { computerOfPlace, newAgentPlace, placeOf } from "@/lib/place";
+import { placeOfComputer } from "@/lib/computers";
+import type { ComputerKindView } from "@/lib/v2";
 import type { Places } from "@/lib/place";
 import { callNodeTools, type ToolChoice, type ToolGate } from "@/lib/toolSettings";
 import { cn } from "@/lib/utils";
@@ -23,7 +26,9 @@ export type Revision = { revision: string; version: number; current: boolean; no
  *  the server runs no decision workflows a starter can use, and then Decision is offered disabled. `modelSource`:
  *  capabilities' `models.source`; `routePrefix`, its `models.route_prefix`, the routing prefix taken off model ids. A harness's `default_model` is the
  *  model the server runs for it when a definition names none (null: none). */
-export type EditorCaps = { harnesses: { id: string; available: boolean; reason?: string; default_model?: string | null }[]; tools: ToolOffer[]; thinking: string[]; defaultModel?: string; modelSource?: string; routePrefix?: string | null; decisionProvider?: string; places?: Places | null; learning?: "on" | "off"; mcp?: boolean; mcpHarnesses?: string[] };
+/** `computers`: the server's computers list (capabilities.computers.kinds), the Computer step's kinds; null on a server
+ *  that lists none, where the step shows where runs go (places). */
+export type EditorCaps = { computers?: ComputerKindView[] | null; harnesses: { id: string; available: boolean; reason?: string; default_model?: string | null }[]; tools: ToolOffer[]; thinking: string[]; defaultModel?: string; modelSource?: string; routePrefix?: string | null; decisionProvider?: string; places?: Places | null; learning?: "on" | "off"; mcp?: boolean; mcpHarnesses?: string[] };
 export type EditorProps = {
   /** The agent being edited, or null for a new one. */
   agent: Agent | null;
@@ -124,7 +129,7 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
   // `revisions` counts them; the current one is the agent's `revision`, which can be an earlier one after "Make current".
   const current = revisions.find((r) => r.revision === agent?.revision) ?? revisions.find((r) => r.current);
   // The Computer step is an agentic agent's (a workflow runs on the runner), on a server that lists where runs can go.
-  const steps = STEPS.filter((s) => !(creating && s.id === "history") && (s.id !== "workflow" || workflow) && !(starting && s.id === "tools") && (s.id !== "computer" || (!workflow && !starting && !!caps.places)));
+  const steps = STEPS.filter((s) => !(creating && s.id === "history") && (s.id !== "workflow" || workflow) && !(starting && s.id === "tools") && (s.id !== "computer" || (!workflow && !starting && !!(caps.computers || caps.places))));
   // A step this agent or server has none of (the Computer step on a server that lists no places) opens the first one.
   const step: Step = steps.some((s) => s.id === chosen) ? chosen : steps[0]!.id;
   const at = steps.findIndex((s) => s.id === step);
@@ -251,7 +256,19 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
               baseLabel={current ? `rev ${current.version}` : undefined} validate={validate} tools={f.tools} serverIssues={workflowIssues(problem, workflow)} />
           )}
 
-          {step === "computer" && !workflow && !starting && caps.places && (
+          {step === "computer" && !workflow && !starting && caps.computers && (
+            <div className="max-w-4xl space-y-8">
+              {/* The computer picked, else the one saved, else the place the form starts on as a computer (the server's
+                  default for a new agent). A pick sets the place it is too, so a tool a box opens (bash) follows it. */}
+              <ComputerSetting kinds={caps.computers} value={f.computer ?? (d?.computer as AgentFields["computer"]) ?? computerOfPlace(f.place ?? { mode: "runner" })}
+                onChange={(computer) => {
+                  const place = placeOfComputer(computer);
+                  const sandboxOnly = new Set(caps.tools.filter((t) => t.sandbox_only).map((t) => t.name));
+                  set({ computer, place, ...(place.mode === "runner" ? { tools: (f.tools ?? []).filter((t) => !sandboxOnly.has(t)) } : {}) });
+                }} error={fieldError("computer") ?? fieldError("place")} warning={fieldWarning("computer") ?? fieldWarning("place")} />
+            </div>
+          )}
+          {step === "computer" && !workflow && !starting && !caps.computers && caps.places && (
             <div className="max-w-3xl space-y-8">
               {/* A pick is saved as the computer, the setting the server keeps place as a view of; the form's place still
                   decides which tools a box opens (bash). */}
