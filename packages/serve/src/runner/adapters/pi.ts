@@ -15,7 +15,7 @@ import { anthropicMessagesApi } from "@earendil-works/pi-ai/api/anthropic-messag
 import { type Conversation, defineExtension, defineTool, GenerationTask, type Harness, hook, type Registry, type Submission, ToolTask } from "@earendil-works/pi-durable";
 import { anthropicPolicy } from "@parcha/agentrun-harness-claude";
 import type { AdapterSession, AgentAdapter, HostTool, SessionIO, SessionSpec, TurnStatus } from "@parcha/agentrun-kernel";
-import { type ModelProxy, startModelProxy } from "@parcha/agentrun-kernel/host";
+import { type ModelProxy, type ProviderPolicy, startModelProxy } from "@parcha/agentrun-kernel/host";
 import { randomBytes } from "node:crypto";
 import { DEFAULT_HARNESS } from "../../harness.js";
 import { KINDS } from "../journal-kinds.js";
@@ -78,7 +78,7 @@ async function openPi(options: PiAdapterOptions, spec: SessionSpec, io: PiSessio
   // The session's route: pi-ai's requests reach the provider only through this proxy, which admits and books each one
   // through the runner's booking (io.models).
   const proxy = await startModelProxy({
-    policy: anthropicPolicy({ model, tools: [] }),
+    policy: piPolicy(model, spec.tools.map((tool) => tool.name)),
     hooks: io.models,
     model,
     origin: options.provider.origin,
@@ -95,6 +95,14 @@ async function openPi(options: PiAdapterOptions, spec: SessionSpec, io: PiSessio
     await proxy.close().catch(() => undefined);
     throw error;
   }
+}
+
+/** The session proxy's policy: claude-agent's (no fork), with pi's tools, the host's own names (`tools`), as the names its
+ *  client offers by themselves (its builtins). The CLI's own `mcp__hands__` prefix is not pi's: under it every one of
+ *  pi's tool definitions would be dropped and the model offered none. Every other tool definition is dropped, and a
+ *  request that offers the session's tools is the turn's answer request. */
+export function piPolicy(model: string, tools: readonly string[]): ProviderPolicy {
+  return anthropicPolicy({ model, tools: [], builtins: tools });
 }
 
 /** The session on its proxy: pi's models through it, the host's tools and the gate as pi's extension, the root's state. */
