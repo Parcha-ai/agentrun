@@ -116,7 +116,7 @@ export function WorkspacePage({ v2, writable }: {
           <div className="flex flex-wrap items-center gap-3">
             <HardDrive className="size-4 text-muted-foreground" aria-hidden />
             <span className="font-mono text-[15px] font-semibold">Archil</span>
-            <span data-state>{view.on ? <Chip tone="success">On</Chip> : <Chip>Off</Chip>}</span>
+            <span data-archil-state>{view.on ? <Chip tone="success">On</Chip> : <Chip>Off</Chip>}</span>
             {view.on && <span data-disk className="font-mono text-[12px] text-muted-foreground">{`${view.diskId ?? ""} · ${view.region ?? ""}`}</span>}
             <span className="flex-1" />
             <Button size="sm" onClick={() => void test()} disabled={testing}>{testing ? "Testing…" : "Test"}</Button>
