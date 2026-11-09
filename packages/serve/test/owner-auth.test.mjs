@@ -235,6 +235,7 @@ test("signing out everywhere ends every session: a copy of the cookie made befor
   assert.equal((await agents(server, other)).status, 401, "another browser's session ended too");
   const session = await call(server.port, { path: "/v2/auth/session", headers: { cookie: other } });
   assert.deepEqual(session.json, { accounts: true, password_set: true, signed_in: false, secrets_writable: false, secrets_reason: "sign_in" });
+  assert.equal((await call(server.port, { method: "POST", path: "/v2/auth/sign-out-everywhere", headers: { ...page(server) }, body: {} })).status, 401, "it takes a session");
   assert.equal((await signIn(server, PASSWORD)).status, 200, "and the password still signs in");
 });
 
