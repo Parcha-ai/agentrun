@@ -46,6 +46,8 @@ export interface ConformanceSetup {
   readonly script: readonly ScriptStep[];
   readonly tools: Readonly<Record<ToolName, SuiteTool>>;
   readonly hooks: KernelHooks;
+  /** The run's agent, for the subject's spec to name (AdapterRunSpec.agentId): the end-of-run step is asked with it. */
+  readonly agentId?: string;
 }
 
 export type ConformanceCase =
@@ -65,6 +67,7 @@ export type ConformanceCase =
   | "approval-names-its-call"
   | "approval-double-click"
   | "message-never-answers"
+  | "end-of-run-answer"
   | "fault-effects-once"
   | "fault-restarts-bounded";
 

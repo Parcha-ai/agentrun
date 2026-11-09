@@ -19,7 +19,7 @@ import { openSqliteStore, RunFinal, type RunRow, type Store } from "../../store/
 import { sendCommand } from "../commands.js";
 import { callsOf, journalRecords, messagesOf, type CallRecord, type MessageRecord } from "../journal-reader.js";
 import { type AnswerData, KINDS } from "../journal-kinds.js";
-import type { LoopFactory } from "../loop-contract.js";
+import type { EndOfRunAnswer, EndOfRunTurn, LoopDeps, LoopFactory } from "../loop-contract.js";
 import { startRunner, type Runner } from "../runner.js";
 import type { ConformanceCase, ConformanceSetup, ConformanceSubject, KernelHooks, ScriptStep, SuiteTool, ToolName } from "./subject.js";
 
@@ -135,7 +135,7 @@ async function world(subject: ConformanceSubject, t: { after(fn: () => unknown):
   await server.runs.create({ id: RUN, agentId: "agent-1", revisionId: "rev-1" });
   /** The command rows a runner has handed to a loop's command(): with the loop, whether or not taken yet. */
   const handed = new Set<number>();
-  const start = async (name: string, setup: ConformanceSetup, holder?: { runner?: Runner }) => {
+  const start = async (name: string, setup: ConformanceSetup, holder?: { runner?: Runner }, more: Pick<LoopDeps, "endOfRun"> = {}) => {
     const store = await openSqliteStore({ dataDir: dir, role: "runner" });
     stores.push(store);
     // Each journal commit's outcome, by the claim's epoch (as child.ts records its process's): what a loop wrote, and
@@ -144,6 +144,7 @@ async function world(subject: ConformanceSubject, t: { after(fn: () => unknown):
     const observedLoop: LoopFactory = (deps) => {
       const loop = factory({
         ...deps,
+        ...more,
         journal: (claim) =>
           new Proxy(deps.journal(claim), {
             get(target, property) {
@@ -639,6 +640,34 @@ const CASES: readonly Case[] = [
       await sendCommand(w.server, RUN, { kind: "approve", body: { approval: callId } });
       await w.ended("ended", 30_000);
       assert.equal(ran.asked, 1, "approved, it ran once");
+    },
+  },
+  {
+    // The end-of-run step's turn (loop-contract.ts EndOfRunTurn) through the run's own session: its answer is read from
+    // the submission its request id names, whoever keeps the record (pi's adapter, or the loop for a CLI), so the step
+    // gets it, never "unanswered"; and the loop's record never writes that turn as a message (its prompt as the person's,
+    // its answer as the model's). Taking the CLI record's submission away turns this red for a CLI subject.
+    id: "end-of-run-answer",
+    title: "the end-of-run turn's answer is read, never unanswered, and the loop's record never shows that turn as a message",
+    async body(subject, t) {
+      const w = await world(subject, t);
+      const { tools } = suiteTools();
+      const prompt = "What did you learn?";
+      const answers: EndOfRunAnswer[] = [];
+      const endOfRun: EndOfRunTurn = async (input) => {
+        answers.push(await input.ask(prompt, { origin: "reflect", deadlineMs: 10_000 }));
+        return undefined;
+      };
+      await w.start("runner-a", { script: [{ say: "the job's answer" }, { say: "a note" }], tools, hooks: quiet, agentId: "agent-1" }, undefined, { endOfRun });
+      await w.ended("ended");
+      assert.equal(answers.length, 1, "asked once");
+      const answer = answers[0]!;
+      assert.ok("ended" in answer && answer.answer !== "", `the step read the turn's answer: ${JSON.stringify(answers)}`);
+      const row = await w.run();
+      const { entries } = await journalRecords(w.server.journal({ runId: RUN, runner: "conformance-reader", epoch: row.epoch, until: 0, from: row.state }), BACKGROUND_CONTEXT);
+      const shown = entries.filter((entry) => entry.kind === KINDS.message).map((entry) => (entry.data as { text?: string }).text);
+      assert.ok(!shown.includes(prompt), `the step's prompt is not a message: ${JSON.stringify(shown)}`);
+      assert.ok(!shown.includes(answer.answer), `the turn's answer is not a message: ${JSON.stringify(shown)}`);
     },
   },
 ];

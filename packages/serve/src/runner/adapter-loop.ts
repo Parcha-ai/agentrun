@@ -106,6 +106,11 @@ interface CliRecord {
   start(callId: string, tool: string, input: unknown, replaySafe: boolean): Promise<void>;
   /** A started call's end (once). */
   end(callId: string, status: CallStatus, output?: string): Promise<void>;
+  /** The end-of-run turn starts: what the model says from now on is that turn's answer, never a message on the record. */
+  answering(): void;
+  /** The end-of-run turn ended (`status`, its turn's): its prompt and answer as the submission `requestId` names, the same
+   *  record pi's adapter writes (done with its answer entry, or unanswered with why), written once. */
+  answered(requestId: string, prompt: string, status: string): Promise<void>;
 }
 
 /** The record on `root` of the run's Harness: what the journal holds already read once, and every call a crash or a
@@ -130,6 +135,8 @@ async function openCliRecord(harness: Harness, journal: Gate["journal"], context
     started.set(callId, true);
   }
   let text = "";
+  /** The end-of-run turn's answer while that turn runs (answering), else undefined. */
+  let answer: string | undefined;
   // One write at a time, in the order they were asked for, a failed one never stopping the next.
   let chain: Promise<void> = Promise.resolve();
   const inTurn = (work: () => Promise<void>): Promise<void> => (chain = chain.then(work, work));
@@ -142,8 +149,10 @@ async function openCliRecord(harness: Harness, journal: Gate["journal"], context
     });
   return {
     onEvent(event) {
-      if (event.type === "text") text += event.delta;
-      else if (event.type === "tool_start" || event.type === "turn_end") void flushText().catch(() => undefined);
+      if (event.type === "text") {
+        if (answer === undefined) text += event.delta;
+        else answer += event.delta;
+      } else if (event.type === "tool_start" || event.type === "turn_end") void flushText().catch(() => undefined);
     },
     flushText,
     person: (input) =>
@@ -165,6 +174,24 @@ async function openCliRecord(harness: Harness, journal: Gate["journal"], context
         if (started.get(callId) !== false) return;
         await append(KINDS.callEnd, { callId, status, ...(output === undefined ? {} : { output }) });
         started.set(callId, true);
+      }),
+    answering() {
+      answer = "";
+    },
+    answered: (requestId, prompt, status) =>
+      inTurn(async () => {
+        const said = answer ?? "";
+        answer = undefined;
+        await harness.commit(async (tx) => {
+          if (await tx.submissionByRequest(root.id, requestId)) return;
+          const asked = await tx.appendEntry(root.id, { kind: KINDS.endOfRunTurn, data: { role: "person", text: prompt }, model: [{ role: "user", content: prompt }] as never });
+          if (status !== "completed") {
+            await tx.createSubmission({ type: "input", conversationId: root.id, requestId, status: "unanswered", entry: asked.id, reason: `the end-of-run turn ended ${status}` });
+            return;
+          }
+          const answered = await tx.appendEntry(root.id, { kind: KINDS.endOfRunTurn, data: { role: "model", text: said }, model: [{ role: "assistant", content: [{ type: "text", text: said }] }] as never });
+          await tx.createSubmission({ type: "input", conversationId: root.id, requestId, status: "done", entry: asked.id, answer: answered.id });
+        }, context);
       }),
   };
 }
@@ -204,6 +231,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
   /** While the end-of-run turn runs: a steer is left for the end, and its writes and edits under work/.learning/ are
    *  refused (REFLECT_NOTE_ONLY). */
   let reflecting = false;
+  /** The claim's CLI record (record: "loop"), for the end-of-run turn's answer; undefined for an adapter keeping its own. */
+  let cliRecord: CliRecord | undefined;
   /** The raises this claim has: the state the ones before left (the kernel cap's takeRaises, in arrival order), the rows
    *  to take in the raise entry's commit, whether any resumes a paused run, and the budget it answered. */
   const raising: { state?: RaiseState; takes: number[]; resumes: boolean; capUsd?: number; budget?: BudgetData; resuming: boolean } = { takes: [], resumes: false, resuming: false };
@@ -346,6 +375,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         const gateOf = preIntentGate(spec, hooks);
         // A CLI's run: the loop keeps its visible record (record: "loop"), every call a crash or a fault left open ended.
         const record = spec.record === "loop" ? await openCliRecord(harness, gate.journal, context) : undefined;
+        cliRecord = record;
         const tools: HostTool[] = spec.session.tools.map((tool) => ({
           ...tool,
           // The rule before a side effect, on the host-tool path every adapter's calls take: after the call's intent, a
@@ -675,21 +705,33 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     const conversation = root;
     const theSession = session;
     const requestId = reflectRequestId(claim.runId);
+    const theRecord = cliRecord;
     reflecting = true;
     let timer: NodeJS.Timeout | undefined;
     try {
-      await theSession.send(prompt, { id: requestId });
-      const turn = theSession.turnEnd();
-      const timeout = new Promise<"timeout">((resolve) => (timer = setTimeout(() => resolve("timeout"), deadlineMs)));
-      const end = await Promise.race([turn, timeout, stopping.then(() => "stop" as const), on.closed.then(() => "closed" as const)]);
-      if (end === "stop" || end === "closed") throw new Interrupted(stopReason?.kind ?? "the Session closed");
-      if (end === "timeout") {
-        await theSession.interrupt().catch(() => {});
-        await on.waitForIdle(context).catch(() => {});
-        return { timedOut: true };
+      // A CLI's record answers a turn it already wrote from its submission, as pi does: its CLI is never asked twice.
+      const known = theRecord ? await on.commit((tx) => tx.submissionByRequest(conversation.id, requestId), context) : undefined;
+      // How this claim's turn ended; a turn answered before reads as its submission says.
+      let turnStatus = "completed";
+      if (!known) {
+        theRecord?.answering();
+        await theSession.send(prompt, { id: requestId });
+        const turn = theSession.turnEnd();
+        const timeout = new Promise<"timeout">((resolve) => (timer = setTimeout(() => resolve("timeout"), deadlineMs)));
+        const end = await Promise.race([turn, timeout, stopping.then(() => "stop" as const), on.closed.then(() => "closed" as const)]);
+        if (end === "stop" || end === "closed") throw new Interrupted(stopReason?.kind ?? "the Session closed");
+        if (end === "timeout") {
+          await theSession.interrupt().catch(() => {});
+          await on.waitForIdle(context).catch(() => {});
+          await theRecord?.answered(requestId, prompt, "timed out");
+          return { timedOut: true };
+        }
+        // The CLI's turn, as the submission pi's adapter writes: what the step reads next, one reader for both.
+        turnStatus = end.status;
+        await theRecord?.answered(requestId, prompt, end.status);
       }
       const record = await on.commit((tx) => tx.submissionByRequest(conversation.id, requestId), context);
-      if (end.status !== "completed" || record?.status !== "done") return { failed: { code: "unanswered", message: "the end-of-run turn gave no answer" } };
+      if (turnStatus !== "completed" || record?.status !== "done") return { failed: { code: "unanswered", message: "the end-of-run turn gave no answer" } };
       const answer = (await entriesOf(gate.journal, conversation.id, context)).find((entry) => entry.id === record.answer);
       return { ended: true, answer: answerText(answer) };
     } finally {
