@@ -141,6 +141,12 @@ async function storeRunOf(store: Store, runId: string, deps: ViewDeps): Promise<
   const runRow = await store.runs.get(runId);
   if (!runRow) return undefined;
   const launch = await launchOf(store, runId);
+  // The run's one cut (run-cut.ts): the pointers it was handed read back and every secret this server never shows, so a
+  // run whose words could repeat one is cut of it, rows and all, or withheld when this server cannot read back what it
+  // was handed (rowShown's choke point).
+  const cut = await runCutValues(deps, store, runId, { runRow, launch });
+  const unshown = cut === "unreadable";
+  const values = cut === "unreadable" ? [] : cut.values;
   const revision = await store.agents.revision(row.revision);
   const harness = launch?.harness ?? harnessOfBody((revision?.body ?? {}) as { harness?: string });
   // Whether the run ran unattended, from the revision it is pinned to (approvals "never"), else the default (ask).
@@ -148,7 +154,7 @@ async function storeRunOf(store: Store, runId: string, deps: ViewDeps): Promise<
   const terminal = row.state !== "running";
   // The timeline, then the waiting row a run asking a question shows (withAsks), as the file path's rows carried it, so a
   // run waiting on a question reads the same status and pending.
-  const timeline = withAsks(await runTimeline(store, runId, context, { settled: terminal }));
+  const timeline = withAsks(await runTimeline(store, runId, context, { settled: terminal, redact: (text) => redacted(text, values) }));
   const revisions = await store.agents.revisions(row.agent);
   const version = revisions.findIndex((r) => r.id === row.revision) + 1;
   const ended = await runLearningEnd(store, runId);
@@ -174,12 +180,6 @@ async function storeRunOf(store: Store, runId: string, deps: ViewDeps): Promise<
   const progress = terminal || row.kind === "workflow" ? undefined : turns.progressAt();
   const lastProgressAt = progress === undefined ? null : iso(progress);
 
-  // The sign-in cut: the pointers the run was handed read back, so a run whose words could repeat one is cut of it, or
-  // withheld when this server cannot read back what it was handed (rowShown's choke point). A run with no mark is cut of
-  // the server's secrets alone.
-  const cut = await runCutValues(deps, store, runId, { runRow, launch });
-  const unshown = cut === "unreadable";
-  const values = cut === "unreadable" ? [] : cut.values;
 
   // The tool-call approvals the run waits (or waited) on, from its journal: each call the gate parked for a person, and
   // the answers given, which the status, pending and moment views read the same as the file path read them from the run's
@@ -280,7 +280,7 @@ export async function viewOverStore(store: Store, runId: string, deps: ViewDeps)
   // person's approval (approvalOf, its arguments shown through the run's redactor), else a run parked at its cap (the budget
   // card), else its agent waiting on a person in its browser (browserPending), else the question its turn ended on (pendingOf).
   const redactor = redactorOf(values);
-  const pending: Pending = status === "input_required" && state === "waiting" ? (approvalOf(view, redactor) ?? run.budget ?? browserPending(run.browserAsk, redactor) ?? computerPending(run.computerAsk, redactor) ?? pendingOf(run.rows)) : null;
+  const pending: Pending = !unshown && status === "input_required" && state === "waiting" ? (approvalOf(view, redactor) ?? run.budget ?? browserPending(run.browserAsk, redactor) ?? computerPending(run.computerAsk, redactor) ?? pendingOf(run.rows)) : null;
   const settled = terminal;
 
   return {

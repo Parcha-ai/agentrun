@@ -1,6 +1,7 @@
 // What GET /runs/{id}/graph serves of each part of a run's graph (runs.ts servedGraph): redacted by a run's answer's rule
 // (key-refusal.ts redactedOutput, over the values the server holds and handed the run), and only then cut. graph-view.ts
 // makes the view whole, so a key saved after it was made, or kept for a busy store's read, is still found.
+import { createHash } from "node:crypto";
 import { redactedOutput } from "./key-refusal.js";
 
 /** The most of a map item's label and of an error (a call's, a decision's) the graph shows. */
@@ -34,6 +35,23 @@ export function servedPart(kind: PartKind, value: unknown, values: readonly stri
     out.error = (cut ? heldBack(out.error) : out.error).slice(0, ERROR_SHOWN);
   }
   return out;
+}
+
+/** A graph view as GET /runs/{id}/graph serves it with `values` held (runs.ts servedGraph's rule): its nodes, each
+ *  decision and each call through servedPart, each part kept in `cache` by the held set and its own content, so a read
+ *  again redacts nothing again and a key saved since makes a new set. */
+export function servedGraphView<T extends { nodes: unknown; decisions: unknown[]; effects: unknown[] }>(view: T, values: readonly string[], cache?: PartCache): T {
+  const digest = (value: unknown): string => createHash("sha256").update(JSON.stringify(value) ?? "").digest("hex");
+  const keys = digest([...values].sort());
+  const once = (kind: PartKind, value: unknown): unknown => {
+    const at = `part:${keys}:${kind}:${digest(value)}`;
+    const kept = cache?.get(at);
+    if (kept !== undefined) return kept;
+    const out = servedPart(kind, value, values);
+    cache?.set(at, out, Buffer.byteLength(JSON.stringify(out) ?? ""));
+    return out;
+  };
+  return { ...view, nodes: once("nodes", view.nodes), decisions: view.decisions.map((value) => once("decision", value)), effects: view.effects.map((value) => once("effect", value)) };
 }
 
 /** What every run's graph keeps in serve's memory, in one cache: each part as served (servedPart), and each workflow

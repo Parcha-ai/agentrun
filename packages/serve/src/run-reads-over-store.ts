@@ -8,6 +8,7 @@ import type { Context } from "@earendil-works/chord";
 import type { TimelineEvent } from "@parcha/pi-durable-agent/timeline";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { ApiError } from "./errors.js";
+import { GRAPH_CACHE_BYTES, PartCache, servedGraphView } from "./graph-served.js";
 import { runGraph } from "./graph-view.js";
 import { checkedPath, decodedPath } from "./home-path.js";
 import { costOf, WITHHELD_SIGN_IN } from "./run-view.js";
@@ -42,6 +43,9 @@ export interface RunReadsDeps {
   /** Whether the run's served output is withheld: its browser sign-in can't be read, so nothing it said is shown
    *  (store-view's `unshown`). The graph refuses when it is, as the route did. */
   withheld(store: RunReadsStore, runId: string): Promise<boolean>;
+  /** The run's one cut (run-cut.ts runCutValues): the values everything served of it is cut of, its graph's parts among
+   *  them, or `unreadable` when it is withheld. */
+  cutValues(store: RunReadsStore, runId: string): Promise<{ values: string[] } | "unreadable">;
   /** A context for the journal reads (graph, timeline). */
   readonly context: Context;
 }
@@ -94,6 +98,9 @@ export async function runBrowserState(store: RunReadsStore, runId: string, deps:
   return { state: "none" };
 }
 
+/** Every store-path run's graph as served, part by part: one LRU by bytes across runs, as the file path's (runs.ts). */
+const graphParts = new PartCache(GRAPH_CACHE_BYTES);
+
 /** A workflow run's graph (getRunGraph): its nodes, decisions and calls, from its journal over the store (graph-view's
  *  runGraph, the store path). An agentic run has none (404, the route's words); a run whose output is withheld is refused
  *  (403 WITHHELD_SIGN_IN), as the route refused it, before anything of it is served. */
@@ -109,7 +116,11 @@ export async function runGraphView(store: Store, runId: string, deps: RunReadsDe
   const launch = await store.runs.launch(runId).then((row) => readLaunchBody(row.body), (error) => (error instanceof StoreLaunchMissing ? undefined : Promise.reject(error)));
   // The run's model-node cost from its rows once it ended (0 before), as the old graph read it from run.rows.
   const rows = ended ? await runTimeline(store, runId, deps.context) : [];
-  return runGraph({
+  // Every part it serves is cut by the run's one cut, as the file path's servedGraph cut it (graph-served.ts servedPart):
+  // its nodes (their labels, items, inputs, states, escalation words), its decisions and its calls.
+  const cut = await deps.cutValues(store, runId);
+  if (cut === "unreadable") throw new ApiError("forbidden", WITHHELD_SIGN_IN);
+  return servedGraphView(await runGraph({
     run: { id: runId, agent: String(view.agent_id), revision: String(view.revision), status, paused: status === "paused", startedAt: String(view.created_at), endedAt: view.ended_at as string | null },
     ended,
     workflow,
@@ -121,7 +132,7 @@ export async function runGraphView(store: Store, runId: string, deps: RunReadsDe
     llmRead: 0,
     store,
     context: deps.context,
-  });
+  }), cut.values, graphParts);
 }
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => { const t = setTimeout(resolve, Math.max(0, ms)); t.unref?.(); });
