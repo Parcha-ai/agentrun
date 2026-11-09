@@ -34,8 +34,8 @@ export function SecretRow({ field: f, label, writable, required = true, disabled
       {note && <span className="text-warning-text">{note}</span>}
       {acts && (
         <span className="ml-auto flex gap-2 font-sans">
-          {onPaste && <Button size="sm" variant={f.set ? "outline" : "primary"} disabled={disabled} onClick={onPaste}>{f.set ? "Replace" : "Paste"}</Button>}
-          {onRemove && f.set && <Button size="sm" variant="destructive" onClick={onRemove}>Remove</Button>}
+          {onPaste && <Button type="button" size="sm" variant={f.set ? "outline" : "primary"} disabled={disabled} onClick={onPaste}>{f.set ? "Replace" : "Paste"}</Button>}
+          {onRemove && f.set && <Button type="button" size="sm" variant="destructive" onClick={onRemove}>Remove</Button>}
         </span>
       )}
     </li>
