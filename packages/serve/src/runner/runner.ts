@@ -333,11 +333,14 @@ export function startRunner(options: RunnerOptions): Runner {
    * Ends the run under `claim` in its journal, for a loop that could not write its own end: an agentrun.end entry on the
    * run's root conversation (one made for it when the run has none yet), with the run row's patch and the commands in
    * `take` keyed to that entry, so they land in its one commit or not at all. When the journal cannot take that commit,
-   * the run row alone (runs.update, the same take in its one transaction). A lost claim (Fenced) writes neither.
+   * the run row alone (runs.update, the same take in its one transaction), unless the end withdraws a call: that end is
+   * never written without its withdrawal, so the run is left as it stands (not final, its stop untaken) and the next claim
+   * ends it with both in one commit. A lost claim (Fenced) writes neither.
    */
   const endRun = async (claim: Claim, given: { state: "stopped" | "failed"; summary: string }, take: readonly number[]) => {
     // Why the run ended, as its end and its row say it: cut of every secret the runner holds (an error's text may echo one).
     const data = { ...given, summary: redact(given.summary) };
+    let withdraws = false;
     try {
       const journal = store.journal(claim);
       const [root] = (await journal.scanConversations({}, 1, undefined, BACKGROUND_CONTEXT)).items;
@@ -353,6 +356,7 @@ export function startRunner(options: RunnerOptions): Runner {
         for (const answer of withdrawnAnswers(await journalEntries(journal, BACKGROUND_CONTEXT), new Date(now()).toISOString())) {
           const answerId = (await journal.mintId()) as unknown as EntryId;
           writes.push({ type: "entry", value: { id: answerId, conversationId, kind: KINDS.answer, data: answer as unknown as JsonValue } } as StorageWrite);
+          withdraws = true;
         }
       }
       const id = (await journal.mintId()) as unknown as EntryId;
@@ -361,7 +365,7 @@ export function startRunner(options: RunnerOptions): Runner {
       const result = await journal.commit([writes], () => {}, BACKGROUND_CONTEXT);
       if (result.stored !== 1) throw result.refused ?? new Error("the run's end was not stored");
     } catch (error) {
-      if (isFenced(error)) throw error;
+      if (isFenced(error) || withdraws) throw error;
       await store.runs.update(claim, { state: data.state, summary: data.summary }, take.length ? { take } : undefined);
     }
   };
