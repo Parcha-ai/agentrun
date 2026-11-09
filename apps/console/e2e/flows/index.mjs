@@ -17,6 +17,7 @@ import githubTrigger from "./github-trigger.mjs";
 import setupOpen from "./setup-open.mjs";
 import setupPublic from "./setup-public.mjs";
 import signIn from "./sign-in.mjs";
+import signOutScope from "./sign-out-scope.mjs";
 import signedOutElsewhere from "./signed-out-elsewhere.mjs";
 import runToEnd from "./run-to-end.mjs";
 import takeOver from "./take-over.mjs";
@@ -29,6 +30,7 @@ export const flows = [
   setupOpen,
   setupPublic,
   signIn,
+  signOutScope,
   connectGitHub,
   githubTrigger,
   { name: "github-trigger-create", pending: "waits on a connected GitHub App without GitHub: the server's GitHub API (githubApi) is a programmatic option only, not a flag the built server takes" },

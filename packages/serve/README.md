@@ -2132,8 +2132,10 @@ AgentRun Server is for one person, who signs in to the console with a password (
 no `AGENTRUN_PUBLIC_URL`, the start prints `Set your password: <url>/setup`, and the first visit sets it, 12 characters or
 more. With it, the start prints `Set up this server: <url>/setup#code=<code>`, and setup takes that code (or the token as
 the Bearer). The server keeps a scrypt hash of the password, never the password, in `DIR/owner.json`, and signs its
-session cookies with the key in `DIR/.session-secret`; both are 0600, and no run reaches either. A session lasts 30 days;
-**Sign out everywhere** ends every session on every browser. Sign-in tries are limited per address, ten in 15 minutes, and the limit keeps up to 10,000 addresses: past that a
+session cookies with the key in `DIR/.session-secret`; both are 0600, and no run reaches either. A session lasts 30 days.
+**Sign out** (`POST /v2/auth/sign-out`) signs out this browser: its session is revoked on the server (a copy of its
+cookie stops working too) and its cookie cleared, and every other browser stays signed in. **Sign out everywhere** (`POST /v2/auth/sign-out-everywhere`) ends every session on every browser and phone,
+this one too. Sign-in tries are limited per address, ten in 15 minutes, and the limit keeps up to 10,000 addresses: past that a
 new address gets a 429 until older ones expire, and an address already limited stays limited. Forgot it: run
 `agentrun-serve reset-password --data DIR` where the data directory is (`docker exec agentrun node
 /opt/agentrun/packages/serve/dist/cli.js reset-password --data /data` in the image). It clears the password and signs every
