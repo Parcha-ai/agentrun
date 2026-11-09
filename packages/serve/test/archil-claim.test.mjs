@@ -83,12 +83,12 @@ test("archil claim: the mount credential is minted when a mount first asks, once
   assert.equal(fake.requests.length, 0, "nothing minted before a mount asks");
   assert.equal(await claim.token(), TOKEN);
   assert.equal(await claim.token(), TOKEN);
-  assert.deepEqual(fake.requests.map((one) => [one.method, one.body?.nickname, one.body?.ttl]), [["GET", undefined, undefined], ["POST", "agentrun:run-1:3", "86400s"]], "the disk's users read, then minted once, named for the run and its epoch, with its lifetime bound");
+  assert.deepEqual(fake.requests.map((one) => [one.method, one.body?.nickname, one.body?.ttl]), [["GET", undefined, undefined], ["POST", "agentrun:run-1:3", "86400s"], ["GET", undefined, undefined]], "the disk's users read, then minted once, named for the run and its epoch, with its lifetime bound, then read again for an earlier epoch's");
   assert.deepEqual(asked, [ARCHIL_API_KEY_ROW], "no disk token row is read");
   assert.deepEqual([...claim.secrets].sort(), [API, TOKEN].sort());
   await claim.revoke();
   await claim.revoke();
-  assert.deepEqual(fake.requests.slice(2).map((one) => [one.method, one.query.identifier]), [["DELETE", "tok-1"], ["GET", undefined]], "removed once by its identifier, then the run's earlier epochs looked for; a second revoke has nothing to remove");
+  assert.deepEqual(fake.requests.slice(3).map((one) => [one.method, one.query.identifier]), [["DELETE", "tok-1"], ["GET", undefined]], "removed once by its identifier, then the run's earlier epochs looked for; a second revoke has nothing to remove");
   assert.equal(fake.users.size, 0);
   assert.ok(!claim.secrets.has(TOKEN), "the token is no longer held");
 });
@@ -99,7 +99,7 @@ test("archil claim: an ARCHIL_API_KEY in the server's environment is the account
   const { claim, asked, made } = await claimOf({ mount, rows: new Map(), env: { ARCHIL_API_KEY: ENV_KEY } });
   assert.equal(await made[0].key(), ENV_KEY, "the disk's key");
   await claim.token();
-  assert.deepEqual(fake.requests.map((one) => one.authorization), [`Bearer ${ENV_KEY}`, `Bearer ${ENV_KEY}`], "the same key lists and mints");
+  assert.deepEqual(fake.requests.map((one) => one.authorization), [`Bearer ${ENV_KEY}`, `Bearer ${ENV_KEY}`, `Bearer ${ENV_KEY}`], "the same key lists, mints and lists again");
   assert.deepEqual(asked, [], "no saved row is read");
   // An empty variable is no key: the saved one is read.
   const saved = await claimOf({ mount, env: { ARCHIL_API_KEY: "  " } });
@@ -173,13 +173,15 @@ test("archil claim: a reclaim removes the run's token users of an earlier epoch 
     ["DELETE", "tok-old"],
     ["DELETE", "tok-older"],
     ["POST", "agentrun:run-1:3"],
-  ], "the earlier claims' removed first, then this claim's minted");
+    ["GET", undefined],
+  ], "the earlier claims' removed first, then this claim's minted, then the list read again for one the first missed");
   assert.deepEqual([...fake.users.keys()].sort(), ["tok-1", "tok-other-run", "tok-person"]);
 });
 
 test("archil claim: a reclaim whose list, read before its mint, lags the earlier epoch's mint still removes that user: the read after its own mint holds it", async (t) => {
-  // mint-4, live: the read right after epoch 1's mint lacked it; the read after epoch 2's POST held both.
-  const { fake, mount } = await controlOn(t, { lagging: true });
+  // mint-4, live: the read right after epoch 1's mint lacked it; the read after epoch 2's POST held both. Two reads lag
+  // here: epoch 1's own after its mint, and epoch 2's before its mint; epoch 2's after its mint holds it.
+  const { fake, mount } = await controlOn(t, { lagging: 2 });
   const first = await claimOf({ mount: { ...mount, epoch: 1 } });
   await first.claim.token();
   // A crashed runner: epoch 1's claim is neither revoked nor released. Epoch 2's first list misses its user.
