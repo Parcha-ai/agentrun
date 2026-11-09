@@ -44,18 +44,23 @@ async function approved(authorizationUrl) {
 }
 
 /** The store file and its sidecars hold no byte of any value in `secrets`. A fresh write sits in the write-ahead log
- *  first, so the -wal (and its -shm index) are scanned beside the main file, before any checkpoint moves the write. */
+ *  first, so the -wal (and its -shm index) are scanned beside the main file, before any checkpoint moves the write. The
+ *  DB file MUST read — a scan that silently skipped it would pass having checked nothing; only the -wal and -shm, which a
+ *  checkpointed or tiny store may not have, are optional. */
 async function noSecretInStore(store, file, secrets) {
   await store.flush();
-  for (const path of [file, `${file}-wal`, `${file}-shm`]) {
+  const scan = (bytes, where) => {
+    for (const secret of secrets) assert.equal(bytes.includes(Buffer.from(secret, "utf8")), false, `a secret is not in ${where}`);
+  };
+  scan(readFileSync(file), "the DB file"); // required: not caught, so an unreadable DB file fails the test
+  for (const [path, where] of [[`${file}-wal`, "the WAL"], [`${file}-shm`, "the WAL index"]]) {
     let bytes;
     try {
       bytes = readFileSync(path);
     } catch {
       continue;
     }
-    const where = path.endsWith("-wal") ? "the WAL" : path.endsWith("-shm") ? "the WAL index" : "the DB file";
-    for (const secret of secrets) assert.equal(bytes.includes(Buffer.from(secret, "utf8")), false, `a secret is not in ${where}`);
+    scan(bytes, where);
   }
 }
 
