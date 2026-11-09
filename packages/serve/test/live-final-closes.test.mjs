@@ -2,16 +2,18 @@
 // tool runs, a resume's stop that the runner ends itself, and a loop that fails before its journal opens, whose end the
 // runner writes. A stream left open on a final run would keep its reader waiting for good.
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { after, test } from "node:test";
 import { sendCommand } from "../dist/runner/commands.js";
-import { piSpec } from "./conformance-pi.mjs";
+import { closeOpenSessions, piAdapterSpec } from "./conformance-pi-adapter.mjs";
 import { collect, liveWorld, quiet, RUN } from "./live-support.mjs";
+import { STEADY_LEASE } from "./runner-support.mjs";
 
 const { watchRun } = await import("../dist/live/stream.js");
 const { openSqliteStore } = await import("../dist/store/index.js");
 const { startRunner } = await import("../dist/runner/runner.js");
-const { createPiLoop } = await import("../dist/runner/loop.js");
-const TIMING = { leaseMs: 600, renewEveryMs: 150, stopMarginMs: 200, pollMs: 20, commandPollMs: 30 };
+const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
+after(closeOpenSessions);
+const TIMING = { ...STEADY_LEASE, pollMs: 20, commandPollMs: 30 };
 
 /** `journal` with every read refused, as a store that cannot be read: pi's Harness cannot open on it. */
 const unreadable = (journal) =>
@@ -62,11 +64,14 @@ test("a run failed because its stop did not settle closes its live stream, its p
   const running = new Promise((resolve) => (started = resolve));
   let letGo = () => {};
   const held = new Promise((resolve) => (letGo = resolve));
-  // Ignores its signal: the stop's bound passes with the turn unsettled, and only the test's end lets it go.
-  const tools = { stubborn: { name: "stubborn", replaySafe: true, ask: false, run: async () => (started(), await held, "late") } };
-  const spec = piSpec({ script: [{ call: "stubborn" }, { say: "done" }], tools, hooks: quiet });
+  // Ignores its signal: the stop's bound passes with the turn unsettled, and only the test's end lets it go. Each run of
+  // it first blocks the process 1.5 s, as a starved machine does (no renew runs): on a lease shorter than that the claim
+  // runs out mid-stop and is retaken, again and again, and the run never reaches its failed end (CI's 15 s miss).
+  const stall = () => { const until = Date.now() + 1_500; while (Date.now() < until); };
+  const tools = { stubborn: { name: "stubborn", replaySafe: true, ask: false, run: async () => (stall(), started(), await held, "late") } };
+  const spec = piAdapterSpec({ script: [{ call: "stubborn" }, { say: "done" }], tools, hooks: quiet });
   const store = await openSqliteStore({ dataDir: w.dir, role: "runner" });
-  const runner = startRunner({ store, createLoop: createPiLoop((claim) => ({ ...spec(claim), stopSettleMs: 300 })), name: "runner-a", ...TIMING });
+  const runner = startRunner({ store, createLoop: createAdapterLoop(async (claim, run) => ({ ...(await spec(claim, run)), stopSettleMs: 300 })), name: "runner-a", ...TIMING });
   t.after(async () => {
     letGo();
     await runner.close();

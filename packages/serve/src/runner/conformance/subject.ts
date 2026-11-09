@@ -9,7 +9,9 @@ export type ScriptStep =
   | { readonly call: ToolName; readonly args?: Record<string, unknown> }
   /** `cut`: the model stops at its output limit as it says it (stopReason "length"): the text is unfinished. */
   | { readonly say: string; readonly cut?: true }
-  | { readonly sayLastSteer: true };
+  | { readonly sayLastSteer: true }
+  /** Says the newest tool result the model was given (a denied call's refusal among them), whole. */
+  | { readonly sayLastResult: true };
 
 /** The suite's tools. effect changes something outside the run; read does not; slow runs until the suite lets it go
  *  (or its signal is aborted); asked is one the gate asks a person about. */
@@ -39,6 +41,10 @@ export interface KernelHooks {
   beforeIntent(call: ToolCall): Promise<void>;
   /** After route() returned, just before journal.result(call, result). */
   beforeResult(call: ToolCall, result: unknown): Promise<void>;
+  /** A paid request answered, just before its booking (the adapter loop's model port). */
+  beforeBooking?(): Promise<void>;
+  /** The adapter loop waits for its session's paid requests to be booked (bookingsSettled, with one still unbooked). */
+  awaitingBookings?(): void;
 }
 
 export interface ConformanceSetup {
@@ -55,6 +61,10 @@ export type ConformanceCase =
   | "stalled-past-lease-process"
   | "replay-safe-rerun"
   | "steer-mid-turn"
+  | "cancel-ends-for-good"
+  | "cancel-parked"
+  | "deny-note"
+  | "steer-origin"
   | "stop-ends-turn"
   | "park-on-ask"
   | "approval-names-its-call"

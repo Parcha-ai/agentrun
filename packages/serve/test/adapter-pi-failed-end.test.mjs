@@ -1,42 +1,49 @@
-// A pi loop that fails while its journal still takes a commit writes the run's end with why, in that commit: the run
-// reads failed in the journal and the live view, not only on its row. Here the loop's own read at the turn's end fails
-// (a busy store), after the answer was stored: the run ends failed, its agentrun.end entry says the store's words, and it
-// is claimed once.
+// pi through the adapter loop: a loop that fails while its journal still takes a commit writes the run's end with why,
+// in that commit (the adapter loop's twin of runner-loop-failed-end). The loop's own read at the turn's end fails (a busy
+// store) after the answer was stored: the run ends failed, its agentrun.end entry says the store's words, and it is
+// claimed once.
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { after, test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { piSpec } from "./conformance-pi.mjs";
+import { closeOpenSessions, piAdapterSubject } from "./conformance-pi-adapter.mjs";
 import { observed, queue, recorder, stores, until } from "./runner-support.mjs";
 
 const { startRunner } = await import("../dist/runner/runner.js");
-const { createPiLoop } = await import("../dist/runner/loop.js");
 const { suiteTools } = await import("../dist/runner/conformance/harness.js");
 const { journalRecords } = await import("../dist/runner/journal-reader.js");
 // A lease no missed renew lets lapse within the case: its property is the failed end and no claim after it, and a claim
 // lost before the end (a starved box) would hand the run to a second claim for a reason that is not the end's.
 const TIMING = { leaseMs: 30_000, renewEveryMs: 150, stopMarginMs: 5_000, pollMs: 20, commandPollMs: 30 };
 const quiet = { beforeIntent: async () => {}, beforeResult: async () => {} };
+after(closeOpenSessions);
 
-/** `journal` whose scans of the loop's own shape (the root's entries, oldest first, 500 a page: loop.ts entriesOf) fail
- *  as a busy store's would; pi's own reads go through. */
-const scansRefused = (journal) =>
-  new Proxy(journal, {
+/** `journal` whose entry scans fail as a busy store's would once the model's answer is stored (a commit wrote a
+ *  pi.assistant entry): the session opened and the turn ran, and the loop's own read at the turn's end fails. */
+const scansRefused = (journal) => {
+  let answered = false;
+  return new Proxy(journal, {
     get(target, key) {
       const value = Reflect.get(target, key, target);
+      if (key === "commit") {
+        return (batches, ...rest) => {
+          if (batches.some((batch) => batch.some((write) => write.type === "entry" && write.value?.kind === "pi.assistant"))) answered = true;
+          return value.call(target, batches, ...rest);
+        };
+      }
       if (key === "scanEntries") {
-        return (query, limit, ...rest) =>
-          query?.order === "ascending" && limit === 500 ? Promise.reject(new Error("the store stayed locked past its busy timeout")) : value.call(target, query, limit, ...rest);
+        return (...args) => (answered ? Promise.reject(new Error("the store stayed locked past its busy timeout")) : value.apply(target, args));
       }
       return typeof value === "function" ? value.bind(target) : value;
     },
   });
+};
 
-test("a pi loop that fails while its journal still takes a commit writes the run's end with why", async (t) => {
+test("pi through the adapter: a loop that fails while its journal still takes a commit writes the run's end with why", async (t) => {
   const opened = await stores({ runners: 1 });
   const record = recorder();
   await queue(opened.server, "run-1");
   const { tools } = suiteTools();
-  const inner = createPiLoop(piSpec({ script: [{ say: "done" }], tools, hooks: quiet }));
+  const inner = piAdapterSubject.createLoop({ script: [{ say: "done" }], tools, hooks: quiet });
   const createLoop = (deps) => inner({ ...deps, journal: (claim) => scansRefused(deps.journal(claim)) });
   const runner = startRunner({ store: observed(opened.runners[0], record), createLoop, name: "runner-a", ...TIMING });
   t.after(() => runner.close());

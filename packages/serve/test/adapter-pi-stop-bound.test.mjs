@@ -1,18 +1,19 @@
-// A person's stop has a bound: when a tool call ignores its abort, the loop waits for the turn to settle at most the
-// stop's bound (PiRunSpec.stopSettleMs), then ends the run failed in words, the stop row taken in that end's commit. It
-// never waits on the call with no limit while the runner keeps renewing the claim.
+// pi through the adapter loop: a person's stop has a bound (the adapter loop's twin of runner-loop-stop-bound). When a
+// tool call ignores its abort, the loop waits for the turn to settle at most the stop's bound (AdapterRunSpec
+// stopSettleMs), then ends the run failed in words, the stop row taken in that end's commit.
 import assert from "node:assert/strict";
-import { test } from "node:test";
-import { piSpec } from "./conformance-pi.mjs";
-import { observed, queue, recorder, stores, until } from "./runner-support.mjs";
+import { after, test } from "node:test";
+import { closeOpenSessions, piAdapterSpec } from "./conformance-pi-adapter.mjs";
+import { observed, queue, recorder, STEADY_LEASE, stores, until } from "./runner-support.mjs";
 
 const { startRunner } = await import("../dist/runner/runner.js");
-const { createPiLoop } = await import("../dist/runner/loop.js");
+const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { sendCommand } = await import("../dist/runner/commands.js");
-const TIMING = { leaseMs: 600, renewEveryMs: 150, stopMarginMs: 200, pollMs: 20, commandPollMs: 30 };
+const TIMING = { ...STEADY_LEASE, pollMs: 20, commandPollMs: 30 };
 const quiet = { beforeIntent: async () => {}, beforeResult: async () => {} };
+after(closeOpenSessions);
 
-test("a stop whose tool call ignores its abort ends the run failed in words within the stop's bound, the stop row taken", async (t) => {
+test("pi through the adapter: a stop whose tool call ignores its abort ends the run failed in words within the stop's bound, the stop row taken", async (t) => {
   const opened = await stores({ runners: 1 });
   const record = recorder();
   await queue(opened.server, "run-1");
@@ -23,8 +24,8 @@ test("a stop whose tool call ignores its abort ends the run failed in words with
   t.after(() => letGo());
   // Ignores its signal: only the test lets it go.
   const tools = { stubborn: { name: "stubborn", replaySafe: true, ask: false, run: async () => (started(), await held, "late") } };
-  const spec = piSpec({ script: [{ call: "stubborn" }, { say: "done" }], tools, hooks: quiet });
-  const createLoop = createPiLoop((claim) => ({ ...spec(claim), stopSettleMs: 300 }));
+  const spec = piAdapterSpec({ script: [{ call: "stubborn" }, { say: "done" }], tools, hooks: quiet });
+  const createLoop = createAdapterLoop(async (claim, run) => ({ ...(await spec(claim, run)), stopSettleMs: 300 }));
   const runner = startRunner({ store: observed(opened.runners[0], record), createLoop, name: "runner-a", ...TIMING });
   t.after(() => runner.close());
   await running;

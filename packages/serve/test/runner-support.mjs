@@ -13,6 +13,11 @@ const { openSqliteStore } = await import("../dist/store/index.js");
 
 export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+/** A lease no stall of a loaded machine outlasts, for a test whose runner is never meant to lose its claim: a claim lost
+ *  to a stall (no renew ran) is retaken, and what the test reads (a count, a call's status) is then the takeover's, not
+ *  the property's. A takeover or fence test keeps its short lease and forces the loss itself. */
+export const STEADY_LEASE = Object.freeze({ leaseMs: 60_000, renewEveryMs: 20_000, stopMarginMs: 5_000 });
+
 /** One order for what happened in this process (a commit tried, a stop told), finer than a millisecond: two things in
  *  the same ms are still one before the other. */
 let happened = 0;

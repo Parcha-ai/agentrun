@@ -11,10 +11,11 @@ import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { openSqliteStore } from "../dist/store/index.js";
 import { startRunner } from "../dist/runner/runner.js";
 import { suiteTools } from "../dist/runner/conformance/harness.js";
-import { piSpec } from "./conformance-pi.mjs";
+import { after } from "node:test";
+import { closeOpenSessions, piAdapterSubject } from "./conformance-pi-adapter.mjs";
 import { quiet, sleep, until } from "./live-support.mjs";
 
-const { createPiLoop } = await import("../dist/runner/loop.js");
+after(closeOpenSessions);
 const { withLiveTicker } = await import("../dist/runner/live-ticker.js");
 const TICK_MS = 250;
 // A lease no stall of a loaded machine outlasts: on a 5 s lease, 300 claims whose renews wait behind 300-row puts lapse,
@@ -42,7 +43,7 @@ async function heldWrites(t, loops, holdMs = 2_000) {
   const put = store.live.put.bind(store.live);
   store.live.put = async (rows) => (puts.push({ at: Date.now(), rows: rows.length }), put(rows));
   const { tools, letSlowGo } = suiteTools();
-  ticker = withLiveTicker(store, createPiLoop(piSpec({ script: [{ call: "slow" }, { say: "done" }], tools, hooks: quiet })), { tickMs: TICK_MS });
+  ticker = withLiveTicker(store, piAdapterSubject.createLoop({ script: [{ call: "slow" }, { say: "done" }], tools, hooks: quiet }), { tickMs: TICK_MS });
   runner = startRunner({ store, createLoop: ticker.createLoop, name: "runner-a", loops: loops + 10, ...TIMING });
   await until(async () => (await server.live.read(Array.from({ length: loops }, (_, i) => `run-${i}`))).length === loops, `every one of ${loops} runs holding its running tool`, 60_000);
   const from = Date.now();
