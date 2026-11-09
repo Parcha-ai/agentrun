@@ -327,7 +327,8 @@ export async function viewOverStore(store: Store, runId: string, deps: ViewDeps)
     // Whether it ran unattended (its revision's approvals, as it started): never, an ask allowed at its gate; ask, the default.
     approvals: run.approvalsMode,
     archived_at: row.archivedAt ?? null,
-    imported_from: runRow.importedFrom ?? null,
+    // Only what an imported run shows: never the server's internal file stamp (importedFrom.file).
+    imported_from: runRow.importedFrom ? { source: runRow.importedFrom.source, session: runRow.importedFrom.session } : null,
     trigger: launch?.trigger ?? null,
     learning: learningViewOf(run.learningEnd, secretsShown(deps.serverSecrets()), terminal && settled),
     poll_after_ms: terminal && settled ? 0 : 1000,
