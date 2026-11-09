@@ -143,12 +143,12 @@ export async function message(
   if (!answers && moment.waitsOnPerson) throw waitingRefusal();
   // A person's message while a tool call waits for approval declines it, with the message as the reason: a deny the run's
   // gate acts on as any deny, resuming the session with the refusal and the person's words in one turn. A trigger's never
-  // does (answers false, refused above).
-  // A person's answer to that call written first (not taken yet) stands, and the store refuses this deny (one answer per
+  // does (answers false, refused above). Marked as the person's message (`by`), so its approval reads "Declined by your
+  // message", as main's declineBy kept it. A person's answer to that call written first (not taken yet) stands, and the store refuses this deny (one answer per
   // approval): the message is then a message like any other, below.
   if (answers && moment.kind === "agentic" && moment.waitingApprovalId !== undefined) {
     const messageId = newMessageId();
-    const declined = await sendCommand(store, moment.id, { kind: "deny", body: { approval: moment.waitingApprovalId, note: content } }).then(
+    const declined = await sendCommand(store, moment.id, { kind: "deny", body: { approval: moment.waitingApprovalId, note: content, by: "message" } }).then(
       () => true,
       (error: unknown) => {
         if (error instanceof StoreConstraint) return false;
@@ -199,9 +199,10 @@ export async function raiseCap(store: RunsStore, moment: RunMoment, cap: number)
   return { resumed: false, ...(moment.live ? { note: `The run's process keeps the ${money(from)} cap it was opened with; the ${money(cap)} cap holds from its next process.` } : {}) };
 }
 
-/** The refusal for a tool call already answered, in the old runs.ts words, by how it was answered. */
-function alreadyAnswered(id: string, decision: ApprovalDecision): ApiError {
-  const how = decision === "canceled" ? "canceled with its run" : decision === "withdrawn" ? "withdrawn when its run was stopped" : `answered: ${decision}`;
+/** The refusal for a tool call already answered, in the old runs.ts words, by how it was answered; a withdrawal by a run
+ *  that ended (completed or failed, `ended`) says its run ended, never that it was stopped. */
+function alreadyAnswered(id: string, decision: ApprovalDecision, ended = false): ApiError {
+  const how = decision === "canceled" ? "canceled with its run" : decision === "withdrawn" ? (ended ? "withdrawn when its run ended" : "withdrawn when its run was stopped") : `answered: ${decision}`;
   return new ApiError("not_continuable", `The tool call ${id} was already ${how}.`, { details: { reason: "already_answered", decision } });
 }
 
@@ -218,8 +219,8 @@ async function sentAnswer(store: RunsStore, runId: string, id: string): Promise<
  *  each write or lose to the store's one-answer index, and the one that loses reads the one that won. The note is the
  *  person's words, carried on the command for the run's gate. */
 export async function approve(store: RunsStore, moment: RunMoment, id: string, decision: "allow" | "deny", note?: string): Promise<void> {
-  const settle = (given: { decision: ApprovalDecision }): void => {
-    if (given.decision !== decision) throw alreadyAnswered(id, given.decision);
+  const settle = (given: { decision: ApprovalDecision; ended?: true }): void => {
+    if (given.decision !== decision) throw alreadyAnswered(id, given.decision, given.ended === true);
   };
   const given = moment.answeredApprovals?.[id] ?? (await sentAnswer(store, moment.id, id));
   if (given) return settle(given);

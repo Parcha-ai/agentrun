@@ -1,16 +1,21 @@
 // The conformance suite's runner process (harness.ts, the process cases): a runner of its own on the suite's data
 // directory, running the subject's loop for one call, that SIGKILLs itself at the kernel point it is given, so only what
-// it had committed survives. Its argument: { dataDir, module, export, tool, point, countFile, eventsFile, stopOnce } as JSON. Its
+// it had committed survives. Its argument: { dataDir, module, export, tool, point, countFile, eventsFile, stopOnce } as JSON;
+// on its stdin, { storeUrl } as JSON (a Postgres store's URL may hold a password, so never on argv). Its
 // runner's events (claims, releases, lost claims, errors, each with its time) are appended to eventsFile as JSON lines,
 // written synchronously so the kill loses none, for the case to show beside the second runner's.
 import { appendFileSync } from "node:fs";
-import { openSqliteStore } from "../../store/index.js";
+import { openStore } from "../../store/index.js";
 import type { LoopFactory } from "../loop-contract.js";
 import { startRunner } from "../runner.js";
 import { CONFORMANCE_TIMING, suiteTools } from "./harness.js";
 import type { ConformanceSubject, KernelHooks, ToolName } from "./subject.js";
 
-const config = JSON.parse(process.argv[2] ?? "{}") as { dataDir: string; module: string; export: string; tool: ToolName; point: keyof KernelHooks; countFile: string; eventsFile?: string; stopOnce?: boolean };
+const config = JSON.parse(process.argv[2] ?? "{}") as { dataDir: string; storeEnv?: Record<string, string>; module: string; export: string; tool: ToolName; point: keyof KernelHooks; countFile: string; eventsFile?: string; stopOnce?: boolean };
+/** The store's URL, read whole from stdin (the harness writes it there and closes it): never on argv or in the environment. */
+const input: Buffer[] = [];
+for await (const chunk of process.stdin) input.push(chunk as Buffer);
+const { storeUrl } = JSON.parse(Buffer.concat(input).toString("utf8") || "{}") as { storeUrl?: string };
 const subject = (await import(config.module))[config.export] as ConformanceSubject;
 const { tools } = suiteTools(config.countFile);
 const said = (event: object) => {
@@ -35,7 +40,8 @@ const at = async (point: keyof KernelHooks) => {
   await die();
 };
 const hooks: KernelHooks = { beforeIntent: () => at("beforeIntent"), beforeResult: () => at("beforeResult") };
-const store = await openSqliteStore({ dataDir: config.dataDir, role: "runner" });
+// The store the harness's world opened (its data directory, or its own Postgres schema).
+const store = await openStore({ dataDir: config.dataDir, role: "runner", url: storeUrl ?? "", env: { ...process.env, ...config.storeEnv } });
 // Each journal commit's outcome, by the claim's epoch: one that lands, or one refused and by what (the runner's ClaimLost,
 // or the store's Fenced), so the case can say what a loop that lost its claim tried to write.
 const createLoop = subject.createLoop({ script: [{ call: config.tool }, { say: "done" }], tools, hooks });

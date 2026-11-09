@@ -6,7 +6,7 @@
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { TimelineEvent } from "@parcha/pi-durable-agent/timeline";
 import { runLink } from "./console-links.js";
-import { redacted, redactedAnswer, withoutLoopback } from "./key-refusal.js";
+import { redacted, redactedAnswer, redactedOutput, withoutLoopback } from "./key-refusal.js";
 import { currentLearning, holdsForOk, type Learning, learningView, LEARNING_LABEL, secretsShown, shortOf, type Shown } from "./learning.js";
 import { MIN_SECRET } from "./learn/secrets.js";
 import { handedValuesOf, launchOf } from "./handed-values.js";
@@ -42,6 +42,7 @@ import {
 } from "./run-view.js";
 import { reflects, type Reflect } from "./learning-run.js";
 import { journalRecords, recordOf } from "./runner/journal-reader.js";
+import { type EndData, KINDS } from "./runner/journal-kinds.js";
 import { notesReadOf, runLearningEnd, type RunLearning, withNotes } from "./store-reads/learning.js";
 import { runReflect, runTimeline } from "./store-reads/journal.js";
 import { type RunReadState, readRun } from "./store-reads/runs.js";
@@ -144,6 +145,8 @@ interface StoreRun {
   /** Whether the run ran unattended, as its revision kept it (approvals "never"), else the default (ask): the run read's
    *  `approvals` field, as runs.ts serves it. Named to stand apart from the approval-request map on the view. */
   readonly approvalsMode: Approvals;
+  /** A completed workflow run's output, as its end kept it (EndData.output); null when it kept none. */
+  readonly output: unknown;
 }
 
 /** A runner holds the run's claim now: it is not in a final state, a runner is named on its row, and its lease has not run
@@ -205,7 +208,9 @@ async function storeRunOf(store: Store, runId: string, deps: ViewDeps): Promise<
   // the answers given, which the status, pending and moment views read the same as the file path read them from the run's
   // store entries.
   const approvals = asksOf(records.entries);
-  const answers = answersOf(records.entries);
+  // A call asked before an end in the journal reads withdrawn in that end's words; a stopped or failed run's (states no
+  // reopen leaves) whose journal holds no end, by its row (answersOf `final`).
+  const answers = answersOf(records.entries, { final: runRow.state === "stopped" || runRow.state === "failed" ? runRow.state : undefined });
   // The rows a person reads: each call that waited for approval in order (held, your approval, what came of it), its
   // arguments and the person's notes through the run's redactor, as the file path's withApprovals served them.
   const rows = withApprovalRows(timeline, approvals, answers, redactorOf(values));
@@ -248,7 +253,10 @@ async function storeRunOf(store: Store, runId: string, deps: ViewDeps): Promise<
     ...(budget?.kind === "budget" ? { pausedWords: budget.said } : {}),
     meta,
   };
-  return { row, runRow, launch, rows, version, harness, learningEnd, view, unshown, values, live, updatedAtMs, lastProgressAt, budget, paused, browserAsk, computerAsk, approvalsMode };
+  // A completed workflow run's output, from its end (the workflow loop keeps it there, as main kept it on the run).
+  const end = row.kind === "workflow" ? records.entries.findLast((entry) => entry.kind === KINDS.end) : undefined;
+  const output = (end?.data as EndData | undefined)?.output ?? null;
+  return { row, runRow, launch, rows, version, harness, learningEnd, view, unshown, values, live, updatedAtMs, lastProgressAt, budget, paused, browserAsk, computerAsk, approvalsMode, output };
 }
 
 /** A run's learning as the view shows it: its end from the store, in a person's words cut of the host's secrets now, and,
@@ -280,7 +288,7 @@ function costOfView(run: StoreRun): Record<string, unknown> {
 export async function viewOverStore(store: Store, runId: string, deps: ViewDeps): Promise<Record<string, unknown> | undefined> {
   const run = await storeRunOf(store, runId, deps);
   if (!run) return undefined;
-  const { row, runRow, launch, view, unshown, values } = run;
+  const { row, runRow, launch, view, unshown, values, output } = run;
   const { status, state } = statusOf(view, factsOf(run));
   const terminal = TERMINAL.has(status);
   const endedAtMs = terminal ? (runRow.endedAt ?? runRow.startedAt) : null;
@@ -288,9 +296,10 @@ export async function viewOverStore(store: Store, runId: string, deps: ViewDeps)
   const servedAnswer = (text: string | null): string | null => (text ? redactedAnswer(text, values) : text);
 
   const finalAnswer = row.kind === "workflow" || unshown ? null : answerOf(run.rows) ?? row.summary ?? null;
-  // A workflow run's output reads from its journal (a separate reader); an agentic run has none. Wired with the workflow
-  // status.
-  const result = status === "completed" ? { output: null, final_answer: servedAnswer(finalAnswer) } : null;
+  // A workflow run's output, as its end kept it, served as runs.ts serves it (servedOutput): each string in it cut of the
+  // values the run holds, its shape kept; none while the run's sign-in can't be read back. An agentic run has none.
+  const servedOutput = row.kind === "workflow" && !unshown && output !== null ? redactedOutput(output, values) : null;
+  const result = status === "completed" ? { output: servedOutput, final_answer: servedAnswer(finalAnswer) } : null;
   // A failed run's reason in the model's own words when the store holds them: the last model-error row's text (a provider's
   // refusal, rendered from its pi.assistant error entry), else the run row's summary (the runner's generic "gave no answer").
   // It reads as the run's Timeline error row does (run-cut.ts runErrorWordsOf, main's errorWords): a refused key in plain
@@ -339,7 +348,8 @@ export async function viewOverStore(store: Store, runId: string, deps: ViewDeps)
     // Whether it ran unattended (its revision's approvals, as it started): never, an ask allowed at its gate; ask, the default.
     approvals: run.approvalsMode,
     archived_at: row.archivedAt ?? null,
-    imported_from: runRow.importedFrom ?? null,
+    // Only what an imported run shows: never the server's internal file stamp (importedFrom.file).
+    imported_from: runRow.importedFrom ? { source: runRow.importedFrom.source, session: runRow.importedFrom.session } : null,
     trigger: launch?.trigger ?? null,
     // Cut by the run's one cut (the pointers it was handed among them), and none for a withheld run, as its words.
     learning: unshown ? null : learningViewOf(run.learningEnd, secretsShown(values), terminal && settled),

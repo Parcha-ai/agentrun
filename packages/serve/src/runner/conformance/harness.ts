@@ -9,13 +9,14 @@
 // that SIGKILLs itself at the point, since a frozen loop can hide a write a real crash would cut.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { once } from "node:events";
 import { appendFileSync, existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { openSqliteStore, RunFinal, type RunRow, type Store, StoreConstraint } from "../../store/index.js";
+import { dropPostgresSchema, openStore, RunFinal, type RunRow, type Store, StoreConstraint, storeTarget } from "../../store/index.js";
 import { sendCommand } from "../commands.js";
 import { callsOf, journalRecords, messagesOf, type CallRecord, type MessageRecord } from "../journal-reader.js";
 import { type AnswerData, KINDS } from "../journal-kinds.js";
@@ -124,6 +125,10 @@ function crashAt(point: keyof KernelHooks, holder: { runner?: Runner; crashed?: 
   };
 }
 
+/** The Postgres store each registered subject's worlds open (registerHarnessConformance's `storeUrl`), by the subject
+ *  object the suite's cases are handed: none for the data directory's SQLite store. */
+const STORE_URLS = new WeakMap<ConformanceSubject, string>();
+
 /** A store in a data directory of its own, one queued run, and runners started on it (each its own connection). */
 /** The suite's short lease, for the crash cases: a crashed runner's claim must run out for the second runner to take
  *  the run over. */
@@ -131,7 +136,14 @@ const TAKEOVER: Partial<typeof TIMING> = {};
 
 async function world(subject: ConformanceSubject, t: { after(fn: () => unknown): void }, timing: Partial<typeof TIMING> = STEADY) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-conformance-"));
-  const server = await openSqliteStore({ dataDir: dir, role: "server" });
+  // The store the suite was handed (store/open.ts): on Postgres, a schema of this world's own, dropped after it. The URL
+  // goes to each opener by hand, and to a runner process in its config, never through an environment (a secret is read
+  // by name: store/open.ts); the environment names only the schema.
+  const target = storeTarget(dir, {}, STORE_URLS.get(subject) ?? "");
+  const storeEnv: Record<string, string> = target.kind === "postgres" ? { AGENTRUN_STORE_SCHEMA: `${target.schema}_c${randomBytes(6).toString("hex")}` } : {};
+  const env = { ...process.env, ...storeEnv };
+  const url = target.kind === "postgres" ? target.url : "";
+  const server = await openStore({ dataDir: dir, role: "server", url, env });
   const stores: Store[] = [server];
   const runners: Runner[] = [];
   /** What the runners said (claims, releases, errors): shown with a case's failure. */
@@ -140,13 +152,14 @@ async function world(subject: ConformanceSubject, t: { after(fn: () => unknown):
     for (const runner of runners) await runner.close();
     for (const store of stores.reverse()) await store.close().catch(() => undefined);
     rmSync(dir, { recursive: true, force: true });
+    if (target.kind === "postgres") await dropPostgresSchema(target.url, storeEnv.AGENTRUN_STORE_SCHEMA!);
   });
   await server.agents.create({ id: "agent-1", name: "Conformance" }, { id: "rev-1", kind: "agentic", body: { instructions: "Follow the script." } });
   await server.runs.create({ id: RUN, agentId: "agent-1", revisionId: "rev-1" });
   /** The command rows a runner has handed to a loop's command(): with the loop, whether or not taken yet. */
   const handed = new Set<number>();
   const start = async (name: string, setup: ConformanceSetup, holder?: { runner?: Runner }, more: Pick<LoopDeps, "endOfRun"> = {}) => {
-    const store = await openSqliteStore({ dataDir: dir, role: "runner" });
+    const store = await openStore({ dataDir: dir, role: "runner", url, env });
     stores.push(store);
     // Each journal commit's outcome, by the claim's epoch (as child.ts records its process's): what a loop wrote, and
     // whether a loop that lost its claim wrote anything after; and each command row handed to the loop.
@@ -224,7 +237,7 @@ async function world(subject: ConformanceSubject, t: { after(fn: () => unknown):
     assert.ok(ask, "the run wrote its ask");
     return String((ask.data as { callId?: unknown }).callId);
   };
-  return { dir, server, start, run, read, ended, commandRow, askedCall, events, handedOver: (id: number) => handed.has(id), liveRows };
+  return { dir, storeUrl: url, storeEnv, server, start, run, read, ended, commandRow, askedCall, events, handedOver: (id: number) => handed.has(id), liveRows };
 }
 
 interface Case {
@@ -340,6 +353,12 @@ async function crashThenResume(subject: ConformanceSubject, t: { after(fn: () =>
 
 /** The runner process the process cases start (child.ts), and its environment: never a test runner's own. */
 const CHILD = fileURLToPath(new URL("./child.js", import.meta.url));
+
+/** How a process case starts its runner process: its config (`config`) on argv, and the store's URL, which may hold a
+ *  password, on stdin, never argv or the environment, which another process of the user reads (ps, /proc). */
+export function processLaunch(config: object, storeUrl: string): { args: string[]; stdin: string } {
+  return { args: [CHILD, JSON.stringify(config)], stdin: `${JSON.stringify({ storeUrl })}\n` };
+}
 const childEnv = () => {
   const env = { ...process.env };
   delete env.NODE_TEST_CONTEXT;
@@ -353,8 +372,10 @@ async function processCrashThenResume(subject: ConformanceSubject, t: { after(fn
   const countFile = join(w.dir, "tool-runs");
   const { tools, ran } = suiteTools(countFile);
   const eventsFile = join(w.dir, "runner-process-events.jsonl");
-  const config = { dataDir: w.dir, module: subject.process!.module, export: subject.process!.export, tool, point, countFile, eventsFile, ...(stall ? { stopOnce: true } : {}) };
-  const child = spawn(process.execPath, [CHILD, JSON.stringify(config)], { env: childEnv(), stdio: ["ignore", "ignore", "pipe"] });
+  const config = { dataDir: w.dir, storeEnv: w.storeEnv, module: subject.process!.module, export: subject.process!.export, tool, point, countFile, eventsFile, ...(stall ? { stopOnce: true } : {}) };
+  const launch = processLaunch(config, w.storeUrl);
+  const child = spawn(process.execPath, launch.args, { env: childEnv(), stdio: ["pipe", "ignore", "pipe"] });
+  child.stdin!.end(launch.stdin);
   // Its end, listened for from its start: a process that ends while the case waits on something else (the fence's wait
   // returns on that end) is never missed by the wait for its death below.
   const exited = once(child, "exit").catch((error: unknown) => ["error", String(error)]) as Promise<[number | string | null, string | null]>;
@@ -809,7 +830,12 @@ async function settledRun(w: { run(): Promise<RunRow> }): Promise<RunRow> {
 
 /** Registers the cases for `subject` with `test` (node:test). A case its facts rule out, or one it cannot model yet, is
  *  skipped with its reason, never passed. */
-export function registerHarnessConformance(subject: ConformanceSubject, { test }: { test: TestFunction }): void {
+/** Registers the suite's cases for `subject` with `test`. `storeUrl`: the Postgres store every case's world opens (each
+ *  in a schema of its own), handed by the caller; without it, the data directory's SQLite store. */
+export function registerHarnessConformance(given: ConformanceSubject, { test, storeUrl }: { test: TestFunction; storeUrl?: string }): void {
+  // The subject object the cases are handed, which names the store their worlds open.
+  const subject: ConformanceSubject = Object.create(given) as ConformanceSubject;
+  if (storeUrl) STORE_URLS.set(subject, storeUrl);
   const ruledOut = factsRuleOut(subject.facts);
   for (const entry of CASES) {
     const processCase = entry.id.endsWith("-process");

@@ -3,8 +3,8 @@
 // purge, end to end through the store. The unit tests (browser-live-store.test.mjs) run the same calls on the fake.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
+import { raw } from "./store-target.mjs";
 import { dropLiveViewer, liveViewerById, putLiveViewer, readLiveViewers } from "../dist/browser-live.js";
 import { queued, storeOn } from "./store-helpers.mjs";
 
@@ -12,13 +12,13 @@ import { queued, storeOn } from "./store-helpers.mjs";
 const KEY = randomBytes(32);
 const handover = (tag) => ({ port: 40000, id: randomBytes(16).toString("base64url"), token: randomBytes(32).toString("base64url"), tag });
 
-/** Every column of every computer_viewers row of `runId`, raw, as the store's file holds it. */
-function rawRows(file, runId) {
-  const db = new DatabaseSync(file, { readOnly: true, timeout: 5_000 });
+/** Every column of every computer_viewers row of `runId`, raw, as the store holds it (its file, or its Postgres schema). */
+async function rawRows(file, runId) {
+  const db = await raw(file, { readOnly: true });
   try {
-    return db.prepare("SELECT * FROM computer_viewers WHERE run_id = ? ORDER BY kind, tag").all(runId);
+    return await db.all("SELECT * FROM computer_viewers WHERE run_id = ? ORDER BY kind, tag", runId);
   } finally {
-    db.close();
+    await db.close();
   }
 }
 /** Whether any column of `rows` holds `text`, as text or as bytes. */
@@ -44,7 +44,7 @@ test("on the real store, under a claim from runs.claimMany: put, read, read by i
   assert.deepEqual(await readLiveViewers(store, randomBytes(32), "run-1"), [], "under another key no seal opens: no viewer");
 
   // The token's plaintext is in no column of the store's rows.
-  const rows = rawRows(file, "run-1");
+  const rows = await rawRows(file, "run-1");
   assert.equal(rows.length, 2);
   for (const { token } of [a, b]) assert.equal(holds(rows, token), false, "the row holds the sealed token alone");
 
@@ -58,13 +58,13 @@ test("on the real store, under a claim from runs.claimMany: put, read, read by i
   assert.ok(second && second.epoch > first.epoch, "claimed again at a newer epoch");
   const stale = handover("ar-run-1-3");
   assert.equal(await putLiveViewer(store, KEY, first, stale), false, "fenced");
-  assert.equal(holds(rawRows(file, "run-1"), stale.id), false, "nothing of it written");
+  assert.equal(holds(await rawRows(file, "run-1"), stale.id), false, "nothing of it written");
   const c = handover("ar-run-1-4");
   assert.equal(await putLiveViewer(store, KEY, second, c), true);
   assert.deepEqual((await readLiveViewers(store, KEY, "run-1")).map(strip), [c]);
 
   // The run's end purges its rows, in its end commit.
   await store.runs.update(second, { state: "ended" });
-  assert.deepEqual(rawRows(file, "run-1"), [], "gone with the end");
+  assert.deepEqual(await rawRows(file, "run-1"), [], "gone with the end");
   assert.deepEqual(await readLiveViewers(store, KEY, "run-1"), []);
 });

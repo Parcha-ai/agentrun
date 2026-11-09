@@ -1,12 +1,13 @@
 // Take over and hand back (LiveViewOptions.takeOver, DrivingGate.take): the person takes the run's browser through the viewer and gives it back. A take asks
 // the host first (it may refuse, in its words); the hold lasts until the viewer's give, the hold's idle window with no input, or its away window with no
 // viewer, and the host is told once how it ended. Only while held does the viewer's input reach the browser. A model call meanwhile waits inside the
-// tool and then goes on with its old element ids dropped and plain words that the person had the browser; a driver a call took before the browser
+// tool and then goes on with plain words that the person had the browser, its old element ids dropped when their input reached the page (kept
+// when it did not: the page is as the agent left it); a driver a call took before the browser
 // changed hands acts no more (the gate's epoch). Fake streams and a fake clock: no browser.
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createDrivingGates } from "../dist/core/driving.js";
-import { drivingGuard, PERSON_DROVE, PERSON_HAD } from "../dist/core/driving-guard.js";
+import { drivingGuard, PERSON_DROVE, PERSON_HAD, PERSON_HAD_UNUSED } from "../dist/core/driving-guard.js";
 import { createLiveView } from "../dist/live-view/index.js";
 import { connect } from "./fixtures/ws-client.mjs";
 
@@ -78,9 +79,9 @@ test("the gate's hold: take holds the browser for the person, moves the epoch, a
   assert.deepEqual(ended, ["given", "idle", "away", "released"], "the session's release ends it");
 });
 
-test("a model call during the hold waits inside the tool; once handed back it goes on, its old element ids dropped, and the model is told plainly that the person had the browser", async () => {
+/** A model call made while the person holds the browser, handed back after `hand` ran during the hold. */
+async function heldCall(tag, hand) {
   const gates = createDrivingGates();
-  const tag = "ar-run-to-2-1";
   let forgot = 0;
   const driver = { forgetSnapshots: () => { forgot += 1; }, snapshot: async () => "[1] the page as it is now", close: async () => {} };
   const port = { session: async () => ({ tag, driver, notice: null }), relaunch: async () => ({ tag, driver }), release: async () => ({ released: true, sessionId: null }) };
@@ -88,14 +89,26 @@ test("a model call during the hold waits inside the tool; once handed back it go
   gates(tag).take();
   let done = false;
   const running = tool({}, port, {}).then((out) => { done = true; return out; });
-  await wait(100);
+  await new Promise((go) => setImmediate(go));
   assert.equal(done, false, "the call waits while the person holds the browser");
+  hand(gates(tag));
   gates(tag).give();
   const out = JSON.parse((await running).content[0].text);
   assert.equal(out.snapshot, "[1] the page as it is now");
-  assert.equal(out.notice, `${PERSON_HAD} ${PERSON_DROVE}`);
-  assert.equal(forgot, 1, "the old element ids were dropped before it went on");
   assert.equal(gates(tag).state(), "idle", "and the gate is free again");
+  return { notice: out.notice, forgot };
+}
+
+test("a model call during the hold waits inside the tool; once handed back after the person's input it goes on, its old element ids dropped, and the model is told plainly that the person had the browser", async () => {
+  const { notice, forgot } = await heldCall("ar-run-to-2-1", (gate) => assert.equal(gate.input(), "driving"));
+  assert.equal(notice, `${PERSON_HAD} ${PERSON_DROVE}`);
+  assert.equal(forgot, 1, "the old element ids were dropped before it went on");
+});
+
+test("a model call during a hold the person did not use (no input) goes on with its element ids kept, told only that it waited: the page is as it left it", async () => {
+  const { notice, forgot } = await heldCall("ar-run-to-2-1b", () => {});
+  assert.equal(notice, PERSON_HAD_UNUSED);
+  assert.equal(forgot, 0, "the ids stand");
 });
 
 test("a call that waited for the person says how long in its result's details (waited_for_person_ms), on the call's clock, so its timeline row can say it waited; one that did not wait says nothing of it", async () => {

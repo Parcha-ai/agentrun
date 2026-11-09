@@ -32,6 +32,7 @@ import { HarnessInstall, harnessesOf, installDirOf, NPM_STOP_GRACE_MS, npmInstal
 import { healthOf, hostMemory, maxRunsOf, MIN_FREE_MIB, runsThatFit } from "./host.js";
 import { IMPORT_ASKED } from "./import.js";
 import type { ImportAnswer, ImportTask } from "./import-worker.js";
+import { answerStoreCall, type StoreCall } from "./import-proxy.js";
 import type { MessageOrigin } from "@parcha/pi-durable-agent/timeline";
 import { gradeModelOf, LEARNING_LABEL, learningBudgetOf, type LearningMode, learningOf, seedOf } from "./learning.js";
 import { agentLearning, learningLog, learningNotes, noteBody, pendingCount, readNote, secretsShown, sendNote, writeNote } from "./learning-routes.js";
@@ -84,9 +85,9 @@ import { memoryMbOf } from "./run-box.js";
 import { DOCUMENTS_ENV } from "./pdf-pages.js";
 import { CAP_MODES, type CapMode } from "./cap.js";
 import { type Blocker, blockersOf, CODE_NODES_ENV, issueOf, MCP_HARNESSES, NOT_SET_UP, type RevisionShape } from "./runnable.js";
-import { handedSecret, holdMadeSecret, hostSecrets, SECRET_NAMES, secret, type StoredKeys, withSecrets } from "./secrets.js";
+import { hostSecrets, SECRET_NAMES, secret, type StoredKeys, withSecrets } from "./secrets.js";
 import { isSecretWriteOperation, SECRET_WRITE_REFUSAL, secretsWritableFields, secretWriterFacts, writesSecret, writesSecretsAllowed } from "./secret-writes.js";
-import { ensureSealKey, SealKeyRefused, sealKeyHome, sealKeyLine } from "./seal-key.js";
+import { bootSealKey } from "./seal-key.js";
 import { redactedOutput } from "./key-refusal.js";
 import { analyticsFilter, analyticsView, statsView } from "./stats.js";
 import { agentLearningOverStore, learningCountsOverStore } from "./store-reads/learning.js";
@@ -337,7 +338,7 @@ export type ServeOptions = {
   triggerClock?: TriggerClock;
   /** The server's store (store/index.ts), where the triggers and their firings live, with the agents they run as. Without
    *  it the trigger routes answer unavailable and nothing fires. */
-  store?: Pick<Store, "triggers" | "runs" | "agents">;
+  store?: Pick<Store, "triggers" | "runs" | "agents"> & Partial<Pick<Store, "liveViewers">>;
   /** A test's seam: the trigger sources this server has (default the registry, trigger-adapters.ts). */
   triggerAdapters?: readonly TriggerAdapter[];
   /** A test's seam: GitHub's API, which Connect GitHub converts its code with and asks of the App's installations
@@ -770,16 +771,7 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   delete process.env[HARNESS_TABLE_ENV];
   // No start without a seal key (seal-key.ts): the one handed over, else the one kept under the config home, made at the
   // first start with only its path printed. Every secret here is kept under it; there is no keeping one in the clear.
-  const handedSeal = handedSecret(SEAL_KEY_ENV);
-  let seal;
-  try {
-    seal = ensureSealKey(handedSeal, { configHome: sealKeyHome(process.env) });
-  } catch (error) {
-    if (error instanceof SealKeyRefused) throw new Error(`agentrun-serve does not start without a seal key. ${error.message}`, { cause: error });
-    throw error;
-  }
-  if (!handedSeal) holdMadeSecret(SEAL_KEY_ENV, seal.text);
-  if (seal.generated) process.stderr.write(`${sealKeyLine(seal)}\n`);
+  const seal = bootSealKey();
   await mkdir(resolve(options.data), { recursive: true, mode: 0o700 });
   // Canonical once, here: a box's mount source below it must then be its own canonical path, through no link (run-box.ts).
   const data = await realpath(resolve(options.data));
@@ -1350,11 +1342,11 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const onWorker = (task: ImportTask["task"]): Promise<ImportAnswer> =>
     closing ? Promise.resolve({ stopped: true }) : new Promise((answered, failed) => {
       const worker = new Worker(new URL("./import-worker.js", import.meta.url), {
-        // The secrets this process holds (secrets.ts keeps them out of every environment, so the worker's has none), and
-        // the keys saved on its Tool keys page, opened now (each cut too, the same rule as the CLI's import: a saved key
-        // and the server's own of the same name may differ), in the worker's memory alone: what the import cuts out of
-        // everything it writes.
-        workerData: { task, data, home: options.sessionsHome?.home ?? homedir(), ...(options.sessionsHome?.temp ? { temp: options.sessionsHome.temp } : {}), secrets: Object.fromEntries(SECRET_NAMES.flatMap((name) => { const value = secret(name); return value === undefined ? [] : [[name, value]]; })), stored: toolKeys.values() } satisfies ImportTask,
+        // The secrets this process holds (secrets.ts keeps them out of every environment, so the worker's has none), in the
+        // worker's memory alone: what the import cuts out of everything it writes. The keys saved on the Tool keys page are
+        // not passed; the worker reads them from the store over the port (sealed rows it opens with the seal key among these
+        // secrets), the same cut as the CLI's import, where a saved key and the server's own of the same name may differ.
+        workerData: { task, data, home: options.sessionsHome?.home ?? homedir(), ...(options.sessionsHome?.temp ? { temp: options.sessionsHome.temp } : {}), secrets: Object.fromEntries(SECRET_NAMES.flatMap((name) => { const value = secret(name); return value === undefined ? [] : [[name, value]]; })) } satisfies ImportTask,
         // Started from a string (its launcher runs node --input-type=module -e), the server's flags are given again
         // without that string and its type: a worker started from a file with them is refused. Otherwise the worker
         // inherits them as Node passes them on, which leaves out the flags a worker may not take (on Node 24 a test
@@ -1363,7 +1355,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       });
       workers.set(worker, { task, exit: once(worker, "exit").catch(() => undefined) });
       let answer: ImportAnswer | undefined;
-      worker.on("message", (message: ImportAnswer) => void (answer = message));
+      // The import worker opens no store of its own: a message carrying `req` is one of its calls to this server's open
+      // store, answered against it and posted back; anything else is its one final answer.
+      worker.on("message", (message: StoreCall | ImportAnswer) => {
+        if (typeof message === "object" && message !== null && "req" in message) void answerStoreCall(store, ctx, message).then((reply) => worker.postMessage(reply));
+        else answer = message as ImportAnswer;
+      });
       worker.once("error", failed);
       worker.once("exit", (code) => {
         workers.delete(worker);
