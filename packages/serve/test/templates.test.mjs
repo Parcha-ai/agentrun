@@ -563,6 +563,7 @@ test("market-monitor's sends are pinned to its channel: the consent screen shows
     assert.equal(covered.status, 201, JSON.stringify(covered.body));
     assert.deepEqual(await settingsOf(covered), { [SEND]: { permission: "allow" } });
     assert.match(pinWarnings(covered)[0].message, /this server's own pin of mcp:slack\/slack_send_message holds its calls meanwhile/);
+    assert.equal(pinWarnings(covered)[0].fix, undefined, "nothing to add: the server's pin already holds it");
     assert.equal((await api("PUT", "/settings/tools", {})).status, 200);
   }
 
