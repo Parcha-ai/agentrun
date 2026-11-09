@@ -3,6 +3,7 @@
 // sends. Edit the server's document, then run node scripts/generate-clients.mjs; never a wire type here.
 
 import type { components, operations } from "./api.generated";
+import type { PendingComputers, PendingKindView, PendingProviderView } from "./computers.pending";
 
 type Answer<Id extends keyof operations> = operations[Id]["answer"];
 type Body<Id extends keyof operations> = operations[Id]["body"];
@@ -29,6 +30,14 @@ export type AgentTool = NonNullable<components["Agent"]["tools"]>[number];
 /** The computer an agent's runs are given (definition.computer): its kind and the provider that serves it, absent for
  *  none. The server keeps `place` as its v2 view and writes both from either; the console writes this one. */
 export type Computer = NonNullable<components["DefinitionInput"]["computer"]>;
+// The server's computers list. These names alias the temporary copy of the handlers' shapes until the server switch
+// documents GET /v2/computers; then they alias the generated types, and nothing else changes.
+/** GET /v2/computers's answer, and capabilities.computers: each kind of computer this server knows. */
+export type Computers = PendingComputers;
+/** One kind: whether it is offered here (why not), its groups, the tools it brings, and its providers. */
+export type ComputerKindView = PendingKindView;
+/** One provider of a kind: ready, or why not. */
+export type ComputerProviderView = PendingProviderView;
 
 /** `so_far_usd` and `unpriced` (serve's costsofar/1), present only while `usd` is null. */
 export type Cost = components["Cost"];
