@@ -16,6 +16,7 @@ test("a hello that does not serve the kind is refused in the registry's words", 
 
 test("a hello with no groups (absent or not a list) declares none: refused in words, never a TypeError", () => {
   for (const said of [{ kind: "linux" }, { kind: "linux", groups: null }, { kind: "linux", groups: "exec" }, {}]) {
-    assert.throws(() => servedGroups(said, "sandbox", servingRefusals), (error) => !(error instanceof TypeError) && /the run's computer can't serve a sandbox: kind sandbox needs groups exec, files, processes/.test(error.message), JSON.stringify(said));
+    // A hello with no machine kind is refused for that too, in the same words, before its groups.
+    assert.throws(() => servedGroups(said, "sandbox", servingRefusals), (error) => !(error instanceof TypeError) && /^the run's computer can't serve a sandbox: /.test(error.message) && /kind sandbox needs groups exec, files, processes/.test(error.message), JSON.stringify(said));
   }
 });
