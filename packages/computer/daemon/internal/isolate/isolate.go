@@ -112,6 +112,31 @@ func checkOwnNetwork(first string) error {
 	return nil
 }
 
+// SystemSockets is where a vendor's base leaves the system's unix sockets (rpcbind, sshd's unix-local socket,
+// systemd's varlink sockets, some PID 1's own, the journal's stdout socket).
+const SystemSockets = "/run"
+
+// CloseSystemSockets takes others' access off every unix socket under root that others may write, links never
+// followed: connecting to a path socket takes write on it, and a network namespace does not cut one, so a program of
+// another uid reaches none of them. The owner's and group's access stays, so root and the services keep theirs; the
+// computer's own sockets are not world-writable (the Archil sync socket is root:2510, computerd's lives in the programs'
+// own folder). An unreadable folder is skipped, as a program could not reach in either; a chmod that fails is an error.
+func CloseSystemSockets(root string) error {
+	return filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil || entry.Type()&fs.ModeSocket == 0 {
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil || info.Mode().Perm()&0o002 == 0 {
+			return nil
+		}
+		if err := os.Chmod(path, info.Mode().Perm()&^0o007); err != nil {
+			return fmt.Errorf("cannot take others' access off the socket %s, which init's programs could then reach: %w", path, err)
+		}
+		return nil
+	})
+}
+
 // Stranger is another process that holds the uid init's programs run as.
 type Stranger struct {
 	PID  int

@@ -417,10 +417,20 @@ func TestStrangersReadsThisMachinesProcAndFindsNoOtherProcessOfAnUnusedUid(t *te
 // sockets (some PID 1's own) and the journal's stdout socket, all world-writable under /run. Init, still root, takes
 // others' access off every such socket: connecting takes write, and a network namespace does not cut a path socket.
 func TestCloseSystemSocketsTakesOthersAccessOffEveryWorldWritableSocketUnderTheRoot(t *testing.T) {
-	root, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
+	// Short folders: a unix socket's path holds at most 107 bytes, and t.TempDir's carries the test's long name.
+	short := func() string {
+		dir, err := os.MkdirTemp("/tmp", "css-")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { os.RemoveAll(dir) })
+		real, err := filepath.EvalSymlinks(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return real
 	}
+	root := short()
 	listen := func(path string, mode os.FileMode) string {
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			t.Fatal(err)
@@ -438,11 +448,7 @@ func TestCloseSystemSocketsTakesOthersAccessOffEveryWorldWritableSocketUnderTheR
 	world := listen(filepath.Join(root, "systemd", "userdb", "io.systemd.DynamicUser"), 0o666)
 	rpcbind := listen(filepath.Join(root, "rpcbind.sock"), 0o777)
 	grouped := listen(filepath.Join(root, "agentrun-archil", "archil.sock"), 0o660)
-	elsewhere, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	display := listen(filepath.Join(elsewhere, "X0"), 0o777)
+	display := listen(filepath.Join(short(), "X0"), 0o777)
 	if err := os.Symlink(display, filepath.Join(root, "link.sock")); err != nil {
 		t.Fatal(err)
 	}

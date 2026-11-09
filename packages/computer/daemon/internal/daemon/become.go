@@ -56,6 +56,10 @@ func Become(uid, gid int, home, socket string, isolation Isolation) error {
 		if err := isolate.OwnNetwork(); err != nil {
 			return err
 		}
+		// No socket of the system's is the programs' to reach, since their own network does not cut a path socket.
+		if err := isolate.CloseSystemSockets(isolate.SystemSockets); err != nil {
+			return err
+		}
 	}
 	if err := dropPrivileges(becomeUser(uid, gid)); err != nil {
 		return err
