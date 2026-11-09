@@ -1946,9 +1946,11 @@ the provider passes the kind, 1 when it does not. A provider passes a kind only 
 capabilities), no case of the run failed (a declared optional group that fails would hand a loop a broken tool),
 every required group has at least one passing case and no Core case skipped but for an optional group the computer does
 not declare, and the run left nothing behind. A Full case that skips is owed by no group: a provider may refuse in
-words what its kind does not require, as the phone harness refuses `touch.pinch`, and the report still shows the skip. `none` is no computer, and `--kind` refuses it in words; `browser` runs, and
-fails `no case of cdp passed` until the suite has CDP cases. `kindCases` and `kindVerdict` are exported, so the serve
-side reads the same table.
+words what its kind does not require, as the phone harness refuses `touch.pinch`, and the report still shows the skip.
+`none` is no computer, and `--kind` refuses it in words. Given no cases, a run takes `casesFor(machineKind)`: a
+browser's own cases (`browserCases`), every other kind the suite's (`conformanceCases`), in the library as in the CLI;
+`kindCases` draws from the same by kind. `kindCases`, `kindVerdict` and `casesFor` are exported, so the serve side reads
+the same table.
 
 What a module given by path implements: either a provider file's `create(options)` (see
 [Adding a computer](#adding-a-computer)), given the CLI's provider options but the env and run with no drifted

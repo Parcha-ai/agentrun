@@ -1,7 +1,7 @@
 export * from "./types.js";
 export { runConformance } from "./runner.js";
 export { formatReport } from "./report.js";
-export { browserCases, browserOnlyCases, conformanceCases } from "./cases/index.js";
+export { browserCases, browserOnlyCases, casesFor, conformanceCases } from "./cases/index.js";
 export { kindCases, kindRunProblem, kindVerdict, type KindVerdict } from "./kind.js";
 export { type CdpDialer, type CdpSocket, dialCdp } from "./cdp.js";
 export {

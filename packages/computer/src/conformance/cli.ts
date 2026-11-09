@@ -9,7 +9,7 @@ import { isCommand } from "../entry.js";
 import type { ComputerProvider } from "../provider.js";
 import { type ConformanceModule, isProviderId, type ProviderEnv, providerIds, providerModule } from "../providers.js";
 import { type ComputerSettingKind, SETTING_KIND_NAMES } from "../kinds.js";
-import { browserCases, conformanceCases } from "./cases/index.js";
+import { browserCases, casesFor, conformanceCases } from "./cases/index.js";
 import { kindRunProblem } from "./kind.js";
 import type { CdpDialer } from "./cdp.js";
 import { formatReport } from "./report.js";
@@ -225,7 +225,7 @@ export async function main(argv: string[], io: CliIo = {}): Promise<number> {
 		}
 		return 1;
 	}
-	const cases = io.cases ?? (target.provider.capabilities().kind === "browser" ? browserCases : conformanceCases);
+	const cases = io.cases ?? casesFor(target.provider.capabilities().kind);
 	const onResult = progress ? (r: CaseResult) => stderr.write(`${r.status === "pass" ? "✓" : r.status === "fail" ? "✗" : "-"} ${r.id}\n`) : undefined;
 	const report = await runConformance(target.provider, {
 		image: args.image ?? target.image ?? DEFAULT_IMAGE,
