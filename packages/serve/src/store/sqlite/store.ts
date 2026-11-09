@@ -11,7 +11,7 @@ import { DDL, SCHEMA_VERSION } from "../schema.js";
 import {
   CommandTaken, Fenced, RefreshLeaseLost, SchemaVersionUnknown, StoreConstraint, StoreFromEarlierVersion,
   type AgentRow, type Agents, type AlsoRow, type Claim, type Command, type Journal, type NewRevision, type RevisionRow, type RunPatch, type RunRow, type Runs,
-  type RunState, type Store, type StoreRole, type TemplatePackage, type Templates, type TriggerDef, type TriggerRow, type Triggers, type TriggerScope,
+  type ReleasedState, type RunState, type Store, type StoreRole, type TemplatePackage, type Templates, type TriggerDef, type TriggerRow, type Triggers, type TriggerScope,
   FINAL_STATES, MCP_REFRESH_CALL_MS, MCP_REFRESH_LEASE_MS, type Live, type LiveRow, type Mcp, type McpPinRow, type McpServerRow,
 } from "../store.js";
 import { Connection, type SqliteExecutor, type SqliteValue, type Statement } from "./connection.js";
@@ -535,8 +535,10 @@ class SqliteStore implements Store {
     });
   }
 
-  async release(claim: Claim, { state, wakeAt = null, backoffUntil = null }: { state?: RunState; wakeAt?: number | null; backoffUntil?: number | null } = {}): Promise<void> {
-    const ending = state !== undefined && FINAL_STATES.includes(state);
+  async release(claim: Claim, { state, wakeAt = null, backoffUntil = null }: { state?: ReleasedState; wakeAt?: number | null; backoffUntil?: number | null } = {}): Promise<void> {
+    // The end commit is the one write that makes a run final (applyRunPatch: the leftover rows refused and the run_live
+    // row deleted with it). A release never does: asked to, it is refused before anything is written.
+    if (state !== undefined && FINAL_STATES.includes(state as RunState)) throw new TypeError(`a release never makes a run final (asked for ${state}): only the run's end commit does, refusing its leftover rows with it`);
     await this.#db.transaction(async (tx) => {
       // A run its end already made final was released by that end (applyRunPatch): this release is a no-op, no second
       // move of its epoch and no error, whatever its claim's lease says now.
@@ -548,8 +550,8 @@ class SqliteStore implements Store {
         // The epoch moves on at a release: the released claim is dead everywhere (its journal, its run updates, its takes),
         // never live until the next claim. A claim whose lease ran out releases nothing: the run, running with its lease run
         // out, is claimable at once, never stuck.
-        `UPDATE runs SET epoch = epoch + 1, runner = NULL, claimed_until = NULL, wake_at = ?, backoff_until = ?, state = coalesce(?, state)${ending ? ", ended_at = coalesce(ended_at, ?)" : ""} WHERE ${claimFence(claim, now).where} AND runner = ?`,
-        [wakeAt, backoffUntil, state ?? null, ...(ending ? [now] : []), ...claimFence(claim, now).params, claim.runner],
+        `UPDATE runs SET epoch = epoch + 1, runner = NULL, claimed_until = NULL, wake_at = ?, backoff_until = ?, state = coalesce(?, state) WHERE ${claimFence(claim, now).where} AND runner = ?`,
+        [wakeAt, backoffUntil, state ?? null, ...claimFence(claim, now).params, claim.runner],
       ));
     }, { full: true });
     // The released claim's journal is dead (its epoch moved on): the store keeps it no longer, and refuses it from now.
