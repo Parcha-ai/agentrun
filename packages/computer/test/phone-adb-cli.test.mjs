@@ -22,7 +22,10 @@ async function adbServer() {
 		socket.on("data", (chunk) => {
 			buffer = Buffer.concat([buffer, chunk]);
 			while (buffer.length >= 4) {
-				const length = Number.parseInt(buffer.subarray(0, 4).toString("latin1"), 16);
+				// adb's framing is four hex digits of length: anything else is not an adb client, and its connection ends.
+				const head = buffer.subarray(0, 4).toString("latin1");
+				if (!/^[0-9a-fA-F]{4}$/.test(head)) return void socket.destroy();
+				const length = Number.parseInt(head, 16);
 				if (buffer.length < 4 + length) return;
 				requests.push(buffer.subarray(4, 4 + length).toString("utf8"));
 				buffer = buffer.subarray(4 + length);
