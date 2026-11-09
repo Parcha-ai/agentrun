@@ -80,7 +80,7 @@ import { type Blocker, blockersOf, CODE_NODES_ENV, issueOf, MCP_HARNESSES, NOT_S
 import { hostSecrets, SECRET_NAMES, secret, type StoredKeys, withSecrets } from "./secrets.js";
 import { redactedOutput } from "./key-refusal.js";
 import { analyticsFilter, analyticsView, statsView } from "./stats.js";
-import { agentLearningCountsOverStore, learningCountsOverStore, runLearningOverStore } from "./store-reads/learning.js";
+import { agentLearningOverStore, learningCountsOverStore, runLearningOverStore } from "./store-reads/learning.js";
 import { outcomes } from "./usage.js";
 import { keyOf, SEAL_KEY_ENV, sealKeyOf, TOOL_FIELDS } from "./tool-keys.js";
 import { toolKeysOverStore } from "./tool-keys-store.js";
@@ -364,15 +364,6 @@ const digest = (text: string) => createHash("sha256").update(text).digest();
 /** Why a trigger never messages a run: it has no spend cap, and every turn a trigger drives is capped. */
 const NO_CAP = "The run has no spend cap: a trigger only messages a run with one, as every turn it drives is capped.";
 
-/** The triggers' store before the server opens its own: each call answers unavailable, and nothing fires. */
-function storeless(): Pick<Store, "triggers" | "runs"> {
-  const refused = new Proxy({}, {
-    get: () => async () => {
-      throw new ApiError("unavailable", "The triggers live in the server's store, which this server has not opened.");
-    },
-  });
-  return { triggers: refused, runs: refused } as unknown as Pick<Store, "triggers" | "runs">;
-}
 const sha256Hex = (text: string) => createHash("sha256").update(text).digest("hex");
 const SESSION_S = SESSION_MS / 1000;
 
@@ -1145,7 +1136,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // Schedules: each firing starts its run as POST /agents/{id}/runs does, capped, under the firing's key (triggers.ts).
   // Firings an earlier server left due are driven again now, beside the recovery above.
   const triggers: Triggers = new Triggers({
-    store: options.store ?? storeless(),
+    // The server's own store (the one it opened) holds the triggers a person writes and reads; a test may inject another
+    // (startServe's `store`).
+    store: options.store ?? store,
     clock: options.triggerClock,
     adapters,
     say: (fields) => (log ? log(logLine("trigger", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("trigger", fields)}\n`)),
@@ -1536,7 +1529,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
 
   async function createRun(req: IncomingMessage, agentId: string) {
     const entry = await needAgent(agentId);
-    if (entry.agent.archivedAt) throw new ApiError("agent_not_runnable", `The agent ${agentId} is archived: unarchive it to run it.`, { details: { archived_at: entry.agent.archivedAt } });
+    if (entry.agent.archivedAt) throw new ApiError("agent_not_runnable", `The agent ${agentId} is archived: unarchive it to run it.`, { details: { archived_at: new Date(entry.agent.archivedAt).toISOString() } });
     const body = await bodyOf(req);
     return idempotent(req, `/agents/${agentId}/runs`, body, async (origin) => {
       // A run the store started under this key, though no answer was kept (its server went down first): that run, as it is now.
@@ -2039,7 +2032,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const limit = limitOf(url.searchParams.get("limit"));
         const offset = cursorOf(url.searchParams.get("cursor"));
         const archived = archivedParam(url);
-        const all = (await agents.list()).filter((entry) => Boolean(entry.agent.archivedAt) === archived);
+        const all = await agents.list({ archived });
         return send(res, 200, { agents: await Promise.all(all.slice(offset, offset + limit).map(async (entry) => agentView(entry, linkOrigin(req), await agentExtra(entry)))), next_cursor: nextCursor(offset + limit, all.length) });
       }
       case "getAgent": {
@@ -2414,18 +2407,19 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       // they are now; a write as the definition's: an archived agent's too.
       case "getAgentLearning": {
         await needAgent(id);
-        // The agent's learning view: its notes, skills, workflows and log from its learning folder; its run-fared counts over the
-        // store (learning-1's agentLearningCountsOverStore). Each note's runs and the impact are named gaps until learning-1 records
-        // a run's given/read notes and its answer times in the store.
-        const counts = await agentLearningCountsOverStore(store, id);
-        return send(res, 200, await agentLearning(data, id, secretsShown(serverSecrets()), counts, null));
+        // The agent's learning view: its notes, skills, workflows and log from its learning folder; its run-fared counts, each
+        // note's runs (given it and that read it) and its impact over the one store (agentLearningOverStore), from each run's
+        // launch, journal and learning end.
+        const { counts, impact, notes } = await agentLearningOverStore(store, id);
+        return send(res, 200, await agentLearning(data, id, secretsShown(serverSecrets()), counts, impact, notes));
       }
       case "listLearningNotes":
       case "listLearningLog":
         await needAgent(id);
         if (found.name === "listLearningNotes") {
-          // The notes from the agent's learning folder; each note's runs are a named gap until learning-1 records them in the store.
-          return send(res, 200, await learningNotes(data, id, url.searchParams, secretsShown(serverSecrets())));
+          // The notes from the agent's learning folder, each with its runs over the one store (agentLearningOverStore's noteRuns).
+          const { notes } = await agentLearningOverStore(store, id);
+          return send(res, 200, await learningNotes(data, id, url.searchParams, secretsShown(serverSecrets()), notes));
         }
         return send(res, 200, await learningLog(data, id, url.searchParams, secretsShown(serverSecrets())));
       case "readLearningFile":
