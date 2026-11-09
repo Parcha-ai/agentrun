@@ -21,7 +21,7 @@ test("the Orgo module's env names: the live switch, the key, the workspace, the 
 	assert.deepEqual(ENV, {
 		live: "AGENTRUN_COMPUTER_LIVE_ORGO",
 		template: "COMPUTER_ORGO_TEMPLATE",
-		apiKey: "COMPUTER_ORGO_API_KEY",
+		key: "COMPUTER_ORGO_API_KEY",
 		workspace: "COMPUTER_ORGO_WORKSPACE",
 		apiUrl: "COMPUTER_ORGO_API_URL",
 	});

@@ -31,10 +31,10 @@ test("orgoRest: the key goes in the Authorization header alone; an Orgo error is
 	assert.equal(read.error.code, "not_found");
 	assert.match(read.error.message, /Workspace not found/);
 	assert.equal(api.requests[0].headers.authorization, `Bearer ${KEY}`);
-	const wrong = orgoRest({ apiKey: "sk_wrong_key_0000000000", apiUrl: API, fetch: api.fetch });
+	const wrong = orgoRest({ apiKey: "not-a-secret", apiUrl: API, fetch: api.fetch });
 	const denied = await wrong.request("GET", `/workspaces/${WORKSPACE}`, { timeoutMs: 1000 });
 	assert.equal(denied.error.code, "denied");
-	assert.ok(!denied.error.message.includes("sk_wrong_key"));
+	assert.ok(!denied.error.message.includes("not-a-secret"));
 	const thrown = orgoRest({ apiKey: KEY, apiUrl: API, fetch: async () => Promise.reject(new Error(`connect ECONNREFUSED Bearer ${KEY}`)) });
 	const failed = await thrown.request("GET", "/workspaces/x", { timeoutMs: 1000 });
 	assert.equal(failed.ok, false);

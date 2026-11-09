@@ -157,11 +157,11 @@ test("the service's refusals are words with a code, and never the key", async ()
 		noKey(created);
 	}
 	const fake = fakePhoneHarness();
-	const wrongKey = await create({ apiKey: "another-fake-key", fetch: fake.fetch, adb: fake.adb, now: fake.clock.now, sleep: fake.clock.sleep });
+	const wrongKey = await create({ apiKey: "not-a-secret", fetch: fake.fetch, adb: fake.adb, now: fake.clock.now, sleep: fake.clock.sleep });
 	const denied = await wrongKey.create(SPEC);
 	assert.equal(denied.error.code, "denied");
 	assert.match(denied.error.message, /^POST \/sessions: the phone harness refused the API key \(401\): invalid API key$/);
-	assert.ok(!denied.error.message.includes("another-fake-key"));
+	assert.ok(!denied.error.message.includes("not-a-secret"));
 });
 
 test("a phone that fails or is not ready within readyMs is ended, in words", async () => {

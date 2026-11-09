@@ -87,11 +87,11 @@ test("phone-harness: one GET /sessions, which rents nothing; ok with its own pho
 	assert.deepEqual(fake.requests().map((r) => `${r.method} ${r.path}`), ["GET /sessions"], "one read, and nothing rented");
 	assert.deepEqual(fake.adbCalls(), [], "no phone is reached");
 
-	const wrongKey = new PhoneHarnessProvider({ apiKey: "another-fake-key", fetch: fake.fetch, adb: fake.adb });
+	const wrongKey = new PhoneHarnessProvider({ apiKey: "not-a-secret", fetch: fake.fetch, adb: fake.adb });
 	const refused = await wrongKey.testConnection();
 	assert.equal(refused.ok, false);
 	assert.equal(refused.error.code, "unauthorized");
-	assert.ok(!refused.error.message.includes("another-fake-key"), "the key is never in the words");
+	assert.ok(!refused.error.message.includes("not-a-secret"), "the key is never in the words");
 
 	const away = new PhoneHarnessProvider({
 		apiKey: PHONE_KEY,

@@ -73,10 +73,10 @@ test("Orgo testConnection: one read of the workspace, which makes nothing; ok wi
 	assert.match(tested.value.detail, /Orgo answered: 1 computer of this provider/);
 	assert.deepEqual(fakes.api.routes(), [`GET /workspaces/${WORKSPACE}`], "one account-level read, and no create");
 	assert.deepEqual(fakes.channel.calls, [], "nothing runs in a computer");
-	const refused = await create({ apiKey: "sk_refused_key_000000000000", workspaceId: WORKSPACE, apiUrl: API, fetch: fakes.api.fetch }).testConnection();
+	const refused = await create({ apiKey: "not-a-secret", workspaceId: WORKSPACE, apiUrl: API, fetch: fakes.api.fetch }).testConnection();
 	assert.equal(refused.ok, false);
 	assert.equal(refused.error.code, "unauthorized");
-	assert.ok(!refused.error.message.includes("sk_refused_key"));
+	assert.ok(!refused.error.message.includes("not-a-secret"));
 });
 
 test("Orgo: a Linux desktop with computerd as a child of Orgo's own agent, network none, Orgo's lifetime, delete, no mount; it serves the desktop kind", () => {

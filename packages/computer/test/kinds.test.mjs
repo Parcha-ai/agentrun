@@ -120,8 +120,8 @@ test("an entry whose provider file has not landed is data alone; once it lands, 
 /** Each provider built as the registry offers it, from the unit tests' fakes. */
 const BUILT = {
 	docker: [() => fakeDocker().provider, () => fakeDocker({ desktop: {} }).provider],
-	e2b: [() => new E2BProvider({ apiKey: "e2b-test-key", Sandbox: fakeE2B().Sandbox, kind: "linux" }), () => new E2BProvider({ apiKey: "e2b-test-key", Sandbox: fakeE2B().Sandbox })],
-	daytona: [() => new DaytonaProvider({ apiKey: "daytona-test-key", apiUrl: "https://api.daytona.test/api", daemonPath: "/nonexistent/computerd", fetch: async () => new Response(null, { status: 500 }) })],
+	e2b: [() => new E2BProvider({ apiKey: "fake-test-key", Sandbox: fakeE2B().Sandbox, kind: "linux" }), () => new E2BProvider({ apiKey: "fake-test-key", Sandbox: fakeE2B().Sandbox })],
+	daytona: [() => new DaytonaProvider({ apiKey: "fake-test-key", apiUrl: "https://api.daytona.test/api", daemonPath: "/nonexistent/computerd", fetch: async () => new Response(null, { status: 500 }) })],
 	modal: [() => new ModalProvider({ sdk: fakeModal().sdk, app: "computers", daemonImage: `ghcr.io/example/computerd@sha256:${"a".repeat(64)}` })],
 	browserbase: [() => new BrowserbaseProvider({ apiKey: BROWSERBASE_KEY, apiUrl: BROWSERBASE_URL, fetch: fakeBrowserbase().fetch })],
 	kernel: [() => new KernelProvider({ apiKey: KERNEL_KEY, apiUrl: KERNEL_URL, fetch: fakeKernel().fetch })],
@@ -131,7 +131,7 @@ const BUILT = {
 			return new PhoneHarnessProvider({ apiKey: PHONE_KEY, fetch: fake.fetch, adb: fake.adb });
 		},
 	],
-	orgo: [() => createOrgo({ apiKey: "orgo-test-key", workspaceId: "ws-test", fetch: async () => new Response(null, { status: 500 }) })],
+	orgo: [() => createOrgo({ apiKey: "fake-test-key", workspaceId: "ws-test", fetch: async () => new Response(null, { status: 500 }) })],
 };
 
 test("a built provider's capabilities, in each configuration, are its entry's static capabilities", () => {

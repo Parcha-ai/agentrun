@@ -15,7 +15,7 @@ export const ENV = {
 	/** The template every computer of the run starts from; default Orgo's base desktop ("linux"). */
 	template: "COMPUTER_ORGO_TEMPLATE",
 	/** Required: an Orgo API key (never ORGO_API_KEY, which a host may hold for another account). */
-	apiKey: "COMPUTER_ORGO_API_KEY",
+	key: "COMPUTER_ORGO_API_KEY",
 	/** Required: the workspace the run's computers live in. */
 	workspace: "COMPUTER_ORGO_WORKSPACE",
 	/** Orgo's API; default https://www.orgo.ai/api. */
@@ -52,8 +52,8 @@ function live(env: Record<string, string | undefined>): void {
 
 /** The provider's settings from COMPUTER_ORGO_* alone: the key, the workspace, and Orgo's API when named. No word holds the key. */
 export function settingsFromEnv(env: Record<string, string | undefined> = process.env): { apiKey: string; workspaceId: string; apiUrl?: string } {
-	const apiKey = env[ORGO_ENV.apiKey];
-	if (!apiKey) throw new Error(`set ${ORGO_ENV.apiKey} to an Orgo API key: the Orgo module reads it there and nowhere else, never from ORGO_API_KEY`);
+	const apiKey = env[ORGO_ENV.key];
+	if (!apiKey) throw new Error(`set ${ORGO_ENV.key} to an Orgo API key: the Orgo module reads it there and nowhere else, never from ORGO_API_KEY`);
 	const workspaceId = env[ORGO_ENV.workspace];
 	if (!workspaceId) throw new Error(`set ${ORGO_ENV.workspace} to the Orgo workspace the run's computers live in`);
 	const apiUrl = env[ORGO_ENV.apiUrl] || undefined;

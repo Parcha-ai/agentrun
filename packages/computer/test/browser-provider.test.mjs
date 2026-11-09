@@ -92,11 +92,11 @@ test("a browser is a kind: linux, daemon none, Core cdp; its groups are the prot
 
 test("the registry holds browserbase and kernel, each built from its options alone; the conformance side reads COMPUTER_<ID>_* only", async () => {
 	for (const id of ["browserbase", "kernel"]) assert.ok(providerIds.includes(id), `the registry holds ${id}`);
-	await withProcessEnv({ BROWSERBASE_API_KEY: "bare-key-must-not-be-used", COMPUTER_BROWSERBASE_API_KEY: "bare-key-must-not-be-used", KERNEL_API_KEY: "bare-key-must-not-be-used", COMPUTER_KERNEL_API_KEY: "bare-key-must-not-be-used" }, async () => {
+	await withProcessEnv({ BROWSERBASE_API_KEY: "not-a-secret", COMPUTER_BROWSERBASE_API_KEY: "not-a-secret", KERNEL_API_KEY: "not-a-secret", COMPUTER_KERNEL_API_KEY: "not-a-secret" }, async () => {
 		for (const id of ["browserbase", "kernel"]) {
 			await assert.rejects(providerFor(id, {}), (error) => {
 				assert.match(error.message, /options\.apiKey/);
-				assert.doesNotMatch(error.message, /bare-key-must-not-be-used/);
+				assert.doesNotMatch(error.message, /not-a-secret/);
 				return true;
 			});
 		}
@@ -107,10 +107,10 @@ test("the registry holds browserbase and kernel, each built from its options alo
 	const browserbase = await (await providerModule("browserbase")).conformance();
 	assert.deepEqual(browserbase.ENV, { live: "AGENTRUN_COMPUTER_LIVE_BROWSERBASE", key: "COMPUTER_BROWSERBASE_API_KEY", project: "COMPUTER_BROWSERBASE_PROJECT_ID", url: "COMPUTER_BROWSERBASE_API_URL" });
 	assert.deepEqual(browserbase.settingsFromEnv({ COMPUTER_BROWSERBASE_API_KEY: "k", COMPUTER_BROWSERBASE_PROJECT_ID: "p" }), { apiKey: "k", projectId: "p" });
-	assert.throws(() => browserbase.settingsFromEnv({ BROWSERBASE_API_KEY: "bare-key-must-not-be-used" }), (error) => /COMPUTER_BROWSERBASE_API_KEY/.test(error.message) && !/bare-key-must-not-be-used/.test(error.message));
+	assert.throws(() => browserbase.settingsFromEnv({ BROWSERBASE_API_KEY: "not-a-secret" }), (error) => /COMPUTER_BROWSERBASE_API_KEY/.test(error.message) && !/not-a-secret/.test(error.message));
 	const kernel = await (await providerModule("kernel")).conformance();
 	assert.deepEqual(kernel.ENV, { live: "AGENTRUN_COMPUTER_LIVE_KERNEL", key: "COMPUTER_KERNEL_API_KEY", url: "COMPUTER_KERNEL_API_URL" });
-	assert.throws(() => kernel.settingsFromEnv({ KERNEL_API_KEY: "bare-key-must-not-be-used" }), (error) => /COMPUTER_KERNEL_API_KEY/.test(error.message) && !/bare-key-must-not-be-used/.test(error.message));
+	assert.throws(() => kernel.settingsFromEnv({ KERNEL_API_KEY: "not-a-secret" }), (error) => /COMPUTER_KERNEL_API_KEY/.test(error.message) && !/not-a-secret/.test(error.message));
 });
 
 for (const [id, vendor] of Object.entries(VENDORS)) {
@@ -227,11 +227,11 @@ for (const [id, vendor] of Object.entries(VENDORS)) {
 		assert.match(tested.detail, /answered: 1 (running session|active browser)/);
 		assert.equal(fake.calls.length - before, 1, "one read");
 		assert.equal(fake.calls.at(-1).method, "GET", "a read, never a create");
-		const wrong = await vendor.make(vendor.fake(), { apiKey: "not-the-key-SECRETKEY" });
+		const wrong = await vendor.make(vendor.fake(), { apiKey: "your-key" });
 		const refused = await wrong.testConnection();
 		assert.equal(refused.ok, false);
 		assert.equal(refused.error.code, "unauthorized");
-		assert.doesNotMatch(refused.error.message, /SECRETKEY|ECHO/);
+		assert.doesNotMatch(refused.error.message, /your-key|ECHO/);
 		const away = await vendor.make(vendor.fake(), { fetch: async () => { throw new TypeError("fetch failed"); } });
 		const unreached = await away.testConnection();
 		assert.equal(unreached.ok, false);
@@ -245,10 +245,10 @@ for (const [id, vendor] of Object.entries(VENDORS)) {
 		assert.equal(failed.error.code, id);
 		assert.match(failed.error.message, /POST .* answered 502/);
 		assert.doesNotMatch(failed.error.message, new RegExp(ECHO));
-		const wrongKey = await vendor.make(vendor.fake(), { apiKey: "not-the-key" });
+		const wrongKey = await vendor.make(vendor.fake(), { apiKey: "test-key" });
 		const denied = await wrongKey.create(spec());
 		assert.equal(denied.error.code, "denied");
-		assert.doesNotMatch(denied.error.message, /not-the-key/);
+		assert.doesNotMatch(denied.error.message, /test-key/);
 	});
 }
 
