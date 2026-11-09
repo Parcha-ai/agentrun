@@ -12,7 +12,10 @@ export const REFLECT_LABEL = "learning";
 /** The end-of-run turn's request id, one per run: pi answers a repeat of it from its submission, so a turn asked again
  *  on a later claim is never asked of the model twice. The server's own prefix, so the run's readers tell the turn's
  *  rows apart by it (reflectFrom). */
-export const reflectRequestId = (runId: string) => `${REFLECT_PREFIX}${runId}`;
+export const reflectRequestId = (runId: string, again = false) => `${REFLECT_PREFIX}${runId}${again ? REFLECT_AGAIN : ""}`;
+/** The suffix of the end-of-run turn's re-ask's request id (EndOfRunTurn ask's `again`): one per run too, so a repeat
+ *  is answered from its submission, never asked of the model twice. */
+export const REFLECT_AGAIN = ":again";
 
 /** Where the end-of-run turn began in a run's journal: the entry its input placed, from the input submission under the
  *  turn's request id; undefined before it is placed, or for a run that asked none. Every entry from it on, until the

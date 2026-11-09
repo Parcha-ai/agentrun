@@ -20,6 +20,8 @@ import { request as httpRequest, type IncomingMessage, type ServerResponse } fro
 import { connect } from "node:net";
 import { join } from "node:path";
 import type { Duplex } from "node:stream";
+import { sealColumn, sealedAt, unsealColumn } from "./store/seal.js";
+import type { Claim, LiveViewerRow, Store } from "./store/store.js";
 
 /** The hand-over directory in the run's directory (never in work/): one file per open session. */
 export const BROWSER_LIVE_DIR = "browser-live";
@@ -115,6 +117,51 @@ export const readHandover = async (runDir: string): Promise<LiveHandover | undef
 /** The hand-over of the viewer whose path id is `id`, or undefined. */
 export const handoverById = async (runDir: string, id: string): Promise<LiveHandover | undefined> => (await readHandovers(runDir)).find((handover) => handover.id === id);
 
+/** The store's live viewers (store.liveViewers: put and drop under the runner's claim, of() for the server) carry the
+ *  hand-over across processes, once serve and the runner share only the store. The token is never plaintext there: the
+ *  runner seals it under the seal key it holds, and the server opens it for the owner's answer alone. */
+export type LiveViewerStore = Pick<Store, "liveViewers">;
+
+/** The runner hands session `handover.tag`'s viewer over, under `claim`, its token sealed under `sealKey`: false when the
+ *  claim is stale and nothing was written. The time is the store's. */
+export async function putLiveViewer(store: LiveViewerStore, sealKey: Buffer, claim: Claim, handover: LiveHandover): Promise<boolean> {
+  if (!TAG.test(handover.tag)) throw new Error("a hand-over's tag is not a session's tag");
+  const { tag, port, id, token } = handover;
+  return store.liveViewers.put(claim, { tag, port, id, sealed: sealColumn(sealKey, sealedAt.liveViewer(claim.runId, tag), token) });
+}
+
+/** Session `tag`'s hand-over goes, and no other's; with no tag, every one of the run's (its runner let its sessions go). A
+ *  tag that is not a session's names no row. */
+export async function dropLiveViewer(store: LiveViewerStore, claim: Claim, tag?: string): Promise<void> {
+  if (tag === undefined) return store.liveViewers.drop(claim);
+  if (TAG.test(tag)) await store.liveViewers.drop(claim, tag);
+}
+
+/** Run `runId`'s row as one hand-over, checked as the files were (a viewer's path id, a session's tag, a port, a time), its
+ *  token opened and checked; undefined for anything else, a seal that does not open among them (never a throw). */
+function handoverOfRow(sealKey: Buffer, runId: string, row: Partial<LiveViewerRow>): LiveHandover | undefined {
+  if (!(Number.isInteger(row.port) && row.port! > 0 && row.port! < 65_536 && VIEWER_ID.test(String(row.id)) && typeof row.tag === "string" && TAG.test(row.tag) && Number.isFinite(row.at) && row.sealed instanceof Uint8Array)) return undefined;
+  let token: string;
+  try {
+    token = unsealColumn(sealKey, sealedAt.liveViewer(runId, row.tag), row.sealed).toString("utf8");
+  } catch {
+    return undefined;
+  }
+  return TOKEN.test(token) ? { port: row.port!, id: row.id!, token, tag: row.tag, at: row.at! } : undefined;
+}
+
+/** Run `runId`'s viewers as its live claim handed them over, newest first, each token opened with `sealKey`; a row that is
+ *  not a hand-over is left out. */
+export async function readLiveViewers(store: LiveViewerStore, sealKey: Buffer, runId: string): Promise<LiveHandover[]> {
+  const found = (await store.liveViewers.of(runId)).flatMap((row) => handoverOfRow(sealKey, runId, row) ?? []);
+  return found.sort((a, b) => b.at! - a.at! || b.tag.localeCompare(a.tag));
+}
+/** Run `runId`'s newest viewer, or undefined. */
+export const liveViewer = async (store: LiveViewerStore, sealKey: Buffer, runId: string): Promise<LiveHandover | undefined> => (await readLiveViewers(store, sealKey, runId))[0];
+/** Run `runId`'s viewer whose path id is `id`, or undefined. */
+export const liveViewerById = async (store: LiveViewerStore, sealKey: Buffer, runId: string, id: string): Promise<LiveHandover | undefined> =>
+  (await readLiveViewers(store, sealKey, runId)).find((handover) => handover.id === id);
+
 /** Where the viewer answers through the server, for run `runId`: the owner's link, its token in the fragment. */
 export const viewerLink = (runId: string, handover: LiveHandover): string => `/v2/runs/${encodeURIComponent(runId)}/browser/live/v/${handover.id}#t=${handover.token}`;
 
@@ -153,7 +200,7 @@ export const LIVE_RECHECK_MS = 2_000;
 /** The viewers' sockets open now, each with the check of the sessions that let it in. A socket whose sessions no longer
  *  hold is destroyed, which takes its way to the run with it (proxyLiveUpgrade): at once on `recheck()` (a sign-out or a
  *  password set in this process), else within LIVE_RECHECK_MS. The timer runs only while a viewer is open. */
-export class LiveViewers {
+export class OpenViewers {
   private readonly open = new Map<Duplex, () => boolean>();
   private timer: NodeJS.Timeout | undefined;
 
@@ -185,11 +232,14 @@ export class LiveViewers {
 
 /** The viewer's WebSocket to the run's port: the request line and the handshake's own headers, the Host and Origin the
  *  run's viewer takes (its own), and nothing else of the owner's (no cookie); then both ways, unread. */
-export function proxyLiveUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer, handover: LiveHandover, rest: string): void {
+/** Once piping starts, the viewer's socket carries the run's WebSocket stream: nothing is ever written into it after that,
+ *  an error only ends it. `onPiping` hears when that starts (the server's own failure handling then destroys, never writes). */
+export function proxyLiveUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer, handover: LiveHandover, rest: string, onPiping?: () => void): void {
   const key = String(req.headers["sec-websocket-key"] ?? "");
   const version = String(req.headers["sec-websocket-version"] ?? "");
   if (!/^[A-Za-z0-9+/]{22}==$/.test(key) || version !== "13") return void socket.end("HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
   const upstream = connect({ host: LOOPBACK, port: handover.port });
+  let piping = false;
   const end = () => {
     socket.destroy();
     upstream.destroy();
@@ -198,10 +248,14 @@ export function proxyLiveUpgrade(req: IncomingMessage, socket: Duplex, head: Buf
     const own = `${LOOPBACK}:${handover.port}`;
     upstream.write(`GET ${rest} HTTP/1.1\r\nHost: ${own}\r\nOrigin: http://${own}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: ${key}\r\nSec-WebSocket-Version: 13\r\n\r\n`);
     if (head.length) upstream.write(head);
+    piping = true;
+    onPiping?.();
     upstream.pipe(socket).pipe(upstream);
   });
   upstream.on("error", () => {
-    if (socket.writable) socket.end("HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
+    // Before piping, the viewer is still waiting for its upgrade's answer: a 502 is that answer. After, it is mid-stream.
+    if (piping) socket.destroy();
+    else if (socket.writable) socket.end("HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
     upstream.destroy();
   });
   socket.on("error", end);

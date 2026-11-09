@@ -17,10 +17,12 @@
 import { createHash, randomBytes } from "node:crypto";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, normalize } from "node:path";
+import type { GateAnswer, GateCall } from "@parcha/agentrun-kernel";
 import type { DriveContext, HostTool, SessionState } from "@parcha/agentrun-kernel/kernel";
-import { journalRecords, NativeJournal, placeSubmissions, recoveryNote, toolBridge, transcriptOf, type TranscriptEntry } from "@parcha/agentrun-kernel/process";
+import { journalRecords, NativeJournal, placeSubmissions, recoveryNote, resumeUnstartedCalls, toolBridge, transcriptOf, type TranscriptEntry } from "@parcha/agentrun-kernel/process";
 import { startModelProxy, type ModelProxyHooks, type ModelProxyOptions, type ParentWatch } from "@parcha/agentrun-kernel/host";
 import { openCodeConfig } from "./config.js";
+import { danglingCalls, settleCall } from "./transcript.js";
 import { startMcpServer } from "./host/mcp.js";
 import { openCodePolicy, TOOL_PREFIX, type WatchedCall } from "./host/policy.js";
 import { startOpenCodeServer, type ConfineChild, type OpenCodeServer } from "./host/server.js";
@@ -79,6 +81,9 @@ export interface OpenCodeHarnessOptions {
   fetch?: typeof fetch;
   /** For tests: the environment the child's allowlist reads. */
   env?: Readonly<Record<string, string | undefined>>;
+  /** The host's gate (SessionIO.gate), which the kernel's tool bridge asks about each call before anything of it is
+   *  written: allow, a deny in the host's words, or a park. Absent: every call runs. */
+  gate?: (call: GateCall) => Promise<GateAnswer>;
 }
 
 /** What the adapter holds of the drive in flight, to stop its turn. */
@@ -260,7 +265,26 @@ export function openCodeHarness(options: OpenCodeHarnessOptions, control?: (driv
       await journal.flush();
     };
 
-    const bridge = toolBridge(ctx, options.tools, { beforeNever: () => barrier() });
+    // The gate is asked once OpenCode's record of the call is in the log (its transcript, mirrored; nothing of the call's
+    // own): a call the gate parks is then in the transcript a later process starts from, dangling under its own id.
+    const gate = options.gate;
+    const bridge = toolBridge(ctx, options.tools, {
+      ...(gate ? { gate: async (call: GateCall) => (await barrier(), gate(call)) } : {}),
+      beforeNever: () => barrier(),
+    });
+    // A resumed session: each call OpenCode started and never ended goes through the shared decision before OpenCode
+    // starts again. A call that never reached its intent runs through the bridge under its own id (the gate, its intent,
+    // the call and its result); each result is written into the transcript as OpenCode records a call's end, so
+    // OpenCode starts on it with the call ended. A call with an intent is left to the recovery below, never run again.
+    await resumeUnstartedCalls(ctx, bridge, danglingCalls(mirrored), async (call, outcome) => {
+      const settled = settleCall(mirrored, call.callId, outcome);
+      for (const event of settled.slice(mirrored.length)) {
+        journal.append(SYNC_STREAM, event, { id: event.id });
+        mirrored.push(event);
+        lastSeq = Math.max(lastSeq, event.seq);
+      }
+      await journal.flush();
+    });
     const hooks: ModelProxyHooks = {
       ...options.hooks,
       // No paid request runs ahead of the log: what OpenCode recorded before it is mirrored first.

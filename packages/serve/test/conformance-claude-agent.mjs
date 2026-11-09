@@ -14,7 +14,7 @@ import { fakeSdk } from "@parcha/agentrun-harness-claude/testing";
 
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { resolveHarness } = await import("../dist/runner/adapters/index.js");
-const { MAX_RESTARTS } = await import("../dist/runner/conformance/harness.js");
+const { CLI_OUTPUT_LIMIT_UNSUPPORTED, MAX_RESTARTS } = await import("../dist/runner/conformance/harness.js");
 
 // The package's stand-in CLI is for tests only: it asks for this under the test runner.
 process.env.AGENTRUN_CLAUDE_AGENT_STANDIN = "1";
@@ -95,6 +95,7 @@ export const claudeAgentSubject = {
   // What its adapter declares (steer false, rerunsStarted false): the suite derives the cases those rule out.
   facts,
   unsupported: {
+    ...CLI_OUTPUT_LIMIT_UNSUPPORTED,
     // The suite's crash child runs outside the test runner (it drops NODE_TEST_CONTEXT), where the package's stand-in CLI
     // is refused by its own guard; the in-process crash cases cover the same points.
     "crash-before-intent-process": "the stand-in Claude Agent CLI runs only under the test runner (its guard), and the suite's crash child runs outside it",

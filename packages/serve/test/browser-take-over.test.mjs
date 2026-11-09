@@ -112,6 +112,7 @@ test("take over and hand back over the proxied socket: input outside a hold is d
   await sleep(300);
   assert.deepEqual(w.inputs(), [], "nothing reached the browser outside a hold");
 
+  const tookAt = Date.now();
   ws.sendJson({ type: "take" });
   assert.deepEqual(await w.next(ws, "hold"), { type: "hold", held: true });
   assert.ok(await until(async () => summaries(await w.rows()).includes("You took over the browser")), "the timeline says the owner took it");
@@ -126,9 +127,17 @@ test("take over and hand back over the proxied socket: input outside a hold is d
   assert.equal(during.pending, null);
   assert.equal(await snapshots(), 1, "the agent's call is still waiting");
 
+  const gaveAt = Date.now();
   ws.sendJson({ type: "give" });
   assert.deepEqual(await w.next(ws, "hold"), { type: "hold", held: false, reason: "given" });
   const back = await follow(w.server.api, w.runId, ["input_required"], { after: w.after });
+  // Each turn's row at its own time, so the hold reads as long as it was; the call that waited for it says so.
+  const rows = await w.rows();
+  const timeOf = (summary) => Date.parse(rows.find((row) => row.summary === summary)?.timestamp ?? "");
+  assert.ok(timeOf("You took over the browser") >= tookAt && timeOf("You took over the browser") < gaveAt, `the take's row at the take: ${JSON.stringify(rows.map((r) => [r.timestamp, r.summary]))}`);
+  assert.ok(timeOf("You handed the browser back") >= gaveAt, "the hand-back's row at the hand-back");
+  const parked = rows.filter((row) => row.kind === "tool_use" && row.tool_name === "snapshot").at(-1);
+  assert.match(parked.summary, /^Waited for you \d+(\.\d+)? (ms|s), then looked at the page structure$/, "the call that waited says so");
   const question = (await w.view()).pending?.question ?? "";
   assert.ok(question.includes(PERSON_HAD), `the model was told the person had the browser: ${question}`);
   assert.ok(question.includes(PERSON_DROVE), "and that the page may have changed");

@@ -101,28 +101,32 @@ export class Owner {
     return `${this.base}/setup#code=${this.setupCode.code}`;
   }
 
-  /** Whether `given` is the setup code: wrong ones count, and the fifth voids it until a new one is printed. */
-  private spendCode(given: unknown): "ok" | "wrong" | "none" {
+  /** Whether `given` is the setup code. None given (`missing`) is no try: it never counts against the printed code. A
+   *  wrong one counts, and the fifth voids it and prints a new one at once (`new`), as an expired one does. */
+  private spendCode(given: unknown): "ok" | "wrong" | "missing" | "new" {
     const setup = this.setupCode;
-    // None good (spent, voided, expired, or the password was reset since): a new one goes to the log.
-    if (!setup || Date.now() > setup.until) return (this.setupCode = null), this.setupLink(), "none";
+    // None good (spent, expired, or the password was reset since): a new one goes to the log.
+    if (!setup || Date.now() > setup.until) return (this.setupCode = null), this.setupLink(), "new";
+    if (typeof given !== "string" || given === "") return "missing";
     const digest = (text: string) => createHash("sha256").update(text).digest();
-    if (typeof given === "string" && timingSafeEqual(digest(given), digest(setup.code))) return (this.setupCode = null), "ok";
-    if (++setup.tries >= SETUP_TRIES) this.setupCode = null;
-    return "wrong";
+    if (timingSafeEqual(digest(given), digest(setup.code))) return (this.setupCode = null), "ok";
+    if (++setup.tries < SETUP_TRIES) return "wrong";
+    this.setupCode = null;
+    this.setupLink();
+    return "new";
   }
 
   /** The first password, from setup: refused once there is one (`exists`) or while another is being set. `byToken`: the
    *  server's token stands in for the code. */
   /** `along`: what the setup keeps with the owner (setup's import), written once the setup is the one going on and before
    *  the password is: a setup that cannot write it sets no owner, and one whose password is not written takes it back. */
-  async setFirst(password: string, code: unknown, byToken: boolean, along?: { keep: () => Promise<unknown>; drop: () => Promise<unknown> }): Promise<"ok" | "exists" | "code"> {
+  async setFirst(password: string, code: unknown, byToken: boolean, along?: { keep: () => Promise<unknown>; drop: () => Promise<unknown> }): Promise<"ok" | "exists" | "wrong" | "missing" | "new"> {
     if (this.settingUp || this.hasPassword()) return "exists";
     this.settingUp = true;
     try {
       if (!byToken && !this.openSetup) {
         const spent = this.spendCode(code);
-        if (spent !== "ok") return "code";
+        if (spent !== "ok") return spent;
       }
       await along?.keep();
       try {

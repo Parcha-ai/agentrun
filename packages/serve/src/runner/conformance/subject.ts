@@ -7,7 +7,8 @@ import type { LoopFactory } from "../loop-contract.js";
 /** One step of the model's script: call a tool, say a text, or say the text of the last steer it was given. */
 export type ScriptStep =
   | { readonly call: ToolName; readonly args?: Record<string, unknown> }
-  | { readonly say: string }
+  /** `cut`: the model stops at its output limit as it says it (stopReason "length"): the text is unfinished. */
+  | { readonly say: string; readonly cut?: true }
   | { readonly sayLastSteer: true }
   /** Says the newest tool result the model was given (a denied call's refusal among them), whole. */
   | { readonly sayLastResult: true };
@@ -69,7 +70,9 @@ export type ConformanceCase =
   | "message-never-answers"
   | "end-of-run-answer"
   | "fault-effects-once"
-  | "fault-restarts-bounded";
+  | "fault-restarts-bounded"
+  | "length-ends-failed"
+  | "length-mid-run";
 
 export interface ConformanceSubject {
   /** The harness's name, as the suite's tests are titled. */
@@ -81,7 +84,7 @@ export interface ConformanceSubject {
   readonly process?: { readonly module: string; readonly export: string };
   /** The facts its adapter declares (AdapterFacts), the cases they rule out derived from them (harness.ts, `factsRuleOut`):
    *  a fact the adapter changes moves its cases with it, never a list kept by hand. */
-  readonly facts?: { readonly id: string; readonly steer: boolean; readonly rerunsStarted?: false };
+  readonly facts?: { readonly id: string; readonly steer: boolean; readonly rerunsStarted?: false; readonly recoversCutAnswers?: number };
   /** Cases this harness cannot model yet, each with why: reported as skipped with that reason, never as passed. */
   readonly unsupported?: Partial<Record<ConformanceCase, string>>;
 }

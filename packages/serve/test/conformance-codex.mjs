@@ -13,7 +13,7 @@ import { fileURLToPath } from "node:url";
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { resolveHarness } = await import("../dist/runner/adapters/index.js");
 const { facts } = await import("@parcha/agentrun-harness-codex/facts");
-const { MAX_RESTARTS } = await import("../dist/runner/conformance/harness.js");
+const { CLI_OUTPUT_LIMIT_UNSUPPORTED, MAX_RESTARTS } = await import("../dist/runner/conformance/harness.js");
 
 process.env.AGENTRUN_CODEX_STANDIN = "1";
 const STAND_IN = fileURLToPath(new URL("../../run-adapters-codex/test/fake-app-server.mjs", import.meta.url));
@@ -126,6 +126,7 @@ export const codexSubject = {
   createLoop: (setup) => createAdapterLoop(codexSpec(setup), { restartLimit: MAX_RESTARTS }),
   facts,
   unsupported: {
+    ...CLI_OUTPUT_LIMIT_UNSUPPORTED,
     "crash-before-intent-process": "the Codex stand-in runs only under a test runner, and the conformance runner process is none (the in-process crash case covers the point)",
     "crash-after-intent-process": "the Codex stand-in runs only under a test runner, and the conformance runner process is none (the in-process crash case covers the point)",
     "stalled-past-lease-process": "the Codex stand-in runs only under a test runner, and the suite's runner child runs outside it",

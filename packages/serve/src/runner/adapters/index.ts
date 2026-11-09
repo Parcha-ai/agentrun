@@ -79,6 +79,21 @@ export const RUNNER_HARNESSES: Readonly<Record<string, RunnerHarness>> = {
       });
     },
   },
+  opencode: {
+    record: "loop",
+    adapter: async (launch, extra = {}) => {
+      // OpenCode's adapter is serve's own (its pinned binary is checked when the adapter is made); loaded when first asked.
+      const { openCodeAdapter } = await import("../../harness-opencode/index.js");
+      return openCodeAdapter({
+        model: launch.model,
+        provider: { origin: launch.provider.origin, credential: launch.provider.credential },
+        ...(launch.price ? { price: launch.price as never } : {}),
+        ...(launch.fetch ? { fetch: launch.fetch } : {}),
+        sessionsDir: launch.sessionsDir,
+        ...extra,
+      });
+    },
+  },
 };
 
 /** The harness the launch names, or undefined when the runner runs none by that name. */

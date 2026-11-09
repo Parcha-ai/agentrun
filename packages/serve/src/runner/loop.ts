@@ -16,7 +16,8 @@
 import type { Context } from "@earendil-works/chord";
 import type { CommitResult, ConversationId, EntryRecord, StorageWrite } from "@earendil-works/pi-durable";
 import type { KernelHooks, ToolCall } from "./conformance/subject.js";
-import type { Command, HeldState, Journal, LoopDeps } from "./loop-contract.js";
+import { KINDS } from "./journal-kinds.js";
+import { type Command, cutAtLimit, type HeldState, type Journal, type LoopDeps } from "./loop-contract.js";
 import type { Staged } from "../store/store.js";
 
 /** pi's own default restart limit (pi-durable 1.5.0 agent settings). */
@@ -167,6 +168,21 @@ export function heldStateOf(value: unknown): HeldState | undefined {
   const text = (live.generation?.message?.content ?? []).map((part) => (part.type === "text" ? part.text ?? "" : "")).join("");
   if (tools.length === 0 && !text) return undefined;
   return { tools, ...(text ? { partial: { text } } : {}) };
+}
+
+/** Why the run fails, when the answer it would end on (the root's last pi.assistant, or a CLI record's last model message)
+ *  was cut at the model's output limit
+ *  (stopReason "length"): unfinished, so never ended. A cut answer the run went on from (a later turn answered after it)
+ *  is not its last, and changes nothing. */
+export function cutLast(entries: readonly EntryRecord[]): string | undefined {
+  // The newest model answer: pi's assistant entry, or a CLI record's model message (its turn_end's stop reason).
+  const last = [...entries].reverse().find((entry) => entry.kind === "pi.assistant" || (entry.kind === KINDS.message && (entry.data as { role?: unknown } | undefined)?.role === "model"));
+  if (last?.kind === KINDS.message) {
+    const said = last.data as { stopReason?: string; outputTokens?: number };
+    return said.stopReason === "length" ? cutAtLimit(said.outputTokens) : undefined;
+  }
+  const message = (last as { model?: { stopReason?: string; usage?: { output?: number } }[] } | undefined)?.model?.[0];
+  return message?.stopReason === "length" ? cutAtLimit(message.usage?.output) : undefined;
 }
 
 /** A tool result pi wrote for a call it cut off at its restart limit, as its message, if any. */
