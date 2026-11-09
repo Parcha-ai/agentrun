@@ -494,7 +494,7 @@ export const ROUTES: readonly Route[] = [
 /** A run's computer as GET /computer reads it with no viewer open: kind browser where its agent has the browser tool, its
  *  kept plane's (a run from before the plane names none, and is Browserbase's where it grants the tool) checked again as a
  *  launch would be; off, saying why, where it has none or its browser resolves unavailable here.
- *  TODO(tl-computer): the agent's own `computer: {kind, provider?}` setting once definitions carry it (desktop, phone). */
+ *  TODO: the agent's own `computer: {kind, provider?}` setting once definitions carry it (desktop, phone). */
 function computerOf(run: Run, env: NodeJS.ProcessEnv, family: LiveFamily = "computer"): ComputerOf {
   const granted = run.tooling?.tools.includes("browser") === true;
   const kept = run.meta.tool_plane?.browser ?? (granted ? "browserbase" : undefined);
@@ -2325,14 +2325,14 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
           // server's keys now) never hides a computer that runs. Only the run's live process serves its view: a file one
           // that is gone left behind names none, whatever answers its port. The newest session whose viewer answers: an
           // older one still open is the next, one that went quiet none.
-          // TODO(tl-untangle cutover): read the store's viewers (browser-live.ts computerViewerLink, or liveViewerLink for /browser, over store.liveViewers,
+          // TODO(cutover): read the store's viewers (browser-live.ts computerViewerLink, or liveViewerLink for /browser, over store.liveViewers,
           // with the seal key) once the server holds the one Store; these run-directory files go with the per-run process.
           viewer: async () => {
             for (const handover of runs.hasProcess(run.id) ? await readHandovers(run.dir) : []) if (await viewerAnswers(handover)) return { kind: "browser" as const, viewer: viewerLink(run.id, handover, family) };
             return undefined;
           },
           computer: () => computerOf(run, env, family),
-          // TODO(tl-places): hold from computerHoldOf(store, runId) (places/computers-cut). Until then the agent drives here:
+          // TODO: hold from computerHoldOf(store, runId), the store-backed take-over. Until then the agent drives here:
           // the browser's driving gate lives in the run's process, which hands the server no hold.
         });
         if (family === "browser") return send(res, 200, view.state === "live" ? { state: "live", viewer: view.viewer } : view.state === "none" ? { state: "none" } : { state: "off", reason: view.why }, { "cache-control": "no-store" });
