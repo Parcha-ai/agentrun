@@ -42,7 +42,7 @@ import { BOX_ALLOW_ENV, boxAllowOf, boxLimitsOf, boxNetworkOf, FAUX_BOX_ENV, fau
 import { Owner, passwordProblem, SESSION_MS } from "./owner.js";
 import { answerPage, byOwnerSession, heldSessions, isJson, overHttps, ownerCookie, ownOrigin, sendHostRefused, signedIn } from "./page.js";
 import { hostFix, hostName, loopbackNames } from "./host-check.js";
-import { handoverById, type LiveFamily, liveRest, OpenViewers, proxyLiveUpgrade, readHandover, readHandovers, serveViewerFile, viewerAnswers, viewerLink } from "./browser-live.js";
+import { handoverById, type LiveFamily, type LiveHandover, liveRest, readLiveViewers, OpenViewers, proxyLiveUpgrade, readHandover, readHandovers, serveViewerFile, viewerAnswers, viewerLink } from "./browser-live.js";
 import { answerAsk } from "./browser-person.js";
 import { type ComputerOf, computerView } from "./computer-view.js";
 import { durationMs, logLine } from "./print.js";
@@ -289,7 +289,7 @@ export type ServeOptions = {
   triggerClock?: TriggerClock;
   /** The server's store (store/index.ts), where the triggers and their firings live. Without it the trigger routes answer
    *  unavailable and nothing fires. */
-  store?: Pick<Store, "triggers" | "runs">;
+  store?: Pick<Store, "triggers" | "runs"> & Partial<Pick<Store, "liveViewers">>;
   /** A test's seam: the trigger sources this server has (default the registry, trigger-adapters.ts). */
   triggerAdapters?: readonly TriggerAdapter[];
   /** A test's seam: the folder the template packages are read from, in place of the package's own (templates.ts). */
@@ -2207,10 +2207,12 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
           // server's keys now) never hides a computer that runs. Only the run's live process serves its view: a file one
           // that is gone left behind names none, whatever answers its port. The newest session whose viewer answers: an
           // older one still open is the next, one that went quiet none.
-          // TODO(tl-untangle cutover): read the store's viewers (browser-live.ts computerViewerLink, or liveViewerLink for /browser, over store.liveViewers,
-          // with the seal key) once the server holds the one Store; these run-directory files go with the per-run process.
+          // Then the store's, every kind's (a desktop's or a phone's that tl-places' runner opened, computer-live.ts), the
+          // browser's own route taking the browser's alone.
+          // TODO(tl-untangle cutover): the run-directory files go with the per-run process; the store's rows alone remain.
           viewer: async () => {
             for (const handover of runs.hasProcess(run.id) ? await readHandovers(run.dir) : []) if (await viewerAnswers(handover)) return { kind: "browser" as const, viewer: viewerLink(run.id, handover, family) };
+            for (const handover of await storeViewers(run.id, family)) if (await viewerAnswers(handover)) return { kind: handover.kind ?? "browser", viewer: viewerLink(run.id, handover, family) };
             return undefined;
           },
           computer: () => computerOf(run, env, family),
@@ -2549,10 +2551,30 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     }
     const run = await needRun(runId);
     const viewer = /^\/v\/([A-Za-z0-9_-]{22})$/.exec(rest)?.[1];
-    // A viewer's page, for a viewer the run has open; its two files, while the run has one open.
-    const handover = !runs.hasProcess(run.id) || !liveRest(rest) ? undefined : viewer ? await handoverById(run.dir, viewer) : await readHandover(run.dir);
+    // A viewer's page, for a viewer the run has open (its page by its computer's kind); its files, while the run has one.
+    const handover = liveRest(rest) ? await handoverOf(run, family, viewer) : undefined;
     if (!handover) throw new ApiError("not_found", `this run's ${family} has no live view at that address`);
-    await serveViewerFile(req, res, rest);
+    await serveViewerFile(req, res, rest, handover.kind === "desktop" || handover.kind === "phone" ? "computer" : "browser");
+  }
+
+  /** The store's viewers of run `runId`, newest first, each token opened with the seal key: every computer kind's for the
+   *  computer family, the browser's alone for the browser's own route. None without the store's viewers or a seal key. */
+  async function storeViewers(runId: string, family: LiveFamily): Promise<LiveHandover[]> {
+    const key = sealKeyOf(env[SEAL_KEY_ENV]);
+    if (!options.store?.liveViewers || !key) return [];
+    const all = await readLiveViewers({ liveViewers: options.store.liveViewers }, key, runId);
+    return family === "browser" ? all.filter((handover) => (handover.kind ?? "browser") === "browser") : all;
+  }
+
+  /** The viewer a live address names: the run process's hand-over files while it lives (the browser's), then the store's
+   *  rows; by its path id (`id`), or with none the newest (for the page's two files). */
+  async function handoverOf(run: Run, family: LiveFamily, id?: string): Promise<LiveHandover | undefined> {
+    if (runs.hasProcess(run.id)) {
+      const filed = id ? await handoverById(run.dir, id) : await readHandover(run.dir);
+      if (filed) return filed;
+    }
+    const stored = await storeViewers(run.id, family);
+    return id ? stored.find((handover) => handover.id === id) : stored[0];
   }
 
   /** The origin of the address people open (`publicUrl`, AGENTRUN_PUBLIC_URL), lowercased; none, undefined. */
@@ -2634,7 +2656,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     let piping = false;
     void (async () => {
       const run = await runs.get(viewing[1]!);
-      const handover = run && runs.hasProcess(run.id) ? await handoverById(run.dir, viewing[3]!.slice(3, -3)) : undefined;
+      const handover = run ? await handoverOf(run, viewing[2] as LiveFamily, viewing[3]!.slice(3, -3)) : undefined;
       if (!handover) return deny("404 Not Found");
       // Gone during the lookup (its close is past, and nothing would drop it from the viewers), or the server is closing
       // and has ended its viewers, or is about to.

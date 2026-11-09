@@ -1,0 +1,5 @@
+---
+packages: @parcha/agentrun-serve, @parcha/pi-browser
+kind: feature
+---
+A desktop's or a phone's screen is watched and taken over live, as the browser's is. On the runner, `openComputerView` (computer-live.ts) starts the computer's viewer on loopback and hands it over in the store under the run's claim (`computer_viewers`, the token sealed); a stale claim is refused `fenced`. Its WebSocket speaks the browser viewer's protocol: hello, ready with Take over, the screen's frames (JPEG or PNG) each sent once the viewer acked the one before, take and give through the run's computer-hold, and input mapped by `toAction` to the computer only while the person holds it (otherwise `held`, "Take over to drive."). One viewer per computer. The server reads the store's viewers of every kind: `GET /v2/runs/{id}/computer` answers live with `kind` `desktop` or `phone`, and the viewer's own page (Take over and Hand back; a phone's back, home and recents) is served under `/v2/runs/{id}/computer/live/`, its socket proxied to the runner's endpoint with the same checks as the browser's. `@parcha/pi-browser/live-view` exports its WebSocket server and token helpers for it.

@@ -190,7 +190,7 @@ export function viewerAnswers(handover: LiveHandover, ms = 1_000): Promise<boole
 
 /** The newest viewer of run `runId` its runner put over the store whose port answers (`answers`, viewerAnswers), whatever
  *  its computer's kind; undefined when none does. */
-async function answeringViewer(store: LiveViewerStore, sealKey: Buffer, runId: string, answers: (handover: LiveHandover) => Promise<boolean>): Promise<LiveHandover | undefined> {
+export async function answeringViewer(store: LiveViewerStore, sealKey: Buffer, runId: string, answers: (handover: LiveHandover) => Promise<boolean>): Promise<LiveHandover | undefined> {
   for (const handover of await readLiveViewers(store, sealKey, runId)) if (await answers(handover)) return handover;
   return undefined;
 }
@@ -239,7 +239,7 @@ export function sessionHandovers(root: string, seam?: ViewerSeam) {
  *  pi-browser's viewer, never the run's port's answer, under this route's own CSP, framed by this server's own origin alone.
  *  The page reads the viewer's id from its path and its token from the fragment, as pi-browser's own does. */
 export const LIVE_CSP = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'";
-const LIVE_REST = /^\/(v\/[A-Za-z0-9_-]{22}|viewer\.js|viewer\.css)$/;
+const LIVE_REST = /^\/(v\/[A-Za-z0-9_-]{22}|viewer\.js|viewer\.css|computer-viewer\.js|computer-viewer\.css)$/;
 export const liveRest = (rest: string): boolean => LIVE_REST.test(rest);
 
 /** The viewer run `runId`'s live route serves at `rest`, read over the store: a viewer's page ("/v/<id>") by its own path
@@ -251,9 +251,13 @@ export async function liveViewerFor(store: LiveViewerStore, sealKey: Buffer, run
   return viewer ? liveViewerById(store, sealKey, runId, viewer) : liveViewer(store, sealKey, runId);
 }
 
-export async function serveViewerFile(req: IncomingMessage, res: ServerResponse, rest: string): Promise<void> {
-  const { viewerAssets } = await import("@parcha/pi-browser/live-view");
-  const [type, body] = rest === "/viewer.js" ? ["text/javascript; charset=utf-8", viewerAssets.js] : rest === "/viewer.css" ? ["text/css; charset=utf-8", viewerAssets.css] : ["text/html; charset=utf-8", viewerAssets.html];
+/** `page`: whose page a viewer's path ("/v/<id>") serves, the browser's (pi-browser's viewer) or a desktop's or phone's
+ *  (computer-viewer.ts); each page's two files are under names of their own. */
+export async function serveViewerFile(req: IncomingMessage, res: ServerResponse, rest: string, page: "browser" | "computer" = "browser"): Promise<void> {
+  const { viewerAssets: browser } = await import("@parcha/pi-browser/live-view");
+  const { computerViewerAssets: computer } = await import("./computer-viewer.js");
+  const assets = rest.startsWith("/computer-viewer.") || (rest.startsWith("/v/") && page === "computer") ? computer : browser;
+  const [type, body] = rest.endsWith(".js") ? ["text/javascript; charset=utf-8", assets.js] : rest.endsWith(".css") ? ["text/css; charset=utf-8", assets.css] : ["text/html; charset=utf-8", assets.html];
   res.writeHead(200, { "content-type": type, "content-length": Buffer.byteLength(body), "content-security-policy": LIVE_CSP, "referrer-policy": "no-referrer", "cache-control": "no-store", "x-content-type-options": "nosniff" });
   res.end(req.method === "HEAD" ? undefined : body);
 }
