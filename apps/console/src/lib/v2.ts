@@ -3,6 +3,7 @@
 // sends. Edit the server's document, then run node scripts/generate-clients.mjs; never a wire type here.
 
 import type { components, operations } from "./api.generated";
+import type * as pending from "./computers.pending";
 
 type Answer<Id extends keyof operations> = operations[Id]["answer"];
 type Body<Id extends keyof operations> = operations[Id]["body"];
@@ -88,3 +89,20 @@ export type RaiseAnswer = Answer<"raiseRunCap">;
 
 /** A recorded response (src/fixtures): what the server answered, exactly. The console's own, not a wire type. */
 export type Recorded<T> = { request: { method: string; path: string }; status: number; headers?: Record<string, string>; body: T };
+
+// Computers (Settings → Computers, the editor's Computer step, a run's computer). TEMPORARY source: computers.pending.ts,
+// until the server documents these routes; then each alias points at api.generated.ts and that file goes.
+/** A kind of computer an agent can be given. */
+export type ComputerKind = pending.ComputerKind;
+/** GET /v2/computers: each kind, whether this server offers it, and its providers. */
+export type Computers = pending.ComputersView;
+export type ComputerKindView = pending.KindView;
+/** A provider of computers: its keys by name (saved or not, never a value), and whether a run could have it now. */
+export type ComputerProvider = pending.ProviderView;
+export type ComputerKey = pending.KeyView;
+/** PUT /v2/computers/{provider}/keys's body: declared names only; null removes one. */
+export type ComputerKeysBody = pending.KeysBody;
+/** POST /v2/computers/{provider}/test's answer. */
+export type ComputerTest = pending.TestView;
+/** A run's `computer`: its kind, provider, state and why. */
+export type RunComputerField = pending.RunComputerField;
