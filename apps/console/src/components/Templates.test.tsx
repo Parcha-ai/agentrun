@@ -260,6 +260,28 @@ describe("applying a template", () => {
     expect(made.textContent).not.toContain("CANARY-VALUE");
   });
 
+  it("offers a parameter whose pattern is a plain alternation as a choice of its values, and never prints a raw pattern", async () => {
+    const LEAD: TemplateView = { ...REVIEWER, name: "inbound-lead", parameters: {
+      post_to: { type: "string", required: true, description: "where each brief goes", pattern: "^(crm|slack|none)$" },
+      slack_channel: { type: "string", required: false, description: "the Slack channel's id", pattern: "^[CG][A-Z0-9]{8,12}$" },
+    } };
+    const t = await open("inbound-lead", { templates: [LEAD] });
+    const field = t.host.querySelector('[data-field="parameters.post_to"]')!;
+    const select = field.querySelector("select")!;
+    expect(select).toBeTruthy();
+    expect(field.querySelector('input[type="text"]')).toBeNull();
+    expect([...select.options].map((o) => o.value).filter(Boolean)).toEqual(["crm", "slack", "none"]);
+    // The help says the parameter's own words, never its pattern.
+    const section = t.host.querySelector('section[aria-label="Parameters"]')!.textContent ?? "";
+    expect(section).not.toContain("^(");
+    expect(section).not.toContain("(as ");
+    expect(section).not.toContain("[CG]");
+    expect(field.textContent).toContain("where each brief goes");
+    await act(async () => { select.value = "slack"; select.dispatchEvent(new Event("change", { bubbles: true })); });
+    await t.click(t.button(/^Apply/));
+    expect(t.sent[0].body.parameters).toEqual({ post_to: "slack" });
+  });
+
   it("opens the made agent at once when there are no warnings", async () => {
     const t = await open("pr-reviewer");
     await t.type(t.host.querySelector('[data-field="parameters.repo"] input'), "acme/web");
