@@ -14,7 +14,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
 import { closeOpenSessions, piAdapterSpec, scriptedOrigin } from "./conformance-pi-adapter.mjs";
-import { beforeRequestOf, cap, quiet, rootEntries, SONNET, sleep, STEADY, TIMING } from "./adapter-pi-cap-support.mjs";
+import { beforeRequestOf, cap, quiet, rootEntries, SONNET, sleep, STEADY } from "./adapter-pi-cap-support.mjs";
 
 after(closeOpenSessions);
 const { openSqliteStore } = await import("../dist/store/index.js");
@@ -59,8 +59,12 @@ function stoppingAt(point) {
 
 async function crashedRaise(t, point, { short = false } = {}) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-adapter-raise-crash-"));
-  const server = await openSqliteStore({ dataDir: dir, role: "server" });
-  const stores = [await openSqliteStore({ dataDir: dir, role: "runner" }), await openSqliteStore({ dataDir: dir, role: "runner" })];
+  // The stores' clock: real time plus `clock.skewMs`, so the killed runner's claim runs out when the case moves the
+  // store's now past its until, never by waiting for a short real lease.
+  const clock = { skewMs: 0 };
+  const now = () => Date.now() + clock.skewMs;
+  const server = await openSqliteStore({ dataDir: dir, role: "server", now });
+  const stores = [await openSqliteStore({ dataDir: dir, role: "runner", now }), await openSqliteStore({ dataDir: dir, role: "runner", now })];
   const runners = [];
   const stop = stoppingAt(point);
   t.after(async () => {
@@ -84,7 +88,7 @@ async function crashedRaise(t, point, { short = false } = {}) {
   }), { restartLimit: MAX_RESTARTS });
   // The first runner's journal stops at the point; the second's is the store's own.
   const first = (deps) => loop({ ...deps, journal: (claim) => stop.wrap(deps.journal(claim)) });
-  runners.push(startRunner({ store: stores[0], createLoop: first, name: "runner-a", ...TIMING }));
+  runners.push(startRunner({ store: stores[0], createLoop: first, name: "runner-a", ...STEADY }));
   const settled = async (state, ms = 20_000) => {
     const from = Date.now();
     for (;;) {
@@ -104,9 +108,10 @@ async function crashedRaise(t, point, { short = false } = {}) {
   const raise = await sendCommand(server, "run-1", { kind: "raise", body: { capUsd: to } });
   await stop.stopped;
   runners[0].kill();
-  // The next runner holds a lease no stall outlasts: the lost runner's short lease is the case's point (it runs out once
-  // that runner is killed), and a claim of runner-b lost to a loaded machine's stall would hand the resume to a second
-  // claim this case does not count.
+  // The killed runner's claim runs out: the store's now moves past its until (both runners hold a lease no stall of a
+  // loaded machine outlasts, so no claim is lost but the one the case loses). A claim of runner-b lost to a stall would
+  // hand the resume to a second claim this case does not count.
+  clock.skewMs = STEADY.leaseMs * 2;
   runners.push(startRunner({ store: stores[1], createLoop: loop, name: "runner-b", ...STEADY }));
   const row = await settled(short ? "parked" : "ended").catch(async (error) => {
     throw new Error(`${error.message}; raises ${JSON.stringify(await rootEntries(stores[1], "agentrun.raise"))}`);

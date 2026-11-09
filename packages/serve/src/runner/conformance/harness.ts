@@ -8,9 +8,9 @@
 // Cases 1 and 2 run twice: with the loop frozen in-process, and with the first runner a process of its own (child.ts)
 // that SIGKILLs itself at the point, since a frozen loop can hide a write a real crash would cut.
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { once } from "node:events";
-import { appendFileSync, existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { appendFileSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -35,12 +35,16 @@ export type TestFunction = (name: string, options: { skip?: string | boolean; ti
 const TIMING = { leaseMs: 600, renewEveryMs: 150, stopMarginMs: 200, pollMs: 20, commandPollMs: 30, interruptBackoffMs: 20 };
 /** The most times a kernel restarts a faulting task before the run fails: every harness's bound is at most this. */
 export const MAX_RESTARTS = 5;
-/** The suite's runner timing, for its runner process too (child.ts). */
-export const CONFORMANCE_TIMING = TIMING;
-/** A lease no missed renew lets lapse within a case: for every case whose property is not the lease (a claim lost
- *  mid-way changes what they read: a call's status, a count), so a starved box can't turn them. world()'s default; the
- *  crash cases take the short one (TAKEOVER). */
-const STEADY: Partial<typeof TIMING> = { leaseMs: 60_000, renewEveryMs: 20_000, stopMarginMs: 5_000 };
+/** A lease no missed renew lets lapse within a case: every runner's, the crash cases' too. A claim is lost only where a
+ *  case loses it: a crashed or stopped runner's claim runs out when the case moves the stores' clock past its until
+ *  (runOut), never by waiting for a short real lease, so a starved box can neither lose a claim early nor late. Longer
+ *  than a case's bound (CASE_TIMEOUT_MS): a takeover the clock did not drive fails the case, it never waits a lease out. */
+const STEADY: Partial<typeof TIMING> = { leaseMs: 600_000, renewEveryMs: 20_000, stopMarginMs: 5_000 };
+/** The suite's runner process (child.ts): the steady lease, with a short renew tick, so a process that goes on after
+ *  its claim ran out (the stalled case) hears its renew answered Fenced within one tick. */
+export const CONFORMANCE_PROCESS_TIMING = { ...TIMING, ...STEADY, renewEveryMs: TIMING.renewEveryMs };
+/** How far the stores' clock moves to run a lost claim out (runOut): past any claim's until under the steady lease. */
+const RUN_OUT_MS = STEADY.leaseMs! * 2;
 const RUN = "run-1";
 /** A case's bound, and the cap on a wait for a runner process's own event: caps on waits for events, never a sleep. */
 const CASE_TIMEOUT_MS = 180_000;
@@ -124,14 +128,22 @@ function crashAt(point: keyof KernelHooks, holder: { runner?: Runner; crashed?: 
   };
 }
 
-/** A store in a data directory of its own, one queued run, and runners started on it (each its own connection). */
-/** The suite's short lease, for the crash cases: a crashed runner's claim must run out for the second runner to take
- *  the run over. */
-const TAKEOVER: Partial<typeof TIMING> = {};
+/** The stores' clock skew a runner process reads (child.ts): the file holds the milliseconds the clock moved, so the
+ *  process's store moves with the case's (runOut). */
+export const storeClockOf = (file: string | undefined): (() => number) => {
+  if (!file) return () => Date.now();
+  return () => Date.now() + (existsSync(file) ? Number(readFileSync(file, "utf8")) || 0 : 0);
+};
 
+/** A store in a data directory of its own, one queued run, and runners started on it (each its own connection). Every
+ *  store's clock is real time plus the case's skew (runOut), a runner process's too, through `clockFile`. */
 async function world(subject: ConformanceSubject, t: { after(fn: () => unknown): void }, timing: Partial<typeof TIMING> = STEADY) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-conformance-"));
-  const server = await openSqliteStore({ dataDir: dir, role: "server" });
+  const clockFile = join(dir, "store-clock-skew");
+  const now = storeClockOf(clockFile);
+  /** A lost claim runs out: every store's now moves past its until (a crashed runner's, or a stopped process's). */
+  const runOut = () => writeFileSync(clockFile, String((Number(existsSync(clockFile) ? readFileSync(clockFile, "utf8") : 0) || 0) + RUN_OUT_MS));
+  const server = await openSqliteStore({ dataDir: dir, role: "server", now });
   const stores: Store[] = [server];
   const runners: Runner[] = [];
   /** What the runners said (claims, releases, errors): shown with a case's failure. */
@@ -146,7 +158,7 @@ async function world(subject: ConformanceSubject, t: { after(fn: () => unknown):
   /** The command rows a runner has handed to a loop's command(): with the loop, whether or not taken yet. */
   const handed = new Set<number>();
   const start = async (name: string, setup: ConformanceSetup, holder?: { runner?: Runner }) => {
-    const store = await openSqliteStore({ dataDir: dir, role: "runner" });
+    const store = await openSqliteStore({ dataDir: dir, role: "runner", now });
     stores.push(store);
     // Each journal commit's outcome, by the claim's epoch (as child.ts records its process's): what a loop wrote, and
     // whether a loop that lost its claim wrote anything after; and each command row handed to the loop.
@@ -221,7 +233,7 @@ async function world(subject: ConformanceSubject, t: { after(fn: () => unknown):
     assert.ok(ask, "the run wrote its ask");
     return String((ask.data as { callId?: unknown }).callId);
   };
-  return { dir, server, start, run, read, ended, commandRow, askedCall, events, handedOver: (id: number) => handed.has(id), liveRows };
+  return { dir, clockFile, runOut, server, start, run, read, ended, commandRow, askedCall, events, handedOver: (id: number) => handed.has(id), liveRows };
 }
 
 interface Case {
@@ -316,23 +328,50 @@ function childEvents(file: string): unknown[] {
 /** The run's live timeline says it went on after `runner` was lost: the loop that took it over wrote it (Claim.lost). */
 function saidTakenOver(rows: readonly TimelineEvent[], runner: string): void {
   const said = rows.filter((row) => row.kind === "phase" && /^Resumed after its runner/.test(row.summary ?? "")).map((row) => row.summary);
-  assert.ok(said.includes(`Resumed after its runner (${runner}) was lost`), `the timeline says the run went on after ${runner} was lost: ${JSON.stringify(said)}`);
+  assert.ok(said.includes(`Resumed after its runner (${runner}) was lost`), `the timeline says the run went on after ${runner} was lost: ${JSON.stringify(said)}; its rows ${JSON.stringify(rows.map((row) => [row.kind, row.summary]))}`);
 }
 
 /** A crash at `point` during a call of `tool`, then a second runner's resume: the run ends. */
 async function crashThenResume(subject: ConformanceSubject, t: { after(fn: () => unknown): void }, tool: ToolName, point: keyof KernelHooks) {
-  const w = await world(subject, t, TAKEOVER);
+  const w = await world(subject, t);
   const { tools, ran } = suiteTools();
   const script: ScriptStep[] = [{ call: tool }, { say: "done" }];
   const holder: { runner?: Runner; crashed?: boolean } = {};
   await w.start("runner-a", { script, tools, hooks: crashAt(point, holder) }, holder);
   await until(() => holder.crashed, `the crash at ${point}`, EVENT_WAIT_MS);
+  // The crashed runner's claim runs out (the stores' clock moves past its until), and runner-b takes the run over.
+  w.runOut();
   await w.start("runner-b", { script, tools, hooks: quiet });
   const row = await w.ended("ended", EVENT_WAIT_MS);
   await saidReleased(w.events);
   resumedOnceByB(w.events, row);
   saidTakenOver(await w.liveRows(), "runner-a");
   return { ...(await w.read()), ran };
+}
+
+/** How processStopped reads a process's state: /proc/<pid>/stat's text (throws where there is no /proc), and `ps -o
+ *  state=`'s answer for it. For the suite's own test, which takes /proc away. */
+export type ProcessReaders = { readonly stat?: (pid: number) => string; readonly ps?: (pid: number) => string };
+
+/** Whether process `pid` is stopped (SIGSTOP), by the kernel's own word, on every platform the suite runs on: the state
+ *  field of /proc/<pid>/stat is "T" where there is a /proc (Linux); elsewhere (macOS) `ps -o state=` answers a state that
+ *  starts with "T". */
+export function processStopped(
+  pid: number,
+  { stat = (at) => readFileSync(`/proc/${at}/stat`, "utf8"), ps = (at) => execFileSync("ps", ["-o", "state=", "-p", String(at)], { encoding: "utf8" }) }: ProcessReaders = {},
+): boolean {
+  let text: string;
+  try {
+    text = stat(pid);
+  } catch {
+    try {
+      return ps(pid).trim().startsWith("T");
+    } catch {
+      return false;
+    }
+  }
+  // The state follows the command name, which is in parentheses and may itself hold spaces or parentheses.
+  return text.slice(text.lastIndexOf(")") + 1).trim().split(" ")[0] === "T";
 }
 
 /** The runner process the process cases start (child.ts), and its environment: never a test runner's own. */
@@ -346,11 +385,11 @@ const childEnv = () => {
 /** As crashThenResume, with the first runner a process of its own that SIGKILLs itself at `point`: nothing it had not
  *  committed survives, as in a real crash. The tools count their runs in a file both processes append to. */
 async function processCrashThenResume(subject: ConformanceSubject, t: { after(fn: () => unknown): void }, tool: ToolName, point: keyof KernelHooks, { stall = false }: { stall?: boolean } = {}) {
-  const w = await world(subject, t, TAKEOVER);
+  const w = await world(subject, t);
   const countFile = join(w.dir, "tool-runs");
   const { tools, ran } = suiteTools(countFile);
   const eventsFile = join(w.dir, "runner-process-events.jsonl");
-  const config = { dataDir: w.dir, module: subject.process!.module, export: subject.process!.export, tool, point, countFile, eventsFile, ...(stall ? { stopOnce: true } : {}) };
+  const config = { dataDir: w.dir, module: subject.process!.module, export: subject.process!.export, tool, point, countFile, eventsFile, clockFile: w.clockFile, ...(stall ? { stopOnce: true } : {}) };
   const child = spawn(process.execPath, [CHILD, JSON.stringify(config)], { env: childEnv(), stdio: ["ignore", "ignore", "pipe"] });
   // Its end, listened for from its start: a process that ends while the case waits on something else (the fence's wait
   // returns on that end) is never missed by the wait for its death below.
@@ -360,12 +399,17 @@ async function processCrashThenResume(subject: ConformanceSubject, t: { after(fn
   t.after(() => {
     if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
   });
-  // `stall`: the process stops itself at `point` (child.ts stopOnce) and is let go once its lease has run out, before
-  // anyone has taken the run again: the window where only the store can refuse what its old loop writes next.
+  // `stall`: the process stops itself at `point` (child.ts stopOnce) and is let go once its lease has run out (the stores'
+  // clock moved past its until, the process's own store reading the same skew), before anyone has taken the run again:
+  // the window where only the store can refuse what its old loop writes next. The clock jump stands in for the time a
+  // box paused it, so no real lease has to run out.
   let continuedAt = 0;
   if (stall) {
     await until(() => childEvents(eventsFile).some((event) => (event as { type?: string }).type === "stopping"), `the runner process stops at ${point}`, EVENT_WAIT_MS);
-    await sleep(TIMING.leaseMs + TIMING.stopMarginMs + 100);
+    // Its word is not the stop: a SIGCONT sent between the two is lost, and the process stays stopped for good. It goes
+    // on only once the kernel says it is stopped.
+    await until(() => processStopped(child.pid!), `the runner process is stopped (its state "T") at ${point}`, EVENT_WAIT_MS);
+    w.runOut();
     continuedAt = Date.now();
     child.kill("SIGCONT");
     // The fence first, before anything waits on the process's death: its old loop's first write once it went on (landed or
@@ -381,6 +425,8 @@ async function processCrashThenResume(subject: ConformanceSubject, t: { after(fn
     const row = await w.run();
     assert.fail(`the runner process dies at ${point} (it ended ${JSON.stringify(exit)}); continued at ${continuedAt}; its events ${JSON.stringify(childEvents(eventsFile))}; the tool ran ${JSON.stringify(ran)}; the run ${JSON.stringify(row)}; stderr ${stderr}`);
   }
+  // The dead process's claim runs out (the stores' clock moves past its until), and runner-b takes the run over.
+  w.runOut();
   await w.start("runner-b", { script: [{ call: tool }, { say: "done" }], tools, hooks: quiet });
   const row = await w.ended("ended", EVENT_WAIT_MS);
   await saidReleased(w.events);
@@ -708,7 +754,9 @@ const CASES: readonly Case[] = [
       const callId = await w.askedCall();
       // A trigger's message: it says "yes", but it answers nothing (answers: false), so it resolves no approval.
       await sendCommand(w.server, RUN, { kind: "steer", body: { text: "yes", answers: false, origin: { kind: "trigger", trigger_id: "trigger-1", source: "webhook", owner: false } } });
-      await sleep(TIMING.leaseMs * 2);
+      // Long enough for the message's row to reach the loop many times over (commandPollMs): this wait can only miss a
+      // wrong answer, never fail a right one, and no lease runs out in it.
+      await sleep(TIMING.commandPollMs * 40);
       assert.equal(ran.asked, 0, "the waiting call did not run on a message");
       const row = await w.run();
       const { entries } = await journalRecords(w.server.journal({ runId: RUN, runner: "conformance-reader", epoch: row.epoch, until: 0, from: row.state }), BACKGROUND_CONTEXT);

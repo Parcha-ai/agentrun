@@ -18,6 +18,33 @@ export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
  *  the property's. A takeover or fence test keeps its short lease and forces the loss itself. */
 export const STEADY_LEASE = Object.freeze({ leaseMs: 60_000, renewEveryMs: 20_000, stopMarginMs: 5_000 });
 
+/** A clock the test moves, for a runner's claim deadline (RunnerOptions.clock): its timers fire only when `advance` moves
+ *  the clock past them, so a deadline case is driven by the test, never by a box's load. Nothing else in the runner (its
+ *  polls, renews, the store's clock) reads it. */
+export function fakeClock(start = Date.now()) {
+  let now = start;
+  let next = 0;
+  const timers = new Map();
+  return {
+    now: () => now,
+    setTimeout: (fn, ms) => {
+      const id = ++next;
+      timers.set(id, { at: now + Math.max(0, ms), fn });
+      return id;
+    },
+    clearTimeout: (id) => void timers.delete(id),
+    /** Moves the clock `ms` on, firing every timer due by then, earliest first. */
+    advance(ms) {
+      now += ms;
+      for (const [id, timer] of [...timers].sort((a, b) => a[1].at - b[1].at)) {
+        if (timer.at > now || !timers.has(id)) continue;
+        timers.delete(id);
+        timer.fn();
+      }
+    },
+  };
+}
+
 /** One order for what happened in this process (a commit tried, a stop told), finer than a millisecond: two things in
  *  the same ms are still one before the other. */
 let happened = 0;
