@@ -1607,7 +1607,10 @@ shows it. It is kept sealed under `AGENTRUN_SEAL_KEY` in `DIR/trigger-settings-w
 sealed settings have a file of their own), so with no seal key no webhook trigger is made (`409 no_sealing_key`).
 `POST /v2/triggers/{id}/secret` makes a new one, shown once, and the old one signs nothing from then on. Like every
 secret this server keeps (its tokens, its outbound webhook's secret), it is cut from what a run shows, from what an
-import keeps and from every learning text. A secret that does not open under the seal key the server starts with is
+import keeps and from every learning text. A secret replaced by a rotation, or whose trigger is deleted, is kept too,
+sealed in a retired row of its own (scope `retired:<trigger>:<n>`), never a setting and in no `GET`: a run that quoted it
+before is still cut on every later server. Retired rows are kept for good for now; dropping one once no run older than
+it is left is still to come. A secret that does not open under the seal key the server starts with is
 said in its log (`condition=trigger_setting_unopened`, naming the trigger), and its trigger is refused until a new
 secret is made. A `trigger-settings-webhook.json` that does not read is never written over: until it is fixed or moved
 away, no webhook trigger is made or rotated (`409 store_unreadable`) and none fires.

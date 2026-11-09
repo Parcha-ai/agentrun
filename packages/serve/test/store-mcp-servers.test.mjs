@@ -9,6 +9,7 @@ import { test } from "node:test";
 import { storeOn } from "./store-helpers.mjs";
 import { mcpServersOverStore } from "../dist/mcp-servers-store.js";
 import { saveMcpServer } from "../dist/mcp-store.js";
+import { openapiDocument } from "../dist/openapi.js";
 
 const KEY = Buffer.from(randomBytes(32));
 const env = (key = KEY) => ({ AGENTRUN_SEAL_KEY: Buffer.from(key).toString("base64") });
@@ -26,6 +27,7 @@ test("a headers server reads: auth header names (not values), credential sealed,
   });
   const view = await reg(store).get("github");
   assert.equal(view.name, "github");
+  assert.equal(view.url, "https://mcp.example.com/github", "the view carries the saved url");
   assert.deepEqual(view.auth, { type: "headers", headers: ["authorization", "x-extra"] }, "header names, never values");
   assert.equal(view.credential, "sealed");
   assert.deepEqual(view.server_info, { name: "GitHub", version: "1" });
@@ -34,6 +36,20 @@ test("a headers server reads: auth header names (not values), credential sealed,
   assert.ok(view.tools.every((tool) => "permission" in tool), "each tool carries its gate permission");
   assert.ok(view.listed_at && view.updated_at, "both timestamps present");
   assert.ok(!JSON.stringify(view).includes("gh-secret"), "the credential is never in the view");
+});
+
+test("the view and the list item carry url, and the view holds every field the v2 McpServer schema requires", async (t) => {
+  const { store } = await storeOn(t);
+  await saveMcpServer(store, KEY, { name: "github", url: "https://mcp.example.com/github", auth: "none", protocol: "2025-06-18", tools: [{ name: "add" }], serverInfo: { name: "GitHub", version: "1" } });
+  const view = await reg(store).get("github");
+  assert.equal(view.url, "https://mcp.example.com/github", "the view carries the saved url");
+  const list = await reg(store).list();
+  assert.equal(list.servers.find((s) => s.name === "github").url, "https://mcp.example.com/github", "the list item carries the saved url");
+  // Every field the v2 McpServer schema requires is in the view, so the next dropped field fails here, not only at the route.
+  const doc = openapiDocument(() => undefined);
+  const op = Object.values(doc.paths).flatMap((path) => Object.values(path)).find((entry) => entry && typeof entry === "object" && entry.operationId === "getMcpServer");
+  const required = op.responses["200"].content["application/json"].schema.required;
+  for (const field of required) assert.ok(field in view, `the view is missing the required field ${field}`);
 });
 
 test("a none-auth server reads credential null and no header names", async (t) => {
@@ -58,11 +74,10 @@ test("an oauth server reads its note from the sealed token set; an expired sign-
   assert.equal((await reg(store).get("linear")).credential, "expired");
 });
 
-test("a credential under another seal key reads unreadable; with no seal key it reads seal_key_missing", async (t) => {
+test("a credential under another seal key reads unreadable", async (t) => {
   const { store } = await storeOn(t);
   await saveMcpServer(store, KEY, { name: "github", url: "https://mcp.example.com/github", auth: "headers", tools: [], credential: { type: "headers", headers: { authorization: "Bearer x" } } });
   assert.equal((await reg(store, env(randomBytes(32))).get("github")).credential, "unreadable", "another key: unreadable");
-  assert.equal((await reg(store, {}).get("github")).credential, "seal_key_missing", "no key: seal_key_missing");
 });
 
 test("remove drops the server; an unknown server is not_found on get and remove", async (t) => {
@@ -84,7 +99,7 @@ test("save, preview and oauthStart refuse a bad body before any network probe", 
   await assert.rejects(() => r.oauthStart("github", { url: "https://x.example", client_secret: `not-a-secret-${"client"}` }), (e) => e.code === "input_invalid" && e.extra.fields.some((f) => f.field === "client_id"));
 });
 
-test("a header server with no seal key is refused a save (never kept in the clear)", async (t) => {
+test("the registry is never made without a seal key (the server never starts without one): it refuses in words, and there is no keyless mode", async (t) => {
   const { store } = await storeOn(t);
-  await assert.rejects(() => reg(store, {}).save("github", { url: "https://x.example/", auth: { type: "headers", headers: { authorization: "Bearer x" } } }), (e) => e.code === "no_sealing_key");
+  for (const given of [{}, { AGENTRUN_SEAL_KEY: "not a key" }]) assert.throws(() => reg(store, given), /MCP servers' credentials are kept under the server's seal key \(AGENTRUN_SEAL_KEY\), and none was handed over/);
 });
