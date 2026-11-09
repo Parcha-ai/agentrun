@@ -46,10 +46,9 @@ import { loadArchilSettings } from "../archil-settings.js";
 import type { Workspace } from "../workspace/workspace.js";
 import type { ComputerSetting } from "../computer-setting.js";
 import type { AdapterRun, AdapterRunSpec, RunCapConfig } from "./adapter-loop.js";
-import { adapterRunGate, type AdapterSpecDeps, answersCut, hostToolCtxOf, learnedWorkflowHostTool } from "./adapter-run-spec.js";
+import { adapterRunGate, type AdapterSpecDeps, answersCut, hostToolCtxOf, learnedWorkflowHostTool, learnsWorkflows } from "./adapter-run-spec.js";
 import { signInReads } from "../sign-ins-store.js";
 import { claimSecrets } from "./claim-secrets.js";
-import { LEARNED_WORKFLOW_TOOL } from "../learned-workflow.js";
 import { TOOL_PLANE_ENV } from "../tool-plane.js";
 import { resolveHarness } from "./adapters/index.js";
 import { entriesOf } from "./loop.js";
@@ -260,21 +259,24 @@ export async function cliRunSpecFromLaunch(launch: RunLaunch, run: AdapterRun, d
   // The run's tools: the kernel registry's hands on its Workspace (and computer), beside the learned_workflow tool when the
   // claim's seed lay chose learned workflows (seedLaid.workflows, as the pi spec lists them). A CLI harness's session has
   // a model port, so learned_workflow runs for real on the session's proxied models (learnedWorkflowHostTool), each node
-  // a request on the run's one route labelled learned_workflow, booked on the run's one ledger. Its call nodes run the agent's tools' effects on the run's scoped
-  // keys (claim-secrets.ts), the run's plane threaded for the web tools among them. (web_fetch/web_search/monid as the CLI's
-  // own host tools are still a TODO, as the pi spec binds them.)
+  // a request on the run's one route labelled learned_workflow, booked on the run's one ledger. Its call nodes run the
+  // agent's tools' effects on the run's scoped keys (claim-secrets.ts), the run's plane threaded for the web tools among
+  // them. (web_fetch/web_search/monid as the CLI's own host tools are still a TODO, as the pi spec binds them.)
   const results: ToolResults = new Map();
   let learnedTool: Awaited<ReturnType<typeof learnedWorkflowHostTool>>;
   // The keys the claim hands the run (its learned workflow's call nodes run on them): never learned (learningEndOfRun).
   let handedKeys: string[] = [];
-  if (granted.includes(LEARNED_WORKFLOW_TOOL)) {
+  // As on main, the run has the tool whenever its revision is agentic and its agent learned a workflow (learnsWorkflows):
+  // a revision never names it, and the session's tools below are the ones the harness is told of.
+  const workflows = seedLaid?.workflows ?? [];
+  if (learnsWorkflows(revision.kind, workflows)) {
     const toolEnv = await claimSecrets({ store: deps.store, sealKey: deps.sealKey, env: deps.env }, revisionRow as unknown as Parameters<typeof claimSecrets>[1], launch);
     handedKeys = runnerSecrets(toolEnv);
     // The keys it opened join the runner's one redactor (the loop's), and this spec's log cut.
     for (const redact of [...(run.redact ? [heldRedactor(run.redact)] : []), cut]) holdClaimed(redact, toolEnv);
     delete toolEnv[TOOL_PLANE_ENV];
     if (launch.plane && Object.keys(launch.plane).length) toolEnv[TOOL_PLANE_ENV] = JSON.stringify(launch.plane);
-    learnedTool = await learnedWorkflowHostTool({ run, granted, plane: launch.plane, env: toolEnv, work: root, workflows: seedLaid?.workflows ?? [], ctx: hostToolCtxOf(run, context, results, root) });
+    learnedTool = await learnedWorkflowHostTool({ run, kind: revision.kind, granted, plane: launch.plane, env: toolEnv, work: root, workflows, ctx: hostToolCtxOf(run, context, results, root) });
   }
   const session: SessionSpec = {
     key: `run:${claim.runId}`,

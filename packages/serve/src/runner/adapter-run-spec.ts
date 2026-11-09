@@ -387,7 +387,7 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
   const handTools = tools.hostTools(granted, undefined, results);
   // The non-hand tools run on the claim's keys (host.env), so a vendor's error may echo one: each answer, and a throw's
   // words, pass the run's one redactor before the harness, the model or the record has them.
-  const nonHandTools = (await bindNonHandTools(host, granted, run, context, results, root, launch.plane, seedLaid?.workflows ?? [])).map((tool) => answersCut(tool, cut));
+  const nonHandTools = (await bindNonHandTools(host, revision.kind, granted, run, context, results, root, launch.plane, seedLaid?.workflows ?? [])).map((tool) => answersCut(tool, cut));
   const sessionTools = [...handTools, ...nonHandTools];
 
   // The run's system prompt, as main's per-run process builds it (app.ts): the environment line first (environment.ts, as
@@ -491,14 +491,21 @@ export function hostToolCtxOf(run: AdapterRun, context: Context, results: ToolRe
   };
 }
 
-/** The run's learned_workflow tool as a HostTool, listed when the revision grants it and the claim's seed lay chose
- *  learned workflows (`workflows`: runner/learning-seed.ts, by learning.ts chooseWorkflows, as main's start chooses
- *  them, so the tool set the model sees matches main). Every run's session — pi's and every CLI harness's — has a model
+/** Whether a run has the learned_workflow tool, by main's rule (app.ts): its revision is agentic and its agent learned
+ *  a workflow it may run (`workflows`: the claim's seed lay chose them, runner/learning-seed.ts). A revision never names
+ *  the tool among its own: the run has it beside them, so the harness is told of it as of theirs. */
+export const learnsWorkflows = (kind: string, workflows: readonly LearnedWorkflow[]): boolean => kind === "agentic" && workflows.length > 0;
+
+/** The run's learned_workflow tool as a HostTool, listed when the run has it (learnsWorkflows: an agentic revision whose
+ *  agent learned workflows, by learning.ts chooseWorkflows as main's start chooses them, so the tool set the model sees
+ *  matches main). `granted`, the revision's own tools, are the ones its workflows' call nodes may call. Every run's session — pi's and every CLI harness's — has a model
  *  port, so its model nodes run on the session's proxied models (run.ledger.models, port-models.ts: read at each
  *  request, labelled learned_workflow), each a request on the run's one route, booked on the run's one ledger and priced
  *  by the session's policy. Its call nodes run the agent's tools' effects on `env`, the run's scoped keys. */
 export async function learnedWorkflowHostTool(opts: {
   readonly run: AdapterRun;
+  /** The revision's kind: only an agentic revision's run has the tool. */
+  readonly kind: string;
   readonly granted: readonly string[];
   readonly plane: RunLaunch["plane"];
   readonly env: NodeJS.ProcessEnv;
@@ -506,9 +513,8 @@ export async function learnedWorkflowHostTool(opts: {
   readonly workflows: readonly LearnedWorkflow[];
   readonly ctx: HostToolCtx;
 }): Promise<HostTool | undefined> {
-  if (!opts.granted.includes(LEARNED_WORKFLOW_TOOL)) return undefined;
+  if (!learnsWorkflows(opts.kind, opts.workflows)) return undefined;
   const flows = opts.workflows;
-  if (!flows.length) return undefined;
   const models = await opts.run.ledger.models(LEARNED_WORKFLOW_TOOL);
   const tool = learnedWorkflowTool({ workflows: flows, granted: opts.granted, ...(opts.plane ? { plane: opts.plane } : {}), env: opts.env, work: opts.work, models: models as never, modelOf: () => ({ provider: PORT_PROVIDER, modelId: "session" }) });
   return hostToolOf(LEARNED_WORKFLOW_TOOL, tool as never, opts.ctx) ?? undefined;
@@ -540,7 +546,7 @@ export function answersCut(tool: HostTool, cut: (text: string) => string): HostT
   };
 }
 
-async function bindNonHandTools(host: ToolHost, granted: readonly string[], run: AdapterRun, context: Context, results: ToolResults, root: string, plane: RunLaunch["plane"], workflows: readonly LearnedWorkflow[]): Promise<AdapterRunSpec["session"]["tools"]> {
+async function bindNonHandTools(host: ToolHost, kind: string, granted: readonly string[], run: AdapterRun, context: Context, results: ToolResults, root: string, plane: RunLaunch["plane"], workflows: readonly LearnedWorkflow[]): Promise<AdapterRunSpec["session"]["tools"]> {
   const names = granted.filter((name) => name === WEB_FETCH_TOOL || name === WEB_SEARCH_TOOL || name.startsWith("monid."));
   // Fail closed (browserListed): the browser binds only on the native route (BROWSER_ON_RUNNER) and with the claim's
   // one-ledger booking on its ToolHost (host.ledger.paid); otherwise none of its tools is listed. No early return on an
@@ -561,10 +567,11 @@ async function bindNonHandTools(host: ToolHost, granted: readonly string[], run:
     }
   }
 
-  // learned_workflow, listed when the claim's seed lay chose learned workflows (as main lists it): its model nodes run on
-  // the session's proxied models (run.ledger.models), each a request on the run's one route labelled learned_workflow.
-  // The agent's scoped keys (host.env) are its call nodes'.
-  const learned = await learnedWorkflowHostTool({ run, granted, plane, env: host.env, work: root, workflows, ctx });
+  // learned_workflow, listed when the run has it (learnsWorkflows, as main lists it: no grant asked of the revision), in
+  // the session's tools the harness is told of: its model nodes run on the session's proxied models (run.ledger.models),
+  // each a request on the run's one route labelled learned_workflow. The agent's scoped keys (host.env) are its call
+  // nodes'.
+  const learned = await learnedWorkflowHostTool({ run, kind, granted, plane, env: host.env, work: root, workflows, ctx });
   if (learned) tools.push(learned);
 
   // The browser (tl-browser): tools.ts's own binding on this run's ToolHost (its store, claim and seal key, its live viewers
