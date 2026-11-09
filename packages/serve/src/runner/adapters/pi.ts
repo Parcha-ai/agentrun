@@ -114,6 +114,8 @@ async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: Ses
   run.setModels(models);
 
   const tools = spec.tools.map((tool) => piTool(tool, io));
+  // A refused call's words (the gate's deny, main's), by call: its result is those words alone, as main gives them.
+  const refusals = new Map<string, string>();
   const extension = defineExtension({
     name: `agentrun-session-${spec.key}`,
     tools,
@@ -123,13 +125,25 @@ async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: Ses
           if (!io.gate) return undefined;
           const answer = await io.gate({ callId: call.id, tool: call.name, args: (call.arguments ?? {}) as Record<string, unknown> }, hookContext);
           if (answer === "allow") return undefined;
-          if ("deny" in answer) return { block: answer.deny };
+          if ("deny" in answer) {
+            refusals.set(call.id, answer.deny);
+            return { block: answer.deny };
+          }
           // Parked: held until pi closes the Session, so the call never reaches its intent in this process.
           return new Promise<never>((_, reject) => {
             const signal = hookContext.abortSignal;
             if (signal?.aborted) return reject(new Error("parked"));
             signal?.addEventListener("abort", () => reject(new Error("parked")), { once: true });
           });
+        },
+        // A call the gate refused: its result is main's words alone, an error, never pi's framing of a blocked call (its
+        // diagnostic, which the model reads as "<harness>[error] Tool call blocked: ..."). Every other result is pi's.
+        afterTool: async (call, result) => {
+          const words = refusals.get(call.id);
+          const blocked = result.diagnostics?.some((diagnostic) => diagnostic.code === "blocked");
+          if (words === undefined || !blocked) return undefined;
+          refusals.delete(call.id);
+          return { output: [{ type: "text" as const, text: words }], isError: true } as never;
         },
       }),
       // An answer's cost is the runner's booking of its request, never pi's $0 for a model it has no price for: set on

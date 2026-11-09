@@ -21,6 +21,7 @@ import type { KernelHooks, ToolCall } from "./conformance/subject.js";
 import { type AnswerData, type ApprovalPrice, type AskData, type BudgetData, type CallEndData, type CallStartData, type CallStatus, type EndData, KINDS, type MessageData, type RaiseData, withdrawnAnswers } from "./journal-kinds.js";
 import { originOf, RUN_RESUMED } from "@parcha/pi-durable-agent/timeline";
 import { type AlsoRow, type Claim, type Command, type CommandOutcome, deniedText, endedBy, type EndOfRunAnswer, type Loop, type LoopDeps, type LoopEnd, type LoopFactory, noteOf, type StopReason } from "./loop-contract.js";
+import { deniedText as setToDenyText } from "../refusal-words.js";
 import { answerText, REFLECT_NOTE_ONLY, reflectRequestId, underLearning, WRITES } from "./end-of-run.js";
 import { approvalOf, CLOSE_MS, CUT_STEP_MS, STOP_SETTLE_MS, commandRequest, cutLast, DEFAULT_RESTART_LIMIT, entriesOf, findData, Gate, heldReporter, Interrupted, KernelFault, Parked, quiet, restartLimited, writesEntry, writesSubmission } from "./loop.js";
 import type { PiRun, PiSessionIO, PreIntentAnswer, PreIntentCall } from "./adapters/pi.js";
@@ -725,7 +726,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       await hooks.beforeIntent(kernelCall);
       const decision = spec.gate?.(kernelCall) ?? "allow";
       if (typeof decision === "object") return { deny: decision.deny };
-      if (decision === "deny") return { deny: `Permission denied: ${call.tool} is set to deny.` };
+      // Main's words for a tool set to deny (tool-gate's deniedText, from its one copy in refusal-words.ts).
+      if (decision === "deny") return { deny: setToDenyText(call.tool) };
       if (decision === "allow") return "allow";
       const answer = await answerOf(call, spec.approvalPrice?.(kernelCall) ?? null);
       if (answer === "park") return { park: true };
