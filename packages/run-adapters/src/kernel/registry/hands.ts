@@ -43,6 +43,63 @@ export type Processes = {
   list(): Promise<readonly ProcessInfo[]>;
 };
 
+/** A computer's kind past files and a shell: each adds its own tools to the run's (defs.ts capabilityToolDefs). */
+export type CapabilityKind = "desktop" | "phone" | "browser";
+
+/** A kind's tool refused in a run whose computer is not of that kind (or lacks the port): the words name the setting. */
+export const needsKindWords = (tool: string, kind: CapabilityKind): string =>
+  `${tool} needs a ${kind} computer: set this agent's computer to ${kind} (Settings → Computers).`;
+
+/** A screenshot as a tool's answer: the words, and the PNG in the answer's images. */
+export const shotAnswer = (text: string, shot: Shot): ToolAnswer => ({ text, images: [{ mimeType: "image/png", data: Buffer.from(shot.png.buffer, shot.png.byteOffset, shot.png.byteLength).toString("base64") }] });
+
+/** A point in a screenshot's pixels, origin top left, as computerd's input.actions takes it. */
+export type ScreenPoint = readonly [x: number, y: number];
+
+/** A screenshot: its PNG's bytes, and its size in pixels (the coordinates input takes). */
+export type Shot = { readonly png: Uint8Array; readonly width: number; readonly height: number };
+
+/** A desktop's screen (computerd's screen.shot): the whole screen, or a region of it in the whole screen's pixels. */
+export type Screen = { shot(options?: { readonly region?: { readonly x: number; readonly y: number; readonly w: number; readonly h: number } }): Promise<Shot> };
+
+/** One action of a desktop's input, as computerd's input.actions takes it: the pointer's and the keyboard's, and
+ *  nothing more. A key is a name of computerd's key table or one printable ASCII character. */
+export type InputAction =
+  | { readonly type: "move"; readonly at: ScreenPoint }
+  | { readonly type: "click"; readonly at?: ScreenPoint; readonly button?: "left" | "right" | "middle"; readonly count?: 1 | 2 | 3 }
+  | { readonly type: "drag"; readonly path: readonly ScreenPoint[]; readonly button?: "left" | "right" | "middle" }
+  | { readonly type: "scroll"; readonly at?: ScreenPoint; readonly dx?: number; readonly dy?: number; readonly unit: "clicks" | "px" }
+  | { readonly type: "type"; readonly text: string }
+  | { readonly type: "key"; readonly keys: readonly string[] };
+
+/** A desktop's input (computerd's input.actions): the batch runs in order; a refusal throws its code and words. */
+export type Input = { actions(list: readonly InputAction[]): Promise<void> };
+
+/** A point on a phone's screen, in its screenshot's pixels. */
+export type PhonePoint = { readonly x: number; readonly y: number };
+
+/** A phone: its screen, a tap, a swipe, typing into the field in focus, and its apps. */
+export type Phone = {
+  shot(): Promise<Shot>;
+  tap(at: PhonePoint): Promise<void>;
+  swipe(spec: { readonly from: PhonePoint; readonly to: PhonePoint; readonly durationMs: number }): Promise<void>;
+  type(text: string): Promise<void>;
+  readonly apps: {
+    list(): Promise<{ readonly apps: readonly { readonly id: string; readonly name?: string }[]; readonly foreground: string | null }>;
+    open(id: string): Promise<void>;
+  };
+};
+
+/** A connection to a browser's DevTools protocol (pi-browser's CdpLink, in shape). */
+export type CdpSession = {
+  send(method: string, params?: object, sessionId?: string): Promise<unknown>;
+  on(listener: (event: { method?: string; params?: unknown; sessionId?: string }) => void): () => void;
+  close(): void;
+};
+
+/** A browser computer: a connection to its CDP. The browser's tools and take-over are the host's (pi-browser's). */
+export type Browser = { connect(): Promise<CdpSession> };
+
 /** What a host tool does with the run's files and shell. */
 export type Hands = {
   /** The longest one exec may run, in seconds: 600 locally and on a computer, 295 on Archil's exec. */
@@ -59,6 +116,13 @@ export type Hands = {
   exec(command: string, options: { timeoutS: number; onOutput?: (chunk: { stream: "stdout" | "stderr"; data: string }) => void }, signal?: AbortSignal): Promise<ExecResult>;
   /** The attached computer's processes; absent with no computer, where the background tools are refused. */
   readonly processes?: Processes;
+  /** A desktop's screen and input; absent where the computer has none, and their tools are refused in words. */
+  readonly screen?: Screen;
+  readonly input?: Input;
+  /** A phone's screen, touch, typing and apps; absent where the computer is no phone. */
+  readonly phone?: Phone;
+  /** A browser's CDP; absent where the computer is no browser. */
+  readonly browser?: Browser;
 };
 
 /** A tool's answer: the text the model reads (and its images), with details for the run's timeline. A failure is an
@@ -90,5 +154,6 @@ export async function answerOf(call: ToolCall, run: () => Promise<ToolAnswer>): 
 /** A host tool's run. */
 export type Executor = (args: unknown, call: ToolCall) => Promise<ToolAnswer>;
 
-/** What the host gives the registry, by tool name: read, write and edit, and bash's own run, which the registry bounds. */
-export type HostExecutors = Readonly<Partial<Record<"read" | "write" | "edit" | "bash", Executor>>>;
+/** What the host gives the registry, by tool name: read, write and edit, and bash's own run, which the registry bounds;
+ *  and, for a browser, its tools' runs (pi-browser's, over hands.browser), by tool name. */
+export type HostExecutors = Readonly<Partial<Record<"read" | "write" | "edit" | "bash", Executor>>> & { readonly browser?: Readonly<Record<string, Executor>> };

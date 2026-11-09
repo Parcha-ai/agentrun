@@ -23,10 +23,12 @@ export type RevisionKind = "agentic" | "workflow";
  *  MCP server's wildcard, to its settings, such as its provider or its permission: names and values its host checks;
  *  absent: the host's own). `maxCostUsd`: a revision's default spend cap for each run, agentic or workflow, in US dollars,
  *  that a run started with none of its own takes (absent: none). `capMode`: how such a cap prices a request, a name its host
- *  knows (absent: the host's default). */
+ *  knows (absent: the host's default). `computer`: the computer its runs are given, a kind and the provider that serves
+ *  it, ids its host knows (absent: the host's default; `place` is its view where it can say it). */
 export type RevisionPlace = { mode: string; box?: string };
-export type AgenticBody = { instructions: string; skills: Record<string, string>; tools: string[]; model?: string; thinking?: string; prompts?: Record<string, PromptVariant>; harness?: string; place?: RevisionPlace; learning?: boolean; toolSettings?: Record<string, Record<string, string>>; approvals?: "never"; maxCostUsd?: number; capMode?: string };
-export type WorkflowBody = { workflow: Workflow; skills: Record<string, string>; tools: string[]; harness?: string; place?: RevisionPlace; toolSettings?: Record<string, Record<string, string>>; approvals?: "never"; maxCostUsd?: number; capMode?: string };
+export type RevisionComputer = { kind: string; provider?: string };
+export type AgenticBody = { instructions: string; skills: Record<string, string>; tools: string[]; model?: string; thinking?: string; prompts?: Record<string, PromptVariant>; harness?: string; place?: RevisionPlace; computer?: RevisionComputer; learning?: boolean; toolSettings?: Record<string, Record<string, string>>; approvals?: "never"; maxCostUsd?: number; capMode?: string };
+export type WorkflowBody = { workflow: Workflow; skills: Record<string, string>; tools: string[]; harness?: string; place?: RevisionPlace; computer?: RevisionComputer; toolSettings?: Record<string, Record<string, string>>; approvals?: "never"; maxCostUsd?: number; capMode?: string };
 /** Written once, never edited. `id` is the SHA-256 of the canonical JSON of `{ agent, parent, kind, body }`; `body.skills` maps a skill path to the SHA-256 of its text. */
 export type Revision = { id: string; agent: string; parent: string | null; createdAt: string; note?: string } & ({ kind: "agentic"; body: AgenticBody } | { kind: "workflow"; body: WorkflowBody });
 /** `archivedAt`: when it was archived, while it is: hidden from lists, kept with its history. */
@@ -97,8 +99,8 @@ export type PendingEnd = "completed" | "escalated" | "failed" | "stopped";
 export type AnalyticsFilter = { from?: string; to?: string; agent?: string; pending?: Readonly<Record<string, PendingEnd>> };
 const PENDING_ENDS: ReadonlySet<string> = new Set<PendingEnd>(["completed", "escalated", "failed", "stopped"]);
 export type NewRevision =
-  | { kind: "agentic"; instructions: string; skills?: Record<string, string>; tools?: string[]; model?: string; thinking?: string; prompts?: Record<string, PromptVariant>; harness?: string; place?: RevisionPlace; learning?: boolean; toolSettings?: Record<string, Record<string, string>>; approvals?: "never"; maxCostUsd?: number; capMode?: string; note?: string }
-  | { kind: "workflow"; workflow: Workflow; skills?: Record<string, string>; tools?: string[]; harness?: string; place?: RevisionPlace; toolSettings?: Record<string, Record<string, string>>; approvals?: "never"; maxCostUsd?: number; capMode?: string; note?: string };
+  | { kind: "agentic"; instructions: string; skills?: Record<string, string>; tools?: string[]; model?: string; thinking?: string; prompts?: Record<string, PromptVariant>; harness?: string; place?: RevisionPlace; computer?: RevisionComputer; learning?: boolean; toolSettings?: Record<string, Record<string, string>>; approvals?: "never"; maxCostUsd?: number; capMode?: string; note?: string }
+  | { kind: "workflow"; workflow: Workflow; skills?: Record<string, string>; tools?: string[]; harness?: string; place?: RevisionPlace; computer?: RevisionComputer; toolSettings?: Record<string, Record<string, string>>; approvals?: "never"; maxCostUsd?: number; capMode?: string; note?: string };
 /** What starts a run: `key`, the caller's name for it (1 to 256 characters), which starts one run only, and `fingerprint`
  *  (at most 256 characters), what was asked, kept to tell a retry from another request under the same key. */
 export type RunOrigin = { key: string; fingerprint?: string };
@@ -318,6 +320,12 @@ function placeOf(place: unknown): RevisionPlace {
   return { mode: place.mode, ...(place.box !== undefined ? { box: place.box } : {}) };
 }
 
+/** A computer as a body keeps it: `{kind, provider?}`, nothing else, each an id its host knows. */
+function computerOf(computer: unknown): RevisionComputer {
+  if (!isObject(computer) || !hostId(computer.kind) || (computer.provider !== undefined && !hostId(computer.provider)) || Object.keys(computer).some((key) => key !== "kind" && key !== "provider")) throw invalid("the computer is not {kind, provider?}, each an id (lowercase letters, digits and dashes)");
+  return { kind: computer.kind, ...(computer.provider !== undefined ? { provider: computer.provider } : {}) };
+}
+
 /** The body of a new revision and the text of each skill it names. Everything about the input is checked here, before any write. */
 function bodyOf(input: NewRevision): { body: AgenticBody | WorkflowBody; texts: Map<string, string> } {
   if (!isObject(input)) throw invalid("the revision is not an object");
@@ -335,7 +343,7 @@ function bodyOf(input: NewRevision): { body: AgenticBody | WorkflowBody; texts: 
   if (set !== undefined && !named(set, (setting) => named(setting, (value) => typeof value === "string" && PICK_NAME.test(value)), TOOL_KEY)) throw invalid("the tool settings are not tool names to settings of names");
   // Sorted, and none when empty: two revisions with the same settings are one.
   const sorted = (value: Record<string, unknown>) => Object.fromEntries(Object.entries(value).sort(([a], [b]) => (a < b ? -1 : 1)));
-  const host: { harness?: string; place?: RevisionPlace; toolSettings?: Record<string, Record<string, string>>; approvals?: "never" } = { ...(input.harness !== undefined ? { harness: input.harness } : {}), ...(input.place !== undefined ? { place: placeOf(input.place) } : {}), ...(set && Object.keys(set).length ? { toolSettings: Object.fromEntries(Object.entries(sorted(set)).map(([name, setting]) => [name, sorted(setting as Record<string, unknown>)])) as Record<string, Record<string, string>> } : {}) };
+  const host: { harness?: string; place?: RevisionPlace; computer?: RevisionComputer; toolSettings?: Record<string, Record<string, string>>; approvals?: "never" } = { ...(input.harness !== undefined ? { harness: input.harness } : {}), ...(input.place !== undefined ? { place: placeOf(input.place) } : {}), ...(input.computer !== undefined ? { computer: computerOf(input.computer) } : {}), ...(set && Object.keys(set).length ? { toolSettings: Object.fromEntries(Object.entries(sorted(set)).map(([name, setting]) => [name, sorted(setting as Record<string, unknown>)])) as Record<string, Record<string, string>> } : {}) };
   // Unattended (approvals "never") is the one value kept: ask, the default, is kept as nothing, so an agent that asks and
   // one that says nothing are one revision.
   if (input.approvals !== undefined && input.approvals !== "never") throw invalid('the approvals is "never", or absent (ask)');

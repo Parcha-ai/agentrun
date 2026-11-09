@@ -110,6 +110,29 @@ function whereOf(file: string): string {
   return `sqlite:${realpathSync(file)}`;
 }
 
+/** The flags the store's worker is given when this process was started with code on its command line: this process's
+ *  less those that apply only to that code (`--input-type`, `-e`/`--eval` and `-p`/`--print` with their code). A worker
+ *  from a file refuses them ("--input-type can only be used with string input via --eval"), and the server's launcher
+ *  starts Node exactly so (`node --input-type=module -e '…'`), so a store opened under it would have no worker. Undefined
+ *  when there are none to drop: the worker then inherits this process's flags as Node gives them, untouched (a list given
+ *  to Worker is checked flag by flag, and one a worker may not take, a process-wide one, is refused). */
+export function workerExecArgv(given: readonly string[]): string[] | undefined {
+  const codeOnly = given.some((flag) => flag.startsWith("--input-type") || flag === "-e" || flag === "--eval" || flag === "-p" || flag === "--print" || flag.startsWith("--eval=") || flag.startsWith("--print="));
+  if (!codeOnly) return undefined;
+  const out: string[] = [];
+  for (let i = 0; i < given.length; i++) {
+    const flag = given[i]!;
+    if (flag.startsWith("--input-type")) continue;
+    if (flag === "-e" || flag === "--eval" || flag === "-p" || flag === "--print") {
+      i++;
+      continue;
+    }
+    if (flag.startsWith("--eval=") || flag.startsWith("--print=")) continue;
+    out.push(flag);
+  }
+  return out;
+}
+
 export class Connection implements SqliteDatabase, StoreConnection {
   readonly dialect: Dialect = SQLITE;
   #where = "";
@@ -159,7 +182,8 @@ export class Connection implements SqliteDatabase, StoreConnection {
 
   /** Starts the worker and opens `file` in it; `owner` takes the store's owner lock too (StoreOwned when another holds it). */
   static async open(file: string, { busyTimeoutMs = 10_000, owner = false }: { busyTimeoutMs?: number; owner?: boolean } = {}): Promise<Connection> {
-    const worker = new Worker(new URL("./worker.js", import.meta.url));
+    const execArgv = workerExecArgv(process.execArgv);
+    const worker = new Worker(new URL("./worker.js", import.meta.url), execArgv ? { execArgv } : {});
     const connection = new Connection(worker);
     try {
       await connection.#send({ op: "open", file, busyTimeoutMs, owner });

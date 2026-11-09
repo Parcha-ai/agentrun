@@ -336,7 +336,8 @@ async function rotatedAcross(t, { expiresAt, stop }) {
   const { store, oauth, claim } = await oauthSetUp(t, { expiresAt });
   const hold = oauth.holdNext();
   const signal = new AbortController();
-  const bounds = { requestMs: 3_000, tries: 1 };
+  // The fake answers when the test says so (hold.answer()), so this bound only catches a hang; a tight one fails under load.
+  const bounds = { requestMs: 60_000, tries: 1 };
   const first = claimOf(store, claim, ["mcp:fake/add"], { now: () => T0, signal: signal.signal, bounds });
   // Behind a token still valid, the step returns before the refresh is answered; an expired one is awaited.
   const step = expiresAt > T0 ? await first : undefined;

@@ -80,7 +80,7 @@ async function crashedRaise(t, point, { short = false } = {}) {
   const loop = createAdapterLoop(async (claim, run) => ({
     ...(await spec(claim, run)),
     cap: runCap,
-    beforeRequest: beforeRequestOf({ capUsd: () => capUsd, modelOf: () => SONNET }),
+    runCap: ({ capUsd: () => capUsd, modelOf: () => SONNET }),
   }), { restartLimit: MAX_RESTARTS });
   // The first runner's journal stops at the point; the second's is the store's own.
   const first = (deps) => loop({ ...deps, journal: (claim) => stop.wrap(deps.journal(claim)) });

@@ -410,16 +410,26 @@ const shown = () => ({ text: (t) => t, name: (n) => n, holds: () => false });
 const learningSeed = () => ({ sha: "seed-abc", notes: { "a.md": "# A\n\nlearned a thing" }, files: [], skipped: [], recent: ["a.md"] });
 const learningDeps = (over = {}) => startDeps({ learning: "on", learningBudget: 8000, shown, seedFor: async () => ({ seed: learningSeed() }), pinnedOf: async () => ({ revision: revisionOf({ learning: true, tools: ["read"] }), version: 1 }), ...over });
 
-test("startRun records the exact given notes, seed and # Learned section a learning agent's start would", async () => {
+test("startRun records the exact given notes, seed, # Learned section and seedNotes a learning agent's start would", async () => {
   const store = await freshStore();
   const run = await startRun(store, learningDeps(), entryOf(), { input: { content: "hi" }, max_cost_usd: 1 });
   const launch = readLaunchBody((await store.runs.launch(run.id)).body);
   const options = { budget: 8000, read: true, shown: shown() };
-  const expected = { given: givenOf(learningSeed(), options), seed: "seed-abc", section: learnedOf(learningSeed(), options) ?? "" };
+  const expected = { given: givenOf(learningSeed(), options), seed: "seed-abc", section: learnedOf(learningSeed(), options) ?? "", seedNotes: Object.keys(learningSeed().notes).length };
   assert.deepEqual(launch.learning, expected);
   assert.deepEqual(learningStartOf(launch), expected);
   // Each given entry carries its name, not just a file.
   assert.ok(launch.learning.given.every((n) => typeof n.file === "string" && typeof n.name === "string"));
+});
+
+test("seedNotes counts the whole seed, so a seed over the budget has seedNotes above given.length", async () => {
+  const store = await freshStore();
+  // Several notes, each sizeable; a small budget admits fewer than all into given.
+  const bigSeed = () => ({ sha: "seed-big", notes: { "a.md": `# A\n\n${"x".repeat(400)}`, "b.md": `# B\n\n${"y".repeat(400)}`, "c.md": `# C\n\n${"z".repeat(400)}` }, files: [], skipped: [], recent: ["a.md", "b.md", "c.md"] });
+  const run = await startRun(store, learningDeps({ learningBudget: 300, seedFor: async () => ({ seed: bigSeed() }) }), entryOf(), { input: { content: "hi" } });
+  const learning = readLaunchBody((await store.runs.launch(run.id)).body).learning;
+  assert.equal(learning.seedNotes, 3);
+  assert.ok(learning.seedNotes > learning.given.length, "the budget narrowed given below the whole seed's note count");
 });
 
 test("startRun records no learning for a non-learning run", async () => {

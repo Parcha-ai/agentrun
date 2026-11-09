@@ -209,6 +209,15 @@ CREATE TABLE sealed_keys (
   updated_at BIGINT NOT NULL
 );
 
+CREATE TABLE computer_ledger (
+  provider TEXT COLLATE "C" NOT NULL,
+  session_id TEXT COLLATE "C" NOT NULL,
+  labels TEXT COLLATE "C" NOT NULL CHECK (labels::json IS NOT NULL),
+  detail TEXT COLLATE "C" NOT NULL CHECK (detail::json IS NOT NULL),
+  updated_at BIGINT NOT NULL,
+  PRIMARY KEY (provider, session_id)
+);
+
 CREATE TABLE learning (
   agent_id TEXT COLLATE "C" NOT NULL REFERENCES agents (id),
   key TEXT COLLATE "C" NOT NULL,

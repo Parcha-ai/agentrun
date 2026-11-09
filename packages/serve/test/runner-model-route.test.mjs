@@ -96,6 +96,7 @@ test("a pi run through the adapter on the faux route goes through the kernel's m
     adapter: piAdapter({ run, model: route.model, provider: route.provider, ...(route.fetch ? { fetch: route.fetch } : {}), ...(route.price ? { price: route.price } : {}) }),
     session: { key: "root", label: "root", system: ["Answer."], tools, context: "fresh" },
     input: "read it",
+    runCap: { capUsd: () => undefined, modelOf: () => undefined },
     hooks: { beforeIntent: async () => {}, beforeResult: async () => {} },
     gate: () => "allow",
   }), { restartLimit: MAX_RESTARTS });

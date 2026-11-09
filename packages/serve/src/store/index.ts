@@ -2,7 +2,7 @@
 export { AgentArchived, CommandTaken, endedReason, FINAL_STATES, Fenced, MCP_REFRESH_CALL_MS, MCP_REFRESH_LEASE_MS, RunFinal, SchemaVersionUnknown, SIGN_IN_TOMBSTONES_KEPT, SignInHandedTo, SignInMissing, StoreBusy, StoreClosed, StoreConstraint, StoreDeadline, StoreFromEarlierVersion, StoreLaunchMissing, StoreOwned, StoreWorkerLost, RefreshLeaseLost, TriggerFull } from "./store.js";
 export type {
   ConstraintRule,
-  AgentRow, Agents, AlsoRow, ChannelPost, Claim, Command, Firing, FiringChange, FiringRow, FiringStatus, FiringStreak, Journal, Live, LiveRow, Mcp, McpOauth, McpOauthPendingRow, McpPinRow,
+  AgentRow, Agents, AlsoRow, ChannelPost, Claim, Command, ComputerLedger, ComputerLedgerRow, Firing, FiringChange, FiringRow, FiringStatus, FiringStreak, Journal, Live, LiveRow, Mcp, McpOauth, McpOauthPendingRow, McpPinRow,
   McpServerRow, NewFiring, NewRevision, NewTrigger, ReleasedState, RevisionRow, RunPatch, RunRow, Runs, RunState, SealedKeyRow, SealedKeys, SettingRow, Settings, Staged,
   StagedTake, Store, StoreRole, TemplatePackage, Templates, TriggerDef, TriggerPatch, TriggerRow, Triggers, TriggerScope, TriggerSettingRow,
   TriggerSettings, ImportedFrom, ImportSource, ImportRunInput, JournalReads, RunOrigin, RunOutcome, RunLaunchInput, RunLaunchRow, Learning,

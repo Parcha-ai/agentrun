@@ -12,7 +12,7 @@ import { browserSpend } from "../dist/browser-cost.js";
 import { mcpGateway } from "../dist/mcp-gateway.js";
 import { FAUX_ENV } from "../dist/model.js";
 import { FAUX_MONID_ENV, MONID_KEY_ENV, monidRegistration } from "../dist/monid.js";
-import { bookedIn } from "../dist/paid-calls.js";
+import { bookedIn, paidRequest, parallelSearchFee } from "../dist/paid-calls.js";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { KEY as MONID_KEY } from "./fixtures/faux-monid.mjs";
 
@@ -66,6 +66,19 @@ test("browser time on the run's one ledger, as main bills it: each call one paid
   await new Promise((resolve) => setTimeout(resolve, 50));
   const hold = Math.ceil(Math.round(2 * lost.stretch * 1e12) / 1e6) / 1e6;
   near((await claimOn(cut)).spentUsd(), 0.0003 + 0.0002 + hold, "the next claim");
+});
+
+// The run view puts a paid request's charge under the tool call it ran in (main's "Tool cost: <server> charged $…" and
+// "Not metered" rows), so its journaled request record names that call. A model request's record names none (its shape is
+// held-bound-unanswered.test.mjs's first test).
+test("a paid web search's request record on the run's one ledger names the tool call it was booked under", async () => {
+  const store = memorySessionStore();
+  const paid = await claimOn(store);
+  const response = await bookedIn({ call: "call-7", record: async () => {}, paid }, () => paidRequest(parallelSearchFee(10), async () => new Response("{}", { status: 200 })));
+  assert.equal(response.status, 200, "the search was sent");
+  const requests = (await store.read(cap.TOOL_SESSION)).filter((r) => r.kind === "runner.request").map((r) => r.data);
+  assert.equal(requests.length, 1, `one paid request: ${JSON.stringify(requests)}`);
+  assert.equal(requests[0].call, "call-7", `its record names its call: ${JSON.stringify(requests[0])}`);
 });
 
 test("a priced MCP call on the run's one ledger books its owner's price, and a later claim still counts it", async (t) => {

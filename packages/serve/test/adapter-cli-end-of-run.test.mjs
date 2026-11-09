@@ -52,6 +52,7 @@ function loopWith(turns, endOfRun) {
     adapter: standInCli(turns),
     session: { key: "root", label: "root", system: [], tools: [], context: "fresh" },
     input: INPUT,
+    runCap: { capUsd: () => undefined, modelOf: () => undefined },
     record: "loop",
     agentId: "agent-1",
     hooks: quiet,

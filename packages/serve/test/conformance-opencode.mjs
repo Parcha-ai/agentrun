@@ -105,6 +105,7 @@ export function openCodeSpec({ script, tools, hooks, agentId }, options = {}) {
     record: harness.record,
     session: { key: "root", label: "root", system: ["Follow the script."], tools: hostTools(tools), context: "fresh" },
     input: "Follow the script.",
+    runCap: { capUsd: () => undefined, modelOf: () => undefined },
     hooks,
     gate: (call) => (tools[call.tool]?.ask ? "ask" : "allow"),
   });

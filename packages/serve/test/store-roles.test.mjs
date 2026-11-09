@@ -14,6 +14,7 @@ import { sqliteAdapterTests } from "./store-target.mjs";
 // Postgres's roles, owner lock and version refusal: store-postgres.test.mjs.
 const test = sqliteAdapterTests(nodeTest, "the store file's roles and owner lock");
 import { SchemaVersionUnknown, StoreOwned } from "../dist/store/store.js";
+import { SCHEMA_VERSION } from "../dist/store/schema.js";
 import { openSqliteStore } from "../dist/store/sqlite/store.js";
 
 function fresh(t) {
@@ -42,8 +43,13 @@ test("a runner refuses a store with no schema yet, and one of a schema version i
   const raw = new DatabaseSync(file);
   raw.exec("UPDATE store_meta SET schema_version = 99");
   raw.close();
-  await assert.rejects(openSqliteStore({ file, role: "runner" }), (error) => error instanceof SchemaVersionUnknown && error.found === 99 && error.known === 1);
+  await assert.rejects(openSqliteStore({ file, role: "runner" }), (error) => error instanceof SchemaVersionUnknown && error.found === 99 && error.known === SCHEMA_VERSION);
   await assert.rejects(openSqliteStore({ file, role: "server" }), SchemaVersionUnknown, "nor does the server open a later build's store");
+  // An earlier build's store (version 1, before the computer ledger): refused the same, never migrated.
+  const earlier = new DatabaseSync(file);
+  earlier.exec("UPDATE store_meta SET schema_version = 1");
+  earlier.close();
+  await assert.rejects(openSqliteStore({ file, role: "server" }), (error) => error instanceof SchemaVersionUnknown && error.found === 1 && error.known === 2);
 });
 
 test("a server and a runner given the same data directory open the same store, whose file the store names; a second server on it is refused", async (t) => {
