@@ -247,8 +247,17 @@ test("the viewer's messages are checked field by field; viewerHoldOf drives tl-p
 /** Timers a test fires itself: each set() is kept, none runs on its own. */
 function manualTimers() {
   const set = [];
+  const waits = [];
   const cleared = new Set();
-  return { set, cleared, timers: { set: (run) => (set.push(run), run), clear: (handle) => cleared.add(handle) }, fire: (i) => set[i]() };
+  return {
+    set,
+    waits,
+    cleared,
+    timers: { set: (run, ms) => { const handle = { run, ms }; set.push(run); waits.push(handle); return handle; }, clear: (handle) => cleared.add(handle) },
+    fire: (i) => set[i](),
+    /** The waits of `ms` still running: set and not cleared. */
+    running: (ms) => waits.filter((w) => w.ms === ms && !cleared.has(w)),
+  };
 }
 const key = (text) => ({ type: "key", action: "char", key: text, code: `Key${text.toUpperCase()}`, text, modifiers: 0 });
 
@@ -355,5 +364,48 @@ test("a binary message from the viewer is bad_message; input before the computer
   assert.deepEqual(await next(ws, "held"), { type: "held", reason: "failed", message: "The computer's screen is not open yet: try again in a moment." });
   assert.deepEqual(watch.state.inputs, []);
   watch.start();
+  ws.destroy();
+});
+
+test("a viewer that stops acking is ended once its frame waits past the idle bound: told in words, its socket closed, its watch ended and a take handed back; each ack starts the bound again", async (t) => {
+  const clock = manualTimers();
+  const IDLE = 1_234;
+  const { row, watch, hold } = await opened(t, { timers: clock.timers, limits: { ackIdleMs: IDLE }, hold: fakeHold({ grant: true }) });
+  const ws = await viewerOf(row);
+  await watch.opened();
+  ws.sendJson({ type: "take" });
+  await next(ws, "hold");
+  // An acked frame: its bound is cleared, and the next frame's bound is its own.
+  const first = watch.push({ bytes: JPEG });
+  await ws.until((m) => m.type === "binary", 5_000);
+  assert.equal(clock.running(IDLE).length, 1, "the frame's bound runs");
+  const firstBound = clock.running(IDLE)[0];
+  ws.sendJson({ type: "ack" });
+  await first;
+  assert.ok(clock.cleared.has(firstBound), "the ack cleared it");
+  assert.equal(clock.running(IDLE).length, 0);
+  void watch.push({ seq: 2, bytes: JPEG });
+  await ws.until((m) => m.type === "binary", 5_000);
+  const [bound] = clock.running(IDLE);
+  assert.ok(bound && bound !== firstBound, "a new bound for the new frame");
+  // No ack comes: past the bound the viewer is ended.
+  const away = hold.nextCall();
+  bound.run();
+  assert.deepEqual(await next(ws, "ended"), { type: "ended", reason: "refused", message: "This view stopped answering; open the live view again." });
+  assert.equal((await ws.until((m) => m.type === "close", 5_000)).item?.type, "close");
+  assert.equal(await away, "away", "the take in progress is handed back");
+  assert.ok(watch.state.closed >= 1, "the watch ends with it");
+});
+
+test("toAction's refusals of #2017's hardening come back held refused, in its words: ctrl+alt+F1 on a desktop", { todo: "waits on #2017's toAction hardening, not yet pushed to computer/live-view (its head is ef4b398775)" }, async (t) => {
+  const { row, watch } = await opened(t, { hold: fakeHold({ grant: true }) });
+  const ws = await viewerOf(row);
+  await watch.opened();
+  ws.sendJson({ type: "take" });
+  await next(ws, "hold");
+  ws.sendJson({ type: "key", action: "down", key: "F1", code: "F1", modifiers: 3 });
+  const held = await next(ws, "held");
+  assert.equal(held?.reason, "refused", JSON.stringify(held));
+  assert.deepEqual(watch.state.inputs, []);
   ws.destroy();
 });
