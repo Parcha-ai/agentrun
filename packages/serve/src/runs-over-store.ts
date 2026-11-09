@@ -104,13 +104,12 @@ export async function cancel(store: RunsStore, moment: RunMoment): Promise<boole
 
 /** Pauses a workflow run, or resumes it (pauseRun/resumeRun): a pause or resume command the run's runner reads and applies.
  *  Verbatim from runs.ts pause: an agentic run has no pause here (501, a turn is stopped instead), an ended or cancelling one
- *  takes none (409). Returns the run id and whether it is paused; the route adds the run's status from its view.
- *  (The runner's "pause"/"resume" command kinds are added on the runner side; written through the store directly until they
- *  are in runner/commands.ts's COMMAND_KINDS, then this routes through sendCommand like the others — a named TODO.) */
+ *  takes none (409). Returns the run id and whether it is paused; the route adds the run's status from its view. The runner
+ *  acks the command in an agentrun.pause or agentrun.resume entry's commit (runner/commands.ts COMMAND_KINDS). */
 async function pauseOrResume(store: RunsStore, moment: RunMoment, paused: boolean): Promise<{ run_id: string; paused: boolean }> {
   if (moment.kind !== "workflow") throw unsupported("runs.pause", "Only a workflow run pauses here: an agentic run's turn is stopped with POST /runs/{id}/stop.");
   if (moment.terminal || moment.cancelled) throw finished(moment);
-  await store.command(moment.id, { kind: paused ? "pause" : "resume", body: {} });
+  await sendCommand(store, moment.id, { kind: paused ? "pause" : "resume", body: {} });
   return { run_id: moment.id, paused };
 }
 

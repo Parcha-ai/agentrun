@@ -40,6 +40,9 @@ import { McpClaimRefused } from "./mcp-claim.js";
 import { Fenced } from "../store/index.js";
 import { type ClaimMcp, parkedFollowUp } from "./mcp-run.js";
 
+/** A pause or resume row on an agentic run, refused in main's words (runs.ts pause): only a workflow run pauses. */
+export const AGENTIC_PAUSE_REFUSED = "Only a workflow run pauses here: an agentic run's turn is stopped with POST /runs/{id}/stop.";
+
 /** What a raise meets, as the kernel cap's checkRaise reads it (run-adapters/src/kernel/cap/park.ts): the run's cap, the
  *  pause it waits at (none while it works) and its last raise, with the pause that one answered. */
 export type RaiseState = { capUsd: number | undefined; final?: boolean; pause?: string | undefined; lastRaise?: { to: number; pause?: string | undefined } };
@@ -1312,6 +1315,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       if (command.kind === "raise") return raise(command);
       if (command.kind === HAND_BACK) return handBack(command);
       if (isComputerCommand(command)) return computerCommand(command);
+      // A pause is a workflow run's: an agentic run's turn is stopped instead, in main's words (runs.ts pause).
+      if (command.kind === "pause" || command.kind === "resume") return { refused: AGENTIC_PAUSE_REFUSED };
       return { refused: `an adapter loop takes no ${command.kind} command` };
     },
     async stop(reason) {
