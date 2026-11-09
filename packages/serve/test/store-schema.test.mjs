@@ -9,7 +9,7 @@ import { Fenced, StoreConstraint } from "../dist/store/store.js";
 import { queued, storeOn } from "./store-helpers.mjs";
 
 const TABLES = [
-  "agents", "browser_viewers", "channel_posts", "channel_told", "commands", "idempotency", "learning", "learning_proposals", "mcp_oauth_pending", "mcp_pins",
+  "agents", "channel_posts", "channel_told", "commands", "computer_viewers", "idempotency", "learning", "learning_proposals", "mcp_oauth_pending", "mcp_pins",
   "mcp_servers", "review_ledger", "revisions", "run_launch", "run_live", "run_origins", "runs", "sealed_keys", "settings", "store_meta",
   "trigger_conversations", "trigger_firings", "trigger_scopes", "trigger_settings", "triggers",
 ];
