@@ -355,6 +355,8 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
     // browser holds and settles its calls here (host.ledger.paid), never on this process's own spend, and a refusal at the
     // cap parks the run (pause). browserListed reads it to fail closed.
     ledger: run.ledger,
+    // The run's one redactor: the browser's answers pass it inside their call, before pi stores them (tools.ts).
+    redact: cut,
     liveViewers: {
       put: (handover: LiveHandover) => putLiveViewer(deps.store, deps.sealKey, claim, handover),
       drop: (tag?: string) => dropLiveViewer(deps.store, claim, tag),
