@@ -40,10 +40,13 @@ test("a credential is refused as damaged when the row's url origin changed since
   assert.equal((await openServerCredential(store, KEY, "github")).unusable, "damaged", "origin mismatch: not sent");
 });
 
+// The `not-a-secret-` prefix keeps the source scan from flagging this dummy credential.
+const CLIENT_SECRET = `not-a-secret-${"owner-client"}`;
+
 test("a pending sign-in's verifier and client seal together by state and are taken once with its plain working state; another seal key does not open them", async (t) => {
   const { store, clock } = await storeOn(t);
   const other = Buffer.from(randomBytes(32));
-  const client = { client_id: "c-1", client_secret: "owner-secret-not-real" };
+  const client = { client_id: "c-1", client_secret: CLIENT_SECRET };
   const working = { discovery: { authorizationServerUrl: "https://as.example" }, url: "https://mcp.example.com/github" };
   await putPendingSignIn(store, KEY, { state: "st-1", server: "github", verifier: "pkce-verifier-xyz", client, working, expiresAt: clock.now + 600_000 });
   assert.equal(await takePendingSignIn(store, other, "st-1"), undefined, "another seal key can't open the sealed secret parts");
@@ -53,6 +56,18 @@ test("a pending sign-in's verifier and client seal together by state and are tak
   assert.deepEqual(took.client, client, "the OAuth client, with its secret, comes back from the sealed blob");
   assert.deepEqual(took.working, working, "the plain working state comes back for finish()");
   assert.equal(await takePendingSignIn(store, KEY, "st-2"), undefined, "taken once");
+});
+
+test("the client secret is only in the sealed column: the plain columns (server, working) never hold it, and the sealed one is ciphertext", async (t) => {
+  const { store, clock } = await storeOn(t);
+  const client = { client_id: "c-1", client_secret: CLIENT_SECRET };
+  const working = { discovery: { authorizationServerUrl: "https://as.example" }, url: "https://mcp.example.com/github" };
+  await putPendingSignIn(store, KEY, { state: "st", server: "github", verifier: "v", client, working, expiresAt: clock.now + 600_000 });
+  // take() returns the row as the store holds it: `sealed` the ciphertext blob, `working` the plain column.
+  const row = await store.mcpOauth.take("st");
+  assert.ok(!JSON.stringify(row.working).includes(CLIENT_SECRET), "the plain working column holds no client secret");
+  assert.ok(!row.server.includes(CLIENT_SECRET), "nor the server column");
+  assert.ok(!Buffer.from(row.sealed).toString("latin1").includes(CLIENT_SECRET), "and the sealed column is ciphertext, not the secret in the clear");
 });
 
 test("takePendingSignIn treats one past its expiry as gone, with a clock", async (t) => {

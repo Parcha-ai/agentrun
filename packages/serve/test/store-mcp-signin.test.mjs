@@ -13,7 +13,9 @@ import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { startFakeOAuth } from "./fixtures/fake-oauth-server.mjs";
 import { storeOn } from "./store-helpers.mjs";
 
-const SECRET = `client-secret-${randomBytes(12).toString("hex")}`;
+// Built with the `not-a-secret-` prefix so the source scan that flags a hardcoded credential does not fire on this test.
+const SECRET = `not-a-secret-${randomBytes(12).toString("hex")}`;
+const PORT = 4321; // the loopback port the registry is attached to below; the port the route's sign-in cookie is named by.
 const env = (key) => ({ AGENTRUN_SEAL_KEY: Buffer.from(key).toString("base64") });
 
 /** A registry over the store at a loopback address (so a loopback sign-in is allowed), the fakes it signs in against, and
@@ -26,7 +28,7 @@ async function signIns(t, key = randomBytes(32)) {
   t.after(() => oauth.close());
   const reg = () => {
     const r = mcpServersOverStore(store, env(key), "1.0.0");
-    r.attach("http://127.0.0.1:4321", "http://127.0.0.1:4321"); // key-gate: this server's own loopback address in a test, never an endpoint
+    r.attach(`http://127.0.0.1:${PORT}`, `http://127.0.0.1:${PORT}`); // key-gate: this server's own loopback address in a test, never an endpoint
     return r;
   };
   return { store, file, oauth, mcp, reg, key };
@@ -41,17 +43,19 @@ async function approved(authorizationUrl) {
   return new URLSearchParams({ code: back.searchParams.get("code"), state: back.searchParams.get("state") });
 }
 
-/** The store file and its WAL hold no byte of any value in `secrets`. */
+/** The store file and its sidecars hold no byte of any value in `secrets`. A fresh write sits in the write-ahead log
+ *  first, so the -wal (and its -shm index) are scanned beside the main file, before any checkpoint moves the write. */
 async function noSecretInStore(store, file, secrets) {
   await store.flush();
-  for (const path of [file, `${file}-wal`]) {
+  for (const path of [file, `${file}-wal`, `${file}-shm`]) {
     let bytes;
     try {
       bytes = readFileSync(path);
     } catch {
       continue;
     }
-    for (const secret of secrets) assert.equal(bytes.includes(Buffer.from(secret, "utf8")), false, `a secret is not in ${path.endsWith("-wal") ? "the WAL" : "the DB file"}`);
+    const where = path.endsWith("-wal") ? "the WAL" : path.endsWith("-shm") ? "the WAL index" : "the DB file";
+    for (const secret of secrets) assert.equal(bytes.includes(Buffer.from(secret, "utf8")), false, `a secret is not in ${where}`);
   }
 }
 
@@ -109,15 +113,20 @@ test("a sign-in survives a restart mid-flight: a fresh registry on the same stor
   assert.equal((await reg().get("docs")).credential, "sealed", "the token set was sealed and kept across the restart");
 });
 
-test("the cookie check binds a callback to the browser that started the sign-in (server.ts applies it to this class too)", () => {
-  // The store registry's oauthCallback does not read cookies: server.ts gates both the file and the store registry with
-  // startedHere before it calls the callback, so a sign-in started in another browser never reaches it. These are the
-  // exported functions it uses; the end-to-end 403 is server.ts's, carried by the serve() integration test the switch
-  // repoints at the store registry.
-  const port = 7700;
-  const state = "state-abc";
-  const cookie = signInCookie(port, state, false).split(";")[0];
-  assert.ok(startedHere(cookie, port, state), "the start's own cookie matches its state");
-  assert.ok(!startedHere("", port, state), "no cookie: refused");
-  assert.ok(!startedHere(signInCookie(port, "other-state", false).split(";")[0], port, state), "another sign-in's cookie does not match");
+test("a callback without the cookie its start set is refused before the store callback runs (the route's startedHere gate)", async (t) => {
+  // The browser binding is the route's gate, not a store column: server.ts (mcpOAuthCallback, ~1969) runs
+  // startedHere(req.headers.cookie, port, state) and returns 403 BEFORE it ever calls the registry's oauthCallback, for the
+  // file and the store registry alike. So a store sign-in a different browser tries to finish never reaches the store. Here
+  // is a real store sign-in's state, put through the exact gate the route applies; the end-to-end HTTP 403 runs through
+  // serve() once the switch repoints server.ts at the store registry (serve still builds the file class, so it can't here).
+  const { mcp, reg } = await signIns(t);
+  const r = reg();
+  const started = await r.oauthStart("docs", { url: mcp.url });
+  const state = new URL(started.authorization_url).searchParams.get("state");
+  const cookie = signInCookie(PORT, state, false).split(";")[0]; // what the start route set in the browser
+  assert.ok(!startedHere(undefined, PORT, state), "no cookie: the gate refuses (the route returns 403), store callback never runs");
+  assert.ok(!startedHere(signInCookie(PORT, "another-sign-in", false).split(";")[0], PORT, state), "another sign-in's cookie: refused");
+  assert.ok(startedHere(cookie, PORT, state), "the start's own cookie passes the gate");
+  // Only the browser that started it, carrying that cookie, gets past the gate; its callback then finishes the sign-in.
+  assert.equal(await r.oauthCallback(await approved(started.authorization_url)), "/#/settings/mcp?server=docs&sign_in=ok");
 });
