@@ -323,6 +323,8 @@ export class OrgoProvider implements ComputerProvider {
 	readonly #display: string;
 	readonly #timeouts: OrgoTimeouts;
 	readonly #probeTargets: string[];
+	/** Each computer's extend in flight, by id: the next waits for it, so two never read the same old deadline. */
+	readonly #extending = new Map<string, Promise<unknown>>();
 
 	constructor({ apiKey, workspaceId, apiUrl = ORGO_API_URL, fetch, webSocket, channel, daemonPath = DEFAULT_DAEMON_PATH, maxLifetimeMs = MAX_LIFETIME_MS, user = "2510:2510", start = "bash", display = ":99", timeouts = {}, probeTargets = DEFAULT_PROBE_TARGETS }: OrgoProviderOptions) {
 		if (typeof apiKey !== "string" || apiKey === "") throw new Error("options.apiKey, an Orgo API key, is required");
@@ -894,9 +896,25 @@ export class OrgoProvider implements ComputerProvider {
 	 * Moves the deadline to now + ttlMs, never earlier and never past the most the labels file holds (create's time plus
 	 * the cap): Orgo's end first, in whole hours with an Idempotency-Key, so it never ends the computer before init does;
 	 * then init's deadline; then the name's, from the time init took; then the labels file. The result is the deadline
-	 * init took.
+	 * init took. A computer's extends are taken in turn: each reads the deadline the one before it left, so a shorter one
+	 * is refused as earlier, never renaming the computer back to an earlier deadline the janitor would trust.
 	 */
-	async extend(ref: ComputerRef, ttlMs: number, { signal }: CallContext = {}): Promise<Result<{ deadline: Date }>> {
+	extend(ref: ComputerRef, ttlMs: number, context: CallContext = {}): Promise<Result<{ deadline: Date }>> {
+		const key = typeof ref?.id === "string" ? ref.id : "";
+		const before = this.#extending.get(key) ?? Promise.resolve();
+		const turn = before.then(() => this.#extend(ref, ttlMs, context));
+		const settled = turn.then(
+			() => undefined,
+			() => undefined,
+		);
+		this.#extending.set(key, settled);
+		void settled.then(() => {
+			if (this.#extending.get(key) === settled) this.#extending.delete(key);
+		});
+		return turn;
+	}
+
+	async #extend(ref: ComputerRef, ttlMs: number, { signal }: CallContext = {}): Promise<Result<{ deadline: Date }>> {
 		const problem = refProblem(ref);
 		if (problem) return fail("invalid", problem);
 		if (!Number.isSafeInteger(ttlMs) || ttlMs <= 0) return fail("invalid", "extend takes ttlMs, a whole number of milliseconds above 0");
@@ -933,9 +951,13 @@ export class OrgoProvider implements ComputerProvider {
 		} finally {
 			await opened.value.close();
 		}
-		const name = withDeadline((nameParts(found.value.name) as { stable: string }).stable, took);
-		const renamed = await this.#rest.request("PATCH", `/computers/${encodeURIComponent(ref.id)}`, { body: { name }, timeoutMs: this.#timeouts.requestMs, ...(signal ? { signal } : {}) });
-		if (!renamed.ok) return fail(renamed.error.code, `init's deadline moved to ${took.toISOString()}, and the deadline in ${found.value.name} did not: ${renamed.error.message}`);
+		// The name's deadline never moves back: a name that already holds this deadline or a later one is kept.
+		const parts = nameParts(found.value.name) as { stable: string; deadline?: Date };
+		const name = parts.deadline !== undefined && parts.deadline.getTime() >= Math.ceil(took.getTime() / 1000) * 1000 ? found.value.name : withDeadline(parts.stable, took);
+		if (name !== found.value.name) {
+			const renamed = await this.#rest.request("PATCH", `/computers/${encodeURIComponent(ref.id)}`, { body: { name }, timeoutMs: this.#timeouts.requestMs, ...(signal ? { signal } : {}) });
+			if (!renamed.ok) return fail(renamed.error.code, `init's deadline moved to ${took.toISOString()}, and the deadline in ${found.value.name} did not: ${renamed.error.message}`);
+		}
 		const written = await this.#writeLabels(ref, { ...file.value, name, deadline: took.toISOString() }, signal);
 		if (!written.ok) return fail(written.error.code, `init's deadline moved to ${took.toISOString()}, and the labels file did not: ${written.error.message}`);
 		return ok({ deadline: took });
