@@ -218,12 +218,13 @@ export async function verifyRunSignIn(store: Pick<Store, "runs" | "signIns">, se
   try {
     const run = await store.runs.get(claim.runId);
     if (!run || !run.signInHanded?.includes(pointerHash(signIn.ref))) return false;
-    // The saved sign-in, read once: its pointer is the one handed, and its save number is what the stamp is conditioned on,
-    // so an owner's fresh save between this read and the stamp is never marked verified by this run's save.
+    // The saved sign-in, read once: its pointer is the one handed, and that exact save (its number and sealed pointer) is
+    // what the stamp is conditioned on, so an owner's fresh save between this read and the stamp, or a forget and a new
+    // first save, is never marked verified by this run's save.
     const row = await store.signIns.get(run.agentId, signIn.provider);
     if (!row || open(sealKey, run.agentId, signIn.provider, row.pointerSealed) !== signIn.ref) return false;
     await store.runs.update(claim, { signInHanded: [...run.signInHanded] });
-    return await store.signIns.verify(run.agentId, signIn.provider, at, { ifSave: row.save });
+    return await store.signIns.verify(run.agentId, signIn.provider, at, { ifSave: row });
   } catch {
     return false;
   }

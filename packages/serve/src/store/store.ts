@@ -768,11 +768,13 @@ export interface SignIns {
   /** The agent's live sign-in for the provider, or undefined. */
   get(agentId: string, provider: string): Promise<SignInRow | undefined>;
   /** Marks the agent's sign-in for the provider verified at `at` (a run saved a live session back): sets verified_at, for
-   *  the v2 view, and answers whether it stamped a row. With `ifSave`, it stamps only while the sign-in is still that save
-   *  (SignInRow.save; WHERE save = ?), so a save that landed since the caller checked (allowed while held; it clears
-   *  verified_at), in the same millisecond or not, is never re-stamped stale: the answer is false then, and nothing is
-   *  written. The run path (E2) calls it at a run's save; a missing sign-in is left as it is (false). */
-  verify(agentId: string, provider: string, at: number, options?: { ifSave?: number }): Promise<boolean>;
+   *  the v2 view, and answers whether it stamped a row. With `ifSave` (the row the caller read, or its save number and
+   *  sealed pointer), it stamps only while the sign-in is still exactly that save (WHERE save = ? AND pointer_sealed = ?):
+   *  a save that landed since the caller checked (allowed while held; it clears verified_at), in the same millisecond or
+   *  not, and a first save made again after a forget (its number restarts at 1, its sealed pointer never the same) is
+   *  never stamped stale: the answer is false then, and nothing is written. The run path (E2) calls it at a run's save; a
+   *  missing sign-in is left as it is (false). */
+  verify(agentId: string, provider: string, at: number, options?: { ifSave?: Pick<SignInRow, "save" | "pointerSealed"> }): Promise<boolean>;
   /** The agent's forgotten pointers for the provider, newest first (kept sealed, never opened here). */
   tombstones(agentId: string, provider: string): Promise<SignInTombstoneRow[]>;
   /** Forgets the agent's live sign-in for the provider, in the one transaction a launch shares as its lock: when a running

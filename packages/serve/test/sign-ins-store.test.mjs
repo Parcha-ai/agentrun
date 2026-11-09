@@ -84,7 +84,7 @@ test("a verify guarded by a forgotten sign-in's save never stamps the first save
   await store.signIns.forget("alpha", "browserbase", {});
   const { row: next } = await store.signIns.saveIfAbsent({ agentId: "alpha", provider: "browserbase", name: "default", pointerSealed: Uint8Array.from([2, 2]) });
   assert.equal(next.save, first.save, "the save after the forget is numbered as the forgotten one was");
-  const stale = await store.signIns.verify("alpha", "browserbase", first.savedAt + 1, { ifSave: first.save });
+  const stale = await store.signIns.verify("alpha", "browserbase", first.savedAt + 1, { ifSave: first });
   assert.equal(stale, false, "guarded by the forgotten sign-in's save, verify stamps nothing");
   assert.equal((await store.signIns.get("alpha", "browserbase")).verifiedAt, null, "the new sign-in stays unverified");
 });
@@ -96,11 +96,11 @@ test("a verify guarded by the save it checked never stamps a newer save, even on
   // The store's clock does not move: the re-save lands in the same millisecond.
   const again = await store.signIns.save({ agentId: "alpha", provider: "browserbase", name: "default", pointerSealed: Uint8Array.from([2]) });
   assert.equal(again.savedAt, first.savedAt, "both saves in one millisecond");
-  const stale = await store.signIns.verify("alpha", "browserbase", first.savedAt + 1, { ifSave: first.save });
+  const stale = await store.signIns.verify("alpha", "browserbase", first.savedAt + 1, { ifSave: first });
   assert.equal(stale, false, "guarded by the first save, verify stamps nothing");
   assert.equal((await store.signIns.get("alpha", "browserbase")).verifiedAt, null, "the newer save stays unverified");
   assert.notEqual(again.save, first.save, "each save has a number of its own");
-  assert.equal(await store.signIns.verify("alpha", "browserbase", first.savedAt + 2, { ifSave: again.save }), true, "guarded by the live save, it stamps");
+  assert.equal(await store.signIns.verify("alpha", "browserbase", first.savedAt + 2, { ifSave: again }), true, "guarded by the live save, it stamps");
 });
 
 test("one live sign-in per agent and provider: a second save replaces it in place", async (t) => {
@@ -320,12 +320,12 @@ test("a verify guarded by the save it checked: a re-save between a run's check a
   assert.equal(again.save, first.save + 1, "the re-save numbered itself on");
   // A run verifies against the save it saw (the first): it must not stamp the re-saved sign-in.
   clock.now += 10;
-  const stale = await store.signIns.verify("alpha", "browserbase", clock.now, { ifSave: first.save });
+  const stale = await store.signIns.verify("alpha", "browserbase", clock.now, { ifSave: first });
   assert.equal(stale, false, "guarded by the old save, verify stamps nothing");
   assert.equal((await store.signIns.get("alpha", "browserbase")).verifiedAt, null, "verified_at stays null for the re-saved sign-in");
   // Against the live save it stamps, and answers true.
   const when = clock.now;
-  const ok = await store.signIns.verify("alpha", "browserbase", when, { ifSave: again.save });
+  const ok = await store.signIns.verify("alpha", "browserbase", when, { ifSave: again });
   assert.equal(ok, true, "the live save stamps it");
   assert.equal((await store.signIns.get("alpha", "browserbase")).verifiedAt, when);
   // No ifSave stamps unconditionally, as the plain call always did; a missing sign-in answers false.

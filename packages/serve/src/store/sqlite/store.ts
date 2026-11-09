@@ -1029,12 +1029,12 @@ class SqliteStore implements Store {
         return row && signInOf(row);
       },
       verify: async (agentId, provider, at, { ifSave } = {}) => {
-        // With ifSave, stamp only while the row is still that save (WHERE save = ?): a save that landed since the caller
-        // checked (allowed while held; it clears verified_at) numbered itself on, in the same millisecond or not, so verify
-        // never stamps it stale.
+        // With ifSave, stamp only while the row is still exactly that save, by its number and its sealed pointer together:
+        // a save that landed since the caller checked numbered itself on, and a first save made again after a forget (its
+        // number back at 1) holds a pointer sealed afresh, never the same bytes, so verify never stamps either stale.
         const [result] = await db.write([{
-          sql: `UPDATE sign_ins SET verified_at = ? WHERE agent_id = ? AND provider = ?${ifSave === undefined ? "" : " AND save = ?"}`,
-          params: ifSave === undefined ? [at, agentId, provider] : [at, agentId, provider, ifSave],
+          sql: `UPDATE sign_ins SET verified_at = ? WHERE agent_id = ? AND provider = ?${ifSave === undefined ? "" : " AND save = ? AND pointer_sealed = ?"}`,
+          params: ifSave === undefined ? [at, agentId, provider] : [at, agentId, provider, ifSave.save, ifSave.pointerSealed],
         }]);
         return result!.changes > 0;
       },
