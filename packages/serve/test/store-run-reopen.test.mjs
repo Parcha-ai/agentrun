@@ -5,9 +5,25 @@
 // unknown one are refused in the store (RunFinal), and nothing is written. A store over another database (Postgres) runs
 // this same case.
 import assert from "node:assert/strict";
-import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { agentWithRevision, queued, storeOn } from "./store-helpers.mjs";
+import { raw } from "./store-target.mjs";
+
+/** A test-only log of every write of a run's state, in the store at `file` (either database): a row trigger appends the
+ *  new state and whether ended_at is set. Read back with `writes(runId)`. */
+async function stateLog(t, file) {
+  const db = await raw(file);
+  t.after(() => db.close().catch(() => undefined));
+  if (db.kind === "sqlite") {
+    await db.exec("CREATE TABLE test_state_log (n INTEGER PRIMARY KEY, run_id TEXT, state TEXT, ended_at INTEGER)");
+    await db.exec("CREATE TRIGGER test_state_log_t AFTER UPDATE OF state ON runs BEGIN INSERT INTO test_state_log (run_id, state, ended_at) VALUES (NEW.id, NEW.state, NEW.ended_at); END");
+  } else {
+    await db.exec(`CREATE TABLE test_state_log (n BIGSERIAL PRIMARY KEY, run_id TEXT, state TEXT, ended_at BIGINT);
+      CREATE FUNCTION test_state_log_f() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN INSERT INTO test_state_log (run_id, state, ended_at) VALUES (NEW.id, NEW.state, NEW.ended_at); RETURN NEW; END $$;
+      CREATE TRIGGER test_state_log_t AFTER UPDATE OF state ON runs FOR EACH ROW EXECUTE FUNCTION test_state_log_f()`);
+  }
+  return { writes: async (runId) => (await db.all("SELECT state, ended_at FROM test_state_log WHERE run_id = ? ORDER BY n", runId)).map((one) => [one.state, one.ended_at !== null]) };
+}
 
 const { RunFinal, endedReason } = await import("../dist/store/index.js");
 
@@ -59,13 +75,11 @@ test("runs.reopen puts a completed agentic run back to running, released and cla
 
 test("a person's message racing a completed run's end lands on exactly one path: in before the end, the end opens the run again with it; after the end, a new row is refused and runs.reopen takes it", async (t) => {
   const { store, file } = await storeOn(t);
-  // Every write of a run's state, as a row trigger sees it (a test-only log on the store's file): the end's final write must
-  // be one of them, its ended_at set, before the reopen's, so what follows a run's changes tells its end (run.ended, its
-  // marker the end's ended_at) as main does before it opens the run again (runs.ts reopen: the end's run.ended first).
-  const db = new DatabaseSync(file);
-  db.exec("CREATE TABLE test_state_log (n INTEGER PRIMARY KEY, run_id TEXT, state TEXT, ended_at INTEGER)");
-  db.exec("CREATE TRIGGER test_state_log_t AFTER UPDATE OF state ON runs BEGIN INSERT INTO test_state_log (run_id, state, ended_at) VALUES (NEW.id, NEW.state, NEW.ended_at); END");
-  t.after(() => db.close());
+  // Every write of a run's state, as a row trigger sees it (a test-only log in the store, on either database): the end's
+  // final write must be one of them, its ended_at set, before the reopen's, so what follows a run's changes tells its end
+  // (run.ended, its marker the end's ended_at) as main does before it opens the run again (runs.ts reopen: the end's
+  // run.ended first).
+  const log = await stateLog(t, file);
   // In before the end: the message waits untaken at the end commit, which opens the run again with it (main's: a message
   // that waited for the end opens the completed run again), its other leftovers refused as before.
   await queued(store);
@@ -75,7 +89,7 @@ test("a person's message racing a completed run's end lands on exactly one path:
   await store.runs.update(first, { state: "ended", summary: "The first answer." });
   const row = await store.runs.get("run-1");
   assert.deepEqual({ state: row.state, runner: row.runner, endedAt: row.endedAt, summary: row.summary }, { state: "running", runner: null, endedAt: null, summary: null }, "opened again in the end's commit");
-  const writes = db.prepare("SELECT state, ended_at FROM test_state_log WHERE run_id = 'run-1' ORDER BY n").all().map((one) => [one.state, one.ended_at !== null]);
+  const writes = await log.writes("run-1");
   assert.deepEqual(writes.slice(-2), [["ended", true], ["running", false]], `the end's final write, its ended_at set, then the reopen: ${JSON.stringify(writes)}`);
   assert.ok((await store.runs.claimable()).includes("run-1"), "a runner claims it at once");
   const rows = await store.commands("run-1", 0);
