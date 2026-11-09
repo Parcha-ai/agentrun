@@ -22,11 +22,11 @@ import { firstMessage } from "../run-manifest.js";
 import type { RunLaunch } from "../run-launch.js";
 import type { Store } from "../store/store.js";
 import { isObject } from "../validate.js";
-import { runGate } from "../tool-gate.js";
+import { type RunFiles, runGate } from "../tool-gate.js";
 import { loadToolSettings } from "../tool-plane.js";
 import type { ToolHost } from "../tools.js";
 import { openRunWorkspace } from "../workspace/run-workspace.js";
-import { runFolder } from "../workspace/paths.js";
+import { COMPUTER_ROOT, runFolder } from "../workspace/paths.js";
 import { runTools, type ToolResults } from "../workspace/run-tools.js";
 import type { AdapterRun, AdapterRunSpec } from "./adapter-loop.js";
 import { piAdapter } from "./adapters/pi.js";
@@ -96,16 +96,19 @@ type RevisionBody = {
  * The run's gate before a call's intent, as the adapter loop asks it: the revision's tool settings and approvals over the
  * server's, from the one store (loadToolSettings), through RunGate (decide: deny with its words, a pin, allow, ask). The
  * adapter loop handles the ask/park/answer on the journal itself, so only the answer is read here, never RunGate's own
- * file-based approval flow. `root`: the run's folder.
+ * file-based approval flow. `root`: the run's files, the run's Workspace (Mode 2: its folder on the run's disk; the turn's
+ * origin is read through it, never a folder of this machine) or the local folder's path.
  *
  * The server's settings are read again at each call, from the store (a row of the local store: no cache, no signal from
  * the server, which may be another process), so a permission set while the run goes reaches its next call ("applies at the
  * next call, in runs already going too"). A read that fails is unread: the gate holds to its last good read, marked unread
  * (RunGate.serverSettings), so a deny it held still refuses and approvals "never" lifts no ask until the store reads.
  */
-export async function adapterRunGate(store: Pick<Store, "settings">, claim: Pick<Claim, "runId">, revision: { kind: string; body: { toolSettings?: unknown; harness?: string; approvals?: Approvals } }, root: string): Promise<NonNullable<AdapterRunSpec["gate"]>> {
+export async function adapterRunGate(store: Pick<Store, "settings">, claim: Pick<Claim, "runId">, revision: { kind: string; body: { toolSettings?: unknown; harness?: string; approvals?: Approvals } }, root: RunFiles): Promise<NonNullable<AdapterRunSpec["gate"]>> {
   let current = await storeSettings(store);
-  const gate = runGate({ root, work: root }, claim.runId, revision, () => current);
+  // A Workspace's paths are in the run's folder: its folder named as a computer names it, for the gate's path checks.
+  const folder = typeof root === "string" ? root : COMPUTER_ROOT;
+  const gate = runGate({ root: folder, work: folder }, claim.runId, revision, () => current, root);
   return async (call) => {
     current = await storeSettings(store);
     return gate.decide(call.tool, call.args);
@@ -164,7 +167,9 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
   // ask it leaves into an allow). The adapter loop asks `gate` and handles the ask/park/answer on the journal itself, so
   // only the permission is read here, never runGate's own file-based approval flow.
   const root = runFolder(deps.data, runRow.agentId, claim.runId);
-  const gate = await adapterRunGate(deps.store, claim, revision, root);
+  // The gate reads the run's own files (the turn's origin) through the run's Workspace: in Mode 2, its folder on the run's
+  // disk, never this machine's folder at the same path.
+  const gate = await adapterRunGate(deps.store, claim, revision, ws.workspace);
 
   // The run's cap (its launch's maxCostUsd): the host's check before each paid request (beforeRequestOf), and what a
   // refusal does to the run (parkOf), with the kernel's raise rule.

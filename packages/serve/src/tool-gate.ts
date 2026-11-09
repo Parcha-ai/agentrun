@@ -49,6 +49,7 @@ import { dataOfRun, readJson, RUN_META } from "./files.js";
 import { LEARNED_DIR } from "./learning.js";
 import type { TurnOrigin } from "./learning-run.js";
 import { COMPUTER_ROOT, portPath } from "./workspace/paths.js";
+import type { Workspace } from "./workspace/workspace.js";
 import { forModel } from "./result.js";
 import { builtinHarness } from "./harness-table.js";
 import { DEFAULT_HARNESS } from "./harness.js";
@@ -453,9 +454,13 @@ export function resumeText(request: Pick<ApprovalRequest, "tool" | "call_id">, s
  *  an agentic run's parks an asked call; a workflow's model node cannot. `serverSettings`: where the server's tool
  *  settings are read from, read at each call as the gate reads them; absent, the file beside the run's data directory (the
  *  old per-run process). The runner gives the one store's (tool-plane.ts loadToolSettings), read once at the claim. */
-export function runGate(where: { root: string; work: string }, runId: string, revision: { kind: string; body: { toolSettings?: unknown; harness?: string; approvals?: Approvals } }, serverSettings?: () => ReturnType<typeof readToolSettings>): RunGate {
-  return new RunGate({ root: where.root, work: where.work, data: dataOfRun(where.root), runId, harness: revision.body.harness ?? DEFAULT_HARNESS }, (revision.body.toolSettings ?? {}) as PermissionSettings, revision.kind === "agentic", process.env[NO_APPROVER_ENV] !== "1", approvalsOf(revision.body.approvals), serverSettings);
+export function runGate(where: { root: string; work: string }, runId: string, revision: { kind: string; body: { toolSettings?: unknown; harness?: string; approvals?: Approvals } }, serverSettings?: () => ReturnType<typeof readToolSettings>, files?: RunFiles): RunGate {
+  return new RunGate({ root: where.root, work: where.work, data: dataOfRun(where.root), runId, harness: revision.body.harness ?? DEFAULT_HARNESS }, (revision.body.toolSettings ?? {}) as PermissionSettings, revision.kind === "agentic", process.env[NO_APPROVER_ENV] !== "1", approvalsOf(revision.body.approvals), serverSettings, files);
 }
+
+/** Where a gate reads the run's own files (the turn's origin): the run's Workspace (Mode 2: its folder on the run's disk,
+ *  read by path in the folder, never a folder of this machine), or the local folder's path. */
+export type RunFiles = Pick<Workspace, "read"> | string;
 
 /** The gate in a run's process, park mode: its policy, the turn's origin, the calls that wait, and the answers acted on. */
 export class RunGate {
@@ -481,20 +486,24 @@ export class RunGate {
   /** `where.data`: the server's data directory, its tool settings beside the store; `overrides`: the pinned revision's
    *  own; `parks`: whether an asked call parks the run (an agentic run's), which a workflow's model node cannot;
    *  `approvers`: whether anyone can answer an ask here (the owner's password session: accounts on); `approvals`: the
-   *  pinned revision's (definition.approvals): "never" runs the agent unattended, an ask allowed (permissionFrom). */
-  constructor(private readonly where: { root: string; work: string; data: string; runId: string; harness?: string; mcpServers?: readonly string[] }, private readonly overrides: PermissionSettings = {}, private readonly parks = true, private readonly approvers = true, private readonly approvals: Approvals = "ask", private readonly readServerSettings?: () => ReturnType<typeof readToolSettings>) {}
+   *  pinned revision's (definition.approvals): "never" runs the agent unattended, an ask allowed (permissionFrom);
+   *  `files`: where the run's own files are read (RunFiles), the run's folder `where.root` when absent. */
+  constructor(private readonly where: { root: string; work: string; data: string; runId: string; harness?: string; mcpServers?: readonly string[] }, private readonly overrides: PermissionSettings = {}, private readonly parks = true, private readonly approvers = true, private readonly approvals: Approvals = "ask", private readonly readServerSettings?: () => ReturnType<typeof readToolSettings>, private readonly files: RunFiles = where.root) {}
 
   /** A tool's permission now (permissionOf): the revision's own over the server's setting, read at each call, so a change
    *  reaches a live run at its next call; under approvals "never", an ask is an allow. */
   readonly policy = (tool: string): Permission => this.setting(tool).permission;
 
   /** The gate's answer for one call before its intent, for a loop that parks and answers asks itself (the runner's adapter
-   *  loop): run it, ask a person, or refuse it with the words the model reads. The same order as `enter`, past the end-of-run
-   *  turn's write check (the loop's own): the deny (with where it was set, and that nothing was sent or charged), then a
-   *  pin, then the allow, then the ask, so an allow that approvals "never" made is decided only after every refusal. */
-  decide(name: string, args: unknown): "allow" | "ask" | { deny: string } {
+   *  loops, pi's and the CLI harnesses'): run it, ask a person, or refuse it with the words the model reads. `enter`'s
+   *  order: the end-of-run turn's write under .learning/ (learningRefusal), the deny (with where it was set, and that
+   *  nothing was sent or charged), a pin, then the allow, then the ask, so an allow that approvals "never" made is decided
+   *  only after every refusal. */
+  async decide(name: string, args: unknown): Promise<"allow" | "ask" | { deny: string }> {
     const key = settingsKeyOf(this.where.harness ?? DEFAULT_HARNESS, name, this.where.mcpServers) ?? name;
     const tool = shellToolOf(name) ?? key;
+    const learning = await this.learningRefusal(key, args);
+    if (learning) return { deny: learning };
     const verdict = this.policy(name);
     if (verdict === "deny") return { deny: deniedText(tool, key, this.denyFrom(name), "no") };
     const pinned = this.pinned(key, args, "no");
@@ -546,13 +555,27 @@ export class RunGate {
     return this.lastGood;
   }
 
-  /** The origin of the turn running now: what the server's internal path wrote for it; none for a person's turn. */
-  turnOrigin(): TurnOrigin | undefined {
+  /** The origin of the turn running now: what the server's internal path wrote for it (TURN_ORIGIN_FILE in the run's
+   *  folder, read through `files`: the run's Workspace or the local folder's path); none for a person's turn, or a file
+   *  that is not there or does not read. */
+  async turnOrigin(): Promise<TurnOrigin | undefined> {
     try {
-      return (JSON.parse(readFileSync(join(this.where.root, TURN_ORIGIN_FILE), "utf8")) as { origin?: unknown })?.origin === "reflect" ? "reflect" : undefined;
+      const text = typeof this.files === "string" ? readFileSync(join(this.files, TURN_ORIGIN_FILE), "utf8") : new TextDecoder().decode(await this.files.read(TURN_ORIGIN_FILE));
+      return (JSON.parse(text) as { origin?: unknown })?.origin === "reflect" ? "reflect" : undefined;
     } catch {
       return undefined;
     }
+  }
+
+  /** The end-of-run turn's refusal of a write or edit under work/.learning/ (NOTE_ONLY_TEXT, the adapter loop's one text
+   *  too), whatever the tool's permission: its notes are kept only from its answer. Undefined for any other call or turn,
+   *  whose write there follows its permission, as anywhere. The first check of `enter` and `decide`. */
+  private async learningRefusal(key: string, args: unknown): Promise<string | undefined> {
+    if (key !== "write" && key !== "edit") return undefined;
+    // The folder's path a file tool resolves against: the local folder's, or a computer's name for it (the Workspace's paths
+    // are in the run's folder, so a path there is relative or under COMPUTER_ROOT).
+    const work = typeof this.files === "string" ? this.where.work : COMPUTER_ROOT;
+    return underLearning(work, args) && (await this.turnOrigin()) === "reflect" ? NOTE_ONLY_TEXT : undefined;
   }
 
   /** One model-initiated call at the gate: undefined when it may run; else its answer, refused at once (deny) or parked
@@ -562,9 +585,9 @@ export class RunGate {
     // held to bash's (SHELL_FAMILY) keeps its own name, so an approved bash_background runs bash_background, never bash.
     const key = settingsKeyOf(this.where.harness ?? DEFAULT_HARNESS, name, this.where.mcpServers) ?? name;
     const tool = shellToolOf(name) ?? key;
-    // The end-of-run turn writes no file under work/.learning/, whatever the tool's permission: its notes are kept only
-    // from its answer (NOTE_ONLY_TEXT). Any other turn's write there follows its permission, as anywhere.
-    if ((key === "write" || key === "edit") && this.turnOrigin() === "reflect" && underLearning(this.where.work, args)) return { text: NOTE_ONLY_TEXT, isError: true };
+    // The end-of-run turn writes no file under work/.learning/, whatever the tool's permission (learningRefusal).
+    const learning = await this.learningRefusal(key, args);
+    if (learning) return { text: learning, isError: true };
     // Every refusal that does not come from the permission (the reflect turn's above, the deny and a pin's below) stays
     // ABOVE the allow's return further down. An allow here may be an ask the agent's approvals "never" turned into one
     // (permissionFrom's last step), and an allowed call runs at once: nothing after that return refuses it.
