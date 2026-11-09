@@ -1678,7 +1678,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
           log?.(logLine("template_undo_failed", { template: pkg.name, trigger: id, message: (undo as Error).message }));
         }
       }
-      await agents.setArchived("agent", entry.agent.id, true).catch((undo: Error) => log?.(logLine("template_undo_failed", { template: pkg.name, agent: entry.agent.id, message: undo.message })));
+      // Archived through the trigger engine, as POST /agents/{id}/archive is: a trigger the undo could not remove is turned
+      // off in that same store transaction with the reason agent_archived, never with none, and unarchive answers it.
+      await triggers.agentArchived(entry.agent.id).catch((undo: Error) => log?.(logLine("template_undo_failed", { template: pkg.name, agent: entry.agent.id, message: undo.message })));
       throw error;
     }
     // A pinned send whose destination parameter was not given is denied, never let go anywhere: said, by its gate name.
