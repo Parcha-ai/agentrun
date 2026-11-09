@@ -112,6 +112,24 @@ test("reusing an existing version changes nothing, including the agent's name", 
   assert.equal((await store.agents.get(first.agentId)).name, "Due diligence", "the name is unchanged on reuse");
 });
 
+test("the agent an external reference maps to is read by that reference; none before its first use", async (t) => {
+  const { store } = await storeOn(t);
+  assert.equal(await store.agents.byExternal("grep:expert:42"), undefined);
+  const run = await store.runs.createInline(inline({ id: "42", version: "7", runId: "run-a" }));
+  const agent = await store.agents.byExternal("grep:expert:42");
+  assert.deepEqual([agent?.id, agent?.externalRef], [run.agentId, "grep:expert:42"]);
+  assert.equal(await store.agents.byExternal("grep:expert:43"), undefined);
+});
+
+test("a version's first use keeps its note on the revision; a reuse leaves it", async (t) => {
+  const { store } = await storeOn(t);
+  const args = inline({ id: "42", version: "7", runId: "run-a" });
+  const first = await store.runs.createInline({ ...args, revision: { ...args.revision, note: "Published in the source." } });
+  const again = inline({ id: "42", version: "7", runId: "run-b" });
+  await store.runs.createInline({ ...again, revision: { ...again.revision, note: "Another note." } });
+  assert.deepEqual((await store.agents.revisions(first.agentId)).map((r) => r.note), ["Published in the source."]);
+});
+
 test("a different expert reference is a different agent", async (t) => {
   const { store } = await storeOn(t);
   await store.runs.createInline(inline({ id: "42", version: "1", runId: "run-a" }));
