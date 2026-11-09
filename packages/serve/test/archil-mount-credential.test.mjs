@@ -27,6 +27,23 @@ test("the ttl is the run's lifetime bound in whole seconds, never a fixed hour",
   assert.equal(ttlOf(24 * 60 * 60_000), "86400s");
   assert.equal(ttlOf(1500), "2s");
   assert.equal(ttlOf(0), "1s");
+  assert.equal(ttlOf(400 * 24 * 60 * 60_000), "31536000s", "at most Archil's 365 days");
+});
+
+test("the run's earlier claims' token users are removed by nickname (agentrun:<run>:<epoch>); its own epoch's, another run's and a person's stay", async (t) => {
+  const { fake, options } = await control(t, {
+    existing: [
+      { identifier: "a", nickname: "agentrun:run-1:1" },
+      { identifier: "b", nickname: "agentrun:run-1:3" },
+      { identifier: "c", nickname: "agentrun:run-10:1" },
+      { identifier: "d", nickname: "agentrun:run-1:x" },
+      { identifier: "e", nickname: "someone's mount" },
+    ],
+  });
+  const { removeOlderMountTokens, nicknameOf } = await import("../dist/workspace/archil-mount-credential.js");
+  assert.equal(nicknameOf("run-1", 3), "agentrun:run-1:3");
+  assert.deepEqual(await removeOlderMountTokens(options, "run-1", 3), ["a"]);
+  assert.deepEqual([...fake.users.keys()].sort(), ["b", "c", "d", "e"]);
 });
 
 test("remove: by its identifier; removed twice is still removed (a 404 is already gone)", async (t) => {

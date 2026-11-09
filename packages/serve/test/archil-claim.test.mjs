@@ -20,7 +20,7 @@ const TOKEN = "fake-minted-token-1";
 async function controlOn(t, options) {
   const fake = await archilControlFake(options);
   t.after(() => fake.close());
-  return { fake, mount: { nickname: "agentrun run-1", ttlMs: 86_400_000, baseUrl: fake.baseUrl } };
+  return { fake, mount: { runId: "run-1", epoch: 3, ttlMs: 86_400_000, baseUrl: fake.baseUrl } };
 }
 /** The Archil settings as the store keeps them (archil-settings.ts). */
 const SETTINGS = { diskId: "dsk-0000000000000001", region: "aws-us-east-1", s3Url: "https://s3.green.us-east-1.aws.prod.archil.com" };
@@ -79,12 +79,12 @@ test("archil claim: the mount credential is minted when a mount first asks, once
   assert.equal(fake.requests.length, 0, "nothing minted before a mount asks");
   assert.equal(await claim.token(), TOKEN);
   assert.equal(await claim.token(), TOKEN);
-  assert.deepEqual(fake.requests.map((one) => [one.method, one.body?.nickname, one.body?.ttl]), [["POST", "agentrun run-1", "86400s"]], "minted once, with the run's label and lifetime bound");
+  assert.deepEqual(fake.requests.map((one) => [one.method, one.body?.nickname, one.body?.ttl]), [["GET", undefined, undefined], ["POST", "agentrun:run-1:3", "86400s"]], "the disk's users read, then minted once, named for the run and its epoch, with its lifetime bound");
   assert.deepEqual(asked, [ARCHIL_API_KEY_ROW], "no disk token row is read");
   assert.deepEqual([...claim.secrets].sort(), [API, TOKEN].sort());
   await claim.revoke();
   await claim.revoke();
-  assert.deepEqual(fake.requests.slice(1).map((one) => [one.method, one.query.identifier]), [["DELETE", "tok-1"]], "removed once by its identifier; a second revoke has nothing to remove");
+  assert.deepEqual(fake.requests.slice(2).map((one) => [one.method, one.query.identifier]), [["DELETE", "tok-1"]], "removed once by its identifier; a second revoke has nothing to remove");
   assert.equal(fake.users.size, 0);
   assert.ok(!claim.secrets.has(TOKEN), "the token is no longer held");
 });
@@ -137,8 +137,41 @@ test("archil claim: a failed mint refuses the mount that asks for it in words, n
   const { fake, mount } = await controlOn(t, { answer: ({ method }) => (method === "POST" ? { status: 403, body: { error: "the account may not add users to this disk", code: "forbidden" } } : undefined) });
   const { claim } = await claimOf({ mount });
   await assert.rejects(claim.token(), (error) => error instanceof ArchilClaimRefused && /This run's folder can't be mounted in its computer: Archil refused to mint the run's mount credential \(403\): the account may not add users to this disk/.test(error.message) && !error.message.includes(API));
-  assert.equal(fake.requests.length, 1);
+  assert.deepEqual(fake.requests.map((one) => one.method), ["GET", "POST"]);
   assert.deepEqual([...claim.secrets], [API], "no token held");
+});
+
+test("archil claim: a reclaim removes the run's token users of an earlier epoch before it mints; another run's and others are left", async (t) => {
+  const existing = [
+    { identifier: "tok-old", nickname: "agentrun:run-1:2" },
+    { identifier: "tok-older", nickname: "agentrun:run-1:1" },
+    { identifier: "tok-other-run", nickname: "agentrun:run-2:1" },
+    { identifier: "tok-person", nickname: "a person's own mount" },
+  ];
+  const { fake, mount } = await controlOn(t, { existing });
+  const { claim } = await claimOf({ mount });
+  assert.equal(await claim.token(), TOKEN);
+  assert.deepEqual(fake.requests.map((one) => [one.method, one.query.identifier ?? one.body?.nickname]), [
+    ["GET", undefined],
+    ["DELETE", "tok-old"],
+    ["DELETE", "tok-older"],
+    ["POST", "agentrun:run-1:3"],
+  ], "the earlier claims' removed first, then this claim's minted");
+  assert.deepEqual([...fake.users.keys()].sort(), ["tok-1", "tok-other-run", "tok-person"]);
+});
+
+test("archil claim: a lost claim removes the run's mount credential at once, not at its ttl", async (t) => {
+  const { fake, mount } = await controlOn(t);
+  const controller = new AbortController();
+  const { claim } = await claimOf({ signal: controller.signal, mount });
+  await claim.token();
+  assert.equal(fake.users.size, 1);
+  controller.abort(new Error("the claim was fenced"));
+  // The remove is a request on its way: wait for it to land (bounded), not for a time.
+  for (let tries = 0; fake.users.size > 0 && tries < 2000; tries += 1) await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.equal(fake.users.size, 0, "removed when the claim was lost");
+  assert.deepEqual(fake.requests.at(-1).method, "DELETE");
+  assert.equal(claim.secrets.size, 0);
 });
 
 test("archil claim: a claim made with no mount credential to mint refuses a mount in words", async () => {

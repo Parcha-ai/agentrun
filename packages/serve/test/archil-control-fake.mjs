@@ -1,12 +1,14 @@
-// A fake of Archil's control API for a disk's token users, on this machine's loopback (no call leaves it): POST
+// A fake of Archil's control API for a disk's token users, on this machine's loopback (no call leaves it): GET
+// /api/disks/{disk} lists them (its authorizedUsers); POST
 // /api/disks/{disk}/users mints a token user ({data: {token, identifier}}), DELETE /api/disks/{disk}/users/token?identifier=
 // removes one (404 once it is gone). It records each request, its Authorization and body. `answer` overrides a reply
 // ({status, body}) for a test that wants a refusal.
 import { createServer } from "node:http";
 
-export async function archilControlFake({ answer, tokenOf = (n) => `fake-minted-token-${n}` } = {}) {
+export async function archilControlFake({ answer, tokenOf = (n) => `fake-minted-token-${n}`, existing = [] } = {}) {
   const requests = [];
-  const users = new Map();
+  /** The disk's token users by identifier: `existing` ones first (an earlier claim's, another run's). */
+  const users = new Map(existing.map((user) => [user.identifier, { ...user }]));
   let minted = 0;
   const server = createServer((req, res) => {
     let raw = "";
@@ -18,6 +20,9 @@ export async function archilControlFake({ answer, tokenOf = (n) => `fake-minted-
       const reply = (status, json) => { res.writeHead(status, { "content-type": "application/json" }); res.end(JSON.stringify(json)); };
       const forced = answer?.({ method: req.method, path: url.pathname, body });
       if (forced) return reply(forced.status, forced.body);
+      if (req.method === "GET" && /^\/api\/disks\/[^/]+$/.test(url.pathname)) {
+        return reply(200, { success: true, data: { authorizedUsers: [...users.values()].map(({ identifier, nickname }) => ({ type: "token", identifier, nickname })) } });
+      }
       const mint = /^\/api\/disks\/([^/]+)\/users$/.exec(url.pathname);
       if (req.method === "POST" && mint) {
         minted += 1;

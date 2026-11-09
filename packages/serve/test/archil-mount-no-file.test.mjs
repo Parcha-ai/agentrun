@@ -36,7 +36,10 @@ function filesHolding(dir, needle) {
   return hits;
 }
 
-test("after a mint and a mount, no file under the server's data dir, the run's scratch or TMPDIR holds the mount token", async (t) => {
+/** A Mode 2 run's claim on the fakes, its sandbox started by computerForClaim with the run's folder mounted: the claim's
+ *  signal's controller, the started computer, what the provider was asked to create, the fake control API, and the
+ *  three places to scan. `existing`: token users the disk holds already (an earlier claim's). */
+async function mountedRun(t, { existing = [] } = {}) {
   // TMPDIR for this test alone, so the scan reads only what this run could have written there.
   const savedTmp = process.env.TMPDIR;
   const tmp = realpathSync(mkdtempSync(join(savedTmp ?? tmpdir(), "agentrun-mount-tmp-")));
@@ -46,7 +49,7 @@ test("after a mint and a mount, no file under the server's data dir, the run's s
     else process.env.TMPDIR = savedTmp;
     rmSync(tmp, { recursive: true, force: true });
   });
-  const control = await archilControlFake({ tokenOf: () => SENTINEL });
+  const control = await archilControlFake({ tokenOf: () => SENTINEL, existing });
   t.after(() => control.close());
   const { store, dir: dataDir } = await storeOn(t);
   const sealKey = randomBytes(32);
@@ -56,9 +59,10 @@ test("after a mint and a mount, no file under the server's data dir, the run's s
   mkdirSync(scratch);
 
   const disk = new FakeArchilDisk();
+  const controller = new AbortController();
   const claim = await archilClaim({
-    settings: SETTINGS, keys: store.sealedKeys, sealKey, signal: new AbortController().signal, makeDisk: () => disk,
-    mount: { nickname: "agentrun run-1", ttlMs: 86_400_000, baseUrl: control.baseUrl },
+    settings: SETTINGS, keys: store.sealedKeys, sealKey, signal: controller.signal, makeDisk: () => disk,
+    mount: { runId: "run-1", epoch: 3, ttlMs: 86_400_000, baseUrl: control.baseUrl },
   });
   const workspace = archilWorkspace(disk, "agents/a/runs/run-1/work", { region: SETTINGS.region, mountToken: () => claim.token() });
   const created = [];
@@ -79,10 +83,40 @@ test("after a mint and a mount, no file under the server's data dir, the run's s
   assert.equal(answer.computer?.kind, "sandbox");
   assert.equal(created[0].mount?.kind, "archil", "the run's folder was mounted");
   assert.equal(created[0].mount.token, SENTINEL, "with the minted token, in memory");
+  return { controller, answer, control, places: [["the server's data dir", dataDir], ["the run's scratch", scratch], ["TMPDIR", tmp]] };
+}
+
+/** No file under any of `places` holds the token. */
+function noFileHolds(places) {
+  for (const [where, root] of places) assert.deepEqual(filesHolding(root, SENTINEL), [], `no file under ${where} holds the token`);
+}
+
+/** Waits (bounded) for a request on its way to land: the fake's users to come to `size`. */
+async function usersAt(control, size) {
+  for (let tries = 0; control.users.size !== size && tries < 2000; tries += 1) await new Promise((resolve) => setTimeout(resolve, 5));
+  return control.users.size;
+}
+
+test("after a mint, a mount and the release, the credential is removed and no file under the data dir, the run's scratch or TMPDIR holds it", async (t) => {
+  const { answer, control, places } = await mountedRun(t);
   await answer.release();
   assert.equal(control.users.size, 0, "the credential was removed at the release");
+  noFileHolds(places);
+});
 
-  for (const [where, root] of [["the server's data dir", dataDir], ["the run's scratch", scratch], ["TMPDIR", tmp]]) {
-    assert.deepEqual(filesHolding(root, SENTINEL), [], `no file under ${where} holds the token`);
-  }
+test("a lost claim removes the credential at once, and no file holds it", async (t) => {
+  const { controller, control, places } = await mountedRun(t);
+  controller.abort(new Error("the claim was fenced"));
+  assert.equal(await usersAt(control, 0), 0, "removed when the claim was lost, not left for its ttl");
+  noFileHolds(places);
+});
+
+test("a reclaim removes an earlier claim's credential before it mints its own, and no file holds either", async (t) => {
+  const { answer, control, places } = await mountedRun(t, { existing: [{ identifier: "tok-epoch-2", nickname: "agentrun:run-1:2" }] });
+  assert.ok(!control.users.has("tok-epoch-2"), "epoch 2's credential removed before epoch 3's was minted");
+  const order = control.requests.map((one) => one.method);
+  assert.ok(order.indexOf("DELETE") < order.indexOf("POST"), `removed before the mint: ${order.join(", ")}`);
+  await answer.release();
+  assert.equal(control.users.size, 0);
+  noFileHolds(places);
 });
