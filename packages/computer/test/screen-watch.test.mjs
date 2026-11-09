@@ -169,8 +169,8 @@ test("width and height are the screen's real pixels: a 2560x1440 screen at maxWi
 	const mapped = [];
 	for (const action of ["down", "up"]) {
 		const one = toAction({ type: "mouse", action, x: at.x, y: at.y, button: 0, buttons: action === "down" ? 1 : 0, clickCount: 1, modifiers: 0 }, "desktop");
-		assert.equal(one.ok, true, JSON.stringify(one));
-		mapped.push(...one.value);
+		assert.ok(Array.isArray(one), JSON.stringify(one));
+		mapped.push(...one);
 	}
 	assert.deepEqual(await watched.value.input(mapped), { ok: true, value: { done: 4 } });
 	assert.deepEqual(fake.calls.at(-1).params.actions, [
@@ -252,16 +252,17 @@ test("watch() refuses a computer with no screen as unsupported, and a ref it can
 });
 
 test("toAction maps the viewer's events per kind, in the screen's pixels; what a kind cannot take is refused in words", () => {
+	// toAction answers the actions (an array), or a Refusal ({ field, message }) naming the event's field it refused.
 	const ok = (event, kind) => {
 		const mapped = toAction(event, kind);
-		assert.equal(mapped.ok, true, `${JSON.stringify(event)} on ${kind}: ${JSON.stringify(mapped)}`);
-		return mapped.value;
+		assert.ok(Array.isArray(mapped), `${JSON.stringify(event)} on ${kind}: ${JSON.stringify(mapped)}`);
+		return mapped;
 	};
-	const refused = (event, kind, code, words) => {
+	const refused = (event, kind, field, words) => {
 		const mapped = toAction(event, kind);
-		assert.equal(mapped.ok, false, `${JSON.stringify(event)} on ${kind}`);
-		assert.equal(mapped.error.code, code);
-		assert.match(mapped.error.message, words);
+		assert.ok(!Array.isArray(mapped), `${JSON.stringify(event)} on ${kind}: refused`);
+		assert.equal(mapped.field, field);
+		assert.match(mapped.message, words);
 	};
 	const mouse = (action, x, y, button = 0, modifiers = 0) => ({ type: "mouse", action, x, y, button, buttons: 0, clickCount: 1, modifiers });
 	const key = (action, k, code, modifiers = 0, text) => ({ type: "key", action, key: k, code, modifiers, ...(text === undefined ? {} : { text }) });
@@ -277,9 +278,9 @@ test("toAction maps the viewer's events per kind, in the screen's pixels; what a
 	assert.deepEqual(ok(key("down", "a", "KeyA"), "desktop"), [], "a printable key's down types nothing: its char does");
 	assert.deepEqual(ok(key("char", "é", "", 0, "é"), "desktop"), [{ type: "type", text: "é" }]);
 	assert.deepEqual(ok(key("up", "Enter", "Enter"), "desktop"), [], "a key's up is in its down's press");
-	refused({ type: "tap", x: 1, y: 2 }, "desktop", "unsupported", /a desktop takes the mouse, the wheel and keys/);
-	refused(key("down", "Hyper", "Hyper"), "desktop", "invalid", /Hyper is not a key/);
-	refused(mouse("move", Number.NaN, 2), "desktop", "invalid", /not a point/);
+	refused({ type: "tap", x: 1, y: 2 }, "desktop", "type", /a desktop takes the mouse, the wheel and keys/);
+	refused(key("down", "Hyper", "Hyper"), "desktop", "key", /Hyper is not a key/);
+	refused(mouse("move", Number.NaN, 2), "desktop", "x", /not a point/);
 	// A phone, Android or iPhone: taps, swipes, its buttons and typed text, upright as its frames are.
 	for (const kind of ["android", "ios"]) {
 		assert.deepEqual(ok({ type: "tap", x: 600.2, y: 300 }, kind), [{ type: "tap", at: [600, 300] }]);
@@ -288,7 +289,7 @@ test("toAction maps the viewer's events per kind, in the screen's pixels; what a
 		assert.deepEqual(ok({ type: "button", name: "back" }, kind), [{ type: "button", name: "back" }]);
 		assert.deepEqual(ok(key("char", "x", "", 0, "hi"), kind), [{ type: "type", text: "hi" }]);
 		assert.deepEqual(ok(key("down", "Enter", "Enter"), kind), [{ type: "key", keys: ["enter"] }]);
-		refused(mouse("down", 1, 2), kind, "unsupported", /a phone takes taps, swipes, its buttons and keys/);
-		refused({ type: "wheel", x: 1, y: 2, dx: 0, dy: 1 }, kind, "unsupported", /a phone takes taps, swipes, its buttons and keys/);
+		refused(mouse("down", 1, 2), kind, "type", /a phone takes taps, swipes, its buttons and keys/);
+		refused({ type: "wheel", x: 1, y: 2, dx: 0, dy: 1 }, kind, "type", /a phone takes taps, swipes, its buttons and keys/);
 	}
 });

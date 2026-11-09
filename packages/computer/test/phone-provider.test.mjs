@@ -952,8 +952,8 @@ test("the phone's watch() gives its PNG frames whole and upright, landscape too,
 	assert.deepEqual([frames[1].width, frames[1].height], [SCREEN.height, SCREEN.width]);
 	assert.deepEqual(png(Buffer.from(frames[1].bytes)), { width: SCREEN.height, height: SCREEN.width });
 	const tap = toAction({ type: "tap", x: SCREEN.height - 20, y: SCREEN.width - 10 }, "android");
-	assert.equal(tap.ok, true, JSON.stringify(tap));
-	assert.deepEqual(await watched.value.input(tap.value), { ok: true, value: { done: 1 } });
+	assert.ok(Array.isArray(tap), JSON.stringify(tap));
+	assert.deepEqual(await watched.value.input(tap), { ok: true, value: { done: 1 } });
 	assert.ok(fake.shells().includes(`input tap ${SCREEN.height - 20} ${SCREEN.width - 10}`), fake.shells().join("\n"));
 	await watched.value.close();
 	await provider.release(ref, "delete");
