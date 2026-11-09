@@ -12,7 +12,7 @@ import {
 } from "./computer-commands.js";
 import { settingOfDefinition } from "./computer-setting.js";
 import { ApiError, invalid } from "./errors.js";
-import type { Store } from "./store/index.js";
+import { FINAL_STATES, type Store } from "./store/index.js";
 import { unknownFields } from "./validate.js";
 import { type AskOutcome, HOLD_IDLE_MS, type HoldState } from "./workspace/computer-hold.js";
 
@@ -52,7 +52,7 @@ export type ComputerRouteDeps = {
 /** Whether the run is over: no computer of an ended run is up. */
 async function runOver(deps: ComputerRouteDeps, runId: string): Promise<boolean> {
   const row = await deps.store.runs.get(runId);
-  return !row || row.state === "ended";
+  return !row || FINAL_STATES.includes(row.state);
 }
 
 /** The run's computer as its owner sees it, from the store. */
