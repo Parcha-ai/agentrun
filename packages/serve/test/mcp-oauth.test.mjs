@@ -108,6 +108,38 @@ test("an OAuth server: preview says to sign in; start, approve and callback keep
   assert.equal((await fetch(`${base}${CALLBACK}?code=x&state=never-given`, { redirect: "manual", headers: { cookie: `agentrun-oauth-${new URL(base).port}-${createHash("sha256").update("never-given").digest("hex").slice(0, 16)}=never-given` } })).status, 400);
 });
 
+test("the OAuth callback's owner-cookie gate holds in front of the store-backed registry: no cookie and another browser's cookie are 403 and never run the callback; the right cookie completes", async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() });
+  const { api } = await serve(t);
+  const { as, mcp } = await fakes(t);
+
+  // Two sign-ins at once, each with its own cookie bound to its own state.
+  const first = await api("POST", "/settings/mcp-servers/docs/oauth/start", { url: mcp.url, scopes: ["read"] });
+  assert.equal(first.status, 200, JSON.stringify(first.body));
+  const other = await api("POST", "/settings/mcp-servers/notes/oauth/start", { url: mcp.url, scopes: ["read"] });
+  assert.equal(other.status, 200, JSON.stringify(other.body));
+  const otherCookie = other.headers.get("set-cookie").split(";")[0];
+
+  // No owner cookie: refused before the registry's callback runs (startedHere, constant-time, in front of McpServersOverStore).
+  const noCookie = await approve(first, { cookie: false });
+  assert.equal(noCookie.status, 403, "no owner cookie is refused");
+  assert.match((await noCookie.json()).error.message, /started in another browser/);
+
+  // Another browser's cookie (a different sign-in's): also refused.
+  const wrongCookie = await approve(first, { jar: otherCookie });
+  assert.equal(wrongCookie.status, 403, "another browser's cookie is refused");
+
+  // Neither refused attempt exchanged a code, so the registry's callback never ran for them: the state is still unused.
+  assert.ok(!as.log.some((entry) => entry.path === "/token"), "no code was exchanged while the gate refused the callback");
+
+  // The right cookie completes: the state survived the refusals, so the callback runs exactly once, now.
+  const back = await approve(first);
+  assert.equal(back.status, 302, await back.clone().text());
+  assert.equal(back.headers.get("location"), "/#/settings/mcp?server=docs&sign_in=ok");
+  assert.ok(as.log.some((entry) => entry.path === "/token" && entry.form.grant_type === "authorization_code"), "the right cookie exchanges the code");
+  assert.equal((await api("GET", "/settings/mcp-servers/docs")).body.credential, "sealed");
+});
+
 test("a sign-in's state expires: a callback after ten minutes is refused", async (t) => {
   withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() });
   const { api } = await serve(t);
