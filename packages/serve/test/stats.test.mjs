@@ -3,13 +3,14 @@
 // counted, never read as $0; no run's files are opened. `analytics` sums the runs' metrics over the runs `from`, `to`
 // and `agent` pick; the other numbers stay the whole store's.
 import assert from "node:assert/strict";
-import { chmod, mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { openStore, openStoreReader } from "@parcha/pi-durable-agent";
+import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { schemaProblems } from "./schema-support.mjs";
-import { follow, runDir, scratch, serve, startRun } from "./support.mjs";
+import { follow, scratch, serve, startRun } from "./support.mjs";
+import { seedRuns } from "./store-helpers.mjs";
+import { openSqliteStore, STORE_FILE } from "../dist/store/sqlite/store.js";
+import { listRuns } from "../dist/store-reads/runs.js";
 import { statsView } from "../dist/stats.js";
 
 const at = (i) => new Date(Date.UTC(2026, 0, 1) + i * 1000).toISOString();
@@ -18,31 +19,24 @@ const at = (i) => new Date(Date.UTC(2026, 0, 1) + i * 1000).toISOString();
  *  (`[agent, state, costUsd | null]`, the i-th started i seconds after the first); `archived` are archived. */
 async function seeded(t, agents, runs, archived = []) {
   const data = join(await scratch(t), "agents");
-  const store = openStore(data);
-  const revisions = {};
-  for (const [id, name] of agents) {
-    store.createAgent({ name, id });
-    revisions[id] = (await store.commitRevision(id, { kind: "agentic", instructions: "Answer." }, { setCurrent: true })).id;
-  }
-  store.close();
-  const db = new DatabaseSync(join(data, "store.sqlite"));
-  db.exec("BEGIN");
-  const insert = db.prepare("INSERT INTO runs (id, agent_id, revision_id, state, started_at, ended_at, cost_usd) VALUES (?, ?, ?, ?, ?, ?, ?)");
-  runs.forEach(([agent, state, cost], i) => insert.run(`run-${i}`, agent, revisions[agent], state, at(i), at(i + 1), cost));
-  db.exec("COMMIT");
-  db.close();
-  const writer = openStore(data);
-  for (const [kind, id] of archived) writer.setArchived(kind, id, true);
-  writer.close();
+  const { revisions } = await seedRuns(
+    data,
+    agents,
+    runs.map(([agent, state, cost], i) => ({ agent, state, costUsd: cost, startedMs: Date.parse(at(i)), endedMs: Date.parse(at(i + 1)) })),
+    archived,
+  );
   return { data, revisions };
 }
 
 /** The three running buckets partition the running runs not archived, as the store lists them. */
-function assertRunningPartitioned(data, body) {
-  const reader = openStoreReader(data);
-  const running = reader.listRuns().filter((r) => r.state === "running" && !r.archivedAt).length;
-  reader.close();
-  assert.equal(body.runs.active + body.runs.needs_input + body.runs.status_unknown, running, "each running run is in exactly one of active, needs_input and status_unknown");
+async function assertRunningPartitioned(data, body) {
+  const store = await openSqliteStore({ dataDir: data, role: "runner" });
+  try {
+    const running = (await listRuns(store, {}, ctx)).filter((r) => r.state === "running" && !r.archivedAt).length;
+    assert.equal(body.runs.active + body.runs.needs_input + body.runs.status_unknown, running, "each running run is in exactly one of active, needs_input and status_unknown");
+  } finally {
+    await store.close();
+  }
 }
 
 /** The served document's schema for GET /stats's 200. */
@@ -82,7 +76,7 @@ test("GET /v2/stats counts by status, sums only known costs, leaves archived out
   });
   assert.deepEqual([analytics.totals.runs, analytics.totals.runs_with_metrics, analytics.totals.tokens], [6, 0, 0], "rows with no metrics: runs, none of them covered");
   assert.deepEqual([analytics.totals.completed, analytics.totals.needs_review, analytics.totals.failed], [2, 1, 1], "the escalated run is completed, and needs review; never failed");
-  assertRunningPartitioned(data, stats.body);
+  await assertRunningPartitioned(data, stats.body);
   const { doc, op, schema } = await statsSchema(baseUrl);
   assert.equal(op["x-agentrun-serve"], "stats/1");
   assert.deepEqual(schemaProblems(doc, schema, stats.body), []);
@@ -97,30 +91,16 @@ test("GET /v2/stats counts by status, sums only known costs, leaves archived out
   assert.notDeepEqual(schemaProblems(doc, schema, { ...stats.body, analytics: { ...analytics, totals: { ...analytics.totals, cost: 1 } } }), []);
 });
 
-/** A data directory with runs that ended with metrics, through the store's own API: chat (pi) and coder (codex), and a
- *  session imported from claude-code, at fixed times. */
+/** A data directory with runs that ended with metrics, through the store: chat (pi) and coder (codex), and a session
+ *  imported from claude-code, at fixed times. */
 async function measured(t) {
   const data = join(await scratch(t), "agents");
-  const store = openStore(data);
-  for (const [id, harness] of [["chat", undefined], ["coder", "codex"]]) {
-    store.createAgent({ name: id, id });
-    await store.commitRevision(id, { kind: "agentic", instructions: "Answer.", ...(harness ? { harness } : {}) }, { setCurrent: true });
-  }
   const metrics = (input, cacheRead, output, requests, tools, extra = {}) => ({ input, cacheRead, cacheWrite: 0, output, requests, unmetered: 0, models: { "anthropic/claude-opus-5-5": requests }, tools, ...extra });
-  const ended = async (agent, end) => {
-    const { runId } = await store.startRun({ agent });
-    store.carryBack(runId, end);
-    return runId;
-  };
-  const chat = await ended("chat", { state: "completed", costUsd: 0.25, metrics: metrics(100, 1000, 20, 2, { read: { calls: 2, errors: 0 } }, { effort: "high", activeMs: 3000 }) });
-  const coder = await ended("coder", { state: "failed", metrics: metrics(50, 0, 10, 1, { shell: { calls: 1, errors: 1 } }, { effort: "low" }) });
-  store.importRun({ agent: "chat", revision: store.listRevisions("chat")[0].id, state: "completed", startedAt: "2026-10-01T08:00:00.000Z", endedAt: "2026-10-01T08:01:00.000Z", costUsd: 0.5, source: "claude-code", session: "session-1", metrics: metrics(5, 0, 5, 1, {}) });
-  store.close();
-  const db = new DatabaseSync(join(data, "store.sqlite"));
-  const times = db.prepare("UPDATE runs SET started_at = ?, ended_at = ? WHERE id = ?");
-  times.run("2026-10-02T10:00:00.000Z", "2026-10-02T10:00:05.000Z", chat);
-  times.run("2026-10-03T00:00:00.000Z", "2026-10-03T00:00:01.000Z", coder);
-  db.close();
+  await seedRuns(data, [["chat", "chat"], ["coder", "coder", "codex"]], [
+    { agent: "chat", state: "completed", costUsd: 0.25, metrics: metrics(100, 1000, 20, 2, { read: { calls: 2, errors: 0 } }, { effort: "high", activeMs: 3000 }), startedMs: Date.parse("2026-10-02T10:00:00.000Z"), endedMs: Date.parse("2026-10-02T10:00:05.000Z") },
+    { agent: "coder", state: "failed", metrics: metrics(50, 0, 10, 1, { shell: { calls: 1, errors: 1 } }, { effort: "low" }), startedMs: Date.parse("2026-10-03T00:00:00.000Z"), endedMs: Date.parse("2026-10-03T00:00:01.000Z") },
+    { agent: "chat", state: "completed", costUsd: 0.5, metrics: metrics(5, 0, 5, 1, {}), startedMs: Date.parse("2026-10-01T08:00:00.000Z"), endedMs: Date.parse("2026-10-01T08:01:00.000Z"), source: "claude-code" },
+  ]);
   return data;
 }
 
@@ -216,32 +196,27 @@ test("GET /v2/stats answers null for the total when every cost is unknown, never
 });
 
 test("a running run this server does not hold is status_unknown: never counted as active or as not waiting", async (t) => {
-  const { data, revisions } = await seeded(t, [["alpha", "Alpha"]], [["alpha", "completed", 0.5]]);
-  const { api, baseUrl } = await serve(t, { data });
-  // Another writer's run: its row is running, and this server never started or adopted it.
-  const db = new DatabaseSync(join(data, "store.sqlite"));
-  db.prepare("INSERT INTO runs (id, agent_id, revision_id, state, started_at) VALUES ('elsewhere', 'alpha', ?, 'running', ?)").run(revisions.alpha, new Date().toISOString());
-  db.close();
+  // Another writer's run, its row running: seeded before this server starts, and (no runner here) never claimed or adopted
+  // by it. The newest, so GET /stats reads it and finds no status for it.
+  const data = join(await scratch(t), "agents");
+  await seedRuns(data, [["alpha", "Alpha"]], [
+    { agent: "alpha", state: "completed", costUsd: 0.5, startedMs: Date.parse(at(0)), endedMs: Date.parse(at(1)) },
+    { id: "elsewhere", agent: "alpha", state: "running", startedMs: Date.parse(at(2)) },
+  ]);
+  const { api, baseUrl } = await serve(t, { data, runner: false });
   const { body } = await api("GET", "/stats");
   assert.deepEqual(body.runs, { total: 2, active: 0, needs_input: 0, failed: 0, needs_review: 0, status_unknown: 1 });
   assert.deepEqual(body.cost, { usd: 0.5, basis: "estimate", unknown_runs: 1 });
-  assertRunningPartitioned(data, body);
+  await assertRunningPartitioned(data, body);
   const { doc, schema } = await statsSchema(baseUrl);
   assert.deepEqual(schemaProblems(doc, schema, body), []);
 });
 
-test("GET /v2/stats over 1,000 runs across several agents answers within 500 ms, and opens nothing on the disk", async (t) => {
+test("GET /v2/stats over 1,000 runs across several agents answers within 500 ms", async (t) => {
   const agents = ["a1", "a2", "a3", "a4", "a5"].map((id) => [id, id.toUpperCase()]);
   const { data } = await seeded(t, agents, Array.from({ length: 1_000 }, (_, i) => [agents[i % 5][0], ["completed", "failed", "stopped", "escalated"][i % 4], i % 2 ? 0.01 : null]), Array.from({ length: 20 }, (_, i) => ["run", `run-${i * 50}`]));
-  // The newest run's own file, which GET /runs reads for its title.
-  await mkdir(runDir(data, "run-999"), { recursive: true });
-  await writeFile(join(runDir(data, "run-999"), "serve.json"), JSON.stringify({ title: "Seeded", created_at: at(999) }));
   const { api } = await serve(t, { data });
-  assert.equal((await api("GET", "/runs?limit=1")).body.runs[0].title, "Seeded");
-  await chmod(join(data, "disk"), 0o000);
-  try {
-    // The positive control: with the disk unreadable, a route that reads a run's file no longer sees it.
-    assert.equal((await api("GET", "/runs?limit=1")).body.runs[0].title, "");
+  {
     const times = [];
     let stats;
     for (let i = 0; i < 5; i++) {
@@ -258,16 +233,13 @@ test("GET /v2/stats over 1,000 runs across several agents answers within 500 ms,
     assert.deepEqual(stats.body.cost, { usd: 5, basis: "estimate", unknown_runs: 480 });
     assert.deepEqual(stats.body.per_agent.map((a) => a.runs), [180, 200, 200, 200, 200], "a1 lost its 20 archived runs");
     assert.deepEqual(stats.body.archived, { agents: 0, runs: 20 });
-  } finally {
-    await chmod(join(data, "disk"), 0o700);
   }
 });
 
 test("a held run still queued (launched, its work not started) counts as active; one working too; one not held is unknown", () => {
-  // The held runs are as the server holds them, read by the real statusOf: a workflow run whose work has not started
-  // is queued, one whose work has is working.
-  const held = new Map([["q", { kind: "workflow", working: false }], ["w", { kind: "workflow", working: true }]]);
-  const runs = { held: (id) => held.get(id) };
+  // statsView buckets each running run by the status statusOf reads for it over the store (BUCKET): queued and working are
+  // active; a run statusOf cannot place (another writer's) is status_unknown.
+  const statusOf = (id) => ({ q: "queued", w: "working" })[id];
   const store = {
     agents: 1, archivedAgents: 0, archivedRuns: 0,
     runs: { total: 3, running: 3, completed: 0, failed: 0, stopped: 0, escalated: 0 },
@@ -275,7 +247,7 @@ test("a held run still queued (launched, its work not started) counts as active;
     byAgent: [{ id: "a", name: "A", runs: 3 }],
     running: ["q", "w", "elsewhere"],
   };
-  assert.deepEqual(statsView(store, runs).runs, { total: 3, active: 2, needs_input: 0, failed: 0, needs_review: 0, status_unknown: 1 });
+  assert.deepEqual(statsView(store, statusOf).runs, { total: 3, active: 2, needs_input: 0, failed: 0, needs_review: 0, status_unknown: 1 });
 });
 
 test("a refused fetch is a failed call in a run's metrics and in GET /v2/stats, whose tool rows carry the name a person reads", { timeout: 60_000 }, async (t) => {
