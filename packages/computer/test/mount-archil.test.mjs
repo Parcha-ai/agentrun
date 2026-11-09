@@ -309,6 +309,67 @@ test("syncingClient: tar.push.begin syncs the folders it made, so a push begun a
 	assert.deepEqual(whole.methods(), ["tar.push.begin", "mount.sync", "tar.push.write", "tar.push.write", "tar.push.end", "mount.sync"], "one sync for the begin's folders, one for the files; none per write");
 });
 
+/** A computerd client that holds pushes as the daemon does, at most 8 open on a connection; mount.sync answers `sync()`. */
+function pushDaemon(sync) {
+	const calls = [];
+	const open = new Set();
+	let made = 0;
+	return {
+		calls,
+		open,
+		async call(method, params) {
+			calls.push([method, params]);
+			if (method === "mount.sync") return sync();
+			if (method === "tar.push.begin") {
+				if (open.size >= 8) return fail("limit", "a connection has at most 8 pushes open: end one first");
+				const id = `push-${++made}`;
+				open.add(id);
+				return ok({ id });
+			}
+			if (method === "tar.push.end") return open.delete(params.id) ? ok({ entries: 0 }) : fail("not_found", `no push ${params.id}`);
+			return ok({});
+		},
+		close() {},
+	};
+}
+
+test("syncingClient: a push whose begin's sync fails or is not waited for is ended by its id, so no upload slot leaks; nine in a row still begin", async () => {
+	// Review (#1994, PRRT_kwDOUmdVMs61KJcB): the sync's error replaced begin's result, so its caller never had the id
+	// to end the push, and each failure held one of the connection's eight push slots for good.
+	const failing = pushDaemon(() => ok({ exitCode: 1 }));
+	const syncing = syncingClient(failing);
+	for (let n = 1; n <= 9; n++) {
+		const result = await syncing.call("tar.push.begin", { path: "/workspace/new" });
+		assert.equal(result.ok, false, `begin ${n}`);
+		assert.notEqual(result.error.code, "limit", `begin ${n} found a slot: ${result.error.message}`);
+		assert.match(result.error.message, /durable/);
+	}
+	assert.equal(failing.open.size, 0, "every push begun was ended");
+	const expected = Array.from({ length: 9 }, (_, i) => [["tar.push.begin"], ["mount.sync"], ["tar.push.end", `push-${i + 1}`]]).flat();
+	assert.deepEqual(failing.calls.map(([method, params]) => (method === "tar.push.end" ? [method, params.id] : [method])), expected, "begin, its sync, then the end of that push");
+
+	// A caller that stops waiting for the sync, before it starts or while it runs, has its push ended too. Each sync is
+	// held until the test lets it go; no clock is involved.
+	const releases = [];
+	const held = pushDaemon(() => new Promise((resolve) => releases.push(() => resolve(ok({ exitCode: 0 })))));
+	const heldSyncing = syncingClient(held);
+	const already = new AbortController();
+	already.abort();
+	const early = await heldSyncing.call("tar.push.begin", { path: "/workspace/a" }, { signal: already.signal });
+	assert.equal(early.ok, false);
+	assert.equal(early.error.code, "aborted");
+	const late = new AbortController();
+	const pending = heldSyncing.call("tar.push.begin", { path: "/workspace/b" }, { signal: late.signal });
+	while (!held.calls.some(([method, params]) => method === "tar.push.begin" && params.path === "/workspace/b")) await new Promise((resolve) => setImmediate(resolve));
+	late.abort();
+	const stopped = await pending;
+	assert.equal(stopped.ok, false);
+	assert.equal(stopped.error.code, "aborted");
+	for (const release of releases) release();
+	assert.equal(held.open.size, 0, "both pushes ended");
+	assert.deepEqual(held.calls.filter(([method]) => method === "tar.push.end").map(([, params]) => params.id), ["push-1", "push-2"]);
+});
+
 test("syncingClient: a sync that fails fails the call in words; a call that failed still syncs, and answers its own error", async () => {
 	for (const sync of [ok({ exitCode: 1 }), fail("not_found", "no Archil sync server at /run/agentrun-archil/archil.sock")]) {
 		const client = fakeClient({ syncs: [sync] });
