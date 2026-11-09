@@ -893,7 +893,8 @@ export class OrgoProvider implements ComputerProvider {
 	/**
 	 * Moves the deadline to now + ttlMs, never earlier and never past the most the labels file holds (create's time plus
 	 * the cap): Orgo's end first, in whole hours with an Idempotency-Key, so it never ends the computer before init does;
-	 * then init's deadline; then the labels file. The result is the deadline init took.
+	 * then init's deadline; then the name's, from the time init took; then the labels file. The result is the deadline
+	 * init took.
 	 */
 	async extend(ref: ComputerRef, ttlMs: number, { signal }: CallContext = {}): Promise<Result<{ deadline: Date }>> {
 		const problem = refProblem(ref);
@@ -917,23 +918,24 @@ export class OrgoProvider implements ComputerProvider {
 			const moved = await this.#rest.request("POST", `/computers/${encodeURIComponent(ref.id)}/extend`, { body: { hours }, headers: { "idempotency-key": randomUUID() }, timeoutMs: this.#timeouts.requestMs, ...(signal ? { signal } : {}) });
 			if (!moved.ok) return fail(moved.error.code, `Orgo's end did not move, so nothing did: ${moved.error.message}`);
 		}
-		// The janitor's deadline next, in the name (a rename, its stable part kept), then init's: a step that fails leaves
-		// the computer ending earlier than asked, never later.
-		const name = withDeadline((nameParts(found.value.name) as { stable: string }).stable, new Date(target));
-		const renamed = await this.#rest.request("PATCH", `/computers/${encodeURIComponent(ref.id)}`, { body: { name }, timeoutMs: this.#timeouts.requestMs, ...(signal ? { signal } : {}) });
-		if (!renamed.ok) return fail(renamed.error.code, `Orgo's end moved, and the deadline in ${found.value.name} did not: ${renamed.error.message}`);
+		// Init's deadline next, then the janitor's, in the name (a rename, its stable part kept), from the time init took:
+		// the name, init and the labels file then agree. A step that fails leaves the janitor ending the computer no later
+		// than init, never after it.
 		const opened = await this.#open(ref, signal);
-		if (!opened.ok) return fail(opened.error.code, `Orgo's end and the name's deadline moved, and init's deadline did not: ${opened.error.message}`);
+		if (!opened.ok) return fail(opened.error.code, `Orgo's end moved, and init's deadline did not: ${opened.error.message}`);
 		let took: Date;
 		try {
 			const at = new Date(target).toISOString();
 			const extended = await opened.value.client.call("deadline.extend", { at }, { signal: this.#bounded(this.#timeouts.helloMs, signal) });
-			if (!extended.ok) return fail(extended.error.code, `Orgo's end and the name's deadline moved, and init's deadline did not: ${extended.error.message}`);
+			if (!extended.ok) return fail(extended.error.code, `Orgo's end moved, and init's deadline did not: ${extended.error.message}`);
 			const answered = Date.parse(extended.value.at);
 			took = new Date(Number.isNaN(answered) ? at : answered);
 		} finally {
 			await opened.value.close();
 		}
+		const name = withDeadline((nameParts(found.value.name) as { stable: string }).stable, took);
+		const renamed = await this.#rest.request("PATCH", `/computers/${encodeURIComponent(ref.id)}`, { body: { name }, timeoutMs: this.#timeouts.requestMs, ...(signal ? { signal } : {}) });
+		if (!renamed.ok) return fail(renamed.error.code, `init's deadline moved to ${took.toISOString()}, and the deadline in ${found.value.name} did not: ${renamed.error.message}`);
 		const written = await this.#writeLabels(ref, { ...file.value, name, deadline: took.toISOString() }, signal);
 		if (!written.ok) return fail(written.error.code, `init's deadline moved to ${took.toISOString()}, and the labels file did not: ${written.error.message}`);
 		return ok({ deadline: took });
