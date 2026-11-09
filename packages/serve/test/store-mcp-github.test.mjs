@@ -110,10 +110,10 @@ test("G3: a token that could not be renewed is used until it expires, then its c
 test("G4: an App not installed on the run's repository, a run with no repository, or no App at all: calls refused in words, never a crash", async (t) => {
   const { fake, claimOf, call, mint } = await setUp(t, { answers: [{ ok: false, reason: "not_installed", message: "no installation" }] });
   const notInstalled = await claimOf();
-  assert.equal((await call(notInstalled)).content[0].text, "The MCP server gh's credential can't be used right now: the GitHub App is not installed on acme/widgets: install it on that repository in GitHub.");
+  assert.equal((await call(notInstalled)).content[0].text, "The MCP server gh's credential can't be used right now: the GitHub App is not installed on acme/widgets: install it from Settings → GitHub.");
   const noRepo = await claimOf({ mint, target: undefined });
   assert.equal((await call(noRepo)).content[0].text, "The MCP server gh's credential can't be used right now: this run names no GitHub repository, so the GitHub App has no repository to make a token for.");
   const noApp = await claimOf(null);
-  assert.equal((await call(noApp)).content[0].text, "The MCP server gh's credential can't be used right now: this server has no GitHub App set up for its runs.");
+  assert.equal((await call(noApp)).content[0].text, "The MCP server gh's credential can't be used right now: this server has no GitHub App set up for its runs (Settings → GitHub).");
   assert.deepEqual(calls(fake), [], "nothing was sent");
 });
