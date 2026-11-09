@@ -46,7 +46,8 @@ test('claude-agent: a content-filtered turn, then a follow-up message on the sam
   const events = [];
   const io = { writer: await store.open('s1'), models: { beforeRequest: async () => ({ turn: 0 }), afterRequest: async () => {} }, signal: new AbortController().signal, dir: mkdtempSync(join(ROOT, 's-')), onEvent: (event) => events.push(event) };
   const session = await adapter.open({ key: 's1', label: 'root', system: [], tools: [], context: 'fresh' }, io);
-  t.after(() => session.close());
+  // Bounded: a session that cannot close (a drive that never ends) fails the file in seconds, never holds the run.
+  t.after(() => Promise.race([session.close(), new Promise((resolve) => setTimeout(resolve, 5_000).unref())]));
   // A turn that never ends fails here in words, not by hanging the file.
   const ended = async (what) => {
     let timer;

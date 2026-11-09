@@ -40,11 +40,21 @@ test("opencode: a content-filtered turn, then a follow-up message on the same se
   const events = [];
   const io = { writer: await store.open("s1"), models: { beforeRequest: async () => ({ turn: 0 }), afterRequest: async () => {} }, signal: new AbortController().signal, onEvent: (event) => events.push(event) };
   const session = await adapter.open({ key: "s1", label: "task", system: ["You answer."], tools: [], context: "fresh" }, io);
-  t.after(() => session.close());
+  // Bounded: a session that cannot close, or a turn that never ends, fails the file in seconds, never holds the run.
+  t.after(() => Promise.race([session.close(), new Promise((resolve) => setTimeout(resolve, 5_000).unref())]));
+  const ended = async (what) => {
+    let timer;
+    const late = new Promise((_, reject) => (timer = setTimeout(() => reject(new Error(`${what} never ended; requests ${seen.length}`)), 20_000)));
+    try {
+      return await Promise.race([session.turnEnd(), late]);
+    } finally {
+      clearTimeout(timer);
+    }
+  };
   await session.send("First.");
-  assert.deepEqual(await session.turnEnd(), { status: "failed", error: FILTERED }, "the filtered turn fails in the filter words");
+  assert.deepEqual(await ended("the filtered turn"), { status: "failed", error: FILTERED }, "the filtered turn fails in the filter words");
   await session.send("Again, please.");
-  assert.deepEqual(await session.turnEnd(), { status: "completed" }, "the follow-up is answered");
+  assert.deepEqual(await ended("the follow-up"), { status: "completed" }, "the follow-up is answered");
   assert.equal(seen.length, 2, "the follow-up's answer request reached the provider");
   assert.match(events.filter((e) => e.type === "text").map((e) => e.delta).join(""), /Answered\./);
 });
