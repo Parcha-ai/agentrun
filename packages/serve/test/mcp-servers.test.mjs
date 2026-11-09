@@ -340,12 +340,8 @@ test("the names AgentRun's own tools are called by, hands and monid, are no MCP 
   }
 });
 
-test("an MCP credential is always kept sealed: the document's mcp_client.at_rest is const sealed, and a server handed no seal key answers sealed", async (t) => {
-  // No seal key handed over: the server makes its own at its start (seal-key.ts ensureSealKey) and keeps everything under it.
-  withEnv(t, {}, ["AGENTRUN_SEAL_KEY"]);
+test("the served document's mcp_client.at_rest is exactly const sealed: an MCP credential is always kept sealed", async (t) => {
   const { api } = await serve(t);
-  assert.equal((await api("GET", "/capabilities")).body.features.mcp_client.at_rest, "sealed");
-  // The served document's schema of it: the one value, never an enum with "unavailable".
   const doc = (await api("GET", "/openapi.json")).body;
   const found = [];
   const walk = (node) => {
@@ -356,4 +352,10 @@ test("an MCP credential is always kept sealed: the document's mcp_client.at_rest
   walk(doc);
   assert.ok(found.length > 0, "the document describes features.mcp_client");
   for (const atRest of found) assert.deepEqual(atRest, { const: "sealed" });
+});
+
+test("a server started with no seal key in its env answers mcp_client.at_rest sealed: it made one at its start", async (t) => {
+  withEnv(t, {}, ["AGENTRUN_SEAL_KEY"]);
+  const { api } = await serve(t);
+  assert.equal((await api("GET", "/capabilities")).body.features.mcp_client.at_rest, "sealed");
 });
