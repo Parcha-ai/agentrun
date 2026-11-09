@@ -163,6 +163,37 @@ test("a message to a run archived while a follow-up waited takes no message: 409
   assert.equal((await commandsOf(store, id)).length, 0, "nothing written");
 });
 
+test("a message to a completed agentic run opens it again: a follow-up steer, not a refusal", async () => {
+  const store = await freshStore();
+  const id = await queuedRun(store);
+  const answer = await message(store, moment({ working: false, awaitingAnswer: false, terminal: true, terminalKind: "completed", kind: "agentic" }), "one more");
+  assert.equal(answer.mode, "follow_up");
+  const rows = await commandsOf(store, id);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].kind, "steer");
+  assert.equal(rows[0].body.text, "one more");
+});
+
+test("a message to a failed run is refused, never reopened: 409 not_continuable, nothing written", async () => {
+  const store = await freshStore();
+  const id = await queuedRun(store);
+  await assert.rejects(
+    () => message(store, moment({ working: false, awaitingAnswer: false, terminal: true, terminalKind: "failed", kind: "agentic" }), "again"),
+    (e) => e.code === "not_continuable" && /This run failed\./.test(e.message),
+  );
+  assert.equal((await commandsOf(store, id)).length, 0, "nothing written");
+});
+
+test("a message to a completed workflow run is refused: only an agentic run opens again", async () => {
+  const store = await freshStore();
+  const id = await queuedRun(store);
+  await assert.rejects(
+    () => message(store, moment({ working: false, awaitingAnswer: false, terminal: true, terminalKind: "completed", kind: "workflow" }), "again"),
+    (e) => e.code === "not_continuable" && /This run is finished\./.test(e.message),
+  );
+  assert.equal((await commandsOf(store, id)).length, 0, "nothing written");
+});
+
 test("a trigger message is refused while the run waits on a person, nothing written (the hazard)", async () => {
   const store = await freshStore();
   const id = await queuedRun(store);

@@ -154,7 +154,10 @@ export async function message(
     await sendCommand(store, moment.id, { kind: "deny", body: { approval: moment.waitingApprovalId, note: content } });
     return { mode: "answer", messageId };
   }
-  if (moment.terminal) throw finished(moment);
+  // A completed agentic run opens again for a follow-up (the runner reopens it on the steer); every other ended run — a
+  // completed workflow, a failed or a cancelled one — takes no message (as the old path reopened only a completed agentic).
+  const reopenable = moment.kind === "agentic" && moment.terminalKind === "completed";
+  if (moment.terminal && !reopenable) throw finished(moment);
   // Paused at its cap: a message would be refused for the same room, so the cap is raised first.
   if (moment.pausedWords !== undefined) {
     throw new ApiError("budget_reached", `The run is paused at its ${money(moment.maxCostUsd ?? 0)} cap: raise the cap first. ${moment.pausedWords}`, { details: { cap_usd: moment.maxCostUsd ?? null } });
