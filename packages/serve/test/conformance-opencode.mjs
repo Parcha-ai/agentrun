@@ -42,9 +42,10 @@ export function scriptedResponses(script, requests = [], { callId = (step) => `c
       const item = { type: "function_call", id: `fc_${step}`, call_id: callId(step, n), name: `hands_${next.call}`, arguments: JSON.stringify(next.args ?? {}), status: "completed" };
       return sse([{ type: "response.output_item.added", output_index: 0, item: { ...item, arguments: "" } }, { type: "response.output_item.done", output_index: 0, item }, done]);
     }
-    // The newest person message (a steer, once one was placed).
+    // The newest person message (a steer, once one was placed), and the newest call's result as OpenCode hands it back.
     const lastPerson = [...input].reverse().find((item) => item.role === "user");
-    const text = next === undefined ? "" : "say" in next ? next.say : textOf(lastPerson);
+    const lastResult = [...input].reverse().find((item) => item.type === "function_call_output");
+    const text = next === undefined ? "" : "say" in next ? next.say : "sayLastResult" in next ? String(lastResult?.output ?? "") : textOf(lastPerson);
     return sse([{ type: "response.output_text.delta", item_id: `m_${step}`, output_index: 0, content_index: 0, delta: text }, done]);
   };
 }
