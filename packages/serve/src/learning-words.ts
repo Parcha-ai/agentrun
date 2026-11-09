@@ -81,7 +81,6 @@ const rulesIn = (problems: readonly Pick<Problem, "rule" | "path">[]) => [...new
 
 /** Why learning stopped, said plainly: the cause inside "Not kept: learning stopped (...)". */
 export const STOPPED = {
-  noGit: "this server has no git that learning can use, so the run started without its notes",
   unreadable: "the agent's notes could not be read, so the run started without them",
   notCopied: "the agent's notes could not be copied into the run, so the run started without them",
   serverStopped: "the server stopped while it set up the run's notes, so the run started without them",
@@ -94,10 +93,8 @@ export const STOPPED = {
   failed: "looking back ended on an error",
   notSetAside: "the new notes could not be set aside to be checked",
   notChecked: "the new notes could not be checked",
-  screenDown: "the safety check on new notes could not run",
   noReview: "the review of the new notes gave no answer",
   unread: "the review of the new notes gave an answer that could not be read",
-  notReviewed: "the new notes could not be reviewed or saved",
 } as const;
 
 /** A run's learning, in words, by where it stands. */

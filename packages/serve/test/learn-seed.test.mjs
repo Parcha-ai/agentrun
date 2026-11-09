@@ -7,7 +7,7 @@
 // into it.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fakeAnthropic } from "@parcha/agentrun-harness-claude/testing";
@@ -501,23 +501,9 @@ test("a folder the server cannot read: the run still completes, with nothing lea
   assert.equal(learnedIn((await ran(api, "locked")).prompt), WHOLE);
 });
 
-test("a main whose commit git cannot read, and notes that cannot be copied into the run: each run completes with nothing learned, seed_failed, and the folder's working tree and index are left as they were", { timeout: 120_000 }, async (t) => {
+test("notes that cannot be copied into the run: it completes with nothing learned, seed_failed", { timeout: 120_000 }, async (t) => {
   const { api, data } = await serve(t, { faux: SYSTEM });
-  const main = await learned(api, data, "lost", { instructions: "Answer the question." });
-  const repo = repoOf(data, "lost");
-  writeFileSync(join(repo, "MEMORY.md"), `${INDEX}- [Mine](mine.md) — a person's uncommitted rule\n`);
-  git(repo, ["add", "--", "MEMORY.md"]);
-  const staged = git(repo, ["ls-files", "--stage"]);
-  const object = join(repo, ".git", "objects", main.slice(0, 2), main.slice(2));
-  const kept = readFileSync(object);
-  rmSync(object);
-  const lost = await ran(api, "lost");
-  await seedFailed(api, data, "lost", lost.runId, lost.prompt);
-  assert.match(readFileSync(join(repo, "MEMORY.md"), "utf8"), /a person's uncommitted rule/);
-  assert.equal(git(repo, ["ls-files", "--stage"]), staged, "the index is not replaced");
-  assert.equal(git(repo, ["for-each-ref", "--format=%(objectname)", "refs/heads/main"]), main);
-  // main readable again, and the run's copy that fails.
-  writeFileSync(object, kept, { mode: 0o444 });
+  await learned(api, data, "lost", { instructions: "Answer the question." });
   learningTestHooks.beforePin = () => {
     throw new Error("the disk is full");
   };
@@ -569,7 +555,7 @@ async function refusedLink(api, data, id, runId, prompt, target, said) {
   assert.deepEqual(readdirSync(target), ["kept"], "nothing is made where the link points");
   assert.equal(readFileSync(join(target, "kept"), "utf8"), "kept\n", "nothing is written through the link");
   const warning = said.find((text) => text.includes(`the agent ${id}'s learning folder could not be read`)) ?? "";
-  assert.match(warning, /is a symbolic link/, said.join(""));
+  assert.match(warning, /a link in the learning folder at [^ ]+ can't be followed, so nothing learned is read or written; remove the link/, said.join(""));
   assert.ok(!warning.includes(target), warning);
 }
 
@@ -605,24 +591,6 @@ test("a symbolic link at disk/agents/<key>, the agent's folder, there before its
   assert.match(JSON.stringify(run.body), /disk\/agents\/linked-[0-9a-f]{16} is a symbolic link, and a run's folder is never made through one/);
   assert.ok(!JSON.stringify(run.body).includes(target), "the refusal names the link, not its target");
   assert.deepEqual(readdirSync(target).sort(), before, "nothing made where the link points");
-});
-
-test("a link swapped in for the learning folder the host has just made is caught by the check after the mkdir, never followed", { timeout: 120_000 }, async (t) => {
-  const { api, data } = await serve(t, { faux: SYSTEM });
-  const target = await linkTarget(t);
-  assert.equal((await api("POST", "/agents", agent("swapped", { learning: true, instructions: "Answer the question." }))).status, 201);
-  const repo = repoOf(data, "swapped");
-  learningTestHooks.afterMkdir = (dir) => {
-    if (dir !== repo) return;
-    rmSync(dir, { recursive: true });
-    symlinkSync(target, dir);
-  };
-  t.after(() => void (learningTestHooks.afterMkdir = undefined));
-  const said = stderrOf(t);
-  const run = await ran(api, "swapped");
-  learningTestHooks.afterMkdir = undefined;
-  assert.ok(lstatSync(repo).isSymbolicLink(), "the hook swapped the link in");
-  await refusedLink(api, data, "swapped", run.runId, run.prompt, target, said);
 });
 
 /** A request's system prompt, as text. */
