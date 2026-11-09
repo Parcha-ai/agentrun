@@ -25,7 +25,7 @@ import { createHash, randomBytes } from "node:crypto";
 import type { MessageOrigin } from "@parcha/pi-durable-agent/timeline";
 import { ApiError, type InputIssue, invalid } from "./errors.js";
 import { EFFORTS } from "./model.js";
-import { type FiringRow, type NewFiring, type Store, StoreConstraint, TriggerFull, type TriggerPatch, type TriggerRow } from "./store/index.js";
+import { AgentArchived, type FiringRow, type NewFiring, type Store, StoreConstraint, TriggerFull, type TriggerPatch, type TriggerRow } from "./store/index.js";
 import { second, type Source, type TriggerAdapter, validZone } from "./trigger-adapter.js";
 import { TRIGGER_ADAPTERS } from "./trigger-adapters.js";
 import { MAX_EVERY_S } from "./trigger-schedule.js";
@@ -88,8 +88,8 @@ export type RunTrigger = { id: string; firing_key: string };
 /** The engine's clock and its one timer: Date.now and setTimeout, or a test's. */
 export type TriggerClock = { now(): number; arm(fire: () => void, ms: number): { clear(): void } };
 export type TriggerDeps = {
-  /** Where the triggers and their firings live. */
-  store: Pick<Store, "triggers" | "runs">;
+  /** Where the triggers and their firings live, and the agents they run as (an archived agent's turn off with it). */
+  store: Pick<Store, "triggers" | "runs" | "agents">;
   /** The refusal of a trigger of source `kind` made or turned on here, when it cannot be (the connection it needs is not
    *  there: GitHub not connected). Undefined, or no such dep, when it can. */
   unavailable?(kind: string): ApiError | undefined;
@@ -215,6 +215,10 @@ export const triggerBodyIssues = (adapters: readonly TriggerAdapter[], body: Jso
  *  rename, is `409 name_taken`; any other error as it is. */
 const nameTaken = (error: unknown, name: string): unknown =>
   error instanceof StoreConstraint && /triggers\.agent_id, triggers\.name/.test(error.message) ? new ApiError("name_taken", `This agent already has a trigger named ${name}.`) : error;
+/** Why a trigger of an archived agent is off, and the 409 for turning one on: the agent by name. */
+const archivedDetail = (name: string) => `The agent ${name} is archived: unarchive it, then turn the trigger on.`;
+/** Why a trigger is off when the server turned it off, as its row keeps it (`disabled`, JSON). */
+const reasonOf = (disabled: unknown): unknown => (isObject(disabled) ? disabled.reason : undefined);
 /** Why a try failed, as its firing keeps it: an ApiError's code, else internal. */
 const errorOf = (error: unknown) => ({ code: error instanceof ApiError ? error.code : "internal", message: String((error as Error)?.message ?? error) });
 
@@ -284,6 +288,8 @@ export class Triggers {
     const id = `trg_${randomBytes(12).toString("hex")}`;
     const enabled = body.enabled !== false;
     if (enabled) this.needAvailable(source.kind);
+    // Never made on for an archived agent: told before anything is minted (the store's own refusal is the backstop).
+    if (enabled) await this.needAgentOn(agentId);
     // A scope belongs to one trigger: told before anything is minted or written (the store's scope rows are the backstop).
     if (enabled) await this.scopeFree(source, id);
     // Its secrets are kept before the trigger is: one that cannot be kept (no seal key) makes none.
@@ -293,7 +299,7 @@ export class Triggers {
     try {
       row = await this.store.triggers.create({ id, agentId, name, enabled, source, target, nextAt: enabled ? nextAfter(this.adapter(source), source, now) : null, catchupWindowS: settings.catchup_window_s ?? CATCHUP_WINDOW_S, ...(typeof settings.max_active_runs === "number" ? { maxActiveRuns: settings.max_active_runs } : {}) }, this.scopesOf(source));
     } catch (error) {
-      throw await this.scopeTaken(error, source, id) ?? nameTaken(error, name);
+      throw (await this.scopeTaken(error, source, id)) ?? (await this.archivedRefusal(error)) ?? nameTaken(error, name);
     }
     // Armed before the answer: a create that answered is in effect, its first time on the timer (arm reads the store).
     await this.arm();
@@ -345,6 +351,43 @@ export class Triggers {
     }
     if (on.length) await this.arm();
     return on.length;
+  }
+
+  /** Agent `agentId` archived, and every trigger that runs as it (its rows: a start_run of it, a message_run to one of its
+   *  runs) turned off with it in the store's one transaction (`disabled: {reason: "agent_archived", detail}`), and said;
+   *  which, by name. From that commit no firing starts a run of it (store.triggers.fire refuses one, and drive skips). */
+  async agentArchived(agentId: string): Promise<{ id: string; name: string }[]> {
+    const name = (await this.store.agents.get(agentId))?.name ?? agentId;
+    const off = await this.store.agents.archive(agentId, true, { at: iso(this.clock.now()), reason: "agent_archived", detail: archivedDetail(name) });
+    for (const t of off) this.deps.say({ condition: "trigger_agent_archived", trigger: t.id, agent: agentId });
+    if (off.length) await this.arm();
+    return off;
+  }
+
+  /** Agent `agentId` unarchived: none of its triggers turns on again. The triggers its archive turned off that are off
+   *  still, by name: each is turned on by a PATCH. */
+  async agentUnarchived(agentId: string): Promise<{ id: string; name: string }[]> {
+    await this.store.agents.archive(agentId, false);
+    return (await this.store.triggers.list(agentId)).filter((t) => !t.enabled && reasonOf(t.disabled) === "agent_archived").map((t) => ({ id: t.id, name: t.name }));
+  }
+
+  /** Refused (409 agent_archived) when agent `agentId` is archived: a trigger made on, turned on or aimed at it. */
+  private async needAgentOn(agentId: string): Promise<void> {
+    const agent = await this.store.agents.get(agentId);
+    if (agent?.archivedAt != null) throw new ApiError("agent_archived", archivedDetail(agent.name));
+  }
+
+  /** The store's refusal of a trigger left on for an archived agent (an archive that committed past needAgentOn) as the
+   *  same 409; undefined for any other error. */
+  private async archivedRefusal(error: unknown): Promise<ApiError | undefined> {
+    if (!(error instanceof AgentArchived)) return undefined;
+    return new ApiError("agent_archived", archivedDetail((await this.store.agents.get(error.agentId))?.name ?? error.agentId));
+  }
+
+  /** Why a firing of a trigger of agent `agentId` is skipped, if it is: the agent is archived. */
+  private async archivedSkip(agentId: string): Promise<string | undefined> {
+    const agent = await this.store.agents.get(agentId);
+    return agent?.archivedAt != null ? `The agent ${agent.name} is archived.` : undefined;
   }
 
   /** Refused as its connection says when a trigger of `kind` cannot be on here (unavailable). */
@@ -415,6 +458,8 @@ export class Triggers {
     // A trigger belongs to its target's agent: aimed at another agent (or another agent's run), it moves to that agent,
     // whose one name per trigger and list of triggers it joins.
     const agentId = target ? await this.agentOf(target) : trigger.agentId;
+    // Turned on, or aimed elsewhere while on: never for an archived agent (the store's own refusal is the backstop).
+    if (enabled && (!trigger.enabled || target)) await this.needAgentOn(agentId);
     const patch: TriggerPatch = {
       ...(agentId !== trigger.agentId ? { agentId } : {}),
       ...(typeof body.name === "string" ? { name: body.name.trim() } : {}), ...(source ? { source } : {}), ...(target ? { target } : {}),
@@ -422,7 +467,7 @@ export class Triggers {
       ...(settings.max_active_runs !== undefined ? { maxActiveRuns: settings.max_active_runs } : {}), ...again, enabled, nextAt: next,
     };
     const row = await this.store.triggers.update(id, patch, enabled ? this.scopesOf(scopeSource) : []).catch(async (error: unknown) => {
-      throw (await this.scopeTaken(error, scopeSource, trigger.id)) ?? nameTaken(error, patch.name ?? trigger.name);
+      throw (await this.scopeTaken(error, scopeSource, trigger.id)) ?? (await this.archivedRefusal(error)) ?? nameTaken(error, patch.name ?? trigger.name);
     });
     if (!row) throw new ApiError("not_found", `no trigger ${id}`);
     await this.arm();
@@ -562,6 +607,11 @@ export class Triggers {
       if (prior) return void (await this.started(triggerId, key, prior.run_id));
       const trigger = await this.find(triggerId);
       if (!trigger) return;
+      // Its agent archived since the firing was recorded (a firing waiting on its cap, or due on a retry): skipped, never a
+      // run or a message.
+      const archived = await this.archivedSkip(trigger.agentId);
+      if (this.closed) return;
+      if (archived) return void (await this.store.triggers.settle(triggerId, key, { status: "skipped", reason: archived }));
       if (trigger.target.kind === "message_run") return void (await this.send(trigger, firing));
       const busy = await this.busy(trigger, firing);
       if (this.closed) return;
@@ -578,6 +628,10 @@ export class Triggers {
         // Stopping, the start may have been cut by the close: the firing stays due for the next start, whose origin key
         // finds a run this one made.
         if (this.closed) return;
+        // The archive committed between the read above and the start, which refused the run (the store's fire reads the
+        // archive in its own transaction): skipped, as above, and no failure counted.
+        const raced = await this.archivedSkip(now.agentId).catch(() => undefined);
+        if (raced) return void (await this.store.triggers.settle(triggerId, key, { status: "skipped", reason: raced }));
         return void (await this.answered(triggerId, key, error));
       }
       if (this.closed) return;

@@ -2007,6 +2007,12 @@ An agent or a run is archived, never deleted: `DELETE` stays `405`. These routes
 - `POST /v2/agents/{id}/archive` hides the agent and its runs from `GET /agents`, `GET /runs` and
   `GET /agents/{id}/runs`; `POST /v2/runs/{id}/archive` hides one run. `.../unarchive` shows them again. Each is
   idempotent (archiving again keeps the first time), takes no body, and answers what it changed.
+- Archiving an agent turns off every trigger that runs as it (a `start_run` of it, a `message_run` to one of its
+  runs) with the archive, in one write: `disabled: {reason: "agent_archived", detail}`, and the answer lists them in
+  `triggers_off: [{id, name}]`. From then no firing starts a run of it: one that comes due anyway (waiting on its
+  `max_active_runs`, or on a retry) is `skipped`, "The agent <name> is archived.". While it is archived, a trigger made
+  on, turned on or aimed at it is `409 agent_archived`. Unarchiving turns none on: its answer lists those still off, and
+  `PATCH /v2/triggers/{id}` `{enabled: true}` turns each on.
 - Each list takes `archived=true` to list only archived ones (`false`, the default, lists the others).
 - Every read by id still answers, with `archived_at` (null when it is not archived; a run's is its own, else its
   agent's): `GET /agents/{id}`, `GET /runs/{id}`, its timeline and its files. `/usage` still counts archived runs: the

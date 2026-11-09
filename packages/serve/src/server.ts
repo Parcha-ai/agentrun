@@ -287,9 +287,9 @@ export type ServeOptions = {
   learningBudget?: number;
   /** A test's seam: the triggers' clock and timer (triggers.ts), in place of Date.now and setTimeout. */
   triggerClock?: TriggerClock;
-  /** The server's store (store/index.ts), where the triggers and their firings live. Without it the trigger routes answer
-   *  unavailable and nothing fires. */
-  store?: Pick<Store, "triggers" | "runs">;
+  /** The server's store (store/index.ts), where the triggers and their firings live, with the agents they run as. Without
+   *  it the trigger routes answer unavailable and nothing fires. */
+  store?: Pick<Store, "triggers" | "runs" | "agents">;
   /** A test's seam: the trigger sources this server has (default the registry, trigger-adapters.ts). */
   triggerAdapters?: readonly TriggerAdapter[];
   /** A test's seam: the folder the template packages are read from, in place of the package's own (templates.ts). */
@@ -341,13 +341,13 @@ const digest = (text: string) => createHash("sha256").update(text).digest();
 const NO_CAP = "The run has no spend cap: a trigger only messages a run with one, as every turn it drives is capped.";
 
 /** The triggers' store before the server opens its own: each call answers unavailable, and nothing fires. */
-function storeless(): Pick<Store, "triggers" | "runs"> {
+function storeless(): Pick<Store, "triggers" | "runs" | "agents"> {
   const refused = new Proxy({}, {
     get: () => async () => {
       throw new ApiError("unavailable", "The triggers live in the server's store, which this server has not opened.");
     },
   });
-  return { triggers: refused, runs: refused } as unknown as Pick<Store, "triggers" | "runs">;
+  return { triggers: refused, runs: refused, agents: refused } as unknown as Pick<Store, "triggers" | "runs" | "agents">;
 }
 const sha256Hex = (text: string) => createHash("sha256").update(text).digest("hex");
 const SESSION_S = SESSION_MS / 1000;
@@ -2090,8 +2090,12 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         await needAgent(id);
         await agents.setArchived("agent", id, found.name === "archiveAgent");
         if (found.name === "archiveAgent") await runs.archived();
+        // Archived, every trigger that runs as it turns off in the store's archive transaction; unarchived, none turns on.
+        // Both answer the triggers off for the archive, each turned on again by PATCH /triggers/{id} {enabled: true}. A
+        // server with no store yet holds no trigger.
+        const triggersOff = !options.store ? [] : found.name === "archiveAgent" ? await triggers.agentArchived(id) : await triggers.agentUnarchived(id);
         const entry = await needAgent(id);
-        return send(res, 200, agentView(entry, linkOrigin(req), await signIns.view(entry.agent.id), await learningOfAgent(entry)), { etag: etagOf(entry) });
+        return send(res, 200, { ...agentView(entry, linkOrigin(req), await signIns.view(entry.agent.id), await learningOfAgent(entry)), triggers_off: triggersOff }, { etag: etagOf(entry) });
       }
       case "forgetSignIn": {
         await needAgent(id);
