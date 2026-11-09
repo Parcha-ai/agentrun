@@ -163,37 +163,6 @@ test("a message to a run archived while a follow-up waited takes no message: 409
   assert.equal((await commandsOf(store, id)).length, 0, "nothing written");
 });
 
-test("a message to a completed agentic run opens it again: a follow-up steer, not a refusal", async () => {
-  const store = await freshStore();
-  const id = await queuedRun(store);
-  const answer = await message(store, moment({ working: false, awaitingAnswer: false, terminal: true, terminalKind: "completed", kind: "agentic" }), "one more");
-  assert.equal(answer.mode, "follow_up");
-  const rows = await commandsOf(store, id);
-  assert.equal(rows.length, 1);
-  assert.equal(rows[0].kind, "steer");
-  assert.equal(rows[0].body.text, "one more");
-});
-
-test("a message to a failed run is refused, never reopened: 409 not_continuable, nothing written", async () => {
-  const store = await freshStore();
-  const id = await queuedRun(store);
-  await assert.rejects(
-    () => message(store, moment({ working: false, awaitingAnswer: false, terminal: true, terminalKind: "failed", kind: "agentic" }), "again"),
-    (e) => e.code === "not_continuable" && /This run failed\./.test(e.message),
-  );
-  assert.equal((await commandsOf(store, id)).length, 0, "nothing written");
-});
-
-test("a message to a completed workflow run is refused: only an agentic run opens again", async () => {
-  const store = await freshStore();
-  const id = await queuedRun(store);
-  await assert.rejects(
-    () => message(store, moment({ working: false, awaitingAnswer: false, terminal: true, terminalKind: "completed", kind: "workflow" }), "again"),
-    (e) => e.code === "not_continuable" && /This run is finished\./.test(e.message),
-  );
-  assert.equal((await commandsOf(store, id)).length, 0, "nothing written");
-});
-
 test("a trigger message is refused while the run waits on a person, nothing written (the hazard)", async () => {
   const store = await freshStore();
   const id = await queuedRun(store);
@@ -225,6 +194,69 @@ test("a message to a run paused at its cap is refused budget_reached, nothing wr
     (e) => e.code === "budget_reached" && /paused at its \$2 cap: raise the cap first\. It reached \$2\.00\./.test(e.message) && e.extra.details.cap_usd === 2,
   );
   assert.equal((await commandsOf(store, id)).length, 0);
+});
+
+/** A run of `agentId`/`revisionId` that a runner claimed and ended in `state` (ended: completed). */
+async function endedRun(store, id, state = "ended", { agentId = "a1", revisionId = "r1" } = {}) {
+  await store.runs.create({ id, agentId, revisionId });
+  await store.runs.update(await store.claim(id, "runner-a"), { state, summary: "The first answer." });
+  return id;
+}
+
+/** The moment of a run that has ended, as the run view reads it. */
+const endedMoment = (id, terminalKind, over = {}) => moment({ id, working: false, live: false, terminal: true, terminalKind, ...over });
+
+test("a message to a completed agentic run opens it again: back to running, released, its steer written in the same step (a follow-up turn)", async () => {
+  const store = await freshStore();
+  const id = await endedRun(store, "run-done");
+  const answer = await message(store, endedMoment(id, "completed"), "one more thing");
+  assert.equal(answer.mode, "follow_up");
+  const row = await store.runs.get(id);
+  assert.deepEqual({ state: row.state, runner: row.runner, endedAt: row.endedAt, summary: row.summary }, { state: "running", runner: null, endedAt: null, summary: null });
+  const rows = await commandsOf(store, id);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].kind, "steer");
+  assert.equal(rows[0].body.text, "one more thing");
+  assert.equal(rows[0].takenAt, null, "the steer waits for the runner that claims the reopened run");
+  assert.ok((await store.runs.claimable()).includes(id), "a runner may claim it at once");
+});
+
+test("a message to a completed workflow run is refused with the old words: 409 This run is finished., nothing written", async () => {
+  const store = await freshStore();
+  await store.agents.create({ id: "w1", name: "Workflow one" }, { id: "rw1", kind: "workflow", body: { workflow: { name: "w", nodes: [] } } });
+  const id = await endedRun(store, "run-wf", "ended", { agentId: "w1", revisionId: "rw1" });
+  const before = await store.runs.get(id);
+  await assert.rejects(
+    () => message(store, endedMoment(id, "completed", { kind: "workflow", agentId: "w1" }), "again"),
+    (e) => e.code === "not_continuable" && e.message === "This run is finished. Start a new run of the agent." && e.extra.next_action.path === "/agents/w1/runs",
+  );
+  assert.deepEqual(await store.runs.get(id), before, "the row is as it was");
+  assert.equal((await commandsOf(store, id)).length, 0, "nothing written");
+});
+
+test("a message to a failed run is refused with the old words: 409 This run failed., nothing written", async () => {
+  const store = await freshStore();
+  const id = await endedRun(store, "run-failed", "failed");
+  const before = await store.runs.get(id);
+  await assert.rejects(
+    () => message(store, endedMoment(id, "failed"), "again"),
+    (e) => e.code === "not_continuable" && e.message === "This run failed. Start a new run of the agent.",
+  );
+  assert.deepEqual(await store.runs.get(id), before, "the row is as it was");
+  assert.equal((await commandsOf(store, id)).length, 0, "nothing written");
+});
+
+test("a message to an archived completed agentic run stays closed: 409 unarchive it, never reopened, nothing written", async () => {
+  const store = await freshStore();
+  const id = await endedRun(store, "run-archived");
+  await store.runs.archive(id, true);
+  const before = await store.runs.get(id);
+  await assert.rejects(
+    () => message(store, endedMoment(id, "completed"), "again"),
+    (e) => e.code === "not_continuable" && e.message === "This run is archived: unarchive it to continue it.",
+  );
+  assert.deepEqual(await store.runs.get(id), before, "the row is as it was");
+  assert.equal((await commandsOf(store, id)).length, 0, "nothing written");
 });
 
 // ---- raiseCap -------------------------------------------------------------------------------------------------------
