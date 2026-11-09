@@ -9,7 +9,11 @@ import { existsSync, mkdtempSync, readdirSync, renameSync, rmSync } from "node:f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { before, test } from "node:test";
+import { before, test as nodeTest } from "node:test";
+import { sqliteAdapterTests } from "./store-target.mjs";
+
+// Postgres commits durably at COMMIT (synchronous_commit on): store-postgres.test.mjs.
+const test = sqliteAdapterTests(nodeTest, "the store file's fsync and FULL commits");
 import { openSqliteStore } from "../dist/store/sqlite/store.js";
 
 const WRITER = fileURLToPath(new URL("./store-fixtures/store-writer.mjs", import.meta.url));

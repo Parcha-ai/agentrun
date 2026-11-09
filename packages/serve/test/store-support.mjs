@@ -5,12 +5,17 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { dropSchema, freshSchema, onPostgres, PG_URL } from "./store-target.mjs";
+
 const { Connection } = await import("../dist/store/sqlite/connection.js");
 const { DDL } = await import("../dist/store/schema.js");
+const { PgConnection, migrate } = await import("../dist/store/index.js");
 
-/** A store file in a scratch directory of test `t`, its schema in place, closed and removed after the test. `db.connection`
- *  is what the journal takes; db.exec/run/get/all arrange and read rows (params after the SQL). */
+/** A store file in a scratch directory of test `t` (on Postgres, a schema of its own), its schema in place, closed and
+ *  removed after the test. `db.connection` is what the journal takes; db.exec/run/get/all arrange and read rows (params
+ *  after the SQL). */
 export async function scratchConnection(t) {
+  if (onPostgres) return scratchPostgres(t);
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-store-"));
   const connection = await Connection.open(join(dir, "store.sqlite"));
   t.after(async () => {
@@ -18,6 +23,24 @@ export async function scratchConnection(t) {
     rmSync(dir, { recursive: true, force: true });
   });
   await connection.write(DDL.map((sql) => ({ sql })));
+  return {
+    connection,
+    exec: async (...statements) => void (await connection.write(statements.map((sql) => ({ sql })))),
+    run: async (sql, ...params) => (await connection.write([{ sql, params }]))[0],
+    get: (sql, ...params) => connection.get(sql, ...params),
+    all: (sql, ...params) => connection.all(sql, ...params),
+  };
+}
+
+/** scratchConnection on Postgres: the store's migrations in a schema of the test's own, dropped after it. */
+async function scratchPostgres(t) {
+  const schema = await freshSchema();
+  const connection = await PgConnection.open({ url: PG_URL, schema });
+  t.after(async () => {
+    await connection.close().catch(() => undefined);
+    await dropSchema(schema);
+  });
+  await connection.withClient((client) => migrate(client, schema, T0));
   return {
     connection,
     exec: async (...statements) => void (await connection.write(statements.map((sql) => ({ sql })))),

@@ -5,7 +5,10 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test } from "node:test";
+import { test as nodeTest } from "node:test";
+import { sqliteAdapterTests } from "./store-target.mjs";
+
+const test = sqliteAdapterTests(nodeTest, "the SQLite connection's worker thread");
 import { openSqliteStore } from "../dist/store/sqlite/store.js";
 
 /** The most a 10 ms timer may be late while the store works: far under a flush's disk wait on a busy box, far over a
