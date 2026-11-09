@@ -37,6 +37,13 @@ for (const name of ["npm_config_registry", "NPM_CONFIG_REGISTRY"]) process.env[n
 // And gives up there at once: no retry with npm's backoff, a short timeout, so a test can never wait on such an install.
 for (const [name, value] of [["fetch_retries", "0"], ["fetch_timeout", "5000"]]) for (const spelling of [`npm_config_${name}`, `NPM_CONFIG_${name.toUpperCase()}`]) process.env[spelling] = value;
 
+/** The store's bytes on disk (the DB and its WAL and shared-memory sidecars), concatenated, for a sealed-at-rest check that
+ *  a secret is never written in the clear: a committed write may still sit in the -wal before a checkpoint, so all three are
+ *  read. The store's rows seal every secret (store/seal.ts), so none of these bytes holds a value in the clear. */
+export function storeBytes(data) {
+  return Buffer.concat(["store.sqlite", "store.sqlite-wal", "store.sqlite-shm"].map((name) => { try { return readFileSync(join(data, name)); } catch { return Buffer.alloc(0); } }));
+}
+
 /** The records of a log another process appends to (a line of JSON each, as the fake docker's): only its whole lines,
  *  each ended by its newline. A file just made and still empty, or a last line still being written, is read as the
  *  records before it, never parsed half. None when there is no file. */

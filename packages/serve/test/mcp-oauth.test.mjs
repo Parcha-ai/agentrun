@@ -17,7 +17,7 @@ import { copyStandIn } from "../../run-adapters-codex/test/stand-in.mjs";
 import { McpServers } from "../dist/mcp-servers.js";
 import { systemNetwork } from "../dist/mcp-oauth.js";
 import { network as fakeNetwork } from "./fixtures/fake-network.mjs";
-import { agent, call, cookieOf, flowAgent, follow, runRecordOf, scratch, serve, withEnv } from "./support.mjs";
+import { agent, call, cookieOf, flowAgent, follow, runRecordOf, scratch, serve, storeBytes, withEnv } from "./support.mjs";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { startFakeOAuth } from "./fixtures/fake-oauth-server.mjs";
 
@@ -100,7 +100,7 @@ test("an OAuth server: preview says to sign in; start, approve and callback keep
   assert.ok(caps.features.mcp_client.auth.includes("oauth"));
   const list = await api("GET", "/settings/mcp-servers");
   holdsNone(JSON.stringify([started.body, read.body, list.body, refreshed.body]), as.issued, "a read");
-  holdsNone(readFileSync(join(data, "mcp-servers.json"), "utf8"), as.issued, "mcp-servers.json");
+  holdsNone(storeBytes(data), as.issued, "the store");
 
   // The state is single-use: the same callback again is refused, and an unknown one too.
   const again = await fetch(back.url, { redirect: "manual", headers: { cookie: started.headers.get("set-cookie").split(";")[0] } });
@@ -166,7 +166,7 @@ test("a pre-registered client: its id and secret are used, no registration is ma
   const read = await api("GET", "/settings/mcp-servers/crm");
   assert.equal(read.body.credential, "sealed");
   assert.equal(read.body.oauth.client, "pre-registered");
-  holdsNone(readFileSync(join(data, "mcp-servers.json"), "utf8"), [secret, ...as.issued], "mcp-servers.json");
+  holdsNone(storeBytes(data), [secret, ...as.issued], "the store");
   assert.equal(read.body.oauth.client_id, "owner-app", "reads show the client id");
   holdsNone(JSON.stringify(read.body), [secret], "a read");
   const bad = await api("POST", "/settings/mcp-servers/crm/oauth/start", { url: mcp.url, client_secret: secret });
@@ -230,7 +230,7 @@ test("a run's launch refreshes a token near its expiry, once for launches at the
   const after = (await api("GET", "/settings/mcp-servers/docs")).body;
   assert.equal(after.credential, "sealed");
   assert.ok(Date.parse(after.oauth.expires_at) >= Date.parse(first.oauth.expires_at));
-  holdsNone(readFileSync(join(data, "mcp-servers.json"), "utf8"), as.issued, "mcp-servers.json");
+  holdsNone(storeBytes(data), as.issued, "the store");
 
   as.revoke();
   assert.deepEqual(await store.headersForRun("docs"), { unopened: "its sign-in expired or was revoked: sign in again in Settings → MCP servers" }, "a refused refresh hands the run a credential that does not open, never none");
