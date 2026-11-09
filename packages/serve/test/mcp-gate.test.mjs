@@ -162,7 +162,8 @@ test("pi: with no setting an MCP tool asks once (exactly one approval): the call
   assert.equal((await api("POST", `/runs/${runId}/approvals/${pending.id}`, { decision: "allow" })).status, 403, "a token never answers");
   assert.equal(await answer(runId, pending.id, { decision: "allow" }), 204);
   await follow(api, runId, ["completed"], { deadlineMs: 60_000 });
-  assert.equal(await answerOf(api, runId), "Resumed: paid for ada");
+  // On the runner, pi's answered call reaches the model as the call's own result (the faux model's "The tool said").
+  assert.equal(await answerOf(api, runId), "The tool said: paid for ada");
   assert.equal(calls(fake, "paid").length, 1, "run once, by the gate");
   await resumeRowIsAgentRuns(api, runId, pending.call_id, "mcp:fake/paid", "pi");
 });
@@ -190,7 +191,8 @@ test("pi: an MCP tool's default ask shows not metered when it has no price; the 
   assert.equal(pending.price, "not metered");
   assert.equal(await answer(runId, pending.id, { decision: "deny", note: "not today" }), 204);
   await follow(server.api, runId, ["completed"], { deadlineMs: 60_000 });
-  assert.equal(await answerOf(server.api, runId), "Resumed: The user denied this mcp:fake/add call. It was not run: nothing was sent and nothing was charged. Reason: not today");
+  // The refusal reaches pi's model as the call's own result.
+  assert.equal(await answerOf(server.api, runId), "The tool said: The user denied this mcp:fake/add call. It was not run: nothing was sent and nothing was charged. Reason: not today");
   assert.equal(calls(fake).length, 0);
 });
 
@@ -207,7 +209,7 @@ test("pi: the run's process killed while a call is parked loses nothing: the sam
   assert.equal(again.id, pending.id, "the same approval");
   assert.equal(await answer(runId, again.id, { decision: "allow" }), 204);
   await follow(api, runId, ["completed"], { deadlineMs: 90_000 });
-  assert.equal(await answerOf(api, runId), "Resumed: 5");
+  assert.equal(await answerOf(api, runId), "The tool said: 5");
   assert.equal(calls(fake, "add").length, 1, "run once");
 });
 
@@ -240,7 +242,7 @@ test("pi: a paid call that ran before a crash keeps its result when its tool is 
   const { rows } = await follow(api, runId, ["completed", "failed"], { deadlineMs: 150_000 });
   assert.ok(existsSync(crashed), "the process went between the call and its resume");
   const said = (await answerOf(api, runId)) ?? "";
-  assert.equal(said, "Resumed: paid for ada", "the model gets the call's saved result");
+  assert.equal(said, "The tool said: paid for ada", "the model gets the call's saved result");
   assert.ok(!said.includes("nothing was charged"), said);
   assert.equal(rows.filter((row) => /^Tool cost:/.test(row.summary ?? "")).length, 1, "booked once");
   assert.equal(calls(fake, "paid").length, 1, "never run again");
@@ -478,7 +480,9 @@ test("a person's message while an MCP call is parked declines it with their word
     const sent = await api("POST", `/runs/${runId}/messages`, { content: said });
     assert.equal(sent.status, 202, JSON.stringify(sent.body));
     const { rows } = await follow(api, runId, ["completed", "failed"], { deadlineMs: 150_000 });
-    assert.match(await answerOf(api, runId) ?? "", new RegExp(`^Resumed: The user denied this mcp:fake/add call\\. It was not run: nothing was sent and nothing was charged\\. Reason: ${said}`), harness);
+    // pi's model reads the refusal as the call's own result; the CLI's session is resumed with main's message.
+    const head = harness === "pi" ? "The tool said" : "Resumed";
+    assert.match(await answerOf(api, runId) ?? "", new RegExp(`^${head}: The user denied this mcp:fake/add call\\. It was not run: nothing was sent and nothing was charged\\. Reason: ${said}`), harness);
     assert.match(rows.find((row) => row.kind === "tool_approval_requested")?.summary ?? "", /^Declined by your message: mcp:fake\/add /, harness);
     assert.equal(await answer(runId, pending.id, { decision: "allow" }), 409, `${harness}: a later allow`);
     assert.equal(calls(fake).length, 0, `${harness}: the server saw nothing`);
