@@ -699,9 +699,10 @@ const finiteUsd = (usd: unknown): number | null => (typeof usd === "number" && N
 const UNBILLED = new Set(["configuration", "auth", "invalid_request", "rate_limited", "connection"]);
 const unbilled = (error: unknown): boolean => error instanceof DecisionProviderError && (error.unsent === true || UNBILLED.has(error.code));
 
-/** The tiers the workflow's model nodes run on (model.ts): the llm tiers over its nodes, else the default. */
+/** The tiers the workflow's model nodes run on (model.ts): the llm tiers over its nodes, read as toolsOf reads them (its
+ *  inspection's node paths), else the default. */
 function tiersOf(workflow: Workflow): Tier[] {
-  const nodes = workflowNodes(workflow, { nodes: [] } as never);
+  const nodes = workflowNodes(workflow, inspectWorkflow(workflow));
   const tiers = llmTiers(nodes, nodeTiers(nodes));
   return tiers.length ? tiers : ["default"];
 }
