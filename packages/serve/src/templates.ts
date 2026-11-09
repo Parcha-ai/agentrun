@@ -279,8 +279,11 @@ export function readPackage(dir: string): Package {
   triggers.forEach((trigger, i) => {
     const target = isObject(trigger) ? trigger.target : undefined;
     if (!isObject(trigger) || typeof trigger.name !== "string" || !trigger.name.trim()) return bad(MANIFEST, `triggers[${i}] has no name: a trigger's name is how an upgrade tells it from the others`);
-    if (triggerNames.has(trigger.name)) bad(MANIFEST, `triggers[${i}]: two triggers are named ${trigger.name}`);
-    triggerNames.add(trigger.name);
+    // Compared as a trigger keeps its name, trimmed (triggers.ts): the store holds one trigger of a name per agent
+    // (UNIQUE (agent_id, name)), and an apply's agent is new, so a package that passes here never meets it.
+    const name = trigger.name.trim();
+    if (triggerNames.has(name)) bad(MANIFEST, `triggers[${i}]: two triggers are named ${name}`);
+    triggerNames.add(name);
     if (!isObject(target) || target.kind !== "start_run" || target.agent_id !== undefined) bad(MANIFEST, `triggers[${i}].target is a start_run with no agent_id: the agent is the one the package makes`);
   });
   if (triggers.length && f.budget === undefined) bad(MANIFEST, "budget is required when the package has triggers: {per_run_usd}, each run's cap");

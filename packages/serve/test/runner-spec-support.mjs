@@ -28,8 +28,9 @@ const stubRoute = async () => ({ model: "faux-1", provider: { api: "anthropic-me
  *   settings the server's tool settings saved in the one store (store.settings), or none
  *   routeOf  the model route (a stub by default)
  *   uploads  [{ path, text, contentType? }] reserved and received as ready files, their ids put on launch.files
+ *   env      the runner process's environment the claim's tools are handed (claim-secrets.ts scopes it); {} by default
  */
-export async function specFor(t, { body = {}, launch = {}, settings, routeOf = stubRoute, uploads = [] } = {}) {
+export async function specFor(t, { body = {}, launch = {}, settings, routeOf = stubRoute, uploads = [], env = {} } = {}) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-spec-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -65,7 +66,7 @@ export async function specFor(t, { body = {}, launch = {}, settings, routeOf = s
   const run = { harness, registry, setModels: (given) => (models = given) };
   // The one shared claim-time computer (none for a runner place); a test gives its own, as the runner would.
   const computerForClaim = async () => ({ release: async () => {} });
-  const deps = { env: {}, data: dir, journal: (c) => store.journal(c), store, sealKey: SEAL_KEY, routeOf, computerForClaim };
+  const deps = { env, data: dir, journal: (c) => store.journal(c), store, sealKey: SEAL_KEY, routeOf, computerForClaim };
   const launchBody = { input: { content: "Do the thing." }, title: "t", place: { mode: "runner" }, model: { provider: "anthropic", modelId: "claude-sonnet-5.5" }, ...(fileIds.length ? { files: fileIds } : {}), ...launch };
   const spec = await adapterRunSpecFromLaunch(launchBody, run, deps, claim);
   return { spec, store, server, claim, dir, run, workFolder };

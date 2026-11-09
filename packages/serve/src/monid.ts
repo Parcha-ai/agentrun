@@ -23,7 +23,7 @@ import { registerLabel, TOOL_COST } from "@parcha/pi-durable-agent/timeline";
 import { paidCall } from "./cap.js";
 import { wireName } from "./catalog.js";
 import { fauxFetch } from "./decisions.js";
-import { holdRefusal, settleOnRoot, writeHold } from "./paid-calls.js";
+import { holdRefusal, paidLedger, paidStep, settleOnRoot, writeHold } from "./paid-calls.js";
 import { forModel } from "./result.js";
 import type { ToolEntry } from "./tools.js";
 import { isObject, type Json } from "./validate.js";
@@ -247,7 +247,16 @@ export function monidRegistration(kind: Kind, env: NodeJS.ProcessEnv, work: () =
         await (settleOnRoot(TOOL_COST, settle) ?? record(api, TOOL_COST, settle, context)).catch(() => undefined);
         return answer;
       };
-      const paid = kind === "run" ? await paidCall(RUN, send, chargeOf, { usd: held, basis }) : { result: await call() };
+      // On the runner's one ledger (paid-calls.ts Ledger.paid): held there at the same figure and settled at the same charge
+      // ($0 when monid charged nothing, at its hold when it may have and did not say), in place of this process's spend.
+      const onLedger = kind === "run" ? paidLedger() : undefined;
+      const paid = onLedger
+        ? await paidStep(onLedger, api.callId, { name: RUN, holdUsd: held, basis }, call, (outcome) => {
+          if (!("result" in outcome)) return null;
+          const usd = chargeOf(outcome.result);
+          return usd === undefined ? 0 : usd;
+        })
+        : kind === "run" ? await paidCall(RUN, send, chargeOf, { usd: held, basis }) : { result: await call() };
       if ("refused" in paid) return forModel(JSON.stringify({ error: paid.refused }), { isError: true });
       const answer = paid.result;
       const price = kind === "inspect" && isObject(answer.price) && answer.price.type === "PER_CALL" ? money(answer.price.amount) : undefined;

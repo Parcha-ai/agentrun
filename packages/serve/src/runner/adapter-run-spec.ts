@@ -24,7 +24,7 @@ import type { RunLaunch } from "../run-launch.js";
 import type { Store } from "../store/store.js";
 import { isObject } from "../validate.js";
 import { type RunFiles, runGate } from "../tool-gate.js";
-import { loadToolSettings } from "../tool-plane.js";
+import { loadToolSettings, TOOL_PLANE_ENV } from "../tool-plane.js";
 import { type ToolHost, toolOf } from "../tools.js";
 import { type HostToolCtx, hostToolOf } from "../host-tools.js";
 import { WEB_FETCH_TOOL } from "../web-fetch.js";
@@ -265,6 +265,12 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
   // tools unlock and its model needs, scoped to the run as the old per-run environment was, so one run's keys never reach
   // another's on this runner (claim-secrets.ts). MCP credentials are the other per-claim secret and come through mcp-claim.
   const toolEnv = await claimSecrets({ store: deps.store, sealKey: deps.sealKey, env: deps.env }, revisionRow as unknown as Parameters<typeof claimSecrets>[1], launch);
+  // The run's resolved tool plane (its web_search/web_fetch/browser providers), as main hands its per-run process (runs.ts):
+  // the web tools read it (tool-plane.ts planeOf) to pick Parallel where the run resolves to it, the model provider's native
+  // search, or the guarded direct fetch. Not a secret; without it the runner's web tools would ignore the run's plane and
+  // never reach Parallel, so they could not book a Parallel call as main does.
+  delete toolEnv[TOOL_PLANE_ENV];
+  if (launch.plane && Object.keys(launch.plane).length) toolEnv[TOOL_PLANE_ENV] = JSON.stringify(launch.plane);
 
   // The tool host's install lifecycle: what a binding registers to run in each conversation's creating commit, once the
   // Harness is open before the session, and at the run's end (the browser tool's reconcile and release hang off these). The
@@ -354,23 +360,22 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
   };
 }
 
-/** The tools whose call spends, routed through the one money seam below. web_fetch/web_search book Parallel's extract and
- *  search; monid's three call monid's paid API; a learned workflow's nodes spend on the run's models and decisions. */
-const PAID_TOOLS: ReadonlySet<string> = new Set([WEB_FETCH_TOOL, WEB_SEARCH_TOOL, "monid.discover", "monid.inspect", "monid.run", LEARNED_WORKFLOW_TOOL]);
-
-/** A paid tool call's money on the runner, through one named seam. Today it refuses the call in words, so a paid tool is
- *  never run unbooked; its name is still listed, so a pi run through the dispatch offers main's tools. A tool that spends
- *  nothing runs (undefined). TODO(spendcap-1): book the call's charge as main does (paid-calls.ts settleIn on the adapter
- *  loop's harness), then return undefined to let it run, and add the red that a paid call books main's figure. */
-function settlePaidCall(name: string): { refused: string } | undefined {
-  return PAID_TOOLS.has(name) ? { refused: "This tool's charge is not settled on the runner yet, so its call was not run." } : undefined;
+/** learned_workflow is listed so a pi run through the dispatch offers main's tool set, but it is not run on the runner yet:
+ *  its nodes need the run's models and decision routes, which the adapter loop hands the spec at open (the {decisions,
+ *  models} seam, spendcap-1's follow-up). Until that lands it is refused in words, never run as a stub. web_fetch,
+ *  web_search and monid carry no such gate: the adapter loop books their paid requests on the run's one ledger
+ *  (adapter-loop.ts bookedIn, paid-calls.ts), held at Parallel's or monid's price and settled at the charge, exactly as
+ *  main does, so they run. */
+function settleLearnedWorkflow(name: string): { refused: string } | undefined {
+  return name === LEARNED_WORKFLOW_TOOL ? { refused: "This tool is not available on the runner yet, so its call was not run." } : undefined;
 }
 
 /** The run's non-hand tools as HostTool[], bound through the ToolHost seam and wrapped as the hands are (host-tools.ts
  *  hostToolOf): web_fetch, web_search and monid, each by its catalog name under the adapter loop's one gate (`spec.gate`;
- *  `gated` is undefined here, as for the hands), its paid call's money through settlePaidCall. The browser (tl-browser,
- *  through host.liveViewers), MCP (tl-mcp's mcpForClaim(claim, store, sealKey, pin) -> { sessionMcp, redactions, release }),
- *  the learned workflow and decisions are each a named todo, added as their seams land. */
+ *  `gated` is undefined here, as for the hands). Their paid requests are booked by the adapter loop on the run's one ledger
+ *  (bookedIn), as main books them, so they run. The browser (tl-browser, through host.liveViewers), MCP (tl-mcp's
+ *  mcpForClaim(claim, store, sealKey, pin) -> { sessionMcp, redactions, release }), the learned workflow and decisions are
+ *  each a named todo, added as their seams land. */
 async function bindNonHandTools(host: ToolHost, granted: readonly string[], run: AdapterRun, context: Context, results: ToolResults, root: string, plane: RunLaunch["plane"]): Promise<AdapterRunSpec["session"]["tools"]> {
   const names = granted.filter((name) => name === WEB_FETCH_TOOL || name === WEB_SEARCH_TOOL || name.startsWith("monid."));
   const ctx: HostToolCtx = {
@@ -385,8 +390,8 @@ async function bindNonHandTools(host: ToolHost, granted: readonly string[], run:
       if (!conversation) throw new Error("the run has no root conversation");
       return conversation.agent(at);
     },
-    // The gate is the adapter loop's own (spec.gate); each paid tool's money through the one settle seam.
-    settle: settlePaidCall,
+    // The gate is the adapter loop's own (spec.gate). web_fetch/web_search/monid carry no settle gate: the adapter loop
+    // books their paid requests on the run's one ledger (bookedIn), so they run.
   };
   const tools: HostTool[] = [];
   for (const name of names) {
@@ -399,11 +404,11 @@ async function bindNonHandTools(host: ToolHost, granted: readonly string[], run:
     }
   }
 
-  // learned_workflow, by main's wire name, listed when the run's pin names learned workflows (as main lists it), behind
-  // settlePaidCall like the other paid tools so the tool set the model sees matches main. Its nodes run on the run's models,
-  // which the adapter loop's open seam gives (TODO, the same {decisions, models} seam as decisions below); the refusal means
-  // they are never reached here, so it is listed, not run. A pin whose learned-workflows file is not on the runner yet is
-  // skipped (that copy is its own seam), never failing the run.
+  // learned_workflow, by main's wire name, listed when the run's pin names learned workflows (as main lists it), so the tool
+  // set the model sees matches main. Its nodes run on the run's models and decision routes, which the adapter loop's open
+  // seam gives (TODO, the {decisions, models} seam as decisions below); until that lands settleLearnedWorkflow refuses the
+  // call, so it is listed, not run (never a stub that pretends to run). A pin whose learned-workflows file is not on the
+  // runner yet is skipped (that copy is its own seam), never failing the run.
   if (granted.includes(LEARNED_WORKFLOW_TOOL)) {
     const flows = await pinnedWorkflows(root, await readPin(root)).catch(() => []);
     if (flows.length) {
@@ -414,11 +419,11 @@ async function bindNonHandTools(host: ToolHost, granted: readonly string[], run:
         env: host.env,
         work: root,
         // TODO(loop seam): the run's models and modelOf come from the adapter loop's {decisions, models} at open; unreached
-        // behind settlePaidCall until the paid-call settle lands.
+        // behind settleLearnedWorkflow until that seam lands.
         models: createModels() as never,
         modelOf: () => undefined,
       });
-      const tool = hostToolOf(LEARNED_WORKFLOW_TOOL, learnedTool as never, ctx);
+      const tool = hostToolOf(LEARNED_WORKFLOW_TOOL, learnedTool as never, { ...ctx, settle: settleLearnedWorkflow });
       if (tool) tools.push(tool);
     }
   }

@@ -76,8 +76,9 @@ export interface HostToolCtx {
   /** The run's tool gate and the park it takes; none for the gate's own run of an approved call (the adapter loop's own
    *  gate, which gates every host-tool call before its intent). */
   readonly gated?: { gate: RunGate; park: Park };
-  /** A paid tool's money, routed through one seam: undefined to run the call, else the refusal that is its answer, so a
-   *  paid tool whose charge cannot be settled here is never run unbooked (runner/adapter-run-spec.ts settlePaidCall). */
+  /** A gate for a tool that cannot be run on the runner yet: undefined to run the call, else the refusal that is its answer,
+   *  so the tool is listed but never run as a stub (runner/adapter-run-spec.ts settleLearnedWorkflow). The paid tools the
+   *  loop can book (web_fetch/web_search/monid) carry no such gate; the adapter loop books their requests (bookedIn). */
   settle?(name: string, args: unknown, callId: string): { refused: string } | undefined;
 }
 
@@ -102,7 +103,7 @@ export function hostToolOf(name: string, tool: ToolRegistration, ctx: HostToolCt
         // A parked call did not run: the harness's session records it so (HostTool's `parked`).
         return refused.parked ? { ...answer, parked: true as const } : answer;
       }
-      // The paid-call money seam: a paid tool whose charge cannot be settled here is refused in words, never run unbooked.
+      // The unready-tool seam: a tool that cannot be run on the runner yet is refused in words, never run as a stub.
       const unsettled = ctx.settle?.(name, args, callId);
       if (unsettled) {
         const answer = { text: unsettled.refused, isError: true };
