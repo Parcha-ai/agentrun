@@ -108,3 +108,12 @@ test("Mode 2 with no saved account key, or no seal key: refused in words naming 
   await assert.rejects(serverRunWorkspace(store, "run-1", options), (error) => error.code === "UNAVAILABLE" && error.message.includes(ARCHIL_API_KEY_ROW));
   await assert.rejects(serverRunWorkspace(store, "run-1", { ...options, sealKey: undefined }), (error) => error.code === "UNAVAILABLE" && /seal key/.test(error.message));
 });
+
+test("Mode 2: an ARCHIL_API_KEY in the server's environment is the account key, over a saved one (the one resolver)", async (t) => {
+  const { store, made, options } = await mode2(t);
+  const workspace = await serverRunWorkspace(store, "run-1", { ...options, env: { ARCHIL_API_KEY: "archil-env-key-0002" } });
+  assert.equal(Buffer.from(await workspace.read("notes.md")).toString(), "line one\nneedle here\n");
+  assert.equal(made.at(-1).key(), "archil-env-key-0002");
+  const unsaved = await mode2(t, { saveKey: false });
+  assert.notEqual(await serverRunWorkspace(unsaved.store, "run-1", { ...unsaved.options, sealKey: undefined, env: { ARCHIL_API_KEY: "archil-env-key-0002" } }), null, "no saved key and no seal key needed");
+});

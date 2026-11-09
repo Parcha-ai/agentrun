@@ -21,14 +21,14 @@ import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { Hearing } from "../heard.js";
 import type { LearningFolder } from "../learn/folder.js";
-import { type HandedReads, handedValuesOf } from "../handed-values.js";
+import { handedValuesOf } from "../handed-values.js";
 import { MIN_SECRET } from "../learn/secrets.js";
 import { gradeModelOf, PROPOSAL } from "../learning.js";
 import { reflects, type Reflect } from "../learning-run.js";
 import { said, STOPPED } from "../learning-words.js";
 import { proposeRun } from "../propose.js";
 import { learningStartOf, type RunLaunch } from "../run-launch.js";
-import { costOf } from "../run-view.js";
+import { costOf, type SignInReader } from "../run-view.js";
 import type { Store } from "../store/store.js";
 import { runEntries, runReflect, runTimeline } from "../store-reads/journal.js";
 import type { EndOfRunTurn } from "./loop-contract.js";
@@ -49,7 +49,7 @@ export interface LearningEndDeps {
   /** The agent's sign-ins, opened (sign-ins-store.ts signInReads over the store and the seal key): the pointers the run's
    *  row says it was handed are read back through them and never learned. Absent, a run marked as handed one learns
    *  nothing (its pointers can't be read back). */
-  readonly signIns?: HandedReads;
+  readonly signIns?: SignInReader;
   /** The secret values the run's claim handed it (claim-secrets.ts: its tool and model keys), never learned. */
   readonly handed?: readonly string[];
   /** The grade model the server names (learning.ts gradeModelOf); none, from `env` as the server reads it. */

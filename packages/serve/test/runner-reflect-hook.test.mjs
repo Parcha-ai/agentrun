@@ -8,6 +8,9 @@ import { parseReflection, reflectPrompt } from "../dist/learn/index.js";
 import { said, STOPPED } from "../dist/learning-words.js";
 
 const claim = { runId: "run-1", runner: "runner-a", epoch: 1, until: 0, from: "running" };
+/** The hooks' clock, and what a run that looked back keeps of its answer with it: its spend reads 0.01 throughout. */
+const AT = Date.UTC(2026, 10, 9, 5, 0, 0);
+const ANSWERED = { answered_at: new Date(AT).toISOString(), job_cost_usd: 0.01, look_back_usd: 0 };
 
 /** A hook over fake deps; `answer` is what the turn's ask resolves with. */
 function hookWith({ facts = {}, answer = { ended: true, answer: "```note\n...\n```" }, check } = {}) {
@@ -21,6 +24,7 @@ function hookWith({ facts = {}, answer = { ended: true, answer: "```note\n...\n`
       return check ? check(input) : { state: "proposed", notes: 1, skills: 0, workflows: 0, proposal: { seed: "abc", notes: [{ file: "a.md", text: "x" }], asked: ["Find the bug."] } };
     },
     newRunId: () => "run-learn-1",
+    now: () => AT,
   };
   const hook = createReflectHook(deps);
   const input = (outcome = "completed") => ({
@@ -100,7 +104,7 @@ test("a proposal keeps the turn and queues one learning run beside the end", asy
   assert.equal(calls.checked[0].outcome, "failed", "the checks read how the job ended");
   assert.deepEqual(rows, {
     also: [
-      { table: "learning_proposals", row: { turn: { answer: "```note\n...\n```", asked: ["Find the bug."] }, proposal: { state: "proposed", notes: 1, skills: 0, workflows: 0, proposal: { seed: "abc", notes: [{ file: "a.md", text: "x" }], asked: ["Find the bug."] }, detail: said.proposed(1, 0, 0) } } },
+      { table: "learning_proposals", row: { turn: { answer: "```note\n...\n```", asked: ["Find the bug."] }, proposal: { state: "proposed", notes: 1, skills: 0, workflows: 0, proposal: { seed: "abc", notes: [{ file: "a.md", text: "x" }], asked: ["Find the bug."] }, detail: said.proposed(1, 0, 0), ...ANSWERED } } },
       { table: "learning_run", row: { id: "run-learn-1" } },
     ],
   });
@@ -117,7 +121,7 @@ test("an answer with nothing to keep, or out of format, or refused by the checks
     assert.ok(rows !== undefined, `${result.reason}: the learning's end is kept`);
     assert.equal(rows.also.length, 1, `${result.reason}: one row`);
     assert.equal(rows.also[0].table, "learning_proposals");
-    assert.deepEqual(rows.also[0].row.proposal, { ...result, state: "dropped", detail }, result.reason);
+    assert.deepEqual(rows.also[0].row.proposal, { ...result, state: "dropped", detail, ...ANSWERED }, result.reason);
     assert.ok(!rows.also.some((row) => row.table === "learning_run"), `${result.reason}: no learning run`);
   }
 });
@@ -129,7 +133,8 @@ test("a turn past its deadline, one the cap refused, and one that failed: droppe
     [{ failed: { code: "run-failed", message: "the model refused" } }, "reflect_failed", said.stopped(STOPPED.failed)],
   ]) {
     const { hook, input, calls } = hookWith({ answer });
-    assert.deepEqual(await hook(input()), { also: [dropped(reason, detail)] }, reason);
+    const after = dropped(reason, detail);
+    assert.deepEqual(await hook(input()), { also: [{ ...after, row: { ...after.row, proposal: { ...after.row.proposal, ...ANSWERED } } }] }, reason);
     assert.deepEqual(calls.checked, [], `${reason}: nothing checked`);
   }
 });
@@ -204,7 +209,44 @@ test("the re-ask is inside the turn's deadline: it gets what the first answer le
   assert.deepEqual([rows.also[0].row.proposal.state, rows.also[0].row.proposal.reason], ["dropped", "unparsed"]);
 });
 
+/** A hook whose run's spend reads `spent` in turn (the job's when it answered, then the run's once its turn closed), its
+ *  clock at `at`; the turn's ask resolves with `answer`. */
+function timedHook({ spent, at, answer = { ended: true, answer: "```note\n...\n```" }, facts = {} }) {
+  const reads = [...spent];
+  const hook = createReflectHook({
+    facts: async () => ({ learns: true, ...facts, costUsd: reads.length > 1 ? reads.shift() : reads[0] }),
+    promptFacts: async () => ({ active: 1, tools: [] }),
+    asked: async () => ({ asked: ["Find the bug."] }),
+    check: async () => ({ state: "proposed", notes: 1, skills: 0, workflows: 0, proposal: { seed: "abc", notes: [], asked: [] } }),
+    newRunId: () => "run-learn-1",
+    now: () => at,
+  });
+  const input = { runId: "run-1", agentId: "agent-1", claim, outcome: "completed", signal: new AbortController().signal, ask: async () => answer };
+  return { hook, input };
+}
+
+test("a run that looked back keeps when its job answered, what the job cost and what looking back cost (learning-run.ts closeLearning), on its proposal and on a drop after the turn", async () => {
+  const at = Date.UTC(2026, 10, 9, 6, 0, 0);
+  const first = timedHook({ spent: [0.3, 0.42], at });
+  const kept = (await first.hook(first.input)).also[0].row.proposal;
+  assert.equal(kept.answered_at, new Date(at).toISOString(), "when the job answered: as the turn starts");
+  assert.equal(kept.job_cost_usd, 0.3, "the run's spend as its job answered");
+  assert.equal(kept.look_back_usd, 0.12, "the run's spend once its turn closed, less the job's");
+  const { hook, input } = timedHook({ spent: [0.3, 0.5], at, answer: { timedOut: true } });
+  const late = (await hook(input)).also[0].row.proposal;
+  assert.deepEqual([late.reason, late.answered_at, late.job_cost_usd, late.look_back_usd], ["reflect_timeout", new Date(at).toISOString(), 0.3, 0.2], "a turn past its deadline keeps them too");
+  const unknown = timedHook({ spent: [0.3, null], at });
+  assert.equal((await unknown.hook(unknown.input)).also[0].row.proposal.look_back_usd, null, "a spend not known once the turn closed: looking back's cost is unknown");
+});
+
+test("a run that never looked back keeps no answer time and no look-back cost", async () => {
+  const { hook, input } = timedHook({ spent: [1], at: 0, facts: { capReached: true } });
+  const kept = (await hook(input)).also[0].row.proposal;
+  assert.equal(kept.reason, "no_budget");
+  assert.ok(!("answered_at" in kept) && !("job_cost_usd" in kept) && !("look_back_usd" in kept), JSON.stringify(kept));
+});
+
 test("checks that fail on their own drop the learning, saying so, and queue no run", async () => {
   const { hook, input } = hookWith({ check: () => { throw new Error("no seed"); } });
-  assert.deepEqual(await hook(input()), { also: [{ table: "learning_proposals", row: { turn: { answer: "```note\n...\n```", asked: ["Find the bug."] }, proposal: { state: "dropped", reason: "propose_failed", detail: said.stopped(STOPPED.notChecked) } } }] });
+  assert.deepEqual(await hook(input()), { also: [{ table: "learning_proposals", row: { turn: { answer: "```note\n...\n```", asked: ["Find the bug."] }, proposal: { state: "dropped", reason: "propose_failed", detail: said.stopped(STOPPED.notChecked), ...ANSWERED } } }] });
 });

@@ -31,7 +31,6 @@ const TODAY = [
   "packages/serve/src/run-db.ts",
   "packages/serve/src/runs.ts",
   "packages/serve/src/server-lock.ts",
-  "packages/serve/src/server.ts",
 ];
 /** A SQLite file named in source: only the store picks its file (a data directory is all anyone else passes). */
 const SQLITE_FILE = /\.sqlite\b/;
@@ -178,7 +177,6 @@ const TODAY_DRIVER = [
   "packages/serve/src/import.ts",
   "packages/serve/src/run-db.ts",
   "packages/serve/src/server-lock.ts",
-  "packages/serve/src/server.ts",
 ];
 
 test("no SQLite driver taken outside the store, but for today's files on the list", () => {

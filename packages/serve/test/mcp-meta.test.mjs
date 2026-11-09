@@ -9,11 +9,10 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { test } from "node:test";
-import { readFile, writeFile } from "node:fs/promises";
-import { join } from "node:path";
 import { mcpGateway, mcpPinOf } from "../dist/mcp-gateway.js";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
-import { agent, answerFlow, flowAgent, follow, runDir, serve as serveOf, withEnv } from "./support.mjs";
+import { agent, answerFlow, flowAgent, follow, serve as serveOf, startInProcessRunner, withEnv } from "./support.mjs";
+import { openSqliteStore } from "../dist/store/index.js";
 
 const TOKEN = `not-a-secret-${"mcp-meta-bearer-0123"}`;
 const REASON = "it runs other actions by name, so a grant can't name the real action. Use the server's direct tools instead.";
@@ -92,14 +91,19 @@ test("a grant of a meta tool is 422 on a harness that doesn't bind MCP tools too
 });
 
 test("a run of a revision saved granting what is now a meta tool is 409 naming it under details.not_grantable with the reason, never under unbound", async (t) => {
-  const { api, data } = await serve(t);
+  // Ported to the one store (the switch): the registry is a store row, edited as a direct store write would be, and read
+  // by a server started on it again (a running server reads its registry at its own saves).
+  withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") });
+  const first = await serveOf(t, { runner: false });
   // Klavis's generic execute_action is granted on a host that is not Klavis's; the server then moves to Klavis's host.
-  await saved(t, api, "strata", ["execute_action"]);
-  assert.equal((await api("POST", "/agents", agent("strata-old", { tools: ["mcp:strata/execute_action"] }))).status, 201);
-  const file = join(data, "mcp-servers.json");
-  const doc = JSON.parse(await readFile(file, "utf8"));
-  doc.servers.strata.url = "https://strata.klavis.ai/mcp/?strata_id=x";
-  await writeFile(file, JSON.stringify(doc));
+  await saved(t, first.api, "strata", ["execute_action"]);
+  assert.equal((await first.api("POST", "/agents", agent("strata-old", { tools: ["mcp:strata/execute_action"] }))).status, 201);
+  await first.close();
+  const store = await openSqliteStore({ dataDir: first.data, role: "runner" });
+  const row = await store.mcp.server("strata");
+  await store.mcp.put({ name: row.name, url: "https://strata.klavis.ai/mcp/?strata_id=x", auth: row.auth, protocol: row.protocol, tools: row.tools, ...(row.prices ? { prices: row.prices } : {}), serverInfo: row.serverInfo, instructions: row.instructions, sealed: row.sealed });
+  await store.close();
+  const { api } = await serveOf(t, { data: first.data, runner: false });
   const run = await api("POST", "/agents/strata-old/runs", { input: { content: "Hello." } });
   assert.equal(run.status, 409, JSON.stringify(run.body));
   assert.equal(run.body.error.code, "agent_not_runnable");
@@ -111,6 +115,7 @@ test("a run of a revision saved granting what is now a meta tool is 409 naming i
   const blocked = JSON.stringify(doc409).includes('"not_grantable"');
   assert.ok(blocked, "the served document names details.not_grantable");
 });
+
 
 test("a grant of a meta tool is 422 in the same words on every harness that binds MCP tools: pi, claude-agent and codex", async (t) => {
   const { api } = await serve(t);
@@ -130,21 +135,26 @@ test("a grant of a meta tool is 422 in the same words on every harness that bind
 });
 
 test("a run's pin made before the rule, holding a meta tool, refuses its next launch in words; the gateway never sends a pinned meta tool", { timeout: 120_000 }, async (t) => {
-  const { api, data } = await serve(t);
+  // Ported to the one store and the runner (the switch): the run's pin is its store row, made before the rule as an earlier
+  // claim would have made it, and the runner's claim step re-checks it at the claim (runner/mcp-claim.ts).
+  withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") });
+  const { api, data } = await serveOf(t, { runner: false });
   await saved(t, api, "composio", ["COMPOSIO_MULTI_EXECUTE_TOOL", "GMAIL_SEND_EMAIL"]);
   assert.equal((await api("POST", "/agents", agent("old", { tools: ["mcp:composio/GMAIL_SEND_EMAIL"] }))).status, 201);
   const run = await api("POST", "/agents/old/runs", { input: { content: "Hello." } });
   assert.equal(run.status, 202, JSON.stringify(run.body));
   const runId = run.body.run_id;
-  await follow(api, runId, ["completed"], { deadlineMs: 60_000 });
   // The pin as one made before the rule would be: the meta tool beside the direct one.
-  const file = join(runDir(data, runId), "mcp-tools.json");
-  const pin = JSON.parse(await readFile(file, "utf8"));
-  pin.composio.tools.push({ name: "COMPOSIO_MULTI_EXECUTE_TOOL", inputSchema: object });
-  await writeFile(file, JSON.stringify(pin));
-  // The message's launch is refused at once: the run fails in words (the message is answered 409 once it has).
-  const again = await api("POST", `/runs/${runId}/messages`, { content: "Again." });
-  assert.ok([202, 409].includes(again.status), JSON.stringify(again.body));
+  const store = await openSqliteStore({ dataDir: data, role: "runner" });
+  t.after(() => store.close().catch(() => undefined));
+  const server = await store.mcp.server("composio");
+  const claim = await store.claim(runId, "earlier", { leaseMs: 60_000 });
+  const listed = (name) => server.tools.find((tool) => tool.name === name);
+  await store.mcp.pinOnce(claim, { composio: { url: server.url, tools: ["GMAIL_SEND_EMAIL", "COMPOSIO_MULTI_EXECUTE_TOOL"].map((name) => ({ name, inputSchema: listed(name)?.input_schema ?? object })) } });
+  await store.release(claim);
+  // Its launch on a runner is refused at the claim: the run fails in words, and nothing is sent.
+  const close = await startInProcessRunner(data);
+  t.after(() => close());
   const { last } = await follow(api, runId, ["failed", "completed"], { deadlineMs: 60_000 });
   const view = (await api("GET", `/runs/${runId}`)).body;
   assert.deepEqual([last.status, view.error?.message], ["failed", `mcp:composio/COMPOSIO_MULTI_EXECUTE_TOOL can't be granted: ${REASON}`], JSON.stringify(view.error));
@@ -152,6 +162,7 @@ test("a run's pin made before the rule, holding a meta tool, refuses its next la
   const said = await gateway.call("composio", "COMPOSIO_MULTI_EXECUTE_TOOL", {}, { signal: new AbortController().signal });
   assert.deepEqual([said.isError, said.content[0].text], [true, `mcp:composio/COMPOSIO_MULTI_EXECUTE_TOOL can't be granted: ${REASON} Nothing was sent.`]);
 });
+
 
 /** What a save says of a workflow's grant of a direct MCP tool: no workflow node binds one here. */
 const UNBOUND_IN_WORKFLOW = (tool) => `${tool}: a workflow's nodes don't bind MCP tools here yet; grant it to an agentic agent.`;
