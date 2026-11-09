@@ -3,7 +3,7 @@
 // adb runs, and no test waits on the wall clock: the fake's clock moves on when the provider sleeps.
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
@@ -892,6 +892,46 @@ test("a file ledger loses no phone when processes and calls put at once: every e
 	for (const { error, stderr } of ran) assert.equal(error, null, stderr);
 	const ids = (await conformance.fileLedger(path).list()).map((entry) => entry.id).sort();
 	assert.equal(ids.length, writers * each, `every put landed: ${ids.length} of ${writers * each}`);
+});
+
+/** The pid of a process that has exited: no process holds it now. */
+const deadPid = () => new Promise((resolve) => {
+	const child = execFile(process.execPath, ["-e", ""], () => resolve(child.pid));
+});
+const ENTRY = { labels: {}, image: "android", deadline: "2026-11-08T12:00:00.000Z" };
+
+test("a file ledger never takes a live writer's lock, however old: a put waits for it, and fails in words", async () => {
+	const path = join(dir, "live-lock-ledger.json");
+	// This process is the holder, so it is alive; the lock is an hour old.
+	writeFileSync(`${path}.lock`, `${process.pid} a-live-writer\n`);
+	utimesSync(`${path}.lock`, new Date(Date.now() - 3_600_000), new Date(Date.now() - 3_600_000));
+	await assert.rejects(conformance.fileLedger(path, { waitMs: 0 }).put({ id: "p1", ...ENTRY }), /stayed locked by another writer/);
+	assert.equal(readFileSync(`${path}.lock`, "utf8"), `${process.pid} a-live-writer\n`, "the live writer's lock is untouched");
+	rmSync(`${path}.lock`);
+});
+
+test("a file ledger takes a dead writer's lock at once, however fresh", async () => {
+	const path = join(dir, "dead-lock-ledger.json");
+	writeFileSync(`${path}.lock`, `${await deadPid()} a-dead-writer\n`);
+	await conformance.fileLedger(path, { waitMs: 0 }).put({ id: "p1", ...ENTRY });
+	assert.deepEqual((await conformance.fileLedger(path).list()).map((entry) => entry.id), ["p1"]);
+	assert.throws(() => readFileSync(`${path}.lock`), /ENOENT/, "and lets it go after its write");
+});
+
+test("a dead writer's lock, broken by many processes at once, is broken once: every entry lands", async () => {
+	// Two waiters that each find the lock stale could each remove it, the second removing the lock the first had just
+	// taken: two writers at once, and an entry dropped.
+	const path = join(dir, "broken-lock-ledger.json");
+	writeFileSync(`${path}.lock`, `${await deadPid()} a-dead-writer\n`);
+	const module = new URL("../dist/conformance/phone-harness.js", import.meta.url).href;
+	const writers = 6;
+	const each = 20;
+	const script = `const { fileLedger } = await import(process.argv[1]); const ledger = fileLedger(process.argv[2]); const who = process.argv[3]; await Promise.all(Array.from({ length: ${each} }, (_, i) => ledger.put({ id: who + "-" + i, labels: {}, image: "android", deadline: "2026-11-08T12:00:00.000Z" })));`;
+	const ran = await Promise.all(
+		Array.from({ length: writers }, (_, w) => new Promise((resolve) => execFile(process.execPath, ["--input-type=module", "-e", script, module, path, `w${w}`], (error, stdout, stderr) => resolve({ error, stderr })))),
+	);
+	for (const { error, stderr } of ran) assert.equal(error, null, stderr);
+	assert.equal((await conformance.fileLedger(path).list()).length, writers * each, "every put landed");
 });
 
 test("the conformance module reads its own COMPUTER_PHONE_HARNESS_* names, never PHONE_HARNESS_API_KEY, and keeps its ledger in a file", async () => {
