@@ -7,10 +7,16 @@ import type { Dialect, LockExecutor } from "../dialect.js";
 
 const path = (keys: readonly string[]): string => `'{${keys.join(",")}}'`;
 
-/** The Postgres dialect for the store in `schema`. */
-export function postgresDialect(schema: string): Dialect {
+/** The database's clock in ms: clock_timestamp(), the moment the statement reads it (after any lock it waited for), never the
+ *  transaction's start. */
+export const DATABASE_NOW_MS = "(EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::bigint";
+
+/** The Postgres dialect for the store in `schema`. Its deadlines run on the database's clock (DATABASE_NOW_MS) unless
+ *  `testClock`: a test that moves the store's clock by hand, bound as a parameter as SQLite's is. */
+export function postgresDialect(schema: string, { testClock = false }: { testClock?: boolean } = {}): Dialect {
   return {
     name: "postgres",
+    ...(testClock ? {} : { nowSql: DATABASE_NOW_MS }),
     jsonText: (column, keys) => `(${column}::json #>> ${path(keys)})`,
     // SQLite's json_extract(...) IS NOT 0: true unless the value is false or the number 0 (absent and null are true).
     jsonNotFalse: (column, keys) => `COALESCE((${column}::json #> ${path(keys)})::text NOT IN ('false', '0'), TRUE)`,

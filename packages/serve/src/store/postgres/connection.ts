@@ -31,6 +31,8 @@ export interface PgConnectionOptions {
   readonly busyTimeoutMs?: number;
   /** Most clients open at once. */
   readonly poolSize?: number;
+  /** Deadlines on the store's own (test) clock, bound as parameters, instead of the database's (postgresDialect). */
+  readonly testClock?: boolean;
 }
 
 /** int8 as a JavaScript number: every integer the store keeps (ms, ids, epochs, counts) is one, and one outside the safe
@@ -145,17 +147,17 @@ export class PgConnection implements StoreConnection {
     return columns;
   };
 
-  private constructor(pool: pg.Pool, owner: pg.Client | undefined, schema: string, busyTimeoutMs: number, where: string) {
+  private constructor(pool: pg.Pool, owner: pg.Client | undefined, schema: string, busyTimeoutMs: number, where: string, testClock: boolean) {
     this.#pool = pool;
     this.#owner = owner;
     this.schema = schema;
     this.where = where;
     this.#busyTimeoutMs = busyTimeoutMs;
-    this.dialect = postgresDialect(schema);
+    this.dialect = postgresDialect(schema, { testClock });
   }
 
   /** The pool on `url` in `schema`, and (owner) the owner lock: StoreOwned when another server holds the schema. */
-  static async open({ url, schema, owner = false, busyTimeoutMs = 10_000, poolSize = 10 }: PgConnectionOptions): Promise<PgConnection> {
+  static async open({ url, schema, owner = false, busyTimeoutMs = 10_000, poolSize = 10, testClock = false }: PgConnectionOptions): Promise<PgConnection> {
     if (!SCHEMA_NAME.test(schema)) throw new TypeError(`the store's schema is a lower-case name of letters, digits and underscores, not ${JSON.stringify(schema)}`);
     const session = `-c search_path=${schema} -c lock_timeout=${Math.max(0, Math.floor(busyTimeoutMs))} -c synchronous_commit=on`;
     const config: pg.PoolConfig = { connectionString: url, options: session, types, max: poolSize, allowExitOnIdle: true, application_name: "agentrun-store" };
@@ -176,7 +178,7 @@ export class PgConnection implements StoreConnection {
     const pool = new pg.Pool(config);
     // An idle client's error (the server went away) surfaces at its next use, never as an unhandled event.
     pool.on("error", () => undefined);
-    return new PgConnection(pool, lock, schema, busyTimeoutMs, postgresWhere(url, schema));
+    return new PgConnection(pool, lock, schema, busyTimeoutMs, postgresWhere(url, schema), testClock);
   }
 
   /** `work`, counted in flight, refused after close. */

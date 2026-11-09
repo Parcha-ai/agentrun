@@ -39,7 +39,7 @@ import {
 import { PI_TABLE as T } from "../schema.js";
 import { type Dialect, SQLITE } from "../dialect.js";
 import type { StoreConnection } from "../sqlite/connection.js";
-import { claimFence } from "../fence.js";
+import { claimFence, storeNow } from "../fence.js";
 import { applyRunPatch, refuseLeftovers } from "../sqlite/run-patch.js";
 import { type Claim, CommandTaken, Fenced, type Journal, type Staged } from "../store.js";
 
@@ -333,7 +333,7 @@ export class RunStorage implements Journal {
       // shared (dialect shareLock): a claim, a release or the run's end, which move the epoch, waits for this commit; a
       // renew, which moves only the lease, never does.
       await tx.run(`SELECT 1 FROM runs WHERE id = ?${this.#dialect.shareLock}`, this.#runId);
-      const fence = claimFence({ runId: this.#runId, epoch: this.#epoch }, this.#now());
+      const fence = claimFence({ runId: this.#runId, epoch: this.#epoch }, storeNow(this.#dialect, this.#now));
       if ((await tx.get(`SELECT 1 AS held FROM runs WHERE ${fence.where}`, ...fence.params)) === undefined) {
         throw new Fenced(this.#runId, this.#epoch);
       }
@@ -424,7 +424,7 @@ export class RunStorage implements Journal {
    */
   async applyIn(tx: SqliteExecutor, batches: readonly (readonly StorageWrite[])[], insertedHere: number | "this-transaction"): Promise<Seq[]> {
     this.#assertOpen();
-    const fence = claimFence({ runId: this.#runId, epoch: this.#epoch }, this.#now(), { insertedHere });
+    const fence = claimFence({ runId: this.#runId, epoch: this.#epoch }, storeNow(this.#dialect, this.#now), { insertedHere });
     if ((await tx.runCounted(`UPDATE runs SET epoch = epoch WHERE ${fence.where}`, ...fence.params)) === 0) {
       throw new Fenced(this.#runId, this.#epoch);
     }

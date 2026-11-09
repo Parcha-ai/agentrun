@@ -138,7 +138,7 @@ test("a write that waits for another writer's lock past the busy wait is StoreBu
   const { store, file, clock } = await storeOn(t);
   await queued(store);
   const claim = await store.claim("run-1", "runner-a", { leaseMs: 30_000 });
-  const busy = await openPostgresStore({ url: PG_URL, schema: schemaOf(file), role: "runner", now: () => clock.now, busyTimeoutMs: 50 });
+  const busy = await openPostgresStore({ url: PG_URL, schema: schemaOf(file), role: "runner", testClock: () => clock.now, busyTimeoutMs: 50 });
   t.after(() => busy.close());
   const other = await client(schemaOf(file));
   t.after(() => other.end().catch(() => undefined));

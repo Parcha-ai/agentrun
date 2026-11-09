@@ -28,6 +28,11 @@ export interface Dialect {
   readonly greatest: string;
   /** A `?` parameter read as a 64-bit integer where nothing else types it (a VALUES list). */
   readonly bigintParam: string;
+  /** The database's own clock in ms, as SQL, for every deadline the store stamps or judges (a claim's lease, a refresh
+   *  lease, a run's wake and backoff, the sign-in settle window): one clock for every store process sharing the database.
+   *  None on SQLite, whose one process's store clock is bound as a parameter (fence.ts storeNow), nor on a Postgres store
+   *  opened with a test's clock. */
+  readonly nowSql?: string;
   /** An INSERT that writes nothing when the row's key is there already: `${insertOrIgnore} INTO … VALUES (…)${onConflictIgnore}`. */
   readonly insertOrIgnore: string;
   readonly onConflictIgnore: string;

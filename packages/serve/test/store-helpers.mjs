@@ -21,7 +21,8 @@ export async function storeOn(t, { clock = { now: T0 }, file, role = "server" } 
     const schema = schemaOf(file) ?? (made = await freshSchema());
     place = `pg:${schema}`;
     try {
-      store = await openPostgresStore({ url: PG_URL, schema, role, now });
+      // The test's clock runs the deadlines too (testClock), as SQLite's store clock does, so a test can jump past a lease.
+      store = await openPostgresStore({ url: PG_URL, schema, role, testClock: now });
     } catch (error) {
       if (made) await dropSchema(made);
       if (dir) rmSync(dir, { recursive: true, force: true });

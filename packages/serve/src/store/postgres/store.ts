@@ -22,8 +22,13 @@ export interface PostgresStoreOptions {
   readonly schema?: string;
   /** Who opens it (StoreRole): the server sets the schema up and holds the owner lock; a runner only checks the version. */
   readonly role?: StoreRole;
-  /** The store's clock, in ms (Date.now): claimed_until and every row's time, as on SQLite. */
+  /** This process's clock, in ms (Date.now): the times rows are stamped with (a run's start and end, a command's). Every
+   *  deadline (a claim's lease, a refresh lease, a run's wake and backoff, the sign-in settle window) is stamped and judged
+   *  on the database's clock instead, one clock for every store process sharing the database. */
   readonly now?: () => number;
+  /** For tests: a clock moved by hand, which then also runs the deadlines in place of the database's (bound as SQLite binds
+   *  its store clock), so a test can jump past a lease. Never set outside a test. */
+  readonly testClock?: () => number;
   /** How long a statement waits for another writer's lock before StoreBusy. */
   readonly busyTimeoutMs?: number;
   /** Most connections the store holds at once. */
@@ -40,11 +45,11 @@ export async function openPostgresStore(options: PostgresStoreOptions): Promise<
   const schema = options.schema ?? DEFAULT_SCHEMA;
   if (!SCHEMA_NAME.test(schema)) throw new TypeError(`the store's schema is a lower-case name of letters, digits and underscores, not ${JSON.stringify(schema)}`);
   const role = options.role ?? "server";
-  const now = options.now ?? Date.now;
+  const now = options.testClock ?? options.now ?? Date.now;
   const migrations = migrationsIn();
   const known = migrations.at(-1)!.version;
   const connection = await PgConnection.open({
-    url: options.url, schema, owner: role === "server",
+    url: options.url, schema, owner: role === "server", testClock: options.testClock !== undefined,
     ...(options.busyTimeoutMs === undefined ? {} : { busyTimeoutMs: options.busyTimeoutMs }),
     ...(options.poolSize === undefined ? {} : { poolSize: options.poolSize }),
   });
@@ -54,7 +59,7 @@ export async function openPostgresStore(options: PostgresStoreOptions): Promise<
     if (role === "runner" && options.warn) {
       const gap = now() - (await connection.clock());
       if (Math.abs(gap) > CLOCK_WARN_MS) {
-        options.warn(`this runner's clock is ${Math.round(gap / 100) / 10} s ${gap > 0 ? "ahead of" : "behind"} the store's database: claims run on the runners' clocks, so keep them in sync (NTP)`);
+        options.warn(`this runner's clock is ${Math.round(gap / 100) / 10} s ${gap > 0 ? "ahead of" : "behind"} the store's database: claims run on the database's clock, but the times this runner stamps (a run's start and end) are off by as much, so keep the clocks in sync (NTP)`);
       }
     }
   } catch (error) {

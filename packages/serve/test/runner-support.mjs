@@ -49,7 +49,7 @@ after(async () => {
 });
 
 /** The store at the test's place, as `role`: the file in `dir`, or on Postgres the schema `schema`. */
-const openAt = ({ file, schema }, role, now) => (schema ? openPostgresStore({ url: PG_URL, schema, role, now }) : openSqliteStore({ file, role, now }));
+const openAt = ({ file, schema }, role, now) => (schema ? openPostgresStore({ url: PG_URL, schema, role, testClock: now }) : openSqliteStore({ file, role, now }));
 
 /**
  * A store file of its own: the server's store (schema set up), and `runners` more opened on the same file as runners.
