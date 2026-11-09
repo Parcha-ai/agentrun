@@ -72,7 +72,12 @@ test("a runner that closes stops its loop where it can resume and releases the r
   const holder = first.runner === a.name ? a : b;
   const other = holder === a ? b : a;
   const leaseEnd = (await server.runs.get("run-1")).claimedUntil;
-  await holder.close();
+  // A starved machine as the close goes: close() has stopped the loop, then the process blocks 600 ms (no renew runs), so
+  // a lease shorter than the stall runs out before the close's release, and the runner lets the claim go unreleased.
+  const closing = holder.close();
+  const until600 = Date.now() + 600;
+  while (Date.now() < until600);
+  await closing;
   const closedAt = Date.now();
 
   assert.equal(faux.loops[0].stopCalls[0]?.kind, "shutdown", "the loop is stopped for a shutdown");
