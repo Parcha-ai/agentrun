@@ -64,12 +64,21 @@ export const saved = (s, pointer) => overStore(s, (store) => saveSignIn(store, s
 /** Forgets alpha's Browserbase sign-in: its pointer to a tombstone, kept only for cutting. */
 export const forgotten = (s) => overStore(s, (store) => forgetSignIn(store, s.seal, { remove: async () => undefined }, "alpha", "browserbase"));
 
-/** Writes `sql` with `params` on the server's store file (a row as the runner writes it), waiting its turn behind the
- *  store's own writers (SQLite's busy timeout) as any second writer on the file does. */
+/** Writes `sql` with `params` on the server's store file (a row as the runner writes it), as the store's own writer
+ *  writes (store/sqlite/worker.ts): BEGIN IMMEDIATE takes the write lock before anything is read, so the busy timeout
+ *  covers another writer in flight. A plain autocommit UPDATE reads first and upgrades after, and a commit by the server
+ *  or its runner in between fails it at once ("database is locked", a stale snapshot the timeout never waits out). */
 export function written({ data }, sql, ...params) {
   const db = new DatabaseSync(join(data, "store.sqlite"), { timeout: 10_000 });
   try {
-    db.prepare(sql).run(...params);
+    db.exec("BEGIN IMMEDIATE");
+    try {
+      db.prepare(sql).run(...params);
+      db.exec("COMMIT");
+    } catch (error) {
+      db.exec("ROLLBACK");
+      throw error;
+    }
   } finally {
     db.close();
   }

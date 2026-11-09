@@ -60,7 +60,6 @@ import { DECISION_KEYS, handover, handoverSignIn, mcpHandover, mcpSecretValues, 
 import { type HandedSignIn, pointerHash, type SignIns } from "./sign-ins.js";
 import { MIN_SECRET } from "./learn/secrets.js";
 import { cutStrings, keyRefusal, redacted, redactedAnswer, redactedLive, redactedOutput, runKeyOf } from "./key-refusal.js";
-import { GRAPH_CACHE_BYTES, PartCache, type PartKind, servedPart } from "./graph-served.js";
 import { CONTENT_FILTER_WORDS, contentFiltered, MODERATED } from "./content-filter.js";
 import { BOX_KEYS, VM_PROVIDER } from "./boxes.js";
 import { type Place, remotePlace, storedPlace } from "./place.js";
@@ -984,13 +983,9 @@ export class Runs {
     return (this.#disk ??= localDisk(this.options.agents.dir, this.store));
   }
   #disk: DiskAdapter | undefined;
-  /** Each workflow revision's workflow, by revision id, as a graph read it: a revision never changes. */
-  private readonly workflows = new Map<string, unknown>();
   /** What decides the secrets each revision's runs are handed (needsOf), by revision id: read once, from the revision the
    *  run is pinned to, never from a request. The keys themselves are read at each launch (keysFor). */
   private readonly needs = new Map<string, RunNeeds>();
-  /** Every run's graph as served, part by part (servedGraph): one LRU by bytes across runs (graph-served.ts PartCache). */
-  private readonly graphCache = new PartCache(GRAPH_CACHE_BYTES);
   private readonly adopting = new Map<string, Promise<Run>>();
   /** The runs this process is starting, from the store's row until the run is held (start): its serve.json and its seed
    *  copy are written in between. A read of one waits for its start and never loads it from disk, where it would look
@@ -1579,26 +1574,6 @@ export class Runs {
     const out = redact(values);
     run.served = { ...run.served, [slot]: { keys, input, out } };
     return out;
-  }
-
-  /** A workflow run's graph as serve serves it: its nodes, each decision and each call (its input, output and error) with
-   *  no held secret, by its answer's rule (redactedOutput), and only then cut: a map item's label at 200 characters, a
-   *  call's error at 2000, and a text stored cut (a decision's state past 64 KB, an error logged cut) less its last 6
-   *  times the longest held value plus 16 characters, where a value the stored cut split would sit. The view comes whole
-   *  from graph-view.ts's lock-free read at each poll, so a key saved since the last poll is found in it too. Each part is
-   *  served once per content and held value set: a console polls the graph while the run goes. */
-  private servedGraph<T extends { nodes: unknown; decisions: unknown[]; effects: unknown[] }>(run: Run, view: T): T {
-    const values = this.refusedValues(run);
-    const keys = digestOf([...values].sort());
-    const once = (kind: PartKind, value: unknown): unknown => {
-      const at = `part:${keys}:${kind}:${digestOf(value)}`;
-      const kept = this.graphCache.get(at);
-      if (kept !== undefined) return kept;
-      const out = servedPart(kind, value, values);
-      this.graphCache.set(at, out, Buffer.byteLength(JSON.stringify(out) ?? ""));
-      return out;
-    };
-    return { ...view, nodes: once("nodes", view.nodes), decisions: view.decisions.map((value) => once("decision", value)), effects: view.effects.map((value) => once("effect", value)) };
   }
 
   /** The timeline's redaction of `run`'s error rows and of what a tool's result shows (its summary and preview), applied
@@ -3986,30 +3961,7 @@ export class Runs {
     return { run_id: run.id, paused, status: statusOf(run).status };
   }
 
-  /** A workflow run's graph as it stands (graph-view.ts), live while it runs. */
-  async graph(run: Run) {
-    if (run.kind !== "workflow") throw new ApiError("not_found", `the run ${run.id} is an agentic run; only a workflow run has a graph`);
-    // Its nodes, decisions and calls are read from its store and are what the run said: while this server can't read the
-    // browser sign-in it was handed (meta.unshown), the pointer they may repeat is not among the values cut, so none of it
-    // is served. Withheld in the same words as its answer, for a run still going too (it is stopped and ends failed).
-    if (run.meta.unshown) throw new ApiError("forbidden", WITHHELD_SIGN_IN);
-    // A revision never changes: read once, waiting out a busy store as a run's end does, never failing a poll on it.
-    let workflow = this.workflows.get(run.revision);
-    if (workflow === undefined) {
-      const revision = (await whenFree(() => this.store.readRevision(run.revision), this.busyDelays(), this.onBusy(run.id, "the agent store"))) as Extract<Revision, { kind: "workflow" }>;
-      this.workflows.set(run.revision, (workflow = revision.body.workflow));
-    }
-    // The run's status as this server holds it, with no read of the agent store, which the run's process may be writing.
-    const { status } = statusOf(run);
-    const ended = TERMINAL.has(status);
-    const { runGraph } = await import("./graph-view.js");
-    const given = {
-      run: { id: run.id, agent: run.agentId, revision: run.revision, status, paused: status === "paused", startedAt: run.meta.created_at, endedAt: ended ? (run.endedAt ?? run.updatedAt) : null },
-      ended, workflow, storeFile: this.storeFile(run), root: run.dir, input: run.meta.input ?? {}, modelCost: costOf(run.rows), llmRead: run.llmRead ?? 0,
-    };
-    // Every read of the run's database is lock-free (run-db.ts): a run's process holding it never makes a poll wait.
-    return this.servedGraph(run, await runGraph(given));
-  }
+
 
   /** How long a run's process gets after SIGTERM before SIGKILL: its drain and a second to exit. */
   private killAfterMs(): number {
