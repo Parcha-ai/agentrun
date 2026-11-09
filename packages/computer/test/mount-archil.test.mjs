@@ -317,6 +317,52 @@ test("syncingClient: coalesced: calls during a sync in flight wait for it, then 
 	assert.equal(client.methods().filter((method) => method === "mount.sync").length, 2, "one in flight, then one shared by the three");
 });
 
+test("syncingClient: never two syncs in flight, whichever microtask a call lands on as one sync ends and its follower starts", async () => {
+	// Review (#1994, PRRT_kwDOUmdVMs61HbFO): the run's finally cleared it a microtask before the queued follower started
+	// the next, and a call in that gap started a sync of its own beside the follower's: two archil syncs on one folder.
+	// Each mount.sync is held until the test lets it go; calls come one per microtask turn; no clock is involved.
+	const held = [];
+	let inFlight = 0;
+	let most = 0;
+	const client = {
+		async call(method) {
+			if (method !== "mount.sync") return ok({});
+			inFlight++;
+			most = Math.max(most, inFlight);
+			return new Promise((resolve) => {
+				held.push(() => {
+					inFlight--;
+					resolve(ok({ exitCode: 0 }));
+				});
+			});
+		},
+		close() {},
+	};
+	const syncing = syncingClient(client);
+	const calls = [];
+	const write = (n) => calls.push(syncing.call("files.write", { path: `/workspace/${n}`, data: "" }));
+	const turns = async (n) => {
+		for (let i = 0; i < n; i++) await Promise.resolve();
+	};
+	write(0);
+	await turns(5);
+	write(1); // waits as the follower of the sync in flight
+	await turns(5);
+	held.shift()(); // the first sync ends: its follower is to start next
+	for (let i = 0; i < 40; i++) {
+		write(`late-${i}`);
+		await Promise.resolve();
+	}
+	// Let every sync still held end, in turn, until every call has its answer.
+	while (held.length > 0 || inFlight > 0) {
+		held.shift()?.();
+		await turns(20);
+	}
+	const answers = await Promise.all(calls);
+	assert.ok(answers.every((answer) => answer.ok), JSON.stringify(answers.filter((answer) => !answer.ok)));
+	assert.equal(most, 1, `at most one archil sync runs at once; ${most} ran together`);
+});
+
 test("syncingClient: a caller whose signal fires stops waiting for the sync, in words; the sync goes on, and others still wait for it", async () => {
 	// Review (#1994, P1): the sync is held until the test lets it go, so no clock is involved.
 	let finish;
