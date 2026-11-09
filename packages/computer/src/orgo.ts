@@ -168,16 +168,32 @@ const ORGO_AGENT_PORTS = [5999, 6080, 8080];
 /**
  * Every path unix socket of Orgo's desktop made root's alone (owner root, mode 0600), but the display's own ($1) and
  * computerd's, before any tool runs: the tools reach the X server through that one and nothing else (live run 4 found
- * root's D-Bus buses connectable by the tool user). Prints `locked <path>` for each. Orgo's desktop runs as root, so
+ * root's D-Bus buses connectable by the tool user). Prints `locked <path>` for each, and `failed <path>` for one it
+ * could not lock. Any failure fails the script: the scan, the sort, or one socket's chown or chmod (a later socket that
+ * locks hides none), and create then refuses the computer. Plain sh (no pipefail): the scan and the sort are each
+ * checked, and the loop reads a here-document, so its failed flag is the script's own. Orgo's desktop runs as root, so
  * nothing of its own loses a socket.
  */
 export const LOCKDOWN_SCRIPT = [
 	"# agentrun-computer: orgo-lockdown",
 	"x=$1",
-	"find /tmp /run /var/run /dev/shm -type s 2>/dev/null | sort -u | while read -r s; do",
+	"set --",
+	'for d in /tmp /run /var/run /dev/shm; do [ -d "$d" ] && set -- "$@" "$d"; done',
+	"[ $# -gt 0 ] || exit 0",
+	// GNU find's -ignore_readdir_race: a socket gone between listing and reading is no failure. Used only where find has it.
+	"r=",
+	"find / -maxdepth 0 -ignore_readdir_race >/dev/null 2>&1 && r=-ignore_readdir_race",
+	'found=$(find "$@" $r -type s) || { echo "scanning for sockets failed"; exit 1; }',
+	"sorted=$(printf '%s\\n' \"$found\" | sort -u) || { echo \"sorting the sockets failed\"; exit 1; }",
+	"failed=0",
+	"while IFS= read -r s; do",
+	'\t[ -n "$s" ] || continue',
 	'\tcase "$s" in "$x" | /run/agentrun/* | /run/agentrun-archil/*) continue ;; esac',
-	'\tchown 0:0 "$s" && chmod 0600 "$s" && echo "locked $s"',
-	"done",
+	'\tif chown 0:0 "$s" && chmod 0600 "$s"; then echo "locked $s"; else echo "failed $s"; failed=1; fi',
+	"done <<EOF",
+	"$sorted",
+	"EOF",
+	"exit $failed",
 ].join("\n");
 
 /** What the labels file holds. */
