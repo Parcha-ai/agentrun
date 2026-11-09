@@ -4,7 +4,7 @@
 // at its next request with the cap's figures; a raise resumes it. A person's take-over (pauses: false) never pauses it.
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
-import { capRun, rootEntries, specCap } from "./adapter-pi-cap-support.mjs";
+import { cap, capRun, rootEntries } from "./adapter-pi-cap-support.mjs";
 import { closeOpenSessions, piAdapterSpec, scriptedOrigin } from "./conformance-pi-adapter.mjs";
 
 const { browserSpend } = await import("../dist/browser-cost.js");
@@ -35,12 +35,20 @@ async function askRun(t, pauses) {
     };
     return piAdapterSpec({ script, tools: { ask_person: askPerson }, hooks: quiet }, { fetch: scriptedOrigin(script, sent) })(claim, run);
   };
-  const run = await capRun(t, { script, specOf, cap: specCap(CAP), runCap: { capUsd: () => CAP, modelOf: () => FREE } });
-  return { ...run, answered };
+  // The cap as E2 hands it to the loop, kept by the server across a raise (adapter-pi-cap-raise.test.mjs's closure).
+  let capUsd = CAP;
+  const runCap = { get capUsd() { return capUsd; }, park: (refusal) => cap.parkOf(refusal, capUsd), checkRaise: cap.checkRaise, followUpOf: cap.followUpOf };
+  const run = await capRun(t, { script, specOf, cap: runCap, runCap: { capUsd: () => capUsd, modelOf: () => FREE } });
+  /** A person's raise: the server keeps the new cap and writes the raise row. */
+  const raise = (usd) => {
+    capUsd = usd;
+    return sendCommand(run.server, "run-1", { kind: "raise", body: { capUsd: usd } });
+  };
+  return { ...run, answered, raise };
 }
 
 test("an agent's ask refused at the cap parks the run at its next request with the cap's figures, and a raise resumes it", async (t) => {
-  const { row, server, answered } = await askRun(t, true);
+  const { row, server, answered, raise } = await askRun(t, true);
   assert.match(answered[0] ?? "", /could cost up to \$0\.03/, `the ask was refused in the cap's words: ${JSON.stringify(answered)}`);
   assert.equal(row.state, "parked", `the run parked on the refused ask: ${JSON.stringify({ state: row.state, summary: row.summary })}`);
   const budgets = await rootEntries(server, "agentrun.budget");
@@ -49,7 +57,7 @@ test("an agent's ask refused at the cap parks the run at its next request with t
   assert.ok(budgets[0].pending.least_cap_usd >= 0.03, `the least cap that sends the ask: ${JSON.stringify(budgets[0])}`);
   assert.equal(row.summary, budgets[0].words, "the row says the cap's words");
   // A raise resumes it.
-  await sendCommand(server, "run-1", { kind: "raise", body: { capUsd: 1 } });
+  await raise(1);
   const from = Date.now();
   let now = row;
   while (!(now.state !== "parked" && now.state !== "running" && now.runner === null)) {

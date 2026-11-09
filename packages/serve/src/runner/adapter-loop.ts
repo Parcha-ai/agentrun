@@ -146,6 +146,10 @@ export interface RunLedger {
   /** The session's proxied models for a request the host sends beside the harness's own, under `label` (portModels on
    *  the session's port); undefined before the session opens. */
   models(label: string): Promise<PortModels> | undefined;
+  /** A paid call the run's cap refused that pauses the run (an agent's ask for a person's browser time: main's paidCall
+   *  pause): its pause is journaled at once, as a refused request's is (pauseAtCap), and the run's next request is refused
+   *  in its words, so the run parks there with the cap's figures. A take-over's refusal pauses nothing: it is not called. */
+  pause(refusal: Refusal): Promise<void>;
 }
 
 export interface AdapterLoopOptions {
@@ -493,6 +497,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         let paidReady: RunTools | undefined;
         let paidOpen: Promise<RunTools> | undefined;
         const paidOf = () => (paidOpen ??= sessions.open(TOOL_SESSION).then((w) => theCap().tools(w, flushed)).then((p) => (paidReady = p)));
+        /** The pause of a paid call the cap refused (ledger.pause), set once the claim's booking is: below. */
+        let pauseFor: ((refusal: Refusal) => Promise<void>) | undefined;
         const ledger: RunLedger = {
           decisions: {
             admit: async (request) => (await decisionsOf()).admit(request),
@@ -507,6 +513,9 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
             heldUsd: () => paidReady?.heldUsd() ?? 0,
           },
           models: (label) => (session?.port?.(label) ? portModels(() => session?.port?.(label)) : undefined),
+          pause: async (refusal) => {
+            await pauseFor?.(refusal);
+          },
         };
         const runOf: AdapterRun = { harness, registry, setModels: (given) => (models = given), ledger };
         const spec = await specOf(claim, runOf);
@@ -528,10 +537,22 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         let refused: Refusal | undefined;
         /** The pause a refusal for room journaled before pi heard of it (pauseAtCap), the run parked with it. */
         let pausedAtRefusal = false;
+        /** A paid call's refusal that pauses the run (ledger.pause): the run's next request is refused in its words. */
+        let pendingPause: Refusal | undefined;
         const beforeRequest: BeforeRequest = async (request) => {
-          const answer = await theCap().before(request);
+          const answer = pendingPause ?? (await theCap().before(request));
           if (answer && "refuse" in answer) {
             refused = answer;
+            await pauseAt(answer);
+          }
+          return answer;
+        };
+        pauseFor = async (refusal) => {
+          pendingPause = refusal;
+          await pauseAt(refusal);
+        };
+        async function pauseAt(answer: Refusal): Promise<void> {
+          {
             // A refusal a raise could fix (the cap's rule, parkOf) journals its pause, the run parked, before the refusal
             // reaches pi: pi stores the refused turn only after it, so a claim lost in between leaves the pause, and the next
             // claim resumes the run parked (an unanswered pause), never ends it as a failed turn. One that cannot land (the
@@ -550,8 +571,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
               }
             }
           }
-          return answer;
-        };
+        }
         // The rule before a side effect for every paid model request, on the path every adapter's requests take: the
         // booking writes the request's record, then awaits request_start before the request leaves, so the flush here
         // makes that record and everything before it durable first (each send, a retry's included).
