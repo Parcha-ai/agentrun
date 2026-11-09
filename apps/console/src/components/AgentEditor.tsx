@@ -14,8 +14,9 @@ import { harnessDefault, modelLabel, NO_DEFAULT } from "@/lib/models";
 import type { McpServer } from "@/lib/mcp";
 import { newAgentPlace, placeOf } from "@/lib/place";
 import type { Places } from "@/lib/place";
-import { callNodeTools, type ToolChoice, type ToolGate } from "@/lib/toolSettings";
+import { callNodeTools, SERVER_DENY, serverDenies, type ToolChoice, type ToolGate } from "@/lib/toolSettings";
 import { cn } from "@/lib/utils";
+import { type Approvals, NEVER_ASK_LINE } from "@/lib/v2";
 
 /** A revision as GET /v2/agents/{id}/revisions lists it; `definition` is what it holds (a workflow revision's workflow). */
 export type Revision = { revision: string; version: number; current: boolean; note: string | null; created_at: string; definition?: Agent["definition"] };
@@ -119,6 +120,8 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
   const workflow = agent?.kind === "workflow";
   // A new agent made from a starter (Decision, Workflow): a workflow revision, so no instructions, tools, thinking or model.
   const starting = creating && isStarter(f.harness);
+  // The agent's approvals as the form has them: changed here, else the definition's, else ask (the server's default).
+  const approvals: Approvals = f.approvals ?? d?.approvals ?? "ask";
   const choices = harnessOptions(caps.harnesses, creating ? { available: !!caps.decisionProvider } : undefined);
   // `revisions` counts them; the current one is the agent's `revision`, which can be an earlier one after "Make current".
   const current = revisions.find((r) => r.revision === agent?.revision) ?? revisions.find((r) => r.current);
@@ -262,7 +265,7 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
                     const choice = providerChoices.find((c) => c.name === t.name);
                     const ownPick = (f.tool_settings ?? d?.tool_settings ?? {})[t.name]?.provider;
                     const pickedOver = !!choice && ownPick !== undefined && ownPick !== choice.provider;
-                    const why = t.call_only && !workflow ? "Workflow-only: a workflow's call node runs it, not an agent" : !runs ? `Not on ${f.harness ?? "pi"} on this server` : sandboxReason(t, f.place ?? placeOf(d?.place) ?? defaultPlaceOf(workflow, f.tools ?? [], caps.places)) ?? (!t.available && !pickedOver ? (choice?.reason ?? t.reason ?? `Needs ${(t.missing ?? []).join(", ")}`) : undefined);
+                    const why = serverDenies(t.name, permissionGates, agent?.tools) ? SERVER_DENY : t.call_only && !workflow ? "Workflow-only: a workflow's call node runs it, not an agent" : !runs ? `Not on ${f.harness ?? "pi"} on this server` : sandboxReason(t, f.place ?? placeOf(d?.place) ?? defaultPlaceOf(workflow, f.tools ?? [], caps.places)) ?? (!t.available && !pickedOver ? (choice?.reason ?? t.reason ?? `Needs ${(t.missing ?? []).join(", ")}`) : undefined);
                     return (
                       <li key={t.name}><label title={why} className={cn("flex items-center gap-3 border px-3 py-2.5 font-mono text-[13px]", on && "border-foreground", why && !on ? "cursor-not-allowed opacity-60" : "cursor-pointer")}>
                         <input type="checkbox" value={t.name} checked={on} disabled={!!why && !on} onChange={() => { setToolsTouched(true); set({ tools: on ? f.tools!.filter((x) => x !== t.name) : [...(f.tools ?? []), t.name] }); }} className="accent-[hsl(var(--primary))]" />
@@ -281,11 +284,24 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
               {/* A workflow agent's tools have no provider here (a call node runs the tool as the server resolves it), but each
                   one's permission is this agent's to set: a call node refused for a tool set to deny or ask is fixed here. */}
               {(
-                <AgentToolSettings agent={agent} harness={f.harness ?? "pi"} model={f.model} tools={f.tools ?? []} choices={workflow ? [] : providerChoices} gates={permissionGates} mcpServers={Array.isArray(mcpServers) ? mcpServers : undefined} focus={focusTool} callTools={workflow ? callNodeTools(parsedWorkflow(f.workflowText) ?? d?.workflow) : undefined}
+                <AgentToolSettings agent={agent} unattended={!workflow && approvals === "never"} harness={f.harness ?? "pi"} model={f.model} tools={f.tools ?? []} choices={workflow ? [] : providerChoices} gates={permissionGates} mcpServers={Array.isArray(mcpServers) ? mcpServers : undefined} focus={focusTool} callTools={workflow ? callNodeTools(parsedWorkflow(f.workflowText) ?? d?.workflow) : undefined}
                   value={f.tool_settings ?? d?.tool_settings ?? {}} issues={problem?.kind === "invalid" ? problem.fields : {}}
                   // Settings equal to the definition's are no change of the form's. While a save is under way the definition is
                   // about to be what it sent, so every change is kept: the save's answer drops it only if it equals what was sent.
                   onChange={(next) => (!saving && same(next, d?.tool_settings ?? {}) ? (setF(({ tool_settings: _gone, ...rest }) => rest), setSaved(false)) : set({ tool_settings: next }))} />
+              )}
+              {/* The agent's approvals (definition.approvals): whether a call its gate says ask waits for you. */}
+              {!workflow && !starting && (
+                <fieldset aria-label="Approvals" className="space-y-2">
+                  <legend className="caps text-[12px] font-semibold">Approvals</legend>
+                  {([["ask", "Ask me", "A call whose permission is ask waits for your answer."], ["never", "Never ask (run unattended)", "For an agent that runs on a trigger, with no one there to answer."]] as const).map(([value, label, note]) => (
+                    <label key={value} className={cn("flex items-start gap-3 border px-3 py-2.5", approvals === value && "border-foreground")}>
+                      <input type="radio" name="approvals" value={value} className="mt-1" checked={approvals === value} disabled={saving} onChange={() => set({ approvals: value })} />
+                      <span><span className="font-mono text-[13px]">{label}</span><span className="block text-[12px] text-muted-foreground">{note}</span></span>
+                    </label>
+                  ))}
+                  {approvals === "never" && <p className="text-[12px] text-warning-text">{NEVER_ASK_LINE}</p>}
+                </fieldset>
               )}
               <Field label="Skills" note="Skill files are saved with each revision and kept as they are by an edit.">
                 {d?.skills?.length ? <ul className="border">{d.skills.map((s) => <li key={s} className="border-b px-3 py-2 font-mono text-[13px] last:border-b-0">{s}</li>)}</ul>

@@ -15,10 +15,12 @@ mcp:
     tools: [slack_send_message]
     required: false
     allow: []
+    pin: { slack_send_message: { channel_id: "${parameters.channel}" } }
   - server: gmail
     tools: [GMAIL_SEND_EMAIL]
     required: false
     allow: []
+    pin: { GMAIL_SEND_EMAIL: { recipient_email: "${parameters.channel}", cc: null, bcc: null, extra_recipients: null } }
 parameters:
   competitors: { type: string, required: true, pattern: "^[^\\n]{2,2000}$", description: "the companies to watch, comma-separated, each a name and its domain: \"Acme (acme.com), Globex (globex.io)\"" }
   topics: { type: string, pattern: "^[^\\n]{0,500}$", description: "optional market keywords, comma-separated (\"payments orchestration, KYB\"): market news on them is in scope too" }
@@ -26,8 +28,10 @@ parameters:
   lookback_days: { type: integer, description: "how many days back a run looks; leave it out for 7, the weekly schedule's gap. Set it to your schedule's gap when you change cron (1 for daily), or runs repeat each other's items" }
   cron: { type: string, default: "0 8 * * 1", description: "when the digest runs, as a cron line (minute hour day-of-month month day-of-week): Monday 08:00 unless you set it; set lookback_days to its gap" }
   timezone: { type: string, default: UTC, description: "the IANA time zone the cron line is read in (Europe/Madrid, America/New_York): UTC unless you set it" }
-budget: { per_run_usd: 1.00 }
+budget: { per_run_usd: 5.00 }
 learning: true
+# Runs unattended (its job runs on triggers): no tool asks; deny and the pins above still hold.
+approvals: never
 triggers:
   - name: weekly-digest
     source: { kind: schedule, cron: "${parameters.cron}", timezone: "${parameters.timezone}" }

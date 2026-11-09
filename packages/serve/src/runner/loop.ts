@@ -36,9 +36,10 @@ import {
   type StorageWrite,
   ToolTask,
 } from "@earendil-works/pi-durable";
+import { RUN_RESUMED } from "@parcha/pi-durable-agent/timeline";
 import type { KernelHooks, ToolCall } from "./conformance/subject.js";
 import { type AnswerData, type AskData, type EndData, KINDS } from "./journal-kinds.js";
-import type { Claim, Command, CommandOutcome, HeldState, Journal, Loop, LoopDeps, LoopEnd, LoopFactory, StopReason } from "./loop-contract.js";
+import { type Claim, type Command, type CommandOutcome, cutAtLimit, type HeldState, type Journal, type Loop, type LoopDeps, type LoopEnd, type LoopFactory, type StopReason } from "./loop-contract.js";
 import { sideEffect } from "./side-effects.js";
 import type { Staged } from "../store/store.js";
 
@@ -231,6 +232,15 @@ function heldStateOf(value: unknown): HeldState | undefined {
   const text = (live.generation?.message?.content ?? []).map((part) => (part.type === "text" ? part.text ?? "" : "")).join("");
   if (tools.length === 0 && !text) return undefined;
   return { tools, ...(text ? { partial: { text } } : {}) };
+}
+
+/** Why the run fails, when the answer it would end on (the root's last pi.assistant) was cut at the model's output limit
+ *  (stopReason "length"): unfinished, so never ended. A cut answer the run went on from (a later turn answered after it)
+ *  is not its last, and changes nothing. */
+function cutLast(entries: readonly EntryRecord[]): string | undefined {
+  const last = [...entries].reverse().find((entry) => entry.kind === "pi.assistant");
+  const message = (last as { model?: { stopReason?: string; usage?: { output?: number } }[] } | undefined)?.model?.[0];
+  return message?.stopReason === "length" ? cutAtLimit(message.usage?.output) : undefined;
 }
 
 /** A tool result pi wrote for a call it cut off at its restart limit, as its message, if any. */
@@ -439,6 +449,8 @@ function piLoop(specOf: (claim: Claim) => PiRunSpec | Promise<PiRunSpec>, deps: 
         if (deps.signal.aborted) gate.seal(new Interrupted("its claim's signal aborted"));
         harness = await Harness.open(gate.journal, { models: spec.models, registry, settings: { restartLimit }, onReport: () => {} }, context);
         root = await harness.root(context, { agent: { model: spec.model, extensions: [kernel] } as never });
+        // Taken over from a runner whose lease ran out mid-run: said on the run's timeline once, at this claim's first pass.
+        if (restarts === 0 && claim.lost) await noteTakenOver(harness, root, claim.lost.runner);
         await reportHeld(harness, root.id);
         opened();
         if (restarts > restartLimit + 1) {
@@ -479,10 +491,14 @@ function piLoop(specOf: (claim: Claim) => PiRunSpec | Promise<PiRunSpec>, deps: 
         }
         await harness.waitForIdle(context);
         const record = await input.status(context);
-        const cutOff = restartLimited(await entriesOf(gate.journal, root.id, context));
+        const settledEntries = await entriesOf(gate.journal, root.id, context);
+        const cutOff = restartLimited(settledEntries);
         if (cutOff) return await writeEnd(harness, root, gate, { state: "failed", summary: `a tool call faulted on every restart: ${cutOff}` }, []);
         const failed = record.status !== "done";
-        return await writeEnd(harness, root, gate, failed ? { state: "failed", summary: "the run gave no answer" } : { state: "ended" }, []);
+        if (failed) return await writeEnd(harness, root, gate, { state: "failed", summary: "the run gave no answer" }, []);
+        // An answer cut at the model's output limit is unfinished: the run fails, saying so, never ended.
+        const cut = cutLast(settledEntries);
+        return await writeEnd(harness, root, gate, cut ? { state: "failed", summary: cut } : { state: "ended" }, []);
       }
     } catch (error) {
       // A sealed journal (a lost claim, a shutdown) or an aborted claim: nothing more is written, the next claim resumes.
@@ -541,6 +557,17 @@ function piLoop(specOf: (claim: Claim) => PiRunSpec | Promise<PiRunSpec>, deps: 
     let timer: NodeJS.Timeout | undefined;
     await Promise.race([closing, new Promise<void>((resolve) => (timer = setTimeout(resolve, CLOSE_MS)))]);
     clearTimeout(timer);
+  }
+
+  /** The run's timeline says it went on after its runner was lost (RUN_RESUMED, `after: runner_lost`): one root entry,
+   *  no run patch. A journal sealed meanwhile (the claim lost again, a shutdown) refuses it, and the loop goes on as it
+   *  would: the next claim says it. */
+  async function noteTakenOver(session: Harness, conversation: Conversation, runner: string): Promise<void> {
+    try {
+      await session.commit((tx) => tx.appendEntry(conversation.id, { kind: RUN_RESUMED, data: { after: "runner_lost", runner, at: Date.now() } }), context);
+    } catch (error) {
+      if (!gate?.sealed) throw error;
+    }
   }
 
   /** The end commit: an `agentrun.end` entry carrying the run row's final patch and the rows it takes. */

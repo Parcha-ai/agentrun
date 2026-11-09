@@ -4,7 +4,7 @@ import type { AgentLearning, LearningChange, LearningDiff, LearningNote, NotePro
 import type { McpAuth, McpClientFeature, McpPreview, McpRefresh, McpServer } from "./mcp";
 import type { RunGraph } from "./runGraph";
 import { applyPage } from "./timeline";
-import type { ApiError, Firing, InputIssue, TemplateApplied, TemplateApply, TemplateView, RaiseAnswer, Run, RunBrowser, RunFiles, RunStatus, TimelinePage, TimelineRow, ToolKeys, ToolKeysFeature, ToolSettings, Trigger, TriggerCreate, TriggerInput, TriggerMade, TriggerSecret, Webhook, WebhookAttempt, WebhookSaved, WebhooksFeature } from "./v2";
+import type { ApiError, Firing, GitHubConnection, GitHubConnectStart, GitHubDisconnected, InputIssue, TemplateApplied, TemplateApply, TemplateView, RaiseAnswer, Run, RunBrowser, RunFiles, RunStatus, TimelinePage, TimelineRow, ToolKeys, ToolKeysFeature, ToolSettings, Trigger, TriggerCreate, TriggerInput, TriggerMade, TriggerSecret, Webhook, WebhookAttempt, WebhookSaved, WebhooksFeature } from "./v2";
 
 /** A request AgentRun Server refused: its HTTP status and its typed error (`code`, `message`, `retryable`). */
 /** A refusal's issue at one field, as the server names it (with its `fix`, when it says one). Its `reason` is any string, as
@@ -59,9 +59,14 @@ const runsQuery = (limit: number, cursor: string | null | undefined, { status, a
 export type Capabilities = { harnesses: { id: string; available: boolean; reason?: string; steer?: boolean }[]; features: { messages: { steer: boolean; answer: boolean; follow_up: boolean; steer_workflow_runs: boolean }; tool_keys?: ToolKeysFeature; webhooks?: WebhooksFeature; mcp_client?: McpClientFeature; triggers?: { routes: boolean; min_every_s?: number; history_kept?: number } }; limits?: { max_upload_bytes?: number; max_files_per_run?: number }; models?: { default?: string | null; ready?: boolean; needs?: "key" | "model" | null; source?: "faux" | "gateway" | "providers" } };
 export type Client = ReturnType<typeof createClient>;
 
+/** The paths whose 401 is the answer to signing in (a wrong password, a wrong setup code), not a session that ended. */
+const SIGNING_IN = new Set(["/auth/sign-in", "/setup"]);
+
 /** The console's client for `agentrun.v2/0`, on the page's own origin: the server's HttpOnly cookie is the session, and
- *  every write is same-origin JSON (the server refuses a cookie write from another origin). */
-export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), base = "/v2" }: { fetch?: typeof fetch; base?: string } = {}) {
+ *  every write is same-origin JSON (the server refuses a cookie write from another origin). `onSignedOut`: called on
+ *  every 401 but signing in's own, so the console knows its session ended (a sign-out in another tab, an expiry) at
+ *  the first read the server refuses, whichever page made it. */
+export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), base = "/v2", onSignedOut }: { fetch?: typeof fetch; base?: string; onSignedOut?: () => void } = {}) {
   async function call<T>(method: string, path: string, opts: { body?: unknown; headers?: Record<string, string>; signal?: AbortSignal; text?: boolean } = {}): Promise<T> {
     return (await callTagged<T>(method, path, opts)).body;
   }
@@ -78,6 +83,7 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
       body: body === undefined ? undefined : JSON.stringify(body),
     });
     if (!res.ok) {
+      if (res.status === 401 && !SIGNING_IN.has(path)) onSignedOut?.();
       const e = ((await res.json().catch(() => null)) as { error?: ApiError & { fields?: FieldIssue[]; retry_after_ms?: number; problems?: NoteProblem[] } } | null)?.error;
       const err = new ClientError(res.status, e?.code ?? "http_error", e?.message ?? `${method} ${path}: ${res.status}`, e?.retryable ?? false, e?.request_id);
       if (e?.fields) err.fields = e.fields;
@@ -264,6 +270,13 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     deleteMcpServer: (name: string) => call<unknown>("DELETE", mcpServer(name)),
     /** Starts an OAuth sign-in to the server at `url`: the page the person opens to approve it. */
     startMcpSignIn: (name: string, body: { url: string; scopes?: string[]; client_id?: string; client_secret?: string }) => call<{ authorization_url: string }>("POST", `${mcpServer(name)}/oauth/start`, { body }),
+    /** This server's GitHub App: 404 (github_not_connected) when none is connected. */
+    githubConnection: () => call<GitHubConnection>("GET", "/integrations/github"),
+    /** Starts connecting one: the form the browser posts to GitHub. 409 github_already_connected, github_no_public_url or
+     *  github_no_seal_key, in the server's words. */
+    connectGitHub: (org?: string) => call<GitHubConnectStart>("POST", "/integrations/github/connect", { body: org ? { org } : {} }),
+    /** Disconnects it: every GitHub trigger turns off; the note says what to delete on GitHub. */
+    disconnectGitHub: () => call<GitHubDisconnected>("DELETE", "/integrations/github"),
     toolSettings: () => call<ToolSettings>("GET", "/settings/tools"),
     /** Replaces the server's providers: a capability the body leaves out takes its default. The answer is each one's now. */
     saveToolSettings: (settings: ToolSettings) => call<ToolSettings>("PUT", "/settings/tools", { body: settings }),

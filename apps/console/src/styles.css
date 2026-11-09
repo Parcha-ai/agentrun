@@ -69,6 +69,10 @@
   @media (prefers-color-scheme: dark) { html:not(.light):not(.dark) { --background: 240 6% 9%; color-scheme: dark; } }
   body { @apply bg-background font-sans text-foreground antialiased; }
   :focus-visible { outline: 1px solid hsl(var(--ring)); outline-offset: 1px; }
+  /* Code and mono text read character by character: JetBrains Mono's ligatures drawn "==" as one long bar. .caps takes
+     the font by @apply (no .font-mono class), and the workflow graph's `font:` shorthands reset only the variant, so
+     both are named here and the feature settings (inherited) hold under them. */
+  code, pre, kbd, samp, .font-mono, .caps, svg.wf { font-variant-ligatures: none; font-feature-settings: "liga" 0, "calt" 0; }
 }
 
 @layer components {

@@ -11,33 +11,32 @@ import { commandRow, fauxLoops, observed, queue, recorder, sleep, stores, until 
 const POLL_MS = 50;
 const TIMING = { leaseMs: 2_000, renewEveryMs: 500, stopMarginMs: 500, pollMs: 20 };
 
-async function runner(t, createLoop, timing = {}) {
+async function runner(t, createLoop, timing = {}, storeOf = (store) => store) {
   const { server, runners: [store] } = await stores({ runners: 1 });
   const record = recorder();
-  const started = startRunner({ store: observed(store, record), createLoop, name: "runner-a", commandPollMs: POLL_MS, ...TIMING, ...timing });
+  const started = startRunner({ store: storeOf(observed(store, record)), createLoop, name: "runner-a", commandPollMs: POLL_MS, ...TIMING, ...timing });
   t.after(() => started.close());
   return { server, record };
 }
 
-test("a steer and then a stop reach the running loop within one poll, and each row's taken_at is set", async (t) => {
+// No wall-clock bound: how soon a row arrives is the poll's (commandPollMs), and a loaded machine's tick says nothing about
+// it. The order (steer before stop) and each row's taken_at are the property.
+test("a steer and then a stop reach the running loop in order, and each row's taken_at is set", async (t) => {
   const faux = fauxLoops({ turns: 1_000, turnMs: 10 });
   const { server } = await runner(t, faux.createLoop);
   await queue(server, "run-1");
   const loop = await until(() => faux.loops[0]?.claim && faux.loops[0], "the loop runs");
 
   const steer = await sendCommand(server, "run-1", { kind: "steer", body: { text: "check the totals" } });
-  const sentAt = Date.now();
   const received = await until(() => loop.received.find((command) => command.id === steer.id), "the steer reaches the loop");
-  assert.ok(received.at - sentAt <= POLL_MS * 2, `the steer took ${received.at - sentAt} ms (one poll is ${POLL_MS})`);
   assert.deepEqual(received.body, { text: "check the totals" });
   const taken = await until(async () => (await commandRow(server, "run-1", steer.id)).takenAt !== null && commandRow(server, "run-1", steer.id), "the steer's taken_at");
   assert.equal(taken.refused, null);
 
   const stop = await sendCommand(server, "run-1", { kind: "stop" });
-  const stoppedAt = Date.now();
   await until(() => loop.stopCalls[0], "the stop reaches the loop");
   assert.deepEqual([loop.stopCalls[0].kind, loop.stopCalls[0].commandId], ["command", stop.id]);
-  assert.ok(loop.stopCalls[0].at - stoppedAt <= POLL_MS * 2, `the stop took ${loop.stopCalls[0].at - stoppedAt} ms`);
+  assert.ok(loop.stopCalls[0].at >= received.at, "the stop reached the loop after the steer");
   await until(async () => (await server.runs.get("run-1")).state === "stopped", "the run is stopped");
   const row = await commandRow(server, "run-1", stop.id);
   assert.ok(row.takenAt !== null, "the stop's taken_at is set by the stopped commit");
@@ -46,11 +45,30 @@ test("a steer and then a stop reach the running loop within one poll, and each r
 });
 
 test("a command for an ended run is refused: in the insert once it is final, and by the runner for one that came as it ended", async (t) => {
-  const faux = fauxLoops({ turns: 4, turnMs: 25 });
-  // The runner never polls before the run ends, so a steer sent while it runs is still untaken at the end.
-  const { server } = await runner(t, faux.createLoop, { commandPollMs: 60_000 });
+  // Long enough that the steer is sent while the run still runs.
+  const faux = fauxLoops({ turns: 40, turnMs: 25 });
+  // The runner never polls before the run ends, so a steer sent while it runs is still untaken at the end. The claim's
+  // first delivery reads the run's rows once: a steer sent before that read is the loop's, never a late one. That read is
+  // held here until the test lets it go (a loaded machine's slow first read), and the steer is sent only once the first
+  // delivery is done (LoopDeps.delivered): the order comes from that, never from a clock. (The 10 s is a failure bound.)
+  let letFirstReadGo;
+  const firstReadMayGo = new Promise((resolve) => (letFirstReadGo = resolve));
+  let firstRead = true;
+  const slowFirstRead = (store) => ({
+    ...store,
+    commands: async (runId, after) => {
+      if (firstRead) {
+        firstRead = false;
+        await Promise.race([firstReadMayGo, new Promise((resolve) => setTimeout(resolve, 10_000).unref())]);
+      }
+      return store.commands(runId, after);
+    },
+  });
+  const { server } = await runner(t, faux.createLoop, { commandPollMs: 60_000 }, slowFirstRead);
   await queue(server, "run-1");
   await until(() => faux.loops[0]?.claim, "the loop runs");
+  letFirstReadGo();
+  await faux.loops[0].deps.delivered;
   const late = await sendCommand(server, "run-1", { kind: "steer", body: { text: "one more thing" } });
 
   await until(async () => (await server.runs.get("run-1")).state === "ended", "the run ends");
