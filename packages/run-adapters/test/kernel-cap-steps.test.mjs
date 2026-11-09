@@ -91,15 +91,15 @@ test("a refusal for good is kept by its step's path, and its failure is a CapSto
 
 test("a capped decision whose price is unreadable fails unsent as a connection error, never the cap's stop", async () => {
   const { cap } = capOn(1);
-  const error = await cap.admit({ kind: "decision", id: "decide-1", model: "unreadable", inputTokens: 100, outputTokens: 100 }).catch((caught) => caught);
+  const error = await cap.admit({ kind: "decision", id: "decide-1", model: "unreadable", inputTokens: 100, questions: 1 }).catch((caught) => caught);
   assert.ok(error instanceof DecisionPriceUnreadable, String(error));
   assert.equal(error instanceof CapRefused, false);
   assert.equal(error.connection, true);
   assert.equal(cap.heldUsd(), 0);
 });
 
-test("a capped decision with a price is held as a model request is, at its output", async () => {
+test("a capped decision with a price is held as a model request is: under strict, at its model's most output", async () => {
   const { cap } = capOn(1, { mode: "strict" });
-  const admitted = await cap.admit({ kind: "decision", id: "decide-2", model: SONNET, inputTokens: 1_000, outputTokens: 500 });
-  assert.ok(Math.abs(admitted.heldUsd - ((1_000 * 3.75 + 500 * 15) / 1e6)) < 1e-12);
+  const admitted = await cap.admit({ kind: "decision", id: "decide-2", model: SONNET, inputTokens: 1_000, questions: 2 });
+  assert.ok(Math.abs(admitted.heldUsd - ((1_000 * 3.75 + 64_000 * 15) / 1e6)) < 1e-12, String(admitted.heldUsd));
 });

@@ -17,7 +17,9 @@ const { startRunner } = await import("../dist/runner/runner.js");
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { journalSessions } = await import("../dist/runner/sessions.js");
 const { MAX_RESTARTS } = await import("../dist/runner/conformance/harness.js");
-const TIMING = { leaseMs: 600, renewEveryMs: 150, stopMarginMs: 200, pollMs: 20, commandPollMs: 30 };
+// A lease no stall of a loaded machine outlasts: a claim lost mid-request would be retaken and the request asked again,
+// which these money checks do not read. The runs end themselves, so nothing here waits on the lease.
+const TIMING = { leaseMs: 60_000, renewEveryMs: 1_000, stopMarginMs: 5_000, pollMs: 20, commandPollMs: 30 };
 const quiet = { beforeIntent: async () => {}, beforeResult: async () => {} };
 after(closeOpenSessions);
 

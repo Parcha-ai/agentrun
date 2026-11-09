@@ -206,6 +206,27 @@ interface Case {
   body(subject: ConformanceSubject, t: { after(fn: () => unknown): void }): Promise<void>;
 }
 
+/** One event of the runner process (child.ts): a claim, a lost claim, a commit's outcome by epoch, and when. */
+type Seen = { type?: string; at?: number; epoch?: number; name?: string; why?: string; claim?: { epoch: number } };
+
+/**
+ * The claim's fence, as the stalled process's own events show it: once it went on (`continuedAt`, its lease run out and no
+ * one holding the run yet), its old loop's writes under its first epoch are each refused by the fence, by name (ClaimLost
+ * or Fenced), and at least one was tried. A landed one names how long after its claim was lost it landed.
+ */
+function fenceHeld(events: readonly Seen[], continuedAt: number): void {
+  const history = JSON.stringify(events);
+  const first = events.find((event) => event.type === "claimed")?.claim?.epoch;
+  const old = events.filter((event) => (event.at ?? 0) >= continuedAt && event.epoch === first && (event.type === "commit-landed" || event.type === "commit-refused"));
+  const lost = events.find((event) => event.type === "claim-lost" && event.epoch === first);
+  for (const landed of old.filter((event) => event.type === "commit-landed")) {
+    const when = lost?.at !== undefined ? `${landed.at! - lost.at} ms after its claim was lost` : `${landed.at! - continuedAt} ms after it went on, its lease run out`;
+    assert.fail(`an epoch-${first} commit landed ${when}: ${history}`);
+  }
+  assert.ok(old.length > 0, `the old loop tried to write after it went on: ${history}`);
+  assert.ok(old.every((event) => event.name === "ClaimLost" || event.name === "Fenced"), `each was refused by the claim's fence, by name: ${history}`);
+}
+
 /**
  * The resume after a crash, as runner-b's own events tell it: runner-b claimed the run once and released it once, with the
  * run ended, and nothing touched the row after its end (its end commit is its release, moving the epoch to runner-b's
@@ -229,14 +250,16 @@ function resumedOnceByB(events: readonly unknown[], row: RunRow): void {
   assert.ok(claims.length > 0, `runner-b claimed the run: ${history}`);
   // Every claim after its first is accounted for: a starved box can miss runner-b's renews, and then it takes the run
   // again. Each such claim comes after runner-b lost the one before (a renew that missed or was fenced), at a fresh epoch,
-  // and nothing of the lost epoch landed after its loss.
+  // and nothing of the lost epoch landed once the run was claimed again. (The runner says it lost a claim a stop margin
+  // before the store's lease runs out, so a commit already on its way can land in that margin, under a lease it still
+  // holds; the fence refuses the old epoch once the lease ran out, and so surely once the next claim holds the run.)
   for (let i = 1; i < claims.length; i += 1) {
     const before = claims[i - 1]!.claim!.epoch;
     const next = claims[i]!.claim!.epoch;
     assert.ok(next > before, `runner-b's claim ${i + 1} is at a fresh epoch (${next} after ${before}): ${history}`);
     const lostAt = ofB.findIndex((event) => event.type === "claim-lost" && event.epoch === before);
     assert.ok(lostAt >= 0 && lostAt < ofB.indexOf(claims[i]!), `runner-b lost its claim at epoch ${before} before it claimed again: ${history}`);
-    assert.deepEqual(ofB.slice(lostAt).filter((event) => event.type === "commit-landed" && event.epoch === before), [], `nothing of runner-b's lost epoch ${before} landed after its loss: ${history}`);
+    assert.deepEqual(ofB.slice(ofB.indexOf(claims[i]!)).filter((event) => event.type === "commit-landed" && event.epoch === before), [], `nothing of runner-b's lost epoch ${before} landed once it claimed the run again: ${history}`);
   }
   const last = claims[claims.length - 1]!.claim!.epoch;
   const releases = ofB.filter((event) => event.type === "released");
@@ -288,6 +311,9 @@ async function processCrashThenResume(subject: ConformanceSubject, t: { after(fn
   const eventsFile = join(w.dir, "runner-process-events.jsonl");
   const config = { dataDir: w.dir, module: subject.process!.module, export: subject.process!.export, tool, point, countFile, eventsFile, ...(stall ? { stopOnce: true } : {}) };
   const child = spawn(process.execPath, [CHILD, JSON.stringify(config)], { env: childEnv(), stdio: ["ignore", "ignore", "pipe"] });
+  // Its end, listened for from its start: a process that ends while the case waits on something else (the fence's wait
+  // returns on that end) is never missed by the wait for its death below.
+  const exited = once(child, "exit").catch((error: unknown) => ["error", String(error)]) as Promise<[number | string | null, string | null]>;
   let stderr = "";
   child.stderr.on("data", (chunk: Buffer) => (stderr += chunk.toString()));
   t.after(() => {
@@ -301,8 +327,13 @@ async function processCrashThenResume(subject: ConformanceSubject, t: { after(fn
     await sleep(TIMING.leaseMs + TIMING.stopMarginMs + 100);
     continuedAt = Date.now();
     child.kill("SIGCONT");
+    // The fence first, before anything waits on the process's death: its old loop's first write once it went on (landed or
+    // refused), or the process's end, bounded. The old loop's epoch is the process's first claim's.
+    const outcome = (event: Seen) => (event.at ?? 0) >= continuedAt && (event.type === "commit-landed" || event.type === "commit-refused");
+    await until(() => child.exitCode !== null || child.signalCode !== null || childEvents(eventsFile).some((event) => outcome(event as Seen)), "the old loop writes once it goes on, or the process ends", 15_000);
+    fenceHeld(childEvents(eventsFile) as Seen[], continuedAt);
   }
-  const exit = (await Promise.race([once(child, "exit"), sleep(EVENT_WAIT_MS).then(() => ["timeout", null])])) as [number | string | null, string | null];
+  const exit = (await Promise.race([exited, sleep(EVENT_WAIT_MS).then(() => ["timeout", null])])) as [number | string | null, string | null];
   // What the process did, when it did not die where it should: its claims, lost claims, commits (landed or refused, by
   // epoch), the tool's runs and the run's row.
   if (exit[1] !== "SIGKILL") {
@@ -359,13 +390,10 @@ const CASES: readonly Case[] = [
     async body(subject, t) {
       const { calls, ran, events, continuedAt } = await processCrashThenResume(subject, t, "effect", "beforeIntent", { stall: true });
       const history = JSON.stringify(events);
+      // The fence was checked first, as soon as the old loop wrote (processCrashThenResume): here, the whole run's again.
+      fenceHeld(events, continuedAt);
       const claims = events.filter((event) => event.type === "claimed").map((event) => event.claim!.epoch);
       assert.ok(claims.length >= 2 && claims[1]! > claims[0]!, `the process lost its claim and took the run back at a new epoch, with a fresh loop: ${history}`);
-      // What its old loop wrote once it went on, its lease run out and no one holding the run yet: tried, and refused.
-      const old = events.filter((event) => (event.at ?? 0) >= continuedAt && event.epoch === claims[0] && (event.type === "commit-landed" || event.type === "commit-refused"));
-      assert.ok(old.length > 0, `the old loop tried to write after it went on: ${history}`);
-      assert.deepEqual(old.filter((event) => event.type === "commit-landed"), [], `none of the old loop's writes landed: ${history}`);
-      assert.ok(old.every((event) => event.name === "ClaimLost" || event.name === "Fenced"), `each was refused by the claim's fence, by name: ${history}`);
       assert.equal(ran.effect, 1, "the effect ran once");
       assert.deepEqual(calls.map((call) => [call.tool, call.status]), [["effect", "done"]]);
     },
@@ -524,7 +552,8 @@ const CASES: readonly Case[] = [
       await w.ended("ended");
       assert.equal(ran.asked, 0, "denied, it never ran");
       const { answers, messages } = await w.read();
-      assert.deepEqual(answers, [{ callId, approved: false, note: "not on a Friday" }], "the answer keeps the note");
+      // The fields this case is about; its time is the loop's clock's (adapter-pi-approval-entries pins it).
+      assert.deepEqual(answers.map(({ callId: id, approved, decision, note }) => ({ callId: id, approved, decision, note })), [{ callId, approved: false, decision: "deny", note: "not on a Friday" }], "the answer is a deny that keeps the note");
       const said = messages.filter((message) => message.role === "model").map((message) => message.text);
       assert.equal(said.length, 1, `the model answered once: ${JSON.stringify(messages)}`);
       // Main's words for a call a person denied (tool-gate.ts refusedText), the note with them. The harness may frame a
@@ -670,6 +699,34 @@ const CASES: readonly Case[] = [
       assert.ok(!shown.includes(answer.answer), `the turn's answer is not a message: ${JSON.stringify(shown)}`);
     },
   },
+  {
+    // An answer the model's output limit cut (stopReason "length") is unfinished: a run that ends on it never reads ended.
+    id: "length-ends-failed",
+    title: "a final answer the model cut at its output limit ends the run failed, saying so",
+    async body(subject, t) {
+      const w = await world(subject, t);
+      const { tools } = suiteTools();
+      await w.start("runner-a", { script: [{ say: "The answer is", cut: true }], tools, hooks: quiet });
+      const row = await settledRun(w);
+      assert.equal(row.state, "failed", `the run ends failed, never ended: ${JSON.stringify({ state: row.state, summary: row.summary })}`);
+      assert.match(row.summary ?? "", CUT_AT_LIMIT, "it says the model stopped at its output limit");
+      const { messages } = await w.read();
+      assert.deepEqual(messages.filter((message) => message.role === "model").map((message) => message.text), ["The answer is"], "its cut answer is kept as it came");
+    },
+  },
+  {
+    id: "length-mid-run",
+    title: "a cut answer the run goes on from changes nothing: the run's end reads its last answer",
+    async body(subject, t) {
+      const w = await world(subject, t);
+      const { tools } = suiteTools();
+      await w.start("runner-a", { script: [{ say: "Part of it", cut: true }, { say: "done" }], tools, hooks: quiet });
+      const row = await settledRun(w);
+      assert.deepEqual([row.state, row.summary], ["ended", null], "the run ends as its last answer says");
+      const { messages } = await w.read();
+      assert.deepEqual(messages.filter((message) => message.role === "model").map((message) => message.text), ["Part of it", "done"]);
+    },
+  },
 ];
 
 const CLI_NEVER_RERUNS = "a CLI never reruns a call that started; only the model calls again (its adapter's facts: rerunsStarted false)";
@@ -683,6 +740,17 @@ export function factsRuleOut(facts: ConformanceSubject["facts"]): Partial<Record
     ...(facts.steer ? {} : { "steer-mid-turn": noSteer, "steer-origin": noSteer }),
     ...(facts.rerunsStarted === false ? { "replay-safe-rerun": CLI_NEVER_RERUNS, "fault-restarts-bounded": CLI_NEVER_RERUNS } : {}),
   };
+}
+
+/** What a run whose answer was cut at the model's output limit says (loop-contract.ts cutAtLimit). */
+const CUT_AT_LIMIT = /^the model stopped at its output limit( \(\d+ tokens\))? before finishing its answer$/;
+
+/** The run once it is released in a final state, whichever: a case reads which. */
+async function settledRun(w: { run(): Promise<RunRow> }): Promise<RunRow> {
+  return until(async () => {
+    const row = await w.run();
+    return row.runner === null && (row.state === "ended" || row.state === "failed" || row.state === "stopped") && row;
+  }, "the run ends and is released");
 }
 
 /** Registers the cases for `subject` with `test` (node:test). A case its facts rule out, or one it cannot model yet, is

@@ -75,6 +75,9 @@ function bounded(stagehand: Stagehand, deadlines: Deadlines): Stagehand {
   });
 }
 
+/** How long a page has to say which document it shows before it is taken not to know. */
+const DOCUMENT_MS = 5_000;
+
 /** `batchMs` bounds every run batch; the page calls' own deadlines are fixed but for tests. */
 export function pageDriver(stagehand: Stagehand, deadlines: { batchMs: number; snapshotMs?: number; screenshotMs?: number; uploadMs?: number }): PageDriver {
   const host = bounded(stagehand, { snapshotMs: SNAPSHOT_MS, screenshotMs: SCREENSHOT_MS, ...deadlines });
@@ -90,12 +93,36 @@ export function pageDriver(stagehand: Stagehand, deadlines: { batchMs: number; s
   const reads = documentReads(facade, newDocument);
   type Kept = { url: string; xpathById: Record<string, string> };
   const kept = () => (facade as unknown as { snapshotsByPage: Map<string, Kept> }).snapshotsByPage;
+  /** The document a page shows, by its own performance.timeOrigin: new on every navigation to a new document and on a
+   *  reload, the same across a #hash change or history.pushState/replaceState (Chrome's per-document loaderId, which
+   *  neither Stagehand's page nor a batch's page can be asked for). Null when the page does not say. */
+  const documentOf = async (page: Page): Promise<number | null> => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const late = new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), DOCUMENT_MS); });
+      const origin = await Promise.race([Promise.resolve(page.evaluate("performance.timeOrigin")).catch(() => null), late]);
+      return typeof origin === "number" ? origin : null;
+    } catch {
+      return null;
+    } finally { clearTimeout(timer); }
+  };
+  /** By page, the document each snapshot was taken on (read once the snapshot is), and that snapshot's ids, to know it is
+   *  still the facade's. Read beside the snapshot, never holding it up: a batch awaits it. */
+  const snapshotDocuments = new Map<string, { xpathById: Record<string, string>; document: Promise<number | null> }>();
   /** An action after the first of a batch checked as one (driving-guard): run by the facade with the snapshot taken as at
    *  the page's address now, for this action only, so an address the batch's own earlier actions moved is not a stale
    *  snapshot; then the snapshot's own address again, so a later call on the moved page is told to snapshot again. */
   const afterChecked = async (actions: RunAction[]) => {
     const page = await active();
     const snapshot = kept().get(page.pageId);
+    // Only on the snapshot's own document: an earlier action that loaded a new one (a link to another page, a reload)
+    // leaves the snapshot's ids pointing at nothing of this page's, so the batch stops before this action, as stale.
+    if (snapshot) {
+      const taken = snapshotDocuments.get(page.pageId);
+      const was = taken && taken.xpathById === snapshot.xpathById ? await taken.document : null;
+      const document = was === null ? null : await documentOf(page);
+      if (was === null || document !== was) throw new Error(NAVIGATED_SNAPSHOT_ERROR);
+    }
     const now = snapshot ? await page.url() : undefined;
     if (!snapshot || now === snapshot.url) return facade.runActions(actions);
     kept().set(page.pageId, { ...snapshot, url: now! });
@@ -106,7 +133,13 @@ export function pageDriver(stagehand: Stagehand, deadlines: { batchMs: number; s
     }
   };
   return {
-    snapshot: (snapshotOptions) => reads.snapshot(snapshotOptions),
+    snapshot: async (snapshotOptions) => {
+      const tree = await reads.snapshot(snapshotOptions);
+      const page = await active().catch(() => null);
+      const taken = page ? kept().get(page.pageId) : undefined;
+      if (page && taken) snapshotDocuments.set(page.pageId, { xpathById: taken.xpathById, document: documentOf(page) });
+      return tree;
+    },
     run: (input) => input.actions !== undefined ? (input.checked ? afterChecked(input.actions) : facade.runActions(input.actions)) : facade.run(input.code ?? ""),
     // As the facade's own batch checks a run's actions before it sends any (runActionsNow): the active page's snapshot,
     // the page still at its address, and every id in it. Read from the facade's snapshots, as forgetSnapshots does.
