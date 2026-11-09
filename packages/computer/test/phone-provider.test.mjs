@@ -3,6 +3,7 @@
 // adb runs, and no test waits on the wall clock: the fake's clock moves on when the provider sleeps.
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
+import { randomFillSync } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -1104,6 +1105,80 @@ test("a phone runs one input batch at a time: a second waits for the first, whol
 	assert.deepEqual(await second, { ok: true, value: { done: 1 } });
 	const order = fake.shells().filter((command) => /^input (tap|keyevent)/.test(command));
 	assert.deepEqual(order, ["input tap 100 300", "input keyevent KEYCODE_BACK"]);
+	await connection.close();
+	await provider.release(ref, "delete");
+});
+
+test("a batch cancelled while it waits its turn answers at once, aborted with none run; the batches before it run on, in order", { timeout: 10_000 }, async (t) => {
+	// A call that waits for the batch before it holds no timer: this keeps the run alive so the test's bound can fail it.
+	const alive = setInterval(() => {}, 1_000);
+	t.after(() => clearInterval(alive));
+	const fake = fakePhoneHarness();
+	let armed = false;
+	let wake;
+	let began;
+	const waiting = new Promise((resolve) => (began = resolve));
+	const sleep = (ms) => (armed ? (began(ms), new Promise((resolve) => (wake = resolve))) : fake.clock.sleep(ms));
+	const provider = await create({ apiKey: KEY, fetch: fake.fetch, adb: fake.adb, ledger: memoryLedger(), now: fake.clock.now, sleep });
+	const { value: ref } = await provider.create(SPEC);
+	const { value: connection } = await provider.connect(ref);
+	const { client } = connection;
+	armed = true;
+	const first = client.call("input.actions", { actions: [{ type: "wait", ms: 300_000 }, { type: "tap", at: [100, 300] }] });
+	await waiting;
+	const cancel = new AbortController();
+	const second = client.call("input.actions", { actions: [{ type: "button", name: "back" }] }, { signal: cancel.signal });
+	const third = client.call("input.actions", { actions: [{ type: "button", name: "home" }] });
+	cancel.abort();
+	const cancelled = await second;
+	assert.equal(cancelled.ok, true, JSON.stringify(cancelled));
+	assert.equal(cancelled.value.done, 0);
+	assert.deepEqual([cancelled.value.failed?.index, cancelled.value.failed?.kind], [0, "aborted"]);
+	assert.match(cancelled.value.failed.message, /^action 0: .*aborted/);
+	armed = false;
+	wake();
+	assert.deepEqual(await first, { ok: true, value: { done: 2 } });
+	assert.deepEqual(await third, { ok: true, value: { done: 1 } });
+	const order = fake.shells().filter((command) => /^input (tap|keyevent)/.test(command));
+	assert.deepEqual(order, ["input tap 100 300", "input keyevent KEYCODE_HOME"], "the cancelled batch never ran, and the others kept their order");
+	await connection.close();
+	await provider.release(ref, "delete");
+});
+
+test("a phone's watch frame over a chunk is held apart from a shot: a screen.shot between its first chunk and its screen.read evicts neither", async () => {
+	// A noisy screen, so its PNG is over a chunk.
+	const fake = fakePhoneHarness();
+	const adb = aroundAdb(fake, async (args, options, run) => {
+		const ran = await run();
+		if (!args.includes("screencap") || !ran.ok) return ran;
+		const stdout = Buffer.from(ran.value.stdout);
+		randomFillSync(stdout, 16);
+		return { ok: true, value: { ...ran.value, stdout } };
+	});
+	const provider = await create({ apiKey: KEY, fetch: fake.fetch, adb, ledger: memoryLedger(), now: fake.clock.now, sleep: fake.clock.sleep });
+	const { value: ref } = await provider.create(SPEC);
+	const { value: connection } = await provider.connect(ref);
+	const { client } = connection;
+	const frame = await client.call("screen.watch", { after: 0 });
+	assert.equal(frame.ok, true, JSON.stringify(frame).slice(0, 200));
+	assert.equal(frame.value.eof, false, "the frame is over a chunk");
+	const first = await client.call("screen.shot", {});
+	assert.equal(first.ok, true);
+	assert.equal(first.value.eof, false, "the shot is over a chunk");
+	// The frame's rest, after the shot: the frame's bytes, whole.
+	const parts = [Buffer.from(frame.value.data, "base64")];
+	for (let eof = false; !eof; ) {
+		const more = await client.call("screen.read", { id: frame.value.id, offset: Buffer.concat(parts).length });
+		assert.equal(more.ok, true, JSON.stringify(more).slice(0, 200));
+		parts.push(Buffer.from(more.value.data, "base64"));
+		eof = more.value.eof;
+	}
+	const bytes = Buffer.concat(parts);
+	assert.equal(bytes.length, frame.value.size);
+	assert.deepEqual(png(bytes), { width: SCREEN.width, height: SCREEN.height });
+	// The shot's rest is still held too.
+	const rest = await client.call("screen.read", { id: first.value.id, offset: Buffer.from(first.value.data, "base64").length });
+	assert.equal(rest.ok, true, JSON.stringify(rest).slice(0, 200));
 	await connection.close();
 	await provider.release(ref, "delete");
 });
