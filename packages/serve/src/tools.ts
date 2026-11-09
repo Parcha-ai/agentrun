@@ -22,7 +22,7 @@ import { type Complete, LLM_TOOL } from "./llm.js";
 import { DOCUMENTS_ENV, PDF_PAGES_TOOL, pdfPages } from "./pdf-pages.js";
 import { monidTool } from "./monid.js";
 import { FAUX_ENV, workflowNodes } from "./model.js";
-import { bookedIn, booking, type Ledger } from "./paid-calls.js";
+import { bookedIn, booking, type Ledger, type PaidBooking } from "./paid-calls.js";
 import { browserPrice, browserSpend } from "./browser-cost.js";
 import { forModel } from "./result.js";
 import { fetchFor, runPages, WEB_FETCH_TOOL, webFetchTool } from "./web-fetch.js";
@@ -98,6 +98,10 @@ export type ToolHost = {
   claim?: Claim;
   /** The key the live-viewer tokens are sealed under before they go to the store (store/seal.ts). */
   sealKey?: Buffer;
+  /** The claim's one-ledger booking (the kernel cap's paidCalls, paid-calls.ts PaidBooking), handed by the adapter loop:
+   *  the runner binds the browser only with it (browserSpend's `paid`), so no browser call is held on this process's own
+   *  spend. Absent today (the loop does not hand it yet), so the runner lists no browser tool. */
+  paid?: PaidBooking;
 };
 
 /** What a name stands for in the run: the pi tools it offers, and the extensions a conversation selects for them. */

@@ -291,7 +291,9 @@ function settlePaidCall(name: string): { refused: string } | undefined {
  *  the learned workflow and decisions are each a named todo, added as their seams land. */
 async function bindNonHandTools(host: ToolHost, granted: readonly string[], run: AdapterRun, context: Context, results: ToolResults, root: string, plane: Plane | undefined): Promise<AdapterRunSpec["session"]["tools"]> {
   const names = granted.filter((name) => name === WEB_FETCH_TOOL || name === WEB_SEARCH_TOOL || name.startsWith("monid."));
-  const browser = granted.includes(BROWSER_TOOL);
+  // Fail closed on money: the browser binds only with the claim's one-ledger booking (host.paid), so none of its calls is
+  // held on this process's own spend (browserSpend without `paid`); without it, none of its tools is listed.
+  const browser = granted.includes(BROWSER_TOOL) && host.paid !== undefined;
   if (names.length === 0 && !browser) return [];
   const ctx: HostToolCtx = {
     context,
