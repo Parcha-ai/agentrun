@@ -1,4 +1,4 @@
-// learningCommit: the one write API on an agent's learning folder (COMMIT-API.md v1, tl-learning). The runner's learning
+// learningCommit: the one write API on an agent's learning folder (COMMIT-API.md v1). The runner's learning
 // loop calls it for a run's merge, and a caller with a person's whole new text calls it for a person's write. Every
 // call is ONE exec of the learning script on the folder's main (learn/folder.ts commitChange, one hold), computed from
 // the folder's snapshot and the bodies it names. A main that moved under it (the script's exit 3) is computed again on

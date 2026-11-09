@@ -5,12 +5,12 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
-import { cpSync, existsSync, readFileSync, watch, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, readFileSync, watch, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { test } from "node:test";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import Ajv2020 from "ajv/dist/2020.js";
-import { CaseError, evalTemplate, fakeAnswer, gradeDeterministic, lastJsonBlock, markdownReport, readCases, startFake, verdictOf } from "../dist/template-eval.js";
+import { CaseError, callsOf, evalTemplate, fakeAnswer, gradeDeterministic, lastJsonBlock, markdownReport, readCases, startFake, verdictOf } from "../dist/template-eval.js";
 import { PackageError, readPackages, TEMPLATES_DIR } from "../dist/templates.js";
 import { scratch, serve } from "./support.mjs";
 
@@ -117,7 +117,9 @@ test("a case whose answer meets a grader of every type passes, each llm grader a
   assert.deepEqual(new Set(run.graders.map((g) => g.type)), new Set(["schema", "regex", "tool_used", "file_exists", "llm"]));
   assert.ok(run.graders.every((g) => g.pass), JSON.stringify(run.graders));
   assert.match(graderOf(run, "file.md").reason, /work folder holds notes\/out\.md/);
-  assert.match(graderOf(run, "wrote.md").reason, /^1 call of write; the grader expects exactly 1$/);
+  assert.match(graderOf(run, "wrote.md").reason, /^2 calls of write; the grader expects exactly 2$/);
+  // A file past the listing's depth (WALK_DEPTH) is read by its path, never taken for absent.
+  assert.match(graderOf(run, "deep-file.md").reason, /work folder holds d1\/d2\/.*\/deep\.md/);
   assert.match(graderOf(run, "target.md").reason, /the answer's summary matches/);
   // Each run's cost and each llm grade's, from the run records: known, and in the case's total.
   const llm = run.graders.filter((g) => g.type === "llm");
@@ -159,6 +161,8 @@ test("a case whose answer fails a grader of every type fails, each failure named
 });
 
 test("a fake MCP server answers from its fixture and records each call; tool_used's args match a call or fail naming it", { timeout: 600_000 }, async () => {
+  // update_contact is pinned to id 7 (evalpkg's agent.md): on its own server the runner pins it as an owner would before
+  // the apply, so the granted write reaches the fake; without that pin the apply would make it deny (AGENT_LAYER_PINS).
   const match = await caseOf("mcp-match");
   assert.equal(match.pass, true, JSON.stringify(match, null, 1));
   const [run] = match.runs;
@@ -168,6 +172,20 @@ test("a fake MCP server answers from its fixture and records each call; tool_use
   const mismatch = await caseOf("mcp-mismatch");
   assert.equal(mismatch.pass, false);
   assert.match(graderOf(mismatch.runs[0], "updated.md").reason, /^0 calls of mcp:crm\/update_contact with \{"id":"8"\}; the grader expects exactly 1$/);
+});
+
+test("a background shell call keeps its own name in the grading record, as the gate's request does: never counted as bash", () => {
+  const rows = [
+    { kind: "tool_use", tool_use_id: "1", tool_name: "bash_background", tool_input_preview: "sleep 1" },
+    { kind: "tool_use", tool_use_id: "2", tool_name: "bash", tool_input_preview: "ls" },
+    { kind: "tool_use", tool_use_id: "3", tool_name: "mcp__hands__bash_output", tool_input_preview: "1" },
+    { kind: "tool_use", tool_use_id: "4", tool_name: "mcp__crm__get_contact", tool_input_preview: "{}" },
+  ];
+  assert.deepEqual(callsOf(rows, "pi", ["crm"]).map((c) => c.tool).slice(0, 2), ["bash_background", "bash"]);
+  assert.deepEqual(callsOf(rows, "claude-agent", ["crm"]).map((c) => c.tool), ["bash_background", "bash", "bash_output", "mcp:crm/get_contact"]);
+  const record = { answer: "", calls: callsOf(rows, "pi", ["crm"]), mcpCalls: [], files: [] };
+  assert.equal(gradeDeterministic({ file: "bg.md", type: "tool_used", tools: ["bash_background"], expect: "called" }, record, []).pass, true);
+  assert.equal(gradeDeterministic({ file: "sh.md", type: "tool_used", tools: ["bash"], count: 1 }, record, []).pass, true, "bash counts its own call alone");
 });
 
 test("a learned note seeded through the learning API reaches the run", { timeout: 600_000 }, async () => {
@@ -200,6 +218,12 @@ test("a case passes only when every run passes: one failing run of two fails it"
 test("on an owner's server it applies that server's package only when it is this folder's, never replaces an MCP server, and archives what it made", { timeout: 300_000 }, async (t) => {
   const { api, baseUrl, token } = await serve(t, { faux: FAUX, templates: FIXTURES });
   const server = { baseUrl, token };
+  // The owner's settings are theirs: unpinned there, the pinned write stays deny and the case fails on it.
+  const before = (await api("GET", "/settings/tools")).body;
+  const unpinned = await evalTemplate({ dir: PKG, cases: ["mcp-match"], server });
+  assert.equal(unpinned.pass, false);
+  assert.deepEqual((await api("GET", "/settings/tools")).body, before, "the runner wrote no setting of the owner's");
+  assert.equal((await api("PUT", "/settings/tools", { ...before, "mcp:crm/update_contact": { pin: { id: "7" } } })).status, 200);
   const report = await evalTemplate({ dir: PKG, cases: ["mcp-match"], server });
   assert.equal(report.pass, true, JSON.stringify(report, null, 1));
   assert.deepEqual(report.server, { kind: "remote", base_url: baseUrl.replace(/\/$/, "") });
@@ -244,11 +268,11 @@ test("a stopped eval cancels the run in progress and cleans up what it made, as 
   assert.equal((await api("GET", "/agents")).body.agents.length, 0, "the agent it made is archived, and no other was made");
 });
 
-/** A proxy on port 0 to the server at `baseUrl` (ending /v2) that answers 500 to every timeline read and passes the rest
- *  on: a server whose timeline fails under the eval. Its /v2 address. */
-async function timelineFails(t, baseUrl) {
+/** A proxy on port 0 to the server at `baseUrl` (ending /v2) that answers 500 to each request `refuses(req)` says so,
+ *  and passes the rest on. Its /v2 address. */
+async function refusing(t, baseUrl, refuses) {
   const proxy = createServer(async (req, res) => {
-    if (/\/runs\/[^/]+\/timeline/.test(req.url)) return void res.writeHead(500, { "content-type": "application/json" }).end('{"error":{"code":"internal","message":"timeline down"}}');
+    if (refuses(req)) return void res.writeHead(500, { "content-type": "application/json" }).end('{"error":{"code":"internal","message":"refused by the test proxy"}}');
     const chunks = [];
     for await (const chunk of req) chunks.push(chunk);
     const body = Buffer.concat(chunks);
@@ -260,16 +284,33 @@ async function timelineFails(t, baseUrl) {
   return `http://127.0.0.1:${proxy.address().port}/v2`; // key-gate: loopback-rule the test's proxy listens on loopback
 }
 
-test("a run whose wait fails is cancelled before the eval goes on, never left going", { timeout: 300_000 }, async (t) => {
+test("a run whose wait fails keeps its result and is cancelled before the eval goes on, never left going", { timeout: 300_000 }, async (t) => {
   // The held case's run never answers on its own: only a cancel ends it.
   process.env.AGENTRUN_TEST_EVAL_HOLD = join(await scratch(t), "holding");
   t.after(() => delete process.env.AGENTRUN_TEST_EVAL_HOLD);
   const { api, baseUrl, token } = await serve(t, { faux: FAUX, templates: FIXTURES });
-  const report = await evalTemplate({ dir: PKG, cases: ["held"], server: { baseUrl: await timelineFails(t, baseUrl), token } });
-  assert.match(report.cases[0].error, /timeline down/);
+  const report = await evalTemplate({ dir: PKG, cases: ["held"], server: { baseUrl: await refusing(t, baseUrl, (req) => /\/runs\/[^/]+\/timeline/.test(req.url)), token } });
+  // The run was started, so it is paid for: it keeps a result (its id, its cost as the server says it), failed with why,
+  // never dropped from the case.
+  const [one] = report.cases[0].runs;
+  assert.equal(report.cases[0].pass, false);
+  assert.ok(one, JSON.stringify(report.cases[0]));
+  assert.match(one.error, /^after the run started: .*timeline: 500 refused by the test proxy/);
+  assert.deepEqual([one.status, one.pass], ["unknown", false]);
   const runs = (await api("GET", "/runs?archived=true")).body.runs;
   assert.equal(runs.length, 1);
+  assert.equal(one.run_id, runs[0].run_id);
   assert.equal((await api("GET", `/runs/${runs[0].run_id}`)).body.status, "cancelled", "the run the eval started is cancelled");
+});
+
+test("a listing of the server's templates that fails once fails that case alone: the next case asks again", { timeout: 300_000 }, async (t) => {
+  const { baseUrl, token } = await serve(t, { faux: FAUX, templates: FIXTURES });
+  let refused = 0;
+  const proxy = await refusing(t, baseUrl, (req) => req.method === "GET" && req.url === "/v2/templates" && refused++ === 0);
+  const report = await evalTemplate({ dir: PKG, cases: ["held", "learned"], server: { baseUrl: proxy, token } });
+  assert.deepEqual(report.cases.map((c) => [c.name, c.pass]), [["held", false], ["learned", true]], JSON.stringify(report.cases, null, 1));
+  assert.match(report.cases[0].error, /^listing the server's templates: 500 refused by the test proxy/);
+  assert.equal(refused, 2, "asked once more after the refusal, then kept");
 });
 
 test("an eval's agent has none of the package's triggers: market-monitor's weekly schedule is deleted at its apply", { timeout: 300_000 }, async (t) => {
@@ -369,6 +410,10 @@ test("agentrun-serve eval-template: exit 0 when every case passes, 1 when one fa
   assert.match(heldErr, /stopping: cancelling the run in progress[\s\S]*stopped; no report\./);
   assert.throws(() => readFileSync(join(dir, "stopped.json")), { code: "ENOENT" });
 
+  // A report path that exists and can't be written: refused before anything runs.
+  const readOnly = join(dir, "read-only.json");
+  writeFileSync(readOnly, "{}");
+  chmodSync(readOnly, 0o444);
   for (const [args, said] of [
     [[PKG, "--case", "nope", "--faux", FAUX], /evals\/nope: no such case/],
     [[PKG, "--runs", "0"], /--runs takes a whole number/],
@@ -377,6 +422,8 @@ test("agentrun-serve eval-template: exit 0 when every case passes, 1 when one fa
     [[PKG, "--grader-model", "nomodel", "--faux", FAUX], /--grader-model is "provider\/model-id"/],
     [[join(PKG, "evals")], /is not a valid package/],
     [[], /it takes one package folder/],
+    [[PKG, "--faux", FAUX, "--report", join(dir, "no-such-folder", "report.json")], /--report's folder .*no-such-folder is not a folder this command can write in/],
+    [[PKG, "--faux", FAUX, "--report", readOnly], /--report's folder .* or a file it can't write/],
   ]) {
     const refused = await run(args);
     assert.equal(refused.code, 2, `${args.join(" ")}: ${refused.err}`);

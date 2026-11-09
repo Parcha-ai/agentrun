@@ -2,6 +2,7 @@
 // computerd goes in through the vendor's file upload and starts as a command that agent runs. These are the shell
 // commands such a provider sends, exactly, and the read-back of the daemon it started: the same for every such vendor.
 import { DAEMON_IN_COMPUTER, helloDrift, SOCKET_DIR, WORK } from "./drift.js";
+import { readOwnNetwork, TOOL_USER } from "./isolation.js";
 import type { ComputerCapabilities, ComputerConnection } from "./provider.js";
 import { fail, ok, type Result } from "./result.js";
 
@@ -40,9 +41,11 @@ const INSTALL_SCRIPT = [
 
 /** Starts init, the long-lived command, as root in a clean environment from its home: `init --user` gives HOME and the
  *  socket's directory to the daemon's user, sets no_new_privs and empties every capability set on every thread, and
- *  becomes that user with no groups. Init holds every process and ends them at the deadline. A display, when given, is
- *  init's DISPLAY, the X display its screen and input methods drive; a maximum, when given, is the most deadline.extend
- *  may move the deadline to. */
+ *  becomes that user with no groups. `--own-network` first cuts init and its programs off from the vendor's agent beside
+ *  them (Daytona's toolbox, E2B's envd), which runs commands as root for whoever reaches it: a network of their own,
+ *  their loopback alone, no vsock, no other process of their uid (src/isolation.ts). Init holds every process and ends
+ *  them at the deadline. A display, when given, is init's DISPLAY, the X display its screen and input methods drive; a
+ *  maximum, when given, is the most deadline.extend may move the deadline to. */
 const INIT_SCRIPT = [
 	"# agentrun-computer: init",
 	// The display is v, not x: held() assigns x, and runs before the exec that reads it.
@@ -50,7 +53,7 @@ const INIT_SCRIPT = [
 	HELD,
 	'held "$d" >&2 || exit 6',
 	ROOT,
-	`exec $p env -i PATH=${PATH} HOME="$h" AGENTRUN_COMPUTERD_SOCKET="$r/computerd.sock" \${v:+DISPLAY="$v"} sh -c 'cd "$HOME" && exec "$@"' sh "$d" init --deadline "$t" --user "$w" \${m:+--max-deadline "$m"}`,
+	`exec $p env -i PATH=${PATH} HOME="$h" AGENTRUN_COMPUTERD_SOCKET="$r/computerd.sock" \${v:+DISPLAY="$v"} sh -c 'cd "$HOME" && exec "$@"' sh "$d" init --deadline "$t" --user "$w" --own-network \${m:+--max-deadline "$m"}`,
 ].join("\n");
 
 /** The bridge one connection runs: stdin and stdout to init's socket. As root, to reach a socket in a directory that is
@@ -60,7 +63,8 @@ const INIT_SCRIPT = [
 const STDIO_SCRIPT = ["# agentrun-computer: stdio", "d=$1; r=$2", HELD, 'held "$d" >&2 || exit 6', ROOT, `exec $p env -i PATH=${PATH} AGENTRUN_COMPUTERD_SOCKET="$r/computerd.sock" "$d" stdio`].join("\n");
 
 const quote = (word: string) => `'${word.replaceAll("'", "'\\''")}'`;
-const shellCommand = (script: string, args: readonly string[]) => ["sh", "-c", quote(script), "sh", ...args.map(quote)].join(" ");
+/** One string for a shell: `sh -c '<script>' sh '<arg>' ...`, every word quoted. */
+export const shellCommand = (script: string, args: readonly string[]) => ["sh", "-c", quote(script), "sh", ...args.map(quote)].join(" ");
 
 export interface ChildCommandOptions {
 	/** Where the vendor's upload left the daemon. */
@@ -80,7 +84,7 @@ export interface ChildCommandOptions {
  * its sha256 printed), init (long-lived) and stdio (one per connection). Each is one string for a shell, `sh -c` with
  * every argument quoted.
  */
-export function childCommands({ staging = "", deadline = "", user = "1000:1000", display = "", maxDeadline = "" }: ChildCommandOptions = {}) {
+export function childCommands({ staging = "", deadline = "", user = TOOL_USER, display = "", maxDeadline = "" }: ChildCommandOptions = {}) {
 	const init = [DAEMON_IN_COMPUTER, deadline, user, WORK, SOCKET_DIR];
 	if (display !== "" || maxDeadline !== "") init.push(display, maxDeadline);
 	return {
@@ -103,7 +107,8 @@ const show = (value: unknown) => (value === undefined ? "nothing" : JSON.stringi
 
 /**
  * What the daemon reports of itself, read back through it: hello, its credentials (no capability in any set,
- * no_new_privs, no groups), its working directory and binary. Each read is bounded by timeoutMs and the caller's signal.
+ * no_new_privs, no groups, a seccomp filter), its network (its own loopback alone, from its /proc/self/net/dev), its
+ * working directory and binary. Each read is bounded by timeoutMs and the caller's signal.
  */
 export async function daemonDrift(connection: ComputerConnection, expected: DaemonExpected, timeoutMs: number, signal?: AbortSignal): Promise<Result<string[]>> {
 	const found = helloDrift(connection.hello, { version: expected.version, kind: expected.kind, groups: expected.groups, arch: expected.arch });
@@ -126,6 +131,11 @@ export async function daemonDrift(connection: ComputerConnection, expected: Daem
 		const value = fields.get(set);
 		if (value === undefined || !/^0+$/.test(value)) found.push(`daemon ${set}: declared no capabilities, read back ${show(value)}`);
 	}
+	if (fields.get("Seccomp") !== "2") found.push(`daemon seccomp: declared 2 (the filter that refuses vsock and io_uring), read back ${show(fields.get("Seccomp"))}`);
+	// Its own network, as its user sees it: the live interfaces lo alone, and none it could bring up (computerd probe).
+	const net = await readOwnNetwork(connection.client, timeoutMs, bounded());
+	if (!net.ok) return fail(net.error.code === "aborted" && !signal?.aborted ? "timeout" : net.error.code, net.error.message);
+	found.push(...net.value);
 	for (const [path, want, what] of [
 		["/proc/self/cwd", WORK, "working directory"],
 		["/proc/self/exe", DAEMON_IN_COMPUTER, "binary"],

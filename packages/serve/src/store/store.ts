@@ -162,6 +162,12 @@ export interface RunPatch {
   readonly endedAt?: number | null;
 }
 
+/** The row runs.update answers. When the patch wrote `signInHanded` (the runner's bind at its claim), `save` rides with it:
+ *  whether this run holds the sign-in's save lease — true unless another run already holds one of the handed pointers,
+ *  decided in the same transaction as the sign_in_handed write so two binds of one sign-in never both save. Absent when the
+ *  patch wrote no `signInHanded`. */
+export type UpdatedRun = RunRow & { readonly save?: boolean };
+
 /** A run's launch, as the server writes it at start: its JSON `body` (run-launch.ts: the first input, title, place, effort,
  *  cap, trigger and origin), and `sealed` ciphertext for any secret it carries (sealed with the server's key outside the
  *  store, AAD `run_launch|<run_id>|sealed`), or none. Written once, in the same transaction as the queued run. */
@@ -516,8 +522,12 @@ export interface Runs {
   claimMany(runner: string, k: number, options?: { leaseMs?: number }): Promise<Claim[]>;
   /** Changes the run's row under `claim`, and in the same commit writes `also` and marks `take`'s command rows taken (a
    *  stop the runner applies itself ends the run with its stop row taken, or neither). Refused, nothing written: Fenced when
-   *  the run's epoch is not the claim's; CommandTaken when a command in `take` is taken already, or not the run's. */
-  update(claim: Claim, patch: RunPatch, rows?: { readonly also?: readonly AlsoRow[]; readonly take?: readonly number[] }): Promise<RunRow>;
+   *  the run's epoch is not the claim's; CommandTaken when a command in `take` is taken already, or not the run's. When the
+   *  patch writes `signInHanded` (the runner's bind), the answer carries `save`: whether this run holds the sign-in's save
+   *  lease, decided in this same transaction so two binds of one sign-in never both save — no other run holds a handed
+   *  pointer, counting a running run and (within `signInSettleMs` of leaving running, a vendor's settle window) one that
+   *  recently left running. `signInSettleMs` defaults to 0 (other vendors free the lease the instant a run leaves running). */
+  update(claim: Claim, patch: RunPatch, rows?: { readonly also?: readonly AlsoRow[]; readonly take?: readonly number[]; readonly signInSettleMs?: number }): Promise<UpdatedRun>;
 }
 
 /** A saved MCP server: its listed tools (each with whether it can be granted, and why not), the owner's prices, and its
@@ -715,6 +725,9 @@ export interface SignInRow {
   readonly name: string;
   readonly pointerSealed: Uint8Array;
   readonly savedAt: number;
+  /** This save's number: 1 when the row was first saved, one more on every save of it since. A verify is guarded by it
+   *  (verify's ifSave), never by savedAt, which two saves in one millisecond share. */
+  readonly save: number;
   /** When a run last verified this sign-in (saved a live session back to the vendor), ms; null when none has since it was
    *  saved. The v2 view's verified_at. */
   readonly verifiedAt: number | null;
@@ -736,13 +749,20 @@ export interface SignIns {
   /** Saves the one live sign-in for the agent and provider, its pointer already sealed by the caller: inserted, or replaced
    *  in place when one is saved already (one per agent and provider). */
   save(signIn: { agentId: string; provider: string; name: string; pointerSealed: Uint8Array }): Promise<SignInRow>;
+  /** Saves the agent's first sign-in for the provider only when it has none, in one atomic step: `saved` true with the row
+   *  it inserted, or false with the live row a save before it left (never the one asked for), so a caller that made a
+   *  vendor object for it lets its own go and uses the winner's. Two first creates at once: exactly one wins. */
+  saveIfAbsent(signIn: { agentId: string; provider: string; name: string; pointerSealed: Uint8Array }): Promise<{ saved: boolean; row: SignInRow }>;
   /** The agent's live sign-ins, by provider (their pointers stay sealed). */
   list(agentId: string): Promise<SignInRow[]>;
   /** The agent's live sign-in for the provider, or undefined. */
   get(agentId: string, provider: string): Promise<SignInRow | undefined>;
   /** Marks the agent's sign-in for the provider verified at `at` (a run saved a live session back): sets verified_at, for
-   *  the v2 view. The run path (E2) calls it at a run's save; a missing sign-in is left as it is. */
-  verify(agentId: string, provider: string, at: number): Promise<void>;
+   *  the v2 view, and answers whether it stamped a row. With `ifSave`, it stamps only while the sign-in is still that save
+   *  (SignInRow.save; WHERE save = ?), so a save that landed since the caller checked (allowed while held; it clears
+   *  verified_at), in the same millisecond or not, is never re-stamped stale: the answer is false then, and nothing is
+   *  written. The run path (E2) calls it at a run's save; a missing sign-in is left as it is (false). */
+  verify(agentId: string, provider: string, at: number, options?: { ifSave?: number }): Promise<boolean>;
   /** The agent's forgotten pointers for the provider, newest first (kept sealed, never opened here). */
   tombstones(agentId: string, provider: string): Promise<SignInTombstoneRow[]>;
   /** Forgets the agent's live sign-in for the provider, in the one transaction a launch shares as its lock: when a running
@@ -752,8 +772,10 @@ export interface SignIns {
    *  no live sign-in for the provider. */
   forget(agentId: string, provider: string, held: { hash?: string; heldUnreadable?: boolean }): Promise<SignInTombstoneRow>;
   /** The id of a running run whose sign_in_handed holds `hash`, if one does; undefined otherwise. The check the runner
-   *  makes before it serves a run's output, and forget makes before it removes a sign-in. */
-  handedHolder(hash: string): Promise<string | undefined>;
+   *  makes before it serves a run's output, and forget makes before it removes a sign-in. With `settleMs` (a vendor's settle
+   *  window, from the store clock or `at`), a run that left running (ended or parked) less than that ago also counts as
+   *  holding it, so a new run does not save over a context write-back still in flight. */
+  handedHolder(hash: string, options?: { settleMs?: number; at?: number }): Promise<string | undefined>;
   /** The id of a running run that was handed any sign-in (a non-empty sign_in_handed), if one was: for a pointer that does
    *  not open here, which any such run may hold. */
   handedAny(): Promise<string | undefined>;

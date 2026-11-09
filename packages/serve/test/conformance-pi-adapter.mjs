@@ -4,6 +4,8 @@
 // CLI harnesses', so the runner's booking is the one ledger; here the proxy's upstream is a scripted Anthropic origin (its
 // `fetch`), whose answer to a request is the script step the conversation has reached: the number of answers the model
 // has given so far, read from the request's own messages, so a resumed run (a new process) picks up at its step.
+import { strictOptions } from "./strict-options.mjs";
+
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { piAdapter } = await import("../dist/runner/adapters/pi.js");
 const { MAX_RESTARTS } = await import("../dist/runner/conformance/harness.js");
@@ -19,7 +21,13 @@ function lastResultOf(body) {
   return typeof content === "string" ? content : (content ?? []).map((part) => (part.type === "text" ? part.text : "")).join("");
 }
 
-/** A fetch that answers Anthropic's Messages API as `script` says, one step per request. Records every request body. */
+/** The tool names a Messages request offers its model. */
+export const offeredTools = (body) => (body?.tools ?? []).map((tool) => tool.name).filter((name) => typeof name === "string");
+
+/** A fetch that answers Anthropic's Messages API as `script` says, one step per request. Records every request body.
+ *  As a model does, it calls only a tool the request offers (the faux model's rule): a scripted call of a tool the request
+ *  does not offer is answered as text naming it unoffered, so a request that lost its tools on the way (a proxy policy
+ *  dropping them) shows as the run going wrong, never as the call it could not have made. */
 export function scriptedOrigin(script, requests = []) {
   return async (_url, init = {}) => {
     const body = JSON.parse(String(init.body ?? "{}"));
@@ -29,7 +37,20 @@ export function scriptedOrigin(script, requests = []) {
     const usage = { input_tokens: 100, output_tokens: 10 };
     const start = { type: "message_start", message: { id: `msg_${step}`, type: "message", role: "assistant", model: body.model, content: [], stop_reason: null, usage: { input_tokens: usage.input_tokens, output_tokens: 1 } } };
     // A call, or several in one round ({ calls: [{ call, args }, …] }, which pi runs in parallel).
-    const calls = next && "calls" in next ? next.calls : next && "call" in next ? [next] : undefined;
+    const scripted = next && "calls" in next ? next.calls : next && "call" in next ? [next] : undefined;
+    const offered = offeredTools(body);
+    const unoffered = scripted?.filter((each) => !offered.includes(each.call)).map((each) => each.call) ?? [];
+    const calls = unoffered.length === 0 ? scripted : undefined;
+    if (unoffered.length > 0) {
+      return sse([
+        start,
+        { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
+        { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: `(not offered: ${unoffered.join(", ")})` } },
+        { type: "content_block_stop", index: 0 },
+        { type: "message_delta", delta: { stop_reason: "end_turn", stop_sequence: null }, usage: { output_tokens: usage.output_tokens } },
+        { type: "message_stop" },
+      ]);
+    }
     if (calls) {
       const blocks = calls.flatMap((each, index) => [
         { type: "content_block_start", index, content_block: { type: "tool_use", id: `toolu_${step}_${index}`, name: each.call, input: {} } },
@@ -96,7 +117,10 @@ function tracked(adapter) {
 }
 
 /** The adapter loop for the suite's setup: pi through the adapter, its model through the session proxy to the script. */
-export function piAdapterSpec({ script, tools, hooks, agentId }, options = {}) {
+export function piAdapterSpec(setup, options = {}) {
+  strictOptions("piAdapterSpec's setup", setup, ["script", "tools", "hooks", "agentId"]);
+  strictOptions("piAdapterSpec", options, ["fetch", "requests", "price", "system"]);
+  const { script, tools, hooks, agentId } = setup;
   return (_claim, run) => ({
     ...(agentId ? { agentId } : {}),
     adapter: tracked(piAdapter({ run, model: MODEL, provider: { api: "anthropic-messages", origin: "https://faux.invalid", credential: () => `not-a-secret-${"x"}` }, fetch: options.fetch ?? scriptedOrigin(script, options.requests), price: options.price ?? (() => 0) })),

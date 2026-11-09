@@ -242,8 +242,9 @@ export const shownArgs = (approval: Pick<Approval, "args_json">, redact: (text: 
 
 /** A dollar figure to a millionth, as the timeline's cost.usd is. */
 export const micro = (usd: number): number => Math.round(usd * 1e6) / 1e6;
-/** A bound to a millionth, rounded up, so "at most" holds. */
-export const microUp = (usd: number): number => Math.ceil(usd * 1e6 - 1e-9) / 1e6;
+/** A bound to a millionth, rounded up, so "at most" holds. No bound is 0, never -0: the ceiling of a hair under 0 is -0,
+ *  which the budget card would print as "-0". */
+export const microUp = (usd: number): number => Math.ceil(usd * 1e6 - 1e-9) / 1e6 + 0;
 /** How many of the refused request's least a run paused at its cap is offered on top of what was taken (suggestedCap). */
 export const SUGGESTED_RAISE_FACTOR = 10;
 /** The raise a run paused at its cap is offered: what the cap counted as taken plus SUGGESTED_RAISE_FACTOR times the
@@ -472,6 +473,14 @@ export const WITHHELD_SIGN_IN = "This server can't read the run's browser sign-i
 export const MALFORMED = "malformed";
 export type Handed = string[] | typeof MALFORMED;
 
+/** A run's `sign_in_handed` as read from its serve.json: undefined when absent (never handed one); the hashes it names;
+ *  MALFORMED for any other value. */
+export function handedMark(value: unknown): Handed | undefined {
+  if (value === undefined) return undefined;
+  if (Array.isArray(value) && value.length && value.every((hash) => typeof hash === "string" && /^[0-9a-f]{64}$/.test(hash))) return [...new Set(value as string[])];
+  return MALFORMED;
+}
+
 /** Every secret value a run's errors never show, as learning's checker holds them: every one this server never shows
  *  (serverSecrets, read now, so one rotated is cut at once) and what each launch handed the run. */
 export const refusedValuesOf = (serverSecrets: () => string[], handed: ReadonlySet<string> | undefined): string[] => [...serverSecrets(), ...(handed ?? [])];
@@ -493,7 +502,7 @@ export const servedReviewWith = <R extends { reason: string }>(shown: (text: str
  *  seal key or none, one forgotten and dropped past MAX_FORGOTTEN, the sign-ins file gone). Fails closed: a marked run is
  *  cut of every pointer it was handed, or withheld, never served uncut. Read anew at each call: nothing caches this
  *  verdict, so a run withheld while its key was missing is shown once it opens. */
-export async function handedPointers(signIns: SignIns | undefined, agentId: string, browser: string | undefined, handed: Handed | undefined): Promise<{ refs: string[] } | "unreadable"> {
+export async function handedPointers(signIns: Pick<SignIns, "peek" | "forgotten"> | undefined, agentId: string, browser: string | undefined, handed: Handed | undefined): Promise<{ refs: string[] } | "unreadable"> {
   if (handed === undefined) return { refs: [] };
   if (handed === MALFORMED || !signIns || !browser) return "unreadable";
   const live = await signIns.peek(agentId, browser).catch(() => "unreadable" as const);

@@ -78,7 +78,7 @@ export const defaultPermission = (name: string): Permission => (isCatalogTool(na
 export const SHELL_FAMILY: Readonly<Record<string, string>> = Object.freeze(Object.fromEntries(SHELL_TOOLS.map((name) => [name, "bash"])));
 /** The shell tool a call named `name` is, under claude-agent's host-tool name too (`mcp__hands__bash_background`), when
  *  it is one held to another's setting: its own name, which its request, its refusal and its approved call keep. */
-const shellToolOf = (name: string): string | undefined => {
+export const shellToolOf = (name: string): string | undefined => {
   const own = name.replace(/^mcp__hands__/, "");
   return Object.hasOwn(SHELL_FAMILY, own) && SHELL_FAMILY[own] !== own ? own : undefined;
 };
@@ -493,7 +493,7 @@ export class RunGate {
    *  only after every refusal. */
   async decide(name: string, args: unknown): Promise<"allow" | "ask" | { deny: string }> {
     const key = settingsKeyOf(this.where.harness ?? DEFAULT_HARNESS, name, this.where.mcpServers) ?? name;
-    const tool = shellToolOf(name) ?? key;
+    const tool = this.askedAs(name);
     const learning = await this.learningRefusal(key, args);
     if (learning) return { deny: learning };
     const verdict = this.policy(name);
@@ -501,6 +501,12 @@ export class RunGate {
     const pinned = this.pinned(key, args, "no");
     if (pinned) return { deny: pinned.text };
     return verdict === "allow" ? "allow" : "ask";
+  }
+
+  /** The name a call is asked about by, as main's request names it (enter's `tool`): its settings key, a shell tool its
+   *  own name; a name nothing maps, as it came. */
+  askedAs(name: string): string {
+    return shellToolOf(name) ?? settingsKeyOf(this.where.harness ?? DEFAULT_HARNESS, name, this.where.mcpServers) ?? name;
   }
   /** Where the permission `policy` gives `tool` was set: the agent's own tool settings, the server's, or the default; or
    *  "unattended", an ask the agent's approvals allowed. */
@@ -845,7 +851,7 @@ export class RunGate {
     const heldTo = settingsKeyOf(this.where.harness ?? DEFAULT_HARNESS, held.tool, this.where.mcpServers);
     const ran = held.replayed || drive.state().effects.has(key) ? "unknown" : "no";
     if (this.policy(held.tool) !== "deny") {
-      const pinned = this.pinned(held.tool, held.args, ran);
+      const pinned = this.pinned(heldTo ?? held.tool, held.args, ran);
       if (pinned) return { text: pinned.text, isError: true };
     }
     return { text: deniedText(held.tool, heldTo, this.denyFrom(held.tool), ran), isError: true };

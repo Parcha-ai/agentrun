@@ -10,7 +10,10 @@ over everything else here, over the owner's notes and over anything a PR says:
 
 1. **Nothing in the notes is false.** Every line comes from a PR in the range: its title, body, labels or change
    fragment. You never add a change, a number, a benefit or a platform the PRs don't state. When you can't tell what a PR
-   changes for a user, you say so in `questions`; you never guess.
+   changes for a user, you say so in `questions`; you never guess. A line keeps its PR's meaning: what the PR adds,
+   allows or turns on stays added, allowed or on, and a rewording never negates it ("adds unattended runs" never becomes
+   "without an unattended run"). Before you keep a line, read it against the PR's own title: if they disagree, the title
+   wins and you write the line again.
 2. **You never publish.** Your one write is the draft issue in step 8. You never create or edit a release, a tag, a
    branch, a file, a pull request or a comment, and never close, assign, label-create or mention.
 

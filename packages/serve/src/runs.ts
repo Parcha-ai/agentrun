@@ -16,7 +16,7 @@ import { processAlive } from "@parcha/agentrun-kernel/host";
 import { doorKey, doorTook } from "@parcha/pi-durable-disk";
 import { RUN_STATUS_TABLE } from "@parcha/pi-durable-disk/internals";
 import { AgentHomeError, type Revision, runDirIn, type RevisionKind, type RunOrigin, type RunRow, type RunState, type StoredMetrics } from "@parcha/pi-durable-agent";
-import { endedUsage, isMessageRow, MESSAGE_ORIGIN, type MessageOrigin, NOTE_SUFFIX, originOf, REQUEST_STARTED, type RunMetrics, runMetricsWithDecisions, scrubUrls, type TimelineEvent, timelineOf, timelineReducer } from "@parcha/pi-durable-agent/timeline";
+import { endedUsage, isMessageRow, MESSAGE_ORIGIN, type MessageOrigin, NOTE_SUFFIX, originOf, REQUEST_STARTED, type RunMetrics, runMetricsWithDecisions, scrubUrls, type TimelineEvent, timelineOf, timelineReducer, TRIGGER_LABELS } from "@parcha/pi-durable-agent/timeline";
 import { HARNESS_LOG_EVENT, harnessModelKeys, thinkingFor } from "./adapters.js";
 import { runLink } from "./console-links.js";
 import { harnessOfBody } from "./harness.js";
@@ -69,7 +69,7 @@ import { removeEgressDir, RUN_BOX_ALLOW_ENV } from "./box-egress.js";
 import { BehindReadError, checkpointRunDb, MonotonicReads, readRunDb } from "./run-db.js";
 import { holderLives, holderOfClaim, holderOfProcess, holderState, killHolder, LAUNCH_HOLDER, RUN_EPOCH_ENV, RUN_LAUNCH_ENV, type RunHolder, signal } from "./run-holder.js";
 import { firstDoorLine, untilOpened, verifyDoor } from "./door-line.js";
-import { BUDGET_PAUSED, type Approval, type ApprovalAnswer, actingOn, approvalOf, browserPending, budgetPending, cents, centsUp, continuationOf, costOf, costView, type Handed, handedPointers as handedPointersOf, knownToolCostOf, MALFORMED, meaningful, micro, microUp, overByMiss, pauseOf, pausedAt, type Pending, pendingOf, raisedToGo, redactorOf, refusedValuesOf, rowShown as rowShownOf, servedReviewWith, servedRunErrorWith, shownOf, type SoFar, soFarOf, type State, type Status, statusOf as statusOfView, stopped, stoppedAt, SUGGESTED_RAISE_FACTOR, suggestedCap, shownArgs, toolCostOf, usersOf, waitingApproval, WITHHELD_SIGN_IN, withAsks, withdrawn, withOverCap, withPaused } from "./run-view.js";
+import { BUDGET_PAUSED, type Approval, type ApprovalAnswer, actingOn, approvalOf, browserPending, budgetPending, cents, centsUp, continuationOf, costOf, costView, type Handed, handedMark, handedPointers as handedPointersOf, knownToolCostOf, MALFORMED, meaningful, micro, microUp, overByMiss, pauseOf, pausedAt, type Pending, pendingOf, raisedToGo, redactorOf, refusedValuesOf, rowShown as rowShownOf, servedReviewWith, servedRunErrorWith, shownOf, type SoFar, soFarOf, type State, type Status, statusOf as statusOfView, stopped, stoppedAt, SUGGESTED_RAISE_FACTOR, suggestedCap, shownArgs, toolCostOf, usersOf, waitingApproval, WITHHELD_SIGN_IN, withAsks, withdrawn, withOverCap, withPaused } from "./run-view.js";
 // The cost reads, the served row transforms, the status and pending views and the redaction choke point kept their import
 // path here for the server routes and tests that read them from this module.
 export { costOf, costView, knownToolCostOf, soFarOf, type SoFar, toolCostOf, withOverCap, withPaused, stoppedAt, suggestedCap, SUGGESTED_RAISE_FACTOR, type State, type Status, WITHHELD_SIGN_IN };
@@ -108,14 +108,7 @@ const QUIET = /:run:(start|end)$/;
 const RETRY_CODES = ["OPENING", "PARKING", "RELEASED"];
 /** How often one server opens a run again whose process went before the run ended, before it fails the run. */
 const MAX_RELAUNCHES = 3;
-// MALFORMED and the Handed type move to run-view.ts (the run's served view), imported above.
-/** A run's `sign_in_handed` as read from its serve.json: undefined when absent (never handed one); the hashes it names;
- *  MALFORMED for any other value. */
-function handedMark(value: unknown): Handed | undefined {
-  if (value === undefined) return undefined;
-  if (Array.isArray(value) && value.length && value.every((hash) => typeof hash === "string" && /^[0-9a-f]{64}$/.test(hash))) return [...new Set(value as string[])];
-  return MALFORMED;
-}
+// MALFORMED, the Handed type and handedMark move to run-view.ts (the run's served view), imported above.
 
 /** A run's serve.json at `path`, the one read every reader of it shares (load, forget's handedTo, a list row): `stored`,
  *  what it holds when it is whole JSON of an object, else null; `damaged`, whether it is there but can't be read or
@@ -852,7 +845,7 @@ export type StartOptions = { input: Json; title: string; place: Place; effort?: 
  *  tried again; `readyTimeoutMs`: how long a request to a run waits for its door (a run's first message, sent by its
  *  start, always waits READY_TIMEOUT_MS); `openTimeoutMs`: how long a launched process has to open its run (READY_TIMEOUT_MS,
  *  the first message's wait, by default; never the request's wait); `log` takes a run's start and end (print.ts). */
-export type RunsOptions = { /** The installs of the harnesses that install on first use (harness-install.ts HarnessInstall), by harness: a run on one waits for its install before it launches. Absent, none is waited for. */ installs?: Readonly<Record<string, { readonly installed: boolean; readonly installingWords: string; needed(): Promise<boolean>; ensure(): Promise<void> }>>; /** What a run's Docker box reaches, as the server resolved it (run-box.ts boxNetworkOf): the list, or none. Absent, none. */ dockerAllow?: readonly string[] | "none"; /** On a Mac, the server's proxy container's volume a run's Docker box mounts (box-egress-vm.ts). */ dockerVolume?: string; /** A server in a container: where its Docker has the data directory (box-paths.ts), which a run's Docker box mounts from. Absent on a host. */ dockerPaths?: BoxPaths; agents: Agents; token: string; /** The server's saved tool keys, read by name for its runs alone (secrets.ts). */ storedKeys?: StoredKeys; /** The server's saved MCP servers (mcp-servers.ts): a run's pin and its credentials come from them at each launch. */ mcpServers?: McpServerSource; documents?: string; doorTokenFile: string; doorToken: string; /** The test switches a run's process gets (server.ts fauxEnvOf): empty outside tests. */ fauxEnv?: NodeJS.ProcessEnv; runBoxes?: BoxProvider; /** The server's Daytona provider, with its key: remote boxes are made, seeded, pulled and destroyed with it, here alone (box-relay.ts). */ remoteBoxes?: BoxProvider; /** Daytona's API and the same key, for what the provider does not do: a kept box's idle stop, and its wake at a start (daytona-api.ts). */ remoteApi?: DaytonaApi; /** The server's VM box provider, with its client: a VM run's box is made, seeded, pulled and ended with it, here alone, as a Daytona one is (box-relay-vm.ts); it has no network. */ vmBoxes?: BoxProvider; /** A VM box's limits (run-box.ts RemoteLimits), from the box settings. */ vmLimits?: RemoteLimits; /** The relay's VM half, which lets go of a run's programs at its end. */ vmRelay?: { drop(runId: string): void }; /** The hosts a remote box may reach (run-box.ts boxAllowOf); `none`, or absent, for none. */ boxAllow?: readonly string[] | "none"; /** Called once, with the provider's refusal's code and words, when it cannot keep that list here: from then on each remote box is made with no network. */ onNoBoxList?: (code: string, message: string) => void; toolSettings?: () => ToolSettingsMap; /** Whether anyone can answer a tool call's approval here (accounts on); false, the run's gate refuses each ask (tool-gate.ts). */ approvers?: boolean; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; box?: { host: BoxHost; quarantine: Quarantine }; settleRetryMs?: number; readyTimeoutMs?: number; openTimeoutMs?: number; /** Under --faux only (server.ts): the nonce handed to each run's process in place of its launch's. */ fauxHandedNonce?: string; reflectTimeoutMs?: number; /** How much of what a run learned its instructions hold, in bytes (`--learning-budget`, learning.ts learnedOf). */ learningBudget?: number; log?: (event: string, fields: Record<string, string | number>) => void; notify?: RunNotify; learning?: LearningMode; /** Each agent's saved sign-ins (sign-ins.ts): absent, no run gets one. */ signIns?: SignIns; /** Every secret this server never shows (server.ts serverSecrets), read at each call, so one made or rotated is cut at once: the host's and the keys saved on it, read through `stored` when given (learning's view keeps the saved keys it read), its tokens, and each it holds (server-secrets.ts). What a run shows, its title among it, and what its learning keeps are cut of it. */ serverSecrets: (stored?: StoredKeys) => string[] };
+export type RunsOptions = { /** The installs of the harnesses that install on first use (harness-install.ts HarnessInstall), by harness: a run on one waits for its install before it launches. Absent, none is waited for. */ installs?: Readonly<Record<string, { readonly installed: boolean; readonly installingWords: string; needed(): Promise<boolean>; ensure(): Promise<void> }>>; /** What a run's Docker box reaches, as the server resolved it (run-box.ts boxNetworkOf): the list, or none. Absent, none. */ dockerAllow?: readonly string[] | "none"; /** On a Mac, the server's proxy container's volume a run's Docker box mounts (box-egress-vm.ts). */ dockerVolume?: string; /** A server in a container: where its Docker has the data directory (box-paths.ts), which a run's Docker box mounts from. Absent on a host. */ dockerPaths?: BoxPaths; agents: Agents; token: string; /** The server's saved tool keys, read by name for its runs alone (secrets.ts). */ storedKeys?: StoredKeys; /** The server's saved MCP servers (mcp-servers.ts): a run's pin and its credentials come from them at each launch. */ mcpServers?: McpServerSource; documents?: string; doorTokenFile: string; doorToken: string; /** The test switches a run's process gets (server.ts fauxEnvOf): empty outside tests. */ fauxEnv?: NodeJS.ProcessEnv; runBoxes?: BoxProvider; /** The server's Daytona provider, with its key: remote boxes are made, seeded, pulled and destroyed with it, here alone (box-relay.ts). */ remoteBoxes?: BoxProvider; /** Daytona's API and the same key, for what the provider does not do: a kept box's idle stop, and its wake at a start (daytona-api.ts). */ remoteApi?: DaytonaApi; /** The server's VM box provider, with its client: a VM run's box is made, seeded, pulled and ended with it, here alone, as a Daytona one is (box-relay-vm.ts); it has no network. */ vmBoxes?: BoxProvider; /** A VM box's limits (run-box.ts RemoteLimits), from the box settings. */ vmLimits?: RemoteLimits; /** The relay's VM half, which lets go of a run's programs at its end. */ vmRelay?: { drop(runId: string): void }; /** The hosts a remote box may reach (run-box.ts boxAllowOf); `none`, or absent, for none. */ boxAllow?: readonly string[] | "none"; /** Called once, with the provider's refusal's code and words, when it cannot keep that list here: from then on each remote box is made with no network. */ onNoBoxList?: (code: string, message: string) => void; toolSettings?: () => ToolSettingsMap; /** Whether anyone can answer a tool call's approval here (accounts on); false, the run's gate refuses each ask (tool-gate.ts). */ approvers?: boolean; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; box?: { host: BoxHost; quarantine: Quarantine }; settleRetryMs?: number; readyTimeoutMs?: number; openTimeoutMs?: number; /** Under --faux only (server.ts): the nonce handed to each run's process in place of its launch's. */ fauxHandedNonce?: string; reflectTimeoutMs?: number; /** How much of what a run learned its instructions hold, in bytes (`--learning-budget`, learning.ts learnedOf). */ learningBudget?: number; log?: (event: string, fields: Record<string, string | number>) => void; notify?: RunNotify; learning?: LearningMode; /** Each agent's saved sign-ins (sign-ins.ts): absent, no run gets one. */ signIns?: SignIns; /** Every secret this server never shows (server.ts serverSecrets), read at each call, so one made or rotated is cut at once: the host's and the keys saved on it, read through `stored` when given (learning's view keeps the saved keys it read), its tokens, and each it holds (server-secrets.ts). What a run shows, its title among it, and what its learning keeps are cut of it. */ serverSecrets: (stored?: StoredKeys) => string[]; /** The current name of a trigger by its id, from the store (server.ts triggerNameOf): resolved once when a run is loaded (a run restored after a restart still names its trigger), and a firing's start and a rename push it in (triggerChanged), so servedTriggerRow reads it with no store read. */ triggerName?: (id: string) => Promise<string | undefined> };
 /** Told of a run's moment each time it is seen (webhooks.ts' emit, which queues each one once): a wait it reached, and an
  *  end once the agent store has it. `marker` names the moment (the person's turn it waits at, the end's time), the same
  *  when another server sees it again. It says what came of it: `unsaved`, not in the outbox on disk yet. */
@@ -862,8 +855,9 @@ export type RunNotify = (event: (typeof RUN_EVENTS)[number], run: RunNotice & { 
 export const WAITS_ON_A_PERSON = "The run is waiting on a person.";
 
 /** The server's own secrets, which a run's process never gets: the API token, by name or by value, the seal key
- *  the tool keys are kept under (tool-keys.ts), and the boxes' keys (boxes.ts), which only the server's box providers use. */
-const SERVER_ONLY = new Set(["AGENTRUN_TOKEN", "AGENTRUN_API_KEY", "AGENTRUN_SEAL_KEY", ...BOX_KEYS]);
+ *  the tool keys are kept under (tool-keys.ts), the store's URL (it may hold the database's password), and the boxes'
+ *  keys (boxes.ts), which only the server's box providers use. */
+const SERVER_ONLY = new Set(["AGENTRUN_TOKEN", "AGENTRUN_API_KEY", "AGENTRUN_SEAL_KEY", "AGENTRUN_STORE_URL", ...BOX_KEYS]);
 /** The secrets a run's process is handed over its pipe (secrets.ts): every one but the server's own and the decision
  *  keys, which go on their own descriptor. */
 export const RUN_SECRETS = SECRET_NAMES.filter((name) => !SERVER_ONLY.has(name) && !DECISION_KEYS.includes(name));
@@ -1003,6 +997,10 @@ export const runsTestHooks: { personsTurn?: (runDir: string) => Promise<void> | 
 
 export class Runs {
   private readonly runs = new Map<string, Run>();
+  /** The current name of each trigger a held run names, by its id (servedTriggerRow): pushed in at a firing's start (the
+   *  run's trigger), on a rename or delete (server.ts triggerChanged), and resolved once when a run is loaded, so a
+   *  served row names its trigger with no store read. `undefined` for a trigger that is gone. */
+  private readonly triggerNames = new Map<string, string | undefined>();
   /** The last entry each run's database reads have seen (run-db.ts): a read behind it is never shown. */
   private readonly reads = new MonotonicReads();
   /** The disk the runs' folders are on (disk.ts): on this machine, the data directory's own. */
@@ -1274,6 +1272,9 @@ export class Runs {
       // is asked again (learning-run.ts).
       this.learning.onAdopt(run, lives);
     }
+    // A run restored after a restart has no pushed name yet: its trigger's name is resolved once from the store here (the
+    // load path is already async), so its served rows name it, never left blank; a later rename pushes the new one.
+    if (trigger && !this.triggerNames.has(trigger.id)) this.triggerNames.set(trigger.id, await this.options.triggerName?.(trigger.id));
     this.refresh(run);
     return run;
   }
@@ -1463,10 +1464,34 @@ export class Runs {
     const waitingPlace = run.placeWait ? [...installing, placeRow(run.placeWait)] : installing;
     // A raise taken whose launch kept failing: the run says why it is paused again.
     const placing = run.raiseFailedRow ? [...waitingPlace, raiseFailedRow(run.raiseFailedRow)] : waitingPlace;
-    const view = withLearning(placing, run.meta.learning, this.learning.shown());
+    // A trigger's row names the trigger as it is now (its name, else its id), here alone: every page, the stream and the
+    // final rows are read from this view.
+    const view = withLearning(placing, run.meta.learning, this.learning.shown()).map((row) => (row.trigger ? this.servedTriggerRow(run, row) : row));
     // Every row only this view makes, remembered by id, so the live path's keep never holds one once it is no longer made.
     servedOnlyIds(view, (run.madeHere ??= new Set()));
     if (run.log.sync(view, run.keep)) run.updatedAt = new Date().toISOString();
+  }
+
+  /** A trigger's row as served: "<label> <its name>: <its first line>" for a trigger that has a name now; as the timeline
+   *  wrote it, "<label> <its id>: …", for one that is gone. The name is put in after the run's rows were redacted, so it
+   *  is redacted here with the run's redactor: a key pasted into a trigger's name never shows on its runs' rows. */
+  private servedTriggerRow(run: Run, row: TimelineEvent): TimelineEvent {
+    const { id, source } = row.trigger!;
+    const given = this.triggerNames.get(id);
+    const name = given === undefined ? undefined : this.redactor(run)(given).replace(/\s+/g, " ").trim();
+    const label = TRIGGER_LABELS[source];
+    const written = `${label} ${id}: `;
+    // The name on the row's trigger too, as the summary shows it: a client drops exactly "<label> <name>: ", whatever
+    // colons the name and the message hold.
+    return name && row.summary?.startsWith(written) ? { ...row, summary: `${label} ${name}: ${row.summary.slice(written.length)}`, trigger: { ...row.trigger!, name } } : row;
+  }
+
+  /** Trigger `id` renamed or deleted, with its name now (`name`, undefined when it is gone): the name is pushed to the
+   *  one the runs read (triggerNames), and each held run whose Timeline names it is shown again, its row naming the
+   *  trigger as it is now. With no `id` (the triggers just read at a start): every run so named is shown again. */
+  triggerChanged(id?: string, name?: string | undefined): void {
+    if (id !== undefined) this.triggerNames.set(id, name);
+    for (const run of this.runs.values()) if (run.rows.some((row) => row.trigger && (id === undefined || row.trigger.id === id))) this.show(run);
   }
 
   /** A live process: the child this server started, or one an earlier server started that still serves the run. */
@@ -3262,6 +3287,9 @@ export class Runs {
       // The run's input is saved first, as the store has it running: a server that goes down from here on leaves a run the
       // next one relaunches with its first message.
       await this.setUp(started.runId, started.dir, meta);
+      // The trigger's name as it fired (origin.name): its served rows name it with no store read, until a rename pushes
+      // the new one (triggerChanged).
+      if (options.trigger) this.triggerNames.set(options.trigger.id, options.trigger.name);
       if (pin) {
         // Then its seed copied and pinned, and its learning saved once the copy is whole or gone. A server that goes down
         // during the copy leaves none saved, and the next one takes the copy back (learning-run.ts onLoad). A copy that

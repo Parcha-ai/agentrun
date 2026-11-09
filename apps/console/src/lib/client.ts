@@ -4,7 +4,7 @@ import type { AgentLearning, LearningChange, LearningDiff, LearningNote, NotePro
 import type { McpAuth, McpClientFeature, McpPreview, McpRefresh, McpServer } from "./mcp";
 import type { RunGraph } from "./runGraph";
 import { applyPage } from "./timeline";
-import type { ApiError, Firing, InputIssue, McpPrivateHosts, TemplateApplied, TemplateApply, TemplateView, RaiseAnswer, Run, RunBrowser, RunFiles, RunStatus, TimelinePage, TimelineRow, ToolKeys, ToolKeysFeature, ToolSettings, Trigger, TriggerCreate, TriggerInput, TriggerMade, TriggerSecret, Webhook, WebhookAttempt, WebhookSaved, WebhooksFeature } from "./v2";
+import type { ApiError, Firing, GitHubConnectStart, GitHubDisconnected, GitHubStatus, InputIssue, McpPrivateHosts, TemplateApplied, TemplateApply, TemplateView, RaiseAnswer, Run, RunBrowser, RunFiles, RunStatus, TimelinePage, TimelineRow, ToolKeys, ToolKeysFeature, ToolSettings, Trigger, TriggerCreate, TriggerInput, TriggerMade, TriggerSecret, Webhook, WebhookAttempt, WebhookSaved, WebhooksFeature, Archil, ArchilBody, ArchilTest, Computers, ComputerKeysBody, ComputerProvider, ComputerTest } from "./v2";
 
 /** A request AgentRun Server refused: its HTTP status and its typed error (`code`, `message`, `retryable`). */
 /** A refusal's issue at one field, as the server names it (with its `fix`, when it says one). Its `reason` is any string, as
@@ -126,7 +126,10 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
       if (e instanceof ClientError && (e.status === 404 || e.status === 403)) return null;
       throw e;
     }),
+    /** Signs this browser out; every other browser stays signed in. */
     signOut: () => call<{ signed_out: boolean }>("POST", "/auth/sign-out", { body: {} }),
+    /** Signs out every browser and phone signed in to this server, this one too. */
+    signOutEverywhere: () => call<{ signed_out: boolean }>("POST", "/auth/sign-out-everywhere", { body: {} }),
     /** Counts and sums from the server's store, for Mission Control (`GET /v2/stats`, a serve extension). */
     stats: () => call<Stats>("GET", "/stats"),
     listRuns: (limit = 50, cursor?: string | null, filter?: RunsFilter) => call<{ runs: Run[]; next_cursor: string | null }>("GET", `/runs${runsQuery(limit, cursor, filter)}`),
@@ -230,6 +233,22 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
      *  state, and the server keeps no record of a body that holds the values. */
     saveToolKey: (id: string, values: Record<string, string>) => call<unknown>("PUT", `/settings/tool-keys/${encodeURIComponent(id)}`, { body: { values } }),
     removeToolKey: (id: string) => call<unknown>("DELETE", `/settings/tool-keys/${encodeURIComponent(id)}`),
+    /** Each kind of computer, whether this server offers it and why not, and its providers with their keys by name, never a
+     *  value. */
+    computers: () => call<Computers>("GET", "/computers"),
+    /** Saves a provider's keys, declared names only; null removes one. No Idempotency-Key: the same PUT twice is the same
+     *  state. The answer is the provider, never a value. */
+    saveComputerKeys: (provider: string, keys: ComputerKeysBody) => call<ComputerProvider>("PUT", `/computers/${encodeURIComponent(provider)}/keys`, { body: keys }),
+    /** One account-level read of a provider with its saved keys; it never makes a computer. */
+    testComputer: (provider: string) => call<ComputerTest>("POST", `/computers/${encodeURIComponent(provider)}/test`),
+    /** Archil (Mode 2): on or off, its disk settings and its key by name, never a value. */
+    archil: () => call<Archil>("GET", "/workspace/archil"),
+    /** Turns Archil on, or changes it: the settings replaced, the key given sealed (null removes it). The answer is the view. */
+    saveArchil: (body: ArchilBody) => call<Archil>("PUT", "/workspace/archil", { body }),
+    /** Turns Archil off (back to Mode 1); its key is kept. The answer is the view. */
+    archilOff: () => call<Archil>("DELETE", "/workspace/archil"),
+    /** One listing of the disk's root with the saved key. */
+    testArchil: () => call<ArchilTest>("POST", "/workspace/archil/test"),
     /** The webhook, never its secret (a serve extension). */
     webhook: () => call<Webhook>("GET", "/settings/webhook"),
     /** Sets the webhook's URL; the first PUT makes its secret and answers it, once (`secret`). */
@@ -275,6 +294,13 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     mcpPrivateHosts: () => call<McpPrivateHosts>("GET", "/settings/mcp-servers/oauth/private-hosts"),
     /** Replaces them (the owner's password session alone): the list as the server keeps it. */
     saveMcpPrivateHosts: (hosts: string[]) => call<McpPrivateHosts>("PUT", "/settings/mcp-servers/oauth/private-hosts", { body: { hosts } }),
+    /** Whether this server has a GitHub App, and the App when it does: always a 200, `{connected: false}` with none. */
+    githubConnection: () => call<GitHubStatus>("GET", "/integrations/github"),
+    /** Starts connecting one: the form the browser posts to GitHub. 409 github_already_connected, github_no_public_url or
+     *  github_no_seal_key, in the server's words. */
+    connectGitHub: (org?: string) => call<GitHubConnectStart>("POST", "/integrations/github/connect", { body: org ? { org } : {} }),
+    /** Disconnects it: every GitHub trigger turns off; the note says what to delete on GitHub. */
+    disconnectGitHub: () => call<GitHubDisconnected>("DELETE", "/integrations/github"),
     toolSettings: () => call<ToolSettings>("GET", "/settings/tools"),
     /** Replaces the server's providers: a capability the body leaves out takes its default. The answer is each one's now. */
     saveToolSettings: (settings: ToolSettings) => call<ToolSettings>("PUT", "/settings/tools", { body: settings }),

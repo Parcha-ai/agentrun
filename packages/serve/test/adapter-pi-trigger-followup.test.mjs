@@ -6,13 +6,13 @@ import assert from "node:assert/strict";
 import { after, test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { closeOpenSessions, piAdapterSubject } from "./conformance-pi-adapter.mjs";
-import { queue, stores, until } from "./runner-support.mjs";
+import { queue, STEADY_LEASE, stores, until } from "./runner-support.mjs";
 
 const { startRunner } = await import("../dist/runner/runner.js");
 const { sendCommand } = await import("../dist/runner/commands.js");
 const { suiteTools } = await import("../dist/runner/conformance/harness.js");
 const { journalRecords, messagesOf } = await import("../dist/runner/journal-reader.js");
-const TIMING = { leaseMs: 600, renewEveryMs: 150, stopMarginMs: 200, pollMs: 20, commandPollMs: 30 };
+const TIMING = { ...STEADY_LEASE, pollMs: 20, commandPollMs: 30 };
 const quiet = { beforeIntent: async () => {}, beforeResult: async () => {} };
 const TRIGGER = "the nightly trigger says yes";
 after(closeOpenSessions);

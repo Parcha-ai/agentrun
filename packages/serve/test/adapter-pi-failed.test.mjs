@@ -4,11 +4,11 @@
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
 import { closeOpenSessions, piAdapterSubject } from "./conformance-pi-adapter.mjs";
-import { observed, queue, recorder, sleep, stores, until } from "./runner-support.mjs";
+import { observed, queue, recorder, sleep, STEADY_LEASE, stores, until } from "./runner-support.mjs";
 
 const { startRunner } = await import("../dist/runner/runner.js");
 const { suiteTools } = await import("../dist/runner/conformance/harness.js");
-const TIMING = { leaseMs: 600, renewEveryMs: 150, stopMarginMs: 200, pollMs: 20, commandPollMs: 30 };
+const TIMING = { ...STEADY_LEASE, pollMs: 20, commandPollMs: 30 };
 const quiet = { beforeIntent: async () => {}, beforeResult: async () => {} };
 after(closeOpenSessions);
 

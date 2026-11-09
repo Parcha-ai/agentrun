@@ -199,7 +199,21 @@ export async function main(argv, env = process.env) {
   // A name that starts with a dash keeps the equals form: the server's parser reads "--data -x" as a missing value.
   const data = dataDir.startsWith("-") ? [`--data=${dataDir}`] : ["--data", dataDir];
   if (rest[0] && !rest[0].startsWith("-")) {
-    return new Promise((resolve) => spawn(launcher, [rest[0], ...data, ...rest.slice(1)], { stdio: "inherit", env: childEnv }).on("exit", (code) => resolve(code ?? 1)));
+    // A server command (an eval among them, which spends while it runs): a stop sent to this command alone (a job
+    // runner's SIGTERM, a SIGHUP) is passed on, and this waits for the command to clean up and end. A hangup is passed
+    // on as a SIGTERM, which every server command stops on.
+    const child = spawn(launcher, [rest[0], ...data, ...rest.slice(1)], { stdio: "inherit", env: childEnv });
+    const codes = { SIGINT: 130, SIGTERM: 143, SIGHUP: 129 };
+    const pass = Object.fromEntries(Object.keys(codes).map((signal) => [signal, () => child.kill(signal === "SIGHUP" ? "SIGTERM" : signal)]));
+    for (const [signal, on] of Object.entries(pass)) process.on(signal, on);
+    return new Promise((resolve) => {
+      const done = (code) => {
+        for (const [signal, on] of Object.entries(pass)) process.off(signal, on);
+        resolve(code);
+      };
+      child.on("error", () => done(1));
+      child.on("exit", (code, signal) => done(code ?? codes[signal] ?? 1));
+    });
   }
   // The server's banner and request lines stay out of this terminal: one line here says where to go, the URL of the
   // server's own "Open " line; the lines SAID names go to stderr after it, for the person, so stdout stays that one line.

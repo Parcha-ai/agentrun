@@ -88,8 +88,9 @@ export interface HostToolCtx {
    *  gate, which gates every host-tool call before its intent). */
   readonly gated?: { gate: RunGate; park: Park };
   /** A gate for a tool that cannot be run on the runner yet: undefined to run the call, else the refusal that is its answer,
-   *  so the tool is listed but never run as a stub (runner/adapter-run-spec.ts settleLearnedWorkflow). The paid tools the
-   *  loop can book (web_fetch/web_search/monid) carry no such gate; the adapter loop books their requests (bookedIn). */
+   *  so the tool is listed but never run as a stub. No tool sets it now (learned_workflow runs for real on every session's
+   *  model port); it stays the seam a not-yet-runnable tool refuses through. The paid tools the loop can book
+   *  (web_fetch/web_search/monid) carry no such gate; the adapter loop books their requests (bookedIn). */
   settle?(name: string, args: unknown, callId: string): { refused: string } | undefined;
 }
 
@@ -97,8 +98,9 @@ export interface HostToolCtx {
  *  the gate before the call, the paid-call seam, then the tool on the run's environment and harness, its answer the text a
  *  model reads (the output or the failure, a write's or an error's path named relative to the run's folder). Undefined when
  *  `name` is not one a host runs (REPLAY). */
-export function hostToolOf(name: string, tool: ToolRegistration, ctx: HostToolCtx): HostTool | undefined {
-  const replay = REPLAY[name];
+export function hostToolOf(name: string, tool: ToolRegistration, ctx: HostToolCtx, replayOf?: "safe" | "never"): HostTool | undefined {
+  // A tool whose catalog name binds several tools (the browser's) gives each one's own policy (`replayOf`).
+  const replay = replayOf ?? REPLAY[name];
   if (!replay) return undefined;
   return {
     name: tool.name,

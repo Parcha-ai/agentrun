@@ -11,16 +11,14 @@
 import type { Context, JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import type { Models } from "@earendil-works/pi-ai";
-import { createModels, createProvider } from "@earendil-works/pi-ai/models";
-import { anthropicMessagesApi } from "@earendil-works/pi-ai/api/anthropic-messages.lazy";
-import { openAIResponsesApi } from "@earendil-works/pi-ai/api/openai-responses.lazy";
-import { type Conversation, defineExtension, defineTool, GenerationTask, type Harness, hook, type Registry, type Submission, ToolTask } from "@earendil-works/pi-durable";
+import { createModels } from "@earendil-works/pi-ai/models";
+import { type Conversation, defineExtension, defineTool, type Extension, GenerationTask, type Harness, hook, type Registry, type Submission, ToolTask } from "@earendil-works/pi-durable";
 import { anthropicPolicy } from "@parcha/agentrun-harness-claude";
 import type { AdapterSession, AgentAdapter, HostTool, SessionIO, SessionSpec, TurnStatus, Wire } from "@parcha/agentrun-kernel";
 import { type ModelProxy, type ProviderPolicy, startModelProxy } from "@parcha/agentrun-kernel/host";
 import { randomBytes } from "node:crypto";
 import { DEFAULT_HARNESS } from "../../harness.js";
-import { sessionBaseUrl, sessionModel } from "../../port-models.js";
+import { sessionProvider } from "../../port-models.js";
 import { KINDS } from "../journal-kinds.js";
 
 /** What the adapter loop lends pi for one claim: the run's Harness, its registry, and where pi's models go. */
@@ -64,6 +62,15 @@ export interface PiAdapterOptions {
   readonly price?: (model: string, usage: never) => number | null;
   /** The proxy's upstream fetch (a test's scripted origin). */
   readonly fetch?: typeof fetch;
+  /** The runner's one redactor, which a provider's error passes through in the session's proxy before pi has it
+   *  (ModelProxyOptions.redact; the proxy's own cut of the credential comes first). */
+  readonly redact?: (text: string) => string;
+  /** pi-native extensions the run's root agent carries beside the session's own (the browser's durable extension, as a
+   *  pi DurableRun on main installs it): installed in the claim's registry, so their tools run as pi's own tool tasks (a
+   *  taskId, a memo, conversations they own) and their own task kinds (a browser.release) under pi's recovery, all in the
+   *  claim's Harness. Their tools pass the session's gate (its beforeTool hook), and every conversation they open takes
+   *  its model from the root's agent, through this session's proxy and its booking. */
+  readonly extensions?: readonly Extension[];
 }
 
 const PROVIDER = "agentrun-session";
@@ -80,13 +87,19 @@ export function piAdapter(options: PiAdapterOptions): AgentAdapter {
   };
 }
 
+/** The names of the run's pi-native extensions' tools (options.extensions): the model is offered them beside the session's
+ *  own (so it may call one), and pi runs it. Offered and run by one mechanism; sessionOn never also piTool-wraps a session
+ *  tool a native extension already owns, so the name is in the request's tools exactly once. */
+const nativeToolNames = (options: PiAdapterOptions): readonly string[] =>
+  (options.extensions ?? []).flatMap((extension) => extension.tools ?? []).map((tool) => tool.name);
+
 async function openPi(options: PiAdapterOptions, spec: SessionSpec, io: PiSessionIO): Promise<AdapterSession> {
   const { model } = options;
   const context = withAbortSignal(io.signal, BACKGROUND_CONTEXT);
   // The session's route: pi-ai's requests reach the provider only through this proxy, which admits and books each one
   // through the runner's booking (io.models).
   const proxy = await startModelProxy({
-    policy: await policyFor(options.provider, model, spec.tools.map((tool) => tool.name)),
+    policy: await policyFor(options.provider, model, [...spec.tools.map((tool) => tool.name), ...nativeToolNames(options)]),
     hooks: io.models,
     model,
     origin: options.provider.origin,
@@ -94,6 +107,7 @@ async function openPi(options: PiAdapterOptions, spec: SessionSpec, io: PiSessio
     ...(options.price ? { price: options.price as never } : {}),
     ...(options.provider.headers ? { headers: options.provider.headers } : {}),
     ...(options.fetch ? { fetch: options.fetch } : {}),
+    ...(options.redact ? { redact: options.redact } : {}),
   }, randomBytes(32).toString("base64url"));
   // An open that fails from here (the claim lost while the session opened) closes the proxy: its server would hold the
   // runner's process open.
@@ -130,20 +144,16 @@ async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: Ses
   const { run, model, like } = options;
   const { api } = options.provider;
   const models = createModels();
-  models.setProvider(createProvider({
-    id: PROVIDER,
-    baseUrl: sessionBaseUrl(api, proxy.url),
-    auth: { apiKey: { name: "AGENTRUN_SESSION_KEY", resolve: async () => ({ auth: { apiKey: proxy.key }, source: "session" }) } },
-    // The proxy knows the session by `authorization: Bearer <key>` (either policy's keyOf). On Messages pi-ai's own
-    // x-api-key stays here, since the proxy forwards only its routes' listed headers; on Responses pi-ai sends the key as
-    // that bearer token itself. pi prices nothing itself (the proxy's booking does), so the model's cost stays $0. Image
-    // input on either wire (sessionModel): a host tool's images (a screenshot) reach the model in its tool result.
-    models: [sessionModel(api, proxy.url, model, { provider: PROVIDER, ...(api === "anthropic-messages" ? { headers: { authorization: `Bearer ${proxy.key}` } } : {}), ...(like ? { like } : {}), reasoning: false })],
-    api: api === "anthropic-messages" ? anthropicMessagesApi() : openAIResponsesApi(),
-  } as never));
+  // pi-ai's client of the session's wire at its proxy (port-models.ts sessionProvider). pi prices nothing itself (the
+  // proxy's booking does), so the model's cost stays $0. Image input on either wire (sessionModel): a host tool's images
+  // (a screenshot) reach the model in its tool result.
+  models.setProvider(sessionProvider(api, proxy, model, { provider: PROVIDER, keyName: "AGENTRUN_SESSION_KEY", ...(like ? { like } : {}), reasoning: false }));
   run.setModels(models);
 
-  const tools = spec.tools.map((tool) => piTool(tool, io));
+  // A session tool whose name a native extension already owns is run by that extension (pi's own tool task), so it is not
+  // piTool-wrapped here too: one tool by that name on the agent, offered once.
+  const owned = new Set(nativeToolNames(options));
+  const tools = spec.tools.filter((tool) => !owned.has(tool.name)).map((tool) => piTool(tool, io));
   // A refused call's words (the gate's deny, main's), by call: its result is those words alone, as main gives them.
   const refusals = new Map<string, string>();
   const extension = defineExtension({
@@ -190,11 +200,15 @@ async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: Ses
     ],
   });
   run.registry.install(extension);
+  // The run's pi-native extensions (options.extensions), in the claim's registry beside the session's.
+  const native = options.extensions ?? [];
+  for (const each of native) run.registry.install(each);
   // The root conversation may exist already (the loop's session records live beside it, under it): its agent is set here,
-  // the session's model, the run's system text (pi's instructions, its parts as the CLI adapters join them) and this
-  // session's tools, on every open.
+  // the session's model, the run's system text (pi's instructions, its parts as the CLI adapters join them), this
+  // session's tools and the run's native extensions, on every open. A conversation a native tool opens takes this agent's
+  // model (pi copies its owner's), so its requests go through this session's proxy.
   const instructions = spec.system.join("\n\n");
-  const agent = { model: { provider: PROVIDER, modelId: model }, extensions: [extension], ...(instructions ? { instructions } : {}) };
+  const agent = { model: { provider: PROVIDER, modelId: model }, extensions: [extension, ...native], ...(instructions ? { instructions } : {}) };
   const root: Conversation = await run.harness.root(context, { agent } as never);
   await root.configure(agent as never, context);
 
@@ -202,6 +216,8 @@ async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: Ses
   // unanswered (a failed turn whose end the loop never read: a claim lost before the run's end landed): an open turn,
   // whose end recover() reads, so a failed turn ends the run failed, never as a completed one.
   let input: Submission | undefined;
+  /** The session closed (its proxy with it): its port gives no route. */
+  let closed = false;
   const existing = await run.harness.commit((tx) => tx.submissionByRequest(root.id, INPUT_REQUEST), context);
   if (existing) input = await run.harness.submission(existing.id, context);
   let state: AdapterSession["state"] = existing === undefined ? "new" : existing.status === "done" ? "idle" : "open_turn";
@@ -250,8 +266,13 @@ async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: Ses
       await root.abort(context).catch(() => undefined);
     },
     async close() {
+      closed = true;
       await proxy.close().catch(() => undefined);
     },
+    // The session's own model route for a request the host sends beside pi's (a learned workflow's model node): its proxy
+    // with a side key minted for `label`, pi's model and the provider's wire (never a literal), so the request goes through
+    // the same policy, origin, credential, price and booking as pi's own, labelled. None once the session is closed.
+    port: (label: string) => (closed ? undefined : { url: proxy.url, key: proxy.sideKey(label), model, api }),
     // A steer: pi places it in the turn in flight, at its next boundary. `id`: its request id (the command's), so the
     // commit that places it is the one that takes its row. `origin` (a trigger's message): its input is the host's user
     // entry (KINDS.input) with that origin, in the same submission, so the attribution lands with the message or not at all.

@@ -1,6 +1,7 @@
-// The store's one schema, version 2 (design 2.1). Nothing migrates into it: the rewrite replaces the old stores, and a store
+// The store's one schema, version 3 (design 2.1). Nothing migrates into it: the rewrite replaces the old stores, and a store
 // an older build made is refused as a version this build does not know. The server sets it up once at its start (a
-// store_meta row holds the version); a runner refuses a version it does not know. Version 2 adds the computer ledger.
+// store_meta row holds the version); a runner refuses a version it does not know. Version 2 adds the computer ledger;
+// version 3 numbers each save of a sign-in (sign_ins.save).
 // Conventions: every time is INTEGER epoch milliseconds; JSON is TEXT checked by json_valid; money is REAL US dollars;
 // sealed columns hold ciphertext only (sealed with the server's key outside the store), so the store never sees a secret
 // in the clear. Foreign keys are on (the connection's pragma).
@@ -12,7 +13,7 @@
 // journal tables, keyed by run_id (store/journal): one schema for every run's journal, so a query joins runs and their
 // journals.
 
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 
 const json = (column: string, nullable = false) => `${column} TEXT${nullable ? "" : " NOT NULL"} CHECK (${column} IS NULL OR json_valid(${column}))`;
 
@@ -81,6 +82,11 @@ export const STORE_DDL: readonly string[] = [
     -- pointer hashes to one of these is in use by it, so forgetting it is refused (sign-ins-store.ts), and its served
     -- output is redacted by every handed pointer. Null when the run was handed none.
     ${json("sign_in_handed", true)},
+    -- When the run last left 'running' (parked or ended): a Browserbase sign-in it held keeps its save lease for the
+    -- settle window after this (the context is still being written back), so a run that binds within it does not save over
+    -- the write-back (sign-ins-store.ts / runs.update's save decision). Null until it first leaves running. Other vendors
+    -- free the lease the instant it leaves running (no settle window), so this is read only with one.
+    left_running_at INTEGER,
     started_at INTEGER NOT NULL,
     ended_at INTEGER
   ) STRICT`,
@@ -263,7 +269,7 @@ export const STORE_DDL: readonly string[] = [
     PRIMARY KEY (agent_id, key)
   ) STRICT`,
 
-  // An agent's saved browser sign-ins (design 2.1, tl-browser's rules): one live row per agent and browser provider, its
+  // An agent's saved browser sign-ins (design 2.1, the browser sign-in rules): one live row per agent and browser provider, its
   // pointer (the vendor's context or profile id) sealed with the store's one rule (store/seal.ts, AAD
   // sign_ins|<agent>:<provider>|pointer), which the store never opens. The owner sees its name ("default") and saved_at,
   // never the pointer, and no run's tools ever do. Forgetting a sign-in moves its sealed pointer, byte for byte so it
@@ -275,6 +281,9 @@ export const STORE_DDL: readonly string[] = [
     name TEXT NOT NULL,
     pointer_sealed BLOB NOT NULL,
     saved_at INTEGER NOT NULL,
+    -- This save's number: 1 at the first save, one more on every save since. A verify is guarded by it, never by saved_at,
+    -- which two saves in one millisecond share (store.signIns.verify's ifSave).
+    save INTEGER NOT NULL DEFAULT 1 CHECK (save >= 1),
     -- When a run that held this sign-in last verified it (saved a live session back to the vendor): the v2 view's
     -- verified_at. Null when the owner just saved it and no run has verified it since (a fresh save clears it). Written by
     -- the run path (store.signIns.verify) at a run's save, read by the view bridge (sign-ins-store.ts).

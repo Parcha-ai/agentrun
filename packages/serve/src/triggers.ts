@@ -22,7 +22,7 @@
 // latest fires if it is within the trigger's catch-up window and the rest are one `missed` row; the schedule goes on from
 // now. A failed firing queues a trigger.failed webhook message.
 import { createHash, randomBytes } from "node:crypto";
-import type { MessageOrigin } from "@parcha/pi-durable-agent/timeline";
+import { type MessageOrigin, TRIGGER_LABELS, type TriggerSource } from "@parcha/pi-durable-agent/timeline";
 import { ApiError, type InputIssue, invalid } from "./errors.js";
 import { EFFORTS } from "./model.js";
 import { AgentArchived, type FiringRow, type NewFiring, type Store, StoreConstraint, TriggerFull, type TriggerPatch, type TriggerRow } from "./store/index.js";
@@ -83,8 +83,10 @@ export type Target = { kind: "start_run"; agent_id: string; input: Json; max_cos
 type Trigger = Omit<TriggerRow, "source" | "target"> & { source: Source; target: Target };
 /** What a trigger.failed webhook message says (webhooks.ts). */
 export type TriggerFailed = { trigger_id: string; name: string; firing_key: string; nominal_at: string; error: { code: string; message: string }; auto_paused: boolean };
-/** A run's provenance, kept in its serve.json: the trigger that started it, and the firing. */
-export type RunTrigger = { id: string; firing_key: string };
+/** A run's provenance, kept in its serve.json: the trigger that started it, and the firing. `name`: the trigger's name as
+ *  it was at the firing, put on the run so its Timeline row names the trigger without a store read (runs.ts
+ *  servedTriggerRow); a rename pushes the new name (server.ts triggerChanged). */
+export type RunTrigger = { id: string; firing_key: string; name?: string };
 /** The engine's clock and its one timer: Date.now and setTimeout, or a test's. */
 export type TriggerClock = { now(): number; arm(fire: () => void, ms: number): { clear(): void } };
 export type TriggerDeps = {
@@ -95,9 +97,10 @@ export type TriggerDeps = {
   unavailable?(kind: string): ApiError | undefined;
   /** What keeps a target from starting runs here, by field (its agent, its kind, its input). */
   targetIssues(target: Target): Promise<InputIssue[]>;
-  /** Starts the target's run with `input`, as POST /agents/{id}/runs would, under `origin`; its first message is the
-   *  trigger's (`from`, never the person's); ApiError when refused. */
-  start(target: Extract<Target, { kind: "start_run" }>, input: Json, origin: RunTrigger, from: MessageOrigin): Promise<{ run_id: string }>;
+  /** Starts the target's run with `input`, as POST /agents/{id}/runs would, under `origin`, titled `title` (its
+   *  trigger's, never its input's); its first message is the trigger's (`from`, never the person's); ApiError when
+   *  refused. */
+  start(target: Extract<Target, { kind: "start_run" }>, input: Json, origin: RunTrigger, from: MessageOrigin, title: string): Promise<{ run_id: string }>;
   /** Queues `input` for the target's run as a command row (answers false) under `key`, as the trigger's (`from`), within
    *  `bound` (store.triggers.message: at most `max` of this trigger's rows untaken for the run, else skipped with
    *  `reason`); ApiError when refused. */
@@ -251,6 +254,9 @@ export class Triggers {
     // A pushed source's own hook path is its id, beside the trigger ids a hook path also names: none looks like one.
     const shaped = this.adapters.find((a) => a.id.startsWith("trg_"));
     if (shaped) throw new Error(`a trigger source's id never starts as a trigger's does: ${shaped.id}`);
+    // A source's id is its kind, its firings' by and, for one pushed on the server's settings, its hook: one source each.
+    const twice = this.adapters.find((a, i) => this.adapters.findIndex((b) => b.id === a.id) !== i);
+    if (twice) throw new Error(`two trigger sources claim the id ${twice.id}${twice.push ? `, and its hook /v2/hooks/${twice.id}` : ""}: one source each`);
   }
 
   /** At the server's start: every enabled trigger whose source no longer reads turned off, each failure's trigger.failed
@@ -322,11 +328,13 @@ export class Triggers {
     return (await this.hookSource(id, kind)) !== undefined;
   }
 
-  /** The source of trigger `id` when it is hookable: what its pushed source's check and parse read (its filter). */
-  async hookSource(id: string, kind: string): Promise<Source | undefined> {
+  /** The source of trigger `id` when it is hookable: what its pushed source's check and parse read (its filter). With no
+   *  `kind`, the source of any pushed trigger `id` that is on, so the hook's resolution can read its kind to find its
+   *  adapter (push-handler.ts): a path that names no such trigger is checked against the decoy, and learns no id. */
+  async hookSource(id: string, kind?: string): Promise<Source | undefined> {
     const row = await this.store.triggers.get(id);
     const trigger = row && asTrigger(row);
-    return trigger !== undefined && trigger.source.kind === kind && this.adapter(trigger.source)?.delivery === "push" && trigger.enabled ? trigger.source : undefined;
+    return trigger !== undefined && (kind === undefined || trigger.source.kind === kind) && this.adapter(trigger.source)?.delivery === "push" && trigger.enabled ? trigger.source : undefined;
   }
 
   /** The triggers of the pushed source `kind` that are on and listen on `scope` (its adapter's scopeOf): the ones an
@@ -626,7 +634,7 @@ export class Triggers {
       if (now.target.kind === "message_run") return void (await this.send(now, firing));
       let started: { run_id: string };
       try {
-        started = await this.deps.start(now.target, this.inputOf(now, firing), { id: triggerId, firing_key: key }, this.originOf(now));
+        started = await this.deps.start(now.target, this.inputOf(now, firing), { id: triggerId, firing_key: key, name: now.name }, this.originOf(now), this.titleOf(now, firing));
       } catch (error) {
         // Stopping, the start may have been cut by the close: the firing stays due for the next start, whose origin key
         // finds a run this one made.
@@ -900,6 +908,17 @@ export class Triggers {
   private given(name: string, source: Source | undefined, target: Target, now: number): Target {
     const trigger = { name, source: source ?? { kind: this.adapters[0]!.id }, target } as Trigger;
     return { ...target, input: this.inputOf(trigger, { by: "manual", nominalAt: now, payload: null }) };
+  }
+
+  /** A run's title, from the trigger that starts it: "<its source> <its name>" (the word its Timeline row begins with,
+   *  pi-durable-agent's TRIGGER_LABELS), and the event its payload's tag names, when one does ("Webhook reviews:
+   *  pull_request opened"); never its input, which may be a sender's markup. */
+  private titleOf(trigger: Trigger, firing: Pick<FiringRow, "by" | "nominalAt" | "payload"> & { attrs?: unknown }): string {
+    const source = TRIGGER_LABELS[trigger.source.kind as TriggerSource] ?? trigger.source.kind;
+    const attrs = firing.attrs as Record<string, string> | undefined;
+    const event = attrs?.event;
+    const action = attrs?.action;
+    return `${source} ${trigger.name}${event ? `: ${event}${action ? ` ${action}` : ""}` : ""}`;
   }
 
   /** Who a firing's input is from (pi-durable-agent's MessageOrigin): the trigger, by its definition as it fires, never

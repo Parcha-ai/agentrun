@@ -16,8 +16,12 @@ import { isObject } from "./validate.js";
 /** What an adapter keeps sealed, and where: `server`, one set for the server; `trigger`, one set per trigger, by its id.
  *  A field with `mint` is a Standard Webhooks secret this server makes (standard-webhooks.ts), shown once; any other is
  *  given (set). `minBytes`: the fewest bytes its value may hold (standard-webhooks.ts keyBytes), MIN_KEY_BYTES for a key
- *  a request is verified with. */
-export type SettingsSpec = { scope: "server" | "trigger"; fields: Record<string, { mint?: true; minBytes?: number }> };
+ *  a request is verified with. `public`: a value that is no secret (an app's id, its name), kept with the rest but never
+ *  in the list of the server's secrets, so no run's text is cut of it, and of any length. `format: "pem"`: a PEM private
+ *  key, whose lines each are listed as secrets. */
+export type SettingsSpec = { scope: "server" | "trigger"; fields: Record<string, { mint?: true; minBytes?: number; public?: true; format?: "pem" }> };
+/** A PEM private key, whole: its BEGIN line, its base64 lines, its END line. */
+const PEM = /^-----BEGIN ((?:[A-Z]+ )*)PRIVATE KEY-----\r?\n[A-Za-z0-9+/=\r\n]+-----END \1PRIVATE KEY-----\s*$/;
 /** The scope of a server-scoped adapter's settings. */
 export const SERVER_SCOPE = "server";
 
@@ -49,6 +53,8 @@ export class SealedSettings {
   private readonly opened: Record<string, Record<string, string>> = {};
   /** The values this store held open and no longer does, rotated or removed: in memory alone, for this process's life. */
   private readonly retired = new Set<string>();
+  /** The PEM keys this store held open and no longer does: in memory alone, listed by pemValues. */
+  private readonly retiredPem: string[] = [];
   /** Why the file does not read: nothing is made, rotated or removed, nothing it holds is read, and it is never written over. */
   private readonly unreadable?: string;
 
@@ -89,9 +95,10 @@ export class SealedSettings {
   set(scope: string, field: string, value: string): void {
     const spec = this.spec.fields[field];
     if (!spec) throw new Error(`${this.adapterId}'s settings keep no ${field}`);
+    if (spec.format === "pem" && !PEM.test(value)) throw invalid([{ field, reason: "invalid", message: `${field} is a PEM private key` }]);
     // A value the list of the server's secrets would pass over (server-secrets.ts: whitespace, under 8 bytes) would be
-    // left out of every redaction: none is kept.
-    if (/\s/.test(value) || Buffer.byteLength(value, "utf8") < 8) throw invalid([{ field, reason: "invalid", message: `${field} is at least 8 bytes, with no whitespace` }]);
+    // left out of every redaction: none is kept. A public one is no secret; a PEM key is listed by its lines.
+    if (!spec.public && spec.format !== "pem" && (/\s/.test(value) || Buffer.byteLength(value, "utf8") < 8)) throw invalid([{ field, reason: "invalid", message: `${field} is at least 8 bytes, with no whitespace` }]);
     // A verification key is kept only as the spec writes one, or every request it checks would be refused.
     if (spec.minBytes === MIN_KEY_BYTES && !value.startsWith(SECRET_PREFIX)) throw invalid([{ field, reason: "invalid", message: `${field} is a Standard Webhooks secret: whsec_ and its key in base64` }]);
     if (spec.minBytes !== undefined && keyBytes(value) < spec.minBytes) throw invalid([{ field, reason: "too_short", message: `${field} holds at least ${spec.minBytes} bytes` }]);
@@ -102,7 +109,7 @@ export class SealedSettings {
     this.writable();
     this.write({ ...this.sealed, [scope]: { ...this.sealed[scope], [field]: seal(this.key!, Buffer.from(value, "utf8"), aad(this.adapterId, scope, field)).toString("base64") } });
     const was = this.opened[scope]?.[field];
-    if (was !== undefined && was !== value) this.retired.add(was);
+    if (was !== undefined && was !== value) this.retire(field, was);
     (this.opened[scope] ??= {})[field] = value;
   }
 
@@ -116,14 +123,46 @@ export class SealedSettings {
     if (this.unreadable || !(scope in this.sealed)) return;
     const { [scope]: _, ...rest } = this.sealed;
     this.write(rest);
-    for (const value of Object.values(this.opened[scope] ?? {})) this.retired.add(value);
+    for (const [field, value] of Object.entries(this.opened[scope] ?? {})) this.retire(field, value);
     delete this.opened[scope];
   }
 
   /** Every value held open, and every one rotated or removed since this store opened, for the server's list of its own
    *  secrets (server-secrets.ts): a run that echoes a secret after its rotation is cut all the same. */
   values(): string[] {
-    return [...Object.values(this.opened).flatMap((fields) => Object.values(fields)), ...this.retired];
+    return [...Object.values(this.opened).flatMap((fields) => Object.entries(fields).flatMap(([field, value]) => this.secretsOf(field, value))), ...this.retired];
+  }
+
+  /** What of `field`'s `value` is a secret to list with a floor (server-secrets.ts): none for a public field or a PEM key
+   *  (pemValues lists that), else the value. */
+  private secretsOf(field: string, value: string): string[] {
+    const spec = this.spec.fields[field];
+    if (spec?.public || spec?.format === "pem") return [];
+    return [value];
+  }
+
+  /** Every PEM key held open, or rotated or removed since this store opened: each whole and each of its base64 lines,
+   *  the short last one too, listed with no floor (server-secrets.ts `whole`). */
+  pemValues(): string[] {
+    const pem = (field: string) => this.spec.fields[field]?.format === "pem";
+    const forms = (value: string) => [value, ...value.split(/\r?\n/).map((line) => line.trim()).filter((line) => line && !line.startsWith("-----"))];
+    return [...Object.values(this.opened).flatMap((fields) => Object.entries(fields).filter(([field]) => pem(field)).flatMap(([, value]) => forms(value))), ...this.retiredPem.flatMap(forms)];
+  }
+
+  private retire(field: string, value: string): void {
+    if (this.spec.fields[field]?.format === "pem") this.retiredPem.push(value);
+    else for (const secret of this.secretsOf(field, value)) this.retired.add(secret);
+  }
+
+  /** Why nothing can be written here (no seal key, or a file that does not read), as the refusal a write would throw;
+   *  undefined when one can be. */
+  unwritable(): ApiError | undefined {
+    try {
+      this.writable();
+      return undefined;
+    } catch (error) {
+      return error as ApiError;
+    }
   }
 
   private writable(): void {

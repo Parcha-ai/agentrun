@@ -18,7 +18,7 @@ import { parseDocument } from "yaml";
 import { checkNote } from "./learn/index.js";
 import { NOTE_FILE } from "./learn/notes.js";
 import { MCP_SERVER_NAME } from "./mcp-servers.js";
-import { settingsKeyOf } from "./tool-gate.js";
+import { settingsKeyOf, shellToolOf } from "./tool-gate.js";
 import { ASK_TOOL, BOUND_TOOLS } from "./tools.js";
 import { applyBodyOf, compiled, type Package, PackageError, packageView, readPackage } from "./templates.js";
 import { isObject, type Json, MODEL_REF } from "./validate.js";
@@ -495,11 +495,12 @@ async function bytesOf(req: IncomingMessage): Promise<Buffer> {
 // ---- the API ---------------------------------------------------------------------------------------------------------
 
 type Answered = { status: number; body: unknown };
-type Api = (method: string, path: string, body?: unknown, headers?: Record<string, string>) => Promise<Answered>;
+/** `statusOnly`: the answer's status alone, its body cancelled unread (a file's existence, never its bytes). */
+type Api = (method: string, path: string, body?: unknown, headers?: Record<string, string>, options?: { statusOnly?: true }) => Promise<Answered>;
 
 /** A client of the v2 API at `baseUrl` (ending in /v2) with `token`. */
 function apiOf(baseUrl: string, token: string): Api {
-  return async (method, path, body, headers = {}) => {
+  return async (method, path, body, headers = {}, options = {}) => {
     const raw = typeof body === "string";
     const res = await fetch(`${baseUrl}${path}`, {
       method,
@@ -508,6 +509,10 @@ function apiOf(baseUrl: string, token: string): Api {
     }).catch((error: unknown) => {
       throw new ApiFailure(`${method} ${path}: the server did not answer (${(error as Error).cause instanceof Error ? ((error as Error).cause as Error).message : (error as Error).message})`);
     });
+    if (options.statusOnly) {
+      await res.body?.cancel().catch(() => undefined);
+      return { status: res.status, body: null };
+    }
     const text = await res.text();
     let json: unknown = text;
     try {
@@ -561,12 +566,14 @@ async function waitRun(api: Api, runId: string, deadline: number, signal?: Abort
 }
 
 /** The calls in a run's rows: each tool_use row by its gate name, with its result's status and preview. */
-function callsOf(rows: readonly Json[], harness: string, servers: readonly string[]): ToolCall[] {
+/** A run's tool calls, each named as a grader names it: the gate's own rule (RunGate.enter), its settings key, but a
+ *  shell tool held to bash's setting (bash_background, bash_output, ...) keeps its own name, so its grader sees it. */
+export function callsOf(rows: readonly Json[], harness: string, servers: readonly string[]): ToolCall[] {
   const results = new Map(rows.filter((row) => row.kind === "tool_result" && row.tool_use_id).map((row) => [String(row.tool_use_id), row]));
   return rows.filter((row) => row.kind === "tool_use" && typeof row.tool_name === "string").map((row) => {
     const name = row.tool_name as string;
     const result = results.get(String(row.tool_use_id));
-    return { tool: settingsKeyOf(harness, name, servers) ?? name, name, preview: (row.tool_input_preview as string | null) ?? null, status: (result?.tool_status as string | undefined) ?? null, result: (result?.tool_result_preview as string | undefined) ?? null };
+    return { tool: shellToolOf(name) ?? settingsKeyOf(harness, name, servers) ?? name, name, preview: (row.tool_input_preview as string | null) ?? null, status: (result?.tool_status as string | undefined) ?? null, result: (result?.tool_result_preview as string | undefined) ?? null };
   });
 }
 
@@ -580,6 +587,18 @@ async function filesOf(api: Api, runId: string): Promise<string[]> {
     cursor = typeof page.body.next_cursor === "string" ? page.body.next_cursor : null;
     if (!cursor) return paths;
   }
+}
+
+/** Each path a file_exists grader names that the run's work folder holds, read one by one (GET /runs/{id}/files/{path}):
+ *  the listing is capped (its `truncated`), so a file past its cap or depth is never taken for absent. Only the status
+ *  is read: the file's body is cancelled unread, whatever its size. */
+async function presentOf(api: Api, runId: string, paths: readonly string[]): Promise<string[]> {
+  const present: string[] = [];
+  for (const path of new Set(paths)) {
+    const read = await api("GET", `/runs/${runId}/files/${path.split("/").map(encodeURIComponent).join("/")}`, undefined, {}, { statusOnly: true });
+    if (read.status === 200) present.push(path);
+  }
+  return present;
 }
 
 const costOf = (view: Json): number | null => (isObject(view.cost) && typeof view.cost.usd === "number" ? view.cost.usd : null);
@@ -610,7 +629,7 @@ export type EvalOptions = {
 /** What the eval made on the server: its agents (archived at the end on an owner's server), its runs not known to have
  *  ended (cancelled at each case's end), and the package's triggers its applies made (deleted). */
 type Made = { agents: string[]; runs: Set<string>; triggers: Set<string> };
-type Ctx = { api: Api; pkg: Package; options: EvalOptions; made: Made; log: (line: string) => void; graderAgent: () => Promise<string>; served?: Promise<Json> };
+type Ctx = { api: Api; pkg: Package; options: EvalOptions; made: Made; log: (line: string) => void; graderAgent: () => Promise<string>; served?: Json };
 export type GraderResult = { grader: string; type: string; pass: boolean; reason: string; cost_usd: number | null; run_id?: string };
 export type RunResult = { run: number; agent_id: string | null; run_id: string | null; status: string; pass: boolean; error?: string; cost_usd: number | null; graders: GraderResult[] };
 export type CaseResult = { name: string; description: string; pass: boolean; runs: RunResult[]; error?: string; cost_usd: number };
@@ -705,7 +724,7 @@ export async function evalTemplate(options: EvalOptions): Promise<Report> {
 async function runCase(ctx: Ctx, one: EvalCase): Promise<CaseResult> {
   const { api, options, log } = ctx;
   const fakes: Fake[] = [];
-  const saved: string[] = [];
+  const saved: { name: string; url: string }[] = [];
   const runs: RunResult[] = [];
   const total = options.runs ?? one.runs;
   try {
@@ -717,7 +736,10 @@ async function runCase(ctx: Ctx, one: EvalCase): Promise<CaseResult> {
       const fake = await startFake(name, fixture);
       fakes.push(fake);
       expectOk(`saving the fake MCP server ${name}`, await api("PUT", `/settings/mcp-servers/${name}`, { url: fake.url, auth: { type: "none" } }));
-      saved.push(name);
+      saved.push({ name, url: fake.url });
+      // Another eval on the same server may have saved its own fake under the name meanwhile: then neither case's calls
+      // can be told apart, and this one fails rather than run on a fake it does not own.
+      if (options.server && !(await ownsFake(api, name, fake.url))) throw new ApiFailure(`another eval saved its own MCP server named ${name} on this server meanwhile: run one eval of this package at a time on a server`);
     }
     for (let n = 1; n <= total; n++) {
       options.signal?.throwIfAborted();
@@ -733,16 +755,20 @@ async function runCase(ctx: Ctx, one: EvalCase): Promise<CaseResult> {
   } finally {
     // Before the next case: no run of this one left going (a wait that failed leaves its run started), no trigger left.
     await cleanUp(api, ctx.made);
-    for (const name of saved) await api("DELETE", `/settings/mcp-servers/${name}`).catch(() => undefined);
+    // Only an entry still this eval's own is removed: another eval's under the same name stays.
+    for (const { name, url } of saved) if (await ownsFake(api, name, url)) await api("DELETE", `/settings/mcp-servers/${name}`).catch(() => undefined);
     for (const fake of fakes) await fake.close();
   }
 }
+/** Whether the server's MCP server `name` is still this eval's fake at `url`. */
+const ownsFake = (api: Api, name: string, url: string): Promise<boolean> => api("GET", `/settings/mcp-servers/${name}`).then((read) => read.status === 200 && isObject(read.body) && read.body.url === url, () => false);
 const caseCost = (runs: readonly RunResult[]) => Math.round(runs.reduce((sum, r) => sum + (r.cost_usd ?? 0) + r.graders.reduce((g, x) => g + (x.cost_usd ?? 0), 0), 0) * 1e6) / 1e6;
 
 /** One run of a case: a fresh agent (so one run's learning never reaches the next), its notes, the run, its grades. */
 async function runOnce(ctx: Ctx, one: EvalCase, n: number, fakes: readonly Fake[]): Promise<RunResult> {
   const { api, pkg, options, made } = ctx;
   const stopped = () => options.signal?.throwIfAborted();
+  await serverPins(ctx, one);
   const applied = expectOk(`applying ${pkg.name}`, await api("POST", `/templates/${pkg.name}/apply`, { parameters: one.parameters, grants: one.grants }));
   const agentId = String(applied.agent_id);
   made.agents.push(agentId);
@@ -758,6 +784,21 @@ async function runOnce(ctx: Ctx, one: EvalCase, n: number, fakes: readonly Fake[
   }
   stopped();
   const runId = await startRun(ctx, agentId, { input: { content: one.input }, ...(one.maxCostUsd !== undefined ? { max_cost_usd: one.maxCostUsd } : {}) }, "starting the run");
+  // A run started is paid for: whatever fails after this (a read, a grade) still gives it a result, with its cost where
+  // the server says it, so the case's total never drops it.
+  try {
+    return await ranOnce(ctx, one, n, fakes, agent, agentId, runId);
+  } catch (error) {
+    if (!(error instanceof ApiFailure)) throw error;
+    const cost = await api("GET", `/runs/${runId}`).then((read) => (read.status === 200 && isObject(read.body) ? costOf(read.body) : null), () => null);
+    return { run: n, agent_id: agentId, run_id: runId, status: "unknown", pass: false, error: `after the run started: ${error.message}`, cost_usd: cost, graders: [] };
+  }
+}
+
+/** The started run `runId` of `agentId` waited on, read and graded. */
+async function ranOnce(ctx: Ctx, one: EvalCase, n: number, fakes: readonly Fake[], agent: Json, agentId: string, runId: string): Promise<RunResult> {
+  const { api, options } = ctx;
+  const stopped = () => options.signal?.throwIfAborted();
   const ended = await waitRun(api, runId, Date.now() + (options.runTimeoutMs ?? RUN_TIMEOUT_MS), options.signal);
   const view = expectOk(`reading run ${runId}`, await api("GET", `/runs/${runId}`));
   // A run that waits on a person (a question, an approval, its cap) is graded as it stands, then cancelled.
@@ -769,7 +810,11 @@ async function runOnce(ctx: Ctx, one: EvalCase, n: number, fakes: readonly Fake[
     answer: typeof result.final_answer === "string" ? result.final_answer : "",
     calls: callsOf(ended.rows, harness, Object.keys(one.mcp)),
     mcpCalls: fakes.flatMap((fake) => fake.calls.map((call) => ({ ...call }))),
-    files: await filesOf(api, runId),
+    files: await (async () => {
+      const listed = await filesOf(api, runId);
+      const named = one.graders.flatMap((grader) => (grader.type === "file_exists" ? [grader.path] : []));
+      return [...listed, ...(await presentOf(api, runId, named.filter((path) => !listed.includes(path))))];
+    })(),
   };
   stopped();
   const base = { run: n, agent_id: agentId, run_id: runId, status: ended.status, cost_usd: costOf(view) };
@@ -795,7 +840,13 @@ async function runOnce(ctx: Ctx, one: EvalCase, n: number, fakes: readonly Fake[
       graders.push({ grader: grader.file, type: grader.type, pass: false, reason: "not graded: the run did not finish", cost_usd: null });
       continue;
     }
-    graders.push({ grader: grader.file, type: grader.type, ...(await gradeLlm(ctx, await ctx.graderAgent(), graderInput(grader, one.input, record))) });
+    // A grade that fails to read fails that grader alone: the run's own result and cost stay.
+    try {
+      graders.push({ grader: grader.file, type: grader.type, ...(await gradeLlm(ctx, await ctx.graderAgent(), graderInput(grader, one.input, record))) });
+    } catch (error) {
+      if (!(error instanceof ApiFailure)) throw error;
+      graders.push({ grader: grader.file, type: grader.type, pass: false, reason: `not graded: ${error.message}`, cost_usd: null });
+    }
   }
   stopped();
   return { ...base, pass: graded && graders.every((g) => g.pass), ...(error ? { error } : {}), graders };
@@ -822,11 +873,12 @@ async function gradeLlm(ctx: Ctx, agentId: string, input: string): Promise<{ pas
  *  another version, and its eval would measure that one: the case fails, naming each field that differs. */
 async function sameAsLocal(ctx: Ctx, one: EvalCase, agent: Json): Promise<void> {
   const { pkg } = ctx;
-  ctx.served ??= (async () => {
+  // Kept once read: a listing that fails fails this case alone, and the next case asks again.
+  if (!ctx.served) {
     const listed = expectOk("listing the server's templates", await ctx.api("GET", "/templates"));
-    return ((listed.templates as Json[] | undefined) ?? []).find((t) => t.name === pkg.name) ?? {};
-  })();
-  const served = await ctx.served;
+    ctx.served = ((listed.templates as Json[] | undefined) ?? []).find((t) => t.name === pkg.name) ?? {};
+  }
+  const served = ctx.served;
   const view = JSON.parse(JSON.stringify(packageView(pkg))) as Json;
   const differs = [...new Set([...Object.keys(view), ...Object.keys(served)])].filter((key) => !same(view[key], served[key]));
   const { parameters } = applyBodyOf(pkg, { parameters: one.parameters, grants: one.grants });
@@ -837,6 +889,22 @@ async function sameAsLocal(ctx: Ctx, one: EvalCase, agent: Json): Promise<void> 
   if (!isObject(agent.definition) || agent.definition.instructions !== (local.definition as Json).instructions) differs.push("instructions");
   if (!same(theirs, ours)) differs.push("skill files");
   if (differs.length) throw new ApiFailure(`the server's ${pkg.name} package is not this folder's: it differs in ${[...new Set(differs)].sort().join(", ")}. The eval would measure the server's copy: run it without --server, or on a server that ships this version`);
+}
+
+/** The pins a case's apply fills (from its parameters) set on the in-process server before it applies, as an owner sets
+ *  them (deploy/walk.md): until the store cutover an agent's own pin is not kept (AGENT_LAYER_PINS), and the apply makes a
+ *  pinned write the server does not pin deny, so a case that grants one could never reach its fake. The server's pin
+ *  then holds the call to the case's own target, as it does in production. Another server's (--server) settings are its
+ *  owner's, left as they are: there an unpinned write stays deny and its case says so. */
+async function serverPins(ctx: Ctx, one: EvalCase): Promise<void> {
+  const { api, pkg, options } = ctx;
+  if (options.server) return;
+  const { parameters } = applyBodyOf(pkg, { parameters: one.parameters, grants: one.grants });
+  const { unkept } = compiled(pkg, parameters, { mcp: pkg.mcp, defaultTools: [], grants: [], pins: false });
+  if (!unkept.length) return;
+  const settings = expectOk("reading the server's tool settings", await api("GET", "/settings/tools"));
+  for (const { tool, pin } of unkept) settings[tool] = { ...(isObject(settings[tool]) ? settings[tool] : {}), pin };
+  expectOk("pinning the case's writes on the server", await api("PUT", "/settings/tools", settings));
 }
 
 /** A run of `agentId` started, and kept in `made.runs` until it is known to have ended. */

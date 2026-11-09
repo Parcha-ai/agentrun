@@ -23,7 +23,7 @@ const repo = (files = {}) => {
   execFileSync('git', ['add', '-A'], { cwd: root });
   return root;
 };
-const flaky = (id, owner = 'tl-tools') => `test("flaky", { skip: process.env.CI && "${marker(id)}(${owner}) until then" }, () => {});\n`;
+const flaky = (id, owner = 'tools') => `test("flaky", { skip: process.env.CI && "${marker(id)}(${owner}) until then" }, () => {});\n`;
 const at = (iso) => new Date(iso);
 
 test('an empty quarantine holds', () => {
@@ -32,15 +32,15 @@ test('an empty quarantine holds', () => {
 
 test('an added entry expires 24 h on: it holds before, and fails the check from its expiry, naming the owner and the file', () => {
   const root = repo({ 'packages/b/test/view.test.mjs': flaky('F33') });
-  const { entry, skip } = addQuarantine(root, { id: 'F33', file: 'packages/b/test/view.test.mjs', owner: 'tl-tools', name: 'flaky', why: 'Chrome start, twice' }, at('2026-11-05T01:00:30Z'));
+  const { entry, skip } = addQuarantine(root, { id: 'F33', file: 'packages/b/test/view.test.mjs', owner: 'tools', name: 'flaky', why: 'Chrome start, twice' }, at('2026-11-05T01:00:30Z'));
   assert.equal(entry.since, '2026-11-05T01:00Z');
   assert.equal(entry.expires, '2026-11-06T01:00Z');
-  assert.match(skip, /^process\.env\.CI && !process\.env\.AGENTRUN_RUN_QUARANTINED && "quarantined F33 \(tl-tools\) until 2026-11-06T01:00Z/);
+  assert.match(skip, /^process\.env\.CI && !process\.env\.AGENTRUN_RUN_QUARANTINED && "quarantined F33 \(tools\) until 2026-11-06T01:00Z/);
   execFileSync('git', ['add', '-A'], { cwd: root });
   assert.deepEqual(checkQuarantine(root, at('2026-11-06T00:59:00Z')), []);
   const [problem, ...more] = checkQuarantine(root, at('2026-11-06T01:00:00Z'));
   assert.deepEqual(more, []);
-  assert.match(problem, /^F33 \(tl-tools\) expired at 2026-11-06T01:00Z: fix packages\/b\/test\/view\.test\.mjs \("flaky"\)/);
+  assert.match(problem, /^F33 \(tools\) expired at 2026-11-06T01:00Z: fix packages\/b\/test\/view\.test\.mjs \("flaky"\)/);
 });
 
 test(`at most ${LIMIT} at once: a fourth is refused when added, and a list of four fails the check`, () => {

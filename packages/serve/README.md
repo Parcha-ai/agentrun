@@ -1620,8 +1620,10 @@ first past that, which the log says once (`condition=trigger_seen_full`). The ag
 then the body, cut at 16 KiB, inside `<trigger-payload source="webhook" scheme="standard" untrusted>...</trigger-payload>`:
 whatever the sender wrote is data, not an instruction. The tag names the signature scheme, the event as that scheme
 reads it (`event="..."`), the JSON body's top-level `action` (`action="..."`) and an unsigned delivery id
-(`delivery="..."`, GitHub's `X-GitHub-Delivery`), each when there is one, so an agent's instructions can read what it
-was given; a sender's words there are cut to 200 characters, their quotes and brackets escaped, and a closing tag in
+(`delivery="..."`, GitHub's `X-GitHub-Delivery`) and, for a GitHub delivery, its pull request or issue's `number="..."`
+(`pull_request.number`, else `issue.number`) and a pull request's `head_sha="..."` (40 hex; a comment event has none, so
+no `head_sha` at all), read from the signed body so the payload's cut never loses them, each when there is one, so an
+agent's instructions can read what it was given; a sender's words there are cut to 200 characters, their quotes and brackets escaped, and a closing tag in
 the body, in any case, is defused.
 
 A webhook trigger's `signature` names its scheme, one of a table of them: `standard` (the default, above) or `github`,
@@ -1686,9 +1688,11 @@ anyone who can comment starts runs.
 A trigger's input, a started run's first message or a firing's message, is the trigger's, never the person's: it carries
 the origin `{kind: "trigger", trigger_id, source, owner}`, `owner` decided by the trigger's definition as it fires and
 never by its payload (true for a schedule, fired on time or by hand; false for a webhook, its body empty or not). The
-model reads the very text it did; the run's timeline shows it as a `phase` row, "Trigger <its id>: <its first line>",
-with `origin: "trigger"` and `trigger: {id, source, owner}` (so a client labels it by its source without reading the
-summary), never as "You: ...", and what the run learns reads it as the trigger's.
+model reads the very text it did; the run's timeline shows it as a `phase` row that names its source and its trigger as
+it is now, "Schedule utc-check: <its first line>" (the trigger's id once it is gone), with `origin: "trigger"` and
+`trigger: {id, source, owner}` (so a client labels it by its source without reading the summary), never as "You: ...",
+and what the run learns reads it as the trigger's. A trigger renamed renames the row; the name it had when it fired is
+not kept yet.
 
 A trigger's target may also be `{kind: "message_run", run_id, input: {content}}`, with a webhook or a schedule source:
 each firing sends its input to that run as `POST /v2/runs/{id}/messages` would (a steer, or a follow-up that opens a
@@ -1699,6 +1703,87 @@ one message per id; a firing driven again after a restart first looks for it the
 never opens a completed run again for one it already has. A firing to a run that is working waits for it (tried every
 5 s), and a trigger holds at most 20 firings due: past them a webhook event and a run now answer `429 rate_limited`
 with `Retry-After: 30`, recording nothing, and a schedule's time is `skipped`.
+
+### GitHub triggers (Connect GitHub)
+
+A server has at most one GitHub App, made with GitHub's app-manifest flow, and every `github` trigger (and every
+GitHub template) uses it. In the console, Connect GitHub calls `POST /v2/integrations/github/connect` (`{org?}`, to make
+the App under an organization) and posts the form it answers to GitHub: `action`, GitHub's new-App page, and
+`manifest`, which names a name GitHub lets the person edit, the server's public URL, its hook `/v2/hooks/github`, its
+callback and setup URLs, the permissions (pull requests write; contents, metadata and issues read) and the events
+(`pull_request`, `issue_comment`). It needs the address GitHub can reach, `AGENTRUN_PUBLIC_URL` (`409 github_no_public_url`,
+"GitHub can't reach this server: set its public URL first"), a seal key (`409 github_no_seal_key`, naming
+`AGENTRUN_SEAL_KEY`), and no App connected already (`409 github_already_connected`, "This server already has a GitHub
+App. Disconnect it first."), and a request at the public URL itself, where GitHub sends the browser back
+(`409 github_wrong_origin`, "Open this server at <public URL> to connect GitHub.", the URL in `details.public_url`). Its
+`state` is random, used once, good for an hour, and bound to the browser that started it
+by a cookie on the callback's path; GitHub reads it from `action`'s URL, and the form posts only `manifest`.
+
+GitHub sends the browser back to `GET /v2/integrations/github/callback` with a code. The server converts it with GitHub
+and keeps the App's id, slug and client id, which are no secret, and its private key and webhook secret, which are,
+sealed in `DIR/trigger-settings-github.json`; GitHub's client secret is never kept, and no secret is logged or answered.
+The browser goes on to install the App, with a fresh install state GitHub passes on and its cookie on the installed
+path; GitHub's redirect after (`/v2/integrations/github/installed`) records the installation only with that state and
+cookie, once GitHub, asked with the App's own JWT, says it is the App's, and sends the browser to the console at the
+public URL, `<public>/#/settings/github?github=connected`. Without the state and cookie it records nothing and lands
+there too: an installation made from GitHub's own pages arrives as the App's signed installation event. Neither leg ever answers an error body: a state
+that is unknown, used, older than an hour or from another browser sends the browser to
+`<public>/#/settings/github?github=error&reason=state_invalid`,
+a code GitHub does not convert to `...&reason=conversion_failed`, one whose App GitHub made while another Connect kept
+its App to `...&reason=already_connected` (the first App stays), and an installation GitHub does not confirm, or one
+checked while GitHub was disconnected or connected again, to `...&reason=installation_unverified`; nothing is kept. The
+App's `installation` events keep the list current, each taken only in its own shape (the installation, its account and
+this App's id) and as GitHub, asked with the App's JWT, bears it out: `X-GitHub-Event` is not signed, so another
+event's signed body sent as one changes nothing. GitHub out of reach when an event is checked answers it `503`, so
+GitHub shows the delivery failed and it can be sent again; and the list is repaired from GitHub's own installations at
+the server's start and when `GET /v2/integrations/github` is read (at most once a minute), by the same rule: none left
+turns the github triggers off, one dropped only shrinks it. A list that an event or the install redirect wrote while
+GitHub was asked is not overwritten by GitHub's older answer: the repair asks once more, and leaves the list as it is
+when it moved again. A deletion or suspension that would leave none is confirmed with GitHub's own list first: only none there turns the
+github triggers off, and its list as it comes (the one removed included, when GitHub holds it active again) becomes the
+list. An installation event follows the same rule: GitHub's answer to its check is taken only when no write came meanwhile
+(else it is asked once more), so an older suspend never undoes a newer unsuspend. A server that closes stops its repair
+and its events' checks, which write nothing after (an event cut so answers `503`, to be sent again).
+`GET /v2/integrations/github` always answers 200: `{connected: false}` with no App, else `{connected: true, app_id, slug,
+installations}`, never a secret. Not connected is an answer, not a 404 a browser logs as an error. `DELETE` with nothing
+connected is still 404.
+
+A trigger with `source: {kind: "github", accept: [...]}` takes the App's events its `accept` names (the same rules as a
+webhook trigger's, above; required) and keeps no secret of its own. `POST /v2/hooks/github` takes no token: each delivery
+is checked by `X-Hub-Signature-256` under the App's webhook secret, and one event fires **every** github trigger whose
+`accept` takes it, each its own firing, keyed by the SHA-256 of the signed body, and its own run (github triggers may
+take the same events; `max_active_runs` caps each). Every other github trigger keeps the body's key for its day, so the
+same body sent again under another `X-GitHub-Event`, which GitHub does not sign, starts nothing: where it matters, a rule
+also tests a field only that event's body has. When a trigger that takes an event holds too many firings due, the delivery is refused `429` with `Retry-After`
+though the others recorded theirs: the retry records it there once it has room, and is the others' duplicate. An event no
+trigger takes is `200 {"ok": "ignored"}`; GitHub's `ping` is
+`200 {"ok": "pong"}`. The payload's tag also names the installation and the repository (`installation="..."
+repo="owner/name"`). A github trigger made or turned on with no App connected is `409 github_not_connected` ("Connect GitHub
+in Settings"). A `{kind: "webhook", signature: "github"}` trigger is unchanged: a repository webhook with its own secret.
+
+An installation deleted or suspended on GitHub leaves the list, and one unsuspended comes back; the github triggers turn
+off only when no installation is left (`disabled: {reason: "connection_lost", detail}`, naming it), and coming back
+turns none on. `DELETE /v2/integrations/github` disconnects the App and turns every github trigger off the same way,
+answering `{disconnected: true, triggers_off, note}`, the note "Delete the App itself on GitHub: <its settings URL>":
+the App's credentials leave this server only, and it stays on GitHub until deleted there. Turned off, a trigger is kept:
+an agent keeps its triggers, and each goes on again once turned on with GitHub connected.
+
+An MCP server saved with `auth: {type: "github_app", headers?}` (`PUT /v2/settings/mcp-servers/{name}`) uses the
+connected App's tokens and keeps none of its own: only its static headers (such as `X-MCP-Tools`), sealed as written,
+and never an `Authorization`. Its tools are listed with a token narrowed to one repository, of the first of the App's
+installations (in order) that covers one; an installation whose account has none selected is passed over. GitHub that
+does not answer while that token is minted (a 429, a 5xx, a rate limit's 403, no answer) is `502 github_failed`, "GitHub didn't answer: try
+again", retryable, and the preview, save or refresh changes nothing. At each launch of a run that
+grants its tools (its start, every resume, a relaunch after a crash) the server mints an installation token for that
+run, narrowed to the one repository the run is about, with the App's permissions: a GitHub event's run uses its
+installation and repository (the server's own payload tag); any other names it in its input as
+`https://github.com/<owner>/<repo>`, whose installation the server asks GitHub for with the App's JWT. The token goes to
+the run's MCP calls with the static headers beside it, lives only in memory (handed to the run's process over its pipe,
+never its environment, journal, a log line or an answer), and is cut from whatever a run shows while it may be in use.
+A run whose repository the App does not cover, or that names none, has those calls answered in words ("The GitHub App
+isn't installed on owner/repo"). A known limit: a token lasts an hour and is not renewed inside a live run's process
+(it is minted at each launch): a run still working past it has its GitHub calls answered, unsent, "The GitHub token for
+this run expired: it is minted again when the run resumes", and its next resume mints a fresh one.
 
 ## Templates
 
@@ -2073,8 +2158,10 @@ AgentRun Server is for one person, who signs in to the console with a password (
 no `AGENTRUN_PUBLIC_URL`, the start prints `Set your password: <url>/setup`, and the first visit sets it, 12 characters or
 more. With it, the start prints `Set up this server: <url>/setup#code=<code>`, and setup takes that code (or the token as
 the Bearer). The server keeps a scrypt hash of the password, never the password, in `DIR/owner.json`, and signs its
-session cookies with the key in `DIR/.session-secret`; both are 0600, and no run reaches either. A session lasts 30 days;
-**Sign out everywhere** ends every session on every browser. Sign-in tries are limited per address, ten in 15 minutes, and the limit keeps up to 10,000 addresses: past that a
+session cookies with the key in `DIR/.session-secret`; both are 0600, and no run reaches either. A session lasts 30 days.
+**Sign out** (`POST /v2/auth/sign-out`) signs out this browser: its session is revoked on the server (a copy of its
+cookie stops working too) and its cookie cleared, and every other browser stays signed in. **Sign out everywhere** (`POST /v2/auth/sign-out-everywhere`) ends every session on every browser and phone,
+this one too. Sign-in tries are limited per address, ten in 15 minutes, and the limit keeps up to 10,000 addresses: past that a
 new address gets a 429 until older ones expire, and an address already limited stays limited. Forgot it: run
 `agentrun-serve reset-password --data DIR` where the data directory is (`docker exec agentrun node
 /opt/agentrun/packages/serve/dist/cli.js reset-password --data /data` in the image). It clears the password and signs every

@@ -258,7 +258,7 @@ export function monidRegistration(kind: Kind, env: NodeJS.ProcessEnv, work: () =
       // ($0 when monid charged nothing, at its hold when it may have and did not say), in place of this process's spend.
       const onLedger = kind === "run" ? paidLedger() : undefined;
       const paid = onLedger
-        ? await paidStep(onLedger, api.callId, { name: RUN, holdUsd: held, basis }, call, (outcome) => {
+        ? await paidStep(onLedger, api.callId, { name: RUN, holdUsd: held, basis, by: label.charged_by }, call, (outcome) => {
           if (!("result" in outcome)) return null;
           const usd = chargeOf(outcome.result);
           return usd === undefined ? 0 : usd;

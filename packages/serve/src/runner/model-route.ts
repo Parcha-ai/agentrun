@@ -1,7 +1,7 @@
 // The runner's model route: where a model's requests go, on which id, at what price. A model is resolved as main
 // resolves a run's (model.ts chooseModel and runModels: the faux module under --faux, the gateway, or each provider on
-// its own key), and a route speaks a wire its caller speaks (`wires`: the pi adapter speaks both of main's, provider.ts;
-// the learning grader and a workflow's model nodes speak Anthropic's Messages alone):
+// its own key), and a route speaks a wire its caller speaks (`wires`: the pi adapter speaks both of main's, provider.ts,
+// and so do the learning grader and a workflow's model nodes, which take the route's wire as pi does):
 // - an Anthropic model goes to Anthropic itself (its catalog origin, ANTHROPIC_BASE_URL's when set), its key read by
 //   name when a request goes, never held by the route;
 // - a model pi-ai speaks OpenAI's Responses to (OpenAI's own on its key, serve's gateway), for a caller that speaks
@@ -49,13 +49,6 @@ export interface ModelRoute {
   readonly outputCeiling?: number | null;
 }
 
-/** `route` as a Messages-only caller takes it (the learning grader, a workflow's model nodes), asked on that wire alone:
- *  any other is a wrong ask, refused in words. */
-export function messagesRoute(route: ModelRoute): ModelRoute & { readonly provider: ModelRoute["provider"] & { readonly api: "anthropic-messages" } } {
-  if (route.provider.api !== "anthropic-messages") throw new Error(`a Messages-only caller was given a ${route.provider.api} route for ${route.model}`);
-  return route as ModelRoute & { readonly provider: ModelRoute["provider"] & { readonly api: "anthropic-messages" } };
-}
-
 /** The origin a route with its own fetch names: nothing is ever sent there, its fetch answers every request. */
 export const ROUTE_ORIGIN = "https://model-route.invalid";
 
@@ -68,9 +61,10 @@ type PiMessage = { usage?: RouteUsage; stopReason?: string; errorMessage?: strin
 
 /** The route of `model` ("provider/model-id"; undefined for the host's model of `tier`), resolved from `env` as main
  *  resolves a run's model, on a wire of `wires` (the caller's; default Messages alone). `upstream`: what the route's own
- *  translation sends with (a test's stand-in for the provider); absent, the network. Refuses, in main's words, a model
- *  this host cannot run. */
-export async function routeOf(model: string | undefined, env: NodeJS.ProcessEnv = process.env, tier: Tier = "default", wires: readonly Wire[] = MESSAGES_ONLY, upstream?: typeof fetch): Promise<ModelRoute> {
+ *  translation sends with (a test's stand-in for the provider); absent, the network. `redact`: the runner's one redactor,
+ *  which the translation's error text passes through (absent, one over every secret `env` holds). Refuses, in main's
+ *  words, a model this host cannot run. */
+export async function routeOf(model: string | undefined, env: NodeJS.ProcessEnv = process.env, tier: Tier = "default", wires: readonly Wire[] = MESSAGES_ONLY, upstream?: typeof fetch, redact?: Redact): Promise<ModelRoute> {
   const chosen = await chooseModel(env, model, tier);
   if ("why" in chosen) throw new Error(chosen.why);
   const { models } = await runModels(env, tier === "default" ? model : undefined, [tier]);
@@ -94,7 +88,7 @@ export async function routeOf(model: string | undefined, env: NodeJS.ProcessEnv 
       like: { ...(target.reasoning !== undefined ? { reasoning: target.reasoning } : {}), ...(target.contextWindow ? { contextWindow: target.contextWindow } : {}), ...(target.maxTokens ? { maxTokens: target.maxTokens } : {}) },
     };
   }
-  return { ...route, provider: { api: "anthropic-messages", origin: ROUTE_ORIGIN, credential: () => "model-route" }, fetch: messagesFetch(models as unknown as PiModels, target, secretRedactor(runnerSecrets(env)), upstream) };
+  return { ...route, provider: { api: "anthropic-messages", origin: ROUTE_ORIGIN, credential: () => "model-route" }, fetch: messagesFetch(models as unknown as PiModels, target, redact ?? secretRedactor(runnerSecrets(env)), upstream) };
 }
 
 /** A fetch that answers Anthropic Messages requests on `target`, through pi-ai's `models`. A provider's error text, which
@@ -116,6 +110,10 @@ export function messagesFetch(models: PiModels, target: PiModel, redact: Redact 
     const stream = new ReadableStream<Uint8Array>({
       async start(controller) {
         const send = (event: { type: string; [key: string]: unknown }) => controller.enqueue(encoder.encode(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`));
+        // A failed request's error event carries its words alone, one data line each: pi-ai's Messages client throws an
+        // error event's data as the request's error, so the caller reads the model's own error as main's in-process pi
+        // reports it ("500 {...}"), never this route's envelope around it.
+        const sendError = (words: string) => controller.enqueue(encoder.encode(`event: error\n${words.split(/\r?\n/).map((line) => `data: ${line}`).join("\n")}\n\n`));
         send({ type: "message_start", message: { id: `msg_${Date.now().toString(36)}`, type: "message", role: "assistant", model: body.model ?? target.id, content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 0, output_tokens: 0 } } });
         // Messages blocks are numbered as sent; a thinking block of pi-ai's is not sent (it carries no signature here).
         const blockOf = new Map<number, number>();
@@ -153,7 +151,7 @@ export function messagesFetch(models: PiModels, target: PiModel, redact: Redact 
             else if (event.type === "done" || event.type === "error") {
               const message = (event.type === "done" ? event.message : event.error) ?? {};
               if (event.type === "error") {
-                send({ type: "error", error: { type: event.reason === "aborted" ? "request_aborted" : "api_error", message: redact(message.errorMessage ?? event.reason ?? "the model's request failed") } });
+                sendError(redact(message.errorMessage ?? event.reason ?? "the model's request failed"));
                 break;
               }
               const used = message.usage ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
@@ -162,7 +160,7 @@ export function messagesFetch(models: PiModels, target: PiModel, redact: Redact 
             }
           }
         } catch (error) {
-          send({ type: "error", error: { type: "api_error", message: redact((error as Error)?.message ?? String(error)) } });
+          sendError(redact((error as Error)?.message ?? String(error)));
         }
         controller.close();
       },

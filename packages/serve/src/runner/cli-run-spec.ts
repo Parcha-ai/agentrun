@@ -41,8 +41,10 @@ import { runTools, type ToolResults } from "../workspace/run-tools.js";
 import { archilClaim, MOUNT_TTL_MS } from "../workspace/archil-claim.js";
 import { loadArchilSettings } from "../archil-settings.js";
 import type { Workspace } from "../workspace/workspace.js";
+import type { ComputerSetting } from "../computer-setting.js";
 import type { AdapterRun, AdapterRunSpec, RunCapConfig } from "./adapter-loop.js";
-import { adapterRunGate, type AdapterSpecDeps, hostToolCtxOf, learnedWorkflowHostTool } from "./adapter-run-spec.js";
+import { adapterRunGate, type AdapterSpecDeps, answersCut, hostToolCtxOf, learnedWorkflowHostTool } from "./adapter-run-spec.js";
+import { signInReads } from "../sign-ins-store.js";
 import { claimSecrets } from "./claim-secrets.js";
 import { LEARNED_WORKFLOW_TOOL } from "../learned-workflow.js";
 import { TOOL_PLANE_ENV } from "../tool-plane.js";
@@ -50,7 +52,7 @@ import { resolveHarness } from "./adapters/index.js";
 import { entriesOf } from "./loop.js";
 import type { Claim } from "./loop-contract.js";
 import { runMetrics } from "./metrics.js";
-import { runnerSecrets, secretRedactor } from "./redact.js";
+import { heldRedactor, holdClaimed, runnerSecrets, secretRedactor } from "./redact.js";
 
 /** The shared claim-time computer types live on the base spec (adapter-run-spec.ts), re-exported for this module's API. */
 export type { ClaimComputer, ClaimDeps, ClaimLaunch, ComputerForClaim } from "./adapter-run-spec.js";
@@ -113,7 +115,7 @@ export async function cliRunSpecFromLaunch(launch: RunLaunch, run: AdapterRun, d
   const context = BACKGROUND_CONTEXT;
   // The spec's log lines carry error text (a release, a computer, a workspace's end): cut of every secret the runner's env
   // holds.
-  const cut = secretRedactor(runnerSecrets(deps.env));
+  const cut = heldRedactor(secretRedactor(runnerSecrets(deps.env)));
   const log = (line: string) => (deps.log ?? (() => {}))(cut(line));
   const runRow = await deps.store.runs.get(claim.runId);
   if (!runRow) throw new Error(`run ${claim.runId}: its row is gone from the store`);
@@ -158,7 +160,7 @@ export async function cliRunSpecFromLaunch(launch: RunLaunch, run: AdapterRun, d
   // The run's computer, from the one shared claim-time function (the pi spec takes the same): none for a runner place.
   // It throws computer_unavailable (nothing made) when the computer cannot be had: the run fails in its words.
   const computer = await deps.computerForClaim(
-    { runId: claim.runId, epoch: claim.epoch, revisionId: runRow.revisionId, place: launch.place, ...((launch as { computer?: unknown }).computer !== undefined ? { computer: (launch as { computer?: unknown }).computer } : {}) },
+    { runId: claim.runId, epoch: claim.epoch, revisionId: runRow.revisionId, place: launch.place, ...((launch as { computer?: ComputerSetting }).computer !== undefined ? { computer: (launch as { computer?: ComputerSetting }).computer } : {}) },
     deps.store,
     // revokeMount removes the run's Archil mount credential at the computer's release (and if a start fails after a mint); the
     // run's end revokes it too, so it goes on every outcome even with no computer. Idempotent. As the pi spec does.
@@ -194,8 +196,20 @@ export async function cliRunSpecFromLaunch(launch: RunLaunch, run: AdapterRun, d
   const chosen = await modelsOf(entry, env, ref);
   const built = await entry.adapter(env, { model: chosen.model, models: chosen.models, unpriced: chosen.unpriced, ...(native.length ? { skills: native } : {}) });
   // The harness's own session options, its private directory and its working directory (SessionIO's dir and cwd, which
-  // every CLI adapter reads), set on its open here, so the loop lends the session nothing of its own.
-  const adapter: typeof built = { ...built, open: (spec, io) => built.open(spec, { ...io, dir, cwd: scratch }) };
+  // every CLI adapter reads), set on its open here, so the loop lends the session nothing of its own. A turn that ends on
+  // the CLI's own error names the harness first, as main words it (harness-app.ts: `<harness>: <error>`), so the run's
+  // error and its Timeline row say which CLI said it.
+  const adapter: typeof built = {
+    ...built,
+    open: async (spec, io) => {
+      const session = await built.open(spec, { ...io, dir, cwd: scratch });
+      const turnEnd = session.turnEnd.bind(session);
+      return Object.assign(session, { turnEnd: async () => {
+        const end = await turnEnd();
+        return end.error ? { ...end, error: `${name}: ${end.error}` } : end;
+      } });
+    },
+  };
 
   // The run's cap (its launch's maxCostUsd): the kernel's check before each paid request, at the catalog price of the
   // model that bills the run, and what a refusal does to the run, with the kernel's raise rule.
@@ -228,23 +242,29 @@ export async function cliRunSpecFromLaunch(launch: RunLaunch, run: AdapterRun, d
 
   // The run's tools: the kernel registry's hands on its Workspace (and computer), beside the learned_workflow tool when the
   // pin names learned workflows. A CLI harness's session has a model port, so learned_workflow runs for real on the
-  // session's proxied models (learnedWorkflowHostTool onSessionPort), each node a request on the run's one route labelled
+  // session's proxied models (learnedWorkflowHostTool), each node a request on the run's one route labelled
   // learned_workflow, booked on the run's one ledger. Its call nodes run the agent's tools' effects on the run's scoped
   // keys (claim-secrets.ts), the run's plane threaded for the web tools among them. (web_fetch/web_search/monid as the CLI's
   // own host tools are still a TODO, as the pi spec binds them.)
   const results: ToolResults = new Map();
   let learnedTool: Awaited<ReturnType<typeof learnedWorkflowHostTool>>;
+  // The keys the claim hands the run (its learned workflow's call nodes run on them): never learned (learningEndOfRun).
+  let handedKeys: string[] = [];
   if (granted.includes(LEARNED_WORKFLOW_TOOL)) {
     const toolEnv = await claimSecrets({ store: deps.store, sealKey: deps.sealKey, env: deps.env }, revisionRow as unknown as Parameters<typeof claimSecrets>[1], launch);
+    handedKeys = runnerSecrets(toolEnv);
+    // The keys it opened join the runner's one redactor (the loop's), and this spec's log cut.
+    for (const redact of [...(run.redact ? [heldRedactor(run.redact)] : []), cut]) holdClaimed(redact, toolEnv);
     delete toolEnv[TOOL_PLANE_ENV];
     if (launch.plane && Object.keys(launch.plane).length) toolEnv[TOOL_PLANE_ENV] = JSON.stringify(launch.plane);
-    learnedTool = await learnedWorkflowHostTool({ run, granted, plane: launch.plane, env: toolEnv, work: root, ctx: hostToolCtxOf(run, context, results, root), onSessionPort: true });
+    learnedTool = await learnedWorkflowHostTool({ run, granted, plane: launch.plane, env: toolEnv, work: root, ctx: hostToolCtxOf(run, context, results, root) });
   }
   const session: SessionSpec = {
     key: `run:${claim.runId}`,
     label: runRow.agentId,
     system: [environmentLine(), instructions, guidance].filter((line): line is string => Boolean(line)),
-    tools: [...tools.hostTools(granted, undefined, results), ...(learnedTool ? [learnedTool] : [])],
+    // The learned workflow's call nodes run on the claim's keys: its answers pass the runner's one redactor, as pi's do.
+    tools: [...tools.hostTools(granted, undefined, results), ...(learnedTool ? [answersCut(learnedTool, run.redact ? heldRedactor(run.redact) : cut)] : [])],
     context: "fresh",
     ...(launch.effort ? { thinking: thinkingFor(facts, launch.effort) } : {}),
   };
@@ -259,6 +279,10 @@ export async function cliRunSpecFromLaunch(launch: RunLaunch, run: AdapterRun, d
     store: deps.store,
     data: deps.data,
     ...(deps.env ? { env: deps.env } : {}),
+    // What the run must never learn beside the runner's secrets: the keys its claim handed it, and its sign-in's pointers,
+    // read back from the store's sign-ins under the seal key (learning-run.ts refused, on the runner).
+    signIns: signInReads(deps.store, deps.sealKey),
+    handed: handedKeys,
     learningFolder: archil === undefined
       ? (agentId: string) => learningFolderOf(deps.data, agentId)
       : (agentId: string) => learningWorkspace({ mode: "archil", agentId, archil }),
