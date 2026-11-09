@@ -293,6 +293,22 @@ test("syncingClient: every call that may change the folder syncs before it answe
 	}
 });
 
+test("syncingClient: tar.push.begin syncs the folders it made, so a push begun and never ended leaves none unsynced; a whole push syncs at its begin and its end, never at a write", async () => {
+	// Review (#1994, PRRT_kwDOUmdVMs61I7Wj): begin makes the destination folder and every missing one above it in
+	// /workspace. A push that then sends nothing and never ends had no call left to sync them.
+	const begun = fakeClient({ answer: () => ok({ id: "push-1" }) });
+	const result = await syncingClient(begun).call("tar.push.begin", { path: "/workspace/new/deep" });
+	assert.equal(result.ok, true);
+	assert.deepEqual(begun.methods(), ["tar.push.begin", "mount.sync"], "begin then nothing: its folders are synced");
+	const whole = fakeClient({ answer: () => ok({ id: "push-1" }) });
+	const syncing = syncingClient(whole);
+	await syncing.call("tar.push.begin", { path: "/workspace/new" });
+	await syncing.call("tar.push.write", { id: "push-1", data: "" });
+	await syncing.call("tar.push.write", { id: "push-1", data: "" });
+	await syncing.call("tar.push.end", { id: "push-1" });
+	assert.deepEqual(whole.methods(), ["tar.push.begin", "mount.sync", "tar.push.write", "tar.push.write", "tar.push.end", "mount.sync"], "one sync for the begin's folders, one for the files; none per write");
+});
+
 test("syncingClient: a sync that fails fails the call in words; a call that failed still syncs, and answers its own error", async () => {
 	for (const sync of [ok({ exitCode: 1 }), fail("not_found", "no Archil sync server at /run/agentrun-archil/archil.sock")]) {
 		const client = fakeClient({ syncs: [sync] });
