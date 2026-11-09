@@ -108,10 +108,14 @@ export type RunOutcome = "completed" | "escalated";
 
 /** The harness an imported run came from. */
 export type ImportSource = "claude-code" | "codex" | "pi";
-/** Where an imported run came from: the harness that ran it, and its own session id. */
+/** Where an imported run came from: the harness that ran it, and its own session id. `file` is the server's own record of
+ *  the session file an import read whole (the sha-256 of its path, never the path, with its size and mtime), so a later
+ *  import does not read an unchanged file again; it is internal and never shown on an answer. The unique import index keys
+ *  on source and session alone, so a re-import of the same session with a different `file` is still the same run. */
 export interface ImportedFrom {
   readonly source: ImportSource;
   readonly session: string;
+  readonly file?: { readonly path_sha256: string; readonly size: number; readonly mtime_ms: number };
 }
 
 /** What a run was started under: `key`, the caller's name for it (a create's idempotency key, a trigger's firing key),
@@ -1056,11 +1060,20 @@ export class StoreLaunchMissing extends Error {
   }
 }
 
-/** A row the store's constraints refuse (a duplicate id or name, a revision of an unknown agent, a bad kind). */
+/** Which of a table's rules refused a row, as both databases report it by code (never by its message's words). */
+export type ConstraintRule = "check" | "unique" | "foreign_key" | "not_null";
+
+/** A row the store's constraints refuse (a duplicate id or name, a revision of an unknown agent, a bad kind). When the
+ *  database said which rule refused it, `rule`; for a duplicate, `unique`: the table and the columns whose values were
+ *  taken already (a primary key's or a UNIQUE's), so a caller tells "the name is taken" from any other refusal. */
 export class StoreConstraint extends Error {
-  constructor(message: string) {
+  readonly rule?: ConstraintRule;
+  readonly unique?: { readonly table: string; readonly columns: readonly string[] };
+  constructor(message: string, details: { rule?: ConstraintRule; unique?: { table: string; columns: readonly string[] } } = {}) {
     super(message);
     this.name = "StoreConstraint";
+    if (details.rule) this.rule = details.rule;
+    if (details.unique) this.unique = details.unique;
   }
 }
 

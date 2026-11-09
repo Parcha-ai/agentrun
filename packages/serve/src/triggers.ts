@@ -105,9 +105,9 @@ export type TriggerDeps = {
    *  `bound` (store.triggers.message: at most `max` of this trigger's rows untaken for the run, else skipped with
    *  `reason`); ApiError when refused. */
   message(target: Extract<Target, { kind: "message_run" }>, input: Json, key: string, from: MessageOrigin, bound: { max: number; reason: string }): Promise<void | { skipped: string }>;
-  /** An adapter's sealed settings (sealed-settings.ts): a trigger's minted secret made (at its create or a rotation)
-   *  and shown once; a trigger's settings removed with it. Undefined for an adapter that keeps none. */
-  settings(adapterId: string): { mint(scope: string, field: string): string; remove(scope: string): void } | undefined;
+  /** An adapter's sealed settings (over the store): a trigger's minted secret made (at its create or a rotation) and shown
+   *  once, durable before it is answered; a trigger's settings removed with it. Undefined for an adapter that keeps none. */
+  settings(adapterId: string): { mint(scope: string, field: string): Promise<string>; remove(scope: string): Promise<void> } | undefined;
   /** A run's status, or null when there is no such run. */
   statusOf(runId: string): Promise<string | null>;
   /** The run the store started under origin `key`, if one: a firing left due by a server that went down mid-start.
@@ -220,7 +220,9 @@ export const triggerBodyIssues = (adapters: readonly TriggerAdapter[], body: Jso
 /** A trigger is named once per agent (the store's UNIQUE (agent_id, name)): a second of the same name, at a create or a
  *  rename, is `409 name_taken`; any other error as it is. */
 const nameTaken = (error: unknown, name: string): unknown =>
-  error instanceof StoreConstraint && /triggers\.agent_id, triggers\.name/.test(error.message) ? new ApiError("name_taken", `This agent already has a trigger named ${name}.`) : error;
+  error instanceof StoreConstraint && error.unique?.table === "triggers" && error.unique.columns.join(",") === "agent_id,name"
+    ? new ApiError("name_taken", `This agent already has a trigger named ${name}.`)
+    : error;
 /** Why a trigger of an archived agent is off, and the 409 for turning one on: the agent by name. */
 const archivedDetail = (name: string) => `The agent ${name} is archived: unarchive it, then turn the trigger on.`;
 /** Why a trigger is off when the server turned it off, as its row keeps it (`disabled`, JSON). */
@@ -302,7 +304,7 @@ export class Triggers {
     // A scope belongs to one trigger: told before anything is minted or written (the store's scope rows are the backstop).
     if (enabled) await this.scopeFree(source, id);
     // Its secrets are kept before the trigger is: one that cannot be kept (no seal key) makes none.
-    const minted = this.mint(source, id);
+    const minted = await this.mint(source, id);
     const name = typeof body.name === "string" ? body.name.trim() : id;
     let row: TriggerRow;
     try {
@@ -488,7 +490,7 @@ export class Triggers {
   async remove(id: string): Promise<void> {
     const trigger = await this.need(id);
     await this.store.triggers.remove(id);
-    if (this.adapter(trigger.source)?.settings?.scope === "trigger") this.deps.settings(trigger.source.kind)?.remove(id);
+    if (this.adapter(trigger.source)?.settings?.scope === "trigger") await this.deps.settings(trigger.source.kind)?.remove(id);
     await this.arm();
   }
 
@@ -859,12 +861,12 @@ export class Triggers {
 
   /** Each field `source`'s adapter mints for its triggers, made now for trigger `id`, by field: none for one that keeps
    *  no trigger-scoped secret. */
-  private mint(source: Source, id: string): Record<string, string> {
+  private async mint(source: Source, id: string): Promise<Record<string, string>> {
     const adapter = this.adapter(source);
     if (!mints(adapter)) return {};
     const store = this.deps.settings(adapter.id);
     if (!store) throw new Error(`no sealed settings for ${adapter.id}`);
-    return Object.fromEntries(Object.entries(adapter.settings!.fields).filter(([, f]) => f.mint).map(([field]) => [field, store.mint(id, field)]));
+    return Object.fromEntries(await Promise.all(Object.entries(adapter.settings!.fields).filter(([, f]) => f.mint).map(async ([field]) => [field, await store.mint(id, field)] as const)));
   }
 
   /** A scope belongs to one trigger: `source`'s (its adapter's scopeOf), for a trigger `id` that is to be on, is refused

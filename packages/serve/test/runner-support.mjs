@@ -1,5 +1,6 @@
-// The runner's tests on module A's store (store/, SqliteStore on a file of its own): the server's store sets the schema
-// up, and each runner opens the file as a runner, as a runner process does. `observed` records what a test reads back
+// The runner's tests on module A's store (store/, SqliteStore on a file of its own, or on Postgres a schema of its own when
+// AGENTRUN_TEST_PG_URL is set: store-target.mjs): the server's store sets the schema up, and each runner opens it as a
+// runner, as a runner process does. `observed` records what a test reads back
 // (claims, journal commits, flushes and releases in order) and can fail a runner's renews; faux loops write real journal
 // commits (pi-durable's commitWrites), with the run's end staged in the last one.
 import { mkdtempSync, rmSync } from "node:fs";
@@ -9,7 +10,9 @@ import { after } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { commitWrites } from "@earendil-works/pi-durable/testing";
 
-const { openSqliteStore } = await import("../dist/store/index.js");
+import { dropSchema, freshSchema, onPostgres, PG_URL } from "./store-target.mjs";
+
+const { openPostgresStore, openSqliteStore } = await import("../dist/store/index.js");
 
 export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -17,6 +20,33 @@ export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
  *  to a stall (no renew ran) is retaken, and what the test reads (a count, a call's status) is then the takeover's, not
  *  the property's. A takeover or fence test keeps its short lease and forces the loss itself. */
 export const STEADY_LEASE = Object.freeze({ leaseMs: 60_000, renewEveryMs: 20_000, stopMarginMs: 5_000 });
+
+/** A clock the test moves, for a runner's claim deadline (RunnerOptions.clock): its timers fire only when `advance` moves
+ *  the clock past them, so a deadline case is driven by the test, never by a box's load. Nothing else in the runner (its
+ *  polls, renews, the store's clock) reads it. */
+export function fakeClock(start = Date.now()) {
+  let now = start;
+  let next = 0;
+  const timers = new Map();
+  return {
+    now: () => now,
+    setTimeout: (fn, ms) => {
+      const id = ++next;
+      timers.set(id, { at: now + Math.max(0, ms), fn });
+      return id;
+    },
+    clearTimeout: (id) => void timers.delete(id),
+    /** Moves the clock `ms` on, firing every timer due by then, earliest first. */
+    advance(ms) {
+      now += ms;
+      for (const [id, timer] of [...timers].sort((a, b) => a[1].at - b[1].at)) {
+        if (timer.at > now || !timers.has(id)) continue;
+        timers.delete(id);
+        timer.fn();
+      }
+    },
+  };
+}
 
 /** One order for what happened in this process (a commit tried, a stop told), finer than a millisecond: two things in
  *  the same ms are still one before the other. */
@@ -38,11 +68,15 @@ export async function until(check, what, ms = 5_000) {
 // were added, so a store closed by a hook added before a runner's close would close under the runner.
 const opened = [];
 after(async () => {
-  for (const { stores, dir } of opened.splice(0)) {
+  for (const { stores, dir, schema } of opened.splice(0)) {
     for (const store of stores) await store.close().catch(() => undefined);
     rmSync(dir, { recursive: true, force: true });
+    if (schema) await dropSchema(schema);
   }
 });
+
+/** The store at the test's place, as `role`: the file in `dir`, or on Postgres the schema `schema`. */
+const openAt = ({ file, schema }, role, now) => (schema ? openPostgresStore({ url: PG_URL, schema, role, testClock: now }) : openSqliteStore({ file, role, now }));
 
 /**
  * A store file of its own: the server's store (schema set up), and `runners` more opened on the same file as runners.
@@ -50,15 +84,17 @@ after(async () => {
  */
 export async function stores({ runners = 1 } = {}) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-runner-"));
-  const file = join(dir, "store.sqlite");
+  const schema = onPostgres ? await freshSchema() : undefined;
+  const file = schema ? `pg:${schema}` : join(dir, "store.sqlite");
   const clock = { skewMs: 0 };
   const now = () => Date.now() + clock.skewMs;
-  const server = await openSqliteStore({ file, role: "server", now });
-  const entry = { stores: [server], dir };
+  const entry = { stores: [], dir, schema };
   opened.push(entry);
+  const server = await openAt({ file, schema }, "server", now);
+  entry.stores.push(server);
   const forRunners = [];
   for (let i = 0; i < runners; i++) {
-    const store = await openSqliteStore({ file, role: "runner", now });
+    const store = await openAt({ file, schema }, "runner", now);
     entry.stores.unshift(store);
     forRunners.push(store);
   }

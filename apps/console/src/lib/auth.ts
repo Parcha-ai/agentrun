@@ -2,13 +2,17 @@ import type { ClientError } from "./client";
 
 export type AuthMode = "signed_in" | "sign_in" | "setup" | "token_link";
 
+/** A server with no accounts: its session read says so (`accounts: false`). */
+export const noAccounts = (r: { status: number; body: unknown }): boolean => r.status === 200 && (r.body as { accounts?: unknown } | null)?.accounts === false;
+
 /** Where the person stands, from `GET /v2/auth/session`: no password yet (the first visit sets it), a password and no
- *  session (sign in), or signed in. A server without accounts has no session route (404): it is reached through the
- *  link it printed, which carries its token once, unless `probe` (the status of a protected read) says the browser is
- *  in already. */
+ *  session (sign in), or signed in. A server without accounts (`accounts: false`) is reached through the link it
+ *  printed, which carries its token once, unless `probe` (the status of a protected read) says the browser is in
+ *  already. */
+
 export function authMode(r: { status: number; body: unknown }, probe?: number): AuthMode {
   // No accounts: a protected read that already succeeds (a token the request carries) is in; otherwise use the link.
-  if (r.status === 404) return probe === 200 ? "signed_in" : "token_link";
+  if (noAccounts(r)) return probe === 200 ? "signed_in" : "token_link";
   const s = (r.body ?? {}) as { password_set?: boolean; signed_in?: boolean };
   if (s.signed_in) return "signed_in";
   return s.password_set ? "sign_in" : "setup";
@@ -25,7 +29,9 @@ export function signInProblem(e: ClientError): string {
   if (e.status === 403 && /has its owner/.test(e.message)) return "This server has its owner already: sign in.";
   if (e.status === 403 && /a new one is in the server's log/.test(e.message)) return "That setup code expired or was voided after too many wrong tries: a new one is in the server's log (on Render, the Logs tab).";
   if (e.status === 403 && /takes the setup code/.test(e.message)) return "Enter the setup code from the server's log.";
-  if (e.status === 403 && /setup code/.test(e.message)) return "That setup code is not the one in the server's log.";
+  // A code that is not the current one (an older link, a mistyped code): what to do, the same whether it came from the
+  // link or was typed.
+  if (e.status === 403 && /setup code/.test(e.message)) return "That setup code was refused: open the newest setup link in the server's log, or paste the server's token (AGENTRUN_TOKEN) here.";
   return e.fields?.[0]?.message ?? e.message;
 }
 
@@ -33,9 +39,12 @@ export function signInProblem(e: ClientError): string {
  *  address keeps, so the code does not stay in the URL or the history (as the server's own setup page does). */
 export function takeSetupCode(hash: string): { code: string | null; rest: string } {
   const params = new URLSearchParams(hash.startsWith("#") ? hash.slice(1) : hash);
-  const code = params.get("code");
-  if (code === null) return { code: null, rest: hash };
+  const given = params.get("code");
+  if (given === null) return { code: null, rest: hash };
   params.delete("code");
   const left = params.toString();
+  // A printed code is base64url only: the link's code is its leading run of those, so a character a chat app took into
+  // the link after it (a "." or ")", an invisible space) is no part of it. One inside it ends the run there.
+  const code = /^[A-Za-z0-9_-]*/.exec(given)![0];
   return { code, rest: left ? `#${left}` : "" };
 }

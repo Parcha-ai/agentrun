@@ -207,3 +207,17 @@ export async function deliver(baseUrl, secret, event, payload, { signature, deli
   return { status: res.status, body: await res.json().catch(() => null), body_text: body };
 }
 
+
+/** The server's store, read beside it in the runner role (the server holds the store itself): its trigger settings, its
+ *  triggers and its runs' launches. Closed after the test. */
+export async function storeOf(t, server) {
+  const { openSqliteStore } = await import("../dist/store/index.js");
+  const store = await openSqliteStore({ dataDir: server.data, role: "runner" });
+  t.after(() => store.close());
+  return store;
+}
+
+/** A run's first input, as its launch row holds it (the runner reads it at the run's claim). */
+export async function firstInput(t, server, runId) {
+  return (await (await storeOf(t, server)).runs.launch(runId)).body.input;
+}

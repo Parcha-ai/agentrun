@@ -10,9 +10,15 @@ import { KEY_TABLE, type KeyTable, type OptionsAnswer, type ProviderFactories, t
 import { COMPUTER_KINDS, type ComputerKind, type ComputerSetting } from "./computer-setting.js";
 import { inArchilMode } from "./archil-settings.js";
 import { ApiError, invalid } from "./errors.js";
-import { type KeyEnv, type KeyMeta, keyMetaOf, envValue, keyReader } from "./key-meta.js";
-import { putSealedKey, removeSealedKey, sealedKeyNames } from "./server-keys.js";
+import { type KeyEnv, type KeyMeta, keyMetaOf, envValue } from "./key-meta.js";
+import { registerSecretWrite, secretName } from "./secret-writes.js";
+import { getSealedKey, putSealedKey, removeSealedKey, sealedKeyNames } from "./server-keys.js";
 import type { Store } from "./store/index.js";
+
+// Every request to a computer's keys is a secret write (secret-writes.ts), whatever its body (a value, a null, an empty
+// body or none), as saveToolKey's is: the server's one dispatch check keeps it to the owner's session before any provider
+// is looked up, so a token learns nothing of which providers exist. The view and the connection test write none.
+registerSecretWrite("saveComputerKeys", () => true);
 
 /** A setting kind as the kind registry's SETTING_KINDS gives it. */
 export interface SettingKindSpec {
@@ -36,7 +42,7 @@ export interface ProviderEntry {
   readonly capabilities: readonly KindCapabilities[];
 }
 
-/** The kind registry, by its own names. */
+/** The kind registry, by its own names: the computer package's module (SETTING_KINDS, PROVIDERS, servingRefusals). */
 export interface KindRegistry {
   readonly SETTING_KINDS: Readonly<Record<ComputerKind, SettingKindSpec>>;
   readonly PROVIDERS: readonly ProviderEntry[];
@@ -49,8 +55,8 @@ export type FolderMode = "local" | "disk";
 export interface ComputerRoutesOptions {
   /** The server's one store: its sealed keys. */
   readonly store: Pick<Store, "sealedKeys">;
-  /** The server's seal key; absent, no key is kept here. */
-  readonly sealKey: Buffer | undefined;
+  /** The server's seal key: there is always one (seal-key.ts ensureSealKey, at the start). */
+  readonly sealKey: Buffer;
   readonly kinds: KindRegistry;
   /** Each provider module's create(), by provider id (the computer package's): what a test and a claim make. */
   readonly factories: ProviderFactories;
@@ -67,10 +73,10 @@ export interface ComputerRoutesOptions {
   readonly env?: KeyEnv;
 }
 
-/** A provider's key, as Settings shows it: the shared secret shape (key-meta.ts), and whether the provider needs it. */
-export type KeyView = KeyMeta & { required: boolean };
-/** A provider as Settings shows it: `metered` straight from the kind registry (its computers are billed by the vendor). */
-export type ProviderView = { id: string; name: string; metered: boolean; keys: KeyView[]; ready: boolean; why?: string };
+/** A provider as Settings shows it: `metered` straight from the kind registry (its computers are billed by the vendor);
+ *  its keys as SecretMeta under `secrets`, each named "computer:<provider>:<KEY>", and `required`, the names of the ones
+ *  it needs. */
+export type ProviderView = { id: string; name: string; metered: boolean; secrets: KeyMeta[]; required: string[]; ready: boolean; why?: string };
 export type KindView = { kind: ComputerKind; offered: boolean; why?: string; groups: string[]; tools: string[]; providers: ProviderView[] };
 export type TestView = { ok: true; detail: string } | { ok: false; why: string };
 
@@ -111,16 +117,17 @@ const keysWhy = (provider: ProviderEntry, missing: readonly string[]): string =>
 export function createComputerRoutes(options: ComputerRoutesOptions) {
   const { store, sealKey, kinds, factories, settings = {}, keyTable = KEY_TABLE, tools, env = {} } = options;
   const providerOf = (id: string) => kinds.PROVIDERS.find((one) => one.id === id);
-  const readKey = keyReader(store, sealKey, env);
   const modeNow = async (): Promise<FolderMode> => (typeof options.mode === "function" ? options.mode() : options.mode);
 
   /** Each kind, whether this server offers it and why not, the capability groups and tools it brings, and each provider
    *  that serves it, with its keys (saved or not, never a value) and whether a run could have it now. */
   async function view(): Promise<{ kinds: KindView[] }> {
     const mode = await modeNow();
-    const names = [...new Set(kinds.PROVIDERS.flatMap((provider) => provider.keys.map((key) => key.name)))];
-    const metas = new Map((await keyMetaOf(store, names.map((name) => ({ name, row: name })), env)).map((meta) => [meta.name, meta]));
-    const saved = new Set([...metas.values()].filter((meta) => meta.set).map((meta) => meta.name));
+    // Every provider's keys in one read: each a SecretMeta named for its provider, set by the environment or the store row
+    // of its key's name.
+    const slots = kinds.PROVIDERS.flatMap((provider) => provider.keys.map((key) => ({ secret: secretName("computer", provider.id, key.name), env: key.name, row: key.name })));
+    const metas = new Map((await keyMetaOf(store, slots, env)).map((meta) => [meta.name, meta]));
+    const saved = new Set(slots.filter((slot) => metas.get(slot.secret)!.set).map((slot) => slot.env));
     return {
       kinds: COMPUTER_KINDS.map((kind): KindView => {
         const spec = kinds.SETTING_KINDS[kind];
@@ -128,7 +135,7 @@ export function createComputerRoutes(options: ComputerRoutesOptions) {
         const providers = serving.map((provider): ProviderView => {
           const missing = missingKeys(provider, saved);
           const why = modeRefusal(kind, provider, mode) ?? (missing.length ? keysWhy(provider, missing) : undefined);
-          return { id: provider.id, name: provider.label, metered: provider.metered, keys: provider.keys.map((key) => ({ ...metas.get(key.name)!, required: key.required })), ready: why === undefined, ...(why ? { why } : {}) };
+          return { id: provider.id, name: provider.label, metered: provider.metered, secrets: provider.keys.map((key) => metas.get(secretName("computer", provider.id, key.name))!), required: provider.keys.filter((key) => key.required).map((key) => secretName("computer", provider.id, key.name)), ready: why === undefined, ...(why ? { why } : {}) };
         });
         const offered = kind === "none" || serving.some((provider) => modeRefusal(kind, provider, mode) === undefined);
         const why = offered ? undefined : serving.length ? `no provider of a ${kind} computer can reach this server's run folders` : `no provider serves a ${kind} computer`;
@@ -148,12 +155,9 @@ export function createComputerRoutes(options: ComputerRoutesOptions) {
       !declared.has(name) ? [{ field: name, reason: "not_allowed", message: `${provider.label} takes ${[...declared].join(", ") || "no keys"}, not ${name}` }]
         : value !== null && (typeof value !== "string" || value === "") ? [{ field: name, reason: "wrong_type", message: `${name} is a non-empty string, or null to remove it` }] : []);
     if (refused.length) throw new KeysRefused(refused);
-    // Kept until the server refuses to start without a seal key (the secrets plan's rule 2); then this branch can't be
-    // reached, and it goes.
-    if (!sealKey && Object.values(body).some((value) => value !== null)) throw new KeysRefused([{ field: Object.keys(body)[0]!, reason: "unavailable", message: "this server was given no seal key, so it keeps no key: start it with AGENTRUN_SEAL_KEY" }]);
     for (const [name, value] of Object.entries(body)) {
       if (value === null) await removeSealedKey(store, name);
-      else await putSealedKey(store, sealKey!, name, value as string);
+      else await putSealedKey(store, sealKey, name, value as string);
     }
     return (await view()).kinds.flatMap((kind) => kind.providers).find((one) => one.id === providerId);
   }
@@ -162,8 +166,8 @@ export function createComputerRoutes(options: ComputerRoutesOptions) {
   async function keysOf(provider: ProviderEntry): Promise<Record<string, string>> {
     const keys: Record<string, string> = {};
     for (const key of provider.keys) {
-      // The environment's value wins over a saved one (source "env"): the one reader a run's computer takes too.
-      const value = await readKey(key.name);
+      // The environment's value wins over a saved one (source "env").
+      const value = envValue(env, key.name) ?? (await getSealedKey(store, sealKey, key.name));
       if (value !== undefined) keys[key.name] = value;
     }
     return keys;

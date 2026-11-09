@@ -32,12 +32,14 @@ const stubRoute = async () => ({ model: "faux-1", provider: { api: "anthropic-me
  *   uploads  [{ path, text, contentType? }] reserved and received as ready files, their ids put on launch.files
  *   env      the runner process's environment the claim's tools are handed (claim-secrets.ts scopes it); {} by default
  *   keys     server keys saved sealed in the one store (store.sealedKeys), as the settings API saves them
+ *   ledger   the run's one ledger as the adapter loop hands it (run.ledger), or none: the learned_workflow tool's model
+ *            nodes take the session's proxied models from it
  *   before   called with the server's store once the run is made, before the runner claims it (a test arranges the run there),
  *            then the seal key and the run's data dir (where a test lands what the claim reads, e.g. a learning seed)
  */
 export async function specFor(t, options = {}) {
-  strictOptions("specFor", options, ["body", "skills", "launch", "settings", "routeOf", "uploads", "env", "keys", "before"]);
-  const { body = {}, skills, launch = {}, settings, routeOf = stubRoute, uploads = [], env = {}, keys = {}, before } = options;
+  strictOptions("specFor", options, ["body", "skills", "launch", "settings", "routeOf", "uploads", "env", "keys", "ledger", "before"]);
+  const { body = {}, skills, launch = {}, settings, routeOf = stubRoute, uploads = [], env = {}, keys = {}, ledger, before } = options;
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-spec-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -76,7 +78,7 @@ export async function specFor(t, options = {}) {
   // The run's root conversation (ROOT_CONVERSATION_ID), as the adapter loop makes it when the session opens: a host tool's
   // paid mark commits there (paid-calls.ts), so a test that runs a tool needs it, as a claim on the loop has it.
   await harness.commit((tx) => tx.createRootConversation(), ctx);
-  const run = { harness, registry, setModels: (given) => (models = given) };
+  const run = { harness, registry, setModels: (given) => (models = given), ...(ledger ? { ledger } : {}) };
   // The one shared claim-time computer (none for a runner place); a test gives its own, as the runner would.
   const computerForClaim = async () => ({ release: async () => {} });
   const deps = { env, data: dir, journal: (c) => store.journal(c), store, sealKey: SEAL_KEY, routeOf, computerForClaim };

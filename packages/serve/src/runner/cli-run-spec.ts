@@ -49,6 +49,7 @@ import type { AdapterRun, AdapterRunSpec, RunCapConfig } from "./adapter-loop.js
 import { adapterRunGate, type AdapterSpecDeps, answersCut, hostToolCtxOf, learnedWorkflowHostTool } from "./adapter-run-spec.js";
 import { signInReads } from "../sign-ins-store.js";
 import { claimSecrets } from "./claim-secrets.js";
+import { mcpForClaim } from "./mcp-run.js";
 import { LEARNED_WORKFLOW_TOOL } from "../learned-workflow.js";
 import { TOOL_PLANE_ENV } from "../tool-plane.js";
 import { resolveHarness } from "./adapters/index.js";
@@ -56,6 +57,7 @@ import { entriesOf } from "./loop.js";
 import type { Claim } from "./loop-contract.js";
 import { runMetrics } from "./metrics.js";
 import { heldRedactor, holdClaimed, runnerSecrets, secretRedactor } from "./redact.js";
+import { githubAppAccess } from "./github-app.js";
 import { holdStored } from "./store-secrets.js";
 
 /** The shared claim-time computer types live on the base spec (adapter-run-spec.ts), re-exported for this module's API. */
@@ -132,6 +134,11 @@ export async function cliRunSpecFromLaunch(launch: RunLaunch, run: AdapterRun, d
   const revision = { kind: revisionRow.kind, body } as { kind: string; body: { toolSettings?: unknown; harness?: string; approvals?: Approvals } };
   const granted = body.tools ?? [];
 
+  // The run's MCP for this claim (mcp-run.ts mcpForClaim): its pin made at the first claim or read as written, its
+  // credentials opened under the runner's seal key (deps.sealKey) into this claim's memory, one gateway for the claim.
+  // First, before the session opens: a refusal (a pin that cannot be made, a pinned meta tool) ends the run in its words.
+  const mcp = await mcpForClaim({ claim, store: deps.store, sealKey: deps.sealKey, grants: granted, harness: run.harness, work: () => runFolder(deps.data, runRow.agentId, claim.runId), launchInput: launch.input, githubAppAccess: (store, key, input) => githubAppAccess(store, key, input, deps.githubApi ? { api: deps.githubApi } : {}), ...(deps.githubMcpOrigin ? { githubMcpOrigin: deps.githubMcpOrigin } : {}) });
+
   // The harness: the launch's, else the revision's. Its table entry (facts, model choice, adapter, skill check), read from
   // the run's environment table as main does (harnessOf: the built-in entries, a test's module merged over them under a
   // test runner; anywhere else it is the built-ins), and the runner's record mode for it.
@@ -193,9 +200,9 @@ export async function cliRunSpecFromLaunch(launch: RunLaunch, run: AdapterRun, d
   const laid = start ? laidLearned(body.instructions ?? "", start.section) : (body.instructions ?? "");
   const check = await entry.skillCheck?.();
   // The revision's own skills laid before they are read, as the pi spec lays them (adapter-run-spec.ts).
-  await layOwnSkills(ws.workspace, (revisionRow.skills ?? {}) as Record<string, string>);
+  await layOwnSkills(ws.workspace, (revisionRow.skills ?? {}) as Record<string, string>, { computer: (launch as { computer?: ComputerSetting }).computer?.kind });
   // A learning run's seed laid as the pi spec lays it (runner/learning-seed.ts), its learned skills then in the skill list
-  // the harness is handed (its native skills, or the prompt's).
+  // the harness is handed (its native skills, or the prompt's), its learned workflows the ones learned_workflow runs.
   const seedLaid = start
     ? await layLearningSeed({
       work: ws.workspace,
@@ -262,9 +269,9 @@ export async function cliRunSpecFromLaunch(launch: RunLaunch, run: AdapterRun, d
   const gate = await adapterRunGate(deps.store, claim, revision, ws.workspace);
 
   // The run's tools: the kernel registry's hands on its Workspace (and computer), beside the learned_workflow tool when the
-  // pin names learned workflows. A CLI harness's session has a model port, so learned_workflow runs for real on the
-  // session's proxied models (learnedWorkflowHostTool), each node a request on the run's one route labelled
-  // learned_workflow, booked on the run's one ledger. Its call nodes run the agent's tools' effects on the run's scoped
+  // claim's seed lay chose learned workflows (seedLaid.workflows, as the pi spec lists them). A CLI harness's session has
+  // a model port, so learned_workflow runs for real on the session's proxied models (learnedWorkflowHostTool), each node
+  // a request on the run's one route labelled learned_workflow, booked on the run's one ledger. Its call nodes run the agent's tools' effects on the run's scoped
   // keys (claim-secrets.ts), the run's plane threaded for the web tools among them. (web_fetch/web_search/monid as the CLI's
   // own host tools are still a TODO, as the pi spec binds them.)
   const results: ToolResults = new Map();
@@ -278,7 +285,7 @@ export async function cliRunSpecFromLaunch(launch: RunLaunch, run: AdapterRun, d
     for (const redact of [...(run.redact ? [heldRedactor(run.redact)] : []), cut]) holdClaimed(redact, toolEnv);
     delete toolEnv[TOOL_PLANE_ENV];
     if (launch.plane && Object.keys(launch.plane).length) toolEnv[TOOL_PLANE_ENV] = JSON.stringify(launch.plane);
-    learnedTool = await learnedWorkflowHostTool({ run, granted, plane: launch.plane, env: toolEnv, work: root, ctx: hostToolCtxOf(run, context, results, root) });
+    learnedTool = await learnedWorkflowHostTool({ run, granted, plane: launch.plane, env: toolEnv, work: root, workflows: seedLaid?.workflows ?? [], ctx: hostToolCtxOf(run, context, results, root) });
   }
   const session: SessionSpec = {
     key: `run:${claim.runId}`,
@@ -319,6 +326,8 @@ export async function cliRunSpecFromLaunch(launch: RunLaunch, run: AdapterRun, d
     gate,
     runCap,
     ...(cap ? { cap } : {}),
+    // The run's MCP for a harness with its own client (mcp-run.ts), the session the adapter mounts; absent when none.
+    ...(mcp ? { mcp } : {}),
     // The run's end-of-run step, when it learns (the spec's, preferred over the loop's deps': adapter-loop.ts stepOf).
     ...(endOfRun ? { endOfRun } : {}),
     agentId: runRow.agentId,

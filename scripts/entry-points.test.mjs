@@ -32,6 +32,7 @@ const reviewed = new Map([
   ['packages/serve/test/learn-support.mjs', childScript],
   ['packages/computer/test/phone-provider.test.mjs', childScript],
   ['spec/lean/sweep/capture-dsl.mjs', label],
+  ['packages/serve/test/store-target.mjs', label],
 ]);
 
 const suspect = (source) => source.includes('process.argv[1]');

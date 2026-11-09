@@ -1,7 +1,7 @@
 // `npx @parcha/agentrun agents list`: the server's API from the terminal. Every command is an operation of the server's
 // OpenAPI document, read from the generated table (commands.generated.mjs); nothing here is written per command. Waiting for
 // a run and following it live (runs start --wait, runs wait, runs timeline --follow) are follow.mjs's; the commands that
-// read a secret from stdin (login, logout, tool-keys set) are login.mjs's, skill install is skill.mjs's, and template
+// read a secret from stdin (login, logout) are login.mjs's, skill install is skill.mjs's, and template
 // validate and template eval, which check and run a package folder on this machine, are template.mjs's.
 import { closeSync, constants, fstatSync, openSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -60,6 +60,7 @@ const HELP = () => {
     "server started on this machine with the data directory (--data, default ~/.agentrun). The token: AGENTRUN_API_KEY,",
     "else api_key in the config file, else that server's own; it is never a flag and never printed. agentrun login",
     "--base-url URL checks a token read from stdin and writes the config file (0600); agentrun logout removes it.",
+    "Keys and other secrets are set in the console, signed in: the token can't write one, so no command does.",
     "Output: the response's JSON on stdout, a file's bytes as they are; an error's on stderr. Exit codes: 0 ok, 1 the",
     "server refused, 2 bad usage (a bad base URL among it), 3 the server cannot be reached, 4 no token, the token was",
     "refused, or the config file, the server's record or its token file was refused. runs wait and runs start --wait",
