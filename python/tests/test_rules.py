@@ -647,6 +647,48 @@ class Rules(unittest.TestCase):
             with self.subTest(errors.index(error)):
                 self.assertNotIn(KEY, text, f"{type(error).__name__}: {[type(link).__name__ for link in chain]}")
 
+    def test_deeply_nested_json_from_the_server_is_data_as_the_typescript_client_reads_it_or_an_agentrun_error_never_a_recursion_error(self) -> None:
+        depth = 600
+
+        def nested() -> str:
+            return "[" * depth + "]" * depth
+
+        def answer(request: Request, reply: Reply) -> Any:
+            if request.url == "/v2/agents":
+                return 200, JSON_HEADERS, f'{{"agents": {nested()}, "next_cursor": null}}'
+            if request.url == "/v2/agents/a":
+                return 400, JSON_HEADERS, f'{{"error": {{"code": "bad_request", "details": {nested()}}}}}'
+            if request.url == "/v2/settings/mcp-servers/docs":
+                return 200, JSON_HEADERS, f'{{"name": "docs", "echo": {nested()}}}'
+            done = json.dumps(page(status="completed", final=True))[:-1] + f', "deep": {nested()}}}'
+            reply.head(200, {"content-type": "text/event-stream"})
+            reply.end(f'id: 1\nevent: rows\ndata: {done}\n\nevent: end\ndata: {{"reason":"terminal"}}\n\n')
+            return None
+
+        server = Listener(self, answer)
+        client = AgentRun(base_url=server.base, api_key=KEY, max_retries=0)
+        secret = {"url": "https://mcp.example.com/mcp", "auth": {"type": "bearer", "token": f"t-{secrets.token_hex(8)}"}}
+        # 600 deep: JSON the parser reads is data, scrubbed where it would be, as the TypeScript client reads it.
+        self.assertIsNone(client.agents.list()["next_cursor"])
+        refused = self.thrown(client.agents.get, "a")
+        assert isinstance(refused, AgentRunRefused), type(refused).__name__
+        self.assertEqual((refused.status, refused.code), (400, "bad_request"))
+        self.assertEqual(client.mcp_servers.save("docs", secret)["name"], "docs")  # type: ignore[arg-type]
+        self.assertEqual([p["status"] for p in client.runs.follow("r1")], ["completed"])
+        # Deeper than the parser reads: an answer that is not JSON it can read, never a RecursionError.
+        depth = 100_000
+        errors = [self.thrown(client.agents.list), self.thrown(client.agents.get, "a"), self.thrown(client.mcp_servers.save, "docs", secret), self.thrown(lambda: list(client.runs.follow("r1")))]
+        self.assertEqual([(type(error).__name__, getattr(error, "status", None), getattr(error, "code", None)) for error in errors], [
+            ("AgentRunRefused", 200, "bad_answer"), ("AgentRunRefused", 400, None), ("AgentRunRefused", 200, "bad_answer"), ("AgentRunRefused", 200, "bad_answer"),
+        ])
+        # Nor a caller's body too deep to send as JSON: a usage error, before anything is sent.
+        sent = len(server.requests)
+        body: Any = []
+        for _ in range(100_000):
+            body = [body]
+        self.assertIsInstance(self.thrown(client.server.mcp, body), AgentRunUsage)
+        self.assertEqual(len(server.requests), sent)
+
     def test_the_key_is_in_no_traceback_even_one_that_prints_its_locals(self) -> None:
         elsewhere = Listener(self)
         home = Listener(self, lambda request, reply: (302, {"location": f"{elsewhere.base}/agents"}, ""))
