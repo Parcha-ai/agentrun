@@ -5,7 +5,7 @@
 // key) and bound to `mcp:<server>:<header>`, so a value moved to another server or header does not open. An OAuth
 // server's token set (mcp-oauth.ts) is sealed the same way, bound to `mcp:<server>:oauth`, and refreshed here. No read
 // returns a credential. No redirect is followed: a credential goes only to the URL the person gave.
-import { GITHUB_MCP_ONLY, GITHUB_MCP_ORIGIN } from "./github.js";
+import { GITHUB_MCP_ONLY, GITHUB_MCP_ORIGIN, githubMcpUrl } from "./github.js";
 import { createHmac } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -431,7 +431,7 @@ export class McpServers {
   private async withAppToken(kept: { auth: { type: AuthType } }, url: URL, headers: HeaderMap, stop?: AbortSignal): Promise<HeaderMap> {
     if (kept.auth.type !== "github_app") return headers;
     // Never a token of the App to another origin: a row saved before this rule is refused here too.
-    if (url.origin !== this.appOrigin) throw invalid([{ field: "url", reason: "not_allowed", message: GITHUB_MCP_ONLY }]);
+    if (!githubMcpUrl(url, this.appOrigin)) throw invalid([{ field: "url", reason: "not_allowed", message: GITHUB_MCP_ONLY }]);
     const minted = this.appToken ? await this.appToken(stop) : { unusable: "This server has no GitHub App: Connect GitHub in Settings." };
     if ("unusable" in minted) throw new ApiError("github_not_connected", minted.unusable);
     return { ...headers, authorization: `Bearer ${minted.token}` };
@@ -440,14 +440,14 @@ export class McpServers {
   /** Whether the saved server `name` takes the connected GitHub App's tokens, minted for each run's launch. */
   takesAppToken(name: string): boolean {
     const saved = this.saved(name);
-    return saved?.auth.type === "github_app" && new URL(saved.url).origin === this.appOrigin;
+    return saved?.auth.type === "github_app" && githubMcpUrl(saved.url, this.appOrigin);
   }
 
   /** Whether the saved server `name` is a github_app one at an origin that is not GitHub's hosted MCP (saved before that
    *  rule): its calls are refused unsent, and no token is minted for it. */
   appServerElsewhere(name: string): boolean {
     const saved = this.saved(name);
-    return saved?.auth.type === "github_app" && new URL(saved.url).origin !== this.appOrigin;
+    return saved?.auth.type === "github_app" && !githubMcpUrl(saved.url, this.appOrigin);
   }
 
   /** A body's URL, auth and prices, or 422. */
@@ -457,7 +457,8 @@ export class McpServers {
     const auth = authOf(body.auth, issues);
     const prices = pricesOf(body.prices, issues);
     // The App's tokens go to GitHub alone: a github_app server is GitHub's hosted MCP, nothing else.
-    if (url && auth?.type === "github_app" && url.origin !== this.appOrigin) issues.push({ field: "url", reason: "not_allowed", message: GITHUB_MCP_ONLY });
+    // A github_app server's URL is refused in the GitHub rule's words, in place of any other the URL drew.
+    if (url && auth?.type === "github_app" && !githubMcpUrl(url, this.appOrigin)) issues.splice(0, issues.length, ...issues.filter((issue) => issue.field !== "url"), { field: "url", reason: "not_allowed", message: GITHUB_MCP_ONLY });
     if (issues.length) throw invalid(issues);
     return { url: url!, auth: auth!, ...(prices ? { prices } : {}) };
   }

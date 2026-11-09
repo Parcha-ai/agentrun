@@ -197,7 +197,7 @@ test("an inline preview of a github_app server lists its tools with a token of t
   const preview = await server.api("POST", "/settings/mcp-servers/preview", { url: fake.url, auth: { type: "github_app", headers: { "X-MCP-Tools": "add" } } });
   assert.equal(preview.status, 200, JSON.stringify(preview.body));
   assert.ok(preview.body.tools.some((tool) => tool.name === "add"));
-  assert.equal(server.github.tokens.length, 1, "with one token of the App's installation");
+  assert.deepEqual(listingTokens(server).map((entry) => entry.repositories ?? null), [null, ["widgets"]], "with a token of one repository (the first only found it, and is revoked)");
 });
 
 test("a github_app server moved off GitHub's hosted MCP is refused on url, and nothing reaches the new address: neither its static headers nor a token", { timeout: 60_000 }, async (t) => {

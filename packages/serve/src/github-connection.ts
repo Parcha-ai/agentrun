@@ -502,8 +502,22 @@ export class GitHubConnect {
     const first = view.installations[0];
     if (!first) return { unusable: "The GitHub App is not installed anywhere yet: install it on an account, then save the server." };
     try {
-      // The least a listing needs: metadata read, never the App's write permissions.
-      return await this.mint(first.id, appJwt(credentials.appId, credentials.pem, this.options.now?.() ?? Date.now()), undefined, { unusable: `GitHub gave no token for the App's installation on ${first.account}.` }, signal, { metadata: "read" });
+      const jwt = appJwt(credentials.appId, credentials.pem, this.options.now?.() ?? Date.now());
+      const refused = { unusable: `GitHub gave no token for the App's installation on ${first.account}.` };
+      // Which repository is the installation's first: asked with a metadata-read token that never leaves this server
+      // (only GitHub's API sees it), revoked at once. The token the listing sends is narrowed to that one repository.
+      const scout = await this.mint(first.id, jwt, undefined, refused, signal, { metadata: "read" });
+      if ("unusable" in scout) return scout;
+      let repo: unknown;
+      try {
+        const listed = await githubCall(this.options.api, "/installation/repositories?per_page=1", { jwt: scout.token, ...(signal ? { signal } : {}) });
+        repo = isObject(listed.json) && Array.isArray(listed.json.repositories) && isObject(listed.json.repositories[0]) ? listed.json.repositories[0].name : undefined;
+      } finally {
+        await githubCall(this.options.api, "/installation/token", { method: "DELETE", jwt: scout.token }).catch(() => undefined);
+      }
+      if (typeof repo !== "string" || !repo) return { unusable: `The GitHub App's installation on ${first.account} covers no repository yet: add one to it, then save the server.` };
+      // The least a listing needs: metadata read, of one repository; never the App's write permissions, never all of them.
+      return await this.mint(first.id, jwt, [repo], refused, signal, { metadata: "read" });
     } catch (error) {
       return { unusable: `GitHub did not give a token: ${(error as Error).message}.` };
     }

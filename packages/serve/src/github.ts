@@ -10,6 +10,19 @@ export const GITHUB_WEB = "https://github.com";
 export const GITHUB_MCP_ORIGIN = "https://api.githubcopilot.com";
 /** Why a github_app server elsewhere is refused, in words. */
 export const GITHUB_MCP_ONLY = "A github_app server is GitHub's hosted MCP (https://api.githubcopilot.com/mcp/) only";
+
+/** Whether `url` is GitHub's hosted MCP (`origin`, a test's fake through the server's seam): its origin exactly, which
+ *  URL folds (the default port, the host's case), and no userinfo. Another port, http, a trailing-dot host or another host
+ *  that only starts with GitHub's is not. The one check a github_app server's URL meets, wherever the App's token may go. */
+export function githubMcpUrl(url: string | URL, origin: string = GITHUB_MCP_ORIGIN): boolean {
+  let u: URL;
+  try {
+    u = new URL(String(url));
+  } catch {
+    return false;
+  }
+  return u.origin === origin && u.username === "" && u.password === "";
+}
 /** How long a call to GitHub may take, whole. */
 const GITHUB_MS = 15_000;
 
@@ -25,7 +38,7 @@ export function appJwt(appId: string, pem: string, nowMs = Date.now()): string {
 
 /** One call to GitHub's API at `api`: its status and its JSON (null when it answers none). A network failure or a wait
  *  past GITHUB_MS throws, saying which; what GitHub answered is the caller's to word, never passed on as it is. */
-export async function githubCall(api: string, path: string, options: { method?: "GET" | "POST"; jwt?: string; body?: unknown; signal?: AbortSignal } = {}): Promise<{ status: number; json: unknown }> {
+export async function githubCall(api: string, path: string, options: { method?: "GET" | "POST" | "DELETE"; jwt?: string; body?: unknown; signal?: AbortSignal } = {}): Promise<{ status: number; json: unknown }> {
   const signal = options.signal ? AbortSignal.any([options.signal, AbortSignal.timeout(GITHUB_MS)]) : AbortSignal.timeout(GITHUB_MS);
   let res: Response;
   try {
