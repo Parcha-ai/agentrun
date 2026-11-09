@@ -741,10 +741,6 @@ const CASES: readonly Case[] = [
   },
 ];
 
-/** The output-limit cases a CLI subject cannot model yet, with why (stated once, for each CLI subject's unsupported list):
- *  the loop reads a cut answer from its entry's stop reason (loop.ts cutLast), and a CLI's record carries none yet. */
-export const CLI_NO_STOP_REASON = "the CLI adapters don't report a turn cut at the model's output limit (stopReason length) yet, and the CLI record carries no stop reason for the loop to read";
-export const CLI_OUTPUT_LIMIT_UNSUPPORTED: Partial<Record<ConformanceCase, string>> = Object.freeze({ "length-ends-failed": CLI_NO_STOP_REASON, "length-mid-run": CLI_NO_STOP_REASON });
 
 const CLI_NEVER_RERUNS = "a CLI never reruns a call that started; only the model calls again (its adapter's facts: rerunsStarted false)";
 
@@ -756,6 +752,12 @@ export function factsRuleOut(facts: ConformanceSubject["facts"]): Partial<Record
     // steer-origin steers the turn in flight too: its message is taken mid-turn, or never.
     ...(facts.steer ? {} : { "steer-mid-turn": noSteer, "steer-origin": noSteer }),
     ...(facts.rerunsStarted === false ? { "replay-safe-rerun": CLI_NEVER_RERUNS, "fault-restarts-bounded": CLI_NEVER_RERUNS } : {}),
+    // A harness that resumes a cut answer itself never ends a turn on the cut; one whose cut ends its turn never goes on
+    // from it in the same turn.
+    ...(facts.recoversCutAnswers !== undefined && facts.recoversCutAnswers > 0
+      ? { "length-ends-failed": `${facts.id} resumes an answer its output limit cut itself, up to ${facts.recoversCutAnswers} times in one turn (its adapter's facts: recoversCutAnswers ${facts.recoversCutAnswers})` }
+      : {}),
+    ...(facts.recoversCutAnswers === 0 ? { "length-mid-run": `a cut ends ${facts.id}'s turn, as pi's does (its adapter's facts: recoversCutAnswers 0)` } : {}),
   };
 }
 

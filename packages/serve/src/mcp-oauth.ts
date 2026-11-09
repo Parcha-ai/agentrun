@@ -21,7 +21,8 @@ export const MCP_SETTINGS_PAGE = "/#/settings/mcp";
 /** What a person is told when a sign-in no longer works. */
 export const SIGN_IN_AGAIN = "sign in again in Settings → MCP servers";
 const STATE_MS = 10 * 60_000;
-const MAX_PENDING = 64;
+/** The most sign-ins that may be in flight at once: the in-memory map evicts to it, and the store-backed one refuses past it. */
+export const MAX_PENDING = 64;
 const REQUEST_MS = 15_000;
 /** How long a token refresh's request may take: a run's start waits for it, two tries at most (mcp-servers.ts), so an
  *  authorization server that never answers holds a start's answer no more than about eight seconds, well under a

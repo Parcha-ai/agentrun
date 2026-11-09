@@ -17,7 +17,7 @@ import {
 } from "./mcp-probe.js";
 import { listMcpServers, openServerCredential, putPendingSignIn, removeMcpServer, saveMcpServer, takePendingSignIn } from "./mcp-store.js";
 import { checkPrivateHosts, privateOAuthHosts, savePrivateOAuthHosts } from "./mcp-private-hosts.js";
-import { type ClientKind, MCP_SETTINGS_PAGE, McpSignIns, type OAuthNetwork, type Pending, type PendingStore, reasonOf, SIGN_IN_AGAIN, systemNetwork, type TokenSet } from "./mcp-oauth.js";
+import { type ClientKind, MAX_PENDING, MCP_SETTINGS_PAGE, McpSignIns, type OAuthNetwork, type Pending, type PendingStore, reasonOf, SIGN_IN_AGAIN, systemNetwork, type TokenSet } from "./mcp-oauth.js";
 import { SEAL_KEY_ENV, sealKeyOf } from "./tool-keys.js";
 import { serverGate, type ToolSettingsMap } from "./tool-plane.js";
 import { type McpCredential, type Mcp, type McpOauth, type McpServerRow, type Settings, type Store } from "./store/index.js";
@@ -29,29 +29,34 @@ const MAX_VALUE_BYTES = MAX_OAUTH_VALUE_BYTES;
 /** The store slice this layer reads and writes; `settings` for the private-network OAuth hosts the owner allows. */
 type McpServersStore = { readonly mcp: Mcp; readonly mcpOauth: McpOauth; readonly settings: Pick<Settings, "get" | "put">; flush: Store["flush"] };
 
-/** The sign-ins in flight over the store (store.mcpOauth): the verifier sealed by its state, the rest of the sign-in's
- *  working state plain JSON the callback rebuilds. The read and the remove are two calls, not one atomic take, so a store
- *  method (store.mcpOauth.take) is still owed for a strictly single-use guarantee under concurrent callbacks; until then a
- *  replay is refused by the expiry and the first remove in the common path. */
+/** The sign-ins in flight over the store (store.mcpOauth): the sign-in's secret parts (the PKCE verifier and the OAuth
+ *  client, with its secret) sealed together by its state, the rest of its working state plain JSON the callback rebuilds.
+ *  `set` sweeps what has expired and refuses past MAX_PENDING live rows before it writes (what the PendingStore contract
+ *  promises), and a start with no verifier is a bug, not a row. `take` deletes and returns in one atomic statement
+ *  (store.mcpOauth.take), so a replay or an expired state takes nothing. */
 function pendingOverStore(store: McpServersStore, sealKey: Buffer): PendingStore {
   return {
     async set(state, entry) {
+      if (!entry.verifier) throw new ApiError("internal", "A sign-in cannot be saved with no PKCE verifier.");
+      const now = Date.now();
+      await store.mcpOauth.sweepExpired(now);
+      if ((await store.mcpOauth.count(now)) >= MAX_PENDING) throw new ApiError("rate_limited", `There are already ${MAX_PENDING} MCP sign-ins in flight; finish or wait one out, then start the sign-in again.`);
       await putPendingSignIn(store, sealKey, {
         state,
         server: entry.name,
-        verifier: entry.verifier ?? "",
-        cookieBinding: "",
-        working: { url: entry.url, was: entry.was, ...(entry.scope ? { scope: entry.scope } : {}), kind: entry.kind, ...(entry.client ? { client: entry.client } : {}), ...(entry.discovery ? { discovery: entry.discovery } : {}), ...(entry.resource ? { resource: entry.resource } : {}) },
+        verifier: entry.verifier,
+        ...(entry.client ? { client: entry.client } : {}),
+        working: { url: entry.url, was: entry.was, ...(entry.scope ? { scope: entry.scope } : {}), kind: entry.kind, ...(entry.discovery ? { discovery: entry.discovery } : {}), ...(entry.resource ? { resource: entry.resource } : {}) },
         expiresAt: entry.expires,
       });
     },
     async take(state) {
       const row = await takePendingSignIn(store, sealKey, state, Date.now());
       if (!row) return undefined;
-      const w = (row.working ?? {}) as { url: string; was: string | null; scope?: string; kind: ClientKind; client?: unknown; discovery?: unknown; resource?: string };
+      const w = (row.working ?? {}) as { url: string; was: string | null; scope?: string; kind: ClientKind; discovery?: unknown; resource?: string };
       return {
         name: row.server, url: w.url, was: w.was ?? null, ...(w.scope ? { scope: w.scope } : {}), kind: w.kind,
-        ...(w.client ? { client: w.client as Pending["client"] } : {}), verifier: row.verifier,
+        ...(row.client ? { client: row.client as Pending["client"] } : {}), verifier: row.verifier,
         ...(w.discovery ? { discovery: w.discovery as Pending["discovery"] } : {}), ...(w.resource ? { resource: w.resource } : {}),
         expires: row.expiresAt,
       };
