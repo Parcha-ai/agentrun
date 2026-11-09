@@ -539,6 +539,10 @@ export interface Runs {
    *  order it numbers, so its watermark is its last change). None is read twice from a later cursor. The cursor is the
    *  store's own: never a time, so writes in one millisecond are each read. */
   changedSince(cursor: RunChangeCursor | undefined, options?: { limit?: number }): Promise<RunChanges>;
+  /** The feed's head, in one read: the cursor a reader holds once it has read on until a page comes back empty, so one
+   *  that starts here reads only the changes made after. It keeps changedSince's watermark: never past a change a
+   *  transaction still in flight may yet commit. */
+  changesHead(): Promise<RunChangeCursor>;
 }
 
 /** A position in the run-change feed (Runs.changedSince): opaque, the store's own; only one it handed back is valid. */

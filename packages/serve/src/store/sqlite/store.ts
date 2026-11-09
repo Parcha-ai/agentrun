@@ -727,6 +727,11 @@ class SqliteStore implements Store {
         const changes = rows.map((row) => ({ id: row.run_id, state: row.state, endedAt: row.ended_at, epoch: row.epoch, runner: row.runner }));
         return { changes, next: String(rows.length ? rows.at(-1)!.seq : after) };
       },
+      // The last change's seq: with one writer, every change at or below it has committed (the watermark), and "0" with none.
+      changesHead: async () => {
+        const [row] = await db.all<{ head: number }>("SELECT COALESCE(MAX(seq), 0) AS head FROM run_changes");
+        return String(row?.head ?? 0);
+      },
       archive: async (runId, archived) => {
         await db.write([{ sql: "UPDATE runs SET archived_at = ? WHERE id = ?", params: [archived ? now() : null, runId] }]);
       },
