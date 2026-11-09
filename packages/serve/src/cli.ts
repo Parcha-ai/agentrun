@@ -17,13 +17,13 @@ import { resetPassword } from "./owner.js";
 import type { ImageState } from "./box-image.js";
 import { banner, boxImageLine } from "./print.js";
 import type { LearningMode } from "./learning.js";
-import { DEFAULT_PORT, type Serve, startServe } from "./server.js";
+import { DEFAULT_PORT, fauxEnvOf, type Serve, type ServeOptions, startServe } from "./server.js";
 import { SEAL_KEY_ENV } from "./tool-keys.js";
 
 /** A runner beside the server on the same data directory (the CLI start's server-and-runner, and the `runner` subcommand):
  *  its own store handle (role runner), and the runner's dispatch (dispatch.ts) for each claimed run — pi on the kernel's
  *  adapter loop, a learning run on the learning loop. Returns the runner and a close() that stops it and closes its store. */
-async function runnerBeside(dataDir: string, loops?: number): Promise<{ runner: Awaited<ReturnType<typeof import("./runner/runner.js")["startRunner"]>>; close: () => Promise<void> }> {
+async function runnerBeside(dataDir: string, loops?: number, switches: NodeJS.ProcessEnv = {}): Promise<{ runner: Awaited<ReturnType<typeof import("./runner/runner.js")["startRunner"]>>; close: () => Promise<void> }> {
   const { startRunner } = await import("./runner/runner.js");
   const { dispatchRunner } = await import("./runner/harness-loops.js");
   const { routeOf } = await import("./runner/model-route.js");
@@ -52,7 +52,11 @@ async function runnerBeside(dataDir: string, loops?: number): Promise<{ runner: 
   // The beside-runner sees the server's environment as a separate runner would (runEnv, not withoutFaux): so an API run on
   // a --faux server reaches the faux gateway and its computers. The run's claim-time computer is composed once, the one way
   // (workspace/computer-deps.ts computerDepsFrom), from that same environment.
-  const runs = runEnv(process.env);
+  // With the server's test switches (`switches`, server.ts fauxEnvOf: --faux and its modules), which the CLI hands the
+  // server as options, never through this process's environment: without them a --faux start's runner looks its faux
+  // model up in pi-ai's own catalog and every run fails on its first request. Assigned onto runEnv's result, never spread:
+  // its secrets are non-enumerable and a spread drops them.
+  const runs = Object.assign(runEnv(process.env), switches);
   const computers = computerDepsFrom({ env: runs, store, sealKey });
   const createLoop = dispatchRunner({ env: runs, data: dataDir, journal: (claim) => store.journal(claim), store, sealKey, routeOf, computerForClaim: computers.computerForClaim, computerDeps: computers.computerDeps });
   const runner = startRunner({ store, createLoop, ...(loops !== undefined ? { loops } : {}) });
@@ -330,8 +334,9 @@ const onBoxImage = (state: ImageState) => {
 // How it was started, for the hints that start it again (adapters.ts npxLine): itself and its runs read it.
 Object.assign(process.env, startedWith({ ...(values.port !== undefined ? { port: values.port } : {}), open: values.open === true }));
 let serve: Serve;
+let serveOptions: ServeOptions;
 try {
-  serve = await startServe({
+  serve = await startServe(serveOptions = {
     onBoxImage,
     data, port, ...(values.port === undefined ? { nextFreePort: true } : {}), ...(values.listen ? { host: values.listen } : {}), ...(given ? { token: given } : {}), ...(values.faux ? { faux: values.faux } : {}), ...(values["faux-browser"] ? { fauxBrowser: values["faux-browser"] } : {}), allowHosts: values["allow-host"],
     ...(values["max-runs"] !== undefined ? { maxRuns: Number(values["max-runs"]) } : {}),
@@ -350,7 +355,7 @@ try {
 let runnerProc: Awaited<ReturnType<typeof runnerBeside>> | undefined;
 if (!values["no-runner"]) {
   try {
-    runnerProc = await runnerBeside(data);
+    runnerProc = await runnerBeside(data, undefined, fauxEnvOf(serveOptions));
   } catch (error) {
     console.error(`agentrun-serve: the runner could not start: ${(error as Error).message}`);
     await serve.close();
