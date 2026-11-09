@@ -461,12 +461,12 @@ export function folderSuite(backend, make) {
     assert.deepEqual(atMain.ops, [], "the seed is main: the snapshot and its bodies, no exec");
     const expected = [{ path: "MEMORY.md", text: indexOf(files) }, { path: "check-units.md", text: UNITS }, { path: "skills/weekly-report/SKILL.md", text: SKILL }, { path: "skills/weekly-report/reference.md", text: "A table.\n" }];
     // Held: every entry at the seed's top, the pending note's file among them (never laid, but main holds it).
-    const held = ["MEMORY.md", "ask-first.md", "check-units.md", "skills"];
-    assert.deepEqual({ ...atMain.result, held: [...atMain.result.held].sort() }, { ok: true, files: expected, refused: [], held }, "a pending note and a held skill are never laid");
+    const top = ["MEMORY.md", "ask-first.md", "check-units.md", "skills"];
+    assert.deepEqual({ ...atMain.result, held: [...atMain.result.held].sort() }, { ok: true, files: expected, refused: [], held: top }, "a pending note and a held skill are never laid");
     await commitChange(ws, await readSnapshot(ws), personChange("retired", "check-units.md", { ...files, "check-units.md": retire(UNITS) }));
     const older = await execsOf(() => readSeed(ws, one.main));
     assert.deepEqual(older.ops, ["read"]);
-    assert.deepEqual({ ...older.result, held: [...older.result.held].sort() }, { ok: true, files: expected, refused: [], held }, "the same files, read by git at the seed");
+    assert.deepEqual({ ...older.result, held: [...older.result.held].sort() }, { ok: true, files: expected, refused: [], held: top }, "the same files, read by git at the seed");
     assert.deepEqual([(await readSeed(ws, "0".repeat(40))).reason], ["gone"]);
     const broken = wrap(ws, { read: async () => { throw Object.assign(new Error("the disk is gone"), { name: "WorkspaceError", code: "UNAVAILABLE" }); }, exec: async () => { throw Object.assign(new Error("gone"), { name: "WorkspaceError", code: "UNAVAILABLE" }); } });
     assert.deepEqual([(await readSeed(broken, one.main)).reason], ["unavailable"]);

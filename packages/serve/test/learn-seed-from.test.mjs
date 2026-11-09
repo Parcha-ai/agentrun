@@ -37,6 +37,7 @@ test("a seed from the folder's read at a commit: its index, its notes newest fir
   assert.deepEqual(Object.keys(seed.notes).sort(), ["newer.md", "older.md"]);
   assert.deepEqual(seed.recent, ["newer.md", "older.md"]);
   assert.deepEqual(seed.files.sort(), ["MEMORY.md", "newer.md", "older.md", "retired.md", "skills"], "every entry at main's top as the read holds it, a retired note's name included, so the index never names it as given");
+  assert.deepEqual(seed.skills.map(({ name, files }) => [name, Object.keys(files ?? {}).sort()]), [["keep-dates", ["SKILL.md"]], ["check-units", ["SKILL.md", "reference/table.md"]]]);
 });
 
 test("a seed's files are what the read holds, not its order: with no order, a pending or a retired note's line is left out of the index a run gets", async () => {
@@ -49,7 +50,6 @@ test("a seed's files are what the read holds, not its order: with no order, a pe
   mkdirSync(join(dir, "work"));
   await pinSeed(dir, localWorkspace(join(dir, "work")), seed, { budget: 8000, read: true, shown: secretsShown([]), own: [] });
   assert.equal(readFileSync(join(dir, "work", ".learning", "MEMORY.md"), "utf8"), "- [Newer](newer.md): About newer.\n");
-  assert.deepEqual(seed.skills.map(({ name, files }) => [name, Object.keys(files ?? {}).sort()]), [["keep-dates", ["SKILL.md"]], ["check-units", ["SKILL.md", "reference/table.md"]]]);
 });
 
 test("a skill over the learned skills' budget is held by its size alone; a path that is no note's or skill's is skipped", async () => {
