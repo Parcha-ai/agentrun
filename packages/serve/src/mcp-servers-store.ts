@@ -344,9 +344,9 @@ export class McpServersOverStore {
     return {
       name,
       url: row.url,
+      ...(prices && Object.keys(prices).length ? { prices } : {}),
       ...listed,
       tools: listed.tools.map((tool) => ({ ...tool, ...serverGate(`mcp:${name}/${tool.name}`, settings) })),
-      ...(prices && Object.keys(prices).length ? { prices } : {}),
       ...(unmetered.length ? { not_metered: unmetered } : {}),
       auth: { type: row.auth, ...(row.auth === "headers" || row.auth === "github_app" ? { headers: Object.keys((cred?.type === "headers" ? cred.headers : {}) as HeaderMap) } : {}) },
       credential: opened === null ? null : !cred ? ("unreadable" as const) : expired ? ("expired" as const) : ("sealed" as const),
