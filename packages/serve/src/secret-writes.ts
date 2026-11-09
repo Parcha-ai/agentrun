@@ -121,14 +121,15 @@ function marksSecret(doc: Json, schema: unknown, seen = new Set<unknown>()): boo
   return Object.values(schema).some((value) => marksSecret(doc, value, seen));
 }
 
-/** The operations of `doc` whose request body marks a field `x-agentrun-secret`. */
+/** The operations of `doc` that write a secret: their request body marks a field `x-agentrun-secret`, or the operation is
+ *  marked whole (a removal, which has no body). The generated CLI leaves every one of them out. */
 export function markedOperations(doc: Json): string[] {
   const out: string[] = [];
   for (const item of Object.values((doc.paths ?? {}) as Record<string, Record<string, unknown>>)) {
     for (const op of Object.values(item)) {
       if (!isObject(op) || typeof op.operationId !== "string") continue;
       const body = isObject(op.requestBody) ? op.requestBody : undefined;
-      if (body && marksSecret(doc, body)) out.push(op.operationId);
+      if (op["x-agentrun-secret"] === true || (body && marksSecret(doc, body))) out.push(op.operationId);
     }
   }
   return out;

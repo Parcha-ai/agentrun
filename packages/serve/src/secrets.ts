@@ -123,6 +123,11 @@ export function holdMadeSecret(name: string, value: string): void {
  *  made itself (holdMadeSecret). */
 const own = (name: string): string | undefined => held.get(name) ?? process.env[name] ?? made.get(name);
 
+/** A secret this process was handed (over its pipe, or in its environment), never one it made itself: what a start asks
+ *  to tell a handed seal key from none, so a second server in one process makes or reads its own and is not handed the
+ *  first one's. */
+export const handedSecret = (name: string): string | undefined => held.get(name) ?? process.env[name];
+
 /** A secret's value: this process's own, which wins (tool-keys.ts' `source: "server"` is exactly these), else a key
  *  saved on the server `stored` reads for, opened now. One that does not open is absent, never a crash. */
 export const secret = (name: string, stored?: StoredKeys): string | undefined => {

@@ -79,7 +79,7 @@ import { memoryMbOf } from "./run-box.js";
 import { DOCUMENTS_ENV } from "./pdf-pages.js";
 import { CAP_MODES, type CapMode, meterFiguresIn } from "./cap.js";
 import { type Blocker, blockersOf, CODE_NODES_ENV, issueOf, MCP_HARNESSES, NOT_SET_UP, type RevisionShape } from "./runnable.js";
-import { holdMadeSecret, hostSecrets, SECRET_NAMES, secret, type StoredKeys, withSecrets } from "./secrets.js";
+import { handedSecret, holdMadeSecret, hostSecrets, SECRET_NAMES, secret, type StoredKeys, withSecrets } from "./secrets.js";
 import { isSecretWriteOperation, SECRET_WRITE_REFUSAL, secretsWritableFields, secretWriterFacts, writesSecret, writesSecretsAllowed } from "./secret-writes.js";
 import { ensureSealKey, SealKeyRefused, sealKeyHome, sealKeyLine } from "./seal-key.js";
 import { redactedOutput } from "./key-refusal.js";
@@ -759,7 +759,7 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   delete process.env[HARNESS_TABLE_ENV];
   // No start without a seal key (seal-key.ts): the one handed over, else the one kept under the config home, made at the
   // first start with only its path printed. Every secret here is kept under it; there is no keeping one in the clear.
-  const handedSeal = secret(SEAL_KEY_ENV);
+  const handedSeal = handedSecret(SEAL_KEY_ENV);
   let seal;
   try {
     seal = ensureSealKey(handedSeal, { configHome: sealKeyHome(process.env) });
