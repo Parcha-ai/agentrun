@@ -23,6 +23,10 @@ const { parallelSearchFee } = await import("../dist/paid-calls.js");
 const { FAUX_PARALLEL_ENV } = await import("../dist/decisions.js");
 const { FAUX_ENV } = await import("../dist/model.js");
 const { paidRequestsOf } = await import("./fixtures/paid-requests.mjs");
+const { runTimeline } = await import("../dist/store-reads/journal.js");
+const { BACKGROUND_CONTEXT } = await import("@earendil-works/chord/context");
+/** The run's timeline rows that speak of a paid tool's charge: its Tool cost rows and its Not metered ones. */
+const chargeRows = (rows) => rows.filter((row) => row.kind === "phase" && /^(Tool cost|Not metered):/.test(row.summary ?? "")).map((row) => row.summary);
 const FAUX_PARALLEL = new URL("./fixtures/faux-parallel-search.mjs", import.meta.url).pathname;
 
 /** A steady lease (this file tests call nodes, not leases): a lease the suite's load can outlast would cut a call node's
@@ -105,7 +109,7 @@ async function runOn(t, { workflow, tools = ["llm"], toolSettings, fetch, capUsd
     // timeline's reader passes over.
     const journalText = async () => ["store.sqlite", "store.sqlite-wal"].map((name) => join(dir, name)).filter(existsSync).map((file) => readFileSync(file).toString("utf8")).join("\n");
     const resting = during ? ["ended", "failed", "stopped"] : ["ended", "failed", "stopped", "parked"];
-    if (resting.includes(row.state) && row.runner === null) return Object.assign(row, { journalText, paidRequests: () => paidRequestsOf(store) });
+    if (resting.includes(row.state) && row.runner === null) return Object.assign(row, { journalText, paidRequests: () => paidRequestsOf(store), timeline: () => runTimeline(server, "run-1", BACKGROUND_CONTEXT, { settled: true }) });
     if (Date.now() - from > 30_000) assert.fail(`the run never left running: ${JSON.stringify({ state: row.state, summary: row.summary })}`);
     await sleep(20);
   }
@@ -117,6 +121,15 @@ test("an llm call node runs to its end on the runner, its request booked once on
   assert.equal(row.state, "ended", JSON.stringify({ state: row.state, summary: row.summary, why: whyIn(await row.journalText()) }));
   assert.deepEqual(origin.counts, { "CALL-ONE": 1 });
   assert.equal(eight(row.costUsd), eight(PER_ANSWER), `booked once: ${row.costUsd}`);
+});
+
+test("an llm call node's hold, given back as its own model request is held, shows no charge row on the run's timeline", async (t) => {
+  const origin = wordsOrigin(["CALL-ONE"]);
+  const row = await runOn(t, { workflow: llmCalls("CALL-ONE"), fetch: origin.fetch });
+  assert.equal(row.state, "ended", JSON.stringify({ state: row.state, summary: row.summary }));
+  // Its cost is its model request's (main's: an llm call is the run's usage, never a paid tool's charge), so no Tool cost
+  // row, and no Not metered one for the hold it gave back unused.
+  assert.deepEqual(chargeRows(await row.timeline()), [], "no charge row for the llm call");
 });
 
 test("the control: three llm call nodes in a chain, never paused, each run once and booked once", async (t) => {
@@ -175,6 +188,8 @@ test("a paid web_search call node on Parallel: its search sent once, and booked 
   const paid = await row.paidRequests();
   assert.ok(paid.length > 0, "the search's paid request is in the run's records");
   for (const request of paid) assert.equal(request.charged_by, "parallel", `charged by Parallel: ${JSON.stringify(request)}`);
+  // Its one charge row, as main's: who charged and what.
+  assert.deepEqual(chargeRows(await row.timeline()), [`Tool cost: parallel charged $${parallelSearchFee(3).usd.toFixed(4)} for ${paid[0].model.slice("paid:".length)}`], "one charge row, Parallel's");
 });
 
 test("past the cap, an llm call node's hold is refused before its effect is admitted: the run parks with nothing sent, and a raise sends it once", async (t) => {
