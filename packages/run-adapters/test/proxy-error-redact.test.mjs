@@ -192,6 +192,18 @@ test("no event's name exempts its data: an error under a healthy event name is c
   assert.equal(relay.push(healthy), healthy);
 });
 
+test("a credential too short to be told from text by chance leaves a healthy stream byte for byte, whole or one character at a time, and is still cut from an error event", () => {
+  const stream = 'event: response.created\ndata: {"type":"response.created","response":{"id":"r"}}\n\n'
+    + 'event: response.completed\ndata: {"type":"response.completed","response":{"id":"r","usage":{"input_tokens":10,"output_tokens":2}}}\n\n';
+  for (const pieces of [[stream], [...stream]]) {
+    const relay = errorCut('events', echoForms(['k']), undefined, () => {});
+    assert.equal(pieces.map((piece) => relay.push(piece)).join('') + relay.end(), stream);
+  }
+  const relay = errorCut('events', echoForms(['k']), undefined, () => {});
+  const failed = 'event: error\ndata: {"type":"error","message":"bad key k"}\n\n';
+  assert.ok(relay.push(failed).includes('bad [redacted]ey [redacted]'));
+});
+
 test("an error answer the cut holds part of reaches the client character for character: the hold never splits a character in two", async (t) => {
   // The window the host's redactor reads would end between the emoji's two halves.
   const body = `a\u{1F600}${'x'.repeat(4095)}`;
