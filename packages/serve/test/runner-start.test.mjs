@@ -12,12 +12,13 @@
 //     its password, the seal key, the server's token and API key, the model key.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
+import { fakeDocker } from "../../computer/test/fake-docker.mjs";
 import { openSqliteStore } from "../dist/store/index.js";
 import { until } from "./runner-support.mjs";
 
@@ -190,28 +191,44 @@ test("the heartbeat check, on an injected clock and file times: younger than twi
   assert.match(stale.why, /runner-x's heartbeat is \d+ s old/);
 });
 
-test("a box-placed run fails at its claim with computer_unavailable in words, nothing made: the runner process has no computers yet (a stated stopgap)", async (t) => {
-  const fake = await fakeAnthropic({ reply: () => ({ text: "never asked" }) });
+// The Docker computer's daemon file, which the computer package's build:daemon makes with Go (CI's build job does; a
+// machine with no Go has none). The fake docker never runs it: the provider only copies and binds it.
+const DAEMON = fileURLToPath(new URL(`../../computer/dist/computerd-linux-amd64`, import.meta.url));
+
+test("a box-placed run gets its Docker computer through the runner process (the composer's claim), released at its end; a runner-placed run beside it gets none", { skip: !existsSync(DAEMON) && "no computerd-linux-amd64: run npm run build:daemon -w @parcha/agentrun-computer (CI's build job does)" }, async (t) => {
+  // The computer package's fake docker, first on the runner's PATH: it answers run, inspect, exec (the daemon's hello) and
+  // rm as the docker CLI does. No Docker is reached.
+  const docker = fakeDocker();
+  const fake = await fakeAnthropic({ reply: () => ({ text: "Done." }) });
   t.after(() => fake.close());
   const dir = scratch(t, "agentrun-runner-box-");
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   await server.agents.create({ id: "agent-1", name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer." } });
   await server.runs.create({ id: "run-box", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { content: "Go." }, title: "box", place: { mode: "sandbox", box: "docker" }, harness: "pi", model: MODEL } });
+  await server.runs.create({ id: "run-here", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { content: "Go." }, title: "here", place: { mode: "runner" }, harness: "pi", model: MODEL } });
   await server.close();
-  const child = runnerChild(t, ["--data", dir], { ANTHROPIC_BASE_URL: fake.url, ANTHROPIC_API_KEY: PLANT.ANTHROPIC_API_KEY, AGENTRUN_RUNNER_NAME: "runner-box" });
+  const child = runnerChild(t, ["--data", dir, "--loops", "2"], {
+    PATH: `${dirname(docker.program)}:${dirname(process.execPath)}:/usr/bin:/bin`,
+    ANTHROPIC_BASE_URL: fake.url, ANTHROPIC_API_KEY: PLANT.ANTHROPIC_API_KEY, AGENTRUN_RUNNER_NAME: "runner-box",
+  });
   await child.line(READY);
-  const row = await until(async () => {
+  const rows = await until(async () => {
     const store = await openSqliteStore({ dataDir: dir, role: "runner" });
     try {
-      const now = await store.runs.get("run-box");
-      return now.state === "failed" && now;
+      const both = [await store.runs.get("run-box"), await store.runs.get("run-here")];
+      return both.every((row) => ["ended", "stopped", "failed"].includes(row.state)) && both;
     } finally {
       await store.close();
     }
-  }, "the box-placed run fails", 30_000);
-  assert.match(row.summary ?? "", /computer_unavailable/, `in words: ${row.summary}`);
-  assert.match(row.summary ?? "", /the runner's place/, "saying the runner runs only the runner's place");
-  assert.equal(fake.messages().length, 0, "nothing made: no model request was sent");
+  }, "both runs end", 60_000);
+  const [box, here] = rows;
+  assert.equal(box.state, "ended", `the box-placed run ran on its computer: ${box.summary}`);
+  assert.equal(here.state, "ended", `the runner-placed run ran: ${here.summary}`);
+  const runs = docker.calls().filter((args) => args[0] === "run");
+  assert.equal(runs.length, 1, `one container, the box-placed run's: ${JSON.stringify(docker.calls())}`);
+  assert.ok(runs[0].includes("agentrun.run=run-box"), `under the run's label: ${runs[0].join(" ")}`);
+  assert.ok(!runs[0].some((arg) => arg.includes("run-here")), "none for the runner-placed run");
+  assert.ok(docker.calls().some((args) => args[0] === "rm"), "released at the run's end");
 });
 
 test("a run's own process under the started runner holds none of the runner's secrets: its agent's bash `env` shows no store URL, seal key, token, API key or model key", async (t) => {
