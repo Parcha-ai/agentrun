@@ -861,6 +861,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // A stored key that does not open is said once at the start, never a refusal to start.
   toolKeys.view();
   const mcpServers = mcpServersOverStore(store, withSecrets(base, "own"), VERSION);
+  if (options.githubMcpOrigin) mcpServers.appOrigin = options.githubMcpOrigin;
   // The saved MCP servers' metadata (their addresses and the tools they list), a snapshot the run-grant checks read in
   // step (blockersOf's `mcp`, and the template apply): the server is the one writer of these rows (a save, refresh, sign-in
   // or delete), so the snapshot is refreshed after each of those and reads what is saved now. The runner reads the registry,

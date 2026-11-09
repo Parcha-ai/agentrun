@@ -21,7 +21,7 @@ import { openSqliteStore } from "../../dist/store/sqlite/store.js";
 import { sealKeyOf } from "../../dist/tool-keys.js";
 import { plantedSignIn, SIGN_IN_WRITE_ROUTES } from "../sign-ins-planted.mjs";
 
-/** @typedef {{ status: number, text: string, json?: unknown }} Answer */
+/** @typedef {{ status: number, text: string, json?: unknown, headers?: Record<string, string | string[]> }} Answer */
 /** @typedef {{ owner: (method: string, path: string, body?: unknown) => Promise<Answer>, token: (method: string, path: string, body?: unknown) => Promise<Answer>, api: Function, server: { port: number, data: string, token: string } }} PlantContext */
 /** @typedef {Record<string, string | string[]>} PlantIds */
 /** @typedef {{ values: string[], ids?: PlantIds, mints?: string[], cleanup?: (ctx: PlantContext, ids: Record<string, string[]>) => Promise<void> }} Planted */

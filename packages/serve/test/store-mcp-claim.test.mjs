@@ -258,12 +258,7 @@ test("M13: two claims refreshing the same expired token at once make one network
   b.release();
 });
 
-test("M11: with no seal key, a server's calls are refused in noSealKey's words, and no refresh is sent", async (t) => {
-  const { store, oauth, claim } = await oauthSetUp(t, { expiresAt: T0 - 1_000 });
-  const step = await claimOf(store, claim, ["mcp:fake/add"], { sealKey: undefined, now: () => T0 });
-  assert.equal(step.credentials.fake?.unopened, UNUSABLE.noSealKey);
-  assert.equal(refreshes(oauth), 0, "no refresh was sent");
-});
+// moved: M11 (a claim with no seal key): a runner never starts without one, seal-key.test.mjs "no seal key and nowhere to keep one: refused in words, never a start without one".
 
 test("M12: a server whose url origin no longer matches its sealed one is damaged: its calls are refused unsent in those words", async (t) => {
   const { store, fake, claim } = await setUp(t);

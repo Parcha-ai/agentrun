@@ -57,3 +57,11 @@ test("changed_at moves with a new credential only: a save that keeps the sealed 
   await r.save("fake", { url: fake.url, auth: { type: "bearer", token: NEXT } });
   assert.equal((await r.get("fake")).secret.changed_at, iso(clock.now), "a new credential moves it");
 });
+
+test("the document's MCP server read takes its secret from the one SecretMeta schema, not a copy", async () => {
+  const { openapiDocument } = await import("../dist/openapi.js");
+  const doc = openapiDocument(() => undefined);
+  const read = doc.paths["/settings/mcp-servers/{name}"].get.responses["200"].content["application/json"].schema;
+  const view = read.$ref ? doc.components.schemas[read.$ref.split("/").pop()] : read;
+  assert.equal(view.properties.secret.$ref, "#/components/schemas/SecretMeta");
+});

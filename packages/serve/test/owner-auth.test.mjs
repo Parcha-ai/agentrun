@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { mock, test } from "node:test";
 import * as owner from "../dist/owner.js";
 import { ROUTES } from "../dist/server.js";
-import { isSecretWriteOperation } from "../dist/secret-writes.js";
+import { writesSecret } from "../dist/secret-writes.js";
 import { builtConsole, call, CONSOLE_INDEX, cookieOf, scratch, serve } from "./support.mjs";
 
 const { Owner, resetPassword, SIGN_IN_PEERS } = owner;
@@ -251,8 +251,9 @@ test("every route, called with no credential, is a 401 but capabilities, the con
       // computer view, a full-control credential for its session, and its hand-back (browser-live.test.mjs,
       // browser-take-over.test.mjs).
       else if ((route.name === "approveLearningFile" || route.name === "restoreLearningFile" || route.name === "answerApproval" || route.name === "getRunBrowser" || route.name === "handBackRunBrowser" || route.name === "getRunComputer") && !headers.cookie) assert.equal(res.status, 403, `${route.method} ${path} with the token: ${res.status} ${res.text}`);
-      // A secret write takes the owner's session alone (secret-writes.ts): the token is 403 on it.
-      else if (isSecretWriteOperation(route.name) && !headers.cookie) assert.equal(res.status, 403, `${route.method} ${path} with the token: ${res.status} ${res.text}`);
+      // A secret write takes the owner's session alone (secret-writes.ts): the token is 403 on it. Which requests are secret
+      // writes is the operation's predicate's to say of this body: an MCP server's PUT with no credential in it is not.
+      else if (writesSecret(route.name, body) && !headers.cookie) assert.equal(res.status, 403, `${route.method} ${path} with the token: ${res.status} ${res.text}`);
       // An OAuth callback takes neither: only the cookie its own start set in the browser that started it.
       else if (route.name === "mcpOAuthCallback") assert.equal(res.status, 403, `${route.method} ${path}: ${res.status} ${res.text}`);
       else assert.ok(![401, 403].includes(res.status), `${route.method} ${path} with ${headers.cookie ? "the session" : "the token"}: ${res.status} ${res.text}`);
