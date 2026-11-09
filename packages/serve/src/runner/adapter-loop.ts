@@ -261,10 +261,9 @@ async function openCliRecord(harness: Harness, journal: Gate["journal"], context
   for (const entry of await entriesOf(journal, root.id, context)) {
     const data = (entry.data ?? {}) as { callId?: unknown; role?: unknown; status?: CallStatus; output?: unknown };
     if (entry.kind === KINDS.callStart && typeof data.callId === "string") started.set(data.callId, started.get(data.callId) ?? false);
-    else if (entry.kind === KINDS.callEnd && typeof data.callId === "string") {
-      started.set(data.callId, true);
-      ends.set(data.callId, { status: data.status ?? "done", ...(typeof data.output === "string" ? { output: data.output } : {}) });
-    } else if (entry.kind === KINDS.message && data.role === "person") personWritten = true;
+    else if (entry.kind === KINDS.callEnd && typeof data.callId === "string") started.set(data.callId, true);
+    else if (entry.kind === KINDS.message && data.role === "person") personWritten = true;
+    if (entry.kind === KINDS.callEnd && typeof data.callId === "string") ends.set(data.callId, { status: data.status ?? "done", ...(typeof data.output === "string" ? { output: data.output } : {}) });
   }
   for (const [callId, ended] of started) {
     if (ended) continue;
