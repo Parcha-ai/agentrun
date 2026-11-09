@@ -18,11 +18,19 @@ const policy = {
   usageOf: () => ({ input: 1, output: 1, cacheRead: 0 }),
 };
 
-/** A proxy whose provider answers `status` with `text` under `redact`; the text the client reads back. */
-async function answered(t, status, text, redact) {
+const { errorCut, echoForms } = await import('../dist/host/proxy.js');
+
+/** A proxy whose provider answers `status` with `text` under `redact`; the text the client reads back. `pieces`: the
+ *  answer's chunks, each its own (default the whole text); `contentType` and the host's `headers` as given. */
+async function answered(t, status, text, redact, { pieces, contentType = 'application/json', headers } = {}) {
   const hooks = { beforeRequest: async () => undefined, afterRequest: async () => {} };
-  const fetch = async () => new Response(text, { status, headers: { 'content-type': 'application/json' } });
-  const p = await startModelProxy({ policy, model: 'm', origin: 'https://provider.invalid', credential: () => CREDENTIAL, hooks, price: () => 0, log: () => {}, fetch, ...(redact ? { redact } : {}) }, KEY);
+  const fetch = async () => new Response(new ReadableStream({
+    start(c) {
+      for (const piece of pieces ?? [text]) c.enqueue(new TextEncoder().encode(piece));
+      c.close();
+    },
+  }), { status, headers: { 'content-type': contentType } });
+  const p = await startModelProxy({ policy, model: 'm', origin: 'https://provider.invalid', credential: () => CREDENTIAL, hooks, price: () => 0, log: () => {}, fetch, ...(redact ? { redact } : {}), ...(headers ? { headers } : {}) }, KEY);
   t.after(() => p.close());
   const { hostname, port } = new URL(p.url);
   return new Promise((resolve, reject) => {
@@ -92,4 +100,60 @@ test("an error body the provider never finishes reaches the client as it comes: 
     req.end(JSON.stringify({ model: 'm' }));
   });
   assert.equal(first, '{"error":{"type":"overloaded"');
+});
+
+test("a value only the host's redactor knows is cut from an error answer wherever a chunk boundary falls in it", async (t) => {
+  const body = JSON.stringify({ error: { message: "the org's token tok-ORG-123 has no access to this model" } });
+  const redact = (text) => text.replaceAll('tok-ORG-123', '[redacted]');
+  const at = body.indexOf('tok-ORG-123');
+  for (let split = at + 1; split < at + 'tok-ORG-123'.length; split++) {
+    const got = await answered(t, 403, body, redact, { pieces: [body.slice(0, split), body.slice(split)] });
+    assert.ok(!got.text.includes('tok-ORG-123') && got.text.includes('[redacted]'), `split at ${split}: ${got.text}`);
+  }
+});
+
+test("an error event reaches the client cut whatever its layout: the type after the message, an id line or a comment before the event's name", async (t) => {
+  const healthy = 'data: {"type":"response.created","response":{"id":"r1"}}\n\n';
+  for (const event of [
+    `data: {"message":"Incorrect API key provided: ${CREDENTIAL}","type":"error"}\n\n`,
+    `id: 7\nevent: error\ndata: {"type":"error","error":{"message":"bad key ${CREDENTIAL}"}}\n\n`,
+    `: keepalive\nevent: error\ndata: {"type":"error","error":{"message":"bad key ${CREDENTIAL}"}}\n\n`,
+    `data: {"response":{"status":"failed","error":{"message":"bad key ${CREDENTIAL}"}},"type":"response.failed"}\n\n`,
+  ]) {
+    for (const pieces of [undefined, [...(healthy + event)]]) {
+      const got = await answered(t, 200, healthy + event, undefined, { pieces, contentType: 'text/event-stream' });
+      assert.ok(!got.text.includes(CREDENTIAL) && got.text.includes('[redacted]') && got.text.startsWith(healthy), JSON.stringify(got.text));
+    }
+  }
+});
+
+test("a header value the host added, with a quote and a slash, is cut in its JSON-escaped and slash-escaped spelling", async (t) => {
+  const TAG = 'dummy-tag/with"quote-0123';
+  const encoded = JSON.stringify({ error: { message: `unknown tag ${TAG}` } }).replaceAll('/', '\\/');
+  assert.ok(encoded.includes('dummy-tag\\/with\\"quote-0123'), 'the provider spells it with both escapes');
+  const got = await answered(t, 400, encoded, undefined, { headers: { 'x-host-tag': TAG } });
+  assert.ok(!got.text.includes('dummy-tag\\/with\\"quote-0123') && got.text.includes('[redacted]'), got.text);
+  assert.ok(echoForms([TAG]).includes('dummy-tag\\/with\\"quote-0123'));
+});
+
+/** The most of the input the relay holds at any moment, fed `pieces`. */
+function mostHeld(relay, pieces) {
+  let fed = 0;
+  let out = 0;
+  let most = 0;
+  for (const piece of pieces) {
+    fed += piece.length;
+    out += relay.push(piece).length;
+    most = Math.max(most, fed - out);
+  }
+  return { most, rest: relay.end() };
+}
+
+test("the relay holds a bounded part of a long answer: a successful stream with no line ends, and an error event that never ends, are both passed on as they come", () => {
+  const piece = 'x'.repeat(64 * 1024);
+  const healthy = mostHeld(errorCut('events', echoForms([CREDENTIAL]), undefined, () => {}), Array.from({ length: 64 }, () => piece));
+  assert.ok(healthy.most <= 128 * 1024, `a stream with no line ends: at most ${healthy.most} characters held`);
+  const said = [];
+  const failed = mostHeld(errorCut('events', echoForms([CREDENTIAL]), (text) => text, (m) => said.push(m)), ['event: error\ndata: {"type":"error","message":"', `bad key ${CREDENTIAL} `, ...Array.from({ length: 64 }, () => piece)]);
+  assert.ok(failed.most <= 128 * 1024, `an error event that never ends: at most ${failed.most} characters held`);
 });
