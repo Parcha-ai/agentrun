@@ -6,19 +6,23 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { startRunner } from "../dist/runner/runner.js";
-import { fauxLoops, observed, queue, recorder, sleep, stores, until } from "./runner-support.mjs";
+import { fauxLoops, observed, queue, recorder, sleep, STEADY_LEASE, stores, until } from "./runner-support.mjs";
 
 const LEASE_MS = 400;
 const TIMING = { leaseMs: LEASE_MS, renewEveryMs: 100, stopMarginMs: 150, pollMs: 20, commandPollMs: 20 };
 
-async function twoRunners(t, createLoop) {
+/** The steady lease, for a case whose point is not a lapse (a close's early release): a claim lost to a stall would turn
+ *  it into the lapse case. */
+const STEADY = { ...STEADY_LEASE, pollMs: 20, commandPollMs: 20 };
+
+async function twoRunners(t, createLoop, timing = TIMING) {
   const { server, runners: [one, two] } = await stores({ runners: 2 });
   const record = recorder();
   const events = [];
   const onEvent = (event) => events.push(event);
   const started = [
-    startRunner({ store: observed(one, record), createLoop, name: "runner-a", onEvent, ...TIMING }),
-    startRunner({ store: observed(two, record), createLoop, name: "runner-b", onEvent, ...TIMING }),
+    startRunner({ store: observed(one, record), createLoop, name: "runner-a", onEvent, ...timing }),
+    startRunner({ store: observed(two, record), createLoop, name: "runner-b", onEvent, ...timing }),
   ];
   t.after(() => Promise.all(started.map((runner) => runner.close())));
   return { server, record, events, runners: started };
@@ -65,7 +69,9 @@ test("the holder is killed: the other reclaims after claimed_until with epoch 2,
 
 test("a runner that closes stops its loop where it can resume and releases the run, still running; the other claims it at once", async (t) => {
   const faux = fauxLoops({ turns: 1_000, turnMs: 20 });
-  const { server, record, runners: [a, b] } = await twoRunners(t, faux.createLoop);
+  // Its point is a close's early release, never a lapse: the steady lease (its "before the old lease ran out" holds
+  // only more plainly on it).
+  const { server, record, runners: [a, b] } = await twoRunners(t, faux.createLoop, STEADY);
   await queue(server, "run-1");
 
   const first = await until(() => record.claims[0], "a claim");
