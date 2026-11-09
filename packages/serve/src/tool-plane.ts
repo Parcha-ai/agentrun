@@ -32,7 +32,7 @@ import { builtinHarness, harnessOf } from "./harness-table.js";
 import { viaOpenRouter, WIRES } from "./provider.js";
 import { savedIn } from "./secrets.js";
 import { hostModel } from "./model.js";
-import { defaultPermission, isCatalogTool, isMcpTool, type Permission, PERMISSIONS, permissionFrom, permissionOf, SHELL_FAMILY } from "./tool-gate.js";
+import { defaultPermission, isCatalogTool, isMcpTool, type Permission, PERMISSIONS, permissionFrom, permissionOf, SETTINGS_UNREAD, SHELL_FAMILY } from "./tool-gate.js";
 
 /**
  * The capabilities a pack or a revision may grant, by name: the tools the kernel gives a run, bound from serve's closed
@@ -427,14 +427,22 @@ export function readToolSettings(dir: string): { settings: ToolSettingsMap; prob
 export class ToolSettings {
   static readonly FILE = "tool-settings.json";
   private current: ToolSettingsMap;
+  /** The file was present but did not read at the start: every tool takes its defaults until a PUT replaces it. */
+  private unread: boolean;
   constructor(private readonly dir: string, warn: (line: string) => void = (line) => void process.stderr.write(`${line}\n`)) {
     const { settings, problems, unreadable } = readToolSettings(dir);
     for (const line of problems) warn(`agentrun-serve: ${line}; ${unreadable ? "every tool takes its defaults" : "that entry is dropped (a permission that is not offered reads ask)"} until a PUT /v2/settings/tools`);
     this.current = settings;
+    this.unread = unreadable === true;
   }
 
+  /** The settings now. While the file does not read, the map carries SETTINGS_UNREAD (tool-gate.ts), so wherever it goes
+   *  (the gate's permission, the plane's providers, an agent's tools, a save's blockers) approvals "never" lifts no ask
+   *  over a deny the file may hold, as the gate itself fails closed. */
   get(): ToolSettingsMap {
-    return structuredClone(this.current);
+    const map = structuredClone(this.current);
+    if (this.unread) (map as { [SETTINGS_UNREAD]?: true })[SETTINGS_UNREAD] = true;
+    return map;
   }
 
   /** Replaces the settings: a tool `map` leaves out takes its defaults. Durable before it returns. */
@@ -451,6 +459,8 @@ export class ToolSettings {
     const written = Object.fromEntries(Object.entries(kept).map(([name, setting]) => [name, { ...(setting!.provider ? { provider: setting!.provider } : {}), ...(setting!.fallback ? { permission: setting!.raw } : setting!.permission ? { permission: setting!.permission } : {}) }]));
     writeDurableSync(join(this.dir, ToolSettings.FILE), `${JSON.stringify(written)}\n`);
     this.current = kept;
+    // The file is the one just written: it reads.
+    this.unread = false;
     return this.get();
   }
 }
