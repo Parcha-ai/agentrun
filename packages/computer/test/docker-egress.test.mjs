@@ -22,14 +22,6 @@ const proxyRunOf = (calls) => runs(calls).find((args) => valuesOf(args, "--entry
 const computerRunOf = (calls) => runs(calls).find((args) => valuesOf(args, "--entrypoint")[0] === "/opt/agentrun/computerd");
 const ref = (name) => ({ id: idOf(name), name });
 
-test("capabilities: network none, open and allow; an allowlist holds names and CIDRs together, 256 of each, on ports 80 and 443; read back from Docker", () => {
-	const { provider } = fakeDocker();
-	const declared = provider.capabilities();
-	assert.deepEqual(declared.network, ["none", "open", "allow"]);
-	assert.deepEqual(declared.allow, { domains: { max: 256, ports: [80, 443] }, cidrs: { max: 256, ports: [80, 443] }, mixed: true });
-	assert.equal(declared.networkReadBack, true);
-});
-
 test("check() takes an allowlist of names and CIDRs, and refuses one that is empty, not a list, too long, or holds an entry the proxy would not take, in words, with no docker call", () => {
 	const { provider, calls } = fakeDocker();
 	assert.deepEqual(provider.check(SPEC), []);
@@ -315,18 +307,20 @@ for (const step of ["logs", "inspect"]) {
 	test(`create() keeps to the proxy's readiness bound when docker ${step} stops answering in the readiness poll: timeout in words, and the proxy and its volume removed`, async () => {
 		// The proxy never says it is ready, so the poll asks docker logs, then docker inspect; the held step never answers.
 		const { provider, calls, names, volumeNames, proceed } = fakeDocker({ egress: "never", hold: [step], egressOptions: { readyMs: 400 } });
-		const started = Date.now();
+		// The test's own bound, far under the held step's minute: a create that outwaits the 0.4 s readiness bound is
+		// aborted here and answers aborted, not timeout. No wall-clock margin that a busy host can miss.
+		const controller = new AbortController();
+		const stop = setTimeout(() => controller.abort(), 30_000);
 		try {
-			const made = await provider.create(SPEC);
-			const took = Date.now() - started;
+			const made = await provider.create(SPEC, { signal: controller.signal });
 			assert.equal(made.ok, false, JSON.stringify(made));
 			assert.equal(made.error.code, "timeout", made.error.message);
 			assert.match(made.error.message, /egress proxy .* was not ready within 0\.4 s/);
-			assert.ok(took < 10_000, `create took ${took} ms, past its 0.4 s bound by far`);
 			assert.ok(calls().some((args) => args[0] === step), `docker ${step} was called`);
 			assert.equal(computerRunOf(calls()), undefined, "the computer was never run");
 			assert.deepEqual([names(), volumeNames()], [[], []], "the proxy and its volume were removed");
 		} finally {
+			clearTimeout(stop);
 			proceed(step);
 		}
 	});

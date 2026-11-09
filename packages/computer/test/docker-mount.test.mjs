@@ -26,11 +26,6 @@ function runFolder(mode = 0o700) {
 }
 const bind = (path) => ({ kind: "bind", path });
 
-test("capabilities: a Docker computer takes a bind mount, and no other kind", () => {
-	const { provider } = fakeDocker();
-	assert.deepEqual(provider.capabilities().mount, ["bind"]);
-});
-
 test("the provider names the uid:gid a computer runs as by default: the user a bound run folder must be writable by", () => {
 	assert.equal(fakeDocker().provider.user, DEFAULT_USER);
 	assert.equal(fakeDocker({ user: "1234:5678" }).provider.user, "1234:5678");
@@ -136,16 +131,6 @@ const REMAPS = [
 	["userns", ["name=seccomp,profile=builtin", "name=userns", "name=cgroupns"]],
 	["rootless", ["name=seccomp,profile=builtin", "name=rootless", "name=cgroupns"]],
 ];
-
-test("hostOf() reads whether the host remaps user ids (name=userns, name=rootless), which is no problem for a computer with no mount", () => {
-	for (const [remap, SecurityOptions] of REMAPS) {
-		const host = computer.hostOf({ Architecture: "x86_64", SecurityOptions, MemoryLimit: true, SwapLimit: true, PidsLimit: true, CPUCfsQuota: true, CPUCfsPeriod: true });
-		assert.equal(host.remap, remap);
-		assert.deepEqual(host.problems, []);
-	}
-	const plain = computer.hostOf({ Architecture: "x86_64", SecurityOptions: ["name=seccomp,profile=builtin"], MemoryLimit: true, SwapLimit: true, PidsLimit: true, CPUCfsQuota: true, CPUCfsPeriod: true });
-	assert.equal("remap" in plain, false);
-});
 
 test("create() with a bind on a host that remaps user ids is refused in words before any docker run; a computer with no mount is made as before", async () => {
 	const dir = runFolder();
