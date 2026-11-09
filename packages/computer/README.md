@@ -1877,6 +1877,9 @@ the API's control URL) is a later change: `platform: "ios"` is refused in words.
   one, and the conformance module a JSON file. `list`, `attach`, `network`, `connect`, `release` and the janitor see
   only the phones it names, never another session on the account, and forget a phone the service ended. release of an
   id the ledger does not name sends no DELETE: it answers `not_found` while that session runs, and ok once it is gone.
+  The service ends a session asynchronously, so a released phone's entry stays, marked `released`, until its own
+  `GET /sessions/<id>` is a 404. Meanwhile a second release is ok, list leaves it out, and attach, connect and network
+  answer `not_found`, as for a deleted computer.
   - create puts an entry under `pending-<Idempotency-Key>` before its POST, and replaces it by the session's id once
     known; a refused POST forgets it.
   - If the POST's answer and its recovery (`GET /sessions/requests/<key>`) are both lost, the entry stays. `list()`

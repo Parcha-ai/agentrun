@@ -10,7 +10,7 @@ phone-harness, from its first live run and the second read of #2000:
 - The conformance module's file ledger writes one at a time, across processes too (a lock file beside it), so no entry is lost.
 - A ledger that fails is a result in words from every call, never a throw, and create rents no phone it cannot record.
 - A connect that fails after adb reached the phone lets the transport go.
-- release ends only a phone its ledger names. Another session on the account is refused `not_found` and sent no DELETE; an unnamed id that is already gone is ok.
+- release ends only a phone its ledger names. Another session on the account is refused `not_found` and sent no DELETE; an unnamed id that is already gone is ok. The service ends a session asynchronously, so a released phone stays in the ledger, marked `released`, until its own GET is a 404: a second release of it is ok, and it is not listed or attached.
 - A create cancelled during its POST asks the service by its Idempotency-Key, not under the cancelled signal, and ends the phone the service made. It answers `aborted` and names that phone.
 - Every ledger write create makes once the phone's id is known is guarded, the last one once the phone is ready included. If one fails, the phone is ended and create answers in words; no throw leaves a phone running.
 - A cancelled `input.actions` batch stops at the action it is on: a `wait` ends when the signal fires, no later command runs, and the batch answers failed, kind `aborted`, at that action. Each adb command runs under the signal.
