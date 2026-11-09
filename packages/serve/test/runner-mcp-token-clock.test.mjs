@@ -101,12 +101,13 @@ function releaseObserved(store) {
   return { store: { where: store.where, mcp, runs: store.runs, settings: store.settings }, released };
 }
 
-for (const [why, net] of [["gets no answer", () => network({ answer: "never" })], ["is refused unsent by the address check", () => network({ address: "10.0.0.1" })]]) {
+// A server that never answers is ended by the request's own bound alone, so it runs at a short one (20 ms).
+for (const [why, net, bounds] of [["gets no answer", () => network({ answer: "never" }), { requestMs: 20, tries: 1 }], ["is refused unsent by the address check", () => network({ address: "10.0.0.1" })]]) {
   test(`a claim whose clock runs ahead uses a token near its end at once, and keeps it when the refresh behind it ${why}`, async (t) => {
     // Two minutes left on the store's clock: inside the refresh margin, still valid.
     const { store, claim } = await setUp(t, 2 * MINUTE);
     const watched = releaseObserved(store);
-    const step = await stepOf(watched.store, claim, 60 * MINUTE, { network: net() });
+    const step = await stepOf(watched.store, claim, 60 * MINUTE, { network: net(), ...(bounds ? { bounds } : {}) });
     t.after(() => step.release());
     assert.equal(bearer(step), `Bearer ${KEPT}`, `used at once: ${JSON.stringify(step.credentials.fake)}`);
     // The refresh behind it fails and lets its lease go; what the step does next is judged after that turn.

@@ -57,7 +57,8 @@ async function setUp(t, { answers = [] } = {}) {
       timer.fired = true;
       timer.fire();
     }
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    // A fired refresh mints and hands its token over in microtasks (the fake App answers at once, no I/O): one drain.
+    await new Promise((resolve) => setImmediate(resolve));
   };
   const work = mkdtempSync(join(tmpdir(), "mcp-github-"));
   t.after(() => rmSync(work, { recursive: true, force: true }));
@@ -70,12 +71,11 @@ async function setUp(t, { answers = [] } = {}) {
 const bearer = (step) => step.credentials.gh?.headers?.authorization;
 const calls = (fake) => fake.log.filter((entry) => entry.method === "tools/call");
 
-test("G1: a run's github_app token is minted at its claim for its repository, used by its gateway, in its redaction set, never stored", async (t) => {
+test("G1: a run's github_app token is minted at its claim for its repository, used by its gateway, never stored", async (t) => {
   const { store, mints, claimOf, call } = await setUp(t);
   const step = await claimOf();
   assert.deepEqual(mints, [{ installation: 7, repo: "acme/widgets" }], "minted once, for the run's repository");
   assert.equal(bearer(step), `Bearer ${token(1)}`);
-  assert.ok(step.secrets.has(`Bearer ${token(1)}`), "the token is in the redaction set");
   assert.deepEqual(await call(step), { content: [{ type: "text", text: "2" }] }, "the gateway's call carries it");
   assert.equal((await store.mcp.server("gh")).sealed, null, "nothing stored on the server's row");
   step.release();

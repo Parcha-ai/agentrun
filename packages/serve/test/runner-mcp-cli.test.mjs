@@ -90,7 +90,12 @@ function mcpCli(seen) {
         async settleOpenTurn() { state = "idle"; },
         turnEnd: () => turn,
         async interrupt() {},
-        async close() { await proxy.close().catch(() => undefined); },
+        // Closed once its turn has heard the door's answer: a call that parks is answered (main's waiting words) before
+        // the session closes, and the CLI keeps what it heard.
+        async close() {
+          await turn?.catch(() => undefined);
+          await proxy.close().catch(() => undefined);
+        },
       };
     },
   };
@@ -130,13 +135,13 @@ async function cliRun(t, { settings = {}, grants = ["mcp:fake/add"] } = {}) {
     };
   });
   runner = startRunner({ store, createLoop: loop, name: "runner-a", ...STEADY });
-  /** The run once it is no longer running, and its journal's entries. */
-  const settled = async () => {
+  /** The run once it is no longer running (or once `done` says so), and its journal's entries. */
+  const settled = async (done = (row) => row.state !== "running" && row.state !== "queued" && row.runner === null) => {
     const from = Date.now();
     let row;
     for (;;) {
       row = await server.runs.get("run-1");
-      if ((row.state !== "running" && row.state !== "queued" && row.runner === null) || Date.now() - from > 20_000) break;
+      if (done(row) || Date.now() - from > 20_000) break;
       await sleep(20);
     }
     const entries = (await journalRecords(server.journal({ runId: "run-1", runner: "reader", epoch: row.epoch, until: 0, from: row.state }), BACKGROUND_CONTEXT)).entries;
@@ -172,15 +177,14 @@ test("C1: the CLI's session carries the run's MCP, not its tools as host tools; 
 test("C2: a call set to ask parks the run with nothing sent, the CLI answered main's waiting words; the owner's Allow runs it exactly once and the session goes on with its result", async (t) => {
   const run = await cliRun(t);
   assert.equal(run.row.state, "parked", JSON.stringify(run.row));
-  // The run parks on the ask and its session closes: the door's answer, when it reaches the CLI before that, is the
-  // waiting words (the door sends no parked flag).
-  if (run.seen.answer !== undefined) assert.deepEqual(run.seen.answer, { content: [{ type: "text", text: waitingText("mcp:fake/add") }] });
+  // The run parks on the ask and its session closes once the CLI heard the door's answer: the waiting words (the door
+  // sends no parked flag).
+  assert.deepEqual(run.seen.answer, { content: [{ type: "text", text: waitingText("mcp:fake/add") }] });
   assert.equal(toolCalls(run.fake).length, 0, "nothing sent while it waits");
   const [ask] = run.entries.filter((entry) => entry.kind === KINDS.ask).map((entry) => entry.data);
   assert.deepEqual([ask?.callId, ask?.tool, ask?.price], [CALL_ID, "mcp:fake/add", "not metered"], "asked by the CLI's own call id, as main's card");
   await run.server.command("run-1", { kind: "approve", body: { approval: CALL_ID } });
-  for (const from = Date.now(); (await run.server.runs.get("run-1")).state !== "ended" && Date.now() - from < 20_000; ) await sleep(20);
-  const { row, entries } = await run.settled();
+  const { row, entries } = await run.settled((row) => row.state === "ended" && row.runner === null);
   assert.equal(row.state, "ended", JSON.stringify(row));
   assert.equal(toolCalls(run.fake).length, 1, "run exactly once");
   assert.equal(run.seen.followUps?.length, 1, "one resume message");
@@ -193,8 +197,7 @@ test("C4: a parked call the owner denies is told in their words, and nothing is 
   const run = await cliRun(t);
   assert.equal(run.row.state, "parked", JSON.stringify(run.row));
   await run.server.command("run-1", { kind: "deny", body: { approval: CALL_ID, note: "not today" } });
-  for (const from = Date.now(); (await run.server.runs.get("run-1")).state !== "ended" && Date.now() - from < 20_000; ) await sleep(20);
-  const { row } = await run.settled();
+  const { row } = await run.settled((row) => row.state === "ended" && row.runner === null);
   assert.equal(row.state, "ended", JSON.stringify(row));
   assert.equal(toolCalls(run.fake).length, 0, "nothing sent");
   assert.ok(run.seen.followUps?.[0]?.endsWith(`\n${deniedText("mcp:fake/add", "not today")}`), run.seen.followUps?.[0]);
@@ -211,8 +214,7 @@ test("C5: a parked call across a new runner: the runner that parked it goes, ano
   assert.equal(run.row.state, "parked", JSON.stringify(run.row));
   await run.replaceRunner();
   await run.server.command("run-1", { kind: "approve", body: { approval: CALL_ID } });
-  for (const from = Date.now(); (await run.server.runs.get("run-1")).state !== "ended" && Date.now() - from < 20_000; ) await sleep(20);
-  const { row } = await run.settled();
+  const { row } = await run.settled((row) => row.state === "ended" && row.runner === null);
   assert.equal(row.state, "ended", JSON.stringify(row));
   assert.equal(row.runner, null);
   assert.equal(toolCalls(run.fake).length, 1, "run exactly once");
