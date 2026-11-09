@@ -433,6 +433,9 @@ export interface Agents {
   /** The agent row and its first revision, current, in one transaction: both or neither. */
   create(agent: { id: string; name: string; description?: string | null }, firstRevision: NewRevision): Promise<void>;
   get(id: string): Promise<AgentRow | undefined>;
+  /** The agent an external reference ("<source>:<kind>:<id>") maps to (Runs.createInline), or undefined before its first
+   *  run. */
+  byExternal(ref: string): Promise<AgentRow | undefined>;
   list(options?: { archived?: boolean }): Promise<AgentRow[]>;
   /** Archives the agent, or unarchives it. Archived, every trigger of it that is on is turned off in the same transaction
    *  (`disabled` set to `why`, JSON; its scope rows dropped), and those are the answer: from its commit no firing starts a
@@ -524,10 +527,11 @@ export interface Runs {
    *  transaction: the agent (one per `ref`, written on its first run, its name and description brought up to the version
    *  whose first use this is) and the revision (one per `version`, made current on its first use) are written or read, then
    *  the run, its origin and its launch. Idempotent — a later run under the same (`ref`, `version`) reuses that revision and
-   *  changes nothing; a different body under an existing version is refused (ExternalBodyConflict), nothing written. */
+   *  changes nothing; a different body under an existing version is refused (ExternalBodyConflict), nothing written. The
+   *  revision's `note` is kept by its first use, as an edit's note is; it is not part of its body. */
   createInline(input: {
     agent: { id: string; name: string; description?: string | null; ref: string };
-    revision: { id: string; version: string; kind: string; body: unknown; skills?: unknown };
+    revision: { id: string; version: string; kind: string; body: unknown; skills?: unknown; note?: string };
     run: { id: string; origin?: RunOrigin };
     launch: RunLaunchInput;
   }): Promise<RunRow>;
