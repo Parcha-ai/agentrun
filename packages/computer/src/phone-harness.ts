@@ -489,15 +489,23 @@ export class PhoneHarnessProvider implements ComputerProvider {
 		const first = sessionOf(posted.value.json, "POST /sessions");
 		if (!first.ok) return first;
 		const id = first.value.id;
-		try {
+		/** A ledger write about the phone, or the phone ended in words: a phone its ledger cannot record would bill unseen. */
+		const record = async (write: () => void | Promise<void>): Promise<Result<void>> => {
+			try {
+				await write();
+				return ok(undefined);
+			} catch (error) {
+				// Ended at once, by the API alone: the ledger has just failed.
+				const ended = await this.#api("DELETE", `/sessions/${encodeURIComponent(id)}`);
+				const after = ended.ok || ended.error.code === "not_found" ? "the phone was ended" : `the phone ${id} could not be ended (${ended.error.message})`;
+				return fail("phone", `${error instanceof Error ? error.message : String(error)}; ${after}`);
+			}
+		};
+		const named = await record(async () => {
 			await this.#ledger.put({ id, labels: { ...(spec.labels ?? {}) }, image: spec.image, deadline: this.#deadlineOf(first.value, from + spec.lifetimeMs) });
 			await this.#ledger.remove(pending);
-		} catch (error) {
-			// A phone no ledger names would bill unseen: it is ended at once, by the API alone.
-			const ended = await this.#api("DELETE", `/sessions/${encodeURIComponent(id)}`);
-			const after = ended.ok || ended.error.code === "not_found" ? "the phone was ended" : `the phone ${id} could not be ended (${ended.error.message})`;
-			return fail("phone", `${error instanceof Error ? error.message : String(error)}; ${after}`);
-		}
+		});
+		if (!named.ok) return named;
 		const ended = async (code: ComputerErrorCode, words: string) => {
 			const gone = await this.#end(id);
 			return fail(code, `${words}; ${gone.ok ? "it was ended" : `it could not be ended (${gone.error.message})`}`);
@@ -515,7 +523,8 @@ export class PhoneHarnessProvider implements ComputerProvider {
 			await this.#sleep(this.#pollMs);
 		}
 		const deadline = this.#deadlineOf(session, from + spec.lifetimeMs);
-		await this.#ledger.put({ id, labels: { ...(spec.labels ?? {}) }, image: spec.image, deadline });
+		const kept = await record(() => this.#ledger.put({ id, labels: { ...(spec.labels ?? {}) }, image: spec.image, deadline }));
+		if (!kept.ok) return kept;
 		const took = this.#now() - from;
 		if (this.#now() >= Date.parse(deadline)) {
 			return ended("timeout", `the phone ${id}'s lifetime of ${spec.lifetimeMs / 1000} s ended before it was ready (it took ${Math.round(took / 100) / 10} s)`);
