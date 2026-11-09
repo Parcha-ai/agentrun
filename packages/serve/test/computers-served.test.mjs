@@ -9,9 +9,10 @@ import { randomBytes } from "node:crypto";
 import { FAUX_VIEW_PATH } from "../dist/faux-computers.js";
 import { SECRET_WRITE_PATHS, serve as served, withEnv } from "./support.mjs";
 
-// A computer key's save and the Archil account key are secret writes (computers.ts, archil-routes.ts): the client sends
-// them from the owner's session, as the console does, and the token is refused them (secret-writes-computers.test.mjs).
-SECRET_WRITE_PATHS.push({ methods: ["PUT"], path: /^\/computers\/[^/]+\/keys$/ }, { methods: ["PUT"], path: /^\/workspace\/archil$/ });
+// A computer key's save and any PUT of the Archil settings are secret writes (computers.ts, archil-routes.ts), and a run's
+// live computer view is a full-control credential (server.ts getRunComputer): the client sends all three from the owner's
+// session, as the console does, and the token is refused them (secret-writes-computers.test.mjs, owner-auth.test.mjs).
+SECRET_WRITE_PATHS.push({ methods: ["PUT"], path: /^\/computers\/[^/]+\/keys$/ }, { methods: ["PUT"], path: /^\/workspace\/archil$/ }, { methods: ["GET"], path: /^\/runs\/[^/]+\/computer$/ });
 
 /** A served server with a seal key, so it keeps the keys it is given, and an owner its client signs in as on its first
  *  secret write. */
@@ -66,9 +67,11 @@ test("served handed no seal key: the server makes its own at the start (seal-key
 });
 
 test("served: a run's desktop view, take-over and hand-back refuse in words until the store-backed take-over lands; a faux page exists only for a live faux desktop", async (t) => {
-  const { api, baseUrl } = await serve(t, { runner: false });
+  const { api, baseUrl, token } = await serve(t, { runner: false });
   const view = await api("GET", "/runs/run-404/computer");
-  assert.equal(view.status, 404, "no run");
+  assert.equal(view.status, 404, "no run, read from the owner's session");
+  const byToken = await fetch(`${baseUrl}/runs/run-404/computer`, { headers: { authorization: `Bearer ${token}` } });
+  assert.equal(byToken.status, 403, "the token never reads a run's live computer view, a run or none");
   const page = await fetch(`${new URL(baseUrl).origin}${FAUX_VIEW_PATH}/faux-desktop-1/view`);
   assert.equal(page.status, 404, "no faux desktop was started");
 });
