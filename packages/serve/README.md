@@ -1590,7 +1590,8 @@ firing has left the history too, and later it is a new firing that a run the key
 ### Webhook triggers
 
 A trigger with `source: {kind: "webhook"}` fires on each request to `POST /v2/hooks/{trigger_id}`: this server's one
-route with no token. The request is signed by the trigger's own secret under the
+route with no token. Its view carries that address as `hook_url`, at the server's public URL when it has one
+(`AGENTRUN_PUBLIC_URL`), else the path; a schedule has none. The request is signed by the trigger's own secret under the
 [Standard Webhooks](https://www.standardwebhooks.com) spec, the one this server's outbound [webhooks](#webhooks) sign
 with, so a sender uses any of its libraries: `webhook-id` (1 to 255 printable ASCII characters, no space), `webhook-timestamp` (Unix seconds, within 5 minutes of this
 server's clock either way) and `webhook-signature: v1,<base64 HMAC-SHA256 of "{id}.{timestamp}.{body}">` under the

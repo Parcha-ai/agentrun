@@ -119,6 +119,9 @@ export type TriggerDeps = {
   adapters?: readonly TriggerAdapter[];
   /** SEEN_KEPT, unless a test gives its own. */
   seenKept?: number;
+  /** The address people and senders reach this server at (AGENTRUN_PUBLIC_URL), with no trailing slash: a pushed
+   *  trigger's hook_url starts with it. None: the hook's path alone. */
+  publicUrl?: string;
 };
 
 const REAL_CLOCK: TriggerClock = {
@@ -824,10 +827,15 @@ export class Triggers {
     return run.agentId;
   }
 
-  /** A trigger as the API answers it: its fields (openapi.ts TRIGGER), named one by one, with its newest firing. */
+  /** A trigger as the API answers it: its fields (openapi.ts TRIGGER), named one by one, with its newest firing; a pushed
+   *  source's, where its sender posts (`hook_url`: its own hook, or its source's one hook when its settings are the
+   *  server's). */
   private async view(trigger: Trigger) {
     const [last] = await this.store.triggers.firings(trigger.id);
+    const adapter = adapterIn(this.adapters, trigger.source.kind);
+    const hook = adapter?.push ? `/v2/hooks/${adapter.settings?.scope === "server" ? adapter.id : trigger.id}` : undefined;
     return {
+      ...(hook ? { hook_url: `${this.deps.publicUrl ?? ""}${hook}` } : {}),
       id: trigger.id, name: trigger.name, enabled: trigger.enabled, source: trigger.source, target: trigger.target, catchup_window_s: trigger.catchupWindowS ?? CATCHUP_WINDOW_S,
       max_active_runs: trigger.maxActiveRuns ?? null, failures_in_a_row: trigger.failuresInARow, disabled: trigger.disabled ?? null, next_at: trigger.nextAt === null ? null : iso(trigger.nextAt), last_run_id: trigger.lastRunId,
       created_at: iso(trigger.createdAt), updated_at: iso(trigger.updatedAt), last_firing: last ? firingView(last) : null,

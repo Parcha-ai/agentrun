@@ -595,7 +595,7 @@ const TRIGGER_FIRING = closedWith(
   },
   { count: { type: "integer", minimum: 1, description: "On a `missed` firing: how many times it stands for, from `nominal_at` on; a cron line's are counted to 10000, and `reason` says \"or more\" past that." }, attempts: { type: "integer", minimum: 0 }, retry_at: DATE_TIME, catch_up: { const: true, description: "A time that fired late, within the trigger's catch-up window: the server was down, or its timer late." } },
 );
-const TRIGGER = closed({
+const TRIGGER_FIELDS = closed({
   id: { type: "string" },
   name: { type: "string", maxLength: 200 },
   enabled: { type: "boolean" },
@@ -611,6 +611,8 @@ const TRIGGER = closed({
   updated_at: DATE_TIME,
   last_firing: { oneOf: [TRIGGER_FIRING, { type: "null" }] },
 }, "A trigger. A firing while its last run is active (working, or waiting on a person) is skipped, and recorded as a skipped firing with why: never queued, since a firing queued behind a run parked on a person would wait as long as the person does. A webhook trigger with `accept` is the exception: each event it takes starts its own run.");
+/** A trigger's view: its fields, all there, and `hook_url`, a pushed source's alone. */
+const TRIGGER = { ...TRIGGER_FIELDS, properties: { ...TRIGGER_FIELDS.properties, hook_url: { type: "string", description: "Where its sender posts, for a pushed source alone (absent for a schedule): a webhook's own hook, `/v2/hooks/{id}`, at this server's public URL (AGENTRUN_PUBLIC_URL) when it has one, else the path." } } };
 const TRIGGER_WRITE = {
   name: { type: "string", minLength: 1, maxLength: 200, description: "Default the trigger's id." },
   enabled: { type: "boolean", default: true, description: "Off, it fires nothing; on again, it goes on from now: the time it was off is skipped, never caught up." },

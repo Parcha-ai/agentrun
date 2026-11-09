@@ -1111,6 +1111,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   const triggers: Triggers = new Triggers({
     store: options.store ?? storeless(),
     clock: options.triggerClock,
+    ...(options.publicUrl ? { publicUrl: options.publicUrl.replace(/\/+$/, "") } : {}),
     adapters,
     say: (fields) => (log ? log(logLine("trigger", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("trigger", fields)}\n`)),
     async targetIssues(target) {
