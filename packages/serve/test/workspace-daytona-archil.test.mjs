@@ -26,13 +26,16 @@ const REAL_KINDS = { SETTING_KINDS, PROVIDERS, servingRefusals };
 const dirs = [];
 after(() => { for (const dir of dirs) rmSync(dir, { recursive: true, force: true }); });
 const DAYTONA_KEY = "fake-test-key-daytona-0001";
+const MODAL_ID = `fake-test-modal-id-${"0001"}`;
+const MODAL_SECRET = `fake-test-modal-secret-${"0001"}`;
+const E2B_KEY = `fake-test-key-e2b-${"0001"}`;
 const ARCHIL_KEY = "fake-test-key-archil-account-0001";
 const SETTINGS = { diskId: "dsk-00000000000fake0", region: "aws-us-east-1", s3Url: "https://s3.green.us-east-1.aws.prod.archil.com" };
 /** Each remote sandbox's saved keys, and the options providerFor is given from them (computer-keys.ts). */
 const PROVIDER_KEYS = {
   daytona: { keys: { DAYTONA_API_KEY: DAYTONA_KEY }, options: { apiKey: DAYTONA_KEY } },
-  modal: { keys: { MODAL_TOKEN_ID: "fake-test-modal-id-0001", MODAL_TOKEN_SECRET: "fake-test-modal-secret-0001" }, options: { tokenId: "fake-test-modal-id-0001", tokenSecret: "fake-test-modal-secret-0001", app: "agentrun" } },
-  e2b: { keys: { E2B_API_KEY: "fake-test-key-e2b-0001" }, options: { apiKey: "fake-test-key-e2b-0001" } },
+  modal: { keys: { MODAL_TOKEN_ID: MODAL_ID, MODAL_TOKEN_SECRET: MODAL_SECRET }, options: { tokenId: MODAL_ID, tokenSecret: MODAL_SECRET, app: "agentrun" } },
+  e2b: { keys: { E2B_API_KEY: E2B_KEY }, options: { apiKey: E2B_KEY } },
 };
 
 test("computerProviderMakers builds each provider through the computer package's providerFor, with the options the keys fill", async () => {
