@@ -81,14 +81,16 @@ export function learningEndOfRun(launch: RunLaunch, deps: LearningEndDeps): EndO
 }
 
 /** The tools a workflow draft may name (learning-run.ts draftTools): the revision's own, as its run's gate reads them
- *  with the server's settings and the agent's; none for a workflow revision. */
+ *  with the server's settings (from the store) and the agent's; none for a workflow revision. */
 async function draftTools(deps: LearningEndDeps, runId: string): Promise<{ tools: string[]; gated: Record<string, string> }> {
   const run = await deps.store.runs.get(runId);
   const revision = run ? await deps.store.agents.revision(run.revisionId) : undefined;
   if (revision?.kind !== "agentic") return { tools: [], gated: {} };
   const body = revision.body as { tools?: string[]; toolSettings?: unknown; approvals?: string };
-  const [{ learnedDraftTools }, { permissionFrom }, { readToolSettings }] = await Promise.all([import("../tools.js"), import("../tool-gate.js"), import("../tool-plane.js")]);
-  const server = readToolSettings(deps.data).settings;
+  const [{ learnedDraftTools }, { permissionFrom }, { loadToolSettings }] = await Promise.all([import("../tools.js"), import("../tool-gate.js"), import("../tool-plane.js")]);
+  // The server's settings from the one store, as the run's gate reads them: a stored row that does not read carries
+  // SETTINGS_UNREAD, which permissionFrom honours (no ask is lifted over a deny the row may hold).
+  const server = (await loadToolSettings(deps.store)).settings;
   const agent = (body.toolSettings ?? {}) as never;
   const approvals = body.approvals === "never" ? "never" : "ask";
   const { tools, gated } = learnedDraftTools(body.tools ?? [], (name) => permissionFrom(name, server as never, agent, approvals).permission, undefined, (name) => permissionFrom(name, server as never, agent, approvals).from);
