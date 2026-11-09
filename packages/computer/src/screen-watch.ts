@@ -419,6 +419,9 @@ function keyActions(event: Record<string, unknown>, kind: "desktop" | "android" 
  * wheel event moves 20 clicks at most each way (clamped). A shortcut keeps Shift (ctrl+shift+s). A click with a
  * modifier held is one click with its keys, on the up; its down only moves. A desktop never gets ctrl+alt+backspace or
  * ctrl+alt+F1 to F12: they end or switch the X display.
+ *
+ * toAction is stateless: each event on its own. A modifier released between a press and its release makes the press
+ * modified and the release plain, and the click is lost; a viewer maps through createActionMapper, which remembers.
  */
 export function toAction(event: ViewerEvent, kind: "desktop" | "android" | "ios"): InputAction[] | Refusal {
 	// The event comes from a browser page: every field is checked here, whatever its type says.
@@ -440,10 +443,10 @@ export function toAction(event: ViewerEvent, kind: "desktop" | "android" | "ios"
 				if (!button) return { field: "button", message: `mouse button ${show(e.button)} is not left (0), middle (1) or right (2)` };
 				if (modifiers === 0) return [{ type: "move", at }, { type: e.action as "down" | "up", button }];
 				// A modified click keeps its modifiers: the protocol holds keys through a click, not across a down and an up,
-				// so the down only moves and the up clicks with the keys held (a modified drag is not sent).
+				// so the down only moves and the up clicks with the keys held (a modified drag is not sent). Each up is one
+				// click: a double-click is its two ups, as the X server times them, never a count (which it would repeat).
 				if (e.action === "down") return [{ type: "move", at }];
-				const count = Number.isInteger(e.clickCount) && (e.clickCount as number) >= 2 && (e.clickCount as number) <= 3 ? (e.clickCount as 2 | 3) : undefined;
-				return [{ type: "move", at }, { type: "click", at, button, ...(count ? { count } : {}), keys: comboOf(modifiers) } as InputAction];
+				return [{ type: "move", at }, { type: "click", at, button, keys: comboOf(modifiers) } as InputAction];
 			}
 			case "wheel": {
 				const at = pointAt(e, "x", "y");
@@ -483,4 +486,55 @@ export function toAction(event: ViewerEvent, kind: "desktop" | "android" | "ios"
 		default:
 			return { field: "type", message: `a phone takes taps, swipes, its buttons and keys, not the ${type}` };
 	}
+}
+
+/** Maps one viewer's events in order, remembering each mouse press until its release: one mapper is one take-over. */
+export interface ActionMapper {
+	/**
+	 * The event as input actions, or a Refusal: toAction's answer, but for a desktop's mouse buttons, whose press decides
+	 * the strategy for the press and its release together:
+	 * - a down with a modifier held sends only a move and remembers the keys held then; its up is one click with those
+	 *   keys, whatever is held at the up;
+	 * - a down with no modifier is a plain down, and its up a plain up, even if a modifier is pressed in between;
+	 * - an up with no press remembered is toAction's.
+	 */
+	map(event: ViewerEvent): InputAction[] | Refusal;
+	/**
+	 * Lets go of every button and key this mapper sent a down for and has not released (the take-over ends, or the
+	 * viewer loses focus), then forgets every press: the ups to send, nothing on a second call. A key is never among
+	 * them: the protocol presses and releases a key within its action, so the mapper never leaves one down.
+	 */
+	release(): InputAction[];
+}
+
+/** A mapper of the viewer's events for a computer of this kind; see ActionMapper. */
+export function createActionMapper(kind: "desktop" | "android" | "ios"): ActionMapper {
+	/** Each mouse button pressed and not released: plain (a down was sent), or the keys a modified press holds. */
+	const pressed = new Map<Button, { keys?: string[] }>();
+	return {
+		map(event) {
+			const stateless = toAction(event, kind);
+			if (isRefusal(stateless) || kind !== "desktop") return stateless;
+			const e = event as unknown as Record<string, unknown>;
+			if (e.type !== "mouse" || (e.action !== "down" && e.action !== "up")) return stateless;
+			// toAction checked the event: its point, button and modifiers are good.
+			const button = BUTTONS[e.button as number] as Button;
+			const at: Point = [Math.round(e.x as number), Math.round(e.y as number)];
+			const modifiers = (e.modifiers as number | undefined) ?? 0;
+			if (e.action === "down") {
+				pressed.set(button, modifiers === 0 ? {} : { keys: comboOf(modifiers) });
+				return stateless;
+			}
+			const press = pressed.get(button);
+			if (press === undefined) return stateless;
+			pressed.delete(button);
+			if (press.keys === undefined) return [{ type: "move", at }, { type: "up", button }];
+			return [{ type: "move", at }, { type: "click", at, button, keys: press.keys }];
+		},
+		release() {
+			const ups: InputAction[] = [...pressed].filter(([, press]) => press.keys === undefined).map(([button]) => ({ type: "up", button }));
+			pressed.clear();
+			return ups;
+		},
+	};
 }

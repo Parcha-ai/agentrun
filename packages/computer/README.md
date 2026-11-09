@@ -444,13 +444,20 @@ phone harness): a computer whose hello has no `screen` is refused as `unsupporte
 failures are `ScreenWatchError`s. `toAction(event, kind)` maps the viewer's `ViewerEvent`s, in the screen's upright
 pixels, to input actions, or to a `Refusal` (`{ field, message }`) for what a kind cannot take:
 - a desktop takes the mouse (a move, and a button down or up at a point; with a modifier held, the up is one click
-  with its keys and the down only moves), the wheel (in clicks, about 120 px a notch, 20 clicks at most an event),
+  with its keys and the down only moves; each up is one click, so a double-click is two and never a `count`), the
+  wheel (in clicks, about 120 px a notch, 20 clicks at most an event),
   keys (combos with the modifiers held, Shift kept: ctrl+shift+s) and typed text; never ctrl+alt+backspace or
   ctrl+alt+F1 to F12, which end or switch the X display;
 - a phone (`android`, `ios`) takes taps, swipes (0 to 1000 ms, clamped), back, home and recents (`app_switch`), keys
   and typed text;
 - a typed text holds 65,536 characters at most (`checkActions` refuses more as `limit` too, as computerd does);
 - anything else, and an event whose fields are not what its type says, is refused in words: `toAction` never throws.
+
+`toAction` is stateless. A viewer maps through `createActionMapper(kind)`, one per take-over: its `map(event)` answers
+as `toAction` does, but a desktop's mouse press decides the strategy for the press and its release together (a
+modifier let go before the up still clicks once, with the keys held at the down; a plain press stays plain), and its
+`release()` gives the ups for every button it pressed and has not released, then forgets them (on blur, or when the
+take-over ends). No key is ever among them: the protocol presses and releases a key within its action.
 
 The seam reads a frame by the size it says (never past it, never over 64 MiB, and whole at the end), keeps 8 inputs
 in flight at most on a watch (one more is refused as `limit`), and redacts every error and a failed action's words
