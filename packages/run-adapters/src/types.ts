@@ -227,7 +227,22 @@ export interface SessionIO {
    *  a harness works in an empty directory of its own. */
   cwd?: string;
   onEvent(event: AdapterEvent): void;
+  /** The host's gate, asked about a call of a host tool before anything of it is written (before its intent, and before
+   *  the flush a call that runs at most once takes): "allow" runs it; a deny answers the model with the host's words and
+   *  runs nothing; a park holds the call, writing nothing, until the session's signal is aborted (the run parks on a
+   *  person). Absent: every call runs. */
+  gate?(call: GateCall, context?: unknown): Promise<GateAnswer>;
 }
+
+/** A call as the host's gate is asked about it. */
+export interface GateCall {
+  readonly callId: string;
+  readonly tool: string;
+  readonly args: Record<string, unknown>;
+}
+
+/** The host's answer before a call's intent: run it, refuse it in these words, or park the run on it. */
+export type GateAnswer = "allow" | { readonly deny: string } | { readonly park: true };
 
 /** An event of a session, as the adapter reports it. The runner adds the node it belongs to. A call's `tool_end` is sent
  *  only once its outcome is durable in the session's records, so a host never shows a result its store does not have;
@@ -302,6 +317,10 @@ export interface AdapterFacts {
   readonly wire: Wire;
   /** Whether it takes a message mid-turn (else a message waits for the turn's end). */
   readonly steer: boolean;
+  /** False when a tool call that started is never run again by a restart, replay-safe or not: the harness's own process
+   *  holds the turn, and only its model calls again (a CLI). Absent: a restart reruns a replay-safe call, by the
+   *  kernel's rule. */
+  readonly rerunsStarted?: false;
   /** What one run of it holds in memory, in MiB: the host admits runs by it. */
   readonly runMib: number;
   /** Whether it binds a session's remote MCP servers (its own MCP client, at the session's gateway). */

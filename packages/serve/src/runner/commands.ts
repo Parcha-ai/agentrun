@@ -4,8 +4,9 @@
 import { originOf } from "@parcha/pi-durable-agent/timeline";
 import type { Command } from "./loop-contract.js";
 
-/** stop and cancel both end the run, stopped: a cancel's end says it was cancelled, as main's cancel ends a run for good. */
-export const COMMAND_KINDS: ReadonlySet<string> = new Set(["stop", "cancel", "steer", "approve", "deny", "raise"]);
+/** stop and cancel both end the run, stopped: a cancel's end says it was cancelled, as main's cancel ends a run for good.
+ *  browser_hand_back is a person's answer to the agent's browser hand-over (runner/hand-back.ts). */
+export const COMMAND_KINDS: ReadonlySet<string> = new Set(["stop", "cancel", "steer", "approve", "deny", "raise", "browser_hand_back"]);
 
 export interface CommandInput {
   readonly kind: string;
@@ -37,6 +38,10 @@ function bodyProblem(kind: string, body: Record<string, unknown>): string | unde
       return typeof body.capUsd === "number" && Number.isFinite(body.capUsd) && body.capUsd > 0
         ? undefined
         : "a raise names its new cap in dollars (capUsd), above zero";
+    case "browser_hand_back":
+      // The person's two answers: an expiry is the run's own, never a person's.
+      if (!text(body.ask)) return "a browser hand-back names the hand-over it answers (ask)";
+      return body.outcome === "done" || body.outcome === "cancelled" ? undefined : "a browser hand-back's outcome is done or cancelled";
     default:
       return undefined;
   }
