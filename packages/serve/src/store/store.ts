@@ -478,6 +478,30 @@ export interface SealedKeys {
   all(): Promise<SealedKeyRow[]>;
 }
 
+/** One session a provider runs, with the labels we gave it and the rest of the provider's entry for it (store schema
+ *  `computer_ledger`). */
+export interface ComputerLedgerRow {
+  readonly provider: string;
+  readonly sessionId: string;
+  readonly labels: Readonly<Record<string, string>>;
+  /** The provider's other fields for the session, as it gave them (a phone's image and deadline). */
+  readonly detail: Readonly<Record<string, unknown>>;
+  readonly updatedAt: number;
+}
+
+/** The labels of the sessions a provider runs with none of its own (a phone provider's), so its list, an attach by
+ *  labels and the janitor outlive a restart. */
+export interface ComputerLedger {
+  /** Saves `labels` and `detail` for `provider`'s session `sessionId`, inserted or replaced in place. */
+  put(provider: string, sessionId: string, labels: Readonly<Record<string, string>>, detail: Readonly<Record<string, unknown>>): Promise<void>;
+  /** The session's row, or undefined when none is kept. */
+  get(provider: string, sessionId: string): Promise<ComputerLedgerRow | undefined>;
+  /** Every session of `provider`, by its id. */
+  list(provider: string): Promise<ComputerLedgerRow[]>;
+  /** The session's row goes. */
+  remove(provider: string, sessionId: string): Promise<void>;
+}
+
 /** A trigger source's sealed setting as a row (store schema `trigger_settings`): its adapter, scope ("server" for the one
  *  server-wide set, or a trigger's id for its own), field, and the value sealed (store/seal.ts) under AAD
  *  trigger_settings|<adapter>|<scope>|<field>: TEXT the store never opens. */
@@ -631,6 +655,8 @@ export interface Store {
   readonly settings: Settings;
   /** The model and provider keys the server holds, sealed (store/seal.ts): bytes the store never opens. */
   readonly sealedKeys: SealedKeys;
+  /** The labels of the sessions a provider runs with none of its own (a phone provider's). */
+  readonly computerLedger: ComputerLedger;
   /** Each trigger source's sealed settings (design 2.1): a value per adapter, scope and field. */
   readonly triggerSettings: TriggerSettings;
   /** MCP OAuth sign-ins in flight (design 2.1): one row per pending sign-in, its verifier sealed. */

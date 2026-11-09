@@ -42,7 +42,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Context } from "@earendil-works/chord";
 import { type Cursor, defineExtension, type Extension, type Harness, ROOT_CONVERSATION_ID, type ToolRegistration, type Tx, wrapTool } from "@earendil-works/pi-durable";
-import { type Drive, EffectFailure, INTERRUPTED_TEXT, openDrive } from "@parcha/agentrun-kernel/kernel";
+import { DESKTOP_TOOL_DEFS, type Drive, EffectFailure, INTERRUPTED_TEXT, openDrive, PHONE_TOOL_DEFS } from "@parcha/agentrun-kernel/kernel";
 import { boundResult } from "@parcha/agentrun-kernel/process";
 import { BARRIER, type DurableRun, MESSAGE_ORIGIN_KIND, syncNow, type SyncTarget } from "@parcha/pi-durable-disk";
 import { dataOfRun, readJson, RUN_META } from "./files.js";
@@ -98,6 +98,9 @@ export function permissionKeys(name: string): string[] {
 /** The browser's registrations on pi (pi-browser's BROWSER_TOOL_NAMES, which a test holds this list to): each is a call
  *  of the table's `browser`. */
 const BROWSER_REGISTRATIONS: readonly string[] = ["snapshot", "run", "screenshot", "browser_read", "browser_release", "browser_relaunch", "browser_request_handoff", "browser_downloads", "browser_upload"];
+/** A computer kind's tools, by name, to the one settings key their kind is held to (`desktop`, `phone`): the kernel
+ *  registry's own definitions say it (their settingsKey), so a tool a kind gains is held to its key with no line here. */
+const KIND_TOOLS: ReadonlyMap<string, string> = new Map([...DESKTOP_TOOL_DEFS, ...PHONE_TOOL_DEFS].map((def) => [def.name, def.settingsKey] as const));
 /** The MCP server through which claude-agent calls the kernel's host tools (`mcp__hands__<wire name>`). */
 const HOST_TOOLS_SERVER = "hands";
 
@@ -113,6 +116,9 @@ export function settingsKeyOf(harness: string, name: string, mcpServers: readonl
   // A tool that runs a command in the box (bash_background and the rest) is held to bash's key: before the table's own names.
   if (Object.hasOwn(SHELL_FAMILY, name)) return SHELL_FAMILY[name];
   if (TABLE_TOOLS.includes(name) || SERVE_OWN_TOOLS.includes(name) || isCatalogTool(name)) return name;
+  // A desktop's or a phone's tool is its kind's key, as the browser's registrations are `browser`.
+  const kind = KIND_TOOLS.get(name);
+  if (kind !== undefined) return kind;
   // A CLI's own tool, the table's tool it is (its facts' nativeTools), by an own name only.
   const nativeTools = builtinHarness(harness)?.facts?.nativeTools;
   const native = nativeTools && Object.hasOwn(nativeTools, name) ? nativeTools[name] : undefined;

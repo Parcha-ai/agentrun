@@ -62,7 +62,7 @@ test("a computer: the Workspace attached through the mount check given; the fold
   const computer = realProcesses(fakeComputer(root), root);
   const checks = [];
   const check = { readBackOf: (spec) => (checks.push(spec), readBackOf(spec)) };
-  const run = await runHands(localWorkspace(root), { computer, check }, { mode: 1, context: ctx });
+  const run = await runHands(localWorkspace(root), { kind: "sandbox", computer, check }, { mode: 1, context: ctx });
   assert.deepEqual([run.shell, run.maxExecS, run.cwd], ["computer", 600, "/workspace"]);
   assert.deepEqual(checks, [{ kind: "bind", path: root }], "attach ran the check given");
   computer.clear();
