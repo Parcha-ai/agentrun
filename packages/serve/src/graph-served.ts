@@ -39,7 +39,10 @@ export function servedPart(kind: PartKind, value: unknown, values: readonly stri
 
 /** A graph view as GET /runs/{id}/graph serves it with `values` held (runs.ts servedGraph's rule): its nodes, each
  *  decision and each call through servedPart, each part kept in `cache` by the held set and its own content, so a read
- *  again redacts nothing again and a key saved since makes a new set. */
+ *  again redacts nothing again and a key saved since makes a new set. Then the WHOLE view is cut last, every string and
+ *  every object key (redactedOutput, the same rule over the same values): its workflow, its structure (`graph`, which
+ *  echoes the workflow's nodes, their labels and words among them) and any field added later, so no part of it is served
+ *  past the cut. What holds no held value (its ids, times and statuses) comes through as it was. */
 export function servedGraphView<T extends { nodes: unknown; decisions: unknown[]; effects: unknown[] }>(view: T, values: readonly string[], cache?: PartCache): T {
   const digest = (value: unknown): string => createHash("sha256").update(JSON.stringify(value) ?? "").digest("hex");
   const keys = digest([...values].sort());
@@ -51,7 +54,8 @@ export function servedGraphView<T extends { nodes: unknown; decisions: unknown[]
     cache?.set(at, out, Buffer.byteLength(JSON.stringify(out) ?? ""));
     return out;
   };
-  return { ...view, nodes: once("nodes", view.nodes), decisions: view.decisions.map((value) => once("decision", value)), effects: view.effects.map((value) => once("effect", value)) };
+  const parts = { ...view, nodes: once("nodes", view.nodes), decisions: view.decisions.map((value) => once("decision", value)), effects: view.effects.map((value) => once("effect", value)) };
+  return redactedOutput(parts, values) as T;
 }
 
 /** What every run's graph keeps in serve's memory, in one cache: each part as served (servedPart), and each workflow

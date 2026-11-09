@@ -48,10 +48,8 @@ const RUN_READS = {
  *  alone. */
 const ASK_PARKS = "waits on ask_person parking the run on the runner";
 // The title/timeline cuts land through the run's one cut set (run-cut.ts, servedTimelineRows), so their cases run here.
-const GRAPH_WF = "waits on the workflow run's graph cutting the sign-in pointer it was handed: run-reads-over-store runGraphView cuts by the run's set, yet a node's served words still carry the pointer";
 const PENDING_PARKED = "waits on the parked run's own server (the ask-gate server) holding the stored tool key and the webhook secret its approval's arguments quote, so the run's cut knows them: today they are saved only on the read server";
 const WAITS = {
-  "getRunGraph (workflow)": GRAPH_WF,
   "getRun (parked)": PENDING_PARKED,
   "getTimeline (parked)": PENDING_PARKED,
   "listRuns (parked)": PENDING_PARKED,
