@@ -1,8 +1,16 @@
 // The run's folder in a computer: the one path it is mounted at, the spec rule every provider's check() shares, and the
 // shape a provider reads it back in. An Archil mount's token is a secret: no refusal, read-back or word here holds it.
 import { realpathSync, statSync } from "node:fs";
-import { epochProblem } from "./labels.js";
 import type { Refusal } from "./provider.js";
+
+/**
+ * Why epoch is not a claim epoch, in words, or undefined when it is one: a whole number from 0 to 2^53 - 1. It lives here,
+ * not in labels.ts, so ./mount loads node built-ins alone; labels.ts takes it from here.
+ */
+export function epochProblem(epoch: unknown): string | undefined {
+	if (typeof epoch === "number" && Number.isSafeInteger(epoch) && epoch >= 0) return undefined;
+	return `an epoch must be a whole number from 0 to ${Number.MAX_SAFE_INTEGER}, not ${typeof epoch === "number" ? String(epoch) : JSON.stringify(epoch) ?? typeof epoch}`;
+}
 
 /** Where the run's folder is mounted in every computer. HOME is elsewhere (a Docker computer's is /work). */
 export const WORKSPACE = "/workspace";
