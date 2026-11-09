@@ -14,7 +14,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
 import { closeOpenSessions, piAdapterSpec, scriptedOrigin } from "./conformance-pi-adapter.mjs";
-import { beforeRequestOf, cap, quiet, rootEntries, SONNET, sleep, TIMING } from "./adapter-pi-cap-support.mjs";
+import { beforeRequestOf, cap, quiet, rootEntries, SONNET, sleep, STEADY, TIMING } from "./adapter-pi-cap-support.mjs";
 
 after(closeOpenSessions);
 const { openSqliteStore } = await import("../dist/store/index.js");
@@ -104,7 +104,10 @@ async function crashedRaise(t, point, { short = false } = {}) {
   const raise = await sendCommand(server, "run-1", { kind: "raise", body: { capUsd: to } });
   await stop.stopped;
   runners[0].kill();
-  runners.push(startRunner({ store: stores[1], createLoop: loop, name: "runner-b", ...TIMING }));
+  // The next runner holds a lease no stall outlasts: the lost runner's short lease is the case's point (it runs out once
+  // that runner is killed), and a claim of runner-b lost to a loaded machine's stall would hand the resume to a second
+  // claim this case does not count.
+  runners.push(startRunner({ store: stores[1], createLoop: loop, name: "runner-b", ...STEADY }));
   const row = await settled(short ? "parked" : "ended").catch(async (error) => {
     throw new Error(`${error.message}; raises ${JSON.stringify(await rootEntries(stores[1], "agentrun.raise"))}`);
   });
