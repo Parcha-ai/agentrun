@@ -47,11 +47,11 @@ import { browserHandBack, handBackTarget } from "./browser-commands.js";
 import { durationMs, logLine } from "./print.js";
 import { knownToolCostOf, type RunMoment, type State, type Status, toolCostOf, WITHHELD_SIGN_IN } from "./run-view.js";
 import { approve, archiveRun, cancel, message, raiseCap, type StartDeps, type StartOptions, startRun, stop as stopRunOverStore, WAITS_ON_A_PERSON } from "./runs-over-store.js";
-import { momentOverStore, summaryOverStore, type ViewDeps, viewOverStore, withheldOverStore } from "./store-view.js";
+import { momentOverStore, summaryOverStore, timelineOverStore, type ViewDeps, viewOverStore, withheldOverStore } from "./store-view.js";
 import { listRunFiles as listRunFilesOverStore, readRunFile as readRunFileOverStore, runBrowserState, runGraphView, type RunReadsDeps, runTimelines } from "./run-reads-over-store.js";
 import { triggerTargets, type TriggerTargetDeps } from "./trigger-targets.js";
 import { listRuns as listRunsOverStore, readRun as readRunOverStore, runOfOrigin as runOfOriginOverStore } from "./store-reads/runs.js";
-import { runEntries, runTimeline } from "./store-reads/journal.js";
+import { runEntries } from "./store-reads/journal.js";
 import { watchRun } from "./live/stream.js";
 import { stats as statsOverStore } from "./store-reads/stats.js";
 import { analytics as analyticsOverStore } from "./store-reads/analytics.js";
@@ -1080,7 +1080,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // The route frames the SSE around its `page`, which long-polls the journal, byte-identical to the old live run's page.
   const timelines = runTimelines({
     context: ctx,
-    timelineRows: (forStore, runId, context) => runTimeline(forStore, runId, context),
+    // The rows a person reads, as the run view serves them (timelineOverStore): each call that waits or waited for an
+    // approval in order (held, the approval row, what came of it) and a question's waiting row, never the bare journal's.
+    timelineRows: async (forStore, runId) => [...((await timelineOverStore(forStore, runId, viewDepsFor(ownOriginOf()))) ?? [])],
     runView: (forStore, runId) => viewOverStore(forStore, runId, viewDepsFor(ownOriginOf())),
   });
   const triggerDeps: TriggerTargetDeps = {

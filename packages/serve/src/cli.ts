@@ -47,7 +47,9 @@ async function runnerBeside(dataDir: string, loops?: number): Promise<{ runner: 
   // A server with no seal key never serves a live view, so a stand-in satisfies the spec's live-viewer seam; a server with
   // one seals its live-viewer tokens with it.
   const sealKey = sealKeyOf(process.env[SEAL_KEY_ENV]) ?? Buffer.alloc(32);
-  const createLoop = dispatchRunner({ env: withoutFaux(process.env), data: dataDir, journal: (claim) => store.journal(claim), store, sealKey, routeOf });
+  // Whether anyone can answer an ask: the server's own rule (accounts on unless AGENTRUN_ACCOUNTS=0), read from the same
+  // environment the server and this runner share; off, the gate refuses each ask at once in words.
+  const createLoop = dispatchRunner({ env: withoutFaux(process.env), data: dataDir, journal: (claim) => store.journal(claim), store, sealKey, routeOf, approvers: process.env.AGENTRUN_ACCOUNTS !== "0" });
   const runner = startRunner({ store, createLoop, ...(loops !== undefined ? { loops } : {}) });
   return { runner, close: async () => { await runner.close(); await store.close(); } };
 }

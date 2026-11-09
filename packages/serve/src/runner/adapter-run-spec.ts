@@ -69,6 +69,10 @@ export interface AdapterSpecDeps {
   readonly log?: (message: string) => void;
   /** D's docker provider for a sandbox run's computer; a test gives its own (computer.ts dockerComputer default). */
   readonly makeProvider?: () => Promise<ComputerProvider>;
+  /** Whether anyone can answer an ask here (the server's accounts are on: AGENTRUN_ACCOUNTS is not 0). False, the gate
+   *  refuses each ask at once in words (tool-gate.ts noApproverText), never parks it. Absent, the old per-run process's
+   *  environment says (NO_APPROVER_ENV). One runner process serves many claims, so it is said here, never per run. */
+  readonly approvers?: boolean;
 }
 
 /** A model as the cap prices it, from the route's catalog cost: its price WITH TIERS (the money rule — a request past a
@@ -166,7 +170,7 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
   // the settings read non-undefined, and the store always reads (no row is every default), so an unattended run goes at an
   // ask it would park on were the settings a file that never read.
   const serverSettings = await loadToolSettings(deps.store);
-  const gate = runGate({ root, work: root }, claim.runId, revision, () => serverSettings);
+  const gate = runGate({ root, work: root }, claim.runId, revision, () => serverSettings, deps.approvers);
 
   // The run's cap (its launch's maxCostUsd): the host's check before each paid request (beforeRequestOf), and what a
   // refusal does to the run (parkOf), with the kernel's raise rule.

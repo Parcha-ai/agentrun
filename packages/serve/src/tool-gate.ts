@@ -448,9 +448,11 @@ export function resumeText(request: Pick<ApprovalRequest, "tool" | "call_id">, s
 /** The gate of the run `runId` at `where` (its directory, under the data directory's runs/), on its pinned revision:
  *  an agentic run's parks an asked call; a workflow's model node cannot. `serverSettings`: where the server's tool
  *  settings are read from, read at each call as the gate reads them; absent, the file beside the run's data directory (the
- *  old per-run process). The runner gives the one store's (tool-plane.ts loadToolSettings), read once at the claim. */
-export function runGate(where: { root: string; work: string }, runId: string, revision: { kind: string; body: { toolSettings?: unknown; harness?: string; approvals?: Approvals } }, serverSettings?: () => ReturnType<typeof readToolSettings>): RunGate {
-  return new RunGate({ root: where.root, work: where.work, data: dataOfRun(where.root), runId, harness: revision.body.harness ?? DEFAULT_HARNESS }, (revision.body.toolSettings ?? {}) as PermissionSettings, revision.kind === "agentic", process.env[NO_APPROVER_ENV] !== "1", approvalsOf(revision.body.approvals), serverSettings);
+ *  old per-run process). The runner gives the one store's (tool-plane.ts loadToolSettings), read once at the claim.
+ *  `approvers`: whether anyone can answer an ask here (accounts on). The runner says so itself, as one process serves many
+ *  claims; absent, the old per-run process's environment says (NO_APPROVER_ENV, set by the server when accounts are off). */
+export function runGate(where: { root: string; work: string }, runId: string, revision: { kind: string; body: { toolSettings?: unknown; harness?: string; approvals?: Approvals } }, serverSettings?: () => ReturnType<typeof readToolSettings>, approvers: boolean = process.env[NO_APPROVER_ENV] !== "1"): RunGate {
+  return new RunGate({ root: where.root, work: where.work, data: dataOfRun(where.root), runId, harness: revision.body.harness ?? DEFAULT_HARNESS }, (revision.body.toolSettings ?? {}) as PermissionSettings, revision.kind === "agentic", approvers, approvalsOf(revision.body.approvals), serverSettings);
 }
 
 /** The gate in a run's process, park mode: its policy, the turn's origin, the calls that wait, and the answers acted on. */
@@ -487,7 +489,8 @@ export class RunGate {
   /** The gate's answer for one call before its intent, for a loop that parks and answers asks itself (the runner's adapter
    *  loop): run it, ask a person, or refuse it with the words the model reads. The same order as `enter`, past the end-of-run
    *  turn's write check (the loop's own): the deny (with where it was set, and that nothing was sent or charged), then a
-   *  pin, then the allow, then the ask, so an allow that approvals "never" made is decided only after every refusal. */
+   *  pin, then the allow, then the ask, so an allow that approvals "never" made is decided only after every refusal. Where
+   *  no one can approve (accounts off), the ask is refused at once in words, never parked, as `enter` refuses it. */
   decide(name: string, args: unknown): "allow" | "ask" | { deny: string } {
     const key = settingsKeyOf(this.where.harness ?? DEFAULT_HARNESS, name, this.where.mcpServers) ?? name;
     const tool = shellToolOf(name) ?? key;
@@ -495,7 +498,8 @@ export class RunGate {
     if (verdict === "deny") return { deny: deniedText(tool, key, this.denyFrom(name), "no") };
     const pinned = this.pinned(key, args, "no");
     if (pinned) return { deny: pinned.text };
-    return verdict === "allow" ? "allow" : "ask";
+    if (verdict === "allow") return "allow";
+    return this.approvers ? "ask" : { deny: noApproverText(tool, "no") };
   }
   /** Where the permission `policy` gives `tool` was set: the agent's own tool settings, the server's, or the default; or
    *  "unattended", an ask the agent's approvals allowed. */

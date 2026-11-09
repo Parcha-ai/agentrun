@@ -183,7 +183,7 @@ export async function cliRunSpecFromLaunch(launch: RunLaunch, run: AdapterRun, d
 
   // The gate before a call's intent: the revision's tool settings over the store's, read once at the claim.
   const serverSettings = await loadToolSettings(deps.store);
-  const gate = runGate({ root, work: root }, claim.runId, revision, () => serverSettings);
+  const gate = runGate({ root, work: root }, claim.runId, revision, () => serverSettings, deps.approvers);
 
   // The run's tools: the kernel registry's hands on its Workspace (and computer). TODO, as the pi spec's: the non-hand
   // tools (web_fetch, web_search, monid, the learned workflow) as host tools under the run's gate.
