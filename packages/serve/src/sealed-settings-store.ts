@@ -21,6 +21,9 @@ const aad = (adapterId: string, scope: string, field: string) => `trigger_settin
 /** The store slice this layer reads and writes. */
 type SealedSettingsStore = { readonly triggerSettings: Pick<TriggerSettings, "get" | "put" | "removeScope">; flush(): Promise<void> };
 
+/** The row a minted field's last replaced value is kept sealed under: read into the redaction list, never a setting. */
+const retiredField = (field: string) => `${field}.retired`;
+
 /** A (scope, field) pair as one key. */
 const pair = (scope: string, field: string) => `${scope}\0${field}`;
 
@@ -77,10 +80,19 @@ class SealedSettingsOverStore {
 
   private async put(scope: string, field: string, value: string): Promise<void> {
     this.writable();
-    await this.store.triggerSettings.put({ adapter: this.adapterId, scope, field, sealed: seal(this.key!, Buffer.from(value, "utf8"), aad(this.adapterId, scope, field)).toString("base64") });
-    await this.store.flush();
     const was = this.opened[scope]?.[field];
-    if (was !== undefined && was !== value) this.retired.add(was);
+    const replaced = was !== undefined && was !== value ? was : undefined;
+    const row = (name: string, text: string) => ({ adapter: this.adapterId, scope, field: name, sealed: seal(this.key!, Buffer.from(text, "utf8"), aad(this.adapterId, scope, name)).toString("base64") });
+    // A minted secret replaced (a rotation) is kept sealed as its field's last retired value, so the next server still cuts
+    // it from what a run said before: one per field, replaced at the next rotation, removed with its scope. Every value
+    // replaced stays in this process's list (retired) all the same.
+    if (replaced !== undefined && this.spec.fields[field]?.mint) {
+      await this.store.triggerSettings.put(row(retiredField(field), replaced));
+      (this.opened[scope] ??= {})[retiredField(field)] = replaced;
+    }
+    await this.store.triggerSettings.put(row(field, value));
+    await this.store.flush();
+    if (replaced !== undefined) this.retired.add(replaced);
     (this.opened[scope] ??= {})[field] = value;
     this.unopened.delete(pair(scope, field));
   }
