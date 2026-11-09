@@ -605,6 +605,10 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
             if (event.type === "request_start") await deps.flush();
           },
         });
+        // A paid request an earlier claim admitted and never saw answered (its runner lost while the request was out): the
+        // provider may have billed it, so it is booked once, as cut, at its hold and bound, and told as any answered request
+        // is, before this claim sends anything (the harness runner's bookCut, main's cut booking).
+        await booking.bookCut();
         const gateOf = preIntentGate(spec, hooks);
         // A CLI's run: the loop keeps its visible record (record: "loop"), every call a crash or a fault left open ended.
         const record = spec.record === "loop" ? await openCliRecord(harness, gate.journal, context) : undefined;
