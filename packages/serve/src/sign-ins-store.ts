@@ -161,6 +161,28 @@ async function firstSignIn(store: Pick<Store, "signIns">, sealKey: Buffer, agent
   return saved;
 }
 
+/** Whether every sign-in run `run` was handed (its sign_in_handed hashes) reads back here: a live sign-in of its agent, or
+ *  a kept tombstone of one, that opens under `sealKey` to a pointer of that hash. One that does not (its seal does not open
+ *  here, or nothing of it is kept) means the run's text could hold a pointer nothing can cut, so the run must not go on:
+ *  main's UNREADABLE_SIGN_IN (runs.ts). A run handed none reads back. */
+export async function handedSignInReadsBack(store: Pick<Store, "signIns">, sealKey: Buffer | undefined, run: { readonly agentId: string; readonly signInHanded: readonly string[] | null }): Promise<boolean> {
+  const handed = run.signInHanded ?? [];
+  if (handed.length === 0) return true;
+  if (!sealKey) return false;
+  const known = new Set<string>();
+  for (const row of await store.signIns.list(run.agentId)) {
+    const pointer = open(sealKey, run.agentId, row.provider, row.pointerSealed);
+    if (pointer !== undefined) known.add(pointerHash(pointer));
+  }
+  for (const provider of ["browserbase", "kernel"] as const) {
+    for (const tomb of await store.signIns.tombstones(run.agentId, provider)) {
+      const pointer = open(sealKey, run.agentId, provider, tomb.pointerSealed);
+      if (pointer !== undefined) known.add(pointerHash(pointer));
+    }
+  }
+  return handed.every((hash) => known.has(hash));
+}
+
 /**
  * A run on the runner saved its sign-in at `at` (a session that saved to it ended): the sign-in's verified_at, as main's
  * lease end fills it from the run's saved mark. Only under the run's own claim, for what it was handed to save: the

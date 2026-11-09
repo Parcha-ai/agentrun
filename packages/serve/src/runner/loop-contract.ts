@@ -59,6 +59,12 @@ export type StopReason =
   /** The runner is closing: the loop stops where it can resume, and the run is released to another runner. */
   | { readonly kind: "shutdown" };
 
+/** A claim its spec builder refuses before anything of the run runs (a handed sign-in that won't read back, an MCP pin
+ *  that can't be made): the loop ends the run failed in these words, with nothing sent. Its message names no secret. */
+export class ClaimRefused extends Error {
+  override name = "ClaimRefused";
+}
+
 /** The end a person's stop or cancel writes: stopped, in words that say which. A cancel's are main's ("cancelled"). */
 export function endedBy(cancel: boolean | undefined): string {
   return cancel ? "cancelled" : "stopped by a person";
