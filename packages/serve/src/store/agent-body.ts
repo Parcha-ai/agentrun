@@ -54,8 +54,8 @@ export const isToolSettingsKey = (name: string): boolean => TOOL_KEY.test(name);
 export type PromptVariant = { role: "base" | "overlay" | "generic" | "question"; label: string; text: string; when?: { question: string; option: string; threshold: number }; criteria?: Record<string, string> };
 
 export type RevisionPlace = { mode: string; box?: string };
-export type AgenticBody = { instructions: string; skills: Record<string, string>; tools: string[]; model?: string; thinking?: string; prompts?: Record<string, PromptVariant>; harness?: string; place?: RevisionPlace; learning?: boolean; toolSettings?: Record<string, ToolSetting>; maxCostUsd?: number; capMode?: string };
-export type WorkflowBody = { workflow: Record<string, unknown>; skills: Record<string, string>; tools: string[]; harness?: string; place?: RevisionPlace; toolSettings?: Record<string, ToolSetting>; maxCostUsd?: number; capMode?: string };
+export type AgenticBody = { instructions: string; skills: Record<string, string>; tools: string[]; model?: string; thinking?: string; prompts?: Record<string, PromptVariant>; harness?: string; place?: RevisionPlace; learning?: boolean; toolSettings?: Record<string, ToolSetting>; approvals?: "never"; maxCostUsd?: number; capMode?: string };
+export type WorkflowBody = { workflow: Record<string, unknown>; skills: Record<string, string>; tools: string[]; harness?: string; place?: RevisionPlace; toolSettings?: Record<string, ToolSetting>; approvals?: "never"; maxCostUsd?: number; capMode?: string };
 /** One tool's settings: named string picks (a provider, a permission). The agent-level argument pin (tl-review's
  *  tool-plane.ts pinIssues + canonicalToolSettings, the one copy) is wired in here once that PR is on the base and
  *  AGENT_LAYER_PINS flips to true; this validator does not reimplement it, so while the flag is false a pin is refused. */
@@ -63,8 +63,8 @@ export type ToolSetting = Record<string, string>;
 
 /** The input a revision's body is built from (the control plane's, in the store's own shape). */
 export type RevisionBodyInput =
-  | { kind: "agentic"; instructions: string; skills?: Record<string, string>; tools?: string[]; model?: string; thinking?: string; prompts?: Record<string, PromptVariant>; harness?: string; place?: unknown; learning?: boolean; toolSettings?: unknown; maxCostUsd?: number; capMode?: string }
-  | { kind: "workflow"; workflow: unknown; skills?: Record<string, string>; tools?: string[]; harness?: string; place?: unknown; toolSettings?: unknown; maxCostUsd?: number; capMode?: string };
+  | { kind: "agentic"; instructions: string; skills?: Record<string, string>; tools?: string[]; model?: string; thinking?: string; prompts?: Record<string, PromptVariant>; harness?: string; place?: unknown; learning?: boolean; toolSettings?: unknown; approvals?: "never"; maxCostUsd?: number; capMode?: string }
+  | { kind: "workflow"; workflow: unknown; skills?: Record<string, string>; tools?: string[]; harness?: string; place?: unknown; toolSettings?: unknown; approvals?: "never"; maxCostUsd?: number; capMode?: string };
 
 /** A place as a body keeps it: `{mode, box?}`, nothing else. */
 function placeOf(place: unknown): RevisionPlace {
@@ -112,10 +112,14 @@ export function bodyOf(input: RevisionBodyInput): { body: AgenticBody | Workflow
     ? Object.fromEntries(Object.entries(set as Record<string, unknown>).sort(([a], [b]) => (a < b ? -1 : 1)).map(([name, inner]) => [name, toolSettingOf(inner)])) as Record<string, ToolSetting>
     : undefined;
 
+  // Unattended (approvals "never") is the one value kept: ask, the default, is kept as nothing, so an agent that asks is
+  // one body with an agent that names the default.
+  if (input.approvals !== undefined && input.approvals !== "never") invalid('the approvals is "never", or absent (ask)');
   const host = {
     ...(input.harness !== undefined ? { harness: input.harness } : {}),
     ...(input.place !== undefined ? { place: placeOf(input.place) } : {}),
     ...(toolSettings ? { toolSettings } : {}),
+    ...(input.approvals === "never" ? { approvals: "never" as const } : {}),
   };
 
   // A default spend cap, and how it prices a request, for a revision of either kind.
