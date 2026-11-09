@@ -471,11 +471,13 @@ export class PhoneHarnessProvider implements ComputerProvider {
 		const pending = pendingId(requestKey);
 		await this.#ledger.put({ id: pending, labels: { ...(spec.labels ?? {}) }, image: spec.image, deadline: new Date(from + spec.lifetimeMs).toISOString(), request: requestKey });
 		let posted = await this.#api("POST", "/sessions", body, { "Idempotency-Key": requestKey }, signal);
-		if (!posted.ok && posted.thrown) {
-			// The request may have been admitted though its answer was lost: ask by its key, never POST again.
+		const cancelled = !posted.ok && posted.error.code === "aborted";
+		if (!posted.ok && (posted.thrown || cancelled)) {
+			// The request may have been admitted though its answer was lost or cancelled: ask by its key, never POST again.
+			// The ask is create's own, not under the caller's signal, which may have fired; a phone it finds is ended below.
 			const recovered = await this.#api("GET", `/sessions/requests/${requestKey}`);
 			if (!recovered.ok) {
-				return fail("phone", `${posted.error.message}; and the service has no session for the request: ${recovered.error.message}; the ledger keeps the request's key, so list() finds the phone if it was made`);
+				return fail(cancelled ? "aborted" : "phone", `${posted.error.message}; and the service has no session for the request: ${recovered.error.message}; the ledger keeps the request's key, so list() finds the phone if it was made`);
 			}
 			posted = recovered;
 		}
@@ -500,6 +502,7 @@ export class PhoneHarnessProvider implements ComputerProvider {
 			const gone = await this.#end(id);
 			return fail(code, `${words}; ${gone.ok ? "it was ended" : `it could not be ended (${gone.error.message})`}`);
 		};
+		if (cancelled) return ended("aborted", `create was aborted during POST /sessions, after the service made the phone ${id}`);
 		let session = first.value;
 		for (;;) {
 			if (signal?.aborted) return ended("aborted", `create was aborted while the phone ${id} started`);
