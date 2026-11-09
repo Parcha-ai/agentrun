@@ -472,7 +472,7 @@ describe("a one-time schedule that has run", () => {
       { ...ONCE, id: "trg_manual", source: { kind: "schedule", at: "2026-11-20T09:00:00Z" }, last_firing: firing({ by: "manual", nominal_at: "2026-11-09T21:00:00Z" }) },
       // Its time's firing waits (the server was full), or failed: no run started.
       { ...ONCE, id: "trg_due", last_firing: firing({ nominal_at: "2026-11-09T20:43:00Z", status: "due" }) },
-      { ...ONCE, id: "trg_failed", last_firing: firing({ nominal_at: "2026-11-09T20:43:00Z", status: "failed", error: { code: "run_failed", message: "no model", retryable: false } }) },
+      { ...ONCE, id: "trg_failed", last_firing: firing({ nominal_at: "2026-11-09T20:43:00Z", status: "failed", error: { code: "run_failed", message: "no model" } }) },
     ];
     const list = await open(server({ triggers: notDone }).v2, {});
     for (const t of notDone) expect(list.host.querySelector(`[data-trigger="${t.id}"]`)!.textContent).not.toContain("Done · ran");
