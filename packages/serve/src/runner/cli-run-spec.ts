@@ -229,7 +229,7 @@ export async function cliRunSpecFromLaunch(launch: RunLaunch, run: AdapterRun, d
 
   // The run's tools: the kernel registry's hands on its Workspace (and computer), beside the learned_workflow tool when the
   // pin names learned workflows. A CLI harness's session has a model port, so learned_workflow runs for real on the
-  // session's proxied models (learnedWorkflowHostTool onSessionPort), each node a request on the run's one route labelled
+  // session's proxied models (learnedWorkflowHostTool), each node a request on the run's one route labelled
   // learned_workflow, booked on the run's one ledger. Its call nodes run the agent's tools' effects on the run's scoped
   // keys (claim-secrets.ts), the run's plane threaded for the web tools among them. (web_fetch/web_search/monid as the CLI's
   // own host tools are still a TODO, as the pi spec binds them.)
@@ -239,7 +239,7 @@ export async function cliRunSpecFromLaunch(launch: RunLaunch, run: AdapterRun, d
     const toolEnv = await claimSecrets({ store: deps.store, sealKey: deps.sealKey, env: deps.env }, revisionRow as unknown as Parameters<typeof claimSecrets>[1], launch);
     delete toolEnv[TOOL_PLANE_ENV];
     if (launch.plane && Object.keys(launch.plane).length) toolEnv[TOOL_PLANE_ENV] = JSON.stringify(launch.plane);
-    learnedTool = await learnedWorkflowHostTool({ run, granted, plane: launch.plane, env: toolEnv, work: root, ctx: hostToolCtxOf(run, context, results, root), onSessionPort: true });
+    learnedTool = await learnedWorkflowHostTool({ run, granted, plane: launch.plane, env: toolEnv, work: root, ctx: hostToolCtxOf(run, context, results, root) });
   }
   const session: SessionSpec = {
     key: `run:${claim.runId}`,
