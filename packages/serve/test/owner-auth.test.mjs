@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { mock, test } from "node:test";
 import * as owner from "../dist/owner.js";
 import { ROUTES } from "../dist/server.js";
+import { isSecretWriteOperation } from "../dist/secret-writes.js";
 import { builtConsole, call, CONSOLE_INDEX, cookieOf, scratch, serve } from "./support.mjs";
 
 const { Owner, resetPassword, SIGN_IN_PEERS } = owner;
@@ -36,12 +37,12 @@ test("the first visit sets the password and signs in: the printed link lands on 
   const session = async (cookie) => (await call(server.port, { path: "/v2/auth/session", headers: cookie ? { cookie } : {} })).json;
   assert.deepEqual((await call(server.port, { path: "/setup" })).headers.location, "/", "the printed link sends the browser to the console, its #code kept");
   assert.equal((await call(server.port, { path: "/" })).status, 200);
-  assert.deepEqual(await session(), { password_set: false, signed_in: false, setup_code: false }, "the console asks for the first password, with no code on an open setup");
+  assert.deepEqual(await session(), { accounts: true, password_set: false, signed_in: false, secrets_writable: false, secrets_reason: "sign_in", setup_code: false }, "the console asks for the first password, with no code on an open setup");
   const made = await setup(server, { password: PASSWORD });
   assert.deepEqual([made.status, made.json.signed_in], [201, true], made.text);
   assert.equal((await agents(server, cookieOf(made))).status, 200, "the 201 carries the owner's session");
-  assert.deepEqual(await session(cookieOf(made)), { password_set: true, signed_in: true });
-  assert.deepEqual(await session(), { password_set: true, signed_in: false }, "another browser is asked to sign in");
+  assert.deepEqual(await session(cookieOf(made)), { accounts: true, password_set: true, signed_in: true, secrets_writable: true }, "the owner's session may write secrets");
+  assert.deepEqual(await session(), { accounts: true, password_set: true, signed_in: false, secrets_writable: false, secrets_reason: "sign_in" }, "another browser is asked to sign in");
   assert.equal((await call(server.port, { path: "/setup" })).headers.location, "/");
   for (const file of ["owner.json", ".session-secret"]) assert.equal((await stat(join(server.data, file))).mode & 0o777, 0o600, file);
   const stored = JSON.parse(await readFile(join(server.data, "owner.json"), "utf8"));
@@ -138,12 +139,12 @@ test("the session read says whether setup takes a code, never the code: true at 
   const coded = await serve(t, { accounts: true });
   const code = new URL(coded.setupUrl).hash.slice("#code=".length);
   const before = await session(coded);
-  assert.deepEqual(before, { password_set: false, signed_in: false, setup_code: true });
+  assert.deepEqual(before, { accounts: true, password_set: false, signed_in: false, secrets_writable: false, secrets_reason: "sign_in", setup_code: true });
   assert.ok(!JSON.stringify(before).includes(code), "the code itself is never in the answer");
   const open = await serve(t, { accounts: true, openSetup: true });
-  assert.deepEqual(await session(open), { password_set: false, signed_in: false, setup_code: false });
+  assert.deepEqual(await session(open), { accounts: true, password_set: false, signed_in: false, secrets_writable: false, secrets_reason: "sign_in", setup_code: false });
   assert.equal((await setup(coded, { password: PASSWORD, code })).status, 201);
-  assert.deepEqual(await session(coded), { password_set: true, signed_in: false }, "no setup_code once a password is set");
+  assert.deepEqual(await session(coded), { accounts: true, password_set: true, signed_in: false, secrets_writable: false, secrets_reason: "sign_in" }, "no setup_code once a password is set");
 });
 
 test("sign-in: the password gives a session cookie, HttpOnly, SameSite=Strict, Path=/, 30 days; a wrong one is a 401 and sets nothing", async (t) => {
@@ -189,7 +190,7 @@ test("signing out ends every session: a copy of the cookie made before is a 401 
   assert.equal((await agents(server, server.cookie)).status, 401);
   assert.equal((await agents(server, other)).status, 401, "another browser's session ended too");
   const session = await call(server.port, { path: "/v2/auth/session", headers: { cookie: other } });
-  assert.deepEqual(session.json, { password_set: true, signed_in: false });
+  assert.deepEqual(session.json, { accounts: true, password_set: true, signed_in: false, secrets_writable: false, secrets_reason: "sign_in" });
   assert.equal((await signIn(server, PASSWORD)).status, 200, "and the password still signs in");
 });
 
@@ -231,7 +232,7 @@ test("every route, called with no credential, is a 401 but capabilities, the con
     const writes = route.method !== "GET" && route.method !== "HEAD";
     const body = writes && route.method !== "DELETE" ? {} : undefined;
     const anonymous = await call(server.port, { method: route.method, path, headers: writes ? page(server) : {}, body });
-    if (["getCapabilities", "getOpenapi", "getHealth"].includes(route.name)) assert.ok([200, 503].includes(anonymous.status), `${route.method} ${path}: ${anonymous.status}`);
+    if (["getCapabilities", "getOpenapi", "getHealth", "getAuthSession"].includes(route.name)) assert.ok([200, 503].includes(anonymous.status), `${route.method} ${path}: ${anonymous.status}`);
     // The browser back from an authorization server carries no token: its state and the cookie its start set are the
     // check (403 without the cookie).
     else if (["mcpOAuthCallback", "mcpOAuthClient"].includes(route.name)) assert.ok([200, 400, 403].includes(anonymous.status), `${route.method} ${path}: ${anonymous.status}`);
@@ -247,6 +248,8 @@ test("every route, called with no credential, is a 401 but capabilities, the con
       // computer view, a full-control credential for its session, and its hand-back (browser-live.test.mjs,
       // browser-take-over.test.mjs).
       else if ((route.name === "approveLearningFile" || route.name === "restoreLearningFile" || route.name === "answerApproval" || route.name === "getRunBrowser" || route.name === "handBackRunBrowser" || route.name === "getRunComputer") && !headers.cookie) assert.equal(res.status, 403, `${route.method} ${path} with the token: ${res.status} ${res.text}`);
+      // A secret write takes the owner's session alone (secret-writes.ts): the token is 403 on it.
+      else if (isSecretWriteOperation(route.name) && !headers.cookie) assert.equal(res.status, 403, `${route.method} ${path} with the token: ${res.status} ${res.text}`);
       // An OAuth callback takes neither: only the cookie its own start set in the browser that started it.
       else if (route.name === "mcpOAuthCallback") assert.equal(res.status, 403, `${route.method} ${path}: ${res.status} ${res.text}`);
       else assert.ok(![401, 403].includes(res.status), `${route.method} ${path} with ${headers.cookie ? "the session" : "the token"}: ${res.status} ${res.text}`);
@@ -258,7 +261,10 @@ test("accounts off: no owner file, no setup or sign-in routes (their old address
   const server = await serve(t);
   assert.equal(server.setupUrl, undefined);
   for (const path of ["/setup", "/sign-in"]) assert.equal((await call(server.port, { path })).headers.location, "/", path);
-  for (const path of ["/v2/setup", "/v2/auth/sign-in", "/v2/auth/session"]) assert.equal((await call(server.port, { method: "POST", path, headers: page(server), body: {} })).status, 404, path);
+  for (const path of ["/v2/setup", "/v2/auth/sign-in"]) assert.equal((await call(server.port, { method: "POST", path, headers: page(server), body: {} })).status, 404, path);
+  // The session read answers here too, with no user field: only whether this caller may write a secret (secret-writes.ts).
+  assert.equal((await call(server.port, { method: "POST", path: "/v2/auth/session", headers: page(server), body: {} })).status, 405, "the session is read, never posted");
+  assert.deepEqual((await call(server.port, { path: "/v2/auth/session" })).json, { accounts: false, secrets_writable: false, secrets_reason: "sign_in" });
   await assert.rejects(stat(join(server.data, "owner.json")));
   assert.equal((await call(server.port, { path: "/v2/agents", headers: { authorization: `Bearer ${server.token}` } })).status, 200);
 });

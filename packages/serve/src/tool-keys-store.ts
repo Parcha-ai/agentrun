@@ -15,7 +15,7 @@ import { decisionsOf } from "./decisions.js";
 import { ApiError, invalid } from "./errors.js";
 import { checkKey, type KeyCheck } from "./key-check.js";
 import { putSealedKey, removeSealedKey } from "./server-keys.js";
-import { rowUnlocks, SEAL_KEY_ENV, sealKeyOf, type StartCheck, TOOL_KEYS, UNREADABLE } from "./tool-keys.js";
+import { rowSecrets, rowUnlocks, SEAL_KEY_ENV, sealKeyOf, type StartCheck, TOOL_KEYS, UNREADABLE } from "./tool-keys.js";
 import { toolsView } from "./tools.js";
 import { type SealedKeys, sealColumn, sealedAt, type Settings, unsealColumn } from "./store/index.js";
 import { isObject, unknownFields } from "./validate.js";
@@ -48,15 +48,17 @@ const fingerprint = (key: Buffer): string => createHmac("sha256", key).update("a
 
 /** The one snapshot the server reads from and keeps in step with every write. `fields` holds each stored field's opened
  *  result (value, or why it does not open); `checks` the per-key provider checks; `seals` the seal-key fingerprint each
- *  field was sealed under, kept so a later start under another key reads it as seal_key_changed. */
-type Snapshot = { fields: Map<string, Opened>; checks: Map<string, KeyCheck>; seals: Map<string, string> };
+ *  field was sealed under, kept so a later start under another key reads it as seal_key_changed; `changed` when each
+ *  field's value was saved: its own sealed_keys row's updated_at (one row holds one field's value, and only that field's
+ *  save writes it, so the row's time is the credential's own). */
+type Snapshot = { fields: Map<string, Opened>; checks: Map<string, KeyCheck>; seals: Map<string, string>; changed: Map<string, number> };
 
 /** The store-backed ToolKeys. `toolKeysOverStore` builds it; the switch awaits load() once before the first read. */
 class ToolKeysOverStore {
   private readonly key: Buffer | undefined;
   private readonly sealCheck: string | undefined;
   private said = "";
-  private snapshot: Snapshot = { fields: new Map(), checks: new Map(), seals: new Map() };
+  private snapshot: Snapshot = { fields: new Map(), checks: new Map(), seals: new Map(), changed: new Map() };
   /** The checks of the keys the server was started with, by key id, each once it answered (checkServer). In memory only. */
   private readonly started: Record<string, StartCheck> = {};
 
@@ -71,11 +73,13 @@ class ToolKeysOverStore {
   async load(): Promise<void> {
     const { checks, seals } = this.readChecks(await this.store.settings.get(TOOL_KEY_CHECKS_KEY));
     const fields = new Map<string, Opened>();
+    const changed = new Map<string, number>();
     for (const row of await this.store.sealedKeys.all()) {
       if (!FIELDS.includes(row.name)) continue; // the sealed_keys table also holds Archil's keys, which are not tool keys
       fields.set(row.name, this.openAt(row.name, row.sealed, seals.get(row.name)));
+      changed.set(row.name, row.updatedAt);
     }
-    this.snapshot = { fields, checks, seals };
+    this.snapshot = { fields, checks, seals, changed };
   }
 
   /** The checks and fingerprints the settings row holds, failing closed (an unreadable row reads as none, so no value is
@@ -132,7 +136,11 @@ class ToolKeysOverStore {
         return { name, set: false, source: null, ...(opened ? { stored_unreadable: true as const } : {}) };
       });
       const check = fields[0].source === "stored" ? (this.snapshot.checks.get(row.id) ?? UNCHECKED) : fields[0].source === "server" ? (this.started[row.id] ?? null) : null;
-      return { id: row.id, kind: row.kind, label: row.label, ...rowUnlocks(row, tools, providers, offers), fields, check };
+      const secrets = rowSecrets(row, fields, (name) => {
+        const at = this.snapshot.changed.get(name);
+        return at === undefined ? null : new Date(at).toISOString();
+      });
+      return { id: row.id, kind: row.kind, label: row.label, ...rowUnlocks(row, tools, providers, offers), fields, secrets, check };
     });
     const reason = UNREADABLE.find((why) => again.some((field) => field.why === why));
     const reenter = reason ? { reason, fields: again.map((field) => field.name) } : null;
@@ -193,6 +201,8 @@ class ToolKeysOverStore {
       this.snapshot.fields.set(name, { value: value as string });
       this.snapshot.seals.set(name, this.sealCheck!);
     }
+    // Each saved field's time is its row's, as the store wrote it (as a restart reads it back): the others' stay.
+    for (const stored of await this.store.sealedKeys.all()) if (Object.hasOwn(values, stored.name)) this.snapshot.changed.set(stored.name, stored.updatedAt);
     if (values[row.fields[0]] !== undefined) this.snapshot.checks.delete(row.id);
     if (check) this.snapshot.checks.set(row.id, check);
     await this.writeChecks();
@@ -208,6 +218,7 @@ class ToolKeysOverStore {
       if (this.snapshot.fields.has(name)) await removeSealedKey(this.store, name);
       this.snapshot.fields.delete(name);
       this.snapshot.seals.delete(name);
+      this.snapshot.changed.delete(name);
     }
     this.snapshot.checks.delete(row.id);
     await this.writeChecks();

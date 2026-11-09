@@ -80,7 +80,9 @@ import { memoryMbOf } from "./run-box.js";
 import { DOCUMENTS_ENV } from "./pdf-pages.js";
 import { CAP_MODES, type CapMode, meterFiguresIn } from "./cap.js";
 import { type Blocker, blockersOf, CODE_NODES_ENV, issueOf, MCP_HARNESSES, NOT_SET_UP, type RevisionShape } from "./runnable.js";
-import { hostSecrets, SECRET_NAMES, secret, type StoredKeys, withSecrets } from "./secrets.js";
+import { handedSecret, holdMadeSecret, hostSecrets, SECRET_NAMES, secret, type StoredKeys, withSecrets } from "./secrets.js";
+import { isSecretWriteOperation, SECRET_WRITE_REFUSAL, secretsWritableFields, secretWriterFacts, writesSecret, writesSecretsAllowed } from "./secret-writes.js";
+import { ensureSealKey, SealKeyRefused, sealKeyHome, sealKeyLine } from "./seal-key.js";
 import { redactedOutput } from "./key-refusal.js";
 import { analyticsFilter, analyticsView, statsView } from "./stats.js";
 import { agentLearningOverStore, learningCountsOverStore, runLearningOverStore } from "./store-reads/learning.js";
@@ -392,6 +394,8 @@ export type Route =
 export const ROUTES: readonly Route[] = [
   { method: "GET", pattern: /^\/capabilities$/, name: "getCapabilities" },
   { method: "GET", pattern: /^\/openapi\.json$/, name: "getOpenapi" },
+  // Answered here only with accounts off: with accounts on, the owner's routes answer it before any route (ownerRoute).
+  { method: "GET", pattern: /^\/auth\/session$/, name: "getAuthSession" },
   { method: "GET", pattern: /^\/health$/, name: "getHealth" },
   { method: "POST", pattern: /^\/agents$/, name: "createAgent" },
   { method: "GET", pattern: /^\/agents$/, name: "listAgents" },
@@ -740,6 +744,18 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   // A harness table module is the server's to name, from `harnessTable` alone, for itself and its runs: one in its own
   // environment (an operator's export, a leftover) never loads, wherever the server reads its environment.
   delete process.env[HARNESS_TABLE_ENV];
+  // No start without a seal key (seal-key.ts): the one handed over, else the one kept under the config home, made at the
+  // first start with only its path printed. Every secret here is kept under it; there is no keeping one in the clear.
+  const handedSeal = handedSecret(SEAL_KEY_ENV);
+  let seal;
+  try {
+    seal = ensureSealKey(handedSeal, { configHome: sealKeyHome(process.env) });
+  } catch (error) {
+    if (error instanceof SealKeyRefused) throw new Error(`agentrun-serve does not start without a seal key. ${error.message}`, { cause: error });
+    throw error;
+  }
+  if (!handedSeal) holdMadeSecret(SEAL_KEY_ENV, seal.text);
+  if (seal.generated) process.stderr.write(`${sealKeyLine(seal)}\n`);
   await mkdir(resolve(options.data), { recursive: true, mode: 0o700 });
   // Canonical once, here: a box's mount source below it must then be its own canonical path, through no link (run-box.ts).
   const data = await realpath(resolve(options.data));
@@ -1345,6 +1361,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   }
 
   async function bodyOf(req: IncomingMessage): Promise<Json> {
+    // Read once: the secret-write check reads a registered operation's body before its route does (secret-writes.ts).
+    const read = bodies.get(req);
+    if (read !== undefined) return read;
     const type = String(req.headers["content-type"] ?? "");
     if (!type.startsWith("application/json")) throw new ApiError("unsupported_media_type", "the body must be application/json");
     const bytes = await bytesOf(req);
@@ -1995,7 +2014,11 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // Before the owner's password is set: whether setup takes the printed code (a server at a public address), so
         // the page asks for it when opened with no link. Never the code itself.
         const set = me.hasPassword();
-        return send(res, 200, { password_set: set, signed_in: signedIn(req, me), ...(set ? {} : { setup_code: !me.openSetup }) });
+        // secrets_writable: whether this browser may save a secret (secret-writes.ts mayWriteSecrets, the dispatch check's
+        // own rule), so the console offers a paste only where it would be taken. Answered before the page marks the
+        // request, so its facts are read here: accounts are on, and its session is its password's.
+        const writable = secretsWritableFields({ accounts: true, passwordSession: signedIn(req, me), consoleSession: false, token: req.headers.authorization !== undefined && !signedIn(req, me), loopbackBound: isLoopback(host) });
+        return send(res, 200, { accounts: true, password_set: set, signed_in: signedIn(req, me), ...writable, ...(set ? {} : { setup_code: !me.openSetup }) });
       }
     }
     throw new ApiError("not_found", `no route /v2${path}`);
@@ -2064,6 +2087,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       return send(res, 200, { ...answer, features: { ...answer.features, computers: await computerCapabilities(computersOf()) } });
     }
     if (found.name === "getOpenapi") return send(res, 200, servedOpenapi(openapi, req.socket.localPort));
+    // With accounts off there is no owner, and the console still asks whether it may save a secret: secret-writes.ts'
+    // verdict over the request the page just marked, never a signed-in user it doesn't have.
+    if (found.name === "getAuthSession") return send(res, 200, { accounts: false, ...secretsWritableFields(secretWriterFacts(req, { accounts: false, loopbackBound: isLoopback(host) })) });
     // The one route with no token: a pushed trigger source's request, checked by its source before anything else is
     // read (push-handler.ts).
     if (found.name === "receiveHook") {
@@ -2116,6 +2142,16 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     if (found.name === "answerApproval" && !byOwnerSession(req) && req.headers.authorization !== undefined) {
       authFailed(`/v2${path}`, "approve_without_session");
       throw new ApiError("forbidden", owner ? "Answering a tool call's approval takes the owner's password sign-in in the console, never a token." : "Answering a tool call's approval takes the owner's password sign-in, and this server has no accounts (AGENTRUN_ACCOUNTS=0).");
+    }
+    // Saving, replacing or removing a secret (secret-writes.ts): the one check. Who may is mayWriteSecrets' alone (the
+    // owner's session); which writes are secret is each plane's registered predicate, read from the body, so a token's
+    // non-secret edit on the same route still goes through. A body that does not read counts as the plane says of none.
+    if (isSecretWriteOperation(found.name) && req.headers.authorization !== undefined && !writesSecretsAllowed(req, { accounts: owner !== undefined, loopbackBound: isLoopback(host) })) {
+      const body = req.method === "DELETE" || req.method === "GET" ? undefined : await bodyOf(req).catch(() => undefined);
+      if (writesSecret(found.name, body)) {
+        authFailed(`/v2${path}`, "secret_without_session");
+        throw new ApiError("forbidden", SECRET_WRITE_REFUSAL);
+      }
     }
     if (!timingSafeEqual(digest(String(req.headers.authorization ?? "")), expected)) {
       authFailed(`/v2${path}`, req.headers.authorization === undefined ? "no_credential" : "wrong_token");

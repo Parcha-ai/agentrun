@@ -18,7 +18,7 @@ import type { ImageState } from "./box-image.js";
 import { banner, boxImageLine } from "./print.js";
 import type { LearningMode } from "./learning.js";
 import { DEFAULT_PORT, type Serve, startServe } from "./server.js";
-import { SEAL_KEY_ENV, sealKeyOf } from "./tool-keys.js";
+import { SEAL_KEY_ENV } from "./tool-keys.js";
 
 /** A runner beside the server on the same data directory (the CLI start's server-and-runner, and the `runner` subcommand):
  *  its own store handle (role runner), and the runner's dispatch (dispatch.ts) for each claimed run — pi on the kernel's
@@ -44,9 +44,11 @@ async function runnerBeside(dataDir: string, loops?: number): Promise<{ runner: 
     }
     throw error;
   }
-  // A server with no seal key never serves a live view, so a stand-in satisfies the spec's live-viewer seam; a server with
-  // one seals its live-viewer tokens with it.
-  const sealKey = sealKeyOf(process.env[SEAL_KEY_ENV]) ?? Buffer.alloc(32);
+  // The server's seal key (seal-key.ts): the one handed over (read through secrets.js, which moves it out of the
+  // environment as it loads), else the one the server keeps under the config home. A runner never starts without it: it
+  // seals the live-viewer tokens, and there is no stand-in key.
+  const { ensureSealKey, sealKeyHome } = await import("./seal-key.js");
+  const sealKey = ensureSealKey(secret(SEAL_KEY_ENV), { configHome: sealKeyHome(process.env) }).key;
   // The beside-runner sees the server's environment as a separate runner would (runEnv, not withoutFaux): so an API run on
   // a --faux server reaches the faux gateway and its computers. The run's claim-time computer is composed once, the one way
   // (workspace/computer-deps.ts computerDepsFrom), from that same environment.

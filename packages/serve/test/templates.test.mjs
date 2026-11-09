@@ -357,15 +357,13 @@ test("no package lets its agent write or send unasked: each MCP tool a package l
   assert.ok(listed.some((x) => WRITES.has(x.id)) && listed.some((x) => x.allowed), "the check sees both writes and allowed tools");
 });
 
-test("a package with a webhook trigger, on a server with no seal key to keep its secret, is refused before anything is made", async (t) => {
+test("a package with a webhook trigger, on a server handed no seal key, keeps its secret under the key the server made at its start: applied, its trigger made", async (t) => {
+  // A server never runs without a seal key (seal-key.ts): handed none, it makes one, so the trigger's secret is kept.
   withEnv(t, {}, ["AGENTRUN_SEAL_KEY"]);
   const { api } = await serve(t);
-  const refused = await api("POST", "/templates/inbound-lead/apply", { parameters: { icp: "B2B fintech", post_to: "none" } });
-  assert.equal(refused.status, 409, JSON.stringify(refused.body));
-  assert.equal(refused.body.error.code, "agent_not_runnable");
-  assert.deepEqual(refused.body.error.fields.map((f) => [f.field, f.reason]), [["triggers.0", "not_set_up_here"]]);
-  assert.match(refused.body.error.fields[0].fix, /AGENTRUN_SEAL_KEY/);
-  assert.deepEqual([(await api("GET", "/agents?archived=true")).body.agents, (await api("GET", "/triggers")).body.triggers], [[], []], "nothing was made, not even an archived agent");
+  const applied = await api("POST", "/templates/inbound-lead/apply", { parameters: { icp: "B2B fintech", post_to: "none" } });
+  assert.equal(applied.status, 201, JSON.stringify(applied.body));
+  assert.equal((await api("GET", "/triggers")).body.triggers.length, 1, "its webhook trigger is made");
 });
 
 test("a server-wide deny of every tool of an MCP server (mcp:<server>/*) keeps each grant of it denied", async (t) => {

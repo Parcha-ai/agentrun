@@ -134,7 +134,11 @@ test("a save still waiting on its provider when the server closes stores nothing
   const data = join(await scratch(t), "agents");
   const server = await startServe({ data, port: 0, faux: FAUX, fauxMonid: FAUX_MONID, drainTimeout: "5s" });
   const put = client(server.baseUrl, server.token)("PUT", "/settings/tool-keys/monid", { values: { MONID_API_KEY: MONID_KEY } }).catch((error) => ({ error }));
-  const signal = await monidStalled();
+  // The save reaches monid's check, which the fake holds; were it answered first (a refusal before the check), the
+  // check would never be reached: the race ends on whichever comes first, and that one says why.
+  const first = await Promise.race([monidStalled().then((signal) => ({ signal })), put.then((answered) => ({ answered }))]);
+  assert.ok(first.signal, `the save answered before it reached monid's check: ${JSON.stringify(first.answered?.body ?? first.answered?.error?.message)}`);
+  const { signal } = first;
   await server.close();
   // The fake answers only now, its signal ignored, and accepts the key: what the save does next runs on the promises
   // that answer resolves, all done before the next turn of the event loop.
