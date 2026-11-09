@@ -10,6 +10,8 @@ export const facts: AdapterFacts = Object.freeze<AdapterFacts>({
   wire: "openai-responses",
   // A message that comes mid-turn waits for the turn's end.
   steer: false,
+  // A call OpenCode started is never run again: one cut off is reported interrupted, never repeated.
+  rerunsStarted: false,
   // One run's memory, measured with the server's (host.ts): OpenCode's server beside the run's process.
   runMib: 704,
   // OpenAI's reasoning efforts stop at xhigh.

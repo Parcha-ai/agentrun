@@ -26,7 +26,8 @@ test("renewMany renews every held claim in one transaction, and answers a fenced
   const { store, clock } = await storeOn(t);
   for (const id of ["run-1", "run-2", "run-3"]) await queued(store, id);
   const claims = [];
-  for (const id of ["run-1", "run-2", "run-3"]) claims.push(await store.claim(id, "runner-a", { leaseMs: 1_000 }));
+  // run-2's lease is the short one: run-1's and run-3's still hold when the renew comes (one that ran out is refused).
+  for (const id of ["run-1", "run-2", "run-3"]) claims.push(await store.claim(id, "runner-a", { leaseMs: id === "run-2" ? 1_000 : 60_000 }));
   // run-2's claim runs out and another runner takes it.
   clock.now += 1_001;
   await store.claim("run-2", "runner-b", { leaseMs: 60_000 });

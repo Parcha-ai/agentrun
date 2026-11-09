@@ -1,7 +1,7 @@
 // Red 0, parity (the page: "not changing: what a person sees"): a run's events from the live view (live/stream.ts,
 // read from the one store) are the events the door's GET /events sends for the same run, the same types in the same
 // order. The door's stream is pi-durable-disk's watchEvents on the run's Harness (what serve's runs.ts reads today); the
-// same faux script, tools and input run once under it and once as a B run (createPiLoop on the store), and the two
+// same script, tools and input run once under it and once as a B run (pi through the adapter on the store), and the two
 // streams' shapes (type, and role for a message event) must be equal. The kernel's own entries (agentrun.end) are not
 // events. The documented difference is only the group-commit fix, which this script never triggers.
 import assert from "node:assert/strict";

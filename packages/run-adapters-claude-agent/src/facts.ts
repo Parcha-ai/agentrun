@@ -11,6 +11,8 @@ export const facts: AdapterFacts = Object.freeze<AdapterFacts>({
   wire: "anthropic-messages",
   // A message that comes mid-turn waits for the turn's end.
   steer: false,
+  // A call that started is never run again (the CLI answers it "[Tool call interrupted]"); only the model calls again.
+  rerunsStarted: false,
   // One run's memory, measured with the server's (serve's host.ts): the CLI and its SDK beside the run's process.
   runMib: 288,
   // Its own MCP client binds the session's remote MCP servers.

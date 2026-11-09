@@ -1,6 +1,7 @@
 // The kernel cap on the runner's booking, for every CLI harness (claude-agent, codex, opencode: their model proxy asks the
 // runner, and the runner asks the host's beforeRequest with the session's spend and its requests in flight). The decision
-// is the one rule, capRule.judge, once per request; the ledger is the runner's (its runner.request and runner.turn
+// is the one rule, capRule.judge, once per request (a request carrying the wrap-up's note: once without it, and once with
+// it when that fits); the ledger is the runner's (its runner.request and runner.turn
 // records) until the cutover binds CapMarks to those records and createCap's own ledger goes.
 import type { BeforeRequest } from "../../runner.js";
 import { CapRefused } from "./errors.js";
@@ -38,7 +39,9 @@ export function beforeRequestOf(options: BeforeRequestOptions): BeforeRequest {
     const capUsd = options.capUsd();
     if (capUsd === undefined) return undefined;
     const model = options.modelOf(request.model) ?? unpriced(request.model);
-    const previous = options.previousOf?.(request.model);
+    // A request the host sends beside the harness's own (its host label: a learned workflow's node) is another
+    // conversation's prompt: nothing of the session's cache is read for it, so it is priced as a cache miss.
+    const previous = request.host === undefined ? options.previousOf?.(request.model) : undefined;
     const asked: ModelCapRequest = {
       kind: "model",
       id: `turn-${request.turn}`,
@@ -65,13 +68,26 @@ export function beforeRequestOf(options: BeforeRequestOptions): BeforeRequest {
     const spentUsd = isFigure(request.spentUsd) && isFigure(toolSpent) ? request.spentUsd + toolSpent : null;
     const toolHeld = options.heldUsd ? options.heldUsd() : 0;
     const heldUsd = isFigure(toolHeld) ? inFlight + toolHeld : null;
-    try {
-      const judged = capRule.judge(asked, { capUsd, spentUsd, heldUsd, mode, now: now() });
-      return { holdUsd: judged.heldUsd, ...(judged.outputTokensMax === undefined ? {} : { outputTokensMax: judged.outputTokensMax }), stoppedUsd: judged.stoppedUsd };
-    } catch (error) {
-      if (error instanceof CapRefused) return { refuse: error.message };
-      throw error;
+    const judge = (input: number | undefined) => {
+      try {
+        const judged = capRule.judge({ ...asked, inputTokens: input }, { capUsd, spentUsd, heldUsd, mode, now: now() });
+        return { holdUsd: judged.heldUsd, boundUsd: judged.boundUsd, ...(judged.outputTokensMax === undefined ? {} : { outputTokensMax: judged.outputTokensMax }), stoppedUsd: judged.stoppedUsd };
+      } catch (error) {
+        // Its words, and what the run's end is decided from (parkOf): for good, or for room with its figures.
+        if (error instanceof CapRefused) return { refuse: error.message, forGood: error.forGood, ...(error.figures ? { figures: error.figures } : {}) };
+        throw error;
+      }
+    };
+    // A request carrying the wrap-up's note is judged as its client sent it first (inputTokensMaxWithoutNote): refused so,
+    // it is refused in those words; admitted so, it goes with the note when the note's bytes fit too, and otherwise
+    // without it (withoutNote), the note left for another request. The note never refuses what fits.
+    if (request.noted && typeof request.inputTokensMaxWithoutNote === "number") {
+      const plain = judge(request.inputTokensMaxWithoutNote);
+      if ("refuse" in plain) return plain;
+      const full = judge(request.inputTokensMax);
+      return "refuse" in full ? { ...plain, withoutNote: true as const } : full;
     }
+    return judge(request.inputTokensMax);
   };
 }
 

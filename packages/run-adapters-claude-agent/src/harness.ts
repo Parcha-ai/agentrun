@@ -6,6 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, posix } from 'node:path';
+import type { GateAnswer, GateCall } from '@parcha/agentrun-kernel';
 import { type DriveContext, type Harness, type HostTool, type ReplayPolicy, Restart, type SessionState, type Submission, Unavailable } from './host/kernel.js';
 import {
   BuiltinCalls,
@@ -32,6 +33,7 @@ import { uuidFrom } from './ids.js';
 import { MessageQueue } from './inbox.js';
 import { sandboxSpawn } from './spawn.js';
 import { MCP_OUTPUT_TOKENS, toolServer } from './host/tool-server.js';
+import { resumeDanglingCalls } from './resume.js';
 import { JournalSessionStore } from './store.js';
 import { MCP_SERVER, TranscriptBuilder, type TurnEnd } from './transcript.js';
 import { CLAUDE_AGENT_CLI_SKILL_NAMES } from './cli-names.js';
@@ -85,7 +87,10 @@ import { assertAgentSdkVersion, CLAUDE_VM_EXECUTABLE } from './versions.js';
  * in the log; `PostToolUse` / `PostToolUseFailure` the outcome, after the
  * Drive's writes are flushed for a mutating call), so after a crash the
  * recovery note says which calls completed and which were interrupted ("may
- * have half-run"); nothing reruns one. Bash's timeout is clamped to what is
+ * have half-run"); nothing reruns one. A host-tool call the transcript left
+ * with no result and no intent (a park held it at the host's gate) runs on
+ * the resume, gate first, and its result is in the transcript before the CLI
+ * starts (`resumeDanglingCalls`). Bash's timeout is clamped to what is
  * left of the invocation, so a command never outlives it: one the clamp ends
  * is recorded as out of time, never left open. Claude Code runs its commands
  * under its own sandbox (bubblewrap, checked by a self-test in the VM before
@@ -256,6 +261,8 @@ export interface ClaudeCodeHarnessOptions {
   unsandboxedCommands?: boolean;
   /** Called with the child's stderr tail when it exits mid-turn, the gateway's refusals, and SDK diagnostics. */
   log?: (message: string, fields?: Record<string, unknown>) => void;
+  /** The host's gate (SessionIO.gate), asked by the tool bridge about each call of `tools` before its intent. */
+  gate?: (call: GateCall) => Promise<GateAnswer>;
 }
 
 /** The default model. */
@@ -535,7 +542,12 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
             );
           },
         });
+        const gate = options.gate;
         const bridge = toolBridge(ctx, tools, {
+          // The host's gate before the intent, so a refused or parked call leaves nothing of its own written. The
+          // assistant line that made the call is in the log before the gate is asked: a park ends the claim, and the
+          // resume finds the call it held dangling in the transcript, under the same id (resumeDanglingCalls).
+          ...(gate ? { gate: async (call: GateCall) => (await store.barrier(call.callId, barrierMs), gate(call)) } : {}),
           // A `never` tool runs only once the assistant entry that asked for it is in the log.
           beforeNever: ({ callId }) => store.barrier(callId, barrierMs),
         });
@@ -702,6 +714,10 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
         const sdkEnv = { ...vmEnv, CLAUDE_CONFIG_DIR: configDir };
         const disallowed = [...CLAUDE_BUILTINS_OFF, ...(providerTools.includes('web_search') ? [] : ['WebSearch']), ...(options.disallowedTools ?? [])].filter((name) => !(skills && name === 'Skill'));
         const sessionId = uuidFrom(ctx.runId);
+        // A host-tool call the transcript left dangling that never started (a park held it, or the process died before
+        // its intent): it runs now, the host's gate first, and its result is in the transcript before the CLI resumes it.
+        // One with an intent is left to the CLI's repair and the recovery note, as before; nothing ever runs one twice.
+        if (store.hasSession) await resumeDanglingCalls(ctx, bridge, store);
         // A turn a crash cut off: the harness's own account of it (which calls completed, which may have half-run) goes
         // in this drive's system prompt, not in a user message the model might answer back to the user. A resumed
         // session sends the system prompt recorded at its start (`snapshot`), whatever a later launch passes, so this

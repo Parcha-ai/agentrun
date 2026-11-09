@@ -53,12 +53,13 @@ test("a run that kept no proposal starts no learning run", async (t) => {
   assert.deepEqual(await store.runs.claimable({ limit: 10 }), [], "nothing queued");
 });
 
-test("a learning run is started once: the same end written again by a resumed claim adds no second one", async (t) => {
+test("a learning run is started once: the same end written again under its claim is refused, and adds no second one", async (t) => {
   const { store } = await storeOn(t);
   const claim = await claimedRun(store);
   await store.runs.update(claim, { state: "ended" }, { also: [kept(), learningRun("run-1-learning")] });
-  // The same rows staged again (a crash after the commit, the end replayed): nothing new, no error.
-  await store.runs.update(claim, {}, { also: [kept(), learningRun("run-1-learning")] });
+  // The end is the run's release (its epoch moved on in that commit): the same rows staged again under the claim (a crash
+  // after the commit, the end replayed) are Fenced, and nothing new is written.
+  await assert.rejects(store.runs.update(claim, {}, { also: [kept(), learningRun("run-1-learning")] }), /Fenced|epoch/);
   const rows = (await store.runs.claimable({ limit: 10 })).filter((id) => id.startsWith("run-1-learning"));
   assert.equal(rows.length, 1, "one learning run");
   assert.equal((await store.runs.launch("run-1-learning")).body.harness, "learning", "and one launch row, kept");

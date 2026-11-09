@@ -4,7 +4,7 @@
 // only a cache miss can pass the cap, by at most the request's bound; under "strict" every token uncached. Its output is
 // held at what it is sent with, its thinking budget included.
 import { providerInputOverhead } from "../../host/overhead.js";
-import type { CapMode, ModelCapRequest, ModelPrice, Previous } from "./types.js";
+import type { CapMode, ModelCapRequest, ModelPrice, PriceRates, Previous } from "./types.js";
 
 /** How long after a request ended the next one in its conversation is expected to read its cache: 4 minutes, inside
  *  Anthropic's 5. */
@@ -27,11 +27,31 @@ export type InputParts = { cached: number; fresh: number };
 /** A price as a function of its input parts and its output tokens, in USD. */
 export type Pricing = (input: InputParts, output: number) => number;
 
-/** `price` as the cap prices with it. */
+/** The rates of `price` for a request of `inputTokens` in all (fresh and cached): its tier with the highest threshold
+ *  that input is above, else its base rates. pi-ai's calculateCost picks them so, on the same table (the catalog's), and
+ *  then prices the whole request at them; serve's kernel-cap-tiers-parity test holds the two together. */
+export function ratesFor(price: ModelPrice, inputTokens: number): PriceRates {
+  let rates: PriceRates = price;
+  let threshold = -1;
+  for (const tier of price.tiers ?? []) {
+    if (inputTokens > tier.inputTokensAbove && tier.inputTokensAbove > threshold) {
+      rates = tier;
+      threshold = tier.inputTokensAbove;
+    }
+  }
+  return rates;
+}
+
+/** `price` as the cap prices with it: a request's cached input at the cache-read rate, its fresh input at the dearer of
+ *  the input and cache-write rates, and its output at the output rate, each at the rates of the tier its whole input
+ *  passes (ratesFor). A hold, a worst case and a booking the cap prices are so never under what the provider bills. */
 export function pricingOf(price: ModelPrice): Pricing {
-  const read = price.cacheRead ?? price.input;
-  const fresh = Math.max(price.input, price.cacheWrite ?? price.input);
-  return (parts, output) => (parts.cached * read + parts.fresh * fresh + output * price.output) / 1e6;
+  return (parts, output) => {
+    const rates = ratesFor(price, parts.cached + parts.fresh);
+    const read = rates.cacheRead ?? rates.input;
+    const fresh = Math.max(rates.input, rates.cacheWrite ?? rates.input);
+    return (parts.cached * read + parts.fresh * fresh + output * rates.output) / 1e6;
+  };
 }
 
 /** The input of a request of `bound` tokens on `model` expected after `previous`, at `now`: its cache read, and its input
