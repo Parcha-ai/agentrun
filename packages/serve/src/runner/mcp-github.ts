@@ -26,9 +26,9 @@ export const REFRESH_BEFORE_MS = 5 * 60_000;
 
 /** Why a github_app server's calls are refused unsent, in the words the gateway gives the model. */
 export const GITHUB_UNUSABLE = {
-  noAccess: "this server has no GitHub App set up for its runs (Settings → GitHub)",
+  noAccess: "this server has no GitHub App set up for its runs",
   noRepo: "this run names no GitHub repository, so the GitHub App has no repository to make a token for",
-  notInstalled: (repo: string) => `the GitHub App is not installed on ${repo}: install it from Settings → GitHub`,
+  notInstalled: (repo: string) => `the GitHub App is not installed on ${repo}: install it on that repository in GitHub`,
   failed: (message: string) => `GitHub did not make a token for this run (${message})`,
   expired: (message: string) => `its GitHub App token expired and a new one could not be made (${message})`,
 };
