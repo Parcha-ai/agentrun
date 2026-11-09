@@ -8,9 +8,10 @@
 //
 // The old test read the holder's /proc environ, from a server-forked run process the cutover no longer has. The "a run's
 // tool processes carry no such name" half — the hands' bash runs with the fixed shellEnv (hands.ts), never the runner's
-// environment — needs a box to run bash in, so it is a separate box-env check (boxed-tools.test.mjs already proves "the
-// box's environment is the fixed one, with no key or token" over the faux box; a real-gateway run cannot also use the faux
-// box, which is coupled to the faux model, so a bash-in-this-run check needs real Docker).
+// environment — needs a box to run bash in, and is covered by boxed-tools.test.mjs's case "demo (pi): in a Docker place
+// bash runs in the run's box, ... the box's environment is the fixed one, with no key or token": it runs an env-printing
+// bash call in a faux box and asserts the box env carries no server variable. That run uses the faux box, which is coupled
+// to the faux model, so a real-gateway run like this one cannot also use it; a bash-in-this-run check would need real Docker.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";

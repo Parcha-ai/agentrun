@@ -1150,7 +1150,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     notify: (failed, key) => webhooks.emitTrigger(failed, key),
   });
   stops.push(async () => triggers.close());
-  if (options.store) void triggers.start().catch((error: Error) => void process.stderr.write(`agentrun-serve: the triggers' start: ${error.message}\n`));
+  // The firing loop runs against the server's own opened store: due firings start their runs through the run write half,
+  // times missed while it was down are recorded, and the timer is armed for the next. (A test may inject its own store.)
+  void triggers.start().catch((error: Error) => void process.stderr.write(`agentrun-serve: the triggers' start: ${error.message}\n`));
 
   // Setup's import of this machine's sessions: offered by a server on this machine only (no public address, listening
   // on loopback), counted once (a listing, no transcript kept), run once, each on a worker thread (import-worker.ts) so
