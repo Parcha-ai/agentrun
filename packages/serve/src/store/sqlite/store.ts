@@ -77,14 +77,15 @@ const triggerOf = (r: TriggerRecord): TriggerRow => ({
 const json = (value: unknown): string => JSON.stringify(value ?? null);
 
 type McpServerRecord = {
-  name: string; url: string; auth: string; protocol: string | null; tools: string; prices: string; sealed: Uint8Array | null;
-  refresh_holder: string | null; refresh_until: number | null; created_at: number; updated_at: number;
+  name: string; url: string; auth: string; protocol: string | null; tools: string; prices: string; server_info: string | null; instructions: string | null; sealed: Uint8Array | null;
+  refresh_holder: string | null; refresh_until: number | null; created_at: number; updated_at: number; listed_at: number | null;
 };
 type McpPinRecord = { run_id: string; body: string; pinned_at: number };
-const MCP_SERVER_COLUMNS = "name, url, auth, protocol, tools, prices, sealed, refresh_holder, refresh_until, created_at, updated_at";
+const MCP_SERVER_COLUMNS = "name, url, auth, protocol, tools, prices, server_info, instructions, sealed, refresh_holder, refresh_until, created_at, updated_at, listed_at";
 const mcpServerOf = (r: McpServerRecord): McpServerRow => ({
   name: r.name, url: r.url, auth: r.auth, protocol: r.protocol, tools: JSON.parse(r.tools), prices: JSON.parse(r.prices),
-  sealed: r.sealed === null ? null : Uint8Array.from(r.sealed), refreshHolder: r.refresh_holder, refreshUntil: r.refresh_until, createdAt: r.created_at, updatedAt: r.updated_at,
+  serverInfo: r.server_info === null ? null : JSON.parse(r.server_info), instructions: r.instructions,
+  sealed: r.sealed === null ? null : Uint8Array.from(r.sealed), refreshHolder: r.refresh_holder, refreshUntil: r.refresh_until, createdAt: r.created_at, updatedAt: r.updated_at, listedAt: r.listed_at,
 });
 const mcpPinOf = (r: McpPinRecord): McpPinRow => ({ runId: r.run_id, body: JSON.parse(r.body), pinnedAt: r.pinned_at });
 
@@ -94,8 +95,8 @@ type SealedKeyRecord = { name: string; sealed: Uint8Array; updated_at: number };
 const sealedKeyOf = (r: SealedKeyRecord): SealedKeyRow => ({ name: r.name, sealed: Uint8Array.from(r.sealed), updatedAt: r.updated_at });
 type TriggerSettingRecord = { adapter: string; scope: string; field: string; sealed: string; updated_at: number };
 const triggerSettingOf = (r: TriggerSettingRecord): TriggerSettingRow => ({ adapter: r.adapter, scope: r.scope, field: r.field, sealed: r.sealed, updatedAt: r.updated_at });
-type McpOauthRecord = { state: string; server: string; verifier_sealed: Uint8Array; cookie_binding: string; working: string | null; expires_at: number };
-const mcpOauthOf = (r: McpOauthRecord): McpOauthPendingRow => ({ state: r.state, server: r.server, verifierSealed: Uint8Array.from(r.verifier_sealed), cookieBinding: r.cookie_binding, working: r.working === null ? null : JSON.parse(r.working), expiresAt: r.expires_at });
+type McpOauthRecord = { state: string; server: string; sealed: Uint8Array; working: string | null; expires_at: number };
+const mcpOauthOf = (r: McpOauthRecord): McpOauthPendingRow => ({ state: r.state, server: r.server, sealed: Uint8Array.from(r.sealed), working: r.working === null ? null : JSON.parse(r.working), expiresAt: r.expires_at });
 
 /** The store's schema version as the file holds it: null when the server has not set it up (no store_meta yet). */
 async function versionOf(db: Connection): Promise<number | null> {
@@ -410,14 +411,18 @@ class SqliteStore implements Store {
       return row && mcpServerOf(row);
     };
     this.mcp = {
-      put: async ({ name, url, auth, protocol = null, tools, prices = null, sealed = null }) => {
+      put: async ({ name, url, auth, protocol = null, tools, prices = null, serverInfo = null, instructions = null, sealed = null, listedAt, updatedAt }) => {
         const at = now();
+        // updated_at defaults to now (a save or a sign-in); a refresh passes the kept one so it is not read as an edit.
+        // listed_at is the tools' listing time, now unless given.
+        const updated = updatedAt ?? at;
+        const listed = listedAt ?? at;
         const [result] = await db.write([{
-          sql: `INSERT INTO mcp_servers (name, url, auth, protocol, tools, prices, sealed, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          sql: `INSERT INTO mcp_servers (name, url, auth, protocol, tools, prices, server_info, instructions, sealed, created_at, updated_at, listed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (name) DO UPDATE SET url = excluded.url, auth = excluded.auth, protocol = excluded.protocol, tools = excluded.tools,
-              prices = excluded.prices, sealed = excluded.sealed, refresh_holder = NULL, refresh_until = NULL, updated_at = excluded.updated_at
+              prices = excluded.prices, server_info = excluded.server_info, instructions = excluded.instructions, sealed = excluded.sealed, refresh_holder = NULL, refresh_until = NULL, updated_at = excluded.updated_at, listed_at = excluded.listed_at
             RETURNING ${MCP_SERVER_COLUMNS}`,
-          params: [name, url, auth, protocol, json(tools), json(prices), sealed, at, at],
+          params: [name, url, auth, protocol, json(tools), json(prices), serverInfo === null ? null : json(serverInfo), instructions, sealed, at, updated, listed],
         }]);
         return mcpServerOf(result!.rows[0] as McpServerRecord);
       },
@@ -592,22 +597,24 @@ class SqliteStore implements Store {
     };
 
     this.mcpOauth = {
-      put: async ({ state, server, verifierSealed, cookieBinding, working, expiresAt }) => {
+      put: async ({ state, server, sealed, working, expiresAt }) => {
         await db.write([{
-          sql: `INSERT INTO mcp_oauth_pending (state, server, verifier_sealed, cookie_binding, working, expires_at) VALUES (?, ?, ?, ?, ?, ?)
-            ON CONFLICT (state) DO UPDATE SET server = excluded.server, verifier_sealed = excluded.verifier_sealed, cookie_binding = excluded.cookie_binding, working = excluded.working, expires_at = excluded.expires_at`,
-          params: [state, server, verifierSealed, cookieBinding, json(working), expiresAt],
+          sql: `INSERT INTO mcp_oauth_pending (state, server, sealed, working, expires_at) VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT (state) DO UPDATE SET server = excluded.server, sealed = excluded.sealed, working = excluded.working, expires_at = excluded.expires_at`,
+          params: [state, server, sealed, json(working), expiresAt],
         }]);
       },
-      get: async (state, at) => {
-        const row = await db.get<McpOauthRecord>("SELECT state, server, verifier_sealed, cookie_binding, working, expires_at FROM mcp_oauth_pending WHERE state = ?", state);
-        if (row === undefined || (at !== undefined && row.expires_at <= at)) return undefined;
-        return mcpOauthOf(row);
-      },
-      remove: async (state) => {
-        await db.write([{ sql: "DELETE FROM mcp_oauth_pending WHERE state = ?", params: [state] }]);
+      take: async (state, at) => {
+        // One statement: delete the row and return it. On the store's single writer this is atomic, so two concurrent
+        // takes of one state can never both get it (the second deletes nothing). The row is gone whether or not it had
+        // expired; an expired one is refused by reading undefined after the delete, so a stale state can't be retried.
+        const [result] = await db.write([{ sql: "DELETE FROM mcp_oauth_pending WHERE state = ? RETURNING state, server, sealed, working, expires_at", params: [state] }]);
+        const row = result!.rows[0] as McpOauthRecord | undefined;
+        if (row === undefined) return undefined;
+        return row.expires_at <= (at ?? now()) ? undefined : mcpOauthOf(row);
       },
       sweepExpired: async (at) => (await db.write([{ sql: "DELETE FROM mcp_oauth_pending WHERE expires_at <= ?", params: [at] }]))[0]!.changes,
+      count: async (at) => (await db.get<{ n: number }>("SELECT count(*) AS n FROM mcp_oauth_pending WHERE expires_at > ?", at))!.n,
     };
   }
 

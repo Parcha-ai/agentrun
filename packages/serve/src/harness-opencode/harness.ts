@@ -94,7 +94,16 @@ export interface DriveControl {
   interrupt(ms: number): Promise<boolean>;
 }
 
-type Outcome = { status: "completed" | "interrupted" | "failed"; error?: string };
+/** How a turn ended. `stopReason` "length": its answer was cut at the model's output limit (OpenCode's finish "length"),
+ *  with that answer's output tokens; the turn itself completed, and the run decides what a cut answer means. */
+type Outcome = { status: "completed" | "interrupted" | "failed"; error?: string; stopReason?: "length"; outputTokens?: number };
+
+/** A turn's cut, from its newest answer's info as OpenCode records it: finish "length", and its output tokens. */
+function cutOf(info: Record<string, unknown>): Pick<Outcome, "stopReason" | "outputTokens"> | undefined {
+  if (info.role !== "assistant" || info.finish !== "length") return undefined;
+  const output = isPlain(info.tokens) && typeof info.tokens.output === "number" ? info.tokens.output : undefined;
+  return { stopReason: "length", ...(output === undefined ? {} : { outputTokens: output }) };
+}
 type SyncEvent = { id: string; aggregate_id: string; seq: number; type: string; data: Record<string, unknown> };
 
 const isPlain = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
@@ -325,7 +334,8 @@ export function openCodeHarness(options: OpenCodeHarnessOptions, control?: (driv
     }
 
     // The turn in flight: what the event stream tells it.
-    let turn: { messageID: string; busy: boolean; accepted: boolean; error?: string; text: Map<string, string>; finalText: string; end: (outcome: Outcome) => void } | undefined;
+    // `cut`: the newest finished answer's, when OpenCode records it as cut at the output limit (finish "length").
+    let turn: { messageID: string; busy: boolean; accepted: boolean; error?: string; cut?: ReturnType<typeof cutOf>; text: Map<string, string>; finalText: string; end: (outcome: Outcome) => void } | undefined;
     const partKinds = new Map<string, string>();
     const roles = new Map<string, string>();
     let interrupting: (() => void) | undefined;
@@ -344,6 +354,8 @@ export function openCodeHarness(options: OpenCodeHarnessOptions, control?: (driv
       const p = event.properties ?? {};
       if (event.type === "message.updated" && isPlain(p.info) && typeof p.info.id === "string" && typeof p.info.role === "string") {
         roles.set(p.info.id, p.info.role);
+        // An answer that finished: the newest decides whether the turn's answer was cut.
+        if (turn && p.info.role === "assistant" && typeof p.info.finish === "string" && (p.sessionID === undefined || p.sessionID === sessionID)) turn.cut = cutOf(p.info);
         return;
       }
       if (p.sessionID !== undefined && p.sessionID !== sessionID) return;
@@ -366,11 +378,11 @@ export function openCodeHarness(options: OpenCodeHarnessOptions, control?: (driv
       }
       if (event.type === "session.status" && turn && isPlain(p.status)) {
         if (p.status.type === "busy" || p.status.type === "retry") turn.busy = true;
-        else if (p.status.type === "idle" && turn.busy) turn.end(turn.error ? { status: "failed", error: turn.error } : { status: "completed" });
+        else if (p.status.type === "idle" && turn.busy) turn.end(turn.error ? { status: "failed", error: turn.error } : { status: "completed", ...turn.cut });
         return;
       }
       if (event.type === "session.idle" && turn && turn.busy) {
-        turn.end(turn.error ? { status: "failed", error: turn.error } : { status: "completed" });
+        turn.end(turn.error ? { status: "failed", error: turn.error } : { status: "completed", ...turn.cut });
         return;
       }
       if (event.type === "session.error" && turn) {
@@ -478,8 +490,9 @@ export function openCodeHarness(options: OpenCodeHarnessOptions, control?: (driv
           }
           const error = isPlain(info.error) ? info.error : undefined;
           if (error && error.name !== "MessageAbortedError") current.error = errorText(error);
+          if (typeof info.finish === "string") current.cut = cutOf(info);
         }
-        current.end(current.error ? { status: "failed", error: current.error } : { status: "completed" });
+        current.end(current.error ? { status: "failed", error: current.error } : { status: "completed", ...current.cut });
       };
       // The stream's end once it has no tries left, or once OpenCode stopped: a turn asked after it fails at once with it,
       // since no event of that turn could reach the drive (one in flight is ended by it here).

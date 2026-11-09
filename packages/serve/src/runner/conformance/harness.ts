@@ -174,11 +174,13 @@ async function world(subject: ConformanceSubject, t: { after(fn: () => unknown):
   const run = async (): Promise<RunRow> => (await server.runs.get(RUN))!;
   const read = async (): Promise<{ calls: CallRecord[]; messages: MessageRecord[]; answers: AnswerData[] }> => {
     const row = await run();
-    // pi's tool tasks and the CLI record alike: the kernel's one reader.
-    const entries = await journalRecords(server.journal({ runId: RUN, runner: "conformance-reader", epoch: row.epoch, until: 0, from: row.state }), BACKGROUND_CONTEXT);
+    // pi's tool tasks and the CLI record alike: the kernel's one reader. A subject whose calls are not the kernel's (a
+    // workflow's are the DSL engine's effect records) reads them its own way (subject.readCalls).
+    const journal = server.journal({ runId: RUN, runner: "conformance-reader", epoch: row.epoch, until: 0, from: row.state });
+    const entries = await journalRecords(journal, BACKGROUND_CONTEXT);
     // The answers to the run's asks: one place for every harness, the resume row's source.
     const answers = entries.entries.filter((entry) => entry.kind === KINDS.answer).map((entry) => entry.data as unknown as AnswerData);
-    return { calls: callsOf(entries), messages: messagesOf(entries), answers };
+    return { calls: subject.readCalls ? await subject.readCalls(journal, BACKGROUND_CONTEXT) : callsOf(entries), messages: messagesOf(entries), answers };
   };
   const ended = (state: RunRow["state"], ms = 15_000) =>
     until(async () => {
@@ -739,10 +741,6 @@ const CASES: readonly Case[] = [
   },
 ];
 
-/** The output-limit cases a CLI subject cannot model yet, with why (stated once, for each CLI subject's unsupported list):
- *  the loop reads a cut answer from its entry's stop reason (loop.ts cutLast), and a CLI's record carries none yet. */
-export const CLI_NO_STOP_REASON = "the CLI adapters don't report a turn cut at the model's output limit (stopReason length) yet, and the CLI record carries no stop reason for the loop to read";
-export const CLI_OUTPUT_LIMIT_UNSUPPORTED: Partial<Record<ConformanceCase, string>> = Object.freeze({ "length-ends-failed": CLI_NO_STOP_REASON, "length-mid-run": CLI_NO_STOP_REASON });
 
 const CLI_NEVER_RERUNS = "a CLI never reruns a call that started; only the model calls again (its adapter's facts: rerunsStarted false)";
 
@@ -754,6 +752,12 @@ export function factsRuleOut(facts: ConformanceSubject["facts"]): Partial<Record
     // steer-origin steers the turn in flight too: its message is taken mid-turn, or never.
     ...(facts.steer ? {} : { "steer-mid-turn": noSteer, "steer-origin": noSteer }),
     ...(facts.rerunsStarted === false ? { "replay-safe-rerun": CLI_NEVER_RERUNS, "fault-restarts-bounded": CLI_NEVER_RERUNS } : {}),
+    // A harness that resumes a cut answer itself never ends a turn on the cut; one whose cut ends its turn never goes on
+    // from it in the same turn.
+    ...(facts.recoversCutAnswers !== undefined && facts.recoversCutAnswers > 0
+      ? { "length-ends-failed": `${facts.id} resumes an answer its output limit cut itself, up to ${facts.recoversCutAnswers} times in one turn (its adapter's facts: recoversCutAnswers ${facts.recoversCutAnswers})` }
+      : {}),
+    ...(facts.recoversCutAnswers === 0 ? { "length-mid-run": `a cut ends ${facts.id}'s turn, as pi's does (its adapter's facts: recoversCutAnswers 0)` } : {}),
   };
 }
 

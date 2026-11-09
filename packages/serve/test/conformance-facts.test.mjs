@@ -17,17 +17,24 @@ test("steer false and rerunsStarted false rule out their cases, each with why", 
   assert.match(out["steer-origin"], /steer false/);
 });
 
+test("recoversCutAnswers rules out one output-limit case: above 0 the cut final answer, 0 the run going on from a cut", () => {
+  assert.deepEqual(Object.keys(factsRuleOut({ id: "a-cli", steer: true, recoversCutAnswers: 3 })), ["length-ends-failed"]);
+  assert.match(factsRuleOut({ id: "a-cli", steer: true, recoversCutAnswers: 3 })["length-ends-failed"], /up to 3 times in one turn/);
+  assert.deepEqual(Object.keys(factsRuleOut({ id: "a-cli", steer: true, recoversCutAnswers: 0 })), ["length-mid-run"]);
+});
+
 test("a harness that steers and reruns a started call has nothing ruled out", () => {
   assert.deepEqual(factsRuleOut({ id: "pi", steer: true }), {});
   assert.deepEqual(factsRuleOut(undefined), {});
 });
 
-test("claude-agent's own facts rule out the four cases", () => {
-  assert.deepEqual(Object.keys(factsRuleOut(claudeFacts)).sort(), ["fault-restarts-bounded", "replay-safe-rerun", "steer-mid-turn", "steer-origin"]);
+test("claude-agent's own facts rule out the five cases: its CLI resumes a cut answer itself, so a single cut never ends its run", () => {
+  assert.deepEqual(Object.keys(factsRuleOut(claudeFacts)).sort(), ["fault-restarts-bounded", "length-ends-failed", "replay-safe-rerun", "steer-mid-turn", "steer-origin"]);
+  assert.match(factsRuleOut(claudeFacts)["length-ends-failed"], /up to 3 times in one turn/);
 });
 
-test("codex's own facts rule out the four cases", () => {
-  assert.deepEqual(Object.keys(factsRuleOut(codexFacts)).sort(), ["fault-restarts-bounded", "replay-safe-rerun", "steer-mid-turn", "steer-origin"]);
+test("codex's own facts rule out the five cases: a cut ends its turn, so no later step of the turn follows one", () => {
+  assert.deepEqual(Object.keys(factsRuleOut(codexFacts)).sort(), ["fault-restarts-bounded", "length-mid-run", "replay-safe-rerun", "steer-mid-turn", "steer-origin"]);
 });
 
 test("registered, a ruled-out case is skipped saying it is by design; the rest run", () => {

@@ -238,17 +238,24 @@ export const STORE_DDL: readonly string[] = [
     protocol TEXT,
     ${json("tools")},
     ${json("prices")},
+    -- The remote server's reported info and its instructions, as it gave them: untrusted, bounded at save (mcp-store.ts).
+    ${json("server_info", true)},
+    instructions TEXT,
     sealed BLOB,
     refresh_holder TEXT,
     refresh_until INTEGER,
     created_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL
+    updated_at INTEGER NOT NULL,
+    -- When the tools were last listed: a refresh moves this, not updated_at, so a refresh is not read as an owner edit.
+    listed_at INTEGER
   ) STRICT`,
   `CREATE TABLE IF NOT EXISTS mcp_oauth_pending (
     state TEXT PRIMARY KEY,
     server TEXT NOT NULL,
-    verifier_sealed BLOB NOT NULL,
-    cookie_binding TEXT NOT NULL,
+    -- The sign-in's secret parts, the PKCE verifier and the OAuth client (with its secret), sealed together (store/seal.ts,
+    -- AAD mcp_oauth_pending|<state>|sealed): bytes the store never opens, so no sign-in secret is ever in the clear here.
+    sealed BLOB NOT NULL,
+    -- The sign-in's non-secret working state the callback rebuilds (url, was, scope, kind, discovery, resource): no secret.
     ${json("working", true)},
     expires_at INTEGER NOT NULL
   ) STRICT`,
