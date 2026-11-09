@@ -55,7 +55,7 @@ function catOf(argv, cwd, computer) {
 const UNPRIVILEGED = { CapInh: NO_CAPABILITIES, CapPrm: NO_CAPABILITIES, CapEff: NO_CAPABILITIES, CapBnd: NO_CAPABILITIES, CapAmb: NO_CAPABILITIES, NoNewPrivs: "1" };
 
 /** What exec.run of argv prints in a computer whose user is uid, as `user` (a name in users, or a uid) when given. */
-function output(argv, { uid, status, users, user, probe, pathSockets = [] }) {
+function output(argv, { uid, status, users, user, probe, pathSockets = [], socketSearchIncomplete = [] }) {
 	const who = user === undefined ? uid : String(users[user] ?? user);
 	if (argv[0] === "id" && argv[1] === "-u") return `${who}\n`;
 	if (argv[0] === "/opt/agentrun/computerd" && argv[1] === "probe") {
@@ -66,7 +66,10 @@ function output(argv, { uid, status, users, user, probe, pathSockets = [] }) {
 		const targets = argv.slice(asked ? 3 : 2).filter((_, i) => i % 2 === 1);
 		const answered = targets.filter((target) => probe.answers.includes(target));
 		const results = targets.map((target) => ({ target, protocol: "any", outcome: answered.includes(target) ? "answered" : "refused", bytes: answered.includes(target) ? 12 : 0, detail: "" }));
-		const sockets = !asked || pathSockets === "no list" ? {} : { sockets: pathSockets };
+		// As computerd reports them: each socket by its path and the type that connected (a bare path is a stream one), and
+		// the roots the search could not cover whole.
+		const listed = pathSockets === "no list" ? [] : pathSockets.map((socket) => (typeof socket === "string" ? { path: socket, type: "stream" } : socket));
+		const sockets = !asked || pathSockets === "no list" ? {} : { sockets: { sockets: listed, incomplete: socketSearchIncomplete } };
 		return `${JSON.stringify({ uid: Number(who), gid: Number(who), kernel: "6.8.0", interfaces: probe.interfaces, quiet: probe.quiet ?? [], raised: probe.raised ?? [], ...sockets, reached: answered, accepted: [], results })}\n`;
 	}
 	if (argv[0] === "cat" && argv[1] === "/proc/self/status") {
@@ -250,6 +253,7 @@ export function fakeComputers({
 	agentAnswers = [],
 	toolCannotWrite = false,
 	pathSockets = [],
+	socketSearchIncomplete = [],
 	display,
 } = {}) {
 	/** The mount as attach and list read it back: its kind and source, never the token unless broken so. An Archil mount
@@ -322,6 +326,7 @@ export function fakeComputers({
 					bound: folderOf(spec.mount),
 					toolCannotWrite,
 					pathSockets,
+					socketSearchIncomplete,
 					display,
 					probe: { interfaces: probeInterfaces, quiet: probeQuiet, raised: probeRaised, answers: agentAnswers },
 				},

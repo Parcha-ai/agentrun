@@ -104,6 +104,15 @@ test("it fails where a program connects to a path unix socket that is not the co
 	const unlisted = await run({ vendorAgentPorts: [2280], pathSockets: "no list" });
 	assert.equal(statuses(unlisted)[ID], "fail");
 	assert.match(reasons(unlisted)[ID], /no list of the path unix sockets/);
+	// Review (#1994, PRRT_kwDOUmdVMs61HER9): a datagram or seqpacket socket is reachable too, and is named with its type.
+	const dgram = await run({ vendorAgentPorts: [2280], pathSockets: [...own, { path: "/run/systemd/journal/socket", type: "dgram" }] });
+	assert.equal(statuses(dgram)[ID], "fail");
+	assert.match(reasons(dgram)[ID], /\/run\/systemd\/journal\/socket \(dgram\)/);
+	// Review (#1994, PRRT_kwDOUmdVMs61HBO1): a search the probe could not finish proves nothing about what it did not see:
+	// the case fails, naming the root and why, even with every socket it found the computer's own.
+	const partial = await run({ vendorAgentPorts: [2280], pathSockets: own, socketSearchIncomplete: ["/workspace: the walk stopped after 50000 entries, its budget"] });
+	assert.equal(statuses(partial)[ID], "fail");
+	assert.match(reasons(partial)[ID], /could not search .*\/workspace: the walk stopped after 50000 entries/);
 });
 
 test("it is skipped in words where nothing is declared (Docker), and fails Core for a child daemon that declares nothing", async () => {
