@@ -1,8 +1,9 @@
 // The owner: the one person this server is for, signed in with a password. DIR/owner.json (0600) holds the password's
 // scrypt hash with its salt and parameters, and the session epoch; DIR/.session-secret (0600) holds the key a session
 // cookie is signed with. A cookie carries when it was made, when it ends (30 days) and the epoch it was made in, under an
-// HMAC: setting the password, signing out and `agentrun-serve reset-password` each move the epoch on, so every cookie
-// made before stops working on every browser. Both files are read again on every check, so a reset run beside a live
+// HMAC, and an id of its own: setting the password, signing out everywhere and `agentrun-serve reset-password` each move
+// the epoch on, so every cookie made before stops working on every browser; signing out revokes the one session's id (kept
+// in the owner file until that session would have ended), so a copy of that cookie stops working too, and no other. Both files are read again on every check, so a reset run beside a live
 // server takes effect at once. Nothing here is ever logged but the setup code a server with a public address prints.
 import { createHash, createHmac, randomBytes, scrypt, timingSafeEqual } from "node:crypto";
 import { readFileSync, renameSync, writeFileSync } from "node:fs";
@@ -26,7 +27,8 @@ const SETUP_TTL_MS = 30 * 60_000;
 const SETUP_TRIES = 5;
 
 type Hash = { N: number; r: number; p: number; salt: string; hash: string };
-type Stored = { v: 1; epoch: number; password?: Hash };
+/** `revoked`: the ids of sessions signed out one by one, each with when it would have ended; swept once past it. */
+type Stored = { v: 1; epoch: number; password?: Hash; revoked?: { sid: string; exp: number }[] };
 
 const derive = (password: string, salt: Buffer, { N, r, p }: { N: number; r: number; p: number }) =>
   new Promise<Buffer>((resolve, reject) => scrypt(password, salt, KEY_BYTES, { N, r, p, maxmem: 256 * N * r }, (error, key) => (error ? reject(error) : resolve(key))));
@@ -175,7 +177,7 @@ export class Owner {
   /** A session cookie's value: its payload and the payload's HMAC. */
   session(): string {
     const now = Date.now();
-    const payload = Buffer.from(JSON.stringify({ iat: now, exp: now + SESSION_MS, epoch: this.read().epoch })).toString("base64url");
+    const payload = Buffer.from(JSON.stringify({ sid: randomBytes(16).toString("base64url"), iat: now, exp: now + SESSION_MS, epoch: this.read().epoch })).toString("base64url");
     return `${payload}.${this.mac(payload)}`;
   }
 
@@ -183,26 +185,45 @@ export class Owner {
     return createHmac("sha256", this.secret).update(payload).digest("base64url");
   }
 
-  /** Whether `value` is a session this server made, not past its end, in the current epoch. */
-  valid(value: string): boolean {
+  /** `value`'s claims when it is a session this server signed (its MAC holds), else undefined. */
+  private claims(value: string): { sid: string; exp: number; epoch: unknown } | undefined {
     const dot = value.indexOf(".");
-    if (dot <= 0) return false;
+    if (dot <= 0) return undefined;
     const payload = value.slice(0, dot);
     const given = Buffer.from(value.slice(dot + 1));
     const expected = Buffer.from(this.mac(payload));
-    if (given.length !== expected.length || !timingSafeEqual(given, expected)) return false;
+    if (given.length !== expected.length || !timingSafeEqual(given, expected)) return undefined;
     try {
-      const { exp, epoch } = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as { exp?: unknown; epoch?: unknown };
-      return typeof exp === "number" && Date.now() < exp && epoch === this.read().epoch && this.hasPassword();
+      const { sid, exp, epoch } = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as { sid?: unknown; exp?: unknown; epoch?: unknown };
+      return typeof sid === "string" && sid !== "" && typeof exp === "number" ? { sid, exp, epoch } : undefined;
     } catch {
-      return false;
+      return undefined;
     }
   }
 
-  /** Ends every session, on every browser. */
-  signOutEverywhere(): void {
+  /** Whether `value` is a session this server made, not past its end, in the current epoch, and not signed out. */
+  valid(value: string): boolean {
+    const claims = this.claims(value);
+    if (!claims || Date.now() >= claims.exp) return false;
     const stored = this.read();
-    writePrivate(this.file, `${JSON.stringify({ ...stored, epoch: stored.epoch + 1 })}\n`);
+    return claims.epoch === stored.epoch && stored.password !== undefined && !(stored.revoked ?? []).some((r) => r.sid === claims.sid);
+  }
+
+  /** Signs out the one session `value` is (this browser's), on the server: its id is kept as revoked until it would have
+   *  ended, and the records past theirs are swept. Nothing for a value that is no session of this server's. */
+  revoke(value: string): void {
+    const claims = this.claims(value);
+    if (!claims) return;
+    const stored = this.read();
+    const now = Date.now();
+    const revoked = [...(stored.revoked ?? []).filter((r) => r.exp > now && r.sid !== claims.sid), ...(claims.exp > now ? [{ sid: claims.sid, exp: claims.exp }] : [])];
+    writePrivate(this.file, `${JSON.stringify({ ...stored, revoked } satisfies Stored)}\n`);
+  }
+
+  /** Ends every session, on every browser: the epoch moves on, and the revoked list, all of it older, goes. */
+  signOutEverywhere(): void {
+    const { revoked: _gone, ...stored } = this.read();
+    writePrivate(this.file, `${JSON.stringify({ ...stored, epoch: stored.epoch + 1 } satisfies Stored)}\n`);
   }
 }
 

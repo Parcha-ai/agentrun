@@ -1997,10 +1997,13 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         }
         return send(res, 200, { signed_in: true }, { "set-cookie": ownerCookie(req, me.session(), SESSION_S) });
       }
-      // This browser: its cookie cleared, every other browser's session left as it is.
+      // This browser: its session revoked on the server (a copy of its cookie is no session either) and its cookie
+      // cleared; every other browser's session left as it is. A viewer watching with it is cut off.
       case "/auth/sign-out": {
         fromPage(req);
         if (!signedIn(req, me)) throw new ApiError("unauthenticated", "this browser is not signed in");
+        for (const value of heldSessions(req)) if (me.valid(value)) me.revoke(value);
+        viewers.recheck();
         return send(res, 200, { signed_out: true }, { "set-cookie": ownerCookie(req, "", 0) });
       }
       // Every browser and phone: the sessions' epoch moves on, so every cookie made before is none, this one's too.

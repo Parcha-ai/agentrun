@@ -238,7 +238,7 @@ test("signing out everywhere ends every session: a copy of the cookie made befor
   assert.equal((await signIn(server, PASSWORD)).status, 200, "and the password still signs in");
 });
 
-test("a session's end is in its signed payload: a cookie past its 30 days, or with its epoch or MAC changed, is no session", async (t) => {
+test("a session's end is in its signed payload: a cookie past its 30 days, with its epoch or MAC changed, or with no id, is no session", async (t) => {
   const server = await owned(t);
   const secret = Buffer.from((await readFile(join(server.data, ".session-secret"), "utf8")).trim(), "base64url");
   const { epoch } = JSON.parse(await readFile(join(server.data, "owner.json"), "utf8"));
@@ -246,9 +246,10 @@ test("a session's end is in its signed payload: a cookie past its 30 days, or wi
     const body = Buffer.from(JSON.stringify(payload)).toString("base64url");
     return `agentrun-${server.port}-session=${body}.${createHmac("sha256", secret).update(body).digest("base64url")}`;
   };
-  assert.equal((await agents(server, forge({ iat: Date.now(), exp: Date.now() + 60_000, epoch }))).status, 200, "the control: a well-made cookie works");
-  assert.equal((await agents(server, forge({ iat: 0, exp: Date.now() - 1, epoch }))).status, 401, "past its end");
-  assert.equal((await agents(server, forge({ iat: Date.now(), exp: Date.now() + 60_000, epoch: epoch - 1 }))).status, 401, "another epoch");
+  assert.equal((await agents(server, forge({ sid: "s1", iat: Date.now(), exp: Date.now() + 60_000, epoch }))).status, 200, "the control: a well-made cookie works");
+  assert.equal((await agents(server, forge({ iat: Date.now(), exp: Date.now() + 60_000, epoch }))).status, 401, "no session id (nothing a sign-out could revoke)");
+  assert.equal((await agents(server, forge({ sid: "s2", iat: 0, exp: Date.now() - 1, epoch }))).status, 401, "past its end");
+  assert.equal((await agents(server, forge({ sid: "s3", iat: Date.now(), exp: Date.now() + 60_000, epoch: epoch - 1 }))).status, 401, "another epoch");
   const [name, value] = server.cookie.split("=");
   assert.equal((await agents(server, `${name}=${value.slice(0, -2)}xx`)).status, 401, "a changed MAC");
 });
