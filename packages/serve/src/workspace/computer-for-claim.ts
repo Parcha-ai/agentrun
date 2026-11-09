@@ -77,6 +77,9 @@ export interface ComputerForClaimDeps {
   /** The run's folder (mounted only where the provider mounts it) and the mount check attach runs. */
   readonly workspace: Workspace;
   readonly check: MountCheck;
+  /** Removes the run's Archil mount credential (the Archil claim's revoke): called once the computer is released, and
+   *  when a start fails after a mount was minted. Absent: nothing was minted (Mode 1). */
+  readonly revokeMount?: () => Promise<void>;
   /** The live view's registration for a desktop or a phone (proxy-only). Absent: no view is opened. */
   readonly openComputerView?: OpenComputerView;
   readonly signal?: AbortSignal;
@@ -218,7 +221,16 @@ export async function computerForClaim(launch: ClaimLaunch, store: Pick<Store, "
   if ("refused" in resolved) throw unavailable(resolved.refused);
   if (resolved.kind === "none") return { computer: undefined, release: noop };
 
-  const started = await resolved.start({ workspace: deps.workspace, check: deps.check, ...(deps.signal ? { signal: deps.signal } : {}) });
+  // The run's mount credential (Mode 2), minted when the mount was made: removed with the computer, or at once when the
+  // start fails after it was minted.
+  const revoke = async (): Promise<void> => { await deps.revokeMount?.(); };
+  let started: Awaited<ReturnType<typeof resolved.start>>;
+  try {
+    started = await resolved.start({ workspace: deps.workspace, check: deps.check, ...(deps.signal ? { signal: deps.signal } : {}) });
+  } catch (error) {
+    await revoke().catch(() => undefined);
+    throw error;
+  }
   const computer = started.computer;
   // A desktop's or a phone's: the owner's take-over (registered, its hold parking the run's ports) and its live view,
   // proxy-only (no vendor's URL reaches a person), opened under this claim. A fenced registration is a lost claim.
@@ -234,6 +246,7 @@ export async function computerForClaim(launch: ClaimLaunch, store: Pick<Store, "
       const opened = await deps.openComputerView({ store, sealKey: deps.sealKey, claim: launch.claim ?? { runId: launch.runId, epoch: launch.epoch }, kind: computer.kind, input, tag: made.id, watch: (signal) => watch(signal), hold: theHold });
       if (!opened.ok) {
         await started.release().catch(() => undefined);
+        await revoke().catch(() => undefined);
         if (opened.refused === "fenced") throw claimLost(`run ${launch.runId}'s claim (epoch ${launch.epoch}) is no longer this runner's, so its ${computer.kind} was released: ${opened.message}`);
         throw unavailable(`the ${computer.kind}'s live view could not be opened: ${opened.message}`);
       }
@@ -251,7 +264,11 @@ export async function computerForClaim(launch: ClaimLaunch, store: Pick<Store, "
         up = false;
         await Promise.resolve(view?.close(why)).catch(() => undefined);
         unregister();
-        await started.release();
+        try {
+          await started.release();
+        } finally {
+          await revoke();
+        }
       })()),
   };
 }

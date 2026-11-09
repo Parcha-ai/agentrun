@@ -3,9 +3,11 @@
 // sealed_keys rows under archil-settings.ts's names, opened with the runner's seal key. A saved exec image must be pinned
 // by digest (`<name>@sha256:<64 hex>`): any other refuses the claim before a key is read.
 //
-// Two rows. "archil.api_key" is the account API key the disk's file API and serverless exec take (archil-disk.ts asks for
-// it on every call, and gets it from this step's memory). "archil.disk_token" is the disk token a computer's mount takes
-// (ArchilWorkspace.mountSpec); it is opened only when a mount first asks, so a run with no computer never needs it.
+// One row: "archil.api_key", the account API key the disk's file API and serverless exec take (archil-disk.ts asks for
+// it on every call, and gets it from this step's memory). The disk token a computer's mount takes
+// (ArchilWorkspace.mountSpec) is no saved row: it is minted per run, at Archil's control plane with that key, the first
+// time a mount asks (archil-mount-credential.ts), so a run with no computer never has one; revoke() removes it at the
+// computer's release and the run's end, and its ttl (the run's lifetime bound) ends it if no remove ever comes.
 //
 // The values live in this step's memory only: never in the environment, the journal, a command row or a log line. Both
 // go in `secrets`, for the redaction set. release(), or the claim's signal aborting, drops them; a call after that is
@@ -16,6 +18,7 @@ import { ARCHIL_API_KEY_ROW, ARCHIL_DISK_TOKEN_ROW, type ArchilSettings } from "
 import { sealedAt, unsealColumn } from "../store/seal.js";
 import type { SealedKeys } from "../store/store.js";
 import { type ArchilDisk, type ArchilDiskOptions, type ArchilImage, archilDisk, pinnedImage } from "./archil-disk.js";
+import { type ArchilMountCredentialOptions, type MountCredential, mintMountToken, removeMountToken } from "./archil-mount-credential.js";
 
 export { ARCHIL_API_KEY_ROW, ARCHIL_DISK_TOKEN_ROW, type ArchilSettings };
 
@@ -35,6 +38,10 @@ export interface ArchilClaimOptions {
   readonly signal: AbortSignal;
   /** Makes the disk (default archilDisk): a test's capture. */
   readonly makeDisk?: (options: ArchilDiskOptions) => ArchilDisk;
+  /** The run's mount credential, minted when a mount first asks: the token user's nickname (the run's label) and its
+   *  ttl (the run's lifetime bound, the safety net if the remove never comes); a loopback control plane and its fetch in
+   *  a test. Absent: a mount is refused in words. */
+  readonly mount?: { readonly nickname: string; readonly ttlMs: number; readonly baseUrl?: string; readonly fetch?: typeof fetch };
 }
 
 export interface ArchilClaim {
@@ -44,8 +51,11 @@ export interface ArchilClaim {
   readonly region: string;
   /** The exec image, pinned by digest; undefined for Archil's default. */
   readonly image: ArchilImage | undefined;
-  /** The disk token, opened the first time a mount asks. */
+  /** The run's mount credential's token, minted the first time a mount asks (once per claim), held in memory only. */
   token(): Promise<string>;
+  /** Removes the run's mount credential at Archil by its identifier (the computer's release, the run's end). Idempotent:
+   *  none minted, or removed already, is nothing to do. */
+  revoke(): Promise<void>;
   /** Every value held, for the redaction set. */
   readonly secrets: ReadonlySet<string>;
   /** Drops every value held: the loop ended, or the claim is lost. */
@@ -54,7 +64,7 @@ export interface ArchilClaim {
 
 const RELEASED = "the run's Archil keys were released (its loop ended or its claim was lost)";
 
-/** The Archil step of a claim: its disk made, its API key opened; the disk token opened when a mount asks. */
+/** The Archil step of a claim: its disk made, its API key opened; the run's mount credential minted when a mount asks. */
 export async function archilClaim(options: ArchilClaimOptions): Promise<ArchilClaim> {
   const { settings, sealKey } = options;
   if (settings === undefined) {
@@ -97,11 +107,19 @@ export async function archilClaim(options: ArchilClaimOptions): Promise<ArchilCl
     held.clear();
     throw new ArchilClaimRefused(`This server's Archil settings can't make its disk: ${(error as Error).message}`, { cause: error });
   }
-  let token: Promise<string> | undefined;
+  const credentialOptions: ArchilMountCredentialOptions = {
+    disk: settings.diskId,
+    region: settings.region,
+    key: () => apiKey,
+    ...(options.mount?.baseUrl ? { baseUrl: options.mount.baseUrl } : {}),
+    ...(options.mount?.fetch ? { fetch: options.mount.fetch } : {}),
+  };
+  let minted: Promise<MountCredential> | undefined;
+  /** The identifier and token of the credential minted, until it is removed. */
+  let live: MountCredential | undefined;
   const release = (): void => {
     released = true;
     held.clear();
-    token = undefined;
   };
   options.signal.addEventListener("abort", release, { once: true });
   if (options.signal.aborted) release();
@@ -112,14 +130,31 @@ export async function archilClaim(options: ArchilClaimOptions): Promise<ArchilCl
     secrets: held,
     token: async () => {
       if (released) throw new Error(RELEASED);
-      token ??= open(ARCHIL_DISK_TOKEN_ROW).then((value) => {
-        if (released) throw new Error(RELEASED);
-        held.add(value);
-        return value;
-      });
-      // A refused open is not kept: the next mount asks again.
-      token.catch(() => { token = undefined; });
-      return token;
+      const mount = options.mount;
+      if (mount === undefined) throw new ArchilClaimRefused("This run's Archil claim was made without a mount credential to mint (its run's label and lifetime), so no computer can mount its folder.");
+      minted ??= mintMountToken(credentialOptions, { nickname: mount.nickname, ttlMs: mount.ttlMs, signal: options.signal }).then(
+        (credential) => {
+          held.add(credential.token);
+          live = credential;
+          return credential;
+        },
+        (error: unknown) => {
+          throw new ArchilClaimRefused(`This run's folder can't be mounted in its computer: ${(error as Error).message}`, { cause: error });
+        },
+      );
+      // A refused mint is not kept: the next mount asks again.
+      minted.catch(() => { minted = undefined; });
+      const credential = await minted;
+      if (released) throw new Error(RELEASED);
+      return credential.token;
+    },
+    revoke: async () => {
+      const credential = live ?? (await minted?.catch(() => undefined));
+      if (credential === undefined) return;
+      await removeMountToken(credentialOptions, credential.identifier, { token: credential.token });
+      if (live === credential) live = undefined;
+      minted = undefined;
+      held.delete(credential.token);
     },
     release,
   };

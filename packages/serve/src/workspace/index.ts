@@ -17,6 +17,9 @@ export { archilDisk, type ArchilDisk, type ArchilDiskOptions, type ArchilImage }
 export {
   ARCHIL_API_KEY_ROW, ARCHIL_DISK_TOKEN_ROW, type ArchilClaim, archilClaim, type ArchilClaimOptions, ArchilClaimRefused, type ArchilSettings,
 } from "./archil-claim.js";
+export {
+  ARCHIL_CONTROL_URLS, type ArchilMountCredentialOptions, ArchilMountCredentialError, mintMountToken, type MountCredential, removeMountToken,
+} from "./archil-mount-credential.js";
 export { openRunWorkspace, type RunWorkspace, type RunWorkspaceOptions } from "./run-workspace.js";
 export { readOnlyWorkspace, SERVER_READS_ONLY, serverRunWorkspace, type ServerRunWorkspaceOptions } from "./server-run-workspace.js";
 export { type LedgerEntry, type ProviderLedger, storeLedger } from "./computer-ledger.js";
