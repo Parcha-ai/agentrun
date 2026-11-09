@@ -25,7 +25,7 @@ const { adapterRunSpecFromLaunch } = await import("../dist/runner/adapter-run-sp
 const { cliRunSpecFromLaunch } = await import("../dist/runner/cli-run-spec.js");
 const { runFolder, runKey } = await import("../dist/workspace/paths.js");
 const { saveArchilSettings } = await import("../dist/archil-settings.js");
-const { ARCHIL_API_KEY_ROW, ARCHIL_DISK_TOKEN_ROW } = await import("../dist/workspace/index.js");
+const { ARCHIL_API_KEY_ROW } = await import("../dist/workspace/index.js");
 const { sealColumn, sealedAt } = await import("../dist/store/seal.js");
 const { OPENCODE_STANDIN_ENV } = await import("../dist/adapters.js");
 const { NOTE_ONLY_TEXT } = await import("../dist/tool-gate.js");
@@ -89,9 +89,10 @@ async function mode2Spec(t, { harness, build, watch = false, use = async () => {
   await server.agents.create({ id: AGENT, name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", ...(harness ? { harness } : {}), tools: ["read", "write"] } });
   const launch = { input: { content: "Do the thing." }, title: "t", place: { mode: "runner" }, ...(harness ? { harness, model: { provider: "openai", modelId: "gpt-5" } } : { model: { provider: "anthropic", modelId: "claude-sonnet-5.5" } }) };
   await server.runs.create({ id: RUN, agentId: AGENT, revisionId: "rev-1" }, { body: launch });
-  // Mode 2: the server's Archil settings, and its two keys sealed under the runner's seal key, as the server saves them.
+  // Mode 2: the server's Archil settings, and its account key sealed under the runner's seal key, as the server saves them.
+  // No disk token is kept any more (places/computers): the mount credential is minted per run from the account key.
   await saveArchilSettings(server, ARCHIL_SETTINGS);
-  for (const [name, value] of [[ARCHIL_API_KEY_ROW, "fake-test-key-api-0001"], [ARCHIL_DISK_TOKEN_ROW, "fake-test-key-disk-token-0001"]]) await server.sealedKeys.put(name, sealColumn(SEAL_KEY, sealedAt.sealedKey(name), value));
+  await server.sealedKeys.put(ARCHIL_API_KEY_ROW, sealColumn(SEAL_KEY, sealedAt.sealedKey(ARCHIL_API_KEY_ROW), "fake-test-key-api-0001"));
   await server.flush?.();
 
   // The run's files on the disk: an input, and a reflect turn's origin.

@@ -192,7 +192,11 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
   const mode: 1 | 2 = archilSettings === undefined ? 1 : 2;
   const archil = archilSettings === undefined
     ? undefined
-    : await archilClaim({ settings: archilSettings, keys: deps.store.sealedKeys, sealKey: deps.sealKey, signal: new AbortController().signal, ...(deps.makeArchilDisk ? { makeDisk: deps.makeArchilDisk } : {}) });
+    // The run's mount credential is minted per run the first time a computer's mount asks (archil-mount-credential.ts), on
+    // the account key from the server's environment first, then the sealed row; named for the run and this claim's epoch, with
+    // a 24 h ttl as the safety net if revoke never comes (revoke normally runs at the run's end, below). A run with no
+    // mounting computer never mints one.
+    : await archilClaim({ settings: archilSettings, keys: deps.store.sealedKeys, sealKey: deps.sealKey, signal: new AbortController().signal, env: deps.env, mount: { runId: claim.runId, epoch: claim.epoch, ttlMs: 86_400_000 }, ...(deps.makeArchilDisk ? { makeDisk: deps.makeArchilDisk } : {}) });
   // The run's Workspace at the claim: Mode 1 the run's local folder (made here, the server's start made it before); Mode 2
   // the run's folder on the disk.
   const ws = archil === undefined
@@ -216,7 +220,9 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
   const computer = await deps.computerForClaim(
     { runId: claim.runId, epoch: claim.epoch, revisionId: runRow.revisionId, place: launch.place, ...((launch as { computer?: unknown }).computer !== undefined ? { computer: (launch as { computer?: unknown }).computer } : {}) },
     deps.store,
-    { ...deps.computerDeps, mode, workspace: ws.workspace, sealKey: deps.sealKey },
+    // revokeMount removes the run's Archil mount credential when the computer is released (and if a start fails after a mint);
+    // the run's end revokes it too (below), so it goes on every outcome even when no computer is made. Idempotent.
+    { ...deps.computerDeps, mode, workspace: ws.workspace, sealKey: deps.sealKey, ...(archil ? { revokeMount: () => archil.revoke() } : {}) },
   );
 
   // The run's mode bounds its shell: 600 s locally or on a computer, 295 s on Archil's serverless exec (Mode 2, none).
@@ -357,6 +363,9 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
     release: async () => {
       await tools.end().catch((error: unknown) => log(`the run's tools' end failed: ${(error as Error)?.message ?? String(error)}`));
       await computer.release().catch((error: unknown) => log(`the run's computer could not be let go: ${(error as Error)?.message ?? String(error)}`));
+      // The run's Archil mount credential, revoked at its end on every outcome, even with no computer (the computer's release
+      // revokes it too; revoke is idempotent, so a second call is a no-op). A run that minted none revokes nothing.
+      await archil?.revoke().catch((error: unknown) => log(`the run's Archil mount credential could not be revoked: ${(error as Error)?.message ?? String(error)}`));
       await ws.end().catch((error: unknown) => log(`the run's workspace end failed: ${(error as Error)?.message ?? String(error)}`));
     },
   };

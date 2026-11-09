@@ -129,7 +129,10 @@ export async function cliRunSpecFromLaunch(launch: RunLaunch, run: AdapterRun, d
   const mode: 1 | 2 = archilSettings === undefined ? 1 : 2;
   const archil = archilSettings === undefined
     ? undefined
-    : await archilClaim({ settings: archilSettings, keys: deps.store.sealedKeys, sealKey: deps.sealKey, signal: new AbortController().signal, ...(deps.makeArchilDisk ? { makeDisk: deps.makeArchilDisk } : {}) });
+    // The run's mount credential, minted per run the first time a computer's mount asks (account key from the server's
+    // environment first, then the sealed row), named for the run and this claim's epoch, 24 h ttl safety net; revoke at the
+    // run's end (below). As the pi spec does.
+    : await archilClaim({ settings: archilSettings, keys: deps.store.sealedKeys, sealKey: deps.sealKey, signal: new AbortController().signal, env: deps.env, mount: { runId: claim.runId, epoch: claim.epoch, ttlMs: 86_400_000 }, ...(deps.makeArchilDisk ? { makeDisk: deps.makeArchilDisk } : {}) });
   // The run's Workspace at the claim, and its uploaded files copied into work/inputs/ once.
   const ws = archil === undefined
     ? await openRunWorkspace({ mode: 1, agentId: runRow.agentId, runId: claim.runId, data: deps.data, log })
@@ -146,7 +149,9 @@ export async function cliRunSpecFromLaunch(launch: RunLaunch, run: AdapterRun, d
   const computer = await deps.computerForClaim(
     { runId: claim.runId, epoch: claim.epoch, revisionId: runRow.revisionId, place: launch.place, ...((launch as { computer?: unknown }).computer !== undefined ? { computer: (launch as { computer?: unknown }).computer } : {}) },
     deps.store,
-    { ...deps.computerDeps, mode, workspace: ws.workspace, sealKey: deps.sealKey },
+    // revokeMount removes the run's Archil mount credential at the computer's release (and if a start fails after a mint); the
+    // run's end revokes it too, so it goes on every outcome even with no computer. Idempotent. As the pi spec does.
+    { ...deps.computerDeps, mode, workspace: ws.workspace, sealKey: deps.sealKey, ...(archil ? { revokeMount: () => archil.revoke() } : {}) },
   );
 
   // The CLI works in the run's scratch folder on this machine (its working directory, swept at the run's end), its own
@@ -240,6 +245,9 @@ export async function cliRunSpecFromLaunch(launch: RunLaunch, run: AdapterRun, d
     release: async () => {
       await tools.end().catch((error: unknown) => log(`the run's tools' end failed: ${(error as Error)?.message ?? String(error)}`));
       await computer.release().catch((error: unknown) => log(`the run's computer could not be let go: ${(error as Error)?.message ?? String(error)}`));
+      // The run's Archil mount credential, revoked at its end on every outcome, even with no computer (idempotent with the
+      // computer's release). A run that minted none revokes nothing.
+      await archil?.revoke().catch((error: unknown) => log(`the run's Archil mount credential could not be revoked: ${(error as Error)?.message ?? String(error)}`));
       await ws.end().catch((error: unknown) => log(`the run's workspace end failed: ${(error as Error)?.message ?? String(error)}`));
       // The claim's Archil keys go from memory once nothing more reads the disk.
       archil?.release();
