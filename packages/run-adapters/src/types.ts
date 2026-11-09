@@ -251,8 +251,9 @@ export type SessionState = "new" | "open_turn" | "idle";
 
 export interface AdapterSession {
   readonly state: SessionState;
-  /** Place the input, then send it: a new turn. */
-  send(text: string): Promise<void>;
+  /** Place the input, then send it: a new turn. `id`: the input's own request id (a follow-up's, such as a raised run's
+   *  turn), so placing it again is the same input, never the run's first one. */
+  send(text: string, options?: { id?: string }): Promise<void>;
   /** Resume the turn a crash cut off, from the session's records. Only when `state` is `open_turn`. */
   recover(): Promise<void>;
   /** Record the open turn as ended, interrupted, and send nothing: the turn is not to be resumed (a person stopped it, and
@@ -272,6 +273,13 @@ export interface AdapterSession {
   interrupt(options?: { drainMs?: number }): Promise<void>;
   /** Stop the harness's processes and let go of the session. */
   close(): Promise<void>;
+  /** A person's message placed in the turn in flight, at its next boundary, for a harness that takes one mid-turn (pi).
+   *  `id`: the request id the placement carries (the host's command), so the host can tell the commit that placed it.
+   *  `mode`: "steer" (the default) steers the turn in flight; "followUp" waits for the turn's end and runs as a turn of
+   *  its own (a message that answers nothing, such as a trigger's). `origin`: who wrote it when the person did not (a
+   *  trigger's message), kept on the message the harness records, as the Timeline shows it. Absent when the harness takes
+   *  no message mid-turn: the host refuses the steer in words. */
+  steer?(text: string, id?: string, mode?: "steer" | "followUp", options?: { readonly origin?: { readonly [key: string]: unknown } }): Promise<void>;
   /** The session's own model route, for a request the host sends beside the harness's own (a learned workflow's model
    *  node): its model proxy's address with a side key minted for `label` (ModelProxy.sideKey), the model its policy
    *  takes and the API it speaks. Undefined while no proxy is up (no turn has attached one yet). Every model request of

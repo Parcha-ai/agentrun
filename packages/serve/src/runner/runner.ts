@@ -13,8 +13,11 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { ConversationId, EntryId, StorageWrite } from "@earendil-works/pi-durable";
 import { COMMAND_KINDS, endedReason } from "./commands.js";
 import { KINDS } from "./journal-kinds.js";
-import type { Claim, Command, Journal, Loop, LoopEnd, LoopFactory, StopReason } from "./loop-contract.js";
+import { type Claim, type Command, endedBy, type Journal, type Loop, type LoopEnd, type LoopFactory, type StopReason } from "./loop-contract.js";
 import { isFenced, type RunnerStore } from "./store-port.js";
+
+/** The untaken row a run ends on when no loop can: a cancel before a stop (it ends the run for good, in its words). */
+const endingRow = (untaken: readonly Command[]): Command | undefined => untaken.find((row) => row.kind === "cancel") ?? untaken.find((row) => row.kind === "stop");
 
 /** A commit by a loop whose claim this runner gave up: refused before it reaches the store. */
 export class ClaimLost extends Error {
@@ -218,9 +221,9 @@ export function startRunner(options: RunnerOptions): Runner {
             held.cursor = Math.max(held.cursor, row.id);
             continue;
           }
-          if (row.kind === "stop") {
+          if (row.kind === "stop" || row.kind === "cancel") {
             held.cursor = Math.max(held.cursor, row.id);
-            stopLoop(held, { kind: "command", commandId: row.id });
+            stopLoop(held, { kind: "command", commandId: row.id, ...(row.kind === "cancel" ? { cancel: true as const } : {}) });
             break;
           }
           const outcome = COMMAND_KINDS.has(row.kind) ? await held.loop.command(row) : { refused: `no command is of kind ${JSON.stringify(row.kind)}` };
@@ -306,7 +309,12 @@ export function startRunner(options: RunnerOptions): Runner {
     }
     held.sealed = true;
     try {
-      if (killed || held.fence.lost) return;
+      if (killed) return;
+      // A loop that came back with a final end wrote it: its end commit landed, and a write that makes the run final is its
+      // release (the store's rule). A renew answered Fenced after that commit is expected, never a lost claim: the end goes
+      // on as any end does, made durable (a flush) before the runner says released. Any other lost claim writes nothing.
+      const endedItself = !threw && (end.state === "ended" || end.state === "stopped" || end.state === "failed");
+      if (held.fence.lost && !endedItself) return;
       // A parked run brought back (a raise, an approval) whose loop could not start stays parked: its waking row keeps
       // one more try, and the run is claimable again after a backoff; after the last try that row is refused with why.
       // Never failed: a person can raise again or stop it (#1944-5, the lead's keep list).
@@ -314,20 +322,20 @@ export function startRunner(options: RunnerOptions): Runner {
       if (threw && end.state === "failed") {
         // A loop that failed with no end written: a person's stop waiting now is the run's end (stopped, its row taken),
         // never refused as a failed run's; else the run ends failed with why. Either way its end is in the journal.
-        const stop = (await store.commands(claim.runId, 0)).find((row) => row.takenAt === null && row.kind === "stop");
+        const stop = endingRow((await store.commands(claim.runId, 0)).filter((row) => row.takenAt === null));
         if (stop) {
-          await endRun(claim, { state: "stopped", summary: "stopped by a person" }, [stop.id]);
+          await endRun(claim, { state: "stopped", summary: endedBy(stop.kind === "cancel") }, [stop.id]);
           end = { state: "stopped" };
         } else {
           await endRun(claim, { state: "failed", summary: end.error.message }, []);
         }
       }
       if (end.state === "ended" || end.state === "stopped" || end.state === "failed") {
+        // The write that made the run final refused its untaken rows itself, in that transaction (the store's rule), and
+        // released the run: said here as the runner always said them. Nothing is taken after it (its claim is spent).
         const reason = endedReason(end.state);
         for (const row of await store.commands(claim.runId, 0)) {
-          if (row.takenAt !== null) continue;
-          await store.take(claim, row.id, "refused", reason);
-          emit({ type: "refused", runId: claim.runId, commandId: row.id, reason });
+          if (row.refused === reason) emit({ type: "refused", runId: claim.runId, commandId: row.id, reason });
         }
       }
       await store.flush();
@@ -356,18 +364,18 @@ export function startRunner(options: RunnerOptions): Runner {
   const resumeFailed = async (held: Held, why: string) => {
     const { claim } = held;
     const untaken = (await store.commands(claim.runId, 0)).filter((row) => row.takenAt === null);
-    const stop = untaken.find((row) => row.kind === "stop");
+    const stop = endingRow(untaken);
     const woke = untaken[0];
     if (stop) {
       // A stop never waits on a loop that cannot start: the run ends stopped here, its stop row taken, and every other
       // untaken row refused as a stopped run's.
       // One write: the run ends stopped with its stop row taken, or neither (a final run never keeps its stop untaken).
-      await endRun(claim, { state: "stopped", summary: "stopped by a person" }, [stop.id]);
+      await endRun(claim, { state: "stopped", summary: endedBy(stop.kind === "cancel") }, [stop.id]);
+      // Every other untaken row was refused in that same write, and the write released the run (the store's rule for a
+      // write that makes a run final): said here, from what the end refused. Nothing is taken after it (its claim is spent).
       const reason = endedReason("stopped");
-      for (const row of untaken) {
-        if (row.id === stop.id) continue;
-        await store.take(claim, row.id, "refused", reason);
-        emit({ type: "refused", runId: claim.runId, commandId: row.id, reason });
+      for (const row of await store.commands(claim.runId, 0)) {
+        if (row.id !== stop.id && row.refused === reason) emit({ type: "refused", runId: claim.runId, commandId: row.id, reason });
       }
       await store.flush();
       await store.release(claim, {});

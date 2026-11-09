@@ -751,7 +751,9 @@ export class LearningRuns {
     // The server's settings, beside the agent store, as the run's gate reads them, and the agent's own.
     const server = readToolSettings(this.options.agents.dir).settings;
     const agent = (known.revision.body.toolSettings ?? {}) as never;
-    return learnedDraftTools(known.revision.body.tools, (name) => permissionFrom(name, server as never, agent).permission, undefined, (name) => permissionFrom(name, server as never, agent).from);
+    // Unattended (approvals "never"): a tool set to ask is allowed at its run's gate, so a draft may name it.
+    const approvals = known.revision.body.approvals === "never" ? "never" : "ask";
+    return learnedDraftTools(known.revision.body.tools, (name) => permissionFrom(name, server as never, agent, approvals).permission, undefined, (name) => permissionFrom(name, server as never, agent, approvals).from);
   }
 
   private async propose(run: Run): Promise<void> {

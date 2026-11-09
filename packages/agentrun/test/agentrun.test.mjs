@@ -73,7 +73,7 @@ test("demo: with no model key, the bin starts on a free loopback port and prints
   assert.deepEqual([health.status, (await health.json()).status], [200, "ok"]);
   assert.equal((await (await fetch(`${base}/v2/capabilities`)).json()).models.default, null, "no model: none was given");
   // Until a single-use sign-in link replaces the plain address, the console's first visit sets the owner's password.
-  assert.deepEqual(await (await fetch(`${base}/v2/auth/session`)).json(), { password_set: false, signed_in: false });
+  assert.deepEqual(await (await fetch(`${base}/v2/auth/session`)).json(), { password_set: false, signed_in: false, setup_code: false });
   assert.ok(existsSync(join(STORE(home), ".token")), "the data directory is ~/.agentrun");
   assert.equal(existsSync(SERVE_STORE(home)), false, "no second store");
   child.kill("SIGTERM");
@@ -290,6 +290,9 @@ test("the command passes its arguments through to the server, with its store (~/
   const dash = await throughStub(t, ["--no-open", "--data=-store"]);
   assert.deepEqual(dash.args, ["--data=-store"], dash.err);
   assert.match(dash.err, /^Press Ctrl-C to stop it\. Its data is in -store\.$/m, dash.err);
+  // A server flag's value is no command: --listen ADDR starts the server.
+  const listen = await throughStub(t, ["--no-open", "--listen", "0.0.0.0"]);
+  assert.deepEqual(listen.args, ["--data", STORE(listen.home), "--listen", "0.0.0.0"], listen.err);
   const sub = await throughStub(t, ["--data", "/srv/agents", "import", "--dry-run"]);
   assert.deepEqual(sub.args, ["import", "--data", "/srv/agents", "--dry-run"], "a subcommand first, on the same data directory");
   const own = await throughStub(t, ["import", "--dry-run"]);
@@ -537,4 +540,63 @@ test("a SIGTERM or a SIGHUP to the command stops the server, which stops each ru
     assert.ok(await gone(Number(readFileSync(setup.files.agentPid, "utf8")), setup.files.agentPid), `${signal}: its agent stopped`);
     assert.equal(readFileSync(setup.files.terms, "utf8"), "TERM\n", `${signal}: the agent got one SIGTERM, the server's, and drained`);
   }
+});
+
+test("a first word that is neither a command of the CLI nor one of the server's is the CLI's: it says there is no such command and lists the commands, exit 2; the server is not started", (t) => {
+  const { env } = bare(t);
+  const run = spawnSync(process.execPath, [BIN, "frobnicate"], { env, encoding: "utf8", timeout: 30_000 });
+  assert.equal(run.status, 2, run.stderr);
+  assert.match(run.stderr, /^agentrun has no command frobnicate\.$/m);
+  assert.match(run.stderr, /^ {2}runs +.*\bstart\b/m, "and the commands");
+  assert.doesNotMatch(run.stderr, /agentrun-serve/, "not the server's usage");
+  assert.equal(run.stdout, "");
+});
+
+test("the server's own commands the bin passes on are exactly those the server's CLI has", () => {
+  const source = readFileSync(new URL("../../serve/src/cli.ts", import.meta.url), "utf8");
+  const own = [...source.matchAll(/process\.argv\[2\] === "([^"]+)"/g)].map((match) => match[1]);
+  assert.deepEqual([...start.SERVER_COMMANDS].sort(), [...new Set(own)].sort());
+});
+
+test("the server's refusals and ignored webhook deliveries reach the person in plain words, route and reason, each once; nothing else of its log does", () => {
+  const told = start.tellerOf();
+  assert.equal(told("at=2026-11-08T20:00:00.000Z event=auth_failed route=/v2/agents reason=wrong_token"), "AgentRun refused a request to /v2/agents: the API token is not this server's. (Each route and reason is said once.)");
+  assert.equal(told("at=2026-11-08T20:00:01.000Z event=auth_failed route=/v2/agents reason=wrong_token"), undefined, "the same refusal again is not said again");
+  assert.equal(told("at=2026-11-08T20:00:02.000Z event=auth_failed route=/v2/agents reason=no_credential"), "AgentRun refused a request to /v2/agents: it carried no API token.");
+  assert.equal(told('at=2026-11-08T20:00:03.000Z event=auth_failed route=/hooks/trg_1 reason=bad_signature'), "AgentRun refused a request to /hooks/trg_1: bad_signature.");
+  assert.equal(told("at=2026-11-08T20:00:04.000Z event=trigger condition=hook_ignored source=github route=/hooks/trg_2 trigger=trg_2 reason=event_not_taken event=star"), "AgentRun ignored a webhook delivery to /hooks/trg_2 (github, event star): event_not_taken.");
+  assert.equal(told("at=2026-11-08T20:00:05.000Z event=trigger condition=hook_unparsed source=github route=/hooks/trg_2"), undefined);
+  assert.equal(told("at=2026-11-08T20:00:06.000Z event=request method=GET route=/v2/agents status=401"), undefined);
+  assert.equal(told("Boxes: none is ready, so sandbox agents do not run here."), undefined, "the SAID lines are said by their own rule");
+  // A server under a flood of refusals: a bounded number of distinct ones, then one line that says the rest are not.
+  const flood = start.tellerOf();
+  const said = Array.from({ length: start.TOLD_MAX + 5 }, (_, i) => flood(`at=x event=auth_failed route=/v2/runs/r${i} reason=wrong_token`)).filter(Boolean);
+  assert.equal(said.length, start.TOLD_MAX + 1);
+  assert.equal(said.at(-1), "AgentRun refuses more requests than this terminal shows; it says no more of them here.");
+});
+
+test("started, the bin says a refused request on stderr; stdout stays the one running line", { timeout: 120_000 }, async (t) => {
+  const { env } = bare(t);
+  const child = spawn(process.execPath, [BIN, "--no-open"], { env, stdio: ["ignore", "pipe", "pipe"] });
+  const exited = new Promise((resolve) => child.on("exit", resolve));
+  t.after(() => stopChild(child, exited));
+  let out = "";
+  let err = "";
+  child.stdout.on("data", (chunk) => (out += chunk));
+  child.stderr.on("data", (chunk) => (err += chunk));
+  for (let i = 0; !/^AgentRun is running at /.test(out); i++) {
+    assert.ok(i < 1000, `the bin printed its line: ${out}${err}`);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  const base = /^AgentRun is running at (http:\/\/127\.0\.0\.1:\d+)/.exec(out)[1];
+  assert.equal((await fetch(`${base}/v2/agents`, { headers: { authorization: "Bearer not-this-servers" } })).status, 401);
+  for (let i = 0; !/refused a request/.test(err); i++) {
+    assert.ok(i < 300, `the refusal was said: ${err}`);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  assert.match(err, /^AgentRun refused a request to \/v2\/agents: the API token is not this server's\./m);
+  assert.doesNotMatch(err, /not-this-servers/, "never the token sent");
+  child.kill("SIGTERM");
+  assert.equal(await exited, 0, err);
+  assert.equal(out.split("\n").filter(Boolean).length, 1, "nothing more on stdout");
 });

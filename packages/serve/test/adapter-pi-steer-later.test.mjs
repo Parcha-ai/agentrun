@@ -1,23 +1,24 @@
-// A person's steer that reaches the loop as the run parks (its journal sealed on the ask) is left for the resume, not
-// refused for good: the loop answers it `later`, the row stays untaken, it wakes the run, and the resume takes it. Made
-// certain here: the steer's first delivery is held until the run's row reads parked.
+// pi through the adapter loop: a person's steer that reaches the loop as the run parks (its journal sealed on the ask) is
+// left for the resume, not refused for good: answered `later`, the row stays untaken, it wakes the run, and the resume
+// takes it. Made certain: the steer's first delivery is held until the run's row reads parked. The adapter loop's twin of
+// runner-loop-steer-later.
 import assert from "node:assert/strict";
-import { test } from "node:test";
-import { piSpec } from "./conformance-pi.mjs";
+import { after, test } from "node:test";
+import { closeOpenSessions, piAdapterSubject } from "./conformance-pi-adapter.mjs";
 import { queue, sleep, stores, until } from "./runner-support.mjs";
 
 const { startRunner } = await import("../dist/runner/runner.js");
-const { createPiLoop } = await import("../dist/runner/loop.js");
 const { sendCommand } = await import("../dist/runner/commands.js");
 const { suiteTools } = await import("../dist/runner/conformance/harness.js");
 const TIMING = { leaseMs: 600, renewEveryMs: 150, stopMarginMs: 200, pollMs: 20, commandPollMs: 30 };
 const quiet = { beforeIntent: async () => {}, beforeResult: async () => {} };
+after(closeOpenSessions);
 
-test("a steer that reaches the loop as the run parks is taken by the resume, never refused", async (t) => {
+test("pi through the adapter: a steer that reaches the loop as the run parks is taken by the resume, never refused", async (t) => {
   const opened = await stores({ runners: 1 });
   await queue(opened.server, "run-1");
   const { tools } = suiteTools();
-  const inner = createPiLoop(piSpec({ script: [{ call: "asked" }, { say: "done" }], tools, hooks: quiet }));
+  const inner = piAdapterSubject.createLoop({ script: [{ call: "asked" }, { say: "done" }], tools, hooks: quiet });
   let held = false;
   const parked = async () => {
     for (;;) {
