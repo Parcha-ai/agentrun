@@ -240,8 +240,6 @@ export const cannotWait = (name: string): string => `The ${name} call needs a pe
  *  commit, and how it ends a parked call's turn); none, the run's root commit. */
 export type McpGateway = Omit<SessionMcp, "call"> & {
   call(server: string, tool: string, args: Record<string, unknown>, context: { signal: AbortSignal; callId?: string; park?: Park }): Promise<McpCallResult>;
-  /** How many credential values the calls in flight hold for their scrub: each call's go when it ends (0 when idle). */
-  heldCredentials(): number;
   /** The credential values the calls in flight hold for their scrub, every call's together (none when idle). */
   heldValues(): string[];
 };
@@ -463,7 +461,6 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
 
   const gateway: McpGateway = {
     servers: [...pins].map(([name, pinned]) => ({ name, tools: pinned.tools })),
-    heldCredentials: () => [...inFlight.values()].reduce((sum, calls) => sum + [...calls].reduce((n, values) => n + values.size, 0), 0),
     heldValues: () => [...new Set([...inFlight.values()].flatMap((calls) => [...calls].flatMap((values) => [...values])))],
     async call(server, tool, args, { signal, callId, park: given }) {
       const why = unsendable(server, tool);
