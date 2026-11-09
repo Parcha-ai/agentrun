@@ -41,7 +41,7 @@ function memoryStore() {
 
 /** A provider stand-in in the computer module's shape: create records its spec, connect answers a fake computer over the
  *  run's folder, stream gives a viewer, release records each call. */
-function fakeProvider(root, record, groups) {
+function fakeProvider(root, record, groups, machine = "linux") {
   const computer = fakeComputer(root);
   return {
     id: "fake",
@@ -58,7 +58,7 @@ function fakeProvider(root, record, groups) {
       return { ok: true, value: { id: "c1", name: "c1" } };
     },
     async connect() {
-      return { ok: true, value: { client: computer.client, hello: { version: "0", os: "linux", kind: "linux", arch: "amd64", groups }, close: async () => {} } };
+      return { ok: true, value: { client: computer.client, hello: { version: "0", os: "linux", kind: machine, arch: "amd64", groups }, close: async () => {} } };
     },
     async attach() {
       const read = await computer.readBack();
@@ -84,20 +84,20 @@ function views(refusal) {
   const opened = [];
   const closed = [];
   const open = async (args) => {
-    opened.push({ kind: args.kind, tag: args.tag, claim: args.claim, sealKey: Buffer.isBuffer(args.sealKey), hold: typeof args.hold?.take, watched: args.watch(new AbortController().signal) !== undefined });
+    opened.push({ kind: args.kind, input: args.input, tag: args.tag, claim: args.claim, sealKey: Buffer.isBuffer(args.sealKey), hold: typeof args.hold?.take, watched: args.watch(new AbortController().signal) !== undefined });
     if (refusal) return { ok: false, refused: refusal, message: `the store refused the viewer (${refusal})` };
     return { ok: true, view: { close: (why) => void closed.push(why) } };
   };
   return { open, opened, closed };
 }
 
-async function claim(setting, { mode = 1, keys = {}, groups = ["exec", "files", "processes"], existing, view } = {}) {
+async function claim(setting, { mode = 1, keys = {}, groups = ["exec", "files", "processes"], existing, view, machine } = {}) {
   const root = scratch();
   const store = memoryStore();
   const sealKey = randomBytes(32);
   for (const [name, value] of Object.entries(keys)) await putSealedKey(store, sealKey, name, value);
   const record = { created: [], released: [], options: [], ...(existing ? { existing } : {}) };
-  const providers = Object.fromEntries(["docker", "e2b", "daytona"].map((id) => [id, (options, extras) => (record.options.push([id, options, typeof extras.ledger.put]), fakeProvider(root, record, groups))]));
+  const providers = Object.fromEntries(["docker", "e2b", "daytona", "phone-harness"].map((id) => [id, (options, extras) => (record.options.push([id, options, typeof extras.ledger.put]), fakeProvider(root, record, groups, machine))]));
   const run = () => computerForClaim({ runId: "run-1", epoch: 3, computer: setting }, store, { mode, kinds: KINDS, sealKey, providers, spec: SPEC, workspace: localWorkspace(root), check: { readBackOf, epoch: 3 }, ...(view ? { openComputerView: view.open } : {}) });
   return { root, record, run };
 }
@@ -131,7 +131,7 @@ test("a desktop opens one proxied live view under the claim, is registered for t
   assert.equal(answer.computer.kind, "desktop");
   assert.equal(record.created[0].mount, undefined, "E2B mounts nothing in Mode 1");
   assert.deepEqual(record.options[0].slice(0, 2), ["e2b", { apiKey: "ek-test" }], "made with its key, by the option it fills");
-  assert.deepEqual(view.opened, [{ kind: "desktop", tag: "c1", claim: { runId: "run-1", epoch: 3 }, sealKey: true, hold: "function", watched: true }], "one view, tagged with the computer's ref id, fed by the provider's watch");
+  assert.deepEqual(view.opened, [{ kind: "desktop", input: "desktop", tag: "c1", claim: { runId: "run-1", epoch: 3 }, sealKey: true, hold: "function", watched: true }], "one view, tagged with the computer's ref id, fed by the provider's watch");
   const registered = runComputerOf("run-1");
   assert.equal(registered?.kind, "desktop");
   assert.equal(registered.live(), true);
@@ -143,6 +143,18 @@ test("a desktop opens one proxied live view under the claim, is registered for t
   assert.equal(runComputerOf("run-1"), undefined, "no longer shown");
   assert.equal(registered.live(), false);
   assert.deepEqual(record.released, [["c1", "delete"]]);
+});
+
+test("a phone's view is opened with its platform, as the phone says it: android, or ios", async () => {
+  const PHONE = ["screen", "input.touch", "input.keys", "apps", "apps.ui_tree"];
+  for (const machine of ["android", "ios"]) {
+    const view = views();
+    const { run } = await claim({ kind: "phone", provider: "phone-harness" }, { keys: { PHONE_HARNESS_API_KEY: "pk-test" }, groups: PHONE, machine, view });
+    const answer = await run();
+    assert.equal(answer.computer.kind, "phone");
+    assert.deepEqual(view.opened.map((one) => [one.kind, one.input]), [["phone", machine]]);
+    await answer.release();
+  }
 });
 
 test("at the run's end the view closes 'ended'", async () => {
