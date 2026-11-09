@@ -397,15 +397,3 @@ test("a viewer that stops acking is ended once its frame waits past the idle bou
   assert.ok(watch.state.closed >= 1, "the watch ends with it");
 });
 
-test("toAction's refusals of #2017's hardening come back held refused, in its words: ctrl+alt+F1 on a desktop", { todo: "waits on #2017's toAction hardening, not yet pushed to computer/live-view (its head is ef4b398775)" }, async (t) => {
-  const { row, watch } = await opened(t, { hold: fakeHold({ grant: true }) });
-  const ws = await viewerOf(row);
-  await watch.opened();
-  ws.sendJson({ type: "take" });
-  await next(ws, "hold");
-  ws.sendJson({ type: "key", action: "down", key: "F1", code: "F1", modifiers: 3 });
-  const held = await next(ws, "held");
-  assert.equal(held?.reason, "refused", JSON.stringify(held));
-  assert.deepEqual(watch.state.inputs, []);
-  ws.destroy();
-});

@@ -33,8 +33,13 @@ const MAX_MESSAGE_BYTES = 64 * 1024;
 /** The bounds a viewer is held to (pi-browser's server.ts keeps the same): how long a connection may stay silent before
  *  its hello and how many may wait for one; past `slowViewerBytes` unsent no frame is sent (nor the watch acked) until the
  *  socket drains, and past `maxBufferedBytes` the viewer is cut off (refused slow_viewer); at most `maxQueuedInput`
- *  events wait behind the one being sent, the rest answered held busy. */
-export const VIEWER_LIMITS = { helloMs: 5_000, maxPending: 8, slowViewerBytes: 512 * 1024, maxBufferedBytes: 4 * 1024 * 1024, maxQueuedInput: 32 } as const;
+ *  events wait behind the one being sent, the rest answered held busy; a frame left unacked past `ackIdleMs` ends the
+ *  viewer (a take in progress handed back through the hold's away). */
+export const VIEWER_LIMITS = { helloMs: 5_000, maxPending: 8, slowViewerBytes: 512 * 1024, maxBufferedBytes: 4 * 1024 * 1024, maxQueuedInput: 32, ackIdleMs: 60_000 } as const;
+/** A viewer whose frame waits unacked past ackIdleMs is ended in these words. */
+export const STOPPED_ANSWERING = "This view stopped answering; open the live view again.";
+/** Its close code. */
+const IDLE_CLOSE = 4408;
 /** The close code of a viewer cut off for not reading (4000-4999 are the applications'). */
 const SLOW_VIEWER_CLOSE = 4429;
 /** Bounds on what a viewer's event may carry. */
@@ -213,7 +218,7 @@ async function openOne(input: OpenComputerView, key: string): Promise<OpenedComp
   let closed = false;
   let origin = "";
   const pending = new Set<WsConn>();
-  type Viewer = { conn: WsConn; watch?: ScreenWatch; abort: AbortController; ack?: () => void; parked?: { frame: ScreenFrame; ack: () => void }; chain: Promise<void>; queued: number };
+  type Viewer = { conn: WsConn; watch?: ScreenWatch; abort: AbortController; ack?: () => void; parked?: { frame: ScreenFrame; ack: () => void }; chain: Promise<void>; queued: number; idle?: unknown };
   let viewer: Viewer | null = null;
   let state: HoldState = "agent";
   /** Moves on with every take: an event queued under one hold is never sent under the next. */
@@ -237,10 +242,25 @@ async function openOne(input: OpenComputerView, key: string): Promise<OpenedComp
     current.parked = undefined;
     sendFrame(current, frame, ack);
   };
+  /** A frame waits for the viewer's ack: past ackIdleMs with none, the viewer is ended, and its watch and a take with it. */
+  const awaitAck = (current: Viewer): void => {
+    if (current.idle !== undefined) return;
+    current.idle = timers.set(() => {
+      current.idle = undefined;
+      if (viewer !== current || current.conn.closed) return;
+      send(current.conn, { type: "ended", reason: "refused", message: STOPPED_ANSWERING });
+      current.conn.close(IDLE_CLOSE, "idle");
+    }, limits.ackIdleMs);
+  };
+  const acked = (current: Viewer): void => {
+    if (current.idle !== undefined) timers.clear(current.idle);
+    current.idle = undefined;
+  };
   /** One frame to the viewer, its ack held until the viewer drew it; held back whole while the viewer is slow. */
   const sendFrame = (current: Viewer, frame: ScreenFrame, ack: () => void): void => {
     const conn = current.conn;
     if (viewer !== current || conn.closed) return ack();
+    awaitAck(current);
     if (bufferedOf(conn) > limits.maxBufferedBytes) return refuse(conn, "slow_viewer");
     if (bufferedOf(conn) > limits.slowViewerBytes) {
       current.parked = { frame, ack };
@@ -250,6 +270,7 @@ async function openOne(input: OpenComputerView, key: string): Promise<OpenedComp
     current.ack = ack;
     if (!conn.send(encodeFrame(frame.bytes, frame.width, frame.height), () => resume(conn))) {
       current.ack = undefined;
+      acked(current);
       ack();
     }
   };
@@ -273,6 +294,7 @@ async function openOne(input: OpenComputerView, key: string): Promise<OpenedComp
     if (viewer?.conn !== conn) return;
     const gone = viewer;
     viewer = null;
+    acked(gone);
     gone.abort.abort();
     gone.ack = undefined;
     void gone.watch?.close().catch(() => undefined);
@@ -369,6 +391,7 @@ async function openOne(input: OpenComputerView, key: string): Promise<OpenedComp
     if (message.type === "ack") {
       const ack = current.ack;
       current.ack = undefined;
+      if (ack) acked(current);
       return ack?.();
     }
     if (message.type === "take" || message.type === "give") return void onHands(current, message.type);
@@ -450,6 +473,7 @@ async function openOne(input: OpenComputerView, key: string): Promise<OpenedComp
       if (viewer) {
         const gone = viewer;
         viewer = null;
+        acked(gone);
         gone.abort.abort();
         await gone.watch?.close().catch(() => undefined);
       }
