@@ -106,9 +106,10 @@ So:
    restatement of the claim. Its date (`YYYY-MM-DD`), its link (the page that shows it, never a search result page),
    and a confidence: `high` when the company's own page or a filing says it, `medium` for one credible outlet, `low`
    when it is inferred or rests on a weak source. Keep at most 15 items, the most consequential first, grouped by
-   company. Every watched company appears, so a reader can tell quiet from skipped: one with no item gets one line,
-   `*<Company>*: nothing new this week (checked: <the pages you read for it>)`, or, when its pages could not be read,
-   `*<Company>*: not checked (<why>)`. Nothing that passed step 4 and 5 for any company: `quiet` is true and the
+   company. Every watched company appears, so a reader can tell quiet from skipped. One with no item gets one line:
+   `*<Company>*: nothing new this week (checked: <the pages you read for it>)` only when none of its changes passed
+   steps 4 and 5; `*<Company>*: <n> changes left out by the 15-item limit` when it had changes that the limit cut;
+   `*<Company>*: not checked (<why>)` when its pages could not be read. Nothing that passed step 4 and 5 for any company: `quiet` is true and the
    digest is the one quiet line, which names every company.
 
 7. **Post, once.**
