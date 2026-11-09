@@ -72,6 +72,21 @@ export interface AdapterLoopOptions {
   readonly restartLimit?: number;
 }
 
+/** The turns a session's records booked (its runner.turn records), in order. */
+export function turnsOf(records: readonly SessionRecord[]): number[] {
+  return records.filter((record) => record.kind === RUNNER_RECORDS.turn).map((record) => (record.data as { turn?: unknown }).turn).filter((turn): turn is number => typeof turn === "number");
+}
+
+/** The booking of the request that just answered, from the session's records: the latest runner.turn record, its
+ *  booked figure (null when unknown); "none" when there is no booking. `given`: the bookings already given to an answer. */
+export function bookingOfAnswer(records: readonly SessionRecord[], _given: ReadonlySet<number>): { turn: number; usd: number | null } | "none" | "ambiguous" {
+  const last = [...records].reverse().find((record) => record.kind === RUNNER_RECORDS.turn);
+  if (!last) return "none";
+  const turn = last.data as { turn?: unknown; usd?: unknown; bookedUsd?: unknown };
+  const figure = turn.bookedUsd !== undefined ? turn.bookedUsd : turn.usd;
+  return { turn: typeof turn.turn === "number" ? turn.turn : -1, usd: typeof figure === "number" && Number.isFinite(figure) ? figure : null };
+}
+
 /** A host check's refusal as the cap's rule reads it (AdapterRunSpec.cap.park). */
 const refusalOf = (refusal: Refusal) => ({ message: refusal.refuse, forGood: refusal.forGood ?? true, ...(refusal.figures ? { figures: refusal.figures } : {}) });
 
@@ -318,14 +333,16 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         };
         // What the request that just answered cost: its booking (the request's runner.turn record, the latest one once
         // the session's requests are booked), its figure or null when unknown. A refused request's record is its $0.
+        // The bookings already given to an answer: every one the session holds when it opens (an earlier claim's), then each
+        // this claim gives.
+        const given = new Set(turnsOf(await writer.read().catch(() => [] as SessionRecord[])));
         const bookedCost = async (): Promise<number | null | undefined> => {
           await bookingsSettled();
-          const records = await writer.read().catch(() => [] as SessionRecord[]);
-          const last = [...records].reverse().find((record) => record.kind === RUNNER_RECORDS.turn);
-          if (!last) return undefined;
-          const turn = last.data as { usd?: unknown; bookedUsd?: unknown };
-          const figure = turn.bookedUsd !== undefined ? turn.bookedUsd : turn.usd;
-          return typeof figure === "number" && Number.isFinite(figure) ? figure : null;
+          const booking = bookingOfAnswer(await writer.read().catch(() => [] as SessionRecord[]), given);
+          if (booking === "none") return undefined;
+          if (booking === "ambiguous") return null;
+          given.add(booking.turn);
+          return booking.usd;
         };
         const io: PiSessionIO = { writer, models: counted, signal: deps.signal, onEvent: () => {}, gate: gateOf, bookedCost };
         session = await spec.adapter.open({ ...spec.session, tools }, io);
