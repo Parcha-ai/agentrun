@@ -513,6 +513,13 @@ export interface Runs {
   list(filter: { agentId?: string; revisionId?: string; state?: RunState; archived?: boolean; limit?: number }): Promise<RunRow[]>;
   /** Archives the run (its own archive time), or unarchives it: idempotent. */
   archive(runId: string, archived: boolean): Promise<void>;
+  /** A person's follow-up to a run that ended completed: in one transaction, the run goes back to running with no runner
+   *  (released, so a runner claims it at once by the claimable rule's released branch), its end's own fields cleared
+   *  (ended_at, summary, outcome, its waits) and everything it did kept (its epoch, its journal, its cost and metrics,
+   *  so its next turn is booked on top of what it spent), and `command` (the follow-up's steer) is written untaken for it.
+   *  Only an agentic run that ended completed (state 'ended'), not imported and not a learning run, reopens: a workflow,
+   *  a failed, stopped or cancelled run, any other, or none is RunFinal, and nothing is written. */
+  reopen(runId: string, command: { kind: string; body?: unknown }): Promise<Command>;
   /** The runs a runner may claim, oldest first: queued; parked with an untaken command or its wake_at passed; running with
    *  no runner (released at a runner's shutdown: it stays running, a run that started keeps that fact) or its claim run
    *  out. */

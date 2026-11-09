@@ -377,6 +377,10 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
   /** While the end-of-run turn runs: a steer is left for the end, and its writes and edits under work/.learning/ are
    *  refused (REFLECT_NOTE_ONLY). */
   let reflecting = false;
+  /** A run a person's follow-up reopened (the store's runs.reopen: its journal holds the end of its last turn, its session
+   *  opens idle): the follow-up's steer is this claim's turn, sent by steer() as a tracked turn (`sent`), and the claim waits
+   *  for it, so the run's next end comes after that turn's answer. Undefined once the claim has read its delivered rows. */
+  let reopen: { sent?: Promise<void> } | undefined;
   /** The claim's CLI record (record: "loop"), for the end-of-run turn's answer; undefined for an adapter keeping its own. */
   let cliRecord: CliRecord | undefined;
   /** The session's paid requests admitted and not yet booked (its model port's beforeRequest, then its afterRequest), and
@@ -483,9 +487,28 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     // The run's job has answered and it is looking back before its end: a person's message is not the end-of-run turn's
     // to answer. Left untaken, so the run's end says it came after the answer.
     if (reflecting) return { later: "the run has answered and is ending: the steer is not placed in its end-of-run turn" };
-    if (!session.steer) return { refused: "this harness takes no steer mid-turn" };
     const text = typeof (command.body as { text?: unknown } | null)?.text === "string" ? (command.body as { text: string }).text : "";
     const requestId = commandRequest(command.id);
+    // A reopened run's follow-up, its session idle: sent as a turn of its own, tracked to its end (as the input and a raise's
+    // follow-up are), its row taken in its submission's commit; the claim waits on it before the run's next end.
+    if (reopen && !reopen.sent && session.state === "idle") {
+      const theSession = session;
+      const taken = gate.expect(writesSubmission(requestId), { take: [command.id] });
+      taken.catch(() => undefined);
+      reopen.sent = (async () => {
+        await cliRecord?.person(text);
+        await theSession.send(text, { id: requestId });
+      })();
+      try {
+        await reopen.sent;
+      } catch (error) {
+        if (gate.sealed) return { later: "the run is parking: the follow-up waits for its resume" };
+        return { refused: `the follow-up was not placed: ${(error as Error).message}` };
+      }
+      await taken.catch(() => {});
+      return { taken: true };
+    }
+    if (!session.steer) return { refused: "this harness takes no steer mid-turn" };
     // A message that answers nothing (a trigger's, answers: false) waits for the turn's end and runs as a turn of its
     // own, never steering the turn in flight, and never as a waiting call's answer.
     const followUp = (command.body as { answers?: unknown } | null)?.answers === false;
@@ -737,6 +760,9 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         }
         // Taken over from a runner whose lease ran out mid-run: said on the run's timeline once, at this claim's first pass.
         if (restarts === 0 && claim.lost) await noteTakenOver(harness, root, claim.lost.runner);
+        // Reopened by a person's follow-up (runs.reopen): its journal holds an end and its session opens idle. Set before the
+        // session is ready, so the follow-up's steer, handed over once it is, is sent as this claim's turn.
+        if (restarts === 0 && session!.state === "idle" && (await entriesOf(gate.journal, root.id, context)).some((entry) => entry.kind === KINDS.end)) reopen = {};
         opened();
         await reportHeld(harness, root.id);
         if (restarts > restartLimit + 1) {
@@ -767,6 +793,20 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           const state = await raiseStateOf();
           if (state.pause === undefined && state.lastRaise?.pause !== undefined) {
             await session!.send(spec.cap.followUpOf(state.lastRaise.to).text, { id: `agentrun:raise:${state.lastRaise.pause}` });
+            followedUp = true;
+          }
+        }
+        if (reopen) {
+          // Every row the runner read for this claim has reached its command() (deps.delivered): the follow-up's steer, sent
+          // by steer() as a turn, is the turn this claim runs. With none (a claim after that turn's answer), it ends again.
+          await deps.delivered;
+          // A steer handed over waits on the session's readiness (resolved above) before it sends: one turn of the event loop
+          // lets it get there.
+          await new Promise<void>((resolve) => setImmediate(resolve));
+          const sent = reopen.sent;
+          reopen = undefined;
+          if (sent) {
+            await sent.catch(() => undefined);
             followedUp = true;
           }
         }
