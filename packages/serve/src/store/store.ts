@@ -278,6 +278,13 @@ export interface TriggerRow {
   readonly target: unknown;
   readonly nextAt: number | null;
   readonly lastRunId: string | null;
+  readonly catchupWindowS: number | null;
+  readonly failuresInARow: number;
+  /** Why it is off, when a failure streak or its source turned it off (JSON); null once it is on again. */
+  readonly disabled: unknown;
+  readonly maxActiveRuns: number | null;
+  readonly createdAt: number;
+  readonly updatedAt: number;
 }
 /** A trigger's firing that starts a run. */
 export interface Firing {
@@ -287,6 +294,81 @@ export interface Firing {
   readonly nominalAt?: number | null;
   readonly catchUp?: boolean;
   readonly payload?: string | null;
+}
+
+export type FiringStatus = "due" | "started" | "sent" | "skipped" | "failed" | "missed" | "ignored";
+/** A trigger's firing as its row keeps it. `shown`: in the trigger's history (the newest HISTORY_KEPT); false, kept only
+ *  for its key's day. `retryAt`: a due firing's next try; `waitsOn`: the run whose turn end wakes a due firing. */
+export interface FiringRow {
+  readonly triggerId: string;
+  readonly key: string;
+  readonly by: string;
+  readonly nominalAt: number;
+  readonly status: FiringStatus;
+  readonly at: number;
+  readonly runId: string | null;
+  readonly reason: string | null;
+  readonly error: { code: string; message: string } | null;
+  readonly count: number | null;
+  readonly attempts: number;
+  readonly retryAt: number | null;
+  readonly payload: string | null;
+  readonly attrs: unknown;
+  readonly notified: boolean;
+  readonly catchUp: boolean;
+  readonly paused: boolean;
+  readonly shown: boolean;
+  readonly waitsOn: string | null;
+}
+/** A firing recorded: due (to be driven), or settled at once (skipped, missed, ignored). */
+export interface NewFiring {
+  readonly key: string;
+  readonly by: string;
+  readonly nominalAt: number;
+  readonly status: "due" | "skipped" | "missed" | "ignored";
+  readonly reason?: string;
+  readonly count?: number;
+  readonly catchUp?: boolean;
+  readonly payload?: string;
+  readonly attrs?: unknown;
+  /** False: kept only for its key's day, never in the history (an ignored delivery's key). */
+  readonly shown?: boolean;
+}
+/** A trigger made, as POST /triggers keeps it. */
+export interface NewTrigger {
+  readonly id: string;
+  readonly agentId: string;
+  readonly name: string;
+  readonly enabled: boolean;
+  readonly source: unknown;
+  readonly target: unknown;
+  readonly nextAt: number | null;
+  readonly catchupWindowS: number;
+  readonly maxActiveRuns?: number | null;
+}
+/** A trigger's fields changed; the ones absent stay. */
+/** `agentId`: the agent it belongs to, which follows its target (a PATCH may aim it at another agent's run or agent). */
+export type TriggerPatch = Partial<Pick<TriggerRow, "agentId" | "name" | "enabled" | "source" | "target" | "nextAt" | "catchupWindowS" | "failuresInARow" | "disabled" | "maxActiveRuns">>;
+/** A firing's new state. Out of due, a firing keeps no retry, wait, payload nor the reason its last try gave (unless given). */
+export interface FiringChange {
+  readonly status?: FiringStatus;
+  readonly runId?: string;
+  readonly reason?: string | null;
+  readonly error?: { code: string; message: string };
+  readonly attempts?: number;
+  readonly retryAt?: number | null;
+  readonly waitsOn?: string | null;
+  readonly notified?: boolean;
+}
+/** What a settle does to the firing's trigger besides: `reset` its failure streak (a run started, a message sent), or
+ *  count a `failure` toward it, turning it off at `pauseAt` in a row (auto-pause, the firing marked paused). */
+export type FiringStreak = { readonly reset: true } | { readonly failure: true; readonly pauseAt: number };
+/** A firing a trigger has no room for: `due` firings are DUE_KEPT already. Nothing was written. */
+export class TriggerFull extends Error {
+  override name = "TriggerFull";
+  constructor(readonly triggerId: string, readonly due: number) {
+    super(`trigger ${triggerId} holds ${due} firings due`);
+  }
 }
 
 export interface Agents {
@@ -316,14 +398,55 @@ export interface Templates {
 export interface Triggers {
   get(id: string): Promise<TriggerRow | undefined>;
   list(agentId: string): Promise<TriggerRow[]>;
+  /** Every trigger, oldest first. */
+  all(): Promise<TriggerRow[]>;
+  /** The trigger and, while it is enabled, its scope rows (`scopes`), in one transaction: a scope another enabled trigger
+   *  holds is refused (StoreConstraint on trigger_scopes), nothing written. */
+  create(trigger: NewTrigger, scopes?: readonly TriggerScope[]): Promise<TriggerRow>;
+  /** The fields given changed, `updatedAt` set: undefined when there is no such trigger. With `scopes`, its scope rows
+   *  rewritten in the same transaction (none while it is off); a patch that turns it off drops them. */
+  update(id: string, patch: TriggerPatch, scopes?: readonly TriggerScope[]): Promise<TriggerRow | undefined>;
+  /** The trigger, its scope rows and its firings gone. */
+  remove(id: string): Promise<void>;
   /** Enables the trigger and writes its scope rows, in one transaction. */
   enable(triggerId: string, scopes: readonly TriggerScope[]): Promise<void>;
   /** Disables the trigger (with why, JSON) and deletes its scope rows, in one transaction. */
   disable(triggerId: string, why?: unknown): Promise<void>;
-  /** The firing starts a run: the queued run, the `started` firing that names it and the trigger's last_run_id, in one
-   *  transaction. The run's launch row is written in that same transaction when the firing carries one (route-1's fire
-   *  calls the store's writeLaunch). */
-  fire(firing: Firing, run: { id: string; agentId: string; revisionId: string }): Promise<RunRow>;
+  /** The firing starts a run: the queued run, the `started` firing that names it (the due firing's row, or a new one) and
+   *  the trigger's last_run_id, with its failure streak reset, in one transaction; with `launch`, the run's launch row in
+   *  that same transaction (the store's one writeLaunch). */
+  fire(firing: Firing, run: { id: string; agentId: string; revisionId: string }, options?: { launch?: RunLaunchInput }): Promise<RunRow>;
+  /** The enabled triggers listening on (`kind`, `scope`): its scope rows. */
+  scoped(kind: string, scope: string): Promise<string[]>;
+  /** `firings` recorded and the trigger's `patch` applied, in one transaction; a key already there is not recorded again
+   *  (`created` false for it). With `room`, a due firing is refused (TriggerFull, nothing written) while the trigger holds
+   *  `room` due already. Undefined when there is no such trigger. */
+  record(triggerId: string, firings: readonly NewFiring[], options?: { patch?: TriggerPatch; room?: number }): Promise<{ created: boolean[] } | undefined>;
+  /** The firing's row, shown or kept for its day. */
+  firing(triggerId: string, key: string): Promise<FiringRow | undefined>;
+  /** The trigger's history, newest first: its shown firings. */
+  firings(triggerId: string): Promise<FiringRow[]>;
+  /** The firing changed (with its trigger's last_run_id moved to a newer run it names, and `streak`), in one transaction:
+   *  undefined when the firing is gone (its trigger deleted). `paused`: this failure turned the trigger off. */
+  settle(triggerId: string, key: string, change: FiringChange, streak?: FiringStreak): Promise<{ firing: FiringRow; paused: boolean } | undefined>;
+  /** Every due firing, and every failed one whose trigger.failed is not marked queued, oldest first. */
+  pending(): Promise<FiringRow[]>;
+  /** A message_run firing's message queued for run `runId` as a command row (its body's origin names the trigger), with
+   *  the firing marked sent and the trigger's streak reset, in one transaction; unless the run already holds `bound.max`
+   *  untaken command rows from this trigger, read in that same transaction: then the firing is skipped with
+   *  `bound.reason` and nothing is queued. Undefined when the firing is gone or no longer due. */
+  message(firing: { triggerId: string; key: string }, runId: string, command: { kind: string; body: unknown }, bound: { max: number; reason: string }): Promise<{ sent: true; commandId: number } | { skipped: string } | undefined>;
+  /** Every due firing waiting for its trigger's room (waits_on), oldest first, each with whether the room is there now
+   *  (fewer of its trigger's started runs not ended than its max_active_runs): one read for all of them. */
+  waiting(): Promise<(FiringRow & { readonly free: boolean })[]>;
+  /** The soonest next time of an enabled trigger, or null. */
+  soonest(): Promise<number | null>;
+  /** How many of the trigger's started runs have not ended (a run reopened later does not count). */
+  activeRuns(triggerId: string): Promise<number>;
+  /** The history kept to `history` shown firings: older ones a sender's key names (manual, pushed) are kept for their day
+   *  (shown 0), others removed; shown-0 rows past `dayMs` removed, then the oldest past `kept` of them. Never a due
+   *  firing, a failure not yet told, nor a started firing whose run has not ended. Answers how many went past `kept`. */
+  prune(triggerId: string, options: { history: number; dayMs: number; keepByKey: (by: string) => boolean; kept?: number }): Promise<number>;
 }
 
 export interface Runs {

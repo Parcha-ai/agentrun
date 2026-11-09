@@ -108,7 +108,11 @@ export const STORE_DDL: readonly string[] = [
     created_at INTEGER NOT NULL
   ) STRICT`,
 
-  // Triggers (module E's), their scopes (rows only while enabled), firings, conversations and adapter settings.
+  // Triggers (module E's), their scopes (rows only while enabled), firings, conversations and adapter settings. A trigger's
+  // firings are one table: its history (shown 1, the newest HISTORY_KEPT), the due queue, and the keys kept only for their
+  // day (shown 0: a run now's or a delivery's, an ignored delivery's included). A due firing keeps its next try in
+  // retry_at under the engine's one backoff table, or waits for its trigger's room (waits_on: the run it waits behind).
+  // max_active_runs: the most of the trigger's started runs not yet ended (a JOIN on runs), none past it.
   `CREATE TABLE IF NOT EXISTS triggers (
     id TEXT PRIMARY KEY,
     agent_id TEXT NOT NULL REFERENCES agents (id),
@@ -117,10 +121,11 @@ export const STORE_DDL: readonly string[] = [
     ${json("source")},
     ${json("target")},
     next_at INTEGER,
-    last_run_id TEXT REFERENCES runs (id),
+    last_run_id TEXT REFERENCES runs (id) ON DELETE SET NULL,
     catchup_window_s INTEGER,
     failures_in_a_row INTEGER NOT NULL DEFAULT 0,
     ${json("disabled", true)},
+    max_active_runs INTEGER CHECK (max_active_runs IS NULL OR max_active_runs BETWEEN 1 AND 100),
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
     UNIQUE (agent_id, name)
@@ -137,9 +142,9 @@ export const STORE_DDL: readonly string[] = [
     key TEXT NOT NULL,
     by TEXT,
     nominal_at INTEGER,
-    status TEXT NOT NULL CHECK (status IN ('due', 'started', 'skipped', 'failed', 'missed')),
+    status TEXT NOT NULL CHECK (status IN ('due', 'started', 'sent', 'skipped', 'failed', 'missed', 'ignored')),
     at INTEGER NOT NULL,
-    run_id TEXT REFERENCES runs (id),
+    run_id TEXT REFERENCES runs (id) ON DELETE SET NULL,
     reason TEXT,
     ${json("error", true)},
     count INTEGER,
@@ -149,7 +154,9 @@ export const STORE_DDL: readonly string[] = [
     catch_up INTEGER,
     paused INTEGER,
     payload TEXT,
+    ${json("attrs", true)},
     shown INTEGER,
+    waits_on TEXT,
     PRIMARY KEY (trigger_id, key)
   ) STRICT`,
   `CREATE INDEX IF NOT EXISTS trigger_firings_retry ON trigger_firings (status, retry_at)`,
