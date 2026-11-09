@@ -103,7 +103,7 @@ const mountingComputer = async (_launch, _store, given) => {
  *  decoys, and `build`'s spec for its claim. `watch`: every read under the run's local folder path while the spec is built
  *  and used (`use`) is recorded. `computer`: the run's computerForClaim (none by default). The control plane is the
  *  fake as a fetch function (`control`: no port), and every other outbound fetch is refused (`outbound`). */
-async function mode2Spec(t, { harness, build, watch = false, use = async () => {}, computer = async () => ({ release: async () => {} }) }) {
+async function mode2Spec(t, { harness, build, watch = false, use = async () => {}, computer = async () => ({ release: async () => {} }), signal }) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-mode2-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -153,7 +153,8 @@ async function mode2Spec(t, { harness, build, watch = false, use = async () => {
   // The run's whole local folder path, the run's directory above its work folder included.
   const watcher = watch ? watchReads(resolve(local, "..")) : undefined;
   try {
-    spec = await build(launch, { harness: harnessRun, registry, setModels: (given) => (models = given) }, deps, claim);
+    // `signal`: the claim's, as the adapter loop hands the run (AdapterRun.signal: aborted on a lost claim or a shutdown).
+    spec = await build(launch, { harness: harnessRun, registry, setModels: (given) => (models = given), ...(signal ? { signal } : {}) }, deps, claim);
     await use(spec);
   } finally {
     watcher?.off();
@@ -207,5 +208,15 @@ for (const [name, harness, build] of [["pi's spec", undefined, adapterRunSpecFro
     await spec.release();
     assert.deepEqual(callsOf(control).slice(2), [`DELETE ${disk}/users/token?identifier=tok-1`, `GET ${disk}`], "removed once at the end (the computer's release and the run's end revoke it, idempotently), then the run's earlier epochs looked for");
     assert.deepEqual(outbound, [], "nothing left this machine");
+  });
+
+  test(`${name} in Mode 2: a lost claim (its signal aborted) removes the run's mount credential at once, before the run's release`, async (t) => {
+    const claimSignal = new AbortController();
+    const { control } = await mode2Spec(t, { harness, build, computer: mountingComputer, signal: claimSignal.signal });
+    const disk = `/api/disks/${ARCHIL_SETTINGS.diskId}`;
+    assert.deepEqual(callsOf(control), [`GET ${disk}`, `POST ${disk}/users`], "minted at the claim");
+    claimSignal.abort(new Error("claim lost (fenced)"));
+    for (let tries = 0; callsOf(control).length < 3 && tries < 400; tries += 1) await new Promise((resolve) => setTimeout(resolve, 5));
+    assert.deepEqual(callsOf(control).slice(2), [`DELETE ${disk}/users/token?identifier=tok-1`], "removed when the claim was lost, with no release yet");
   });
 }
