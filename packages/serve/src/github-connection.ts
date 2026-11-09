@@ -266,18 +266,28 @@ export class GitHubConnect {
     if (!installationId || !/^\d{1,15}$/.test(installationId)) return this.failed("installation_unverified", "GitHub's redirect named no installation");
     const credentials = this.connection.credentials();
     if (!credentials || !this.connection.view()) return this.failed("installation_unverified", "no GitHub App is connected");
-    let answer: { status: number; json: unknown };
-    try {
-      answer = await githubCall(this.options.api, `/app/installations/${installationId}`, { jwt: appJwt(credentials.appId, credentials.pem, this.options.now?.() ?? Date.now()), ...(signal ? { signal } : {}) });
-    } catch (error) {
-      return this.failed("installation_unverified", (error as Error).message);
+    let account: string | undefined;
+    for (let asked = 1; ; asked++) {
+      // The list's version before GitHub is asked: a write meanwhile (an installation event, a repair) is newer than
+      // GitHub's answer, which is then asked for again, once.
+      const version = this.connection.version;
+      let answer: { status: number; json: unknown };
+      try {
+        answer = await githubCall(this.options.api, `/app/installations/${installationId}`, { jwt: appJwt(credentials.appId, credentials.pem, this.options.now?.() ?? Date.now()), ...(signal ? { signal } : {}) });
+      } catch (error) {
+        return this.failed("installation_unverified", (error as Error).message);
+      }
+      const found = isObject(answer.json) ? answer.json : {};
+      account = isObject(found.account) && typeof found.account.login === "string" ? found.account.login : undefined;
+      if (answer.status !== 200 || String(found.id) !== installationId || !account) return this.failed("installation_unverified", `GitHub does not know installation ${installationId} as this App's (HTTP ${answer.status})`);
+      // A suspended installation is not one the App can act in: never recorded.
+      if (found.suspended_at !== null && found.suspended_at !== undefined) return this.failed("installation_unverified", `installation ${installationId} is suspended on GitHub`);
+      // Checked for the App connected when it was asked: one disconnected, or replaced, meanwhile keeps nothing of it.
+      if (this.connection.view()?.app_id !== credentials.appId) return this.failed("installation_unverified", "GitHub was disconnected or connected again while the installation was checked");
+      if (this.connection.version === version) break;
+      if (asked >= 2) return this.failed("installation_unverified", "the installation list was written again while GitHub was asked twice");
     }
-    const found = isObject(answer.json) ? answer.json : {};
-    const account = isObject(found.account) && typeof found.account.login === "string" ? found.account.login : undefined;
-    if (answer.status !== 200 || String(found.id) !== installationId || !account) return this.failed("installation_unverified", `GitHub does not know installation ${installationId} as this App's (HTTP ${answer.status})`);
-    // Checked for the App connected when it was asked: one disconnected, or replaced, meanwhile keeps nothing of it.
-    if (this.connection.view()?.app_id !== credentials.appId) return this.failed("installation_unverified", "GitHub was disconnected or connected again while the installation was checked");
-    this.connection.addInstallation({ id: Number(installationId), account });
+    this.connection.addInstallation({ id: Number(installationId), account: account! });
     this.options.say({ condition: "github_installed", installation: installationId, account });
     return consoleAt(this.options.publicUrl, CONNECTED_PAGE);
   }
@@ -525,5 +535,6 @@ export function githubTargetOf(content: unknown): { installation?: number; repo:
   }
   const own = at >= 0 ? content.slice(0, at) : content;
   const url = REPO_URL.exec(own);
-  return url ? { repo: `${url[1]}/${url[2]!.replace(/\.git$/, "")}` } : undefined;
+  // The repository's name ends where the sentence does: trailing punctuation, then a .git, are not part of it.
+  return url ? { repo: `${url[1]}/${url[2]!.replace(/[.,;:)!?]+$/, "").replace(/\.git$/, "")}` } : undefined;
 }
