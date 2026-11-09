@@ -401,19 +401,6 @@ export class McpServers {
     return { ...headers, authorization: `Bearer ${minted.token}` };
   }
 
-  /** Whether the saved server `name` takes the connected GitHub App's tokens, minted for each run's launch. */
-  takesAppToken(name: string): boolean {
-    const saved = this.saved(name);
-    return saved?.auth.type === "github_app" && githubMcpUrl(saved.url, this.appOrigin);
-  }
-
-  /** Whether the saved server `name` is a github_app one at an origin that is not GitHub's hosted MCP (saved before that
-   *  rule): its calls are refused unsent, and no token is minted for it. */
-  appServerElsewhere(name: string): boolean {
-    const saved = this.saved(name);
-    return saved?.auth.type === "github_app" && !githubMcpUrl(saved.url, this.appOrigin);
-  }
-
   /** A body's URL, auth and prices, or 422. */
   private admit(body: Record<string, unknown>, priced = false): { url: URL; auth: Auth; prices?: McpPrices } {
     const issues = unknownFields(body, priced ? ["url", "auth", "prices"] : ["url", "auth"]);

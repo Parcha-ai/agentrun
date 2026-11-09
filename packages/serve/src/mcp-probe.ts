@@ -127,7 +127,7 @@ export function urlOf(value: unknown, issues: InputIssue[]): URL | undefined {
 /** The body's auth: its type and, when it sends one, its credential as the headers it becomes. */
 export function authOf(value: unknown, issues: InputIssue[]): Auth | undefined {
   if (value === undefined) return { type: "none" };
-  if (!isObject(value)) return void issues.push({ field: "auth", reason: "wrong_type", message: "auth is {type: none|bearer|headers|oauth, token?, headers?}." });
+  if (!isObject(value)) return void issues.push({ field: "auth", reason: "wrong_type", message: "auth is {type: none|bearer|headers|oauth|github_app, token?, headers?}." });
   const before = issues.length;
   issues.push(...unknownFields(value, ["type", "token", "headers"]).map((issue) => ({ ...issue, field: `auth.${issue.field}` })));
   const type = value.type;
