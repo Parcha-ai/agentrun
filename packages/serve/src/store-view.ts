@@ -36,6 +36,7 @@ import {
   costView,
   soFarOf,
   withAsks,
+  withApprovalRows,
 } from "./run-view.js";
 import { reflects, type Reflect } from "./learning-run.js";
 import { journalRecords, recordOf } from "./runner/journal-reader.js";
@@ -155,7 +156,7 @@ async function storeRunOf(store: Store, runId: string, deps: ViewDeps): Promise<
   const terminal = row.state !== "running";
   // The timeline, then the waiting row a run asking a question shows (withAsks), as the file path's rows carried it, so a
   // run waiting on a question reads the same status and pending.
-  const rows = withAsks(await runTimeline(store, runId, context, { settled: terminal }));
+  const timeline = withAsks(await runTimeline(store, runId, context, { settled: terminal }));
   const revisions = await store.agents.revisions(row.agent);
   const version = revisions.findIndex((r) => r.id === row.revision) + 1;
   const learningEnd = await runLearningEnd(store, runId);
@@ -191,6 +192,9 @@ async function storeRunOf(store: Store, runId: string, deps: ViewDeps): Promise<
   // store entries.
   const approvals = asksOf(records.entries);
   const answers = answersOf(records.entries);
+  // The rows a person reads: each call that waited for approval in order (held, your approval, what came of it), its
+  // arguments and the person's notes through the run's redactor, as the file path's withApprovals served them.
+  const rows = withApprovalRows(timeline, approvals, answers, redactorOf(values));
 
   const meta: RunViewMeta = { ...(launch?.maxCostUsd !== undefined ? { max_cost_usd: launch.maxCostUsd } : {}), ...(Object.keys(answers).length ? { approvals: answers } : {}) };
   // The budget card the run shows while it stands parked at its cap, from its journal's agentrun.budget park (none once a
@@ -252,6 +256,12 @@ function costOfView(run: StoreRun): Record<string, unknown> {
 }
 
 /** GET /runs/{id}'s answer from the store, byte-identical to runs.ts's view for the same run. Undefined for an unknown run. */
+/** A run's timeline rows over the one store, as a person reads them (storeRunOf's rows: each call that waited for approval
+ *  in order). Undefined for an unknown run. */
+export async function timelineOverStore(store: Store, runId: string, deps: ViewDeps): Promise<readonly TimelineEvent[] | undefined> {
+  return (await storeRunOf(store, runId, deps))?.view.rows;
+}
+
 export async function viewOverStore(store: Store, runId: string, deps: ViewDeps): Promise<Record<string, unknown> | undefined> {
   const run = await storeRunOf(store, runId, deps);
   if (!run) return undefined;
