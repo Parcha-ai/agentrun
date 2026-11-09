@@ -157,6 +157,10 @@ export type AdapterRun = PiRun & {
    *  could reach text (the session's model proxy, the model route's translation, its log lines). Absent where no runner
    *  gave one (a spec built alone). */
   readonly redact?: (text: string) => string;
+  /** The claim's signal (LoopDeps.signal): aborted on a lost claim or the runner's shutdown, never on a person's stop. A
+   *  spec's per-claim resources let go of what they hold at once on it (the run's Archil mount credential). Absent where
+   *  no loop gave one (a spec built alone). */
+  readonly signal?: AbortSignal;
 };
 
 /** What the adapter loop hands a run's tool host: the run's decisions, paid calls and proxied models, on its one cap. */
@@ -573,7 +577,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
             await pauseFor?.(refusal);
           },
         };
-        const runOf: AdapterRun = { harness, registry, setModels: (given) => (models = given), ledger, ...(deps.redact ? { redact: deps.redact } : {}) };
+        const runOf: AdapterRun = { harness, registry, setModels: (given) => (models = given), ledger, ...(deps.redact ? { redact: deps.redact } : {}), signal: deps.signal };
         // The spec. A claim it refuses (ClaimRefused: a handed sign-in that won't read back) ends the run in its words with
         // nothing sent.
         let spec: AdapterRunSpec;
