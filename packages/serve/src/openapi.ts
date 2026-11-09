@@ -27,6 +27,7 @@ import { GRADER_TYPES, MODEL_TIERS, PARAMETER_TYPES } from "./templates.js";
 import { NOT_SET_UP } from "./runnable.js";
 import { APPROVAL_ROW, ARGS_PREVIEW_BYTES, MAX_PIN_ARGS, MAX_PIN_CHOICES, PERMISSIONS } from "./tool-gate.js";
 import { MAX_PIN_TEXT, permissionsOf, type Pickable, PICKABLE, PROVIDERS, TABLE_TOOLS } from "./tool-plane.js";
+import { SECRET_META_SCHEMA } from "./secret-writes.js";
 
 type Json = Record<string, unknown>;
 
@@ -185,6 +186,7 @@ const TOOL_KEYS_VIEW = closed({
           },
         },
       },
+      secrets: { type: "array", items: { $ref: "#/components/schemas/SecretMeta" }, description: "Each of `fields` as every secret's view says it (SecretMeta, in their order): named tool:<FIELD> or model:<FIELD>; source `env` where `fields` says `server`, `console` where it says `stored`; changed_at when that field's own value was saved." },
       check: {
         oneOf: [
           closed({ state: { const: "accepted" }, at: { type: "string", format: "date-time", description: "When it was saved and checked; the server's own key, when the server started and checked it." } }),
@@ -844,7 +846,7 @@ const HOME_PATH = {
 };
 const RAW = { "application/octet-stream": { schema: { type: "string", contentMediaType: "application/octet-stream" } }, "*/*": { schema: { type: "string" } } };
 const HOME_PATHS = "A path with an empty, `.` or `..` segment, a backslash, a NUL or a leading `/`, a segment that is not plain text (not its own NFC form, or holding a default-ignorable code point), or over 1024 characters, is `400 invalid_file_path`; a segment that starts with `.` is `403 system_file_forbidden`.";
-const HOME_WRITES = "A path more than 16 directories deep, past where the list goes, is `400 invalid_file_path`. A path at or under one of `capabilities.home.host_owned` (`learning/`, `sign-ins/`) is `403 system_file_forbidden` with `details.reason` `host_owned`: matched on the path as normalized, by its first segment folded (compatibility form, any case, no combining marks), so `./Learning/x` too, and by identity (the same device and inode) where that segment and the host-owned path are both on disk. A link on the way, or as the file, is `403 system_file_forbidden` with `details.reason` `link`: never followed. A path that names a directory, or runs through a file, is `400 invalid_file_path`. An archived agent's home is written as any other's. Where \`capabilities.home.writes\` is false (no /proc/self/fd, as on macOS), the write or delete is \`501 unsupported_here\`.";
+const HOME_WRITES = "A path more than 16 directories deep, past where the list goes, is `400 invalid_file_path`. A path at or under one of `capabilities.home.host_owned` (`learning/`, `sign-ins/`) is `403 system_file_forbidden` with `details.reason` `host_owned`: matched on the path as normalized, by its first segment folded (compatibility form, any case, no combining marks), so `./Learning/x` too. A link on the way, or as the file, is `403 system_file_forbidden` with `details.reason` `link`: never followed. A path that names a directory, or runs through a file, is `400 invalid_file_path`. An archived agent's home is written as any other's. Where \`capabilities.home.writes\` is false (no /proc/self/fd, as on macOS), the write or delete is \`501 unsupported_here\`.";
 
 /** This server's own routes, outside the contract. */
 /** One JSON-RPC 2.0 message, and the answer to a request (POST /mcp). */
@@ -1060,18 +1062,43 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
   "/settings/tool-keys/{key_id}": {
     put: {
       operationId: "saveToolKey", tags: ["local"], summary: "Save a tool key's fields, sealed",
-      description: "Each value is sealed under the server's seal key and kept in the data directory as ciphertext alone; the key's other fields stay as they are. The key (the first field) is first checked against its provider with one call that costs nothing, given 5 s: a key the provider refuses (401) is 422 input_invalid, its field's reason `refused_by_provider` and the message in plain words with the provider's first sentence (never any of the key), and nothing is kept; otherwise it is kept, and GET's `check` says `accepted` or `not_checked` and why (a 403 is not_checked: a key scoped away from the check's call may still work for its tools). A save whose check is still waiting when the server begins to close keeps nothing (503 unavailable, while its connection lasts). 422 also for an unknown key or field, or a value that is empty, holds a control character or is over 1024 bytes; 409 key_set_by_server for a field the server is started with; 409 no_sealing_key when the server was handed no seal key.",
+      description: "Each value is sealed under the server's seal key and kept in the data directory as ciphertext alone; the key's other fields stay as they are. The key (the first field) is first checked against its provider with one call that costs nothing, given 5 s: a key the provider refuses (401) is 422 input_invalid, its field's reason `refused_by_provider` and the message in plain words with the provider's first sentence (never any of the key), and nothing is kept; otherwise it is kept, and GET's `check` says `accepted` or `not_checked` and why (a 403 is not_checked: a key scoped away from the check's call may still work for its tools). A save whose check is still waiting when the server begins to close keeps nothing (503 unavailable, while its connection lasts). 422 also for an unknown key or field, or a value that is empty, holds a control character or is over 1024 bytes; 409 key_set_by_server for a field the server is started with; 409 no_sealing_key when the server was handed no seal key. A secret write: the owner's signed-in session alone (ownerSession), never the token, which is 403 forbidden in words.",
       parameters: [KEY_ID],
-      requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, required: ["values"], properties: { values: { type: "object", minProperties: 1, additionalProperties: { type: "string", minLength: 1 } } } } } } },
-      responses: { "204": { description: "Saved." }, ...errors(400, 401, 409, 415, 422, 429, 500, 503) },
+      // The owner's password session alone (secret-writes.ts), never the document's bearer.
+      security: [{ ownerSession: [] }],
+      requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, required: ["values"], properties: { values: { type: "object", minProperties: 1, additionalProperties: { type: "string", minLength: 1, "x-agentrun-secret": true }, "x-agentrun-secret": true } } } } } },
+      responses: { "204": { description: "Saved." }, ...errors(400, 401, 403, 409, 415, 422, 429, 500, 503) },
       "x-agentrun-serve": "toolkeys/1",
     },
     delete: {
       operationId: "deleteToolKey", tags: ["local"], summary: "Forget a tool key's stored fields",
-      description: "409 key_set_by_server when the server is started with every field of it.",
+      description: "409 key_set_by_server when the server is started with every field of it. A secret write: the owner's signed-in session alone (ownerSession), never the token, which is 403 forbidden in words.",
       parameters: [KEY_ID],
-      responses: { "204": { description: "Forgotten." }, ...errors(401, 409, 422, 429, 500) },
+      security: [{ ownerSession: [] }],
+      responses: { "204": { description: "Forgotten." }, ...errors(401, 403, 409, 422, 429, 500) },
       "x-agentrun-serve": "toolkeys/1",
+    },
+  },
+  "/auth/session": {
+    get: {
+      operationId: "getAuthSession", tags: ["local"], summary: "Whether this browser has accounts, is signed in, and may save a secret",
+      description: "Answered with no credential: what the console needs before it shows a setup or sign-in screen, or a field to paste a secret into. `accounts`: whether this server has accounts (a password owner); with them off it answers `accounts`, `secrets_writable` and `secrets_reason` alone, no user field. A secret (a model or tool key, an MCP header or token, a computer vendor's key) is saved only from the owner's session: with accounts on, the owner's password session; with accounts off on a server bound to loopback alone, the console the launch link opened. The API token never saves one, on any server.",
+      security: [],
+      responses: {
+        "200": json({
+          type: "object", additionalProperties: false, required: ["accounts", "secrets_writable"],
+          properties: {
+            accounts: { type: "boolean", description: "Whether this server has accounts (a password owner). false: the console shows no setup or sign-in screen." },
+            password_set: { type: "boolean", description: "With accounts: whether the owner's password is set." },
+            signed_in: { type: "boolean", description: "With accounts: whether this browser holds the owner's password session." },
+            setup_code: { type: "boolean", description: "With accounts, before the password is set: whether setup takes the code the server printed (a server at a public address). Never the code." },
+            secrets_writable: { type: "boolean", description: "Whether this caller may save, replace or remove a secret here (the same rule the server applies to the write itself)." },
+            secrets_reason: { enum: ["sign_in", "no_accounts", "token"], description: "Present only when secrets_writable is false: sign_in, this is not the owner's session (accounts on: sign in with the password; accounts off on a loopback-bound server: open the console from the launch link); no_accounts, accounts are off and this server is reachable off loopback, where no one saves a secret until accounts are on; token, the caller is the API token, which never saves one, on any server." },
+          },
+        }, "This browser's account state, and whether it may save a secret."),
+        ...errors(429, 500),
+      },
+      "x-agentrun-serve": "secrets/1",
     },
   },
   "/settings/mcp-servers": {
@@ -1176,7 +1203,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
   [`${HOME_FILES_AT}/{path}`]: {
     get: {
       operationId: "readHomeFile", tags: ["agents"], summary: "One file of the agent's home, raw",
-      description: `Raw bytes with the file's content type, as a run's file is read (\`GET /runs/{run_id}/files/{path}\`): \`nosniff\`, a CSP on HTML, \`?download=1\` for an attachment. ${HOME_PATHS} A path at or under one of \`capabilities.home.host_owned\` (\`learning/\`, \`sign-ins/\`), as normalized, folded and by identity on disk, is \`403 system_file_forbidden\` with \`details.reason\` \`host_owned\`. Its message names the learning API (\`/v2/agents/{agent_id}/learning\`) on a server that has that route, and says this server has none on one that does not. A link on the way is \`404 not_found\`.`,
+      description: `Raw bytes with the file's content type, as a run's file is read (\`GET /runs/{run_id}/files/{path}\`): \`nosniff\`, a CSP on HTML, \`?download=1\` for an attachment. ${HOME_PATHS} A path at or under one of \`capabilities.home.host_owned\` (\`learning/\`, \`sign-ins/\`), as normalized and folded, is \`403 system_file_forbidden\` with \`details.reason\` \`host_owned\`. Its message names the learning API (\`/v2/agents/{agent_id}/learning\`) on a server that has that route, and says this server has none on one that does not. A link on the way is \`404 not_found\`.`,
       parameters: [ref("parameters/AgentId"), HOME_PATH, { name: "download", in: "query", required: false, description: "`1` forces a download.", schema: { type: "integer", enum: [0, 1], default: 0 } }],
       responses: {
         "200": { description: "The whole file.", headers: { "Content-Disposition": ref("headers/ContentDisposition"), "X-Content-Type-Options": ref("headers/NoSniff") }, content: RAW },
@@ -1186,7 +1213,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
     },
     put: {
       operationId: "writeHomeFile", tags: ["agents"], summary: "Write one file of the agent's home",
-      description: `The raw body becomes the file, whole: written to a temporary file beside it and renamed over it (0600), the directories on the way made. Of two writes of one file at once, each lands whole and the last wins. A body over \`capabilities.home.max_file_bytes\` is \`413 payload_too_large\`. ${HOME_PATHS} ${HOME_WRITES}`,
+      description: `The raw body becomes the file, whole: written to a temporary file beside it and renamed over it (the workspace's mode, inside the owner-only 0700 home folder), the directories on the way made. Of two writes of one file at once, each lands whole and the last wins. A body over \`capabilities.home.max_file_bytes\` is \`413 payload_too_large\`. ${HOME_PATHS} ${HOME_WRITES}`,
       parameters: [ref("parameters/AgentId"), HOME_PATH],
       requestBody: { required: true, content: RAW },
       responses: { "200": json(HOME_FILE, "The file, as the list shows it."), ...errors(400, 401, 403, 404, 413, 429, 500, 501) },
@@ -1527,6 +1554,18 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       description: "While a message the run took is still open (an agentic run, working or queued): when its turn last wrote anything, a request's start included; it holds still while a tool or a model request runs, and moves as the turn writes. Null once every message has had its turn, and on a workflow run.",
       "x-agentrun-serve": "turnend/1",
     },
+    claim: {
+      type: ["object", "null"],
+      additionalProperties: false,
+      required: ["runner", "epoch", "until"],
+      properties: {
+        runner: { type: "string", description: "The id of the runner process holding the run now." },
+        epoch: { type: "integer", description: "The run's claim count: it rises by one each time a runner claims the run, and every write the runner makes under its claim carries it, so a write from a claim that has ended is refused." },
+        until: { type: "string", format: "date-time", description: "When the claim runs out unless its runner renews it first; past it, another runner may claim the run." },
+      },
+      description: "The runner holding the run now, when one does (a running run): its id, the claim's count, and when the claim runs out. Null when no runner holds the run.",
+      "x-agentrun-serve": "claim/1",
+    },
     place: RUN_PLACE,
     learning: LEARNING,
     review: REVIEW,
@@ -1699,7 +1738,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       type: "object", additionalProperties: false, required: ["disk", "host_owned", "max_file_bytes", "writes"],
       properties: {
         disk: { enum: ["local"], description: "Where the homes are: this server's disk, under its data directory." },
-        host_owned: { type: "array", items: { type: "string" }, description: "The paths in a home only the server writes, never served here: each that is there is one entry of the list (`host_owned: true`), and a GET, PUT or DELETE at or under one, matched by its name folded (compatibility form, any case, no combining marks) or by identity on disk, is 403 `system_file_forbidden`." },
+        host_owned: { type: "array", items: { type: "string" }, description: "The paths in a home only the server writes, never served here: each that is there is one entry of the list (`host_owned: true`), and a GET, PUT or DELETE at or under one, matched by its name folded (compatibility form, any case, no combining marks), is 403 `system_file_forbidden`." },
         max_file_bytes: { type: "integer", minimum: 1, description: "The largest file a PUT takes: `limits.max_body_bytes`. Over it, 413 `payload_too_large` naming `max_body_bytes`." },
         writes: { type: "boolean", description: "Whether PUT and DELETE write a home's files here. True only where this server reaches its held directory handles through /proc/self/fd (Linux), probed once at start, the probe its confinement walks by; false elsewhere (macOS), where both answer 501 `unsupported_here` and nothing is written or removed. The list and reads work either way." },
       },
@@ -1918,6 +1957,8 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
     "x-agentrun-serve": "learning/2",
   };
   const schemas = (doc.components as Json).schemas as Record<string, Json>;
+  // The one shape every secret's view answers (secret-writes.ts secretMeta): a component each plane's view refers to.
+  schemas.SecretMeta = structuredClone(SECRET_META_SCHEMA) as unknown as Json;
   const fields: string[] = [];
   for (const [where, added] of Object.entries(FIELD_EXTENSIONS)) {
     const [name, ...down] = where.split("/");

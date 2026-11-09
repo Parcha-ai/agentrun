@@ -139,24 +139,30 @@ export function browserSpend(provider: string, price: { usdPerHour: number | nul
     const usd = data.usd ?? 0;
     const session = sessions.get(data.tag);
     addSpend(data.usd);
+    const through = Date.parse(data.at);
+    // The part of this charge that is a kept session's person time, run since its last charge up to the charge's own
+    // through: that part is held elsewhere already (carried, or still under way) and the call's hold left it out
+    // (carriedSince), so it is taken off the call's hold below only once, never a second time with the rest of the charge.
+    // Read before bookCarried, which trims those same holds.
+    const personBooked = session && !data.final ? carriedSince(data.tag, session.at, through) : 0;
     // Its charge books the session's time since its last one, a person's included, up to its own through: what was carried
     // for it until then goes (all of it, at the release's), and a person's time after that through stays held. A charge
     // computed before a person's time ended, and committed after, so leaves the rest held.
     if (data.final) dropCarried(data.tag);
-    else bookCarried(data.tag, Date.parse(data.at));
+    else bookCarried(data.tag, through);
     if (data.final) {
       // A session the provider ended before its first charge has no reserve: its release comes out of its call's hold.
       take(session?.reserve ?? [...calls.values()].find((c) => c.cid === data.conversation)?.hold, usd);
       session?.reserve.drop();
       sessions.delete(data.tag);
     } else if (session) {
-      take(data.call === null ? undefined : calls.get(data.call)?.hold, usd);
+      take(data.call === null ? undefined : calls.get(data.call)?.hold, Math.max(0, usd - personBooked));
       // Its reserve is one stretch again: a kept session's held what it ran before this charge, which booked it.
       session.reserve.usd = stretch;
-      Object.assign(session, { at: Date.parse(data.at), call: data.call ?? session.call });
+      Object.assign(session, { at: through, call: data.call ?? session.call });
     } else {
       take(data.call === null ? undefined : calls.get(data.call)?.hold, usd + stretch);
-      sessions.set(data.tag, { cid: data.conversation, reserve: keepHold(stretch), at: Date.parse(data.at), call: data.call });
+      sessions.set(data.tag, { cid: data.conversation, reserve: keepHold(stretch), at: through, call: data.call });
     }
   }
 

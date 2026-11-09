@@ -1,0 +1,64 @@
+// The runner's dispatch for a launch of harness "learning" (learning-factory.ts LEARNING_HARNESS): the learning loop, its
+// grade asked through the runner's one model route. Per learning run, from its launch: the grade model (`model`, the
+// server's gradeModelOf, written when the run that learned ended), else the agent's own model, as main grades. The
+// grade is booked as the grade's (learning-ask.ts bookedAsk: the learning run's own records, the kernel's model proxy)
+// and capped by nothing: main books it to the learning meter and caps no grade. A grader that never answers is cut at
+// the grade's bound, and what it spent is unknown (null).
+import { bookedAsk, type GraderRoute } from "./learning-ask.js";
+import { learningLoopFactory } from "./learning-factory.js";
+import { GRADE_TIMEOUT_MS, type LearningLoopDeps } from "./learning-loop.js";
+import type { LoopFactory } from "./loop-contract.js";
+import type { Store } from "../store/store.js";
+
+/** What a grade asks the runner's route for: the grade model the launch names (none: the agent's own), and the agent. */
+export interface GradeRouteAsk {
+  readonly model?: string;
+  readonly agentId: string;
+}
+
+export interface LearningDispatchDeps {
+  readonly store: Pick<Store, "runs" | "agents" | "learning">;
+  /** The server's data directory: each agent's learning folder. */
+  readonly data: string;
+  /** The runner's one model route (its pi runs take the same): where a grade goes, on which model, at what price; under
+   *  --faux, the faux model's. GraderRoute moves to runner/model-route.ts with the route. */
+  readonly routeOf: (grade: GradeRouteAsk) => GraderRoute | Promise<GraderRoute>;
+  readonly log?: (line: string) => void;
+  readonly now?: () => number;
+  /** For tests: the grade's bound, as a signal. Default: GRADE_TIMEOUT_MS from the ask. */
+  readonly gradeBound?: () => AbortSignal;
+}
+
+const objectOf = (value: unknown): Record<string, unknown> => (value !== null && typeof value === "object" ? (value as Record<string, unknown>) : {});
+
+/** The learning run's grade route: its launch's grade model, and the agent of the run that learned. */
+async function gradeOf(store: LearningDispatchDeps["store"], learningRunId: string): Promise<GradeRouteAsk> {
+  const body = objectOf((await store.runs.launch(learningRunId)).body);
+  const sourceId = objectOf(body.input).runId;
+  const source = typeof sourceId === "string" ? await store.runs.get(sourceId) : undefined;
+  if (!source) throw new Error(`the learning run ${learningRunId} names no run it learns from`);
+  return { ...(typeof body.model === "string" && body.model !== "" ? { model: body.model } : {}), agentId: source.agentId };
+}
+
+/** The loop for a launch of harness "learning": the runner's dispatch calls it for each such run it claims. */
+export function learningLoopOf(deps: LearningDispatchDeps): LoopFactory {
+  return (loopDeps) => {
+    let claimed: string | undefined;
+    const ask: LearningLoopDeps["ask"] = async (request, signal, run) => {
+      if (claimed === undefined) throw new Error("the learning run's grade was asked before its claim");
+      const route = await deps.routeOf(await gradeOf(deps.store, claimed));
+      // The loop's own signal (a stop, a lost claim, its bound) and the grade's bound, both: whichever ends first cuts it.
+      const bound = deps.gradeBound ? deps.gradeBound() : AbortSignal.timeout(GRADE_TIMEOUT_MS);
+      return bookedAsk(route)(request, AbortSignal.any([signal, bound]), run);
+    };
+    const loop = learningLoopFactory({ store: deps.store, data: deps.data, ask, ...(deps.log ? { log: deps.log } : {}), ...(deps.now ? { now: deps.now } : {}) })(loopDeps);
+    return {
+      start: (claim) => {
+        claimed = claim.runId;
+        return loop.start(claim);
+      },
+      command: (command) => loop.command(command),
+      stop: (reason) => loop.stop(reason),
+    };
+  };
+}

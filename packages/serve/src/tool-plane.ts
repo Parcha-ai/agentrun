@@ -80,7 +80,7 @@ export type ToolSetting = { provider?: string; permission?: Permission; pin?: Pi
  *  today keeps a setting's values as names only, and refuses a pin; the store of the rewrite (store/, module A) keeps it
  *  as given, and this is true from its cutover on. Until then a pin is set on the server (PUT /v2/settings/tools), which
  *  the gate holds every run to; the gate reads an agent's pin wherever a revision carries one. */
-export const AGENT_LAYER_PINS: boolean = false;
+export const AGENT_LAYER_PINS: boolean = true;
 /** Why an agent's own pin is refused while AGENT_LAYER_PINS is false. */
 export const AGENT_PIN_LATER = "An agent's own pin is kept once this server's agent store takes it (the store cutover). Until then set the pin on this server, PUT /v2/settings/tools (Settings → Tools), which the tool gate holds every run to.";
 /** The longest pinned string. */
