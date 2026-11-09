@@ -81,6 +81,21 @@ async function parked(api, runId) {
   return { view, rows, result };
 }
 
+/** Waits, on the timeline's long poll, until run `runId` has moved past its approval `approvalId`: it ended, or it waits on
+ *  another approval. A run that resumes and parks at its next call at once may never be seen working, so "working" alone is
+ *  not the sign. */
+async function pastApproval(api, runId, approvalId, deadlineMs = 55_000) {
+  const end = Date.now() + deadlineMs;
+  let after = 0;
+  for (;;) {
+    const view = (await api("GET", `/runs/${runId}`)).body;
+    if (["completed", "failed", "cancelled"].includes(view.status) || (view.pending && view.pending.id !== approvalId)) return view;
+    assert.ok(Date.now() < end, `run ${runId} did not move past the approval ${approvalId}: ${view.status}/${view.state}, pending ${view.pending?.id}`);
+    const { body: page } = await api("GET", `/runs/${runId}/timeline?${new URLSearchParams({ ...(after ? { after: String(after) } : {}), wait_ms: "2000" })}`);
+    after = page.next_after ?? after;
+  }
+}
+
 /** The rows of the gate's resume messages in `rows`: the server's, never a person's message. */
 const resumeRows = (rows) => rows.filter((row) => row.origin === "server" && /^AgentRun: (\S+ ran once you allowed it|You declined \S+|Your message declined \S+)/.test(row.summary ?? ""));
 
@@ -664,7 +679,7 @@ test("on pi, monid's calls at their default ask park by their settings keys, and
     const { pending } = (await api("GET", `/runs/${runId}`)).body;
     assert.equal(pending?.tool, tool, "parked by its settings key");
     assert.equal((await answer(runId, pending.id, { decision: "allow" })).status, 204);
-    await follow(api, runId, ["working", "completed"], { deadlineMs: 55_000 });
+    await pastApproval(api, runId, pending.id);
   }
   await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
   assert.match((await api("GET", `/runs/${runId}`)).body.result.final_answer, /"full_name":"Ada"/);
