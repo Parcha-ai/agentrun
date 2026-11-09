@@ -29,6 +29,7 @@ import { randomUUID } from "node:crypto";
 import { REFRESH_REQUEST_MS, refreshed, refused, systemNetwork, type OAuthNetwork, type TokenSet } from "../mcp-oauth.js";
 import { type McpCredentials, type McpPin, mcpPinOf } from "../mcp-gateway.js";
 import { META_REASON, metaToolOf } from "../mcp-meta.js";
+import { boundTool, type McpTool } from "../mcp-probe.js";
 import { type GithubAppAccess, type GithubTimer, githubTokens } from "./mcp-github.js";
 import { REFRESH_MARGIN_MS, UNKNOWN_EXPIRY_MS, UNUSABLE } from "../mcp-servers.js";
 import { openMcpCredential, sealMcpCredential, type McpCredential } from "../store/seal.js";
@@ -262,7 +263,8 @@ async function pinOf({ store, claim, grants }: McpClaimOptions): Promise<McpPin 
     made = mcpPinOf(grants, {
       server: (name) => {
         const row = rows.get(name);
-        return row && { url: row.url, tools: (row.tools ?? []) as never, ...(row.prices ? { prices: row.prices as Record<string, number> } : {}) };
+        // The registry keeps each tool as its server listed it (input_schema); the pin holds the harnesses' shape.
+        return row && { url: row.url, tools: ((row.tools ?? []) as McpTool[]).map(boundTool), ...(row.prices ? { prices: row.prices as Record<string, number> } : {}) };
       },
       headers: () => undefined,
     });

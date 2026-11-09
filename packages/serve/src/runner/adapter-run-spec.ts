@@ -37,6 +37,8 @@ import { createModels } from "@earendil-works/pi-ai/models";
 import { promptOf, readsFiles } from "../skills.js";
 import { openRunWorkspace } from "../workspace/run-workspace.js";
 import { runFolder } from "../workspace/paths.js";
+import { SEAL_KEY_ENV, sealKeyOf } from "../tool-keys.js";
+import { mcpForClaim } from "./mcp-run.js";
 import { runTools, type ToolResults } from "../workspace/run-tools.js";
 import { INPUTS_DIR, UPLOADS_DIR, Uploads } from "../uploads.js";
 import { claimSecrets } from "./claim-secrets.js";
@@ -116,6 +118,12 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
   const body = (revisionRow.body ?? {}) as RevisionBody;
   const revision = { kind: revisionRow.kind, body } as { kind: string; body: { toolSettings?: unknown; harness?: string; approvals?: Approvals } };
   const granted = body.tools ?? [];
+
+  // The run's MCP for this claim (mcp-run.ts mcpForClaim): its pin made at the first claim or read as written, its
+  // credentials opened under the server's seal key into this claim's memory, one gateway for the claim. First, before
+  // anything the spec would have to let go: a refusal (a pin that cannot be made, a pinned meta tool) ends the run in its
+  // words before the session opens.
+  const mcp = await mcpForClaim({ claim, store: deps.store, sealKey: sealKeyOf(deps.env[SEAL_KEY_ENV]), grants: granted, harness: run.harness, work: () => runFolder(deps.data, runRow.agentId, claim.runId), launchInput: launch.input });
 
   // The run's Workspace at the claim (E4c). Mode 1: the run's local folder under the data directory, made here (the server's
   // start made it before). Mode 2 (Archil) is TODO(E2r2): the claim's Archil step (archilClaim) is threaded through the deps
@@ -259,6 +267,7 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
     gate: (call) => gate.decide(call.tool, call.args),
     ...(beforeRequest ? { beforeRequest } : {}),
     ...(cap ? { cap } : {}),
+    ...(mcp ? { mcp } : {}),
     // The tool host's install lifecycle (its bindings' onConversation/beforeResume/beforeRelease), run by the adapter loop.
     lifecycle: life,
     agentId: runRow.agentId,

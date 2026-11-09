@@ -55,6 +55,11 @@ const LOOPBACK = (host: string) => LOOPBACK_NAMES.includes(host) || LOOPBACK_V4.
 
 export type AuthType = (typeof MCP_AUTH_TYPES)[number];
 export type McpTool = { name: string; title?: string; description?: string; input_schema: unknown; output_schema?: unknown; annotations?: unknown };
+/** A registry tool (input_schema, as the server listed it) in the harnesses' shape (the kernel's McpTool: inputSchema),
+ *  as a run is pinned to it and a session binds it. */
+export function boundTool(tool: McpTool): { name: string; title?: string; description?: string; inputSchema: Record<string, unknown>; annotations?: Record<string, unknown> } {
+  return { name: tool.name, ...(tool.title ? { title: tool.title } : {}), ...(tool.description ? { description: tool.description } : {}), inputSchema: (tool.input_schema ?? {}) as Record<string, unknown>, ...(tool.annotations ? { annotations: tool.annotations as Record<string, unknown> } : {}) };
+}
 export type Listed = { protocol: string; server_info: unknown; instructions?: string; tools: McpTool[] };
 /** A tool's declared price in USD a call, by its name: what a run's cap holds and books for each call (mcp-gateway.ts). */
 export type McpPrices = Record<string, number>;

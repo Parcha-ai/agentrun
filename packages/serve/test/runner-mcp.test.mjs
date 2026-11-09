@@ -14,6 +14,8 @@ import { closeOpenSessions, MODEL, piAdapterSpec, scriptedOrigin } from "./confo
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { beforeRequestOf, rootEntries, SONNET, specCap } from "./adapter-pi-cap-support.mjs";
 
+/** A tool as the registry keeps it: as its server listed it (input_schema). */
+const listed = ({ inputSchema, ...tool }) => ({ ...tool, input_schema: inputSchema });
 const { openSqliteStore, sealMcpCredential } = await import("../dist/store/index.js");
 const { startRunner } = await import("../dist/runner/runner.js");
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
@@ -66,7 +68,7 @@ async function mcpRun(t, { script, grants, settings = {}, tools = [ADD, PAID], p
     await server.close().catch(() => {});
     rmSync(dir, { recursive: true, force: true });
   });
-  await server.mcp.put({ name: "fake", url: fake.url, auth, tools, ...(prices ? { prices } : {}), sealed: auth === "github_app" ? null : seal(fake.url) });
+  await server.mcp.put({ name: "fake", url: fake.url, auth, tools: tools.map(listed), ...(prices ? { prices } : {}), sealed: auth === "github_app" ? null : seal(fake.url) });
   await server.agents.create({ id: "agent-1", name: "Mcp" }, { id: "rev-1", kind: "agentic", body: {} });
   await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" });
   await before?.({ server, store, fake });
@@ -241,7 +243,7 @@ test("R8: a server whose URL changed since the run was pinned refuses each call 
   const run = await mcpRun(t, { script, grants: ["mcp:fake/add"] });
   assert.equal(run.row.state, "parked");
   // Moved while the run waits: its pin keeps the address it started with.
-  await run.server.mcp.put({ name: "fake", url: moved.url, auth: "bearer", tools: [ADD, PAID], sealed: headers(moved.url) });
+  await run.server.mcp.put({ name: "fake", url: moved.url, auth: "bearer", tools: [listed(ADD), listed(PAID)], sealed: headers(moved.url) });
   const [ask] = await asks(run.server);
   await run.server.command("run-1", { kind: "approve", body: { approval: ask.callId } });
   const row = await run.settle((r) => r.state === "ended" || r.state === "failed");
@@ -306,7 +308,7 @@ test("R12: a resumed claim calls the tools its run was pinned with, read as writ
   const run = await mcpRun(t, { script, grants: ["mcp:fake/add"] });
   assert.equal(run.row.state, "parked", JSON.stringify(run.row));
   // While the run waits, a refresh of the server lists other tools: `add` is gone from the registry.
-  await run.server.mcp.put({ name: "fake", url: run.fake.url, auth: "bearer", tools: [PAID], sealed: headers(run.fake.url) });
+  await run.server.mcp.put({ name: "fake", url: run.fake.url, auth: "bearer", tools: [listed(PAID)], sealed: headers(run.fake.url) });
   const [ask] = await asks(run.server);
   await run.server.command("run-1", { kind: "approve", body: { approval: ask.callId } });
   const row = await run.settle((r) => r.state === "ended" || r.state === "failed");
