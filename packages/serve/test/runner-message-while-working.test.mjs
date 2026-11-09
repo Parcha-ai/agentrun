@@ -18,6 +18,7 @@ const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { CONFORMANCE_TIMING } = await import("../dist/runner/conformance/harness.js");
 const { adapterRunSpecFromLaunch } = await import("../dist/runner/adapter-run-spec.js");
 const { runTimeline } = await import("../dist/store-reads/journal.js");
+const { journalRecords } = await import("../dist/runner/journal-reader.js");
 after(closeOpenSessions);
 
 const RUN = "run-1";
@@ -42,9 +43,20 @@ const answer = (step, model, text) => sse([
   { type: "message_stop" },
 ]);
 
+/** `factory`'s loops, each telling `answered(command, outcome)` once its command() has answered a row: an event, so a test
+ *  waits on what the loop did with a message, never on a timer. */
+const heard = (factory, answered) => (deps) => {
+  const loop = factory(deps);
+  return { ...loop, start: (claim) => loop.start(claim), stop: (...args) => loop.stop(...args), command: async (command) => {
+    const outcome = await loop.command(command);
+    answered(command, outcome);
+    return outcome;
+  } };
+};
+
 /** A pi run through the runner whose model answers by `answerOf(body, n)` (the nth request), and, with `looksBack`, an
  *  end-of-run turn asking LOOK_BACK; the stores and what the model was asked. */
-async function runOn(t, { answerOf, looksBack = false }) {
+async function runOn(t, { answerOf, looksBack = false, step, answered = () => {} }) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-message-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -72,11 +84,11 @@ async function runOn(t, { answerOf, looksBack = false }) {
   };
   const specOf = async (given, run, claim) => {
     const spec = await adapterRunSpecFromLaunch(given, run, deps, claim);
-    return looksBack ? { ...spec, endOfRun } : spec;
+    return step ? { ...spec, endOfRun: step } : looksBack ? { ...spec, endOfRun } : spec;
   };
   const runner = startRunner({
     store, name: "runner-a", ...CONFORMANCE_TIMING, leaseMs: 30_000, stopMarginMs: 5_000,
-    createLoop: createDispatchLoop({ launchOf: (runId) => store.runs.launch(runId), resolve: (name, given) => (name === "pi" ? createAdapterLoop((claim, run) => specOf(given, run, claim)) : undefined) }),
+    createLoop: createDispatchLoop({ launchOf: (runId) => store.runs.launch(runId), resolve: (name, given) => (name === "pi" ? heard(createAdapterLoop((claim, run) => specOf(given, run, claim)), answered) : undefined) }),
   });
   t.after(() => runner.close().catch(() => {}));
   return { server, requests };
@@ -93,9 +105,11 @@ const ended = (server) => until(async () => {
 async function reached(server, requests, rowId, answered) {
   const row = (await server.commands(RUN, 0)).find((one) => one.id === rowId);
   assert.ok(row && row.takenAt !== null && row.refused === null, `the message was taken by the run, not refused or left: ${JSON.stringify(row)}`);
-  assert.ok(requests.some((body) => JSON.stringify(body.messages).includes("Also this.")), `the model was asked with the message: ${requests.length} requests`);
+  // What the person sees first: the message's answer on the run's timeline. A message taken and lost is lost here whether
+  // the run's end came before its model request or before that request's answer (which of the two is the scheduler's).
   const said = (await runTimeline(server, RUN, context, { settled: true })).map((one) => `${one.kind}:${one.text ?? one.summary ?? ""}`).join("\n");
   assert.ok(said.includes("Also this.") && said.includes(answered), `the timeline shows the message and its answer:\n${said}`);
+  assert.ok(requests.some((body) => JSON.stringify(body.messages).includes("Also this.")), `the model was asked with the message: ${requests.length} requests`);
   assert.ok(said.indexOf("First answer.") < said.indexOf("Also this."), `after the first answer:\n${said}`);
 }
 
@@ -112,24 +126,55 @@ test("a message sent while the run's turn is in flight reaches it: placed into t
   await reached(server, requests, row.id, "Second answer.");
 });
 
-test("a message sent after the turn's answer, while the run looks back in its end-of-run turn, runs as a turn of its own before the run ends: never refused by the end", { timeout: 120_000 }, async (t) => {
-  let release;
-  const held = new Promise((resolve) => (release = resolve));
+test("a message sent after the turn's answer, while the run looks back in its end-of-run turn, is never refused by the end: the end opens the run again and it runs as a new turn, as main's", { timeout: 120_000 }, async (t) => {
+  // Events only: the end-of-run turn's answer is held until the loop has answered the message's row.
+  let loopHeard;
+  const heardIt = new Promise((resolve) => (loopHeard = resolve));
+  let rowId;
   const { server, requests } = await runOn(t, {
     looksBack: true,
+    answered: (command) => command.body?.text === "Also this." && loopHeard(),
     answerOf: async (body) => {
       const asked = JSON.stringify(body.messages);
       if (asked.includes("Also this.")) return "Answer to the message.";
-      if (asked.includes(LOOK_BACK)) return (await held, "A note.");
+      if (asked.includes(LOOK_BACK)) return (await heardIt, "A note.");
       return "First answer.";
     },
   });
   // The end-of-run turn's request is in flight: the person's message lands now.
   await until(() => requests.some((body) => JSON.stringify(body.messages).includes(LOOK_BACK)), "the end-of-run turn's model request");
-  const row = await server.command(RUN, { kind: "steer", body: { text: "Also this." } });
-  await new Promise((resolve) => setTimeout(resolve, 500));
-  release();
+  rowId = (await server.command(RUN, { kind: "steer", body: { text: "Also this." } })).id;
   const end = await ended(server);
   assert.equal(end.state, "ended", JSON.stringify(end));
-  await reached(server, requests, row.id, "Answer to the message.");
+  await reached(server, requests, rowId, "Answer to the message.");
+});
+
+test("a message sent in the gap between the turn's answer and the run's end is never swallowed by the idle session: the end opens the run again and it runs as a new turn", { timeout: 120_000 }, async (t) => {
+  // Events only, no timer: the run's end-of-run step (no turn of its own: the run is not looking back, its session idle)
+  // holds the run in the gap until the loop has answered the message's row; the model's answer to the message is held
+  // until the run's first end is in its journal. A message the loop places into the idle session is then answered only
+  // after that end, and its answer goes nowhere; one it leaves for the end opens the run again and runs as a new turn.
+  let loopHeard;
+  const heardIt = new Promise((resolve) => (loopHeard = resolve));
+  let openAnswer;
+  const answerGate = new Promise((resolve) => (openAnswer = resolve));
+  let inGap = false;
+  const step = async ({ cut }) => {
+    inGap = true;
+    if (!cut) await heardIt;
+    return undefined;
+  };
+  let rowId;
+  const { server, requests } = await runOn(t, {
+    step,
+    answered: (command) => command.body?.text === "Also this." && loopHeard(),
+    answerOf: async (body) => (JSON.stringify(body.messages).includes("Also this.") ? (await answerGate, "Answer to the message.") : "First answer."),
+  });
+  await until(() => inGap, "the run between its answer and its end");
+  rowId = (await server.command(RUN, { kind: "steer", body: { text: "Also this." } })).id;
+  await until(async () => (await journalRecords(server.readJournal(RUN), context)).entries.some((entry) => entry.kind === "agentrun.end"), "the run's first end is in its journal", 30_000);
+  openAnswer();
+  const end = await ended(server);
+  assert.equal(end.state, "ended", JSON.stringify(end));
+  await reached(server, requests, rowId, "Answer to the message.");
 });
