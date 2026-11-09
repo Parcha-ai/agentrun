@@ -174,6 +174,9 @@ const ERROR_TYPES: ReadonlySet<string> = new Set(["error", "response.failed"]);
 const TYPE_FIRST = /^\s*\{\s*"type"\s*:\s*"([^"]*)"/;
 /** Whether a UTF-16 code unit is the second half of a character written as two. */
 const isLowSurrogate = (unit: number): boolean => unit >= 0xdc00 && unit <= 0xdfff;
+/** The shortest form a healthy event is cut of: a shorter one (a test's one-letter credential) matches its text by chance,
+ *  and cutting it there breaks the answer. An error is cut of every form. */
+const MIN_ECHO = 8;
 /** A line's end in an event stream: LF, CRLF or a bare CR, as the format has them. */
 const LINE_END = /\r\n|\r|\n/;
 /** The next line end of a piece, searched from `lastIndex`. */
@@ -186,17 +189,23 @@ const LINE_BREAK = /\r\n|\r|\n/g;
  *     could still begin a form is held, and, with a host redactor, the last REDACT_WINDOW characters too, so a value it
  *     knows is never split between two of its readings. An error body the provider never finishes still reaches the
  *     client as it comes, past what is held. The body's end is cut, and a start of a form it ends on is cut too.
- *   - `events` (a successful streamed answer): each event is told from its fields, whatever their order: its `event:`
- *     name, or its data's JSON (a type of `error` or `response.failed`, or an `error`), an `id:`, `retry:` or comment line
- *     read past. An error event is cut as an error answer is, as it comes; every other event passes byte for byte. An
- *     event is held only until it can be told (its name, or its data line whole), and at most EVENT_HOLD of it: past that
- *     it is told from what came (a data line whose type comes first), and one that still cannot be is cut as an error's.
- *     Nothing a healthy event sent is kept.
+ *   - `events` (a successful streamed answer): each event is told from its fields, whatever their order: an `event:` name
+ *     of an error, or its data's JSON (a type of `error` or `response.failed`, or an `error`), an `id:`, `retry:` or
+ *     comment line read past; a healthy name exempts nothing, its data is still read. An error event is cut as an error
+ *     answer is, as it comes; every other event has the credential's forms of MIN_ECHO characters or more cut and passes
+ *     otherwise byte for byte, only
+ *     the start of a form held back (never past a line end). An event is held only until it can be told (an error's
+ *     name, or its data line whole), and at most EVENT_HOLD of it: past that it is told from what came (a data line whose
+ *     type comes first), and one that still cannot be is cut as an error's. Nothing a healthy event sent is kept.
  *   - `as-is`: every piece as it came.
  * A `redact` that throws leaves the cut, and is said.
  */
 export function errorCut(mode: "error" | "events" | "as-is", forms: readonly string[], redact: ((text: string) => string) | undefined, say: (message: string) => void): { push(text: string): string; end(): string } {
-  const cut = (text: string): string => forms.reduce((out, form) => out.split(form).join(REDACTED), text);
+  /** `text` with every one of `of` cut out. */
+  const cutOf = (of: readonly string[], text: string): string => of.reduce((out, form) => out.split(form).join(REDACTED), text);
+  const cut = (text: string): string => cutOf(forms, text);
+  /** The forms a healthy event is cut of: those long enough not to match its text by chance. */
+  const healthyForms = forms.filter((form) => form.length >= MIN_ECHO);
   const redacted = (text: string): string => {
     if (!text || !redact) return text;
     try {
@@ -207,20 +216,23 @@ export function errorCut(mode: "error" | "events" | "as-is", forms: readonly str
     }
   };
   if (mode === "as-is" || !forms.length && !redact) return { push: (text) => text, end: () => "" };
-  /** The length of the longest end of `text` that is a proper start of a form. */
-  const startOfForm = (text: string): number => {
+  /** The length of the longest end of `text` that is a proper start of one of `of` (default every form). */
+  const startOfForm = (text: string, of: readonly string[] = forms): number => {
     let longest = 0;
-    for (const form of forms) for (let n = Math.min(form.length - 1, text.length); n > longest; n--) if (text.endsWith(form.slice(0, n))) longest = n;
+    for (const form of of) for (let n = Math.min(form.length - 1, text.length); n > longest; n--) if (text.endsWith(form.slice(0, n))) longest = n;
     return longest;
   };
   /** An error's text cut as it comes: all that came, cut and redacted again each time (both leave cut text as it is), less
-   *  the end that could still change: the start of a form, and with a host redactor the last REDACT_WINDOW characters. */
-  const cutter = () => {
+   *  the end that could still change: the start of a form, and with a host redactor the last REDACT_WINDOW characters.
+   *  `host` false: a healthy event's, cut of healthyForms alone, holding back only the start of one. */
+  const cutter = (host = true) => {
+    const of = host ? forms : healthyForms;
+    const startOf = (text: string) => startOfForm(text, of);
     let held = "";
     return {
       push(text: string): string {
-        const all = redacted(cut(held + text));
-        let at = all.length - Math.min(all.length, Math.max(startOfForm(all), redact ? REDACT_WINDOW : 0));
+        const all = host ? redacted(cut(held + text)) : cutOf(of, held + text);
+        let at = all.length - Math.min(all.length, Math.max(startOf(all), host && redact ? REDACT_WINDOW : 0));
         // Never between the two UTF-16 halves of a character: each half written alone is two U+FFFD to the client.
         if (at > 0 && at < all.length && isLowSurrogate(all.charCodeAt(at))) at -= 1;
         held = all.slice(at);
@@ -230,7 +242,7 @@ export function errorCut(mode: "error" | "events" | "as-is", forms: readonly str
         const rest = held;
         held = "";
         // Text that ends on the start of a form ends on part of a secret: cut too.
-        const part = startOfForm(rest);
+        const part = startOf(rest);
         return part ? `${rest.slice(0, rest.length - part)}${REDACTED}` : rest;
       },
     };
@@ -264,11 +276,12 @@ export function errorCut(mode: "error" | "events" | "as-is", forms: readonly str
     return (typeof json.type === "string" && ERROR_TYPES.has(json.type)) || (json.error !== undefined && json.error !== null) ? "error" : "raw";
   };
   /** What an event not yet whole is, from its whole lines (`whole`) and the line still coming (`part`), if it can be told:
-   *  its name, else its first data line once that reads; past EVENT_HOLD, from a data line whose type comes first, else
-   *  an error's (a data line that cannot be told is cut) or a healthy event's (no data yet: nothing to cut). */
+   *  an error's name, else its first data line once that reads (a healthy name exempts nothing: its data may still be an
+   *  error's); past EVENT_HOLD, from a data line whose type comes first, else an error's (a data line that cannot be told
+   *  is cut) or a healthy event's (no data yet). */
   const verdict = (whole: readonly string[], part: string, held: number): "error" | "raw" | undefined => {
     const fields = fieldsOf(whole);
-    if (fields.name !== undefined) return ERROR_TYPES.has(fields.name) ? "error" : "raw";
+    if (fields.name !== undefined && ERROR_TYPES.has(fields.name)) return "error";
     for (const data of fields.data) {
       const said = dataSays(data);
       if (said) return said;
@@ -281,42 +294,42 @@ export function errorCut(mode: "error" | "events" | "as-is", forms: readonly str
     }
     return fields.data.length ? "error" : "raw";
   };
-  /** A whole event that was never told: an error's when its name or its data says so, or it holds a form. */
+  /** A whole event that was never told: an error's when its name or its data says so, or it holds a form long enough to
+   *  be told from its text. */
   const wholeIsError = (event: string): boolean => {
     const fields = fieldsOf(event.split(LINE_END));
     if (fields.name !== undefined && ERROR_TYPES.has(fields.name)) return true;
     if (fields.data.length && dataSays(fields.data.join("\n")) === "error") return true;
-    return forms.some((form) => event.includes(form));
+    return healthyForms.some((form) => event.includes(form));
   };
 
   /** The event's state: `hold` until it can be told (its text so far in `held`, at most EVENT_HOLD and a piece), then
-   *  `raw` (passed as it comes, nothing kept) or `error` (cut as it comes). `lineChars`: the characters of the line coming,
-   *  for telling a blank line, which ends the event; nothing a raw event sent is kept. */
+   *  `raw` (passed as it comes with the credential's forms cut, only the start of a form held back) or `error` (cut as it
+   *  comes, the host's redactor too). `lineChars`: the characters of the line coming, for telling a blank line, which ends
+   *  the event; nothing a raw event sent is kept. */
   let state: "hold" | "raw" | "error" = "hold";
   let held = "";
   let lineChars = 0;
-  let errorCutter: ReturnType<typeof cutter> | undefined;
+  let eventCutter: ReturnType<typeof cutter> | undefined;
   const decide = (to: "error" | "raw"): string => {
     const text = held;
     held = "";
     state = to;
-    if (to === "raw") return text;
-    errorCutter = cutter();
-    return errorCutter.push(text);
+    eventCutter = cutter(to === "error");
+    return eventCutter.push(text);
   };
   const eventEnds = (): string => {
-    const out = state === "hold" ? (wholeIsError(held) ? redacted(cut(held)) : held) : state === "error" ? errorCutter!.end() : "";
+    const out = state === "hold" ? (wholeIsError(held) ? redacted(cut(held)) : cutOf(healthyForms, held)) : eventCutter!.end();
     state = "hold";
     held = "";
-    errorCutter = undefined;
+    eventCutter = undefined;
     return out;
   };
   /** Whether the last piece ended on a CR: its line ended there, and a LF that begins the next piece is that CR's (a CRLF
    *  split between pieces), not a line of its own. */
   let afterCr = false;
   const feed = (piece: string): string => {
-    if (state === "raw") return piece;
-    if (state === "error") return errorCutter!.push(piece);
+    if (state !== "hold") return eventCutter!.push(piece);
     held += piece;
     return "";
   };
