@@ -293,3 +293,62 @@ test("toAction maps the viewer's events per kind, in the screen's pixels; what a
 		refused({ type: "wheel", x: 1, y: 2, dx: 0, dy: 1 }, kind, "type", /a phone takes taps, swipes, its buttons and keys/);
 	}
 });
+
+test("toAction holds what a viewer may send to bounds: it checks every field at run time, caps text, clamps swipes and wheels, and keeps modifiers", () => {
+	const actions = (event, kind = "desktop") => {
+		const mapped = toAction(event, kind);
+		assert.ok(Array.isArray(mapped), `${JSON.stringify(event).slice(0, 120)} on ${kind}: ${JSON.stringify(mapped).slice(0, 200)}`);
+		return mapped;
+	};
+	const refusal = (event, kind, field, words) => {
+		let mapped;
+		try {
+			mapped = toAction(event, kind);
+		} catch (error) {
+			assert.fail(`${JSON.stringify(event).slice(0, 120)} on ${kind}: threw ${error.message}`);
+		}
+		assert.ok(!Array.isArray(mapped), `${JSON.stringify(event).slice(0, 120)} on ${kind}: refused`);
+		assert.equal(mapped.field, field, mapped.message);
+		assert.match(mapped.message, words);
+	};
+	const key = (k, modifiers = 0, action = "down") => ({ type: "key", action, key: k, code: k, modifiers });
+	const mouse = (action, modifiers = 0, button = 0) => ({ type: "mouse", action, x: 10, y: 20, button, buttons: 0, clickCount: 1, modifiers });
+	// Every field is checked whatever the type says: a viewer is a browser page.
+	for (const [event, field] of [
+		[null, "type"],
+		[{ type: "teleport", x: 1, y: 2 }, "type"],
+		[{ ...mouse("down"), action: "jump" }, "action"],
+		[{ ...mouse("down"), button: "left" }, "button"],
+		[{ ...mouse("move"), modifiers: "ctrl" }, "modifiers"],
+		[{ type: "key", action: "down", key: 13, code: "Enter", modifiers: 0 }, "key"],
+		[{ type: "key", action: "press", key: "a", code: "KeyA", modifiers: 0 }, "action"],
+		[{ type: "key", action: "char", key: "a", code: "KeyA", text: 5, modifiers: 0 }, "text"],
+		[{ type: "wheel", x: 1, y: 2, dx: Number.POSITIVE_INFINITY, dy: 0 }, "dx"],
+	]) {
+		refusal(event, "desktop", field, /./);
+	}
+	for (const [event, field] of [
+		[{ type: "button", name: "power" }, "name"],
+		[{ type: "tap", x: Number.POSITIVE_INFINITY, y: 2 }, "x"],
+		[{ type: "swipe", x1: 1, y1: 2, x2: 3, y2: 4, ms: "slow" }, "ms"],
+	]) {
+		refusal(event, "android", field, /./);
+	}
+	// Typed text holds at most 64K characters (computerd's MaxTypeRunes), on every kind.
+	assert.deepEqual(actions({ type: "key", action: "char", key: "a", code: "", text: "a".repeat(65_536), modifiers: 0 }), [{ type: "type", text: "a".repeat(65_536) }]);
+	refusal({ type: "key", action: "char", key: "a", code: "", text: "a".repeat(65_537), modifiers: 0 }, "android", "text", /at most 65536 characters/);
+	// A swipe lasts 0 to 1000 ms; a wheel moves at most 20 clicks an event.
+	assert.deepEqual(actions({ type: "swipe", x1: 1, y1: 2, x2: 3, y2: 4, ms: 99_999 }, "android"), [{ type: "swipe", path: [[1, 2], [3, 4]], ms: 1000 }]);
+	assert.deepEqual(actions({ type: "swipe", x1: 1, y1: 2, x2: 3, y2: 4, ms: -5 }, "ios"), [{ type: "swipe", path: [[1, 2], [3, 4]], ms: 0 }]);
+	assert.deepEqual(actions({ type: "wheel", x: 1, y: 2, dx: -1e9, dy: 1e9 }), [{ type: "scroll", at: [1, 2], dx: -20, dy: 20, unit: "clicks" }]);
+	// A shortcut keeps Shift: Ctrl+Shift+S is not Ctrl+S.
+	assert.deepEqual(actions(key("S", 2 | 8)), [{ type: "key", keys: ["ctrl", "shift", "s"] }]);
+	// A modified click keeps its modifiers: the down only moves, and the up clicks with the keys held.
+	assert.deepEqual(actions(mouse("down", 2)), [{ type: "move", at: [10, 20] }]);
+	assert.deepEqual(actions(mouse("up", 2 | 8)), [{ type: "move", at: [10, 20] }, { type: "click", at: [10, 20], button: "left", keys: ["ctrl", "shift"] }]);
+	assert.deepEqual(actions({ ...mouse("up", 8), clickCount: 2 }), [{ type: "move", at: [10, 20] }, { type: "click", at: [10, 20], button: "left", count: 2, keys: ["shift"] }]);
+	// A viewer never ends or switches the display.
+	refusal(key("Backspace", 2 | 1), "desktop", "key", /would end the display/);
+	for (const f of ["F1", "F7", "F12"]) refusal(key(f, 2 | 1), "desktop", "key", /would switch the display/);
+	assert.deepEqual(actions(key("F1")), [{ type: "key", keys: ["f1"] }], "F1 alone is a key");
+});
