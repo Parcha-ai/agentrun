@@ -33,7 +33,7 @@ import { healthOf, hostMemory, maxRunsOf, MIN_FREE_MIB, runsThatFit } from "./ho
 import { IMPORT_ASKED } from "./import.js";
 import type { ImportAnswer, ImportTask } from "./import-worker.js";
 import type { MessageOrigin } from "@parcha/pi-durable-agent/timeline";
-import { gradeModelOf, LEARNING_LABEL, learningBudgetOf, type LearningMode, learningOf } from "./learning.js";
+import { gradeModelOf, LEARNING_LABEL, learningBudgetOf, type LearningMode, learningOf, seedOf } from "./learning.js";
 import { agentLearning, learningLog, learningNotes, noteBody, pendingCount, readNote, secretsShown, sendNote, writeNote } from "./learning-routes.js";
 import { answerLlms, MCP_PATH, mcpEndpoint } from "./mcp.js";
 import { openapiDocument, servedOpenapi, UNSUPPORTED } from "./openapi.js";
@@ -1179,6 +1179,26 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     ...(documents ? { documents: resolve(documents) } : {}),
     ...(boxAllow !== undefined ? { boxAllow } : {}),
     modelOf,
+    // The run's learning start, decided at start as the old file-backed start decided it (learning-run.ts onStart/seedFor):
+    // the server's learning switch, the budget its # Learned section fits, the agent's seed read now from its learning folder
+    // (git), and the host's secrets as they are shown now to cut the notes a run is given. runs-over-store.learningStartFor
+    // pins the result (given/seed/section/seedNotes) in the launch for the runner; a seed that cannot be read starts the run
+    // with nothing learned (a fault never refuses it). INERT until the runner installs learning-1's learningEndOfRun as its
+    // endOfRun (cutover-learning-end 283008bb05, E2r3's one-line spec-builder hookup); land this in that same round.
+    learning,
+    learningBudget,
+    seedFor: async (agentId: string) => {
+      // The switch runs no git in this process (learning.ts seedOf: the folder's own script and file API, which checks git
+      // itself); a git or folder fault surfaces here as a seedOf error, so the run starts with nothing learned, never refused.
+      return seedOf(data, agentId).then(
+        (seed) => ({ seed }),
+        (error: Error) => {
+          process.stderr.write(`agentrun-serve: the agent ${agentId}'s learning folder could not be read, so its run starts with nothing learned: ${error.message}\n`);
+          return { failed: error.message };
+        },
+      );
+    },
+    shown: () => secretsShown(serverSecrets()),
   };
   // A run's served view and its live moment, from the store (store-view): `origin` is where this request reaches the
   // console, the secrets are cut live, and the sign-ins give the handed-pointer cut. Trigger and background reads (no
