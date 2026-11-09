@@ -153,7 +153,8 @@ export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = fa
 	const view = ({ gets, ...s }) => ({ ...s, ...(s.state === "provisioning" ? { progress: { phase: "booting" } } : {}) });
 
 	// --- the phone ---------------------------------------------------------------------------------------------------
-	const phone = { connected: new Set(), unlocked: new Set(), foreground: LAUNCHER, running: new Set([LAUNCHER]), screen: "top", offset: 0, page: "", search: "" };
+	/** touches: each `input motionevent` the phone took, with the clock's time it took it. */
+	const phone = { connected: new Set(), unlocked: new Set(), foreground: LAUNCHER, running: new Set([LAUNCHER]), screen: "top", offset: 0, page: "", search: "", touches: [] };
 	const expected = code ?? ADB_CODE;
 	const maxOffset = Math.max(0, HEADER + ROW * ITEMS.length - SCREEN.height);
 
@@ -260,8 +261,23 @@ export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = fa
 	const KEYS = { KEYCODE_HOME: () => (phone.foreground = LAUNCHER), KEYCODE_BACK: back, KEYCODE_APP_SWITCH: () => {}, KEYCODE_DEL: () => (phone.search = phone.search.slice(0, -1)) };
 
 	function shell(command) {
-		const w = words(command);
 		const ok = (stdout = "") => ({ exitCode: 0, stdout: Buffer.from(stdout), stderr: "" });
+		// A chain of commands, as sh runs `a;b`: each in turn (the fake splits only a chain with no quoted words).
+		if (command.includes(";") && !command.includes("'")) {
+			let out = "";
+			for (const part of command.split(";")) {
+				const one = shell(part.trim());
+				if (one.exitCode !== 0) return one;
+				out += one.stdout.toString("utf8");
+			}
+			return ok(out);
+		}
+		const w = words(command);
+		// toybox's sleep takes a decimal fraction of a second; it moves the shared clock on, as every wait here does.
+		if (w[0] === "sleep" && /^\d+(\.\d+)?$/.test(w[1] ?? "")) {
+			clock.sleep(Math.round(Number(w[1]) * 1000));
+			return ok();
+		}
 		if (w[0] === "echo") return ok(`${w.slice(1).join(" ")}\n`);
 		if (w[0] === "unlock") {
 			if (w[1] !== expected) return ok("wrong code\n");
@@ -281,7 +297,10 @@ export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = fa
 			if (phone.foreground === SETTINGS && phone.screen === "top") phone.offset = Math.min(maxOffset, Math.max(0, phone.offset + (y1 - y2)));
 			return ok();
 		}
-		if (w[0] === "input" && w[1] === "motionevent") return ok();
+		if (w[0] === "input" && w[1] === "motionevent") {
+			phone.touches.push({ action: w[2], at: [Number(w[3]), Number(w[4])], ms: clock.now() });
+			return ok();
+		}
 		if (w[0] === "input" && w[1] === "text") {
 			if (phone.foreground === SEARCH_PKG && phone.screen === "search") phone.search += w[2].replaceAll("%s", " ");
 			return ok();

@@ -526,6 +526,25 @@ test("the client answers the phone groups over adb: a screenshot, touch, keys, b
 	assert.match((await client.call("exec.run", { argv: ["id"], timeoutMs: 1000 })).error.message, /a phone has no shell in the computer protocol/);
 });
 
+test("a swipe of more than two points takes its ms, spread over its segments by their length", async () => {
+	const { provider, fake } = await setup();
+	const { value: ref } = await provider.create(SPEC);
+	const { client } = (await provider.connect(ref)).value;
+	const swiped = await client.call("input.actions", { actions: [{ type: "swipe", path: [[100, 100], [100, 300], [100, 400]], ms: 600 }] });
+	assert.deepEqual(swiped, { ok: true, value: { done: 1 } });
+	const [first, ...rest] = fake.phone.touches;
+	assert.deepEqual(
+		[first, ...rest].map(({ action, at, ms }) => [action, at, ms - first.ms]),
+		[
+			["DOWN", [100, 100], 0],
+			["MOVE", [100, 300], 400],
+			["MOVE", [100, 400], 600],
+			["UP", [100, 400], 600],
+		],
+		"200 px of 300 take 400 ms of 600, and the last 100 px the other 200",
+	);
+});
+
 // The hang guard only bounds a failure: on a pass the batch answers in microtasks, with no timer.
 test("a cancelled input batch stops at the action it is on: a wait ends when the signal fires, and no later command runs", { timeout: 10_000 }, async () => {
 	// A wait the cancel interrupts: once armed, the clock's sleep never ends by itself, so only the signal can end it.
