@@ -172,6 +172,13 @@ test("only the owner's signed-in page takes over or answers: a token, or no cred
   assert.equal((await w.handBack("done", { authorization: `Bearer ${w.server.token}` })).status, 403, "a token never answers for the owner");
   const none = await w.handBack("done");
   assert.deepEqual([none.status, none.json.error.message], [404, "this run's agent has not asked for you in its browser"], "an agent that asked for nobody");
+  // The computer's hand-back is tl-places' (places/computers-cut): no such route here, whoever asks.
+  const computerHandBack = await call(w.server.port, { method: "POST", path: `/v2/runs/${w.runId}/computer/hand-back`, headers: { ...json, origin: w.origin, cookie: w.cookie }, body: { outcome: "done" } });
+  assert.equal(computerHandBack.status, 404, "no /computer/hand-back on this build");
+  // GET /computer keeps its shape: the run's computer, its kind, and who holds it.
+  const computer = await call(w.server.port, { path: `/v2/runs/${w.runId}/computer`, headers: { cookie: w.cookie } });
+  assert.deepEqual(Object.keys(computer.json).sort(), ["hold", "kind", "state", "viewer"]);
+  assert.deepEqual([computer.json.state, computer.json.kind, computer.json.hold], ["live", "browser", "agent"]);
   // The browser's own routes and the computer family's both answer the owner, and refuse a token alike.
   for (const path of [`/v2/runs/${w.runId}/browser`, `/v2/runs/${w.runId}/computer`]) {
     assert.equal((await call(w.server.port, { path, headers: { cookie: w.cookie } })).status, 200, path);
