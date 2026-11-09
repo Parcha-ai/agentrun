@@ -853,7 +853,7 @@ export class RunGate {
     const heldTo = settingsKeyOf(this.where.harness ?? DEFAULT_HARNESS, held.tool, this.where.mcpServers);
     const ran = held.replayed || drive.state().effects.has(key) ? "unknown" : "no";
     if (this.policy(held.tool) !== "deny") {
-      const pinned = this.pinned(held.tool, held.args, ran);
+      const pinned = this.pinned(heldTo ?? held.tool, held.args, ran);
       if (pinned) return { text: pinned.text, isError: true };
     }
     return { text: deniedText(held.tool, heldTo, this.denyFrom(held.tool), ran), isError: true };

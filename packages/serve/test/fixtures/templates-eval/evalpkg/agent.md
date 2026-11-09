@@ -7,6 +7,7 @@ tools: [read, write, ask_person]
 mcp:
   - server: crm
     tools: [get_contact, update_contact]
+    pin: { update_contact: { id: "7" } }
 parameters:
   team: { type: string, required: true, description: "the team the agent answers for" }
 learning: true

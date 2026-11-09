@@ -437,6 +437,11 @@ export const withDefaults = (map: ToolSettingsMap): ToolSettingsMap & Record<Pic
 /** The server's tool settings, beside the agent store in its data directory: not a secret, and not in store.sqlite,
  *  which runs hold open. Read once at the start, written whole and durably (0600) at each PUT; a missing file is every
  *  default, and so is one it cannot read, which it says in one line. */
+/** An empty settings map marked as standing for a file that does not read (SETTINGS_UNREAD, tool-gate.ts): every caller of
+ *  readToolSettings inherits the mark, a direct read too (learning's draft check, the learned-draft tools), so none lifts an
+ *  ask over a file whose deny it cannot see. */
+const unreadMap = (): ToolSettingsMap => Object.assign({}, { [SETTINGS_UNREAD]: true }) as ToolSettingsMap;
+
 /** The tool settings in `dir` as the server and the tool gate read them, failing closed: each entry that reads is kept;
  *  one that does not is dropped, but a known tool keeps what of it reads, and its permission, when not one offered,
  *  reads ask (deny where ask is not offered), never its allow default. `problems`: one line for each entry dropped or
@@ -449,7 +454,7 @@ export function readToolSettings(dir: string): { settings: ToolSettingsMap; prob
     read = JSON.parse(readFileSync(file, "utf8"));
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return { settings: {}, problems: [] };
-    return { settings: {}, problems: [`${file} does not read as JSON`], unreadable: true };
+    return { settings: unreadMap(), problems: [`${file} does not read as JSON`], unreadable: true };
   }
   return checkToolSettings(read, file);
 }
@@ -460,7 +465,7 @@ export function readToolSettings(dir: string): { settings: ToolSettingsMap; prob
  *  path, or the setting's key in the store). `unreadable`: the value as a whole is not an object. */
 export function checkToolSettings(read: unknown, where: string): { settings: ToolSettingsMap; problems: string[]; unreadable?: true } {
   const isPlain = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
-  if (!isPlain(read)) return { settings: {}, problems: [`${where} is not an object of tools to their settings`], unreadable: true };
+  if (!isPlain(read)) return { settings: unreadMap(), problems: [`${where} is not an object of tools to their settings`], unreadable: true };
   const settings: ToolSettingsMap = {};
   const problems: string[] = [];
   for (const [name, setting] of Object.entries(read)) {
