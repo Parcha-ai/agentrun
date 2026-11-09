@@ -495,11 +495,12 @@ async function bytesOf(req: IncomingMessage): Promise<Buffer> {
 // ---- the API ---------------------------------------------------------------------------------------------------------
 
 type Answered = { status: number; body: unknown };
-type Api = (method: string, path: string, body?: unknown, headers?: Record<string, string>) => Promise<Answered>;
+/** `statusOnly`: the answer's status alone, its body cancelled unread (a file's existence, never its bytes). */
+type Api = (method: string, path: string, body?: unknown, headers?: Record<string, string>, options?: { statusOnly?: true }) => Promise<Answered>;
 
 /** A client of the v2 API at `baseUrl` (ending in /v2) with `token`. */
 function apiOf(baseUrl: string, token: string): Api {
-  return async (method, path, body, headers = {}) => {
+  return async (method, path, body, headers = {}, options = {}) => {
     const raw = typeof body === "string";
     const res = await fetch(`${baseUrl}${path}`, {
       method,
@@ -508,6 +509,10 @@ function apiOf(baseUrl: string, token: string): Api {
     }).catch((error: unknown) => {
       throw new ApiFailure(`${method} ${path}: the server did not answer (${(error as Error).cause instanceof Error ? ((error as Error).cause as Error).message : (error as Error).message})`);
     });
+    if (options.statusOnly) {
+      await res.body?.cancel().catch(() => undefined);
+      return { status: res.status, body: null };
+    }
     const text = await res.text();
     let json: unknown = text;
     try {
@@ -583,11 +588,12 @@ async function filesOf(api: Api, runId: string): Promise<string[]> {
 }
 
 /** Each path a file_exists grader names that the run's work folder holds, read one by one (GET /runs/{id}/files/{path}):
- *  the listing is capped (its `truncated`), so a file past its cap or depth is never taken for absent. */
+ *  the listing is capped (its `truncated`), so a file past its cap or depth is never taken for absent. Only the status
+ *  is read: the file's body is cancelled unread, whatever its size. */
 async function presentOf(api: Api, runId: string, paths: readonly string[]): Promise<string[]> {
   const present: string[] = [];
   for (const path of new Set(paths)) {
-    const read = await api("GET", `/runs/${runId}/files/${path.split("/").map(encodeURIComponent).join("/")}`);
+    const read = await api("GET", `/runs/${runId}/files/${path.split("/").map(encodeURIComponent).join("/")}`, undefined, {}, { statusOnly: true });
     if (read.status === 200) present.push(path);
   }
   return present;
