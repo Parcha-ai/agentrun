@@ -1,18 +1,19 @@
-// One server per data root (server-lock.ts): a second server on a root another server holds is refused by name before
-// it touches anything, a crashed server's lock never blocks the next start, and the refusal holds between two servers in
-// one process too.
+// One server per data root (the store's owner lock, store.sqlite.owner): a second server on a root another server holds
+// is refused by name before it touches anything, a crashed server's lock never blocks the next start, and the refusal
+// holds between two servers in one process too. server-lock.ts's own lock file is read only by its own case below.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { mkdir, readdir, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
-import { ServerLockHeldError, startServe, takeServerLock } from "../dist/index.js";
+import { startServe, takeServerLock } from "../dist/index.js";
+import { StoreOwned } from "../dist/store/index.js";
 import { client, FAUX, printed, scratch } from "./support.mjs";
 
 const CLI = new URL("../dist/cli.js", import.meta.url).pathname;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-const refusal = (data) => `agentrun-serve: another server holds this data root (${join(data, "server.lock")}): stop it, or start this one with another --data\n`;
+const refusal = (data) => `agentrun-serve: another server holds the store at ${join(data, "store.sqlite")}\n`;
 
 /** The bin on `data`, its output kept; with `started`, resolves once it printed its address, else once it exited. */
 async function bin(t, data, { started = true, env = {} } = {}) {
@@ -48,7 +49,7 @@ test("a second server on a root another server holds exits 1 with one line, touc
   let closed = false;
   t.after(() => !closed && first.close());
   assert.equal(await answers(first), 200);
-  assert.equal((await stat(join(data, "server.lock"))).mode & 0o777, 0o600, "server.lock is the server's alone");
+  assert.equal((await stat(join(data, "store.sqlite.owner"))).mode & 0o777, 0o600, "the store's owner lock is the server's alone");
   const before = await snapshot(data);
   const second = await bin(t, data, { started: false });
   assert.equal(second.code, 1);
@@ -63,19 +64,19 @@ test("a second server on a root another server holds exits 1 with one line, touc
   assert.equal(await answers(third), 200);
 });
 
-test("a server killed by SIGKILL leaves its server.lock behind, and the next server on the root reuses it and serves", { timeout: 60_000 }, async (t) => {
+test("a server killed by SIGKILL leaves its store's owner lock behind, and the next server on the root takes it and serves", { timeout: 60_000 }, async (t) => {
   const data = join(await scratch(t), "agents");
   await mkdir(data);
-  // A process that takes the lock as a server's start does, and is killed holding it.
-  const lock = new URL("../dist/server-lock.js", import.meta.url).href;
-  const holder = spawn(process.execPath, ["--input-type=module", "-e", `import { takeServerLock } from ${JSON.stringify(lock)}; globalThis.serverLock = takeServerLock(${JSON.stringify(data)}); console.log("held"); setInterval(() => {}, 60_000);`], { stdio: ["ignore", "pipe", "pipe"] });
+  // A process that takes the lock as a server's start does (it opens the store as the server), and is killed holding it.
+  const store = new URL("../dist/store/index.js", import.meta.url).href;
+  const holder = spawn(process.execPath, ["--input-type=module", "-e", `const { openSqliteStore } = await import(${JSON.stringify(store)}); globalThis.store = await openSqliteStore({ dataDir: ${JSON.stringify(data)}, role: "server" }); console.log("held"); setInterval(() => {}, 60_000);`], { stdio: ["ignore", "pipe", "pipe"] });
   t.after(() => holder.exitCode === null && holder.signalCode === null && holder.kill("SIGKILL"));
   const exited = new Promise((resolve) => holder.once("exit", resolve));
   await printed(holder, /^held$/m);
-  await assert.rejects(startServe({ data, port: 0, faux: FAUX }), ServerLockHeldError, "held while it lives");
+  await assert.rejects(startServe({ data, port: 0, faux: FAUX }), StoreOwned, "held while it lives");
   holder.kill("SIGKILL");
   await exited;
-  await stat(join(data, "server.lock")); // still there: the kernel dropped the lock, not the file
+  await stat(join(data, "store.sqlite.owner")); // still there: the kernel dropped the lock, not the file
   const next = await startServe({ data, port: 0, faux: FAUX });
   t.after(() => next.close());
   assert.equal(await answers(next), 200);
@@ -86,7 +87,7 @@ test("two servers in one process on one root: the second start is refused (SQLit
   const first = await startServe({ data, port: 0, faux: FAUX });
   let closed = false;
   t.after(() => !closed && first.close());
-  await assert.rejects(startServe({ data, port: 0, faux: FAUX }), (error) => error instanceof ServerLockHeldError && error.code === "SERVER_LOCK_HELD" && `agentrun-serve: ${error.message}\n` === refusal(data));
+  await assert.rejects(startServe({ data, port: 0, faux: FAUX }), (error) => error instanceof StoreOwned && `agentrun-serve: ${error.message}\n` === refusal(data));
   assert.equal((await client(first.baseUrl, first.token)("GET", "/agents")).status, 200, "the first server still answers");
   await first.close();
   closed = true;
@@ -100,7 +101,7 @@ test("a start that fails after taking the lock releases it: the next start on th
   const taken = createServer();
   await new Promise((resolve) => taken.listen(0, "127.0.0.1", resolve));
   t.after(() => taken.close());
-  await assert.rejects(startServe({ data, port: taken.address().port, faux: FAUX }), (error) => !(error instanceof ServerLockHeldError));
+  await assert.rejects(startServe({ data, port: taken.address().port, faux: FAUX }), (error) => !(error instanceof StoreOwned));
   const next = await startServe({ data, port: 0, faux: FAUX });
   t.after(() => next.close());
   assert.equal((await client(next.baseUrl, next.token)("GET", "/agents")).status, 200);
