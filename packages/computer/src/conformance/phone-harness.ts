@@ -100,20 +100,28 @@ function take(lockPath: string, words: string): boolean {
  * Removes the lock at lockPath if it still holds `dead`, the words of a holder found gone. Breakers take turns by a
  * second lock (<lock>.break, also naming its holder), and the lock is read again under it. So a lock is broken once:
  * a waiter that judged the same dead lock never removes the lock another has taken since.
+ *
+ * Answers whether it moved things on: it broke the lock (or found it gone), or removed a breaker that had died. False
+ * when another breaker, alive, holds <lock>.break: the caller waits for it, under its deadline, as for any live holder.
  */
-function breakDead(lockPath: string, dead: string, words: string): void {
+function breakDead(lockPath: string, dead: string, words: string): boolean {
 	const breaker = `${lockPath}.break`;
 	if (!take(breaker, words)) {
 		// Another waiter is breaking it. A breaker that died midway leaves its own lock, named by it: that one goes too.
 		const other = lockWords(breaker);
-		if (other !== undefined && leftByTheDead(other) && lockWords(breaker) === other) unlinkSync(breaker);
-		return;
+		if (other === undefined) return true;
+		if (leftByTheDead(other) && lockWords(breaker) === other) {
+			unlinkSync(breaker);
+			return true;
+		}
+		return false;
 	}
 	try {
 		if (lockWords(lockPath) === dead) unlinkSync(lockPath);
 	} finally {
 		unlinkSync(breaker);
 	}
+	return true;
 }
 
 /**
@@ -137,10 +145,8 @@ export function fileLedger(path: string, { waitMs = LOCK_WAIT_MS }: { waitMs?: n
 			for (let wait = 2; !take(lockPath, words); wait = Math.min(wait * 2, 50)) {
 				const held = lockWords(lockPath);
 				if (held === undefined) continue;
-				if (leftByTheDead(held)) {
-					breakDead(lockPath, held, words);
-					continue;
-				}
+				// A dead holder's lock is broken at once; a live breaker at work on it is waited for, like a live holder.
+				if (leftByTheDead(held) && breakDead(lockPath, held, words)) continue;
 				if (Date.now() >= until) throw new Error(`the phone ledger ${path} stayed locked by another writer for ${waitMs / 1000} s (${lockPath})`);
 				await new Promise((resolve) => setTimeout(resolve, wait));
 			}
