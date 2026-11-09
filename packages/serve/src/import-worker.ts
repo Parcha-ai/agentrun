@@ -5,8 +5,8 @@
 // Before anything loads node:sqlite, as in the server's own thread: its ExperimentalWarning is not the server's to print.
 import "./quiet-sqlite-warning.js";
 import { parentPort, workerData } from "node:worker_threads";
-import { openStore } from "@parcha/pi-durable-agent";
 import { ownSecrets, planImport, runImport } from "./import.js";
+import { openSqliteStore } from "./store/index.js";
 
 /** `secrets`: the server's own, and `stored`: the keys saved on its Tool keys page (tool-keys.ts' `values`), both cut
  *  out of everything the import writes; never put in an environment. */
@@ -32,16 +32,17 @@ const answer = async (): Promise<ImportAnswer> => {
     // Sessions as the import takes them: a session written in several files (a resumed thread) is one run.
     return stop.signal.aborted ? { stopped: true } : { projects: plan.projects.length, sessions: plan.projects.reduce((n, p) => n + new Set(p.sessions.map((s) => `${s.source}:${s.id}`)).size, 0) };
   }
-  // A connection of its own, which may wait for the store: only this thread waits.
-  const store = openStore(data);
+  // A connection of its own, which may wait for the store: only this thread waits. (The narrow store proxy over the
+  // server's one open store replaces this second opener; until then it opens its own.)
+  const store = await openSqliteStore({ dataDir: data, role: "server" });
   try {
     // The secrets this server made and keeps, read as the import starts: cut by their values too.
     const taking = { ...options, own: ownSecrets(data, env) };
     const report = await runImport(store, await planImport(taking, store), taking);
-    const took = { agents: report.agents.filter((a) => a.runs + a.finished > 0).map((a) => a.id), runs: report.agents.reduce((n, a) => n + a.runs + a.finished, 0), skipped: report.skipped.length };
+    const took = { agents: report.agents.filter((a) => a.runs > 0).map((a) => a.id), runs: report.agents.reduce((n, a) => n + a.runs, 0), skipped: report.skipped.length };
     return stop.signal.aborted ? { took, stopped: true } : { took };
   } finally {
-    store.close();
+    await store.close();
   }
 };
 parentPort!.postMessage(await answer());
