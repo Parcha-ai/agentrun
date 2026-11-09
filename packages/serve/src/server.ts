@@ -12,7 +12,7 @@ import { once } from "node:events";
 import { existsSync, readFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { homedir } from "node:os";
-import { type NewRevision, type Revision, runDirIn, type RunOrigin, STORE_FILE } from "@parcha/pi-durable-agent";
+import { type Revision, type RunOrigin } from "@parcha/pi-durable-agent";
 import { type AgentEntry, agentRevision, agentRevisions, agentView, commitAgent, createAgent, definitionOf, etagOf, getAgent, listAgents, revisionView, setAgentArchived, setCurrentRevision } from "./agents-store.js";
 import { WORKFLOW_ADAPTERS } from "./app.js";
 import { DECISION_ADAPTER, decisionsOf, FAUX_JEV_ENV, FAUX_OPENROUTER_ENV, FAUX_PARALLEL_ENV, fauxFetch } from "./decisions.js";
@@ -51,7 +51,7 @@ import { momentOverStore, summaryOverStore, type ViewDeps, viewOverStore } from 
 import { triggerTargets, type TriggerTargetDeps } from "./trigger-targets.js";
 import { listRuns as listRunsOverStore, readRun as readRunOverStore, runOfOrigin as runOfOriginOverStore } from "./store-reads/runs.js";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { openSqliteStore, type RevisionPlace, type RunRow, type Store, StoreBusy, StoreConstraint } from "./store/index.js";
+import { type AgenticBody, type NewRevision, openSqliteStore, type RevisionPlace, type RunRow, type Store, StoreBusy, StoreConstraint, type WorkflowBody } from "./store/index.js";
 import { runModelRef } from "./model.js";
 // The v2 run statuses, as the run view names them (run-view.ts Status), for the list filter's validation. */
 const STATUSES = ["queued", "working", "paused", "input_required", "completed", "failed", "cancelled"] as const;
@@ -77,7 +77,7 @@ import { redactedOutput } from "./key-refusal.js";
 import { analyticsFilter, analyticsView, pendingOf, statsView } from "./stats.js";
 import { outcomes } from "./usage.js";
 import { keyOf, SEAL_KEY_ENV, sealKeyOf, TOOL_FIELDS, ToolKeys } from "./tool-keys.js";
-import { vendorsOver } from "./sign-ins.js";
+import { SIGN_INS_DIR, vendorsOver } from "./sign-ins.js";
 // E1b builds the store-backed sign-ins bridge (the old SignIns interface — peek/forgotten/view/forget — over store.signIns,
 // byte-identical v2 shapes; "held"/held_by from a live run whose sign_in_handed holds the pointer, verified_at from the
 // last holder's lease end). TODO(E1b): wire its sha; named import until then.
@@ -256,7 +256,8 @@ export type ServeOptions = {
   notice?: (line: string) => void;
   /** The waits between carry backs that found the store held by another writer (default 0.5, 1, 2, 4 and 8 s), and a
    *  hook called at each such refusal. */
-  carryBackRetry?: CarryBackRetry;
+  /** A test hook the per-run process used for carry-back; the runner owns carry-back now (unused by the server cut). */
+  carryBackRetry?: unknown;
   /** A test's seam: awaited by a stop between its mark and its abort, so a test can hold a stop in flight there. */
   beforeAbort?: (runId: string) => Promise<void> | void;
   /** A test's seam: awaited by a completed run's reopen for a follow-up, after the run reads open again and before its
@@ -1028,10 +1029,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     pinnedOf,
     inputIssuesOf,
     explainRun,
-    told,
+    // told and fallbackPlace are const arrows declared later in startHolding; wrap them so startDeps captures the binding
+    // (called at request time, after they are assigned) rather than reading them before their declaration.
+    told: (error) => told(error),
     runnable,
     readyFiles: (ids) => uploads.readyFiles(ids as string[]),
-    fallbackPlace,
+    fallbackPlace: (kind, tools) => fallbackPlace(kind, tools),
     workflowTitle,
     serverSecrets,
     toolSettings: () => settings.get(),
@@ -1229,13 +1232,22 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     if (revision?.kind !== "agentic") return { tools: [], gated: {} };
     const [{ learnedDraftTools }, { permissionOf }, { readToolSettings }] = await Promise.all([import("./tools.js"), import("./tool-gate.js"), import("./tool-plane.js")]);
     const server = readToolSettings(agents.dir).settings;
-    return learnedDraftTools(revision.body.tools, (name) => permissionOf(name, server as never, (revision.body.toolSettings ?? {}) as never, revision.body.approvals === "never" ? "never" : "ask"));
+    // The revision row's body is the agentic body JSON (store-backed RevisionRow types it as unknown).
+    const body = revision.body as { tools?: string[]; toolSettings?: unknown; approvals?: string };
+    return learnedDraftTools(body.tools ?? [], (name) => permissionOf(name, server as never, (body.toolSettings ?? {}) as never, body.approvals === "never" ? "never" : "ask"));
   }
   async function needAgent(id: string): Promise<AgentEntry> {
     const entry = ID.test(id) ? await agents.get(id) : null;
     if (!entry) throw new ApiError("not_found", `no agent ${id}`);
     return entry;
   }
+  /** An agent view's extra fields (agents-store agentView): its saved sign-ins and its learning count. The run counts
+   *  (runs.count/live) are E3's run reads; the switch does not pass them yet — they default to zero. TODO(E3): pass
+   *  { runs: { count, live } } from the store. */
+  const agentExtra = async (entry: AgentEntry): Promise<{ signIns: object[]; learning?: { pending: number } }> => {
+    const learning = await learningOfAgent(entry);
+    return { signIns: await signIns.view(entry.agent.id), ...(learning ? { learning } : {}) };
+  };
   // A run's live moment from the store (store-view momentOf), for the one acceptance each act a run takes reads. The run
   // routes read from the store + the run view now, not a live Run.
   async function needRun(id: string): Promise<RunMoment> {
@@ -1329,18 +1341,21 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   /** A definition being saved: refused (422 by field) when it can never run here; else what this host still lacks. A
    *  revision that names no place is checked where it would run (fallbackPlace). */
   async function saveable(revision: NewRevision): Promise<InputIssue[]> {
+    // The store's NewRevision keeps the revision's fields under `body` (AgenticBody|WorkflowBody); build the flat shape the
+    // host checks (runnable.ts RevisionShape) from it, as shapeOf does for a run's Revision.
+    const body = revision.body as AgenticBody & Partial<WorkflowBody>;
     // An agent on a harness that installs on first use starts its install, if it is not in yet: its first run waits for less.
-    const install = revision.kind === "agentic" ? installs[harnessOfBody(revision)] : undefined;
+    const install = revision.kind === "agentic" ? installs[harnessOfBody(body)] : undefined;
     if (install) {
       void install.ensure().catch((error: Error) => log?.(logLine("harness_install_failed", { harness: install.entry.id, message: error.message })));
     }
-    const named = revision.kind === "agentic" ? revision : workflowShape(revision);
+    const named = (revision.kind === "agentic" ? { kind: "agentic" as const, ...(body as AgenticBody) } : workflowShape(body as never)) as unknown as RevisionShape;
     const shape = named.place ? named : { ...named, place: fallbackPlace(named.kind, named.tools ?? []), unnamed: true as const };
     const blockers = await blockersOf(env, shape, settings.get(), { boxes: boxOffers, offers, mcp: mcpTools });
     // An agent's default cap caps each run started without one of its own, and a web tool resolves by the cap: what a cap
     // alone keeps from running under the definition's own picks, whatever this host's settings, would keep every such run
     // from running, so the save is refused, not each run (claude-agent's or codex's own search, picked, under a cap).
-    if ((revision.maxCostUsd ?? 0) > 0) {
+    if ((body.maxCostUsd ?? 0) > 0) {
       const key = (b: Blocker) => `${b.field}\n${b.message}`;
       const plain = new Set((await blockersOf(env, shape, {}, { boxes: boxOffers, offers, mcp: mcpTools })).map(key));
       const capped = await blockersOf(env, shape, {}, { capped: true, boxes: boxOffers, offers, mcp: mcpTools, decisionPrice });
@@ -1507,8 +1522,11 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
 
   /** The revision a run of `entry` starts on: the one `body.revision` pins, else the agent's current; undefined when the
    *  pin names none, or the agent has no revision. */
-  async function pinnedOf(entry: AgentEntry, body: Json) {
-    return typeof body.revision === "string" ? await agents.revision(entry.agent.id, body.revision) : entry.revision && { revision: entry.revision, version: entry.version };
+  async function pinnedOf(entry: AgentEntry, body: Json): Promise<{ revision: Revision; version: number } | undefined> {
+    const found = typeof body.revision === "string" ? await agents.revision(entry.agent.id, body.revision) : entry.revision && { revision: entry.revision, version: entry.version };
+    // A store RevisionRow is the same revision the run path reads as a pi Revision (its body is the revision body JSON); the
+    // run write half (StartDeps) types it as Revision, so the row is handed across as one.
+    return found ? { revision: found.revision as unknown as Revision, version: found.version } : undefined;
   }
 
   /** A run create's body as POST /agents/{id}/runs checks it before it reads the agent: each field issue. */
@@ -1558,12 +1576,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
 
   // ---- files ----------------------------------------------------------------------------------------------------------
 
-  /** Run `run`'s Workspace, which its files' list and reads go through: null while the run has no folder (an imported
-   *  run never has one), which lists nothing. */
-  async function runWorkspace(run: Pick<Run, "agentId" | "id">): Promise<Workspace | null> {
-    const root = runFolder(data, run.agentId, run.id);
-    return (await lstat(root).catch(() => null))?.isDirectory() ? localWorkspace(root) : null;
-  }
+  // A run's Workspace (its files' list and reads) is the store-backed run reads' now (run-reads-over-store, E2c, over the
+  // run's launch place with run-workspace.ts), not a local folder off the data directory. Removed with the file routes.
 
   // ---- an agent's home --------------------------------------------------------------------------------------------------
 
@@ -1923,7 +1937,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const body = await bodyOf(req);
         const answer = await idempotent(req, "/agents", body, async () => {
           const { entry, warnings } = await createAgentOf(body);
-          return { status: 201, body: { ...agentView(entry, linkOrigin(req), await signIns.view(entry.agent.id), await learningOfAgent(entry)), warnings }, headers: { location: `/v2/agents/${entry.agent.id}`, etag: etagOf(entry) } };
+          return { status: 201, body: { ...agentView(entry, linkOrigin(req), await agentExtra(entry)), warnings }, headers: { location: `/v2/agents/${entry.agent.id}`, etag: etagOf(entry) } };
         });
         return send(res, answer.status, answer.body, answer.headers);
       }
@@ -1932,13 +1946,13 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const offset = cursorOf(url.searchParams.get("cursor"));
         const archived = archivedParam(url);
         const all = (await agents.list()).filter((entry) => Boolean(entry.agent.archivedAt) === archived);
-        return send(res, 200, { agents: await Promise.all(all.slice(offset, offset + limit).map(async (entry) => agentView(entry, linkOrigin(req), await signIns.view(entry.agent.id), await learningOfAgent(entry)))), next_cursor: nextCursor(offset + limit, all.length) });
+        return send(res, 200, { agents: await Promise.all(all.slice(offset, offset + limit).map(async (entry) => agentView(entry, linkOrigin(req), await agentExtra(entry)))), next_cursor: nextCursor(offset + limit, all.length) });
       }
       case "getAgent": {
         const entry = await needAgent(id);
         // The tools its current revision grants, as capabilities list them, each with its provider for this agent.
-        const tools = entry.revision ? agentTools(env, settings.get(), await toolingOf(entry.revision), caps.tools.map((tool) => tool.name)) : [];
-        return send(res, 200, { ...agentView(entry, linkOrigin(req), await signIns.view(entry.agent.id), await learningOfAgent(entry)), tools }, { etag: etagOf(entry) });
+        const tools = entry.revision ? agentTools(env, settings.get(), await toolingOf(entry.revision as unknown as Revision), caps.tools.map((tool) => tool.name)) : [];
+        return send(res, 200, { ...agentView(entry, linkOrigin(req), await agentExtra(entry)), tools }, { etag: etagOf(entry) });
       }
       case "updateDefinition": {
         const entry = await needAgent(id);
@@ -1958,14 +1972,15 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         let warnings: InputIssue[] = [];
         const check = async (revision: NewRevision) => void (warnings = await saveable(revision));
         const edited = await agents.commit(entry, checkDefinitionBody(contract ? { definition: body } : body, { creating: false }), { check, contract, ...(match === undefined ? {} : { ifCurrent: entry.revision?.id ?? null }) });
-        return send(res, 200, { ...agentView(edited, linkOrigin(req), await signIns.view(edited.agent.id), await learningOfAgent(edited)), warnings }, { etag: etagOf(edited) });
+        return send(res, 200, { ...agentView(edited, linkOrigin(req), await agentExtra(edited)), warnings }, { etag: etagOf(edited) });
       }
       case "listRevisions": {
         const entry = await needAgent(id);
         const limit = limitOf(url.searchParams.get("limit"));
         const offset = cursorOf(url.searchParams.get("cursor"));
         const all = await agents.revisions(id);
-        const page = await agents.request(() => all.slice(offset, offset + limit).map((row) => revisionView(entry.agent, row, agents.store.readRevision(row.id))));
+        // agentRevisions already carries each row's version and current flag; revisionView builds the v2 shape from it.
+        const page = all.slice(offset, offset + limit).map((row) => revisionView(entry.agent, row));
         return send(res, 200, { revisions: page, next_cursor: nextCursor(offset + limit, all.length) });
       }
       case "setCurrent": {
@@ -1977,7 +1992,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         if (typeof revision !== "string" || !ID.test(revision)) throw invalid([{ field: "revision", reason: revision === undefined ? "missing" : "wrong_type", message: "revision is a revision id of this agent" }]);
         if (!(await agents.revision(id, revision))) throw invalid([{ field: "revision", reason: "not_an_option", message: `${revision} is not a revision of the agent ${id}` }]);
         const moved = await agents.setCurrent(entry, revision);
-        return send(res, 200, agentView(moved, linkOrigin(req), await signIns.view(moved.agent.id), await learningOfAgent(moved)), { etag: etagOf(moved) });
+        return send(res, 200, agentView(moved, linkOrigin(req), await agentExtra(moved)), { etag: etagOf(moved) });
       }
       case "archiveAgent":
       case "unarchiveAgent": {
@@ -1985,7 +2000,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         await agents.setArchived("agent", id, found.name === "archiveAgent");
         // No run sweep on archive: a runner reads an archived agent's run rows directly, nothing to sweep.
         const entry = await needAgent(id);
-        return send(res, 200, agentView(entry, linkOrigin(req), await signIns.view(entry.agent.id), await learningOfAgent(entry)), { etag: etagOf(entry) });
+        return send(res, 200, agentView(entry, linkOrigin(req), await agentExtra(entry)), { etag: etagOf(entry) });
       }
       case "forgetSignIn": {
         await needAgent(id);

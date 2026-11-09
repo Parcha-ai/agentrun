@@ -91,6 +91,7 @@ function revisionInputOf(definition: Json, files: Record<string, string>): Revis
     instructions: definition.instructions as string,
     ...(typeof definition.model === "string" ? { model: definition.model } : {}),
     ...(typeof definition.thinking === "string" ? { thinking: definition.thinking } : {}),
+    ...(definition.approvals === "ask" || definition.approvals === "never" ? { approvals: definition.approvals } : {}),
     ...common,
     ...learning,
     ...capped,
@@ -224,6 +225,7 @@ export async function commitAgent(
         ...(definition.harness === undefined && currentBody.harness ? { harness: currentBody.harness } : {}),
         ...(definition.place === undefined && currentBody.place ? { place: currentBody.place } : {}),
         ...(definition.learning === undefined && current.kind === "agentic" && !isObject(definition.workflow) && (currentBody as AgenticBody).learning !== undefined ? { learning: (currentBody as AgenticBody).learning } : {}),
+        ...(definition.approvals === undefined && current.kind === "agentic" && !isObject(definition.workflow) && (currentBody as AgenticBody).approvals !== undefined ? { approvals: (currentBody as AgenticBody).approvals } : {}),
         ...(definition.max_cost_usd === undefined && currentBody.maxCostUsd !== undefined ? { max_cost_usd: currentBody.maxCostUsd } : {}),
         ...(definition.cap_mode === undefined && currentBody.capMode !== undefined ? { cap_mode: currentBody.capMode } : {}),
       }
@@ -278,7 +280,7 @@ export function definitionOf(agent: AgentRow, revision: RevisionRow, version: nu
     ...(body.capMode !== undefined ? { cap_mode: body.capMode } : {}),
   };
   const kindBody = revision.kind === "agentic"
-    ? { instructions: (body as AgenticBody).instructions, ...((body as AgenticBody).model ? { model: (body as AgenticBody).model } : {}), ...((body as AgenticBody).thinking ? { thinking: (body as AgenticBody).thinking } : {}), ...((body as AgenticBody).learning !== undefined ? { learning: (body as AgenticBody).learning } : {}), ...common }
+    ? { instructions: (body as AgenticBody).instructions, ...((body as AgenticBody).model ? { model: (body as AgenticBody).model } : {}), ...((body as AgenticBody).thinking ? { thinking: (body as AgenticBody).thinking } : {}), ...((body as AgenticBody).learning !== undefined ? { learning: (body as AgenticBody).learning } : {}), ...((body as AgenticBody).approvals !== undefined ? { approvals: (body as AgenticBody).approvals } : {}), ...common }
     : { workflow: (body as WorkflowBody).workflow, ...common };
   return {
     id: agent.id,
