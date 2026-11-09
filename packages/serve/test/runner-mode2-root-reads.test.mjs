@@ -216,7 +216,11 @@ for (const [name, harness, build] of [["pi's spec", undefined, adapterRunSpecFro
     const disk = `/api/disks/${ARCHIL_SETTINGS.diskId}`;
     assert.deepEqual(callsOf(control), [`GET ${disk}`, `POST ${disk}/users`], "minted at the claim");
     claimSignal.abort(new Error("claim lost (fenced)"));
-    for (let tries = 0; callsOf(control).length < 3 && tries < 400; tries += 1) await new Promise((resolve) => setTimeout(resolve, 5));
-    assert.deepEqual(callsOf(control).slice(2), [`DELETE ${disk}/users/token?identifier=tok-1`], "removed when the claim was lost, with no release yet");
+    // The lost claim's revoke settles with its list read for an earlier epoch's, after its remove: awaited, then read.
+    const swept = control.seen((one, index, all) => one.method === "GET" && all.slice(0, index).some((before) => before.method === "DELETE"));
+    let timer;
+    const bound = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`the lost claim's token was never removed: ${JSON.stringify(callsOf(control))}`)), 20_000); });
+    await Promise.race([swept, bound]).finally(() => clearTimeout(timer));
+    assert.deepEqual(callsOf(control).slice(2), [`DELETE ${disk}/users/token?identifier=tok-1`, `GET ${disk}`], "removed when the claim was lost, with no release yet, then the run's earlier epochs looked for");
   });
 }
