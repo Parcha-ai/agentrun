@@ -267,16 +267,7 @@ const MCP_SERVER_VIEW = {
     not_metered: { type: "array", items: { type: "string" }, description: "The tools it lists that no price meters, in its order: a call of one runs outside the run's cost and its cap (\"not metered\" on the run's timeline). Absent when every tool has a price ($0 included)." },
     listed_at: { type: "string", format: "date-time", description: "When its tools were last listed (a PUT or a refresh)." },
     updated_at: { type: "string", format: "date-time", description: "When it was last saved." },
-    secret: {
-      type: "object", additionalProperties: false, required: ["name", "set", "source", "changed_at"],
-      properties: {
-        name: { type: "string", description: "`mcp:<server>`." },
-        set: { type: "boolean", description: "Whether a credential is kept sealed for it." },
-        source: { enum: ["env", "console", "sign-in", null], description: "How it came: `console`, pasted (a bearer token or headers); `sign-in`, an OAuth sign-in; null with none. An MCP server's credential never comes from the server's environment." },
-        changed_at: { type: ["string", "null"], format: "date-time", description: "When the credential was last set: a save with a new one, or a sign-in. A save that keeps it, a refresh of the tools and a token refresh leave it. Null with none." },
-      },
-      description: "The credential as every secret is read: never a value.",
-    },
+    secret: { $ref: "#/components/schemas/SecretMeta", description: "Its credential as every secret is read (SecretMeta), never a value: named mcp:<server>; source `console` for a pasted bearer token or headers, `sign-in` for an OAuth sign-in (an MCP credential never comes from the server's environment), null with none; changed_at moves when a new credential is saved or signed in, never on a save that keeps it, a refresh of the tools or a token refresh." },
   },
 };
 const MCP_AUTH = {
