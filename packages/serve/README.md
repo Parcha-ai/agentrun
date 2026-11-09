@@ -1570,8 +1570,8 @@ A firing starts its run once. Its key comes from the trigger and its nominal tim
 a restart drives again finds its run. A firing's key stays bound to that run: when the server stopped while setting the
 run up, the firing reads `failed` ("The server stopped while setting up the run.") with that run's id, it never fires
 again, the next firing goes ahead, and `POST /v2/triggers/{id}/fire` is how a person tries it again. While the trigger's last run is active (working, or waiting on a person), a firing
-is `skipped`, with why (a webhook trigger with `accept` is the exception: [each event it takes](#webhook-triggers)
-starts its own run); a full server (`429`) keeps it due and tries again. Times missed while the server was down are
+is `skipped`, with why (a webhook trigger with `accept` or `max_active_runs` is the exception: [each event it
+takes](#webhook-triggers) starts its own run); a full server (`429`) keeps it due and tries again. Times missed while the server was down are
 one `missed` firing with their count, and the schedule goes on from now; the latest of them still fires, once, when it is
 no older than the trigger's `catchup_window_s` (default an hour; 0, never), marked `catch_up`. A
 firing while the last run is active (working, or parked waiting on a person) is skipped with why, never queued,
@@ -1581,7 +1581,8 @@ gets a `trigger.failed` message for it (`data: {trigger_id, name, firing_key, no
 trigger off (`disabled: {reason: "auto_paused"}`); a firing that starts its run resets the count, and so does turning
 it on again. Run now (below) works on an auto-paused trigger too, and counts toward the streak like any firing: one that
 starts its run resets it, one that fails adds to it. A trigger whose cron line or zone no longer reads here (after an
-upgrade of the cron library or of the time zone data) is turned off alone, at a start or when it comes due
+upgrade of the cron library or of the time zone data), or whose `every_s` a hand edit of its row put out of range, is
+turned off alone, at a start or when it comes due
 (`disabled: {reason: "source_unreadable", detail}`), and every other schedule goes on firing; turning it on again takes a
 new source. A trigger's firings are driven one at a time, in order, so a firing a crash left due settles to its run
 before the next one's overlap is checked. `PATCH /v2/triggers/{id}` changes it, and
@@ -1592,7 +1593,8 @@ firing has left the history too, and later it is a new firing that a run the key
 ### Webhook triggers
 
 A trigger with `source: {kind: "webhook"}` fires on each request to `POST /v2/hooks/{trigger_id}`: this server's one
-route with no token. The request is signed by the trigger's own secret under the
+route with no token. Its view carries that address as `hook_url`, at the server's public URL when it has one
+(`AGENTRUN_PUBLIC_URL`), else the path; a schedule has none. The request is signed by the trigger's own secret under the
 [Standard Webhooks](https://www.standardwebhooks.com) spec, the one this server's outbound [webhooks](#webhooks) sign
 with, so a sender uses any of its libraries: `webhook-id` (1 to 255 printable ASCII characters, no space), `webhook-timestamp` (Unix seconds, within 5 minutes of this
 server's clock either way) and `webhook-signature: v1,<base64 HMAC-SHA256 of "{id}.{timestamp}.{body}">` under the
@@ -1672,8 +1674,12 @@ Such a trigger can take every run this server has room for, starving other trigg
 `max_active_runs` (1 to 100; `null` clears it): past that many of its runs active, a firing waits due and is tried
 again, as at a full server, and is never skipped. It counts the runs this trigger started while they work, kept apart
 from its history (so a long run counts however many firings follow it) and read again at each check; a run a person
-opens again after it ended is that person's follow-up, not counted. Only a trigger whose firings each start a run
-takes it (`422` otherwise). On a public repository, a rule for `issue_comment` or `issues` events needs a condition on
+opens again after it ended is that person's follow-up, not counted. Any `start_run` trigger of a pushed source (a
+webhook) takes it, with or without `accept`: set, each event starts its own run, never skipped behind the last, up to the
+cap; past it a firing waits due, and past 20 due an event answers `429 rate_limited` with `Retry-After`. Without
+`max_active_runs`, a trigger with no `accept` keeps the overlap skip: an event while its last run is active is
+`skipped`. A schedule keeps the overlap skip and takes no cap, and nor does a `message_run` target, which starts no run
+(`422` for either). On a public repository, a rule for `issue_comment` or `issues` events needs a condition on
 `/comment/author_association` or `/issue/author_association` (`in: ["OWNER", "MEMBER", "COLLABORATOR"]`): without one,
 anyone who can comment starts runs.
 
@@ -2006,6 +2012,12 @@ An agent or a run is archived, never deleted: `DELETE` stays `405`. These routes
 - `POST /v2/agents/{id}/archive` hides the agent and its runs from `GET /agents`, `GET /runs` and
   `GET /agents/{id}/runs`; `POST /v2/runs/{id}/archive` hides one run. `.../unarchive` shows them again. Each is
   idempotent (archiving again keeps the first time), takes no body, and answers what it changed.
+- Archiving an agent turns off every trigger that runs as it (a `start_run` of it, a `message_run` to one of its
+  runs) with the archive, in one write: `disabled: {reason: "agent_archived", detail}`, and the answer lists them in
+  `triggers_off: [{id, name}]`. From then no firing starts a run of it: one that comes due anyway (waiting on its
+  `max_active_runs`, or on a retry) is `skipped`, "The agent <name> is archived.". While it is archived, a trigger made
+  on, turned on or aimed at it is `409 agent_archived`. Unarchiving turns none on: its answer lists those still off, and
+  `PATCH /v2/triggers/{id}` `{enabled: true}` turns each on.
 - Each list takes `archived=true` to list only archived ones (`false`, the default, lists the others).
 - Every read by id still answers, with `archived_at` (null when it is not archived; a run's is its own, else its
   agent's): `GET /agents/{id}`, `GET /runs/{id}`, its timeline and its files. `/usage` still counts archived runs: the
