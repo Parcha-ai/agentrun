@@ -979,13 +979,17 @@ export class E2BProvider implements ComputerProvider {
 				call(
 					`root's ${argv[0] === ARCHIL_HELPER ? `agentrun-archil ${argv[1]}` : argv[0]} in ${name}`,
 					async () => {
-						const handle = await sandbox.commands.run(argv.map(quote).join(" "), { background: true, stdin: true, user: "root", timeoutMs, requestTimeoutMs: requestMs });
-						try {
-							if (stdin !== undefined) await sandbox.commands.sendStdin(handle.pid, new Uint8Array(Buffer.from(stdin, "utf8")), { requestTimeoutMs: requestMs });
-							await sandbox.commands.closeStdin(handle.pid, { requestTimeoutMs: requestMs });
-						} catch (error) {
-							await handle.kill().catch(() => false);
-							throw error;
+						// Stdin only for a step given one (mount and revoke's token). A step that reads none (serve, which detaches and
+						// exits at once; checkin; the preflight) may end before its stdin could be closed, and E2B then knows no such pid.
+						const handle = await sandbox.commands.run(argv.map(quote).join(" "), { background: true, stdin: stdin !== undefined, user: "root", timeoutMs, requestTimeoutMs: requestMs });
+						if (stdin !== undefined) {
+							try {
+								await sandbox.commands.sendStdin(handle.pid, new Uint8Array(Buffer.from(stdin, "utf8")), { requestTimeoutMs: requestMs });
+								await sandbox.commands.closeStdin(handle.pid, { requestTimeoutMs: requestMs });
+							} catch (error) {
+								await handle.kill().catch(() => false);
+								throw error;
+							}
 						}
 						try {
 							const done = await handle.wait();
