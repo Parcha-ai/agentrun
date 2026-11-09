@@ -230,6 +230,36 @@ describe("applying a template", () => {
     expect(t.host.querySelector('section[aria-label="Applied"] h1')!.textContent).toContain("Code review: acme/web applied");
   });
 
+  it("shows each webhook trigger's secret once beside its URL, with Copy and that it won't be shown again", async () => {
+    const SECRET = "CANARY-VALUE-5e1f0a2b9c";
+    const t = await open("pr-reviewer", { apply: async () => ({ template: "pr-reviewer", version: "1.0.0", agent_id: "pr-reviewer-1", trigger_ids: ["trg_hook", "trg_cron"], warnings: [],
+      webhook_secrets: [{ trigger_id: "trg_hook", secret: SECRET }] }) });
+    await t.type(t.host.querySelector('[data-field="parameters.repo"] input'), "acme/web");
+    await t.click(t.button(/^Apply/));
+    // A secret shown once keeps the screen: it never moves on past it.
+    expect(t.went).toEqual([]);
+    const made = t.host.querySelector('section[aria-label="Applied"]')!;
+    const once = made.querySelector('section[aria-label^="The webhook\'s URL and secret"]')!;
+    expect(once.textContent).toContain(`${location.origin}/v2/hooks/trg_hook`);
+    expect(once.textContent).toContain(SECRET);
+    expect(once.textContent).toContain("You won't see this secret again.");
+    expect([...once.querySelectorAll("button")].some((b) => /Copy secret/.test(b.textContent ?? ""))).toBe(true);
+    // Only the webhook trigger's: a schedule's (trg_cron) has no secret and is not listed.
+    expect(made.textContent).not.toContain("/v2/hooks/trg_cron");
+    expect(made.querySelector('a[href="#/agents/pr-reviewer-1"]')?.textContent).toContain("Open the agent");
+  });
+
+  it("on a retry of the same apply, shows the server's note in place of a secret it no longer sends", async () => {
+    const t = await open("pr-reviewer", { apply: async () => ({ template: "pr-reviewer", version: "1.0.0", agent_id: "pr-reviewer-1", trigger_ids: ["trg_hook"], warnings: [],
+      note: "This apply was made before: its webhook secrets were shown then and are not shown again." }) });
+    await t.type(t.host.querySelector('[data-field="parameters.repo"] input'), "acme/web");
+    await t.click(t.button(/^Apply/));
+    expect(t.went).toEqual([]);
+    const made = t.host.querySelector('section[aria-label="Applied"]')!;
+    expect(made.textContent).toContain("This apply was made before: its webhook secrets were shown then and are not shown again.");
+    expect(made.textContent).not.toContain("CANARY-VALUE");
+  });
+
   it("opens the made agent at once when there are no warnings", async () => {
     const t = await open("pr-reviewer");
     await t.type(t.host.querySelector('[data-field="parameters.repo"] input'), "acme/web");
