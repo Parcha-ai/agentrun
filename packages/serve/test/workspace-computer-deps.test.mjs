@@ -169,6 +169,63 @@ test("the composer builds a working claim on the faux box: a faux desktop is a k
   assert.equal(faux.viewPage(page), undefined, "its release ended it");
 });
 
+/** A sandbox provider stand-in: create records its spec; its computer binds the run's folder (the read-back it gives). */
+function fakeSandbox(root, record) {
+  const computer = fakeComputer(root);
+  return {
+    id: "fake",
+    version: "0",
+    capabilities: () => ({ lifetime: "janitor", maxLifetimeMs: 86_400_000 }),
+    check: () => [],
+    list: async () => ({ ok: true, value: [] }),
+    async create(spec) {
+      record.created.push(structuredClone(spec));
+      return { ok: true, value: { id: "c1", name: "c1" } };
+    },
+    connect: async () => ({ ok: true, value: { client: computer.client, hello: { version: "0", os: "linux", kind: "linux", arch: "amd64", groups: ["exec", "files", "processes"] }, close: async () => {} } }),
+    async attach() {
+      const read = await computer.readBack();
+      return { ok: true, value: { id: "c1", name: "c1", spec: { image: "i", user: "1000:1000", network: "none", ...(read.ok ? { mount: read.value } : {}) } } };
+    },
+    release: async (ref, how) => (record.released.push([ref.id, how]), { ok: true, value: undefined }),
+  };
+}
+
+/** A claim as the runner's spec builders make one (its run, epoch, revision and place), over a store that also has the
+ *  run's launch row (runs.launch), as the runner's store does. `boxAllow`: the launch's box_allow. */
+async function placeClaim(place, boxAllow) {
+  const root = scratch();
+  const sealKey = randomBytes(32);
+  const store = { ...(await savedKeysStore(sealKey)), runs: { launch: async (runId) => ({ runId, body: { input: { content: "Go." }, title: "t", place, ...(boxAllow === undefined ? {} : { box_allow: boxAllow }) }, sealed: null, createdAt: 0 }) } };
+  const record = { created: [], released: [], loaded: [] };
+  const load = async (id, options) => (record.loaded.push([id, options]), fakeSandbox(root, record));
+  const { computerForClaim, computerDeps } = computerDepsFrom({ env: ENV, store, sealKey, kinds: KINDS, load });
+  const answer = await computerForClaim({ runId: "run-1", epoch: 3, revisionId: "rev-1", place }, store, { ...computerDeps, mode: 1, workspace: localWorkspace(root), sealKey });
+  return { answer, record };
+}
+
+// What the runner's stopgap (harness-loops.ts sandboxComputerForClaim) gives, the composer gives: none for a runner place,
+// and for a sandbox place a Docker computer reaching what the run's launch allows (box_allow), no network otherwise.
+test("for a runner place the composer's claim makes no computer", async () => {
+  const { answer, record } = await placeClaim({ mode: "runner" });
+  assert.equal(answer.computer, undefined);
+  assert.deepEqual(record.loaded, [], "no provider built");
+  await answer.release();
+});
+
+test("for a sandbox place the composer's claim makes a Docker computer that reaches what the run's launch allows, and none without an allow-list", async () => {
+  const allowed = await placeClaim({ mode: "sandbox", box: "docker" }, ["example.com", "api.example.org"]);
+  assert.equal(allowed.answer.computer?.kind, "sandbox");
+  assert.deepEqual(allowed.record.loaded.map(([id]) => id), ["docker"]);
+  assert.deepEqual(allowed.record.created[0].network, { allow: ["example.com", "api.example.org"] }, "the launch's box_allow is the computer's allow-list");
+  await allowed.answer.release();
+  for (const boxAllow of [undefined, "none"]) {
+    const closed = await placeClaim({ mode: "sandbox", box: "docker" }, boxAllow);
+    assert.equal(closed.record.created[0].network, "none", `box_allow ${JSON.stringify(boxAllow)}: no network`);
+    await closed.answer.release();
+  }
+});
+
 test("the composer builds every provider through the one provider builder, and gives the claim the mount check", async () => {
   const store = memoryStore();
   const { computerDeps } = computerDepsFrom({ env: {}, store, sealKey: undefined, kinds: KINDS, load: async () => { throw new Error("not built here"); } });
