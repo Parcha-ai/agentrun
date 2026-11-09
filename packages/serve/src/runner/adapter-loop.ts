@@ -19,9 +19,9 @@ import { type Conversation, type ConversationId, createRegistry, Harness, LiveDo
 import { type AdapterSession, type AgentAdapter, type BeforeRequest, type HostTool, modelPortFor, type Refusal, runBooking, type SessionSpec } from "@parcha/agentrun-kernel";
 import type { KernelHooks, ToolCall } from "./conformance/subject.js";
 import { type AnswerData, type AskData, type BudgetData, type EndData, KINDS, type RaiseData } from "./journal-kinds.js";
-import { originOf } from "@parcha/pi-durable-agent/timeline";
+import { originOf, RUN_RESUMED } from "@parcha/pi-durable-agent/timeline";
 import { type Claim, type Command, type CommandOutcome, deniedText, endedBy, type Loop, type LoopDeps, type LoopEnd, type LoopFactory, noteOf, type StopReason } from "./loop-contract.js";
-import { approvalOf, CLOSE_MS, STOP_SETTLE_MS, commandRequest, DEFAULT_RESTART_LIMIT, entriesOf, findData, Gate, heldReporter, Interrupted, KernelFault, Parked, quiet, restartLimited, writesEntry, writesSubmission } from "./loop.js";
+import { approvalOf, CLOSE_MS, STOP_SETTLE_MS, commandRequest, cutLast, DEFAULT_RESTART_LIMIT, entriesOf, findData, Gate, heldReporter, Interrupted, KernelFault, Parked, quiet, restartLimited, writesEntry, writesSubmission } from "./loop.js";
 import type { PiRun, PiSessionIO, PreIntentAnswer, PreIntentCall } from "./adapters/pi.js";
 import { journalSessions } from "./sessions.js";
 import { sideEffect } from "./side-effects.js";
@@ -316,6 +316,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           raising.resuming = true;
           raising.state ??= await raiseStateOf();
         }
+        // Taken over from a runner whose lease ran out mid-run: said on the run's timeline once, at this claim's first pass.
+        if (restarts === 0 && claim.lost) await noteTakenOver(harness, root, claim.lost.runner);
         opened();
         await reportHeld(harness, root.id);
         if (restarts > restartLimit + 1) {
@@ -386,7 +388,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         }
         const outcome = await turn;
         await harness.waitForIdle(context);
-        const cutOff = restartLimited(await entriesOf(gate.journal, root.id, context));
+        const settledEntries = await entriesOf(gate.journal, root.id, context);
+        const cutOff = restartLimited(settledEntries);
         if (cutOff) return await writeEnd(harness, root, gate, { state: "failed", summary: `a tool call faulted on every restart: ${cutOff}` }, []);
         if (outcome.status !== "completed" && refused) {
           // A turn the host's check refused: what that does to the run is the cap's rule (parkOf), as on main. A refusal a
@@ -401,7 +404,11 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           if (park?.outcome === "parked") return await parkAtCap(harness, root, gate, { pending: park.pending, words: park.words });
           return await writeEnd(harness, root, gate, { state: "failed", summary: park?.outcome === "failed" ? park.error : refused.refuse }, []);
         }
-        return await writeEnd(harness, root, gate, outcome.status === "completed" ? { state: "ended" } : { state: "failed", summary: `the run gave no answer (${outcome.status})` }, []);
+        if (outcome.status !== "completed") return await writeEnd(harness, root, gate, { state: "failed", summary: `the run gave no answer (${outcome.status})` }, []);
+        // An answer cut at the model's output limit is unfinished: the run fails, saying so, never ended (loop.ts cutLast;
+        // the words are loop-contract's cutAtLimit).
+        const cut = cutLast(settledEntries);
+        return await writeEnd(harness, root, gate, cut ? { state: "failed", summary: cut } : { state: "ended" }, []);
       }
     } catch (error) {
       if (gate?.sealed || deps.signal.aborted) return await interrupted("its claim's signal aborted");
@@ -568,6 +575,17 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     let timer: NodeJS.Timeout | undefined;
     await Promise.race([new Promise<void>((resolve) => bookedAll.push(resolve)), new Promise<void>((resolve) => (timer = setTimeout(resolve, CLOSE_MS)))]);
     clearTimeout(timer);
+  }
+
+  /** The run's timeline says it went on after its runner was lost (RUN_RESUMED, `after: runner_lost`): one root entry,
+   *  no run patch. A journal sealed meanwhile (the claim lost again, a shutdown) refuses it, and the loop goes on as it
+   *  would: the next claim says it. */
+  async function noteTakenOver(on: Harness, conversation: Conversation, runner: string): Promise<void> {
+    try {
+      await on.commit((tx) => tx.appendEntry(conversation.id, { kind: RUN_RESUMED, data: { after: "runner_lost", runner, at: Date.now() } }), context);
+    } catch (error) {
+      if (!gate?.sealed) throw error;
+    }
   }
 
   async function writeEnd(on: Harness, conversation: Conversation, theGate: Gate, data: EndData, take: readonly number[]): Promise<LoopEnd> {
