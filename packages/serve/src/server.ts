@@ -111,7 +111,14 @@ import { agentTools, browserKeyRow, isUnavailable, recheckPlane, settingsIssues,
 import { toolSettingsOverStore } from "./tool-settings-store.js";
 import { MAX_FILES_PER_RUN, MAX_UPLOAD_BYTES, Uploads, UPLOADS_DIR } from "./uploads.js";
 import { entryAt, listFiles, sendFile as sendWorkspaceFile, viewOf } from "./run-files.js";
-import { COMPUTER_ROUTES, computerRoute } from "./computer-view.js";
+import { COMPUTER_ROUTES } from "./computer-view.js";
+import { PROVIDERS as COMPUTER_PROVIDERS, providerFor as computerProviderFor, providerIds as computerProviderIds, SETTING_KINDS, servingRefusals } from "@parcha/agentrun-computer";
+import { capabilityToolDefs, hostToolDefs } from "@parcha/agentrun-kernel/kernel";
+import { archilRoute, createArchilRoutes } from "./archil-routes.js";
+import { computerOfPlace, type ComputerKind, type ComputerSetting, type PlaceView } from "./computer-setting.js";
+import { computerCapabilities, type ComputerRoutes, createComputerRoutes, folderModeOf, type KindRegistry, settingsComputerRoute } from "./computers.js";
+import { FAUX_VIEW_PATH, type FauxComputers, fauxComputers } from "./faux-computers.js";
+import { runComputerField } from "./run-computer.js";
 import { writesHeld } from "./workspace.js";
 import { agentHomeFolder, isWorkspaceError, localWorkspace, runFolder, serverRunWorkspace, type Workspace } from "./workspace/index.js";
 // server-lock.ts is gone: the store's EXCLUSIVE connection is the one-server lock (StoreOwned refuses a second server).
@@ -961,6 +968,39 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const adapters = options.triggerAdapters ?? TRIGGER_ADAPTERS;
   const openapi = openapiDocument((operationId) => ROUTES.find((r) => r.name === operationId)?.capability, adapters);
   const sealKey = sealKeyOf(withSecrets(base, "own")[SEAL_KEY_ENV]);
+  // Settings → Computers and the owner's Archil settings, over the one store (computers.ts, archil-routes.ts), built once
+  // at the first request, when the server's own address is known (--faux's desktop view is a page on it). The real kind
+  // registry and each provider's create() are the computer package's (kinds.ts, providers.ts providerFor); under --faux,
+  // faux-computers.ts's three providers stand in. The folder mode is read at each call (folderModeOf), so turning Archil
+  // on or off needs no rebuild; a key named in the server's environment wins over a saved one.
+  const browserToolNames = (await import("@parcha/pi-browser")).BROWSER_TOOLS.map((tool: { name: string }) => tool.name);
+  const localTools = new Set(hostToolDefs({ maxExecS: 600, shell: "local" }).map((def) => def.name));
+  const kindTools = (kind: ComputerKind): readonly string[] =>
+    kind === "none" ? [] : kind === "sandbox" ? hostToolDefs({ maxExecS: 600, shell: "computer" }).map((def) => def.name).filter((name) => !localTools.has(name))
+      : kind === "browser" ? browserToolNames : capabilityToolDefs(kind).map((def) => def.name);
+  let faux: FauxComputers | undefined;
+  const fauxOf = (): FauxComputers => (faux ??= fauxComputers({ viewerBase: ownOriginOf() }));
+  let computerRoutes: ComputerRoutes | undefined;
+  const computersOf = (): ComputerRoutes => (computerRoutes ??= createComputerRoutes({
+    store, sealKey, tools: kindTools, mode: folderModeOf(store), env: process.env,
+    ...(options.faux
+      ? { kinds: fauxOf().kinds, factories: fauxOf().factories, keyTable: fauxOf().keyTable }
+      : {
+        kinds: { SETTING_KINDS, PROVIDERS: COMPUTER_PROVIDERS, servingRefusals } as unknown as KindRegistry,
+        factories: Object.fromEntries(computerProviderIds.map((id) => [id, (providerOptions: Record<string, string>) => computerProviderFor(id, providerOptions as never)])),
+      }),
+  }));
+  const archil = createArchilRoutes({ store, sealKey, env: process.env });
+  /** A run's computer on its read: its revision's computer setting, else the one its place says; absent for none. */
+  const runComputerOf = async (runId: string, view: Record<string, unknown>): Promise<Record<string, unknown>> => {
+    const run = await store.runs.get(runId);
+    const body = run ? ((await store.agents.revision(run.revisionId))?.body as { computer?: ComputerSetting; place?: PlaceView } | undefined) : undefined;
+    const setting = body?.computer ?? (body?.place ? computerOfPlace(body.place) : undefined);
+    if (!setting) return {};
+    const error = view.error as { code?: unknown; message?: unknown } | null | undefined;
+    const field = runComputerField(setting, { id: runId, status: String(view.status), ...(error && typeof error.code === "string" ? { error: { code: error.code, message: String(error.message ?? "") } } : {}) });
+    return field ? { computer: field } : {};
+  };
   // The agents accessor the routes call, over the one store (module A): the agents-store functions, with the run-row reads
   // the server makes (store-reads) under `.store`. `.request` is a thin pass-through — the store runs its own transactions,
   // so a call needs no outer serialization. The old Agents class and its per-agent home store are gone.
@@ -1966,7 +2006,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     if (!matching.length) throw new ApiError("not_found", path.startsWith("/v2/") ? `no route /v2${path}: /v2 is in it twice. A path an answer gives (upload.url, a Location) starts at the server's root: send it to the server's address, not after the /v2 base.` : `no route ${path}`);
     const found = matching.find((r) => r.method === req.method || (req.method === "HEAD" && r.method === "GET"));
     if (!found) throw new ApiError("method_not_allowed", `${req.method} is not a method of ${path}`, {}, { allow: [...new Set(matching.map((r) => r.method))].join(", ") });
-    if (found.name === "getCapabilities") return send(res, 200, forCaller(caps, byOwnerSession(req)));
+    if (found.name === "getCapabilities") {
+      // features.computers: the computer kinds this server offers now (computers.ts), read at each answer, since turning
+      // Archil on or off, or saving a key, changes them.
+      const answer = forCaller(caps, byOwnerSession(req));
+      return send(res, 200, { ...answer, features: { ...answer.features, computers: await computerCapabilities(computersOf()) } });
+    }
     if (found.name === "getOpenapi") return send(res, 200, servedOpenapi(openapi, req.socket.localPort));
     // The one route with no token: a pushed trigger source's request, checked by its source before anything else is
     // read (push-handler.ts).
@@ -2122,7 +2167,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       case "getRun": {
         const view = await viewOverStore(store, id, viewDepsFor(linkOrigin(req)));
         if (!view) throw new ApiError("not_found", `no run ${id}`);
-        return send(res, 200, view);
+        return send(res, 200, { ...view, ...(await runComputerOf(id, view)) });
       }
       case "getTimeline":
         await needRun(id);
@@ -2213,14 +2258,31 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       case "getRunComputer":
       case "takeOverRunComputer":
       case "handBackRunComputer": {
-        // A run's desktop or phone: its view, the owner's take-over and hand-back (computer-view.ts).
-        const run = await needRun(id);
-        const answer = await computerRoute(found.name, run.id, {
-          ownerSession: byOwnerSession(req), token: req.headers.authorization !== undefined, accounts: owner !== undefined,
-          ...(found.name === "getRunComputer" ? {} : { body: await bodyOf(req) }),
-        });
-        if (found.name !== "getRunComputer") runs.remark(run.id);
-        return send(res, 200, answer, { "cache-control": "no-store" });
+        // TODO(take-over over the store, k2): a run's desktop or phone view, take-over and hand-back read and write the
+        // run's computer through the store, as its runner holds it; computer-view.ts's in-memory register belongs to the
+        // pre-cut server and is not ported. Until k2's store-backed work lands, these routes refuse in words.
+        await needRun(id);
+        throw unsupported("computer.take_over", "A run's desktop or phone view, take-over and hand-back are not wired on this server yet: they move to the store with the runner's computer (the store-backed take-over).");
+      }
+      case "listComputers":
+      case "saveComputerKeys":
+      case "testComputer": {
+        // Settings → Computers (computers.ts): the rules are the handler's; this sends its answer.
+        const provider = found.name === "listComputers" ? undefined : id;
+        const body = found.name === "saveComputerKeys" ? await bodyOf(req) : undefined;
+        const controller = new AbortController();
+        req.once("close", () => controller.abort());
+        return send(res, 200, await settingsComputerRoute(computersOf(), found.name, { ...(provider !== undefined ? { provider } : {}), ...(body !== undefined ? { body } : {}), signal: controller.signal }), { "cache-control": "no-store" });
+      }
+      case "getWorkspaceArchil":
+      case "putWorkspaceArchil":
+      case "deleteWorkspaceArchil":
+      case "testWorkspaceArchil": {
+        // The owner's Archil settings, Mode 2 on and off (archil-routes.ts): the rules are the handler's.
+        const body = found.name === "putWorkspaceArchil" ? await bodyOf(req) : undefined;
+        const controller = new AbortController();
+        req.once("close", () => controller.abort());
+        return send(res, 200, await archilRoute(archil, found.name, { ...(body !== undefined ? { body } : {}), signal: controller.signal }), { "cache-control": "no-store" });
       }
       case "listRunFiles": {
         await needRun(id);
@@ -2607,6 +2669,14 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     if (raw === MCP_PATH) return void mcp(req, res).catch(fail);
     if (raw === "/llms.txt") return void answerLlms(req, res).catch(fail);
     if (answerPage(req, res, raw, { token, dir: data, authFailed, console: options.console, takesBytes, ...(owner ? { owner } : {}), ...(options.publicUrl ? { publicUrl: options.publicUrl } : {}) })) return;
+    // Under --faux only: a faux desktop's live view, a page on this server's own address (faux-computers.ts viewPage), so
+    // a run's take-over has a viewer to open in the console's real-browser flows. Gone after the computer's release.
+    if (options.faux && raw.startsWith(`${FAUX_VIEW_PATH}/`)) {
+      const page = fauxOf().viewPage(raw);
+      if (page === undefined) return fail(new ApiError("not_found", `no faux desktop at ${raw}`));
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" }).end(req.method === "HEAD" ? undefined : page);
+      return;
+    }
     if (!raw.startsWith("/v2/")) return fail(new ApiError("not_found", `no route ${raw}; the API is under /v2`));
     // A run's id needs no decoding: one that is not an id as sent (a stray or malformed escape) is no run's, and is never
     // decoded here, where a throw would leave the request listener.
