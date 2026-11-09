@@ -110,7 +110,7 @@ const HOST_TOOLS_SERVER = "hands";
  *  by. A settings key is itself (a table tool, `monid.<tool>`, `mcp:<server>/<tool>`); a CLI's own tool is the table's it
  *  is; an MCP alias, `mcp__<server>__<tool>` (claude-agent's host tools `mcp__hands__<wire name>`, mapped as their
  *  wire name) and a harness's own (its facts' toolAlias: OpenCode's `<server>_<tool>`), is `mcp:<server>/<tool>`; a catalog's wire name (`monid_run`) is its
- *  catalog name; the browser's registrations are `browser`; an adapter's read_skill_file is `read`. OpenCode's `<server>_<tool>` maps only for a server of
+ *  catalog name; the browser's registrations are `browser`; an adapter's read_skill_file is `read` (but an agent's MCP tool of that name is its own). OpenCode's `<server>_<tool>` maps only for a server of
  *  `mcpServers` (the run's configured MCP servers), never by its shape, since a host tool's name has the same shape.
  *  Undefined: nothing maps it, and the gate asks. The key only: an MCP call enters the gate once, in the MCP gateway for a
  *  registration it marks (GATED_BY_GATEWAY), else where its tool is wrapped. */
@@ -120,7 +120,12 @@ export function settingsKeyOf(harness: string, name: string, mcpServers: readonl
   if (TABLE_TOOLS.includes(name) || SERVE_OWN_TOOLS.includes(name) || isCatalogTool(name)) return name;
   // An adapter's own read of a skill's file (codex's and OpenCode's read_skill_file, from the session's copy of the run's
   // skills) is a read: held to read's key, so a server's read deny refuses it and the default allows it, on every harness.
-  if (name === READ_SKILL_FILE) return "read";
+  // Unless the name is an agent's MCP tool on this harness (OpenCode's <server>_<tool>: a configured server `read` with a
+  // tool `skill_file`): that tool keeps its own key, so read's setting never stands in for it.
+  if (name === READ_SKILL_FILE) {
+    const alias = builtinHarness(harness)?.facts?.toolAlias?.exec(name) ?? null;
+    return alias && mcpServers.includes(alias[1]!) ? mcpToolName(alias[1]!, alias[2]!) : "read";
+  }
   // A desktop's or a phone's tool is its kind's key, as the browser's registrations are `browser`.
   const kind = KIND_TOOLS.get(name);
   if (kind !== undefined) return kind;
