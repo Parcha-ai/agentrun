@@ -1,6 +1,28 @@
 # @parcha/agentrun-computer
 
-Private for now: not published, and nothing else in the repository uses it yet.
+Published from the next release; nothing else in the repository uses it yet.
+
+```sh
+npm install @parcha/agentrun-computer@latest
+```
+
+```ts
+import { DockerProvider, providerModule } from "@parcha/agentrun-computer";
+// The mount rule alone: loads no provider, no vendor SDK and no conformance code.
+import { checkMount, readBackOf, WORKSPACE, type MountSpec } from "@parcha/agentrun-computer/mount";
+```
+
+The package carries the daemon for Linux amd64 and arm64 in `dist/`, so a provider runs it with no Go on the host. A
+vendor's SDK is the host's: Modal's `modal` package is imported only when the Modal provider is built, and the package
+depends on nothing. A provider's mount kinds are its file's `MOUNT`, read with `(await providerModule(id)).MOUNT`,
+which loads that one provider's file and the protocol modules it uses, and no other provider.
+
+Every install carries all of `dist/`, whatever the host's architecture and whichever provider it uses: both daemons
+(a Docker host on either architecture and every remote provider use one of them, and the archive does not know which),
+every provider's module, and the conformance CLI and suite with the Daytona sweep. At 0.1.0-beta.31 (`npm pack
+--dry-run --json`) that is 122 files, 3,688,167 bytes packed and 9,234,731 unpacked; the two daemons are 8,216,900 of
+the unpacked bytes (4,219,042 amd64, 3,997,858 arm64) and the conformance code 238,421. The trade: no Go, no download
+and no install script on the host, for one daemon more than the host runs: about 4 MB unpacked and 1.6 MB compressed.
 
 The open platform's computer protocol. A computer is anything an agent can run commands on: a container, a microVM, a
 full VM, a machine. The protocol has two layers:

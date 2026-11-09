@@ -37,7 +37,7 @@ test("a journal commit under a claim whose epoch moved on is refused with Fenced
   // Another runner claims the run: its epoch moves on.
   await db.run("UPDATE runs SET epoch = 2 WHERE id = ?", "run-fenced");
   const entryId = await storage.mintId();
-  storage.stage({ run: { state: "ended", costUsd: 1.25 } });
+  storage.stage({ run: { state: "ended", costUsd: 1.25 }, effect: entryId });
   await assert.rejects(commitWrites(storage, [{ type: "entry", value: { id: entryId, conversationId: ROOT, kind: "message" } }], context), (error) => error instanceof Fenced && error.runId === "run-fenced" && error.epoch === 1, "the stale claim's commit is Fenced");
   assert.equal(await db.get("SELECT 1 AS found FROM pi_entries WHERE run_id = ? AND id = ?", "run-fenced", entryId), undefined, "no journal row");
   assert.deepEqual(await db.get("SELECT next_seq FROM pi_metadata WHERE run_id = ?", "run-fenced"), before, "no seq taken");

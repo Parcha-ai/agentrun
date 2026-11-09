@@ -2,7 +2,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { join, relative } from "node:path";
+import { join, posix, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
 import type { SqliteDatabase, SqliteExecutor, SqliteValue } from "@earendil-works/pi-durable/storage/sqlite";
@@ -171,8 +171,14 @@ const MATCHED = new RegExp([CALL.source, OPENS.source, EFFECTFUL.source].join("|
 const REPO = fileURLToPath(new URL("../../..", import.meta.url));
 const inRepo = (file: string): boolean => existsSync(join(REPO, file));
 
+/** The relative modules a file imports or re-exports (a type import too), resolved from its own directory. */
+const IMPORTS = /\b(?:import|export)\b[^;'"]*?\bfrom\s*["'](\.[^"']*)["']|\bimport\s*\(\s*["'](\.[^"']*)["']\s*\)/g;
+function importsOf(file: string, text: string): string[] {
+  return [...text.matchAll(IMPORTS)].map((match) => posix.normalize(posix.join(posix.dirname(file), match[1] ?? match[2]!)));
+}
+
 function violations(table: Table, journal: Synchronous, given: ReadonlyMap<string, string>, exists: (file: string) => boolean = inRepo): string[] {
-  const vias = Object.values(table.barriers).flatMap((row) => (row.via ? [row.via.text] : []));
+  const vias = Object.values(table.barriers).flatMap((row) => [...(row.via ? [row.via.text] : []), ...(row.call ? [row.call] : [])]);
   const sources = new Map([...given].map(([file, text]) => [file, MATCHED.test(text) || vias.some((via) => text.includes(via)) ? withoutComments(text, file) : text]));
   const out: string[] = [];
   const called = new Map<string, Set<string>>();
@@ -193,15 +199,17 @@ function violations(table: Table, journal: Synchronous, given: ReadonlyMap<strin
   }
   for (const [name, row] of Object.entries(table.barriers)) {
     if (!(row.store in table.stores)) out.push(`${name}: store ${row.store} is not listed`);
-    if (row.status === "active" && !called.has(name)) out.push(`${name}: active, but ${row.site} has no syncNow(…, BARRIER.${name})`);
+    if (row.status === "active" && row.call !== undefined) {
+      if (!(sources.get(row.site) ?? "").includes(row.call)) out.push(`${name}: active, but ${row.site} has no ${JSON.stringify(row.call)}`);
+    } else if (row.status === "active" && !called.has(name)) out.push(`${name}: active, but ${row.site} has no syncNow(…, BARRIER.${name})`);
     if (row.status === "active" && row.via && !(sources.get(row.via.file) ?? "").includes(row.via.text)) out.push(`${name}: ${row.via.file} no longer has ${JSON.stringify(row.via.text)}`);
     if (row.status === "planned" && row.store === "run-journal" && journal === "NORMAL") out.push(`${name}: still planned, and the run journal is NORMAL: it may not go NORMAL before every barrier on it is active`);
     if (row.status === "active") {
-      const proof = (row as { proof?: string | null }).proof;
+      const proof = (row as { proof?: string | readonly string[] | null }).proof;
       if (proof === undefined) out.push(`${name}: active, and names no box-loss proof (proof: its end-to-end test file, or null while it has none)`);
       else if (proof === null) {
         if (journal === "NORMAL") out.push(`${name}: has no box-loss proof, and the run journal is NORMAL`);
-      } else if (!exists(proof)) out.push(`${name}: its proof ${proof} does not exist`);
+      } else for (const file of typeof proof === "string" ? [proof] : proof) if (!exists(file)) out.push(`${name}: its proof ${file} does not exist`);
     }
   }
   for (const [name, pre] of Object.entries(table.preconditions ?? {})) if (!pre.done && journal === "NORMAL") out.push(`${name}: not done, and the run journal is NORMAL: ${pre.what}`);
@@ -212,6 +220,16 @@ function violations(table: Table, journal: Synchronous, given: ReadonlyMap<strin
     const level = store.synchronous === "journal" ? journal : store.synchronous;
     if (store.effects === "none") {
       for (const file of store.opens) if (EFFECTFUL.test(sources.get(file) ?? "")) out.push(`${id}: listed with no effects, but ${file} runs a tool, a model or a barrier on it`);
+      // Its interface's users: a file outside the interface that imports from it and runs a tool or a model.
+      const face = store.interface;
+      if (face !== undefined) {
+        for (const [file, text] of sources) {
+          if (file.startsWith(face) || store.opens.includes(file)) continue;
+          if (importsOf(file, text).some((module) => module.startsWith(face)) && EFFECTFUL.test(text)) {
+            out.push(`${id}: listed with no effects, but ${file} runs a tool, a model or a barrier on it through its interface`);
+          }
+        }
+      }
     } else if (level === "NORMAL") {
       const chokepoints = Object.entries(table.barriers).filter(([, row]) => row.store === id && row.status === "active");
       if (chokepoints.length === 0) out.push(`${id}: NORMAL with effects, and no active barrier`);
@@ -351,5 +369,46 @@ describe("the barriers table, held to the source", () => {
     assert.deepEqual(violations(t("packages/x/test/proof.test.ts"), "NORMAL", files, exists), []);
     assert.deepEqual(violations(t(null), "FULL", files, exists), []);
     assert.deepEqual(violations(t(null), "NORMAL", files, exists), ["here: has no box-loss proof, and the run journal is NORMAL"]);
+  });
+
+  it("a store's interface: a file that imports it and runs a tool is its user, so a store listed with no effects and such a user fails", () => {
+    const t: Table = { barriers: {}, stores: { quiet: { opens: ["x/src/store/db.ts"], synchronous: "NORMAL", effects: "none", interface: "x/src/store/", what: "" } } };
+    const files = new Map([
+      ["x/src/store/db.ts", "openNodeSqliteStorage(p);"],
+      // Runs a tool, and reaches the store through its interface (a type import is enough): the store's user.
+      ["x/src/runner/loop.ts", 'import type { Staged } from "../store/store.js";\nregistry.install(tools);'],
+      // Runs a tool, but imports another module: not this store's user.
+      ["x/src/other/free.ts", 'import { thing } from "../elsewhere/x.js";\nregistry.install(tools);'],
+      // Imports the store, and runs nothing: a reader.
+      ["x/src/runner/reads.ts", 'import { read } from "../store/index.js";\nconst rows = read();'],
+    ]);
+    assert.deepEqual(violations(t, "FULL", files), ["quiet: listed with no effects, but x/src/runner/loop.ts runs a tool, a model or a barrier on it through its interface"]);
+    const commented = new Map([...files, ["x/src/runner/loop.ts", '// import type { Staged } from "../store/store.js";\nregistry.install(tools);']]);
+    assert.deepEqual(violations(t, "FULL", commented), [], "an import that is only in a comment makes no user");
+  });
+
+  it("a barrier's call: an active row whose call is a code line of its site is met by that line, never by it in a comment, nor without it", () => {
+    const t: Table = {
+      barriers: { flushed: { store: "s", site: "x/src/a.ts", call: "if (!c.safe) await c.flush();", status: "active", proof: null, why: "" } },
+      stores: { s: { opens: ["x/src/db.ts"], synchronous: "NORMAL", effects: "barriers", what: "" } },
+    };
+    const with_ = (a: string) => new Map([["x/src/db.ts", "openNodeSqliteStorage(p);"], ["x/src/a.ts", a]]);
+    assert.deepEqual(violations(t, "FULL", with_("export async function run(c) { if (!c.safe) await c.flush(); return c.go(); }")), []);
+    const missing = ['flushed: active, but x/src/a.ts has no "if (!c.safe) await c.flush();"'];
+    assert.deepEqual(violations(t, "FULL", with_("export async function run(c) { return c.go(); }")), missing);
+    assert.deepEqual(violations(t, "FULL", with_("// if (!c.safe) await c.flush();\nexport async function run(c) { return c.go(); }")), missing, "a call only in a comment is missing");
+  });
+
+  it("a proof may be a list (together the proof, the box-loss test among them): each file must exist, and a single file still works", () => {
+    const t: Table = {
+      barriers: {
+        listed: { store: "s", site: "x/src/a.ts", call: "await c.flush();", status: "active", proof: ["packages/x/test/box-loss.test.ts", "packages/x/test/gone.test.ts"], why: "" },
+        single: { store: "s", site: "x/src/a.ts", call: "await c.sync();", status: "active", proof: "packages/x/test/box-loss.test.ts", why: "" },
+      },
+      stores: { s: { opens: ["x/src/db.ts"], synchronous: "FULL", effects: "barriers", what: "" } },
+    };
+    const files = new Map([["x/src/db.ts", "openNodeSqliteStorage(p);"], ["x/src/a.ts", "await c.flush(); await c.sync();"]]);
+    const exists = (file: string) => file === "packages/x/test/box-loss.test.ts";
+    assert.deepEqual(violations(t, "FULL", files, exists), ["listed: its proof packages/x/test/gone.test.ts does not exist"]);
   });
 });
