@@ -55,7 +55,9 @@ const json = (status, body, headers = {}) => new Response(JSON.stringify(body), 
  * meets ("ok", "busy", "limit", "credit", "error": the session fails while provisioning); `loseAnswer`, the POST is
  * admitted and then its answer is lost (fetch rejects); `others`, sessions on the account this provider never made;
  * `loseRecovery`, the GET that recovers a create by its key is lost too; `cancelPost`, called once a POST /sessions is
- * admitted (a test aborts the create's signal in it), after which that fetch rejects as an aborted one does;
+ * admitted (a test aborts the create's signal in it), after which that fetch rejects as an aborted one does; `stall`,
+ * called with each request's { method, path }: when it answers true, the request is never answered, and only its
+ * signal ends it;
  * `code`, the unlock code the phone takes (default the one the API gives); `abi`, what getprop reports; `launchHidden`,
  * a launched app is reported in front (dumpsys) while the screen and the tree still show the launcher; `launchNothing`,
  * `am start` starts nothing at all.
@@ -64,7 +66,7 @@ const json = (status, body, headers = {}) => new Response(JSON.stringify(body), 
  * (com.android.settings.intelligence) on top of Settings' own task. A force-stop of Settings leaves it there, a plain
  * `am start` of Settings resumes that task, search in front, and only `--activity-clear-task` starts Settings afresh.
  */
-export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = false, loseRecovery = false, cancelPost, others = [], code, abi = "x86_64", launchHidden = false, launchNothing = false, clock = fakeClock() } = {}) {
+export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = false, loseRecovery = false, cancelPost, stall, others = [], code, abi = "x86_64", launchHidden = false, launchNothing = false, clock = fakeClock() } = {}) {
 	const requests = [];
 	const adbCalls = [];
 	const sessions = new Map(others.map((s) => [s.id, { ...s }]));
@@ -76,6 +78,14 @@ export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = fa
 		const headers = Object.fromEntries(Object.entries(init.headers ?? {}).map(([k, v]) => [k.toLowerCase(), v]));
 		const body = init.body === undefined ? undefined : JSON.parse(init.body);
 		requests.push({ method, path: u.pathname, headers, body });
+		if (stall?.({ method, path: u.pathname })) {
+			// A request that never answers: only its signal ends it, as an aborted fetch rejects.
+			return new Promise((_, reject) => {
+				const stop = () => reject(init.signal.reason ?? new DOMException("This operation was aborted", "AbortError"));
+				if (init.signal?.aborted) stop();
+				else init.signal?.addEventListener("abort", stop, { once: true });
+			});
+		}
 		if (headers.authorization !== `Bearer ${KEY}`) return json(401, { error: "invalid API key" });
 		const path = u.pathname;
 		if (method === "GET" && path === "/me") return json(200, { id: "acct_1", available: [] });

@@ -192,6 +192,56 @@ test("a phone that fails or is not ready within readyMs is ended, in words", asy
 	assert.equal(slow.fake.sessions.size, 0);
 });
 
+/** A timer the test fires: each request's bound, as the provider asked for it, with no wall clock. */
+function testTimers() {
+	const made = [];
+	const timeout = (ms) => {
+		const controller = new AbortController();
+		made.push({ ms, fire: () => controller.abort(new DOMException("The operation timed out.", "TimeoutError")) });
+		return controller.signal;
+	};
+	return { timeout, made };
+}
+
+// The hang guard only bounds a failure: on a pass nothing waits on a timer.
+test("each API request has its own bound: a stalled readiness read is cut off by what readyMs has left, and the phone is ended", { timeout: 10_000 }, async () => {
+	const { timeout, made } = testTimers();
+	let stalledNow;
+	const stalled = new Promise((resolve) => (stalledNow = resolve));
+	let reads = 0;
+	const stall = ({ method, path }) => method === "GET" && path === "/sessions/sess_0001" && ++reads === 3 && (stalledNow(), true);
+	const { provider, fake } = await setup({ readyAfter: 10, stall }, { readyMs: 10_000, pollMs: 2000, requestMs: 30_000, timeout });
+	const pending = provider.create(SPEC);
+	await stalled;
+	// Two reads and two polls of 2 s: the third read may take the 6 s readyMs has left, not the 30 s of any request.
+	assert.deepEqual(made.map((one) => one.ms), [30_000, 10_000, 8_000, 6_000]);
+	made.at(-1).fire();
+	const late = await pending;
+	assert.equal(late.ok, false, JSON.stringify(late));
+	assert.equal(late.error.code, "timeout");
+	assert.match(late.error.message, /^the phone sess_0001 was not ready within 10 s: GET \/sessions\/sess_0001: the phone harness did not answer within 6 s; it was ended$/);
+	assert.equal(fake.sessions.size, 0, "the phone was ended");
+	assert.equal(made.at(-1).ms, 30_000, "the DELETE has a bound of its own");
+});
+
+test("a POST that stalls is cut off by its bound and recovered by its Idempotency-Key, never posted again", { timeout: 10_000 }, async () => {
+	const { timeout, made } = testTimers();
+	let stalledNow;
+	const stalled = new Promise((resolve) => (stalledNow = resolve));
+	const stall = ({ method, path }) => method === "POST" && path === "/sessions" && (stalledNow(), true);
+	const { provider, fake } = await setup({ stall }, { requestMs: 30_000, timeout });
+	const pending = provider.create(SPEC);
+	await stalled;
+	// The stalled POST never reached the fake's sessions: recovery finds nothing, and says so in words.
+	made.at(-1).fire();
+	const created = await pending;
+	assert.equal(created.ok, false, JSON.stringify(created));
+	assert.match(created.error.message, /^POST \/sessions: the phone harness did not answer within 30 s; and the service has no session for the request/);
+	const key = fake.requests()[0].headers["idempotency-key"];
+	assert.deepEqual(fake.requests().map((r) => `${r.method} ${r.path}`), ["POST /sessions", `GET /sessions/requests/${key}`]);
+	assert.ok(made.every((one) => one.ms === 30_000), "the POST and the recovery each have a bound");
+});
+
 test("a create whose answer was lost is recovered by its Idempotency-Key, never by a second POST", async () => {
 	const { provider, fake } = await setup({ loseAnswer: true });
 	const created = await provider.create(SPEC);
