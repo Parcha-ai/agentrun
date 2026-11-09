@@ -37,6 +37,7 @@ const RUN_READS = {
   readRunFile: (run) => [`/runs/${run.id}/files/${run.file}`],
   getRunGraph: (run) => [`/runs/${run.id}/graph`],
   getRunBrowser: (run) => [`/runs/${run.id}/browser`],
+  getRunComputer: (run) => [`/runs/${run.id}/computer`],
   getRunLearning: (run) => [`/runs/${run.id}/learning`],
   getRunLearningDiff: (run) => [`/runs/${run.id}/learning/diff`],
 };
