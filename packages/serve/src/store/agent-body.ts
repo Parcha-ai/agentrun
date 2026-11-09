@@ -41,29 +41,49 @@ export const isSkillPath = (value: string): boolean =>
 /** An id a host knows: a harness, a place's mode, a box (lowercase letters, digits and dashes). */
 const HOST_ID = /^[a-z][a-z0-9-]{0,63}$/;
 const hostId = (value: unknown): value is string => typeof value === "string" && HOST_ID.test(value);
+/** A setting's or a value's name in tool settings: lowercase letters, digits, dashes and underscores. */
+const PICK_NAME = /^[a-z][a-z0-9_-]{0,63}$/;
+/** A tool's name in tool settings: a plain name (PICK_NAME), a catalog's tool (`monid.discover`), an MCP server's tool
+ *  (`mcp:<server>/<tool>`) or its wildcard (`mcp:<server>/*`). */
+const TOOL_KEY = /^(?:[a-z][a-z0-9_-]{0,63}(?:\.[A-Za-z0-9_-]{1,64})?|mcp:[A-Za-z0-9_.-]{1,64}\/(?:\*|[A-Za-z0-9_.-]{1,128}))$/;
+/** Whether `name` is a tool's name the store keeps in tool settings (TOOL_KEY): the one check, which a server runs before
+ *  it makes an agent, so a key the store refuses never takes an agent's id. */
+export const isToolSettingsKey = (name: string): boolean => TOOL_KEY.test(name);
 
 /** An overlay prompt variant, as a body carries it (kept opaque here, passed through unchanged). Ported from kinds.ts. */
 export type PromptVariant = { role: "base" | "overlay" | "generic" | "question"; label: string; text: string; when?: { question: string; option: string; threshold: number }; criteria?: Record<string, string> };
 
 export type RevisionPlace = { mode: string; box?: string };
-/** A revision's tool settings as its body keeps them: a map of a tool's key to its settings ({provider?, permission?,
- *  pin?}), checked and made canonical by the caller (agents-store.ts, through tool-plane's settingsIssues +
- *  canonicalToolSettings, the one copy). The store body holds it as it is given; this validator never reimplements it. */
-export type ToolSettings = Record<string, unknown>;
-export type AgenticBody = { instructions: string; skills: Record<string, string>; tools: string[]; model?: string; thinking?: string; prompts?: Record<string, PromptVariant>; harness?: string; place?: RevisionPlace; learning?: boolean; toolSettings?: ToolSettings; maxCostUsd?: number; capMode?: string };
-export type WorkflowBody = { workflow: Record<string, unknown>; skills: Record<string, string>; tools: string[]; harness?: string; place?: RevisionPlace; toolSettings?: ToolSettings; maxCostUsd?: number; capMode?: string };
+export type AgenticBody = { instructions: string; skills: Record<string, string>; tools: string[]; model?: string; thinking?: string; prompts?: Record<string, PromptVariant>; harness?: string; place?: RevisionPlace; learning?: boolean; toolSettings?: Record<string, ToolSetting>; approvals?: "never"; maxCostUsd?: number; capMode?: string };
+export type WorkflowBody = { workflow: Record<string, unknown>; skills: Record<string, string>; tools: string[]; harness?: string; place?: RevisionPlace; toolSettings?: Record<string, ToolSetting>; approvals?: "never"; maxCostUsd?: number; capMode?: string };
+/** One tool's settings: named string picks (a provider, a permission). The agent-level argument pin (tl-review's
+ *  tool-plane.ts pinIssues + canonicalToolSettings, the one copy) is wired in here once that PR is on the base and
+ *  AGENT_LAYER_PINS flips to true; this validator does not reimplement it, so while the flag is false a pin is refused. */
+export type ToolSetting = Record<string, string>;
 
-/** The input a revision's body is built from (the control plane's, in the store's own shape). `toolSettings` is already
- *  checked and canonical (agents-store.ts via tool-plane's one copy); this validator keeps it as given. */
+/** The input a revision's body is built from (the control plane's, in the store's own shape). */
 export type RevisionBodyInput =
-  | { kind: "agentic"; instructions: string; skills?: Record<string, string>; tools?: string[]; model?: string; thinking?: string; prompts?: Record<string, PromptVariant>; harness?: string; place?: unknown; learning?: boolean; toolSettings?: ToolSettings; maxCostUsd?: number; capMode?: string }
-  | { kind: "workflow"; workflow: unknown; skills?: Record<string, string>; tools?: string[]; harness?: string; place?: unknown; toolSettings?: ToolSettings; maxCostUsd?: number; capMode?: string };
+  | { kind: "agentic"; instructions: string; skills?: Record<string, string>; tools?: string[]; model?: string; thinking?: string; prompts?: Record<string, PromptVariant>; harness?: string; place?: unknown; learning?: boolean; toolSettings?: unknown; approvals?: "never"; maxCostUsd?: number; capMode?: string }
+  | { kind: "workflow"; workflow: unknown; skills?: Record<string, string>; tools?: string[]; harness?: string; place?: unknown; toolSettings?: unknown; approvals?: "never"; maxCostUsd?: number; capMode?: string };
 
 /** A place as a body keeps it: `{mode, box?}`, nothing else. */
 function placeOf(place: unknown): RevisionPlace {
   if (!isObject(place) || !hostId(place.mode) || (place.box !== undefined && !hostId(place.box)) || Object.keys(place).some((key) => key !== "mode" && key !== "box")) invalid("the place is not {mode, box?}, each an id (lowercase letters, digits and dashes)");
   const ok = place as { mode: string; box?: string };
   return { mode: ok.mode, ...(ok.box !== undefined ? { box: ok.box } : {}) };
+}
+
+/** One tool's settings, checked and sorted: named string picks (PICK_NAME to PICK_NAME). Sorted, so two equal settings are
+ *  one body. The argument pin is NOT handled here (see ToolSetting): it is wired through tool-plane's canonicalToolSettings
+ *  when AGENT_LAYER_PINS flips, and refused until then. */
+function toolSettingOf(setting: unknown): ToolSetting {
+  if (!isObject(setting)) invalid("the tool settings are not tool names to settings of names");
+  const kept: Record<string, string> = {};
+  for (const [name, value] of Object.entries(setting as Record<string, unknown>).sort(([a], [b]) => (a < b ? -1 : 1))) {
+    if (!(PICK_NAME.test(name) && typeof value === "string" && PICK_NAME.test(value))) invalid("the tool settings are not tool names to settings of names");
+    kept[name] = value as string;
+  }
+  return kept;
 }
 
 /** The body of a new revision and the text of each skill it names (path to text), everything checked here, before any
@@ -83,16 +103,23 @@ export function bodyOf(input: RevisionBodyInput): { body: AgenticBody | Workflow
   if (!Array.isArray(tools) || !tools.every((t) => typeof t === "string" && t !== "") || new Set(tools).size !== tools.length) invalid("the tools are not a list of distinct non-empty names");
   if (input.harness !== undefined && !hostId(input.harness)) invalid("the harness is not a harness id (lowercase letters, digits and dashes)");
 
-  // tool settings are checked and made canonical by the caller (agents-store.ts via tool-plane's settingsIssues +
-  // canonicalToolSettings, the one copy); the body keeps them as given. An empty map keeps none.
   const set = input.toolSettings;
-  if (set !== undefined && !isObject(set)) invalid("the tool settings are not an object of tools to their settings");
-  const toolSettings = set && Object.keys(set).length ? (set as ToolSettings) : undefined;
+  if (set !== undefined) {
+    if (!isObject(set)) invalid("the tool settings are not tool names to settings of names");
+    for (const name of Object.keys(set as Record<string, unknown>)) if (!TOOL_KEY.test(name)) invalid("the tool settings are not tool names to settings of names");
+  }
+  const toolSettings = set && Object.keys(set).length
+    ? Object.fromEntries(Object.entries(set as Record<string, unknown>).sort(([a], [b]) => (a < b ? -1 : 1)).map(([name, inner]) => [name, toolSettingOf(inner)])) as Record<string, ToolSetting>
+    : undefined;
 
+  // Unattended (approvals "never") is the one value kept: ask, the default, is kept as nothing, so an agent that asks is
+  // one body with an agent that names the default.
+  if (input.approvals !== undefined && input.approvals !== "never") invalid('the approvals is "never", or absent (ask)');
   const host = {
     ...(input.harness !== undefined ? { harness: input.harness } : {}),
     ...(input.place !== undefined ? { place: placeOf(input.place) } : {}),
     ...(toolSettings ? { toolSettings } : {}),
+    ...(input.approvals === "never" ? { approvals: "never" as const } : {}),
   };
 
   // A default spend cap, and how it prices a request, for a revision of either kind.
