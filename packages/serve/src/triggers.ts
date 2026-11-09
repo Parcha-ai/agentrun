@@ -208,7 +208,9 @@ export const triggerBodyIssues = (adapters: readonly TriggerAdapter[], body: Jso
 /** A trigger is named once per agent (the store's UNIQUE (agent_id, name)): a second of the same name, at a create or a
  *  rename, is `409 name_taken`; any other error as it is. */
 const nameTaken = (error: unknown, name: string): unknown =>
-  error instanceof StoreConstraint && /triggers\.agent_id, triggers\.name/.test(error.message) ? new ApiError("name_taken", `This agent already has a trigger named ${name}.`) : error;
+  error instanceof StoreConstraint && error.unique?.table === "triggers" && error.unique.columns.join(",") === "agent_id,name"
+    ? new ApiError("name_taken", `This agent already has a trigger named ${name}.`)
+    : error;
 /** Why a try failed, as its firing keeps it: an ApiError's code, else internal. */
 const errorOf = (error: unknown) => ({ code: error instanceof ApiError ? error.code : "internal", message: String((error as Error)?.message ?? error) });
 

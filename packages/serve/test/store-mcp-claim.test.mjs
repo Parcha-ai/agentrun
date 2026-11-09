@@ -195,12 +195,21 @@ test("M7: an expired token is refreshed once before the loop, its new token used
 
 test("M8: a claim lost while its refresh waited never starts its loop: fresh() re-confirms the claim's epoch and is Fenced", async (t) => {
   const { store, oauth, claim, clock } = await oauthSetUp(t, { expiresAt: T0 - 1_000 });
-  oauth.hang();
-  const pending = claimOf(store, claim, ["mcp:fake/add"], { now: () => T0, bounds: { requestMs: 400, tries: 1 } });
-  // Meanwhile the claim lapses and another runner takes the run.
+  // The refresh's answer is held by the test's authorization server until the test lets it go: the order below is the
+  // test's events, never a timeout (the request's bound is a ceiling the release ends long before).
+  const hold = oauth.holdNext();
+  // Its outcome kept from the start: whenever it settles, nothing is left unhandled.
+  const pending = claimOf(store, claim, ["mcp:fake/add"], { now: () => T0, bounds: { requestMs: 60_000, tries: 1 } }).then(() => "started", (error) => error);
+  // The pin is written and the refresh is in flight (its request granted, its answer held): only then does the claim
+  // lapse and another runner take the run, to completion, so it is the confirm after the refresh that finds it gone.
+  await hold.granted;
+  assert.ok(await store.mcp.pin("run-1"), "the pin was written under the claim before the refresh");
   clock.now = T0 + LEASE + 1;
   assert.ok(await store.claim("run-1", "runner-b", { leaseMs: LEASE }));
-  await assert.rejects(pending, Fenced);
+  hold.answer();
+  const outcome = await pending;
+  assert.ok(outcome instanceof Fenced, `Fenced: ${outcome}`);
+  assert.match(outcome.stack, /\bconfirm\b/, "by the confirm after the refresh, not an earlier write");
 });
 
 test("M9: fresh() run again on a resume refreshes a token that expired since the claim", async (t) => {

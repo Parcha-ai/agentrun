@@ -1,6 +1,7 @@
 // The one store (design 2.1), for the cutover: nothing on main imports it until then.
 export { CommandTaken, endedReason, FINAL_STATES, Fenced, MCP_REFRESH_CALL_MS, MCP_REFRESH_LEASE_MS, RunFinal, SchemaVersionUnknown, SIGN_IN_TOMBSTONES_KEPT, SignInHandedTo, SignInMissing, StoreBusy, StoreClosed, StoreConstraint, StoreDeadline, StoreFromEarlierVersion, StoreLaunchMissing, StoreOwned, StoreWorkerLost, RefreshLeaseLost, TriggerFull } from "./store.js";
 export type {
+  ConstraintRule,
   AgentRow, Agents, AlsoRow, ChannelPost, Claim, Command, Firing, FiringChange, FiringRow, FiringStatus, FiringStreak, Journal, Live, LiveRow, Mcp, McpOauth, McpOauthPendingRow, McpPinRow,
   McpServerRow, NewFiring, NewRevision, NewTrigger, ReleasedState, RevisionRow, RunPatch, RunRow, Runs, RunState, SealedKeyRow, SealedKeys, SettingRow, Settings, Staged,
   StagedTake, Store, StoreRole, TemplatePackage, Templates, TriggerDef, TriggerPatch, TriggerRow, Triggers, TriggerScope, TriggerSettingRow,
@@ -18,6 +19,10 @@ export { RunStorage } from "./journal/storage.js";
 export { claimFence, type FenceVariant } from "./fence.js";
 export { DEFAULT_LEASE_MS, openSqliteStore, type SqliteStoreOptions, storeOver } from "./sqlite/store.js";
 export { Connection, DEFAULT_TRANSACTION_DEADLINE_MS, type SqliteDatabase, type SqliteExecutor, type SqliteValue, type StoreConnection, type TransactionOptions, type Tx } from "./sqlite/connection.js";
-export { type Dialect, SQLITE } from "./dialect.js";
+export { cleanText, type Dialect, SQLITE } from "./dialect.js";
+export { openStore, type OpenStoreOptions, storePlace, storeTarget, type StoreTarget } from "./open.js";
+export { CLOCK_WARN_MS, DEFAULT_SCHEMA, openPostgresStore, type PostgresStoreOptions, postgresWhere } from "./postgres/store.js";
+export { PgConnection, SCHEMA_NAME } from "./postgres/connection.js";
+export { dropPostgresSchema, migrate, migrationsIn, versionOf as postgresVersionOf } from "./postgres/migrate.js";
 export { applyRunPatch, RUN_COLUMNS, runOf, type RunRecord } from "./sqlite/run-patch.js";
 export { readLaunch, writeLaunch } from "./sqlite/run-launch.js";

@@ -84,7 +84,7 @@ test("a take lands only in the commit that stores its effect: a commit without t
     all: async (sql, ...params) => (check(sql), tx.all(sql, ...params)),
     step: async (statement) => (check(statement.sql), tx.step(statement)),
   });
-  const connection = { get: (...args) => db.connection.get(...args), all: (...args) => db.connection.all(...args), transaction: (work, options) => db.connection.transaction((tx) => work(wrap(tx)), options) };
+  const connection = { dialect: db.connection.dialect, get: (...args) => db.connection.get(...args), all: (...args) => db.connection.all(...args), transaction: (work, options) => db.connection.transaction((tx) => work(wrap(tx)), options) };
   const storage = await RunStorage.open(connection, claim, () => NOW);
   await commitWrites(storage, [{ type: "conversation", value: { id: ROOT } }], context);
   await commandRow(db, 12, "run-keyed");

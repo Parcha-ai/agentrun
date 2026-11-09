@@ -2,22 +2,13 @@
 // through agents.create, addRevision and templates.apply, read back the same; canonicalToolSettings (tool-plane.ts) is
 // the one form a revision's settings take, so two that pin the same arguments in another order are one text.
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { test } from "node:test";
 import { canonicalToolSettings } from "../dist/tool-plane.js";
+import { storeOn } from "./store-helpers.mjs";
 
-const { openSqliteStore } = await import("../dist/store/index.js");
-
+/** The one store of test `t` (a scratch file, or a Postgres schema: store-helpers.mjs), on the real clock. */
 async function scratchStore(t) {
-  const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-store-"));
-  const store = await openSqliteStore({ file: join(dir, "store.sqlite") });
-  t.after(async () => {
-    await store.close().catch(() => undefined);
-    rmSync(dir, { recursive: true, force: true });
-  });
-  return store;
+  return (await storeOn(t, { clock: { get now() { return Date.now(); } } })).store;
 }
 
 const SEND = "mcp:slack/slack_send_message";

@@ -31,6 +31,9 @@ export interface Dialect {
   /** An INSERT that writes nothing when the row's key is there already: `${insertOrIgnore} INTO … VALUES (…)${onConflictIgnore}`. */
   readonly insertOrIgnore: string;
   readonly onConflictIgnore: string;
+  /** What a run row's INSERT returns to name the row it inserted (fence.ts, the inserted-here form): SQLite's rowid; on
+   *  Postgres nothing (NULL), since the fence names it by the inserting transaction. */
+  readonly insertedRow: string;
   /** After a SELECT of runs to claim: lock the rows picked, skipping any another claimer holds. */
   readonly claimLock: string;
   /** After a SELECT of a run row a write depends on: hold it, so a writer of the row (a run's end, a claim) waits, and this
@@ -43,7 +46,14 @@ export interface Dialect {
   lockKey(tx: LockExecutor, key: string): Promise<void>;
 }
 
-const jsonPath = (path: readonly string[]): string => `'$.${path.join(".")}'`;
+/** Text as both stores write it: a NUL (which Postgres's TEXT cannot hold) becomes U+FFFD, a visible mark, so a model's stray
+ *  NUL in a summary or a reason never fails a write on one store and passes on the other. Every string a statement binds
+ *  goes through it (both connections), so a read that binds the same string finds the row. */
+export function cleanText(text: string): string {
+  return text.includes("\u0000") ? text.replaceAll("\u0000", "�") : text;
+}
+
+const jsonPath =(path: readonly string[]): string => `'$.${path.join(".")}'`;
 
 /** SQLite: one writer at a time (BEGIN IMMEDIATE), so every lock is already held. */
 export const SQLITE: Dialect = {
@@ -59,6 +69,7 @@ export const SQLITE: Dialect = {
   bigintParam: "?",
   insertOrIgnore: "INSERT OR IGNORE",
   onConflictIgnore: "",
+  insertedRow: "rowid",
   claimLock: "",
   shareLock: "",
   lockRow: async () => undefined,

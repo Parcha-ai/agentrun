@@ -4,13 +4,13 @@
 // runner's events (claims, releases, lost claims, errors, each with its time) are appended to eventsFile as JSON lines,
 // written synchronously so the kill loses none, for the case to show beside the second runner's.
 import { appendFileSync } from "node:fs";
-import { openSqliteStore } from "../../store/index.js";
+import { openStore } from "../../store/index.js";
 import type { LoopFactory } from "../loop-contract.js";
 import { startRunner } from "../runner.js";
 import { CONFORMANCE_TIMING, suiteTools } from "./harness.js";
 import type { ConformanceSubject, KernelHooks, ToolName } from "./subject.js";
 
-const config = JSON.parse(process.argv[2] ?? "{}") as { dataDir: string; module: string; export: string; tool: ToolName; point: keyof KernelHooks; countFile: string; eventsFile?: string; stopOnce?: boolean };
+const config = JSON.parse(process.argv[2] ?? "{}") as { dataDir: string; storeEnv?: Record<string, string>; module: string; export: string; tool: ToolName; point: keyof KernelHooks; countFile: string; eventsFile?: string; stopOnce?: boolean };
 const subject = (await import(config.module))[config.export] as ConformanceSubject;
 const { tools } = suiteTools(config.countFile);
 const said = (event: object) => {
@@ -35,7 +35,8 @@ const at = async (point: keyof KernelHooks) => {
   await die();
 };
 const hooks: KernelHooks = { beforeIntent: () => at("beforeIntent"), beforeResult: () => at("beforeResult") };
-const store = await openSqliteStore({ dataDir: config.dataDir, role: "runner" });
+// The store the harness's world opened (its data directory, or its own Postgres schema).
+const store = await openStore({ dataDir: config.dataDir, role: "runner", env: { ...process.env, ...config.storeEnv } });
 // Each journal commit's outcome, by the claim's epoch: one that lands, or one refused and by what (the runner's ClaimLost,
 // or the store's Fenced), so the case can say what a loop that lost its claim tried to write.
 const createLoop = subject.createLoop({ script: [{ call: config.tool }, { say: "done" }], tools, hooks });

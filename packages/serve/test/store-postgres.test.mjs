@@ -1,0 +1,187 @@
+// The store's Postgres adapter (store/postgres): what SQLite's adapter tests check of its file, worker and locks, for a
+// schema on Postgres. Who opens it: the server applies the migrations and holds the owner lock (one server per schema); a
+// runner sets nothing up and refuses a schema version it does not know, in the same words. The migrations are versioned
+// files, applied once, never edited. A lock held past the busy wait is StoreBusy; a transaction past its deadline is
+// StoreDeadline, and the calls after it go on. A runner whose clock is far from the database's says so. One opener picks
+// the store from AGENTRUN_STORE_URL.
+import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { test } from "node:test";
+import { queued, storeOn } from "./store-helpers.mjs";
+import { client, dropSchema, freshSchema, PG_URL, postgresOnly, schemaOf } from "./store-target.mjs";
+
+const { migrate, migrationsIn, openPostgresStore, postgresWhere, openStore, PgConnection, SchemaVersionUnknown, storeTarget, StoreBusy, StoreDeadline, StoreOwned } = await import("../dist/store/index.js");
+const { RunnerRefused, startRunnerProcess } = await import("../dist/runner/main.js");
+
+const ONLY = postgresOnly("the Postgres adapter");
+
+/** A schema name of the test's own, dropped after it (nothing made in it yet). */
+async function schemaFor(t) {
+  const schema = await freshSchema();
+  t.after(() => dropSchema(schema));
+  return schema;
+}
+
+async function sql(schema, text, ...params) {
+  const c = await client(schema);
+  try {
+    return (await c.query(text, params)).rows;
+  } finally {
+    await c.end();
+  }
+}
+
+test("a Postgres store's place names its host, database and schema, never the URL's user, password or query", () => {
+  // A URL with a user and a password in it, set on the parsed URL (no credential in this file's text).
+  const url = new URL("postgresql://db.example:6543/grep?sslmode=require&application_name=x");
+  url.username = "someone";
+  url.password = "x".repeat(12);
+  const where = postgresWhere(url.href, "agentrun");
+  assert.equal(where, "postgres:db.example:6543/grep/agentrun");
+  assert.ok(!where.includes("someone") && !where.includes("xxxx") && !where.includes("sslmode"), where);
+  assert.equal(postgresWhere("postgres://127.0.0.1/agentrun", "t_1"), "postgres:127.0.0.1/agentrun/t_1");
+});
+
+test("a second server on the same schema is refused (StoreOwned); once the first closes, a server opens it", ONLY, async (t) => {
+  const schema = await schemaFor(t);
+  const first = await openPostgresStore({ url: PG_URL, schema, role: "server" });
+  await assert.rejects(openPostgresStore({ url: PG_URL, schema, role: "server" }), (error) => error instanceof StoreOwned && /another server holds the store in the Postgres schema/.test(error.message));
+  const runner = await openPostgresStore({ url: PG_URL, schema, role: "runner" });
+  await runner.close();
+  await first.close();
+  const second = await openPostgresStore({ url: PG_URL, schema, role: "server" });
+  await second.close();
+});
+
+test("servers of two schemas in one database hold their own owner locks", ONLY, async (t) => {
+  const [a, b] = [await schemaFor(t), await schemaFor(t)];
+  const one = await openPostgresStore({ url: PG_URL, schema: a });
+  const two = await openPostgresStore({ url: PG_URL, schema: b });
+  await two.close();
+  await one.close();
+});
+
+test("a runner refuses a schema not set up yet, and one of a version it does not know (SchemaVersionUnknown); so does a server", ONLY, async (t) => {
+  const schema = await schemaFor(t);
+  await assert.rejects(openPostgresStore({ url: PG_URL, schema, role: "runner" }), (error) => error instanceof SchemaVersionUnknown && error.found === null && error.message.includes(`the Postgres schema ${schema}`));
+  const server = await openPostgresStore({ url: PG_URL, schema });
+  await server.close();
+  // A later build's migration, applied.
+  await sql(schema, "INSERT INTO schema_migrations (version, name, sha256, applied_at) VALUES (2, 'later', 'x', 0)");
+  await assert.rejects(openPostgresStore({ url: PG_URL, schema, role: "runner" }), (error) => error instanceof SchemaVersionUnknown && error.found === 2 && error.known === 1);
+  await assert.rejects(openPostgresStore({ url: PG_URL, schema, role: "server" }), SchemaVersionUnknown, "nor does the server open a later build's schema");
+});
+
+test("a runner sets nothing up: its open of a schema not set up leaves no schema behind", ONLY, async (t) => {
+  const schema = await schemaFor(t);
+  await assert.rejects(openPostgresStore({ url: PG_URL, schema, role: "runner" }), SchemaVersionUnknown);
+  assert.deepEqual(await sql(undefined, "SELECT nspname FROM pg_namespace WHERE nspname = $1", schema), [], "no schema made");
+});
+
+test("the server applies each migration once, in one transaction, recording its version, name and file hash", ONLY, async (t) => {
+  const schema = await schemaFor(t);
+  const migrations = migrationsIn();
+  assert.deepEqual(migrations.map((m) => [m.version, m.name]), [[1, "initial"]]);
+  const first = await openPostgresStore({ url: PG_URL, schema });
+  await first.close();
+  const second = await openPostgresStore({ url: PG_URL, schema });
+  await second.close();
+  const rows = await sql(schema, "SELECT version, name, sha256 FROM schema_migrations ORDER BY version");
+  assert.deepEqual(rows.map((row) => [Number(row.version), row.name, row.sha256]), [[1, "initial", migrations[0].sha256]], "applied once");
+});
+
+test("a migration that fails leaves nothing of it: the schema's version is unchanged and its tables absent", ONLY, async (t) => {
+  const schema = await schemaFor(t);
+  const connection = await PgConnection.open({ url: PG_URL, schema });
+  t.after(() => connection.close());
+  const broken = [...migrationsIn(), { version: 2, name: "broken", sql: "CREATE TABLE half_made (id BIGINT); SELECT no_such_function()", sha256: "y" }];
+  await assert.rejects(connection.withClient((c) => migrate(c, schema, 0, broken)));
+  assert.deepEqual(await sql(undefined, "SELECT nspname FROM pg_namespace WHERE nspname = $1", schema), [], "the first open's transaction rolled back whole, its schema too");
+  await connection.withClient((c) => migrate(c, schema, 0));
+  await assert.rejects(connection.withClient((c) => migrate(c, schema, 0, broken)));
+  const rows = await sql(schema, "SELECT version FROM schema_migrations ORDER BY version");
+  assert.deepEqual(rows.map((row) => Number(row.version)), [1], "version 2 not recorded");
+  assert.deepEqual(await sql(schema, "SELECT to_regclass('half_made') AS t"), [{ t: null }], "its table not made");
+});
+
+test("an applied migration whose file changed since is refused at the server's open, naming the file", ONLY, async (t) => {
+  const schema = await schemaFor(t);
+  const store = await openPostgresStore({ url: PG_URL, schema });
+  await store.close();
+  await sql(schema, "UPDATE schema_migrations SET sha256 = 'edited' WHERE version = 1");
+  await assert.rejects(openPostgresStore({ url: PG_URL, schema }), /0001_initial\.sql with other text than this build's/);
+});
+
+test("a schema name that is not a plain lower-case name is refused before anything is opened", ONLY, async () => {
+  for (const schema of ["Agentrun", "a-b", "x; DROP TABLE runs", "", "1abc"]) {
+    await assert.rejects(openPostgresStore({ url: PG_URL, schema }), TypeError, schema);
+  }
+});
+
+test("a write that waits for another writer's lock past the busy wait is StoreBusy, and writes nothing", ONLY, async (t) => {
+  const { store, file, clock } = await storeOn(t);
+  await queued(store);
+  const claim = await store.claim("run-1", "runner-a", { leaseMs: 30_000 });
+  const busy = await openPostgresStore({ url: PG_URL, schema: schemaOf(file), role: "runner", now: () => clock.now, busyTimeoutMs: 50 });
+  t.after(() => busy.close());
+  const other = await client(schemaOf(file));
+  t.after(() => other.end().catch(() => undefined));
+  await other.query("BEGIN");
+  await other.query("SELECT 1 FROM runs WHERE id = 'run-1' FOR UPDATE");
+  await assert.rejects(busy.runs.update(claim, { summary: "late" }), StoreBusy);
+  await other.query("ROLLBACK");
+  assert.equal((await store.runs.get("run-1")).summary, null, "nothing written");
+});
+
+test("a transaction past its deadline is rolled back with StoreDeadline, and the calls after it go on", ONLY, async (t) => {
+  const schema = await schemaFor(t);
+  const connection = await PgConnection.open({ url: PG_URL, schema });
+  t.after(() => connection.close());
+  await connection.withClient((c) => migrate(c, schema, 0));
+  const slow = connection.transaction(async (tx) => {
+    await tx.run("INSERT INTO settings (key, value, updated_at) VALUES ('slow', '1', 1)");
+    await tx.run("SELECT pg_sleep(30)");
+  }, { deadlineMs: 200 });
+  await assert.rejects(slow, StoreDeadline);
+  assert.equal(await connection.get("SELECT 1 AS found FROM settings WHERE key = 'slow'"), undefined, "nothing of it kept");
+  await connection.write([{ sql: "INSERT INTO settings (key, value, updated_at) VALUES ('after', '1', 1)" }]);
+  assert.deepEqual(await connection.get("SELECT key FROM settings WHERE key = 'after'"), { key: "after" }, "a write after it lands");
+});
+
+test("a runner whose clock is more than 2 s from the database's says so at its open; one in step says nothing", ONLY, async (t) => {
+  const { file } = await storeOn(t);
+  const said = [];
+  const ahead = await openPostgresStore({ url: PG_URL, schema: schemaOf(file), role: "runner", now: () => Date.now() + 60_000, warn: (message) => said.push(message) });
+  await ahead.close();
+  assert.equal(said.length, 1);
+  assert.match(said[0], /this runner's clock is \d+(\.\d)? s ahead of the store's database/);
+  const inStep = await openPostgresStore({ url: PG_URL, schema: schemaOf(file), role: "runner", warn: (message) => said.push(message) });
+  await inStep.close();
+  assert.equal(said.length, 1, "nothing more said");
+});
+
+test("the one opener picks Postgres for a postgres:// AGENTRUN_STORE_URL, in AGENTRUN_STORE_SCHEMA, else SQLite in the data directory", ONLY, async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "store-open-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  assert.deepEqual(storeTarget(dir, {}), { kind: "sqlite", dataDir: dir });
+  assert.deepEqual(storeTarget(dir, { AGENTRUN_STORE_URL: "postgresql://h/db" }), { kind: "postgres", url: "postgresql://h/db", schema: "agentrun" });
+  assert.throws(() => storeTarget(dir, { AGENTRUN_STORE_URL: "mysql://h/db" }), TypeError);
+  const schema = await schemaFor(t);
+  const store = await openStore({ dataDir: dir, env: { AGENTRUN_STORE_URL: PG_URL, AGENTRUN_STORE_SCHEMA: schema } });
+  await queued(store);
+  await store.close();
+  assert.equal((await sql(schema, "SELECT id FROM runs")).length, 1, "the run is in the Postgres schema");
+});
+
+test("a runner process on a schema not set up is refused in the SQLite words, naming the schema and never the URL", ONLY, async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "store-runner-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const schema = await schemaFor(t);
+  const env = { AGENTRUN_STORE_URL: PG_URL, AGENTRUN_STORE_SCHEMA: schema };
+  const error = await startRunnerProcess({ dataDir: dir, env, createLoop: () => assert.fail("no run is claimed") }).then(() => null, (e) => e);
+  assert.ok(error instanceof RunnerRefused, String(error));
+  assert.equal(error.message, `The store in the Postgres schema ${schema} is not set up yet: start the server on the Postgres schema ${schema} first, then the runner.`);
+  assert.ok(!error.message.includes(PG_URL), "the URL is not in the words");
+});

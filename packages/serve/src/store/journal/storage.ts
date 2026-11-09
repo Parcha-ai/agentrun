@@ -329,7 +329,8 @@ export class RunStorage implements Journal {
     // only its own statements, never a model or a tool.
     await this.#transaction(async (tx) => {
       // The claim's fence (store/fence.ts): its epoch, and its lease not run out on the store's clock, read here inside the
-      // transaction so the check and the commit are one.
+      // transaction so the check and the commit are one, once the run's row is held (a no-op on SQLite's one writer).
+      await this.#dialect.lockRow(tx, "runs", "id", this.#runId);
       const fence = claimFence({ runId: this.#runId, epoch: this.#epoch }, this.#now());
       if ((await tx.runCounted(`UPDATE runs SET epoch = epoch WHERE ${fence.where}`, ...fence.params)) === 0) {
         throw new Fenced(this.#runId, this.#epoch);
@@ -419,7 +420,7 @@ export class RunStorage implements Journal {
    * transaction rolls back. A refused batch throws, so an import is all or nothing. Returns the seqs stored. Never
    * interleave it with commit() on the same journal: it is for a fresh run's single import, not a live run's loop.
    */
-  async applyIn(tx: SqliteExecutor, batches: readonly (readonly StorageWrite[])[], insertedHere: number): Promise<Seq[]> {
+  async applyIn(tx: SqliteExecutor, batches: readonly (readonly StorageWrite[])[], insertedHere: number | "this-transaction"): Promise<Seq[]> {
     this.#assertOpen();
     const fence = claimFence({ runId: this.#runId, epoch: this.#epoch }, this.#now(), { insertedHere });
     if ((await tx.runCounted(`UPDATE runs SET epoch = epoch WHERE ${fence.where}`, ...fence.params)) === 0) {

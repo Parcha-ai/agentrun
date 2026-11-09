@@ -947,11 +947,20 @@ export class StoreLaunchMissing extends Error {
   }
 }
 
-/** A row the store's constraints refuse (a duplicate id or name, a revision of an unknown agent, a bad kind). */
+/** Which of a table's rules refused a row, as both databases report it by code (never by its message's words). */
+export type ConstraintRule = "check" | "unique" | "foreign_key" | "not_null";
+
+/** A row the store's constraints refuse (a duplicate id or name, a revision of an unknown agent, a bad kind). When the
+ *  database said which rule refused it, `rule`; for a duplicate, `unique`: the table and the columns whose values were
+ *  taken already (a primary key's or a UNIQUE's), so a caller tells "the name is taken" from any other refusal. */
 export class StoreConstraint extends Error {
-  constructor(message: string) {
+  readonly rule?: ConstraintRule;
+  readonly unique?: { readonly table: string; readonly columns: readonly string[] };
+  constructor(message: string, details: { rule?: ConstraintRule; unique?: { table: string; columns: readonly string[] } } = {}) {
     super(message);
     this.name = "StoreConstraint";
+    if (details.rule) this.rule = details.rule;
+    if (details.unique) this.unique = details.unique;
   }
 }
 

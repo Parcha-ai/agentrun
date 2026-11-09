@@ -9,13 +9,14 @@
 // that SIGKILLs itself at the point, since a frozen loop can hide a write a real crash would cut.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { once } from "node:events";
 import { appendFileSync, existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { openSqliteStore, RunFinal, type RunRow, type Store } from "../../store/index.js";
+import { dropPostgresSchema, openStore, RunFinal, type RunRow, type Store, storeTarget } from "../../store/index.js";
 import { sendCommand } from "../commands.js";
 import { callsOf, journalRecords, messagesOf, type CallRecord, type MessageRecord } from "../journal-reader.js";
 import { type AnswerData, KINDS } from "../journal-kinds.js";
@@ -126,7 +127,11 @@ function crashAt(point: keyof KernelHooks, holder: { runner?: Runner; crashed?: 
 /** A store in a data directory of its own, one queued run, and runners started on it (each its own connection). */
 async function world(subject: ConformanceSubject, t: { after(fn: () => unknown): void }, timing: Partial<typeof TIMING> = {}) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-conformance-"));
-  const server = await openSqliteStore({ dataDir: dir, role: "server" });
+  // The store the environment names (store/open.ts): on Postgres, a schema of this world's own, dropped after it.
+  const target = storeTarget(dir);
+  const storeEnv: Record<string, string> = target.kind === "postgres" ? { AGENTRUN_STORE_URL: target.url, AGENTRUN_STORE_SCHEMA: `${target.schema}_c${randomBytes(6).toString("hex")}` } : {};
+  const env = { ...process.env, ...storeEnv };
+  const server = await openStore({ dataDir: dir, role: "server", env });
   const stores: Store[] = [server];
   const runners: Runner[] = [];
   /** What the runners said (claims, releases, errors): shown with a case's failure. */
@@ -135,13 +140,14 @@ async function world(subject: ConformanceSubject, t: { after(fn: () => unknown):
     for (const runner of runners) await runner.close();
     for (const store of stores.reverse()) await store.close().catch(() => undefined);
     rmSync(dir, { recursive: true, force: true });
+    if (target.kind === "postgres") await dropPostgresSchema(target.url, storeEnv.AGENTRUN_STORE_SCHEMA!);
   });
   await server.agents.create({ id: "agent-1", name: "Conformance" }, { id: "rev-1", kind: "agentic", body: { instructions: "Follow the script." } });
   await server.runs.create({ id: RUN, agentId: "agent-1", revisionId: "rev-1" });
   /** The command rows a runner has handed to a loop's command(): with the loop, whether or not taken yet. */
   const handed = new Set<number>();
   const start = async (name: string, setup: ConformanceSetup, holder?: { runner?: Runner }, more: Pick<LoopDeps, "endOfRun"> = {}) => {
-    const store = await openSqliteStore({ dataDir: dir, role: "runner" });
+    const store = await openStore({ dataDir: dir, role: "runner", env });
     stores.push(store);
     // Each journal commit's outcome, by the claim's epoch (as child.ts records its process's): what a loop wrote, and
     // whether a loop that lost its claim wrote anything after; and each command row handed to the loop.
@@ -219,7 +225,7 @@ async function world(subject: ConformanceSubject, t: { after(fn: () => unknown):
     assert.ok(ask, "the run wrote its ask");
     return String((ask.data as { callId?: unknown }).callId);
   };
-  return { dir, server, start, run, read, ended, commandRow, askedCall, events, handedOver: (id: number) => handed.has(id), liveRows };
+  return { dir, storeEnv, server, start, run, read, ended, commandRow, askedCall, events, handedOver: (id: number) => handed.has(id), liveRows };
 }
 
 interface Case {
@@ -348,7 +354,7 @@ async function processCrashThenResume(subject: ConformanceSubject, t: { after(fn
   const countFile = join(w.dir, "tool-runs");
   const { tools, ran } = suiteTools(countFile);
   const eventsFile = join(w.dir, "runner-process-events.jsonl");
-  const config = { dataDir: w.dir, module: subject.process!.module, export: subject.process!.export, tool, point, countFile, eventsFile, ...(stall ? { stopOnce: true } : {}) };
+  const config = { dataDir: w.dir, storeEnv: w.storeEnv, module: subject.process!.module, export: subject.process!.export, tool, point, countFile, eventsFile, ...(stall ? { stopOnce: true } : {}) };
   const child = spawn(process.execPath, [CHILD, JSON.stringify(config)], { env: childEnv(), stdio: ["ignore", "ignore", "pipe"] });
   // Its end, listened for from its start: a process that ends while the case waits on something else (the fence's wait
   // returns on that end) is never missed by the wait for its death below.

@@ -1,8 +1,8 @@
 // The runner process (draft command: `agentrun runner --data D [--loops N]`): a long-lived process of its own, beside the
-// server, with its own connection to the store in the data directory. It never sets the store up: a store whose schema
+// server, with its own connection to the store (in the data directory, or the Postgres AGENTRUN_STORE_URL names). It never sets the store up: a store whose schema
 // it does not know (or one the server has not set up yet) is refused before any run is claimed. SIGTERM or SIGINT closes
 // it: every loop stopped where it can resume, its runs flushed and released for another runner.
-import { openSqliteStore, SchemaVersionUnknown, type Store } from "../store/index.js";
+import { openStore, SchemaVersionUnknown, type Store, storePlace, storeTarget } from "../store/index.js";
 import type { LoopFactory } from "./loop-contract.js";
 import { startRunner, type Runner, type RunnerEvent } from "./runner.js";
 
@@ -16,6 +16,10 @@ export interface RunnerProcessOptions {
   /** Each claimed run's loop (B2's loop.ts for pi and the CLI harnesses). */
   createLoop: LoopFactory;
   onEvent?: (event: RunnerEvent) => void;
+  /** Where AGENTRUN_STORE_URL and AGENTRUN_STORE_SCHEMA are read (process.env). */
+  env?: NodeJS.ProcessEnv;
+  /** What a person should see at the start (a clock far from the store's Postgres): stderr by default. */
+  warn?: (message: string) => void;
 }
 
 export interface RunnerProcess {
@@ -29,18 +33,23 @@ export class RunnerRefused extends Error {
   override name = "RunnerRefused";
 }
 
-/** The store, opened as a runner: refused when its schema is one this build does not know, or not set up yet. */
-async function openStore(dataDir: string): Promise<Store> {
+/** The store, opened as a runner (store/open.ts: Postgres when AGENTRUN_STORE_URL names one, else SQLite in the data
+ *  directory): refused when its schema is one this build does not know, or not set up yet. */
+async function openRunnerStore(dataDir: string, env: NodeJS.ProcessEnv, warn: (message: string) => void): Promise<Store> {
+  // The store module owns where the store is (design: only the store adapter knows a file or a schema).
+  const target = storeTarget(dataDir, env);
+  // The same words on either store: the data directory's, or the Postgres schema's (never its URL).
+  const store = target.kind === "sqlite" ? dataDir : storePlace(target);
+  const on = target.kind === "sqlite" ? "this data directory" : storePlace(target);
   try {
-    // The store module owns the file name in the data directory (design: only the store adapter knows a file).
-    return await openSqliteStore({ dataDir, role: "runner" });
+    return await openStore({ dataDir, role: "runner", env, warn });
   } catch (error) {
     if (!(error instanceof SchemaVersionUnknown)) throw error;
     const { found, known } = error;
     throw new RunnerRefused(
       found === null
-        ? `The store in ${dataDir} is not set up yet: start the server on this data directory first, then the runner.`
-        : `The store in ${dataDir} is at schema version ${found}, and this runner knows ${known}: run a runner of the same release as the server.`,
+        ? `The store in ${store} is not set up yet: start the server on ${on} first, then the runner.`
+        : `The store in ${store} is at schema version ${found}, and this runner knows ${known}: run a runner of the same release as the server.`,
       { cause: error },
     );
   }
@@ -48,7 +57,8 @@ async function openStore(dataDir: string): Promise<Store> {
 
 /** Opens the store as a runner and starts claiming runs. */
 export async function startRunnerProcess(options: RunnerProcessOptions): Promise<RunnerProcess> {
-  const store = await openStore(options.dataDir);
+  const warn = options.warn ?? ((message: string) => void process.stderr.write(`agentrun-runner: ${message}\n`));
+  const store = await openRunnerStore(options.dataDir, options.env ?? process.env, warn);
   let runner: Runner;
   try {
     runner = startRunner({
