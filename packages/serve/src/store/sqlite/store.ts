@@ -9,7 +9,7 @@ import { claimFence } from "../fence.js";
 import { RunStorage } from "../journal/storage.js";
 import { DDL, SCHEMA_VERSION } from "../schema.js";
 import {
-  CommandTaken, Fenced, RefreshLeaseLost, SchemaVersionUnknown, StoreConstraint, StoreFromEarlierVersion, TriggerFull, type AgentRow, type Agents,
+  AgentArchived, CommandTaken, Fenced, RefreshLeaseLost, SchemaVersionUnknown, StoreConstraint, StoreFromEarlierVersion, TriggerFull, type AgentRow, type Agents,
   type AlsoRow, type Claim, type Command, type FiringChange, type FiringRow, type FiringStatus, type ImportRunInput, type Journal, type NewRevision, type RevisionRow, type RunPatch, type RunRow, type Runs,
   type JournalReads,
   type RunState, type Store, type StoreRole, type TemplatePackage, type Templates, type TriggerDef, type TriggerPatch, type TriggerRow, type Triggers, type TriggerScope,
@@ -276,6 +276,11 @@ class SqliteStore implements Store {
       await tx.run("DELETE FROM trigger_scopes WHERE trigger_id = ?", triggerId);
       for (const { kind, scope } of scopes) await tx.run("INSERT INTO trigger_scopes (kind, scope, trigger_id) VALUES (?, ?, ?)", kind, scope, triggerId);
     };
+    /** Refused (AgentArchived) when agent `agentId` is archived: read in the writing transaction, so an archive that
+     *  commits first is seen, and one that commits after finds what this wrote. */
+    const refuseArchived = async (tx: SqliteExecutor, agentId: string) => {
+      if ((await tx.get<{ archived_at: number | null }>("SELECT archived_at FROM agents WHERE id = ?", agentId))?.archived_at != null) throw new AgentArchived(agentId);
+    };
     /** Inserts the trigger, or (on its name for the agent) changes it in place, keeping its id; then its scope rows, only
      *  while it is enabled. `insertOnly` (an apply's new agent): no ON CONFLICT, and the package check keeps the names
      *  distinct, so the store's one name per agent is never what refuses an apply (templates.apply below). */
@@ -308,9 +313,19 @@ class SqliteStore implements Store {
       },
       list: async ({ archived = false } = {}) =>
         (await db.all<AgentRecord>(`SELECT ${AGENT_COLUMNS} FROM agents WHERE archived_at IS ${archived ? "NOT NULL" : "NULL"} ORDER BY created_at, id`)).map(agentOf),
-      archive: async (id, archived) => {
-        await db.write([{ sql: "UPDATE agents SET archived_at = ? WHERE id = ?", params: [archived ? now() : null, id] }]);
-      },
+      archive: async (id, archived, why) =>
+        db.transaction(async (tx) => {
+          const at = now();
+          await tx.run("UPDATE agents SET archived_at = ? WHERE id = ?", archived ? at : null, id);
+          if (!archived) return [];
+          // Its triggers that are on, off in this same commit: a firing's fire reads the archive in its own transaction.
+          const off = await tx.all<{ id: string; name: string }>(
+            "UPDATE triggers SET enabled = 0, next_at = NULL, disabled = ?, updated_at = ? WHERE agent_id = ? AND enabled = 1 RETURNING id, name",
+            why === undefined ? null : json(why), at, id,
+          );
+          for (const t of off) await writeScopes(tx, t.id, []);
+          return off.map(({ id: triggerId, name }) => ({ id: triggerId, name })).sort((a, b) => a.name.localeCompare(b.name));
+        }),
       addRevision: async ({ agentId, ...revision }) => {
         await db.transaction((tx) => insertRevision(tx, agentId, revision, now()));
       },
@@ -362,6 +377,7 @@ class SqliteStore implements Store {
         const row = await db.transaction(async (tx) => {
           // A trigger belongs to an agent the store holds: refused in words, never a bare foreign-key failure.
           if (!(await tx.get<{ id: string }>("SELECT id FROM agents WHERE id = ?", t.agentId))) throw new StoreConstraint(`no agent ${t.agentId}: a trigger belongs to an agent the store holds`);
+          if (t.enabled) await refuseArchived(tx, t.agentId);
           const made = await tx.get<TriggerRecord>(
             `INSERT INTO triggers (id, agent_id, name, enabled, source, target, next_at, catchup_window_s, max_active_runs, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING ${TRIGGER_COLUMNS}`,
             t.id, t.agentId, t.name, t.enabled ? 1 : 0, json(t.source), json(t.target), t.nextAt, t.catchupWindowS, t.maxActiveRuns ?? null, at, at,
@@ -377,6 +393,8 @@ class SqliteStore implements Store {
           // Moved to another agent (its target re-aimed): one the store holds, refused in words otherwise.
           if (patch.agentId !== undefined && !(await tx.get<{ id: string }>("SELECT id FROM agents WHERE id = ?", patch.agentId))) throw new StoreConstraint(`no agent ${patch.agentId}: a trigger belongs to an agent the store holds`);
           const changed = await tx.get<TriggerRecord>(`UPDATE triggers SET ${set} WHERE id = ? RETURNING ${TRIGGER_COLUMNS}`, ...params, id);
+          // Never left on for an archived agent (turned on, or moved there on): the whole update is undone.
+          if (changed?.enabled === 1) await refuseArchived(tx, changed.agent_id);
           // Scope rows only while it is on: turned off, it holds none; given scopes, they are its rows now.
           if (changed && (changed.enabled === 0 || scopes !== undefined)) await writeScopes(tx, id, changed.enabled === 1 ? (scopes ?? []) : []);
           return changed;
@@ -529,7 +547,9 @@ class SqliteStore implements Store {
         }),
       enable: async (triggerId, scopes) => {
         await db.transaction(async (tx) => {
-          if ((await tx.runCounted("UPDATE triggers SET enabled = 1, disabled = NULL, updated_at = ? WHERE id = ?", now(), triggerId)) === 0) throw new StoreConstraint(`no trigger ${triggerId}`);
+          const on = await tx.get<{ agent_id: string }>("UPDATE triggers SET enabled = 1, disabled = NULL, updated_at = ? WHERE id = ? RETURNING agent_id", now(), triggerId);
+          if (!on) throw new StoreConstraint(`no trigger ${triggerId}`);
+          await refuseArchived(tx, on.agent_id);
           await writeScopes(tx, triggerId, scopes);
         });
       },
@@ -544,6 +564,8 @@ class SqliteStore implements Store {
       fire: async (firing, run, { launch } = {}) =>
         db.transaction(async (tx) => {
           const at = now();
+          // Never a run of an archived agent: the archive's commit is read here, in the transaction that would start it.
+          await refuseArchived(tx, run.agentId);
           const row = await tx.get<RunRecord>(`INSERT INTO runs (id, agent_id, revision_id, state, epoch, started_at) VALUES (?, ?, ?, 'queued', 0, ?) RETURNING ${RUN_COLUMNS}`, run.id, run.agentId, run.revisionId, at);
           // The run's launch row lands with it, through the store's one writer, or neither does.
           if (launch) await writeLaunch(tx, run.id, launch, at);
