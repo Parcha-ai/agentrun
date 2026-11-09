@@ -49,6 +49,13 @@ export const ERROR_STATUS = {
   sign_in_held: 409,
   handoff_answered: 409,
   scope_taken: 409,
+  // Connect GitHub (github-connection.ts): a github trigger on a server with no GitHub App, a second App, a Connect that
+  // GitHub could not call back (no public address), and one whose secrets could not be kept (no seal key).
+  github_not_connected: 409,
+  github_already_connected: 409,
+  github_no_public_url: 409,
+  github_no_seal_key: 409,
+  github_wrong_origin: 409,
 } as const;
 
 export type ErrorCode = keyof typeof ERROR_STATUS;

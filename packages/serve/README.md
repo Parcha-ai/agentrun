@@ -912,7 +912,8 @@ default). An agent's `definition.tool_settings` has the same shape and is over t
 for its capability (`auto`, `native`, `exa-keyless` or `parallel` for `web_search`; `kernel` or `parallel` for `web_fetch`;
 `auto`, `browserbase`, `kernel` or `chrome` for `browser`, [below](#tools)); an
 unknown capability or provider is `422`. Any tool's settings also take a `permission`, `allow`, `ask` or `deny`, which the
-tool gate holds every call to (an ask parks the run for the owner's approval); a workflow's call node, which cannot wait
+tool gate holds every call to (an ask parks the run for the owner's approval), and an MCP tool's a `pin`, the arguments
+its calls must carry ([MCP servers](#mcp-servers), `422` for one that is not one); a workflow's call node, which cannot wait
 for an approval, refuses its run when its tool is set to ask or deny (`409`, `details.asks` or `details.denied`). The
 settings are kept in the data directory
 (`tool-settings.json`, 0600, written whole and durably), not a secret, and read by every run launched from then on.
@@ -1451,6 +1452,24 @@ asked by default.
   until the owner answers `POST /v2/runs/{id}/approvals/{approval_id}` from their password session. Allowed, the run
   sends the call once and resumes with its result; denied, it resumes with the refusal. A restart while a call is
   parked loses nothing.
+- **Pins.** An MCP tool's own key (`mcp:<server>/<tool>`, never the wildcard) may also carry `pin`, 1 to 8 of the
+  tool's top-level arguments, each to the one JSON scalar its calls must carry (`null`: the argument left out), or a
+  list of 1 to 16 of them, the argument one of the list, compared strictly:
+  `{"mcp:slack/slack_send_message": {"permission": "allow", "pin": {"channel_id": "C0123"}}}`,
+  `{"mcp:github/pull_request_review_write": {"pin": {"method": ["create", "submit_pending"], "event": [null, "COMMENT"]}}}`. The gate checks a pinned
+  tool's call before it runs or asks anyone, whatever the permission (an allow, an ask, a grant): a call whose arguments
+  are not as pinned is refused, never sent and never asked about, and the model reads "mcp:slack/slack_send_message may
+  only be called with channel_id = C0123: its destination is fixed by the agent's settings". The run's process logs a
+  line naming the tool, the call and the arguments that did not hold, and its Timeline row is a failed call, as any
+  refusal's. A call approved under ask is checked again before it is sent. A pin adds to a setting and is never a
+  permission: the agent's pin and the server's both hold (an argument both pin takes what holds both), and where
+  nothing holds both every call is refused, saying so. A template pins its sends' destinations to its parameters ([Templates](#templates)). A pin in
+  `tool-settings.json` that does not read refuses every call of its tool, and `GET /settings/tools` serves it as
+  `pin_broken: true`. A `PUT` that keeps the tool's key and sets no valid pin (the mark sent back as served, or the pin
+  left out) keeps it broken, so saving another tool's setting never lifts it; a valid pin repairs it, and leaving the
+  key out removes the setting. Until the agent
+  store's cutover an agent's own pin (`definition.tool_settings.<tool>.pin`) is refused, `422 not_set_up_here`: the
+  store this server writes today keeps no pin, so set it on the server meanwhile.
 - **Prices.** `PUT /v2/settings/mcp-servers/{name}` takes `prices`, each tool's price in USD a call
   (`{"prices": {"search": 0.01}}`; a finite number, 0 or more, for a tool the server lists; else `422`). A priced call
   is held at its price under the run's `max_cost_usd`, refused unsent when the cap cannot take it, and booked as the
@@ -1591,8 +1610,10 @@ first past that, which the log says once (`condition=trigger_seen_full`). The ag
 then the body, cut at 16 KiB, inside `<trigger-payload source="webhook" scheme="standard" untrusted>...</trigger-payload>`:
 whatever the sender wrote is data, not an instruction. The tag names the signature scheme, the event as that scheme
 reads it (`event="..."`), the JSON body's top-level `action` (`action="..."`) and an unsigned delivery id
-(`delivery="..."`, GitHub's `X-GitHub-Delivery`), each when there is one, so an agent's instructions can read what it
-was given; a sender's words there are cut to 200 characters, their quotes and brackets escaped, and a closing tag in
+(`delivery="..."`, GitHub's `X-GitHub-Delivery`) and, for a GitHub delivery, its pull request or issue's `number="..."`
+(`pull_request.number`, else `issue.number`) and a pull request's `head_sha="..."` (40 hex; a comment event has none, so
+no `head_sha` at all), read from the signed body so the payload's cut never loses them, each when there is one, so an
+agent's instructions can read what it was given; a sender's words there are cut to 200 characters, their quotes and brackets escaped, and a closing tag in
 the body, in any case, is defused.
 
 A webhook trigger's `signature` names its scheme, one of a table of them: `standard` (the default, above) or `github`,
@@ -1667,6 +1688,82 @@ never opens a completed run again for one it already has. A firing to a run that
 5 s), and a trigger holds at most 20 firings due: past them a webhook event and a run now answer `429 rate_limited`
 with `Retry-After: 30`, recording nothing, and a schedule's time is `skipped`.
 
+### GitHub triggers (Connect GitHub)
+
+A server has at most one GitHub App, made with GitHub's app-manifest flow, and every `github` trigger (and every
+GitHub template) uses it. In the console, Connect GitHub calls `POST /v2/integrations/github/connect` (`{org?}`, to make
+the App under an organization) and posts the form it answers to GitHub: `action`, GitHub's new-App page, and
+`manifest`, which names a name GitHub lets the person edit, the server's public URL, its hook `/v2/hooks/github`, its
+callback and setup URLs, the permissions (pull requests write; contents, metadata and issues read) and the events
+(`pull_request`, `issue_comment`). It needs the address GitHub can reach, `AGENTRUN_PUBLIC_URL` (`409 github_no_public_url`,
+"GitHub can't reach this server: set its public URL first"), a seal key (`409 github_no_seal_key`, naming
+`AGENTRUN_SEAL_KEY`), and no App connected already (`409 github_already_connected`, "This server already has a GitHub
+App. Disconnect it first."), and a request at the public URL itself, where GitHub sends the browser back
+(`409 github_wrong_origin`, "Open this server at <public URL> to connect GitHub.", the URL in `details.public_url`). Its
+`state` is random, used once, good for an hour, and bound to the browser that started it
+by a cookie on the callback's path; GitHub reads it from `action`'s URL, and the form posts only `manifest`.
+
+GitHub sends the browser back to `GET /v2/integrations/github/callback` with a code. The server converts it with GitHub
+and keeps the App's id, slug and client id, which are no secret, and its private key and webhook secret, which are,
+sealed in `DIR/trigger-settings-github.json`; GitHub's client secret is never kept, and no secret is logged or answered.
+The browser goes on to install the App, with a fresh install state GitHub passes on and its cookie on the installed
+path; GitHub's redirect after (`/v2/integrations/github/installed`) records the installation only with that state and
+cookie, once GitHub, asked with the App's own JWT, says it is the App's, and sends the browser to the console at the
+public URL, `<public>/#/settings/github?github=connected`. Without the state and cookie it records nothing and lands
+there too: an installation made from GitHub's own pages arrives as the App's signed installation event. Neither leg ever answers an error body: a state
+that is unknown, used, older than an hour or from another browser sends the browser to
+`<public>/#/settings/github?github=error&reason=state_invalid`,
+a code GitHub does not convert to `...&reason=conversion_failed`, one whose App GitHub made while another Connect kept
+its App to `...&reason=already_connected` (the first App stays), and an installation GitHub does not confirm, or one
+checked while GitHub was disconnected or connected again, to `...&reason=installation_unverified`; nothing is kept. The
+App's `installation` events keep the list current, each taken only in its own shape (the installation, its account and
+this App's id) and as GitHub, asked with the App's JWT, bears it out: `X-GitHub-Event` is not signed, so another
+event's signed body sent as one changes nothing. GitHub out of reach when an event is checked answers it `503`, so
+GitHub shows the delivery failed and it can be sent again; and the list is repaired from GitHub's own installations at
+the server's start and when `GET /v2/integrations/github` is read (at most once a minute), by the same rule: none left
+turns the github triggers off, one dropped only shrinks it. A list that an event or the install redirect wrote while
+GitHub was asked is not overwritten by GitHub's older answer: the repair asks once more, and leaves the list as it is
+when it moved again. A deletion or suspension that would leave none is confirmed with GitHub's own list first: only none there turns the
+github triggers off, and its list as it comes (the one removed included, when GitHub holds it active again) becomes the
+list. An installation event follows the same rule: GitHub's answer to its check is taken only when no write came meanwhile
+(else it is asked once more), so an older suspend never undoes a newer unsuspend. A server that closes stops its repair
+and its events' checks, which write nothing after (an event cut so answers `503`, to be sent again).
+`GET /v2/integrations/github` shows `{app_id, slug, installations}`, never a secret.
+
+A trigger with `source: {kind: "github", accept: [...]}` takes the App's events its `accept` names (the same rules as a
+webhook trigger's, above; required) and keeps no secret of its own. `POST /v2/hooks/github` takes no token: each delivery
+is checked by `X-Hub-Signature-256` under the App's webhook secret, and one event fires **every** github trigger whose
+`accept` takes it, each its own firing, keyed by the SHA-256 of the signed body, and its own run (github triggers may
+take the same events; `max_active_runs` caps each). Every other github trigger keeps the body's key for its day, so the
+same body sent again under another `X-GitHub-Event`, which GitHub does not sign, starts nothing: where it matters, a rule
+also tests a field only that event's body has. When a trigger that takes an event holds too many firings due, the delivery is refused `429` with `Retry-After`
+though the others recorded theirs: the retry records it there once it has room, and is the others' duplicate. An event no
+trigger takes is `200 {"ok": "ignored"}`; GitHub's `ping` is
+`200 {"ok": "pong"}`. The payload's tag also names the installation and the repository (`installation="..."
+repo="owner/name"`). A github trigger made or turned on with no App connected is `409 github_not_connected` ("Connect GitHub
+in Settings"). A `{kind: "webhook", signature: "github"}` trigger is unchanged: a repository webhook with its own secret.
+
+An installation deleted or suspended on GitHub leaves the list, and one unsuspended comes back; the github triggers turn
+off only when no installation is left (`disabled: {reason: "connection_lost", detail}`, naming it), and coming back
+turns none on. `DELETE /v2/integrations/github` disconnects the App and turns every github trigger off the same way,
+answering `{disconnected: true, triggers_off, note}`, the note "Delete the App itself on GitHub: <its settings URL>":
+the App's credentials leave this server only, and it stays on GitHub until deleted there. Turned off, a trigger is kept:
+an agent keeps its triggers, and each goes on again once turned on with GitHub connected.
+
+An MCP server saved with `auth: {type: "github_app", headers?}` (`PUT /v2/settings/mcp-servers/{name}`) uses the
+connected App's tokens and keeps none of its own: only its static headers (such as `X-MCP-Tools`), sealed as written,
+and never an `Authorization`. Its tools are listed with a token of the App's installation. At each launch of a run that
+grants its tools (its start, every resume, a relaunch after a crash) the server mints an installation token for that
+run, narrowed to the one repository the run is about, with the App's permissions: a GitHub event's run uses its
+installation and repository (the server's own payload tag); any other names it in its input as
+`https://github.com/<owner>/<repo>`, whose installation the server asks GitHub for with the App's JWT. The token goes to
+the run's MCP calls with the static headers beside it, lives only in memory (handed to the run's process over its pipe,
+never its environment, journal, a log line or an answer), and is cut from whatever a run shows while it may be in use.
+A run whose repository the App does not cover, or that names none, has those calls answered in words ("The GitHub App
+isn't installed on owner/repo"). A known limit: a token lasts an hour and is not renewed inside a live run's process
+(it is minted at each launch): a run still working past it has its GitHub calls answered, unsent, "The GitHub token for
+this run expired: it is minted again when the run resumes", and its next resume mints a fresh one.
+
 ## Templates
 
 A template package makes a working agent in one call: its definition, its skills and rules, and its triggers, from a
@@ -1675,6 +1772,22 @@ overrides?: {model}}` makes one, or nothing when a check fails (a trigger refuse
 package's `version` is SemVer and never `definition.version`, the agent's revision number. The first package is `code-review`, a code review agent for one GitHub repository. The format and the
 rules of an apply are in [templates/README.md](https://github.com/Parcha-ai/agentrun/blob/main/packages/serve/templates/README.md);
 `agentrun template validate DIR` checks a folder as the server does.
+
+`agentrun template eval DIR` (`agentrun-serve eval-template DIR`) runs a package's eval cases as real runs of its agent
+and grades each run with the case's graders: by default on a server of its own over a temp data directory, so it never
+touches yours, with each case's fake MCP servers on loopback and its learned notes seeded through the learning API. Real
+models cost money: each run is capped at its case's `max_cost_usd`. It exits 0 when every case passed, 1 when one
+failed, 2 when nothing ran. The runner, the graders and the report are in
+[templates/README.md](https://github.com/Parcha-ai/agentrun/blob/main/packages/serve/templates/README.md#running-the-evals).
+
+| `eval-template` flag | What |
+| --- | --- |
+| `--case NAME` | A case to run; repeat it. Without one, every case. |
+| `--runs N` | Runs of each case, in place of each case's `runs`. |
+| `--server URL` | Run on that server, its token in `AGENTRUN_API_KEY` (the launcher hands it over its pipe; never printed). The agents the eval makes are archived at the end. |
+| `--grader-model PROVIDER/MODEL` | The `llm` graders' model; default the server's. |
+| `--report FILE` | The whole report as JSON (per case, run and grader: pass, reason, cost); a summary goes to stdout, progress to stderr. |
+| `--faux MODULE` | Answer every model request from the module, as the server's `--faux` does. Not with `--server`. |
 
 ## What it serves
 

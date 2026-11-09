@@ -4,7 +4,7 @@ import type { AgentLearning, LearningChange, LearningDiff, LearningNote, NotePro
 import type { McpAuth, McpClientFeature, McpPreview, McpRefresh, McpServer } from "./mcp";
 import type { RunGraph } from "./runGraph";
 import { applyPage } from "./timeline";
-import type { ApiError, Firing, InputIssue, TemplateApplied, TemplateApply, TemplateView, RaiseAnswer, Run, RunBrowser, RunFiles, RunStatus, TimelinePage, TimelineRow, ToolKeys, ToolKeysFeature, ToolSettings, Trigger, TriggerCreate, TriggerInput, TriggerMade, TriggerSecret, Webhook, WebhookAttempt, WebhookSaved, WebhooksFeature } from "./v2";
+import type { ApiError, Firing, GitHubConnection, GitHubConnectStart, GitHubDisconnected, InputIssue, TemplateApplied, TemplateApply, TemplateView, RaiseAnswer, Run, RunBrowser, RunFiles, RunStatus, TimelinePage, TimelineRow, ToolKeys, ToolKeysFeature, ToolSettings, Trigger, TriggerCreate, TriggerInput, TriggerMade, TriggerSecret, Webhook, WebhookAttempt, WebhookSaved, WebhooksFeature } from "./v2";
 
 /** A request AgentRun Server refused: its HTTP status and its typed error (`code`, `message`, `retryable`). */
 /** A refusal's issue at one field, as the server names it (with its `fix`, when it says one). Its `reason` is any string, as
@@ -270,6 +270,13 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     deleteMcpServer: (name: string) => call<unknown>("DELETE", mcpServer(name)),
     /** Starts an OAuth sign-in to the server at `url`: the page the person opens to approve it. */
     startMcpSignIn: (name: string, body: { url: string; scopes?: string[]; client_id?: string; client_secret?: string }) => call<{ authorization_url: string }>("POST", `${mcpServer(name)}/oauth/start`, { body }),
+    /** This server's GitHub App: 404 (github_not_connected) when none is connected. */
+    githubConnection: () => call<GitHubConnection>("GET", "/integrations/github"),
+    /** Starts connecting one: the form the browser posts to GitHub. 409 github_already_connected, github_no_public_url or
+     *  github_no_seal_key, in the server's words. */
+    connectGitHub: (org?: string) => call<GitHubConnectStart>("POST", "/integrations/github/connect", { body: org ? { org } : {} }),
+    /** Disconnects it: every GitHub trigger turns off; the note says what to delete on GitHub. */
+    disconnectGitHub: () => call<GitHubDisconnected>("DELETE", "/integrations/github"),
     toolSettings: () => call<ToolSettings>("GET", "/settings/tools"),
     /** Replaces the server's providers: a capability the body leaves out takes its default. The answer is each one's now. */
     saveToolSettings: (settings: ToolSettings) => call<ToolSettings>("PUT", "/settings/tools", { body: settings }),

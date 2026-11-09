@@ -15,7 +15,7 @@ afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
 
 const REVIEWER: TemplateView = {
   name: "pr-reviewer", display_name: "PR reviewer", version: "1.0.0", description: "Reviews a pull request and leaves one review.",
-  license: "MIT", repository: null, harness: ["claude-agent"], model: { tier: "balanced" }, effort: null, tools: null,
+  license: "MIT", author: null, repository: null, output: null, harness: ["claude-agent"], model: { tier: "balanced" }, effort: null, tools: null,
   mcp: [{ server: "github", required: true, tools: [
     { name: "get_pull_request", tool: "mcp:github/get_pull_request", asks: "allow" },
     { name: "create_review", tool: "mcp:github/create_review", asks: "ask" },
@@ -24,14 +24,14 @@ const REVIEWER: TemplateView = {
     repo: { type: "string", required: true, description: "The repository, as owner/name", pattern: "^[^/]+/[^/]+$" },
     max_files: { type: "integer", required: false, description: "How many files it reads at most" },
   },
-  secrets: ["PARALLEL_API_KEY"], budget: { per_run_usd: 0.5 }, learning: false, triggers: [{ kind: "github", events: ["pull_request"] }], skills: [], evals: [],
+  secrets: ["PARALLEL_API_KEY"], budget: { per_run_usd: 0.5 }, learning: false, approvals_default: "ask", triggers: [{ kind: "github", events: ["pull_request"] }], skills: [], evals: [],
 };
 const NOTES: TemplateView = { ...REVIEWER, name: "meeting-notes", display_name: null, version: "0.2.0", description: "Turns a transcript into notes.", mcp: [], parameters: {}, secrets: [], budget: null, triggers: [] };
 
 type Fake = { apply?: (name: string, body: unknown, key: string) => Promise<unknown>; servers?: string[]; templates?: TemplateView[] };
 async function open(name?: string, fake: Fake = {}) {
   const went: string[] = [];
-  const sent: { name: string; body: { parameters?: Record<string, unknown>; grants?: string[] }; key: string }[] = [];
+  const sent: { name: string; body: { parameters?: Record<string, unknown>; grants?: string[]; overrides?: Record<string, unknown> }; key: string }[] = [];
   const v2 = {
     listTemplates: async () => ({ templates: fake.templates ?? [REVIEWER, NOTES] }),
     listMcpServers: async () => ({ servers: (fake.servers ?? ["github"]).map((n) => ({ name: n, url: `https://${n}.example/mcp`, auth: { type: "none" }, tools: [], credential: null })) }),
@@ -132,7 +132,7 @@ describe("applying a template", () => {
     await t.click(t.button(/^Apply/));
     expect(t.sent).toHaveLength(2);
     expect(t.sent[0].name).toBe("pr-reviewer");
-    expect(t.sent[0].body).toEqual({ parameters: { repo: "acme/web", max_files: 3 }, grants: ["mcp:github/create_review"] });
+    expect(t.sent[0].body).toEqual({ parameters: { repo: "acme/web", max_files: 3 }, grants: ["mcp:github/create_review"], overrides: { approvals: "ask" } });
     expect(t.sent[0].key).toBeTruthy();
     expect(t.sent[1].key).toBe(t.sent[0].key);
   });
@@ -190,6 +190,33 @@ describe("applying a template", () => {
     expect(t.went).toEqual([]);
   });
 
+  it("preselects the template's own approvals: Never ask, with what it grants, for one that runs unattended; Ask me for one that asks", async () => {
+    const MONITOR: TemplateView = { ...REVIEWER, name: "market-monitor", approvals_default: "never" };
+    const radio = (t: Awaited<ReturnType<typeof open>>, label: RegExp) => [...t.host.querySelectorAll<HTMLInputElement>('fieldset[aria-label="Approvals"] input[type="radio"]')].find((r) => label.test(r.closest("label")?.textContent ?? ""));
+    const never = await open("market-monitor", { templates: [MONITOR] });
+    expect(radio(never, /^Never ask/)!.checked).toBe(true);
+    expect(never.host.querySelector('fieldset[aria-label="Approvals"]')!.textContent).toContain("Never ask: every tool this agent has runs without waiting for you.");
+    // Switching still sends the choice.
+    await never.click(radio(never, /^Ask me/));
+    await never.type(never.host.querySelector('[data-field="parameters.repo"] input'), "acme/web");
+    await never.click(never.button(/^Apply/));
+    expect(never.sent[0].body.overrides).toEqual({ approvals: "ask" });
+    act(() => root?.unmount()); document.body.innerHTML = "";
+    const asks = await open("pr-reviewer");
+    expect(radio(asks, /^Ask me/)!.checked).toBe(true);
+  });
+
+  it("asks by default; Never ask says what it grants and is sent as the agent's approvals", async () => {
+    const t = await open("pr-reviewer");
+    const radio = (label: RegExp) => [...t.host.querySelectorAll<HTMLInputElement>('fieldset[aria-label="Approvals"] input[type="radio"]')].find((r) => label.test(r.closest("label")?.textContent ?? ""));
+    expect(radio(/^Ask me/)!.checked).toBe(true);
+    await t.click(radio(/^Never ask/));
+    expect(t.host.querySelector('fieldset[aria-label="Approvals"]')!.textContent).toContain("Never ask: every tool this agent has runs without waiting for you. A tool set to deny, and a template's pins, still hold.");
+    await t.type(t.host.querySelector('[data-field="parameters.repo"] input'), "acme/web");
+    await t.click(t.button(/^Apply/));
+    expect(t.sent[0].body.overrides).toEqual({ approvals: "never" });
+  });
+
   it("titles what was applied with the values sent, not edits made while the apply was under way", async () => {
     const CODE: TemplateView = { ...REVIEWER, name: "code-review", display_name: "Code review: ${parameters.repo}" };
     let answer: (v: unknown) => void = () => {};
@@ -201,6 +228,36 @@ describe("applying a template", () => {
     await act(async () => { answer({ template: "code-review", version: "1.0.0", agent_id: "cr-1", trigger_ids: [], warnings: [{ field: "mcp.github", reason: "not_set_up_here", message: "github is not set up here." }] }); });
     await t.settle();
     expect(t.host.querySelector('section[aria-label="Applied"] h1')!.textContent).toContain("Code review: acme/web applied");
+  });
+
+  it("shows each webhook trigger's secret once beside its URL, with Copy and that it won't be shown again", async () => {
+    const SECRET = "CANARY-VALUE-5e1f0a2b9c";
+    const t = await open("pr-reviewer", { apply: async () => ({ template: "pr-reviewer", version: "1.0.0", agent_id: "pr-reviewer-1", trigger_ids: ["trg_hook", "trg_cron"], warnings: [],
+      webhook_secrets: [{ trigger_id: "trg_hook", secret: SECRET }] }) });
+    await t.type(t.host.querySelector('[data-field="parameters.repo"] input'), "acme/web");
+    await t.click(t.button(/^Apply/));
+    // A secret shown once keeps the screen: it never moves on past it.
+    expect(t.went).toEqual([]);
+    const made = t.host.querySelector('section[aria-label="Applied"]')!;
+    const once = made.querySelector('section[aria-label^="The webhook\'s URL and secret"]')!;
+    expect(once.textContent).toContain(`${location.origin}/v2/hooks/trg_hook`);
+    expect(once.textContent).toContain(SECRET);
+    expect(once.textContent).toContain("You won't see this secret again.");
+    expect([...once.querySelectorAll("button")].some((b) => /Copy secret/.test(b.textContent ?? ""))).toBe(true);
+    // Only the webhook trigger's: a schedule's (trg_cron) has no secret and is not listed.
+    expect(made.textContent).not.toContain("/v2/hooks/trg_cron");
+    expect(made.querySelector('a[href="#/agents/pr-reviewer-1"]')?.textContent).toContain("Open the agent");
+  });
+
+  it("on a retry of the same apply, shows the server's note in place of a secret it no longer sends", async () => {
+    const t = await open("pr-reviewer", { apply: async () => ({ template: "pr-reviewer", version: "1.0.0", agent_id: "pr-reviewer-1", trigger_ids: ["trg_hook"], warnings: [],
+      note: "This apply was made before: its webhook secrets were shown then and are not shown again." }) });
+    await t.type(t.host.querySelector('[data-field="parameters.repo"] input'), "acme/web");
+    await t.click(t.button(/^Apply/));
+    expect(t.went).toEqual([]);
+    const made = t.host.querySelector('section[aria-label="Applied"]')!;
+    expect(made.textContent).toContain("This apply was made before: its webhook secrets were shown then and are not shown again.");
+    expect(made.textContent).not.toContain("CANARY-VALUE");
   });
 
   it("opens the made agent at once when there are no warnings", async () => {

@@ -5,6 +5,7 @@
 // key) and bound to `mcp:<server>:<header>`, so a value moved to another server or header does not open. An OAuth
 // server's token set (mcp-oauth.ts) is sealed the same way, bound to `mcp:<server>:oauth`, and refreshed here. No read
 // returns a credential. No redirect is followed: a credential goes only to the URL the person gave.
+import { GITHUB_MCP_ONLY, GITHUB_MCP_ORIGIN, githubMcpUrl } from "./github.js";
 import { createHmac } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -23,7 +24,7 @@ export const MCP_SERVER_NAME = /^[a-z][a-z0-9-]{0,31}$/;
 /** The names AgentRun's own tools are called by, which no MCP server takes: claude-agent calls the kernel's host tools
  *  as `mcp__hands__<tool>`, and monid's are `monid_<tool>` (tool-gate.ts settingsKeyOf reads both as AgentRun's). */
 export const RESERVED_MCP_NAMES: readonly string[] = ["hands", "monid"];
-export const MCP_AUTH_TYPES = ["none", "bearer", "headers", "oauth"] as const;
+export const MCP_AUTH_TYPES = ["none", "bearer", "headers", "oauth", "github_app"] as const;
 /** A run's launch refreshes an OAuth access token that expires within this. */
 /** Where an owner updates a saved MCP server, as people read it. */
 const MCP_SETTINGS = "Settings → MCP servers";
@@ -76,6 +77,13 @@ type Auth = { type: AuthType; headers?: HeaderMap };
 
 export class McpServers {
   readonly file: string;
+  /** The connected GitHub App's installation token for listing a `github_app` server's tools as it is saved, refreshed
+   *  or previewed by name (github-connection.ts tokenForListing); a run's own is minted at its launch (runs.ts). Set by
+   *  the server; absent, such a server cannot be saved. */
+  appToken?: (signal?: AbortSignal) => Promise<{ token: string } | { unusable: string }>;
+  /** The one origin a github_app server may have (GITHUB_MCP_ORIGIN; a test's fake through the server's seam): the App's
+   *  tokens are minted for, and sent to, nothing else. */
+  appOrigin = GITHUB_MCP_ORIGIN;
   private readonly key: Buffer | undefined;
   private readonly sealCheck: string | undefined;
   private readonly signIns: McpSignIns;
@@ -148,11 +156,12 @@ export class McpServers {
       const name = String(body.name);
       await this.freshen(name);
       const kept = this.need(name);
-      return marked(kept.url, await listServer(new URL(kept.url), this.opened(name, kept, "name"), this.version, stop));
+      return marked(kept.url, await listServer(new URL(kept.url), await this.withAppToken(kept, new URL(kept.url), this.opened(name, kept, "name"), stop), this.version, stop));
     }
     const { url, auth } = this.admit(body);
-    if (auth.type !== "none" && !auth.headers) throw invalid([credentialMissing(auth.type, "A preview needs the credential it is to connect with.")]);
-    return marked(url.href, await listServer(url, auth.headers ?? {}, this.version, stop));
+    // A github_app server's credential is a token of the App, minted here, as for a saved one: its static headers are optional.
+    if (auth.type !== "none" && auth.type !== "github_app" && !auth.headers) throw invalid([credentialMissing(auth.type, "A preview needs the credential it is to connect with.")]);
+    return marked(url.href, await listServer(url, await this.withAppToken({ auth: { type: auth.type } }, url, auth.headers ?? {}, stop), this.version, stop));
   }
 
   /** PUT: preview, then keep the server with the tools listed. A body with no credential keeps the sealed one, while
@@ -163,7 +172,13 @@ export class McpServers {
     if (auth.type !== "none" && !this.key) throw new ApiError("no_sealing_key", `This server was handed no seal key (${SEAL_KEY_ENV}), so it keeps no MCP server credential: it never keeps one in the clear. ${SEAL_KEY_HOW}`);
     const was = this.servers()[name];
     let headers = auth.headers;
-    if (auth.type !== "none" && !headers) {
+    // A github_app server's own headers are only its static ones (its token is minted), kept as saved only at the same
+    // origin, as any saved credential: a move takes them again, or none goes to another origin.
+    if (auth.type === "github_app" && !headers && was?.auth.type === "github_app" && was.auth.sealed) {
+      if (new URL(was.url).origin !== url.origin) throw invalid([credentialMissing(auth.type, `The address moved from ${new URL(was.url).origin} to ${url.origin}: send the headers again, so saved ones never go to another origin.`)]);
+      headers = this.opened(name, was, "auth.headers");
+    }
+    if (auth.type !== "none" && auth.type !== "github_app" && !headers) {
       if (!was || was.auth.type !== auth.type) throw invalid([credentialMissing(auth.type, `The server ${name} has no saved ${auth.type} credential to keep.`)]);
       if (new URL(was.url).origin !== url.origin) throw invalid([credentialMissing(auth.type, `The address moved from ${new URL(was.url).origin} to ${url.origin}: send the credential again, so a saved one never goes to another origin.`)]);
       await this.freshen(name);
@@ -172,12 +187,12 @@ export class McpServers {
       if (saving(now) !== saving(was)) throw new ApiError("unavailable", `The server ${name} was signed in to, saved or forgotten meanwhile: save it again.`);
       headers = this.opened(name, now, credentialMissing(auth.type, "").field);
     }
-    const listed = await listServer(url, headers ?? {}, this.version, stop);
+    const listed = await listServer(url, await this.withAppToken({ auth: { type: auth.type } }, url, headers ?? {}, stop), this.version, stop);
     // A price names a tool the server listed now, or nothing is saved.
     const unlisted = Object.keys(prices ?? {}).filter((tool) => !listed.tools.some((listedTool) => listedTool.name === tool));
     if (unlisted.length) throw invalid(unlisted.map((tool) => ({ field: `prices.${tool}`, reason: "not_an_option", message: `The server ${name} lists no tool ${tool}; its tools are ${listed.tools.map((t) => t.name).join(", ") || "none"}.` })));
     const now = new Date().toISOString();
-    const sealed = auth.type !== "oauth" && headers && Object.fromEntries(Object.entries(headers).map(([header, value]) => [header, seal(this.key!, Buffer.from(value, "utf8"), aad(name, header)).toString("base64")]));
+    const sealed = auth.type !== "oauth" && headers && Object.keys(headers).length > 0 && Object.fromEntries(Object.entries(headers).map(([header, value]) => [header, seal(this.key!, Buffer.from(value, "utf8"), aad(name, header)).toString("base64")]));
     const servers = this.servers();
     // An OAuth server keeps its token set as sealed (a refresh meanwhile kept); only a sign-in replaces it, and one that
     // lands, or a PUT or DELETE, while this listed makes the listing stale: its token never goes with another URL.
@@ -196,7 +211,7 @@ export class McpServers {
   async refresh(name: string, stop?: AbortSignal) {
     await this.freshen(name);
     const was = this.need(name);
-    const listed = await listServer(new URL(was.url), this.opened(name, was, "name"), this.version, stop);
+    const listed = await listServer(new URL(was.url), await this.withAppToken(was, new URL(was.url), this.opened(name, was, "name"), stop), this.version, stop);
     const servers = this.servers();
     const now = servers[name];
     if (!now) throw notFound(name);
@@ -380,7 +395,7 @@ export class McpServers {
       // it as soon as the tool is ticked, before any agent's read gives it.
       tools: listed.tools.map((tool) => ({ ...tool, ...serverGate(`mcp:${name}/${tool.name}`, settings) })),
       ...(unmetered.length ? { not_metered: unmetered } : {}),
-      auth: { type: auth.type, ...(auth.type === "headers" ? { headers: Object.keys(auth.sealed ?? {}) } : {}) },
+      auth: { type: auth.type, ...(auth.type === "headers" || auth.type === "github_app" ? { headers: Object.keys(auth.sealed ?? {}) } : {}) },
       credential: opened === null ? null : !("headers" in opened) ? opened.unreadable : auth.oauth?.expired ? ("expired" as const) : ("sealed" as const),
       ...(auth.oauth ? { oauth: { ...(auth.oauth.expires_at ? { expires_at: auth.oauth.expires_at } : {}), scopes: auth.oauth.scopes, client: auth.oauth.client, ...(auth.oauth.client_id ? { client_id: auth.oauth.client_id } : {}) } } : {}),
     };
@@ -388,6 +403,8 @@ export class McpServers {
 
   /** The sealed credential opened: its headers, and for OAuth the token set, whose access token is the header. */
   private open(name: string, kept: Kept): { headers: HeaderMap; set?: TokenSet } | { unreadable: "seal_key_missing" | "unreadable" } {
+    // A github_app server with no static headers keeps nothing sealed: its token is minted for each use.
+    if (kept.auth.type === "github_app" && !kept.auth.sealed) return { headers: {} };
     if (!this.key) return { unreadable: "seal_key_missing" };
     if (kept.auth.check !== this.sealCheck || !isObject(kept.auth.sealed)) return { unreadable: "unreadable" };
     try {
@@ -410,12 +427,38 @@ export class McpServers {
     throw invalid([{ field, reason: "missing", message: `The saved credential of ${name} does not open here (sealed under another seal key, or damaged): send it again.` }]);
   }
 
+  /** `headers` and, for a github_app server, an installation token of the connected App to list its tools with. */
+  private async withAppToken(kept: { auth: { type: AuthType } }, url: URL, headers: HeaderMap, stop?: AbortSignal): Promise<HeaderMap> {
+    if (kept.auth.type !== "github_app") return headers;
+    // Never a token of the App to another origin: a row saved before this rule is refused here too.
+    if (!githubMcpUrl(url, this.appOrigin)) throw invalid([{ field: "url", reason: "not_allowed", message: GITHUB_MCP_ONLY }]);
+    const minted = this.appToken ? await this.appToken(stop) : { unusable: "This server has no GitHub App: Connect GitHub in Settings." };
+    if ("unusable" in minted) throw new ApiError("github_not_connected", minted.unusable);
+    return { ...headers, authorization: `Bearer ${minted.token}` };
+  }
+
+  /** Whether the saved server `name` takes the connected GitHub App's tokens, minted for each run's launch. */
+  takesAppToken(name: string): boolean {
+    const saved = this.saved(name);
+    return saved?.auth.type === "github_app" && githubMcpUrl(saved.url, this.appOrigin);
+  }
+
+  /** Whether the saved server `name` is a github_app one at an origin that is not GitHub's hosted MCP (saved before that
+   *  rule): its calls are refused unsent, and no token is minted for it. */
+  appServerElsewhere(name: string): boolean {
+    const saved = this.saved(name);
+    return saved?.auth.type === "github_app" && !githubMcpUrl(saved.url, this.appOrigin);
+  }
+
   /** A body's URL, auth and prices, or 422. */
   private admit(body: Record<string, unknown>, priced = false): { url: URL; auth: Auth; prices?: McpPrices } {
     const issues = unknownFields(body, priced ? ["url", "auth", "prices"] : ["url", "auth"]);
     const url = urlOf(body.url, issues);
     const auth = authOf(body.auth, issues);
     const prices = pricesOf(body.prices, issues);
+    // The App's tokens go to GitHub alone: a github_app server is GitHub's hosted MCP, nothing else.
+    // A github_app server's URL is refused in the GitHub rule's words, in place of any other the URL drew.
+    if (url && auth?.type === "github_app" && !githubMcpUrl(url, this.appOrigin)) issues.splice(0, issues.length, ...issues.filter((issue) => issue.field !== "url"), { field: "url", reason: "not_allowed", message: GITHUB_MCP_ONLY });
     if (issues.length) throw invalid(issues);
     return { url: url!, auth: auth!, ...(prices ? { prices } : {}) };
   }
@@ -520,6 +563,7 @@ function authOf(value: unknown, issues: InputIssue[]): Auth | undefined {
     else if (Buffer.byteLength(text) > MAX_VALUE_BYTES) issues.push({ field, reason: "too_long", message: `${field} is at most ${MAX_VALUE_BYTES} bytes.` });
   };
   let headers: HeaderMap | undefined;
+  if (type === "github_app" && value.token !== undefined) issues.push({ field: "auth.token", reason: "not_allowed", message: "auth.type github_app takes no token: the connected GitHub App's installation token is minted for each run." });
   if ((type === "none" || type === "oauth") && (value.token !== undefined || value.headers !== undefined)) issues.push({ field: "auth", reason: "not_allowed", message: type === "none" ? "auth.type none sends no credential." : "auth.type oauth takes its credential from a sign-in, never from a body." });
   if (type === "bearer") {
     if (value.headers !== undefined) issues.push({ field: "auth.headers", reason: "not_allowed", message: "A bearer credential is auth.token." });
@@ -528,8 +572,8 @@ function authOf(value: unknown, issues: InputIssue[]): Auth | undefined {
       headers = { authorization: `Bearer ${String(value.token)}` };
     }
   }
-  if (type === "headers") {
-    if (value.token !== undefined) issues.push({ field: "auth.token", reason: "not_allowed", message: "Named headers are auth.headers." });
+  if (type === "headers" || type === "github_app") {
+    if (type === "headers" && value.token !== undefined) issues.push({ field: "auth.token", reason: "not_allowed", message: "Named headers are auth.headers." });
     if (value.headers !== undefined) {
       const entries = isObject(value.headers) ? Object.entries(value.headers) : [];
       if (!entries.length || entries.length > MAX_HEADERS) issues.push({ field: "auth.headers", reason: "invalid", message: `auth.headers names 1 to ${MAX_HEADERS} headers and their values.` });
@@ -537,6 +581,7 @@ function authOf(value: unknown, issues: InputIssue[]): Auth | undefined {
       for (const [name, text] of entries) {
         const lower = name.toLowerCase();
         if (!HEADER_NAME.test(name) || RESERVED.has(lower)) issues.push({ field: `auth.headers.${name}`, reason: "invalid", message: `${name} is not a header a credential may be sent in.` });
+        else if (type === "github_app" && lower === "authorization") issues.push({ field: `auth.headers.${name}`, reason: "not_allowed", message: "A github_app server's Authorization is the installation token minted for each run, never a saved one." });
         else if (lower in headers) issues.push({ field: `auth.headers.${name}`, reason: "duplicate", message: `${name} is named twice.` });
         check(`auth.headers.${name}`, text);
         headers[lower] = String(text);
