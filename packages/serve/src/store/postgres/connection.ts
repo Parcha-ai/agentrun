@@ -232,7 +232,9 @@ export class PgConnection implements StoreConnection {
     const pool = new pg.Pool(config);
     // The lease connection: one more, for renewing claims only (TransactionOptions.lease), so a renew never waits for a
     // client behind the pool's other work, whatever the runner's loops hold.
-    const leasePool = new pg.Pool({ ...config, max: 1, application_name: "agentrun-store-lease" });
+    // Its connection named for its schema, as the owner lock's is. A lease connection whose backend dies while idle is
+    // dropped by the pool (its 'error', handled below) and the next renew opens a fresh one within the connect deadline.
+    const leasePool = new pg.Pool({ ...config, max: 1, application_name: `agentrun-store-lease:${schema}` });
     // An idle client's error (the server went away) surfaces at its next use, never as an unhandled event.
     pool.on("error", () => undefined);
     leasePool.on("error", () => undefined);

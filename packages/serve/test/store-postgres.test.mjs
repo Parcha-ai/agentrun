@@ -194,6 +194,35 @@ test("a runner whose every pool client is held by its loops still renews its cla
   assert.equal(outcome.value[0]?.runId, "run-0", "the claim renewed");
 });
 
+test("a renew after the lease connection's backend died gets a fresh lease connection within the connect deadline: the claim holds, the process lives", ONLY, async (t) => {
+  const schema = await schemaFor(t);
+  const server = await openPostgresStore({ url: PG_URL, schema });
+  t.after(() => server.close());
+  await queued(server, "run-0");
+  const runner = await openPostgresStore({ url: PG_URL, schema, role: "runner", connectTimeoutMs: 1_000 });
+  t.after(() => runner.close().catch(() => undefined));
+  const claim = await runner.claim("run-0", "runner-a", { leaseMs: 30_000 });
+  await runner.renew(claim, { leaseMs: 30_000 });
+  // The lease connection, idle, ended from outside (an operator, a database restart): found by its name.
+  const ended = await sql(schema, "SELECT pg_terminate_backend(pid) AS gone FROM pg_stat_activity WHERE application_name = $1", `agentrun-store-lease:${schema}`);
+  assert.deepEqual(ended.map((row) => row.gone), [true], "the lease connection's one backend ended");
+  // Gone from the database before the renew (its socket's end reaches the pool as the backend exits).
+  while ((await sql(schema, "SELECT count(*)::int AS n FROM pg_stat_activity WHERE application_name = $1", `agentrun-store-lease:${schema}`))[0].n > 0) await new Promise((resolve) => setImmediate(resolve));
+  // The next renew, on its own timer: a fresh lease connection, the claim still held. A renew that met the dead client
+  // before the pool dropped it is said at once (a connection error, never a hang) and the one after it must land.
+  const started = Date.now();
+  let renewed;
+  for (let tries = 0; tries < 2 && !renewed; tries++) {
+    const outcome = await within(runner.renewMany([claim], { leaseMs: 30_000 }), 3_000);
+    assert.notEqual(outcome, "hung", "the renew hung");
+    if (!outcome.error) renewed = outcome.value;
+  }
+  assert.equal(renewed?.[0]?.runId, "run-0", "renewed: the claim holds");
+  assert.ok(Date.now() - started < 4_000, `within the connect deadline (${Date.now() - started} ms)`);
+  const fresh = await sql(schema, "SELECT count(*)::int AS n FROM pg_stat_activity WHERE application_name = $1", `agentrun-store-lease:${schema}`);
+  assert.equal(fresh[0].n, 1, "on a fresh lease connection, never the shared pool");
+});
+
 test("a write on a store whose every pool client is held is refused at the connect deadline (StoreDeadline), never left waiting for one", ONLY, async (t) => {
   const schema = await schemaFor(t);
   const { runner, letGo } = await saturated(t, schema, { size: 2, connectTimeoutMs: 500 });
