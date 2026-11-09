@@ -3,7 +3,10 @@ import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
 import { KeysPage } from "./KeysPage";
 import { createClient } from "@/lib/client";
-import type { ToolKey, ToolKeyField, ToolKeys } from "@/lib/v2";
+import type { ToolKey, ToolKeys } from "@/lib/v2";
+import { type KeyIn, servedKey } from "@/test/keys";
+
+type ToolKeyField = KeyIn["fields"][number];
 
 // Settings → Tool keys over GET, PUT and DELETE /v2/settings/tool-keys: each field says whether it is set and where
 // from, a save sends only what was typed, a key the server holds is read-only, a saved key that no longer opens is
@@ -18,11 +21,11 @@ const field = (name: string, source: ToolKeyField["source"], extra: Partial<Tool
 function view(fields: Record<string, ToolKeyField>, reenter: ToolKeys["reenter"] = null): ToolKeys {
   const f = (name: string) => fields[name] ?? field(name, null);
   return {
-    keys: [
+    keys: ([
       { id: "parallel", kind: "tool", label: "Parallel", fields: [f("PARALLEL_API_KEY")], unlocks: ["web_fetch", "web_search"], harnesses: ["pi", "claude-agent", "codex"], check: null },
       { id: "monid", kind: "tool", label: "Monid", fields: [f("MONID_API_KEY")], unlocks: ["monid.discover", "monid.inspect", "monid.run"], harnesses: ["pi", "claude-agent", "codex"], check: null },
       { id: "browserbase", kind: "tool", label: "Browserbase", fields: [f("BROWSERBASE_API_KEY"), f("BROWSERBASE_PROJECT_ID")], unlocks: ["browser"], harnesses: ["pi"], check: null },
-    ],
+    ] as KeyIn[]).map(servedKey),
     reenter,
   };
 }
@@ -85,7 +88,7 @@ describe("KeysPage", () => {
   // Harnesses", a label with nothing after it. Its row says what it unlocks and nothing about harnesses.
   it("says nothing about harnesses on a row whose key no harness reads", async () => {
     const plain = view({});
-    const jev: ToolKey = { id: "typesafe", kind: "tool", label: "TypeSafe (Jev)", fields: [field("TYPESAFE_API_KEY", null)], unlocks: ["decisions.jev"], harnesses: [], check: null };
+    const jev: ToolKey = servedKey({ id: "typesafe", kind: "tool", label: "TypeSafe (Jev)", fields: [field("TYPESAFE_API_KEY", null)], unlocks: ["decisions.jev"], harnesses: [], check: null });
     const { v2 } = server([{ ...plain, keys: [...plain.keys, jev] }]);
     const page = await open(v2);
     expect(page.row("TypeSafe (Jev)").textContent).toContain("Unlocks decisions.jev");
@@ -245,7 +248,7 @@ describe("KeysPage", () => {
 
   it("lists a model provider's key under Models, before the tools' keys, and saves it through its own route; with none, no headings", async () => {
     const plain = view({});
-    const anthropic: ToolKey = { id: "anthropic", kind: "model", label: "Anthropic", fields: [field("ANTHROPIC_API_KEY", null)], unlocks: [], harnesses: ["pi", "claude-agent"], check: null };
+    const anthropic: ToolKey = servedKey({ id: "anthropic", kind: "model", label: "Anthropic", fields: [field("ANTHROPIC_API_KEY", null)], unlocks: [], harnesses: ["pi", "claude-agent"], check: null });
     const { v2, calls } = server([{ ...plain, keys: [...plain.keys.map((k) => ({ ...k, kind: "tool" as const })), anthropic] }]);
     const page = await open(v2);
     expect([...page.host.querySelectorAll("h2")].map((h) => h.textContent)).toEqual(["Models", "Tools"]);

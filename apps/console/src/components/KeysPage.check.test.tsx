@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { KeysPage } from "./KeysPage";
 import { createClient } from "@/lib/client";
 import { when } from "@/lib/format";
+import { type KeyIn, servedKey } from "@/test/keys";
 import type { ToolKey, ToolKeys } from "@/lib/v2";
 
 // A saved key's check (GET /v2/settings/tool-keys' `check` on each key): accepted by its provider, with when; not
@@ -17,7 +18,7 @@ const AT = "2026-11-03T21:40:00.000Z";
 const NOT_ANSWERED = "the provider would not answer the check (403); the key may still work for its tools";
 
 const monid = (check: unknown, set = true): ToolKey =>
-  ({ id: "monid", label: "Monid", fields: [{ name: "MONID_API_KEY", set, source: set ? "console" : null, changed_at: set ? "2026-11-09T09:00:00Z" : null }], unlocks: ["monid.discover"], harnesses: ["pi"], ...(check === undefined ? {} : { check }) }) as ToolKey;
+  servedKey({ id: "monid", kind: "tool", label: "Monid", fields: [{ name: "MONID_API_KEY", set, source: set ? "console" : null, changed_at: set ? "2026-11-09T09:00:00Z" : null }], unlocks: ["monid.discover"], harnesses: ["pi"], ...(check === undefined ? {} : { check }) } as KeyIn);
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 function server(key: ToolKey, write?: () => Response) {
   const fetch = (async (_url: string, init?: RequestInit) => ((init?.method ?? "GET") === "GET" ? json(200, { keys: [key], reenter: null } satisfies ToolKeys) : write!())) as typeof globalThis.fetch;

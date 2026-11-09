@@ -8,6 +8,7 @@ import { createClient } from "@/lib/client";
 import type { McpServer } from "@/lib/mcp";
 import { NO_ACCOUNTS, secretsWhyNot, secretsWritableOf, SIGN_IN_TO_CHANGE } from "@/lib/secrets";
 import type { ToolKeys } from "@/lib/v2";
+import { type KeyIn, servedKey } from "@/test/keys";
 
 // Secrets are write-only, and only the owner's password session writes them (GET /v2/auth/session's secrets_writable).
 // Off it, every page holding a secret shows each one's state and says once how to change them, with no Paste, Replace,
@@ -28,18 +29,21 @@ const mount = async (el: ReturnType<typeof createElement>) => {
 const labels = (host: Element) => [...host.querySelectorAll("button")].map((b) => b.textContent?.trim());
 
 const KEYS: ToolKeys = {
-  keys: [
+  keys: ([
     { id: "parallel", kind: "tool", label: "Parallel", fields: [{ name: "PARALLEL_API_KEY", set: true, source: "console", changed_at: "2026-11-09T09:00:00Z" }], unlocks: ["web_fetch"], harnesses: ["pi"], check: null },
     { id: "monid", kind: "tool", label: "Monid", fields: [{ name: "MONID_API_KEY", set: true, source: "env", changed_at: null }], unlocks: ["monid.run"], harnesses: ["pi"], check: null },
     { id: "anthropic", kind: "model", label: "Anthropic", fields: [{ name: "ANTHROPIC_API_KEY", set: false, source: null, changed_at: null }], unlocks: [], harnesses: ["pi"], check: null },
-  ],
+  ] as KeyIn[]).map(servedKey),
   reenter: null,
 };
 const MCP: McpServer = {
   name: "linear", url: "https://mcp.example.test/mcp", auth: { type: "headers", headers: ["X-Api-Key"] }, credential: "sealed", tools: [], protocol: "2025-06-18",
   listed_at: "2026-11-09T09:00:00Z", updated_at: "2026-11-09T09:00:00Z",
-  secrets: [{ name: "X-Api-Key", set: true, source: "console", changed_at: "2026-11-09T09:00:00Z" }],
+  // A server holding several secrets (its headers' values) carries `secrets`, each "mcp:<server>:<field>".
+  secrets: [{ name: "mcp:linear:X-Api-Key", set: true, source: "console", changed_at: "2026-11-09T09:00:00Z" }],
 };
+// One holding one (its bearer token) carries `secret`, "mcp:<server>".
+const BEARER: McpServer = { ...MCP, name: "fake", auth: { type: "bearer" }, secrets: undefined, secret: { name: "mcp:fake", set: true, source: "console", changed_at: "2026-11-09T09:00:00Z" } };
 
 describe("the session that may write secrets", () => {
   it("is the one whose read says secrets_writable: true, accounts on or off, and no other", () => {
@@ -84,16 +88,22 @@ describe("Keys, off the password session", () => {
     expect(host.textContent).toContain(SIGN_IN_TO_CHANGE);
     expect(host.textContent!.split(SIGN_IN_TO_CHANGE)).toHaveLength(2);
     expect(labels(host).filter((l) => /^(Paste|Replace|Remove)$/.test(l ?? ""))).toEqual([]);
-    expect(host.querySelector('[data-secret="PARALLEL_API_KEY"]')!.textContent).toContain("Pasted here");
-    expect(host.querySelector('[data-secret="MONID_API_KEY"]')!.getAttribute("data-source")).toBe("env");
+    expect(host.querySelector('[data-secret="tool:PARALLEL_API_KEY"]')!.textContent).toContain("Pasted here");
+    expect(host.querySelector('[data-secret="tool:MONID_API_KEY"]')!.getAttribute("data-source")).toBe("env");
+  });
+
+  it("says each key by its own name, never its secret's plane", async () => {
+    const host = await mount(createElement(KeysPage, { v2: client(() => KEYS), atRest: "sealed", writable: true }));
+    expect(host.querySelector('[data-secret="tool:PARALLEL_API_KEY"]')!.textContent).toContain("PARALLEL_API_KEY");
+    expect(host.textContent).not.toMatch(/\b(tool|model):/);
   });
 
   it("on it: Replace and Remove on a key pasted here, Paste on a missing one, nothing on one set in the environment", async () => {
     const host = await mount(createElement(KeysPage, { v2: client(() => KEYS), atRest: "sealed", writable: true }));
     expect(host.textContent).not.toContain(SIGN_IN_TO_CHANGE);
-    expect(labels(host.querySelector('[data-secret="PARALLEL_API_KEY"]')!)).toEqual(["Replace", "Remove"]);
-    expect(labels(host.querySelector('[data-secret="ANTHROPIC_API_KEY"]')!)).toEqual(["Paste"]);
-    expect(labels(host.querySelector('[data-secret="MONID_API_KEY"]')!)).toEqual([]);
+    expect(labels(host.querySelector('[data-secret="tool:PARALLEL_API_KEY"]')!)).toEqual(["Replace", "Remove"]);
+    expect(labels(host.querySelector('[data-secret="model:ANTHROPIC_API_KEY"]')!)).toEqual(["Paste"]);
+    expect(labels(host.querySelector('[data-secret="tool:MONID_API_KEY"]')!)).toEqual([]);
   });
 });
 
@@ -106,11 +116,11 @@ describe("the model key card, off the password session", () => {
 });
 
 describe("MCP servers and their credentials", () => {
-  const v2 = () => client((path) => (path === "/v2/settings/mcp-servers" ? { servers: [MCP] } : {}));
+  const v2 = () => client((path) => (path === "/v2/settings/mcp-servers" ? { servers: [MCP, BEARER] } : {}));
 
   it("shows each saved credential value as a secret row; off the password session, no way to type one", async () => {
     const host = await mount(createElement(McpServersPage, { v2: v2(), atRest: "sealed", writable: false }));
-    const row = host.querySelector('[data-secret="X-Api-Key"]')!;
+    const row = host.querySelector('[data-secret="mcp:linear:X-Api-Key"]')!;
     expect(row.textContent).toContain("Pasted here");
     expect(labels(row)).toEqual([]);
     expect(host.textContent).toContain(SIGN_IN_TO_CHANGE);
@@ -120,9 +130,15 @@ describe("MCP servers and their credentials", () => {
     expect(host.querySelector('input[name="mcp-client-secret"]')).toBeNull();
   });
 
+  it("a server's one secret is its row too, said as what it is, never by its name", async () => {
+    const host = await mount(createElement(McpServersPage, { v2: v2(), atRest: "sealed", writable: true }));
+    expect(host.querySelector('[data-secret="mcp:fake"]')!.textContent).toContain("Bearer token");
+    expect(host.textContent).not.toContain("mcp:");
+  });
+
   it("on the password session, Replace on a saved credential opens its server's form", async () => {
     const host = await mount(createElement(McpServersPage, { v2: v2(), atRest: "sealed", writable: true }));
-    const row = host.querySelector('[data-secret="X-Api-Key"]')!;
+    const row = host.querySelector('[data-secret="mcp:linear:X-Api-Key"]')!;
     expect(labels(row)).toEqual(["Replace"]);
     await act(async () => { [...row.querySelectorAll("button")].find((b) => b.textContent?.trim() === "Replace")!.click(); });
     expect(host.querySelector('input[name="mcp-header-value-0"]')).not.toBeNull();

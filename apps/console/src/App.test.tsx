@@ -8,6 +8,7 @@ import { agentsList, recorded } from "@/fixtures";
 import type { Agent } from "@/lib/agentForm";
 import { runLabel } from "@/lib/format";
 import type { Run, TimelinePage } from "@/lib/v2";
+import { servedKey } from "@/test/keys";
 
 // Mission Control is the first page: the bare address and the old start page's both open it, so no link dead-ends.
 describe("route", () => {
@@ -119,7 +120,7 @@ describe("App, Mission Control after a failed read", () => {
 // Settings shows only on a server with the tool keys routes, so the console never offers a page its server lacks.
 describe("App, Settings", () => {
   const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
-  const keys = { keys: [{ id: "monid", label: "Monid", fields: [{ name: "MONID_API_KEY", set: false, source: null, changed_at: null }], unlocks: ["monid.run"], harnesses: ["pi"] }], reenter: null };
+  const keys = { keys: [servedKey({ id: "monid", kind: "tool", label: "Monid", fields: [{ name: "MONID_API_KEY", set: false, source: null, changed_at: null }], unlocks: ["monid.run"], harnesses: ["pi"], check: null })], reenter: null };
   // capabilities.tools with a choice of provider (web_search, web_fetch), as a server with tool settings lists them.
   const choiceTools = [
     { name: "web_search", summary: "Search the web", nodes: true, calls: true, available: true, harnesses: ["pi"], providers: ["auto", "native", "exa-keyless", "parallel"], provider: "auto", default_provider: "auto", resolves: { pi: "exa-keyless", "claude-agent": "native", codex: "native" } },
@@ -291,7 +292,7 @@ describe("App, the model key card on the first screen", () => {
   it("shows while models.ready is false, saves the key, reads the capabilities again, and goes once they say ready", async () => {
     const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
     const features = { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false }, tool_keys: { routes: true, at_rest: "sealed" } };
-    const keys = { keys: [{ id: "anthropic", kind: "model", label: "Anthropic", fields: [{ name: "ANTHROPIC_API_KEY", set: false, source: null, changed_at: null }], unlocks: [], harnesses: ["pi"] }], reenter: null };
+    const keys = { keys: [servedKey({ id: "anthropic", kind: "model", label: "Anthropic", fields: [{ name: "ANTHROPIC_API_KEY", set: false, source: null, changed_at: null }], unlocks: [], harnesses: ["pi"], check: null })], reenter: null };
     const asked: string[] = [];
     let ready = false;
     vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
