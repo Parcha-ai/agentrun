@@ -551,6 +551,15 @@ export interface McpServerRow {
   /** A refresh in flight: its holder and the lease's end (ms), or null. */
   readonly refreshHolder: string | null;
   readonly refreshUntil: number | null;
+  /** Whether that lease has run out, judged by the store's own clock when the row was read: the clock leaseRefresh writes
+   *  and grants it by. A reader judges the lease by this, never by its own clock against refreshUntil: on another machine
+   *  its clock may run ahead of the store's, and a live lease would read as lapsed. False with no lease. */
+  readonly refreshLapsed: boolean;
+  /** How much of the credential's access token is left (ms; negative once run out), by the store's own clock when the row
+   *  was read: the store stamps its end when the credential is written (token_until). A claim judges the token by this,
+   *  never by its own clock against the set's expires_at, which the writer stamped on its clock. Null when the writer
+   *  gave no measure of the token's life. */
+  readonly tokenLeftMs: number | null;
   readonly createdAt: number;
   readonly updatedAt: number;
   /** When the tools were last listed (ms): a refresh moves this, not updatedAt, so a refresh is not read as an owner edit.
@@ -582,8 +591,9 @@ export const MCP_REFRESH_LEASE_MS = MCP_REFRESH_CALL_MS + STORE_WRITE_DEADLINE_M
 export interface Mcp {
   /** The server's write: the server's row, inserted or replaced by name (its first save's time kept). An owner's save
    *  clears any refresh lease and changes the credential, so a refresh in flight is dropped (keepRefreshed's `kept: false`)
-   *  and never overwrites it. */
-  put(server: { name: string; url: string; auth: string; protocol?: string | null; tools: unknown; prices?: unknown; serverInfo?: unknown; instructions?: string | null; sealed?: Uint8Array | null; listedAt?: number; updatedAt?: number; credentialChangedAt?: number | null }): Promise<McpServerRow>;
+   *  and never overwrites it. `tokenLeftMs`: the writer's measure of the credential's access token's remaining life (a
+   *  duration, on its own clock); the store stamps the token's end on its clock from it (token_until), none without it. */
+  put(server: { name: string; url: string; auth: string; protocol?: string | null; tools: unknown; prices?: unknown; serverInfo?: unknown; instructions?: string | null; sealed?: Uint8Array | null; listedAt?: number; updatedAt?: number; credentialChangedAt?: number | null; tokenLeftMs?: number | null }): Promise<McpServerRow>;
   remove(name: string): Promise<void>;
   /** The registry's rows, by name. */
   servers(): Promise<McpServerRow[]>;
@@ -607,7 +617,7 @@ export interface Mcp {
    *  holds it. `kept: false` (nothing written) when the credential changed meanwhile (a newer set landed, or the owner saved
    *  one): ours is dropped, and no refresh is tried again with any token. Under one deadline from its call
    *  (STORE_WRITE_DEADLINE_MS). `row`: the server as it is after, undefined when it is no longer saved. */
-  keepRefreshed(name: string, keep: { seen: Uint8Array | null; sealed: Uint8Array; holder: string }): Promise<{ kept: boolean; row: McpServerRow | undefined }>;
+  keepRefreshed(name: string, keep: { seen: Uint8Array | null; sealed: Uint8Array; holder: string; tokenLeftMs?: number | null }): Promise<{ kept: boolean; row: McpServerRow | undefined }>;
   /** Gives the lease back without a new credential (the refresh failed or got no answer), so the next claim may try at once. */
   releaseRefresh(name: string, holder: string): Promise<void>;
 }

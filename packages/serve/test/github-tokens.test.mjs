@@ -13,9 +13,6 @@ import { connect, connectable, deliver, firstInput, INSTALLED, PUBLIC, storeOf }
 import { agent, follow, runDir, serve } from "./support.mjs";
 import { firings } from "./trigger-support.mjs";
 
-/** Why a case is skipped on the cutover: a github_app server is listed with the App's token by the store registry, which
- *  takes appToken in tl-mcp's port (McpServersOverStore). */
-const STORE_MCP_APP = "waits on the store registry's github_app listing token (tl-mcp's appToken in McpServersOverStore)";
 const FAUX_MCP = new URL("./fixtures/faux-mcp.mjs", import.meta.url).pathname;
 const ALLOW = { "mcp:gh/*": { permission: "allow" } };
 const pr = { action: "opened", number: 12, pull_request: { draft: false }, repository: { full_name: "acme/widgets" }, installation: { id: 777 } };
@@ -67,7 +64,7 @@ test("mintInstallationToken: the repository's installation looked up with the Ap
   assert.deepEqual([away.ok, away.reason], [false, "github_failed"]);
 });
 
-test("an inline preview of a github_app server lists its tools with a token of the App, as a saved one's does", { timeout: 60_000, skip: STORE_MCP_APP }, async (t) => {
+test("an inline preview of a github_app server lists its tools with a token of the App, as a saved one's does", { timeout: 60_000 }, async (t) => {
   let server;
   const minted = () => server.github.tokens.map((entry) => `Bearer ${entry.token}`);
   const fake = await startFakeMcp({ token: (authorization) => minted().includes(authorization) });
@@ -80,7 +77,7 @@ test("an inline preview of a github_app server lists its tools with a token of t
   assert.deepEqual(listingTokens(server).map((entry) => entry.repositories ?? null), [null, ["widgets"]], "with a token of one repository (the first only found it, and is revoked)");
 });
 
-test("a github_app server moved off GitHub's hosted MCP is refused on url, and nothing reaches the new address: neither its static headers nor a token", { timeout: 60_000, skip: STORE_MCP_APP }, async (t) => {
+test("a github_app server moved off GitHub's hosted MCP is refused on url, and nothing reaches the new address: neither its static headers nor a token", { timeout: 60_000 }, async (t) => {
   let server;
   const minted = () => server.github.tokens.map((entry) => `Bearer ${entry.token}`);
   const [a, b] = [await startFakeMcp({ token: (authorization) => minted().includes(authorization) }), await startFakeMcp({ token: (authorization) => minted().includes(authorization) })];
@@ -95,7 +92,7 @@ test("a github_app server moved off GitHub's hosted MCP is refused on url, and n
   assert.equal(server.github.tokens.length, tokens, "no token minted for it");
 });
 
-test("a pull_request's number and head sha, and a comment's number, ride on the payload's tag from the signed body, whatever the 16 KiB cut leaves of the payload; a comment's tag has no head_sha", { timeout: 120_000, skip: STORE_MCP_APP }, async (t) => {
+test("a pull_request's number and head sha, and a comment's number, ride on the payload's tag from the signed body, whatever the 16 KiB cut leaves of the payload; a comment's tag has no head_sha", { timeout: 120_000 }, async (t) => {
   const { server } = await withGitHubMcp(t);
   const { readFile: read } = await import("node:fs/promises");
   assert.equal((await server.api("POST", "/agents", agent("long", { tools: [] }))).status, 201);
@@ -122,7 +119,7 @@ test("a pull_request's number and head sha, and a comment's number, ride on the 
   assert.ok(!commentTag.includes("head_sha"), `a comment's tag has no head_sha at all: ${commentTag}`);
 });
 
-test("a github_app server is GitHub's hosted MCP only: a preview or a save at any other URL (another host, a port, http, userinfo, a trailing dot, a host that only starts with GitHub's) is 422 on url, and no token of the App is minted", { timeout: 60_000, skip: STORE_MCP_APP }, async (t) => {
+test("a github_app server is GitHub's hosted MCP only: a preview or a save at any other URL (another host, a port, http, userinfo, a trailing dot, a host that only starts with GitHub's) is 422 on url, and no token of the App is minted", { timeout: 60_000 }, async (t) => {
   const server = await connectable(t);
   await connect(server);
   const mints = () => server.github.requests.filter((r) => r.url.endsWith("/access_tokens")).length;
@@ -137,7 +134,7 @@ test("a github_app server is GitHub's hosted MCP only: a preview or a save at an
   assert.equal(mints(), before, "no token minted for any of them");
 });
 
-test("the token that lists a github_app server's tools as it is saved asks for the least: metadata read, of one repository; the one that found that repository never left the server and is revoked", { timeout: 60_000, skip: STORE_MCP_APP }, async (t) => {
+test("the token that lists a github_app server's tools as it is saved asks for the least: metadata read, of one repository; the one that found that repository never left the server and is revoked", { timeout: 60_000 }, async (t) => {
   const { server, seen } = await withGitHubMcp(t);
   const [scout, listing] = listingTokens(server);
   assert.deepEqual([scout.repositories, scout.permissions], [undefined, { metadata: "read" }]);
@@ -147,7 +144,7 @@ test("the token that lists a github_app server's tools as it is saved asks for t
   assert.ok(seen.some((request) => request.authorization === `Bearer ${listing.token}`), "the narrowed one listed the tools");
 });
 
-test("a github_app server saved at an origin that is no longer GitHub's hosted MCP gets no token: its preview by name is refused (a run's claim refuses it too: store-mcp-github G6)", { timeout: 120_000, skip: STORE_MCP_APP }, async (t) => {
+test("a github_app server saved at an origin that is no longer GitHub's hosted MCP gets no token: its preview by name is refused (a run's claim refuses it too: store-mcp-github G6)", { timeout: 120_000 }, async (t) => {
   const { server } = await withGitHubMcp(t);
   await server.close();
   // The same data on a server whose hosted-MCP origin is GitHub's own: the row saved before is at another origin.
@@ -178,19 +175,23 @@ test("githubMcpUrl: GitHub's hosted MCP at its origin, any path, the default por
 });
 
 test("a github_app run's MCP call carries an installation token the runner minted from the store's App for the run's repository, through the run spec's githubAppAccess", { timeout: 120_000 }, async (t) => {
-  const server = await connectable(t, { faux: FAUX_MCP, harnesses: true });
-  await connect(server);
+  let server;
   const minted = () => server.github.tokens.filter((entry) => entry.repositories).map((entry) => `Bearer ${entry.token}`);
   const seen = [];
   const fake = await startFakeMcp({ token: (authorization) => minted().includes(authorization), inspect: (headers) => seen.push(headers.authorization) });
   t.after(() => fake.close());
+  // The fake stands in for GitHub's hosted MCP, for each server and its runner alike (each's test-only seam): the first
+  // server's runner lives on to the test's end, beside the second's, and either may claim the run.
+  const githubMcpOrigin = new URL(fake.url).origin;
+  server = await connectable(t, { faux: FAUX_MCP, harnesses: true, githubMcpOrigin });
+  await connect(server);
   // The registry row as a save keeps it (no credential: the token is minted per claim), written while the server is
   // down (the store registry takes no github_app save yet), so the server reads it at its next start.
   await server.close();
   const reader = await storeOf(t, server);
   const add = { name: "add", title: "Add", description: "Add two numbers.", input_schema: { type: "object", properties: { a: { type: "number" }, b: { type: "number" } }, required: ["a", "b"] }, annotations: { readOnlyHint: true } };
   await reader.mcp.put({ name: "gh", url: fake.url, auth: "github_app", tools: [add], sealed: null });
-  const again = await serve(t, { data: server.data, publicUrl: PUBLIC, githubApi: server.github.url, faux: FAUX_MCP, harnesses: true });
+  const again = await serve(t, { data: server.data, publicUrl: PUBLIC, githubApi: server.github.url, githubMcpOrigin, faux: FAUX_MCP, harnesses: true });
   assert.equal((await again.api("POST", "/agents", agent("review", { tools: ["mcp:gh/add"], tool_settings: { "mcp:gh/*": { permission: "allow" } } }))).status, 201);
   const run = await again.api("POST", "/agents/review/runs", { input: { content: 'Call mcp__gh__add with {"a":2,"b":3}\n\nThe repository is https://github.com/acme/widgets.' }, max_cost_usd: 1 });
   assert.ok([201, 202].includes(run.status), JSON.stringify(run.body));
@@ -200,4 +201,71 @@ test("a github_app run's MCP call carries an installation token the runner minte
   const tokens = server.github.tokens.filter((entry) => entry.repositories);
   assert.deepEqual(tokens.map((entry) => [entry.installation, entry.repositories]), [[777, ["widgets"]]], "minted once, for the run's repository");
   assert.ok(seen.includes(`Bearer ${tokens[0].token}`), "the MCP server got it");
+});
+
+/** A connected server whose MCP server lists its tools with the App's tokens, before any is saved: the fake takes only a
+ *  token GitHub minted. */
+async function connectedForListing(t) {
+  let server;
+  const minted = () => server.github.tokens.map((entry) => `Bearer ${entry.token}`);
+  const fake = await startFakeMcp({ token: (authorization) => minted().includes(authorization) });
+  t.after(() => fake.close());
+  server = await connectable(t, { githubMcpOrigin: new URL(fake.url).origin });
+  await connect(server);
+  return { server, fake, entry: { url: fake.url, auth: { type: "github_app", headers: { "X-MCP-Tools": "add" } } } };
+}
+
+test("the token that lists a github_app server's tools comes from the first installation that covers a repository: one whose account has none selected is passed over, and each scout is revoked", { timeout: 60_000 }, async (t) => {
+  const { server, entry } = await connectedForListing(t);
+  const { installations, app } = server.github;
+  // acme's installation has no repository selected; other's, installed after it, has one.
+  installations.get(777).repositories = [];
+  installations.set(778, { account: "other", suspended_at: null, repositories: ["other/gadgets"] });
+  assert.equal((await deliver(server.baseUrl, app.webhook_secret, "installation", { action: "created", installation: { id: 778, account: { login: "other" }, app_id: 4242 } })).status, 200);
+  assert.deepEqual((await server.api("GET", "/integrations/github")).body.installations, [{ id: 777, account: "acme" }, { id: 778, account: "other" }]);
+  const preview = await server.api("POST", "/settings/mcp-servers/preview", entry);
+  assert.equal(preview.status, 200, JSON.stringify(preview.body));
+  assert.ok(preview.body.tools.some((tool) => tool.name === "add"));
+  const listing = listingTokens(server);
+  assert.deepEqual(listing.map((token) => [token.installation, token.repositories ?? null]), [[777, null], [778, null], [778, ["gadgets"]]], "a scout on each installation in turn, then the token narrowed to the second's repository");
+  assert.deepEqual(server.github.revoked, [listing[0].token, listing[1].token], "both scouts revoked");
+});
+
+test("GitHub not answering the listing's read of an installation's repositories (a 503, a 429) is 502 github_failed, \"GitHub didn't answer: try again\", never github_not_connected: a preview, a save and a refresh each, and nothing stored changes", { timeout: 60_000 }, async (t) => {
+  const { server, entry } = await connectedForListing(t);
+  assert.equal((await server.api("PUT", "/settings/mcp-servers/gh", entry)).status, 200);
+  const before = (await server.api("GET", "/settings/mcp-servers/gh")).body;
+  for (const status of [503, 429]) {
+    server.github.failures.repositories = status;
+    const tries = [["POST", "/settings/mcp-servers/preview", entry], ["PUT", "/settings/mcp-servers/other", entry], ["POST", "/settings/mcp-servers/gh/refresh"]];
+    for (const [method, path, body] of tries) {
+      const refused = await server.api(method, path, body);
+      assert.deepEqual([refused.status, refused.body.error?.code, refused.body.error?.retryable], [502, "github_failed", true], `${status} ${method} ${path}: ${JSON.stringify(refused.body)}`);
+      assert.match(refused.body.error.message, /GitHub didn't answer: try again/);
+    }
+  }
+  assert.equal((await server.api("GET", "/settings/mcp-servers/other")).status, 404, "nothing saved");
+  assert.deepEqual((await server.api("GET", "/settings/mcp-servers/gh")).body, before, "the saved one unchanged");
+  const scouts = listingTokens(server).filter((token) => !token.repositories);
+  assert.deepEqual(server.github.revoked, scouts.map((token) => token.token), "every scout revoked, the refused ones too");
+});
+
+test("a GitHub rate limit answered 403 (a secondary limit's words, X-RateLimit-Remaining 0, a Retry-After), on the repositories read or on the scout's mint, is 502 github_failed too; a 403 that is no rate limit is a refusal, never \"try again\"", { timeout: 60_000 }, async (t) => {
+  const { server, entry } = await connectedForListing(t);
+  const { failures } = server.github;
+  const limited = [
+    ["repositories", { status: 403, message: "You have exceeded a secondary rate limit. Please wait a few minutes before you try again." }],
+    ["repositories", { status: 403, message: "Forbidden", headers: { "x-ratelimit-remaining": "0" } }],
+    ["mint", { status: 403, message: "API rate limit exceeded for installation ID 777." }],
+    ["mint", { status: 403, message: "Forbidden", headers: { "retry-after": "60" } }],
+  ];
+  for (const [what, failure] of limited) {
+    Object.assign(failures, { repositories: undefined, mint: undefined, [what]: failure });
+    const refused = await server.api("POST", "/settings/mcp-servers/preview", entry);
+    assert.deepEqual([refused.status, refused.body.error?.code, refused.body.error?.retryable], [502, "github_failed", true], `${what} ${JSON.stringify(failure)}: ${JSON.stringify(refused.body)}`);
+  }
+  // A 403 that names no limit (the token cannot read here) is said as it is, not as GitHub being away.
+  Object.assign(failures, { repositories: { status: 403, message: "Resource not accessible by integration" }, mint: undefined });
+  const denied = await server.api("POST", "/settings/mcp-servers/preview", entry);
+  assert.deepEqual([denied.status, denied.body.error?.code], [409, "github_not_connected"], JSON.stringify(denied.body));
 });

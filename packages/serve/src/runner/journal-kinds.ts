@@ -163,6 +163,9 @@ export interface AnswerData {
   /** The person's words with their answer (a decline's reason): the model reads it with the refusal, and the resume row
    *  shows it. Absent when they gave none. */
   readonly note?: string;
+  /** "message": a deny a person's message gave while the call waited (the message route's deny row), which its approval
+   *  row reads as "Declined by your message". Absent for an answer given directly. */
+  readonly by?: "message";
 }
 
 /** The withdrawn answers a stopped end writes for every call still waiting (an ask with no answer) in `entries`. */

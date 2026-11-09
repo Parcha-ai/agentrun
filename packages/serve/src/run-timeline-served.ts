@@ -33,10 +33,13 @@ export async function servedTimelineRows(deps: ServedTimelineDeps, store: Store,
   const redact = (text: string) => redacted(text, values);
   // The rows a person reads: each call that waited for approval in order (held, your approval, what came of it), its
   // arguments and the person's notes through the cut (run-view.ts withApprovalRows), as main's served Timeline read them.
-  const records = await journalRecords(store.readJournal(runId), context);
-  const rows = withApprovalRows(await runTimeline(store, runId, context, { redact }), asksOf(records.entries), answersOf(records.entries), redact);
+  // A call asked before an end in the journal reads withdrawn in that end's words; a stopped or failed run's (states no
+  // reopen leaves) whose journal holds no end, by its row (answersOf `final`).
   const run = await store.runs.get(runId);
   const ended = run ? FINAL_STATES.includes(run.state) : false;
+  const records = await journalRecords(store.readJournal(runId), context);
+  const final = run?.state === "stopped" || run?.state === "failed" ? run.state : undefined;
+  const rows = withApprovalRows(await runTimeline(store, runId, context, { redact }), asksOf(records.entries), answersOf(records.entries, { final }), redact);
   // A workflow's decisions: their rows among the model nodes' by time, each text shown through the cut set, with as many
   // characters held back from a text stored cut as a held value takes in its widest form (main's decisionShown).
   const receipts = await decisionsOverStore(store, runId, context).catch(() => null);

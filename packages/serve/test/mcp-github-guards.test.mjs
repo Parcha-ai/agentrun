@@ -63,6 +63,27 @@ test("a github_app server lists its tools with the App's listing token beside it
   await assert.rejects(r.preview({ url: fake.url, auth: { type: "github_app" } }), (error) => error.code === "github_not_connected" && error.message === "The GitHub App is not installed anywhere yet.");
 });
 
+test("a listing token GitHub didn't answer for is 502 github_failed in its words, retryable: nothing listed, saved or changed, and no request reaches the MCP server", async (t) => {
+  const { store } = await storeOn(t);
+  const fake = await startFakeMcp({ token: (authorization) => authorization === `Bearer ${APP_TOKEN}` });
+  t.after(() => fake.close());
+  const r = reg(store);
+  r.appOrigin = new URL(fake.url).origin;
+  r.appToken = async () => ({ token: APP_TOKEN });
+  const kept = await r.save("gh", { url: fake.url, auth: { type: "github_app" } });
+  const sent = fake.log.length;
+  r.appToken = async () => ({ failed: "GitHub didn't answer: try again." });
+  const failed = (error) => error.code === "github_failed" && error.status === 502 && error.message === "GitHub didn't answer: try again." && error.body("req").error.retryable === true;
+  await assert.rejects(r.preview({ url: fake.url, auth: { type: "github_app" } }), failed, "an inline preview");
+  await assert.rejects(r.preview({ name: "gh" }), failed, "a preview by name");
+  await assert.rejects(r.save("other", { url: fake.url, auth: { type: "github_app" } }), failed, "a new save");
+  await assert.rejects(r.save("gh", { url: fake.url, auth: { type: "github_app", headers: { "x-extra": "new" } } }), failed, "a save over a kept one");
+  await assert.rejects(r.refresh("gh"), failed, "a refresh");
+  assert.equal(fake.log.length, sent, "no request reached the MCP server");
+  assert.deepEqual((await r.list()).servers.map((server) => server.name), ["gh"], "nothing new saved");
+  assert.deepEqual(await r.get("gh"), kept, "the kept one unchanged");
+});
+
 test("the registry refuses a github_app server off GitHub's hosted MCP before anything is sent or minted: inline preview, save, preview by name and refresh, each 422 on url", async (t) => {
   const { store } = await storeOn(t);
   const sent = noRequests(t);
