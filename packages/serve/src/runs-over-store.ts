@@ -30,7 +30,7 @@ import { clip } from "./web-fetch-direct.js";
 import { isObject, type Json } from "./validate.js";
 
 /** The store slice these writers need: the run rows, its commands, and the origin read a retry makes. */
-export type RunsStore = Pick<Store, "runs" | "command" | "commands" | "runOfOrigin">;
+export type RunsStore = Pick<Store, "runs" | "agents" | "command" | "commands" | "runOfOrigin">;
 
 /** The run view (run-view.ts) owns a run's live moment and how an approval was answered (statusOf and the predicates it
  *  folds from the journal). The write half reads the moment and never recomputes it; both types are re-exported here so the
@@ -128,20 +128,23 @@ export type MessageMode = "steer" | "answer" | "follow_up";
  *  call waiting for approval is a deny with the person's words as the reason (as runs.ts declineBy did); every other message
  *  is a steer, which the runner places into the turn in flight, answers a question with, or runs as a follow-up turn, by the
  *  run's state. `answers: false` is a trigger's message, which never answers a person: refused while the run waits on one,
- *  and never a deny of an approval. The mode is the label the v2 answer reports, from the run's moment. */
+ *  and never a deny of an approval. The mode is the label the v2 answer reports, from the run's moment. `momentNow` reads
+ *  the run's moment again (the run view's), for the words of a run that ended after `moment` was read. */
 export async function message(
   store: RunsStore,
   moment: RunMoment,
   content: string,
-  { requestId, answers = true, origin }: { requestId?: string; answers?: boolean; origin?: unknown } = {},
+  { requestId, answers = true, origin, momentNow }: { requestId?: string; answers?: boolean; origin?: unknown; momentNow?: () => Promise<RunMoment | undefined> } = {},
 ): Promise<{ mode: MessageMode; messageId: string }> {
   if (moment.importedSource !== undefined) throw importedRefusal(moment);
   // A cancelled run takes no message, whether or not its end is written yet.
   if (moment.cancelled) throw finished(moment);
   // Re-read the run at the write, past any wait for a place: a run archived while a follow-up waited takes no message (the
-  // moment was read before the wait). Main's words.
+  // moment was read before the wait). A run reads archived when it is or its agent is, as main's run read had it. Main's
+  // words.
   const row = await store.runs.get(moment.id);
-  if (row?.archivedAt) throw new ApiError("not_continuable", "This run is archived: unarchive it to continue it.");
+  const agent = await store.agents.get(moment.agentId);
+  if (row?.archivedAt || agent?.archivedAt) throw new ApiError("not_continuable", "This run is archived: unarchive it to continue it.");
   // A message that may not answer a person (a trigger's) is refused while the run waits on one, before anything else, as the
   // old door refused it (WAITING): it never declines a parked approval, nor answers a question or a cap's pause.
   if (!answers && moment.waitsOnPerson) throw waitingRefusal();
@@ -173,7 +176,8 @@ export async function message(
     try {
       await store.runs.reopen(moment.id, command);
     } catch (again) {
-      if (again instanceof RunFinal) throw finished(moment);
+      // Refused: in the words of the run's end as it reads now, which may have come after `moment` was read.
+      if (again instanceof RunFinal) throw finished((await momentNow?.()) ?? moment);
       throw again;
     }
   }

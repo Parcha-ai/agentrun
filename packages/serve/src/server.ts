@@ -2409,7 +2409,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
           const content = body.content;
           if (typeof content !== "string" || !/\S/.test(content)) throw invalid([{ field: "content", reason: content === undefined ? "missing" : "wrong_type", message: "content is a non-empty string" }]);
           if (content.length > MAX_MESSAGE) throw invalid([{ field: "content", reason: "too_long", message: `content is at most ${MAX_MESSAGE} characters` }]);
-          const { mode, messageId } = await message(store, run, content);
+          const { mode, messageId } = await message(store, run, content, { momentNow: () => momentOverStore(store, run.id, viewDepsFor(ownOriginOf())) });
           // The run's state after the command row is written (the run view): the runner applies the steer; the client polls.
           const { status, state } = await runStatusState(run.id);
           return { status: 202, body: { run_id: run.id, message_id: messageId, mode, status, state, poll_after_ms: 1000 } };

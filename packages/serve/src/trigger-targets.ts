@@ -89,7 +89,7 @@ export function triggerTargets(store: Store & RunsStore, deps: TriggerTargetDeps
         // The firing's key is the message's id; the message answers no person (answers false), its origin the trigger's.
         // How many of a trigger's messages a busy run keeps, and which are skipped, is the store's trigger side
         // (store.triggers.message's bound); this writes the command through the run write half.
-        await message(store, run, String((input as { content?: unknown }).content), { answers: false, origin: from, requestId: key });
+        await message(store, run, String((input as { content?: unknown }).content), { answers: false, origin: from, requestId: key, momentNow: () => deps.momentOf(run.id) });
       } catch (error) {
         if (error instanceof ApiError && error.message === WAITS_ON_A_PERSON) return { skipped: WAITS_ON_A_PERSON };
         throw error;
