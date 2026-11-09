@@ -9,12 +9,12 @@ import { ToolsPage } from "@/components/ToolsPage";
 import { GitHubPage } from "@/components/GitHubPage";
 import { McpServersPage } from "@/components/McpServersPage";
 import { ModelKeyCard } from "@/components/ModelKeyCard";
+import { useSecrets } from "@/lib/secrets";
 import { NoModelBanner } from "@/components/NoModelBanner";
 import { BoxImageBanner } from "@/components/BoxImageBanner";
 import { WebhookPage } from "@/components/WebhookPage";
 import { ComputersPage } from "@/components/ComputersPage";
 import { WorkspacePage } from "@/components/WorkspacePage";
-import { useSecretsWritable } from "@/lib/secrets";
 import { ScheduleNames, type TriggerKnown } from "@/components/ScheduleChip";
 import { SchedulesPage } from "@/components/Schedules";
 import { TemplatesPage } from "@/components/Templates";
@@ -28,7 +28,7 @@ import { type Agent, decisionProvider, toolOffers } from "@/lib/agentForm";
 import { RUN_STATUSES, RunsList } from "@/components/RunsList";
 import { type Section, Shell } from "@/components/Shell";
 import { SignIn } from "@/components/SignIn";
-import { type AuthMode, authMode, setupTakesCode, signInProblem, takeSetupCode } from "@/lib/auth";
+import { type AuthMode, authMode, noAccounts, setupTakesCode, signInProblem, takeSetupCode } from "@/lib/auth";
 import { approvalRefusal } from "@/lib/approval";
 import { trackHistory } from "@/lib/back";
 import { allPages, type Capabilities, ClientError, createClient, type ImportOffer, type ImportState, problemOf, type RunsFilter } from "@/lib/client";
@@ -48,7 +48,7 @@ const MODEL_CHECK_MS = 10_000;
 
 /** `agent`: an agent's page (at `tab`), or with `edit` its editor; null is a new agent's editor. `runsOf`, `status` and
  *  `archived` (for runs): the runs list's filters. `settings`: a settings page. */
-type Where = { section: Section; template?: string; run?: string; trigger?: string | null; kind?: "schedule" | "webhook"; agent?: string | null; edit?: boolean; tool?: string; tab?: string; notes?: string[]; runsOf?: string; archived?: boolean; status?: RunStatus; settings?: SettingsPage; signIn?: ReturnType<typeof signInOf>; github?: ReturnType<typeof githubReturnOf> };
+type Where = { section: Section; template?: string; run?: string; trigger?: string | null; kind?: "schedule" | "webhook" | "github"; agent?: string | null; edit?: boolean; tool?: string; tab?: string; notes?: string[]; runsOf?: string; archived?: boolean; status?: RunStatus; settings?: SettingsPage; signIn?: ReturnType<typeof signInOf>; github?: ReturnType<typeof githubReturnOf> };
 /** The page an address opens. Exported for its test. */
 export function route(h: string = location.hash): Where {
   let m = h.match(/^#\/runs\/([^/?]+)$/);
@@ -71,6 +71,7 @@ export function route(h: string = location.hash): Where {
   // Triggers: the list, a new schedule, a new webhook, one trigger, and a schedule's editor.
   if (h === "#/triggers/new") return { section: "triggers", trigger: null, kind: "schedule" };
   if (h === "#/triggers/new-webhook") return { section: "triggers", trigger: null, kind: "webhook" };
+  if (h === "#/triggers/new-github") return { section: "triggers", trigger: null, kind: "github" };
   m = h.match(/^#\/triggers\/([^/?]+)(\/edit)?$/);
   if (m) return { section: "triggers", trigger: decodeURIComponent(m[1]), ...(m[2] ? { edit: true } : {}) };
   if (h.startsWith("#/triggers")) return { section: "triggers" };
@@ -165,7 +166,7 @@ export function App() {
     const r = await v2.session();
     setCodeNeeded(setupTakesCode(r));
     // A server without accounts: a protected read tells whether this browser is in already (a token it sends).
-    const probe = r.status === 404 ? await v2.listAgents().then(() => 200, (e) => (e instanceof ClientError ? e.status : 0)) : undefined;
+    const probe = noAccounts(r) ? await v2.listAgents().then(() => 200, (e) => (e instanceof ClientError ? e.status : 0)) : undefined;
     return authMode(r, probe);
   };
   const readSession = async () => setAuth(await sessionMode());
@@ -226,8 +227,8 @@ function Starting() {
 }
 
 function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onSignedOut: () => void }) {
-  // Whether this session may paste, replace or remove a computer or Archil key (lib/secrets.ts says this base's default).
-  const secretsWritable = useSecretsWritable(v2);
+  // Whether this session may paste, replace or remove a secret: the owner's password session alone (secrets_writable).
+  const { writable: secretsWritable, whyNot: secretsWhyNot } = useSecrets(v2);
   const [signOutError, setSignOutError] = useState<string | null>(null);
   const [where, setWhere] = useState(() => route());
   const [caps, setCaps] = useState<Capabilities | null>(null);
@@ -512,6 +513,8 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
     <Shell active={where.section} settings={settingsOffered.length > 0} triggers={scheduling} onNavigate={nav} onSignOut={() => {
       // The card comes back only once the server ended the session: a sign-out that did not reach it says so instead.
       v2.signOut().then(onSignedOut, (e) => setSignOutError(e instanceof ClientError ? e.message : "The sign-out did not reach the server. Try again."));
+    }} onSignOutEverywhere={() => {
+      v2.signOutEverywhere().then(onSignedOut, (e) => setSignOutError(e instanceof ClientError ? e.message : "The sign-out did not reach the server. Try again."));
     }} banners={<>
       {signOutError && <p className="border-b bg-card px-5 py-3 font-mono text-[13px] text-destructive-text md:px-8" role="alert">Not signed out: {signOutError}</p>}
       {imported && (
@@ -527,17 +530,17 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
         : where.section === "settings"
         ? <Settings active={where.settings ?? "keys"} offered={settingsOffered}>
             {where.settings === "tools" ? <ToolsPage v2={v2} choices={choices} gates={gates} onSaved={readCaps} onOpen={readCaps} />
-              : where.settings === "mcp" ? <McpServersPage v2={v2} signIn={where.signIn} />
+              : where.settings === "mcp" ? <McpServersPage v2={v2} signIn={where.signIn} writable={secretsWritable} whyNot={secretsWhyNot} />
               : where.settings === "github" ? <GitHubPage v2={v2} returned={where.github} />
-              : where.settings === "computers" ? <ComputersPage v2={v2} writable={secretsWritable} />
-              : where.settings === "workspace" ? <WorkspacePage v2={v2} writable={secretsWritable} />
+              : where.settings === "computers" ? <ComputersPage v2={v2} writable={secretsWritable} whyNot={secretsWhyNot} />
+              : where.settings === "workspace" ? <WorkspacePage v2={v2} writable={secretsWritable} whyNot={secretsWhyNot} />
               : where.settings === "webhook" ? <WebhookPage v2={v2} atRest={caps?.features?.webhooks?.at_rest} />
-              : <KeysPage v2={v2} atRest={caps?.features?.tool_keys?.at_rest} onChange={readCaps} />}
+              : <KeysPage v2={v2} atRest={caps?.features?.tool_keys?.at_rest} onChange={readCaps} writable={secretsWritable} whyNot={secretsWhyNot} />}
           </Settings>
         : where.section === "mission"
         // The first screen asks for a model key while the server says no agent that names no model runs here yet.
         ? <div className="flex h-full flex-col">
-            {caps?.models?.ready === false && <ModelKeyCard v2={v2} needs={caps.models.needs} model={caps.models.default} atRest={caps.features.tool_keys?.at_rest} onSaved={readCaps} />}
+            {caps?.models?.ready === false && <ModelKeyCard v2={v2} needs={caps.models.needs} model={caps.models.default} atRest={caps.features.tool_keys?.at_rest} onSaved={readCaps} writable={secretsWritable} whyNot={secretsWhyNot} />}
             {boxComing && <BoxImageBanner box={boxComing} />}
             <div className="min-h-0 flex-1">
               <MissionControl view={mission} error={missionError} onRetry={() => setMissionTry((n) => n + 1)}

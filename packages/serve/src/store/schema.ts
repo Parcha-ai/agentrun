@@ -1,6 +1,7 @@
-// The store's one schema, version 2 (design 2.1). Nothing migrates into it: the rewrite replaces the old stores, and a store
+// The store's one schema, version 3 (design 2.1). Nothing migrates into it: the rewrite replaces the old stores, and a store
 // an older build made is refused as a version this build does not know. The server sets it up once at its start (a
-// store_meta row holds the version); a runner refuses a version it does not know. Version 2 adds the computer ledger.
+// store_meta row holds the version); a runner refuses a version it does not know. Version 2 adds the computer ledger;
+// version 3 numbers each save of a sign-in (sign_ins.save).
 // Conventions: every time is INTEGER epoch milliseconds; JSON is TEXT checked by json_valid; money is REAL US dollars;
 // sealed columns hold ciphertext only (sealed with the server's key outside the store), so the store never sees a secret
 // in the clear. Foreign keys are on (the connection's pragma).
@@ -12,7 +13,7 @@
 // journal tables, keyed by run_id (store/journal): one schema for every run's journal, so a query joins runs and their
 // journals.
 
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 4;
 
 /** One answer per approval of a run: a second approve or deny command naming the same approval is refused
  *  (StoreConstraint), so the first answer a person gives wins from the moment it is written, before the runner takes it
@@ -286,6 +287,9 @@ export const STORE_DDL: readonly string[] = [
     name TEXT NOT NULL,
     pointer_sealed BLOB NOT NULL,
     saved_at INTEGER NOT NULL,
+    -- This save's number: 1 at the first save, one more on every save since. A verify is guarded by it, never by saved_at,
+    -- which two saves in one millisecond share (store.signIns.verify's ifSave).
+    save INTEGER NOT NULL DEFAULT 1 CHECK (save >= 1),
     -- When a run that held this sign-in last verified it (saved a live session back to the vendor): the v2 view's
     -- verified_at. Null when the owner just saved it and no run has verified it since (a fresh save clears it). Written by
     -- the run path (store.signIns.verify) at a run's save, read by the view bridge (sign-ins-store.ts).
@@ -324,7 +328,12 @@ export const STORE_DDL: readonly string[] = [
     -- When the sealed credential was last set: a save with a new credential or an OAuth sign-in moves it. A save that
     -- keeps the sealed one, a refresh of the tools, and a token refresh (the server keeping the sign-in) leave it.
     -- Null with no credential.
-    credential_changed_at INTEGER
+    credential_changed_at INTEGER,
+    -- When the sealed credential's access token runs out, on the store's own clock: stamped when the credential is
+    -- written (a save, a token refresh) as the store's now plus the writer's measure of the token's remaining life, so a
+    -- claim on any machine judges the token by the store's clock (McpServerRow.tokenLeftMs). Null when the writer gave no
+    -- measure (no token set, or a writer that has none).
+    token_until INTEGER
   ) STRICT`,
   `CREATE TABLE IF NOT EXISTS mcp_oauth_pending (
     state TEXT PRIMARY KEY,

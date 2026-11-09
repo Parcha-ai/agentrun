@@ -20,7 +20,7 @@ import { type AdapterSession, type AgentAdapter, type BeforeRequest, type HostTo
 import type { KernelHooks, ToolCall } from "./conformance/subject.js";
 import { type AnswerData, type ApprovalPrice, type AskData, type BudgetData, type CallEndData, type CallStartData, type CallStatus, type EndData, KINDS, type MessageData, type RaiseData, withdrawnAnswers } from "./journal-kinds.js";
 import { originOf, RUN_RESUMED } from "@parcha/pi-durable-agent/timeline";
-import { type AlsoRow, type Claim, type Command, type CommandOutcome, deniedText, endedBy, type EndOfRunAnswer, type EndOfRunTurn, type Loop, type LoopDeps, type LoopEnd, type LoopFactory, noteOf, type StopReason } from "./loop-contract.js";
+import { type AlsoRow, type Claim, ClaimRefused, type Command, type CommandOutcome, deniedText, endedBy, type EndOfRunAnswer, type EndOfRunTurn, type Loop, type LoopDeps, type LoopEnd, type LoopFactory, noteOf, type StopReason } from "./loop-contract.js";
 import { deniedText as setToDenyText } from "../refusal-words.js";
 import { ADAPTER_API } from "../turn-end.js";
 import { answerText, REFLECT_NOTE_ONLY, reflectRequestId, underLearning, WRITES } from "./end-of-run.js";
@@ -619,13 +619,15 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         };
         const runOf: AdapterRun = { harness, registry, setModels: (given) => (models = given), ledger, ...(deps.redact ? { redact: deps.redact } : {}) };
         // The spec, its MCP claim step among it (mcpForClaim, before the session opens). A refusal there ends the run in its
-        // words with nothing sent; a claim lost during its refresh ends the loop with nothing more written.
+        // words with nothing sent; a claim lost during its refresh ends the loop with nothing more written. A claim the spec
+        // refuses (ClaimRefused: a handed sign-in that won't read back) ends the run in its words too.
         let spec: AdapterRunSpec;
         try {
           spec = await specOf(claim, runOf);
         } catch (error) {
           if (error instanceof Fenced) return await interrupted("its claim was lost while its MCP credentials were made fresh");
           if (error instanceof McpClaimRefused) return await writeEnd(harness, await harness.root(context), gate, { state: "failed", summary: error.message }, []);
+          if (error instanceof ClaimRefused) return await writeEnd(harness, await harness.root(context), gate, { state: "failed", summary: error.message }, []);
           throw error;
         }
         mcp = spec.mcp;
@@ -991,12 +993,12 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       await hooks.beforeIntent(kernelCall);
       const decision = (await spec.gate?.(kernelCall)) ?? "allow";
       if (typeof decision === "object") return { deny: decision.deny };
+      // Asked about by the name the gate gives (its settings key, as main's pending approval is named), else the call's own;
+      // an MCP call by its catalog name (tool) either way, never pi's wire name, and so are its call and its price.
+      const asked = spec.gate?.askedAs?.(tool) ?? tool;
       // Main's words for a tool set to deny (tool-gate's deniedText, from its one copy in refusal-words.ts).
-      if (decision === "deny") return { deny: setToDenyText(call.tool) };
+      if (decision === "deny") return { deny: setToDenyText(asked) };
       if (decision === "allow") return "allow";
-      // Asked about by the name the gate gives (its settings key, as main's pending approval is named), else the call's; the
-      // call and its price keep the MCP catalog name (tool).
-      const asked = spec.gate?.askedAs?.(call.tool) ?? call.tool;
       const answer = await answerOf({ ...call, tool }, mcp?.priceOf(tool) ?? spec.approvalPrice?.(kernelCall) ?? null, asked);
       if (answer === "park") return { park: true };
       return answer.approved ? "allow" : { deny: deniedText(asked, answer.note) };

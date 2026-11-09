@@ -94,6 +94,35 @@ test("PROVIDERS is the agreed table of ids, labels, key names, mounts and meteri
 	for (const id of ["orgo", "phone-harness", "browserbase", "kernel"]) assert.deepEqual(mounts[id], [], id);
 });
 
+test("PROVIDERS' default images: each kind is one of the entry's own, and each value is its module's constant", async () => {
+	const [daytona, modal, e2b, orgo, phone, browser] = await Promise.all(
+		["daytona", "modal", "e2b", "orgo", "phone-harness", "browser"].map((name) => import(`../dist/${name}.js`)),
+	);
+	// The values serve uses when a computer setting names no image, each from the module that owns it.
+	const expected = {
+		docker: undefined,
+		daytona: { sandbox: daytona.DAYTONA_DEFAULT_SNAPSHOT },
+		modal: { sandbox: modal.MODAL_DEFAULT_IMAGE },
+		e2b: { sandbox: e2b.E2B_BASE_TEMPLATE, desktop: e2b.E2B_DESKTOP_TEMPLATE },
+		orgo: { desktop: orgo.ORGO_BASE_IMAGE },
+		"phone-harness": { phone: phone.PHONE_IMAGE },
+		browserbase: { browser: browser.BROWSER_IMAGE },
+		kernel: { browser: browser.BROWSER_IMAGE },
+	};
+	assert.deepEqual(PROVIDERS.map((entry) => entry.id).sort(), Object.keys(expected).sort(), "every provider is named here");
+	for (const entry of PROVIDERS) {
+		assert.deepEqual(entry.defaultImage, expected[entry.id], `${entry.id}: its default images are its modules' constants`);
+		for (const kind of Object.keys(entry.defaultImage ?? {})) assert.ok(entry.kinds.includes(kind), `${entry.id}: a default image for ${kind}, which it serves`);
+	}
+	// What each module's constant is: a constant that drifts shows here.
+	assert.deepEqual(
+		[daytona.DAYTONA_DEFAULT_SNAPSHOT, modal.MODAL_DEFAULT_IMAGE, e2b.E2B_BASE_TEMPLATE, e2b.E2B_DESKTOP_TEMPLATE, orgo.ORGO_BASE_IMAGE, phone.PHONE_IMAGE, browser.BROWSER_IMAGE],
+		["default", "debian:bookworm-slim", "base", "desktop", "linux", "android", "chromium"],
+	);
+	// Docker's sandbox has none: serve builds its own image (DOCKER_RECIPE).
+	assert.equal(PROVIDERS.find((entry) => entry.id === "docker").defaultImage, undefined);
+});
+
 test("each entry's kinds are derived by serves() from its static capabilities, never written beside them", () => {
 	for (const entry of PROVIDERS) {
 		const derived = SETTINGS.filter((kind) => entry.capabilities.some((one) => serves(one, kind)));

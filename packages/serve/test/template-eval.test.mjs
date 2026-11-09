@@ -10,8 +10,9 @@ import { basename, dirname, join } from "node:path";
 import { test } from "node:test";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import Ajv2020 from "ajv/dist/2020.js";
-import { CaseError, evalTemplate, fakeAnswer, gradeDeterministic, lastJsonBlock, markdownReport, readCases, startFake, verdictOf } from "../dist/template-eval.js";
+import { CaseError, callsOf, evalTemplate, fakeAnswer, gradeDeterministic, lastJsonBlock, markdownReport, readCases, startFake, verdictOf } from "../dist/template-eval.js";
 import { PackageError, readPackages, TEMPLATES_DIR } from "../dist/templates.js";
+import { AGENT_LAYER_PINS } from "../dist/tool-plane.js";
 import { scratch, serve } from "./support.mjs";
 
 const FIXTURES = new URL("./fixtures/templates-eval/", import.meta.url).pathname;
@@ -174,6 +175,20 @@ test("a fake MCP server answers from its fixture and records each call; tool_use
   assert.match(graderOf(mismatch.runs[0], "updated.md").reason, /^0 calls of mcp:crm\/update_contact with \{"id":"8"\}; the grader expects exactly 1$/);
 });
 
+test("a background shell call keeps its own name in the grading record, as the gate's request does: never counted as bash", () => {
+  const rows = [
+    { kind: "tool_use", tool_use_id: "1", tool_name: "bash_background", tool_input_preview: "sleep 1" },
+    { kind: "tool_use", tool_use_id: "2", tool_name: "bash", tool_input_preview: "ls" },
+    { kind: "tool_use", tool_use_id: "3", tool_name: "mcp__hands__bash_output", tool_input_preview: "1" },
+    { kind: "tool_use", tool_use_id: "4", tool_name: "mcp__crm__get_contact", tool_input_preview: "{}" },
+  ];
+  assert.deepEqual(callsOf(rows, "pi", ["crm"]).map((c) => c.tool).slice(0, 2), ["bash_background", "bash"]);
+  assert.deepEqual(callsOf(rows, "claude-agent", ["crm"]).map((c) => c.tool), ["bash_background", "bash", "bash_output", "mcp:crm/get_contact"]);
+  const record = { answer: "", calls: callsOf(rows, "pi", ["crm"]), mcpCalls: [], files: [] };
+  assert.equal(gradeDeterministic({ file: "bg.md", type: "tool_used", tools: ["bash_background"], expect: "called" }, record, []).pass, true);
+  assert.equal(gradeDeterministic({ file: "sh.md", type: "tool_used", tools: ["bash"], count: 1 }, record, []).pass, true, "bash counts its own call alone");
+});
+
 test("a learned note seeded through the learning API reaches the run", { timeout: 600_000 }, async () => {
   const one = await caseOf("learned");
   assert.equal(one.pass, true, JSON.stringify(one, null, 1));
@@ -204,10 +219,12 @@ test("a case passes only when every run passes: one failing run of two fails it"
 test("on an owner's server it applies that server's package only when it is this folder's, never replaces an MCP server, and archives what it made", { timeout: 300_000 }, async (t) => {
   const { api, baseUrl, token } = await serve(t, { faux: FAUX, templates: FIXTURES });
   const server = { baseUrl, token };
-  // The owner's settings are theirs: unpinned there, the pinned write stays deny and the case fails on it.
+  // The owner's settings are theirs, and the runner writes none of them. Unpinned there, the pinned write is held by the
+  // agent's own pin once the store keeps one (AGENT_LAYER_PINS), and the case passes; until then it stays deny and the
+  // case fails on it.
   const before = (await api("GET", "/settings/tools")).body;
   const unpinned = await evalTemplate({ dir: PKG, cases: ["mcp-match"], server });
-  assert.equal(unpinned.pass, false);
+  assert.equal(unpinned.pass, AGENT_LAYER_PINS, JSON.stringify(unpinned.cases[0].runs.map((r) => r.error ?? r.status)));
   assert.deepEqual((await api("GET", "/settings/tools")).body, before, "the runner wrote no setting of the owner's");
   assert.equal((await api("PUT", "/settings/tools", { ...before, "mcp:crm/update_contact": { pin: { id: "7" } } })).status, 200);
   const report = await evalTemplate({ dir: PKG, cases: ["mcp-match"], server });
@@ -287,6 +304,19 @@ test("a run whose wait fails keeps its result and is cancelled before the eval g
   assert.equal(runs.length, 1);
   assert.equal(one.run_id, runs[0].run_id);
   assert.equal((await api("GET", `/runs/${runs[0].run_id}`)).body.status, "cancelled", "the run the eval started is cancelled");
+});
+
+test("a run no runner takes fails by name once it has stayed queued past its bound, never left to the run's whole timeout", { timeout: 120_000 }, async (t) => {
+  // A server with no runner beside it: every run it takes stays queued.
+  const { api, baseUrl, token } = await serve(t, { faux: FAUX, templates: FIXTURES, runner: false });
+  const report = await evalTemplate({ dir: PKG, cases: ["learned"], server: { baseUrl, token }, queueTimeoutMs: 3_000 });
+  const [one] = report.cases[0].runs;
+  assert.ok(one, JSON.stringify(report.cases[0]));
+  assert.deepEqual([one.status, one.pass], ["timed_out", false]);
+  assert.match(one.error, /^the run stayed queued for 3 s: no runner took it \(state \w+\), and it was cancelled$/);
+  // The eval asked to cancel it and cleaned up what it made (the agent archived); no runner ever claimed the run.
+  const left = (await api("GET", `/runs/${one.run_id}`)).body;
+  assert.equal(left.claim, null, "never claimed");
 });
 
 test("a listing of the server's templates that fails once fails that case alone: the next case asks again", { timeout: 300_000 }, async (t) => {

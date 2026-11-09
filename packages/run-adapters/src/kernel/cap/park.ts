@@ -9,10 +9,14 @@ import { CAP_TOLERANCE } from "./price.js";
 import { CAP_REFUSAL_CODE, money, suggestedRaise } from "./words.js";
 
 const micro = (usd: number): number => Math.round(usd * 1e6) / 1e6;
+/** A bound to a millionth, rounded up (never under what it bounds), as main's overshoot bound is (run-view.ts microUp);
+ *  no bound is 0, never -0 (the ceiling of a hair under 0 is -0, which a card would print as "-0"). */
+const microUp = (usd: number): number => Math.ceil(usd * 1e6 - 1e-9) / 1e6 + 0;
 
 /** A run parked at its cap waits on a raise: its cap, what the cap counted as taken, the least the refused step needs, the
- *  least cap that sends it, and the raise it is offered. */
-export type BudgetPending = { kind: "budget"; cap_usd: number; spent_usd: number; needs_usd: number; least_cap_usd: number; suggested_cap_usd: number };
+ *  least cap that sends it, the raise it is offered, and the most a cache miss could have added to the refused step
+ *  (`bound_usd`, the refusal's boundUsd; 0 when it named none), which the budget card shows as main's overshoot bound. */
+export type BudgetPending = { kind: "budget"; cap_usd: number; spent_usd: number; needs_usd: number; least_cap_usd: number; suggested_cap_usd: number; bound_usd: number };
 
 export type Park =
   | { outcome: "parked"; pending: BudgetPending; words: string; event: { kind: "pause"; text: string }; error?: undefined }
@@ -21,11 +25,11 @@ export type Park =
 /** The run's end for `refusal` under `capUsd`. */
 export function parkOf(refusal: CapRefused, capUsd: number): Park {
   if (refusal.forGood || !refusal.figures) return { outcome: "failed", error: refusal.message };
-  const { spentUsd, needsUsd, leastCapUsd } = refusal.figures;
+  const { spentUsd, needsUsd, leastCapUsd, boundUsd } = refusal.figures;
   const words = refusal.message.startsWith(CAP_REFUSAL_CODE) ? refusal.message.slice(CAP_REFUSAL_CODE.length) : refusal.message;
   return {
     outcome: "parked",
-    pending: { kind: "budget", cap_usd: capUsd, spent_usd: micro(spentUsd), needs_usd: micro(needsUsd), least_cap_usd: leastCapUsd, suggested_cap_usd: suggestedRaise(capUsd, spentUsd, needsUsd) },
+    pending: { kind: "budget", cap_usd: capUsd, spent_usd: micro(spentUsd), needs_usd: micro(needsUsd), least_cap_usd: leastCapUsd, suggested_cap_usd: suggestedRaise(capUsd, spentUsd, needsUsd), bound_usd: microUp(boundUsd ?? 0) },
     words,
     event: { kind: "pause", text: words },
   };

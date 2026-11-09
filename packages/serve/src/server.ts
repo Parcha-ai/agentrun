@@ -47,7 +47,7 @@ import { browserHandBack, handBackTarget } from "./browser-commands.js";
 import { type ComputerOf, computerView } from "./computer-view.js";
 import { durationMs, logLine } from "./print.js";
 import { knownToolCostOf, redactorOf, type RunMoment, type State, type Status, toolCostOf } from "./run-view.js";
-import { approve, archiveRun, cancel, message, raiseCap, type StartDeps, type StartOptions, startRun, stop as stopRunOverStore, WAITS_ON_A_PERSON } from "./runs-over-store.js";
+import { approve, archiveRun, cancel, message, pause as pauseRunOverStore, raiseCap, resume as resumeRunOverStore, type StartDeps, type StartOptions, startRun, stop as stopRunOverStore, WAITS_ON_A_PERSON } from "./runs-over-store.js";
 import { momentOverStore, summaryOverStore, timelineOverStore, type ViewDeps, viewOverStore, withheldOverStore } from "./store-view.js";
 import { servedTimelineRows } from "./run-timeline-served.js";
 import { servedRunLearning } from "./run-learning-served.js";
@@ -100,9 +100,11 @@ import { SIGN_INS_DIR, vendorsOver } from "./sign-ins.js";
 import { signInsOverStore } from "./sign-ins-store.js";
 import { MCP_AUTH_TYPES, type McpTool } from "./mcp-probe.js";
 import { mcpServersOverStore } from "./mcp-servers-store.js";
+import { privateHostsRoute } from "./mcp-private-hosts.js";
 import { metaToolOf } from "./mcp-meta.js";
 import { MCP_SETTINGS_PAGE, signInCookie, startedHere } from "./mcp-oauth.js";
 import { type RunNotice, WEBHOOK_EVENTS, Webhooks } from "./webhooks.js";
+import { appPermissionWarnings } from "./template-github-permissions.js";
 import { templateApplied, templateTriggerSecret, templateWebhookSecrets, triggerMade, triggerRotated, webhookSaved, withTriggerSecret } from "./trigger-secrets-shown.js";
 import { type SealedSettingsOverStore } from "./sealed-settings-store.js";
 import { type ServerSecrets } from "./server-secrets.js";
@@ -482,8 +484,8 @@ export const ROUTES: readonly Route[] = [
   { method: "POST", pattern: /^\/settings\/mcp-servers\/([^/]+)\/oauth\/start$/, name: "startMcpOAuth" },
   { method: "GET", pattern: /^\/settings\/mcp-servers\/oauth\/callback$/, name: "mcpOAuthCallback" },
   { method: "GET", pattern: /^\/settings\/mcp-servers\/oauth\/client\.json$/, name: "mcpOAuthClient" },
-  // Served over the store-backed registry (mcp-private-hosts.ts privateHostsRoute) once the server runs on the one store:
-  // until then they answer 404, as an unmatched route does.
+  // Over the store-backed registry (mcp-private-hosts.ts privateHostsRoute); the PUT is a secret write as a whole, so the
+  // one secret-write check takes it from the owner's session alone.
   { method: "GET", pattern: /^\/settings\/mcp-servers\/oauth\/private-hosts$/, name: "getMcpPrivateHosts" },
   { method: "PUT", pattern: /^\/settings\/mcp-servers\/oauth\/private-hosts$/, name: "putMcpPrivateHosts" },
   { method: "GET", pattern: /^\/settings\/tools$/, name: "getToolSettings" },
@@ -867,9 +869,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // step (blockersOf's `mcp`, and the template apply): the server is the one writer of these rows (a save, refresh, sign-in
   // or delete), so the snapshot is refreshed after each of those and reads what is saved now. The runner reads the registry,
   // pins and credentials from the store at a run's claim (runner/mcp-claim.ts); this server hands a run no MCP source.
-  let mcpMeta = new Map<string, { url: string; tools: readonly McpTool[] }>();
+  let mcpMeta = new Map<string, { url: string; auth: string; tools: readonly McpTool[] }>();
   const refreshMcpMeta = async (): Promise<void> => {
-    mcpMeta = new Map((await store.mcp.servers()).map((row) => [row.name, { url: row.url, tools: (row.tools as McpTool[]) ?? [] }]));
+    mcpMeta = new Map((await store.mcp.servers()).map((row) => [row.name, { url: row.url, auth: row.auth, tools: (row.tools as McpTool[]) ?? [] }]));
   };
   await refreshMcpMeta();
   // Each saved server's tools in the harnesses' shape (the registry keeps input_schema; a bound tool takes inputSchema),
@@ -1303,9 +1305,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const githubConnection = () => github.view();
   /** What applying a template reads of the server (templates.ts TemplatesDeps). */
   const templateDeps: TemplatesDeps = { githubConnection };
-  // STOPGAP: a github_app MCP server's save-time listing token is set on the MCP registry's `appToken`; the store-backed
-  // registry gains that setter with the github-over-store MCP work, so until then the github MCP listing mints no token here
-  // (a run's own is minted in the runner, runner/mcp-github.ts). Every token minted is a server secret while it may be in use.
+  // A github_app MCP server's tools are listed with an installation token of the App, narrowed to one repository it covers
+  // with metadata read (tokenForListing); a run's own is minted in the runner (runner/github-app.ts). Every token minted
+  // is a server secret while it may be in use.
+  mcpServers.appToken = (signal) => githubConnect.tokenForListing(signal);
   secretStores.add("github-tokens", () => githubConnect.liveTokens());
   const triggers: Triggers = new Triggers({
     // The server's own store (the one it opened) holds the triggers a person writes and reads; a test may inject another
@@ -1676,7 +1679,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
           log?.(logLine("template_undo_failed", { template: pkg.name, trigger: id, message: (undo as Error).message }));
         }
       }
-      await agents.setArchived("agent", entry.agent.id, true).catch((undo: Error) => log?.(logLine("template_undo_failed", { template: pkg.name, agent: entry.agent.id, message: undo.message })));
+      // Archived through the trigger engine, as POST /agents/{id}/archive is: a trigger the undo could not remove is turned
+      // off in that same store transaction with the reason agent_archived, never with none, and unarchive answers it.
+      await triggers.agentArchived(entry.agent.id).catch((undo: Error) => log?.(logLine("template_undo_failed", { template: pkg.name, agent: entry.agent.id, message: undo.message })));
       throw error;
     }
     // A pinned send whose destination parameter was not given is denied, never let go anywhere: said, by its gate name.
@@ -1684,12 +1689,15 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // A pin this server's agent store does not keep yet (tool-plane.ts AGENT_LAYER_PINS): said, with the setting that holds
     // the send to its destination meanwhile, the server's.
     const unkept: InputIssue[] = made.unkept.map(({ tool, pin }) => ({ field: `pins.${tool}`, reason: NOT_SET_UP, message: serverPinned.has(tool) ? `${tool} is not pinned to ${pinWords(pin)} for this agent yet (this server's agent store keeps an agent's own pin from the store cutover on); this server's own pin of ${tool} holds its calls meanwhile.` : `${tool} is not pinned to ${pinWords(pin)} for this agent yet: this server's agent store keeps an agent's own pin from the store cutover on. Until then the agent was made with ${tool} set to deny, so nothing it reads can send it elsewhere. Pin it on this server, which holds every agent's calls of ${tool}, and apply again to let it.`, ...(serverPinned.has(tool) ? {} : { fix: `Add ${JSON.stringify({ [tool]: { pin } })} to this server's tool settings (Settings → Tools; PUT /v2/settings/tools replaces the whole map, so send it with the rest).` }) }));
+    // A GitHub tool the package grants that Connect GitHub's App may not use (its manifest asks for less), where the github
+    // MCP server runs on the App's tokens: said now, before a run's first call is refused (template-github-permissions.ts).
+    const appShort = appPermissionWarnings({ name: pkg.name, mcp: saved }, (server) => mcpMeta.get(server)?.auth === "github_app");
     // A webhook trigger's secret is in no apply answer: each one's warning sends the person to the console for it.
     const hooks = made.triggers.flatMap((trigger, i) => (isObject(trigger.source) && trigger.source.kind === "webhook" ? [templateTriggerSecret(i)] : []));
     // Each trigger it made, a webhook trigger's with its secret's metadata; the values go back beside the answer, never in it
     // (the route adds them to the first answer to the owner's session, after the Idempotency-Key's record is written).
     const minted = new Map(secrets.map(({ trigger_id, secret }) => [trigger_id, secret]));
-    const applied = { template: pkg.name, version: pkg.version, agent_id: entry.agent.id, trigger_ids: ids, ...templateWebhookSecrets([...minted.keys()], new Date().toISOString()), warnings: [...skipped, ...kept, ...modelWarnings, ...unpinned, ...unkept, ...warnings, ...hooks] };
+    const applied = { template: pkg.name, version: pkg.version, agent_id: entry.agent.id, trigger_ids: ids, ...templateWebhookSecrets([...minted.keys()], new Date().toISOString()), warnings: [...skipped, ...kept, ...modelWarnings, ...unpinned, ...unkept, ...warnings, ...hooks, ...appShort] };
     return { applied, minted };
   }
 
@@ -2034,8 +2042,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     return { password: body.password as string, body };
   }
 
-  /** POST /v2/setup, POST /v2/auth/sign-in, POST /v2/auth/sign-out and GET /v2/auth/session, answered before any
-   *  credential: their own checks are the setup code (or the token), the password, and the session. */
+  /** POST /v2/setup, POST /v2/auth/sign-in, POST /v2/auth/sign-out, POST /v2/auth/sign-out-everywhere and GET
+   *  /v2/auth/session, answered before any credential: their own checks are the setup code (or the token), the password,
+   *  and the session. */
   async function ownerRoute(req: IncomingMessage, res: ServerResponse, path: string, me: Owner): Promise<void> {
     const method = path === "/auth/session" || path === "/setup/import" ? "GET" : "POST";
     if (req.method !== method) throw new ApiError("method_not_allowed", `${req.method} is not a method of /v2${path}`, {}, { allow: method });
@@ -2096,7 +2105,17 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         }
         return send(res, 200, { signed_in: true }, { "set-cookie": ownerCookie(req, me.session(), SESSION_S) });
       }
+      // This browser: its session revoked on the server (a copy of its cookie is no session either) and its cookie
+      // cleared; every other browser's session left as it is. A viewer watching with it is cut off.
       case "/auth/sign-out": {
+        fromPage(req);
+        if (!signedIn(req, me)) throw new ApiError("unauthenticated", "this browser is not signed in");
+        for (const value of heldSessions(req)) if (me.valid(value)) me.revoke(value);
+        viewers.recheck();
+        return send(res, 200, { signed_out: true }, { "set-cookie": ownerCookie(req, "", 0) });
+      }
+      // Every browser and phone: the sessions' epoch moves on, so every cookie made before is none, this one's too.
+      case "/auth/sign-out-everywhere": {
         fromPage(req);
         if (!signedIn(req, me)) throw new ApiError("unauthenticated", "this browser is not signed in");
         me.signOutEverywhere();
@@ -2585,13 +2604,13 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         return send(res, 200, await runGraphView(store, id, runReadsDeps));
       case "pauseRun":
       case "resumeRun": {
+        // A workflow run's pause or resume is a command its runner reads and applies (runs-over-store.pauseOrResume): an
+        // agentic run has none (501, its turn is stopped instead), an ended or cancelling one takes none (409). The route
+        // adds the run's status from its view.
         const run = await needRun(id);
-        // RULED (A1): an agentic run is not paused or resumed by hand — the cap's raise brings a run paused at its cap back;
-        // there is no manual pause. 501, as the document says.
-        if (run.kind === "agentic") throw unsupported("runs.pause_resume", "A run is not paused or resumed by hand: raise its cap to bring a run paused at its cap back; there is no manual pause.");
-        // A workflow run's pause and resume are real, and come with the runner's pause/resume command kinds and E2c's
-        // journal writers: until those land this is a named TODO, refused as unsupported here (not as a permanent no).
-        throw unsupported("runs.pause_resume", "TODO(pause): a workflow run's pause and resume are being wired (the runner's pause/resume and the store's writers); not available on this build yet.");
+        const { paused } = await (found.name === "pauseRun" ? pauseRunOverStore : resumeRunOverStore)(store, run);
+        const { status } = await runStatusState(run.id);
+        return send(res, 200, { run_id: run.id, paused, status });
       }
       case "readRunFile": {
         await needRun(id);
@@ -2704,9 +2723,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       case "getGitHubConnection": {
         // Repaired from GitHub's own first, at most once a minute: a missed installation event is put right here.
         await githubConnect.reconcile((detail) => triggers.turnOff("github", detail));
+        // Always a 200: not connected is an answer, never an error a browser logs as one.
         const view = githubConnection();
-        if (!view) throw new ApiError("not_found", "No GitHub App is connected to this server: Connect GitHub in Settings.");
-        return send(res, 200, view);
+        return send(res, 200, view ? { connected: true, ...view } : { connected: false });
       }
       case "disconnectGitHub": {
         const view = githubConnection();
@@ -2719,6 +2738,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         log?.(logLine("github", { condition: "github_disconnected", app_id: view.app_id, triggers_off: off }));
         return send(res, 200, { disconnected: true, triggers_off: off, note: `Delete the App itself on GitHub: ${settingsUrl}` });
       }
+      case "getMcpPrivateHosts":
+        return send(res, 200, await privateHostsRoute(mcpServers, { method: "GET" }), { "cache-control": "no-store" });
+      case "putMcpPrivateHosts":
+        return send(res, 200, await privateHostsRoute(mcpServers, { method: "PUT", body: () => bodyOf(req) }), { "cache-control": "no-store" });
       case "deleteMcpServer":
         await mcpServers.remove(id);
         await refreshMcpMeta();

@@ -216,6 +216,8 @@ limit: aim for under 15,000 characters of JSON. An answer cut off mid-string is 
 - At most 20 officers and 10 beneficial owners. Past 20 officers: every current director first, then the chief
   executive, chief financial officer and company secretary, then the most recent resignations. Say in `limitations`
   how many officers you left out and cite the registry's officer list (its source id), where the rest are.
+- At most 10 beneficial owners. Past 10 (a public company's holders of 5% or more): the largest holdings first, and
+  say in `limitations` how many holders you left out, citing the proxy table or the 13D/13G filings that list them.
 - At most 10 rejected candidates. Past 10: keep those closest to the subject first (same name in the same
   jurisdiction, then a parent or a former or trading name, then other jurisdictions), and say in `limitations` how many
   you left out and cite the registry search (its source id) that lists them.

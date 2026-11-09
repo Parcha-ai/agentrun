@@ -101,6 +101,8 @@ test("demo: a GitHub delivery signed with the trigger's whole secret fires once,
   const again = await deliver(baseUrl, id, "pull_request", event, { secret, delivery });
   assert.deepEqual([again.status, again.headers["idempotent-replayed"], again.body.key, again.body.run_id], [200, "true", first.body.key, fired.run_id]);
   assert.equal((await api("GET", "/agents/review/runs")).body.runs.length, 1, "one run");
+  // Titled from the trigger and the event its tag names, never from the payload's markup.
+  assert.equal((await api("GET", `/runs/${fired.run_id}`)).body.title, `Webhook ${created.body.name}: pull_request opened`);
   const { content } = JSON.parse(await readFile(join(runDir(data, fired.run_id), "serve.json"), "utf8")).input;
   assert.ok(content.startsWith(`Review this pull request.\n\n<trigger-payload source="webhook" scheme="github" event="pull_request" action="opened" delivery="${delivery}" number="7" untrusted>\n${JSON.stringify(event)}\n</trigger-payload>`), content);
   await follow(api, fired.run_id, ["completed"]);

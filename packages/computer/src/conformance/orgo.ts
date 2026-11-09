@@ -6,7 +6,7 @@
 // The daemon is uploaded into each computer (dist/computerd-linux-amd64, `npm run build:daemon`); the drifted provider
 // uploads one built with Go as version <version>-drift. Every computer of a run lives at most 1 h, Orgo's shortest end
 // (ends_in_hours 1): Orgo deletes it then whatever happens to the run.
-import { create, type OrgoChannel, type OrgoProvider, type OrgoWebSocketFactory } from "../orgo.js";
+import { create, ORGO_BASE_IMAGE, type OrgoChannel, type OrgoProvider, type OrgoWebSocketFactory } from "../orgo.js";
 import { buildDriftDaemon, DRIFT_VERSION } from "./drift-daemon.js";
 
 /** The environment this module reads, by name: the live switch, the run's template, and the provider's settings. */
@@ -62,7 +62,7 @@ export function settingsFromEnv(env: Record<string, string | undefined> = proces
 
 /** The image every computer of the run starts from: COMPUTER_ORGO_TEMPLATE, or Orgo's base desktop. */
 export function conformanceImage({ env = process.env }: Pick<OrgoModuleOptions, "env"> = {}): string {
-	return env[ORGO_ENV.template] || "linux";
+	return env[ORGO_ENV.template] || ORGO_BASE_IMAGE;
 }
 
 function build({ env = process.env, fetch, webSocket, channel }: OrgoModuleOptions, daemonPath: string | undefined): OrgoProvider {

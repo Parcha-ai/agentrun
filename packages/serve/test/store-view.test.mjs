@@ -284,8 +284,8 @@ test("a run parked at its cap reads input_required with the budget pending card"
   const view = await viewOverStore(store, "run-1", deps);
   assert.equal(view.status, "input_required");
   assert.equal(view.state, "waiting");
-  // overshoot_bound_usd is microUp(0) === -0, byte-identical to the file-backed card when the cap kept no cache-miss bound.
-  assert.deepEqual(view.pending, { kind: "budget", cap_usd: 0.5, spent_usd: 0.3, needs_usd: 1, least_cap_usd: 1.3, suggested_cap_usd: 11, overshoot_bound_usd: -0, said: "Out of budget. Raise the cap to at least $1.30 to continue.", at: iso(T0 + 1_000) });
+  // overshoot_bound_usd is microUp(0), which is 0, never -0, when the cap kept no cache-miss bound.
+  assert.deepEqual(view.pending, { kind: "budget", cap_usd: 0.5, spent_usd: 0.3, needs_usd: 1, least_cap_usd: 1.3, suggested_cap_usd: 11, overshoot_bound_usd: 0, said: "Out of budget. Raise the cap to at least $1.30 to continue.", at: iso(T0 + 1_000) });
   assert.deepEqual(view.cost, { usd: 0, basis: "estimate", charge_state: null, cap_usd: 0.5, overshoot_bound_usd: 0 });
   assert.equal(view.cap_mode, "expected");
   assert.equal(view.result, null);

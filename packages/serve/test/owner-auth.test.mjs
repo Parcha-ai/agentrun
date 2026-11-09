@@ -1,9 +1,11 @@
 // The owner: one person, one password. The first visit sets it (with the printed code at a public address), a signed
-// session cookie carries the sign-in for 30 days, signing out ends every session, and reset-password clears it. The token
+// session cookie carries the sign-in for 30 days, signing out signs out this browser, signing out everywhere ends every
+// session, and reset-password clears it. The token
 // stays the way in for scripts and the CLI. Every route but capabilities, the contract and health needs one or the other.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHmac } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { mock, test } from "node:test";
@@ -174,27 +176,70 @@ test("every cookie write is the page's: sign-in, setup and sign-out from another
   const evil = { ...json, origin: "https://evil.example" };
   assert.equal((await signIn(server, PASSWORD, evil)).status, 403);
   assert.equal((await call(server.port, { method: "POST", path: "/v2/auth/sign-out", headers: { ...evil, cookie: server.cookie }, body: {} })).status, 403);
+  assert.equal((await call(server.port, { method: "POST", path: "/v2/auth/sign-out-everywhere", headers: { ...evil, cookie: server.cookie }, body: {} })).status, 403);
   assert.equal((await call(server.port, { method: "POST", path: "/v2/auth/sign-in", headers: { "content-type": "application/x-www-form-urlencoded", origin: page(server).origin }, body: "password=x" })).status, 415);
   const write = (headers) => call(server.port, { method: "POST", path: "/v2/agents", headers: { cookie: server.cookie, ...headers }, body: { definition: { id: "a1", name: "a1", instructions: "Answer.", tools: [] } } });
   assert.equal((await write(evil)).status, 401, "a cookie from another origin is no credential");
   assert.equal((await write(page(server))).status, 201);
 });
 
-test("signing out ends every session: a copy of the cookie made before is a 401 after, on every browser", async (t) => {
+test("signing out signs out this browser only: its session is revoked on the server and its cookie cleared, and another browser stays signed in", async (t) => {
+  const server = await owned(t);
+  const other = cookieOf(await signIn(server, PASSWORD));
+  // A copy of this browser's cookie, taken before it signs out (another profile, a backup).
+  const copied = server.cookie;
+  assert.equal((await agents(server, copied)).status, 200);
+  const out = await call(server.port, { method: "POST", path: "/v2/auth/sign-out", headers: { ...page(server), cookie: server.cookie }, body: {} });
+  assert.equal(out.status, 200, out.text);
+  assert.match(out.headers["set-cookie"][0], /Max-Age=0/, "this browser's cookie is cleared");
+  assert.equal((await agents(server, copied)).status, 401, "the copied cookie's session is revoked on the server");
+  assert.deepEqual((await call(server.port, { path: "/v2/auth/session", headers: { cookie: copied } })).json, { accounts: true, password_set: true, signed_in: false, secrets_writable: false, secrets_reason: "sign_in" });
+  assert.equal((await call(server.port, { path: "/api/stats", headers: { cookie: copied } })).status, 401, "and the page's data refuses it");
+  assert.equal((await agents(server, other)).status, 200, "another browser's session stays");
+  assert.deepEqual((await call(server.port, { path: "/v2/auth/session", headers: { cookie: other } })).json, { accounts: true, password_set: true, signed_in: true, secrets_writable: true });
+  assert.equal((await call(server.port, { method: "POST", path: "/v2/auth/sign-out", headers: { ...page(server) }, body: {} })).status, 401, "a browser with no session has none to end");
+});
+
+test("a revoked session is kept only until it would have ended: its record goes with its expiry, and the owner file stays small", async (t) => {
+  mock.timers.enable({ apis: ["Date"], now: 1_000_000 });
+  t.after(() => mock.timers.reset());
+  const dir = await scratch(t);
+  const me = new Owner(dir, true);
+  await me.setFirst(PASSWORD, undefined, false);
+  const first = me.session();
+  me.revoke(first);
+  assert.equal(me.valid(first), false);
+  const ownerFile = () => JSON.parse(readFileSync(join(dir, owner.OWNER_FILE), "utf8"));
+  assert.equal(ownerFile().revoked.length, 1);
+  assert.ok(!JSON.stringify(ownerFile()).includes(first.split(".")[1]), "the cookie's MAC is never kept");
+  // Past its 30 days the record goes at the next revoke.
+  mock.timers.tick(31 * 24 * 3_600_000);
+  const second = me.session();
+  me.revoke(second);
+  assert.equal(ownerFile().revoked.length, 1, "the expired record is swept");
+  assert.equal(me.valid(second), false);
+  // Signing out everywhere moves the epoch: the list empties.
+  me.signOutEverywhere();
+  assert.deepEqual(ownerFile().revoked ?? [], []);
+});
+
+test("signing out everywhere ends every session: a copy of the cookie made before is a 401 after, on every browser", async (t) => {
   const server = await owned(t);
   const other = cookieOf(await signIn(server, PASSWORD));
   assert.equal((await agents(server, other)).status, 200);
-  const out = await call(server.port, { method: "POST", path: "/v2/auth/sign-out", headers: { ...page(server), cookie: server.cookie }, body: {} });
+  const out = await call(server.port, { method: "POST", path: "/v2/auth/sign-out-everywhere", headers: { ...page(server), cookie: server.cookie }, body: {} });
   assert.equal(out.status, 200, out.text);
+  assert.deepEqual(out.json, { signed_out: true });
   assert.match(out.headers["set-cookie"][0], /Max-Age=0/);
   assert.equal((await agents(server, server.cookie)).status, 401);
   assert.equal((await agents(server, other)).status, 401, "another browser's session ended too");
   const session = await call(server.port, { path: "/v2/auth/session", headers: { cookie: other } });
   assert.deepEqual(session.json, { accounts: true, password_set: true, signed_in: false, secrets_writable: false, secrets_reason: "sign_in" });
+  assert.equal((await call(server.port, { method: "POST", path: "/v2/auth/sign-out-everywhere", headers: { ...page(server) }, body: {} })).status, 401, "it takes a session");
   assert.equal((await signIn(server, PASSWORD)).status, 200, "and the password still signs in");
 });
 
-test("a session's end is in its signed payload: a cookie past its 30 days, or with its epoch or MAC changed, is no session", async (t) => {
+test("a session's end is in its signed payload: a cookie past its 30 days, with its epoch or MAC changed, or with no id, is no session", async (t) => {
   const server = await owned(t);
   const secret = Buffer.from((await readFile(join(server.data, ".session-secret"), "utf8")).trim(), "base64url");
   const { epoch } = JSON.parse(await readFile(join(server.data, "owner.json"), "utf8"));
@@ -202,9 +247,10 @@ test("a session's end is in its signed payload: a cookie past its 30 days, or wi
     const body = Buffer.from(JSON.stringify(payload)).toString("base64url");
     return `agentrun-${server.port}-session=${body}.${createHmac("sha256", secret).update(body).digest("base64url")}`;
   };
-  assert.equal((await agents(server, forge({ iat: Date.now(), exp: Date.now() + 60_000, epoch }))).status, 200, "the control: a well-made cookie works");
-  assert.equal((await agents(server, forge({ iat: 0, exp: Date.now() - 1, epoch }))).status, 401, "past its end");
-  assert.equal((await agents(server, forge({ iat: Date.now(), exp: Date.now() + 60_000, epoch: epoch - 1 }))).status, 401, "another epoch");
+  assert.equal((await agents(server, forge({ sid: "s1", iat: Date.now(), exp: Date.now() + 60_000, epoch }))).status, 200, "the control: a well-made cookie works");
+  assert.equal((await agents(server, forge({ iat: Date.now(), exp: Date.now() + 60_000, epoch }))).status, 401, "no session id (nothing a sign-out could revoke)");
+  assert.equal((await agents(server, forge({ sid: "s2", iat: 0, exp: Date.now() - 1, epoch }))).status, 401, "past its end");
+  assert.equal((await agents(server, forge({ sid: "s3", iat: Date.now(), exp: Date.now() + 60_000, epoch: epoch - 1 }))).status, 401, "another epoch");
   const [name, value] = server.cookie.split("=");
   assert.equal((await agents(server, `${name}=${value.slice(0, -2)}xx`)).status, 401, "a changed MAC");
 });
@@ -304,7 +350,7 @@ test("with accounts on, the token link signs no browser in: it sets no cookie, a
   assert.deepEqual([kept.status, kept.headers.location], [303, "/?view=runs"], "other parameters stay");
   assert.deepEqual([(await call(server.port, { path: "/" })).text], [CONSOLE_INDEX], "then the console, which asks for the password");
   const tokenCookie = `agentrun-${server.port}=${createHmac("sha256", server.token).update("agentrun-serve page").digest("base64url")}`;
-  const out = await call(server.port, { method: "POST", path: "/v2/auth/sign-out", headers: { ...page(server), cookie: server.cookie }, body: {} });
+  const out = await call(server.port, { method: "POST", path: "/v2/auth/sign-out-everywhere", headers: { ...page(server), cookie: server.cookie }, body: {} });
   assert.equal(out.status, 200, out.text);
   for (const cookie of [tokenCookie, `${tokenCookie}; ${server.cookie}`]) {
     assert.equal((await agents(server, cookie)).status, 401, "the token's page cookie outlives no sign-out");

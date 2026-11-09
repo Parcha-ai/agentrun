@@ -297,7 +297,7 @@ export async function triggerStore(of) {
  *  dispatch (dispatch.ts): each claim's launch picks its harness loop — pi on the kernel's adapter loop with the run's pi
  *  spec, a learning run on the learning loop, its model route the faux model under `faux`. Returns a close() that stops the
  *  runner and closes its store handle. */
-export async function startInProcessRunner(data, { faux, githubApi, accounts, ...switches } = {}) {
+export async function startInProcessRunner(data, { faux, githubApi, githubMcpOrigin, accounts, ...switches } = {}) {
   const store = await openSqliteStore({ dataDir: data, role: "runner" });
   // The runner's env mirrors the server's faux (model.ts FAUX_ENV): its model route reads the faux model from it, so a run
   // never reaches the network. The seal key is the server's (seal-key.ts), read as the CLI's runner reads it: the one
@@ -321,8 +321,9 @@ export async function startInProcessRunner(data, { faux, githubApi, accounts, ..
   try {
     runner = startRunner({
       store,
-      // A test's fake GitHub, the server's githubApi seam: the runner mints the App's tokens there (never from the env).
-      createLoop: dispatchRunner({ env, data, journal: (claim) => store.journal(claim), store, sealKey, routeOf, computerForClaim: computers.computerForClaim, computerDeps: computers.computerDeps, ...(githubApi ? { githubApi } : {}) }),
+      // A test's fake GitHub, the server's githubApi seam: the runner mints the App's tokens there (never from the env). Its
+      // fake GitHub MCP, the server's githubMcpOrigin seam: a github_app server there is the runner's GitHub MCP too.
+      createLoop: dispatchRunner({ env, data, journal: (claim) => store.journal(claim), store, sealKey, routeOf, computerForClaim: computers.computerForClaim, computerDeps: computers.computerDeps, ...(githubApi ? { githubApi } : {}), ...(githubMcpOrigin ? { githubMcpOrigin } : {}) }),
     });
   } catch (error) {
     restore();
@@ -626,7 +627,7 @@ export function call(port, { method = "GET", path = "/", headers = {}, body } = 
         resolve({ status: res.statusCode, headers: res.headers, text, json });
       });
     });
-    req.once("error", reject);
+    req.once("error", (error) => reject(Object.assign(error, { message: `${error.message} on ${method} ${path} (a reused socket: ${req.reusedSocket})` })));
     req.end(body === undefined ? undefined : typeof body === "string" ? body : JSON.stringify(body));
   });
 }

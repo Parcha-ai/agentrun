@@ -1,6 +1,7 @@
 // The skills a run's computer kind brings: how to look, act, check and recover on a desktop (desktop-computer) or a phone
 // (phone-computer). Each is the SKILL.md beside this file (kind-skills/<kind>/SKILL.md, copied next to the server by the
-// build), laid in a run's .agents/skills/<name>/ with the agent's own skills (revision-skills.ts layRevisionSkills).
+// build), laid in a run's .agents/skills/<name>/ with the agent's own skills at the claim (revision-skills.ts
+// layOwnSkills).
 import { readFileSync } from "node:fs";
 
 /** A kind's skill: its name (its folder under .agents/skills/, as its front matter says it) and its SKILL.md's text. */

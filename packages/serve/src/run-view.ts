@@ -352,8 +352,9 @@ export const shownArgs = (approval: Pick<Approval, "args_json">, redact: (text: 
 
 /** A dollar figure to a millionth, as the timeline's cost.usd is. */
 export const micro = (usd: number): number => Math.round(usd * 1e6) / 1e6;
-/** A bound to a millionth, rounded up, so "at most" holds. */
-export const microUp = (usd: number): number => Math.ceil(usd * 1e6 - 1e-9) / 1e6;
+/** A bound to a millionth, rounded up, so "at most" holds. No bound is 0, never -0: the ceiling of a hair under 0 is -0,
+ *  which the budget card would print as "-0". */
+export const microUp = (usd: number): number => Math.ceil(usd * 1e6 - 1e-9) / 1e6 + 0;
 /** How many of the refused request's least a run paused at its cap is offered on top of what was taken (suggestedCap). */
 export const SUGGESTED_RAISE_FACTOR = 10;
 /** The raise a run paused at its cap is offered: what the cap counted as taken plus SUGGESTED_RAISE_FACTOR times the
@@ -587,6 +588,11 @@ export function momentOf(run: RunView, facts: RunFacts, live: boolean): RunMomen
 
 /** An ended run's words, withheld while this server can't read the sign-in it was handed (load). */
 export const WITHHELD_SIGN_IN = "This server can't read the run's browser sign-in (its seal key changed or is missing, or the sign-in is damaged), so nothing the run said is shown.";
+
+/** A withheld run's title: a short line that fits the title's length and holds nothing the run said, so a title that
+ *  repeats the handed sign-in is never served when this server can't cut it. The full sentence stays in the run's error
+ *  and review. */
+export const WITHHELD_TITLE = "Withheld: a sign-in this run used can't be read";
 
 /** What a `sign_in_handed` the server did not write (anything but a non-empty array of SHA-256 hashes: a `true` or one
  *  hash an older build wrote, or a damaged value) reads as: some pointer was handed, which one is not known, so the run is

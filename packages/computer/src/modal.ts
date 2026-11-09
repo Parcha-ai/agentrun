@@ -57,6 +57,7 @@ import {
 	type Refusal,
 } from "./provider.js";
 import { type ComputerErrorCode, fail, ok, type Result } from "./result.js";
+import { daemonWatch, type ScreenWatch, type ScreenWatchHandlers, type WatchOptions } from "./screen-watch.js";
 import { connectionError } from "./test-connection.js";
 import { waitUntil } from "./wait.js";
 
@@ -186,6 +187,8 @@ export const MOUNT: readonly MountKind[] = ["archil"];
 
 /** The machine kind and groups of its one configuration: a linux computer. */
 export const CAPABILITIES: readonly KindCapabilities[] = [{ kind: "linux", groups: ["exec", "files", "processes"] }];
+/** A registry tag for linux/amd64 that Modal can pull: the default when a setting names no image. */
+export const MODAL_DEFAULT_IMAGE = "debian:bookworm-slim";
 
 /** The SDK's default server (modal-client@64880502:js/src/config.ts:143). */
 export const MODAL_DEFAULT_SERVER_URL = "https://api.modal.com:443";
@@ -805,7 +808,7 @@ export class ModalProvider implements ComputerProvider {
 		const given = (typeof spec === "object" && spec !== null ? spec : {}) as unknown as Record<string, unknown>;
 		const { image, lifetimeMs, network, cpus, memoryMb, pids, labels, workdir, user, mount } = given;
 		if (typeof image !== "string" || image.trim() === "" || image.startsWith("-") || /\s/.test(image)) {
-			refuse("image", "an image is required: a registry tag for linux/amd64 that Modal can pull, such as debian:bookworm-slim");
+			refuse("image", `an image is required: a registry tag for linux/amd64 that Modal can pull, such as ${MODAL_DEFAULT_IMAGE}`);
 		} else if (image.includes("\0")) refuse("image", NUL);
 		refusals.push(...checkLifetime(lifetimeMs, this.capabilities()));
 		if (network === "open" || (typeof network === "object" && network !== null && "allow" in network)) refuse("network", OWN_NETWORK_ONLY);
@@ -1189,6 +1192,11 @@ export class ModalProvider implements ComputerProvider {
 		if (!found.ok) return found;
 		if (!ours(found.value.tags, ref.name)) return fail("not_found", `no Modal computer named ${ref.name} has the id ${ref.id}`);
 		return found;
+	}
+
+	/** The live view: screen.watch on a connection of the watch's own (daemonWatch); a sandbox has no screen. */
+	watch(ref: ComputerRef, handlers: ScreenWatchHandlers, options?: WatchOptions): Promise<Result<ScreenWatch>> {
+		return daemonWatch(this, ref, handlers, options);
 	}
 
 	async connect(ref: ComputerRef): Promise<Result<ComputerConnection>> {

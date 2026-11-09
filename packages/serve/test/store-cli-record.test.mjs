@@ -117,11 +117,12 @@ test("a pi run is untouched: it still folds its usage row, which a CLI run has n
 
 // A paid MCP tool charge the runner books in the kernel cap's paid-tools session (TOOL_SESSION), read back as the Tool cost
 // row the file path had on the run's root. The session's runner.request names the tool (model "paid:<name>") and the call
-// it ran under; its runner.turn carries the cost; the charge is placed under that call, joined by `call`.
-const paidSession = (convId, skId, reqId, turnId, { name = "mcp:fake/paid", call = "c1", usd = 0.05 } = {}) => [
+// it ran under, and who charged for it (charged_by); its runner.turn carries the cost; the charge is placed under that
+// call, joined by `call`.
+const paidSession = (convId, skId, reqId, turnId, { name = "mcp:fake/paid", call = "c1", usd = 0.05, chargedBy = "fake" } = {}) => [
   { type: "conversation", value: { id: convId } },
   { type: "entry", value: { id: skId, conversationId: ROOT, kind: "agentrun.session.key", data: { key: "paid-tools", conversation: convId } } },
-  { type: "entry", value: { id: reqId, conversationId: convId, kind: "runner.request", data: { turn: 1, model: `paid:${name}`, call, heldUsd: usd } } },
+  { type: "entry", value: { id: reqId, conversationId: convId, kind: "runner.request", data: { turn: 1, model: `paid:${name}`, call, heldUsd: usd, charged_by: chargedBy } } },
   { type: "entry", value: { id: turnId, conversationId: convId, kind: "runner.turn", data: { turn: 1, usd } } },
 ];
 
@@ -146,6 +147,25 @@ test("a pi run's paid MCP charge renders a Tool cost row under its call, from th
   assert.ok(result >= 0 && result < cost && cost < final, `the Tool cost row follows its call's result, before the answer: ${JSON.stringify(shown(rows))}`);
   assert.equal(rows[cost].summary, "Tool cost: fake charged $0.0500 for mcp:fake/paid");
   assert.equal(rows[cost].tool_use_id, "c1");
+});
+
+test("a paid web_search charge's Tool cost row names who charged, from its record's charged_by", async (t) => {
+  const { store } = await storeOn(t);
+  const claim = await claimed(store, { harness: "pi", runId: "run-1" });
+  const j = store.journal(claim);
+  await commitWrites(j, [
+    { type: "conversation", value: { id: ROOT } },
+    { type: "entry", value: { id: await j.mintId(), conversationId: ROOT, kind: "pi.user", model: [{ role: "user", content: "search", timestamp: T0 }] } },
+    { type: "entry", value: { id: await j.mintId(), conversationId: ROOT, kind: "pi.assistant", model: [{ role: "assistant", stopReason: "tool_use", content: [{ type: "toolCall", id: "c1", name: "web_search", arguments: {} }], timestamp: T0 + 1 }] } },
+    ...paidSession(await j.mintId(), await j.mintId(), await j.mintId(), await j.mintId(), { name: "web_search", usd: 0.005, chargedBy: "parallel" }),
+    { type: "entry", value: { id: await j.mintId(), conversationId: ROOT, kind: "pi.tool-result", model: [{ role: "tool", toolCallId: "c1", content: "ok", timestamp: T0 + 2 }] } },
+    { type: "entry", value: { id: await j.mintId(), conversationId: ROOT, kind: "pi.assistant", model: [{ role: "assistant", stopReason: "stop", content: [{ type: "text", text: "Done." }], timestamp: T0 + 3 }] } },
+  ], context);
+  await store.runs.update(claim, { state: "ended", outcome: "completed", summary: "Done.", costUsd: 0.005, endedAt: T0 + 9 });
+
+  const rows = await runTimeline(store, "run-1", context, { settled: true });
+  const cost = rows.find((x) => x.kind === "phase" && /^Tool cost:/.test(x.summary ?? ""));
+  assert.equal(cost?.summary, "Tool cost: parallel charged $0.0050 for web_search", JSON.stringify(shown(rows)));
 });
 
 test("a claude-agent run's paid MCP charge renders a Tool cost row under its call, from the paid-tools session", async (t) => {
