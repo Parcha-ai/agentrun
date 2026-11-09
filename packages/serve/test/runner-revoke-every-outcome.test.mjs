@@ -29,10 +29,18 @@ const { suiteTools, MAX_RESTARTS } = await import("../dist/runner/conformance/ha
 after(closeOpenSessions);
 const quiet = { beforeIntent: async () => {}, beforeResult: async () => {} };
 const STEADY = { leaseMs: 60_000, renewEveryMs: 20_000, stopMarginMs: 5_000, pollMs: 20, commandPollMs: 30 };
-/** A short lease, for the cases whose claim is lost or whose runner dies. */
-const SHORT = { leaseMs: 600, renewEveryMs: 150, stopMarginMs: 200, pollMs: 20, commandPollMs: 30 };
+/** The runner a case kills, or whose renews it fails: its lease outlasts a loaded machine's stalls (renewed every 150 ms,
+ *  so a living runner never loses it), and runs out a few seconds after the kill or the first failed renew. */
+const DIES = { leaseMs: 5_000, renewEveryMs: 150, stopMarginMs: 1_000, pollMs: 20, commandPollMs: 30 };
 const SETTINGS = { diskId: "dsk-00000000000fake0", region: "aws-us-east-1", s3Url: "https://s3.green.us-east-1.aws.prod.archil.com" };
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** `promise`, or a failure named `what` if it has not settled by `ms`: a bound that names the hang, not a wait. */
+function within(promise, what, ms = 20_000) {
+  let timer;
+  const bound = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(what)), ms); });
+  return Promise.race([promise, bound]).finally(() => clearTimeout(timer));
+}
 
 /** Polls `check` until it answers truthy, or fails saying `what` with `context()`. */
 async function until(check, what, context = () => "", ms = 20_000) {
@@ -48,7 +56,7 @@ async function until(check, what, context = () => "", ms = 20_000) {
 /** Run-1 on the adapter loop through real runners, its spec minting a real Archil mount credential at each build (one per
  *  claim) and revoking it at its release. `script`, `extra(claim)`: the run's model script and its spec's own (a cap, a
  *  failing adapter). `start(store)` starts a runner on the store (the case's own timing and store wrapper). */
-async function revokeRun(t, { script, extra = () => ({}) }) {
+async function revokeRun(t, { script, extra = () => ({}), holdRelease = () => undefined }) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-revoke-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -66,6 +74,15 @@ async function revokeRun(t, { script, extra = () => ({}) }) {
   const spec = piAdapterSpec({ script, tools, hooks: quiet });
   /** The epoch of each claim whose spec minted a credential. */
   const minted = [];
+  /** Each claim epoch's release, settled once its revoke (its own remove, then the run's earlier epochs) has. */
+  const releases = new Map();
+  const releaseOf = (epoch) => {
+    if (!releases.has(epoch)) {
+      let resolve;
+      releases.set(epoch, { done: new Promise((done) => (resolve = done)), resolve });
+    }
+    return releases.get(epoch);
+  };
   const loop = createAdapterLoop(async (claim, run) => {
     const base = await spec(claim, run);
     // As the builders make it: the server's settings, the account key, a mount credential for this run and claim epoch.
@@ -76,7 +93,18 @@ async function revokeRun(t, { script, extra = () => ({}) }) {
     });
     await archil.token();
     minted.push(claim.epoch);
-    return { ...base, agentId: "agent-1", ...extra(claim, base), release: async () => { await archil.revoke(); } };
+    return {
+      ...base, agentId: "agent-1", ...extra(claim, base),
+      release: async () => {
+        try {
+          // `holdRelease(epoch)`: a promise the run's end waits on before its revoke (a loaded machine's slow end), or none.
+          await holdRelease(claim.epoch);
+          await archil.revoke();
+        } finally {
+          releaseOf(claim.epoch).resolve();
+        }
+      },
+    };
   }, { restartLimit: MAX_RESTARTS });
   const start = (timing, wrap = (s) => s, onEvent) => {
     const runner = startRunner({ store: wrap(store), createLoop: loop, name: `runner-${runners.length}`, ...timing, ...(onEvent ? { onEvent } : {}) });
@@ -89,7 +117,9 @@ async function revokeRun(t, { script, extra = () => ({}) }) {
     return now.state === state && now.runner === null && now;
   }, `run-1 ${state} and released`, async () => JSON.stringify({ row: await row(), users: control.users.size, minted }));
   const tokensGone = () => until(() => control.users.size === 0, "no token left with the control plane", () => JSON.stringify({ users: [...control.users.keys()], requests: control.requests.map((one) => `${one.method} ${one.path}`) }));
-  return { server, control, minted, start, row, settled, tokensGone, slowStarted, letSlowGo };
+  /** Claim `epoch`'s release has settled, its revoke with it; or a failure named `what`. */
+  const released = (epoch, what) => within(releaseOf(epoch).done, `${what}: ${JSON.stringify({ requests: control.requests.map((one) => `${one.method} ${one.query?.identifier ?? one.path}`) })}`);
+  return { server, control, minted, start, row, settled, released, tokensGone, slowStarted, letSlowGo };
 }
 
 /** The control plane's mints so far. */
@@ -116,7 +146,7 @@ test("failed: a run that ends failed (its adapter cannot open) has its token rem
 test("stopped: a person's stop ends the run stopped, and its token is removed", async (t) => {
   const w = await revokeRun(t, { script: [{ call: "slow" }, { say: "never" }] });
   w.start(STEADY);
-  await w.slowStarted;
+  await within(w.slowStarted, "the run's first claim never reached its slow call");
   await sendCommand(w.server, "run-1", { kind: "stop" });
   await w.settled("stopped");
   assert.deepEqual(w.minted, [1]);
@@ -176,34 +206,49 @@ test("a lost claim: a runner whose renews fail loses its claim, and its loop let
     },
   });
   const events = [];
-  w.start(SHORT, failingRenews, (event) => events.push(event));
-  await w.slowStarted;
+  w.start(DIES, failingRenews, (event) => events.push(event));
+  await within(w.slowStarted, "the run's first claim never reached its slow call");
   assert.equal(w.control.users.size, 1, "the run holds one token while it runs");
   failing = true;
   await until(() => events.some((event) => event.type === "claim-lost" && event.runId === "run-1"), "the claim was lost", () => JSON.stringify(events.slice(-5)));
-  assert.deepEqual(w.minted, [1]);
-  await w.tokensGone();
+  // The lost claim's release, awaited: once its lease runs out the run may be claimed again (a higher epoch, its own
+  // token), so the case reads epoch 1's token alone, not the plane's count.
+  await w.released(1, "the lost claim's token (tok-1) was never let go");
+  assert.equal(w.minted[0], 1);
+  assert.equal(w.control.users.has("tok-1"), false, "the lost claim's token is gone");
+  assert.deepEqual(w.control.requests.filter((one) => one.method === "DELETE").map((one) => one.query.identifier).slice(0, 1), ["tok-1"], "its token was the first removed");
 });
 
-test("a crash: a killed runner leaves its token; the next claim removes it before it mints its own, and the run's end removes that", async (t) => {
-  // The dead runner's call holds for good (its process is gone); the next claim's runs at once.
-  const quick = { name: "slow", replaySafe: true, ask: false, run: async () => "slow done" };
-  const w = await revokeRun(t, {
-    script: [{ call: "slow" }, { say: "done" }],
-    extra: (claim, base) => (claim.epoch > 1 ? { session: { ...base.session, tools: base.session.tools.map((tool) => (tool.name === "slow" ? { ...tool, call: async () => ({ text: await quick.run() }) } : tool)) } } : {}),
+// Once as it runs, and once with the run's end held until its row reads ended (a loaded machine, as round 111's full
+// run): the row reads ended and released before the release's revoke has gone through, so the requests are read only
+// once that release has settled.
+for (const held of [false, true]) {
+  test(`a crash: a killed runner leaves its token; the next claim removes it before it mints its own, and the run's end removes that${held ? " (its end landing after the row reads ended)" : ""}`, async (t) => {
+    let letGo = () => {};
+    const gate = held ? new Promise((resolve) => (letGo = resolve)) : undefined;
+    // The dead runner's call holds for good (its process is gone); the next claim's runs at once.
+    const quick = { name: "slow", replaySafe: true, ask: false, run: async () => "slow done" };
+    const w = await revokeRun(t, {
+      script: [{ call: "slow" }, { say: "done" }],
+      extra: (claim, base) => (claim.epoch > 1 ? { session: { ...base.session, tools: base.session.tools.map((tool) => (tool.name === "slow" ? { ...tool, call: async () => ({ text: await quick.run() }) } : tool)) } } : {}),
+      holdRelease: (epoch) => (epoch > 1 ? gate : undefined),
+    });
+    const first = w.start(DIES);
+    await within(w.slowStarted, "the run's first claim never reached its slow call");
+    first.kill();
+    assert.equal(w.control.users.size, 1, "the killed runner let nothing go");
+    const [left] = [...w.control.users.keys()];
+    // The dead runner's short lease runs out; the next runner's is steady, so a loaded machine never costs it its claim.
+    w.start(STEADY);
+    await w.settled("ended");
+    letGo();
+    assert.deepEqual(w.minted, [1, 2], "the dead claim's, then the next claim's");
+    // The run's end: its claim's release, whose revoke removes tok-2 and then looks for the run's earlier epochs.
+    await w.released(w.minted.at(-1), "tok-2 was never removed at the run's end");
+    const calls = w.control.requests.map((one) => `${one.method}${one.query?.identifier ? ` ${one.query.identifier}` : ""}${one.body?.nickname ? ` ${one.body.nickname}` : ""}`);
+    // The dead claim's token (agentrun:run-1:1), removed by the next claim (epoch 2) before it mints its own; then the
+    // run's end removes that one, and its revoke reads the list for an earlier epoch's left.
+    assert.deepEqual(calls, ["GET", "POST agentrun:run-1:1", "GET", `DELETE ${left}`, "POST agentrun:run-1:2", "DELETE tok-2", "GET"], "the next claim's removal of the dead one's token comes before its own mint, and the run's end removes its own");
+    assert.equal(w.control.users.size, 0, "no token left with the control plane");
   });
-  const first = w.start(SHORT);
-  await w.slowStarted;
-  first.kill();
-  assert.equal(w.control.users.size, 1, "the killed runner let nothing go");
-  const [left] = [...w.control.users.keys()];
-  w.start(SHORT);
-  await w.settled("ended");
-  assert.deepEqual(w.minted.slice(0, 1), [1]);
-  assert.ok(w.minted.length >= 2, `the next claim minted its own: ${JSON.stringify(w.minted)}`);
-  const calls = w.control.requests.map((one) => `${one.method}${one.query?.identifier ? ` ${one.query.identifier}` : ""}${one.body?.nickname ? ` ${one.body.nickname}` : ""}`);
-  // The dead claim's token (agentrun:run-1:1), removed by the next claim (epoch 2) before it mints its own; then the run's
-  // end removes that one.
-  assert.deepEqual(calls, ["GET", "POST agentrun:run-1:1", "GET", `DELETE ${left}`, "POST agentrun:run-1:2", "DELETE tok-2"], "the next claim's removal of the dead one's token comes before its own mint");
-  await w.tokensGone();
-});
+}
