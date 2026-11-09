@@ -8,7 +8,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { kindOf, serves } from "../dist/index.js";
+import { kindOf, serves, sweep } from "../dist/index.js";
 import { API, fakeOrgoApi, fakeOrgoChannel, KEY, LABELS_PATH, VNC, WORKSPACE } from "./fake-orgo.mjs";
 
 const orgo = await import("../dist/orgo.js");
@@ -40,11 +40,11 @@ const only = (api) => [...api.computers.values()].at(-1);
 
 /** A computer as create leaves one, seeded into both fakes: its record, its labels file, init running. */
 function seeded({ api, channel }, { labels = SPEC.labels, status = "running", deadline = new Date(Date.now() + 30 * 60_000).toISOString(), max = new Date(Date.now() + 720 * HOUR).toISOString(), name, file } = {}) {
-	const record = api.add({ name: name ?? orgoName(labels, "0123456789ab"), status, ends_at: new Date(Date.now() + HOUR).toISOString() });
+	const record = api.add({ name: name ?? orgoName(labels, "0123456789ab", new Date(deadline)), status, ends_at: new Date(Date.now() + HOUR).toISOString() });
 	const box = channel.boxOf(record.id);
 	box.labels = file ?? JSON.stringify({ name: record.name, labels, deadline, maxDeadline: max, image: "linux", cpus: 1, memoryMb: 4096 });
 	box.daemon = { path: "/opt/agentrun/computerd", bytes: DAEMON_BYTES };
-	box.init = { deadline, user: "2510:2510", uid: 2510, gid: 2510, display: ":99", max };
+	box.init = { deadline, user: "2510:2510", uid: 2510, gid: 2510, display: ":99", max, ownNetwork: true };
 	return { record, box, ref: { id: record.id, name: record.name } };
 }
 
@@ -83,7 +83,7 @@ test("Orgo: a Linux desktop with computerd as a child of Orgo's own agent, netwo
 	const { provider } = setup();
 	assert.deepEqual(provider.capabilities(), {
 		kind: "desktop",
-		lifetime: "vendor",
+		lifetime: "janitor",
 		network: ["none"],
 		networkReadBack: false,
 		isolation: "vm",
@@ -93,6 +93,7 @@ test("Orgo: a Linux desktop with computerd as a child of Orgo's own agent, netwo
 		maxLifetimeMs: 720 * HOUR,
 		release: ["delete"],
 		mount: [],
+		vendorAgentPorts: [5999, 6080, 8080],
 	});
 	assert.equal(serves(provider.capabilities(), "desktop"), true);
 	assert.equal(kindOf(provider.capabilities()), "desktop");
@@ -129,7 +130,11 @@ test("Orgo names: computer-<12 hex>, then the run's hash and the epoch when the 
 	assert.equal(name, orgoName({ ...SPEC.labels, team: "b" }, "0123456789ab"), "only the run and the epoch are in a name");
 	assert.notEqual(name, orgoName({ ...SPEC.labels, "agentrun.run": "run-other" }, "0123456789ab"));
 	assert.ok(!name.includes(RUN), "the run is hashed, never written as given");
-	assert.ok(orgoName({ "agentrun.run": "x".repeat(4000), "agentrun.epoch": String(Number.MAX_SAFE_INTEGER) }, "0123456789ab").length <= 80, "a name Orgo can hold");
+	assert.ok(orgoName({ "agentrun.run": "x".repeat(4000), "agentrun.epoch": String(Number.MAX_SAFE_INTEGER) }, "0123456789ab", new Date(8.64e15)).length <= 80, "a name Orgo can hold");
+	// The janitor's deadline, in whole seconds (rounded up, so never before init's own) in base 36: list() reads it.
+	const at = new Date("2026-11-08T22:33:04.733Z");
+	assert.equal(orgoName(SPEC.labels, "0123456789ab", at), `${name}-d${Math.ceil(at.getTime() / 1000).toString(36)}`);
+	assert.equal(orgoName({}, "0123456789ab", at), `computer-0123456789ab-d${Math.ceil(at.getTime() / 1000).toString(36)}`);
 });
 
 test("Orgo create: the computer in the workspace, computerd uploaded and installed, Orgo's X socket checked, the labels file, init on :99 as 2510:2510, then the bridge, hello, the daemon and the probe", async () => {
@@ -139,10 +144,20 @@ test("Orgo create: the computer in the workspace, computerd uploaded and install
 	const record = only(api);
 	assert.deepEqual(created.value.id, record.id);
 	assert.equal(created.value.name, record.name);
-	assert.match(record.name, /^computer-[0-9a-f]{12}-r[a-z2-7]{16}-e3$/);
+	assert.match(record.name, /^computer-[0-9a-f]{12}-r[a-z2-7]{16}-e3-d[0-9a-z]+$/);
 	assert.deepEqual(record.asked, { workspace_id: WORKSPACE, name: record.name, os: "linux", ram: 4, cpu: 1, ends_in_hours: 1 });
 	const ops = channel.calls.map(({ op, kind }) => (kind ? `${op} ${kind}` : op));
-	assert.deepEqual(ops.slice(0, 6), ["upload", "run install", "run orgo-x11", "run orgo-labels", "start init", "stdio stdio"]);
+	assert.deepEqual(ops.slice(0, 8), ["upload", "run install", "run orgo-x11", "run orgo-labels", "run orgo-ports", "run orgo-lockdown", "start init", "stdio stdio"]);
+	// Every path socket of Orgo's desktop is made root's alone before any tool runs, but the display's own: the tools reach
+	// the X server through it, and nothing else (live run 4 found root's D-Bus buses connectable by the tool user).
+	assert.deepEqual(channel.calls.find((call) => call.kind === "orgo-lockdown").argv.slice(4), ["/tmp/.X11-unix/X99"]);
+	assert.ok(created.value.notes.some((note) => /made root's alone: \/run\/dbus\/system_bus_socket, \/tmp\/dbus-3fd5ustF2v/.test(note)), JSON.stringify(created.value.notes));
+	// Init and its programs in a network of their own, loopback alone; the probe tries every port root listens on in
+	// Orgo's own network (its agent's, read at create) and the declared ones, on both loopbacks: all refused.
+	assert.match(channel.calls.find((call) => call.op === "start").argv.join(" "), /--own-network/);
+	const probed = channel.boxes.get(record.id).probes.at(-1);
+	for (const port of [8231, 5900, 5999, 6080, 8080]) for (const host of ["127.0.0.1", "[::1]"]) assert.ok(probed.includes(`${host}:${port}`), `the probe tries ${host}:${port}: ${probed.join(", ")}`);
+	assert.ok(created.value.notes.some((note) => /Orgo's own network listens on 5900, 8231/.test(note)), JSON.stringify(created.value.notes));
 	const upload = channel.calls[0];
 	assert.match(upload.path, /^\/tmp\/agentrun-computerd-[0-9a-f]{16}$/);
 	assert.equal(upload.size, DAEMON_BYTES.length);
@@ -159,6 +174,7 @@ test("Orgo create: the computer in the workspace, computerd uploaded and install
 	assert.deepEqual(file.labels, SPEC.labels);
 	assert.equal(file.name, record.name);
 	assert.equal(file.deadline, init.deadline);
+	assert.equal(record.name.slice(record.name.lastIndexOf("-d") + 2), Math.ceil(Date.parse(init.deadline) / 1000).toString(36), "the name's deadline is init's, in whole seconds rounded up");
 	assert.equal(file.maxDeadline, init.max);
 	assert.deepEqual(api.routes(), ["POST /computers"], "Orgo's REST is the create alone; the rest is the channel");
 	for (const request of api.requests) keyless({ ...request, headers: { ...request.headers, authorization: undefined } }, `${request.method} ${request.path}`);
@@ -184,6 +200,8 @@ test("Orgo create: each refusal deletes the computer and says why, never with th
 		[{ box: { interfaces: ["lo", "eth0"] } }, /daemon network: declared its own \(lo alone\), read back lo, eth0/],
 		[{ box: { raised: ["tunl0"] } }, /brought up tunl0/],
 		[{ box: { reached: ["1.1.1.1:443"] } }, /1\.1\.1\.1:443/],
+		[{ box: { reached: ["127.0.0.1:8231"] } }, /127\.0\.0\.1:8231/],
+		[{ box: { interfaces: ["lo", "eth0"] } }, /daemon network: declared its own \(lo alone\), read back lo, eth0/],
 	]) {
 		const { provider, api } = setup({}, { channel: channelOptions });
 		const created = await provider.create(SPEC);
@@ -240,6 +258,8 @@ test("Orgo list: this workspace's computers by name, the run and epoch filtered 
 	assert.deepEqual(byRun.value[0].labels, { "agentrun.run": RUN, "agentrun.epoch": "3" });
 	assert.equal(byRun.value[0].network, "none");
 	assert.equal(byRun.value[0].state, "running");
+	const deadline = Date.parse(JSON.parse(mine.box.labels).deadline);
+	assert.equal(byRun.value[0].deadline.getTime(), Math.ceil(deadline / 1000) * 1000, "the deadline read from the name: the janitor's");
 	assert.deepEqual(fakes.channel.calls, [], "the name is the fast path: nothing runs in a computer");
 	const runOnly = await fakes.provider.list({ "agentrun.run": RUN });
 	assert.equal(runOnly.value.length, 2);
@@ -325,6 +345,18 @@ test("Orgo release delete: DELETE, then waits until Orgo no longer has it; a com
 	assert.equal(foreign.deleted, false);
 });
 
+test("Orgo is janitor-ended: the janitor's sweep deletes a computer past the deadline its name carries, with nothing run inside, and keeps one before it", async () => {
+	const fakes = setup();
+	const past = seeded(fakes, { deadline: new Date(Date.now() - 60_000).toISOString() });
+	const live = seeded(fakes, { labels: { "agentrun.run": RUN, "agentrun.epoch": "4" } });
+	const swept = await sweep(fakes.provider, { labels: { "agentrun.run": RUN }, now: new Date() });
+	assert.equal(swept.ok, true, JSON.stringify(swept));
+	assert.deepEqual(swept.value.deleted, [past.ref.name]);
+	assert.equal(past.record.deleted, true);
+	assert.equal(live.record.deleted, false);
+	assert.deepEqual(fakes.channel.calls, [], "the janitor runs nothing in a computer");
+});
+
 test("Orgo extend: Orgo's end moved in whole hours with an Idempotency-Key, then init's deadline, then the labels file; never past the cap", async () => {
 	const fakes = setup();
 	const { ref, record, box } = seeded(fakes, { max: new Date(Date.now() + 3 * HOUR).toISOString() });
@@ -336,8 +368,29 @@ test("Orgo extend: Orgo's end moved in whole hours with an Idempotency-Key, then
 	assert.ok(Date.parse(record.ends_at) >= Date.now() + 2 * HOUR - 1000, "Orgo ends it no earlier than asked");
 	assert.equal(box.extended.length, 1, "init's deadline moved");
 	assert.equal(JSON.parse(box.labels).deadline, extended.value.deadline.toISOString(), "and the labels file");
+	// The janitor's deadline, in the name, follows: Orgo renames the computer (PATCH), the rest of its name as it was.
+	const renamed = fakes.api.requests.find((request) => request.method === "PATCH" && request.path === `/computers/${ref.id}`);
+	assert.ok(renamed, "a PATCH renames the computer");
+	assert.equal(record.name, `${ref.name.slice(0, ref.name.lastIndexOf("-d"))}-d${Math.ceil(extended.value.deadline.getTime() / 1000).toString(36)}`);
+	assert.equal(JSON.parse(box.labels).name, record.name, "the labels file names it as Orgo does");
+	const listed = await fakes.provider.list({ "agentrun.run": RUN });
+	assert.equal(listed.value[0].deadline.getTime(), Math.ceil(extended.value.deadline.getTime() / 1000) * 1000, "list() reads the extended deadline");
+	// A ref made before the rename still reaches it: a computer is its id and the stable part of its name.
+	const connected = await fakes.provider.connect(ref);
+	assert.equal(connected.ok, true, JSON.stringify(connected));
+	await connected.value.close();
+	assert.equal((await fakes.provider.attach({ id: ref.id })).ok, true);
 	const past = await fakes.provider.extend(ref, 4 * HOUR);
 	assert.equal(past.ok, false);
 	assert.equal(past.error.code, "limit");
 	assert.equal(box.extended.length, 1, "nothing moved");
+	// An extend never moves the deadline earlier: one that would is refused in words, the deadline as it was (live run 4).
+	const extends_ = fakes.api.requests.filter((request) => request.path === `/computers/${ref.id}/extend`).length;
+	const earlier = await fakes.provider.extend(ref, 60_000);
+	assert.equal(earlier.ok, false, JSON.stringify(earlier));
+	assert.equal(earlier.error.code, "refused");
+	assert.match(earlier.error.message, /earlier/);
+	assert.equal(box.extended.length, 1, "init's deadline did not move");
+	assert.equal(JSON.parse(box.labels).deadline, extended.value.deadline.toISOString(), "nor the labels file");
+	assert.equal(fakes.api.requests.filter((request) => request.path === `/computers/${ref.id}/extend`).length, extends_, "nor Orgo's end");
 });
