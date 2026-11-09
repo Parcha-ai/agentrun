@@ -88,7 +88,9 @@ function revisionInputOf(definition: Json, files: Record<string, string>): Revis
     ...(typeof definition.max_cost_usd === "number" && definition.max_cost_usd > 0 ? { maxCostUsd: definition.max_cost_usd } : {}),
     ...(typeof definition.cap_mode === "string" ? { capMode: definition.cap_mode } : {}),
   };
-  if (isObject(definition.workflow)) return { kind: "workflow", workflow: definition.workflow, ...common, ...capped };
+  // A workflow keeps its approvals too ("never": it runs unattended), so its call nodes are checked with them (runnable.ts,
+  // permissionOf with the revision's approvals): a call node on a tool set to ask runs under never, as on main.
+  if (isObject(definition.workflow)) return { kind: "workflow", workflow: definition.workflow, ...(definition.approvals === "never" ? { approvals: "never" as const } : {}), ...common, ...capped };
   const learning = typeof definition.learning === "boolean" ? { learning: definition.learning } : {};
   return {
     kind: "agentic",
@@ -230,7 +232,8 @@ export async function commitAgent(
         // The computer and its place go together: an edit naming neither keeps both (the computer, else the place).
         ...(definition.place === undefined && definition.computer === undefined ? (currentBody.computer ? { computer: currentBody.computer } : currentBody.place ? { place: currentBody.place } : {}) : {}),
         ...(definition.learning === undefined && current.kind === "agentic" && !isObject(definition.workflow) && (currentBody as AgenticBody).learning !== undefined ? { learning: (currentBody as AgenticBody).learning } : {}),
-        ...(definition.approvals === undefined && current.kind === "agentic" && !isObject(definition.workflow) && (currentBody as AgenticBody).approvals !== undefined ? { approvals: (currentBody as AgenticBody).approvals } : {}),
+        // An edit naming no approvals keeps the agent's, of either kind (a workflow's "never" too).
+        ...(definition.approvals === undefined && current.kind === (isObject(definition.workflow) ? "workflow" : "agentic") && (currentBody as { approvals?: unknown }).approvals !== undefined ? { approvals: (currentBody as { approvals?: unknown }).approvals } : {}),
         ...(definition.max_cost_usd === undefined && currentBody.maxCostUsd !== undefined ? { max_cost_usd: currentBody.maxCostUsd } : {}),
         ...(definition.cap_mode === undefined && currentBody.capMode !== undefined ? { cap_mode: currentBody.capMode } : {}),
       }
@@ -286,7 +289,7 @@ export function definitionOf(agent: AgentRow, revision: RevisionRow, version: nu
   };
   const kindBody = revision.kind === "agentic"
     ? { instructions: (body as AgenticBody).instructions, ...((body as AgenticBody).model ? { model: (body as AgenticBody).model } : {}), ...((body as AgenticBody).thinking ? { thinking: (body as AgenticBody).thinking } : {}), ...((body as AgenticBody).learning !== undefined ? { learning: (body as AgenticBody).learning } : {}), ...((body as AgenticBody).approvals !== undefined ? { approvals: (body as AgenticBody).approvals } : {}), ...common }
-    : { workflow: (body as WorkflowBody).workflow, ...common };
+    : { workflow: (body as WorkflowBody).workflow, ...((body as WorkflowBody).approvals !== undefined ? { approvals: (body as WorkflowBody).approvals } : {}), ...common };
   return {
     id: agent.id,
     version,
