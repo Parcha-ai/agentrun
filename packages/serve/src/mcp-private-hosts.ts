@@ -7,7 +7,7 @@
 // machine's own addresses stay refused whatever the list says.
 import net from "node:net";
 import os from "node:os";
-import { ApiError, invalid, type InputIssue } from "./errors.js";
+import { invalid, type InputIssue } from "./errors.js";
 import { hostKey } from "./mcp-meta.js";
 import type { Settings } from "./store/index.js";
 import { unknownFields } from "./validate.js";
@@ -129,15 +129,10 @@ export type PrivateHostsRegistry = {
   setPrivateHosts(body: Record<string, unknown>): Promise<{ hosts: string[] }>;
 };
 
-/** Why a write is refused unless it comes from the owner's signed-in page. */
-export const PRIVATE_HOSTS_SESSION_ONLY = "Allowing private-network hosts for MCP sign-ins takes the owner's password sign-in in the console, never a token: a run, an agent's MCP client or a script may hold one.";
-
 /** GET and PUT /v2/settings/mcp-servers/oauth/private-hosts, whole: the list read, or replaced (422 in words for a bad
- *  body). A PUT is the owner's own act: `bySession` is whether the request came from their signed-in console page
- *  (page.ts byOwnerSession: never a token, from this server's own origin with a JSON body); without it, 403 before the
- *  body is read. */
-export async function privateHostsRoute(registry: PrivateHostsRegistry, request: { method: "GET" } | { method: "PUT"; body: () => Promise<Record<string, unknown>>; bySession: boolean }): Promise<{ hosts: string[] }> {
+ *  body). Who may PUT is the one gate's to decide before this runs: the PUT is a secret write as a whole
+ *  (mcp-secret-writes.ts), so only the owner's signed-in session reaches it. */
+export async function privateHostsRoute(registry: PrivateHostsRegistry, request: { method: "GET" } | { method: "PUT"; body: () => Promise<Record<string, unknown>> }): Promise<{ hosts: string[] }> {
   if (request.method === "GET") return registry.privateHosts();
-  if (!request.bySession) throw new ApiError("forbidden", PRIVATE_HOSTS_SESSION_ONLY);
   return registry.setPrivateHosts(await request.body());
 }

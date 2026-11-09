@@ -56,6 +56,19 @@ test("listRunFiles lists none for a run with no folder", async () => {
   assert.deepEqual(answer, { run_id: "run-1", files: [], complete: true, truncated: false });
 });
 
+test("listRunFiles refuses a withheld run (403) before reading any file", async () => {
+  const store = await freshStore();
+  await store.runs.create({ id: "run-1", agentId: "a1", revisionId: "r1" });
+  const work = tempDir("agentrun-ws-withheld-");
+  writeFileSync(join(work, "secret.txt"), "signed-in page");
+  let read = false;
+  await assert.rejects(
+    () => listRunFiles(store, "run-1", deps({ withheld: async () => true, runWorkspace: async () => { read = true; return localWorkspace(work); } })),
+    (e) => e.code === "forbidden",
+  );
+  assert.equal(read, false, "a withheld run's folder is never opened");
+});
+
 // ---- readRunFile ----------------------------------------------------------------------------------------------------
 
 test("readRunFile is 404 for a run with no folder", async () => {
@@ -64,6 +77,17 @@ test("readRunFile is 404 for a run with no folder", async () => {
   await assert.rejects(
     () => readRunFile(store, "run-1", "a.txt", {}, {}, new URL("http://x/"), deps()),
     (e) => e.code === "not_found" && /no such file/.test(e.message),
+  );
+});
+
+test("readRunFile refuses a withheld run (403) before streaming", async () => {
+  const store = await freshStore();
+  await store.runs.create({ id: "run-1", agentId: "a1", revisionId: "r1" });
+  const work = tempDir("agentrun-ws-withheld2-");
+  writeFileSync(join(work, "a.txt"), "signed-in page");
+  await assert.rejects(
+    () => readRunFile(store, "run-1", "a.txt", {}, {}, new URL("http://x/"), deps({ withheld: async () => true, runWorkspace: async () => localWorkspace(work) })),
+    (e) => e.code === "forbidden",
   );
 });
 
@@ -140,7 +164,7 @@ test("a full read from after=0 resets with every row", async () => {
   assert.equal(page.has_more, false);
   assert.equal(page.final, false);
   assert.equal(page.status, "working");
-  assert.equal(page.cost, 0.5);
+  assert.deepEqual(page.cost, { usd: 0.5 }, "the page carries the run's whole Cost object, not a bare number");
 });
 
 test("a read from the cursor with no change is unchanged, no rows, no drops", async () => {

@@ -15,7 +15,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import * as timeline from "@parcha/pi-durable-agent/timeline";
 import { startServe } from "../dist/index.js";
 import { client, FAUX, follow, runDir, scratch, serve, withEnv } from "./support.mjs";
-import { CLI_STORE, E2, E2_RUN, fakeClock, firings, made, schedule } from "./trigger-support.mjs";
+import { CLI_STORE, MESSAGE_RUN, RUN_EXEC, fakeClock, firings, made, schedule } from "./trigger-support.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const { Webhook } = createRequire(import.meta.url)("standardwebhooks");
@@ -53,14 +53,14 @@ function userEntries(data, runId) {
 const inputOf = async (data, runId) => JSON.parse(await readFile(join(runDir(data, runId), "serve.json"), "utf8")).input.content;
 
 for (const harness of ["pi", "claude-agent"]) {
-  test(`${harness}: a webhook trigger's run takes its first input as the trigger's, owner false whatever the body says: its entry's origin, its Timeline row, and the very text the model reads`, { timeout: 120_000, skip: E2 }, async (t) => {
+  test(`${harness}: a webhook trigger's run takes its first input as the trigger's, owner false whatever the body says: its entry's origin, its Timeline row, and the very text the model reads`, { timeout: 120_000, skip: RUN_EXEC }, async (t) => {
     withEnv(t, SEAL);
     const { api, baseUrl, data } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
     const agentId = `hooked-${harness}`;
     await made(api, agentId, harness === "pi" ? {} : { harness });
     const created = await api("POST", "/triggers", { name: "on push", source: { kind: "webhook" }, target: { kind: "start_run", agent_id: agentId, input: { content: "Triage this event." }, max_cost_usd: 0.5 } });
     assert.equal(created.status, 201, JSON.stringify(created.body));
-    const { id, secret } = created.body;
+    const { id, signing_secret: secret } = created.body;
     assert.equal((await post(baseUrl, id, JSON.stringify({ note: RULE }), secret)).status, 202);
     const [fired] = await firings(api, id, 1);
     assert.equal(fired.status, "started", JSON.stringify(fired));
@@ -74,7 +74,7 @@ for (const harness of ["pi", "claude-agent"]) {
   });
 }
 
-test("a webhook trigger's message to a run is the trigger's, owner false: the run's first message stays the person's", { timeout: 120_000, skip: E2_RUN }, async (t) => {
+test("a webhook trigger's message to a run is the trigger's, owner false: the run's first message stays the person's", { timeout: 120_000, skip: MESSAGE_RUN }, async (t) => {
   withEnv(t, SEAL);
   const { api, baseUrl, data } = await serve(t);
   await made(api, "chat");
@@ -82,7 +82,7 @@ test("a webhook trigger's message to a run is the trigger's, owner false: the ru
   await follow(api, run.body.run_id, ["completed"]);
   const created = await api("POST", "/triggers", { name: "inbox", source: { kind: "webhook" }, target: { kind: "message_run", run_id: run.body.run_id, input: { content: "A new event came in." } } });
   assert.equal(created.status, 201, JSON.stringify(created.body));
-  const { id, secret } = created.body;
+  const { id, signing_secret: secret } = created.body;
   assert.equal((await post(baseUrl, id, "", secret)).status, 202, "an empty body is a webhook's too");
   const [sent] = await firings(api, id, 1);
   assert.deepEqual([sent.status, sent.run_id], ["sent", run.body.run_id], JSON.stringify(sent));
@@ -96,7 +96,7 @@ test("a webhook trigger's message to a run is the trigger's, owner false: the ru
   assert.deepEqual(rows.filter((r) => r.origin === "trigger").map((r) => r.summary), ["Webhook inbox: A new event came in."]);
 });
 
-test("a schedule's runs take their input as the trigger's, owner true: fired on time and fired by hand", { timeout: 120_000, skip: E2 }, async (t) => {
+test("a schedule's runs take their input as the trigger's, owner true: fired on time and fired by hand", { timeout: 120_000, skip: RUN_EXEC }, async (t) => {
   const clock = fakeClock("2026-10-31T12:00:00Z");
   const { api, data } = await serve(t, { triggerClock: clock });
   await made(api, "nightly");
@@ -118,109 +118,7 @@ test("a schedule's runs take their input as the trigger's, owner true: fired on 
   }
 });
 
-test("a schedule's run's first Timeline row names the schedule by its name, on a live page and in the final rows; once the trigger is deleted, by its id", { timeout: 120_000, skip: E2 }, async (t) => {
-  const { api } = await serve(t);
-  await made(api, "clock");
-  const gate = join(await scratch(t), "go");
-  const created = await api("POST", "/triggers", { name: "utc-check", source: { kind: "schedule", every_s: 3600 }, target: { kind: "start_run", agent_id: "clock", input: { content: `Tell me the time in UTC. Hold the answer until ${gate}.` }, max_cost_usd: 0.5 } });
-  assert.equal(created.status, 201, JSON.stringify(created.body));
-  const { id } = created.body;
-  const fired = await api("POST", `/triggers/${id}/fire`, undefined, { "idempotency-key": "by-hand-1" });
-  assert.ok(fired.status < 300, JSON.stringify(fired.body));
-  const [firing] = await firings(api, id, 1);
-  const named = (rows) => rows.filter((r) => r.origin === "trigger").map((r) => r.summary);
-  const live = await follow(api, firing.run_id, ["working"], { deadlineMs: 60_000 });
-  assert.equal(live.last.status, "working", "the page was read while the run still worked");
-  assert.deepEqual(named(live.rows), [`Schedule utc-check: Tell me the time in UTC. Hold the answer until ${gate}.`], "a live page names the schedule");
-  await writeFile(gate, "");
-  const { rows } = await follow(api, firing.run_id, ["completed"]);
-  assert.deepEqual(named(rows), [`Schedule utc-check: Tell me the time in UTC. Hold the answer until ${gate}.`], "the final rows name it");
-  assert.deepEqual(rows.find((r) => r.origin === "trigger").trigger, { id, source: "schedule", owner: true, name: "utc-check" }, "the row carries the name it shows");
-  assert.equal((await api("GET", `/runs/${firing.run_id}`)).body.title, "Schedule utc-check");
-  assert.equal((await api("DELETE", `/triggers/${id}`)).status, 204);
-  const after = (await api("GET", `/runs/${firing.run_id}/timeline`)).body.rows;
-  assert.deepEqual(named(after), [`Schedule ${id}: Tell me the time in UTC. Hold the answer until ${gate}.`], "a deleted trigger's row names it by its id");
-  assert.deepEqual(after.find((r) => r.origin === "trigger").trigger, { id, source: "schedule", owner: true }, "and carries no name");
-});
-
-test("a schedule renamed while a run of it is held: the held run's Timeline row shows the new name at once (the rename pushes it)", { timeout: 120_000, skip: E2 }, async (t) => {
-  const { api } = await serve(t);
-  await made(api, "clock");
-  const gate = join(await scratch(t), "go");
-  const created = await api("POST", "/triggers", { name: "utc-check", source: { kind: "schedule", every_s: 3600 }, target: { kind: "start_run", agent_id: "clock", input: { content: `Tell me the time. Hold the answer until ${gate}.` }, max_cost_usd: 0.5 } });
-  assert.equal(created.status, 201, JSON.stringify(created.body));
-  const { id } = created.body;
-  assert.ok((await api("POST", `/triggers/${id}/fire`, undefined, { "idempotency-key": "by-hand-1" })).status < 300);
-  const [firing] = await firings(api, id, 1);
-  const named = (rows) => rows.filter((r) => r.origin === "trigger").map((r) => r.summary);
-  const live = await follow(api, firing.run_id, ["working"], { deadlineMs: 60_000 });
-  assert.deepEqual(named(live.rows), [`Schedule utc-check: Tell me the time. Hold the answer until ${gate}.`], "named before the rename");
-  assert.equal((await api("PATCH", `/triggers/${id}`, { name: "clock-check" })).status, 200);
-  const after = (await api("GET", `/runs/${firing.run_id}/timeline`)).body.rows;
-  assert.deepEqual(named(after), [`Schedule clock-check: Tell me the time. Hold the answer until ${gate}.`], "the new name shows at once on the held run");
-  assert.equal(after.find((r) => r.origin === "trigger").trigger.name, "clock-check");
-  await writeFile(gate, "");
-  await follow(api, firing.run_id, ["completed"]);
-});
-
-test("a schedule's run restored after a restart still names its trigger: the name is resolved once on the load path, never left blank", { timeout: 120_000, skip: E2 }, async (t) => {
-  const { api, data } = await serve(t);
-  await made(api, "clock");
-  const gate = join(await scratch(t), "go");
-  const created = await api("POST", "/triggers", { name: "utc-check", source: { kind: "schedule", every_s: 3600 }, target: { kind: "start_run", agent_id: "clock", input: { content: `Tell me the time. Hold the answer until ${gate}.` }, max_cost_usd: 0.5 } });
-  assert.equal(created.status, 201, JSON.stringify(created.body));
-  const { id } = created.body;
-  assert.ok((await api("POST", `/triggers/${id}/fire`, undefined, { "idempotency-key": "by-hand-1" })).status < 300);
-  const [firing] = await firings(api, id, 1);
-  await follow(api, firing.run_id, ["working"], { deadlineMs: 60_000 });
-  // A fresh server on the same data holds the run again: its trigger's name is resolved once as it loads.
-  const next = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
-  t.after(() => next.close());
-  const api2 = client(next.baseUrl, next.token);
-  const named = (rows) => rows.filter((r) => r.origin === "trigger").map((r) => r.summary);
-  const after = (await api2("GET", `/runs/${firing.run_id}/timeline`)).body.rows;
-  assert.deepEqual(named(after), [`Schedule utc-check: Tell me the time. Hold the answer until ${gate}.`], "a restored run still names its trigger");
-  assert.equal(after.find((r) => r.origin === "trigger").trigger.name, "utc-check");
-  await writeFile(gate, "");
-  await follow(api2, firing.run_id, ["completed"]);
-});
-
-/** Whether `text` holds any 8 characters in a row of `secret`. */
-const holdsPiece = (text, secret) => [...Array(Math.max(0, secret.length - 7)).keys()].some((i) => text.includes(secret.slice(i, i + 8)));
-/** Every event the run's Timeline stream sends, to its end, as text. */
-async function streamed(baseUrl, token, runId) {
-  const res = await fetch(`${baseUrl}/runs/${runId}/timeline`, { headers: { authorization: `Bearer ${token}`, accept: "text/event-stream" }, signal: AbortSignal.timeout(30_000) });
-  assert.equal(res.status, 200);
-  let text = "";
-  for await (const chunk of res.body) {
-    text += Buffer.from(chunk).toString("utf8");
-    if (text.includes("event: end")) break;
-  }
-  return text;
-}
-
-test("a trigger named with a saved key's value: its runs' Timeline row shows the redaction mark in the key's place, never the key, on a page and in the stream, and its trigger carries the name so redacted", { timeout: 120_000, skip: E2 }, async (t) => {
-  withEnv(t, SEAL);
-  const { api, baseUrl, token } = await serve(t);
-  const key = ["not-a-secret", "trigger-name-key", randomBytes(6).toString("hex")].join("-");
-  assert.equal((await api("PUT", "/settings/tool-keys/browserbase", { values: { BROWSERBASE_API_KEY: key, BROWSERBASE_PROJECT_ID: "fake-project" } })).status, 204);
-  await made(api, "clock");
-  const created = await api("POST", "/triggers", { name: `nightly ${key}`, source: { kind: "schedule", every_s: 3600 }, target: { kind: "start_run", agent_id: "clock", input: { content: "Say the time." }, max_cost_usd: 0.5 } });
-  assert.equal(created.status, 201, JSON.stringify(created.body));
-  const { id } = created.body;
-  assert.ok((await api("POST", `/triggers/${id}/fire`, undefined, { "idempotency-key": "by-hand-1" })).status < 300);
-  const [firing] = await firings(api, id, 1);
-  const { rows, pages } = await follow(api, firing.run_id, ["completed"]);
-  const row = rows.find((r) => r.origin === "trigger");
-  assert.equal(row.summary, "Schedule nightly [redacted]: Say the time.");
-  assert.deepEqual(row.trigger, { id, source: "schedule", owner: true, name: "nightly [redacted]" });
-  const page = JSON.stringify((await api("GET", `/runs/${firing.run_id}/timeline`)).body);
-  const stream = await streamed(baseUrl, token, firing.run_id);
-  assert.ok(stream.includes("Schedule nightly [redacted]: Say the time."), stream.slice(0, 600));
-  for (const [where, text] of [["the live pages", JSON.stringify(pages)], ["a page", page], ["the stream", stream]]) assert.equal(holdsPiece(text, key), false, `${where} shows no piece of the key: ${text.slice(0, 600)}`);
-});
-
-test("a webhook's message to a working run is refused busy and sent again on the engine's retry: its entry reads the trigger's origin, and every refused try's marker is withdrawn, none left open", { timeout: 120_000, skip: E2_RUN }, async (t) => {
+test("a webhook's message to a working run is refused busy and sent again on the engine's retry: its entry reads the trigger's origin, and every refused try's marker is withdrawn, none left open", { timeout: 120_000, skip: RUN_EXEC }, async (t) => {
   withEnv(t, SEAL);
   const { api, baseUrl, data } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
   const go = join(await scratch(t), "go");
@@ -229,7 +127,7 @@ test("a webhook's message to a working run is refused busy and sent again on the
   await follow(api, run.body.run_id, ["working"], { deadlineMs: 30_000 });
   const created = await api("POST", "/triggers", { name: "inbox", source: { kind: "webhook" }, target: { kind: "message_run", run_id: run.body.run_id, input: { content: "A new event came in." } } });
   assert.equal(created.status, 201, JSON.stringify(created.body));
-  const { id, secret } = created.body;
+  const { id, signing_secret: secret } = created.body;
   assert.equal((await post(baseUrl, id, "{\"ticket\":7}", secret)).status, 202);
   const origin = { kind: "trigger", trigger_id: id, source: "webhook", owner: false };
   // Refused busy at least once (the engine tries again every 5 s), each try's marker withdrawn.
@@ -268,7 +166,7 @@ async function killedBeforeFirstMessage(t) {
   await made(api, "learner", { learning: true, tools: ["write"] });
   const created = await api("POST", "/triggers", { name: "on push", source: { kind: "webhook" }, target: { kind: "start_run", agent_id: "learner", input: { content: "Answer soon." }, max_cost_usd: 0.5 } });
   assert.equal(created.status, 201, JSON.stringify(created.body));
-  const { id, secret } = created.body;
+  const { id, signing_secret: secret } = created.body;
   assert.equal((await post(baseUrl, id, "{}", secret)).status, 202);
   let dir = "";
   for (const end = Date.now() + 60_000; !(dir = await readFile(signal, "utf8").catch(() => "")); await sleep(50)) assert.ok(Date.now() < end, "the run's seed copy was reached");

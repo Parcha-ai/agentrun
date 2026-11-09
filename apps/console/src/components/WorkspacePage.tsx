@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
 import { type Client, ClientError, problemOf } from "@/lib/client";
 import { clock } from "@/lib/format";
-import { SIGN_IN_TO_CHANGE } from "@/lib/secrets";
+import { type SecretsWhyNot, WHY_NOT_WORDS } from "@/lib/secrets";
 import type { ApiError, Archil, ArchilBody } from "@/lib/v2";
 
 /** The page's one line about the disk, as decided: nothing else is said about disk state. */
@@ -22,7 +22,7 @@ const FIELDS: { name: "diskId" | "region" | "s3Url" | "image"; label: string; pl
 type Fields = Record<(typeof FIELDS)[number]["name"], string>;
 const fieldsOf = (v: Archil): Fields => ({ diskId: v.diskId ?? "", region: v.region ?? "", s3Url: v.s3Url ?? "", image: v.image ?? "" });
 
-/** Archil's one key, by the name the read gives and the PUT takes. */
+/** Archil's secret, served as "workspace:archil": the page says it, and the PUT takes it, as ARCHIL_API_KEY. */
 const KEY = "ARCHIL_API_KEY";
 
 const apiError = (e: unknown): ApiError => (e instanceof ClientError ? e.toApiError() : { code: "network", message: e instanceof Error ? e.message : String(e), retryable: false });
@@ -32,10 +32,12 @@ const apiError = (e: unknown): ApiError => (e instanceof ClientError ? e.toApiEr
  *  sends the fields, and the key only when pasted (PUT), and a refusal is said under its field; Remove asks, then saves
  *  the key null; Test (POST …/test) says the server's detail or its why as given; Turn off (DELETE) asks first, and the
  *  key is kept. */
-export function WorkspacePage({ v2, writable }: {
+export function WorkspacePage({ v2, writable, whyNot = "sign_in" }: {
   v2: Client;
-  /** Whether this session may paste, replace or remove a key (lib/secrets.ts useSecretsWritable). */
+  /** Whether this session may paste, replace or remove a key: the session read's secrets_writable (lib/secrets.ts useSecrets). */
   writable: boolean;
+  /** Why not, when it may not: the reason line (WHY_NOT_WORDS). */
+  whyNot?: SecretsWhyNot;
 }) {
   const [view, setView] = useState<Archil | null>(null);
   const [loadError, setLoadError] = useState<ApiError | null>(null);
@@ -111,12 +113,12 @@ export function WorkspacePage({ v2, writable }: {
           <h1 className="mt-1 text-2xl font-semibold">Workspace</h1>
           <p className="mt-2 text-[14px] text-muted-foreground">{COPY}</p>
         </div>
-        {!writable && <p role="status" className="border bg-card p-4 text-[13px]">{SIGN_IN_TO_CHANGE}</p>}
+        {!writable && <p role="status" className="border bg-card p-4 text-[13px]">{WHY_NOT_WORDS[whyNot]}</p>}
         <section aria-label="Archil" className="border p-4">
           <div className="flex flex-wrap items-center gap-3">
             <HardDrive className="size-4 text-muted-foreground" aria-hidden />
             <span className="font-mono text-[15px] font-semibold">Archil</span>
-            <span data-state>{view.on ? <Chip tone="success">On</Chip> : <Chip>Off</Chip>}</span>
+            <span data-archil-state>{view.on ? <Chip tone="success">On</Chip> : <Chip>Off</Chip>}</span>
             {view.on && <span data-disk className="font-mono text-[12px] text-muted-foreground">{`${view.diskId ?? ""} · ${view.region ?? ""}`}</span>}
             <span className="flex-1" />
             <Button size="sm" onClick={() => void test()} disabled={testing}>{testing ? "Testing…" : "Test"}</Button>
@@ -144,10 +146,8 @@ export function WorkspacePage({ v2, writable }: {
             ))}
             {/* The key sits with the settings it saves with; SecretRow's buttons never submit this form. */}
             <ul>
-              {view.keys.filter((key) => key.name === KEY).map((key) => (
-                <SecretRow key={key.name} field={key} label={KEY} writable={writable && !pasting && !removingKey}
-                  onPaste={() => setPasting(true)} onRemove={() => setRemovingKey(true)} />
-              ))}
+              <SecretRow field={view.secret} label={KEY} writable={writable && !pasting && !removingKey}
+                onPaste={() => setPasting(true)} onRemove={() => setRemovingKey(true)} />
             </ul>
             {writable && removingKey && (
               <div data-confirm-key className="flex flex-wrap items-center gap-3 border bg-card p-3">

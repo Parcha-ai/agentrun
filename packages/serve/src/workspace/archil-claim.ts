@@ -15,12 +15,9 @@
 // row), refuses in words that name the row and never hold a value. Nothing here reads the environment: the settings,
 // the store's sealed keys and the seal key are handed in.
 import { ARCHIL_API_KEY_ROW, type ArchilSettings } from "../archil-settings.js";
-import { envValue, type KeyEnv } from "../key-meta.js";
-
-/** The environment variable that names the Archil account key (archil-routes.ts's key name). */
-const ARCHIL_API_KEY_NAME = "ARCHIL_API_KEY";
-import { sealedAt, unsealColumn } from "../store/seal.js";
+import type { KeyEnv } from "../key-meta.js";
 import type { SealedKeys } from "../store/store.js";
+import { archilApiKey } from "./archil-key.js";
 import { type ArchilDisk, type ArchilDiskOptions, type ArchilImage, archilDisk, pinnedImage } from "./archil-disk.js";
 import { type ArchilMountCredentialOptions, type MountCredential, mintMountToken, nicknameOf, removeMountToken, removeOlderMountTokens } from "./archil-mount-credential.js";
 import { COMPUTER_LIFETIME_MS } from "./computer-deps.js";
@@ -89,25 +86,11 @@ export async function archilClaim(options: ArchilClaimOptions): Promise<ArchilCl
   } catch (error) {
     throw new ArchilClaimRefused(`This server's Archil exec image ${JSON.stringify(settings.image)} can't be used: ${(error as Error).message}`, { cause: error });
   }
-  // The server's environment wins (key-meta.ts): an ARCHIL_API_KEY variable is the account key, over a saved one, for
-  // the disk and for the run's mount credential alike.
-  const fromEnv = options.env === undefined ? undefined : envValue(options.env, ARCHIL_API_KEY_NAME);
-  if (fromEnv === undefined && sealKey === undefined) {
-    throw new ArchilClaimRefused(`This runner was started without the server's seal key, so it can't open the saved ${ARCHIL_API_KEY_ROW} key: start it with the key the server keeps.`);
-  }
-  const open = async (name: string): Promise<string> => {
-    if (sealKey === undefined) throw new ArchilClaimRefused(`This runner was started without the server's seal key, so it can't open the saved ${name} key: start it with the key the server keeps.`);
-    const sealed = await options.keys.get(name);
-    if (sealed === undefined) throw new ArchilClaimRefused(`no ${name} key is saved on this server: save it in the server's keys, then run again.`);
-    try {
-      return unsealColumn(sealKey, sealedAt.sealedKey(name), sealed).toString("utf8").trim();
-    } catch {
-      throw new ArchilClaimRefused(`the saved ${name} key does not open under this server's seal key (it was saved under another key, or for another row): save it again.`);
-    }
-  };
+  // The account key by the one resolver (archil-key.ts): the server's ARCHIL_API_KEY variable first, else the sealed
+  // row, for the disk and for the run's mount credential alike.
   const held = new Set<string>();
   let released = false;
-  const apiKey = fromEnv ?? (await open(ARCHIL_API_KEY_ROW));
+  const apiKey = (await archilApiKey({ ...(options.env ? { env: options.env } : {}), keys: options.keys, sealKey })).value;
   held.add(apiKey);
   let disk: ArchilDisk;
   try {

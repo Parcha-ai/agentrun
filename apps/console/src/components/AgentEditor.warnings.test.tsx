@@ -6,6 +6,9 @@ import { AgentEditor } from "./AgentEditor";
 import { AgentEditPage } from "./AgentsPage";
 import type { Agent, SaveWarning } from "@/lib/agentForm";
 
+/** A fake client with no computers list unless it brings its own: the Computer step then shows where runs go. */
+const withoutComputers = (v2: object) => ({ computers: () => Promise.reject(new Error("fixture: no computers list")), ...v2 });
+
 // A save the server took can still say what this host lacks to run it (`warnings`): the editor shows each one, above
 // the form and beside the field it names, so nothing the server said is hidden.
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -42,7 +45,7 @@ describe("AgentEditor, a save's warnings", () => {
     };
     const host = document.body.appendChild(document.createElement("div"));
     root = createRoot(host);
-    act(() => root!.render(createElement(AgentEditPage, { v2: v2 as never, caps: caps as never, agentId: "calc", go: () => {} })));
+    act(() => root!.render(createElement(AgentEditPage, { v2: withoutComputers(v2) as never, caps: caps as never, agentId: "calc", go: () => {} })));
     const settle = async () => { for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
     await settle();
     expect(host.textContent).not.toContain(MODEL.message);

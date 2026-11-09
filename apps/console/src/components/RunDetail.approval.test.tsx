@@ -66,12 +66,12 @@ describe("RunDetail, a run waiting on a tool call's approval", () => {
       ...rows.slice(0, 4),
       row(4, { kind: "tool_result", summary: "Held for your approval", tool_name: "web_fetch", tool_use_id: "call_1" }),
       row(5, { id: "row_4:approval", kind: "tool_approval_requested", summary: `Asked your approval: web_fetch ${PENDING.args_preview}`, text: PENDING.args_preview, tool_name: "web_fetch", tool_use_id: "call_1" }),
-      row(6, { kind: "phase", origin: "server", summary: "AgentRun: web_fetch was refused: you declined it: use the cached copy", text: "web_fetch was refused: you declined it." }),
+      row(6, { kind: "phase", origin: "server", summary: "AgentRun: You declined web_fetch: use the cached copy", text: "You declined web_fetch." }),
     ];
     const shown = text(renderToStaticMarkup(createElement(RunDetail, { run: { ...run, status: "working", state: "working", pending: null }, agentName: "fetcher", messages: messageFeatures, harnessSteers: true, rows: served, files: [], actions: {}, onMessage: () => {}, onApprove: async () => null, tab: "timeline" })));
     const where = (words: string) => shown.indexOf(words);
     expect(where("Held for your approval")).toBeGreaterThan(-1);
     expect(where("Asked your approval: web_fetch")).toBeGreaterThan(where("Held for your approval"));
-    expect(where("web_fetch was refused: you declined it: use the cached copy")).toBeGreaterThan(where("Asked your approval: web_fetch"));
+    expect(where("You declined web_fetch: use the cached copy")).toBeGreaterThan(where("Asked your approval: web_fetch"));
   });
 });
