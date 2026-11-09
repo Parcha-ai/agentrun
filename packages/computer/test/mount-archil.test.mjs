@@ -278,6 +278,13 @@ test("syncingClient: every call that may change the folder syncs before it answe
 		await syncingClient(client).call(method, params);
 		assert.deepEqual(client.methods(), [method], `${method} does not sync`);
 	}
+	// Review (#1994, P1): a push that wrote files, then hit an entry the daemon refuses, ends at that tar.push.write (the
+	// daemon drops it once its extraction stops), so no tar.push.end comes: the failed write syncs, and answers its own error.
+	const refusedEntry = fakeClient({ answer: (method) => (method === "tar.push.write" ? fail("invalid", "push-1: entry ../x leaves the folder") : ok({})) });
+	const failed = await syncingClient(refusedEntry).call("tar.push.write", { id: "push-1", data: "" });
+	assert.equal(failed.ok, false);
+	assert.match(failed.error.message, /leaves the folder/);
+	assert.deepEqual(refusedEntry.methods(), ["tar.push.write", "mount.sync"], "a failed push write syncs what the push wrote before it");
 	// A process seen ended syncs; a read of one still running does not.
 	for (const [exited, expected] of [[true, ["process.read", "mount.sync"]], [false, ["process.read"]]]) {
 		const client = fakeClient({ answer: () => ok({ data: "", nextOffset: 0, dropped: 0, exited, size: 0 }) });
