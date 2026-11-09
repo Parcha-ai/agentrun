@@ -4,10 +4,12 @@ import type { AgentLearning, LearningChange, LearningDiff, LearningNote, NotePro
 import type { McpAuth, McpClientFeature, McpPreview, McpRefresh, McpServer } from "./mcp";
 import type { RunGraph } from "./runGraph";
 import { applyPage } from "./timeline";
-import type { ApiError, Firing, RaiseAnswer, Run, RunBrowser, RunFiles, RunStatus, TimelinePage, TimelineRow, ToolKeys, ToolKeysFeature, ToolSettings, Trigger, TriggerCreate, TriggerInput, TriggerMade, TriggerSecret, Webhook, WebhookAttempt, WebhookSaved, WebhooksFeature } from "./v2";
+import type { ApiError, Firing, InputIssue, TemplateApplied, TemplateApply, TemplateView, RaiseAnswer, Run, RunBrowser, RunFiles, RunStatus, TimelinePage, TimelineRow, ToolKeys, ToolKeysFeature, ToolSettings, Trigger, TriggerCreate, TriggerInput, TriggerMade, TriggerSecret, Webhook, WebhookAttempt, WebhookSaved, WebhooksFeature } from "./v2";
 
 /** A request AgentRun Server refused: its HTTP status and its typed error (`code`, `message`, `retryable`). */
-export type FieldIssue = { field: string; reason: string; message: string };
+/** A refusal's issue at one field, as the server names it (with its `fix`, when it says one). Its `reason` is any string, as
+ *  ApiError's `code` is: the server also sends reasons its document does not list yet (an MCP server's `url` "redirect"). */
+export type FieldIssue = Omit<InputIssue, "reason"> & { reason: InputIssue["reason"] | (string & {}) };
 
 export class ClientError extends Error {
   /** A 422's issues, by field, as the server names them. */
@@ -256,6 +258,11 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     /** The server's provider per capability that has a choice (its default where it sets none). */
     /** Remote MCP servers (a serve extension): a read shows a credential's state, never its value. A preview stores
      *  nothing; a save with no credential in `auth` keeps the sealed one. */
+    /** The templates this server offers. */
+    listTemplates: () => call<{ templates: TemplateView[] }>("GET", "/templates"),
+    /** Makes a template's agent (and its triggers) under one Idempotency-Key: the same request again answers what it did. */
+    applyTemplate: (name: string, body: TemplateApply, idempotencyKey: string) =>
+      call<TemplateApplied>("POST", `/templates/${encodeURIComponent(name)}/apply`, { body, headers: { "idempotency-key": idempotencyKey } }),
     listMcpServers: () => call<{ servers: McpServer[]; file_unreadable?: true }>("GET", "/settings/mcp-servers"),
     previewMcpServer: (url: string, auth: McpAuth) => call<McpPreview>("POST", "/settings/mcp-servers/preview", { body: { url, auth } }),
     saveMcpServer: (name: string, url: string, auth: McpAuth, prices?: Record<string, number>) => call<McpServer>("PUT", mcpServer(name), { body: { url, auth, ...(prices ? { prices } : {}) } }),
