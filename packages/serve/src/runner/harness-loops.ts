@@ -43,8 +43,10 @@ export function resolveRunnerLoop(deps: AdapterSpecDeps): (harness: string, laun
       return createAdapterLoop((claim, adapterRun) => adapterRunSpecFromLaunch(launch, adapterRun, deps, claim));
     }
     if ((HARNESSES as readonly string[]).includes(harness)) {
-      // TODO(E2r2): resolveHarness(harness) for claude-agent, codex and opencode on the adapter loop (ws-c3, cutover-cli:
-      // not merged yet).
+      // A CLI harness (claude-agent, codex, opencode) runs on the adapter loop with its own adapter (runner/adapters/index.ts
+      // resolveHarness) and record: "loop". TODO: createAdapterLoop(cliRunSpecFromLaunch(...)) once the CLI spec builder
+      // lands (tl-places, untangle/cutover-cli-spec): the host tools, the system prompt with the harness's skillCheck, and
+      // the adapter from resolveHarness(harness) — the non-pi equivalent of adapterRunSpecFromLaunch.
       return undefined;
     }
     return undefined;
