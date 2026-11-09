@@ -145,7 +145,7 @@ const js = `"use strict";
   }
 
   var HOLD_ENDED = { given: "You handed the computer back to the agent.", answered: "The agent's request was answered, so the computer went back to the agent.", idle: "The computer went back to the agent: no input came from you for 15 minutes.", away: "The computer went back to the agent: the live view was closed.", released: "The computer's session ended while you had it." };
-  var REFUSED = { unauthorized: "This link's token was not accepted.", viewer_in_use: "Another viewer already has this computer.", released: "This computer has been released.", bad_message: "The host did not understand this viewer." };
+  var REFUSED = { unauthorized: "This link's token was not accepted.", viewer_in_use: "Another viewer already has this computer.", released: "This computer has been released.", bad_message: "The host did not understand this viewer.", slow_viewer: "This view fell too far behind the computer's screen: open the live view again." };
   var ENDED = { gone: "This computer has ended.", released: "This computer has been released.", ended: "This computer's session has ended.", unreachable: "The computer can't be reached right now.", refused: "The computer refused its live view.", unsupported: "This computer has no screen to show." };
   ws.onmessage = function (event) {
     if (typeof event.data !== "string") { draw(event.data); return; }
