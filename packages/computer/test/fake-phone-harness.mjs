@@ -78,7 +78,9 @@ const json = (status, body, headers = {}) => new Response(JSON.stringify(body), 
  * admitted (a test aborts the create's signal in it), after which that fetch rejects as an aborted one does; `stall`,
  * called with each request's { method, path }: when it answers true, the request is never answered, and only its
  * signal ends it; `onList`, given GET /sessions' snapshot once it is taken and before it is answered, answers the
- * list to send (a test makes a phone in between, or leaves a live one out, as a lagging listing would);
+ * list to send (a test makes a phone in between, or leaves a live one out, as a lagging listing would); `postAnswer`,
+ * what POST /sessions answers in place of its 202: "503" (the phone is made, and a gateway answers 503), "empty" (the
+ * phone is made, and the 202 holds no session), "503-unmade" (a 503, and nothing is made);
  * `code`, the unlock code the phone takes (default the one the API gives); `abi`, what getprop reports; `launchHidden`,
  * a launched app is reported in front (dumpsys) while the screen and the tree still show the launcher; `launchNothing`,
  * `am start` starts nothing at all; `twoPane`, Settings shows two panes, as Android does on a window 600 dp wide or
@@ -91,7 +93,7 @@ const json = (status, body, headers = {}) => new Response(JSON.stringify(body), 
  * (com.android.settings.intelligence) on top of Settings' own task. A force-stop of Settings leaves it there, a plain
  * `am start` of Settings resumes that task, search in front, and only `--activity-clear-task` starts Settings afresh.
  */
-export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = false, loseRecovery = false, cancelPost, stall, onList, others = [], code, abi = "x86_64", launchHidden = false, launchNothing = false, twoPane = false, rowTapsMiss = false, endLag = 0, clock = fakeClock() } = {}) {
+export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = false, loseRecovery = false, cancelPost, stall, onList, postAnswer, others = [], code, abi = "x86_64", launchHidden = false, launchNothing = false, twoPane = false, rowTapsMiss = false, endLag = 0, clock = fakeClock() } = {}) {
 	const requests = [];
 	const adbCalls = [];
 	const sessions = new Map(others.map((s) => [s.id, { ...s }]));
@@ -120,6 +122,7 @@ export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = fa
 			if (start === "busy") return json(503, { error: "every phone is busy", code: "phones_busy", retry_after_seconds: 30 }, { "retry-after": "30" });
 			if (start === "limit") return json(409, { error: "the account's sessions are full", code: "session_limit", session_limit: 1 });
 			if (start === "credit") return json(403, { error: "insufficient credits", balance_cents: 0 });
+			if (postAnswer === "503-unmade") return json(503, { error: "the gateway timed out" });
 			const id = `sess_${(++next).toString().padStart(4, "0")}`;
 			const session = {
 				id,
@@ -139,6 +142,9 @@ export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = fa
 				cancelPost();
 				if (init.signal?.aborted) throw init.signal.reason ?? new DOMException("This operation was aborted", "AbortError");
 			}
+			// The phone is made, and the answer says otherwise: a 5xx from a gateway, or a 2xx with no session in it.
+			if (postAnswer === "503") return json(503, { error: "the gateway timed out" });
+			if (postAnswer === "empty") return json(202, {});
 			return json(202, view(session));
 		}
 		if (method === "GET" && path === "/sessions") {
