@@ -19,7 +19,7 @@ const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { journalRecords } = await import("../dist/runner/journal-reader.js");
 const { runReflect } = await import("../dist/store-reads/journal.js");
 const { runLearningEnd } = await import("../dist/store-reads/learning.js");
-const { seedOf } = await import("../dist/learning.js");
+const { learningFolderOf, seedOf } = await import("../dist/learning.js");
 const { said } = await import("../dist/learning-words.js");
 const endModule = await import("../dist/runner/learning-end.js").catch(() => ({}));
 const learningEndOfRun = (...args) => (typeof endModule.learningEndOfRun === "function" ? endModule.learningEndOfRun(...args) : assert.fail("learningEndOfRun is not there"));
@@ -65,7 +65,8 @@ async function world(t, body, launchOf) {
     const store = await openSqliteStore({ dataDir: dir, role: "runner" });
     stores.push(store);
     const spec = piAdapterSpec({ script: [{ say: "The job's answer." }, { say: REFLECTED }], tools: {}, hooks: quiet });
-    const endOfRun = endOfRunOf({ store, data: dir, env: {} });
+    // Mode 1: the agent's learning folder is the local one under the data directory.
+    const endOfRun = endOfRunOf({ store, data: dir, env: {}, learningFolder: (agentId) => learningFolderOf(dir, agentId) });
     const createLoop = (deps) => {
       const job = createAdapterLoop(async (claim, run) => ({ ...(await spec(claim, run)), agentId: "agent-1" }))({ ...deps, ...(endOfRun ? { endOfRun } : {}) });
       let mine = false;

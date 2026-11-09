@@ -16,6 +16,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { Hearing } from "../heard.js";
+import type { LearningFolder } from "../learn/folder.js";
 import { gradeModelOf, PROPOSAL } from "../learning.js";
 import { reflects, type Reflect } from "../learning-run.js";
 import { said, STOPPED } from "../learning-words.js";
@@ -28,11 +29,15 @@ import { runEntries, runReflect, runTimeline } from "../store-reads/journal.js";
 import type { EndOfRunTurn } from "./loop-contract.js";
 import { type Checked, createReflectHook, type ReflectTurn } from "./reflect-hook.js";
 
-/** What the step reads: the run's store, the data directory its agents' learning folders are in (the learning loop's
- *  `data`), and the runner's environment (the host's secrets a proposal is refused for; the grade model it names). */
+/** What the step reads: the run's store, the data directory (the server's tool settings a draft's tools are read with),
+ *  the agent's learning folder (where the run's place keeps it), and the runner's environment (the host's secrets a
+ *  proposal is refused for; the grade model it names). */
 export interface LearningEndDeps {
   readonly store: Store;
   readonly data: string;
+  /** Agent `agentId`'s learning folder, where the run's place keeps it: learningWorkspace({ mode: "local", agentId, data })
+   *  in Mode 1, { mode: "archil", agentId, archil } in Mode 2. Opened for each check, and ended after it. */
+  readonly learningFolder: (agentId: string) => LearningFolder;
   readonly env?: NodeJS.ProcessEnv;
   /** The grade model the server names (learning.ts gradeModelOf); none, from `env` as the server reads it. */
   readonly gradeModel?: string;
@@ -102,7 +107,13 @@ async function checkedOf(deps: LearningEndDeps, input: { runId: string; agentId:
   try {
     const { tools, gated } = await draftTools(deps, input.runId);
     const turn = { answer: input.turn.answer, asked: [...input.turn.asked], ...(input.turn.triggered?.length ? { triggered: input.turn.triggered.map((one) => ({ ...one })) } : {}) };
-    const proposed = await proposeRun({ data: deps.data, agentId: input.agentId, runDir, seed: input.seed, turn, refuse: input.refuse, outcome: input.outcome, tools, ...(Object.keys(gated).length ? { gated } : {}) });
+    const folder = deps.learningFolder(input.agentId);
+    let proposed;
+    try {
+      proposed = await proposeRun({ folder: folder.workspace, runDir, seed: input.seed, turn, refuse: input.refuse, outcome: input.outcome, tools, ...(Object.keys(gated).length ? { gated } : {}) });
+    } finally {
+      await folder.end();
+    }
     if (proposed.state !== "proposed") return proposed as Checked;
     const proposal: unknown = JSON.parse(await readFile(join(runDir, PROPOSAL), "utf8"));
     return { ...proposed, proposal };
