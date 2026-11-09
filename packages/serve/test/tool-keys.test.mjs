@@ -3,13 +3,13 @@
 // that does not open (no seal key, another one, a damaged file) is asked for again, said once in the log, and never
 // stops the server; there is no clear fallback.
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { spawn, spawnSync } from "node:child_process";
+import { createHash, randomBytes } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { startServe } from "../dist/index.js";
-import { secret } from "../dist/secrets.js";
+import { secret, SECRET_NAMES } from "../dist/secrets.js";
 import { readingOf } from "../dist/server.js";
 import { openSqliteStore, STORE_FILE } from "../dist/store/sqlite/store.js";
 import { rowUnlocks, TOOL_KEYS, unlockedBy } from "../dist/tool-keys.js";
@@ -18,6 +18,7 @@ import { agent, call, harnessData, client, cookieOf, FAUX, follow, printed, scra
 
 const LAUNCHER = new URL("../launcher/agentrun-serve", import.meta.url).pathname;
 const FAUX_BROWSER = new URL("./fixtures/faux-browser.mjs", import.meta.url).pathname;
+const FAUX_MONID = new URL("./fixtures/faux-monid.mjs", import.meta.url).pathname;
 const KEYS = ["PARALLEL_API_KEY", "MONID_API_KEY", "BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "KERNEL_API_KEY", "TYPESAFE_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY", "AGENTRUN_SEAL_KEY"];
 const sealKey = () => randomBytes(32).toString("base64");
 /** A throwaway value: none is a real key. */
@@ -231,6 +232,68 @@ test("a field the server is started with is the server's: GET says so, PUT and D
   for (const value of Object.values(server)) holdsNone(JSON.stringify(view) + JSON.stringify(refused.body), formsOf(value), "an answer");
   assert.equal((await api("DELETE", "/settings/tool-keys/browserbase")).status, 204, "its stored field goes; the server's stays");
   assert.deepEqual(fieldsOf((await api("GET", "/settings/tool-keys")).body).BROWSERBASE_PROJECT_ID, UNSET);
+});
+
+test("a value the server is started with wins over one pasted before, for a tool key and a model key: GET's secrets say env with no changed_at, PUT and DELETE are 409, and the tool's check at the start is sent the server's value", async (t) => {
+  const log = join(await scratch(t), "monid-calls.jsonl");
+  const pasted = { MONID_API_KEY: made(), OPENROUTER_API_KEY: made() };
+  const started = { MONID_API_KEY: made(), OPENROUTER_API_KEY: made() };
+  const digest = (value) => createHash("sha256").update(value).digest("hex");
+  // Faux monid accepts the pasted value, so it is kept; it refuses any other.
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey(), AGENTRUN_TEST_FAUX_MONID_CALLS: log, AGENTRUN_TEST_FAUX_MONID_ACCEPTS: digest(pasted.MONID_API_KEY) }, [...KEYS, "AGENTRUN_TEST_FAUX_MONID_CALLS", "AGENTRUN_TEST_FAUX_MONID_ACCEPTS"]);
+  const calls = () => (existsSync(log) ? readFileSync(log, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line)) : []);
+  const secretsOf = (view) => Object.fromEntries(view.keys.flatMap((key) => key.secrets.map(({ name, ...meta }) => [name, meta])));
+  const data = join(await scratch(t), "agents");
+  const first = await serve(t, { data, fauxMonid: FAUX_MONID });
+  for (const [id, name] of [["monid", "MONID_API_KEY"], ["openrouter", "OPENROUTER_API_KEY"]]) assert.equal((await first.api("PUT", `/settings/tool-keys/${id}`, { values: { [name]: pasted[name] } })).status, 204, name);
+  const pastedSecrets = secretsOf((await first.api("GET", "/settings/tool-keys")).body);
+  for (const name of ["tool:MONID_API_KEY", "model:OPENROUTER_API_KEY"]) {
+    assert.deepEqual([pastedSecrets[name]?.set, pastedSecrets[name]?.source], [true, "console"], name);
+    assert.match(pastedSecrets[name].changed_at, /^\d{4}-\d\d-\d\dT/, `${name}: a pasted value's own time`);
+  }
+  await first.close();
+
+  // Started again with both set where it starts: the server's values win, and the pasted ones stay stored, unread.
+  Object.assign(process.env, started);
+  const before = calls().length;
+  // The start's check of a key it was given goes to a check's own fake (server.ts startFetch), never the runs' one.
+  const second = await serve(t, { data, fauxMonid: FAUX_MONID, fauxMonidCheck: FAUX_MONID });
+  const view = (await second.api("GET", "/settings/tool-keys")).body;
+  const fields = fieldsOf(view);
+  assert.deepEqual([fields.MONID_API_KEY, fields.OPENROUTER_API_KEY], [{ set: true, source: "server" }, { set: true, source: "server" }]);
+  const secrets = secretsOf(view);
+  for (const name of ["tool:MONID_API_KEY", "model:OPENROUTER_API_KEY"]) assert.deepEqual(secrets[name], { set: true, source: "env", changed_at: null }, `${name}: env, and no time the server could know`);
+  for (const [id, name] of [["monid", "MONID_API_KEY"], ["openrouter", "OPENROUTER_API_KEY"]]) {
+    const put = await second.api("PUT", `/settings/tool-keys/${id}`, { values: { [name]: made() } });
+    assert.deepEqual([put.status, put.body.error?.code], [409, "key_set_by_server"], `${name}: a paste is refused while the server sets it`);
+    assert.equal((await second.api("DELETE", `/settings/tool-keys/${id}`)).body.error?.code, "key_set_by_server", `${name}: so is a removal`);
+  }
+  // The tool's check at this start goes out on the server's value, never the pasted one (faux monid refuses it, so the
+  // check reads refused, in words that say to set the right one where AgentRun starts).
+  let checked;
+  for (let turn = 0; turn < 400 && !(checked = calls().slice(before).find((call) => call.path === "/v1/discover")); turn++) await new Promise((go) => setTimeout(go, 25));
+  assert.ok(checked, "the start checked monid's key");
+  assert.equal(checked.key, digest(started.MONID_API_KEY).slice(0, 16), "sent the server's value");
+  assert.ok(!calls().slice(before).some((call) => call.key === digest(pasted.MONID_API_KEY).slice(0, 16)), "the pasted value is never sent");
+  const check = (await second.api("GET", "/settings/tool-keys")).body.keys.find((key) => key.id === "monid").check;
+  assert.equal(check?.state, "refused", JSON.stringify(check));
+  const text = JSON.stringify((await second.api("GET", "/settings/tool-keys")).body);
+  for (const value of [...Object.values(pasted), ...Object.values(started)]) holdsNone(text, formsOf(value), "the view");
+});
+
+test("every field of every tool and model key is on the launcher's SECRETS, so the server holds it in memory, never in its environment: secrets.ts takes each out of process.env as it loads", () => {
+  const fields = [...new Set(TOOL_KEYS.flatMap((row) => row.fields))];
+  assert.deepEqual(fields.filter((name) => !SECRET_NAMES.includes(name)), [], "a key's field not on the list would stay in process.env, and every child would inherit it");
+  // A process started with each in its environment, as one with no launcher is: once secrets.js loads, none is left in
+  // process.env (nor in a child's default environment), and each is still read by name.
+  const values = Object.fromEntries(fields.map((name) => [name, made()]));
+  const probe = `const m = await import(${JSON.stringify(new URL("../dist/secrets.js", import.meta.url).href)}); const names = ${JSON.stringify(fields)};
+    process.stdout.write(JSON.stringify({ left: names.filter((n) => n in process.env), read: names.filter((n) => m.secret(n) !== undefined) }));`;
+  const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !SECRET_NAMES.includes(name)));
+  const ran = spawnSync(process.execPath, ["--input-type=module", "-e", probe], { env: { ...env, ...values }, encoding: "utf8" });
+  assert.equal(ran.status, 0, ran.stderr);
+  assert.deepEqual(JSON.parse(ran.stdout), { left: [], read: fields });
+  holdsNone(ran.stdout + ran.stderr, Object.values(values).flatMap(formsOf), "what it printed");
 });
 
 test("handed no seal key, the server keeps a key under the one it made at its start, never in the clear: PUT is 204, and capabilities say sealed", async (t) => {

@@ -6,12 +6,17 @@
 // The plants' own answers are read too, all but a minting answer to the owner's session (a plant's `mints`): a value shown
 // once there is allowed, and anywhere else is a hit. A GET whose path needs an id no plant made is skipped and named.
 import assert from "node:assert/strict";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import { test } from "node:test";
-import { agent, call, cookieOf, serve, storeBytes, withEnv } from "./support.mjs";
+import { agent, call, cookieOf, follow, serve, storeBytes, withEnv } from "./support.mjs";
 import { answerSources, filledPaths, findPlanted, formsOf, mergedIds, operationOf, plantedOf, plantedValue, registeredPlants } from "./fixtures/planted-secrets.mjs";
 
 const json = { "content-type": "application/json" };
+const FAUX_CALL = new URL("./fixtures/faux-call.mjs", import.meta.url).pathname;
+const FAUX_MONID = new URL("./fixtures/faux-monid.mjs", import.meta.url).pathname;
 
 test("the harness finds a planted value in every form it looks for (a leak it is shown, in the test alone)", () => {
   const value = plantedValue("leak");
@@ -107,4 +112,42 @@ test("no planted secret shows in any GET (by every id a plant made), a plant's a
   assert.deepEqual(hits, [], `a planted secret showed (skipped: ${skipped.join(", ") || "none"})`);
   for (const planted of planteds) if (planted.cleanup) await planted.cleanup(ctx, ids);
   t.diagnostic(`plants: ${ran.join(", ")}; GETs read: ${read}; answers read: ${answers.length}; skipped: ${skipped.length ? skipped.join(", ") : "none"}`);
+});
+
+// A key saved on the server reaches a run as the claim opens it: when its vendor answers an error that echoes it, the
+// run's records hold none of it, as for a key the server was started with. The runner's redactor must hold the claim's
+// opened keys as well as its own environment's.
+test("a stored tool key a vendor echoes back in an error shows in none of the run's records: its timeline, its view and answer, the store's bytes (the journal's rows) and the server's log", { timeout: 120_000, skip: "waits on the runner adding a claim's opened keys to its redactor (runnerSecrets extra)" }, async (t) => {
+  const planted = plantedValue("sk-planted-monid");
+  const calls = join(mkdtempSync(join(tmpdir(), "planted-monid-")), "calls.jsonl");
+  t.after(() => rmSync(dirname(calls), { recursive: true, force: true }));
+  withEnv(t, {
+    AGENTRUN_TEST_FAUX_MONID_CALLS: calls,
+    AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"),
+    // Faux monid takes the planted key at its save's check (a discover), and answers a run's inspect with an error that
+    // holds the key it was sent.
+    AGENTRUN_TEST_FAUX_MONID_ACCEPTS: createHash("sha256").update(planted).digest("hex"),
+    AGENTRUN_TEST_FAUX_MONID_ECHO: "/v1/inspect",
+  }, ["MONID_API_KEY", "AGENTRUN_TEST_FAUX_MONID_ACCEPTS", "AGENTRUN_TEST_FAUX_MONID_ECHO", "AGENTRUN_TEST_FAUX_MONID_CALLS"]);
+  const logs = [];
+  const { api, data } = await serve(t, { faux: FAUX_CALL, fauxMonid: FAUX_MONID, log: (line) => logs.push(line) });
+  // Saved from the owner's session (support.mjs sends a secret write so).
+  assert.equal((await api("PUT", "/settings/tool-keys/monid", { values: { MONID_API_KEY: planted } })).status, 204);
+  assert.equal((await api("POST", "/agents", agent("echoed", { tools: ["monid.inspect"], tool_settings: { "monid.inspect": { permission: "allow" } } }))).status, 201);
+  const run = await api("POST", "/agents/echoed/runs", { input: { content: 'Call monid_inspect with {"provider":"faux","endpoint":"/person/enrich"}.' } });
+  assert.equal(run.status, 202, JSON.stringify(run.body));
+  const { rows } = await follow(api, run.body.run_id, ["completed", "failed"], { deadlineMs: 60_000 });
+  const view = (await api("GET", `/runs/${run.body.run_id}`)).body;
+  // The call reached faux monid on the stored key (its log keeps a digest of the key it was sent, never the key), so its
+  // error, which echoes that key, came back to the run: never a run with no such tool.
+  const sent = existsSync(calls) ? readFileSync(calls, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line)) : [];
+  const digest = createHash("sha256").update(planted).digest("hex").slice(0, 16);
+  assert.ok(sent.some((call) => call.path === "/v1/inspect" && call.key === digest), `the run's inspect reached monid on the stored key: ${JSON.stringify(rows.map((row) => `${row.kind}: ${row.summary}`))}`);
+  const sources = [
+    { where: "the run's timeline", text: JSON.stringify(rows) },
+    { where: "the run's view and answer", text: JSON.stringify(view) },
+    { where: "store.sqlite (+wal, shm), utf8", text: storeBytes(data).toString("utf8") },
+    { where: "the server's log", text: logs.join("\n") },
+  ];
+  assert.deepEqual(findPlanted(sources, [planted]), [], "the stored key showed in the run's records");
 });
