@@ -49,7 +49,7 @@ function runEffectOf(setup) {
 async function readCalls(journal, context) {
   const calls = [];
   for (let cursor; ; ) {
-    const page = await journal.scanDocuments({ kind: "agentrun.effects", scope: { kind: "session" } }, 500, cursor, context);
+    const page = await journal.scanDocuments({ kind: "agentrun.effects", scope: { kind: "session" }, at: "current" }, 500, cursor, context);
     for (const record of page.items) {
       const value = (await journal.document(record.id, "current", context))?.value ?? {};
       const result = value.result;
