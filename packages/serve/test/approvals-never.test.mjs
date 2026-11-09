@@ -100,12 +100,15 @@ test("under never a deny still refuses: the server's, and the agent's own", { ti
   const { api } = await serve(t, GATE);
   assert.equal((await api("PUT", "/settings/tools", { web_fetch: { permission: "deny" } })).status, 200);
   const serverDenied = await fetching(api, "never-server-deny", "pi", { approvals: "never" });
-  const own = await fetching(api, "never-own-deny", "pi", { approvals: "never", tool_settings: { web_fetch: { permission: "deny" } } });
-  for (const [runId, from] of [[serverDenied, "server"], [own, "agent"]]) {
+  const refused = async (runId, from) => {
     const { rows } = await follow(api, runId, ["completed"], { deadlineMs: 60_000 });
     const result = rows.find((row) => row.kind === "tool_result");
     assert.deepEqual([result?.tool_status, result?.tool_result_preview], ["failed", deniedText("web_fetch", undefined, from)], from);
-  }
+  };
+  await refused(serverDenied, "server");
+  // The agent's own deny, on a server that asks (a server deny would be the answer first, from the server).
+  assert.equal((await api("PUT", "/settings/tools", { web_fetch: { permission: "ask" } })).status, 200);
+  await refused(await fetching(api, "never-own-deny", "pi", { approvals: "never", tool_settings: { web_fetch: { permission: "deny" } } }), "agent");
   assert.deepEqual(await dialled(), [], "a denied call never ran");
 });
 
@@ -208,14 +211,16 @@ test("never lifts no ask that stands in for a setting that does not read: a fall
   assert.notEqual(never.policy("web_fetch"), "allow", "the server's deny under the agent's ask is never allowed");
 });
 
-test("a server deny under the agent's own ask is never run under never: the call parks as it does without never, and is never sent", { timeout: 120_000 }, async (t) => {
+test("a server deny under the agent's own ask is never run under never: a server deny is absolute, so the call is refused on this server, never parked, never sent", { timeout: 120_000 }, async (t) => {
   const dialled = await network(t);
   const { api } = await serve(t, GATE);
   assert.equal((await api("PUT", "/settings/tools", { web_fetch: { permission: "deny" } })).status, 200);
   const runId = await fetching(api, "never-under-deny", "pi", { approvals: "never", tool_settings: { web_fetch: { permission: "ask" } } });
-  const { last } = await follow(api, runId, ["input_required", "completed"], { deadlineMs: 60_000 });
+  const { rows } = await follow(api, runId, ["completed"], { deadlineMs: 60_000 });
   const view = (await api("GET", `/runs/${runId}`)).body;
-  assert.ok(last.status === "input_required" ? view.pending?.kind === "approval" : true, `parked as without never: ${JSON.stringify(view.pending)}`);
+  assert.equal(view.pending, null, "never parked");
+  const result = rows.find((row) => row.kind === "tool_result");
+  assert.deepEqual([result?.tool_status, result?.tool_result_preview], ["failed", deniedText("web_fetch", undefined, "server")], "refused on this server");
   assert.deepEqual(await dialled(), [], "never sent");
 });
 
