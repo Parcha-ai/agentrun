@@ -2,9 +2,9 @@
 // each through the run's gate (RunGate's extension, which parks no workflow call: tool-gate.ts), so a tool set to deny is
 // refused in deniedText's words and one set to ask in the model-node words (a model node cannot wait for a person),
 // neither run nor booked; one allowed is offered, called once and booked once on the run's one ledger, on the run's own
-// keys (its claim's secrets and its tool plane). Main's NODE_TOOLS beyond the web tools (read, write, edit, browser) need
-// the run's Workspace and computer, which the workflow loop does not claim yet: a node naming one is refused at the claim
-// in words that name it, never offered or dropped silently.
+// keys (its claim's secrets and its tool plane). The file tools run on the run's hands (runner-wf-node-hands); the browser
+// is not bound for a node on the runner yet: a node naming it is refused at the claim in words that name it, never offered
+// or dropped silently.
 //
 // Through the real loop (startRunner over createWorkflowLoop and workflowSpecOf) on a real store; the shared scripted
 // origin calls a tool only when the request offers it (conformance-pi-adapter.mjs), and Parallel's search is the faux
@@ -117,12 +117,12 @@ test("a model node's web_search set to ask: refused in the model-node words (it 
   assert.equal(eight(row.costUsd), eight(2 * PER_REQUEST));
 });
 
-test("a model node naming a tool the runner does not bind for model nodes yet (read) is refused at the claim, in words naming it", async (t) => {
-  const words = typeof spec.nodeToolUnboundText === "function" ? spec.nodeToolUnboundText("read") : assert.fail("workflow-spec.ts nodeToolUnboundText is not there");
+test("a model node naming a tool the runner does not bind for model nodes yet (browser) is refused at the claim, in words naming it", async (t) => {
+  const words = typeof spec.nodeToolUnboundText === "function" ? spec.nodeToolUnboundText("browser") : assert.fail("workflow-spec.ts nodeToolUnboundText is not there");
   const before = listening();
-  const { row, requests, text } = await runOn(t, { workflow: searchingFlow(["read"]) });
+  const { row, requests, text } = await runOn(t, { workflow: searchingFlow(["browser"]) });
   assert.equal(row.state, "failed", JSON.stringify({ state: row.state, summary: row.summary }));
-  assert.ok(`${row.summary ?? ""}\n${text}`.includes(words), `refused in words naming read: ${row.summary}`);
+  assert.ok(`${row.summary ?? ""}\n${text}`.includes(words), `refused in words naming browser: ${row.summary}`);
   assert.equal(requests.length, 0, "no model request sent");
   assert.equal(listening(), before, "the refused claim leaves no model proxy listening");
 });

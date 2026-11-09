@@ -56,7 +56,7 @@ function countingComputers() {
 /** run-1 of `workflow` (its revision with `toolSettings`), its node playing `script`, on a runner whose workflow spec gets
  *  the run's hands through claimRunHands; its row once it leaves running, the requests, the store's text, the run's
  *  folder and the computer counts. */
-async function runOn(t, { workflow, toolSettings, script }) {
+async function runOn(t, { workflow, toolSettings, script, toolsThrow }) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-wf-node-hands-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -77,14 +77,21 @@ async function runOn(t, { workflow, toolSettings, script }) {
   });
   const computers = countingComputers();
   const handsDeps = { store, data: dir, env: {}, log: () => {}, computerForClaim: computers.computerForClaim };
-  const runHands = hands?.claimRunHands
-    ? async (claim) => hands.claimRunHands(handsDeps, claim, await store.runs.launch(claim.runId), await store.runs.get(claim.runId))
-    : undefined;
+  // `toolsThrow`: the hands open, then taking their tools throws in these words (a claim failing once it holds them).
+  const opened = async (claim) => hands.claimRunHands(handsDeps, claim, await store.runs.launch(claim.runId), await store.runs.get(claim.runId));
+  const runHands = !hands?.claimRunHands
+    ? undefined
+    : toolsThrow
+      ? async (claim) => { const held = await opened(claim); return { ...held, tools: { ...held.tools, hostTools: () => { throw new Error(toolsThrow); } } }; }
+      : opened;
   runner = startRunner({ store, createLoop: createWorkflowLoop(spec.workflowSpecOf({ store, providerOf, env: {}, ...(runHands ? { hands: runHands } : {}) })), name: "runner-a", ...TIMING });
   const from = Date.now();
   for (;;) {
     const row = await server.runs.get("run-1");
     if (["ended", "failed", "stopped"].includes(row.state) && row.runner === null) {
+      // The claim is done once the runner has closed (its loop's release runs after the end commit).
+      await runner.close();
+      runner = undefined;
       const text = ["store.sqlite", "store.sqlite-wal"].map((name) => join(dir, name)).filter(existsSync).map((file) => readFileSync(file).toString("utf8")).join("\n");
       const folder = runFolder ? runFolder(dir, "agent-1", "run-1") : undefined;
       return { row, requests, text, folder, computers: computers.counts };
@@ -134,6 +141,17 @@ test("a workflow whose nodes name no file tool claims no Workspace and no comput
   assert.equal(computers.claims.length, 0, "no computer claimed");
 });
 
+test("a claim that fails once it holds the run's hands lets them go: the run fails in the failure's words, its computer released once", async (t) => {
+  needsHands();
+  const words = "the run's file tools could not be taken here";
+  const { row, requests, computers } = await runOn(t, { workflow: nodeFlow(["read"]), script: [SUBMIT], toolsThrow: words });
+  assert.equal(row.state, "failed", JSON.stringify({ state: row.state, summary: row.summary }));
+  assert.ok(`${row.summary ?? ""}`.includes(words), `failed in the failure's words: ${row.summary}`);
+  assert.equal(requests.length, 0, "no model request sent");
+  assert.equal(computers.claims.length, 1, "the computer was claimed");
+  assert.equal(computers.released, 1, "and let go, though the claim failed");
+});
+
 test("a model node naming browser is still refused at the claim, in words naming it, nothing claimed", async (t) => {
   const words = spec.nodeToolUnboundText("browser");
   const { row, requests, computers } = await runOn(t, { workflow: nodeFlow(["browser"]), script: [SUBMIT] });
@@ -171,11 +189,15 @@ test("through the runner's real dispatch, a node naming read claims the run's co
     if (Date.now() - from > 45_000) assert.fail(`the run never ended: ${JSON.stringify({ state: row.state, summary: row.summary })}`);
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
+  // The claim is done once the runner has closed (its loop's release runs after the end commit).
+  await runner.close();
+  runner = undefined;
   // The faux route never submits, so the node may fail; what matters is the claim: never refused for read, and the hands
   // claimed for the run's place and let go.
+  const { counts } = computers;
   assert.ok(!`${row.summary ?? ""}`.includes(spec.nodeToolUnboundText("read")), `not refused at the claim: ${row.summary}`);
-  assert.equal(computers.claims.length, 1, `the computer claimed once: ${JSON.stringify(computers.claims)}`);
-  assert.deepEqual(computers.claims[0]?.place, { mode: "runner" }, "for the run's own place");
-  assert.equal(computers.claims[0]?.runId, "run-1");
-  assert.equal(computers.released, 1, "let go once the claim was done");
+  assert.equal(counts.claims.length, 1, `the computer claimed once: ${JSON.stringify(counts.claims)}`);
+  assert.deepEqual(counts.claims[0]?.place, { mode: "runner" }, "for the run's own place");
+  assert.equal(counts.claims[0]?.runId, "run-1");
+  assert.equal(counts.released, 1, "let go once the claim was done");
 });

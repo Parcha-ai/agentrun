@@ -16,6 +16,7 @@ import { learningLoopOf } from "./learning-dispatch.js";
 import type { LoopFactory } from "./loop-contract.js";
 import { createWorkflowLoop, isWorkflowRevision } from "./workflow-loop.js";
 import { workflowSpecOf } from "./workflow-spec.js";
+import { claimRunHands } from "./run-hands.js";
 
 /** The dispatch's `resolve`, built from the runner's deps: it reads the run's revision (for a workflow revision) and
  *  returns the loop the run runs on, or undefined when this runner does not run it (the dispatch fails it in words). */
@@ -30,7 +31,12 @@ export function resolveRunnerLoop(deps: AdapterSpecDeps): (harness: string, laun
       // the runner resolves any (routeProviderOf over the route, the default when no providerOf is given).
       // The runner's seal key and data directory go with it: a claim's sealed secrets are read with them (claim-secrets.ts,
       // store-secrets.ts), and every one the server keeps is held by the run's one redactor.
-      return createWorkflowLoop(workflowSpecOf({ store: deps.store, sealKey: deps.sealKey, data: deps.data, ...(deps.env ? { env: deps.env } : {}) }));
+      // Its model nodes' file tools run on the run's hands, opened the way an agentic run's claim opens them (run-hands.ts:
+      // its Workspace, the computer its place needs), when a node names one.
+      // Their log lines pass the run's one redactor (`redact`, the claim's), as an agentic run's do.
+      const hands = (claim: { runId: string; epoch: number }, redact?: (text: string) => string) =>
+        claimRunHands({ ...deps, log: (line: string) => (deps.log ?? (() => {}))(redact ? redact(line) : line) }, claim, launch, run!);
+      return createWorkflowLoop(workflowSpecOf({ store: deps.store, sealKey: deps.sealKey, data: deps.data, hands, ...(deps.env ? { env: deps.env } : {}) }));
     }
     if (harness === "learning") {
       // A built-in learning run on the learning loop: its grade goes through the runner's one model route, on the grade

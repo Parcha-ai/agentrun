@@ -13,11 +13,11 @@ import type { Context } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Models } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
-import { defineExtension, type Extension, type Harness, ROOT_CONVERSATION_ID, type ToolRegistration, wrapTool } from "@earendil-works/pi-durable";
+import { defineExtension, defineTool, type Extension, type Harness, ROOT_CONVERSATION_ID, type ToolRegistration, wrapTool } from "@earendil-works/pi-durable";
 import type { Revision } from "@parcha/pi-durable-agent";
 import { chargedCost, type DecisionProvider, DecisionProviderError, EffectFailure, inspectWorkflow, type LoadImage, type Workflow, type WorkflowDeps } from "@parcha/agentrun-dsl";
 import type { DecisionModelPrice } from "@parcha/agentrun-decisions";
-import { type BeforeRequest, modelPortFor, type Refusal, type RunSessions, type Wire } from "@parcha/agentrun-kernel";
+import { type BeforeRequest, type HostTool, modelPortFor, type Refusal, type RunSessions, type Wire } from "@parcha/agentrun-kernel";
 import { type ModelProxy, type ProviderPolicy, type ProxyUsage, startModelProxy } from "@parcha/agentrun-kernel/host";
 import { type CapMode, type CapModel, CapRefused, checkRaise, DECISION_SESSION, type DecisionCapRequest, followUpOf, parkOf, type RaiseState, runCap, type RunDecisions } from "@parcha/agentrun-kernel/kernel/cap";
 import { completer } from "../llm.js";
@@ -50,7 +50,8 @@ import { type CapRefusal, PAUSED_WORDS, type WorkflowCapRule, type WorkflowHostH
 import { heldRedactor, holdClaimed } from "./redact.js";
 import { holdStored } from "./store-secrets.js";
 import { type DecisionDriver, type NodeToolBinding, type WorkflowCap, workflowHost, type WorkflowHostDeps } from "./workflow-host.js";
-import type { Store } from "../store/store.js";
+import type { Claim, Store } from "../store/store.js";
+import type { RunHands } from "./run-hands.js";
 
 /** The one session key the workflow's model requests book under (the run's one booking sums it, runBooking). */
 const SESSION = "workflow";
@@ -134,6 +135,10 @@ export interface WorkflowSpecDeps {
    *  decision node; a test gives its own. */
   readonly loadImage?: LoadImage;
   readonly now?: () => number;
+  /** The run's hands for a claim (run-hands.ts claimRunHands: its Workspace, the computer its place needs and the kernel's
+   *  tools over them, as an agentic run's claim opens them), opened only when a model node names a file tool (read, write,
+   *  edit). The runner's switch gives it (harness-loops.ts); absent, a node naming one is refused at the claim. */
+  readonly hands?: (claim: Pick<Claim, "runId" | "epoch">, redact?: (text: string) => string) => Promise<RunHands>;
 }
 
 /** The run's decision providers, by id, and the one a node that names none is answered by (decisions.ts). */
@@ -185,24 +190,34 @@ function capRuleOf(capUsd: number): WorkflowCapRule {
   };
 }
 
+/** What a claim holds until it is done: its model proxies, and its hands (Workspace, computer, tools) when a model node
+ *  names a file tool. */
+type Held = { readonly proxies: ModelProxy[]; hands?: RunHands };
+/** Lets go of what a claim holds: its proxies closed, then its hands (their tools' end, the computer, the Workspace). */
+async function letGo(held: Held): Promise<void> {
+  for (const proxy of held.proxies) await proxy.close().catch(() => undefined);
+  await held.hands?.release().catch(() => undefined);
+}
+
 /** The claim-time builder: `specOf(claim)` the loop calls. Reads the run's launch and revision, resolves each tier's
  *  provider, and returns the spec. The model proxies and the booking are started per claim (release closes them). */
-export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string }, run?: WorkflowSpecRun) => Promise<WorkflowRunSpec> {
+export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string; epoch?: number }, run?: WorkflowSpecRun) => Promise<WorkflowRunSpec> {
   const now = deps.now ?? Date.now;
   // The run's models resolve the one way the runner resolves any (routeProviderOf over routeOf), unless a test gives its own.
   const providerOf = deps.providerOf ?? routeProviderOf(deps.env ?? process.env);
-  // The proxies a claim started: closed by the spec's release once the claim is done, or here when the claim fails before
-  // its spec is returned (the loop then has no spec to release), so a failed claim leaves no proxy listening.
+  // What a claim holds (its proxies, its hands): let go by the spec's release once the claim is done, or here when the claim
+  // fails before its spec is returned (the loop then has no spec to release), so a failed claim leaves nothing held.
   return async (claim, run) => {
-    const proxies: ModelProxy[] = [];
+    const held: Held = { proxies: [] };
     try {
-      return await claimSpec(claim, run, proxies);
+      return await claimSpec(claim, run, held);
     } catch (error) {
-      for (const proxy of proxies) await proxy.close().catch(() => undefined);
+      await letGo(held);
       throw error;
     }
   };
-  async function claimSpec(claim: { runId: string }, run: WorkflowSpecRun | undefined, proxies: ModelProxy[]): Promise<WorkflowRunSpec> {
+  async function claimSpec(claim: { runId: string; epoch?: number }, run: WorkflowSpecRun | undefined, held: Held): Promise<WorkflowRunSpec> {
+    const { proxies } = held;
     /** The keys a claim opens, held by the runner's one redactor (run.redact) before a decision can echo one. */
     const holding = async (opening: Promise<NodeJS.ProcessEnv>): Promise<NodeJS.ProcessEnv> => {
       const opened = await opening;
@@ -216,6 +231,10 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string 
     const nodeNames = workflowTools(workflowNodes(claimed.workflow, inspectWorkflow(claimed.workflow))).nodes;
     const unbound = nodeNames.find((name) => !RUNNER_NODE_TOOLS.includes(name));
     if (unbound !== undefined) throw new Error(nodeToolUnboundText(unbound));
+    // A node's file tools run on the run's hands (its Workspace and computer, fenced by the claim's epoch): a runner that
+    // gives the spec none refuses the run here, as for a tool it does not bind.
+    const handNames = nodeNames.filter((name) => NODE_HAND_TOOLS.includes(name));
+    if (handNames.length > 0 && (deps.hands === undefined || claim.epoch === undefined)) throw new Error(nodeToolUnboundText(handNames[0]!));
     // Every secret the server keeps sealed (store-secrets.ts) held by the runner's one redactor before the workflow runs.
     if (run?.redact) await holdStored(heldRedactor(run.redact), deps.store, deps.sealKey, deps.data);
     const tiers = tiersOf(claimed.workflow);
@@ -295,7 +314,13 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string 
       beforeRelease: () => {},
       handoverInJournal: true,
     };
-    const nodeBindings = await bindNodeTools(nodeNames, nodeHost);
+    const nodeBindings = await bindNodeTools(nodeNames.filter((name) => !NODE_HAND_TOOLS.includes(name)), nodeHost);
+    // The node's file tools (main's fileTool: the run's file tools over its work folder): the run's hands, opened the way an
+    // agentic run's claim opens them (run-hands.ts), held until the claim is done, and the kernel's tools over them.
+    if (handNames.length > 0) {
+      held.hands = await deps.hands!({ runId: claim.runId, epoch: claim.epoch! }, run?.redact ? heldRedactor(run.redact) : undefined);
+      for (const tool of held.hands.tools.hostTools(handNames)) nodeBindings.set(tool.name, { tools: [nodeHandTool(tool)], extensions: [] });
+    }
     // Each node tool as the node gets it and the registry holds it: booked on the run's one ledger (bookedNodeTools), in an
     // extension of its own; the binding's raw extension (installed through `installed`) is never put in the registry.
     const nodeTools = new Map<string, NodeToolBinding>();
@@ -377,9 +402,7 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string 
         paidTools = await run.tools(await sessions.open(TOOL_SESSION), { flush: () => deps.store.flush() });
         hooks.setPort(booking.models as never);
       },
-      release: async () => {
-        for (const proxy of proxies) await proxy.close().catch(() => undefined);
-      },
+      release: () => letGo(held),
     };
     return spec;
   }
@@ -774,12 +797,30 @@ function tiersOf(workflow: Workflow): Tier[] {
 
 /** The tools the workflow may call, for the host to register. */
 /** The tools a workflow's model node takes on the runner: main's NODE_TOOLS (tools.ts) that bind through a ToolHost alone.
- *  Its file tools (read, write, edit) need the run's Workspace and its browser a computer, which the workflow loop does not
- *  claim yet: a node naming one is refused at the claim (nodeToolUnboundText). */
-export const RUNNER_NODE_TOOLS: readonly string[] = Object.freeze([WEB_FETCH_TOOL, WEB_SEARCH_TOOL]);
+ *  Its file tools (read, write, edit) are the kernel's hands over the run's Workspace (NODE_HAND_TOOLS). The browser waits on
+ *  the runner's native browser route: a node naming it is refused at the claim (nodeToolUnboundText). */
+export const NODE_HAND_TOOLS: readonly string[] = Object.freeze(["read", "write", "edit"]);
+export const RUNNER_NODE_TOOLS: readonly string[] = Object.freeze([WEB_FETCH_TOOL, WEB_SEARCH_TOOL, ...NODE_HAND_TOOLS]);
 /** A node naming a tool the runner does not bind for a model node yet: the run is refused at its claim in these words,
  *  the tool never offered and never silently dropped. */
-export const nodeToolUnboundText = (tool: string): string => `A workflow's model node names ${tool}, which the runner does not bind for a model node yet (it needs the run's workspace or computer); this run cannot start here.`;
+export const nodeToolUnboundText = (tool: string): string => `A workflow's model node names ${tool}, which the runner does not bind for a model node yet; this run cannot start here.`;
+
+/** A kernel hand (read, write or edit over the run's Workspace and computer) as a model node's tool: pi's tool of it, as
+ *  the pi adapter registers a host tool (adapters/pi.ts piTool), replay-safe only where the kernel says so (main's REPLAY:
+ *  read safe, write and edit never). */
+function nodeHandTool(tool: HostTool): ToolRegistration {
+  return defineTool({
+    name: tool.name,
+    description: tool.description,
+    parameters: tool.inputSchema as never,
+    replay: tool.replay === "safe" ? "safe" : "unsafe",
+    execute: async (args: unknown, api: { callId: string }, context: Context) => {
+      const answer = await tool.call(args ?? {}, { callId: api.callId, signal: context.abortSignal ?? new AbortController().signal });
+      const images = (answer.images ?? []).map((image) => ({ type: "image" as const, data: image.data, mimeType: image.mimeType }));
+      return { output: [{ type: "text" as const, text: answer.text }, ...images], ...(answer.isError ? { isError: true } : {}) } as never;
+    },
+  } as never) as unknown as ToolRegistration;
+}
 
 /** The model nodes' tools bound for this claim (main's app.ts:243-249, 301-302): each through `host`, the run's
  *  ToolHost on the runner (its own keys and plane, as an agentic run's non-hand tools bind). */
