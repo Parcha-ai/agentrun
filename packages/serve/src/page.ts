@@ -14,7 +14,7 @@ import { storeApi } from "@parcha/pi-durable-agent/serve";
 import { ApiError } from "./errors.js";
 import { hostRefusedPage } from "./host-check.js";
 
-const CSP = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
+const CSP = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; base-uri 'none'; form-action https://github.com; frame-ancestors 'none'";
 const SECURITY = { "content-security-policy": CSP, "x-content-type-options": "nosniff", "referrer-policy": "no-referrer", "cache-control": "no-store" };
 const HTML = "text/html; charset=utf-8";
 /** Strict-Transport-Security for a server whose public address (AGENTRUN_PUBLIC_URL) is https: a browser that saw it
@@ -125,6 +125,11 @@ const ownerSessions = new WeakSet<IncomingMessage>();
 /** Whether `req` came from the owner's page under their password session (answerPage). A token, whoever holds it, never
  *  did. */
 export const byOwnerSession = (req: IncomingMessage): boolean => ownerSessions.has(req);
+/** The requests the console sends under the cookie accounts-off mints from the token (no password), held to this server's
+ *  own origin and a JSON body as every page write is: a fact secret-writes.ts reads (mayWriteSecrets), never an owner. */
+const consoleSessions = new WeakSet<IncomingMessage>();
+/** Whether `req` came from the accounts-off console's page session (answerPage). */
+export const byConsoleSession = (req: IncomingMessage): boolean => consoleSessions.has(req);
 
 /**
  * Answers the console's paths ("/" and its /assets/*, and the addresses that moved to "/") and the store's /api/*, and
@@ -143,6 +148,7 @@ export function answerPage(req: IncomingMessage, res: ServerResponse, raw: strin
       // The owner's password session (accounts on), never a cookie a token mints: what approving a note asks for, and
       // what capabilities read to say whether this caller may (byOwnerSession).
       if (server.owner) ownerSessions.add(req);
+      else consoleSessions.add(req);
     }
     return false;
   }

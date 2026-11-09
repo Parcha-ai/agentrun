@@ -189,7 +189,9 @@ test("a trigger that would start an uncapped run, a workflow's included, or fire
   await refused(schedule("missing", { every_s: 600 }), "target.agent_id", "not_found");
   assert.deepEqual((await api("GET", "/triggers")).body.triggers, [], "nothing kept");
   assert.equal((await api("DELETE", "/triggers/trg_none")).status, 404);
-  assert.deepEqual((await api("GET", "/capabilities")).body.features.triggers, { routes: true, sources: ["schedule", "webhook"], targets: ["start_run", "message_run"], min_every_s: 60, history_kept: 200, catchup_window_s: 3600, failures_to_pause: 5, webhook: { signing: "standard-webhooks/v1", signatures: ["standard", "github"], tolerance_s: 300, max_body_bytes: 262144, payload_kept_bytes: 16384, at_rest: "unavailable" } });
+  assert.deepEqual((await api("GET", "/capabilities")).body.features.triggers, { routes: true, sources: ["schedule", "webhook", "github"], targets: ["start_run", "message_run"], min_every_s: 60, history_kept: 200, catchup_window_s: 3600, failures_to_pause: 5, webhook: { signing: "standard-webhooks/v1", signatures: ["standard", "github"], tolerance_s: 300, max_body_bytes: 262144, payload_kept_bytes: 16384, at_rest: "sealed" } });
+  // A server started with no seal key handed over has one all the same (ensureSealKey): what it keeps is always sealed.
+  assert.equal((await api("GET", "/capabilities")).body.features.webhooks.at_rest, "sealed");
 });
 
 test("a capped trigger on a workflow agent is taken, as one on an agentic agent is: a workflow run's spend is capped", { timeout: 120_000 }, async (t) => {
@@ -450,6 +452,25 @@ test("a date that is no date, and an interval past a year, are 422 on their fiel
   const year = await api("POST", "/triggers", schedule("dates", { every_s: 366 * 86_400, start_at: "2026-01-01T00:00:00Z" }));
   assert.equal(year.status, 201, JSON.stringify(year.body));
   assert.equal(year.body.next_at, "2027-01-02T00:00:00.000Z");
+});
+
+test("archiving an agent answers the triggers it turned off; while it is archived turning one on is 409 agent_archived; unarchiving answers those still off, which stay off until each is turned on", { timeout: 60_000 }, async (t) => {
+  const { api } = await serve(t);
+  await made(api, "weekly");
+  const trigger = (await api("POST", "/triggers", schedule("weekly", { every_s: 604_800 }))).body;
+  const archived = await api("POST", "/agents/weekly/archive");
+  assert.equal(archived.status, 200, JSON.stringify(archived.body));
+  assert.deepEqual([archived.body.agent_id, archived.body.triggers_off], ["weekly", [{ id: trigger.id, name: trigger.name }]]);
+  const off = (await api("GET", `/triggers/${trigger.id}`)).body;
+  assert.deepEqual([off.enabled, off.disabled?.reason], [false, "agent_archived"]);
+  const refused = await api("PATCH", `/triggers/${trigger.id}`, { enabled: true });
+  assert.deepEqual([refused.status, refused.body.error?.code], [409, "agent_archived"], JSON.stringify(refused.body));
+  const back = await api("POST", "/agents/weekly/unarchive");
+  assert.equal(back.status, 200, JSON.stringify(back.body));
+  assert.deepEqual(back.body.triggers_off, [{ id: trigger.id, name: trigger.name }], "still off: unarchiving turns none on");
+  assert.equal((await api("PATCH", `/triggers/${trigger.id}`, { enabled: true })).body.enabled, true);
+  assert.deepEqual((await api("POST", "/agents/weekly/archive")).body.triggers_off.length, 1, "on again, the next archive turns it off again");
+  assert.deepEqual((await api("POST", "/agents/weekly/unarchive")).body.triggers_off.length, 1);
 });
 
 // Superseded: "a triggers file holding a malformed trigger leaves the server up". The triggers keep no file: their rows

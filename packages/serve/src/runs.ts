@@ -60,7 +60,6 @@ import { DECISION_KEYS, handover, handoverSignIn, mcpHandover, mcpSecretValues, 
 import { type HandedSignIn, pointerHash, type SignIns } from "./sign-ins.js";
 import { MIN_SECRET } from "./learn/secrets.js";
 import { cutStrings, keyRefusal, redacted, redactedAnswer, redactedLive, redactedOutput, runKeyOf } from "./key-refusal.js";
-import { GRAPH_CACHE_BYTES, PartCache, type PartKind, servedPart } from "./graph-served.js";
 import { CONTENT_FILTER_WORDS, contentFiltered, MODERATED } from "./content-filter.js";
 import { BOX_KEYS, VM_PROVIDER } from "./boxes.js";
 import { type Place, remotePlace, storedPlace } from "./place.js";
@@ -69,7 +68,7 @@ import { removeEgressDir, RUN_BOX_ALLOW_ENV } from "./box-egress.js";
 import { BehindReadError, checkpointRunDb, MonotonicReads, readRunDb } from "./run-db.js";
 import { holderLives, holderOfClaim, holderOfProcess, holderState, killHolder, LAUNCH_HOLDER, RUN_EPOCH_ENV, RUN_LAUNCH_ENV, type RunHolder, signal } from "./run-holder.js";
 import { firstDoorLine, untilOpened, verifyDoor } from "./door-line.js";
-import { BUDGET_PAUSED, type Approval, type ApprovalAnswer, actingOn, approvalOf, browserPending, budgetPending, cents, centsUp, continuationOf, costOf, costView, type Handed, handedPointers as handedPointersOf, knownToolCostOf, MALFORMED, meaningful, micro, microUp, overByMiss, pauseOf, pausedAt, type Pending, pendingOf, raisedToGo, redactorOf, refusedValuesOf, rowShown as rowShownOf, servedReviewWith, servedRunErrorWith, shownOf, HELD, outcomeSays, outcomeShows, type SoFar, soFarOf, type State, type Status, statusOf as statusOfView, stopped, stoppedAt, SUGGESTED_RAISE_FACTOR, suggestedCap, shownArgs, toolCostOf, usersOf, waitingApproval, WITHHELD_SIGN_IN, withAsks, withdrawn, withOverCap, withPaused } from "./run-view.js";
+import { BUDGET_PAUSED, type Approval, type ApprovalAnswer, actingOn, approvalOf, browserPending, budgetPending, cents, centsUp, continuationOf, costOf, costView, type Handed, handedMark, handedPointers as handedPointersOf, knownToolCostOf, MALFORMED, meaningful, micro, microUp, overByMiss, pauseOf, pausedAt, type Pending, pendingOf, raisedToGo, redactorOf, refusedValuesOf, rowShown as rowShownOf, servedReviewWith, servedRunErrorWith, shownOf, HELD, outcomeSays, outcomeShows, type SoFar, soFarOf, type State, type Status, statusOf as statusOfView, stopped, stoppedAt, SUGGESTED_RAISE_FACTOR, suggestedCap, shownArgs, toolCostOf, usersOf, waitingApproval, WITHHELD_SIGN_IN, withAsks, withdrawn, withOverCap, withPaused } from "./run-view.js";
 // The cost reads, the served row transforms, the status and pending views and the redaction choke point kept their import
 // path here for the server routes and tests that read them from this module.
 export { costOf, costView, knownToolCostOf, soFarOf, type SoFar, toolCostOf, withOverCap, withPaused, stoppedAt, suggestedCap, SUGGESTED_RAISE_FACTOR, type State, type Status, WITHHELD_SIGN_IN };
@@ -108,14 +107,7 @@ const QUIET = /:run:(start|end)$/;
 const RETRY_CODES = ["OPENING", "PARKING", "RELEASED"];
 /** How often one server opens a run again whose process went before the run ended, before it fails the run. */
 const MAX_RELAUNCHES = 3;
-// MALFORMED and the Handed type move to run-view.ts (the run's served view), imported above.
-/** A run's `sign_in_handed` as read from its serve.json: undefined when absent (never handed one); the hashes it names;
- *  MALFORMED for any other value. */
-function handedMark(value: unknown): Handed | undefined {
-  if (value === undefined) return undefined;
-  if (Array.isArray(value) && value.length && value.every((hash) => typeof hash === "string" && /^[0-9a-f]{64}$/.test(hash))) return [...new Set(value as string[])];
-  return MALFORMED;
-}
+// MALFORMED, the Handed type and handedMark move to run-view.ts (the run's served view), imported above.
 
 /** A run's serve.json at `path`, the one read every reader of it shares (load, forget's handedTo, a list row): `stored`,
  *  what it holds when it is whole JSON of an object, else null; `damaged`, whether it is there but can't be read or
@@ -842,8 +834,9 @@ export type RunNotify = (event: (typeof RUN_EVENTS)[number], run: RunNotice & { 
 export const WAITS_ON_A_PERSON = "The run is waiting on a person.";
 
 /** The server's own secrets, which a run's process never gets: the API token, by name or by value, the seal key
- *  the tool keys are kept under (tool-keys.ts), and the boxes' keys (boxes.ts), which only the server's box providers use. */
-const SERVER_ONLY = new Set(["AGENTRUN_TOKEN", "AGENTRUN_API_KEY", "AGENTRUN_SEAL_KEY", ...BOX_KEYS]);
+ *  the tool keys are kept under (tool-keys.ts), the store's URL (it may hold the database's password), and the boxes'
+ *  keys (boxes.ts), which only the server's box providers use. */
+const SERVER_ONLY = new Set(["AGENTRUN_TOKEN", "AGENTRUN_API_KEY", "AGENTRUN_SEAL_KEY", "AGENTRUN_STORE_URL", ...BOX_KEYS]);
 /** The secrets a run's process is handed over its pipe (secrets.ts): every one but the server's own and the decision
  *  keys, which go on their own descriptor. */
 export const RUN_SECRETS = SECRET_NAMES.filter((name) => !SERVER_ONLY.has(name) && !DECISION_KEYS.includes(name));
@@ -990,13 +983,9 @@ export class Runs {
     return (this.#disk ??= localDisk(this.options.agents.dir, this.store));
   }
   #disk: DiskAdapter | undefined;
-  /** Each workflow revision's workflow, by revision id, as a graph read it: a revision never changes. */
-  private readonly workflows = new Map<string, unknown>();
   /** What decides the secrets each revision's runs are handed (needsOf), by revision id: read once, from the revision the
    *  run is pinned to, never from a request. The keys themselves are read at each launch (keysFor). */
   private readonly needs = new Map<string, RunNeeds>();
-  /** Every run's graph as served, part by part (servedGraph): one LRU by bytes across runs (graph-served.ts PartCache). */
-  private readonly graphCache = new PartCache(GRAPH_CACHE_BYTES);
   private readonly adopting = new Map<string, Promise<Run>>();
   /** The runs this process is starting, from the store's row until the run is held (start): its serve.json and its seed
    *  copy are written in between. A read of one waits for its start and never loads it from disk, where it would look
@@ -1585,26 +1574,6 @@ export class Runs {
     const out = redact(values);
     run.served = { ...run.served, [slot]: { keys, input, out } };
     return out;
-  }
-
-  /** A workflow run's graph as serve serves it: its nodes, each decision and each call (its input, output and error) with
-   *  no held secret, by its answer's rule (redactedOutput), and only then cut: a map item's label at 200 characters, a
-   *  call's error at 2000, and a text stored cut (a decision's state past 64 KB, an error logged cut) less its last 6
-   *  times the longest held value plus 16 characters, where a value the stored cut split would sit. The view comes whole
-   *  from graph-view.ts's lock-free read at each poll, so a key saved since the last poll is found in it too. Each part is
-   *  served once per content and held value set: a console polls the graph while the run goes. */
-  private servedGraph<T extends { nodes: unknown; decisions: unknown[]; effects: unknown[] }>(run: Run, view: T): T {
-    const values = this.refusedValues(run);
-    const keys = digestOf([...values].sort());
-    const once = (kind: PartKind, value: unknown): unknown => {
-      const at = `part:${keys}:${kind}:${digestOf(value)}`;
-      const kept = this.graphCache.get(at);
-      if (kept !== undefined) return kept;
-      const out = servedPart(kind, value, values);
-      this.graphCache.set(at, out, Buffer.byteLength(JSON.stringify(out) ?? ""));
-      return out;
-    };
-    return { ...view, nodes: once("nodes", view.nodes), decisions: view.decisions.map((value) => once("decision", value)), effects: view.effects.map((value) => once("effect", value)) };
   }
 
   /** The timeline's redaction of `run`'s error rows and of what a tool's result shows (its summary and preview), applied
@@ -3992,30 +3961,7 @@ export class Runs {
     return { run_id: run.id, paused, status: statusOf(run).status };
   }
 
-  /** A workflow run's graph as it stands (graph-view.ts), live while it runs. */
-  async graph(run: Run) {
-    if (run.kind !== "workflow") throw new ApiError("not_found", `the run ${run.id} is an agentic run; only a workflow run has a graph`);
-    // Its nodes, decisions and calls are read from its store and are what the run said: while this server can't read the
-    // browser sign-in it was handed (meta.unshown), the pointer they may repeat is not among the values cut, so none of it
-    // is served. Withheld in the same words as its answer, for a run still going too (it is stopped and ends failed).
-    if (run.meta.unshown) throw new ApiError("forbidden", WITHHELD_SIGN_IN);
-    // A revision never changes: read once, waiting out a busy store as a run's end does, never failing a poll on it.
-    let workflow = this.workflows.get(run.revision);
-    if (workflow === undefined) {
-      const revision = (await whenFree(() => this.store.readRevision(run.revision), this.busyDelays(), this.onBusy(run.id, "the agent store"))) as Extract<Revision, { kind: "workflow" }>;
-      this.workflows.set(run.revision, (workflow = revision.body.workflow));
-    }
-    // The run's status as this server holds it, with no read of the agent store, which the run's process may be writing.
-    const { status } = statusOf(run);
-    const ended = TERMINAL.has(status);
-    const { runGraph } = await import("./graph-view.js");
-    const given = {
-      run: { id: run.id, agent: run.agentId, revision: run.revision, status, paused: status === "paused", startedAt: run.meta.created_at, endedAt: ended ? (run.endedAt ?? run.updatedAt) : null },
-      ended, workflow, storeFile: this.storeFile(run), root: run.dir, input: run.meta.input ?? {}, modelCost: costOf(run.rows), llmRead: run.llmRead ?? 0,
-    };
-    // Every read of the run's database is lock-free (run-db.ts): a run's process holding it never makes a poll wait.
-    return this.servedGraph(run, await runGraph(given));
-  }
+
 
   /** How long a run's process gets after SIGTERM before SIGKILL: its drain and a second to exit. */
   private killAfterMs(): number {

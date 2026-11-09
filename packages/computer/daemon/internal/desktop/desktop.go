@@ -144,6 +144,11 @@ func (d *Display) gone(c *x11.Conn, err error) error {
 	return rpc.Errorf(rpc.KindUnsupported, "the display %s went away: %v", d.name, err)
 }
 
+// Name is the DISPLAY this display was made with, such as ":99"; "" is none.
+func (d *Display) Name() string {
+	return d.name
+}
+
 // Groups is Groups when the display answers with XTEST, else none.
 func (d *Display) Groups() []string {
 	if _, err := d.connection(); err != nil {

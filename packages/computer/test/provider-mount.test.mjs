@@ -28,21 +28,21 @@ test("Docker: MOUNT is [\"bind\"], what its provider declares", () => {
 	assert.deepEqual([...docker.MOUNT], declared(fakeDocker({ desktop: {} }).provider), "a desktop takes the same mount");
 });
 
-test("Modal: MOUNT is [] until D6, what its provider declares", () => {
+test("Modal: MOUNT is [\"archil\"], what its provider declares", () => {
 	const provider = new ModalProvider({ sdk: fakeModal().sdk, app: "computers", daemonImage: DAEMON_IMAGE });
-	assert.deepEqual([...modal.MOUNT], []);
+	assert.deepEqual([...modal.MOUNT], ["archil"]);
 	assert.deepEqual([...modal.MOUNT], declared(provider));
 });
 
-test("Daytona: MOUNT is [] until D6, what its provider declares", () => {
+test("Daytona: MOUNT is [\"archil\"], what its provider declares", () => {
 	const fake = fakeDaytona();
 	const provider = new DaytonaProvider({ apiKey: KEY, apiUrl: API, daemonPath: DAEMON, fetch: fake.fetch, webSocket: fake.webSocket });
-	assert.deepEqual([...daytona.MOUNT], []);
+	assert.deepEqual([...daytona.MOUNT], ["archil"]);
 	assert.deepEqual([...daytona.MOUNT], declared(provider));
 });
 
-test("E2B: MOUNT is [] until D6, what its provider declares", () => {
+test("E2B: MOUNT is [\"archil\"], what its provider declares", () => {
 	const provider = new e2b.E2BProvider({ apiKey: E2B_KEY, Sandbox: fakeE2B().Sandbox, daemonPath: DAEMON });
-	assert.deepEqual([...e2b.MOUNT], []);
+	assert.deepEqual([...e2b.MOUNT], ["archil"]);
 	assert.deepEqual([...e2b.MOUNT], declared(provider));
 });

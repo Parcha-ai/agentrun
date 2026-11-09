@@ -43,7 +43,7 @@ describe("the conformance suite on Docker", { skip: LIVE ? false : "set AGENTRUN
 	});
 
 	it("has cases in every group", () => {
-		for (const group of ["health", "exec", "files", "process", "provider", "drift", "mount", "screen", "input", "touch", "apps", "lifetime"]) {
+		for (const group of ["health", "exec", "files", "process", "provider", "drift", "isolation", "mount", "screen", "input", "touch", "apps", "lifetime"]) {
 			assert.ok(conformanceCases.some((c) => c.group === group), `no ${group} case`);
 		}
 	});

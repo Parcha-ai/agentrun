@@ -166,6 +166,12 @@ export interface RunPatch {
   readonly endedAt?: number | null;
 }
 
+/** The row runs.update answers. When the patch wrote `signInHanded` (the runner's bind at its claim), `save` rides with it:
+ *  whether this run holds the sign-in's save lease — true unless another run already holds one of the handed pointers,
+ *  decided in the same transaction as the sign_in_handed write so two binds of one sign-in never both save. Absent when the
+ *  patch wrote no `signInHanded`. */
+export type UpdatedRun = RunRow & { readonly save?: boolean };
+
 /** A run's launch, as the server writes it at start: its JSON `body` (run-launch.ts: the first input, title, place, effort,
  *  cap, trigger and origin), and `sealed` ciphertext for any secret it carries (sealed with the server's key outside the
  *  store, AAD `run_launch|<run_id>|sealed`), or none. Written once, in the same transaction as the queued run. */
@@ -401,6 +407,14 @@ export class TriggerFull extends Error {
   }
 }
 
+/** A run of an archived agent, or a trigger of it made on or turned on: refused, nothing written (Agents.archive). */
+export class AgentArchived extends Error {
+  override name = "AgentArchived";
+  constructor(readonly agentId: string) {
+    super(`the agent ${agentId} is archived`);
+  }
+}
+
 export interface Agents {
   /** Creates the agent, or renames it (name, description) when it exists. */
   put(agent: { id: string; name: string; description?: string | null }): Promise<void>;
@@ -408,7 +422,11 @@ export interface Agents {
   create(agent: { id: string; name: string; description?: string | null }, firstRevision: NewRevision): Promise<void>;
   get(id: string): Promise<AgentRow | undefined>;
   list(options?: { archived?: boolean }): Promise<AgentRow[]>;
-  archive(id: string, archived: boolean): Promise<void>;
+  /** Archives the agent, or unarchives it. Archived, every trigger of it that is on is turned off in the same transaction
+   *  (`disabled` set to `why`, JSON; its scope rows dropped), and those are the answer: from its commit no firing starts a
+   *  run of the agent (triggers.fire refuses it, AgentArchived), and none of its triggers is made on or turned on.
+   *  Unarchived, none turns on again: the answer is empty. */
+  archive(id: string, archived: boolean, why?: unknown): Promise<{ id: string; name: string }[]>;
   /** Adds a revision and makes it the agent's current one, in one commit. */
   addRevision(revision: NewRevision & { agentId: string }): Promise<void>;
   /** Makes `revisionId`, one of the agent's own, its current one. StoreConstraint when it is not a revision of `agentId`. */
@@ -433,20 +451,23 @@ export interface Triggers {
   /** Every trigger, oldest first. */
   all(): Promise<TriggerRow[]>;
   /** The trigger and, while it is enabled, its scope rows (`scopes`), in one transaction: a scope another enabled trigger
-   *  holds is refused (StoreConstraint on trigger_scopes), nothing written. */
+   *  holds is refused (StoreConstraint on trigger_scopes), nothing written; one made on for an archived agent too
+   *  (AgentArchived). */
   create(trigger: NewTrigger, scopes?: readonly TriggerScope[]): Promise<TriggerRow>;
   /** The fields given changed, `updatedAt` set: undefined when there is no such trigger. With `scopes`, its scope rows
-   *  rewritten in the same transaction (none while it is off); a patch that turns it off drops them. */
+   *  rewritten in the same transaction (none while it is off); a patch that turns it off drops them. One that leaves it
+   *  on for an archived agent, turned on or moved there, is refused (AgentArchived), nothing written. */
   update(id: string, patch: TriggerPatch, scopes?: readonly TriggerScope[]): Promise<TriggerRow | undefined>;
   /** The trigger, its scope rows and its firings gone. */
   remove(id: string): Promise<void>;
-  /** Enables the trigger and writes its scope rows, in one transaction. */
+  /** Enables the trigger and writes its scope rows, in one transaction; refused for an archived agent's (AgentArchived). */
   enable(triggerId: string, scopes: readonly TriggerScope[]): Promise<void>;
   /** Disables the trigger (with why, JSON) and deletes its scope rows, in one transaction. */
   disable(triggerId: string, why?: unknown): Promise<void>;
   /** The firing starts a run: the queued run, the `started` firing that names it (the due firing's row, or a new one) and
    *  the trigger's last_run_id, with its failure streak reset, in one transaction; with `launch`, the run's launch row in
-   *  that same transaction (the store's one writeLaunch). */
+   *  that same transaction (the store's one writeLaunch). A run of an archived agent is refused in it (AgentArchived),
+   *  nothing written: a firing claimed before the archive committed starts no run after it. */
   fire(firing: Firing, run: { id: string; agentId: string; revisionId: string }, options?: { launch?: RunLaunchInput }): Promise<RunRow>;
   /** The enabled triggers listening on (`kind`, `scope`): its scope rows. */
   scoped(kind: string, scope: string): Promise<string[]>;
@@ -505,8 +526,12 @@ export interface Runs {
   claimMany(runner: string, k: number, options?: { leaseMs?: number }): Promise<Claim[]>;
   /** Changes the run's row under `claim`, and in the same commit writes `also` and marks `take`'s command rows taken (a
    *  stop the runner applies itself ends the run with its stop row taken, or neither). Refused, nothing written: Fenced when
-   *  the run's epoch is not the claim's; CommandTaken when a command in `take` is taken already, or not the run's. */
-  update(claim: Claim, patch: RunPatch, rows?: { readonly also?: readonly AlsoRow[]; readonly take?: readonly number[] }): Promise<RunRow>;
+   *  the run's epoch is not the claim's; CommandTaken when a command in `take` is taken already, or not the run's. When the
+   *  patch writes `signInHanded` (the runner's bind), the answer carries `save`: whether this run holds the sign-in's save
+   *  lease, decided in this same transaction so two binds of one sign-in never both save — no other run holds a handed
+   *  pointer, counting a running run and (within `signInSettleMs` of leaving running, a vendor's settle window) one that
+   *  recently left running. `signInSettleMs` defaults to 0 (other vendors free the lease the instant a run leaves running). */
+  update(claim: Claim, patch: RunPatch, rows?: { readonly also?: readonly AlsoRow[]; readonly take?: readonly number[]; readonly signInSettleMs?: number }): Promise<UpdatedRun>;
 }
 
 /** A saved MCP server: its listed tools (each with whether it can be granted, and why not), the owner's prices, and its
@@ -531,6 +556,9 @@ export interface McpServerRow {
   /** When the tools were last listed (ms): a refresh moves this, not updatedAt, so a refresh is not read as an owner edit.
    *  Null for a row written before this column. */
   readonly listedAt: number | null;
+  /** When the sealed credential was last set (ms): a new credential's save or a sign-in, never a token refresh. Null with
+   *  no credential. */
+  readonly credentialChangedAt: number | null;
 }
 
 /** A run's MCP pin: what it may call, per granted server (url, tools, prices), written once at its first claim. */
@@ -542,13 +570,20 @@ export interface McpPinRow {
 
 /** The longest an MCP token refresh may take: two tries of 4 s each. The runner's claim step gives its call up by then. */
 export const MCP_REFRESH_CALL_MS = 2 * 4_000;
-/** A refresh lease's length by default: the call's deadline and room to write its result. */
-export const MCP_REFRESH_LEASE_MS = MCP_REFRESH_CALL_MS + 4_000;
+/** The most one bounded store write may take, counted from its call: its wait behind its connection (SQLite's queue, a
+ *  Postgres pool's connect), for the database's lock, its statement and its commit (keepRefreshed's on both stores). */
+export const STORE_WRITE_DEADLINE_MS = 10_000;
+/** A refresh lease's length by default: it covers the holder's whole custody of the refresh token, the refresh call
+ *  (MCP_REFRESH_CALL_MS) and then the keep of its new set (STORE_WRITE_DEADLINE_MS, from the keep's call), with 2 s to
+ *  spare. A lease shorter than both lapses while a slow commit is still landing a set whose token the provider already
+ *  spent, and a waiter then takes over and refreshes with the spent one. Made from the two bounds so it cannot drift. */
+export const MCP_REFRESH_LEASE_MS = MCP_REFRESH_CALL_MS + STORE_WRITE_DEADLINE_MS + 2_000;
 
 export interface Mcp {
   /** The server's write: the server's row, inserted or replaced by name (its first save's time kept). An owner's save
-   *  clears any refresh lease, so a refresh in flight is refused (RefreshLeaseLost) and never overwrites it. */
-  put(server: { name: string; url: string; auth: string; protocol?: string | null; tools: unknown; prices?: unknown; serverInfo?: unknown; instructions?: string | null; sealed?: Uint8Array | null; listedAt?: number; updatedAt?: number }): Promise<McpServerRow>;
+   *  clears any refresh lease and changes the credential, so a refresh in flight is dropped (keepRefreshed's `kept: false`)
+   *  and never overwrites it. */
+  put(server: { name: string; url: string; auth: string; protocol?: string | null; tools: unknown; prices?: unknown; serverInfo?: unknown; instructions?: string | null; sealed?: Uint8Array | null; listedAt?: number; updatedAt?: number; credentialChangedAt?: number | null }): Promise<McpServerRow>;
   remove(name: string): Promise<void>;
   /** The registry's rows, by name. */
   servers(): Promise<McpServerRow[]>;
@@ -566,9 +601,13 @@ export interface Mcp {
    *  may take it. `ms` must be longer than the refresh call's own deadline (MCP_REFRESH_CALL_MS: the holder gives its call
    *  up by then), so a lease never lapses while its holder's call may still spend the token; a shorter one is refused. */
   leaseRefresh(name: string, lease: { seen: Uint8Array | null; holder: string; ms?: number }): Promise<{ leased: boolean; row: McpServerRow }>;
-  /** The lease holder's refreshed credential: written, and the lease cleared, in one transaction. RefreshLeaseLost (nothing
-   *  written) when `holder` no longer holds the lease (it ran out and another claim took it, or the server was removed). */
-  refreshToken(name: string, refresh: { holder: string; sealed: Uint8Array }): Promise<McpServerRow>;
+  /** A refresh's new credential, kept by a compare-and-set on the CREDENTIAL in one statement: written iff the server's
+   *  sealed value is still `seen` (the one the refresh started from, its lease's), whoever holds the lease now, so a
+   *  token already spent at the provider is never lost to a lease that lapsed; the lease cleared only when `holder` still
+   *  holds it. `kept: false` (nothing written) when the credential changed meanwhile (a newer set landed, or the owner saved
+   *  one): ours is dropped, and no refresh is tried again with any token. Under one deadline from its call
+   *  (STORE_WRITE_DEADLINE_MS). `row`: the server as it is after, undefined when it is no longer saved. */
+  keepRefreshed(name: string, keep: { seen: Uint8Array | null; sealed: Uint8Array; holder: string }): Promise<{ kept: boolean; row: McpServerRow | undefined }>;
   /** Gives the lease back without a new credential (the refresh failed or got no answer), so the next claim may try at once. */
   releaseRefresh(name: string, holder: string): Promise<void>;
 }
@@ -716,8 +755,11 @@ export interface SignIns {
   /** The agent's live sign-in for the provider, or undefined. */
   get(agentId: string, provider: string): Promise<SignInRow | undefined>;
   /** Marks the agent's sign-in for the provider verified at `at` (a run saved a live session back): sets verified_at, for
-   *  the v2 view. The run path (E2) calls it at a run's save; a missing sign-in is left as it is. */
-  verify(agentId: string, provider: string, at: number): Promise<void>;
+   *  the v2 view, and answers whether it stamped a row. With `ifSavedAt`, it stamps only while the sign-in's saved_at is
+   *  still that one (WHERE saved_at = ?), so a save that landed since the caller checked (allowed while held; it clears
+   *  verified_at) is never re-stamped stale — the answer is false then, and nothing is written. The run path (E2) calls it
+   *  at a run's save; a missing sign-in is left as it is (false). */
+  verify(agentId: string, provider: string, at: number, options?: { ifSavedAt?: number }): Promise<boolean>;
   /** The agent's forgotten pointers for the provider, newest first (kept sealed, never opened here). */
   tombstones(agentId: string, provider: string): Promise<SignInTombstoneRow[]>;
   /** Forgets the agent's live sign-in for the provider, in the one transaction a launch shares as its lock: when a running
@@ -727,8 +769,10 @@ export interface SignIns {
    *  no live sign-in for the provider. */
   forget(agentId: string, provider: string, held: { hash?: string; heldUnreadable?: boolean }): Promise<SignInTombstoneRow>;
   /** The id of a running run whose sign_in_handed holds `hash`, if one does; undefined otherwise. The check the runner
-   *  makes before it serves a run's output, and forget makes before it removes a sign-in. */
-  handedHolder(hash: string): Promise<string | undefined>;
+   *  makes before it serves a run's output, and forget makes before it removes a sign-in. With `settleMs` (a vendor's settle
+   *  window, from the store clock or `at`), a run that left running (ended or parked) less than that ago also counts as
+   *  holding it, so a new run does not save over a context write-back still in flight. */
+  handedHolder(hash: string, options?: { settleMs?: number; at?: number }): Promise<string | undefined>;
   /** The id of a running run that was handed any sign-in (a non-empty sign_in_handed), if one was: for a pointer that does
    *  not open here, which any such run may hold. */
   handedAny(): Promise<string | undefined>;
@@ -923,17 +967,6 @@ export class StoreOwned extends Error {
   }
 }
 
-/** A refreshed MCP credential from a claim that no longer holds the server's refresh lease: nothing is written. */
-export class RefreshLeaseLost extends Error {
-  readonly server: string;
-  readonly holder: string;
-  constructor(server: string, holder: string) {
-    super(`the MCP server ${server}'s refresh lease is not ${holder}'s any more: its token set is not written`);
-    this.name = "RefreshLeaseLost";
-    this.server = server;
-    this.holder = holder;
-  }
-}
 
 /** A data directory an earlier version wrote (its store, agent homes, run databases or settings files): this version
  *  neither reads nor moves it. `found`: what was found, relative to the directory. */

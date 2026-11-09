@@ -118,8 +118,10 @@ export type RunHands = {
  *  phone's ports and answering them wrapped, so a call made while the person holds it waits, and an action then is
  *  refused; never the shell's, the files' or a browser's (its take-over is pi-browser's own). */
 export async function runHands(workspace: Workspace, computer: RunComputer | undefined, options: { readonly mode: 1 | 2; readonly context: Context; readonly aliases?: readonly string[]; readonly hold?: RunHold }): Promise<RunHands> {
-  const spec = await workspace.mountSpec();
-  const here = spec.kind === "bind" ? spec.path : undefined;
+  // The folder's own path on this machine, Mode 1's bind. A Mode 2 folder (Archil) has none, and asking its mount would
+  // mint the run's mount credential: only a computer that mounts the folder asks it (attach, below).
+  const spec = options.mode === 1 ? await workspace.mountSpec() : undefined;
+  const here = spec?.kind === "bind" ? spec.path : undefined;
   const mounted = mountedIn(computer);
   const attached = mounted === undefined ? workspace : await workspace.attach(mounted.computer, mounted.check);
   // The folder's name: /workspace in a computer (and on Archil's exec, which has no path of this machine), its own path here.

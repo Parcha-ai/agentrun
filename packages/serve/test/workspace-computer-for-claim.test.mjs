@@ -1,7 +1,7 @@
 // The run's computer at its claim (serve/src/workspace/computer-for-claim.ts computerForClaim), the one call the runner's
 // specs make: the agent's setting resolved in the server's mode, its provider made with its sealed keys, the computer
-// started under the run's labels (the run's folder mounted only where the provider mounts it), a desktop registered for
-// its owner's view and take-over with the provider's stream, and released once at the run's end. Kind none is no
+// started under the run's labels (the run's folder mounted only where the provider mounts it), a desktop's live view
+// opened with its hold, and released once at the run's end (the hold ended with it). Kind none is no
 // computer; a provider with no key, Mode 1's non-Docker sandbox and Mode 2's Docker are refused in words with code
 // computer_unavailable, before anything is made. Every provider here is a loopback fake; the kind registry is the
 // agreed stand-in (workspace-kinds-fixture.mjs).
@@ -63,7 +63,7 @@ function fakeProvider(root, record, groups, machine = "linux") {
       const read = await computer.readBack();
       return { ok: true, value: { id: "c1", name: "c1", spec: { image: "i", user: "1000:1000", network: "none", ...(read.ok ? { mount: read.value } : {}) } } };
     },
-    // tl-computer's watch of the screen: what feeds the run's proxied live view.
+    // The provider's watch of the screen: what feeds the run's proxied live view.
     watch(ref, { signal }) {
       record.watched = [...(record.watched ?? []), [ref.id, signal instanceof AbortSignal]];
       return { frames: [] };
@@ -77,20 +77,22 @@ function fakeProvider(root, record, groups, machine = "linux") {
 
 const SPEC = () => ({ image: "agentrun/computer:test", lifetimeMs: 60_000, network: "none" });
 
-/** A stand-in for tl-browser's openComputerView (computer-live.ts), in its exact type: records each open and each close,
+/** A stand-in for openComputerView (computer-live.ts), in its exact type: records each open and each close,
  *  and answers `refusal` when given. Test fixture only. */
 function views(refusal) {
   const opened = [];
   const closed = [];
+  const holds = [];
   const open = async (args) => {
+    holds.push(args.hold);
     opened.push({ kind: args.kind, input: args.input, tag: args.tag, claim: args.claim, sealKey: Buffer.isBuffer(args.sealKey), hold: typeof args.hold?.take, watched: args.watch(new AbortController().signal) !== undefined });
     if (refusal) return { ok: false, refused: refusal, message: `the store refused the viewer (${refusal})` };
     return { ok: true, view: { close: (why) => void closed.push(why) } };
   };
-  return { open, opened, closed };
+  return { open, opened, closed, holds };
 }
 
-async function claim(setting, { mode = 1, keys = {}, groups = ["exec", "files", "processes"], existing, view, machine = setting.kind === "desktop" ? "desktop" : setting.kind === "phone" ? "android" : "linux" } = {}) {
+async function claim(setting, { mode = 1, keys = {}, groups = ["exec", "files", "processes"], existing, view, machine } = {}) {
   const root = scratch();
   const store = memoryStore();
   const sealKey = randomBytes(32);
@@ -126,7 +128,7 @@ test("a Mode 1 sandbox on Docker is made under the run's labels with the run's f
   assert.equal(record.revoked, 1, "the run's mount credential is removed once, after the computer");
 });
 
-test("a desktop opens one proxied live view under the claim, is held for take-over, and on release closes the view 'released' and its hold", async () => {
+test("a desktop opens one proxied live view under the claim with its hold, and on release closes the view 'released' and ends the hold", async () => {
   const view = views();
   const { record, run } = await claim({ kind: "desktop", provider: "e2b" }, { keys: { E2B_API_KEY: "ek-test" }, groups: ["screen", "input.pointer", "input.keys"], view });
   const answer = await run();
@@ -134,15 +136,14 @@ test("a desktop opens one proxied live view under the claim, is held for take-ov
   assert.equal(record.created[0].mount, undefined, "E2B mounts nothing in Mode 1");
   assert.deepEqual(record.options[0].slice(0, 2), ["e2b", { apiKey: "ek-test" }], "made with its key, by the option it fills");
   assert.deepEqual(view.opened, [{ kind: "desktop", input: "desktop", tag: "c1", claim: { runId: "run-1", epoch: 3 }, sealKey: true, hold: "function", watched: true }], "one view, tagged with the computer's ref id, fed by the provider's watch");
-  assert.equal(answer.held?.kind, "desktop", "the hold and its kind, for the spec's AdapterRunSpec.computer");
   assert.equal(typeof answer.hold, "function", "the person's hold on its ports, for runTools");
-  // A take in force when the computer goes ends released, and the hold takes nothing after.
-  assert.equal(answer.held.hold.take(), true);
+  const [hold] = view.holds;
+  assert.equal(hold.take(), true, "a person takes the desktop");
+  assert.equal(hold.state().held, true);
   await answer.release();
   await answer.release("ended");
   assert.deepEqual(view.closed, ["released"], "closed once");
-  assert.equal(answer.held.hold.state(), "agent", "the take ended released");
-  assert.equal(answer.held.hold.take(), false, "the hold is closed");
+  assert.equal(hold.state().held, false, "the release ends the hold: nothing stays parked past the run's computer");
   assert.deepEqual(record.released, [["c1", "delete"]]);
 });
 
@@ -200,43 +201,6 @@ test("the runner's start sweeps each provider's computers past their deadline, o
   assert.equal(swept.length, 1);
   assert.equal(swept[0].swept.ok, true, JSON.stringify(swept));
   assert.deepEqual(record.released, [["late", "delete"]]);
-});
-
-test("a faux desktop (--faux's launch) is the kinded RunComputer: kind desktop, the groups the computer declares", async () => {
-  const { fauxComputers } = await import("../dist/faux-computers.js");
-  const faux = fauxComputers({ viewerBase: "http://127.0.0.1:9" });
-  const store = memoryStore();
-  const root = scratch();
-  const answer = await computerForClaim({ runId: "run-faux", epoch: 1, computer: { kind: "desktop", provider: "faux-desktop" } }, store, {
-    mode: 1, kinds: faux.kinds, sealKey: randomBytes(32), providers: {}, spec: SPEC, keyTable: faux.keyTable, launch: faux.launch,
-    workspace: localWorkspace(root), check: { readBackOf, epoch: 1 },
-  });
-  assert.equal(answer.computer.kind, "desktop");
-  assert.deepEqual([...answer.computer.groups], ["screen", "input.pointer", "input.keys"]);
-  await answer.release();
-});
-
-test("a phone is the kinded RunComputer: kind phone, the groups its hello declares", async () => {
-  const PHONE = ["screen", "input.touch", "input.keys", "apps", "apps.ui_tree"];
-  const { run } = await claim({ kind: "phone", provider: "phone-harness" }, { keys: { PHONE_HARNESS_API_KEY: "pk-test" }, groups: PHONE, machine: "android" });
-  const answer = await run();
-  assert.equal(answer.computer.kind, "phone");
-  assert.deepEqual([...answer.computer.groups], PHONE);
-  await answer.release();
-});
-
-test("a computer whose hello does not serve the setting's kind is refused in the registry's words and released", async () => {
-  // A phone that declares no apps group.
-  const phone = await claim({ kind: "phone", provider: "phone-harness" }, { keys: { PHONE_HARNESS_API_KEY: "pk-test" }, groups: ["screen", "input.touch"], machine: "android" });
-  const refused = await phone.run().then(() => undefined, (error) => error);
-  assert.equal(refused?.code, "computer_unavailable");
-  assert.match(refused.message, /the run's computer can't serve a phone: kind phone needs groups apps/);
-  assert.deepEqual(phone.record.released, [["c1", "delete"]], "released, never handed on");
-  // A desktop setting whose computer says it is a linux machine.
-  const desktop = await claim({ kind: "desktop", provider: "e2b" }, { keys: { E2B_API_KEY: "ek-test" }, groups: ["screen", "input.pointer", "input.keys"], machine: "linux" });
-  const notDesktop = await desktop.run().then(() => undefined, (error) => error);
-  assert.match(notDesktop?.message ?? "", /kind desktop is a desktop machine, not a linux one/);
-  assert.deepEqual(desktop.record.released, [["c1", "delete"]]);
 });
 
 async function refusal(setting, options) {

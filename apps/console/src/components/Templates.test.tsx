@@ -15,7 +15,7 @@ afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
 
 const REVIEWER: TemplateView = {
   name: "pr-reviewer", display_name: "PR reviewer", version: "1.0.0", description: "Reviews a pull request and leaves one review.",
-  license: "MIT", repository: null, harness: ["claude-agent"], model: { tier: "balanced" }, effort: null, tools: null,
+  license: "MIT", author: null, repository: null, output: null, harness: ["claude-agent"], model: { tier: "balanced" }, effort: null, tools: null,
   mcp: [{ server: "github", required: true, tools: [
     { name: "get_pull_request", tool: "mcp:github/get_pull_request", asks: "allow" },
     { name: "create_review", tool: "mcp:github/create_review", asks: "ask" },
@@ -24,14 +24,14 @@ const REVIEWER: TemplateView = {
     repo: { type: "string", required: true, description: "The repository, as owner/name", pattern: "^[^/]+/[^/]+$" },
     max_files: { type: "integer", required: false, description: "How many files it reads at most" },
   },
-  secrets: ["PARALLEL_API_KEY"], budget: { per_run_usd: 0.5 }, learning: false, triggers: [{ kind: "github", events: ["pull_request"] }], skills: [], evals: [],
+  secrets: ["PARALLEL_API_KEY"], budget: { per_run_usd: 0.5 }, learning: false, approvals_default: "ask", triggers: [{ kind: "github", events: ["pull_request"] }], skills: [], evals: [],
 };
 const NOTES: TemplateView = { ...REVIEWER, name: "meeting-notes", display_name: null, version: "0.2.0", description: "Turns a transcript into notes.", mcp: [], parameters: {}, secrets: [], budget: null, triggers: [] };
 
 type Fake = { apply?: (name: string, body: unknown, key: string) => Promise<unknown>; servers?: string[]; templates?: TemplateView[] };
 async function open(name?: string, fake: Fake = {}) {
   const went: string[] = [];
-  const sent: { name: string; body: { parameters?: Record<string, unknown>; grants?: string[] }; key: string }[] = [];
+  const sent: { name: string; body: { parameters?: Record<string, unknown>; grants?: string[]; overrides?: Record<string, unknown> }; key: string }[] = [];
   const v2 = {
     listTemplates: async () => ({ templates: fake.templates ?? [REVIEWER, NOTES] }),
     listMcpServers: async () => ({ servers: (fake.servers ?? ["github"]).map((n) => ({ name: n, url: `https://${n}.example/mcp`, auth: { type: "none" }, tools: [], credential: null })) }),
@@ -132,7 +132,7 @@ describe("applying a template", () => {
     await t.click(t.button(/^Apply/));
     expect(t.sent).toHaveLength(2);
     expect(t.sent[0].name).toBe("pr-reviewer");
-    expect(t.sent[0].body).toEqual({ parameters: { repo: "acme/web", max_files: 3 }, grants: ["mcp:github/create_review"] });
+    expect(t.sent[0].body).toEqual({ parameters: { repo: "acme/web", max_files: 3 }, grants: ["mcp:github/create_review"], overrides: { approvals: "ask" } });
     expect(t.sent[0].key).toBeTruthy();
     expect(t.sent[1].key).toBe(t.sent[0].key);
   });
@@ -190,6 +190,33 @@ describe("applying a template", () => {
     expect(t.went).toEqual([]);
   });
 
+  it("preselects the template's own approvals: Never ask, with what it grants, for one that runs unattended; Ask me for one that asks", async () => {
+    const MONITOR: TemplateView = { ...REVIEWER, name: "market-monitor", approvals_default: "never" };
+    const radio = (t: Awaited<ReturnType<typeof open>>, label: RegExp) => [...t.host.querySelectorAll<HTMLInputElement>('fieldset[aria-label="Approvals"] input[type="radio"]')].find((r) => label.test(r.closest("label")?.textContent ?? ""));
+    const never = await open("market-monitor", { templates: [MONITOR] });
+    expect(radio(never, /^Never ask/)!.checked).toBe(true);
+    expect(never.host.querySelector('fieldset[aria-label="Approvals"]')!.textContent).toContain("Never ask: every tool this agent has runs without waiting for you.");
+    // Switching still sends the choice.
+    await never.click(radio(never, /^Ask me/));
+    await never.type(never.host.querySelector('[data-field="parameters.repo"] input'), "acme/web");
+    await never.click(never.button(/^Apply/));
+    expect(never.sent[0].body.overrides).toEqual({ approvals: "ask" });
+    act(() => root?.unmount()); document.body.innerHTML = "";
+    const asks = await open("pr-reviewer");
+    expect(radio(asks, /^Ask me/)!.checked).toBe(true);
+  });
+
+  it("asks by default; Never ask says what it grants and is sent as the agent's approvals", async () => {
+    const t = await open("pr-reviewer");
+    const radio = (label: RegExp) => [...t.host.querySelectorAll<HTMLInputElement>('fieldset[aria-label="Approvals"] input[type="radio"]')].find((r) => label.test(r.closest("label")?.textContent ?? ""));
+    expect(radio(/^Ask me/)!.checked).toBe(true);
+    await t.click(radio(/^Never ask/));
+    expect(t.host.querySelector('fieldset[aria-label="Approvals"]')!.textContent).toContain("Never ask: every tool this agent has runs without waiting for you. A tool set to deny, and a template's pins, still hold.");
+    await t.type(t.host.querySelector('[data-field="parameters.repo"] input'), "acme/web");
+    await t.click(t.button(/^Apply/));
+    expect(t.sent[0].body.overrides).toEqual({ approvals: "never" });
+  });
+
   it("titles what was applied with the values sent, not edits made while the apply was under way", async () => {
     const CODE: TemplateView = { ...REVIEWER, name: "code-review", display_name: "Code review: ${parameters.repo}" };
     let answer: (v: unknown) => void = () => {};
@@ -201,6 +228,24 @@ describe("applying a template", () => {
     await act(async () => { answer({ template: "code-review", version: "1.0.0", agent_id: "cr-1", trigger_ids: [], warnings: [{ field: "mcp.github", reason: "not_set_up_here", message: "github is not set up here." }] }); });
     await t.settle();
     expect(t.host.querySelector('section[aria-label="Applied"] h1')!.textContent).toContain("Code review: acme/web applied");
+  });
+
+  it("a webhook trigger the apply made: the server's warning in its words, with a link to that trigger for its signing secret", async () => {
+    const LEAD: TemplateView = { ...REVIEWER, name: "inbound-lead", triggers: [{ name: "lead-webhook", source: { kind: "webhook" } }, { name: "weekly", source: { kind: "schedule" } }] };
+    const SAYS = "This webhook trigger's signing secret is not in an apply answer. Open its trigger in the console to get it (Rotate).";
+    const t = await open("inbound-lead", { templates: [LEAD], apply: async () => ({ template: "inbound-lead", version: "1.0.0", agent_id: "lead-1", trigger_ids: ["trg_hook", "trg_cron"],
+      warnings: [{ field: "triggers.0.secret", reason: "not_allowed", message: SAYS }] }) });
+    await t.type(t.host.querySelector('[data-field="parameters.repo"] input'), "acme/web");
+    await t.click(t.button(/^Apply/));
+    expect(t.went).toEqual([]);
+    const made = t.host.querySelector('section[aria-label="Applied"]')!;
+    expect(made.textContent).toContain(SAYS);
+    const link = [...made.querySelectorAll("a")].find((a) => a.getAttribute("href") === "#/triggers/trg_hook");
+    expect(link?.textContent).toBe("Open lead-webhook to get its signing secret (Rotate)");
+    // Only the webhook's: the schedule (trg_cron) has no secret and gets no link.
+    expect(made.querySelector('a[href="#/triggers/trg_cron"]')).toBeNull();
+    // No secret is shown here any more.
+    expect(made.textContent).not.toContain("You won't see this secret again.");
   });
 
   it("opens the made agent at once when there are no warnings", async () => {

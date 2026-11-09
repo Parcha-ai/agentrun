@@ -37,6 +37,13 @@ export const KINDS = {
    *  takeRaises, all a claim found at once). A budget entry with a raise entry after it is answered. Neither a call nor a
    *  message, so the reader passes over it. */
   raise: "agentrun.raise",
+  /** A workflow run paused by its person (a `pause` row): its commit takes the pause rows and carries the run parked in
+   *  the pause's words; a step a pause held was never sent. A pause entry with no resume entry after it is in force.
+   *  Neither a call nor a message, so the reader passes over it. */
+  pause: "agentrun.pause",
+  /** The resume of a paused workflow run (a `resume` row), taken: the workflow goes on from its journal. Neither a call nor
+   *  a message, so the reader passes over it. */
+  resume: "agentrun.resume",
   /** A CLI run's end-of-run turn (the loop's record): its prompt (`role: "person"`) and its answer (`role: "model"`, the
    *  text in `model` as pi's answer carries it), the entry and the answer of the submission its request id names, the
    *  same submission pi's adapter writes, so the step reads both alike. Neither a call nor a message: the reader passes

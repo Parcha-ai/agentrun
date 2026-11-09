@@ -1066,7 +1066,10 @@ view. A session a restarted process keeps (it was still running at the vendor) g
 new process, with a new token, and nobody holding the browser. `GET /v2/runs/{id}/browser` answers `{state: "live", viewer}` while a session is open (`viewer`, a link on this server
 with its token in the fragment), `{state: "none"}` when the run has a browser but no session is open, and
 `{state: "off", reason}` when it has none: its agent has no `browser` tool, or its browser resolves unavailable here (the
-tool plane's words, `a local Chrome is not set up on this server`, or for Kernel with no key, that it needs a Kernel key). It takes the owner's
+tool plane's words, `a local Chrome is not set up on this server`, or for Kernel with no key, that it needs a Kernel key). The
+same view is the computer family's too, one for every kind (`browser`, `desktop`, `phone`), read through the same code:
+`GET /v2/runs/{id}/computer` answers `{state: "live", kind, viewer, hold}` (the link under `/v2/runs/{id}/computer/live/`),
+`{state: "none", kind, hold}` or `{state: "off", hold, why}`; `hold` says who drives now (`agent`, `pending` or `person`). It takes the owner's
 password session in the console: a token, which a run's process, an MCP client or a script may hold, is `403`.
 
 The viewer lives under `/v2/runs/{id}/browser/live/`. Its page, script and style are this server's own (the files of the
@@ -1567,8 +1570,8 @@ A firing starts its run once. Its key comes from the trigger and its nominal tim
 a restart drives again finds its run. A firing's key stays bound to that run: when the server stopped while setting the
 run up, the firing reads `failed` ("The server stopped while setting up the run.") with that run's id, it never fires
 again, the next firing goes ahead, and `POST /v2/triggers/{id}/fire` is how a person tries it again. While the trigger's last run is active (working, or waiting on a person), a firing
-is `skipped`, with why (a webhook trigger with `accept` is the exception: [each event it takes](#webhook-triggers)
-starts its own run); a full server (`429`) keeps it due and tries again. Times missed while the server was down are
+is `skipped`, with why (a webhook trigger with `accept` or `max_active_runs` is the exception: [each event it
+takes](#webhook-triggers) starts its own run); a full server (`429`) keeps it due and tries again. Times missed while the server was down are
 one `missed` firing with their count, and the schedule goes on from now; the latest of them still fires, once, when it is
 no older than the trigger's `catchup_window_s` (default an hour; 0, never), marked `catch_up`. A
 firing while the last run is active (working, or parked waiting on a person) is skipped with why, never queued,
@@ -1578,7 +1581,8 @@ gets a `trigger.failed` message for it (`data: {trigger_id, name, firing_key, no
 trigger off (`disabled: {reason: "auto_paused"}`); a firing that starts its run resets the count, and so does turning
 it on again. Run now (below) works on an auto-paused trigger too, and counts toward the streak like any firing: one that
 starts its run resets it, one that fails adds to it. A trigger whose cron line or zone no longer reads here (after an
-upgrade of the cron library or of the time zone data) is turned off alone, at a start or when it comes due
+upgrade of the cron library or of the time zone data), or whose `every_s` a hand edit of its row put out of range, is
+turned off alone, at a start or when it comes due
 (`disabled: {reason: "source_unreadable", detail}`), and every other schedule goes on firing; turning it on again takes a
 new source. A trigger's firings are driven one at a time, in order, so a firing a crash left due settles to its run
 before the next one's overlap is checked. `PATCH /v2/triggers/{id}` changes it, and
@@ -1589,7 +1593,8 @@ firing has left the history too, and later it is a new firing that a run the key
 ### Webhook triggers
 
 A trigger with `source: {kind: "webhook"}` fires on each request to `POST /v2/hooks/{trigger_id}`: this server's one
-route with no token. The request is signed by the trigger's own secret under the
+route with no token. Its view carries that address as `hook_url`, at the server's public URL when it has one
+(`AGENTRUN_PUBLIC_URL`), else the path; a schedule has none. The request is signed by the trigger's own secret under the
 [Standard Webhooks](https://www.standardwebhooks.com) spec, the one this server's outbound [webhooks](#webhooks) sign
 with, so a sender uses any of its libraries: `webhook-id` (1 to 255 printable ASCII characters, no space), `webhook-timestamp` (Unix seconds, within 5 minutes of this
 server's clock either way) and `webhook-signature: v1,<base64 HMAC-SHA256 of "{id}.{timestamp}.{body}">` under the
@@ -1615,8 +1620,10 @@ first past that, which the log says once (`condition=trigger_seen_full`). The ag
 then the body, cut at 16 KiB, inside `<trigger-payload source="webhook" scheme="standard" untrusted>...</trigger-payload>`:
 whatever the sender wrote is data, not an instruction. The tag names the signature scheme, the event as that scheme
 reads it (`event="..."`), the JSON body's top-level `action` (`action="..."`) and an unsigned delivery id
-(`delivery="..."`, GitHub's `X-GitHub-Delivery`), each when there is one, so an agent's instructions can read what it
-was given; a sender's words there are cut to 200 characters, their quotes and brackets escaped, and a closing tag in
+(`delivery="..."`, GitHub's `X-GitHub-Delivery`) and, for a GitHub delivery, its pull request or issue's `number="..."`
+(`pull_request.number`, else `issue.number`) and a pull request's `head_sha="..."` (40 hex; a comment event has none, so
+no `head_sha` at all), read from the signed body so the payload's cut never loses them, each when there is one, so an
+agent's instructions can read what it was given; a sender's words there are cut to 200 characters, their quotes and brackets escaped, and a closing tag in
 the body, in any case, is defused.
 
 A webhook trigger's `signature` names its scheme, one of a table of them: `standard` (the default, above) or `github`,
@@ -1669,8 +1676,12 @@ Such a trigger can take every run this server has room for, starving other trigg
 `max_active_runs` (1 to 100; `null` clears it): past that many of its runs active, a firing waits due and is tried
 again, as at a full server, and is never skipped. It counts the runs this trigger started while they work, kept apart
 from its history (so a long run counts however many firings follow it) and read again at each check; a run a person
-opens again after it ended is that person's follow-up, not counted. Only a trigger whose firings each start a run
-takes it (`422` otherwise). On a public repository, a rule for `issue_comment` or `issues` events needs a condition on
+opens again after it ended is that person's follow-up, not counted. Any `start_run` trigger of a pushed source (a
+webhook) takes it, with or without `accept`: set, each event starts its own run, never skipped behind the last, up to the
+cap; past it a firing waits due, and past 20 due an event answers `429 rate_limited` with `Retry-After`. Without
+`max_active_runs`, a trigger with no `accept` keeps the overlap skip: an event while its last run is active is
+`skipped`. A schedule keeps the overlap skip and takes no cap, and nor does a `message_run` target, which starts no run
+(`422` for either). On a public repository, a rule for `issue_comment` or `issues` events needs a condition on
 `/comment/author_association` or `/issue/author_association` (`in: ["OWNER", "MEMBER", "COLLABORATOR"]`): without one,
 anyone who can comment starts runs.
 
@@ -1690,6 +1701,82 @@ one message per id; a firing driven again after a restart first looks for it the
 never opens a completed run again for one it already has. A firing to a run that is working waits for it (tried every
 5 s), and a trigger holds at most 20 firings due: past them a webhook event and a run now answer `429 rate_limited`
 with `Retry-After: 30`, recording nothing, and a schedule's time is `skipped`.
+
+### GitHub triggers (Connect GitHub)
+
+A server has at most one GitHub App, made with GitHub's app-manifest flow, and every `github` trigger (and every
+GitHub template) uses it. In the console, Connect GitHub calls `POST /v2/integrations/github/connect` (`{org?}`, to make
+the App under an organization) and posts the form it answers to GitHub: `action`, GitHub's new-App page, and
+`manifest`, which names a name GitHub lets the person edit, the server's public URL, its hook `/v2/hooks/github`, its
+callback and setup URLs, the permissions (pull requests write; contents, metadata and issues read) and the events
+(`pull_request`, `issue_comment`). It needs the address GitHub can reach, `AGENTRUN_PUBLIC_URL` (`409 github_no_public_url`,
+"GitHub can't reach this server: set its public URL first"), a seal key (`409 github_no_seal_key`, naming
+`AGENTRUN_SEAL_KEY`), and no App connected already (`409 github_already_connected`, "This server already has a GitHub
+App. Disconnect it first."), and a request at the public URL itself, where GitHub sends the browser back
+(`409 github_wrong_origin`, "Open this server at <public URL> to connect GitHub.", the URL in `details.public_url`). Its
+`state` is random, used once, good for an hour, and bound to the browser that started it
+by a cookie on the callback's path; GitHub reads it from `action`'s URL, and the form posts only `manifest`.
+
+GitHub sends the browser back to `GET /v2/integrations/github/callback` with a code. The server converts it with GitHub
+and keeps the App's id, slug and client id, which are no secret, and its private key and webhook secret, which are,
+sealed in `DIR/trigger-settings-github.json`; GitHub's client secret is never kept, and no secret is logged or answered.
+The browser goes on to install the App, with a fresh install state GitHub passes on and its cookie on the installed
+path; GitHub's redirect after (`/v2/integrations/github/installed`) records the installation only with that state and
+cookie, once GitHub, asked with the App's own JWT, says it is the App's, and sends the browser to the console at the
+public URL, `<public>/#/settings/github?github=connected`. Without the state and cookie it records nothing and lands
+there too: an installation made from GitHub's own pages arrives as the App's signed installation event. Neither leg ever answers an error body: a state
+that is unknown, used, older than an hour or from another browser sends the browser to
+`<public>/#/settings/github?github=error&reason=state_invalid`,
+a code GitHub does not convert to `...&reason=conversion_failed`, one whose App GitHub made while another Connect kept
+its App to `...&reason=already_connected` (the first App stays), and an installation GitHub does not confirm, or one
+checked while GitHub was disconnected or connected again, to `...&reason=installation_unverified`; nothing is kept. The
+App's `installation` events keep the list current, each taken only in its own shape (the installation, its account and
+this App's id) and as GitHub, asked with the App's JWT, bears it out: `X-GitHub-Event` is not signed, so another
+event's signed body sent as one changes nothing. GitHub out of reach when an event is checked answers it `503`, so
+GitHub shows the delivery failed and it can be sent again; and the list is repaired from GitHub's own installations at
+the server's start and when `GET /v2/integrations/github` is read (at most once a minute), by the same rule: none left
+turns the github triggers off, one dropped only shrinks it. A list that an event or the install redirect wrote while
+GitHub was asked is not overwritten by GitHub's older answer: the repair asks once more, and leaves the list as it is
+when it moved again. A deletion or suspension that would leave none is confirmed with GitHub's own list first: only none there turns the
+github triggers off, and its list as it comes (the one removed included, when GitHub holds it active again) becomes the
+list. An installation event follows the same rule: GitHub's answer to its check is taken only when no write came meanwhile
+(else it is asked once more), so an older suspend never undoes a newer unsuspend. A server that closes stops its repair
+and its events' checks, which write nothing after (an event cut so answers `503`, to be sent again).
+`GET /v2/integrations/github` shows `{app_id, slug, installations}`, never a secret.
+
+A trigger with `source: {kind: "github", accept: [...]}` takes the App's events its `accept` names (the same rules as a
+webhook trigger's, above; required) and keeps no secret of its own. `POST /v2/hooks/github` takes no token: each delivery
+is checked by `X-Hub-Signature-256` under the App's webhook secret, and one event fires **every** github trigger whose
+`accept` takes it, each its own firing, keyed by the SHA-256 of the signed body, and its own run (github triggers may
+take the same events; `max_active_runs` caps each). Every other github trigger keeps the body's key for its day, so the
+same body sent again under another `X-GitHub-Event`, which GitHub does not sign, starts nothing: where it matters, a rule
+also tests a field only that event's body has. When a trigger that takes an event holds too many firings due, the delivery is refused `429` with `Retry-After`
+though the others recorded theirs: the retry records it there once it has room, and is the others' duplicate. An event no
+trigger takes is `200 {"ok": "ignored"}`; GitHub's `ping` is
+`200 {"ok": "pong"}`. The payload's tag also names the installation and the repository (`installation="..."
+repo="owner/name"`). A github trigger made or turned on with no App connected is `409 github_not_connected` ("Connect GitHub
+in Settings"). A `{kind: "webhook", signature: "github"}` trigger is unchanged: a repository webhook with its own secret.
+
+An installation deleted or suspended on GitHub leaves the list, and one unsuspended comes back; the github triggers turn
+off only when no installation is left (`disabled: {reason: "connection_lost", detail}`, naming it), and coming back
+turns none on. `DELETE /v2/integrations/github` disconnects the App and turns every github trigger off the same way,
+answering `{disconnected: true, triggers_off, note}`, the note "Delete the App itself on GitHub: <its settings URL>":
+the App's credentials leave this server only, and it stays on GitHub until deleted there. Turned off, a trigger is kept:
+an agent keeps its triggers, and each goes on again once turned on with GitHub connected.
+
+An MCP server saved with `auth: {type: "github_app", headers?}` (`PUT /v2/settings/mcp-servers/{name}`) uses the
+connected App's tokens and keeps none of its own: only its static headers (such as `X-MCP-Tools`), sealed as written,
+and never an `Authorization`. Its tools are listed with a token of the App's installation. At each launch of a run that
+grants its tools (its start, every resume, a relaunch after a crash) the server mints an installation token for that
+run, narrowed to the one repository the run is about, with the App's permissions: a GitHub event's run uses its
+installation and repository (the server's own payload tag); any other names it in its input as
+`https://github.com/<owner>/<repo>`, whose installation the server asks GitHub for with the App's JWT. The token goes to
+the run's MCP calls with the static headers beside it, lives only in memory (handed to the run's process over its pipe,
+never its environment, journal, a log line or an answer), and is cut from whatever a run shows while it may be in use.
+A run whose repository the App does not cover, or that names none, has those calls answered in words ("The GitHub App
+isn't installed on owner/repo"). A known limit: a token lasts an hour and is not renewed inside a live run's process
+(it is minted at each launch): a run still working past it has its GitHub calls answered, unsent, "The GitHub token for
+this run expired: it is minted again when the run resumes", and its next resume mints a fresh one.
 
 ## Templates
 
@@ -1748,6 +1835,7 @@ failed, 2 when nothing ran. The runner, the graders and the report are in
 | `GET /settings/tools`, `PUT /settings/tools` | This server's own: the providers of `web_search`, `web_fetch` and `browser` ([search and fetch](#search-and-fetch)). |
 | `GET /runs/{id}/browser` | This server's own (`x-agentrun-serve: "liveview/1"`): the run's live browser view for the owner, `{state: "off", reason}`, `{state: "none"}` or `{state: "live", viewer}` ([the live view](#the-browsers-live-view)). |
 | `POST /runs/{id}/browser/hand-back` | This server's own (`liveview/2`): the owner's answer to the agent's ask for them in its browser, `{outcome: "done" \| "cancelled"}`; the first answer wins, a different one is `409 handoff_answered` ([the live view](#the-browsers-live-view)). |
+| `GET /runs/{id}/computer` | This server's own (`computer/1`): the run's live computer view for the owner, one family for every kind, `{state: "off", hold, why?}`, `{state: "none", kind, hold}` or `{state: "live", kind, viewer, hold}`, its viewer under `/runs/{id}/computer/live/`; the browser is kind `browser` here, beside its own route ([the live view](#the-browsers-live-view)). |
 | `GET`, `PUT` and `DELETE /settings/webhook`, `POST /settings/webhook/test`, `GET /settings/webhook/deliveries` and `POST .../deliveries/{webhook_id}/redeliver` | [Webhooks](#webhooks), this server's own routes (`x-agentrun-serve: "webhook/1"`): the URL run notices are POSTed to, signed by the Standard Webhooks spec; never its secret but once. |
 | `GET` and `POST /triggers`, `GET`, `PATCH` and `DELETE /triggers/{id}`, `POST /triggers/{id}/fire`, `GET /triggers/{id}/firings`, `POST /triggers/{id}/secret`, `POST /hooks/{id}` (no token: [signed](#webhook-triggers)) | [Schedules](#schedules), this server's own routes (`x-agentrun-serve: "trigger/1"`): schedules that start an agent's capped runs, each firing once, and their history. |
 | `GET /templates`, `POST /templates/{name}/apply` | [Templates](#templates), this server's own routes (`x-agentrun-serve: "templates/1"`): the template packages it ships, and an apply that makes one's agent and triggers, all or nothing. |
@@ -2002,6 +2090,12 @@ An agent or a run is archived, never deleted: `DELETE` stays `405`. These routes
 - `POST /v2/agents/{id}/archive` hides the agent and its runs from `GET /agents`, `GET /runs` and
   `GET /agents/{id}/runs`; `POST /v2/runs/{id}/archive` hides one run. `.../unarchive` shows them again. Each is
   idempotent (archiving again keeps the first time), takes no body, and answers what it changed.
+- Archiving an agent turns off every trigger that runs as it (a `start_run` of it, a `message_run` to one of its
+  runs) with the archive, in one write: `disabled: {reason: "agent_archived", detail}`, and the answer lists them in
+  `triggers_off: [{id, name}]`. From then no firing starts a run of it: one that comes due anyway (waiting on its
+  `max_active_runs`, or on a retry) is `skipped`, "The agent <name> is archived.". While it is archived, a trigger made
+  on, turned on or aimed at it is `409 agent_archived`. Unarchiving turns none on: its answer lists those still off, and
+  `PATCH /v2/triggers/{id}` `{enabled: true}` turns each on.
 - Each list takes `archived=true` to list only archived ones (`false`, the default, lists the others).
 - Every read by id still answers, with `archived_at` (null when it is not archived; a run's is its own, else its
   agent's): `GET /agents/{id}`, `GET /runs/{id}`, its timeline and its files. `/usage` still counts archived runs: the

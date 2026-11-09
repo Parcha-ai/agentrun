@@ -14,7 +14,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
 import { closeOpenSessions, piAdapterSpec, scriptedOrigin } from "./conformance-pi-adapter.mjs";
-import { beforeRequestOf, cap, quiet, rootEntries, SONNET, sleep, TIMING } from "./adapter-pi-cap-support.mjs";
+import { beforeRequestOf, cap, quiet, rootEntries, SONNET, sleep, STEADY, TIMING } from "./adapter-pi-cap-support.mjs";
 
 after(closeOpenSessions);
 const { openSqliteStore } = await import("../dist/store/index.js");
@@ -104,7 +104,11 @@ async function crashedRaise(t, point, { short = false } = {}) {
   const raise = await sendCommand(server, "run-1", { kind: "raise", body: { capUsd: to } });
   await stop.stopped;
   runners[0].kill();
-  runners.push(startRunner({ store: stores[1], createLoop: loop, name: "runner-b", ...TIMING }));
+  // The second runner on a lease no stall of a loaded machine outlasts: the run moves from the first runner to it by the
+  // first's loss alone. On the short lease a stall could lose its own claim while its follow-up's request was out, and
+  // the claim that took it again would send that request once more (the lost one booked cut): a second request this
+  // test would read as a follow-up sent twice. That path is its own case below, forced, never left to the clock.
+  runners.push(startRunner({ store: stores[1], createLoop: loop, name: "runner-b", ...STEADY }));
   const row = await settled(short ? "parked" : "ended").catch(async (error) => {
     throw new Error(`${error.message}; raises ${JSON.stringify(await rootEntries(stores[1], "agentrun.raise"))}`);
   });
@@ -126,6 +130,88 @@ for (const [point, words] of [["submission", "before its follow-up's submission 
     assert.deepEqual(raises.map((data) => [data.capUsd, data.takes]), [[RAISED, [w.raise.id]]], "one raise entry, never a second");
   });
 }
+
+// A follow-up whose request is out when its runner is lost: that request may have been billed, so it is booked cut (its
+// hold and its bound) and the next claim sends the follow-up's request again. Two requests reach the provider, both on
+// the run's books, and the follow-up is in the conversation once. Forced by events: the provider holds the first
+// follow-up request until the first runner is gone and the second has sent its own.
+test("a raised run whose runner is lost while its follow-up's request is out: that request is booked cut, the next claim sends it once more, and the run ends", async (t) => {
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-adapter-raise-lost-request-"));
+  const server = await openSqliteStore({ dataDir: dir, role: "server" });
+  const stores = [await openSqliteStore({ dataDir: dir, role: "runner" }), await openSqliteStore({ dataDir: dir, role: "runner" })];
+  const runners = [];
+  let release = () => {};
+  const held = new Promise((resolve) => (release = resolve));
+  t.after(async () => {
+    release();
+    for (const runner of runners) await runner.close().catch(() => {});
+    for (const store of stores) await store.close().catch(() => {});
+    await server.close().catch(() => {});
+    rmSync(dir, { recursive: true, force: true });
+  });
+  await server.agents.create({ id: "agent-1", name: "Raise lost request" }, { id: "rev-1", kind: "agentic", body: {} });
+  await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" });
+  let capUsd = CAP;
+  const sent = [];
+  const script = [{ say: "done" }];
+  const origin = scriptedOrigin(script, sent);
+  let followUpOut = () => {};
+  const out = new Promise((resolve) => (followUpOut = resolve));
+  let first = true;
+  // The provider: the first follow-up request is held (its runner is lost meanwhile), every other answered at once.
+  const fetch = async (url, init) => {
+    const body = JSON.parse(String(init?.body ?? "{}"));
+    if (first && followUpsIn(body) > 0) {
+      first = false;
+      sent.push(body);
+      followUpOut();
+      await held;
+      throw new Error("the provider's connection went with its runner");
+    }
+    return origin(url, init);
+  };
+  const spec = piAdapterSpec({ script, tools: {}, hooks: quiet }, { fetch });
+  const parkRule = { get capUsd() { return capUsd; }, park: (refusal) => cap.parkOf(refusal, capUsd), checkRaise: cap.checkRaise, followUpOf: cap.followUpOf };
+  const loop = createAdapterLoop(async (claim, run) => ({ ...(await spec(claim, run)), cap: parkRule, runCap: { capUsd: () => capUsd, modelOf: () => SONNET } }), { restartLimit: MAX_RESTARTS });
+  runners.push(startRunner({ store: stores[0], createLoop: loop, name: "runner-a", ...TIMING }));
+  const settled = async (state, ms = 20_000) => {
+    const from = Date.now();
+    for (;;) {
+      const row = await server.runs.get("run-1");
+      if (row.state === state && row.runner === null) return row;
+      if ((row.state !== state && ["ended", "stopped", "failed"].includes(row.state)) || Date.now() - from > ms) throw new Error(`not ${state} within ${ms} ms: ${JSON.stringify(row)}; ${sent.length} requests sent`);
+      await sleep(20);
+    }
+  };
+  await settled("parked");
+  capUsd = RAISED;
+  await sendCommand(server, "run-1", { kind: "raise", body: { capUsd: RAISED } });
+  // The first runner's follow-up request is out (held at the provider): the runner is lost there.
+  await out;
+  runners[0].kill();
+  runners.push(startRunner({ store: stores[1], createLoop: loop, name: "runner-b", ...STEADY }));
+  const row = await settled("ended");
+  release();
+  assert.equal(row.summary, null, `ended with no words: ${JSON.stringify(row)}`);
+  const followUps = sent.filter((body) => followUpsIn(body) > 0);
+  assert.equal(followUps.length, 2, `the lost request and the next claim's, no more: ${JSON.stringify(sent.map((body) => body.messages))}`);
+  for (const body of followUps) assert.equal(followUpsIn(body), 1, `the follow-up is in the conversation once: ${JSON.stringify(body.messages)}`);
+  // On the run's books: the lost request booked cut, at its hold and bound, beside the one that was answered.
+  const { BACKGROUND_CONTEXT: ctx } = await import("@earendil-works/chord/context");
+  const { createModels } = await import("@earendil-works/pi-ai/models");
+  const { createRegistry, Harness } = await import("@earendil-works/pi-durable");
+  const { journalSessions } = await import("../dist/runner/sessions.js");
+  const now = await stores[1].runs.get("run-1");
+  const reader = await Harness.open(stores[1].journal({ runId: "run-1", runner: "test-reader", epoch: now.epoch, until: 0, from: now.state }), { models: createModels(), registry: createRegistry(), onReport: () => {} }, ctx);
+  try {
+    const records = await journalSessions(reader, ctx, stores[1]).read("root");
+    const turns = records.filter((r) => r.kind === "runner.turn").map((r) => r.data);
+    assert.equal(turns.filter((data) => data.cut === true).length, 1, `the lost request booked cut: ${JSON.stringify(records.map((r) => [r.kind, r.data]))}`);
+    assert.equal(records.filter((r) => r.kind === "runner.request").length, turns.length, `every request booked: ${JSON.stringify(records.map((r) => [r.kind, r.data]))}`);
+  } finally {
+    await reader.close(ctx);
+  }
+});
 
 // Mirrors kernel-cap-park "a parked run's next step stays refused until the cap is raised, then goes", across a lost
 // runner: the run's end is the follow-up turn's, never the first input's.

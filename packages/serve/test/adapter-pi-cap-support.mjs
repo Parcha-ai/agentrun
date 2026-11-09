@@ -5,6 +5,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MODEL, piAdapterSpec, scriptedOrigin } from "./conformance-pi-adapter.mjs";
+import { strictOptions } from "./strict-options.mjs";
 
 const { openSqliteStore } = await import("../dist/store/index.js");
 const { startRunner } = await import("../dist/runner/runner.js");
@@ -27,7 +28,9 @@ export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 /** A store with one queued run, a runner on the adapter loop running `script` on the run's one cap of `runCap` (the kernel
  *  runCap's options), until the run is not running or `ms` passes. `asked`: each request the cap judged, with its answer;
  *  `sent`: each body the provider got. */
-export async function capRun(t, { script, runCap, cap: parkCap, specOf, during, journalOf, ms = 20_000 }) {
+export async function capRun(t, options) {
+  strictOptions("capRun", options, ["script", "runCap", "cap", "specOf", "during", "journalOf", "ms"]);
+  const { script, runCap, cap: parkCap, specOf, during, journalOf, ms = 20_000 } = options;
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-adapter-cap-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -65,7 +68,7 @@ export async function capRun(t, { script, runCap, cap: parkCap, specOf, during, 
     await sleep(20);
   }
   await acting;
-  return { row, asked, sent, ms: Date.now() - from, server, store };
+  return { row, asked, sent, ms: Date.now() - from, server, store, dir };
 }
 
 /** The run's cap as a loop spec carries it (what E2 fills from the run's launch): its figure and the kernel's park. */

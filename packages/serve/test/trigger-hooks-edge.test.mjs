@@ -36,10 +36,12 @@ test("no route but POST /v2/hooks/{id} (and capabilities, the document and healt
   withEnv(t, SEAL);
   const { api, baseUrl } = await serve(t);
   await made(api, "triage");
-  const { id, secret } = (await api("POST", "/triggers", hooked("triage"))).body;
+  const { id, signing_secret: secret } = (await api("POST", "/triggers", hooked("triage"))).body;
   const at = port(baseUrl);
   // mcpOAuthClient: the OAuth client metadata document an authorization server fetches, public by design (mcp-oauth.ts).
-  const open = new Set(["getCapabilities", "getOpenapi", "getHealth", "receiveHook", "mcpOAuthClient"]);
+  // getAuthSession: the session read, public by design: the console reads it before sign-in (accounts, and whether this
+  // caller may write secrets), and it names no one (owner-auth.test.mjs pins its shapes).
+  const open = new Set(["getCapabilities", "getOpenapi", "getHealth", "receiveHook", "mcpOAuthClient", "getAuthSession"]);
   for (const route of ROUTES) {
     const path = `/v2${route.pattern.source.replace(/^\^|\$$/g, "").replace(/\\\//g, "/").replace(/\\\./g, ".").replace(/\(\[\^\/\]\+\)|\(\.\+\)/g, "x-id")}`;
     const answer = await raw(at, { method: route.method, path, headers: { "content-type": "application/json" }, body: ["POST", "PUT", "PATCH"].includes(route.method) ? "{}" : undefined });
@@ -47,6 +49,10 @@ test("no route but POST /v2/hooks/{id} (and capabilities, the document and healt
     // The OAuth callback takes no token, only the cookie its own start set in the browser that started it (mcp-oauth.ts):
     // without that cookie it is 403, and it is served to nothing else.
     else if (route.name === "mcpOAuthCallback") assert.equal(answer.status, 403, `${route.method} ${path} (${route.name}): ${answer.text.slice(0, 200)}`);
+    // Connect GitHub's two steps back from GitHub take no token either: the callback's state and its browser's cookie
+    // (github-connection.ts), and an installation GitHub confirms to the App's JWT; with neither, the browser is sent to the
+    // console's GitHub settings with why, and nothing is done.
+    else if (route.name === "gitHubCallback" || route.name === "gitHubInstalled") assert.equal(answer.status, 302, `${route.method} ${path} (${route.name}): ${answer.text.slice(0, 200)}`);
     else assert.equal(answer.status, 401, `${route.method} ${path} (${route.name}) needs the token: ${answer.text.slice(0, 200)}`);
   }
   const body = "{}";
@@ -88,7 +94,7 @@ test("malformed, duplicated or oversized webhook headers, a webhook-id past 255 
   withEnv(t, SEAL);
   const { api, baseUrl } = await serve(t);
   await made(api, "triage");
-  const { id, secret } = (await api("POST", "/triggers", hooked("triage"))).body;
+  const { id, signing_secret: secret } = (await api("POST", "/triggers", hooked("triage"))).body;
   const at = port(baseUrl);
   const body = "{}";
   const good = signed(secret, body);
@@ -124,7 +130,7 @@ test("the signature covers the exact bytes: a body serialised again differently 
   const lines = [];
   const { api, baseUrl, data } = await serve(t, { log: (line) => lines.push(line) });
   await made(api, "triage");
-  const { id, secret } = (await api("POST", "/triggers", hooked("triage"))).body;
+  const { id, signing_secret: secret } = (await api("POST", "/triggers", hooked("triage"))).body;
   const at = port(baseUrl);
   const sent = '{"a":1,"marker":"BODY-MARKER-1"}';
   const headers = signed(secret, sent);
@@ -156,7 +162,7 @@ test(`a message a run already took (${harness}), its firing left due by a restar
   await made(first.api, "chat", harness === "pi" ? {} : { harness });
   const run = (await first.api("POST", "/agents/chat/runs", { input: { content: "Say hello." }, max_cost_usd: 1 })).body;
   await follow(first.api, run.run_id, ["completed"]);
-  const { id, secret } = (await first.api("POST", "/triggers", { name: "inbox", source: { kind: "webhook" }, target: { kind: "message_run", run_id: run.run_id, input: { content: "A new event came in." } } })).body;
+  const { id, signing_secret: secret } = (await first.api("POST", "/triggers", { name: "inbox", source: { kind: "webhook" }, target: { kind: "message_run", run_id: run.run_id, input: { content: "A new event came in." } } })).body;
   const body = '{"ticket":7}';
   assert.equal((await call(port(first.baseUrl), { method: "POST", path: `/v2/hooks/${id}`, headers: signed(secret, body), body })).status, 202);
   const [sent] = await firings(first.api, id, 1);
@@ -186,7 +192,7 @@ async function refusedWhileBusy(api, baseUrl, go) {
   await made(api, "held", { harness: "claude-agent", instructions: `Hold the answer until ${go}.`, tools: ["web_fetch"] });
   const run = (await api("POST", "/agents/held/runs", { input: { content: "hi" }, max_cost_usd: 1 })).body;
   await follow(api, run.run_id, ["working"], { deadlineMs: 30_000 });
-  const { id, secret } = (await api("POST", "/triggers", { name: "inbox", source: { kind: "webhook" }, target: { kind: "message_run", run_id: run.run_id, input: { content: "A new event came in." } } })).body;
+  const { id, signing_secret: secret } = (await api("POST", "/triggers", { name: "inbox", source: { kind: "webhook" }, target: { kind: "message_run", run_id: run.run_id, input: { content: "A new event came in." } } })).body;
   const body = '{"ticket":8}';
   assert.equal((await call(port(baseUrl), { method: "POST", path: `/v2/hooks/${id}`, headers: signed(secret, body), body })).status, 202);
   for (const end = Date.now() + 30_000; ; await new Promise((resolve) => setTimeout(resolve, 50))) {

@@ -1,8 +1,8 @@
 // A run's computer as the run read shows it: `computer: {kind, provider, state, why?}`. The run's own state says where
 // its computer is (not started yet: starting; going: ready; over: ended), and a run whose computer could not be had
 // fails with the code computer_unavailable and the server's words, which the field carries as why. Whether the owner
-// has taken it over comes from one place, the register of run computers that the take-over routes keep, through the
-// port ComputerStateOf (the computer view's computerStateOf, passed in where the run read is answered).
+// has taken it over comes through the port ComputerStateOf, passed in where the run read is answered: none is passed
+// until the store-backed take-over lands (computer-routes.ts), so no run reads taken_over here.
 import type { ComputerKind, ComputerSetting } from "./computer-setting.js";
 import { COMPUTER_UNAVAILABLE } from "./computers.js";
 

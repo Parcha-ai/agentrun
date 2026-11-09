@@ -18,6 +18,9 @@ import { BOX_IDS, BOX_NETWORKS, BOX_STATES } from "./boxes.js";
 import { PLACE_MODES } from "./place.js";
 import { TOOL_KEYS, UNREADABLE } from "./tool-keys.js";
 import { MCP_AUTH_TYPES, MCP_SERVER_NAME } from "./mcp-servers.js";
+import { MAX_PRIVATE_HOSTS } from "./mcp-private-hosts.js";
+// The predicate of MCP's fields this document marks x-agentrun-secret, registered with the one gate as it loads.
+import "./mcp-secret-writes.js";
 import { MCP_SETTINGS_PAGE } from "./mcp-oauth.js";
 import { ATTEMPTS_KEPT, MESSAGE_TYPES, WEBHOOK_EVENTS } from "./webhooks.js";
 import { DEFAULT_SCHEME, SCHEME_NAMES, SIGNATURE_SCHEMES } from "./trigger-signatures.js";
@@ -28,6 +31,11 @@ import { GRADER_TYPES, MODEL_TIERS, PARAMETER_TYPES } from "./templates.js";
 import { NOT_SET_UP } from "./runnable.js";
 import { APPROVAL_ROW, ARGS_PREVIEW_BYTES, MAX_PIN_ARGS, MAX_PIN_CHOICES, PERMISSIONS } from "./tool-gate.js";
 import { KIND_KEYS, MAX_PIN_TEXT, permissionsOf, type Pickable, PICKABLE, PROVIDERS, TABLE_TOOLS } from "./tool-plane.js";
+import { SECRET_META_SCHEMA } from "./secret-writes.js";
+// The modules that own the computer and Archil key writes: loading the document loads their secret-write predicates
+// (secret-writes.ts registerSecretWrite), so every operation the document marks has its predicate wherever it is read.
+import "./computers.js";
+import { ARCHIL_KEY_NAMES } from "./archil-routes.js";
 
 type Json = Record<string, unknown>;
 
@@ -186,6 +194,7 @@ const TOOL_KEYS_VIEW = closed({
           },
         },
       },
+      secrets: { type: "array", items: { $ref: "#/components/schemas/SecretMeta" }, description: "Each of `fields` as every secret's view says it (SecretMeta, in their order): named tool:<FIELD> or model:<FIELD>; source `env` where `fields` says `server`, `console` where it says `stored`; changed_at when that field's own value was saved." },
       check: {
         oneOf: [
           closed({ state: { const: "accepted" }, at: { type: "string", format: "date-time", description: "When it was saved and checked; the server's own key, when the server started and checked it." } }),
@@ -210,6 +219,11 @@ const TOOL_KEYS_VIEW = closed({
   },
 });
 const KEY_ID = { name: "key_id", in: "path", required: true, description: "The tool key: one of GET /settings/tool-keys' ids.", schema: { type: "string" } };
+/** The InputIssue reasons a saved MCP server's refusals give that the contract's enum lacks (mcp-probe.ts). */
+const MCP_ISSUE_REASONS = ["redirect", "not_https", "too_many_tools", "tools_too_large", "reserved", "expired"] as const;
+/** The private-network hosts an MCP server's authorization server may be on (mcp-private-hosts.ts). */
+const PRIVATE_HOSTS = closed({ hosts: { type: "array", maxItems: MAX_PRIVATE_HOSTS, items: { type: "string", minLength: 1, maxLength: 253 }, description: "Host names or IP addresses, as kept: lowercase, every final dot dropped, an IPv6 address in brackets." } });
+const PRIVATE_HOSTS_RULE = "A listed host may resolve to private-network addresses (10/8, 172.16/12, 192.168/16, 100.64/10, fc00::/7), and still only over https; every address it resolves to is checked, and the request goes to an address checked. Loopback, link-local (cloud metadata among them), unspecified, multicast and broadcast addresses, this machine's and this server's own are refused whatever the list says. The server's sign-in and a runner's token refresh read the list at each use.";
 /** A remote MCP server's tools as it listed them (mcp-servers.ts), and the server as saved: never its credential. */
 const MCP_TOOL = {
   type: "object", additionalProperties: false, required: ["name", "input_schema"],
@@ -258,14 +272,15 @@ const MCP_SERVER_VIEW = {
     not_metered: { type: "array", items: { type: "string" }, description: "The tools it lists that no price meters, in its order: a call of one runs outside the run's cost and its cap (\"not metered\" on the run's timeline). Absent when every tool has a price ($0 included)." },
     listed_at: { type: "string", format: "date-time", description: "When its tools were last listed (a PUT or a refresh)." },
     updated_at: { type: "string", format: "date-time", description: "When it was last saved." },
+    secret: { $ref: "#/components/schemas/SecretMeta", description: "Its credential as every secret is read (SecretMeta), never a value: named mcp:<server>; source `console` for a pasted bearer token or headers, `sign-in` for an OAuth sign-in (an MCP credential never comes from the server's environment), null with none; changed_at moves when a new credential is saved or signed in, never on a save that keeps it, a refresh of the tools or a token refresh." },
   },
 };
 const MCP_AUTH = {
   type: "object", additionalProperties: false, required: ["type"],
   properties: {
     type: { enum: [...MCP_AUTH_TYPES], description: `\`none\`; \`bearer\` (\`token\`, sent as \`Authorization: Bearer <token>\`); \`headers\` (each named header and its value); \`oauth\`, with no credential in the body: the server is signed in to first (POST /settings/mcp-servers/{name}/oauth/start), and a PUT keeps the sealed token set.` },
-    token: { type: "string", minLength: 1, maxLength: 8192 },
-    headers: { type: "object", minProperties: 1, maxProperties: 8, additionalProperties: { type: "string", minLength: 1, maxLength: 8192 }, description: "Header names a credential may go in: not Host, Content-Type, Accept, Content-Length, Connection, Transfer-Encoding, Last-Event-ID or an Mcp- header the transport sets." },
+    token: { type: "string", minLength: 1, maxLength: 8192, "x-agentrun-secret": true },
+    headers: { type: "object", minProperties: 1, maxProperties: 8, additionalProperties: { type: "string", minLength: 1, maxLength: 8192, "x-agentrun-secret": true }, description: "Header names a credential may go in: not Host, Content-Type, Accept, Content-Length, Connection, Transfer-Encoding, Last-Event-ID or an Mcp- header the transport sets." },
   },
   description: "Absent: none. A PUT that sends no `token` (no `headers`) keeps the sealed credential, when the type and the URL's origin are unchanged.",
 };
@@ -351,15 +366,18 @@ const AGENT_TOOLS = {
   "x-agentrun-serve": "providers/1",
 };
 const WEBHOOK_ID = { name: "webhook_id", in: "path", required: true, description: "The message, as its `webhook-id` names it.", schema: { type: "string" } };
+/** The outbound webhook's secret's metadata (secret-writes.ts SecretMeta): never its value. */
+const WEBHOOK_SECRET_META = { ...ref("schemas/SecretMeta"), description: "Its signing secret's metadata, named `webhook:outbound`: set, made by this server at the first save (source console), and when; null for a webhook set before it was kept. Never the value." };
 const WEBHOOK_SET_FIELDS = {
   configured: { const: true }, url: { type: "string" },
+  secret: WEBHOOK_SECRET_META,
   signing: { enum: ["sealed", "seal_key_missing", "unreadable"], description: "Whether the secret signs here: `sealed`; `seal_key_missing` (the server was handed no seal key) or `unreadable` (sealed under another key, or damaged), when nothing is sent until the webhook is removed and set again. Never the secret." },
   disabled: { oneOf: [closed({ at: { type: "string", format: "date-time" }, reason: { type: "string" } }), { type: "null" }], description: "Set when the receiver answered 410 Gone: nothing is sent until a PUT sets the webhook again." },
   updated_at: { type: "string", format: "date-time" },
 };
 const WEBHOOK_SET = closed(WEBHOOK_SET_FIELDS);
 /** GET /settings/webhook (webhooks.ts): the webhook, or none; never its secret. */
-const WEBHOOK_VIEW = { oneOf: [closed({ configured: { const: false } }), WEBHOOK_SET] };
+const WEBHOOK_VIEW = { oneOf: [closed({ configured: { const: false }, secret: WEBHOOK_SECRET_META }), WEBHOOK_SET] };
 const WEBHOOK_SECRET = { type: "string", pattern: "^whsec_[A-Za-z0-9+/]+={0,2}$", description: "The signing secret, shown this once: `whsec_` and 32 random bytes in base64, as the Standard Webhooks spec gives it. Keep it where the receiver checks `webhook-signature`." };
 const WEBHOOK_ATTEMPT = closed({
   webhook_id: { type: "string", description: "The message's `webhook-id`: the same on each of its tries, and on a redelivery." },
@@ -547,12 +565,10 @@ const COMPUTER_ANSWER = closedWith({
 }, {
   outcome: { enum: ["done", "cancelled", "expired"], description: "A hand-back that answered the agent's ask: the answer the agent gets, the first one." },
 });
-/** A secret as every view shows it (key-meta.ts): never a value, a prefix, a length or a hash. */
-const SECRET_META = {
-  set: { type: "boolean", description: "Whether a value is set: the value itself is never shown." },
-  source: { enum: ["env", "console", "sign-in", null], description: "Where the value comes from: `env`, the server's environment (by the key's name; it wins over a saved one); `console`, saved through this server's routes, sealed; `sign-in`, obtained by a sign-in or Connect; null when it is not set." },
-  changed_at: { type: ["string", "null"], format: "date-time", description: "When the saved value last changed; null when it is not set, or comes from the environment." },
-};
+/** A secret's set, source and changed_at, from the one shared shape (secret-writes.ts SECRET_META_SCHEMA): never a value,
+ *  a prefix, a length or a hash. */
+const { set: SECRET_SET, source: SECRET_SOURCE, changed_at: SECRET_CHANGED_AT } = SECRET_META_SCHEMA.properties;
+const SECRET_META = { set: SECRET_SET, source: SECRET_SOURCE, changed_at: SECRET_CHANGED_AT };
 /** One secret's SecretMeta, exactly { name, set, source, changed_at }: its name is "<plane>:<id>". */
 const SECRET_ITEM = (nameDescription: string) => closed({ name: { type: "string", description: nameDescription }, ...SECRET_META });
 /** computer/1: an agent's computer kind, as Settings → Computers and the run read name it (computer-setting.ts). */
@@ -611,6 +627,10 @@ const ARCHIL_VIEW = closedWith({
 const COMPUTER_MARK = { "x-agentrun-serve": "computer/1" };
 const ARCHIL_MARK = { "x-agentrun-serve": "archil/1" };
 const PROVIDER_PARAM = { name: "provider", in: "path", required: true, description: "The provider's id (GET /computers lists them).", schema: { type: "string", minLength: 1 } };
+/** computer/1: a run's live computer kind, one live view family for every kind (GET /runs/{run_id}/computer). */
+const RUN_COMPUTER_KIND: Json = { enum: ["browser", "desktop", "phone"], description: "The run's computer: its agent's computer kind (`browser` for the browser tool)." };
+/** Who drives the run's computer now (GET /runs/{run_id}/computer). */
+const COMPUTER_HOLD: Json = { enum: ["agent", "pending", "person"], description: "Who drives the computer now: `agent`; `pending`, the person's Take over waits for the agent's step in flight; `person`, taken over." };
 /** trigger/1: triggers, a schedule or a signed webhook, that start an agent's capped runs or message a run (triggers.ts). */
 const TRIGGER_MARK = { "x-agentrun-serve": "trigger/1" };
 /** A run's `trigger`, on Run and on RunSummary alike. */
@@ -667,31 +687,37 @@ const TRIGGER_FIRING = closedWith(
   },
   { count: { type: "integer", minimum: 1, description: "On a `missed` firing: how many times it stands for, from `nominal_at` on; a cron line's are counted to 10000, and `reason` says \"or more\" past that." }, attempts: { type: "integer", minimum: 0 }, retry_at: DATE_TIME, catch_up: { const: true, description: "A time that fired late, within the trigger's catch-up window: the server was down, or its timer late." } },
 );
-const TRIGGER = closed({
+const TRIGGER_FIELDS = closed({
   id: { type: "string" },
   name: { type: "string", maxLength: 200 },
   enabled: { type: "boolean" },
   source: TRIGGER_SOURCE_SENT,
   target: TRIGGER_TARGET,
   catchup_window_s: { type: "integer", minimum: 0, maximum: MAX_EVERY_S, description: `How late a missed time may still fire, once: of the times that came while the server was down (or its timer was late), the latest fires if it is this recent, under its own key, and the rest are one \`missed\` firing. 0: a missed time never fires. Default ${CATCHUP_WINDOW_S}.` },
-  max_active_runs: { type: ["integer", "null"], minimum: 1, maximum: MAX_ACTIVE_RUNS, description: `For a trigger whose firings each start a run (a webhook with \`accept\`): the most of its runs active at once. A firing past it waits due (\`retry_at\`) and is tried again, never skipped. Null: none, so such a trigger can take every run this server has room for. Any other trigger is 422 with it set.` },
+  max_active_runs: { type: ["integer", "null"], minimum: 1, maximum: MAX_ACTIVE_RUNS, description: `For a \`start_run\` trigger of a pushed source (a webhook, with or without \`accept\`): each event starts its own run, never skipped behind the last, and this is the most of its runs active at once. A firing past it waits due and is tried again; past 20 due an event is 429 \`rate_limited\`. Null: a trigger with \`accept\` takes every run this server has room for, and one without keeps the overlap skip. A schedule or a \`message_run\` target is 422 with it set.` },
   failures_in_a_row: { type: "integer", minimum: 0, description: `Failed firings since the last that started a run; at ${FAILURES_TO_PAUSE} the trigger turns itself off (\`disabled\`). Turned on again, it counts from 0.` },
-  disabled: { oneOf: [closed({ at: DATE_TIME, reason: { const: "auto_paused" } }), closed({ at: DATE_TIME, reason: { const: "source_unreadable" }, detail: { type: "string", description: "Why the source no longer reads." } }), { type: "null" }], description: `Why it is off, when the server turned it off: \`auto_paused\`, ${FAILURES_TO_PAUSE} failed firings in a row; \`source_unreadable\`, its cron line or zone no longer reads here (a newer cron library or time zone data refuses it), found at a start or when it came due, and only this trigger is turned off. Null once it is on again, which for \`source_unreadable\` takes a new source.` },
+  disabled: { oneOf: [closed({ at: DATE_TIME, reason: { const: "auto_paused" } }), closed({ at: DATE_TIME, reason: { const: "source_unreadable" }, detail: { type: "string", description: "Why the source no longer reads." } }), closed({ at: DATE_TIME, reason: { const: "agent_archived" }, detail: { type: "string", description: "The agent it runs as, archived." } }), closed({ at: DATE_TIME, reason: { const: "connection_lost" }, detail: { type: "string", description: "Which connection went (GitHub disconnected here, or the App's installation deleted or suspended on GitHub)." } }), { type: "null" }], description: `Why it is off, when the server turned it off: \`agent_archived\`, the agent it runs as was archived (turning it on is 409 agent_archived until the agent is unarchived); \`auto_paused\`, ${FAILURES_TO_PAUSE} failed firings in a row; \`connection_lost\`, the connection it needs went (GitHub disconnected here, or the App's installation deleted or suspended on GitHub); \`source_unreadable\`, its cron line or zone no longer reads here (a newer cron library or time zone data refuses it) or its every_s is out of range (a hand edit of its row), found at a start or when it came due, and only this trigger is turned off. Null once it is on again, which for \`source_unreadable\` takes a new source.` },
   next_at: { type: ["string", "null"], format: "date-time", description: "When it fires next; null while it is off." },
-  last_run_id: { type: ["string", "null"], description: "The run its last firing that started one started; while that run is active (working, or waiting on a person), each firing is skipped, unless the trigger is a webhook with `accept`. Null until one starts." },
+  last_run_id: { type: ["string", "null"], description: "The run its last firing that started one started; while that run is active (working, or waiting on a person), each firing is skipped, unless its firings each start their own run (a webhook with `accept`, or a pushed trigger with `max_active_runs`). Null until one starts." },
   created_at: DATE_TIME,
   updated_at: DATE_TIME,
   last_firing: { oneOf: [TRIGGER_FIRING, { type: "null" }] },
 }, "A trigger. A firing while its last run is active (working, or waiting on a person) is skipped, and recorded as a skipped firing with why: never queued, since a firing queued behind a run parked on a person would wait as long as the person does. A webhook trigger with `accept` is the exception: each event it takes starts its own run.");
+/** A trigger's view: its fields, all there, and `hook_url`, a pushed source's alone. */
+const TRIGGER = { ...TRIGGER_FIELDS, properties: { ...TRIGGER_FIELDS.properties, hook_url: { type: "string", description: "Where its sender posts, for a pushed source alone (absent for a schedule): a webhook's own hook, `/v2/hooks/{id}`, at this server's public URL (AGENTRUN_PUBLIC_URL) when it has one, else the path." } } };
 const TRIGGER_WRITE = {
   name: { type: "string", minLength: 1, maxLength: 200, description: "Default the trigger's id." },
   enabled: { type: "boolean", default: true, description: "Off, it fires nothing; on again, it goes on from now: the time it was off is skipped, never caught up." },
   source: TRIGGER_SOURCE,
   target: TRIGGER_TARGET,
   catchup_window_s: { type: "integer", minimum: 0, maximum: MAX_EVERY_S, default: CATCHUP_WINDOW_S },
-  max_active_runs: { type: ["integer", "null"], minimum: 1, maximum: MAX_ACTIVE_RUNS, description: `For a trigger whose firings each start a run (a webhook with \`accept\`): the most of its runs active at once. A firing past it waits due (\`retry_at\`) and is tried again, never skipped. Null: none, so such a trigger can take every run this server has room for. Any other trigger is 422 with it set. A PATCH with null clears it.` },
+  max_active_runs: { type: ["integer", "null"], minimum: 1, maximum: MAX_ACTIVE_RUNS, description: `For a \`start_run\` trigger of a pushed source (a webhook, with or without \`accept\`): each event starts its own run, never skipped behind the last, and this is the most of its runs active at once. A firing past it waits due and is tried again; past 20 due an event is 429 \`rate_limited\`. Null: a trigger with \`accept\` takes every run this server has room for, and one without keeps the overlap skip. A schedule or a \`message_run\` target is 422 with it set. A PATCH with null clears it.` },
 };
 const TRIGGER_ID = { name: "trigger_id", in: "path", required: true, schema: { type: "string" } };
+/** A webhook trigger's minted secret's metadata (secret-writes.ts SecretMeta, trigger-secrets-shown.ts): never its value. */
+const TRIGGER_SECRET_META = { ...ref("schemas/SecretMeta"), description: "A webhook trigger's signing secret's metadata, named `trigger:<id>`: set, made by this server (source console), and when, where known (its create's and rotation's answers; a read says null). Never the value. Absent for a trigger that keeps none (a schedule's)." };
+/** A trigger as GET and the list read it: with its minted secret's metadata, where it has one. */
+const TRIGGER_READ = { ...TRIGGER, properties: { ...TRIGGER.properties, secret: TRIGGER_SECRET_META, note: { type: "string", description: "Present when its signing secret is kept but does not open under this server's seal key (sealed under another): why it reads as not set, and what to do (rotate it in the console). Until then each delivery is the one 401." } } };
 /** A hook whose body did not arrive in time (push-handler.ts readCapped): answered, then its socket closed. */
 const HOOK_TIMEOUT = { description: `\`request_timeout\`: the body did not arrive, whole, within ${HOOK_BODY_MS / 1000} s; the socket is closed after this answer.`, headers: { "X-Request-Id": ref("headers/RequestId") }, content: { "application/json": { schema: ref("schemas/Error") } } };
 /** A verified request whose firing key was seen within its day, its firing no longer kept: nothing fired. */
@@ -703,6 +729,9 @@ const HOOK_IGNORED = closed({ ok: { const: "ignored" } }, "Verified, and not an 
  *  trigger takes. Its firings' `by` names the sources `adapters` give. */
 const hookFiringsOf = (adapters: readonly TriggerAdapter[]) => closed({ firings: { type: "array", items: { oneOf: [{ ...TRIGGER_FIRING, properties: { ...TRIGGER_FIRING.properties, by: firedByOf(adapters) } }, HOOK_DUPLICATE] } } });
 const TRIGGER_SECRET = { type: "string", pattern: "^whsec_[A-Za-z0-9+/]+={0,2}$", description: "A webhook trigger's signing secret, shown this once: `whsec_` and 32 random bytes in base64, as the Standard Webhooks spec gives it. Never in any GET; kept sealed under the seal key. Sign each request to /hooks/{trigger_id} with it." };
+/** github/1: Connect GitHub, the server's one GitHub App (github-connection.ts). */
+const GITHUB_MARK = { "x-agentrun-serve": "github/1" };
+const GITHUB_CONNECTION = closed({ app_id: { type: "string" }, slug: { type: "string", description: "The App's name on GitHub, as its URL has it." }, installations: { type: "array", items: closed({ id: { type: "integer" }, account: { type: "string", description: "The GitHub user or organization it is installed on." } }), description: "Where the App is installed, as its installation events and setup redirects say." } }, "The server's GitHub App: never a secret.");
 /** templates/1: template packages, listed and applied (templates.ts; the format is templates/README.md). */
 const TEMPLATE_MARK = { "x-agentrun-serve": "templates/1" };
 const NULLABLE_STRING = { type: ["string", "null"] };
@@ -713,7 +742,9 @@ const TEMPLATE = closed({
   version: { type: "string", description: "SemVer." },
   description: { type: "string" },
   license: NULLABLE_STRING,
+  author: { type: ["object", "null"], additionalProperties: false, required: ["name"], properties: { name: { type: "string" }, email: { type: "string" }, url: { type: "string" } }, description: "Who made the package; null when it names no one." },
   repository: NULLABLE_STRING,
+  output: { type: ["object", "null"], additionalProperties: false, required: ["schema", "json_schema"], properties: { schema: { type: "string", description: "The schema's file in the package; it ships beside each SKILL.md." }, json_schema: { type: ["object", "null"], description: "The JSON Schema the agent's answer meets (its last fenced json block)." } }, description: "The shape of the agent's answer; null when the package names none." },
   harness: { type: ["array", "null"], items: { type: "string" }, description: "The harnesses it runs on, in the order it prefers them: apply takes the first this server runs. Null: any, the server's default." },
   model: { type: ["object", "null"], additionalProperties: false, required: ["tier"], properties: { tier: { enum: Object.keys(MODEL_TIERS) }, prefer: { type: "string" } }, description: "The model it wants: `prefer` when this server runs it, else this server's model for the tier (fast: AGENT_MODEL_FAST, balanced: AGENT_MODEL, strong: AGENT_MODEL_STRONG, each else the default). Null: the server's default." },
   effort: { type: ["string", "null"], description: "Its thinking level, the definition's `thinking`." },
@@ -731,6 +762,7 @@ const TEMPLATE = closed({
   secrets: { type: "array", items: { type: "string" }, description: "The keys this server must have, by variable name (a saved key counts), before apply makes anything." },
   budget: { type: ["object", "null"], additionalProperties: false, required: ["per_run_usd"], properties: { per_run_usd: { type: "number" } }, description: "Each run's spend cap, the agent's max_cost_usd. Required of a package with triggers." },
   learning: { type: "boolean" },
+  approvals_default: { enum: ["ask", "never"], description: "What the package recommends for the agent's approvals: `ask`, the agent asks its person before a tool runs; `never`, it runs unattended (a template whose job runs on triggers). Deny settings and pins hold either way: a pinned write can only go where its pin says." },
   triggers: { type: "array", items: { type: "object" }, description: "The triggers apply makes on its agent: POST /triggers bodies with no agent_id, placeholders unfilled." },
   skills: { type: "array", items: { type: "string" } },
   evals: { type: "array", items: { type: "string" }, description: `Its eval cases (evals/<case>/: prompt.md and graders of ${GRADER_TYPES.join(", ")}); none runs here.` },
@@ -740,7 +772,7 @@ const TEMPLATE_APPLY = {
   properties: {
     parameters: { type: "object", description: "The package's parameters (GET /templates), by name, each of its type." },
     grants: { type: "array", items: { type: "string" }, description: "The owner's answer to the consent screen: the package's MCP tools, by gate name (`mcp:<server>/<tool>`, GET /templates `mcp[].tools[].tool`), the agent is allowed to call unasked. Any other is 422. One the owner denies on this server stays denied, with a warning. A grant is written as the agent's own tool setting, which outranks the server's ask or allow; a deny set on this server, before or after the apply, still refuses the tool there, as a server deny is absolute (edit its `definition.tool_settings` to take a grant back). Absent, none: every tool keeps the owner's setting." },
-    overrides: { type: "object", additionalProperties: false, properties: { model: { type: "string", pattern: MODEL_REF.source, description: "The agent's model in place of the one the package's tier and preference pick, \"provider/model-id\"." }, approvals: { enum: ["ask", "never"], description: "The agent's approvals (its definition's): never runs it unattended (each tool that would ask allowed, a deny still refusing), ask makes it ask. Absent: ask.", "x-agentrun-serve": "unattended/1" } } },
+    overrides: { type: "object", additionalProperties: false, properties: { model: { type: "string", pattern: MODEL_REF.source, description: "The agent's model in place of the one the package's tier and preference pick, \"provider/model-id\"." }, approvals: { enum: ["ask", "never"], description: "The agent's approvals (its definition's): never runs it unattended (each tool that would ask allowed, a deny still refusing), ask makes it ask. Absent: the package's `approvals_default` (`ask` only when it names none).", "x-agentrun-serve": "unattended/1" } } },
   },
 };
 const TEMPLATE_APPLIED = closed({
@@ -748,7 +780,7 @@ const TEMPLATE_APPLIED = closed({
   version: { type: "string" },
   agent_id: { type: "string", description: "The agent made (GET /agents/{agent_id})." },
   trigger_ids: { type: "array", items: { type: "string" }, description: "Its triggers, in the package's order (GET /triggers/{trigger_id})." },
-  warnings: { type: "array", items: ref("schemas/InputIssue"), description: "What this host still lacks for the agent to run, as POST /agents answers it." },
+  warnings: { type: "array", items: ref("schemas/InputIssue"), description: "What this host still lacks for the agent to run, as POST /agents answers it; a webhook trigger the apply made adds a warning pointing to the console for its signing secret (shown there once), never the secret itself." },
 });
 const TRIGGER_ERRORS = "409 store_unreadable when triggers.json in the data directory does not read: nothing fires, and nothing is written over it.";
 const RUN_LEARNING = {
@@ -1101,6 +1133,18 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       "x-agentrun-serve": "computer/1",
     },
   },
+  "/runs/{run_id}/computer": {
+    get: {
+      operationId: "getRunComputer", tags: ["runs"], summary: "Watch the run's computer live and take it over: its viewer link, for the owner",
+      description: "The live view of the run's computer, one family for every kind (`browser`, `desktop`, `phone`: the run's agent's computer). `live` with `viewer`, a link on this server (`/v2/runs/{run_id}/computer/live/v/<id>#t=<token>`) to open, or frame, in the console, while a viewer is open; `none` when the run has a computer but no session is up (or it ended); `off` when there is no computer here (its agent has none, or its computer resolves unavailable here), with `why` in plain words. `kind` is the run's computer, on every answer but `off`. `hold` says who drives now: `agent`; `pending`, the person's Take over waits for the agent's step; `person`. The viewer watches until its Take over, then drives until its Hand back, both in the viewer's own bar: outside a hold the run drops its input. The token is in the link's fragment alone, never in a request line, a Referer or a log; the viewer's page sends it once, in its WebSocket hello. It opens that one session's view, and drives it once taken over: it dies with the computer (its release), the run's end, or the owner's sign-out (the socket closes), and a second viewer of the same session is refused (viewer_in_use). The viewer's page is served under the link's path with `frame-ancestors 'self'`, and its WebSocket is taken only from this server's own origin (or its public address, AGENTRUN_PUBLIC_URL) with the owner's cookie. It takes the owner's password session in the console: never a token, which a run's process, an MCP client or a script may hold (403); no credential is 401. The vendors' own live-view links never leave the run's process.",
+      parameters: [ref("parameters/RunId")],
+      responses: {
+        "200": json({ oneOf: [closedWith({ state: { const: "off" }, hold: COMPUTER_HOLD }, { why: { type: "string", description: "Why there is no computer view here, in plain words." } }), closed({ state: { const: "none" }, kind: RUN_COMPUTER_KIND, hold: COMPUTER_HOLD }), closed({ state: { const: "live" }, kind: RUN_COMPUTER_KIND, viewer: { type: "string", description: "The viewer's link on this server, `/v2/runs/{run_id}/computer/live/v/<id>#t=<token>`: its token in the fragment alone." }, hold: COMPUTER_HOLD })] }, "The run's live view, none open, or no computer here."),
+        ...errors(401, 403, 404, 429, 500),
+      },
+      "x-agentrun-serve": "computer/1",
+    },
+  },
   "/workflows/validate": {
     post: {
       operationId: "validateWorkflow", tags: ["agents"], summary: "Check a workflow definition without saving it",
@@ -1153,10 +1197,10 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
   "/computers/{provider}/keys": {
     put: {
       operationId: "saveComputerKeys", tags: ["local"], summary: "Save a computer provider's keys, sealed",
-      description: "Each key the provider declares (GET /computers names them) is sealed under the server's seal key; null removes one. A name it does not declare, a value that is not a non-empty string, or any key on a server with no seal key is 422 input_invalid with its fields, and nothing is saved. The answer is the provider as GET /computers shows it: never a value.",
+      description: "Each key the provider declares (GET /computers names them) is sealed under the server's seal key; null removes one. Saving or removing a key is a secret write: it takes the owner's signed-in session, and the API token is 403. A name it does not declare, a value that is not a non-empty string, or any key on a server with no seal key is 422 input_invalid with its fields, and nothing is saved. The answer is the provider as GET /computers shows it: never a value.",
       parameters: [PROVIDER_PARAM],
-      requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: { type: ["string", "null"] }, description: "The provider's key names, each its value, or null to remove it." } } } },
-      responses: { "200": json(COMPUTER_PROVIDER, "The provider, its keys saved or not."), ...errors(401, 404, 422, 429, 500) },
+      requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: { type: ["string", "null"], "x-agentrun-secret": true }, description: "The provider's key names, each its value, or null to remove it." } } } },
+      responses: { "200": json(COMPUTER_PROVIDER, "The provider, its keys saved or not."), ...errors(401, 403, 404, 422, 429, 500) },
       ...COMPUTER_MARK,
     },
   },
@@ -1177,15 +1221,15 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
     },
     put: {
       operationId: "putWorkspaceArchil", tags: ["local"], summary: "Turn Mode 2 on: run folders on this Archil disk",
-      description: "Replaces the Archil settings (the disk, its region and S3 URL, and an exec image pinned by digest when given) and seals the account key (ARCHIL_API_KEY) under the server's seal key when given; null removes it, and a key not given is kept. No disk token is kept: a computer's mount credential is minted per run from the account key, so ARCHIL_DISK_TOKEN is refused like any field Archil does not take. A field that is not right, an image not pinned by digest, or a key on a server with no seal key is 422 input_invalid with its fields, and nothing is saved. The answer never holds a key.",
+      description: "Replaces the Archil settings (the disk, its region and S3 URL, and an exec image pinned by digest when given) and seals the account key (ARCHIL_API_KEY) under the server's seal key when given; null removes it, and a key not given is kept. No disk token is kept: a computer's mount credential is minted per run from the account key, so ARCHIL_DISK_TOKEN is refused like any field Archil does not take. Giving or removing the account key is a secret write: it takes the owner's signed-in session, and the API token is 403; the disk, region, S3 URL and image alone stay editable with the token. A field that is not right, an image not pinned by digest, or a key on a server with no seal key is 422 input_invalid with its fields, and nothing is saved. The answer never holds a key.",
       requestBody: {
         required: true,
         content: { "application/json": { schema: closedWith({ diskId: { type: "string", minLength: 1 }, region: { type: "string", minLength: 1 }, s3Url: { type: "string", format: "uri", pattern: "^https://" } }, {
           image: { type: "string", pattern: "^[^\\s@]+@sha256:[0-9a-f]{64}$" },
-          keys: { type: "object", additionalProperties: false, properties: { ARCHIL_API_KEY: { type: ["string", "null"], minLength: 1 } } },
+          keys: { type: "object", additionalProperties: false, properties: Object.fromEntries(ARCHIL_KEY_NAMES.map((name) => [name, { type: ["string", "null"], minLength: 1, "x-agentrun-secret": true }])) },
         }) } },
       },
-      responses: { "200": json(ARCHIL_VIEW, "The Archil settings, saved."), ...errors(401, 422, 429, 500) },
+      responses: { "200": json(ARCHIL_VIEW, "The Archil settings, saved."), ...errors(401, 403, 422, 429, 500) },
       ...ARCHIL_MARK,
     },
     delete: {
@@ -1213,18 +1257,45 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
   "/settings/tool-keys/{key_id}": {
     put: {
       operationId: "saveToolKey", tags: ["local"], summary: "Save a tool key's fields, sealed",
-      description: "Each value is sealed under the server's seal key and kept in the data directory as ciphertext alone; the key's other fields stay as they are. The key (the first field) is first checked against its provider with one call that costs nothing, given 5 s: a key the provider refuses (401) is 422 input_invalid, its field's reason `refused_by_provider` and the message in plain words with the provider's first sentence (never any of the key), and nothing is kept; otherwise it is kept, and GET's `check` says `accepted` or `not_checked` and why (a 403 is not_checked: a key scoped away from the check's call may still work for its tools). A save whose check is still waiting when the server begins to close keeps nothing (503 unavailable, while its connection lasts). 422 also for an unknown key or field, or a value that is empty, holds a control character or is over 1024 bytes; 409 key_set_by_server for a field the server is started with; 409 no_sealing_key when the server was handed no seal key.",
+      description: "Each value is sealed under the server's seal key and kept in the data directory as ciphertext alone; the key's other fields stay as they are. The key (the first field) is first checked against its provider with one call that costs nothing, given 5 s: a key the provider refuses (401) is 422 input_invalid, its field's reason `refused_by_provider` and the message in plain words with the provider's first sentence (never any of the key), and nothing is kept; otherwise it is kept, and GET's `check` says `accepted` or `not_checked` and why (a 403 is not_checked: a key scoped away from the check's call may still work for its tools). A save whose check is still waiting when the server begins to close keeps nothing (503 unavailable, while its connection lasts). 422 also for an unknown key or field, or a value that is empty, holds a control character or is over 1024 bytes; 409 key_set_by_server for a field the server is started with; 409 no_sealing_key when the server was handed no seal key. A secret write: the owner's signed-in session alone (ownerSession), never the token, which is 403 forbidden in words.",
       parameters: [KEY_ID],
-      requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, required: ["values"], properties: { values: { type: "object", minProperties: 1, additionalProperties: { type: "string", minLength: 1 } } } } } } },
-      responses: { "204": { description: "Saved." }, ...errors(400, 401, 409, 415, 422, 429, 500, 503) },
+      // The owner's password session alone (secret-writes.ts), never the document's bearer.
+      security: [{ ownerSession: [] }],
+      requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, required: ["values"], properties: { values: { type: "object", minProperties: 1, additionalProperties: { type: "string", minLength: 1, "x-agentrun-secret": true }, "x-agentrun-secret": true } } } } } },
+      responses: { "204": { description: "Saved." }, ...errors(400, 401, 403, 409, 415, 422, 429, 500, 503) },
       "x-agentrun-serve": "toolkeys/1",
     },
     delete: {
       operationId: "deleteToolKey", tags: ["local"], summary: "Forget a tool key's stored fields",
-      description: "409 key_set_by_server when the server is started with every field of it.",
+      // A removal has no body to mark a field in: the operation is marked whole, a secret write all the same.
+      "x-agentrun-secret": true,
+      description: "409 key_set_by_server when the server is started with every field of it. A secret write: the owner's signed-in session alone (ownerSession), never the token, which is 403 forbidden in words.",
       parameters: [KEY_ID],
-      responses: { "204": { description: "Forgotten." }, ...errors(401, 409, 422, 429, 500) },
+      security: [{ ownerSession: [] }],
+      responses: { "204": { description: "Forgotten." }, ...errors(401, 403, 409, 422, 429, 500) },
       "x-agentrun-serve": "toolkeys/1",
+    },
+  },
+  "/auth/session": {
+    get: {
+      operationId: "getAuthSession", tags: ["local"], summary: "Whether this browser has accounts, is signed in, and may save a secret",
+      description: "Answered with no credential: what the console needs before it shows a setup or sign-in screen, or a field to paste a secret into. `accounts`: whether this server has accounts (a password owner); with them off it answers `accounts`, `secrets_writable` and `secrets_reason` alone, no user field. A secret (a model or tool key, an MCP header or token, a computer vendor's key) is saved only from the owner's session: with accounts on, the owner's password session; with accounts off on a server bound to loopback alone, the console the launch link opened. The API token never saves one, on any server.",
+      security: [],
+      responses: {
+        "200": json({
+          type: "object", additionalProperties: false, required: ["accounts", "secrets_writable"],
+          properties: {
+            accounts: { type: "boolean", description: "Whether this server has accounts (a password owner). false: the console shows no setup or sign-in screen." },
+            password_set: { type: "boolean", description: "With accounts: whether the owner's password is set." },
+            signed_in: { type: "boolean", description: "With accounts: whether this browser holds the owner's password session." },
+            setup_code: { type: "boolean", description: "With accounts, before the password is set: whether setup takes the code the server printed (a server at a public address). Never the code." },
+            secrets_writable: { type: "boolean", description: "Whether this caller may save, replace or remove a secret here (the same rule the server applies to the write itself)." },
+            secrets_reason: { enum: ["sign_in", "no_accounts", "token"], description: "Present only when secrets_writable is false: sign_in, this is not the owner's session (accounts on: sign in with the password; accounts off on a loopback-bound server: open the console from the launch link); no_accounts, accounts are off and this server is reachable off loopback, where no one saves a secret until accounts are on; token, the caller is the API token, which never saves one, on any server." },
+          },
+        }, "This browser's account state, and whether it may save a secret."),
+        ...errors(429, 500),
+      },
+      "x-agentrun-serve": "secrets/1",
     },
   },
   "/settings/mcp-servers": {
@@ -1280,7 +1351,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       operationId: "startMcpOAuth", tags: ["local"], summary: "Start signing in to an MCP server with OAuth: the page the owner opens",
       description: `Discovers the server's authorization server (RFC 9728, then RFC 8414) with the official MCP SDK, and its client: the \`client_id\` (and \`client_secret\`) given; else, signing in again to the same origin, the client kept from the last sign-in (its secret too); else this server's client metadata document, when this server's address is public https and the authorization server takes one; else dynamic registration. PKCE S256, and the RFC 8707 \`resource\` is the server's URL. Answers \`authorization_url\` for the owner to open; the authorization server sends the browser back to GET /settings/mcp-servers/oauth/callback within 10 minutes. 409 no_sealing_key with no seal key; 409 wrong_origin when the request came to another address than the one the callback is under (\`details.open\` says where to open the console); 424 when discovery or registration fails, or an MCP server off loopback names a private or plain-http endpoint. The answer sets a cookie (one per sign-in, \`SameSite=Lax\`, the callback's path, 10 minutes) that the callback requires.`,
       parameters: [MCP_NAME],
-      requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, required: ["url"], properties: { url: MCP_URL, scopes: { type: "array", minItems: 1, maxItems: 32, items: { type: "string" } }, client_id: { type: "string", minLength: 1 }, client_secret: { type: "string", minLength: 1, description: "Only with client_id; kept sealed with the token set." } } } } } },
+      requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, required: ["url"], properties: { url: MCP_URL, scopes: { type: "array", minItems: 1, maxItems: 32, items: { type: "string" } }, client_id: { type: "string", minLength: 1 }, client_secret: { type: "string", minLength: 1, description: "Only with client_id; kept sealed with the token set.", "x-agentrun-secret": true } } } } } },
       responses: { "200": json(closed({ authorization_url: { type: "string", format: "uri" } }), "The page the owner opens."), ...errors(400, 401, 409, 415, 422, 429, 500), ...MCP_FAILED },
       "x-agentrun-serve": "mcpservers/1",
     },
@@ -1294,11 +1365,68 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       "x-agentrun-serve": "mcpservers/1",
     },
   },
+  "/integrations/github": {
+    get: {
+      operationId: "getGitHubConnection", tags: ["local"], summary: "The server's GitHub App, if one is connected: its id, slug and installations, never a secret",
+      description: "Its installations are first repaired from GitHub's own (GET /app/installations with the App's JWT), at most once a minute: an installation event missed or not checked (GitHub out of reach answers that event 503) is put right here, and a list that comes to hold none turns every github trigger off (`connection_lost`). GitHub out of reach leaves the list as it is.",
+      responses: { "200": json(GITHUB_CONNECTION, "The connection."), ...errors(401, 404, 429, 500) },
+      ...GITHUB_MARK,
+    },
+    delete: {
+      operationId: "disconnectGitHub", tags: ["local"], summary: "Disconnect GitHub: the App's credentials gone from this server, and every github trigger off",
+      description: "Removes the App's sealed credentials and installations, and turns every github trigger off (`disabled: {reason: \"connection_lost\"}`), keeping them: connected again, each goes on when turned on. The App itself stays on GitHub: `note` says \"Delete the App itself on GitHub: <its settings URL>\". 404 when none is connected.",
+      responses: { "200": json(closed({ disconnected: { const: true }, triggers_off: { type: "integer", minimum: 0, description: "How many github triggers it turned off." }, note: { type: "string", description: "Where to delete the App itself on GitHub." } }), "Disconnected."), ...errors(401, 404, 429, 500) },
+      ...GITHUB_MARK,
+    },
+  },
+  "/integrations/github/connect": {
+    post: {
+      operationId: "connectGitHub", tags: ["local"], summary: "Start Connect GitHub: the app-manifest form the console posts to GitHub",
+      description: "GitHub's app-manifest flow, which makes the server's one GitHub App. Answers the form the console auto-submits: `action` (GitHub's new-App page, under `org` when given, with `state` on it) and `manifest` (a field of that form, as JSON): a name GitHub lets the person edit, the server's public URL, its hook `/v2/hooks/github`, its callback and its setup URL, the App's permissions (pull requests write, contents, metadata and issues read) and events (pull_request, issue_comment). `state` is random, used once, good for an hour, and bound to the browser that started it by a cookie on the callback's path; GitHub reads it from `action`'s URL, and the form posts only `manifest`. 409 github_no_public_url (\"GitHub can't reach this server: set its public URL first\") with no public URL (AGENTRUN_PUBLIC_URL); 409 github_already_connected (\"This server already has a GitHub App. Disconnect it first.\"); 409 github_wrong_origin (\"Open this server at <public URL> to connect GitHub.\", `details.public_url` that URL, for the console's link) when the request came to another address than the public URL, where GitHub sends the browser back: nothing is started.",
+      requestBody: { required: false, content: { "application/json": { schema: { type: "object", additionalProperties: false, properties: { org: { type: "string", pattern: "^[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}$", description: "The GitHub organization to make the App under; absent, the signed-in GitHub user." } } } } } },
+      responses: { "200": json(closed({ action: { type: "string", format: "uri" }, manifest: { type: "object", description: "GitHub's app manifest, posted as the form's `manifest` field." }, state: { type: "string" } }), "The form to post to GitHub."), ...errors(400, 401, 409, 415, 422, 429, 500) },
+      ...GITHUB_MARK,
+    },
+  },
+  "/integrations/github/callback": {
+    get: {
+      operationId: "gitHubCallback", tags: ["local"], summary: "Where GitHub sends the owner's browser back with the new App's code", security: [{}],
+      description: "Takes no token, and answers the browser only with where to go. Its `state` and the cookie its start set in that browser are the check. Converts `code` with GitHub (POST /app-manifests/{code}/conversions), keeps the App's id, slug, client id, private key and webhook secret sealed (its client secret is never kept), and redirects to GitHub's page that installs the App. A state that is unknown, used, over an hour old or from another browser redirects to the console's `/#/settings/github?github=error&reason=state_invalid`, a code GitHub does not convert to `...&reason=conversion_failed`, and one whose App GitHub made while another Connect kept its App to `...&reason=already_connected`; nothing is kept. Nothing of the App's secrets is logged or answered.",
+      parameters: ["code", "state"].map((name) => ({ name, in: "query", required: false, schema: { type: "string" } })),
+      responses: { "302": { description: "To GitHub, to install the App; or to the console's GitHub settings with `github=error&reason=state_invalid`, `conversion_failed` or `already_connected`." }, ...errors(429, 500) },
+      ...GITHUB_MARK,
+    },
+  },
+  "/integrations/github/installed": {
+    get: {
+      operationId: "gitHubInstalled", tags: ["local"], summary: "Where GitHub sends the browser once the App is installed", security: [{}],
+      description: "Takes no token, and answers the browser only with where to go. It records an installation only with the install state the callback sent GitHub's install page (`state`, which GitHub passes on) and the cookie it set in that browser, and only as GitHub, asked with the App's own JWT (GET /app/installations/{installation_id}), says it is the App's; then the browser goes to the console's `/#/settings/github?github=connected`. Without the state and cookie it records nothing and lands there too (an install from GitHub's own pages arrives as the App's signed installation event); otherwise (no such installation of the App, no App connected, GitHub not reached) to `/#/settings/github?github=error&reason=installation_unverified`, and nothing is kept.",
+      parameters: ["installation_id", "setup_action", "state"].map((name) => ({ name, in: "query", required: false, schema: { type: "string" } })),
+      responses: { "302": { description: "To the console's GitHub settings: `github=connected`, or `github=error&reason=installation_unverified`." }, ...errors(429, 500) },
+      ...GITHUB_MARK,
+    },
+  },
   "/settings/mcp-servers/oauth/client.json": {
     get: {
       operationId: "mcpOAuthClient", tags: ["local"], summary: "This server's OAuth client metadata document", security: [{}],
       description: "Its own URL is its client id (CIMD): `redirect_uris` is the callback, `token_endpoint_auth_method` none. Readable without a credential, for an authorization server to fetch.",
       responses: { "200": json({ type: "object" }, "The document."), ...errors(429, 500) },
+      "x-agentrun-serve": "mcpservers/1",
+    },
+  },
+  "/settings/mcp-servers/oauth/private-hosts": {
+    get: {
+      operationId: "getMcpPrivateHosts", tags: ["local"], summary: "The private-network hosts an MCP server's authorization server may be on",
+      description: `An MCP server's authorization server (its discovery, registration, token and refresh endpoints) is refused on a private network unless its host is on this list, which is empty by default. ${PRIVATE_HOSTS_RULE}`,
+      responses: { "200": json(PRIVATE_HOSTS, "The list."), ...errors(401, 429, 500) },
+      "x-agentrun-serve": "mcpservers/1",
+    },
+    put: {
+      operationId: "putMcpPrivateHosts", tags: ["local"], summary: "Replace the private-network hosts an MCP server's authorization server may be on",
+      description: `Replaces the list; an empty list allows none. Each entry is a host name or an IP address, matched exactly (lowercase, every final dot dropped, an IPv6 address as a URL writes it, in brackets): no wildcards, address ranges, ports or schemes, at most ${MAX_PRIVATE_HOSTS}. 422 with each entry that is not one, or that names an address no listing could allow. ${PRIVATE_HOSTS_RULE} Only the owner, signed in with their password, changes it: the route takes the console's password session alone, from this server's own origin with a JSON body (as every page write), and answers 403 \`forbidden\` to every token, the server's own included, since a run's process, an agent's MCP client or a script may hold one, and to every request on a server with accounts off; with no credential at all it is 401, as every route.`,
+      security: [{ ownerSession: [] }],
+      requestBody: { required: true, content: { "application/json": { schema: PRIVATE_HOSTS } } },
+      responses: { "200": json(PRIVATE_HOSTS, "The list, as kept."), ...errors(400, 401, 403, 415, 422, 429, 500, 503) },
       "x-agentrun-serve": "mcpservers/1",
     },
   },
@@ -1363,7 +1491,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       "x-agentrun-serve": "approvals/1",
     },
   },
-  ...archiving("agents", "Agent", ref("parameters/AgentId"), "The agent, with archived_at."),
+  ...archiving("agents", "Agent", ref("parameters/AgentId"), "The agent, with archived_at, and `triggers_off: [{id, name}]`: archived, the triggers that run as it, turned off with the archive (`disabled.reason` `agent_archived`); unarchived, those its archive turned off that are off still (unarchiving turns none on: PATCH /triggers/{id} with enabled true does)."),
   ...archiving("runs", "Run", ref("parameters/RunId"), "The run, with archived_at."),
   ...LEARNING_EXTENSIONS,
   "/agents/{agent_id}/sign-ins/{key}": {
@@ -1389,7 +1517,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       description: `Messages follow the Standard Webhooks spec (standardwebhooks.com), so a receiver verifies them with any of its libraries. Each is POSTed to \`url\` as JSON \`{type, timestamp, data}\`: \`run.needs_input\` when a run comes to need its person (status input_required; \`data.pending.kind\` \`question\` for an ask_person question, \`approval\` for a tool call that waits for a person's approval, \`stopped\` for a stopped turn, \`budget\` for a run paused at its spend cap, \`browser\` for an agent's ask for the person in its browser) and \`run.ended\` when it ends (completed, failed or cancelled), with \`data: {run_id, agent_id, status, title, url}\`, \`url\` the run on the page; and \`trigger.failed\` when a trigger's firing could not start its run (/triggers), with \`data: {trigger_id, name, firing_key, nominal_at, error: {code, message}, auto_paused}\`, \`auto_paused\` true when it was the ${FAILURES_TO_PAUSE}th in a row and turned the trigger off, its \`webhook-id\` the same for the same firing, after a restart too; never a tool's arguments, an output or an input, which the API reads. Headers: \`webhook-id\` (the same on every try, the receiver's idempotency key), \`webhook-timestamp\` (Unix seconds) and \`webhook-signature: v1,<base64 HMAC-SHA256 of "{id}.{timestamp}.{body}">\` under the secret's 32 bytes; a receiver refuses a timestamp more than 5 minutes from its clock. A try not answered 2xx in 15 s (no redirect followed) is tried again after about 5 s, 5 min, 30 min, 2 h, 5 h and 10 h, with jitter, then logged as failed; pending messages go on after a restart. A 410 turns the webhook off until it is set again. The first PUT makes the secret and answers 201 with it, once; a later PUT keeps it, turns the webhook on again and answers 200. 422 for a URL that is not http or https, holds a user or password, or is over 2048 characters; 409 no_sealing_key when the server was handed no seal key to keep the secret under.`,
       requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, required: ["url"], properties: { url: { type: "string", format: "uri", maxLength: 2048 } } } } } },
       responses: {
-        "201": json(closed({ ...WEBHOOK_SET_FIELDS, secret: WEBHOOK_SECRET }), "Set, with its secret, shown this once."),
+        "201": json({ oneOf: [closed({ ...WEBHOOK_SET_FIELDS, signing_secret: WEBHOOK_SECRET }), closed({ ...WEBHOOK_SET_FIELDS, note: { type: "string", description: "To the API token, which is never shown the secret: the words that send the person to the console for it." } })] }, "Set, with its secret as `signing_secret`, shown this once to the owner's signed-in session; to the API token, its metadata and the words in its place."),
         "200": json(WEBHOOK_SET, "Changed; the secret is kept."),
         ...errors(400, 401, 409, 415, 422, 429, 500),
       },
@@ -1397,7 +1525,10 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
     },
     delete: {
       operationId: "deleteWebhook", tags: ["local"], summary: "Remove the webhook; its pending messages are dropped, the log of attempts is kept",
-      responses: { "204": { description: "Removed." }, ...errors(401, 429, 500) },
+      description: "A secret write: its signing secret goes with it. The owner's signed-in session alone (ownerSession), never the token, which is 403 forbidden in words and the webhook kept.",
+      // The owner's password session alone (secret-writes.ts), never the document's bearer.
+      security: [{ ownerSession: [] }],
+      responses: { "204": { description: "Removed." }, ...errors(401, 403, 429, 500) },
       "x-agentrun-serve": "webhook/1",
     },
   },
@@ -1420,7 +1551,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
     get: {
       operationId: "listTriggers", tags: ["local"], summary: "The triggers: schedules and signed webhooks that start an agent's capped runs or message a run",
       description: TRIGGER_ERRORS,
-      responses: { "200": json(closed({ triggers: { type: "array", items: TRIGGER } }), "Each trigger, oldest first, with its last firing."), ...errors(401, 409, 429, 500) },
+      responses: { "200": json(closed({ triggers: { type: "array", items: TRIGGER_READ } }), "Each trigger, oldest first, with its last firing."), ...errors(401, 409, 429, 500) },
       ...TRIGGER_MARK,
     },
     post: {
@@ -1428,7 +1559,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       description: `Each firing starts one run of \`target.agent_id\` with \`target.input\` and its \`max_cost_usd\` (else the agent's default), as POST /agents/{agent_id}/runs would, and the run's \`trigger\` names it. A firing starts its run once, across retries and restarts. While the trigger's last run is active (working, or waiting on a person: a question, an approval, its cap), a firing is skipped; a webhook trigger with \`accept\` starts a run for each event it takes instead (the server's run limit still holds: a start it refuses is tried again). The last ${HISTORY_KEPT} firings are kept. A \`webhook\` source fires on each request to /hooks/{trigger_id} signed by its secret, which this answer holds (\`secret\`) this once: a retry under the same Idempotency-Key answers the same trigger with a \`note\` in its place, as the key's record never keeps a secret. A \`message_run\` target sends each firing's input to one run, under the firing's key, which the run's store takes once. 422 for another source kind, a start_run target with no max_cost_usd whose agent has no default one, an agent that is a workflow or does not take the input, or a run that is a workflow's; 409 no_sealing_key for a webhook trigger on a server handed no seal key.`,
       parameters: [ref("parameters/IdempotencyKey")],
       requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, required: ["source", "target"], properties: TRIGGER_WRITE } } } },
-      responses: { "201": json({ ...TRIGGER, properties: { ...TRIGGER.properties, secret: TRIGGER_SECRET, note: { type: "string", description: "On a retry under the same Idempotency-Key, in place of a webhook trigger's secret: it was shown once, and POST /triggers/{trigger_id}/secret makes a new one." } } }, "Made; a webhook trigger's first answer holds its `secret`, this once."), ...errors(400, 401, 409, 415, 422, 429, 500) },
+      responses: { "201": json({ ...TRIGGER, properties: { ...TRIGGER.properties, secret: TRIGGER_SECRET_META, signing_secret: TRIGGER_SECRET, secret_set: { const: true, description: "A webhook trigger's first answer: its secret is made and kept. The secret itself is in the answer to the owner's signed-in session alone (the console's)." }, note: { type: "string", description: "In place of a webhook trigger's secret: to the API token, which is never shown one, the words that send the person to the console to rotate it there; on a retry under the same Idempotency-Key, that it was shown once." } } }, "Made; a webhook trigger's first answer to the owner's signed-in session holds its `signing_secret`, this once."), ...errors(400, 401, 409, 415, 422, 429, 500) },
       ...TRIGGER_MARK,
     },
   },
@@ -1436,7 +1567,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
     get: {
       operationId: "getTrigger", tags: ["local"], summary: "One trigger",
       parameters: [TRIGGER_ID],
-      responses: { "200": json(TRIGGER, "The trigger."), ...errors(401, 404, 409, 429, 500) },
+      responses: { "200": json(TRIGGER_READ, "The trigger."), ...errors(401, 404, 409, 429, 500) },
       ...TRIGGER_MARK,
     },
     patch: {
@@ -1466,16 +1597,18 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
   "/triggers/{trigger_id}/secret": {
     post: {
       operationId: "rotateTriggerSecret", tags: ["local"], summary: "A webhook trigger's new secret, shown once; the old one signs nothing from now on",
-      description: "422 for a trigger that is not a webhook's; 409 no_sealing_key when the server was handed no seal key.",
+      description: "A secret write: the owner's signed-in session alone (ownerSession), never the token, which is 403 forbidden in words and the secret kept. 422 for a trigger that is not a webhook's; 409 no_sealing_key when the server was handed no seal key.",
       parameters: [TRIGGER_ID],
-      responses: { "200": json(closed({ secret: TRIGGER_SECRET }), "The new secret, this once."), ...errors(401, 404, 409, 422, 429, 500) },
+      // The owner's password session alone (secret-writes.ts), never the document's bearer.
+      security: [{ ownerSession: [] }],
+      responses: { "200": json(closed({ secret: TRIGGER_SECRET_META, signing_secret: TRIGGER_SECRET }), "The new secret as `signing_secret`, this once, and its metadata."), ...errors(401, 403, 404, 409, 422, 429, 500) },
       ...TRIGGER_MARK,
     },
   },
   "/hooks/{trigger_id}": {
     post: {
       operationId: "receiveHook", tags: ["local"], summary: "Fire a webhook trigger: a request signed by its secret, no token",
-      description: `This server's one route with no token: the request's signature is its credential, checked on the raw body before anything else. A webhook trigger's \`signature\` names the scheme its requests are signed under (default \`${DEFAULT_SCHEME}\`), and a request is checked by the one scheme whose signature header it carries (${SCHEME_NAMES.map((name) => `\`${SIGNATURE_SCHEMES[name].signatureHeader}\` for \`${name}\``).join(", ")}): ${SCHEME_NAMES.map((name) => SIGNATURE_SCHEMES[name].describe).join(" ")} The body's bytes are signed as sent, whatever its content type. The body is any text, at most 256 KiB (413 past it), arriving whole within ${HOOK_BODY_MS / 1000} s (408 past that); its first ${PAYLOAD_KEPT_BYTES / 1024} KiB reach the agent inside \`<trigger-payload source="webhook" scheme="..." event="..." action="..." delivery="..." untrusted>\`, the event as the scheme reads it, the action the JSON body's top-level \`action\` and the delivery the unsigned delivery id (GitHub's X-GitHub-Delivery), each when there is one. A bad or missing signature, a stale or future timestamp, no scheme's signature header or more than one, a scheme other than the trigger's, an unknown trigger, one that is off and one that is not a webhook's all answer the same 401. A verified request its trigger's \`accept\` does not take (GitHub's \`ping\` among them, when no rule names it) answers 200 \`{"ok": "ignored"}\`, fires nothing and is said in the log. The first request with a firing key (as its scheme reads it: the signed \`webhook-id\`, or the SHA-256 of a GitHub body) answers 202 once its firing is recorded, and its run starts after; the same key again, for a day after, answers 200 with that firing (or \`{"ok": "duplicate"}\` once the firing has left the trigger's kept history; each trigger keeps up to ${SEEN_KEPT} keys for their day, the oldest let go first past that) and starts nothing. A trigger holds at most ${DUE_KEPT} firings due (a message_run firing waits while its run works): past them a new delivery answers 429 \`rate_limited\` with Retry-After and records nothing, so the sender sends it again later.`,
+      description: `This server's one route with no token: the request's signature is its credential, checked on the raw body before anything else. A webhook trigger's \`signature\` names the scheme its requests are signed under (default \`${DEFAULT_SCHEME}\`), and a request is checked by the one scheme whose signature header it carries (${SCHEME_NAMES.map((name) => `\`${SIGNATURE_SCHEMES[name].signatureHeader}\` for \`${name}\``).join(", ")}): ${SCHEME_NAMES.map((name) => SIGNATURE_SCHEMES[name].describe).join(" ")} The body's bytes are signed as sent, whatever its content type. The body is any text, at most 256 KiB (413 past it), arriving whole within ${HOOK_BODY_MS / 1000} s (408 past that); its first ${PAYLOAD_KEPT_BYTES / 1024} KiB reach the agent inside \`<trigger-payload source="webhook" scheme="..." event="..." action="..." delivery="..." untrusted>\`, the event as the scheme reads it, the action the JSON body's top-level \`action\`, the delivery the unsigned delivery id (GitHub's X-GitHub-Delivery), and for a GitHub delivery \`number\` (pull_request.number, else issue.number) and \`head_sha\` (pull_request.head.sha; none on a comment event), read from the signed body so the cut never loses them, each when there is one. A bad or missing signature, a stale or future timestamp, no scheme's signature header or more than one, a scheme other than the trigger's, an unknown trigger, one that is off and one that is not a webhook's all answer the same 401. A verified request its trigger's \`accept\` does not take (GitHub's \`ping\` among them, when no rule names it) answers 200 \`{"ok": "ignored"}\`, fires nothing and is said in the log. The first request with a firing key (as its scheme reads it: the signed \`webhook-id\`, or the SHA-256 of a GitHub body) answers 202 once its firing is recorded, and its run starts after; the same key again, for a day after, answers 200 with that firing (or \`{"ok": "duplicate"}\` once the firing has left the trigger's kept history; each trigger keeps up to ${SEEN_KEPT} keys for their day, the oldest let go first past that) and starts nothing. A trigger holds at most ${DUE_KEPT} firings due (a message_run firing waits while its run works): past them a new delivery answers 429 \`rate_limited\` with Retry-After and records nothing, so the sender sends it again later.`,
       security: [],
       parameters: [TRIGGER_ID],
       requestBody: { required: true, content: { "*/*": { schema: {} } } },
@@ -1568,6 +1701,9 @@ const LEARNING_SHORT = {
 const CONSOLE_URL = (what: string): Json => ({ type: "string", format: "uri", description: `The ${what}'s page in this server's console, at the address people open it (the server's public URL when it has one, else the address this request reached it at): the link to give a person.`, "x-agentrun-serve": "consoleurl/1" });
 /** The RUN_FIELDS every run's view and summary hold (runs.ts): required, beside the contract's. */
 export const RUN_FIELDS_SENT = ["revision", "kind", "archived_at"];
+/** The field every saved sign-in is sent with beside the contract's, required: `secret`, its one secret's metadata
+ *  (secrets/1, sign-ins-secrets.ts). */
+export const SIGN_IN_FIELDS_SENT = ["secret"];
 /** DefinitionInput's contract fields this server does not require (validate.ts): a workflow revision has no
  *  instructions, and the server mints or keeps version, skills and tools when a write leaves them out. */
 export const DEFINITION_INPUT_OPTIONAL = ["instructions", "version", "skills", "tools"];
@@ -1961,8 +2097,8 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
     },
     tool_keys: {
       type: "object", additionalProperties: false, required: ["routes", "at_rest"],
-      properties: { routes: { type: "boolean" }, at_rest: { enum: ["sealed", "unavailable"] } },
-      description: "GET, PUT and DELETE /settings/tool-keys: a tool's key saved by name, kept `sealed` under the seal key the server was handed; `unavailable` with none, when nothing is kept.",
+      properties: { routes: { type: "boolean" }, at_rest: { const: "sealed" } },
+      description: "GET, PUT and DELETE /settings/tool-keys: a tool's key saved by name, kept `sealed` under the server's seal key, which it always has (handed, or made at its first start).",
       "x-agentrun-serve": "toolkeys/1",
     },
     mcp_client: {
@@ -1974,12 +2110,12 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
     tool_permissions: { type: "boolean", description: "Whether a tool setting may carry a permission (allow, ask, deny), which the tool gate holds every tool call to.", "x-agentrun-serve": "providers/1" },
     webhooks: {
       type: "object", additionalProperties: false, required: ["routes", "events", "signing", "at_rest"],
-      properties: { routes: { type: "boolean" }, events: { type: "array", items: { enum: [...WEBHOOK_EVENTS] } }, signing: { const: "standard-webhooks/v1" }, at_rest: { enum: ["sealed", "unavailable"] } },
+      properties: { routes: { type: "boolean" }, events: { type: "array", items: { enum: [...WEBHOOK_EVENTS] } }, signing: { const: "standard-webhooks/v1" }, at_rest: { const: "sealed" } },
       description: "/settings/webhook: one URL each of `events` is POSTed to, signed by the Standard Webhooks spec; its secret kept `sealed` under the seal key the server was handed, `unavailable` with none, when no webhook is set.",
       "x-agentrun-serve": "webhook/1",
     },
     triggers: {
-      ...closed({ routes: { type: "boolean" }, sources: { type: "array", items: { enum: [...SOURCE_KINDS] } }, targets: { type: "array", items: { enum: [...TARGET_KINDS] } }, min_every_s: { type: "integer" }, history_kept: { type: "integer" }, catchup_window_s: { type: "integer" }, failures_to_pause: { type: "integer" }, webhook: closed({ signing: { const: "standard-webhooks/v1" }, signatures: { type: "array", items: { enum: [...SCHEME_NAMES] }, description: "The signature schemes a webhook trigger's `signature` may name." }, tolerance_s: { type: "integer" }, max_body_bytes: { type: "integer" }, payload_kept_bytes: { type: "integer" }, at_rest: { enum: ["sealed", "unavailable"] } }) }),
+      ...closed({ routes: { type: "boolean" }, sources: { type: "array", items: { enum: [...SOURCE_KINDS] } }, targets: { type: "array", items: { enum: [...TARGET_KINDS] } }, min_every_s: { type: "integer" }, history_kept: { type: "integer" }, catchup_window_s: { type: "integer" }, failures_to_pause: { type: "integer" }, webhook: closed({ signing: { const: "standard-webhooks/v1" }, signatures: { type: "array", items: { enum: [...SCHEME_NAMES] }, description: "The signature schemes a webhook trigger's `signature` may name." }, tolerance_s: { type: "integer" }, max_body_bytes: { type: "integer" }, payload_kept_bytes: { type: "integer" }, at_rest: { const: "sealed" } }) }),
       description: "/triggers: schedules and signed webhooks that start an agent's capped runs or message a run: the source and target kinds this server takes, the shortest interval, how many firings each trigger keeps, the default catch-up window, and how many failed firings in a row turn a trigger off.",
       ...TRIGGER_MARK,
     },
@@ -2086,7 +2222,7 @@ function serverHooks(adapters: readonly TriggerAdapter[]): Record<string, Json> 
         requestBody: { required: true, content: { "*/*": { schema: {} } } },
         // A handshake's answer is any object but a firings one or the ignored answer, so each answer is exactly one of the
         // 200's shapes, and a handshake of the source's own, {ok: true} say, is one.
-        responses: { "202": json(made, "Recorded: each firing's run starts (or its message goes) after this answer."), "200": json(push.handshake ? { oneOf: [made, HOOK_IGNORED, { type: "object", not: { anyOf: [{ required: ["firings"] }, HOOK_IGNORED] }, description: "The source's handshake answer." }] } : { oneOf: [made, HOOK_IGNORED] }, "Nothing new: each event's firing as it stands (a key seen within its day whose firing is no longer kept, `{ok: \"duplicate\"}`), or none; or `{ok: \"ignored\"}`, a request the source's own filter does not take."), "408": HOOK_TIMEOUT, ...errors(401, 413, 429, 500) },
+        responses: { "202": json(made, "Recorded: each firing's run starts (or its message goes) after this answer."), "200": json(push.handshake ? { oneOf: [made, HOOK_IGNORED, { type: "object", not: { anyOf: [{ required: ["firings"] }, HOOK_IGNORED] }, description: "The source's handshake answer." }] } : { oneOf: [made, HOOK_IGNORED] }, "Nothing new: each event's firing as it stands (a key seen within its day whose firing is no longer kept, `{ok: \"duplicate\"}`), or none; or `{ok: \"ignored\"}`, a request the source's own filter does not take."), "408": HOOK_TIMEOUT, ...errors(401, 413, 429, 500, 503) },
         ...TRIGGER_MARK,
       },
     };
@@ -2112,6 +2248,8 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
     "x-agentrun-serve": "learning/2",
   };
   const schemas = (doc.components as Json).schemas as Record<string, Json>;
+  // The one shape every secret's view answers (secret-writes.ts secretMeta): a component each plane's view refers to.
+  schemas.SecretMeta = structuredClone(SECRET_META_SCHEMA) as unknown as Json;
   const fields: string[] = [];
   for (const [where, added] of Object.entries(FIELD_EXTENSIONS)) {
     const [name, ...down] = where.split("/");
@@ -2263,6 +2401,19 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
       fields.push("SignIn.else");
     }
   }
+  // secrets/1: each saved sign-in carries its one secret under `secret`, in the secret metadata shape every plane gives
+  // (sign-ins-secrets.ts), always sent: named sign-in:<agent_id>:<provider>, set, from a sign-in, changed when its pointer
+  // was saved. Never the pointer.
+  const signInSchema = schemas.SignIn as Json & { properties: Record<string, Json>; required: string[] };
+  if (signInSchema.properties.secret === undefined) {
+    signInSchema.properties.secret = {
+      $ref: "#/components/schemas/SecretMeta",
+      description: "The sign-in's one secret, its vendor pointer, as metadata alone (SecretMeta): named `sign-in:<agent_id>:<provider>`, set, from a `sign-in`, changed when its pointer was saved (not a run's verify, `verified_at`). Never the pointer, a prefix, a length or a hash.",
+      "x-agentrun-serve": "secrets/1",
+    };
+    fields.push("SignIn.secret");
+    signInSchema.required = [...signInSchema.required, ...SIGN_IN_FIELDS_SENT];
+  }
   // A workflow run pauses here (POST /runs/{run_id}/pause): its status reads `paused` until it is resumed.
   const runStatus = schemas.RunStatus as Json & { enum?: string[] };
   if (Array.isArray(runStatus.enum) && !runStatus.enum.includes("paused")) {
@@ -2277,6 +2428,14 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
     issueReason.enum = [...issueReason.enum, NOT_SET_UP];
     issueReason["x-agentrun-serve"] = "runnable/1";
     fields.push(`InputIssue.reason.${NOT_SET_UP}`);
+  }
+  // mcpservers/1: the reasons a saved MCP server's 422 gives beside the contract's (mcp-probe.ts): a URL that redirects
+  // (never followed) or is plain http off loopback, a server listing too many tools or too much of them, a name kept for
+  // AgentRun's own tools, a sign-in that expired.
+  for (const reason of MCP_ISSUE_REASONS) {
+    if (!Array.isArray(issueReason.enum) || issueReason.enum.includes(reason)) continue;
+    issueReason.enum = [...issueReason.enum, reason];
+    fields.push(`InputIssue.reason.${reason}`);
   }
   // A paid tool's charges (monid's) are a meter of their own on /usage, beside the model's tokens.
   const meter = schemas.Meter as Json & { enum?: string[] };
@@ -2351,8 +2510,10 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
   // that server, not the first of the contract's.
   doc.servers = [{ url: "/v2", description: "This server." }];
   if (adapters !== TRIGGER_ADAPTERS) withAdapters(doc, adapters);
-  // Every server-wide pushed source's own hook, the registry's as a test's.
-  Object.assign(doc.paths, serverHooks(adapters));
+  // Every server-wide pushed source's own hook, the registry's as a test's: this server's own, and listed so.
+  const hooks = serverHooks(adapters);
+  Object.assign(doc.paths, hooks);
+  ((doc.info["x-agentrun-serve"] as Json).extensions as string[]).push(...Object.keys(hooks).map((path) => `POST ${path}`));
   return doc;
 }
 

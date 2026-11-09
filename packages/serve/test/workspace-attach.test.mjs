@@ -73,12 +73,19 @@ test("attach checks the computer's read-back against readBackOf(mountSpec()) (th
   const passed = { readBackOf: (spec) => { asked.push(spec); return { kind: "bind", path: "/where/the/check/says" }; } };
   await base.attach(fakeComputer(root, { readBack: { kind: "bind", path: "/where/the/check/says" } }), passed);
   assert.deepEqual(asked, [{ kind: "bind", path: root }], "it asked the passed-in check, with its own mount");
-  // The disk's mount: never with the token in a refusal.
+  // The disk's mount, read back under the claim's epoch (attach.ts checkReadBack: readBackOf(spec, check.epoch), each
+  // side said as "<disk>:/<folder> in <region>, exclusive under epoch <n>"): never with the token in a refusal.
   const archil = { kind: "archil", disk: "dsk", region: "r1", folder: "agents/a/runs/r/work", token: "secret-token" };
-  await refused(checkReadBack(fakeComputer(root, { readBack: { kind: "archil", disk: "dsk", region: "r1", folder: "agents/b/runs/r/work" } }), archil, { readBackOf }), "REFUSED", /not dsk:\/agents\/a\/runs\/r\/work in r1/);
-  await refused(checkReadBack(fakeComputer(root, { readBack: { kind: "archil", disk: "dsk", region: "r2", folder: "agents/a/runs/r/work" } }), archil, { readBackOf }), "REFUSED", /in r2, not/);
-  await checkReadBack(fakeComputer(root, { readBack: { kind: "archil", disk: "dsk", region: "r1", folder: "agents/a/runs/r/work" } }), archil, { readBackOf });
-  await assert.rejects(checkReadBack(fakeComputer(root, { readBack: { kind: "bind", path: "/x" } }), archil, { readBackOf }), (error) => !error.message.includes("secret-token"), "a refusal never carries the token");
+  const claimed = { readBackOf, epoch: 1 };
+  const back = (fields) => fakeComputer(root, { readBack: { kind: "archil", disk: "dsk", region: "r1", folder: "agents/a/runs/r/work", exclusive: true, epoch: 1, ...fields } });
+  await refused(checkReadBack(back({ folder: "agents/b/runs/r/work" }), archil, claimed), "REFUSED", /it mounts dsk:\/agents\/b\/runs\/r\/work in r1, exclusive under epoch 1, not dsk:\/agents\/a\/runs\/r\/work in r1, exclusive under epoch 1/);
+  await refused(checkReadBack(back({ region: "r2" }), archil, claimed), "REFUSED", /it mounts dsk:\/agents\/a\/runs\/r\/work in r2, exclusive under epoch 1, not dsk:\/agents\/a\/runs\/r\/work in r1/);
+  await refused(checkReadBack(back({ epoch: 2 }), archil, claimed), "REFUSED", /it mounts dsk:\/agents\/a\/runs\/r\/work in r1, exclusive under epoch 2, not dsk:\/agents\/a\/runs\/r\/work in r1, exclusive under epoch 1/);
+  await checkReadBack(back({}), archil, claimed);
+  // The epoch fence (#1994: readBackOf takes the claim's epoch): a check with no epoch reads no Archil mount back, so the
+  // disk's mount is refused in these words, however it reads back.
+  await refused(checkReadBack(back({}), archil, { readBackOf }), "REFUSED", /not an Archil mount of dsk:\/agents\/a\/runs\/r\/work with no epoch to read it back under \(an epoch must be a whole number from 0 to 9007199254740991, not undefined\)/);
+  await assert.rejects(checkReadBack(fakeComputer(root, { readBack: { kind: "bind", path: "/x" } }), archil, claimed), (error) => !error.message.includes("secret-token"), "a refusal never carries the token");
 });
 
 test("attached: a write goes to a temporary file beside the target, then a move; a big one in chunks, the kept mode on the last", async () => {

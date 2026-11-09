@@ -14,6 +14,8 @@ export const ERROR_STATUS = {
   method_not_allowed: 405,
   agent_exists: 409,
   name_taken: 409,
+  // A trigger made on, turned on, or aimed while on, for an archived agent (triggers.ts).
+  agent_archived: 409,
   agent_not_runnable: 409,
   home_busy: 409,
   idempotency_mismatch: 409,
@@ -51,6 +53,12 @@ export const ERROR_STATUS = {
   handoff_answered: 409,
   computer_not_live: 409,
   scope_taken: 409,
+  // Connect GitHub (github-connection.ts): a github trigger on a server with no GitHub App, a second App, a Connect that
+  // GitHub could not call back (no public address), and one whose secrets could not be kept (no seal key).
+  github_not_connected: 409,
+  github_already_connected: 409,
+  github_no_public_url: 409,
+  github_wrong_origin: 409,
 } as const;
 
 export type ErrorCode = keyof typeof ERROR_STATUS;

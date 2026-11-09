@@ -148,19 +148,24 @@ check_out() {
 # first; nothing is written.
 no_links() {
   for q in .agentrun .agentrun/diffs .agentrun/snapshot.json; do
-    [ -L "$q" ] && die "$q is a symbolic link, and the learning script never writes through one"
+    [ -L "$q" ] && link "$q"
   done
   while read -r mode p; do
-    [ -L "$p" ] && [ "$mode" != 120000 ] && die "$p is a symbolic link, and the learning script never writes through one"
+    [ -L "$p" ] && [ "$mode" != 120000 ] && link "$p"
     q=$p
     while :; do
       case $q in
         */*) q=${q%/*} ;;
         *) break ;;
       esac
-      [ -L "$q" ] && die "$q is a symbolic link, and the learning script never writes through one"
+      [ -L "$q" ] && link "$q"
     done
   done < "$tmp/paths"
+}
+
+# A link found where the script would write, in the words every learning read says it in.
+link() {
+  die "a link in the learning folder at $1 can't be followed, so nothing learned is read or written; remove the link"
 }
 
 # "<mode> <path>" of every path commit $1 holds.

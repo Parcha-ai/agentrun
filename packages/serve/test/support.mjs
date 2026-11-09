@@ -6,21 +6,55 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { createHash } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { after } from "node:test";
 import { fileURLToPath } from "node:url";
 import { claudeAgentExecutable } from "@parcha/agentrun-harness-claude";
 import { codexTarget } from "../../run-adapters-codex/dist/binary.js";
 import { processAlive } from "@parcha/agentrun-kernel/host";
 import { startServe } from "../dist/index.js";
+import { fauxEnvOf } from "../dist/server.js";
 import { readRunDbSync } from "../dist/run-db.js";
 import { resolve } from "node:path";
 import { openSqliteStore } from "../dist/store/index.js";
 import { startRunner } from "../dist/runner/runner.js";
 import { dispatchRunner } from "../dist/runner/harness-loops.js";
+import { computerDepsFrom } from "../dist/workspace/index.js";
 import { routeOf } from "../dist/runner/model-route.js";
 import { FAUX_ENV, withoutFaux } from "../dist/model.js";
-import { SEAL_KEY_ENV, sealKeyOf } from "../dist/tool-keys.js";
+import { SEAL_KEY_ENV } from "../dist/tool-keys.js";
+import { ensureSealKey, sealKeyHome } from "../dist/seal-key.js";
+import { secret } from "../dist/secrets.js";
+
+// Every test process keeps the seal key a server makes at its first start (seal-key.ts) under a config home of its own,
+// never this machine's ~/.config: a server never starts without one, and a test must write nothing outside its own dirs.
+{
+  const config = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-config-"));
+  process.env.XDG_CONFIG_HOME = config;
+  process.on("exit", () => rmSync(config, { recursive: true, force: true }));
+}
+
+/** The secret writes (secret-writes.ts registers them on the server) the client sends from the owner's session, as the
+ *  console does: the token can't make one. A plane's tests add theirs with secretWritePath, and need no client of their
+ *  own. A path here is matched under /v2, its query left off. */
+export const SECRET_WRITE_PATHS = [
+  { methods: ["PUT", "DELETE"], path: /^\/settings\/tool-keys\/[^/]+$/ },
+  { methods: ["POST"], path: /^\/triggers$/ },
+  { methods: ["POST"], path: /^\/triggers\/[^/]+\/secret$/ },
+  { methods: ["PUT"], path: /^\/settings\/webhook$/ },
+  // MCP (mcp-secret-writes.ts): a saved server's PUT (a token or headers it carries), a sign-in's start (a client_secret),
+  // and the private-network OAuth hosts.
+  { methods: ["PUT"], path: /^\/settings\/mcp-servers\/[^/]+$/ },
+  { methods: ["POST"], path: /^\/settings\/mcp-servers\/[^/]+\/oauth\/start$/ },
+  { methods: ["PUT"], path: /^\/settings\/mcp-servers\/oauth\/private-hosts$/ },
+];
+/** Adds a secret write the client sends from the owner's session (`methods` on `path`, a RegExp over the /v2 path). */
+export const secretWritePath = (methods, path) => void SECRET_WRITE_PATHS.push({ methods, path });
+const secretWrite = (method, path) => SECRET_WRITE_PATHS.some((write) => write.methods.includes(method) && write.path.test(path.split("?")[0]));
+/** The owner's password the client sets on a server that has none yet, to make a secret write from its session. */
+const CLIENT_OWNER_PHRASE = `client-owner-${createHash("sha256").update(String(process.pid)).digest("hex").slice(0, 24)}`;
+/** Each server's owner session cookie, by its base URL: set once, when the client first makes a secret write. */
+const ownerCookies = new Map();
 
 export const FAUX = new URL("./fixtures/faux-model.mjs", import.meta.url).pathname;
 
@@ -222,7 +256,16 @@ function withAgents(store) {
       return typeof value === "function" ? value.bind(target) : value;
     },
   });
-  return { triggers, runs: store.runs };
+  // An agent archived through the server is archived in the store too, its row put first when it is not there.
+  const agents = new Proxy(store.agents, {
+    get(target, key) {
+      const value = Reflect.get(target, key, target);
+      if (key === "archive") return async (id, ...rest) => (await ensure(id), value.call(target, id, ...rest));
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  // The trigger settings too: the GitHub App is kept there (server.ts, sealed-settings-store.ts).
+  return { triggers, runs: store.runs, agents, triggerSettings: store.triggerSettings, flush: () => store.flush() };
 }
 
 /** Trigger stores handed to servers a test starts itself (startServe, not serve()): closed when the file's tests are done,
@@ -252,18 +295,24 @@ export async function triggerStore(of) {
  *  dispatch (dispatch.ts): each claim's launch picks its harness loop — pi on the kernel's adapter loop with the run's pi
  *  spec, a learning run on the learning loop, its model route the faux model under `faux`. Returns a close() that stops the
  *  runner and closes its store handle. */
-export async function startInProcessRunner(data, { faux } = {}) {
+export async function startInProcessRunner(data, { faux, githubApi, ...switches } = {}) {
   const store = await openSqliteStore({ dataDir: data, role: "runner" });
   // The runner's env mirrors the server's faux (model.ts FAUX_ENV): its model route reads the faux model from it, so a run
-  // never reaches the network. The seal key, when the server has one, seals the live-viewer tokens the browser tool writes;
-  // a server with none never serves a live view, so a stand-in is enough to satisfy the spec.
-  const env = { ...withoutFaux(process.env), ...(faux ? { [FAUX_ENV]: resolve(faux) } : {}) };
-  const sealKey = sealKeyOf(env[SEAL_KEY_ENV]) ?? Buffer.alloc(32);
+  // never reaches the network. The seal key is the server's (seal-key.ts), read as the CLI's runner reads it: the one
+  // handed over, else the one kept under this process's config home. It seals the live-viewer tokens the browser writes.
+  // Its tools' fakes and its harness table too, as the server hands a run's process its own (server.ts fauxEnvOf): each
+  // the test gave its server (fauxMonid, fauxParallel, fauxJev, harnessTable…).
+  const env = { ...withoutFaux(process.env), ...(faux ? fauxEnvOf({ ...switches, faux }) : {}) };
+  const sealKey = ensureSealKey(secret(SEAL_KEY_ENV), { configHome: sealKeyHome(process.env) }).key;
+  // The run's claim-time computer, composed once the one way (workspace/computer-deps.ts computerDepsFrom): none for the
+  // runner's place, the real kinds otherwise, keys read from this env then the store's sealed rows.
+  const computers = computerDepsFrom({ env, store, sealKey });
   let runner;
   try {
     runner = startRunner({
       store,
-      createLoop: dispatchRunner({ env, data, journal: (claim) => store.journal(claim), store, sealKey, routeOf }),
+      // A test's fake GitHub, the server's githubApi seam: the runner mints the App's tokens there (never from the env).
+      createLoop: dispatchRunner({ env, data, journal: (claim) => store.journal(claim), store, sealKey, routeOf, computerForClaim: computers.computerForClaim, computerDeps: computers.computerDeps, ...(githubApi ? { githubApi } : {}) }),
     });
   } catch (error) {
     await store.close();
@@ -284,7 +333,9 @@ export async function serve(t, { harnesses: asked, runner: wantRunner = true, ..
   // A runner beside the server on the same data (the CLI start's server-and-runner): it claims and runs what the server
   // starts, so a test reads a run that runs, not one that queues forever. `runner: false` leaves it off for a test that
   // wants the server alone. Its loop is the switch's dispatch (learning wired; pi/workflow the server's own, E2r).
-  const closeRunner = wantRunner === false ? undefined : await startInProcessRunner(data, { faux: Object.hasOwn(options, "faux") ? options.faux : FAUX });
+  const closeRunner = wantRunner === false ? undefined : await startInProcessRunner(data, { ...options, faux: Object.hasOwn(options, "faux") ? options.faux : FAUX });
+  // A handle of the test's own on the server's store (as a runner's), for what a test reads of its rows: server.store.
+  const store = await openSqliteStore({ dataDir: data, role: "runner" });
   // A server on another's data (a restart's): its owner's hook closes it before the directory goes.
   if (dir) sharing.set(data, new Set());
   else sharing.get(data)?.add(server);
@@ -294,6 +345,7 @@ export async function serve(t, { harnesses: asked, runner: wantRunner = true, ..
   t.after(async () => {
     // The runner releases its claims and closes its store handle before the server's directory goes.
     if (closeRunner) await closeRunner();
+    await store.close().catch(() => {});
     await server.close();
     // The servers a test started on this one's data close before it goes: node:test runs after-hooks in the order they
     // were added, so this one runs before theirs, and a directory removed under a server still writing there fails with
@@ -306,10 +358,17 @@ export async function serve(t, { harnesses: asked, runner: wantRunner = true, ..
     if (dir) await writableTree(dir).then(() => rm(dir, { recursive: true, force: true }));
     if (sudo.length) throw new Error(`a box command ran sudo on this machine (the stand-in refused it): ${sudo.join("; ")}`);
   });
-  return { ...server, data, api: client(server.baseUrl, server.token) };
+  return { ...server, data, store, api: client(server.baseUrl, server.token) };
 }
 
-export function client(baseUrl, token) {
+/** `server`'s client with every request sent from the owner's session (ownerSessionOf), as the console sends it: the
+ *  password session with accounts on, the launch link's console with accounts off on loopback. */
+export const asOwner = (server) => client(server.baseUrl, server.token, { owner: true });
+/** The owner's session the test client holds for `server` (ownerSessionOf: its cookie and origin), for a request a test
+ *  sends itself as the console does (an approval's answer): one owner per server, never a second password. */
+export const clientOwnerSession = (server) => ownerSessionOf(server.baseUrl, server.token);
+
+export function client(baseUrl, token, { owner = false } = {}) {
   /** A request on a connection of its own, which nothing reuses: a pooled socket the server closes is not its failure. */
   const fresh = (method, path) =>
     new Promise((resolve, reject) => {
@@ -329,10 +388,15 @@ export function client(baseUrl, token) {
   /** `raiseCheck: false`: no raise guard read after this request (raisedReadsQueued), for a test whose server goes away
    *  once the raise is answered. */
   async function api(method, path, body, headers = {}, { raiseCheck = true } = {}) {
+    // A secret write goes from the owner's session, as the console's does (secret-writes.ts): the token is refused one.
+    const session = (owner || secretWrite(method, path)) && !headers.authorization ? await ownerSessionOf(baseUrl, token) : undefined;
+    const sent = { body };
     const res = await fetch(`${baseUrl}${path}`, {
       method,
-      headers: { ...(token ? { authorization: `Bearer ${token}` } : {}), ...(body === undefined ? {} : { "content-type": "application/json" }), ...headers },
-      body: body === undefined ? undefined : JSON.stringify(body),
+      headers: session
+        ? { "content-type": "application/json", cookie: session.cookie, origin: session.origin, ...headers }
+        : { ...(token ? { authorization: `Bearer ${token}` } : {}), ...(body === undefined ? {} : { "content-type": "application/json" }), ...headers },
+      body: sent.body === undefined ? undefined : JSON.stringify(sent.body),
     });
     const text = await res.text();
     let json;
@@ -343,6 +407,30 @@ export function client(baseUrl, token) {
     if (raiseCheck && method === "PATCH" && res.status === 200 && json?.resumed === true) await raisedReadsQueued(baseUrl, token, path);
     return { status: res.status, headers: res.headers, body: json ?? text };
   };
+}
+
+/** The owner's session on the server at `baseUrl` (its /v2), for the client's secret writes. With accounts on, the client
+ *  sets the owner's password the first time, with its token standing in for the setup code (so on any server, its setup
+ *  open or not), or signs in with it on a server it set up before a restart; with accounts off, it follows the launch link
+ *  (`/?token=`, the 303 that sets the console's cookie), whose console is the owner's on a loopback server
+ *  (secret-writes.ts). Where none works (an owner the test set up with its own password) it throws, saying so: a secret
+ *  write never falls back to the token, which the server refuses; such a test makes its own owner's session. */
+async function ownerSessionOf(baseUrl, token) {
+  // By address and token: a server started again on a port another used has its own owner and cookie.
+  const known = `${baseUrl} ${token ?? ""}`;
+  if (ownerCookies.has(known)) return ownerCookies.get(known);
+  const origin = new URL(baseUrl).origin;
+  const post = (path, headers = {}) => fetch(`${baseUrl}${path}`, { method: "POST", redirect: "manual", headers: { "content-type": "application/json", origin, ...headers }, body: JSON.stringify({ password: CLIENT_OWNER_PHRASE }) });
+  const tried = [];
+  const answer = async (what, res) => (tried.push(`${what}: ${res.status}`), res);
+  let res = await answer("setup", await post("/setup", token ? { authorization: `Bearer ${token}` } : {}));
+  if (res.status !== 201) res = await answer("sign-in", await post("/auth/sign-in"));
+  if (res.status !== 200 && res.status !== 201 && token) res = await answer("launch link", await fetch(`${origin}/?token=${encodeURIComponent(token)}`, { redirect: "manual" }));
+  const cookie = [200, 201, 303].includes(res.status) ? res.headers.getSetCookie().map((line) => line.split(";")[0]).join("; ") : "";
+  if (!cookie) throw new Error(`the test client has no owner's session on ${baseUrl} for a secret write (${tried.join(", ")}): the token never writes a secret, so a test whose owner has its own password signs in itself`);
+  const session = { cookie, origin };
+  ownerCookies.set(known, session);
+  return session;
 }
 
 /** A guard on every pause a test reads: a run paused at its cap that serves its figures serves `least_cap_usd` with them,

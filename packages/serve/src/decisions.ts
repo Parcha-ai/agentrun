@@ -179,6 +179,9 @@ export function decisionModelsNamed(nodes: readonly Record<string, unknown>[]): 
   return out;
 }
 
+/** The keys a per-run process was handed on its pipe, once read: process-wide on purpose, as that process is one run's.
+ *  The runner (one process for many claims) never reads the pipe: each claim's keys are in its own environment
+ *  (parallelKeyOf, decisionProvidersIn), so nothing here is shared between claims. */
 let keysHanded: Record<string, string> | undefined;
 /** The keys the server handed the run's process, by name: read at the first call and the descriptor closed, and the
  *  same object at every later one (the decision providers' and the web tools'), so the descriptor is read and closed once
@@ -194,6 +197,14 @@ export function handedKeys(env: NodeJS.ProcessEnv): Record<string, string> {
   } finally {
     closeSync(fd);
   }
+}
+
+/** The Parallel key a call's environment holds: on the pipe where the server handed a per-run process its keys
+ *  (`DECISION_KEY_FD_ENV` set: main's run process, handedKeys), else in the claim's own environment, where the runner's
+ *  claim put it (claim-secrets.ts). Read from the environment the call is given each time, so a claim's key is its own. */
+export function parallelKeyOf(env: NodeJS.ProcessEnv): string | undefined {
+  if (env[DECISION_KEY_FD_ENV] !== undefined) return handedKeys(env)[PARALLEL_KEY_ENV];
+  return isSet(env[PARALLEL_KEY_ENV]) ? env[PARALLEL_KEY_ENV] : undefined;
 }
 
 /** Under --faux only: the fetch the module `env[name]` names, in place of a provider's API (the tests' fake). */

@@ -6,16 +6,40 @@
 // their names only: a provider declares them, Settings takes only those, and the store keeps each sealed under the
 // server's seal key (server-keys.ts); a provider is handed its keys only at the claim, or for its test, both through
 // computer-keys.ts (providerOptions, testConnection), which maps a key's name onto the option it fills.
-import type { KindCapabilities, ProviderEntry, SettingKindSpec } from "@parcha/agentrun-computer";
 import { KEY_TABLE, type KeyTable, type OptionsAnswer, type ProviderFactories, type ProviderSettings, providerOptions, testConnection } from "./computer-keys.js";
 import { COMPUTER_KINDS, type ComputerKind, type ComputerSetting } from "./computer-setting.js";
 import { inArchilMode } from "./archil-settings.js";
 import { ApiError, invalid } from "./errors.js";
-import { type KeyEnv, type KeyMeta, keyMetaOf, envValue, secretName } from "./key-meta.js";
+import { type KeyEnv, type KeyMeta, keyMetaOf, envValue } from "./key-meta.js";
+import { registerSecretWrite, secretName } from "./secret-writes.js";
 import { getSealedKey, putSealedKey, removeSealedKey, sealedKeyNames } from "./server-keys.js";
 import type { Store } from "./store/index.js";
 
-export type { KindCapabilities, ProviderEntry, SettingKindSpec };
+// A key save is a secret write (secret-writes.ts): any named key, a value or a null (a removal counts), so the server's one
+// dispatch check keeps it to the owner's session. The view and the connection test write none.
+registerSecretWrite("saveComputerKeys", (body) => typeof body === "object" && body !== null && !Array.isArray(body) && Object.keys(body).length > 0);
+
+/** A setting kind as the kind registry's SETTING_KINDS gives it. */
+export interface SettingKindSpec {
+  readonly machineKinds: readonly string[];
+  readonly required: readonly string[];
+  readonly optional: readonly string[];
+}
+
+/** A provider configuration's machine kind and groups, as the kind registry gives them. */
+export type KindCapabilities = { readonly kind: string; readonly groups: readonly string[] };
+
+/** A provider as the kind registry's PROVIDERS gives it. */
+export interface ProviderEntry {
+  readonly id: string;
+  readonly label: string;
+  readonly kinds: readonly ComputerKind[];
+  readonly keys: readonly { readonly name: string; readonly required: boolean }[];
+  /** The mounts its computers take; none means it cannot mount the run's folder. */
+  readonly mounts: readonly string[];
+  readonly metered: boolean;
+  readonly capabilities: readonly KindCapabilities[];
+}
 
 /** The kind registry, by its own names: the computer package's module (SETTING_KINDS, PROVIDERS, servingRefusals). */
 export interface KindRegistry {
@@ -30,8 +54,8 @@ export type FolderMode = "local" | "disk";
 export interface ComputerRoutesOptions {
   /** The server's one store: its sealed keys. */
   readonly store: Pick<Store, "sealedKeys">;
-  /** The server's seal key; absent, no key is kept here. */
-  readonly sealKey: Buffer | undefined;
+  /** The server's seal key: there is always one (seal-key.ts ensureSealKey, at the start). */
+  readonly sealKey: Buffer;
   readonly kinds: KindRegistry;
   /** Each provider module's create(), by provider id (the computer package's): what a test and a claim make. */
   readonly factories: ProviderFactories;
@@ -130,12 +154,9 @@ export function createComputerRoutes(options: ComputerRoutesOptions) {
       !declared.has(name) ? [{ field: name, reason: "not_allowed", message: `${provider.label} takes ${[...declared].join(", ") || "no keys"}, not ${name}` }]
         : value !== null && (typeof value !== "string" || value === "") ? [{ field: name, reason: "wrong_type", message: `${name} is a non-empty string, or null to remove it` }] : []);
     if (refused.length) throw new KeysRefused(refused);
-    // Kept until the server refuses to start without a seal key (the secrets plan's rule 2); then this branch can't be
-    // reached, and it goes.
-    if (!sealKey && Object.values(body).some((value) => value !== null)) throw new KeysRefused([{ field: Object.keys(body)[0]!, reason: "unavailable", message: "this server was given no seal key, so it keeps no key: start it with AGENTRUN_SEAL_KEY" }]);
     for (const [name, value] of Object.entries(body)) {
       if (value === null) await removeSealedKey(store, name);
-      else await putSealedKey(store, sealKey!, name, value as string);
+      else await putSealedKey(store, sealKey, name, value as string);
     }
     return (await view()).kinds.flatMap((kind) => kind.providers).find((one) => one.id === providerId);
   }
@@ -145,7 +166,7 @@ export function createComputerRoutes(options: ComputerRoutesOptions) {
     const keys: Record<string, string> = {};
     for (const key of provider.keys) {
       // The environment's value wins over a saved one (source "env").
-      const value = envValue(env, key.name) ?? (sealKey ? await getSealedKey(store, sealKey, key.name) : undefined);
+      const value = envValue(env, key.name) ?? (await getSealedKey(store, sealKey, key.name));
       if (value !== undefined) keys[key.name] = value;
     }
     return keys;
