@@ -2401,15 +2401,15 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       // they are now; a write as the definition's: an archived agent's too.
       case "getAgentLearning": {
         await needAgent(id);
-        // TODO(E3/learning-1): the agent's learning counts/impact/notes over the store (store-reads/learning + the ledger),
-        // in place of runs.learning.ofAgent over live runs. Not wired yet.
+        // TODO(learning-1): the agent's learning view over the store — learning-1's agent-learning read on untangle/cutover-switch-learn
+        // (beside learningCountsOverStore), its counts/impact/notes from the store's ledger, byte-identical to main. Wire when its head lands.
         return runReadsTodo();
       }
       case "listLearningNotes":
       case "listLearningLog":
         await needAgent(id);
         if (found.name === "listLearningNotes") {
-          // TODO(E3/learning-1): each note's run counts over the store's ledger (store-reads/learning), not live runs.
+          // TODO(learning-1): each note's runs over the store's ledger — learning-1's notes read on untangle/cutover-switch-learn. Wire when its head lands.
           return runReadsTodo();
         }
         return send(res, 200, await learningLog(data, id, url.searchParams, secretsShown(serverSecrets())));
@@ -2431,11 +2431,14 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       }
       case "getRunLearning":
         await needRun(id);
-        // TODO(E2c/learning-1): the run's learning view over the store (store-reads/learning + store-view), not per-run files.
+        // TODO(learning-1): runLearningOverStore(store, runId) from untangle/cutover-switch-learn — the run's v2 learning view byte-identical
+        // to main (seed, merged, verdict/pending/problems redaction, grade cost), its statuses from the store journal (viewOverStore's statusOf
+        // line), no folder reads. Wire when its head lands.
         return runReadsTodo();
       case "getRunLearningDiff":
         await needRun(id);
-        // TODO(E2c/learning-1): the run's learning diff over the store (store-reads), not the run's .learning/diffs files.
+        // TODO(learning-1): the run's learning diff over the store — learning-1's diff read on untangle/cutover-switch-learn, not the run's
+        // .learning/diffs files. Wire when its head lands.
         return runReadsTodo();
       case "getWebhook":
         return send(res, 200, webhooks.view());
