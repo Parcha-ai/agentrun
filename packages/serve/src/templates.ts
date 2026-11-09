@@ -116,6 +116,35 @@ export class PackageError extends Error {
   }
 }
 
+/** A github source split at its where conditions' `in` values, the one place a parameter may fill it: `ins`, each
+ *  condition's list, and `rest`, the source without them. */
+function whereIns(source: Json): { ins: unknown[]; rest: Json } {
+  const ins: unknown[] = [];
+  const accept = Array.isArray(source.accept)
+    ? source.accept.map((rule) => (isObject(rule) && Array.isArray(rule.where)
+      ? { ...rule, where: rule.where.map((condition) => (isObject(condition) && Object.hasOwn(condition, "in") ? (ins.push(condition.in), Object.fromEntries(Object.entries(condition).filter(([key]) => key !== "in"))) : condition)) }
+      : rule))
+    : source.accept;
+  return { ins, rest: { ...source, accept } };
+}
+
+/** What a github trigger an apply made runs on, in words, for the apply's answer: "Code review runs on each pull request
+ *  to acme/widgets." The package's name says what runs; the events are its accept's, the repositories its where
+ *  conditions on /repository/full_name, when every rule names some. */
+export function githubTriggerWords(packageName: string, source: Json): string {
+  const subject = `${packageName.charAt(0).toUpperCase()}${packageName.slice(1).replace(/-/g, " ")}`;
+  const rules = Array.isArray(source.accept) ? source.accept.filter(isObject) : [];
+  const events = [...new Set(rules.map((rule) => GITHUB_EVENT_WORDS[String(rule.event)] ?? String(rule.event).replace(/_/g, " ")))];
+  const reposOf = (rule: Json) => (Array.isArray(rule.where) ? rule.where : []).flatMap((c) => (isObject(c) && c.pointer === "/repository/full_name" && Array.isArray(c.in) ? c.in.filter((v): v is string => typeof v === "string") : []));
+  const repos = rules.every((rule) => reposOf(rule).length) ? [...new Set(rules.flatMap(reposOf))] : [];
+  const or = (words: string[]) => (words.length < 2 ? words.join("") : `${words.slice(0, -1).join(", ")} or ${words.at(-1)}`);
+  return `${subject} runs on each ${or(events)} ${repos.length ? `to ${or(repos)}` : "to a repository the GitHub App is installed on"}.`;
+}
+const GITHUB_EVENT_WORDS: Record<string, string> = { pull_request: "pull request", pull_request_review: "pull request review", pull_request_review_comment: "review comment", issue_comment: "comment", issues: "issue" };
+
+/** What an apply says of a github trigger it skipped because GitHub is not connected here. */
+export const GITHUB_TRIGGER_UNCONNECTED = "Connect GitHub in Settings, then apply again to review pull requests automatically.";
+
 /** Every string in `value`, deep. */
 const strings = (value: unknown): string[] => (typeof value === "string" ? [value] : Array.isArray(value) ? value.flatMap(strings) : isObject(value) ? Object.values(value).flatMap(strings) : []);
 
@@ -316,17 +345,25 @@ export function readPackage(dir: string): Package {
   for (const value of strings([instructions, triggers, f.display_name, mcp.map((need) => need.pin)])) {
     for (const [, used] of value.matchAll(PLACEHOLDER)) if (!Object.hasOwn(parameters, used!)) bad(MANIFEST, `\${parameters.${used}} names no parameter`);
   }
-  // A placeholder fills text a run reads, and a schedule's time (its cron and timezone, read as the schedule at apply);
-  // a trigger's other settings are the package's own, checked here. A parameter that sets a time has a default, so the
-  // schedule the package ships is checked here too.
+  // A placeholder fills text a run reads, a schedule's time (its cron and timezone, read as the schedule at apply), and a
+  // github trigger's where `in` values (the repository it takes, say); a trigger's other settings are the package's own,
+  // checked here. A parameter that sets a time has a default, so the schedule the package ships is checked here too; one
+  // a github trigger takes is required or has a default, so the trigger never fills empty and takes no event.
   triggers.forEach((trigger, i) => {
     if (!isObject(trigger)) return;
     const timed = isObject(trigger.source) && trigger.source.kind === "schedule";
+    const github = isObject(trigger.source) && trigger.source.kind === "github";
     const fixed = Object.entries(trigger).flatMap(([key, value]) =>
       key === "target" && isObject(value) ? Object.entries(value).filter(([k]) => k !== "input").map(([k, v]) => [`target.${k}`, v] as const)
       : key === "source" && timed && isObject(value) ? Object.entries(value).filter(([k]) => !SCHEDULE_FIELDS.includes(k)).map(([k, v]) => [`source.${k}`, v] as const)
+      : key === "source" && github && isObject(value) ? [[key, whereIns(value).rest] as const]
       : [[key, value] as const]);
-    for (const [at, value] of fixed) for (const [used] of strings(value).flatMap((text) => [...text.matchAll(PLACEHOLDER)])) bad(MANIFEST, `triggers[${i}].${at} holds ${used}: a placeholder goes in display_name, the instructions, a trigger's target.input, a schedule's cron and timezone, or an mcp pin's values`);
+    for (const [at, value] of fixed) for (const [used] of strings(value).flatMap((text) => [...text.matchAll(PLACEHOLDER)])) bad(MANIFEST, `triggers[${i}].${at} holds ${used}: a placeholder goes in display_name, the instructions, a trigger's target.input, a schedule's cron and timezone, a github trigger's where in values, or an mcp pin's values`);
+    if (github) {
+      for (const used of new Set(strings(whereIns(trigger.source as Json).ins).flatMap((text) => [...text.matchAll(PLACEHOLDER)].map((m) => m[1]!)))) {
+        if (Object.hasOwn(parameters, used) && !parameters[used]!.required && parameters[used]!.default === undefined) bad(MANIFEST, `parameters.${used} is used in triggers[${i}].source.accept, so it is required or has a default: a github trigger filled empty takes no event`);
+      }
+    }
     if (!timed) return;
     for (const field of SCHEDULE_FIELDS) {
       for (const [, used] of strings((trigger.source as Json)[field]).flatMap((text) => [...text.matchAll(PLACEHOLDER)])) {
