@@ -100,6 +100,13 @@ export type CdpSession = {
 /** A browser computer: a connection to its CDP. The browser's tools and take-over are the host's (pi-browser's). */
 export type Browser = { connect(): Promise<CdpSession> };
 
+/** The agent's hand-over of a desktop or a phone to the person, through the run's hold: ask opens it (what the person is
+ *  to do, how both will know it is done, when it expires, ISO time) and resolves with its first answer, or expired. An
+ *  abort of `signal` (a stop, a lost claim) rejects it. */
+export type Handoff = {
+  ask(request: { readonly instruction: string; readonly completion_condition: string; readonly expires_at: string }, signal?: AbortSignal): Promise<{ readonly outcome: "done" | "cancelled" | "expired" }>;
+};
+
 /** What a host tool does with the run's files and shell. */
 export type Hands = {
   /** The longest one exec may run, in seconds: 600 locally and on a computer, 295 on Archil's exec. */
@@ -123,6 +130,8 @@ export type Hands = {
   readonly phone?: Phone;
   /** A browser's CDP; absent where the computer is no browser. */
   readonly browser?: Browser;
+  /** A desktop's or a phone's hand-over to the person (the run's hold); absent where there is none. */
+  readonly handoff?: Handoff;
 };
 
 /** A tool's answer: the text the model reads (and its images), with details for the run's timeline. A failure is an

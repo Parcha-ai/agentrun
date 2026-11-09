@@ -11,9 +11,13 @@ import { join } from "node:path";
 import { after, test } from "node:test";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { readBackOf } from "@parcha/agentrun-computer";
+import { capabilityToolDefs } from "@parcha/agentrun-kernel/kernel";
 import { localWorkspace, resolveComputer, runTools } from "../dist/workspace/index.js";
 import { fakeComputer } from "./workspace-fake-computer.mjs";
 import { ARCHIL_KINDS, KINDS } from "./workspace-kinds-fixture.mjs";
+
+/** A kind's own tools, as the kernel registry lists them (the hand-over the desktop and phone share among them). */
+const kindTools = (kind) => capabilityToolDefs(kind).map((def) => def.name);
 
 const dirs = [];
 after(() => { for (const dir of dirs) rmSync(dir, { recursive: true, force: true }); });
@@ -114,7 +118,7 @@ test("start: a mounted desktop launches with the run's folder as its mount and o
   const started = await resolved.start({ workspace: localWorkspace(root), check: { readBackOf } });
   assert.deepEqual(side.launched, [["docker", { kind: "desktop", keys: {}, mount: { kind: "bind", path: root } }]]);
   const run = await runTools(localWorkspace(root), started.computer, { mode: 1, context: ctx });
-  assert.deepEqual(run.registry.list().map((def) => def.name), ["read", "write", "edit", "bash", "bash_background", "bash_output", "bash_input", "bash_signal", "bash_list", "desktop_screen", "desktop_input"]);
+  assert.deepEqual(run.registry.list().map((def) => def.name), ["read", "write", "edit", "bash", "bash_background", "bash_output", "bash_input", "bash_signal", "bash_list", ...kindTools("desktop")]);
   await started.release();
   assert.deepEqual(side.launched.at(-1), ["released", "fake-1"]);
   // A remote sandbox gets its declared keys and nothing else saved beside them.
@@ -126,8 +130,8 @@ test("start: a mounted desktop launches with the run's folder as its mount and o
 test("start: an unmounted desktop, a phone and a browser launch with no mount; their runs keep the runner's folder", async () => {
   const root = scratch();
   for (const [setting, mode, tools] of [
-    [{ kind: "desktop", provider: "e2b" }, 1, ["desktop_screen", "desktop_input"]],
-    [{ kind: "phone", provider: "phone-harness" }, 2, ["phone_screen", "phone_tap", "phone_swipe", "phone_type", "phone_apps", "phone_open"]],
+    [{ kind: "desktop", provider: "e2b" }, 1, kindTools("desktop")],
+    [{ kind: "phone", provider: "phone-harness" }, 2, kindTools("phone")],
   ]) {
     const side = claim(root);
     const started = await (await resolveComputer(setting, mode, KIND_REGISTRY, side)).start({ workspace: localWorkspace(root), check: { readBackOf } });

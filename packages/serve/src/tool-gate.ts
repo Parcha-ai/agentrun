@@ -100,7 +100,12 @@ export function permissionKeys(name: string): string[] {
 const BROWSER_REGISTRATIONS: readonly string[] = ["snapshot", "run", "screenshot", "browser_read", "browser_release", "browser_relaunch", "browser_request_handoff", "browser_downloads", "browser_upload"];
 /** A computer kind's tools, by name, to the one settings key their kind is held to (`desktop`, `phone`): the kernel
  *  registry's own definitions say it (their settingsKey), so a tool a kind gains is held to its key with no line here. */
-const KIND_TOOLS: ReadonlyMap<string, string> = new Map([...DESKTOP_TOOL_DEFS, ...PHONE_TOOL_DEFS].map((def) => [def.name, def.settingsKey] as const));
+const KIND_TOOLS: ReadonlyMap<string, readonly string[]> = (() => {
+  const keys = new Map<string, string[]>();
+  for (const def of [...DESKTOP_TOOL_DEFS, ...PHONE_TOOL_DEFS]) keys.set(def.name, [...new Set([...(keys.get(def.name) ?? []), def.settingsKey])]);
+  return keys;
+})();
+const STRICTNESS: Readonly<Record<Permission, number>> = { allow: 0, ask: 1, deny: 2 };
 /** The MCP server through which claude-agent calls the kernel's host tools (`mcp__hands__<wire name>`). */
 const HOST_TOOLS_SERVER = "hands";
 
@@ -116,9 +121,10 @@ export function settingsKeyOf(harness: string, name: string, mcpServers: readonl
   // A tool that runs a command in the box (bash_background and the rest) is held to bash's key: before the table's own names.
   if (Object.hasOwn(SHELL_FAMILY, name)) return SHELL_FAMILY[name];
   if (TABLE_TOOLS.includes(name) || SERVE_OWN_TOOLS.includes(name) || isCatalogTool(name)) return name;
-  // A desktop's or a phone's tool is its kind's key, as the browser's registrations are `browser`.
+  // A desktop's or a phone's tool is its kind's key, as the browser's registrations are `browser`; one both kinds have
+  // (the hand-over) is named by the first, its permission the stricter of both (RunGate's setting).
   const kind = KIND_TOOLS.get(name);
-  if (kind !== undefined) return kind;
+  if (kind !== undefined) return kind[0];
   // A CLI's own tool, the table's tool it is (its facts' nativeTools), by an own name only.
   const nativeTools = builtinHarness(harness)?.facts?.nativeTools;
   const native = nativeTools && Object.hasOwn(nativeTools, name) ? nativeTools[name] : undefined;
@@ -437,9 +443,11 @@ export function resumeText(request: Pick<ApprovalRequest, "tool" | "call_id">, s
 }
 
 /** The gate of the run `runId` at `where` (its directory, under the data directory's runs/), on its pinned revision:
- *  an agentic run's parks an asked call; a workflow's model node cannot. */
-export function runGate(where: { root: string; work: string }, runId: string, revision: { kind: string; body: { toolSettings?: unknown; harness?: string; approvals?: Approvals } }): RunGate {
-  return new RunGate({ root: where.root, work: where.work, data: dataOfRun(where.root), runId, harness: revision.body.harness ?? DEFAULT_HARNESS }, (revision.body.toolSettings ?? {}) as PermissionSettings, revision.kind === "agentic", process.env[NO_APPROVER_ENV] !== "1", approvalsOf(revision.body.approvals));
+ *  an agentic run's parks an asked call; a workflow's model node cannot. `serverSettings`: where the server's tool
+ *  settings are read from, read at each call as the gate reads them; absent, the file beside the run's data directory (the
+ *  old per-run process). The runner gives the one store's (tool-plane.ts loadToolSettings), read once at the claim. */
+export function runGate(where: { root: string; work: string }, runId: string, revision: { kind: string; body: { toolSettings?: unknown; harness?: string; approvals?: Approvals } }, serverSettings?: () => ReturnType<typeof readToolSettings>): RunGate {
+  return new RunGate({ root: where.root, work: where.work, data: dataOfRun(where.root), runId, harness: revision.body.harness ?? DEFAULT_HARNESS }, (revision.body.toolSettings ?? {}) as PermissionSettings, revision.kind === "agentic", process.env[NO_APPROVER_ENV] !== "1", approvalsOf(revision.body.approvals), serverSettings);
 }
 
 /** The gate in a run's process, park mode: its policy, the turn's origin, the calls that wait, and the answers acted on. */
@@ -467,7 +475,7 @@ export class RunGate {
    *  own; `parks`: whether an asked call parks the run (an agentic run's), which a workflow's model node cannot;
    *  `approvers`: whether anyone can answer an ask here (the owner's password session: accounts on); `approvals`: the
    *  pinned revision's (definition.approvals): "never" runs the agent unattended, an ask allowed (permissionFrom). */
-  constructor(private readonly where: { root: string; work: string; data: string; runId: string; harness?: string; mcpServers?: readonly string[] }, private readonly overrides: PermissionSettings = {}, private readonly parks = true, private readonly approvers = true, private readonly approvals: Approvals = "ask") {}
+  constructor(private readonly where: { root: string; work: string; data: string; runId: string; harness?: string; mcpServers?: readonly string[] }, private readonly overrides: PermissionSettings = {}, private readonly parks = true, private readonly approvers = true, private readonly approvals: Approvals = "ask", private readonly readServerSettings?: () => ReturnType<typeof readToolSettings>) {}
 
   /** A tool's permission now (permissionOf): the revision's own over the server's setting, read at each call, so a change
    *  reaches a live run at its next call; under approvals "never", an ask is an allow. */
@@ -476,7 +484,17 @@ export class RunGate {
    *  "unattended", an ask the agent's approvals allowed. */
   readonly denyFrom = (tool: string): SettingFrom => this.setting(tool).from;
   private setting(tool: string): { permission: Permission; from: SettingFrom } {
-    const key = settingsKeyOf(this.where.harness ?? DEFAULT_HARNESS, tool, this.where.mcpServers);
+    // A tool the desktop and the phone both have (the hand-over): the gate knows not the run's kind, so it is held to the
+    // stricter of both keys' settings, never more permissive than the run's own kind's.
+    const shared = KIND_TOOLS.get(tool.replace(/^mcp__hands__/, ""));
+    if (shared && shared.length > 1) {
+      return shared.map((key) => this.settingOf(tool, key)).reduce((strictest, one) => (STRICTNESS[one.permission] > STRICTNESS[strictest.permission] ? one : strictest));
+    }
+    return this.settingOf(tool, settingsKeyOf(this.where.harness ?? DEFAULT_HARNESS, tool, this.where.mcpServers));
+  }
+
+  /** `tool`'s permission under its settings key `key`, and where it was set. */
+  private settingOf(tool: string, key: string | undefined): { permission: Permission; from: SettingFrom } {
     // A name nothing maps fails closed: it asks (refused where no one can approve), never allows, under approvals "never"
     // too: no setting of it was read, so none says it may run.
     if (key === undefined) return { permission: "ask", from: "default" };
@@ -504,7 +522,7 @@ export class RunGate {
   /** The server's settings now: read at each call, so a change reaches a live run; a file that does not read keeps the
    *  last good (undefined: none read yet). Each problem is said once, by file and field, never a value. */
   private serverSettings(): PermissionSettings | undefined {
-    const read = readToolSettings(this.where.data);
+    const read = this.readServerSettings ? this.readServerSettings() : readToolSettings(this.where.data);
     for (const line of read.problems) {
       if (this.told.has(line)) continue;
       this.told.add(line);

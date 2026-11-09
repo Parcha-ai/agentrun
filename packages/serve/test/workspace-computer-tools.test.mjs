@@ -30,8 +30,8 @@ const names = (run) => run.registry.list().map((def) => def.name);
 
 const LOCAL = ["read", "write", "edit", "bash"];
 const COMPUTER = [...LOCAL, "bash_background", "bash_output", "bash_input", "bash_signal", "bash_list"];
-const DESKTOP = ["desktop_screen", "desktop_input"];
-const PHONE = ["phone_screen", "phone_tap", "phone_swipe", "phone_type", "phone_apps", "phone_open"];
+const DESKTOP = ["desktop_screen", "desktop_input", "computer_request_handoff"];
+const PHONE = ["phone_screen", "phone_tap", "phone_swipe", "phone_type", "phone_apps", "phone_open", "computer_request_handoff"];
 const DESKTOP_GROUPS = ["exec", "files", "processes", "screen", "input.pointer", "input.keys"];
 const PHONE_GROUPS = ["screen", "input.touch", "apps"];
 const PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==", "base64");

@@ -146,9 +146,9 @@ export type TriggerDeps = {
   /** Sends `input` to the target's run, as POST /runs/{id}/messages would, under `key` (the run's store takes a message
    *  once per key), as the trigger's (`from`); ApiError when refused. */
   message(target: Extract<Target, { kind: "message_run" }>, input: Json, key: string, from: MessageOrigin): Promise<void | { skipped: string }>;
-  /** An adapter's sealed settings (sealed-settings.ts): a trigger's minted secret made (at its create or a rotation)
-   *  and shown once; a trigger's settings removed with it. Undefined for an adapter that keeps none. */
-  settings(adapterId: string): { mint(scope: string, field: string): string; remove(scope: string): void } | undefined;
+  /** An adapter's sealed settings (over the store): a trigger's minted secret made (at its create or a rotation) and shown
+   *  once, durable before it is answered; a trigger's settings removed with it. Undefined for an adapter that keeps none. */
+  settings(adapterId: string): { mint(scope: string, field: string): Promise<string>; remove(scope: string): Promise<void> } | undefined;
   /** A run's status, or null when there is no such run. */
   statusOf(runId: string): Promise<string | null>;
   /** The run the agent store started under origin `key`, if one: a firing left due by a server that went down mid-start.
@@ -361,7 +361,7 @@ export class Triggers {
     if (enabled) this.scopeFree(source, id);
     const trigger: Trigger = { id, name: typeof body.name === "string" ? body.name.trim() : id, enabled, source, target, catchup_window_s: settings.catchup_window_s ?? CATCHUP_WINDOW_S, ...(typeof settings.max_active_runs === "number" ? { max_active_runs: settings.max_active_runs } : {}), failures_in_a_row: 0, disabled: null, created_at: iso(now), updated_at: iso(now), next_at: enabled ? this.nextIso(source, now) : null, firings: [] };
     // Its secrets are kept before the trigger is: one that cannot be kept (no seal key) makes none.
-    const minted = this.mint(source, id);
+    const minted = await this.mint(source, id);
     this.commit(() => void this.triggers.push(trigger));
     this.arm();
     // What it minted, shown this once, by field: a webhook's `secret`.
@@ -369,7 +369,7 @@ export class Triggers {
   }
 
   /** A trigger's new signing secret, shown this once; the old one signs nothing from now on. */
-  rotate(id: string): Record<string, string> {
+  async rotate(id: string): Promise<Record<string, string>> {
     const trigger = this.need(id);
     if (!mints(this.adapter(trigger.source))) throw invalid([{ field: "source.kind", reason: "not_allowed", message: "Only a webhook trigger has a secret." }]);
     return this.mint(trigger.source, id);
@@ -474,10 +474,10 @@ export class Triggers {
     return this.view(trigger);
   }
 
-  remove(id: string): void {
+  async remove(id: string): Promise<void> {
     const trigger = this.need(id);
     this.commit(() => void (this.triggers = this.triggers.filter((t) => t !== trigger)));
-    if (this.adapter(trigger.source).settings?.scope === "trigger") this.deps.settings(trigger.source.kind)?.remove(id);
+    if (this.adapter(trigger.source).settings?.scope === "trigger") await this.deps.settings(trigger.source.kind)?.remove(id);
     this.arm();
   }
 
@@ -904,12 +904,12 @@ export class Triggers {
 
   /** Each field `source`'s adapter mints for its triggers, made now for trigger `id`, by field: none for one that keeps
    *  no trigger-scoped secret. */
-  private mint(source: Source, id: string): Record<string, string> {
+  private async mint(source: Source, id: string): Promise<Record<string, string>> {
     const adapter = this.adapter(source);
     if (!mints(adapter)) return {};
     const store = this.deps.settings(adapter.id);
     if (!store) throw new Error(`no sealed settings for ${adapter.id}`);
-    return Object.fromEntries(Object.entries(adapter.settings!.fields).filter(([, f]) => f.mint).map(([field]) => [field, store.mint(id, field)]));
+    return Object.fromEntries(await Promise.all(Object.entries(adapter.settings!.fields).filter(([, f]) => f.mint).map(async ([field]) => [field, await store.mint(id, field)] as const)));
   }
 
   /** A scope belongs to one trigger: `source`'s (its adapter's scopeOf), for a trigger `id` that is to be on, is refused

@@ -37,7 +37,7 @@ import { LEARNED_WORKFLOW_TOOL, learnedWorkflowTool } from "./learned-workflow.j
 import { completer } from "./llm.js";
 import { searchOn } from "./hosted-search.js";
 import { imageLoader } from "./pdf-pages.js";
-import { EFFORT_ENV, type ModelRef, llmTiers, nodeTiers, providerModels, runModels, type Tier, thinkingOf, workflowNodes } from "./model.js";
+import { EFFORT_ENV, type ModelRef, llmTiers, nodeTiers, runModels, type Tier, thinkingOf, wireModels, workflowNodes } from "./model.js";
 import { gated, liveView, nodeLog, readLiveView } from "./pause.js";
 import { remotePlace, storedPlace } from "./place.js";
 import { runBox, runBoxProvider } from "./run-box.js";
@@ -51,9 +51,9 @@ import { isObject } from "./validate.js";
 import { mirrorWrites } from "./workspace.js";
 import { deniedText, runGate } from "./tool-gate.js";
 
-/** The workflow adapters this host gives every run: model nodes, and calls `via: "tool"` to the table's tools. Typed
- *  questions (`runJudge`) run too where the host sets a decision provider's key (decisions.ts). */
-export const WORKFLOW_ADAPTERS = ["runNode", "runEffect"] as const;
+// The workflow adapters this host gives every run moved to the runner side (runner/workflow-adapters.ts); re-exported
+// here so readers that still take it from this module are unchanged.
+export { WORKFLOW_ADAPTERS } from "./runner/workflow-adapters.js";
 
 /** A call node's tool failure, as the value its effect completed with (runEffect below). */
 const TOOL_FAILED = "agentrun_serve_tool_failed";
@@ -81,16 +81,6 @@ async function markResumed({ harness, context, generation, previous }: BeforeRes
   if (process.env[FOLLOW_UP_OPEN_ENV] === "1") return;
   if (!after || !(await harness.conversation(ROOT_CONVERSATION_ID, context))) return;
   await harness.commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: RUN_RESUMED, data: { after, generation, at: Date.now() } })), context);
-}
-
-/** The run's model and pi-ai's catalog that prices it, where its harness's model is chosen on its wire's own settings (its
- *  entry's onWire: claude-agent's, never the gateway's; an OpenAI model reached through OpenRouter alone, which needs no
- *  OpenAI key: provider.ts modelOn). Anywhere else, the run's usual models (runModels). */
-async function wireModels(entry: HarnessEntry, env: NodeJS.ProcessEnv, ref: string | undefined) {
-  const choice = await entry.model(env, ref, true);
-  if (!choice) throw new Error(`${entry.id} does not run here.`);
-  if ("why" in choice) throw new Error(choice.why);
-  return { models: await providerModels(env), model: choice.model as ModelRef | undefined, byTier: new Map([["default", choice.model]]), unpriced: new Set<string>() };
 }
 
 /** The run's row and its pinned revision, read from the store the run's directory sits in. */
