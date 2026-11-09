@@ -11,10 +11,10 @@ import { commandRow, fauxLoops, observed, queue, recorder, sleep, stores, until 
 const POLL_MS = 50;
 const TIMING = { leaseMs: 2_000, renewEveryMs: 500, stopMarginMs: 500, pollMs: 20 };
 
-async function runner(t, createLoop, timing = {}) {
+async function runner(t, createLoop, timing = {}, storeOf = (store) => store) {
   const { server, runners: [store] } = await stores({ runners: 1 });
   const record = recorder();
-  const started = startRunner({ store: observed(store, record), createLoop, name: "runner-a", commandPollMs: POLL_MS, ...TIMING, ...timing });
+  const started = startRunner({ store: storeOf(observed(store, record)), createLoop, name: "runner-a", commandPollMs: POLL_MS, ...TIMING, ...timing });
   t.after(() => started.close());
   return { server, record };
 }
@@ -46,11 +46,30 @@ test("a steer and then a stop reach the running loop within one poll, and each r
 });
 
 test("a command for an ended run is refused: in the insert once it is final, and by the runner for one that came as it ended", async (t) => {
-  const faux = fauxLoops({ turns: 4, turnMs: 25 });
-  // The runner never polls before the run ends, so a steer sent while it runs is still untaken at the end.
-  const { server } = await runner(t, faux.createLoop, { commandPollMs: 60_000 });
+  // Long enough that the steer is sent while the run still runs.
+  const faux = fauxLoops({ turns: 40, turnMs: 25 });
+  // The runner never polls before the run ends, so a steer sent while it runs is still untaken at the end. The claim's
+  // first delivery reads the run's rows once: a steer sent before that read is the loop's, never a late one. That read is
+  // held here until the test lets it go (a loaded machine's slow first read), and the steer is sent only once the first
+  // delivery is done (LoopDeps.delivered): the order comes from that, never from a clock. (The 10 s is a failure bound.)
+  let letFirstReadGo;
+  const firstReadMayGo = new Promise((resolve) => (letFirstReadGo = resolve));
+  let firstRead = true;
+  const slowFirstRead = (store) => ({
+    ...store,
+    commands: async (runId, after) => {
+      if (firstRead) {
+        firstRead = false;
+        await Promise.race([firstReadMayGo, new Promise((resolve) => setTimeout(resolve, 10_000).unref())]);
+      }
+      return store.commands(runId, after);
+    },
+  });
+  const { server } = await runner(t, faux.createLoop, { commandPollMs: 60_000 }, slowFirstRead);
   await queue(server, "run-1");
   await until(() => faux.loops[0]?.claim, "the loop runs");
+  letFirstReadGo();
+  await faux.loops[0].deps.delivered;
   const late = await sendCommand(server, "run-1", { kind: "steer", body: { text: "one more thing" } });
 
   await until(async () => (await server.runs.get("run-1")).state === "ended", "the run ends");

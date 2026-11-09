@@ -6,6 +6,7 @@ import { placeIssues } from "./place.js";
 import { computerIssues, settingConflict } from "./computer-setting.js";
 import { AGENT_LAYER_PINS, AGENT_PIN_LATER, settingsIssues } from "./tool-plane.js";
 import { CAP_MODES } from "./cap.js";
+import { APPROVALS } from "./approvals.js";
 
 export const ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const SKILL_PATH = /^(?!.*(?:^|\/)\.{1,2}(?:\/|$))(?!.*\/\/)(?!.*\/$)[^/\\\u0000][^\\\u0000]*$/;
@@ -19,7 +20,7 @@ export const IDEMPOTENCY_TTL_S = 86_400;
 export const stable = (value: unknown): string =>
   Array.isArray(value) ? `[${value.map(stable).join(",")}]` : isObject(value) ? `{${Object.keys(value).sort().map((k) => `${JSON.stringify(k)}:${stable(value[k])}`).join(",")}}` : JSON.stringify(value);
 
-export const DEFINITION_FIELDS = ["id", "version", "name", "description", "instructions", "workflow", "model", "thinking", "harness", "place", "computer", "learning", "skills", "tools", "tool_settings", "max_cost_usd", "cap_mode"];
+export const DEFINITION_FIELDS = ["id", "version", "name", "description", "instructions", "workflow", "model", "thinking", "harness", "place", "computer", "learning", "skills", "tools", "tool_settings", "approvals", "max_cost_usd", "cap_mode"];
 /** Why a field a definition may have elsewhere has no place in an agent store's revision. */
 export const NOT_KEPT: Record<string, string> = {
   input_schema: "The agent store keeps no input_schema: an agentic run takes {content}, and a workflow checks its input against its own schema.",
@@ -83,7 +84,7 @@ export function definitionIssues(definition: unknown, { at = "definition", creat
   if (d.tools !== undefined) names(d.tools, `${at}.tools`, out);
   // The agent's own tool settings, over the server's (tool-plane.ts); an edit that leaves them out keeps none.
   if (d.tool_settings !== undefined) {
-    const settings = settingsIssues(d.tool_settings, `${at}.tool_settings`);
+    const settings = settingsIssues(d.tool_settings, `${at}.tool_settings`, "agent");
     out.push(...settings);
     // An agent's own pin, once its store keeps one (AGENT_LAYER_PINS); until then a pin that is one is the server's to set.
     if (!AGENT_LAYER_PINS && isObject(d.tool_settings)) {
@@ -93,6 +94,10 @@ export function definitionIssues(definition: unknown, { at = "definition", creat
       }
     }
   }
+  // Whether the agent's runs ask a person (the gate as its settings say) or run unattended, an ask allowed: never over a
+  // deny. An edit that leaves it out asks, as one that leaves out tool_settings keeps none: no edit makes an agent
+  // unattended by saying nothing.
+  if (d.approvals !== undefined && !(APPROVALS as readonly unknown[]).includes(d.approvals)) out.push(issue(`${at}.approvals`, "not_an_option", `${at}.approvals is one of ${APPROVALS.join(", ")}: ask, the default, waits for a person where a tool is set to ask; never runs the agent unattended, each such tool allowed, while a deny still refuses`));
   // The agent's default cap of each run started without one of its own: above 0 sets it, 0 clears it (no default), and
   // an edit that leaves it out keeps the agent's (agents.ts), so leaving a field out never removes a spend limit.
   if (d.max_cost_usd !== undefined) {

@@ -17,10 +17,12 @@
 import { createHash, randomBytes } from "node:crypto";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, normalize } from "node:path";
+import type { GateAnswer, GateCall } from "@parcha/agentrun-kernel";
 import type { DriveContext, HostTool, SessionState } from "@parcha/agentrun-kernel/kernel";
-import { journalRecords, NativeJournal, placeSubmissions, recoveryNote, toolBridge, transcriptOf, type TranscriptEntry } from "@parcha/agentrun-kernel/process";
+import { journalRecords, NativeJournal, placeSubmissions, recoveryNote, resumeUnstartedCalls, toolBridge, transcriptOf, type TranscriptEntry } from "@parcha/agentrun-kernel/process";
 import { startModelProxy, type ModelProxyHooks, type ModelProxyOptions, type ParentWatch } from "@parcha/agentrun-kernel/host";
 import { openCodeConfig } from "./config.js";
+import { danglingCalls, settleCall } from "./transcript.js";
 import { startMcpServer } from "./host/mcp.js";
 import { openCodePolicy, TOOL_PREFIX, type WatchedCall } from "./host/policy.js";
 import { startOpenCodeServer, type ConfineChild, type OpenCodeServer } from "./host/server.js";
@@ -79,6 +81,9 @@ export interface OpenCodeHarnessOptions {
   fetch?: typeof fetch;
   /** For tests: the environment the child's allowlist reads. */
   env?: Readonly<Record<string, string | undefined>>;
+  /** The host's gate (SessionIO.gate), which the kernel's tool bridge asks about each call before anything of it is
+   *  written: allow, a deny in the host's words, or a park. Absent: every call runs. */
+  gate?: (call: GateCall) => Promise<GateAnswer>;
 }
 
 /** What the adapter holds of the drive in flight, to stop its turn. */
@@ -89,7 +94,16 @@ export interface DriveControl {
   interrupt(ms: number): Promise<boolean>;
 }
 
-type Outcome = { status: "completed" | "interrupted" | "failed"; error?: string };
+/** How a turn ended. `stopReason` "length": its answer was cut at the model's output limit (OpenCode's finish "length"),
+ *  with that answer's output tokens; the turn itself completed, and the run decides what a cut answer means. */
+type Outcome = { status: "completed" | "interrupted" | "failed"; error?: string; stopReason?: "length"; outputTokens?: number };
+
+/** A turn's cut, from its newest answer's info as OpenCode records it: finish "length", and its output tokens. */
+function cutOf(info: Record<string, unknown>): Pick<Outcome, "stopReason" | "outputTokens"> | undefined {
+  if (info.role !== "assistant" || info.finish !== "length") return undefined;
+  const output = isPlain(info.tokens) && typeof info.tokens.output === "number" ? info.tokens.output : undefined;
+  return { stopReason: "length", ...(output === undefined ? {} : { outputTokens: output }) };
+}
 type SyncEvent = { id: string; aggregate_id: string; seq: number; type: string; data: Record<string, unknown> };
 
 const isPlain = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
@@ -260,7 +274,26 @@ export function openCodeHarness(options: OpenCodeHarnessOptions, control?: (driv
       await journal.flush();
     };
 
-    const bridge = toolBridge(ctx, options.tools, { beforeNever: () => barrier() });
+    // The gate is asked once OpenCode's record of the call is in the log (its transcript, mirrored; nothing of the call's
+    // own): a call the gate parks is then in the transcript a later process starts from, dangling under its own id.
+    const gate = options.gate;
+    const bridge = toolBridge(ctx, options.tools, {
+      ...(gate ? { gate: async (call: GateCall) => (await barrier(), gate(call)) } : {}),
+      beforeNever: () => barrier(),
+    });
+    // A resumed session: each call OpenCode started and never ended goes through the shared decision before OpenCode
+    // starts again. A call that never reached its intent runs through the bridge under its own id (the gate, its intent,
+    // the call and its result); each result is written into the transcript as OpenCode records a call's end, so
+    // OpenCode starts on it with the call ended. A call with an intent is left to the recovery below, never run again.
+    await resumeUnstartedCalls(ctx, bridge, danglingCalls(mirrored), async (call, outcome) => {
+      const settled = settleCall(mirrored, call.callId, outcome);
+      for (const event of settled.slice(mirrored.length)) {
+        journal.append(SYNC_STREAM, event, { id: event.id });
+        mirrored.push(event);
+        lastSeq = Math.max(lastSeq, event.seq);
+      }
+      await journal.flush();
+    });
     const hooks: ModelProxyHooks = {
       ...options.hooks,
       // No paid request runs ahead of the log: what OpenCode recorded before it is mirrored first.
@@ -301,7 +334,8 @@ export function openCodeHarness(options: OpenCodeHarnessOptions, control?: (driv
     }
 
     // The turn in flight: what the event stream tells it.
-    let turn: { messageID: string; busy: boolean; accepted: boolean; error?: string; text: Map<string, string>; finalText: string; end: (outcome: Outcome) => void } | undefined;
+    // `cut`: the newest finished answer's, when OpenCode records it as cut at the output limit (finish "length").
+    let turn: { messageID: string; busy: boolean; accepted: boolean; error?: string; cut?: ReturnType<typeof cutOf>; text: Map<string, string>; finalText: string; end: (outcome: Outcome) => void } | undefined;
     const partKinds = new Map<string, string>();
     const roles = new Map<string, string>();
     let interrupting: (() => void) | undefined;
@@ -320,6 +354,8 @@ export function openCodeHarness(options: OpenCodeHarnessOptions, control?: (driv
       const p = event.properties ?? {};
       if (event.type === "message.updated" && isPlain(p.info) && typeof p.info.id === "string" && typeof p.info.role === "string") {
         roles.set(p.info.id, p.info.role);
+        // An answer that finished: the newest decides whether the turn's answer was cut.
+        if (turn && p.info.role === "assistant" && typeof p.info.finish === "string" && (p.sessionID === undefined || p.sessionID === sessionID)) turn.cut = cutOf(p.info);
         return;
       }
       if (p.sessionID !== undefined && p.sessionID !== sessionID) return;
@@ -342,11 +378,11 @@ export function openCodeHarness(options: OpenCodeHarnessOptions, control?: (driv
       }
       if (event.type === "session.status" && turn && isPlain(p.status)) {
         if (p.status.type === "busy" || p.status.type === "retry") turn.busy = true;
-        else if (p.status.type === "idle" && turn.busy) turn.end(turn.error ? { status: "failed", error: turn.error } : { status: "completed" });
+        else if (p.status.type === "idle" && turn.busy) turn.end(turn.error ? { status: "failed", error: turn.error } : { status: "completed", ...turn.cut });
         return;
       }
       if (event.type === "session.idle" && turn && turn.busy) {
-        turn.end(turn.error ? { status: "failed", error: turn.error } : { status: "completed" });
+        turn.end(turn.error ? { status: "failed", error: turn.error } : { status: "completed", ...turn.cut });
         return;
       }
       if (event.type === "session.error" && turn) {
@@ -454,8 +490,9 @@ export function openCodeHarness(options: OpenCodeHarnessOptions, control?: (driv
           }
           const error = isPlain(info.error) ? info.error : undefined;
           if (error && error.name !== "MessageAbortedError") current.error = errorText(error);
+          if (typeof info.finish === "string") current.cut = cutOf(info);
         }
-        current.end(current.error ? { status: "failed", error: current.error } : { status: "completed" });
+        current.end(current.error ? { status: "failed", error: current.error } : { status: "completed", ...current.cut });
       };
       // The stream's end once it has no tries left, or once OpenCode stopped: a turn asked after it fails at once with it,
       // since no event of that turn could reach the drive (one in flight is ended by it here).

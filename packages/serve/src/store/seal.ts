@@ -21,6 +21,8 @@ export const sealedAt = {
   mcpServer: (name: string): SealedAt => ({ table: "mcp_servers", row: name, column: "sealed" }),
   oauthVerifier: (state: string): SealedAt => ({ table: "mcp_oauth_pending", row: state, column: "verifier" }),
   sealedKey: (name: string): SealedAt => ({ table: "sealed_keys", row: name, column: "sealed" }),
+  /** A run's browser session's live viewer token (browser-live.ts): one row per run and session tag. */
+  liveViewer: (runId: string, tag: string): SealedAt => ({ table: "browser_viewers", row: `${runId}/${tag}`, column: "sealed" }),
 };
 
 /** The AAD a value at `at` is sealed under. A part with the separator in it is refused: no two places share an AAD. */

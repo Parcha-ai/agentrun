@@ -1,0 +1,8 @@
+---
+packages: @parcha/agentrun-kernel, @parcha/agentrun-harness-claude, @parcha/agentrun-serve
+kind: feature
+---
+A call that never started now runs on resume instead of reading "interrupted". When a claude-agent run resumes a transcript that ends in a host-tool call with no result, and the run's journal holds no intent for that call (the host's gate parked it for a person's approval, or the process died before the call was written), the call now goes through the host's gate again under the id the model gave it, runs once, and its result goes into the transcript before the CLI starts again. Before, the CLI answered such a call "[Tool call interrupted]". A call whose intent is in the journal is never run again: the CLI answers it as before, and the recovery note says what the log knows of it. A gate that parks again writes nothing.
+- `@parcha/agentrun-kernel`: `SessionIO.gate` (the host's gate before a host-tool call's intent: allow, deny in the host's words, or park), the tool bridge's `gate` option, and `resumeUnstartedCalls` / `unstartedCalls` in `./process`, the decision every CLI harness shares on a resume. `AdapterFacts.rerunsStarted` (false for a harness that never runs a started call again).
+- `@parcha/agentrun-harness-claude`: the gate is asked only once the assistant entry that made the call is in the log, so a parked call is found dangling on the resume under the same id.
+- `@parcha/agentrun-serve`: the harness conformance suite skips the cases an adapter's facts rule out (`factsRuleOut`), saying they are by design. The claude-agent subject runs through the runner and passes the park-and-resume cases.

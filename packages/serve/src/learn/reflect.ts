@@ -111,6 +111,12 @@ export function reflectPrompt(options: { dir: string; active: number; tools?: re
   ].join("\n");
 }
 
+/** The end-of-run turn asked again, once, when the parser refused its answer: why, in the parser's own words (`detail`,
+ *  parseReflection's), and the whole answer again in the format. */
+export function reflectAgain(detail: string): string {
+  return `Your answer could not be read: ${detail}. Give the whole answer again in the format asked for above, every note, skill and workflow block in it, and nothing else.`;
+}
+
 /** The prompt's example workflow draft, whole: its schemas declared once, its input and output naming them by `schemaId`,
  *  and a chain the learned runner runs (a `web_fetch` call when the agent has it, then a model node; else two model
  *  nodes), so an agent copies a draft the DSL and the checker pass (a test validates this text). */
@@ -170,6 +176,8 @@ export type Reflection =
 export const ANSWER_MAX = 100_000;
 /** A learning block's opening line, up to 3 spaces in: its fence, its kind and the rest of its info string. */
 const LEARNING_OPEN = /^ {0,3}(`{3,4})(note|skill|workflow)(?![^ \t])[ \t]*(.*)$/;
+/** A skill's or a workflow draft's opening in three backticks, not the four asked for: its kind. */
+const SHORT_OPEN = /^ {0,3}`{3}(skill|workflow)(?![^ \t])/;
 /** A fence longer than any learning block's (five backticks or more): an example, skipped whole to its close. */
 const LONG_OPEN = /^ {0,3}(`{5,})/;
 /** Front matter's name line after a `---` line, a few lines down: a note written outside a block. */
@@ -200,9 +208,12 @@ export function parseReflection(answer: unknown): Reflection {
   if (answer.length > ANSWER_MAX) return { ok: false, reason: "unparsed", detail: `the answer is over ${ANSWER_MAX} characters` };
   const lines = answer.replace(/\r\n?/g, "\n").split("\n");
   const blocks: Record<string, { name: string; text: string }[]> = { [NOTE_BLOCK]: [], [SKILL_BLOCK]: [], [WORKFLOW_BLOCK]: [] };
+  /** The first skill or draft opened in three backticks, outside every block: what the answer tried, when it holds no other. */
+  let shortFenced: string | undefined;
   for (let i = 0; i < lines.length; i++) {
     const open = learningOpen(lines[i]!);
     if (!open) {
+      shortFenced ??= SHORT_OPEN.exec(lines[i]!)?.[1];
       const long = LONG_OPEN.exec(lines[i]!)?.[1];
       let end = i + 1;
       while (long && end < lines.length && !closes(lines[end]!, long)) end++;
@@ -231,5 +242,8 @@ export function parseReflection(answer: unknown): Reflection {
   const skills = blocks[SKILL_BLOCK]!;
   const workflows = blocks[WORKFLOW_BLOCK]!;
   if (notes.length || skills.length || workflows.length) return { ok: true, notes, ...(skills.length ? { skills } : {}), ...(workflows.length ? { workflows } : {}) };
+  // A skill or a draft opened in the fence a note may use: it tried, in the wrong fence (its front matter, if any, is no
+  // loose note).
+  if (shortFenced) return { ok: false, reason: "unparsed", detail: `a ${shortFenced}'s block must open with four backticks: \`\`\`\`${shortFenced} <name>` };
   return LOOSE_NOTE.test(lines.join("\n")) ? { ok: false, reason: "unparsed", detail: `the answer holds a note outside a \`\`\`${NOTE_BLOCK} block` } : { ok: false, reason: "empty" };
 }

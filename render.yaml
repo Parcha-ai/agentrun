@@ -6,7 +6,9 @@ services:
     runtime: docker
     dockerfilePath: ./packages/serve/docker/Dockerfile
     dockerContext: .
-    plan: starter
+    # 2 GB and a 10 GB disk at the least: Claude Code and Codex install themselves on first use onto the disk (the image
+    # leaves them out), which fills 1 GB, and 512 MB is short for them.
+    plan: 1c-2g
     numInstances: 1
     healthCheckPath: /v2/health
     # Render waits 30 s after SIGTERM, above the image's 6 s drain. maxShutdownDelaySeconds would set it, but Render
@@ -14,7 +16,7 @@ services:
     disk:
       name: agentrun-data
       mountPath: /data
-      sizeGB: 1
+      sizeGB: 10
     envVars:
       - key: PORT
         value: "7340"

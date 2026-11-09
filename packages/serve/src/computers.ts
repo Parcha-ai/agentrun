@@ -8,6 +8,7 @@
 // computer-keys.ts (providerOptions, testConnection), which maps a key's name onto the option it fills.
 import { KEY_TABLE, type KeyTable, type OptionsAnswer, type ProviderFactories, type ProviderSettings, providerOptions, testConnection } from "./computer-keys.js";
 import { COMPUTER_KINDS, type ComputerKind, type ComputerSetting } from "./computer-setting.js";
+import { ApiError, invalid } from "./errors.js";
 import { getSealedKey, putSealedKey, removeSealedKey, sealedKeyNames } from "./server-keys.js";
 import type { Store } from "./store/index.js";
 
@@ -196,3 +197,40 @@ export function createComputerRoutes(options: ComputerRoutesOptions) {
 }
 
 export type ComputerRoutes = ReturnType<typeof createComputerRoutes>;
+
+/** Settings → Computers' routes, by their operation names: GET /v2/computers, PUT /v2/computers/{provider}/keys and POST
+ *  /v2/computers/{provider}/test. */
+export const COMPUTER_SETTINGS_ROUTES: ReadonlySet<string> = new Set(["listComputers", "saveComputerKeys", "testComputer"]);
+
+const noProvider = (id: string | undefined): ApiError => new ApiError("not_found", `this server has no computer provider ${JSON.stringify(id ?? "")}: GET /v2/computers lists them`);
+
+/** One of Settings → Computers' routes at its handler, as serve's dispatch calls it: its answer (sent 200), or its refusal
+ *  as an ApiError (sent with its status): an unknown provider is not_found; a key save's body that is not an object of
+ *  names, or a name the provider does not take, is input_invalid with its fields. */
+export async function settingsComputerRoute(routes: ComputerRoutes, name: string, request: { readonly provider?: string; readonly body?: unknown; readonly signal?: AbortSignal }): Promise<unknown> {
+  if (name === "listComputers") return routes.view();
+  if (name === "saveComputerKeys") {
+    const { body } = request;
+    if (typeof body !== "object" || body === null || Array.isArray(body)) throw new ApiError("input_invalid", "the body is a JSON object of the provider's key names, each a string, or null to remove it");
+    let saved: ProviderView | undefined;
+    try {
+      saved = await routes.saveKeys(request.provider ?? "", body as Record<string, unknown>);
+    } catch (error) {
+      if (error instanceof KeysRefused) throw invalid(error.fields, error.message);
+      throw error;
+    }
+    if (saved === undefined) throw noProvider(request.provider);
+    return saved;
+  }
+  if (name === "testComputer") {
+    const answer = await routes.test(request.provider ?? "", request.signal);
+    if (answer === undefined) throw noProvider(request.provider);
+    return answer;
+  }
+  throw new ApiError("not_found", `no computer route ${name}`);
+}
+
+/** capabilities.computers: the kinds this server offers now, in the registry's order. */
+export async function computerCapabilities(routes: ComputerRoutes): Promise<{ kinds: ComputerKind[] }> {
+  return { kinds: (await routes.view()).kinds.filter((kind) => kind.offered).map((kind) => kind.kind) };
+}
