@@ -1,7 +1,7 @@
 // The screen: a shot is a PNG of the size it says, read whole through screen.read, and every pixel of it decodes; a
 // region shot has the region's size and decodes too; on a desktop the fixture's colors are where the fixture paints them.
-// The live view (provider.watch, screen.watch underneath): the first frame is an image of the size it says, of the
-// screen screen.shot reads, and a pointer move is a new frame.
+// The live view (provider.watch, screen.watch underneath): the first frame decodes to the size it says, of the screen
+// screen.shot reads, and a pointer move is a new frame with the cursor where it went.
 import { MAX_CHUNK_BYTES, type Point, type Rect, type ScreenShotResult } from "../../protocol.js";
 import type { ComputerError } from "../../result.js";
 import type { ScreenFrame, ScreenWatchHandlers } from "../../screen-watch.js";
@@ -119,7 +119,13 @@ export const screenCases: Case[] = [
 				const first = await next("the first frame");
 				t.assert(first.seq >= 1, `the first frame's seq is ${first.seq}, not 1 or more`);
 				t.assert(first.format === "jpeg" || first.format === "png", `the first frame's format is ${JSON.stringify(first.format)}, not jpeg or png`);
-				const [w, h] = imageSize(first.bytes, first.format);
+				let w: number;
+				let h: number;
+				try {
+					[w, h] = decodedSize(first.bytes, first.format);
+				} catch (error) {
+					throw new Error(`the first frame's ${first.format.toUpperCase()} does not decode: ${error instanceof Error ? error.message : String(error)}`);
+				}
 				t.assert(w === first.frameWidth && h === first.frameHeight, `the first frame's ${first.format.toUpperCase()} is ${w}x${h}, not the ${first.frameWidth}x${first.frameHeight} it says`);
 				t.deepEqual([first.width, first.height], [shot.width, shot.height], "the frame's screen size (the input space), against screen.shot's");
 				t.assert(first.frameWidth <= first.width, `the frame is ${first.frameWidth} wide, wider than the ${first.width}-pixel screen`);
@@ -129,11 +135,14 @@ export const screenCases: Case[] = [
 				t.deepEqual(t.ok(await watch.input([{ type: "move", at }]), `input: a pointer move to ${at}`), { done: 1 }, `input: a pointer move to ${at}`);
 				let moved: ScreenFrame | undefined;
 				const until = t.clock.now() + t.patience;
-				// A desktop may change on its own (a clock): the frame the move made is the first with the cursor there.
-				while (moved === undefined || (moved.cursor !== undefined && (moved.cursor[0] !== at[0] || moved.cursor[1] !== at[1]))) {
+				// A desktop may change on its own (a clock): the frame the move made is the first with the cursor there, and a
+				// frame with no cursor, or with it elsewhere, is not it.
+				const there = (frame: ScreenFrame) => frame.cursor?.[0] === at[0] && frame.cursor?.[1] === at[1];
+				while (moved === undefined || !there(moved)) {
 					const left = until - t.clock.now();
 					const got = left > 0 ? await nextWithin(left) : undefined;
-					t.assert(got !== undefined, `a pointer move to ${at} gave no new frame within ${t.patience} ms`);
+					if (moved === undefined) t.assert(got !== undefined, `a pointer move to ${at} gave no new frame within ${t.patience} ms`);
+					else t.assert(got !== undefined, `a pointer move to ${at} gave no frame with the cursor there within ${t.patience} ms: the last frame's cursor is ${moved.cursor ? moved.cursor.join(",") : "missing"}`);
 					moved = got as ScreenFrame;
 				}
 				t.assert(moved.seq > first.seq, `the frame after the move is seq ${moved.seq}, not past ${first.seq}`);
@@ -154,21 +163,53 @@ async function within<T>(promise: Promise<T>, ms: number, _what: string): Promis
 	}
 }
 
-/** The width and height a JPEG's SOF or a PNG's IHDR names; [0, 0] when the bytes are neither. */
-function imageSize(bytes: Uint8Array, format: "jpeg" | "png"): [number, number] {
-	const b = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+/**
+ * The width and height of a frame that decodes, or a throw in words. A PNG is decoded whole (every pixel, readPng). A
+ * JPEG is walked to its end, with no decoder in the suite: its start, its segments each inside the bytes, a frame header
+ * (SOF) and a quantization table (DQT) before its first scan, entropy-coded data in each scan, and its end (EOI) last.
+ */
+function decodedSize(bytes: Uint8Array, format: "jpeg" | "png"): [number, number] {
 	if (format === "png") {
-		const signature = [137, 80, 78, 71, 13, 10, 26, 10];
-		return b.length >= 24 && signature.every((v, i) => b[i] === v) ? [b.readUInt32BE(16), b.readUInt32BE(20)] : [0, 0];
+		const png = readPng(bytes);
+		return [png.width, png.height];
 	}
-	if (b.length < 4 || b[0] !== 0xff || b[1] !== 0xd8 || b[b.length - 2] !== 0xff || b[b.length - 1] !== 0xd9) return [0, 0];
-	for (let i = 2; i + 9 < b.length; ) {
-		if (b[i] !== 0xff) return [0, 0];
-		const marker = b[i + 1];
+	return jpegSize(Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength));
+}
+
+/** A JPEG's width and height once its structure is whole; see decodedSize. */
+function jpegSize(b: Buffer): [number, number] {
+	if (b.length < 4 || b[0] !== 0xff || b[1] !== 0xd8) throw new Error("it lacks the JPEG start (SOI)");
+	let size: [number, number] | undefined;
+	let tables = false;
+	let scans = 0;
+	for (let i = 2; ; ) {
+		if (i + 2 > b.length || b[i] !== 0xff) throw new Error(`byte ${i} is not a marker, and the JPEG has not ended (EOI)`);
+		const marker = b[i + 1] as number;
+		if (marker === 0xd9) {
+			if (scans === 0) throw new Error("it ends with no scan (SOS): it holds no pixels");
+			if (i + 2 !== b.length) throw new Error(`${b.length - i - 2} bytes follow its end (EOI)`);
+			if (size === undefined || size[0] === 0 || size[1] === 0) throw new Error("its frame header (SOF) gives no size");
+			return size;
+		}
+		if (i + 4 > b.length) throw new Error(`its segment at byte ${i} runs past the end, with no scan (SOS) whole`);
 		const length = b.readUInt16BE(i + 2);
+		if (length < 2 || i + 2 + length > b.length) throw new Error(`its segment at byte ${i} runs past the end, with no scan (SOS) whole`);
 		// SOF0 to SOF15, but DHT (C4), JPG (C8) and DAC (CC): the frame's height, then its width.
-		if (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc) return [b.readUInt16BE(i + 7), b.readUInt16BE(i + 5)];
+		if (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc) {
+			if (length < 8) throw new Error(`its frame header (SOF) at byte ${i} is ${length} bytes, too short`);
+			size = [b.readUInt16BE(i + 7), b.readUInt16BE(i + 5)];
+		}
+		if (marker === 0xdb) tables = true;
 		i += 2 + length;
+		if (marker !== 0xda) continue;
+		if (size === undefined) throw new Error("its scan (SOS) comes before a frame header (SOF)");
+		if (!tables) throw new Error("its scan (SOS) comes before a quantization table (DQT)");
+		// The entropy-coded data runs to the next marker: inside it, 0xFF is followed by 0x00 (a stuffed byte) or a
+		// restart marker (D0 to D7).
+		const start = i;
+		while (i + 1 < b.length && !(b[i] === 0xff && b[i + 1] !== 0x00 && !((b[i + 1] as number) >= 0xd0 && (b[i + 1] as number) <= 0xd7))) i++;
+		if (i === start) throw new Error(`its scan at byte ${start} holds no data: no pixels`);
+		if (i + 1 >= b.length) throw new Error("its scan runs to the last byte, with no end (EOI)");
+		scans++;
 	}
-	return [0, 0];
 }
