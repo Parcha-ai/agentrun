@@ -106,7 +106,9 @@ test("redactWords takes out every secret shape a vendor or a device may echo", (
 		["access_token=eyJhbGciOiJIUzI1NiJ9.e30.x refused", /eyJhbGci/],
 		["Authorization: Bearer abcdefghijklmnop refused", /abcdefghijklmnop/],
 		["the key sk-proj-ABCDEF1234567890 is not valid", /sk-proj-ABCDEF1234567890/],
-		["the token ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ012345 expired", /ghp_ABCDEFGHIJ/],
+		// 20 characters after ghp_: inside redactWords' rule (16 or more), and short of a real token's 36, so the
+		// source export's github_token rule (30 or more) does not take this fixture for a key.
+		["the token ghp_ABCDEFGHIJKLMNOPQRST expired", /ghp_ABCDEFGHIJ/],
 		["fetch of user:hunter2@db.internal failed", /hunter2/],
 		["failed to connect to 'live.phone-harness.com:22220'", /phone-harness\.com:22220/],
 		["no route to 10.1.2.3:5555", /10\.1\.2\.3:5555/],
