@@ -18,6 +18,7 @@ import { getSealedKey } from "../server-keys.js";
 import type { Store } from "../store/index.js";
 import type { MountCheck } from "./attach.js";
 import { computerHold, heldHands } from "./computer-hold.js";
+import { type ServingRefusals, servedGroups } from "./computer-serves.js";
 import { type ProviderLedger, storeLedger } from "./computer-ledger.js";
 import { type ClaimSide, type ComputerSetting, type ComputerSettingKind, type KindRegistry, type LaunchedComputer, type ProviderEntry, resolveComputer } from "./resolve-computer.js";
 import type { RunComputer, RunHold } from "./run-tools.js";
@@ -181,6 +182,18 @@ export async function sweepComputers(providers: readonly ComputerProvider[], lab
  *  computer_unavailable and the server's words when the agent's computer cannot be had here. */
 export async function computerForClaim(launch: ClaimLaunch, store: Pick<Store, "agents" | "sealedKeys" | "computerLedger">, deps: ComputerForClaimDeps): Promise<ClaimComputer> {
   const table = deps.keyTable ?? KEY_TABLE;
+  /** What a started computer says it is (its hello's machine kind, else its provider's configuration of the kind, and the
+   *  groups it declares), read against the kind registry by the one shared check (servedGroups): one that does not serve
+   *  the setting's kind is released and refused in the registry's words. */
+  const serves = async (launched: LaunchedComputer, machine: string | undefined, entry: ProviderEntry, kind: ComputerSettingKind): Promise<void> => {
+    const said = machine ?? entry.capabilities.find((one) => deps.kinds.servingRefusals(one, kind).length === 0)?.kind ?? "unknown";
+    try {
+      servedGroups({ kind: String(said), groups: launched.groups.map(String) }, kind, deps.kinds.servingRefusals as unknown as ServingRefusals);
+    } catch (error) {
+      await launched.release().catch(() => undefined);
+      throw error;
+    }
+  };
   /** The computer this claim started (one per claim): its ref id tags its live view, and its watch feeds it. */
   let made: { readonly id: string; readonly machine?: string; readonly watch?: (signal: AbortSignal) => unknown } | undefined;
   /** The provider entry it was started from: a phone's platform where the computer did not say it. */
@@ -199,6 +212,7 @@ export async function computerForClaim(launch: ClaimLaunch, store: Pick<Store, "
     async launch(entry, { kind, keys, mount, signal }) {
       if (deps.launch) {
         const own = await deps.launch(entry, { kind, keys, ...(mount ? { mount } : {}), ...(signal ? { signal } : {}) });
+        await serves(own, undefined, entry, kind);
         const ownWatch = (own as unknown as { watch?: (signal: AbortSignal) => unknown }).watch;
         made = { id: own.id, ...(ownWatch ? { watch: ownWatch } : {}) };
         madeBy = entry;
@@ -211,6 +225,7 @@ export async function computerForClaim(launch: ClaimLaunch, store: Pick<Store, "
       const provider = await make(options.options, { ledger: storeLedger(store.computerLedger, entry.id) });
       const spec: ComputerSpec = { ...deps.spec(entry, kind as Exclude<ComputerSettingKind, "none">), labels: runLabels(launch.runId, launch.epoch), ...(mount ? { mount } : {}) };
       const launched = await providerLaunch(provider, launch, spec, signal);
+      await serves(launched, launched.machine, entry, kind);
       made = { id: launched.id, machine: launched.machine, ...(launched.watch ? { watch: launched.watch } : {}) };
       madeBy = entry;
       return launched;
