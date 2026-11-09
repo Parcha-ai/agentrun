@@ -13,6 +13,7 @@ import { adapterRunSpecFromLaunch, type AdapterSpecDeps } from "./adapter-run-sp
 import { createAdapterLoop } from "./adapter-loop.js";
 import { cliRunSpecFromLaunch } from "./cli-run-spec.js";
 import { learningLoopOf } from "./learning-dispatch.js";
+import { learningEndOfRun } from "./learning-end.js";
 import type { LoopFactory } from "./loop-contract.js";
 import { createWorkflowLoop, isWorkflowRevision } from "./workflow-loop.js";
 import { workflowSpecOf } from "./workflow-spec.js";
@@ -45,10 +46,15 @@ export function resolveRunnerLoop(deps: AdapterSpecDeps): (harness: string, laun
     // runs the pi spec (adapterRunSpecFromLaunch). A harness with no entry is unknown here: the dispatch fails it in words.
     const runner = resolveHarness(harness);
     if (runner) {
-      return createAdapterLoop((claim, adapterRun) =>
+      const factory = createAdapterLoop((claim, adapterRun) =>
         runner.record === "loop"
           ? cliRunSpecFromLaunch(launch, adapterRun, deps, claim)
           : adapterRunSpecFromLaunch(launch, adapterRun, deps, claim));
+      // A run that learns gets the end-of-run step (reflect + proposal over its store, learning-end.ts), from its launch's
+      // learning start; a run that does not learn has none. The same for the pi and the CLI spec. (learningFolder, the Mode
+      // 2 folder dep, is a TODO once tl-places' sha lands.)
+      const end = learningEndOfRun(launch, { store: deps.store, data: deps.data, ...(deps.env ? { env: deps.env } : {}) });
+      return end ? (loopDeps) => factory({ ...loopDeps, endOfRun: end }) : factory;
     }
     return undefined;
   };
