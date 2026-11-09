@@ -10,3 +10,4 @@ phone-harness, from its first live run and the second read of #2000:
 - The conformance module's file ledger writes one at a time, across processes too (a lock file beside it), so no entry is lost.
 - A ledger that fails is a result in words from every call, never a throw, and create rents no phone it cannot record.
 - A connect that fails after adb reached the phone lets the transport go.
+- release ends only a phone its ledger names. Another session on the account is refused `not_found` and sent no DELETE; an unnamed id that is already gone is ok.

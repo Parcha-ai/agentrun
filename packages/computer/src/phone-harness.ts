@@ -598,6 +598,13 @@ export class PhoneHarnessProvider implements ComputerProvider {
 
 	async #release(ref: ComputerRef, how: "stop" | "delete"): Promise<Result<void>> {
 		if (how === "stop") return fail("unsupported", "a cloud phone has no stop: release it with delete, which ends the session");
+		if ((await this.#ledger.get(ref.id)) === undefined) {
+			// Not this provider's to end. Its own GET tells a phone already gone (ok, as release is idempotent) from another
+			// session on the account, which is refused and never sent a DELETE.
+			const read = await this.#session(ref.id);
+			if (!read.ok) return read.error.code === "gone" ? ok(undefined) : read;
+			return fail("not_found", `${ref.id} is not a phone this provider made: it is not ended`);
+		}
 		return this.#end(ref.id);
 	}
 
