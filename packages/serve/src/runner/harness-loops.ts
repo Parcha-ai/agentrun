@@ -9,7 +9,7 @@
 //   - anything else fails the run in words (the dispatch's UnknownHarness).
 import type { RunLaunch } from "../run-launch.js";
 import { resolveHarness } from "./adapters/index.js";
-import { adapterRunSpecFromLaunch, type AdapterSpecDeps } from "./adapter-run-spec.js";
+import { adapterRunSpecFromLaunch, type AdapterSpecDeps, PI_WIRES } from "./adapter-run-spec.js";
 import { createAdapterLoop } from "./adapter-loop.js";
 import { cliRunSpecFromLaunch } from "./cli-run-spec.js";
 import { learningLoopOf } from "./learning-dispatch.js";
@@ -36,7 +36,9 @@ export function resolveRunnerLoop(deps: AdapterSpecDeps): (harness: string, laun
       return learningLoopOf({
         store: deps.store,
         data: deps.data,
-        routeOf: (grade) => deps.routeOf(grade.model, deps.env),
+        // The grader speaks the route's wire, as pi does (learning-ask.ts: pi.ts policyFor and port-models.ts
+        // sessionProvider), so its route is asked on pi's wires; a model on neither keeps the route's Messages translation.
+        routeOf: (grade) => deps.routeOf(grade.model, deps.env, "default", PI_WIRES),
         ...(deps.log ? { log: deps.log } : {}),
       });
     }

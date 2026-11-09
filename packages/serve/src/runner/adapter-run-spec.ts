@@ -12,9 +12,8 @@
 import type { Context } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { ROOT_CONVERSATION_ID, type ToolExecutionApi } from "@earendil-works/pi-durable";
-import type { ComputerProvider } from "@parcha/agentrun-computer";
-import { type CapModel, type CapRefused, checkRaise, followUpOf, parkOf } from "@parcha/agentrun-kernel/kernel/cap";
-import type { HostTool, SessionSpec } from "@parcha/agentrun-kernel";
+import { beforeRequestOf, type CapModel, type CapRefused, checkRaise, followUpOf, parkOf } from "@parcha/agentrun-kernel/kernel/cap";
+import type { BeforeRequest, HostTool, SessionSpec, Wire } from "@parcha/agentrun-kernel";
 import type { Approvals } from "../approvals.js";
 import type { LiveHandover, LiveViewerStore } from "../browser-live.js";
 import { dropLiveViewer, putLiveViewer } from "../browser-live.js";
@@ -52,6 +51,8 @@ import { runMetrics } from "./metrics.js";
 import type { ModelRoute, RouteCost } from "./model-route.js";
 import { archilClaim, type ArchilClaimOptions, MOUNT_TTL_MS } from "../workspace/archil-claim.js";
 import { loadArchilSettings } from "../archil-settings.js";
+import type { ComputerSetting } from "../computer-setting.js";
+import type { claimComputer, ComputerDeps } from "../workspace/computer-deps.js";
 import type { RunComputer } from "../workspace/run-tools.js";
 import type { Workspace } from "../workspace/workspace.js";
 import { runnerSecrets, secretRedactor } from "./redact.js";
@@ -79,8 +80,12 @@ export interface ClaimComputer {
   readonly hold?: unknown;
   release(): Promise<void>;
 }
-/** The one shared claim-time computer every spec takes (computer-for-claim.ts), passed in by the runner. */
-export type ComputerForClaim = (launch: ClaimLaunch, store: AdapterSpecDeps["store"], deps: ClaimDeps & Readonly<Record<string, unknown>>) => Promise<ClaimComputer>;
+/** The one shared claim-time computer every spec takes (computer-for-claim.ts), passed in by the runner: the composer's
+ *  (workspace/computer-deps.ts computerDepsFrom), or a test's stand-in. */
+export type ComputerForClaim = typeof claimComputer;
+
+/** The wires pi speaks on the runner: main's pi's (provider.ts), Anthropic's Messages and OpenAI's Responses. */
+export const PI_WIRES: readonly Wire[] = Object.freeze(["anthropic-messages", "openai-responses"]);
 
 /** What the runner hands the spec builder, beside the claim and the loop's own Harness (the AdapterRun): the store (its
  *  agent and run reads, and the live-viewer seam the browser tool writes through), the data directory a Mode 1 run folder
@@ -96,17 +101,16 @@ export interface AdapterSpecDeps {
   readonly store: Store & LiveViewerStore;
   /** The key the store's live-viewer tokens are sealed under (store/seal.ts). */
   readonly sealKey: Buffer;
-  /** The run's model route (model-route.ts routeOf), the one route the pi adapter and the cap read. */
-  readonly routeOf: (model: string | undefined, env: NodeJS.ProcessEnv, tier?: Tier) => Promise<ModelRoute>;
+  /** The run's model route (model-route.ts routeOf), the one route the pi adapter and the cap read, on a wire of `wires`
+   *  (the caller's; pi speaks both of main's, PI_WIRES). */
+  readonly routeOf: (model: string | undefined, env: NodeJS.ProcessEnv, tier?: Tier, wires?: readonly Wire[]) => Promise<ModelRoute>;
   /** The run's log line (what its Workspace and computer have to say that is not a run failure). */
   readonly log?: (message: string) => void;
-  /** D's docker provider for a sandbox run's computer; a test gives its own (computer.ts dockerComputer default). */
-  readonly makeProvider?: () => Promise<ComputerProvider>;
   /** The one shared claim-time computer (computer-for-claim.ts), for both the pi and the CLI spec: none for a runner place.
    *  The runner gives it; a test gives its own. */
   readonly computerForClaim: ComputerForClaim;
   /** What the runner gives computerForClaim once (its kind registry, provider makers, computer spec, keys and settings). */
-  readonly computerDeps?: Readonly<Record<string, unknown>>;
+  readonly computerDeps: ComputerDeps;
   /** A Mode 2 claim's Archil disk (a test's fake); absent, the real disk the Archil settings name. */
   readonly makeArchilDisk?: ArchilClaimOptions["makeDisk"];
   /** The Archil mount credential's control plane, for a test's loopback fake (archilControlFake): its base URL and the
@@ -129,7 +133,8 @@ export function capModelOf(route: ModelRoute): CapModel {
         ...(cost.tiers ? { tiers: cost.tiers.map((tier) => ({ inputTokensAbove: tier.inputTokensAbove, input: tier.input, output: tier.output, cacheRead: tier.cacheRead, cacheWrite: tier.cacheWrite })) } : {}),
       }
     : null;
-  return { id: route.model, api: "anthropic-messages", price, outputCeiling: route.outputCeiling ?? null };
+  // The cap reads a request's provider overhead by the route's own wire (providerInputOverhead).
+  return { id: route.model, api: route.provider.api, price, outputCeiling: route.outputCeiling ?? null };
 }
 
 /** The revision's body, as the fields the spec reads of it (agentic runs only reach here; a workflow run is dispatched to
@@ -231,7 +236,7 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
   // Docker container for a sandbox, under the claim's epoch (the one fence). It throws computer_unavailable (nothing made)
   // when the computer cannot be had: the run fails in its words.
   const computer = await deps.computerForClaim(
-    { runId: claim.runId, epoch: claim.epoch, revisionId: runRow.revisionId, place: launch.place, ...((launch as { computer?: unknown }).computer !== undefined ? { computer: (launch as { computer?: unknown }).computer } : {}) },
+    { runId: claim.runId, epoch: claim.epoch, revisionId: runRow.revisionId, place: launch.place, ...((launch as { computer?: ComputerSetting }).computer !== undefined ? { computer: (launch as { computer?: ComputerSetting }).computer } : {}) },
     deps.store,
     // revokeMount removes the run's Archil mount credential when the computer is released (and if a start fails after a mint);
     // the run's end revokes it too (below), so it goes on every outcome even when no computer is made. Idempotent.
@@ -243,11 +248,13 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
 
   // The run's model route: its model through routeOf (NEVER re-resolved — the launch's model, pinned at start), the catalog
   // price with tiers for the cap, and the proxy's price (pi-ai calculateCost, tiered).
-  const route = await deps.routeOf(launch.model ? `${launch.model.provider}/${launch.model.modelId}` : undefined, deps.env);
+  // pi speaks both of main's wires: an OpenAI-family model's route is OpenAI's Responses itself.
+  const route = await deps.routeOf(launch.model ? `${launch.model.provider}/${launch.model.modelId}` : undefined, deps.env, "default", PI_WIRES);
   const adapter = piAdapter({
     run,
     model: route.model,
     provider: route.provider,
+    ...(route.like ? { like: route.like } : {}),
     ...(route.price ? { price: route.price as never } : {}),
     ...(route.fetch ? { fetch: route.fetch } : {}),
   });

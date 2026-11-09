@@ -10,8 +10,8 @@ import { KEY_TABLE, type KeyTable, type OptionsAnswer, type ProviderFactories, t
 import { COMPUTER_KINDS, type ComputerKind, type ComputerSetting } from "./computer-setting.js";
 import { inArchilMode } from "./archil-settings.js";
 import { ApiError, invalid } from "./errors.js";
-import { type KeyEnv, type KeyMeta, keyMetaOf, envValue } from "./key-meta.js";
-import { getSealedKey, putSealedKey, removeSealedKey, sealedKeyNames } from "./server-keys.js";
+import { type KeyEnv, type KeyMeta, keyMetaOf, envValue, keyReader } from "./key-meta.js";
+import { putSealedKey, removeSealedKey, sealedKeyNames } from "./server-keys.js";
 import type { Store } from "./store/index.js";
 
 /** A setting kind as the kind registry's SETTING_KINDS gives it. */
@@ -111,6 +111,7 @@ const keysWhy = (provider: ProviderEntry, missing: readonly string[]): string =>
 export function createComputerRoutes(options: ComputerRoutesOptions) {
   const { store, sealKey, kinds, factories, settings = {}, keyTable = KEY_TABLE, tools, env = {} } = options;
   const providerOf = (id: string) => kinds.PROVIDERS.find((one) => one.id === id);
+  const readKey = keyReader(store, sealKey, env);
   const modeNow = async (): Promise<FolderMode> => (typeof options.mode === "function" ? options.mode() : options.mode);
 
   /** Each kind, whether this server offers it and why not, the capability groups and tools it brings, and each provider
@@ -161,8 +162,8 @@ export function createComputerRoutes(options: ComputerRoutesOptions) {
   async function keysOf(provider: ProviderEntry): Promise<Record<string, string>> {
     const keys: Record<string, string> = {};
     for (const key of provider.keys) {
-      // The environment's value wins over a saved one (source "env").
-      const value = envValue(env, key.name) ?? (sealKey ? await getSealedKey(store, sealKey, key.name) : undefined);
+      // The environment's value wins over a saved one (source "env"): the one reader a run's computer takes too.
+      const value = await readKey(key.name);
       if (value !== undefined) keys[key.name] = value;
     }
     return keys;
