@@ -428,7 +428,11 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
     endPatch: async () => {
       const entries = await entriesOf(deps.journal(claim), ROOT_CONVERSATION_ID, context);
       const { metrics, costUsd } = runMetrics(entries as never, { ...(launch.effort !== undefined ? { effort: launch.effort } : {}) });
-      return { ...(costUsd !== null ? { costUsd } : {}), metrics };
+      // Its paid tool calls (a Parallel search's, a monid call's, a person's browser time), booked on the run's one ledger
+      // (the paid tool calls on its cap, in their own session, not on the root), are the run's cost too.
+      const paid = run.ledger?.paid ? run.ledger.paid.spentUsd() : 0;
+      const total = costUsd === null || paid === null ? null : costUsd + paid;
+      return { ...(total !== null ? { costUsd: total } : {}), metrics };
     },
     // The pass's resources go once the loop writes nothing more through them: its tools' end (background processes ended,
     // scratch swept), its computer let go, then its Workspace's end (Mode 2 sweeps the exec spill).
