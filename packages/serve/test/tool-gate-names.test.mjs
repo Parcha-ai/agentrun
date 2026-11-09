@@ -41,9 +41,11 @@ const NAMES = {
   codex: [
     ...Object.keys(REPLAY).flatMap((name) => [[name, folded(name)], [wireName(name), folded(name)]]),
     ["web_search", "web_search"], ["shell", "bash"],
+    // The adapter's own read of a skill's file, from the session's copy of the run's skills: read's key.
+    ["read_skill_file", "read"],
     ["mcp__srv__echo", "mcp:srv/echo"],
   ],
-  opencode: [["mcp__srv__echo", "mcp:srv/echo"]],
+  opencode: [["read_skill_file", "read"], ["mcp__srv__echo", "mcp:srv/echo"]],
 };
 
 test("every name a call reaches the gate by, on every harness, maps to its settings key", () => {
@@ -63,6 +65,45 @@ test("a name nothing maps fails closed: it asks, and where no one can approve it
   assert.equal(new RunGate(where).policy("mystery_tool"), "ask", "never allow");
   const park = { commit: async (change) => change({ appendEntry: async () => undefined }) };
   assert.deepEqual(await new RunGate(where, {}, true, false).enter("mystery_tool", {}, "c1", park), { text: noApproverText("mystery_tool"), isError: true });
+});
+
+/** A run's gate on `harness`, its server settings `settings` (none: the default), and how one call enters it: undefined
+ *  when it may run, else its answer (refused, or parked), with the requests a park kept. */
+async function enterOn(t, harness, settings, name, args) {
+  const [root, work, data] = [await scratch(t), await scratch(t), await scratch(t)];
+  if (settings) await writeFile(join(data, "tool-settings.json"), JSON.stringify(settings));
+  const runGate = new RunGate({ root, work, data, runId: "r1", harness });
+  const kept = [];
+  const park = { commit: async (change) => change({ appendEntry: async (_conversation, entry) => void kept.push(entry) }) };
+  return { entered: await runGate.enter(name, args, "c1", park), kept, policy: runGate.policy(name) };
+}
+const SKILL_READ = { skill: "status-report-format", path: "SKILL.md" };
+
+test("read_skill_file, codex's and OpenCode's own read of a skill's file, is held to read's key: the default runs it, unparked", async (t) => {
+  for (const harness of ["codex", "opencode"]) {
+    const { entered, kept, policy } = await enterOn(t, harness, undefined, "read_skill_file", SKILL_READ);
+    assert.equal(policy, "allow", `${harness}: allowed, as read is`);
+    assert.equal(entered, undefined, `${harness}: it runs`);
+    assert.deepEqual(kept, [], `${harness}: nothing parked for an approval`);
+  }
+});
+
+test("read_skill_file is refused when the server denies read, in the deny words naming read's setting", async (t) => {
+  for (const harness of ["codex", "opencode"]) {
+    const { entered, policy } = await enterOn(t, harness, { read: { permission: "deny" } }, "read_skill_file", SKILL_READ);
+    assert.equal(policy, "deny", harness);
+    assert.deepEqual(entered, { text: deniedText("read"), isError: true }, harness);
+  }
+});
+
+test("the key only: read_skill_file's own path is no read path to the gate, so one that looks like it leaves the work folder is not refused here (the skill reader's own bounds are its own)", async (t) => {
+  for (const harness of ["codex", "opencode"]) {
+    for (const path of ["../x/SKILL.md", "/etc/passwd"]) {
+      const { entered, kept } = await enterOn(t, harness, undefined, "read_skill_file", { skill: "status-report-format", path });
+      assert.equal(entered, undefined, `${harness} ${path}: the gate lets it through to the reader`);
+      assert.deepEqual(kept, [], `${harness} ${path}: nothing parked`);
+    }
+  }
 });
 
 /** pi's registration `name`, wrapped by a run's gate on `data`'s settings: what its call answers, whether the tool ran,

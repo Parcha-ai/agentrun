@@ -1,11 +1,12 @@
 // A skill an agent learned reaches a codex run on the RUNNER path as Codex's own skill: the runner claims the run, the CLI
 // spec builder (cliRunSpecFromLaunch) lays the run's learning seed at the claim (runner/learning-seed.ts), and the
 // learned skill is handed to the codex adapter in its native skill list. Codex then finds it in its session's
-// CODEX_HOME/skills (where it lists a user's skills), read_skill_file is among its tools, and the model's call of it
-// reaches Codex. learned-skill-native.test.mjs proves the same, and the read's answer, through serve's own start (main's
-// pinSeed); this one never goes through it. The answer is not checked here: on the runner path the run's gate
-// (adapterRunGate) asks for read_skill_file, so the run parks for an approval before the read answers (a gap of the
-// gate's, named to its owner). On Codex's stand-in (no Codex binary) and a loopback gateway: no network, no key.
+// CODEX_HOME/skills (where it lists a user's skills), read_skill_file is among its tools, and the model's read of it
+// answers with the SKILL.md: the run's gate holds read_skill_file to read's key, so the default allows it (no park for an
+// approval). The key only: the gate never takes read_skill_file's path as a read path, so a path that climbs or is
+// absolute reaches the skill reader, whose own refusal answers ("absolute or climbs") and reads nothing.
+// learned-skill-native.test.mjs proves the read through serve's own start (main's pinSeed); this one never goes through
+// it. On Codex's stand-in (no Codex binary) and a loopback gateway: no network, no key.
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
@@ -67,7 +68,12 @@ function findAll(dir, name, found = []) {
   return found;
 }
 
-test("on the runner path, a codex run gets the skill its agent learned as Codex's own: in its session's CODEX_HOME/skills, read_skill_file among its tools, and the model's read of it reaches Codex", { timeout: 120_000, skip: noSetpriv }, async (t) => {
+
+/** A codex learning run on the runner path, on Codex's stand-in, whose model calls read_skill_file with `read` (its
+ *  first message is the stand-in's call), the learned skill on the agent's main. Waits for the run to settle (ended, or
+ *  parked), then at most 15 s for the read's answer in Codex's session record: `answer` is undefined when none came,
+ *  and `state` says why (a read the run's gate holds parks the run for an approval). */
+async function codexRead(t, read) {
   standInGuard(t);
   const origin = await gateway(t, "Codex answered.");
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-codex-learned-"));
@@ -94,7 +100,7 @@ test("on the runner path, a codex run gets the skill its agent learned as Codex'
   const seed = (await seedOf(dir, AGENT)).sha;
 
   await server.agents.create({ id: AGENT, name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer the question.", harness: "codex", tools: ["read"], learning: true } });
-  const launch = { input: { content: `call read_skill_file ${JSON.stringify(READ)}` }, title: "t", place: { mode: "runner" }, harness: "codex", model: { provider: "openai", modelId: "gpt-test" }, learning: { given: [], seed, section: "", seedNotes: 0 } };
+  const launch = { input: { content: `call read_skill_file ${JSON.stringify(read)}` }, title: "t", place: { mode: "runner" }, harness: "codex", model: { provider: "openai", modelId: "gpt-test" }, learning: { given: [], seed, section: "", seedNotes: 0 } };
   await server.runs.create({ id: RUN, agentId: AGENT, revisionId: "rev-1" }, { body: launch });
   await server.flush?.();
 
@@ -128,16 +134,37 @@ test("on the runner path, a codex run gets the skill its agent learned as Codex'
   }
   assert.ok(["ended", "parked"].includes(row.state), `the run did its turn (ended, or parked for the next message): ${JSON.stringify(row)}; log ${JSON.stringify(log)}`);
 
-  // Codex's own home for the session: the learned skill where Codex lists a user's skills.
+  // Codex's own home for the session, and its session record.
   const homes = findAll(dir, "codex-home");
   assert.equal(homes.length, 1, `one CODEX_HOME for the run: ${JSON.stringify(homes)}`);
-  const listed = join(homes[0], "skills", NAME, "SKILL.md");
-  assert.equal(existsSync(listed) ? readFileSync(listed, "utf8") : null, servedSkill(SKILL), "Codex finds the learned skill where it lists a user's skills");
-  // Codex's session record: read_skill_file among its tools, and the model's call of it made.
   const rollouts = readdirSync(join(homes[0], "sessions"), { recursive: true }).map(String).filter((path) => path.endsWith(".jsonl"));
   assert.ok(rollouts.length >= 1, "Codex recorded its session");
-  const lines = readFileSync(join(homes[0], "sessions", rollouts[0]), "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line));
+  const record = () => readFileSync(join(homes[0], "sessions", rollouts[0]), "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line));
+  const outputs = () => record().filter((line) => line.payload?.type === "function_call_output").map((line) => String(line.payload.output));
+  // Bounded: a read the run's gate holds never answers, and the caller fails by name rather than hanging.
+  const by = Date.now() + 15_000;
+  while (!outputs().length && Date.now() < by) await new Promise((resolve) => setTimeout(resolve, 50));
+  return { home: homes[0], lines: record(), answer: outputs()[0], state: (await server.runs.get(RUN)).state };
+}
+
+test("on the runner path, a codex run gets the skill its agent learned as Codex's own: in its session's CODEX_HOME/skills, read_skill_file among its tools, and the model's read of it answers with the SKILL.md", { timeout: 120_000, skip: noSetpriv }, async (t) => {
+  const { home, lines, answer, state } = await codexRead(t, READ);
+  const listed = join(home, "skills", NAME, "SKILL.md");
+  assert.equal(existsSync(listed) ? readFileSync(listed, "utf8") : null, servedSkill(SKILL), "Codex finds the learned skill where it lists a user's skills");
   assert.ok((lines[0].payload.dynamic_tools ?? []).some((tool) => tool.name === "read_skill_file"), `read_skill_file is among Codex's tools: ${JSON.stringify((lines[0].payload.dynamic_tools ?? []).map((tool) => tool.name))}`);
   const calls = lines.filter((line) => line.payload?.type === "function_call").map((line) => [line.payload.name, JSON.parse(line.payload.arguments)]);
   assert.deepEqual(calls, [["read_skill_file", READ]], "the model's read of the learned skill reached Codex");
+  if (answer === undefined) assert.fail(`read_skill_file's answer never came (the gate asked): the run is ${state}`);
+  assert.ok(answer.includes(RULE), `the read returns the learned SKILL.md: ${answer}`);
+});
+
+test("on the runner path, the gate lets read_skill_file's own path through (it is not read's path), and the reader itself refuses one that climbs or is absolute, reading nothing", { timeout: 240_000, skip: noSetpriv }, async (t) => {
+  for (const path of ["../x/SKILL.md", "/etc/passwd"]) {
+    await t.test(path, async (t) => {
+      const { answer, state } = await codexRead(t, { skill: NAME, path });
+      if (answer === undefined) assert.fail(`read_skill_file's answer never came (the gate asked): the run is ${state}`);
+      assert.match(answer, /absolute or climbs/, "the skill reader's own refusal, not the gate's");
+      assert.doesNotMatch(answer, /root:|STATUS: OK/, "nothing outside the session's skill copy is read");
+    });
+  }
 });
