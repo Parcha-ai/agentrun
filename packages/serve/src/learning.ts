@@ -378,7 +378,7 @@ export async function seedFrom(commit: string | null, read: SeedReader, { order,
 
 /** What seedFrom reads through the agent's learning folder: the script's read at a commit, or the snapshot and its
  *  bodies when the commit is main's (learn/seed-check.ts readSeed). No git in this process. */
-const readerOf = (ws: Workspace): SeedReader => async (commit) => {
+export const readerOf = (ws: Workspace): SeedReader => async (commit) => {
   const got = await readFolderSeed(ws, commit);
   return got.ok ? { ok: true, files: got.files, refused: got.refused } : { ok: false, why: got.reason };
 };
@@ -605,7 +605,7 @@ async function runSkillNames(work: Workspace): Promise<Set<string>> {
 /** Lays each of `skills` in the run's `.agents/skills/<name>/` through its Workspace, a folder made new for it (one
  *  already there throws EXISTS); a link on the way is ESCAPE, and nothing is written through it. Each name goes in
  *  `made` once its folder is, so a caller that fails takes back what was laid. */
-async function laySkills(work: Workspace, skills: readonly LearnedSkill[], made: string[]): Promise<void> {
+export async function laySkills(work: Workspace, skills: readonly LearnedSkill[], made: string[]): Promise<void> {
   if (!skills.length) return;
   const there = await runSkillNames(work);
   for (const { name, files = {} } of skills) {
@@ -619,7 +619,7 @@ async function laySkills(work: Workspace, skills: readonly LearnedSkill[], made:
 
 /** Takes the learned skills `names` back out of the run's work: each `.agents/skills/<name>/`, unless a folder on the
  *  way is a link (or no folder), when nothing is touched. */
-async function takeSkills(work: Workspace, names: Iterable<string>): Promise<void> {
+export async function takeSkills(work: Workspace, names: Iterable<string>): Promise<void> {
   for (const name of names) {
     try {
       await work.remove(`${SKILLS_PATH}/${name}`, { recursive: true, force: true });
@@ -637,7 +637,7 @@ const namesIn = (files: readonly string[] | undefined): string[] => [...new Set(
  *  LEARNED_SKILLS_BUDGET and never more than the revision's `own` skill files (by their bytes in `work`) leave of
  *  SKILL_BYTES. One named like a folder of the revision's skills, or like anything already in `work/.agents/skills/`, is
  *  the revision's, and not the run's; one that does not fit, or holds a host secret (`shown`), is left out. */
-async function chooseSkills(work: Workspace, seed: Seed, own: readonly string[], shown: Shown): Promise<{ taken: LearnedSkill[]; left: string[] }> {
+export async function chooseSkills(work: Workspace, seed: Seed, own: readonly string[], shown: Shown): Promise<{ taken: LearnedSkill[]; left: string[] }> {
   if (!seed.skills?.length) return { taken: [], left: [] };
   let ownBytes = 0;
   const folders = new Map<string, Promise<Entry[]>>();
