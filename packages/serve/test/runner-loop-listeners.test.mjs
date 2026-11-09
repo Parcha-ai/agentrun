@@ -1,5 +1,6 @@
 // A loop leaves nothing on its claim's signal once it ends (from #1933's Greptile thread on pi-durable-disk's live
-// events, declined there because the cutover deletes that path): every abort listener the pi loop adds on deps.signal is
+// events, declined there because the cutover deletes that path): every abort listener pi's loop (the adapter loop and the pi
+// adapter) adds on deps.signal is
 // removed when start() settles, ended or parked alike, so a runner that holds many loops over its life gains none.
 import assert from "node:assert/strict";
 import { getEventListeners } from "node:events";
@@ -10,11 +11,14 @@ import { test } from "node:test";
 import { openSqliteStore } from "../dist/store/index.js";
 import { startRunner } from "../dist/runner/runner.js";
 import { suiteTools } from "../dist/runner/conformance/harness.js";
-import { piSpec } from "./conformance-pi.mjs";
+import { after } from "node:test";
+import { closeOpenSessions, piAdapterSubject } from "./conformance-pi-adapter.mjs";
 
-const { createPiLoop } = await import("../dist/runner/loop.js");
+after(closeOpenSessions);
 const quiet = { beforeIntent: async () => {}, beforeResult: async () => {} };
-const TIMING = { leaseMs: 600, renewEveryMs: 150, stopMarginMs: 200, pollMs: 20, commandPollMs: 30 };
+// A lease no stall of a loaded machine outlasts: a claim lost and retaken gives the run a second claim's signal, which
+// these tests do not read. The runs end themselves, so nothing here waits on the lease.
+const TIMING = { leaseMs: 60_000, renewEveryMs: 1_000, stopMarginMs: 5_000, pollMs: 20, commandPollMs: 30 };
 
 async function runOnce(t, script, endState) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-loop-listeners-"));
@@ -31,7 +35,7 @@ async function runOnce(t, script, endState) {
   await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" });
   const signals = [];
   const { tools } = suiteTools();
-  const inner = createPiLoop(piSpec({ script, tools, hooks: quiet }));
+  const inner = piAdapterSubject.createLoop({ script, tools, hooks: quiet });
   runner = startRunner({ store, createLoop: (deps) => (signals.push(deps.signal), inner(deps)), name: "runner-a", ...TIMING });
   const deadline = Date.now() + 15_000;
   for (;;) {

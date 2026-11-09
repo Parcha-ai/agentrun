@@ -12,7 +12,7 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { accessSync, constants, mkdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { READ_SKILL_FILE, readSkillFileTool, skillProblems, type AdapterSession, type AgentAdapter, type HostSkill, type HostTool, type SessionIO, type SessionSpec, type ToolImage, type TurnStatus } from "@parcha/agentrun-kernel";
+import { READ_SKILL_FILE, readSkillFileTool, skillProblems, type AdapterSession, type AgentAdapter, type GateCall, type HostSkill, type HostTool, type SessionIO, type SessionSpec, type ToolImage, type TurnStatus } from "@parcha/agentrun-kernel";
 import { abortedOutcome, openDrive, pendingSubmissions, Restart, SessionHalt, type Drive, type HostTool as KernelTool } from "@parcha/agentrun-kernel/kernel";
 import { toolSchemaProblems } from "@parcha/agentrun-kernel";
 import { NativeJournal, recoveryNote, settleTurn, transcriptOf } from "@parcha/agentrun-kernel/process";
@@ -449,6 +449,8 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
         sdk,
         ...(options.mcp ? { toolServerModules: options.mcp } : {}),
         ...(options.log ? { log: options.log } : {}),
+        // The host's gate, asked about each host-tool call before it is written or run.
+        ...(io.gate ? { gate: (call: GateCall) => io.gate!(call) } : {}),
       });
 
       const live = (event: unknown) => {

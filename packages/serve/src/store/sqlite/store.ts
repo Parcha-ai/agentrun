@@ -5,6 +5,7 @@
 import { existsSync, mkdirSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { claimFence } from "../fence.js";
 import { RunStorage } from "../journal/storage.js";
 import { DDL, SCHEMA_VERSION } from "../schema.js";
 import {
@@ -12,12 +13,12 @@ import {
   type AlsoRow, type Claim, type Command, type ImportRunInput, type Journal, type NewRevision, type RevisionRow, type RunPatch, type RunRow, type Runs,
   type JournalReads,
   type RunState, type Store, type StoreRole, type TemplatePackage, type Templates, type TriggerDef, type TriggerRow, type Triggers, type TriggerScope,
-  FINAL_STATES, MCP_REFRESH_CALL_MS, MCP_REFRESH_LEASE_MS, type Learning, type LearningProposal, type Live, type LiveRow, type Mcp, type McpPinRow, type McpServerRow,
+  FINAL_STATES, MCP_REFRESH_CALL_MS, MCP_REFRESH_LEASE_MS, type Learning, type LearningProposal, type Live, type LiveRow, type LiveViewerRow, type LiveViewers, type Mcp, type McpPinRow, type McpServerRow,
   type McpOauth, type McpOauthPendingRow, type SealedKeyRow, type SealedKeys, type Settings, type SettingRow, type TriggerSettingRow, type TriggerSettings,
   type ComputerLedger, type ComputerLedgerRow,
 } from "../store.js";
 import { Connection, type SqliteExecutor, type SqliteValue, type Statement } from "./connection.js";
-import { applyRunPatch, RUN_COLUMNS, runOf, type RunRecord } from "./run-patch.js";
+import { applyRunPatch, refuseLeftovers, RUN_COLUMNS, runOf, type RunRecord } from "./run-patch.js";
 import { readLaunch, writeLaunch } from "./run-launch.js";
 
 /** A claim's length when the caller names none. */
@@ -52,14 +53,14 @@ const TRIGGER_COLUMNS = "id, agent_id, name, enabled, source, target, next_at, l
 const FINAL = FINAL_STATES.map((state) => `'${state}'`).join(", ");
 /** The runs a runner may claim, at a time bound five times (CLAIMABLE_AT): queued; running with no runner (released) or
  *  its claim run out, once its backoff (an interrupted run's) has passed; parked, once no claim holds it (a run parks
- *  under its claim and is released a few seconds later), with its wake_at passed, an untaken stop, or an untaken command
+ *  under its claim and is released a few seconds later), with its wake_at passed, an untaken stop or cancel, or an untaken command
  *  that can answer it once its backoff (a failed resume's) has passed. A row marked `answers: false` (a trigger's
  *  follow-up message) answers no park: it waits, untaken, and its loop gets it after the person's answer wakes the run. */
 const CLAIMABLE = `(state = 'queued'
   OR (state = 'running' AND (runner IS NULL OR claimed_until < ?) AND (backoff_until IS NULL OR backoff_until <= ?))
   OR (state = 'parked' AND (runner IS NULL OR claimed_until < ?) AND (
     (wake_at IS NOT NULL AND wake_at <= ?)
-    OR EXISTS (SELECT 1 FROM commands WHERE commands.run_id = runs.id AND commands.taken_at IS NULL AND commands.kind = 'stop')
+    OR EXISTS (SELECT 1 FROM commands WHERE commands.run_id = runs.id AND commands.taken_at IS NULL AND commands.kind IN ('stop', 'cancel'))
     OR ((backoff_until IS NULL OR backoff_until <= ?) AND EXISTS (SELECT 1 FROM commands WHERE commands.run_id = runs.id AND commands.taken_at IS NULL
       AND json_extract(commands.body, '$.answers') IS NOT 0)))))`;
 const CLAIMABLE_AT = (at: number): number[] => [at, at, at, at, at];
@@ -77,14 +78,15 @@ const triggerOf = (r: TriggerRecord): TriggerRow => ({
 const json = (value: unknown): string => JSON.stringify(value ?? null);
 
 type McpServerRecord = {
-  name: string; url: string; auth: string; protocol: string | null; tools: string; prices: string; sealed: Uint8Array | null;
-  refresh_holder: string | null; refresh_until: number | null; created_at: number; updated_at: number;
+  name: string; url: string; auth: string; protocol: string | null; tools: string; prices: string; server_info: string | null; instructions: string | null; sealed: Uint8Array | null;
+  refresh_holder: string | null; refresh_until: number | null; created_at: number; updated_at: number; listed_at: number | null;
 };
 type McpPinRecord = { run_id: string; body: string; pinned_at: number };
-const MCP_SERVER_COLUMNS = "name, url, auth, protocol, tools, prices, sealed, refresh_holder, refresh_until, created_at, updated_at";
+const MCP_SERVER_COLUMNS = "name, url, auth, protocol, tools, prices, server_info, instructions, sealed, refresh_holder, refresh_until, created_at, updated_at, listed_at";
 const mcpServerOf = (r: McpServerRecord): McpServerRow => ({
   name: r.name, url: r.url, auth: r.auth, protocol: r.protocol, tools: JSON.parse(r.tools), prices: JSON.parse(r.prices),
-  sealed: r.sealed === null ? null : Uint8Array.from(r.sealed), refreshHolder: r.refresh_holder, refreshUntil: r.refresh_until, createdAt: r.created_at, updatedAt: r.updated_at,
+  serverInfo: r.server_info === null ? null : JSON.parse(r.server_info), instructions: r.instructions,
+  sealed: r.sealed === null ? null : Uint8Array.from(r.sealed), refreshHolder: r.refresh_holder, refreshUntil: r.refresh_until, createdAt: r.created_at, updatedAt: r.updated_at, listedAt: r.listed_at,
 });
 const mcpPinOf = (r: McpPinRecord): McpPinRow => ({ runId: r.run_id, body: JSON.parse(r.body), pinnedAt: r.pinned_at });
 
@@ -210,6 +212,7 @@ class SqliteStore implements Store {
   readonly runs: Runs;
   readonly mcp: Mcp;
   readonly live: Live;
+  readonly liveViewers: LiveViewers;
   readonly learning: Learning;
   readonly settings: Settings;
   readonly sealedKeys: SealedKeys;
@@ -400,6 +403,8 @@ class SqliteStore implements Store {
               throw new CommandTaken(claim.runId, commandId);
             }
           }
+          // An update that made the run final: its other untaken rows are refused in this transaction, after its own takes.
+          await refuseLeftovers(tx, claim.runId, patch.state, at);
           return row;
         });
       },
@@ -410,14 +415,18 @@ class SqliteStore implements Store {
       return row && mcpServerOf(row);
     };
     this.mcp = {
-      put: async ({ name, url, auth, protocol = null, tools, prices = null, sealed = null }) => {
+      put: async ({ name, url, auth, protocol = null, tools, prices = null, serverInfo = null, instructions = null, sealed = null, listedAt, updatedAt }) => {
         const at = now();
+        // updated_at defaults to now (a save or a sign-in); a refresh passes the kept one so it is not read as an edit.
+        // listed_at is the tools' listing time, now unless given.
+        const updated = updatedAt ?? at;
+        const listed = listedAt ?? at;
         const [result] = await db.write([{
-          sql: `INSERT INTO mcp_servers (name, url, auth, protocol, tools, prices, sealed, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          sql: `INSERT INTO mcp_servers (name, url, auth, protocol, tools, prices, server_info, instructions, sealed, created_at, updated_at, listed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (name) DO UPDATE SET url = excluded.url, auth = excluded.auth, protocol = excluded.protocol, tools = excluded.tools,
-              prices = excluded.prices, sealed = excluded.sealed, refresh_holder = NULL, refresh_until = NULL, updated_at = excluded.updated_at
+              prices = excluded.prices, server_info = excluded.server_info, instructions = excluded.instructions, sealed = excluded.sealed, refresh_holder = NULL, refresh_until = NULL, updated_at = excluded.updated_at, listed_at = excluded.listed_at
             RETURNING ${MCP_SERVER_COLUMNS}`,
-          params: [name, url, auth, protocol, json(tools), json(prices), sealed, at, at],
+          params: [name, url, auth, protocol, json(tools), json(prices), serverInfo === null ? null : json(serverInfo), instructions, sealed, at, updated, listed],
         }]);
         return mcpServerOf(result!.rows[0] as McpServerRecord);
       },
@@ -432,7 +441,9 @@ class SqliteStore implements Store {
       },
       pinOnce: (claim, body) =>
         db.transaction(async (tx) => {
-          await tx.step(fenced(claim, "UPDATE runs SET epoch = epoch WHERE id = ? AND epoch = ?", [claim.runId, claim.epoch]));
+          // Under the claim's epoch and its lease: a runner paused past its lease pins nothing.
+          const fence = claimFence(claim, now());
+          await tx.step(fenced(claim, `UPDATE runs SET epoch = epoch WHERE ${fence.where}`, fence.params));
           await tx.run("INSERT INTO mcp_pins (run_id, body, pinned_at) VALUES (?, ?, ?) ON CONFLICT (run_id) DO NOTHING", claim.runId, json(body), now());
           return mcpPinOf((await tx.get<McpPinRecord>("SELECT run_id, body, pinned_at FROM mcp_pins WHERE run_id = ?", claim.runId))!);
         }),
@@ -468,18 +479,19 @@ class SqliteStore implements Store {
     };
 
     this.live = {
-      // One transaction for the tick; each row written only under its run's current epoch (the SELECT finds no run row
-      // for a stale claim, so nothing is inserted or changed).
+      // One transaction for the tick; each row written only under its run's current epoch and live lease (the SELECT finds
+      // no run row for a stale or lapsed claim, so nothing is inserted or changed). The drop below stays on the epoch.
       put: (rows) =>
         db.transaction(async (tx) => {
           const at = now();
           const written: string[] = [];
           const fenced: string[] = [];
           for (const { claim, state } of rows) {
+            const fence = claimFence(claim, at);
             const changed = await tx.runCounted(
-              `INSERT INTO run_live (run_id, state, updated_at) SELECT id, ?, ? FROM runs WHERE id = ? AND epoch = ?
+              `INSERT INTO run_live (run_id, state, updated_at) SELECT id, ?, ? FROM runs WHERE ${fence.where}
                 ON CONFLICT (run_id) DO UPDATE SET state = excluded.state, updated_at = excluded.updated_at`,
-              json(state), at, claim.runId, claim.epoch,
+              json(state), at, ...fence.params,
             );
             (changed > 0 ? written : fenced).push(claim.runId);
           }
@@ -498,6 +510,39 @@ class SqliteStore implements Store {
           sql: "DELETE FROM run_live WHERE run_id = ? AND EXISTS (SELECT 1 FROM runs WHERE id = ? AND epoch = ?)",
           params: [claim.runId, claim.runId, claim.epoch],
         }]);
+      },
+    };
+
+    this.liveViewers = {
+      // Under the claim's fence (its epoch and its lease, on the store's clock read in this transaction): the SELECT finds
+      // no run row for a stale or lapsed claim, so nothing is inserted or changed, and the put answers false.
+      put: (claim, viewer) =>
+        db.transaction(async (tx) => {
+          const at = now();
+          const fence = claimFence(claim, at);
+          const changed = await tx.runCounted(
+            `INSERT INTO browser_viewers (run_id, tag, port, viewer_id, sealed, at, runner, epoch) SELECT id, ?, ?, ?, ?, ?, ?, ? FROM runs WHERE ${fence.where}
+              ON CONFLICT (run_id, tag) DO UPDATE SET port = excluded.port, viewer_id = excluded.viewer_id, sealed = excluded.sealed, at = excluded.at, runner = excluded.runner, epoch = excluded.epoch`,
+            viewer.tag, viewer.port, viewer.id, viewer.sealed, at, claim.runner, claim.epoch, ...fence.params,
+          );
+          return changed > 0;
+        }),
+      // On the claim's epoch alone, as run_live's drop: a runner clearing its own rows after its lease ran out takes no
+      // one else's.
+      drop: async (claim, tag) => {
+        await db.write([{
+          sql: `DELETE FROM browser_viewers WHERE run_id = ?${tag === undefined ? "" : " AND tag = ?"} AND EXISTS (SELECT 1 FROM runs WHERE id = ? AND epoch = ?)`,
+          params: [claim.runId, ...(tag === undefined ? [] : [tag]), claim.runId, claim.epoch],
+        }]);
+      },
+      // The server's read: only the run's epoch, under a live lease on the store's clock, written by the run's runner.
+      of: async (runId) => {
+        const rows = await db.all<{ tag: string; port: number; viewer_id: string; sealed: Uint8Array; at: number; runner: string }>(
+          `SELECT v.tag, v.port, v.viewer_id, v.sealed, v.at, v.runner FROM browser_viewers v JOIN runs r ON r.id = v.run_id
+            WHERE v.run_id = ? AND v.epoch = r.epoch AND r.claimed_until >= ? AND v.runner = r.runner ORDER BY v.at DESC, v.tag`,
+          runId, now(),
+        );
+        return rows.map((row): LiveViewerRow => ({ tag: row.tag, port: row.port, id: row.viewer_id, sealed: new Uint8Array(row.sealed), at: row.at, runner: row.runner }));
       },
     };
 
@@ -585,6 +630,15 @@ class SqliteStore implements Store {
       remove: async (state) => {
         await db.write([{ sql: "DELETE FROM mcp_oauth_pending WHERE state = ?", params: [state] }]);
       },
+      take: async (state, at) => {
+        // One statement: delete the row and return it. On the store's single writer this is atomic, so two concurrent
+        // takes of one state can never both get it (the second deletes nothing). The row is gone whether or not it had
+        // expired; an expired one is refused by reading undefined after the delete, so a stale state can't be retried.
+        const [result] = await db.write([{ sql: "DELETE FROM mcp_oauth_pending WHERE state = ? RETURNING state, server, verifier_sealed, cookie_binding, working, expires_at", params: [state] }]);
+        const row = result!.rows[0] as McpOauthRecord | undefined;
+        if (row === undefined) return undefined;
+        return row.expires_at <= (at ?? now()) ? undefined : mcpOauthOf(row);
+      },
       sweepExpired: async (at) => (await db.write([{ sql: "DELETE FROM mcp_oauth_pending WHERE expires_at <= ?", params: [at] }]))[0]!.changes,
     };
   }
@@ -612,6 +666,8 @@ class SqliteStore implements Store {
         runner, until, ...picked.map((row) => row.id),
       );
       const epochs = new Map(rows.map((row) => [row.id, row.epoch]));
+      // A take or reclaim leaves no viewer of an older claim behind: its rows go in this transaction.
+      for (const row of rows) await tx.run("DELETE FROM browser_viewers WHERE run_id = ? AND epoch < ?", row.id, row.epoch);
       // A newer claim of a run supersedes its release here: journal() refuses by epoch, and the newer epoch passes.
       for (const { id } of picked) this.#released.delete(id);
       return picked.map(({ id, state }) => ({ runId: id, runner, epoch: epochs.get(id)!, until, from: state }));
@@ -620,9 +676,12 @@ class SqliteStore implements Store {
 
   async renew(claim: Claim, { leaseMs = DEFAULT_LEASE_MS }: { leaseMs?: number } = {}): Promise<Claim> {
     // As a claim's: the lease runs from when the renew holds the writer lock.
+    // A lease that ran out is gone: no renew brings it back (its runner takes the run again, at a new epoch).
     const until = await this.#db.transaction(async (tx) => {
-      const at = this.#now() + leaseMs;
-      await tx.step(fenced(claim, "UPDATE runs SET claimed_until = ? WHERE id = ? AND epoch = ? AND runner = ?", [at, claim.runId, claim.epoch, claim.runner]));
+      const now = this.#now();
+      const at = now + leaseMs;
+      const fence = claimFence(claim, now);
+      await tx.step(fenced(claim, `UPDATE runs SET claimed_until = ? WHERE ${fence.where} AND runner = ?`, [at, ...fence.params, claim.runner]));
       return at;
     });
     return { ...claim, until };
@@ -633,10 +692,12 @@ class SqliteStore implements Store {
     // One transaction for every claim, each update on its own: a claim another runner took changes no row and is answered
     // Fenced, never rolling the others back.
     return this.#db.transaction(async (tx) => {
-      const until = this.#now() + leaseMs;
+      const now = this.#now();
+      const until = now + leaseMs;
       const out: (Claim | Fenced)[] = [];
       for (const claim of claims) {
-        const renewed = await tx.all<{ id: string }>("UPDATE runs SET claimed_until = ? WHERE id = ? AND epoch = ? AND runner = ? RETURNING id", until, claim.runId, claim.epoch, claim.runner);
+        const fence = claimFence(claim, now);
+        const renewed = await tx.all<{ id: string }>(`UPDATE runs SET claimed_until = ? WHERE ${fence.where} AND runner = ? RETURNING id`, until, ...fence.params, claim.runner);
         out.push(renewed.length > 0 ? { ...claim, until } : new Fenced(claim.runId, claim.epoch));
       }
       return out;
@@ -645,13 +706,21 @@ class SqliteStore implements Store {
 
   async release(claim: Claim, { state, wakeAt = null, backoffUntil = null }: { state?: RunState; wakeAt?: number | null; backoffUntil?: number | null } = {}): Promise<void> {
     const ending = state !== undefined && FINAL_STATES.includes(state);
-    await this.#db.write([fenced(
-      claim,
-      // The epoch moves on at a release: the released claim is dead everywhere (its journal, its run updates, its takes),
-      // never live until the next claim.
-      `UPDATE runs SET epoch = epoch + 1, runner = NULL, claimed_until = NULL, wake_at = ?, backoff_until = ?, state = coalesce(?, state)${ending ? ", ended_at = coalesce(ended_at, ?)" : ""} WHERE id = ? AND epoch = ? AND runner = ?`,
-      [wakeAt, backoffUntil, state ?? null, ...(ending ? [this.#now()] : []), claim.runId, claim.epoch, claim.runner],
-    )], { full: true });
+    await this.#db.transaction(async (tx) => {
+      // A run its end already made final was released by that end (applyRunPatch): this release is a no-op, no second
+      // move of its epoch and no error, whatever its claim's lease says now.
+      const final = await tx.get<{ state: RunState; runner: string | null }>("SELECT state, runner FROM runs WHERE id = ?", claim.runId);
+      if (final && FINAL_STATES.includes(final.state) && final.runner === null) return;
+      const now = this.#now();
+      await tx.step(fenced(
+        claim,
+        // The epoch moves on at a release: the released claim is dead everywhere (its journal, its run updates, its takes),
+        // never live until the next claim. A claim whose lease ran out releases nothing: the run, running with its lease run
+        // out, is claimable at once, never stuck.
+        `UPDATE runs SET epoch = epoch + 1, runner = NULL, claimed_until = NULL, wake_at = ?, backoff_until = ?, state = coalesce(?, state)${ending ? ", ended_at = coalesce(ended_at, ?)" : ""} WHERE ${claimFence(claim, now).where} AND runner = ?`,
+        [wakeAt, backoffUntil, state ?? null, ...(ending ? [now] : []), ...claimFence(claim, now).params, claim.runner],
+      ));
+    }, { full: true });
     // The released claim's journal is dead (its epoch moved on): the store keeps it no longer, and refuses it from now.
     this.#journals.delete(journalKey(claim));
     this.#released.delete(claim.runId);
@@ -731,33 +800,38 @@ class SqliteStore implements Store {
     const state = run.state ?? "ended";
     return this.#db.transaction(async (tx) => {
       // The ended run row, its launch row and its transcript's journal, all in this one transaction (the server's own
-      // writer): a crash between them leaves nothing. The run is created at epoch 0, so the journal's fence passes.
-      const row = await tx.get<RunRecord>(
+      // writer): a crash between them leaves nothing. The run is created at epoch 0 with no runner, and the journal's fence
+      // passes for that one row, by the rowid its insert returned (the claim fence's inserted-here form).
+      const row = await tx.get<RunRecord & { inserted_rowid: number }>(
         `INSERT INTO runs (id, agent_id, revision_id, state, epoch, cost_usd, metrics, summary, outcome, imported_from, started_at, ended_at)
-          VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?) RETURNING ${RUN_COLUMNS}`,
+          VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?) RETURNING rowid AS inserted_rowid, ${RUN_COLUMNS}`,
         run.id, run.agentId, run.revisionId, state, run.costUsd ?? null,
         run.metrics === undefined || run.metrics === null ? null : json(run.metrics), run.summary ?? null,
         run.outcome ?? null, JSON.stringify(run.importedFrom), run.startedAt, run.endedAt ?? at,
       );
       await writeLaunch(tx, run.id, run.launch, at);
-      await new RunStorage(this.#db, { runId: run.id, epoch: 0 }, this.#now).applyIn(tx, run.transcript);
+      await new RunStorage(this.#db, { runId: run.id, epoch: 0 }, this.#now).applyIn(tx, run.transcript, row!.inserted_rowid);
       return runOf(row!);
     });
   }
 
   async take(claim: Claim, commandId: number, outcome: "taken" | "refused" = "taken", reason?: string): Promise<void> {
-    await this.#db.write([
-      fenced(claim, "UPDATE runs SET epoch = epoch WHERE id = ? AND epoch = ?", [claim.runId, claim.epoch]),
-      { sql: "UPDATE commands SET taken_at = ?, refused = ? WHERE id = ? AND run_id = ? AND taken_at IS NULL", params: [this.#now(), outcome === "refused" ? (reason ?? "refused") : null, commandId, claim.runId] },
-    ]);
+    // The clock is read inside the transaction, so the lease check and the write are one.
+    await this.#db.transaction(async (tx) => {
+      const now = this.#now();
+      const fence = claimFence(claim, now);
+      await tx.step(fenced(claim, `UPDATE runs SET epoch = epoch WHERE ${fence.where}`, fence.params));
+      await tx.run("UPDATE commands SET taken_at = ?, refused = ? WHERE id = ? AND run_id = ? AND taken_at IS NULL", now, outcome === "refused" ? (reason ?? "refused") : null, commandId, claim.runId);
+    });
   }
 
   async retry(claim: Claim, commandId: number): Promise<number> {
-    const [, counted] = await this.#db.write([
-      fenced(claim, "UPDATE runs SET epoch = epoch WHERE id = ? AND epoch = ?", [claim.runId, claim.epoch]),
-      { sql: "UPDATE commands SET tries = tries + 1 WHERE id = ? AND run_id = ? AND taken_at IS NULL RETURNING tries", params: [commandId, claim.runId] },
-    ]);
-    const row = counted!.rows[0] as { tries: number } | undefined;
+    const counted = await this.#db.transaction(async (tx) => {
+      const fence = claimFence(claim, this.#now());
+      await tx.step(fenced(claim, `UPDATE runs SET epoch = epoch WHERE ${fence.where}`, fence.params));
+      return tx.all<{ tries: number }>("UPDATE commands SET tries = tries + 1 WHERE id = ? AND run_id = ? AND taken_at IS NULL RETURNING tries", commandId, claim.runId);
+    });
+    const row = counted[0];
     if (!row) throw new StoreConstraint(`run ${claim.runId}: command ${commandId} is taken, or not the run's: no try to count`);
     return row.tries;
   }

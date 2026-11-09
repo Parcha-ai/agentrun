@@ -18,7 +18,7 @@ import { parseArgs } from 'node:util';
 import { FLAGS, WAIT } from '../packages/agentrun/lib/follow.mjs';
 import { SECRETS } from '../packages/agentrun/lib/login.mjs';
 import { SKILL_INSTALL } from '../packages/agentrun/lib/skill.mjs';
-import { TEMPLATE_VALIDATE } from '../packages/agentrun/lib/template.mjs';
+import { TEMPLATE_EVAL, TEMPLATE_VALIDATE } from '../packages/agentrun/lib/template.mjs';
 import { allCommands, recipeProblems, referenceText, skillText } from './clients/skill.mjs';
 import { clientProblems, clientText } from './clients/typescript.mjs';
 import { typesOf, typesText } from './clients/types.mjs';
@@ -34,7 +34,7 @@ const TYPES = 'apps/console/src/lib/api.generated.ts';
 // may begin with one.
 const RESERVED = ['api', 'help', 'import', 'reset-password', 'login', 'logout', 'skill'];
 // The CLI's hand-written commands: none may be a generated one too.
-const HAND = { flags: FLAGS, wait: WAIT, local: [...SECRETS, SKILL_INSTALL, TEMPLATE_VALIDATE] };
+const HAND = { flags: FLAGS, wait: WAIT, local: [...SECRETS, SKILL_INSTALL, TEMPLATE_VALIDATE, TEMPLATE_EVAL] };
 const SCALAR = ['string', 'number', 'integer', 'boolean'];
 const GLOBAL_FLAGS = ['base-url', 'data', 'body', 'body-type', 'help'];
 // Headers the CLI sets itself.
@@ -141,7 +141,7 @@ export function operationsOf(doc) {
         unsupported: op['x-agentrun-serve-unsupported'] !== undefined, parameters: [...params.values()],
         body: body === undefined ? null : {
           required: body.required === true, types: Object.keys(body.content ?? {}),
-          properties: Object.entries(schema?.properties ?? {}).map(([name, property]) => ({ name, ...shapeOf(doc, property), required: schema.required?.includes(name) ?? false, description: firstLine(deref(doc, property)?.description) })),
+          properties: Object.entries(schema?.properties ?? {}).map(([name, property]) => ({ name, ...shapeOf(doc, property), ...(deref(doc, property)?.const !== undefined ? { const: deref(doc, property).const } : {}), required: schema.required?.includes(name) ?? false, description: firstLine(deref(doc, property)?.description) })),
           type: schema === undefined ? null : typeOf(doc, body.content['application/json'].schema),
           ...(example !== undefined ? { example } : {}),
         },
@@ -199,6 +199,15 @@ export function problemsOf(ops, map) {
   for (const id of [...Object.keys(map.commands), ...map.secretBody, ...Object.keys(map.omit), ...Object.keys(map.multiSegment)]) {
     if (!ids.has(id)) problems.push(`${RESOURCES} names ${id}, which the document has no operation for`);
   }
+  for (const [id, fill] of Object.entries(map.bodyFill ?? {})) {
+    const op = ops.find((o) => o.operationId === id);
+    if (!op) problems.push(`${RESOURCES} names ${id}, which the document has no operation for`);
+    else for (const [name, value] of Object.entries(fill)) {
+      const property = op.body?.properties.find((p) => p.name === name);
+      if (!property) problems.push(`${RESOURCES} fills ${id}'s body field ${name}, which its body does not have`);
+      else if (property.const !== undefined && canonical(property.const) !== canonical(value)) problems.push(`${RESOURCES} fills ${id}'s body field ${name} with another value than its const`);
+    }
+  }
   for (const [id, name] of Object.entries(map.multiSegment)) {
     const op = ops.find((o) => o.operationId === id);
     if (op && !op.path.includes(`{${name}}`)) problems.push(`${RESOURCES} names ${id}'s path parameter ${name}, which its route ${op.path} does not have`);
@@ -235,6 +244,12 @@ export function commandsOf(ops, map) {
       const type = flagType(p);
       return type && !taken.has(flagOf(p.name)) ? [{ name: p.name, ...type, required: p.required, description: p.description }] : [];
     });
+    // What a body made of flags alone carries besides them: each required field the document fixes to one value (its
+    // const), and what the map fills (an MCP request's id). A whole --body is sent as given.
+    const bodyFill = secretBody ? {} : {
+      ...Object.fromEntries((op.body?.properties ?? []).filter((p) => p.required && p.const !== undefined).map((p) => [p.name, p.const])),
+      ...(map.bodyFill?.[op.operationId] ?? {}),
+    };
     entries.push({
       command: commandOf(op, map), operationId: op.operationId, method: op.method, path: op.path,
       pathParams: [...op.path.matchAll(/\{([^}]+)\}/g)].map((match) => match[1]),
@@ -242,7 +257,7 @@ export function commandsOf(ops, map) {
       multiSegment: map.multiSegment[op.operationId] ? [map.multiSegment[op.operationId]] : [],
       // A secret body's string fields that are no secret, by their full path: every other one is cut from what is printed.
       ...(secretBody ? { publicFields: map.publicFields[op.operationId] ?? [] } : {}),
-      query, headers, bodyFlags, hasBody: op.body !== null, bodyRequired: op.body?.required === true, bodyTypes: op.body?.types ?? [], secretBody,
+      query, headers, bodyFlags, ...(Object.keys(bodyFill).length ? { bodyFill } : {}), hasBody: op.body !== null, bodyRequired: op.body?.required === true, bodyTypes: op.body?.types ?? [], secretBody,
       // A working body, as the document gives it: the command's help prints it as a --body to paste. Never a secret body's.
       ...(op.body?.example !== undefined && !secretBody ? { example: op.body.example } : {}),
       // A download: its answer is the file's bytes, written as received.
@@ -290,7 +305,7 @@ export function tableText(ops, map) {
 
 async function main() {
   const { values } = parseArgs({ options: { check: { type: 'boolean' }, out: { type: 'string' }, skill: { type: 'string' }, client: { type: 'string' }, resources: { type: 'string' }, document: { type: 'string' }, types: { type: 'string' } } });
-  const map = { secretBody: [], omit: {}, multiSegment: {}, publicFields: {}, ...JSON.parse(await readFile(resolve(root, values.resources ?? RESOURCES), 'utf8')) };
+  const map = { secretBody: [], omit: {}, multiSegment: {}, publicFields: {}, bodyFill: {}, ...JSON.parse(await readFile(resolve(root, values.resources ?? RESOURCES), 'utf8')) };
   const doc = values.document ? JSON.parse(await readFile(resolve(values.document), 'utf8')) : await servedDocument();
   const ops = operationsOf(doc);
   const problems = [...problemsOf(ops, map), ...publicFieldProblems(doc, map), ...clientProblems(ops, map, commandOf)];

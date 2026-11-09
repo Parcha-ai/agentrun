@@ -2,7 +2,7 @@
 // From github.com/vercel-labs/durable-harness, packages/harness-process/src/tools.ts at ea8aa4060c (UPSTREAM.json records its blob and sha256).
 // Changed by Parcha, and AgentRun's own since the port from upstream froze on 2026-11-07.
 import { type DriveContext, EffectFailure, type EffectError, type HostTool, hostToolIO, type ReplayPolicy, type ToolOutput } from '../kernel/index.js';
-import { HOST_RESULT_MAX_CHARS, type ToolImage } from '../types.js';
+import { type GateAnswer, type GateCall, HOST_RESULT_MAX_CHARS, type ToolImage } from '../types.js';
 
 /**
  * The tool bridge: `HostTool`s as a harness-neutral list a port maps onto its
@@ -53,6 +53,13 @@ export interface BridgedTool {
 
 export interface ToolBridgeOptions {
   /**
+   * The host's gate (SessionIO.gate), asked about a call the log has not finished before anything of it: before
+   * `beforeNever` and before its intent. "allow" runs it; a deny is the call's error result in the host's words,
+   * nothing written and nothing run; a park holds the call, nothing written, until the drive's (or the harness's)
+   * signal is aborted, and then rejects.
+   */
+  gate?: (call: GateCall) => Promise<GateAnswer>;
+  /**
    * Runs before a `replay: 'never'` call that the log has not finished:
    * the place for `journal.flush()`, so the harness's record of the call is
    * in the log before the call's intent is.
@@ -86,6 +93,16 @@ export class Mutex {
 /** The memo key of a tool call. */
 export const toolKey = (callId: string) => `tool:${callId}`;
 
+/** A call the gate parked: held, never answered here, until `signal` is aborted (the run parked and this process lets
+ *  go of it); then it rejects, so the harness is never handed a result for it. */
+function parkedUntilAborted(signal: AbortSignal, tool: string): Promise<never> {
+  return new Promise<never>((_, reject) => {
+    const parked = () => reject(new Error(`${tool} was parked: the run waits for a person's answer`));
+    if (signal.aborted) return parked();
+    signal.addEventListener('abort', parked, { once: true });
+  });
+}
+
 /**
  * Build the bridge for one drive. The calls' effects are this drive's: build
  * a new bridge per `drive(ctx)`.
@@ -104,6 +121,14 @@ export function toolBridge(ctx: DriveContext, tools: HostTool[], options: ToolBr
       if (!callId) throw new TypeError(`agentrun-kernel: a call to ${tool.name} has no call id; derive a stable one`);
       const key = toolKey(callId);
       const fresh = !ctx.isMemoized(key);
+      // The gate first: before the flush and the intent, so a refused or parked call leaves nothing in the log.
+      if (fresh && options.gate) {
+        const answer = await options.gate({ callId, tool: tool.name, args: (args ?? {}) as Record<string, unknown> });
+        if (answer !== 'allow') {
+          if ('deny' in answer) return { text: answer.deny, isError: true };
+          await parkedUntilAborted(signal ? AbortSignal.any([signal, ctx.signal]) : ctx.signal, tool.name);
+        }
+      }
       if (fresh && tool.replay === 'never') await options.beforeNever?.({ name: tool.name, callId, args });
       if (fresh && live) ctx.live({ type: 'tool_start', name: tool.name, args, callId });
       try {
