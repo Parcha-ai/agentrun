@@ -94,11 +94,22 @@ exits and is started again.
 no runner can share its SQLite store there. Runners on Render need the Postgres store, each runner a background worker
 from the same image with `runner --data /data` as its command.
 
+## Upgrading from an earlier server
+
+There is no upgrade in place. The earlier server kept its agents in `/data/store.sqlite`, under the same name as the new
+store's file, and the new server refuses to start on a data directory that holds one, saying so. Then either:
+
+- keep running the earlier version on that volume, or
+- start on a new data directory (a new volume) and re-create your agents there.
+
+Nothing converts an earlier volume.
+
 ## The walks
 
 `walk/` holds two walks of this stack on a faux model (`walk/faux-steps.mjs`: no model key, no network). Each starts its
 own compose project with its own volume and seal key, prints a report (a `Verdict:` line, then a table of step, result and
-evidence), and removes everything when it ends. Each builds this checkout's image, or walks `AGENTRUN_IMAGE` when set.
+evidence), and removes everything when it ends. Each starts on a new volume, never an earlier server's, and builds
+this checkout's image, or walks `AGENTRUN_IMAGE` when set.
 
 - `walk/smoke.sh`, which CI runs: the server is healthy, both runners say they are ready, and a run of an agent in the
   runner's place completes, each of its steps done once.
