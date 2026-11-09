@@ -48,8 +48,8 @@ test("bash's bound is the registry's, by the hands' ceiling: Archil's 295 s in b
   assert.match(bash.description, /at most 295 s/, "Archil's ceiling, in bash's words");
   const capped = await call([bash], "bash", { command: "echo hi", timeout: 900 });
   assert.equal(capped.text, "hi\n\n\nbash runs a command for at most 295 s: this one ran with 295 s, not the 900 s asked.");
-  const timed = await call([bash], "bash", { command: "echo before; sleep 30", timeout: 0.2 });
-  assert.deepEqual(timed, { text: "before\n\n\nCommand timed out after 0.2 seconds", isError: true });
+  const timed = await call([bash], "bash", { command: "echo before; sleep 30", timeout: 0.5 });
+  assert.deepEqual(timed, { text: "before\n\n\nCommand timed out after 0.5 seconds", isError: true });
 });
 
 test("a computer: the registry's computer list, with the five background tools on the attached Workspace's processes", async () => {

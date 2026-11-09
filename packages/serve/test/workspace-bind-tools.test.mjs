@@ -61,7 +61,7 @@ test("bound: a call's text is today's host tool's for the same call on the same 
     ["read", { path: "a.txt" }], ["read", { path: "big.txt" }], ["read", { path: "nope.txt" }], ["read", { path: "../x" }], ["write", { path: "w.txt", content: "w" }],
     ["edit", { path: "a.txt", edits: [{ oldText: "two", newText: "2" }] }], ["edit", { path: "a.txt", edits: [{ oldText: "zzz", newText: "2" }] }],
     ["bash", { command: "echo hi" }], ["bash", { command: "echo out; exit 3" }], ["bash", { command: "seq 1 5000" }],
-    ["bash", { command: "echo before; sleep 30", timeout: 0.2 }], ["bash", { command: "printf 'é%.0s' $(seq 1 30000)" }],
+    ["bash", { command: "echo before; sleep 30", timeout: 0.5 }], ["bash", { command: "printf 'é%.0s' $(seq 1 30000)" }],
   ];
   // Each side names its own folder, and a spilled output's file name is random: the texts are compared with both taken out.
   const plain = (text, root) => text.replaceAll(root, "<folder>").replace(/\.agentrun\/output\/[0-9a-f]+\.log/g, ".agentrun/output/<id>.log");

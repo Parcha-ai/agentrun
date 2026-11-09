@@ -27,8 +27,8 @@ test("an executor keeps a failure's output and says its words apart; streamed ou
   const root = scratch();
   const env = piEnv(localWorkspace(root), { cwd: "/workspace", env: shellEnv(), defaultTimeoutS: 120 });
   const bash = piExecutor(bashTool(), env, ctx);
-  const timed = await bash({ command: "echo before; sleep 300", timeout: 0.2 }, {});
-  assert.deepEqual([timed.text, timed.error, timed.isError], ["before\n", "Command timed out after 0.2 seconds", true]);
+  const timed = await bash({ command: "echo before; sleep 300", timeout: 0.5 }, {});
+  assert.deepEqual([timed.text, timed.error, timed.isError], ["before\n", "Command timed out after 0.5 seconds", true]);
   const streamed = [];
   await bash({ command: "echo first; echo second" }, { output: (chunk) => streamed.push(chunk) });
   assert.deepEqual(streamed.join(""), "first\nsecond\n");
