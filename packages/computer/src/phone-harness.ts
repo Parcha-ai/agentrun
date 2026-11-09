@@ -904,7 +904,10 @@ class AdbClient implements ComputerClient {
 	#hello: HelloResult | undefined;
 	#size: [number, number] = [0, 0];
 	#scale = 1;
+	/** The shot held for screen.read, until read to its end or the next shot. */
 	#held: { id: string; bytes: Buffer } | undefined;
+	/** The newest watch frame's rest, held apart from the shot's (as computerd's is), so neither evicts the other. */
+	#watchHeld: { id: string; bytes: Buffer } | undefined;
 	/**
 	 * screen.watch's state: the newest frame's seq, what it was read from (a digest of the pixels), the frame, and when
 	 * the screen was last read (read, by now()).
@@ -957,6 +960,7 @@ class AdbClient implements ComputerClient {
 		if (this.#closed) return;
 		this.#closed = true;
 		this.#held = undefined;
+		this.#watchHeld = undefined;
 		this.#closing.abort();
 		this.#gone = this.disconnect().catch(() => undefined);
 	}
@@ -1011,12 +1015,8 @@ class AdbClient implements ComputerClient {
 				this.#watching = turn.catch(() => undefined);
 				return turn;
 			}
-			case "input.actions": {
-				// Batches run in turn: two at once would interleave their adb commands on the phone.
-				const turn = this.#inputs.then(() => this.#actions(params.actions, this.#either(signal)));
-				this.#inputs = turn.catch(() => undefined);
-				return turn;
-			}
+			case "input.actions":
+				return this.#inTurn(params.actions, this.#either(signal));
 			case "apps.list":
 				return this.#appsList();
 			case "apps.launch":
@@ -1117,17 +1117,20 @@ class AdbClient implements ComputerClient {
 		const data = bytes.subarray(0, MAX_CHUNK_BYTES);
 		const eof = data.length === bytes.length;
 		const id = randomBytes(6).toString("hex");
-		if (!eof) this.#held = { id, bytes };
+		if (!eof) this.#watchHeld = { id, bytes };
 		return { seq, changed: true, ...(eof ? {} : { id }), size: bytes.length, data: data.toString("base64"), eof, format: "png", frameWidth, frameHeight, width, height };
 	}
 
+	/** The rest of the shot or the watch frame held by id, from offset: each is dropped once read to its end. */
 	#read(id: unknown, offset: unknown): Call {
-		const held = this.#held;
+		const frame = this.#watchHeld !== undefined && this.#watchHeld.id === id;
+		const held = frame ? this.#watchHeld : this.#held;
 		if (held === undefined || held.id !== id) return refuse("not_found", `no shot ${show(id)} is held: take one with screen.shot`);
 		if (!(Number.isSafeInteger(offset) && (offset as number) >= 0 && (offset as number) <= held.bytes.length)) return refuse("invalid", `offset ${show(offset)} is not inside the shot's ${held.bytes.length} bytes`);
 		const data = held.bytes.subarray(offset as number, (offset as number) + MAX_CHUNK_BYTES);
 		const eof = (offset as number) + data.length >= held.bytes.length;
-		if (eof) this.#held = undefined;
+		if (eof && frame) this.#watchHeld = undefined;
+		else if (eof) this.#held = undefined;
 		return ok({ data: data.toString("base64"), eof });
 	}
 
@@ -1212,6 +1215,30 @@ class AdbClient implements ComputerClient {
 		} finally {
 			signal.removeEventListener("abort", stop);
 		}
+	}
+
+	/**
+	 * A batch in its turn: batches run one at a time, since two at once would interleave their adb commands on the phone.
+	 * A cancel while the batch waits answers at once, aborted with none of it run, and its turn then passes with nothing
+	 * done; a cancel once it runs stops it at the action it is on (#actions).
+	 */
+	#inTurn(actions: unknown, signal: AbortSignal): Promise<Call> {
+		const waitedOut = (): Call =>
+			ok({ done: 0, failed: { index: 0, kind: "aborted", message: "action 0: the batch was aborted while it waited for the batch before it; none of it ran" } } satisfies InputActionsResult);
+		let started = false;
+		const turn = this.#inputs.then((): Promise<Call> | Call => {
+			started = true;
+			return signal.aborted ? waitedOut() : this.#actions(actions, signal);
+		});
+		this.#inputs = turn.catch(() => undefined);
+		return new Promise<Call>((resolve, reject) => {
+			const stop = () => {
+				if (!started) resolve(waitedOut());
+			};
+			signal.addEventListener("abort", stop, { once: true });
+			if (signal.aborted) stop();
+			turn.then(resolve, reject).finally(() => signal.removeEventListener("abort", stop));
+		});
 	}
 
 	async #actions(actions: unknown, signal?: AbortSignal): Promise<Call> {
