@@ -21,6 +21,8 @@ export const KEY = "e2b_fake_computer_key_0123456789";
 export const DESKTOP_GROUPS = ["exec", "files", "processes", "screen", "input.pointer", "input.keys"];
 export const LINUX_GROUPS = ["exec", "files", "processes"];
 const NO_CAPS = "0000000000000000";
+/** The helper's verbs that read the disk token on stdin; every other root command reads none. */
+const STDIN_VERBS = new Set(["mount", "revoke"]);
 
 export class SandboxNotFoundError extends Error {
 	name = "SandboxNotFoundError";
@@ -451,9 +453,17 @@ export function fakeE2B({
 					await step(`commands.run ${verb ?? script?.kind ?? "other"}`, opts, sb);
 					if (gone(sb)) throw new SandboxNotFoundError(`Sandbox ${sb.id} not found`);
 					if (verb !== undefined) {
-						if (opts.background !== true || opts.stdin !== true || opts.user !== "root") throw new Error(`a root command runs in the background as root with stdin, not ${JSON.stringify(opts)}`);
+						if (opts.background !== true || opts.user !== "root") throw new Error(`a root command runs in the background as root, not ${JSON.stringify(opts)}`);
 						const handle = handleOf(sb, opts);
-						roots.set(handle.pid, { argv: wordsOf(cmd), verb, handle, chunks: [] });
+						const root = { argv: wordsOf(cmd), verb, handle, chunks: [] };
+						roots.set(handle.pid, root);
+						// As in E2B: a command that reads no stdin (serve, which detaches; checkin; the preflight) runs and ends at once,
+						// so its pid is gone when the caller would close its stdin. Only mount and revoke wait on their stdin.
+						if (opts.stdin !== true || !STDIN_VERBS.has(verb)) {
+							root.closed = true;
+							root.ended = true;
+							queueMicrotask(() => runRoot(root));
+						}
 						return handle;
 					}
 					if (script?.kind === "install") {
@@ -495,6 +505,7 @@ export function fakeE2B({
 				},
 				async closeStdin(pid, opts) {
 					const root = roots.get(pid);
+					if (root?.ended) throw Object.assign(new Error(`[not_found] process with pid ${pid} not found`), { name: "NotFoundError" });
 					if (root === undefined) throw new Error(`process ${pid} has no stdin to close here`);
 					if (root.closed) throw new Error(`process ${pid}'s stdin is closed already`);
 					root.closed = true;
