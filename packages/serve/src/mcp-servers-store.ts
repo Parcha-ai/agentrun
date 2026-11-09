@@ -157,6 +157,8 @@ export class McpServersOverStore {
     if (auth.type !== "none" && !this.sealKey) throw new ApiError("no_sealing_key", `This server was handed no seal key (${SEAL_KEY_ENV}), so it keeps no MCP server credential: it never keeps one in the clear. ${SEAL_KEY_HOW}`);
     const was = await this.store.mcp.server(name);
     let credential: McpCredential | undefined;
+    // The sealed credential kept (no new one sent) keeps its own time (credential_changed_at); a new one moves it.
+    let kept: number | null | undefined;
     let headers = auth.headers;
     if (auth.type !== "none" && !headers) {
       if (!was || was.auth !== auth.type) throw invalid([credentialMissing(auth.type, `The server ${name} has no saved ${auth.type} credential to keep.`)]);
@@ -164,6 +166,7 @@ export class McpServersOverStore {
       const open = await this.opened(name, was, credentialMissing(auth.type, "").field);
       credential = open.credential;
       headers = open.headers;
+      kept = was.credentialChangedAt;
     } else if (auth.type !== "none") {
       credential = { type: "headers", headers: headers! };
     }
@@ -174,7 +177,7 @@ export class McpServersOverStore {
     const priced = prices ?? (was?.url === url.href ? pricesListed((was.prices ?? undefined) as McpPrices | undefined, listed.tools) : undefined);
     const saved = await saveMcpServer(this.store, this.sealKey!, {
       name, url: url.href, auth: auth.type, protocol: listed.protocol, tools: listed.tools, serverInfo: listed.server_info, instructions: listed.instructions ?? null,
-      ...(priced && Object.keys(priced).length ? { prices: priced } : {}), ...(credential ? { credential } : {}),
+      ...(priced && Object.keys(priced).length ? { prices: priced } : {}), ...(credential ? { credential } : {}), ...(kept !== undefined ? { credentialChangedAt: kept } : {}),
     });
     await this.store.flush();
     return this.view(saved);
@@ -191,8 +194,9 @@ export class McpServersOverStore {
     const saved = await saveMcpServer(this.store, this.sealKey!, {
       name, url: was.url, auth: was.auth, protocol: listed.protocol, tools: listed.tools, serverInfo: listed.server_info, instructions: listed.instructions ?? null,
       ...(Object.keys(prices).length ? { prices } : {}), ...(was.auth !== "none" ? { credential: open.credential } : {}),
-      // A refresh re-lists the tools; it keeps updated_at (not an owner edit) and lets listed_at move to now.
-      updatedAt: was.updatedAt,
+      // A refresh re-lists the tools; it keeps updated_at (not an owner edit) and the credential's time, and lets
+      // listed_at move to now.
+      updatedAt: was.updatedAt, credentialChangedAt: was.credentialChangedAt,
     });
     await this.store.flush();
     return {
@@ -320,6 +324,7 @@ export class McpServersOverStore {
       ...(set ? { oauth: { ...(set.expires_at ? { expires_at: set.expires_at } : {}), scopes: (set.tokens.scope ?? "").split(" ").filter(Boolean), client: set.kind, ...(set.client?.client_id ? { client_id: set.client.client_id } : {}) } } : {}),
       listed_at: listedAt,
       updated_at: updatedAt,
+      secret: secretOf(row),
     };
   }
 
@@ -342,4 +347,12 @@ const saving = (row: McpServerRow) => `${row.url} ${row.updatedAt}`;
  *  needed — every read goes to the store (the runner also writes the OAuth state), so a read is always current. */
 export function mcpServersOverStore(store: McpServersStore, env: NodeJS.ProcessEnv, version: string, network?: OAuthNetwork): McpServersOverStore {
   return new McpServersOverStore(store, env, version, network);
+}
+
+/** The server's credential as every secret is read (SECRETS-PLAN.md): set or not, how it came ("console": pasted, a
+ *  bearer token or headers; "sign-in": an OAuth sign-in; null: none), and the credential's own last change. Never a value.
+ *  An MCP credential never comes from the server's environment. */
+function secretOf(row: McpServerRow): { name: string; set: boolean; source: "console" | "sign-in" | null; changed_at: string | null } {
+  const set = row.sealed !== null && (row.auth === "bearer" || row.auth === "headers" || row.auth === "oauth");
+  return { name: `mcp:${row.name}`, set, source: !set ? null : row.auth === "oauth" ? "sign-in" : "console", changed_at: set && row.credentialChangedAt !== null ? new Date(row.credentialChangedAt).toISOString() : null };
 }

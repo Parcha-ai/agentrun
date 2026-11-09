@@ -11,6 +11,8 @@ export type McpAuthType = "none" | "bearer" | "headers" | "oauth";
 export type McpServer = {
   /** The tools it lists that no price meters (the read's `not_metered`): absent when every tool has a price. */
   not_metered?: string[];
+  /** Its credential as every secret is read: set or not, how it came, when it last changed. Never a value. */
+  secret?: { name: string; set: boolean; source: "env" | "console" | "sign-in" | null; changed_at: string | null };
   name: string; url: string; auth: { type: McpAuthType; headers?: string[] }; tools: McpTool[]; protocol?: string; listed_at?: string; updated_at?: string;
   credential: "sealed" | "seal_key_missing" | "unreadable" | "expired" | null;
   oauth?: { expires_at?: string; scopes: string[]; client: string; client_id?: string };

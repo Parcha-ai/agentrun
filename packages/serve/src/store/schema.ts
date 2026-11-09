@@ -247,7 +247,11 @@ export const STORE_DDL: readonly string[] = [
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
     -- When the tools were last listed: a refresh moves this, not updated_at, so a refresh is not read as an owner edit.
-    listed_at INTEGER
+    listed_at INTEGER,
+    -- When the sealed credential was last set: a save with a new credential or an OAuth sign-in moves it. A save that
+    -- keeps the sealed one, a refresh of the tools, and a token refresh (the server keeping the sign-in) leave it.
+    -- Null with no credential.
+    credential_changed_at INTEGER
   ) STRICT`,
   `CREATE TABLE IF NOT EXISTS mcp_oauth_pending (
     state TEXT PRIMARY KEY,

@@ -282,6 +282,19 @@ describe("Settings → MCP servers, the saved ones", () => {
     expect(p.row("paid").textContent).not.toContain("not metered");
   });
 
+  it("says where each credential came from and when it last changed, from the read's secret; none says nothing", async () => {
+    const changed = "2026-11-04T10:00:00Z";
+    const s = server([[
+      saved({ secret: { name: "mcp:fake", set: true, source: "console", changed_at: changed } }),
+      saved({ name: "docs", auth: { type: "oauth" }, oauth: { scopes: [], client: "dynamic" }, secret: { name: "mcp:docs", set: true, source: "sign-in", changed_at: changed } }),
+      saved({ name: "open", auth: { type: "none" }, credential: null, secret: { name: "mcp:open", set: false, source: null, changed_at: null } }),
+    ]]);
+    const p = await open(s.v2);
+    expect(p.row("fake").textContent).toContain("Pasted in the console · last changed ");
+    expect(p.row("docs").textContent).toContain("From a sign-in · last changed ");
+    expect(p.row("open").textContent).not.toContain("last changed");
+  });
+
   it("refreshes one and says what was added, removed and changed", async () => {
     const after = saved({ tools: [TOOLS[0], { name: "paid", description: "A call the server bills.", input_schema: {} }] });
     const s = server([[saved()], [after]], (c) => (c.path.endsWith("/refresh") ? json(200, { added: ["paid"], removed: ["slow_write"], changed: ["add"], server: after }) : undefined));
