@@ -69,7 +69,12 @@ async function fetching(api, id, harness, url = PAGE, extra = {}) {
 
 /** Run `runId` parked for an approval: its view and its rows, and the call's result row. */
 async function parked(api, runId) {
-  const { rows } = await follow(api, runId, ["input_required"], { deadlineMs: 55_000 });
+  const { rows } = await follow(api, runId, ["input_required"], { deadlineMs: 55_000 }).catch(async (error) => {
+    // A run that never parks: name it, with its error and its last rows, so the failure says which run and why.
+    const view = (await api("GET", `/runs/${runId}`)).body;
+    const last = ((await api("GET", `/runs/${runId}/timeline`)).body.rows ?? []).slice(-8).map((row) => `${row.kind}: ${row.summary}`);
+    throw new Error(`${error.message}; run ${runId} of ${view.agent_id}: ${JSON.stringify(view.error ?? null)}; last rows ${JSON.stringify(last)}`);
+  });
   const view = (await api("GET", `/runs/${runId}`)).body;
   const result = rows.find((row) => row.kind === "tool_result" && row.tool_name === "web_fetch");
   return { view, rows, result };
@@ -92,10 +97,11 @@ async function resumed(api, runId) {
 /** The parked call's own rows (its call's and its result's): kind, summary and status. They never say the call ran while it
  *  had not: no tool verb, no outcome, no status, only what came of the approval. */
 const ownRows = (rows, callId) => rows.filter((r) => (r.kind === "tool_use" || r.kind === "tool_result") && r.tool_use_id === callId).map((r) => [r.kind, r.summary, r.tool_status]);
-/** Asserts that call `callId`'s own rows in `rows` (one at least, its result's) all read `summary`, with no status. */
-function ownRowsSay(rows, callId, summary, at) {
+/** Asserts that call `callId`'s own rows in `rows` all read `summary`, with no status: one at least, its result's once it has
+ *  one (`result`), else its call's (a parked call has no result: the turn ends at the park, the model handed nothing). */
+function ownRowsSay(rows, callId, summary, at, { result = true } = {}) {
   const own = ownRows(rows, callId);
-  assert.ok(own.some(([kind]) => kind === "tool_result"), `${at}: its result's row`);
+  assert.ok(own.some(([kind]) => kind === (result ? "tool_result" : "tool_use")), `${at}: its ${result ? "result's" : "call's"} row`);
   assert.deepEqual(own, own.map(([kind]) => [kind, summary, null]), `${at}: the call's own rows`);
 }
 /** A parked call as a person reads it, in seq order (a client folds a call's result into its call's step, at the call's
@@ -241,7 +247,7 @@ test("web_fetch set to ask on pi, claude-agent and codex at once: each run parks
   const doc = (await api("GET", "/openapi.json")).body;
   const runs = await Promise.all(HARNESSES.flatMap((harness) => ["allow", "deny"].map(async (decision) => ({ harness, decision, runId: await fetching(api, `${decision}-${harness}`, harness) }))));
   for (const run of runs) {
-    const { view, rows, result } = await parked(api, run.runId);
+    const { view, rows } = await parked(api, run.runId);
     const at = `${run.decision} on ${run.harness}`;
     assert.deepEqual([view.status, view.state, view.pending?.kind, view.pending?.tool], ["input_required", "waiting", "approval", "web_fetch"], at);
     // A pending approval is named by its call: run-view.ts asksOf gives the card the ask's callId, its call row's tool_use_id.
@@ -251,13 +257,14 @@ test("web_fetch set to ask on pi, claude-agent and codex at once: each run parks
     assert.deepEqual(JSON.parse(view.pending.args_preview), { url: PAGE });
     assert.ok(Date.parse(view.pending.requested_at) > 0);
     assert.deepEqual(schemaProblems(doc, doc.components.schemas.Run.properties.pending, view.pending), [], at);
-    assert.equal(result.tool_result_preview, waitingText("web_fetch"), `${at}: the call answered that it waits`);
+    // The turn ends at the park: the model is handed no waiting answer, so the call has no result yet.
+    assert.deepEqual(rows.filter((r) => r.kind === "tool_result" && r.tool_use_id === call.tool_use_id), [], `${at}: no result yet`);
     const row = rows.find((r) => r.kind === "tool_approval_requested");
-    assert.deepEqual([row?.tool_name, row?.tool_use_id], ["web_fetch", result.tool_use_id], `${at}: its row`);
-    // Nothing ran: the call's own rows say it waits, never "Fetched …: ok".
-    ownRowsSay(rows, result.tool_use_id, "Not run yet: it waits for your approval", at);
-    readsInOrder(rows, result.tool_use_id, `${at} (waiting)`, { answered: false });
-    Object.assign(run, { approval: view.pending.id, callId: result.tool_use_id });
+    assert.deepEqual([row?.tool_name, row?.tool_use_id], ["web_fetch", call.tool_use_id], `${at}: its row`);
+    // Nothing ran: the call's own row says it waits, never "Fetched …: ok", and the approval row follows it.
+    ownRowsSay(rows, call.tool_use_id, "Not run yet: it waits for your approval", at, { result: false });
+    readsInOrder(rows, call.tool_use_id, `${at} (waiting)`, { answered: false });
+    Object.assign(run, { approval: view.pending.id, callId: call.tool_use_id });
   }
   assert.deepEqual(await dialled(), [], "nothing ran while they wait");
   // A real wait, past any CLI's own tool timeout: no CLI sits in a call meanwhile.
