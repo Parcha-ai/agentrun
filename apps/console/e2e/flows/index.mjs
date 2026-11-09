@@ -16,6 +16,7 @@ import connectGitHub from "./connect-github.mjs";
 import githubTrigger from "./github-trigger.mjs";
 import setupOpen from "./setup-open.mjs";
 import setupPublic from "./setup-public.mjs";
+import setupLinkFollow from "./setup-link-follow.mjs";
 import signIn from "./sign-in.mjs";
 import signOutScope from "./sign-out-scope.mjs";
 import signedOutElsewhere from "./signed-out-elsewhere.mjs";
@@ -30,6 +31,7 @@ import triggerRowLabel from "./trigger-row-label.mjs";
 export const flows = [
   setupOpen,
   setupPublic,
+  setupLinkFollow,
   signIn,
   signOutScope,
   connectGitHub,
