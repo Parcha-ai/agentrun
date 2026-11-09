@@ -482,7 +482,7 @@ function identityWorkflowCap(): WorkflowCap {
  *  system plus LLM_FRAMING_BYTES for the request's own framing, and the output it asks for, else its model's most);
  *  nothing for a call that pays no one (pdf_pages, a search the plane sends elsewhere). `pricing` and `bound` for `llm`:
  *  what its answer's own usage is priced at after (the net, holdAtEffects). */
-export type CallHold = { readonly usd: number; readonly name: string; readonly basis: string; readonly llm?: { readonly price: CapModel["price"] } };
+export type CallHold = { readonly usd: number; readonly name: string; readonly basis: string; readonly chargedBy?: string; readonly llm?: { readonly price: CapModel["price"] } };
 /** The request's own framing beside its prompt and system (its JSON, the model, its limits), in bytes: a bound. */
 export const LLM_FRAMING_BYTES = 2_048;
 /** The output an `llm` call that names none is sent asking for at most (port-models.ts sessionModel's maxTokens). */
@@ -493,7 +493,8 @@ export function callHoldOf(tool: string, input: Record<string, unknown>, env: No
   if (tool === "web_search" || tool === "web_fetch") {
     if (planeOf(env)[tool] !== "parallel") return NO_HOLD(tool);
     const fee = tool === "web_search" ? parallelSearchFee(searchArgs(input).n) : parallelExtractFee(1);
-    return { usd: fee.usd, name: fee.name, basis: fee.basis };
+    // Who charges for it (main's charge row's charged_by), as paidOn names it: the hold is the record its request books under.
+    return { usd: fee.usd, name: fee.name, basis: fee.basis, chargedBy: fee.by };
   }
   if (tool === "llm") {
     const model = modelOfTier(typeof input.tier === "string" ? input.tier : undefined);
@@ -555,7 +556,7 @@ export function holdAtEffects(cap: WorkflowCap, deps: { readonly paid: () => Run
         const call = `${params.node.label}@${params.executionPath ?? ""}`;
         const id = `${call}#hold${(seq += 1)}`;
         try {
-          await paid.admit({ id, name: hold.name, holdUsd: hold.usd, basis: hold.basis, call });
+          await paid.admit({ id, name: hold.name, holdUsd: hold.usd, basis: hold.basis, call, ...(hold.chargedBy ? { chargedBy: hold.chargedBy } : {}) });
         } catch (error) {
           if (error instanceof CapRefused && !error.forGood) {
             deps.park({ message: error.message, forGood: false, ...(error.figures ? { figures: error.figures } : {}) });
