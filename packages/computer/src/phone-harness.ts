@@ -574,8 +574,17 @@ export class PhoneHarnessProvider implements ComputerProvider {
 			if (signal?.aborted) return ended("aborted", `create was aborted while the phone ${id} started`);
 			// A read takes no longer than readyMs has left, so a stalled one cannot hold create past it.
 			const left = this.#readyMs - (this.#now() - from);
-			const read = await this.#session(id, signal, Math.max(1, Math.min(this.#requestMs, left)));
-			if (!read.ok && read.error.code === "timeout") return ended("timeout", `the phone ${id} was not ready within ${this.#readyMs / 1000} s: ${read.error.message}`);
+			const bound = Math.max(1, Math.min(this.#requestMs, left));
+			const read = await this.#session(id, signal, bound);
+			if (!read.ok && read.error.code === "timeout") {
+				// A read cut off by its own bound (requestMs) while readyMs has time left is one slow answer, not the deadline:
+				// ask again. Only a read bounded by what readyMs had left, or the deadline check below, ends the phone.
+				if (bound < left && this.#now() - from < this.#readyMs) {
+					await this.#sleep(this.#pollMs);
+					continue;
+				}
+				return ended("timeout", `the phone ${id} was not ready within ${this.#readyMs / 1000} s: ${read.error.message}`);
+			}
 			if (!read.ok) return ended(read.error.code === "gone" ? "phone" : read.error.code, `the phone ${id} did not start: ${read.error.message}`);
 			session = read.value;
 			if (session.state === "ready") break;

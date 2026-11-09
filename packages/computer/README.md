@@ -1869,8 +1869,9 @@ the API's control URL) is a later change: `platform: "ios"` is refused in words.
   - A create cancelled during its POST is recovered by its key all the same, and the phone the service made is ended.
   - A phone that fails, or is not ready within `readyMs` (240 s), is ended.
   - Each request has a bound of its own, `requestMs` (30 s), beside the caller's signal, and a readiness read takes no
-    longer than `readyMs` has left. A request cut off by its bound is treated as a lost answer. The `timeout` option is
-    the timer (default `AbortSignal.timeout`).
+    longer than `readyMs` has left. A request cut off by its bound is treated as a lost answer. A readiness read cut
+    off by `requestMs` while `readyMs` has time left is asked again; only `readyMs` itself ends a phone that is slow to
+    start. The `timeout` option is the timer (default `AbortSignal.timeout`).
   - Once the phone's id is known, a ledger write that fails ends the phone, and create answers in words.
   - The service's refusals keep their words (`limit` for `phones_busy` and `session_limit`, `denied` for the key or
     credit) and never hold the key.
