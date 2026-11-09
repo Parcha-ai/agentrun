@@ -9,10 +9,12 @@ import { mergedNote } from "../dist/learn/notes.js";
 import { agentFolderOf } from "../dist/files.js";
 import { learningRepair } from "../dist/learn/folder.js";
 import { learningCommit, readMain } from "../dist/learn/commit.js";
-import { learningFolderOf, PROPOSAL } from "../dist/learning.js";
-import { judgeProposal } from "../dist/grade.js";
+import { gradedItems, gradePrompt, parseVerdict, UNREADABLE_REASON } from "../dist/learn/index.js";
+import { learningFolderOf } from "../dist/learning.js";
+import fauxLearn from "./fixtures/faux-learn.mjs";
 import { keptOf, mergeChangeOf } from "../dist/runner/learning-loop.js";
 import { localWorkspace } from "../dist/workspace/index.js";
+import { openSqliteStore } from "../dist/store/index.js";
 import { agent, follow, runDir } from "./support.mjs";
 
 /** A run's new note as main keeps it once merged: with the host's `origin: you` line when it keeps the user's own words
@@ -71,35 +73,61 @@ export function proposedOf(view) {
   assert.equal(view.learning?.state, "proposed", JSON.stringify(view.learning));
 }
 
-/** Run `runId`'s kept proposal graded and merged as the runner's learning run does it (runner/learning-loop.ts), on the
- *  agent's folder in the server's data: main read for the grade (readMain), the grader asked on the faux model by the
- *  agent's instructions (judgeProposal: gradePrompt and parseVerdict), then what the verdict keeps merged by the
- *  learning run's own rule (keptOf, mergeChangeOf) through the folder's one write (learningCommit). What it came to:
- *  `problems` (main refused it before the grade), `failed` (no verdict), `verdict` with `result` (learningCommit's) when
- *  the verdict merges, or `verdict` alone when it keeps nothing. */
+/** A grade as the runner's learning run makes it (runner/learning-loop.ts), on a faux grader `reply` (a faux module's
+ *  default export, called in this process as the faux model is): the prompt (gradePrompt) over `input`, the answer read
+ *  (parseVerdict), and asked once more when it can't be read. The verdict, or `failed` when the grader fails. */
+export async function gradeOnFaux(reply, input) {
+  const prompt = gradePrompt({ run: input.runId, instructions: input.instructions, active: input.active, superseded: input.superseded, proposed: input.proposed, ...(input.files?.length ? { files: input.files } : {}), ...(input.asked ? { asked: input.asked } : {}), ...(input.triggered ? { triggered: input.triggered } : {}) });
+  const items = gradedItems(input.proposed, input.files ?? []);
+  const faux = { model: "faux", message: (text, extra = {}) => ({ text, ...extra }) };
+  let verdict;
+  for (let ask = 0; ask < 2; ask++) {
+    const answer = await reply({ messages: [{ role: "user", content: prompt }] }, faux);
+    if (answer.stopReason === "error") return { failed: new Error(answer.errorMessage ?? "the faux grader failed") };
+    verdict = parseVerdict(answer.text, items);
+    if (verdict.reason !== UNREADABLE_REASON || verdict.items.length) break;
+  }
+  return { verdict };
+}
+
+/** Run `runId`'s kept learning (its learning_proposals row: the turn and the proposal), from the server's store: the
+ *  test's own handle on it (server.store), else one opened on the server's data for the read. */
+export async function keptProposal(server, runId) {
+  if (server.store) return server.store.learning.proposal(runId);
+  const store = await openSqliteStore({ dataDir: server.data, role: "runner" });
+  try {
+    return await store.learning.proposal(runId);
+  } finally {
+    await store.close();
+  }
+}
+
+/** Run `runId`'s kept proposal (the runner's learning_proposals row) graded and merged as the runner's learning run
+ *  does it (runner/learning-loop.ts), on the agent's folder in the server's data: main read for the grade (readMain),
+ *  the faux grader asked by the agent's instructions (gradePrompt, parseVerdict, asked once more when its answer can't be
+ *  read), then what the verdict keeps merged by the learning run's own rule (keptOf, mergeChangeOf) through the folder's
+ *  one write (learningCommit). What it came to: `problems` (main refused it before the grade), `failed` (no verdict),
+ *  `verdict` with `result` (learningCommit's) when the verdict merges, or `verdict` alone when it keeps nothing. */
 export async function learnedOnMain(server, agentId, runId) {
   assert.ok(server.data && server.api, "the server's data and api");
-  const proposal = JSON.parse(readFileSync(join(runDir(server.data, runId), PROPOSAL), "utf8"));
+  const kept = await keptProposal(server, runId);
+  const proposal = kept?.proposal?.proposal;
+  assert.ok(proposal, `run ${runId} kept a proposal: ${JSON.stringify(kept?.proposal)}`);
   // The instructions of the revision the run ran, whose faux grading rules ("Grade: ...") the grader reads.
   const { agent_version: version } = (await server.api("GET", `/runs/${runId}`)).body;
   const revisions = (await server.api("GET", `/agents/${agentId}/revisions?limit=100`)).body.revisions;
   const instructions = revisions.find((revision) => revision.version === version)?.definition?.instructions;
   assert.equal(typeof instructions, "string", `run ${runId}'s revision (version ${version}) has instructions`);
-  // As the learning run does it: no queue held across the grade (a person's write meanwhile goes through), the merge
-  // safe by learningCommit's own compare and swap and its check of the blobs the grade read.
   const { workspace, end } = learningFolderOf(server.data, agentId);
   try {
     const main = await readMain(workspace, proposal);
     if ("problems" in main) return { problems: main.problems };
-    const judged = await judgeProposal({
-      runId, agent: { instructions }, main, proposed: proposal.notes, ...(proposal.files ? { files: proposal.files } : {}),
-      ...(proposal.asked ? { asked: proposal.asked } : {}), ...(proposal.triggered ? { triggered: proposal.triggered } : {}),
-      env: { PATH: process.env.PATH, AGENTRUN_SERVE_FAUX: LEARN }, signal: new AbortController().signal,
-    });
-    if (!("verdict" in judged)) return { failed: judged.error };
-    if (!judged.verdict.merge) return { verdict: judged.verdict };
-    const merging = keptOf(proposal, judged.verdict);
-    return { verdict: judged.verdict, result: await learningCommit(workspace, mergeChangeOf(runId, merging, judged.verdict, main.graded)) };
+    const graded = await gradeOnFaux(fauxLearn, { runId, instructions, active: main.active, superseded: main.superseded, proposed: proposal.notes, files: proposal.files, asked: proposal.asked, triggered: proposal.triggered });
+    if (graded.failed) return { failed: graded.failed };
+    const { verdict } = graded;
+    if (!verdict.merge) return { verdict };
+    const merging = keptOf(proposal, verdict);
+    return { verdict, result: await learningCommit(workspace, mergeChangeOf(runId, merging, verdict, main.graded)) };
   } finally {
     await end();
   }

@@ -32,9 +32,9 @@ import { MCP_PIN, mcpCredentialsOf, mcpNameOf, type McpPin, mcpPinOf, type McpSe
 import { META_REASON, metaToolOf } from "./mcp-meta.js";
 import { type DaytonaApi, KEPT_AUTOSTOP_MINUTES, keepWhenIdle, wakeBoxes } from "./daytona-api.js";
 import { servedOnly, servedOnlyIds } from "./served-only.js";
-import { type Learning, LEARNING_LABEL, type LearningMode, type LearningReason, type LearningState, shortOf } from "./learning.js";
-import { Hearing } from "./heard.js";
-import { labelled, LearningRuns, type Reflect, reflecting, reflects, type TurnOrigin, withLearning } from "./learning-run.js";
+import { type Learning, LEARNING_LABEL, type LearningMode, shortOf } from "./learning.js";
+import { LearningRuns, withLearning } from "./learning-run.js";
+import { labelled, type Reflect, reflects } from "./reflect-range.js";
 import { type BoxHost, type Quarantine, settleBox, sweepBoxes } from "./box/sweep.js";
 import { rowPaths } from "./workspace-paths.js";
 import { ASK_TOOL, toolingOf, workflowTools } from "./tools.js";
@@ -331,12 +331,6 @@ export type Run = {
    *  reads the link from here, never from the row's text. Rebuilt from the store's rows, which keep the head, when a
    *  run is opened. */
   resumeRows?: Map<string, string>;
-  /** The whole text of each assistant message of its end-of-run turn, by store entry: what the turn answered, whose
-   *  notes learning reads (learning-run.ts). */
-  turnText?: Map<number, string>;
-  /** What was said to it, whole, by store entry, as its learning's grader reads it (heard.ts): the person's words, and a
-   *  trigger's input apart by its source. */
-  hearing?: Hearing;
   child?: ChildProcess;
   /** The pid of a run process an earlier server started that still serves the run: supervised by the holder its row names. */
   orphan?: number;
@@ -499,16 +493,6 @@ function noteTurns(run: Run, entries: readonly unknown[], submissions: readonly 
     const data = value.kind === REQUEST_STARTED && isObject(value.data) && value.data[CAP_REFUSED_FIELD] === true ? value.data : undefined;
     if (data) run.capMark = value.id;
     if (data) run.capRefusal = typeof data.spentUsd === "number" && typeof data.needsUsd === "number" && typeof data.leastCapUsd === "number" ? { spentUsd: data.spentUsd, needsUsd: data.needsUsd, leastCapUsd: data.leastCapUsd, ...(typeof data.boundUsd === "number" && data.boundUsd > 0 ? { boundUsd: data.boundUsd } : {}) } : undefined;
-    // What was said to the run, whole, by entry (heard.ts): kept only while its learning has yet to keep it (seeded or
-    // reflecting), so a run that does not learn holds none, and learning-run.ts beforeSettle lets it go once kept.
-    const learning = run.meta.learning?.state;
-    if (learning === "seeded" || learning === "reflecting") (run.hearing ??= new Hearing()).note(value);
-    // The end-of-run turn's assistant messages, whole, by entry: what the turn answered, whose notes learning reads
-    // (learning-run.ts). The ledger skips them; this is their only reader here.
-    if (value.kind === "pi.assistant" && reflects(run.meta.reflect, value.id) && Array.isArray(value.model) && isObject(value.model[0])) {
-      const content = value.model[0].content;
-      (run.turnText ??= new Map()).set(value.id, typeof content === "string" ? content : Array.isArray(content) ? content.filter((b) => isObject(b) && b.type === "text").map((b) => String((b as Json).text ?? "")).join("\n").trim() : "");
-    }
   }
   const reflect = (id: number) => reflects(run.meta.reflect, id);
   run.turns.note(entries, submissions, reflect);
@@ -824,7 +808,7 @@ export type StartOptions = { input: Json; title: string; place: Place; effort?: 
  *  tried again; `readyTimeoutMs`: how long a request to a run waits for its door (a run's first message, sent by its
  *  start, always waits READY_TIMEOUT_MS); `openTimeoutMs`: how long a launched process has to open its run (READY_TIMEOUT_MS,
  *  the first message's wait, by default; never the request's wait); `log` takes a run's start and end (print.ts). */
-export type RunsOptions = { /** The installs of the harnesses that install on first use (harness-install.ts HarnessInstall), by harness: a run on one waits for its install before it launches. Absent, none is waited for. */ installs?: Readonly<Record<string, { readonly installed: boolean; readonly installingWords: string; needed(): Promise<boolean>; ensure(): Promise<void> }>>; /** What a run's Docker box reaches, as the server resolved it (run-box.ts boxNetworkOf): the list, or none. Absent, none. */ dockerAllow?: readonly string[] | "none"; /** On a Mac, the server's proxy container's volume a run's Docker box mounts (box-egress-vm.ts). */ dockerVolume?: string; /** A server in a container: where its Docker has the data directory (box-paths.ts), which a run's Docker box mounts from. Absent on a host. */ dockerPaths?: BoxPaths; agents: Agents; token: string; /** The server's saved tool keys, read by name for its runs alone (secrets.ts). */ storedKeys?: StoredKeys; /** The server's saved MCP servers (mcp-servers.ts): a run's pin and its credentials come from them at each launch. */ mcpServers?: McpServerSource; documents?: string; doorTokenFile: string; doorToken: string; /** The test switches a run's process gets (server.ts fauxEnvOf): empty outside tests. */ fauxEnv?: NodeJS.ProcessEnv; runBoxes?: BoxProvider; /** The server's Daytona provider, with its key: remote boxes are made, seeded, pulled and destroyed with it, here alone (box-relay.ts). */ remoteBoxes?: BoxProvider; /** Daytona's API and the same key, for what the provider does not do: a kept box's idle stop, and its wake at a start (daytona-api.ts). */ remoteApi?: DaytonaApi; /** The server's VM box provider, with its client: a VM run's box is made, seeded, pulled and ended with it, here alone, as a Daytona one is (box-relay-vm.ts); it has no network. */ vmBoxes?: BoxProvider; /** A VM box's limits (run-box.ts RemoteLimits), from the box settings. */ vmLimits?: RemoteLimits; /** The relay's VM half, which lets go of a run's programs at its end. */ vmRelay?: { drop(runId: string): void }; /** The hosts a remote box may reach (run-box.ts boxAllowOf); `none`, or absent, for none. */ boxAllow?: readonly string[] | "none"; /** Called once, with the provider's refusal's code and words, when it cannot keep that list here: from then on each remote box is made with no network. */ onNoBoxList?: (code: string, message: string) => void; toolSettings?: () => ToolSettingsMap; /** Whether anyone can answer a tool call's approval here (accounts on); false, the run's gate refuses each ask (tool-gate.ts). */ approvers?: boolean; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; box?: { host: BoxHost; quarantine: Quarantine }; settleRetryMs?: number; readyTimeoutMs?: number; openTimeoutMs?: number; /** Under --faux only (server.ts): the nonce handed to each run's process in place of its launch's. */ fauxHandedNonce?: string; reflectTimeoutMs?: number; /** How much of what a run learned its instructions hold, in bytes (`--learning-budget`, learning.ts learnedOf). */ learningBudget?: number; log?: (event: string, fields: Record<string, string | number>) => void; notify?: RunNotify; learning?: LearningMode; /** Each agent's saved sign-ins (sign-ins.ts): absent, no run gets one. */ signIns?: SignIns; /** Every secret this server never shows (server.ts serverSecrets), read at each call, so one made or rotated is cut at once: the host's and the keys saved on it, read through `stored` when given (learning's view keeps the saved keys it read), its tokens, and each it holds (server-secrets.ts). What a run shows, its title among it, and what its learning keeps are cut of it. */ serverSecrets: (stored?: StoredKeys) => string[]; /** The current name of a trigger by its id, from the store (server.ts triggerNameOf): resolved once when a run is loaded (a run restored after a restart still names its trigger), and a firing's start and a rename push it in (triggerChanged), so servedTriggerRow reads it with no store read. */ triggerName?: (id: string) => Promise<string | undefined> };
+export type RunsOptions = { /** The installs of the harnesses that install on first use (harness-install.ts HarnessInstall), by harness: a run on one waits for its install before it launches. Absent, none is waited for. */ installs?: Readonly<Record<string, { readonly installed: boolean; readonly installingWords: string; needed(): Promise<boolean>; ensure(): Promise<void> }>>; /** What a run's Docker box reaches, as the server resolved it (run-box.ts boxNetworkOf): the list, or none. Absent, none. */ dockerAllow?: readonly string[] | "none"; /** On a Mac, the server's proxy container's volume a run's Docker box mounts (box-egress-vm.ts). */ dockerVolume?: string; /** A server in a container: where its Docker has the data directory (box-paths.ts), which a run's Docker box mounts from. Absent on a host. */ dockerPaths?: BoxPaths; agents: Agents; token: string; /** The server's saved tool keys, read by name for its runs alone (secrets.ts). */ storedKeys?: StoredKeys; /** The server's saved MCP servers (mcp-servers.ts): a run's pin and its credentials come from them at each launch. */ mcpServers?: McpServerSource; documents?: string; doorTokenFile: string; doorToken: string; /** The test switches a run's process gets (server.ts fauxEnvOf): empty outside tests. */ fauxEnv?: NodeJS.ProcessEnv; runBoxes?: BoxProvider; /** The server's Daytona provider, with its key: remote boxes are made, seeded, pulled and destroyed with it, here alone (box-relay.ts). */ remoteBoxes?: BoxProvider; /** Daytona's API and the same key, for what the provider does not do: a kept box's idle stop, and its wake at a start (daytona-api.ts). */ remoteApi?: DaytonaApi; /** The server's VM box provider, with its client: a VM run's box is made, seeded, pulled and ended with it, here alone, as a Daytona one is (box-relay-vm.ts); it has no network. */ vmBoxes?: BoxProvider; /** A VM box's limits (run-box.ts RemoteLimits), from the box settings. */ vmLimits?: RemoteLimits; /** The relay's VM half, which lets go of a run's programs at its end. */ vmRelay?: { drop(runId: string): void }; /** The hosts a remote box may reach (run-box.ts boxAllowOf); `none`, or absent, for none. */ boxAllow?: readonly string[] | "none"; /** Called once, with the provider's refusal's code and words, when it cannot keep that list here: from then on each remote box is made with no network. */ onNoBoxList?: (code: string, message: string) => void; toolSettings?: () => ToolSettingsMap; /** Whether anyone can answer a tool call's approval here (accounts on); false, the run's gate refuses each ask (tool-gate.ts). */ approvers?: boolean; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; box?: { host: BoxHost; quarantine: Quarantine }; settleRetryMs?: number; readyTimeoutMs?: number; openTimeoutMs?: number; /** Under --faux only (server.ts): the nonce handed to each run's process in place of its launch's. */ fauxHandedNonce?: string; /** How much of what a run learned its instructions hold, in bytes (`--learning-budget`, learning.ts learnedOf). */ learningBudget?: number; log?: (event: string, fields: Record<string, string | number>) => void; notify?: RunNotify; learning?: LearningMode; /** Each agent's saved sign-ins (sign-ins.ts): absent, no run gets one. */ signIns?: SignIns; /** Every secret this server never shows (server.ts serverSecrets), read at each call, so one made or rotated is cut at once: the host's and the keys saved on it, read through `stored` when given (learning's view keeps the saved keys it read), its tokens, and each it holds (server-secrets.ts). What a run shows, its title among it, and what its learning keeps are cut of it. */ serverSecrets: (stored?: StoredKeys) => string[]; /** The current name of a trigger by its id, from the store (server.ts triggerNameOf): resolved once when a run is loaded (a run restored after a restart still names its trigger), and a firing's start and a rename push it in (triggerChanged), so servedTriggerRow reads it with no store read. */ triggerName?: (id: string) => Promise<string | undefined> };
 /** Told of a run's moment each time it is seen (webhooks.ts' emit, which queues each one once): a wait it reached, and an
  *  end once the agent store has it. `marker` names the moment (the person's turn it waits at, the end's time), the same
  *  when another server sees it again. It says what came of it: `unsaved`, not in the outbox on disk yet. */
@@ -1016,26 +1000,13 @@ export class Runs {
   memory = hostMemory();
   /** The start sweep of the boxes runs left: once, before any run opens a box (sweepOnce). */
   private swept?: Promise<void>;
-  /** The runs' learning (learning-run.ts): a step this file calls as a run starts, ends, settles, opens again and is
-   *  recovered, handed what it moves of a run. */
+  /** The runs' learning (learning-run.ts): its seed as a run starts and opens again, its ledger line as it is saved,
+   *  and what its view reads. A run's end-of-run turn, its check, the grade and the merge are the runner's. */
   readonly learning: LearningRuns;
   /** When this server took the data root (one server a root): a run started since is its own, never one to recover. */
   private readonly bootedAt = new Date().toISOString();
   constructor(private readonly options: RunsOptions) {
-    this.learning = new LearningRuns(options, {
-      held: (id) => this.runs.get(id),
-      get: (id) => this.get(id),
-      live: (run) => this.live(run),
-      toLiveDoor: (run, path, body, turnOrigin) => this.toLiveDoor(run, path, body, turnOrigin),
-      toDoor: (run, path, body) => this.toDoor(run, path, body),
-      abortTurn: (run) => this.abortTurn(run),
-      terminate: (run) => this.terminate(run),
-      mark: (run) => this.mark(run),
-      show: (run) => this.show(run),
-      save: (run) => this.saveMeta(run),
-      costOf,
-      fauxEnv: () => this.fauxEnv(),
-    });
+    this.learning = new LearningRuns(options, { held: (id) => this.runs.get(id) });
   }
 
   /** A test's seam (startServe's `beforeAbort`): awaited by a stop between its mark and its abort, so a test can hold a
@@ -1243,9 +1214,6 @@ export class Runs {
         // Its cancel's SIGTERM may never have gone: it is let go now, its turn aborted first.
         if (run.cancel) void this.abortTurn(run).then(() => this.terminate(run));
       }
-      // One a server left in its end-of-run turn finishes with its job's outcome, and its turn, when its process lives,
-      // is asked again (learning-run.ts).
-      this.learning.onAdopt(run, lives);
     }
     // A run restored after a restart has no pushed name yet: its trigger's name is resolved once from the store here (the
     // load path is already async), so its served rows name it, never left blank; a later rename pushes the new one.
@@ -1687,8 +1655,6 @@ export class Runs {
     }
     if (!end) return;
     if (end.error) run.error = end.error;
-    // A run that learns is not let go yet: its end-of-run turn is asked first, unless learning skips it (learning-run.ts).
-    if (this.learning.beforeFinish(run, end)) return;
     this.finish(run, end.outcome, end.abort);
   }
 
@@ -2003,7 +1969,8 @@ export class Runs {
   }
 
   async recover(): Promise<void> {
-    // The learning a server left between steps, picked up once every running run is read (learning-run.ts).
+    // A learning end a server saved and did not put in the ledger, written there once every running run is read
+    // (learning-run.ts).
     const recoverLearning = this.learning.recover();
     await this.sweepOnce();
     // Only what an earlier server left: a store slow to answer here must not hand back a run a create is setting up now.
@@ -2320,23 +2287,6 @@ export class Runs {
     if (door) await fetch(new URL("/abort", door), { method: "POST", headers: this.headers(run, true), body: "{}", signal: AbortSignal.timeout(5_000) }).catch(() => undefined);
   }
 
-  /** One request to the door of a run whose process lives, never waking it (toDoor wakes no run that is finishing): again
-   *  while it opens or parks. `turnOrigin`: who sent a turn this request sends (learning-run.ts's REFLECT_ORIGIN), kept in
-   *  the run's directory before it goes, where the tool gate reads it (tool-gate.ts NOTE_ONLY_TEXT); a person's message
-   *  removes it. */
-  private async toLiveDoor(run: Run, path: string, body?: Json, turnOrigin?: TurnOrigin): Promise<Json | null> {
-    if (turnOrigin) await (run.originWrite = writeWhole(join(run.dir, TURN_ORIGIN_FILE), `${JSON.stringify({ origin: turnOrigin })}\n`));
-    for (const deadline = Date.now() + 30_000; ; await sleep(200)) {
-      if (!this.live(run) || run.cancel) throw new Error("the run's process is gone");
-      const door = this.doorOf(run);
-      const res = door ? await fetch(new URL(path, door), { method: body ? "POST" : "GET", headers: this.headers(run, body !== undefined), body: body && JSON.stringify(body), signal: AbortSignal.timeout(15_000) }).catch(() => null) : null;
-      const data = res ? ((await res.json().catch(() => null)) as Json | null) : null;
-      if (res && res.status < 400) return data;
-      if (res && !(res.status === 503 && RETRY_CODES.includes(String(data?.error)))) throw new Error(`the run's door answered ${res.status}`);
-      if (Date.now() > deadline) throw new Error("the run's door did not answer");
-    }
-  }
-
   private async toDoor(run: Run, path: string, body?: Json, readyMs?: number, refresh = false): Promise<{ status: number; body: Json | null }> {
     const deadline = Date.now() + 30_000;
     for (;;) {
@@ -2527,8 +2477,6 @@ export class Runs {
     const mcp = pin && this.options.mcpServers ? mcpCredentialsOf(pin, this.options.mcpServers) : undefined;
     // And its saved sign-in, on the same pipe after them (pinSignIn): a pointer its browser opens, never in its environment.
     const secrets = Buffer.concat([handover(handed, this.options.storedKeys), ...(mcp ? [mcpHandover(mcp)] : []), ...(run.signIn ? [handoverSignIn(run.signIn)] : [])]);
-    // What it was handed, for the check of what its end-of-run turn writes (learning-run.ts).
-    this.learning.onLaunch(run, handed, mcpSecretValues(mcp ?? {}));
     // And for what its errors show (refusedValues): each value handed, kept past a key's rotation.
     run.handed ??= new Set();
     for (const name of handed) {
@@ -2898,11 +2846,10 @@ export class Runs {
     if (gone && (await this.options.agents.request(() => this.store.readRun(run.id)).catch(() => undefined))?.archivedAt) await this.teardown(run);
     let ended: { outcome: Status; state?: Ended; summary?: string } | undefined;
     // A workflow run carries back how its workflow ended, through workflowCarry; cancelled before that, it stopped.
-    // A cancel during the end-of-run turn ends the run's learning, never its job: the run keeps the outcome it had.
     // Even when another live holder still serves the run (!gone: its stop not through yet, kept pending), a cancel ends it
     // here: workflowEnd only reads the run's store lock-free and carries the end back, so it neither waits on nor writes
     // that holder's store, and the holder's exit later finds the run ended.
-    if (run.cancel && !reflecting(run)) ended = run.kind === "workflow" ? await this.workflowEnd(run, workflowEnding(record) ?? { status: "stopped" }) : { outcome: "cancelled" };
+    if (run.cancel) ended = run.kind === "workflow" ? await this.workflowEnd(run, workflowEnding(record) ?? { status: "stopped" }) : { outcome: "cancelled" };
     else if (run.finishing) ended = { outcome: run.finishing };
     else if (run.notSetUp && gone) {
       run.error = { code: "run_failed", message: "The server went down while it set the run up, before it saved the run's input; the run never started, and a new one can.", retryable: false, details: { reason: SETUP_LOST } };
@@ -3006,8 +2953,6 @@ export class Runs {
     // Its process is gone: its box goes with its end, whatever the end (a follow-up after it gets a fresh box; work/ stays).
     // A remote box's last pull lands first: the end is not recorded until its files are in work/.
     await this.dropBox(run, true);
-    // Its end-of-run turn closed, and what the turn wrote set aside before the run reads ended (learning-run.ts).
-    await this.learning.beforeSettle(run, outcome);
     // A run whose rows are not read (meta.unshown) has an unknown cost, never $0.
     const cost = run.meta.unshown ? null : run.decisionCost === undefined ? costOf(run.rows) : costView(run.rows, undefined, run.decisionCost);
     // An unknown cost keeps what it cost so far beside it, for the list row read from the store.
@@ -3082,8 +3027,6 @@ export class Runs {
     this.show(run);
     this.refresh(run);
     this.notice(run, "run.ended", run.endedAt);
-    // Only once the run has ended as it would without learning: a slow or failing check never holds the job.
-    void this.learning.afterSettle(run);
   }
 
   /** The run's metrics as the store keeps them: what its entries say it used, the effort its newest process ran at (unknown
@@ -3118,7 +3061,6 @@ export class Runs {
         if (row?.costUsd !== undefined) run.costUsd = row.costUsd;
         // In the store at last: its run.ended goes now.
         this.notice(run, "run.ended", run.endedAt);
-        await this.learning.afterSettle(run);
       }, () => this.persistLater(run, persist));
     }, this.options.settleRetryMs ?? SETTLE_RETRY_MS);
     timer.unref();
@@ -3744,7 +3686,7 @@ export class Runs {
   /** A person's turn is sent next: no turn from here on is the server's own end-of-run turn (tool-gate.ts NOTE_ONLY_TEXT),
    *  so its origin goes, right before the turn is sent. */
   private async personsTurn(run: Run): Promise<void> {
-    // A write of the origin still in flight lands first, then goes: none starts from here (learning-run.ts reflectTurn).
+    // A write of the origin still in flight lands first, then goes: none starts from here.
     await run.originWrite?.catch(() => undefined);
     await rm(join(run.dir, TURN_ORIGIN_FILE), { force: true }).catch((error: Error) => warn(run.id, `its turn's origin is not removed: ${error.message}`));
     await runsTestHooks.personsTurn?.(run.dir);
@@ -3806,8 +3748,6 @@ export class Runs {
       // Launched, it holds its place as a live run.
       release();
     }
-    // An end-of-run turn its process went in is aborted before the follow-up is sent (learning-run.ts).
-    await this.learning.afterReopen(run);
   }
 
   /** Waits, up to a request's deadline, until a live run's rows show every message sent to it, and any rows at all: its
@@ -4017,7 +3957,6 @@ export class Runs {
     // The retry for raised runs waiting for a place stops now: nothing is launched past the close.
     clearInterval(this.placeRetry);
     this.placeRetry = undefined;
-    this.learning.close();
     const live = [...this.runs.values()].filter((run) => run.child);
     for (const run of live) {
       run.child!.kill("SIGTERM");
@@ -4030,7 +3969,6 @@ export class Runs {
     for (const deadline = Date.now() + this.killAfterMs(); adopted.some((run) => run.orphanHolder && holderLives(run.orphanHolder)) && Date.now() < deadline; ) await sleep(100);
     await sleep(0);
     await Promise.all([...this.runs.values()].map((run) => run.settling));
-    await this.learning.idle();
     for (const run of this.runs.values()) {
       run.feed?.abort();
       clearTimeout(run.stopPending);
@@ -4163,11 +4101,6 @@ export class Runs {
     // A run's learning row and its decision rows are shown again with the keys as they are now (show): a key saved after
     // a workflow ended is redacted from its decisions on the next read, learning or not.
     for (const run of this.runs.values()) if (run.meta.learning || run.decisions) this.show(run);
-  }
-
-  /** A held run's learning, in short (learning-run.ts heldLearning). */
-  heldLearning(runId: string): { state: LearningState; reason: LearningReason | null } | null | undefined {
-    return this.learning.heldLearning(runId);
   }
 
   /** The timeline from change `after`, held up to `waitMs` for a change when there is none. */

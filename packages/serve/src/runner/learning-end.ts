@@ -24,7 +24,7 @@ import type { LearningFolder } from "../learn/folder.js";
 import { handedValuesOf } from "../handed-values.js";
 import { MIN_SECRET } from "../learn/secrets.js";
 import { gradeModelOf, PROPOSAL } from "../learning.js";
-import { reflects, type Reflect } from "../learning-run.js";
+import { reflects, type Reflect } from "../reflect-range.js";
 import { said, STOPPED } from "../learning-words.js";
 import { proposeRun } from "../propose.js";
 import { learningStartOf, type RunLaunch } from "../run-launch.js";

@@ -8,7 +8,7 @@ import { timelineOf, TOOL_COST, TOOL_UNMETERED } from "@parcha/pi-durable-agent/
 import { RUNNER_RECORDS } from "@parcha/agentrun-kernel";
 import { TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
 import { Hearing } from "../heard.js";
-import { labelled, type Reflect } from "../learning-run.js";
+import { labelled, type Reflect } from "../reflect-range.js";
 import { reflectFrom } from "../runner/end-of-run.js";
 import { journalEntries, journalRecords } from "../runner/journal-reader.js";
 import { KINDS } from "../runner/journal-kinds.js";

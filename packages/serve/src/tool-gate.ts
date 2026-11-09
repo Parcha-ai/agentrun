@@ -47,7 +47,7 @@ import { boundResult } from "@parcha/agentrun-kernel/process";
 import { BARRIER, type DurableRun, MESSAGE_ORIGIN_KIND, syncNow, type SyncTarget } from "@parcha/pi-durable-disk";
 import { dataOfRun, readJson, RUN_META } from "./files.js";
 import { LEARNED_DIR } from "./learning.js";
-import type { TurnOrigin } from "./learning-run.js";
+import type { TurnOrigin } from "./reflect-range.js";
 import { COMPUTER_ROOT, portPath } from "./workspace/paths.js";
 import type { Workspace } from "./workspace/workspace.js";
 import { forModel } from "./result.js";

@@ -317,8 +317,6 @@ export type ServeOptions = {
   /** With `faux` only: the door nonce each run's process is handed in place of its launch's own, so its door answers the
    *  launch's proof wrongly (a test of a door that fails its proof). */
   fauxHandedNonce?: string;
-  /** How long a run's end-of-run turn may take before it is aborted and the run finishes without it (default 5 min). */
-  reflectTimeoutMs?: number;
   /** The model the grader runs on (`--grade-model`; default AGENTRUN_SERVE_GRADE_MODEL, else the strong tier,
    *  AGENT_MODEL_STRONG, else each run's agent's own model). */
   gradeModel?: string;

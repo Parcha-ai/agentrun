@@ -32,7 +32,6 @@ test("a run's learning shows given and read, never used: given from its start, r
   const record = { state: "seeded", reason: null, detail: null, at: "2026-11-05T00:00:00.000Z", given: [{ file: "units.md", name: "Check units" }], read: [{ file: "units.md", name: "Check units" }] };
   assert.deepEqual(learning.notesView(record, shown, false), { given: [{ file: "units.md", name: "Check units" }] });
   assert.deepEqual(learning.notesView(record, shown, true), { given: [{ file: "units.md", name: "Check units" }], read: [{ file: "units.md", name: "Check units" }] });
-  assert.ok(learning.KEPT_LEARNING.includes("given") && learning.KEPT_LEARNING.includes("read") && !learning.KEPT_LEARNING.includes("used"));
 });
 
 test("the ledger keeps the files a run was given and read, and the agent's notes count the runs of each", () => {
@@ -75,7 +74,7 @@ test("the ledger reads a run's learning whose given or read holds an entry out o
 test("a run whose read grows after its ledger line is written (a follow-up read another note) keeps that read after a restart, its run and its grade's cost counted once", async (t) => {
   const data = mkdtempSync(join(tmpdir(), "given-read-"));
   t.after(() => rmSync(data, { recursive: true, force: true }));
-  const kernel = { held: () => undefined, get: async () => null };
+  const kernel = { held: () => undefined };
   const units = { file: "units.md", name: "Check units" };
   const tables = { file: "tables.md", name: "Answer in tables" };
   const ended = { state: "merged", reason: null, detail: null, at: "2026-11-05T00:00:10.000Z", seed_notes: 2, given: [units, tables], read: [units], cost_usd: { grade: 0.25 }, look_back_usd: 0 };

@@ -12,7 +12,6 @@ import { note } from "./fixtures/faux-learn.mjs";
 import { copyOf, ended, git, LEARN, learnedIn, learnedOnMain, learner, made, objects, proposedOf, repoOf, resnap, SWITCH_TODO, savedOf, settled, started, wholeIn } from "./learn-support.mjs";
 import { schemaProblems } from "./schema-support.mjs";
 import { folderTestHooks, forgetBodies } from "../dist/learn/folder.js";
-import { learningTestHooks } from "../dist/learning.js";
 import { spiedWorkspace } from "./learn-support.mjs";
 import { agent, call, follow, runsFolders, scratch, serve, withEnv } from "./support.mjs";
 
@@ -369,11 +368,9 @@ test("a commit's notes are read once: a later page and the view at the same main
   }
   // Every read is the folder's snapshot and the bodies it names, through the workspace's file API: no git, no exec.
   const calls = [];
-  const gitCalls = [];
-  learningTestHooks.git = (args) => gitCalls.push(args);
   folderTestHooks.workspace = spiedWorkspace(calls);
   forgetBodies();
-  t.after(() => void (learningTestHooks.git = undefined, folderTestHooks.workspace = undefined));
+  t.after(() => void (folderTestHooks.workspace = undefined));
   /** The workspace calls since the last look, each its method and path (exec: its argv). */
   const reads = () => calls.splice(0).map(([method, what]) => `${method} ${what}`);
 
@@ -402,7 +399,6 @@ test("a commit's notes are read once: a later page and the view at the same main
   assert.deepEqual(reads().sort(), ["read .agentrun/snapshot.json", "read MEMORY.md", "read a-one.md"]);
   await api("GET", "/agents/paged/learning");
   assert.deepEqual(reads(), ["read .agentrun/snapshot.json"]);
-  assert.deepEqual(gitCalls, [], "no read runs git");
 });
 
 test("a note's name that holds a value made secret after it was written is never shown: the view, the notes, the log, the run's diff and the notes a run learned and used read it [redacted], its route answers the real name only to a caller who knows it, and a retire by it takes it out of the index", { timeout: 240_000, skip: SWITCH_TODO }, async (t) => {

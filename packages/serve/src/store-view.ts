@@ -39,7 +39,7 @@ import {
   withAsks,
   withApprovalRows,
 } from "./run-view.js";
-import { reflects, type Reflect } from "./learning-run.js";
+import { reflects, type Reflect } from "./reflect-range.js";
 import { journalRecords, recordOf } from "./runner/journal-reader.js";
 import { notesReadOf, runLearningEnd, type RunLearning, withNotes } from "./store-reads/learning.js";
 import { runReflect, runTimeline } from "./store-reads/journal.js";
