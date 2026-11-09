@@ -75,7 +75,12 @@ So:
       costs one fetch more, so this run skips the pricing baseline (fetch 3) for that company and says so in
       `unreachable`; the discovered URL goes in a learned note, so next week starts from it.
    2. **Pricing** (`max_chars: 6000`): the pricing page's plan table. It carries no dates, so it needs a baseline: a
-      price the previous digest quoted, else fetch 3.
+      price the previous digest quoted, else fetch 3. The URL is the one a learned note names, else `/pricing`. A
+      not-found answer (404, "page not found") or a page with no plans means the guess is wrong, never that the
+      company blocks you: find the pricing page in the home page's links (the same one 1000-character home fetch the
+      changelog step takes, made once for both), read it, and put the URL in a learned note so next week starts from
+      it. No pricing link there (some companies publish none): say so in `unreachable` as "no public pricing page",
+      never as a block. A challenge or an access-denied page is a block; say that instead.
    3. **Pricing baseline** (`max_chars: 6000`): the archive copy from before the window,
       `https://web.archive.org/web/<YYYYMMDD of from>/<pricing URL>`. Check the snapshot's own date in the URL it
       lands on, and use it only when it is on or before `from`. A plan, price, limit, free tier or billing unit that
