@@ -607,6 +607,20 @@ test("typing into Settings' search reads back from the tree", async () => {
 	assert.equal(find(tree.root)?.text, "Hello, agentrun! 123");
 });
 
+test("a literal %s is typed as %s, not as a space: input text's escape never meets text that holds it", async () => {
+	const { provider } = await setup();
+	const { value: ref } = await provider.create(SPEC);
+	const { client } = (await provider.connect(ref)).value;
+	const find = (n) => (n.id === SEARCH_FIELD ? n : n.children.map(find).find(Boolean));
+	for (const text of ["format %s", "%s%s", "50% sure", "%%s and %", "s%", "%ss %"]) {
+		await client.call("apps.launch", { id: SETTINGS });
+		const typed = await client.call("input.actions", { actions: [{ type: "tap", at: [100, 40] }, { type: "type", text }] });
+		assert.deepEqual(typed, { ok: true, value: { done: 2 } }, text);
+		assert.equal(find((await client.call("apps.ui_tree", {})).value.root)?.text, text, "what the phone got");
+		await client.call("apps.terminate", { id: SETTINGS });
+	}
+});
+
 test("apps.launch puts the named app in front, even when its task holds another app's activity on top", async () => {
 	// Android 15 (phone probe 2): Settings' search is another package's activity on top of Settings' task. After a
 	// force-stop of Settings, a plain `am start` resumes that task with search in front; a cleared task starts Settings.

@@ -48,6 +48,26 @@ export function fakeClock(start = Date.now()) {
 	};
 }
 
+/**
+ * What `input text <arg>` types, as AOSP's InputShellCommand.sendText reads its argument: a `%` followed by `s` is a
+ * space, and every other character, a lone `%` included, is itself.
+ */
+function inputText(arg) {
+	const out = [...arg];
+	let escaped = false;
+	for (let i = 0; i < out.length; i++) {
+		if (escaped) {
+			escaped = false;
+			if (out[i] === "s") {
+				out[i] = " ";
+				out.splice(--i, 1);
+			}
+		}
+		if (out[i] === "%") escaped = true;
+	}
+	return out.join("");
+}
+
 const json = (status, body, headers = {}) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", ...headers } });
 
 /**
@@ -302,7 +322,7 @@ export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = fa
 			return ok();
 		}
 		if (w[0] === "input" && w[1] === "text") {
-			if (phone.foreground === SEARCH_PKG && phone.screen === "search") phone.search += w[2].replaceAll("%s", " ");
+			if (phone.foreground === SEARCH_PKG && phone.screen === "search") phone.search += inputText(w[2]);
 			return ok();
 		}
 		if (w[0] === "input" && w[1] === "keyevent") {
