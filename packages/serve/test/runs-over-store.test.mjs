@@ -11,7 +11,8 @@ import { after, test } from "node:test";
 const { openSqliteStore } = await import("../dist/store/index.js");
 const { archiveRun, approve, cancel, message, pause, raiseCap, resume, startRun, stop, WAITS_ON_A_PERSON } = await import("../dist/runs-over-store.js");
 const { sendCommand } = await import("../dist/runner/commands.js");
-const { readLaunchBody } = await import("../dist/run-launch.js");
+const { readLaunchBody, learningStartOf } = await import("../dist/run-launch.js");
+const { givenOf, learnedOf } = await import("../dist/learning.js");
 
 const dirs = [];
 after(() => {
@@ -400,6 +401,44 @@ test("startRun under an origin key starts one run; a retry under the same key ge
   const again = await startRun(store, startDeps(), entryOf(), { input: { content: "hi" } }, { origin: { key: "firing-1" } });
   assert.equal(again.id, first.id);
   assert.equal((await store.runs.list({ agentId: "a1" })).length, 1);
+});
+
+// ---- learning start -------------------------------------------------------------------------------------------------
+
+const shown = () => ({ text: (t) => t, name: (n) => n, holds: () => false });
+/** A learning seed with one active note. */
+const learningSeed = () => ({ sha: "seed-abc", notes: { "a.md": "# A\n\nlearned a thing" }, files: [], skipped: [], recent: ["a.md"] });
+const learningDeps = (over = {}) => startDeps({ learning: "on", learningBudget: 8000, shown, seedFor: async () => ({ seed: learningSeed() }), pinnedOf: async () => ({ revision: revisionOf({ learning: true, tools: ["read"] }), version: 1 }), ...over });
+
+test("startRun records the exact given notes, seed and # Learned section a learning agent's start would", async () => {
+  const store = await freshStore();
+  const run = await startRun(store, learningDeps(), entryOf(), { input: { content: "hi" }, max_cost_usd: 1 });
+  const launch = readLaunchBody((await store.runs.launch(run.id)).body);
+  const options = { budget: 8000, read: true, shown: shown() };
+  const expected = { given: givenOf(learningSeed(), options), seed: "seed-abc", section: learnedOf(learningSeed(), options) ?? "" };
+  assert.deepEqual(launch.learning, expected);
+  assert.deepEqual(learningStartOf(launch), expected);
+  // Each given entry carries its name, not just a file.
+  assert.ok(launch.learning.given.every((n) => typeof n.file === "string" && typeof n.name === "string"));
+});
+
+test("startRun records no learning for a non-learning run", async () => {
+  const store = await freshStore();
+  // The same deps, but the revision does not learn.
+  const run = await startRun(store, learningDeps({ pinnedOf: async () => ({ revision: revisionOf({ learning: false, tools: ["read"] }), version: 1 }) }), entryOf(), { input: { content: "hi" } });
+  assert.equal(readLaunchBody((await store.runs.launch(run.id)).body).learning, undefined);
+});
+
+test("startRun records the server's learning off as no learning", async () => {
+  const store = await freshStore();
+  const run = await startRun(store, learningDeps({ learning: "off" }), entryOf(), { input: { content: "hi" } });
+  assert.equal(readLaunchBody((await store.runs.launch(run.id)).body).learning, undefined);
+});
+
+test("a learning run whose seed cannot be read starts with nothing (given empty, seed null, section empty)", async () => {
+  const store = await freshStore();
+  const run = await startRun(store, learningDeps({ seedFor: async () => ({ failed: "no git here" }) }), entryOf(), { input: { content: "hi" } });
+  assert.deepEqual(readLaunchBody((await store.runs.launch(run.id)).body).learning, { given: [], seed: null, section: "" });
 });
 
 // ---- cancel ---------------------------------------------------------------------------------------------------------

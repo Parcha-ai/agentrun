@@ -20,34 +20,63 @@ import type { LiveHandover, LiveViewerStore } from "../browser-live.js";
 import { dropLiveViewer, putLiveViewer } from "../browser-live.js";
 import type { Tier } from "../model.js";
 import { firstMessage } from "../run-manifest.js";
-import type { RunLaunch } from "../run-launch.js";
+import { learningStartOf, type RunLaunch } from "../run-launch.js";
 import type { Store } from "../store/store.js";
 import { isObject } from "../validate.js";
-import { runGate } from "../tool-gate.js";
-import { loadToolSettings } from "../tool-plane.js";
+import { type RunFiles, runGate } from "../tool-gate.js";
+import { loadToolSettings, TOOL_PLANE_ENV } from "../tool-plane.js";
 import { type ToolHost, toolOf } from "../tools.js";
 import { type HostToolCtx, hostToolOf } from "../host-tools.js";
 import { WEB_FETCH_TOOL } from "../web-fetch.js";
 import { WEB_SEARCH_TOOL } from "../web-search.js";
 import { environmentLine } from "../environment.js";
 import { effortGuidance } from "../effort-guidance.js";
-import { pinnedWorkflows, readPin, withLearned } from "../learning.js";
+import { laidLearned, pinnedWorkflows, readPin } from "../learning.js";
 import { LEARNED_WORKFLOW_TOOL, learnedWorkflowTool } from "../learned-workflow.js";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { promptOf, readsFiles } from "../skills.js";
 import { openRunWorkspace } from "../workspace/run-workspace.js";
-import { runFolder } from "../workspace/paths.js";
+import { COMPUTER_ROOT, runFolder } from "../workspace/paths.js";
 import { runTools, type ToolResults } from "../workspace/run-tools.js";
 import { INPUTS_DIR, UPLOADS_DIR, Uploads } from "../uploads.js";
 import { claimSecrets } from "./claim-secrets.js";
 import { join } from "node:path";
 import { type AdapterRun, type AdapterRunSpec, hostLifecycle } from "./adapter-loop.js";
 import { piAdapter } from "./adapters/pi.js";
-import { dockerComputer } from "./computer.js";
 import { entriesOf } from "./loop.js";
 import type { Claim, Journal } from "./loop-contract.js";
 import { runMetrics } from "./metrics.js";
 import type { ModelRoute, RouteCost } from "./model-route.js";
+import { archilClaim, type ArchilClaimOptions } from "../workspace/archil-claim.js";
+import { loadArchilSettings } from "../archil-settings.js";
+import type { RunComputer } from "../workspace/run-tools.js";
+import type { Workspace } from "../workspace/workspace.js";
+
+/** What a claim gives the shared computerForClaim: the run, its epoch, its revision, its place and any computer choice. */
+export interface ClaimLaunch {
+  readonly runId: string;
+  readonly epoch: number;
+  readonly revisionId: string;
+  readonly place?: unknown;
+  readonly computer?: unknown;
+}
+/** What the spec gives computerForClaim of its own: the run's mode, its Workspace and the runner's seal key (the runner
+ *  gives the rest once, `computerDeps`). */
+export interface ClaimDeps {
+  readonly mode: 1 | 2;
+  readonly workspace: Workspace;
+  readonly sealKey: Buffer | undefined;
+  readonly signal?: AbortSignal;
+}
+/** The run's computer at the claim: none for a runner place; its release, after the run's tools' end. A computer that
+ *  cannot be had throws (computer_unavailable). */
+export interface ClaimComputer {
+  readonly computer?: RunComputer;
+  readonly hold?: unknown;
+  release(): Promise<void>;
+}
+/** The one shared claim-time computer every spec takes (computer-for-claim.ts), passed in by the runner. */
+export type ComputerForClaim = (launch: ClaimLaunch, store: AdapterSpecDeps["store"], deps: ClaimDeps & Readonly<Record<string, unknown>>) => Promise<ClaimComputer>;
 
 /** What the runner hands the spec builder, beside the claim and the loop's own Harness (the AdapterRun): the store (its
  *  agent and run reads, and the live-viewer seam the browser tool writes through), the data directory a Mode 1 run folder
@@ -69,6 +98,13 @@ export interface AdapterSpecDeps {
   readonly log?: (message: string) => void;
   /** D's docker provider for a sandbox run's computer; a test gives its own (computer.ts dockerComputer default). */
   readonly makeProvider?: () => Promise<ComputerProvider>;
+  /** The one shared claim-time computer (computer-for-claim.ts), for both the pi and the CLI spec: none for a runner place.
+   *  The runner gives it; a test gives its own. */
+  readonly computerForClaim: ComputerForClaim;
+  /** What the runner gives computerForClaim once (its kind registry, provider makers, computer spec, keys and settings). */
+  readonly computerDeps?: Readonly<Record<string, unknown>>;
+  /** A Mode 2 claim's Archil disk (a test's fake); absent, the real disk the Archil settings name. */
+  readonly makeArchilDisk?: ArchilClaimOptions["makeDisk"];
 }
 
 /** A model as the cap prices it, from the route's catalog cost: its price WITH TIERS (the money rule — a request past a
@@ -106,6 +142,38 @@ type RevisionBody = {
  * and registry (AdapterRun); `deps` is the runner's store, data directory, model route and seal key; `claim` is the claim
  * this pass holds.
  */
+/**
+ * The run's gate before a call's intent, as the adapter loop asks it: the revision's tool settings and approvals over the
+ * server's, from the one store (loadToolSettings), through RunGate (decide: deny with its words, a pin, allow, ask). The
+ * adapter loop handles the ask/park/answer on the journal itself, so only the answer is read here, never RunGate's own
+ * file-based approval flow. `root`: the run's files, the run's Workspace (Mode 2: its folder on the run's disk; the turn's
+ * origin is read through it, never a folder of this machine) or the local folder's path.
+ *
+ * The server's settings are read again at each call, from the store (a row of the local store: no cache, no signal from
+ * the server, which may be another process), so a permission set while the run goes reaches its next call ("applies at the
+ * next call, in runs already going too"). A read that fails is unread: the gate holds to its last good read, marked unread
+ * (RunGate.serverSettings), so a deny it held still refuses and approvals "never" lifts no ask until the store reads.
+ */
+export async function adapterRunGate(store: Pick<Store, "settings">, claim: Pick<Claim, "runId">, revision: { kind: string; body: { toolSettings?: unknown; harness?: string; approvals?: Approvals } }, root: RunFiles): Promise<NonNullable<AdapterRunSpec["gate"]>> {
+  let current = await storeSettings(store);
+  // A Workspace's paths are in the run's folder: its folder named as a computer names it, for the gate's path checks.
+  const folder = typeof root === "string" ? root : COMPUTER_ROOT;
+  const gate = runGate({ root: folder, work: folder }, claim.runId, revision, () => current, root);
+  return async (call) => {
+    current = await storeSettings(store);
+    return gate.decide(call.tool, call.args);
+  };
+}
+
+/** The server's tool settings from the store now; a read that throws is unread (no value of it said). */
+async function storeSettings(store: Pick<Store, "settings">): Promise<Awaited<ReturnType<typeof loadToolSettings>>> {
+  try {
+    return await loadToolSettings(store);
+  } catch {
+    return { settings: {}, problems: ["the stored tool settings could not be read"], unreadable: true };
+  }
+}
+
 export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRun, deps: AdapterSpecDeps, claim: Claim): Promise<AdapterRunSpec> {
   const context = BACKGROUND_CONTEXT;
   const log = deps.log ?? (() => {});
@@ -117,10 +185,19 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
   const revision = { kind: revisionRow.kind, body } as { kind: string; body: { toolSettings?: unknown; harness?: string; approvals?: Approvals } };
   const granted = body.tools ?? [];
 
-  // The run's Workspace at the claim (E4c). Mode 1: the run's local folder under the data directory, made here (the server's
-  // start made it before). Mode 2 (Archil) is TODO(E2r2): the claim's Archil step (archilClaim) is threaded through the deps
-  // when E4c's Mode 2 lands on the runner.
-  const ws = await openRunWorkspace({ mode: 1, agentId: runRow.agentId, runId: claim.runId, data: deps.data, log });
+  // The run's mode is the server's: Mode 2 where its Archil settings are saved (archil-settings.ts), the run's folder then
+  // on the claim's Archil disk (archil-claim.ts: its keys from the store's sealed rows, under the runner's seal key, in this
+  // claim's memory only); else Mode 1, the run's local folder. The same for the pi and the CLI spec.
+  const archilSettings = await loadArchilSettings(deps.store);
+  const mode: 1 | 2 = archilSettings === undefined ? 1 : 2;
+  const archil = archilSettings === undefined
+    ? undefined
+    : await archilClaim({ settings: archilSettings, keys: deps.store.sealedKeys, sealKey: deps.sealKey, signal: new AbortController().signal, ...(deps.makeArchilDisk ? { makeDisk: deps.makeArchilDisk } : {}) });
+  // The run's Workspace at the claim: Mode 1 the run's local folder (made here, the server's start made it before); Mode 2
+  // the run's folder on the disk.
+  const ws = archil === undefined
+    ? await openRunWorkspace({ mode: 1, agentId: runRow.agentId, runId: claim.runId, data: deps.data, log })
+    : await openRunWorkspace({ mode: 2, agentId: runRow.agentId, runId: claim.runId, archil, log });
 
   // The run's uploaded files, copied into its work/inputs/ before the first turn, as the server's start copied them before
   // the per-run process ran (uploads.copyInto). Once per run: a fresh run has no inputs/ yet; a resumed claim finds them
@@ -133,18 +210,17 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
     }
   }
 
-  // A sandbox run's computer (Mode 1 Docker): D makes a container with the run's folder at /workspace, under the claim's
-  // epoch (the one fence). runTools attaches the Workspace to it; the run's release lets it go.
-  const computer = launch.place.mode === "sandbox"
-    ? await dockerComputer(ws.workspace, {
-        runId: claim.runId,
-        epoch: claim.epoch,
-        ...(launch.boxAllow !== undefined ? { boxAllow: launch.boxAllow } : {}),
-        ...(deps.env.AGENTRUN_DOCKER_IMAGE ? { image: deps.env.AGENTRUN_DOCKER_IMAGE } : {}),
-      }, deps.makeProvider)
-    : undefined;
+  // The run's computer, from the one shared claim-time function (the CLI spec takes the same): none for a runner place, a
+  // Docker container for a sandbox, under the claim's epoch (the one fence). It throws computer_unavailable (nothing made)
+  // when the computer cannot be had: the run fails in its words.
+  const computer = await deps.computerForClaim(
+    { runId: claim.runId, epoch: claim.epoch, revisionId: runRow.revisionId, place: launch.place, ...((launch as { computer?: unknown }).computer !== undefined ? { computer: (launch as { computer?: unknown }).computer } : {}) },
+    deps.store,
+    { ...deps.computerDeps, mode, workspace: ws.workspace, sealKey: deps.sealKey },
+  );
 
-  const tools = await runTools(ws.workspace, computer?.run, { mode: 1, context });
+  // The run's mode bounds its shell: 600 s locally or on a computer, 295 s on Archil's serverless exec (Mode 2, none).
+  const tools = await runTools(ws.workspace, computer.computer, { mode, context });
 
   // The run's model route: its model through routeOf (NEVER re-resolved — the launch's model, pinned at start), the catalog
   // price with tiers for the cap, and the proxy's price (pi-ai calculateCost, tiered).
@@ -161,12 +237,9 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
   // ask it leaves into an allow). The adapter loop asks `gate` and handles the ask/park/answer on the journal itself, so
   // only the permission is read here, never runGate's own file-based approval flow.
   const root = runFolder(deps.data, runRow.agentId, claim.runId);
-  // The server's tool settings are the one store's (loadToolSettings), read once at the claim, never a file beside the data
-  // directory (the old per-run process's readToolSettings). The gate's approvals "never" lifts an ask to an allow only where
-  // the settings read non-undefined, and the store always reads (no row is every default), so an unattended run goes at an
-  // ask it would park on were the settings a file that never read.
-  const serverSettings = await loadToolSettings(deps.store);
-  const gate = runGate({ root, work: root }, claim.runId, revision, () => serverSettings);
+  // The gate reads the run's own files (the turn's origin) through the run's Workspace: in Mode 2, its folder on the run's
+  // disk, never this machine's folder at the same path.
+  const gate = await adapterRunGate(deps.store, claim, revision, ws.workspace);
 
   // The run's cap (its launch's maxCostUsd): the host's check before each paid request (beforeRequestOf), and what a
   // refusal does to the run (parkOf), with the kernel's raise rule.
@@ -192,6 +265,12 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
   // tools unlock and its model needs, scoped to the run as the old per-run environment was, so one run's keys never reach
   // another's on this runner (claim-secrets.ts). MCP credentials are the other per-claim secret and come through mcp-claim.
   const toolEnv = await claimSecrets({ store: deps.store, sealKey: deps.sealKey, env: deps.env }, revisionRow as unknown as Parameters<typeof claimSecrets>[1], launch);
+  // The run's resolved tool plane (its web_search/web_fetch/browser providers), as main hands its per-run process (runs.ts):
+  // the web tools read it (tool-plane.ts planeOf) to pick Parallel where the run resolves to it, the model provider's native
+  // search, or the guarded direct fetch. Not a secret; without it the runner's web tools would ignore the run's plane and
+  // never reach Parallel, so they could not book a Parallel call as main does.
+  delete toolEnv[TOOL_PLANE_ENV];
+  if (launch.plane && Object.keys(launch.plane).length) toolEnv[TOOL_PLANE_ENV] = JSON.stringify(launch.plane);
 
   // The tool host's install lifecycle: what a binding registers to run in each conversation's creating commit, once the
   // Harness is open before the session, and at the run's end (the browser tool's reconcile and release hang off these). The
@@ -230,11 +309,13 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
   const sessionTools = [...handTools, ...nonHandTools];
 
   // The run's system prompt, as main's per-run process builds it (app.ts): the environment line first (environment.ts, as
-  // pi installs it before every other section), then the revision's instructions with its skills and what the agent learned
-  // folded in (learning.ts withLearned, then skills.ts promptOf, each skill whole or by its file as the run reads its
-  // files), then the effort guidance (the launch's effort, never this process's environment). The one path for every harness.
-  const learned = await withLearned(root, ws.workspace, body.instructions ?? "", Object.keys(body.skills ?? {}));
-  const instructions = await promptOf(learned.instructions, learned.skills, ws.workspace, { onDemand: readsFiles(granted) });
+  // pi installs it before every other section), then the revision's instructions with what the agent learned laid in
+  // (learning.ts laidLearned, from the launch's learning start — the # Learned section decided once at launch, so the runner
+  // reads no learning folder), its own skills through skills.ts promptOf, then the effort guidance (the launch's effort,
+  // never this process's environment). The one path for every harness.
+  const start = learningStartOf(launch);
+  const laid = start ? laidLearned(body.instructions ?? "", start.section) : (body.instructions ?? "");
+  const instructions = await promptOf(laid, Object.keys(body.skills ?? {}), ws.workspace, { onDemand: readsFiles(granted) });
   const guidance = effortGuidance(launch.effort);
   const system = [environmentLine(), instructions, guidance].filter((line): line is string => Boolean(line));
 
@@ -246,17 +327,18 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
     context: "fresh",
   };
 
-  // The person's first message: the start body's content, with the run's file manifest beside it (run-manifest.ts).
+  // The person's first message: the start body's content, with the run's file manifest beside it (run-manifest.ts), read
+  // through the run's Workspace (Mode 2: its inputs/ on the disk, never a folder of this machine).
   const content = isObject(launch.input) && typeof (launch.input as { content?: unknown }).content === "string" ? (launch.input as { content: string }).content : "";
-  const input = await firstMessage(content, root);
+  const input = await firstMessage(content, ws.workspace);
 
   return {
     adapter,
     session,
     input,
-    // The gate's answer with its words (RunGate.decide): a deny names where it was set and that nothing was sent or charged,
-    // and a pinned MCP tool's call outside its pin is refused before it is asked or sent, as the old per-run gate did.
-    gate: (call) => gate.decide(call.tool, call.args),
+    // The gate's answer with its words (adapterRunGate, RunGate.decide): a deny names where it was set and that nothing was
+    // sent or charged, and a pinned MCP tool's call outside its pin is refused before it is asked or sent.
+    gate,
     ...(beforeRequest ? { beforeRequest } : {}),
     ...(cap ? { cap } : {}),
     // The tool host's install lifecycle (its bindings' onConversation/beforeResume/beforeRelease), run by the adapter loop.
@@ -274,29 +356,28 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
     // scratch swept), its computer let go, then its Workspace's end (Mode 2 sweeps the exec spill).
     release: async () => {
       await tools.end().catch((error: unknown) => log(`the run's tools' end failed: ${(error as Error)?.message ?? String(error)}`));
-      if (computer) await computer.release().catch((error: unknown) => log(`the run's computer could not be let go: ${(error as Error)?.message ?? String(error)}`));
+      await computer.release().catch((error: unknown) => log(`the run's computer could not be let go: ${(error as Error)?.message ?? String(error)}`));
       await ws.end().catch((error: unknown) => log(`the run's workspace end failed: ${(error as Error)?.message ?? String(error)}`));
     },
   };
 }
 
-/** The tools whose call spends, routed through the one money seam below. web_fetch/web_search book Parallel's extract and
- *  search; monid's three call monid's paid API; a learned workflow's nodes spend on the run's models and decisions. */
-const PAID_TOOLS: ReadonlySet<string> = new Set([WEB_FETCH_TOOL, WEB_SEARCH_TOOL, "monid.discover", "monid.inspect", "monid.run", LEARNED_WORKFLOW_TOOL]);
-
-/** A paid tool call's money on the runner, through one named seam. Today it refuses the call in words, so a paid tool is
- *  never run unbooked; its name is still listed, so a pi run through the dispatch offers main's tools. A tool that spends
- *  nothing runs (undefined). TODO(spendcap-1): book the call's charge as main does (paid-calls.ts settleIn on the adapter
- *  loop's harness), then return undefined to let it run, and add the red that a paid call books main's figure. */
-function settlePaidCall(name: string): { refused: string } | undefined {
-  return PAID_TOOLS.has(name) ? { refused: "This tool's charge is not settled on the runner yet, so its call was not run." } : undefined;
+/** learned_workflow is listed so a pi run through the dispatch offers main's tool set, but it is not run on the runner yet:
+ *  its nodes need the run's models and decision routes, which the adapter loop hands the spec at open (the {decisions,
+ *  models} seam, spendcap-1's follow-up). Until that lands it is refused in words, never run as a stub. web_fetch,
+ *  web_search and monid carry no such gate: the adapter loop books their paid requests on the run's one ledger
+ *  (adapter-loop.ts bookedIn, paid-calls.ts), held at Parallel's or monid's price and settled at the charge, exactly as
+ *  main does, so they run. */
+function settleLearnedWorkflow(name: string): { refused: string } | undefined {
+  return name === LEARNED_WORKFLOW_TOOL ? { refused: "This tool is not available on the runner yet, so its call was not run." } : undefined;
 }
 
 /** The run's non-hand tools as HostTool[], bound through the ToolHost seam and wrapped as the hands are (host-tools.ts
  *  hostToolOf): web_fetch, web_search and monid, each by its catalog name under the adapter loop's one gate (`spec.gate`;
- *  `gated` is undefined here, as for the hands), its paid call's money through settlePaidCall. The browser (tl-browser,
- *  through host.liveViewers), MCP (tl-mcp's mcpForClaim(claim, store, sealKey, pin) -> { sessionMcp, redactions, release }),
- *  the learned workflow and decisions are each a named todo, added as their seams land. */
+ *  `gated` is undefined here, as for the hands). Their paid requests are booked by the adapter loop on the run's one ledger
+ *  (bookedIn), as main books them, so they run. The browser (tl-browser, through host.liveViewers), MCP (tl-mcp's
+ *  mcpForClaim(claim, store, sealKey, pin) -> { sessionMcp, redactions, release }), the learned workflow and decisions are
+ *  each a named todo, added as their seams land. */
 async function bindNonHandTools(host: ToolHost, granted: readonly string[], run: AdapterRun, context: Context, results: ToolResults, root: string, plane: RunLaunch["plane"]): Promise<AdapterRunSpec["session"]["tools"]> {
   const names = granted.filter((name) => name === WEB_FETCH_TOOL || name === WEB_SEARCH_TOOL || name.startsWith("monid."));
   const ctx: HostToolCtx = {
@@ -315,8 +396,8 @@ async function bindNonHandTools(host: ToolHost, granted: readonly string[], run:
       if (!conversation) throw new Error("the run has no root conversation");
       return conversation.agent(at);
     },
-    // The gate is the adapter loop's own (spec.gate); each paid tool's money through the one settle seam.
-    settle: settlePaidCall,
+    // The gate is the adapter loop's own (spec.gate). web_fetch/web_search/monid carry no settle gate: the adapter loop
+    // books their paid requests on the run's one ledger (bookedIn), so they run.
   };
   const tools: HostTool[] = [];
   for (const name of names) {
@@ -329,11 +410,11 @@ async function bindNonHandTools(host: ToolHost, granted: readonly string[], run:
     }
   }
 
-  // learned_workflow, by main's wire name, listed when the run's pin names learned workflows (as main lists it), behind
-  // settlePaidCall like the other paid tools so the tool set the model sees matches main. Its nodes run on the run's models,
-  // which the adapter loop's open seam gives (TODO, the same {decisions, models} seam as decisions below); the refusal means
-  // they are never reached here, so it is listed, not run. A pin whose learned-workflows file is not on the runner yet is
-  // skipped (that copy is its own seam), never failing the run.
+  // learned_workflow, by main's wire name, listed when the run's pin names learned workflows (as main lists it), so the tool
+  // set the model sees matches main. Its nodes run on the run's models and decision routes, which the adapter loop's open
+  // seam gives (TODO, the {decisions, models} seam as decisions below); until that lands settleLearnedWorkflow refuses the
+  // call, so it is listed, not run (never a stub that pretends to run). A pin whose learned-workflows file is not on the
+  // runner yet is skipped (that copy is its own seam), never failing the run.
   if (granted.includes(LEARNED_WORKFLOW_TOOL)) {
     const flows = await pinnedWorkflows(root, await readPin(root)).catch(() => []);
     if (flows.length) {
@@ -344,11 +425,11 @@ async function bindNonHandTools(host: ToolHost, granted: readonly string[], run:
         env: host.env,
         work: root,
         // TODO(loop seam): the run's models and modelOf come from the adapter loop's {decisions, models} at open; unreached
-        // behind settlePaidCall until the paid-call settle lands.
+        // behind settleLearnedWorkflow until that seam lands.
         models: createModels() as never,
         modelOf: () => undefined,
       });
-      const tool = hostToolOf(LEARNED_WORKFLOW_TOOL, learnedTool as never, ctx);
+      const tool = hostToolOf(LEARNED_WORKFLOW_TOOL, learnedTool as never, { ...ctx, settle: settleLearnedWorkflow });
       if (tool) tools.push(tool);
     }
   }

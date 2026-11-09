@@ -43,6 +43,10 @@ export interface KernelHooks {
   beforeIntent(call: ToolCall): Promise<void>;
   /** After route() returned, just before journal.result(call, result). */
   beforeResult(call: ToolCall, result: unknown): Promise<void>;
+  /** A paid request answered, just before its booking (the adapter loop's model port). */
+  beforeBooking?(): Promise<void>;
+  /** The adapter loop waits for its session's paid requests to be booked (bookingsSettled, with one still unbooked). */
+  awaitingBookings?(): void;
 }
 
 export interface ConformanceSetup {

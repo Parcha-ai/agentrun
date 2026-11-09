@@ -7,8 +7,8 @@
 //   - pi runs on the kernel's adapter loop with the run's pi spec (adapterRunSpecFromLaunch);
 //   - a CLI harness (claude-agent, codex, opencode) runs on the adapter loop with its own adapter;
 //   - anything else fails the run in words (the dispatch's UnknownHarness).
-import { DEFAULT_HARNESS, HARNESSES } from "../harness.js";
 import type { RunLaunch } from "../run-launch.js";
+import { resolveHarness } from "./adapters/index.js";
 import { adapterRunSpecFromLaunch, type AdapterSpecDeps } from "./adapter-run-spec.js";
 import { createAdapterLoop } from "./adapter-loop.js";
 import { cliRunSpecFromLaunch } from "./cli-run-spec.js";
@@ -40,14 +40,15 @@ export function resolveRunnerLoop(deps: AdapterSpecDeps): (harness: string, laun
         ...(deps.log ? { log: deps.log } : {}),
       });
     }
-    if (harness === DEFAULT_HARNESS) {
-      return createAdapterLoop((claim, adapterRun) => adapterRunSpecFromLaunch(launch, adapterRun, deps, claim));
-    }
-    if ((HARNESSES as readonly string[]).includes(harness)) {
-      // A CLI harness (claude-agent, codex, opencode) runs on the adapter loop with its own adapter and record: "loop"
-      // (cli-run-spec.ts, the non-pi equivalent of adapterRunSpecFromLaunch: it resolves the harness through
-      // resolveHarness, builds its host tools and its system prompt with the harness's skillCheck).
-      return createAdapterLoop((claim, adapterRun) => cliRunSpecFromLaunch(launch, adapterRun, deps, claim));
+    // The harness's own entry decides which spec builds the run, by the entry's facts and never the harness's name: an entry
+    // whose visible record the loop keeps (record: "loop") runs the CLI spec (cli-run-spec.ts), one that keeps its own (pi)
+    // runs the pi spec (adapterRunSpecFromLaunch). A harness with no entry is unknown here: the dispatch fails it in words.
+    const runner = resolveHarness(harness);
+    if (runner) {
+      return createAdapterLoop((claim, adapterRun) =>
+        runner.record === "loop"
+          ? cliRunSpecFromLaunch(launch, adapterRun, deps, claim)
+          : adapterRunSpecFromLaunch(launch, adapterRun, deps, claim));
     }
     return undefined;
   };
