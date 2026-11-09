@@ -11,7 +11,7 @@
 // writes sign_in_handed.
 import { createHash } from "node:crypto";
 import { ApiError } from "./errors.js";
-import { sealColumn, sealedAt, SignInHandedTo, SignInMissing, type Store, unsealColumn } from "./store/index.js";
+import { type Claim, sealColumn, sealedAt, SignInHandedTo, SignInMissing, type Store, unsealColumn } from "./store/index.js";
 
 /** The one saved sign-in an agent keeps per provider is named this; the owner's label, never the model's. */
 export const SIGN_IN_NAME = "default";
@@ -83,6 +83,44 @@ export async function openSavedPointer(store: SignInsStore, sealKey: Buffer | un
   if (!row) return undefined;
   const pointer = open(sealKey, agentId, provider, row.pointerSealed);
   return pointer === undefined ? "unreadable" : { pointer };
+}
+
+/** A run's handed sign-in, as the browser binding takes it: the vendor, the pointer, and whether the run saves to it. */
+export type RunSignIn = { provider: Vendor; ref: string; save: boolean };
+
+/**
+ * The sign-in run `claim.runId`'s browser starts from on the runner, read from the store under that run's own claim: its
+ * agent's saved pointer for `resolution`'s vendor, opened under `sealKey`. The runner is one process holding many claims,
+ * so this is the only way a run gets its pointer there (never the process's environment or secrets' pipe, which the old
+ * per-run process read with handedSignIn).
+ *
+ * As the old launch did, the run keeps that it was handed the pointer (its hash added to sign_in_handed, under the claim)
+ * before it is handed it, so a forget sees the run: one it could not keep (a stale or lost claim: Fenced) is handed none.
+ * The pointer is read again after that write: a forget that landed between the two moved it to a tombstone, and the run
+ * is handed none. It saves to it unless another running run holds it (the store's handed holder); a run resumed on the
+ * pointer it held keeps saving. None, too, with no seal key, a pointer that does not open, a browser that keeps none, or
+ * an agent that saved none for the vendor. Never throws, and never names the pointer.
+ */
+export async function runSignIn(store: Pick<Store, "runs" | "signIns">, sealKey: Buffer | undefined, claim: Claim, resolution: string): Promise<RunSignIn | undefined> {
+  const vendor = (() => { try { return vendorOf(resolution); } catch { return undefined; } })();
+  if (!vendor || !sealKey) return undefined;
+  try {
+    const run = await store.runs.get(claim.runId);
+    if (!run) return undefined;
+    const opened = await openSavedPointer(store, sealKey, run.agentId, vendor);
+    if (opened === undefined || opened === "unreadable") return undefined;
+    const hash = pointerHash(opened.pointer);
+    const holder = await store.signIns.handedHolder(hash);
+    const save = holder === undefined || holder === claim.runId;
+    const before = run.signInHanded ?? [];
+    // Always written, even when the hash is there already: the write is the claim's fence.
+    await store.runs.update(claim, { signInHanded: before.includes(hash) ? [...before] : [...before, hash] });
+    const now = await openSavedPointer(store, sealKey, run.agentId, vendor);
+    if (now === undefined || now === "unreadable" || now.pointer !== opened.pointer) return undefined;
+    return { provider: vendor, ref: opened.pointer, save };
+  } catch {
+    return undefined;
+  }
 }
 
 /** The pointers of the agent's forgotten sign-ins for the provider that open under this server's seal key, and whether any

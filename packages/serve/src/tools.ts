@@ -36,7 +36,8 @@ import { redactedAnswer } from "./key-refusal.js";
 import { SIGN_IN_KEY, SIGN_IN_SAVED } from "./sign-ins.js";
 import { answerIn } from "./runner/hand-back.js";
 import type { LiveHandover, LiveViewerStore } from "./browser-live.js";
-import type { Claim } from "./store/store.js";
+import type { Claim, Store } from "./store/store.js";
+import { runSignIn } from "./sign-ins-store.js";
 
 export const ASK_TOOL = "ask_person";
 /** Under `--faux` only: a module whose default export gives the browser's `{ provider, driver }` for the run's
@@ -89,9 +90,11 @@ export type ToolHost = {
    *  binding reads `liveViewers`, never them directly. Absent on the server path, where the viewer lives in the run's
    *  directory (browser-live.ts sessionHandovers: writeHandover/dropHandover). */
   liveViewers?: { put(handover: LiveHandover): Promise<boolean>; drop(tag?: string): Promise<void> };
-  /** The one store, for the live-viewer seam above (and the sign-in verify the runner saves). */
-  store?: LiveViewerStore;
-  /** The claim this run is held under: the live-viewer rows are written under it (its epoch fences them). */
+  /** The one store, for the live-viewer seam above, the run's saved sign-in (its runs and sign-ins, read under `claim`)
+   *  and the sign-in verify the runner saves. */
+  store?: LiveViewerStore & Pick<Store, "runs" | "signIns">;
+  /** The claim this run is held under: the live-viewer rows are written under it (its epoch fences them), and the run's
+   *  saved sign-in is read and its hand kept under it. Present, the run is on the runner: never the process's own pipe. */
   claim?: Claim;
   /** The key the live-viewer tokens are sealed under before they go to the store (store/seal.ts). */
   sealKey?: Buffer;
@@ -268,7 +271,9 @@ const browserTool: ToolEntry = {
     ]);
     const vendor = planeOf(host.env).browser ?? "browserbase";
     const refused = isUnavailable(vendor) ? new BrowserFailureError(browserFailure("browser_unavailable", `The browser does not run here: ${whyUnavailable(vendor)}.`)) : undefined;
-    const handed = handedSignIn();
+    // The run's saved sign-in: on the runner (one process, many claims) read from the store under this run's own claim
+    // (sign-ins-store.ts runSignIn), never from the process; on the old per-run process, over its own secrets' pipe.
+    const handed = host.claim ? (refused || !host.store ? undefined : await runSignIn(host.store, host.sealKey, host.claim, vendor)) : handedSignIn();
     const kept = !refused && handed?.provider === vendor ? handed : undefined;
     const faux = host.env[FAUX_ENV] ? host.env[FAUX_BROWSER_ENV] : undefined;
     const parts = faux
