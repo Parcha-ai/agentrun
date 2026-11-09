@@ -29,6 +29,7 @@ const reviewed = new Map([
   ['packages/pi-durable-disk/test/place.test.ts', childScript],
   ['packages/pi/test/signin-entry.test.mjs', childScript],
   ['packages/serve/test/secret-custody.test.mjs', childScript],
+  ['packages/computer/test/phone-provider.test.mjs', childScript],
   ['spec/lean/sweep/capture-dsl.mjs', label],
 ]);
 
