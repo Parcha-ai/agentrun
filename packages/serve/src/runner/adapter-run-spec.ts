@@ -37,6 +37,7 @@ import { LEARNED_WORKFLOW_TOOL, learnedWorkflowTool } from "../learned-workflow.
 import { PORT_PROVIDER } from "../port-models.js";
 import { promptOf, readsFiles } from "../skills.js";
 import { openRunWorkspace } from "../workspace/run-workspace.js";
+import { layOwnSkills } from "../workspace/revision-skills.js";
 import { COMPUTER_ROOT, runFolder } from "../workspace/paths.js";
 import { runTools, type ToolResults } from "../workspace/run-tools.js";
 import { INPUTS_DIR, UPLOADS_DIR, Uploads } from "../uploads.js";
@@ -373,6 +374,10 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
   // never this process's environment). The one path for every harness.
   const start = learningStartOf(launch);
   const laid = start ? laidLearned(body.instructions ?? "", start.section) : (body.instructions ?? "");
+  // The revision's own skills are laid in the run's .agents/skills/ before they are read (main's server start laid them;
+  // on the one store the claim does), from the revision row's texts (the body keeps only each file's SHA-256): each
+  // folder not there yet, never over a learned skill or an earlier claim's.
+  await layOwnSkills(ws.workspace, (revisionRow.skills ?? {}) as Record<string, string>);
   const instructions = await promptOf(laid, Object.keys(body.skills ?? {}), ws.workspace, { onDemand: readsFiles(granted) });
   const guidance = effortGuidance(launch.effort);
   const system = [environmentLine(), instructions, guidance].filter((line): line is string => Boolean(line));
