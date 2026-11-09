@@ -1705,7 +1705,8 @@ the server's start and when `GET /v2/integrations/github` is read (at most once 
 turns the github triggers off, one dropped only shrinks it. A list that an event or the install redirect wrote while
 GitHub was asked is not overwritten by GitHub's older answer: the repair asks once more, and leaves the list as it is
 when it moved again. A deletion or suspension that would leave none is confirmed with GitHub's own list first: only none there turns the
-github triggers off, and others there become the list. An installation event follows the same rule: GitHub's answer to its check is taken only when no write came meanwhile
+github triggers off, and its list as it comes (the one removed included, when GitHub holds it active again) becomes the
+list. An installation event follows the same rule: GitHub's answer to its check is taken only when no write came meanwhile
 (else it is asked once more), so an older suspend never undoes a newer unsuspend. A server that closes stops its repair
 and its events' checks, which write nothing after (an event cut so answers `503`, to be sent again).
 `GET /v2/integrations/github` shows `{app_id, slug, installations}`, never a secret.

@@ -361,10 +361,11 @@ export class GitHubConnect {
         this.options.say({ condition: "github_installation_ignored", action, installation: String(id), reason: "the connection or its list changed while GitHub's list was asked; the next read repairs it" });
         return noted;
       }
-      const others = listed.filter((i) => i.id !== id);
-      if (others.length) {
-        this.connection.setInstallations(others);
-        this.options.say({ condition: "github_installations_repaired", installations: String(others.length), was: "1", triggers_off: "0", reason: `installation ${id} ${action === "deleted" ? "deleted" : "suspended"}, and GitHub lists others` });
+      // GitHub's list as it comes, the checked installation included: one unsuspended (or installed again) since its check
+      // is active there, and stays.
+      if (listed.length) {
+        this.connection.setInstallations(listed);
+        this.options.say({ condition: "github_installations_repaired", installations: String(listed.length), was: "1", triggers_off: "0", reason: `installation ${id} ${action === "deleted" ? "deleted" : "suspended"}, and GitHub lists ${listed.some((i) => i.id === id) ? "it active again" : "others"}` });
         return noted;
       }
     }
