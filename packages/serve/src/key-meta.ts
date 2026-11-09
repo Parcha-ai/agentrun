@@ -6,6 +6,7 @@
 //
 // The environment wins: a variable named as the key, and not empty, is the key's value, over a saved one (source "env").
 // The server's environment is passed in (never process.env read here), so a test gives its own.
+import { getSealedKey } from "./server-keys.js";
 import type { Store } from "./store/index.js";
 
 export type SecretSource = "env" | "console" | "sign-in" | null;
@@ -22,6 +23,11 @@ export const envValue = (env: KeyEnv, name: string): string | undefined => {
   const value = Object.hasOwn(env, name) ? env[name] : undefined;
   return typeof value === "string" && value.trim() !== "" ? value : undefined;
 };
+
+/** A key's value by its name, as the server reads it: the environment's, else the saved one opened with `sealKey` (none
+ *  without a seal key). The one reader Settings → Computers and a run's computer take a provider's keys through. */
+export const keyReader = (store: { sealedKeys: Pick<Store["sealedKeys"], "get"> }, sealKey: Buffer | undefined, env: KeyEnv = {}) =>
+  async (name: string): Promise<string | undefined> => envValue(env, name) ?? (sealKey ? await getSealedKey(store, sealKey, name) : undefined);
 
 /** Each slot's metadata: from the environment when it names the key, else from the store's sealed-key rows (read once). */
 export async function keyMetaOf(store: { sealedKeys: Pick<Store["sealedKeys"], "all"> }, slots: readonly KeySlot[], env: KeyEnv = {}): Promise<KeyMeta[]> {
