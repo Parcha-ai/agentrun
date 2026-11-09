@@ -41,6 +41,11 @@ export const SECRET_WRITE_PATHS = [
   { methods: ["POST"], path: /^\/triggers$/ },
   { methods: ["POST"], path: /^\/triggers\/[^/]+\/secret$/ },
   { methods: ["PUT"], path: /^\/settings\/webhook$/ },
+  // MCP (mcp-secret-writes.ts): a saved server's PUT (a token or headers it carries), a sign-in's start (a client_secret),
+  // and the private-network OAuth hosts.
+  { methods: ["PUT"], path: /^\/settings\/mcp-servers\/[^/]+$/ },
+  { methods: ["POST"], path: /^\/settings\/mcp-servers\/[^/]+\/oauth\/start$/ },
+  { methods: ["PUT"], path: /^\/settings\/mcp-servers\/oauth\/private-hosts$/ },
 ];
 /** Adds a secret write the client sends from the owner's session (`methods` on `path`, a RegExp over the /v2 path). */
 export const secretWritePath = (methods, path) => void SECRET_WRITE_PATHS.push({ methods, path });
@@ -330,12 +335,11 @@ export async function serve(t, { harnesses: asked, runner: wantRunner = true, ..
       for (const other of sharing.get(data) ?? []) await other.close();
       sharing.delete(data);
     }
-    if (held) await storeDone(data, held);
     const sudo = dockerState ? (await import("./fixtures/sudo-stand-in.mjs")).sudoStandIn(dockerState).calls() : [];
     if (dir) await writableTree(dir).then(() => rm(dir, { recursive: true, force: true }));
     if (sudo.length) throw new Error(`a box command ran sudo on this machine (the stand-in refused it): ${sudo.join("; ")}`);
   });
-  return { ...server, data, api: client(server.baseUrl, server.token), ...(held ? { store: held.store } : {}) };
+  return { ...server, data, api: client(server.baseUrl, server.token) };
 }
 
 /** `server`'s client with every request sent from the owner's session (ownerSessionOf), as the console sends it: the

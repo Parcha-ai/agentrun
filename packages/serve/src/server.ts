@@ -366,15 +366,6 @@ const digest = (text: string) => createHash("sha256").update(text).digest();
 /** Why a trigger never messages a run: it has no spend cap, and every turn a trigger drives is capped. */
 const NO_CAP = "The run has no spend cap: a trigger only messages a run with one, as every turn it drives is capped.";
 
-/** The triggers' store before the server opens its own: each call answers unavailable, and nothing fires. */
-function storeless(): Pick<Store, "triggers" | "runs"> {
-  const refused = new Proxy({}, {
-    get: () => async () => {
-      throw new ApiError("unavailable", "The triggers live in the server's store, which this server has not opened.");
-    },
-  });
-  return { triggers: refused, runs: refused } as unknown as Pick<Store, "triggers" | "runs">;
-}
 const sha256Hex = (text: string) => createHash("sha256").update(text).digest("hex");
 const SESSION_S = SESSION_MS / 1000;
 
@@ -1165,7 +1156,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // Schedules: each firing starts its run as POST /agents/{id}/runs does, capped, under the firing's key (triggers.ts).
   // Firings an earlier server left due are driven again now, beside the recovery above.
   const triggers: Triggers = new Triggers({
-    store: options.store ?? storeless(),
+    // The server's own store (the switch): the triggers' rows and the runs they start live there.
+    store: options.store ?? store,
     clock: options.triggerClock,
     adapters,
     say: (fields) => (log ? log(logLine("trigger", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("trigger", fields)}\n`)),
@@ -1177,7 +1169,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     notify: (failed, key) => webhooks.emitTrigger(failed, key),
   });
   stops.push(async () => triggers.close());
-  if (options.store) void triggers.start().catch((error: Error) => void process.stderr.write(`agentrun-serve: the triggers' start: ${error.message}\n`));
+  void triggers.start().catch((error: Error) => void process.stderr.write(`agentrun-serve: the triggers' start: ${error.message}\n`));
 
   // Setup's import of this machine's sessions: offered by a server on this machine only (no public address, listening
   // on loopback), counted once (a listing, no transcript kept), run once, each on a worker thread (import-worker.ts) so
