@@ -39,9 +39,9 @@ export interface ReflectDeps {
   readonly promptFacts: (runId: string, agentId: string) => Promise<{ active: number; tools: readonly string[] }>;
   /** What the person said in the run, and a trigger's input, as the checks and the grader read them. */
   readonly asked: (runId: string) => Promise<{ asked: readonly string[]; triggered?: ReflectTurn["triggered"] }>;
-  /** Every value the run must never learn (learning-run.ts refused): the host's secrets and what the run was handed, its
-   *  sign-in pointer among them; `unreadable` when what it was handed can't be read back, and the run learns nothing.
-   *  Absent, none. */
+  /** Every value the run must never learn (learning-run.ts refused): the host's secrets, the keys saved on the server, and
+   *  what the run was handed, its sign-in pointer among them; `unreadable` when what it was handed can't be read back, and
+   *  the run learns nothing (as it does when the list can't be read at all). Absent, none. */
   readonly refuse?: (runId: string) => Promise<readonly string[] | "unreadable">;
   /** proposeRun's checks over the turn, against the seed the run started from, refusing `refuse`. */
   readonly check: (input: { runId: string; agentId: string; turn: ReflectTurn; outcome: "completed" | "failed"; refuse: readonly string[] }) => Promise<Checked>;
@@ -93,12 +93,15 @@ export function createReflectHook(deps: ReflectDeps): EndOfRunTurn {
     };
     // What the run must never learn, read once, before it is asked anything: a run whose list can't be read learns
     // nothing, never over a shorter one.
-    const read = deps.refuse ? await deps.refuse(input.runId).catch(() => "unreadable" as const) : [];
-    const refuse = read === "unreadable" ? [] : read;
+    // A list that could not be read at all (the store's saved keys, say) is a fault, said as one; one the run's handed mark
+    // can't be read back for says so.
+    const read = deps.refuse ? await deps.refuse(input.runId).catch(() => "failed" as const) : [];
+    const refuse = read === "unreadable" || read === "failed" ? [] : read;
     // Every end from here closes through this one function: looked's timings first, then the cut LAST, over every
     // string the kept rows hold, whatever looked adds now or later.
     const close = async (rows: AlsoRow[]) => ({ also: (await looked({ also: rows })).also.map((row) => cutRow(row, refuse)) });
     if (read === "unreadable") return close([droppedRow(null, "propose_failed", said.stopped(STOPPED.signInUnread))]);
+    if (read === "failed") return close([droppedRow(null, "propose_failed", said.stopped(STOPPED.notChecked))]);
     const { active, tools } = await deps.promptFacts(input.runId, input.agentId);
     const deadlineMs = deps.deadlineMs ?? REFLECT_TIMEOUT_MS;
     const started = now();

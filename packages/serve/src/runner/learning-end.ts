@@ -52,6 +52,10 @@ export interface LearningEndDeps {
   readonly signIns?: SignInReader;
   /** The secret values the run's claim handed it (claim-secrets.ts: its tool and model keys), never learned. */
   readonly handed?: readonly string[];
+  /** Every key saved on the server, opened now (server-keys.ts savedKeyValues), never learned though the run was never
+   *  handed it, as the server's own check refused them (serverSecrets). Read at each run's end, so a key saved while the
+   *  run lived is refused too. */
+  readonly savedKeys?: () => Promise<readonly string[]>;
   /** The grade model the server names (learning.ts gradeModelOf); none, from `env` as the server reads it. */
   readonly gradeModel?: string;
 }
@@ -85,7 +89,8 @@ export function learningEndOfRun(launch: RunLaunch, deps: LearningEndDeps): EndO
     refuse: async (runId) => {
       const pointers = await handedValuesOf(deps, deps.store, runId);
       if (pointers === "unreadable") return "unreadable";
-      return runnerSecrets(env, [...(deps.handed ?? []), ...pointers.refs.filter((ref) => ref.length >= MIN_SECRET)]);
+      const saved = deps.savedKeys ? await deps.savedKeys() : [];
+      return runnerSecrets(env, [...(deps.handed ?? []), ...saved, ...pointers.refs.filter((ref) => ref.length >= MIN_SECRET)]);
     },
     check: async ({ runId, agentId, turn, outcome, refuse }) => {
       if (start.seed === null) throw new Error("the run's learning start names no commit of main to propose against");

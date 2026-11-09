@@ -45,6 +45,7 @@ import type { Workspace } from "../workspace/workspace.js";
 import type { ComputerSetting } from "../computer-setting.js";
 import type { AdapterRun, AdapterRunSpec, RunCapConfig } from "./adapter-loop.js";
 import { adapterRunGate, type AdapterSpecDeps, answersCut, hostToolCtxOf, learnedWorkflowHostTool } from "./adapter-run-spec.js";
+import { savedKeyValues } from "../server-keys.js";
 import { signInReads } from "../sign-ins-store.js";
 import { claimSecrets } from "./claim-secrets.js";
 import { mcpForClaim } from "./mcp-run.js";
@@ -292,6 +293,7 @@ export async function cliRunSpecFromLaunch(launch: RunLaunch, run: AdapterRun, d
     // What the run must never learn beside the runner's secrets: the keys its claim handed it, and its sign-in's pointers,
     // read back from the store's sign-ins under the seal key (learning-run.ts refused, on the runner).
     signIns: signInReads(deps.store, deps.sealKey),
+    savedKeys: () => savedKeyValues(deps.store, deps.sealKey),
     handed: handedKeys,
     learningFolder: archil === undefined
       ? (agentId: string) => learningFolderOf(deps.data, agentId)

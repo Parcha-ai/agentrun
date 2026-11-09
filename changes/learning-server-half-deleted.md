@@ -13,4 +13,6 @@ Deleted:
 
 The end-of-run turn's range in a run's record (`Reflect`, `reflects`, `labelled`, `reflecting`, `TurnOrigin`) moves to `reflect-range.ts`, for the runner's learning end, the store's reads, the store-backed view and the tool gate.
 
+On the switch line, GET /v2/runs/{id}/learning/diff answers from the store again (it answered 501): a merge from the agent's learning folder, the kept proposal's notes against its seed, or no file against the launch's seed. The runner's learning end now refuses every key saved on the server, as the server's own check did, besides the runner's secrets, the claim's keys and the handed sign-in pointers.
+
 Upgrading: drop `reflectTimeoutMs` from a `startServe` call; the end-of-run turn's deadline is the runner's (`REFLECT_TIMEOUT_MS`).
