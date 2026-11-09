@@ -17,10 +17,10 @@ import { anthropicMessagesApi } from "@earendil-works/pi-ai/api/anthropic-messag
 import { type Extension, type Harness, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { chargedCost, type DecisionProvider, DecisionProviderError, type LoadImage, type Workflow, type WorkflowDeps } from "@parcha/agentrun-dsl";
 import type { DecisionModelPrice } from "@parcha/agentrun-decisions";
-import { type BeforeRequest, modelPortFor, type Refusal, runBooking, type RunSessions } from "@parcha/agentrun-kernel";
+import { type BeforeRequest, modelPortFor, type Refusal, type RunSessions } from "@parcha/agentrun-kernel";
 import { anthropicPolicy } from "@parcha/agentrun-harness-claude";
 import { type ModelProxy, type ProviderPolicy, type ProxyUsage, startModelProxy } from "@parcha/agentrun-kernel/host";
-import { beforeRequestOf, type Cap, type CapMode, type CapModel, CapRefused, checkRaise, createCap, type DecisionCapRequest, followUpOf, parkOf, type RaiseState } from "@parcha/agentrun-kernel/kernel/cap";
+import { type CapMode, type CapModel, CapRefused, checkRaise, DECISION_SESSION, type DecisionCapRequest, followUpOf, parkOf, type RaiseState, runCap, type RunDecisions } from "@parcha/agentrun-kernel/kernel/cap";
 import { completer } from "../llm.js";
 // The serve decision-provider list prices and the replay check, shared with main's decision cap. They move to the new
 // path when the old per-run decision cap (decision-cap.ts) is deleted in the cutover; one source of truth until then.
@@ -204,12 +204,11 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string 
     // The cap read against every request: the run's cap, raised in place once harnessReady reads this claim's raise.
     let effectiveCapUsd = claimed.capUsd;
 
-    // The run's decision cap, when its workflow has a decision node: one kernel cap of its own (createCap), on which each
-    // decision admits and settles, priced as main holds it (holdOf). It reads the same cap figure the model booking does
-    // (effectiveCapUsd, raised in place), so a raise moves both; its spend and holds feed the model booking's rule
-    // (harnessReady), so a run's model requests and decisions draw on one spend. With no cap the kernel prices no decision.
+    // The run's decision providers, when its workflow has a decision node; the decisions book on the run's ONE cap
+    // (runCap), created with the model booking once the Harness is open (harnessReady). A decision node runs after that, so
+    // it reaches the cap through this reference, which harnessReady sets.
     const decisions = (await deps.decisionProvidersOf?.()) ?? undefined;
-    const decisionCap: Cap | undefined = decisions ? createCap({ capUsd: () => effectiveCapUsd, mode: claimed.mode, now }) : undefined;
+    let decisionCap: RunDecisions | undefined;
 
     // The run's completer for a call node's `llm` tool: one completion on the run's models, its tier's model (the proxy
     // books it under the cap like a model node's).
@@ -235,11 +234,11 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string 
           runEffect: runEffectOf(claimed, complete, deps.env ?? process.env),
           workRoot: claimed.workRoot,
           flush: () => deps.store.flush(),
-          // A decision node books through the run's decision cap (admitted and settled as main holds it); a cap refusal for
-          // room parks the run through the loop's hook, the same as a model node's. With no decision provider the workflow
-          // runs none, and the cap is the identity (the model money is on the proxy).
+          // A decision node books through the run's one cap (admitted and settled as main holds it); a cap refusal for room
+          // parks the run through the loop's hook, the same as a model node's. The cap is wired at harnessReady, so the
+          // wrapper reaches it through the deferred reference. With no decision provider the workflow runs none.
           ...(decisions ? { decisionProviders: decisions, ...(deps.loadImage ? { loadImage: deps.loadImage } : {}) } : {}),
-          cap: decisionCap ? decisionWorkflowCap(decisionCap, decisions!, hooks.park) : identityWorkflowCap(),
+          cap: decisions ? decisionWorkflowCap(() => decisionCap, decisions, hooks.park) : identityWorkflowCap(),
         };
         return workflowHost(hostDeps) as { extensions: readonly Extension[]; host: never };
       },
@@ -247,26 +246,23 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string 
         // The raise this claim took (takeRaises wrote it before the workflow ran) moves the cap in place.
         const raised = await raisedCapOf(harness, context);
         if (raised !== undefined && (effectiveCapUsd === undefined || raised > effectiveCapUsd)) effectiveCapUsd = raised;
-        // The run's booking over the journal's sessions: the model proxy's requests go through it, checked by the cap and
-        // summed across the run (runBooking). Wired now the Harness is open; the proxies' hooks forward here.
+        // The run's ONE cap over the journal's sessions: its model requests and its decisions admit by the one rule and
+        // book on one ledger (runCap's runBooking over the sessions), so each is judged on the run's whole spend and a
+        // refusal's figures are the run's. Wired now the Harness is open; the proxies' hooks forward to the model booking.
         const sessions = journalSessions(harness, context, { flush: () => deps.store.flush() });
         const writer = await sessions.open(SESSION);
-        const cap = cappedBefore({
-          capUsd: () => effectiveCapUsd,
-          modelOf: capModelOf,
-          mode: claimed.mode,
-          now,
-          park: hooks.park,
-          // The reconciliation seam: the model booking's rule reads the run's decision spend and holds beside its own
-          // requests, so a run's model requests and decisions draw on one spend (beforeRequestOf's spentUsd/heldUsd).
-          ...(decisionCap ? { spentUsd: () => decisionCap.spentUsd(), heldUsd: () => decisionCap.heldUsd() } : {}),
-        });
+        const run = runCap({ sessions: sessions as unknown as RunSessions, capUsd: () => effectiveCapUsd, mode: claimed.mode, now, modelOf: capModelOf });
         booking = await modelPortFor(writer, {
           key: SESSION,
           label: SESSION,
-          beforeRequest: runBooking(sessions as RunSessions, cap),
+          // The model booking is the run's rule itself (no second booking); a refusal parks the run through the loop's hook.
+          beforeRequest: parkOnRefusal(run.before, hooks.park),
           onEvent: async (event) => { if (event.type === "request_start") await deps.store.flush(); },
         });
+        // The run's decisions book on the same cap, under their own session (DECISION_SESSION); created now the Harness is
+        // open, so a decision node (which runs after this) reaches it through the deferred reference. The flush makes each
+        // decision's hold durable before it is sent, as a model request's is.
+        if (decisions) decisionCap = await run.decisions(await sessions.open(DECISION_SESSION), { flush: () => deps.store.flush() });
         hooks.setPort(booking.models as never);
       },
       release: async () => {
@@ -277,16 +273,15 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string 
   };
 }
 
-/** The cap's beforeRequest for the run's model requests: the kernel cap's rule (beforeRequestOf), and on a refusal it
- *  parks the run through the loop's hook (parkOf decides room vs for good from the refusal), the same as the pi adapter's
+/** The run's rule with a park on a refusal: `before` (runCap's one rule for the model session) is asked, and on a refusal
+ *  the run parks through the loop's hook (parkOf decides room vs for good from the refusal), the same as the pi adapter's
  *  parkAtCap. It still returns the refusal, so the proxy refuses the request and the node's turn ends. */
-function cappedBefore(options: { capUsd: () => number | undefined; modelOf: (id: string) => CapModel | undefined; mode: CapMode; now: () => number; park: (refusal: CapRefusal) => void; spentUsd?: () => number | null; heldUsd?: () => number | null }): BeforeRequest {
-  const before = beforeRequestOf({ capUsd: options.capUsd, modelOf: options.modelOf, mode: options.mode, now: options.now, ...(options.spentUsd ? { spentUsd: options.spentUsd } : {}), ...(options.heldUsd ? { heldUsd: options.heldUsd } : {}) });
+function parkOnRefusal(before: BeforeRequest, park: (refusal: CapRefusal) => void): BeforeRequest {
   return async (request) => {
     const verdict = await before(request);
     if (verdict && "refuse" in verdict) {
       const refusal = verdict as Refusal;
-      options.park({ message: refusal.refuse, forGood: refusal.forGood ?? true, ...(refusal.figures ? { figures: refusal.figures } : {}) });
+      park({ message: refusal.refuse, forGood: refusal.forGood ?? true, ...(refusal.figures ? { figures: refusal.figures } : {}) });
     }
     return verdict;
   };
@@ -338,17 +333,18 @@ function runEffectOf(claimed: Claimed, complete: ReturnType<typeof completer>, e
 
 /** The end's cost and metrics: what every model request of the run cost (the booking) plus what its decisions cost (the
  *  decision cap), one spend for the run. Unknown (no figure) once either part is unknown. */
-async function endPatchOf(booking: Awaited<ReturnType<typeof modelPortFor>> | undefined, decisionCap: Cap | undefined): Promise<Pick<EndData, "costUsd" | "metrics">> {
+async function endPatchOf(booking: Awaited<ReturnType<typeof modelPortFor>> | undefined, decisionCap: RunDecisions | undefined): Promise<Pick<EndData, "costUsd" | "metrics">> {
   if (!booking) return {};
   const model = booking.spentUsd();
   const decision = decisionCap ? decisionCap.spentUsd() : 0;
   return model === null || decision === null ? {} : { costUsd: model + decision };
 }
 
-/** The run's decision cap as a WorkflowCap: model nodes and call nodes pass through (their money is on the proxy), and a
- *  decision node is admitted and settled through the kernel cap (`cap`), priced as main holds it. */
-function decisionWorkflowCap(cap: Cap, providers: DecisionProviders, park: (refusal: CapRefusal) => void): WorkflowCap {
-  return { node: (fn) => fn, effect: (fn) => fn, judge: <F>(fn: F, driver?: DecisionDriver): F => decisionJudge(fn, { cap, providers, park, driver }) };
+/** The run's one cap as a WorkflowCap: model nodes and call nodes pass through (their money is on the proxy), and a
+ *  decision node is admitted and settled through the run's decisions (`getCap`, wired at harnessReady), priced as main
+ *  holds it. The reference is deferred because the cap is not built until the Harness opens. */
+function decisionWorkflowCap(getCap: () => RunDecisions | undefined, providers: DecisionProviders, park: (refusal: CapRefusal) => void): WorkflowCap {
+  return { node: (fn) => fn, effect: (fn) => fn, judge: <F>(fn: F, driver?: DecisionDriver): F => decisionJudge(fn, { getCap, providers, park, driver }) };
 }
 
 /** A decision wrapped over the DSL driver's judge (the host's `recovered.runJudge`): it prices the request as main does
@@ -357,7 +353,7 @@ function decisionWorkflowCap(cap: Cap, providers: DecisionProviders, park: (refu
  *  run through the loop's hook (as a model node's does); a refusal for no price fails it; a price the catalog could not
  *  read fails the decision node as a connection error, never the cap's stop. A request the driver answers from what it
  *  decided before (a route's, or one an earlier process admitted that did not fail) holds nothing (askedBefore). */
-function decisionJudge<F>(inner: F, deps: { cap: Cap; providers: DecisionProviders; park: (refusal: CapRefusal) => void; driver?: DecisionDriver }): F {
+function decisionJudge<F>(inner: F, deps: { getCap: () => RunDecisions | undefined; providers: DecisionProviders; park: (refusal: CapRefusal) => void; driver?: DecisionDriver }): F {
   const judge = inner as (params: JudgeParams) => Promise<JudgeResult>;
   return (async (params: JudgeParams) => {
     if (deps.driver && askedBefore(deps.driver, params)) return judge(params);
@@ -365,9 +361,12 @@ function decisionJudge<F>(inner: F, deps: { cap: Cap; providers: DecisionProvide
     const provider = Object.hasOwn(deps.providers.providers, id) ? deps.providers.providers[id] : undefined;
     // A provider the host lacks is refused by the judge itself (configuration), before anything is held.
     if (!provider) return judge(params);
+    const cap = deps.getCap();
+    // The cap is wired at harnessReady, before any node runs; a decision reaching here without it is a bug.
+    if (!cap) throw new Error(`decision "${params.label}": the run's decision cap was not wired before the workflow ran`);
     const request = await decisionRequestOf(provider, params);
     try {
-      await deps.cap.admit(request);
+      await cap.admit(request);
     } catch (error) {
       // A refusal the cap read: for room the run parks (a raise sends it), for no price it fails; both through the loop's
       // hook, as a model node's refusal does. A price the catalog could not read fails the decision node, never the cap.
@@ -376,13 +375,13 @@ function decisionJudge<F>(inner: F, deps: { cap: Cap; providers: DecisionProvide
     }
     try {
       const result = await judge(params);
-      await deps.cap.settle(request.id, { end: "charged", usd: finiteUsd(result?.cost_usd) });
+      await cap.settle(request.id, { end: "charged", usd: finiteUsd(result?.cost_usd) });
       return result;
     } catch (error) {
       // Sent and maybe billed (its outcome lost, its answer rejected): at what it was charged, else at its hold (null).
       // One its provider refused unbilled, or that never left, charged nothing: booked at $0 so no later process counts it.
       const charged = chargedCost(error);
-      await deps.cap.settle(request.id, { end: "charged", usd: charged !== undefined ? charged : unbilled(error) ? 0 : null });
+      await cap.settle(request.id, { end: "charged", usd: charged !== undefined ? charged : unbilled(error) ? 0 : null });
       throw error;
     }
   }) as F;
