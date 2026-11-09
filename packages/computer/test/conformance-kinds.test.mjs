@@ -70,6 +70,15 @@ test("a case skipped for an optional group the computer does not declare does no
 	assert.ok(skipped.verdict.reasons.some((r) => r.includes("process.skip")), skipped.verdict.reasons.join("; "));
 });
 
+test("only a Core case's skip is owed by a required group: a Full case that skips does not fail its kind, and one that fails still does", async () => {
+	const base = [pass("exec.ok", ["exec"]), pass("files.ok", ["files"]), pass("process.ok", ["processes"])];
+	const fullSkip = await sandboxRun({ cases: [...base, pass("process.extra", ["processes"], { level: "full", run: async (t) => t.skip("the provider refuses it in words") })] });
+	assert.equal(fullSkip.verdict.verdict, "pass", fullSkip.verdict.reasons.join("; "));
+	const fullFail = await sandboxRun({ cases: [...base, pass("process.extra", ["processes"], { level: "full", run: async (t) => t.equal(1, 2, "one") })] });
+	assert.equal(fullFail.verdict.verdict, "fail");
+	assert.ok(fullFail.verdict.reasons.some((r) => r.includes("process.extra failed")), fullFail.verdict.reasons.join("; "));
+});
+
 test("runConformance refuses kind and only together, and kind none, in words; browser fails until a cdp case passes", async () => {
 	const { provider } = fakeComputers();
 	await assert.rejects(runConformance(provider, { image: IMAGE, kind: "sandbox", only: ["exec"] }), /kind and only/);
