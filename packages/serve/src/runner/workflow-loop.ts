@@ -77,6 +77,15 @@ export interface WorkflowRunSpec {
   readonly endPatch?: (end: EndData) => Promise<Pick<EndData, "costUsd" | "metrics">>;
   /** pi-durable's restart limit for the run's Harness. Absent: pi's own default. */
   readonly restartLimit?: number;
+  /** Called once the run's Harness is open, before the workflow runs: the spec wires anything that needs the Harness here
+   *  (the run's model booking over the journal's sessions, which the model proxy's requests go through — the booking's
+   *  writer is the Harness's, not available at build()). Absent: nothing to wire. A resume calls it afresh on the reopened
+   *  Harness. */
+  readonly harnessReady?: (harness: Harness, context: Context) => void | Promise<void>;
+  /** Lets the spec's per-claim resources go once the loop is done with the claim (the model proxies it started): called
+   *  once, however the run ended (ended, stopped, failed, parked or interrupted), so a parked or resumed run starts fresh
+   *  proxies on its next claim. Never throws out. Absent: nothing to let go. */
+  readonly release?: () => Promise<void>;
 }
 
 /** What the interpreter's host may ask of the loop while it runs. */
@@ -233,6 +242,7 @@ function workflowLoop(specOf: (claim: Claim) => WorkflowRunSpec | Promise<Workfl
 
   async function run(claim: Claim): Promise<LoopEnd> {
     runId = claim.runId;
+    try {
     // A step the cap holds parks the run: `park` keeps the refusal and aborts this controller, which ends the held step's
     // wait (its node's signal) and the workflow's invocation, leaving the task pending for a later claim; the loop then
     // writes the run parked instead of interrupted. The claim's own signal (a lost claim, a shutdown) aborts it too.
@@ -255,6 +265,9 @@ function workflowLoop(specOf: (claim: Claim) => WorkflowRunSpec | Promise<Workfl
     registry.install(workflows.extension);
     harness = await Harness.open(deps.journal(claim), { models: spec.models, registry, onReport: () => {}, ...(spec.restartLimit !== undefined ? { settings: { restartLimit: spec.restartLimit } } : {}) }, context);
     harnessClosed = false;
+    // The run's model booking lives on the Harness (the journal's sessions), so it is wired now, before the workflow's
+    // first model request goes through the proxy. A resume rebuilds it on the reopened Harness.
+    await spec.harnessReady?.(harness, context);
 
     // A cancel the runner handed over before the Harness opened: take it now the workflow is about to run.
     if (stopReason?.kind === "command") void requestCancel();
@@ -285,6 +298,11 @@ function workflowLoop(specOf: (claim: Claim) => WorkflowRunSpec | Promise<Workfl
     if (stopReason?.kind === "command") return await writeEnd(endJournal, context, { state: "stopped", summary: endedBy(stopReason.cancel) });
     const carry = await workflowCarry({ runId: claim.runId, storage: endJournal, revision }, outcome, { context });
     return await writeEnd(endJournal, context, carry);
+    } finally {
+      // The claim is done however it ended (ended, stopped, failed, parked, interrupted): let the spec's per-claim
+      // resources go, the model proxies it started. A parked or resumed run starts fresh ones on its next claim.
+      await spec?.release?.().catch(() => undefined);
+    }
   }
 
   /** A step's spend cap held it: the run parks with the cap's pending budget (an `agentrun.budget` entry, the run's row in
