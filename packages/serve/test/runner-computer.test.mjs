@@ -16,7 +16,7 @@ function fakeProvider() {
     capabilities: () => ({}),
     check: () => [],
     async create(spec) { state.spec = spec; return { ok: true, value: state.ref }; },
-    async connect() { return { ok: true, value: { client: { call: async () => ({ ok: true, value: {} }), close: async () => {} }, hello: {}, close: async () => {} } }; },
+    async connect() { return { ok: true, value: { client: { call: async () => ({ ok: true, value: {} }), close: async () => {} }, hello: { version: "test", os: "linux", kind: "linux", arch: "amd64", groups: ["exec", "files", "processes"] }, close: async () => {} } }; },
     async attach(ref) { return { ok: true, value: { id: ref.id, spec: { mount } } }; },
     async release(ref, how) { state.released.push([ref.id, how]); return { ok: true, value: undefined }; },
     async list() { return { ok: true, value: [] }; },
