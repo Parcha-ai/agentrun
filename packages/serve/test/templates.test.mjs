@@ -62,6 +62,14 @@ test("the code-review package reads whole: its review skill with the rules besid
   assert.match(review.instructions, /\$\{parameters\.repo\}/, "placeholders stay unfilled until an apply");
 });
 
+test("a package names each trigger once, compared as a trigger keeps its name (trimmed): two that differ only by spaces are refused, so an apply never meets the store's one name per agent", async (t) => {
+  const twice = (second) => ({ edit }) => edit("learning: false", `learning: false\ntriggers:\n  - name: nightly\n    source: { kind: schedule, cron: "0 9 * * *" }\n    target: { kind: start_run }\n  - name: ${second}\n    source: { kind: schedule, cron: "0 10 * * *" }\n    target: { kind: start_run }`);
+  for (const second of ["nightly", '"nightly "', '" nightly"']) {
+    const problems = await problemsOf(t, twice(second));
+    assert.ok(problems.includes("agent.md: triggers[1]: two triggers are named nightly"), `${second}: ${JSON.stringify(problems)}`);
+  }
+});
+
 test("the validator refuses a malformed package, naming each problem", async (t) => {
   const refused = async (change, pattern) => {
     const problems = await problemsOf(t, change);

@@ -1086,6 +1086,13 @@ const LEARNS = "You learn from your runs. When this run ends you are asked what 
 /** What a run that starts with no note is told in place of what it learned. */
 const NOTHING_YET = "Nothing learned yet.";
 
+/** A run's instructions with its # Learned section laid in main's position: the revision's instructions, then the heading,
+ *  LEARNS, and the section text — "Nothing learned yet." when the run learns but its section is empty (no notes yet, or a
+ *  seed that could not be read). Shared so the runner (laying launch.learning.section, read with no folder) and app.ts
+ *  (withLearned) lay the same bytes. */
+export const laidLearned = (instructions: string, section: string | undefined): string =>
+  `${instructions.trim()}\n\n${LEARNED_HEADING}\n\n${LEARNS}\n\n${section || NOTHING_YET}`;
+
 /** A run's instructions, with `# Learned` after them when its pin in `runDir` says it learns: that it learns, then what
  *  the pin says it learned, or that it has learned nothing yet. A run with no pin (its agent does not learn, its seed
  *  failed, a workflow's run) is never asked what to keep, so it is told nothing. And its skill files: the revision's
@@ -1107,7 +1114,7 @@ export async function withLearned(runDir: string, given: Workspace | string, ins
     else process.stderr.write(`agentrun-serve: the skill ${name} its agent learned is no longer whole in the run's work, so the run goes on without it\n`);
   }
   return {
-    instructions: pin ? `${instructions.trim()}\n\n${LEARNED_HEADING}\n\n${LEARNS}\n\n${section ?? NOTHING_YET}` : instructions,
+    instructions: pin ? laidLearned(instructions, section) : instructions,
     skills: [...own, ...learned.filter((path) => whole.has(path.split("/")[0]!))],
   };
 }

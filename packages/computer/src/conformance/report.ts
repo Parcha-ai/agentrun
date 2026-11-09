@@ -2,7 +2,7 @@
 // --only left out, the verdict last.
 import type { CaseGroup, CaseResult, ConformanceReport } from "./types.js";
 
-const GROUPS: CaseGroup[] = ["health", "exec", "files", "process", "provider", "drift", "mount", "screen", "input", "touch", "apps", "lifetime"];
+const GROUPS: CaseGroup[] = ["health", "exec", "files", "process", "provider", "drift", "mount", "screen", "input", "touch", "apps", "lifetime", "browser"];
 const NAMES_WIDTH = 44;
 const INDENT = " ".repeat("core ".length + "provider ".length + 1);
 
@@ -67,5 +67,10 @@ export function formatReport(report: ConformanceReport): string {
 	if (report.undeclared.length > 0) verdict += ` · ${report.undeclared.join(" ")} not declared`;
 	if (report.only) verdict += ` · only ${report.only.join(",")}`;
 	lines.push(verdict);
+	// A run by kind ends on the kind's verdict, which is what it was for.
+	if (report.kindVerdict) {
+		const { kind, verdict: outcome, reasons } = report.kindVerdict;
+		lines.push(outcome === "pass" ? `kind ${kind} PASS` : `kind ${kind} FAIL: ${reasons.join("; ")}`);
+	}
 	return `${lines.join("\n")}\n`;
 }

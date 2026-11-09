@@ -6,7 +6,7 @@ import { Chip } from "@/components/ui/chip";
 import type { Client } from "@/lib/client";
 import { when } from "@/lib/format";
 import { type SecretsWhyNot, WHY_NOT_WORDS } from "@/lib/secrets";
-import { type McpAuth, type McpPreview, mcpProblem, type McpRefresh, type McpServer, NO_SEAL_KEY } from "@/lib/mcp";
+import { type McpAuth, type McpPreview, mcpProblem, type McpRefresh, type McpServer, NO_SEAL_KEY, signInFailure } from "@/lib/mcp";
 
 type Problem = ReturnType<typeof mcpProblem>;
 type SignIn = { server: string; ok: boolean; error?: string };
@@ -16,6 +16,9 @@ const MAX_HEADERS = 8;
 const CREDENTIAL: Record<string, [string, "success" | "warning" | "plain"]> = {
   sealed: ["sealed", "success"], expired: ["sign-in expired", "warning"], unreadable: ["can't be opened: enter it again", "warning"], seal_key_missing: ["no seal key now", "warning"],
 };
+
+/** Where a saved credential came from, as its row says it (the read's `secret.source`). */
+const SOURCE: Record<"env" | "console" | "sign-in", string> = { env: "From the server's environment", console: "Pasted in the console", "sign-in": "From a sign-in" };
 
 /** Settings → MCP servers: the remote MCP servers this server keeps, each with its tools and its credential's state, and
  *  a form to add one: its address and credential, a preview of the tools it lists, then Save. A credential goes to the
@@ -51,7 +54,7 @@ export function McpServersPage({ v2, atRest, signIn, writable, whyNot = "sign_in
         </div>
         {signIn && (
           <p className={`border p-4 text-[13px] ${signIn.ok ? "border-success/50 text-success-text" : "border-warning/50 text-warning-text"}`} role="status">
-            {signIn.ok ? `Signed in to ${signIn.server}. Its tools are saved.` : `Signing in to ${signIn.server} failed: ${signIn.error}.`}
+            {signIn.ok ? `Signed in to ${signIn.server}. Its tools are saved.` : `Signing in to ${signIn.server} failed: ${signInFailure(signIn.error)}.`}
           </p>
         )}
         {cantStore && <p className="border bg-card p-4 font-mono text-[13px]" role="status">{NO_SEAL_KEY}</p>}
@@ -68,6 +71,7 @@ export function McpServersPage({ v2, atRest, signIn, writable, whyNot = "sign_in
         {servers && (servers.length
           ? <ul className="border">{servers.map((s) => <ServerRow key={s.name} v2={v2} server={s} writable={writable && !form} signIn={startSignIn} onChange={() => setForm({ saved: s })} onChanged={load} />)}</ul>
           : <p className="border px-3 py-4 font-mono text-[13px] text-muted-foreground">No MCP server is saved here yet.</p>)}
+        <PrivateHosts v2={v2} />
       </div>
     </div>
   );
@@ -96,12 +100,13 @@ function ServerRow({ v2, server: s, writable, signIn, onChange, onChanged }: { v
       <div className="flex flex-wrap items-start gap-3">
         <Plug className="mt-1 size-4 shrink-0 text-muted-foreground" aria-hidden />
         <div className="min-w-0 flex-1">
-          <p className="flex flex-wrap items-center gap-2"><span className="font-mono text-[15px] font-semibold">{s.name}</span><Chip tone={tone}>{said}</Chip></p>
+          <p className="flex flex-wrap items-center gap-2"><span className="font-mono text-[15px] font-semibold">{s.name}</span><Chip tone={tone}>{said}</Chip>{!!s.not_metered?.length && <Chip tone="plain">not metered</Chip>}</p>
           <p className="mt-1.5 break-all font-mono text-[12px] text-muted-foreground">{s.url}</p>
+          {s.secret?.set && s.secret.source && <p className="mt-1 font-mono text-[12px] text-muted-foreground">{SOURCE[s.secret.source]}{s.secret.changed_at ? ` · last changed ${when(s.secret.changed_at)}` : ""}</p>}
           {oauth && s.oauth && <p className="mt-1 font-mono text-[12px] text-muted-foreground">Signed in with OAuth{s.oauth.scopes.length ? ` · ${s.oauth.scopes.join(" ")}` : ""}{s.oauth.client === "pre-registered" && s.oauth.client_id ? ` · client ${s.oauth.client_id}` : ""}{s.credential === "expired" ? " · sign-in expired: sign in again" : s.oauth.expires_at ? ` · token until ${when(s.oauth.expires_at)}` : ""}</p>}
           <details className="mt-2">
             <summary className="cursor-pointer font-mono text-[12px]">{s.tools.length} tool{s.tools.length === 1 ? "" : "s"}</summary>
-            <ul className="mt-1 space-y-0.5">{s.tools.map((t) => <li key={t.name} className="font-mono text-[12px]">{t.name}{s.prices?.[t.name] !== undefined && <span className="text-muted-foreground"> · ${s.prices[t.name]} a call</span>}</li>)}</ul>
+            <ul className="mt-1 space-y-0.5">{s.tools.map((t) => <li key={t.name} className="font-mono text-[12px]">{t.name}{s.prices?.[t.name] !== undefined && <span className="text-muted-foreground"> · ${s.prices[t.name]} a call</span>}{s.not_metered?.includes(t.name) && <span className="text-muted-foreground"> · not metered</span>}</li>)}</ul>
           </details>
           {/* Its credential's values (the token, each header's), each as a secret row: Replace opens the server's form. */}
           {metas.length > 0 && <ul className="mt-2 space-y-1.5">{metas.map((m) => <SecretRow key={m.name} field={m} label={AUTH_LABEL[s.auth.type]} writable={writable} onPaste={m.source === "sign-in" ? undefined : onChange} />)}</ul>}
@@ -126,6 +131,54 @@ function ServerRow({ v2, server: s, writable, signIn, onChange, onChanged }: { v
       )}
       {problem && <div className="mt-3"><Said problem={problem} /></div>}
     </li>
+  );
+}
+
+/** Settings → MCP servers → Private network hosts: the hosts an MCP server's sign-in may reach on a private network,
+ *  none by default. Each add or remove sends the whole list, and the list shown is the one the server answers it kept.
+ *  Only the owner's password session changes it: the server refuses a token, and the console says its words. */
+function PrivateHosts({ v2 }: { v2: Client }) {
+  const [hosts, setHosts] = useState<string[] | null>(null);
+  const [loadError, setLoadError] = useState<Problem | null>(null);
+  const [problem, setProblem] = useState<Problem | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [draft, setDraft] = useState("");
+  const load = () => void v2.mcpPrivateHosts().then((r) => { setHosts(r.hosts); setLoadError(null); }, (e) => setLoadError(mcpProblem(e)));
+  useEffect(load, [v2]); // eslint-disable-line react-hooks/exhaustive-deps
+  const save = async (next: string[]): Promise<boolean> => {
+    setBusy(true); setProblem(null);
+    try { setHosts((await v2.saveMcpPrivateHosts(next)).hosts); return true; } catch (e) { setProblem(mcpProblem(e)); return false; } finally { setBusy(false); }
+  };
+  const allow = async (e: FormEvent) => {
+    e.preventDefault();
+    if (hosts && draft.trim() && (await save([...hosts, draft.trim()]))) setDraft("");
+  };
+  return (
+    <section aria-labelledby="mcp-private-hosts" className="space-y-3 border bg-card p-4">
+      <h2 id="mcp-private-hosts" className="caps text-[12px] font-semibold">Private network hosts</h2>
+      <p className="text-[13px] text-muted-foreground">Off by default. A host listed here may run an MCP server's sign-in on your private network (10.x, 172.16–31.x, 192.168.x, 100.64–127.x, fc00::/7), over https only; never this machine, loopback or a link-local address such as cloud metadata.</p>
+      {loadError && (
+        <div role="alert">
+          <p className="font-mono text-[13px] text-destructive-text">The private network hosts could not be read. {loadError.text}</p>
+          <button type="button" onClick={load} className="caps mt-3 border px-3 py-2 text-[12px] hover:bg-accent">Try again</button>
+        </div>
+      )}
+      {hosts && (hosts.length
+        ? <ul aria-label="Allowed private network hosts" className="border bg-background">{hosts.map((host) => (
+            <li key={host} data-host={host} className="flex items-center justify-between gap-3 border-b px-3 py-2 last:border-b-0">
+              <span className="break-all font-mono text-[13px]">{host}</span>
+              <Button size="sm" disabled={busy} onClick={() => void save(hosts.filter((h) => h !== host))}>Remove</Button>
+            </li>
+          ))}</ul>
+        : <p className="border bg-background px-3 py-3 font-mono text-[13px] text-muted-foreground">No host is allowed: a sign-in on a private network is refused.</p>)}
+      {hosts && (
+        <form onSubmit={(e) => void allow(e)} aria-label="Allow a private network host" className="flex gap-2">
+          <input name="mcp-private-host" aria-label="Host name or IP address" value={draft} onChange={(e) => setDraft(e.target.value)} placeholder="auth.corp.example" spellCheck={false} autoCapitalize="off" autoCorrect="off" className={input} />
+          <Button type="submit" size="sm" variant="solid" disabled={busy || !draft.trim()}>Allow</Button>
+        </form>
+      )}
+      {problem && <Said problem={problem} />}
+    </section>
   );
 }
 
@@ -182,11 +235,9 @@ function ServerForm({ v2, saved, cantStore, writable, signIn, onCancel, onSaved 
   const submit = (e: FormEvent) => {
     e.preventDefault();
     if (type === "oauth" && (!saved || needsSignIn)) return void startSignIn();
-    // A save replaces the server's record: its tools' prices go with it, for the tools it still lists at the same address
-    // (a new address is another server, whose prices are its own).
-    const listed = preview?.tools ?? saved?.tools ?? [];
-    const kept = saved?.prices && url.trim() === saved.url ? Object.fromEntries(Object.entries(saved.prices).filter(([tool]) => listed.some((t) => t.name === tool))) : {};
-    void act(async () => { await v2.saveMcpServer(name.trim(), url.trim(), auth(), Object.keys(kept).length ? kept : undefined); form.current?.reset(); onSaved(); });
+    // No prices are sent: this form sets none, and the server keeps the saved ones for the tools still listed at the same
+    // address when a PUT has none.
+    void act(async () => { await v2.saveMcpServer(name.trim(), url.trim(), auth()); form.current?.reset(); onSaved(); });
   };
   const canSave = !busy && !!name.trim() && !!url.trim() && (!!saved || !!preview);
   const keepNote = (what: string) => saved?.credential === "sealed" && saved.auth.type === type && <span className="-mt-1 mb-2 block text-[12px] text-muted-foreground">Saved. {what}</span>;
@@ -235,7 +286,8 @@ function ServerForm({ v2, saved, cantStore, writable, signIn, onCancel, onSaved 
       {problem && (
         <div className="space-y-2">
           <Said problem={problem} />
-          {problem.signIn && <Button type="button" size="sm" variant="primary" disabled={busy || !name.trim()} onClick={() => void startSignIn()}>Sign in</Button>}
+          {/* With OAuth chosen the form's own Sign in is there: one button, not two. */}
+          {problem.signIn && type !== "oauth" && <Button type="button" size="sm" variant="primary" disabled={busy || !name.trim()} onClick={() => void startSignIn()}>Sign in</Button>}
         </div>
       )}
       {preview && (

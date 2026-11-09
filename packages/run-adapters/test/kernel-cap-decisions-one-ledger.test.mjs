@@ -80,6 +80,25 @@ test("a decision sent and its box lost before any later write still counts after
   near(admitted.heldUsd, 0.25, "its hold");
 });
 
+test("a paid tool call on the run's one cap is held at its price beside the run's spend (main's paidCall), and a later claim counts what it charged", async () => {
+  const store = memorySessionStore();
+  await modelSpent(store, 0.6);
+  const run = cap.runCap({ sessions: store, capUsd: () => 0.6005, mode: "expected", now: () => T0, modelOf: () => undefined });
+  const tools = await run.tools(await store.open(cap.TOOL_SESSION));
+  const search = { id: "call-1#1", name: "Parallel's search", holdUsd: 0.001, basis: "Parallel's list price for a fast search" };
+  const refused = await tools.admit(search).then(() => undefined, (error) => error);
+  assert.ok(refused instanceof cap.CapRefused, `$0.60 spent and $0.001 asked of a $0.6005 cap: refused for room: ${refused ?? "admitted"}`);
+  assert.match(refused.message, /the next step, Parallel's search, could cost up to \$0\.001 \(Parallel's list price for a fast search\)/, "main's paidRefusal words");
+  near(refused.figures?.spentUsd, 0.6, "spent");
+  const roomy = cap.runCap({ sessions: store, capUsd: () => 1, mode: "expected", now: () => T0, modelOf: () => undefined });
+  const calls = await roomy.tools(await store.open(cap.TOOL_SESSION));
+  const admitted = await calls.admit(search);
+  near(admitted.heldUsd, 0.001, "held at its price");
+  await calls.settle("call-1#1", 0.001);
+  const next = await cap.runCap({ sessions: store, capUsd: () => 1, mode: "expected", now: () => T0, modelOf: () => undefined }).tools(await store.open(cap.TOOL_SESSION));
+  near(next.spentUsd(), 0.001, "the next claim counts it");
+});
+
 const near = (actual, expected, what) => assert.ok(typeof actual === "number" && Math.abs(actual - expected) < 1e-9, `${what}: ${actual}, not ${expected}`);
 
 test("a decision under a tight cap is judged on the run's model spend beside its own: refused, its figures the run's, as main's", async () => {

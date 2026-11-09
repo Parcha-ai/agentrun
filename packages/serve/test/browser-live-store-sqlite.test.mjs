@@ -1,4 +1,4 @@
-// The live viewers' hand-over (browser-live.ts) on the real store (SqliteStore's browser_viewers), under a claim the store
+// The live viewers' hand-over (browser-live.ts) on the real store (SqliteStore's computer_viewers), under a claim the store
 // hands out (runs.claimMany): the runner's put and drop, the server's reads, the fence, the sealed column and the end's
 // purge, end to end through the store. The unit tests (browser-live-store.test.mjs) run the same calls on the fake.
 import assert from "node:assert/strict";
@@ -12,11 +12,11 @@ import { queued, storeOn } from "./store-helpers.mjs";
 const KEY = randomBytes(32);
 const handover = (tag) => ({ port: 40000, id: randomBytes(16).toString("base64url"), token: randomBytes(32).toString("base64url"), tag });
 
-/** Every column of every browser_viewers row of `runId`, raw, as the store's file holds it. */
+/** Every column of every computer_viewers row of `runId`, raw, as the store's file holds it. */
 function rawRows(file, runId) {
   const db = new DatabaseSync(file, { readOnly: true, timeout: 5_000 });
   try {
-    return db.prepare("SELECT * FROM browser_viewers WHERE run_id = ? ORDER BY tag").all(runId);
+    return db.prepare("SELECT * FROM computer_viewers WHERE run_id = ? ORDER BY kind, tag").all(runId);
   } finally {
     db.close();
   }

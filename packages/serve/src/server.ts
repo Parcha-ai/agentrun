@@ -42,7 +42,7 @@ import { BOX_ALLOW_ENV, boxAllowOf, boxLimitsOf, boxNetworkOf, FAUX_BOX_ENV, fau
 import { Owner, passwordProblem, SESSION_MS } from "./owner.js";
 import { answerPage, byOwnerSession, heldSessions, isJson, overHttps, ownerCookie, ownOrigin, sendHostRefused, signedIn } from "./page.js";
 import { hostFix, hostName, loopbackNames } from "./host-check.js";
-import { handoverById, type LiveHandover, liveRest, liveViewer, liveViewerById, liveViewerFor, liveViewerLink, OpenViewers, proxyLiveUpgrade, readHandover, readHandovers, serveViewerFile, viewerAnswers, viewerLink } from "./browser-live.js";
+import { computerViewerLink, handoverById, type LiveFamily, type LiveHandover, liveRest, liveViewer, liveViewerById, liveViewerFor, liveViewerLink, OpenViewers, proxyLiveUpgrade, readHandover, readHandovers, serveViewerFile, viewerAnswers, viewerLink } from "./browser-live.js";
 import { browserHandBack, handBackTarget } from "./browser-commands.js";
 import { durationMs, logLine } from "./print.js";
 import { knownToolCostOf, type RunMoment, type State, type Status, toolCostOf, WITHHELD_SIGN_IN } from "./run-view.js";
@@ -125,8 +125,9 @@ const workerArgs = (args: readonly string[]): string[] =>
 export const DEFAULT_PORT = 7340;
 const VERSION: string = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8")).version;
 const IDEMPOTENCY_FILE = ".idempotency.json";
-/** A run's live browser viewer, under the run's path (browser-live.ts): its run id, then its page, files or WebSocket. */
-const LIVE_PATH = /^\/v2\/runs\/([^/]+)\/browser\/live(\/.*)$/;
+/** A run's live viewer, under the run's path (browser-live.ts): its run id, the family's address (`computer`, one for every
+ *  computer kind; `browser`, the browser's own), then its page, files or WebSocket. Both are served by the same code. */
+const LIVE_PATH = /^\/v2\/runs\/([^/]+)\/(computer|browser)\/live(\/.*)$/;
 const MAX_BODY = 1 << 20;
 const MAX_MESSAGE = 20_000;
 const MAX_WAIT_MS = 25_000;
@@ -313,6 +314,9 @@ export type ServeOptions = {
   learningBudget?: number;
   /** A test's seam: the triggers' clock and timer (triggers.ts), in place of Date.now and setTimeout. */
   triggerClock?: TriggerClock;
+  /** The server's store (store/index.ts), where the triggers and their firings live, with the agents they run as. Without
+   *  it the trigger routes answer unavailable and nothing fires. */
+  store?: Pick<Store, "triggers" | "runs" | "agents">;
   /** A test's seam: the trigger sources this server has (default the registry, trigger-adapters.ts). */
   triggerAdapters?: readonly TriggerAdapter[];
   /** A test's seam: the folder the template packages are read from, in place of the package's own (templates.ts). */
@@ -362,6 +366,7 @@ async function tokenIn(file: string): Promise<{ token: string; made: boolean }> 
 const digest = (text: string) => createHash("sha256").update(text).digest();
 /** Why a trigger never messages a run: it has no spend cap, and every turn a trigger drives is capped. */
 const NO_CAP = "The run has no spend cap: a trigger only messages a run with one, as every turn it drives is capped.";
+
 const sha256Hex = (text: string) => createHash("sha256").update(text).digest("hex");
 const SESSION_S = SESSION_MS / 1000;
 
@@ -416,6 +421,7 @@ export const ROUTES: readonly Route[] = [
   { method: "GET", pattern: /^\/runs\/([^/]+)\/files$/, name: "listRunFiles" },
   { method: "GET", pattern: /^\/runs\/([^/]+)\/browser$/, name: "getRunBrowser" },
   { method: "POST", pattern: /^\/runs\/([^/]+)\/browser\/hand-back$/, name: "handBackRunBrowser" },
+  { method: "GET", pattern: /^\/runs\/([^/]+)\/computer$/, name: "getRunComputer" },
   { method: "GET", pattern: /^\/runs\/([^/]+)\/files\/(.+)$/, name: "readRunFile" },
   { method: "POST", pattern: /^\/files$/, name: "createFile", raw: true },
   { method: "GET", pattern: /^\/files$/, name: "listFiles" },
@@ -437,6 +443,10 @@ export const ROUTES: readonly Route[] = [
   { method: "POST", pattern: /^\/settings\/mcp-servers\/([^/]+)\/oauth\/start$/, name: "startMcpOAuth" },
   { method: "GET", pattern: /^\/settings\/mcp-servers\/oauth\/callback$/, name: "mcpOAuthCallback" },
   { method: "GET", pattern: /^\/settings\/mcp-servers\/oauth\/client\.json$/, name: "mcpOAuthClient" },
+  // Served over the store-backed registry (mcp-private-hosts.ts privateHostsRoute) once the server runs on the one store:
+  // until then they answer 404, as an unmatched route does.
+  { method: "GET", pattern: /^\/settings\/mcp-servers\/oauth\/private-hosts$/, name: "getMcpPrivateHosts" },
+  { method: "PUT", pattern: /^\/settings\/mcp-servers\/oauth\/private-hosts$/, name: "putMcpPrivateHosts" },
   { method: "GET", pattern: /^\/settings\/tools$/, name: "getToolSettings" },
   { method: "PUT", pattern: /^\/settings\/tools$/, name: "putToolSettings" },
   { method: "GET", pattern: /^\/settings\/webhook$/, name: "getWebhook" },
@@ -620,8 +630,9 @@ function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: Ha
       /** A tool setting's `permission` (definition.tool_settings, /v2/settings/tools): allow, ask or deny, which the tool
        *  gate holds every tool call to (tool-gate.ts); an ask is answered at POST /runs/{id}/approvals/{approval_id}. */
       tool_permissions: true,
-      /** The owner watches a run's browser live (GET /runs/{id}/browser, browser-live.ts), takes it over from the viewer and
-       *  hands it back, and answers the agent's ask for them (POST /runs/{id}/browser/hand-back, browser-person.ts). */
+      /** The owner watches a run's browser live (GET /runs/{id}/browser, and GET /runs/{id}/computer, browser-live.ts), takes
+       *  it over from the viewer and hands it back, and answers the agent's ask for them (POST /runs/{id}/browser/hand-back,
+       *  browser-person.ts). */
       browser_live: { read_only: false, take_over: true, ask: true },
       /** An agent's browser stays signed in between its runs (sign-ins.ts): with a seal key to keep each pointer under, and a
        *  browser vendor here (Browserbase's or Kernel's; local Chrome keeps none). */
@@ -1147,8 +1158,11 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
 
   // Schedules: each firing starts its run as POST /agents/{id}/runs does, capped, under the firing's key (triggers.ts).
   // Firings an earlier server left due are driven again now, beside the recovery above.
-  const triggers: Triggers = new Triggers(data, {
+  const triggers: Triggers = new Triggers({
+    // The server's own store (the switch): the triggers' rows and the runs they start live there.
+    store: options.store ?? store,
     clock: options.triggerClock,
+    ...(options.publicUrl ? { publicUrl: options.publicUrl.replace(/\/+$/, "") } : {}),
     adapters,
     say: (fields) => (log ? log(logLine("trigger", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("trigger", fields)}\n`)),
     // The trigger target policy (what a trigger may start or message, and in what words it is refused) is the one store's
@@ -1159,7 +1173,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     notify: (failed, key) => webhooks.emitTrigger(failed, key),
   });
   stops.push(async () => triggers.close());
-  triggers.start();
+  void triggers.start().catch((error: Error) => void process.stderr.write(`agentrun-serve: the triggers' start: ${error.message}\n`));
 
   // Setup's import of this machine's sessions: offered by a server on this machine only (no public address, listening
   // on loopback), counted once (a listing, no transcript kept), run once, each on a worker thread (import-worker.ts) so
@@ -2019,11 +2033,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       authFailed(`/v2${path}`, "approve_without_session");
       throw new ApiError("forbidden", owner ? "Approving a note takes the owner's password sign-in in the console, never a token." : "Approving a note takes the owner's password sign-in, and this server has no accounts (AGENTRUN_ACCOUNTS=0).");
     }
-    // A run's live browser view is a full-control credential for its browser: the owner's signed-in page alone, as approving
-    // a note is (never a token a run, an MCP client or a script may hold).
-    if ((found.name === "getRunBrowser" || found.name === "handBackRunBrowser") && !byOwnerSession(req) && req.headers.authorization !== undefined) {
-      authFailed(`/v2${path}`, "browser_without_session");
-      throw new ApiError("forbidden", owner ? "A run's live browser takes the owner's password sign-in in the console, never a token." : "A run's live browser takes the owner's password sign-in, and this server has no accounts (AGENTRUN_ACCOUNTS=0).");
+    // A run's live computer view is a full-control credential for its computer: the owner's signed-in page alone, as
+    // approving a note is (never a token a run, an MCP client or a script may hold).
+    if ((found.name === "getRunBrowser" || found.name === "handBackRunBrowser" || found.name === "getRunComputer") && !byOwnerSession(req) && req.headers.authorization !== undefined) {
+      const what = found.name.endsWith("Browser") ? "browser" : "computer";
+      authFailed(`/v2${path}`, `${what}_without_session`);
+      throw new ApiError("forbidden", owner ? `A run's live ${what} takes the owner's password sign-in in the console, never a token.` : `A run's live ${what} takes the owner's password sign-in, and this server has no accounts (AGENTRUN_ACCOUNTS=0).`);
     }
     // Answering a tool call that waits for approval (tool-gate.ts) is the same: the owner's signed-in page alone, never a
     // token, which the run's own process, an agent's MCP client or a script may hold.
@@ -2114,9 +2129,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       case "unarchiveAgent": {
         await needAgent(id);
         await agents.setArchived("agent", id, found.name === "archiveAgent");
-        // No run sweep on archive: a runner reads an archived agent's run rows directly, nothing to sweep.
+        // No run sweep on archive: a runner reads an archived agent's run rows directly, nothing to sweep. Archived, every
+        // trigger that runs as it turns off in the store's archive transaction; unarchived, none turns on. Both answer the
+        // triggers off for the archive, each turned on again by PATCH /triggers/{id} {enabled: true}.
+        const triggersOff = found.name === "archiveAgent" ? await triggers.agentArchived(id) : await triggers.agentUnarchived(id);
         const entry = await needAgent(id);
-        return send(res, 200, agentView(entry, linkOrigin(req), await agentExtra(entry)), { etag: etagOf(entry) });
+        return send(res, 200, { ...agentView(entry, linkOrigin(req), await agentExtra(entry)), triggers_off: triggersOff }, { etag: etagOf(entry) });
       }
       case "forgetSignIn": {
         await needAgent(id);
@@ -2214,6 +2232,16 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // The run's browser state over the store: its runner's live viewer when it serves one (liveViewer, unset until
         // the runner publishes the handover), else its kept plane re-checked, as a launch would, for `off`/`none`.
         return send(res, 200, await runBrowserState(store, id, runReadsDeps));
+      }
+      case "getRunComputer": {
+        await needRun(id);
+        // The computer family's read of the same over the store: the runner's open viewer under /computer/live with its
+        // kind (computerViewerLink), else the run's browser as runBrowserState reads it with no viewer. Its runner drives
+        // (`hold` agent) until a seam answers who holds it (TODO(tl-places): computerHoldOf).
+        const open = sealKey ? await computerViewerLink(store, sealKey, id) : undefined;
+        if (open) return send(res, 200, { state: "live", kind: open.kind, viewer: open.viewer, hold: "agent" }, { "cache-control": "no-store" });
+        const browser = await runBrowserState(store, id, { ...runReadsDeps, liveViewer: undefined });
+        return send(res, 200, browser.state === "off" ? { state: "off", hold: "agent", why: browser.reason } : { state: "none", kind: "browser", hold: "agent" }, { "cache-control": "no-store" });
       }
       case "handBackRunBrowser": {
         // The owner's answer to the agent's ask for them in its browser (browser-commands.ts): the first answer wins, the same
@@ -2494,7 +2522,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       case "redeliverWebhook":
         return send(res, 200, await webhooks.redeliver(id));
       case "listTriggers":
-        return send(res, 200, triggers.list());
+        return send(res, 200, await triggers.list());
       case "createTrigger": {
         const body = await bodyOf(req);
         // A webhook trigger's secret is in its first answer alone: the Idempotency-Key's record keeps the trigger and a
@@ -2524,7 +2552,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       case "rotateTriggerSecret":
         return send(res, 200, await triggers.rotate(id));
       case "getTrigger":
-        return send(res, 200, triggers.get(id));
+        return send(res, 200, await triggers.get(id));
       case "updateTrigger":
         return send(res, 200, await triggers.update(id, await bodyOf(req)));
       case "deleteTrigger":
@@ -2537,7 +2565,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         return send(res, fired.created ? 202 : 200, fired.firing, fired.created ? {} : { "idempotent-replayed": "true" });
       }
       case "listTriggerFirings":
-        return send(res, 200, triggers.firings(id));
+        return send(res, 200, await triggers.firings(id));
     }
     throw new ApiError("not_found", `no route ${path}`);
   }
@@ -2551,21 +2579,21 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     res.end(text);
   }
 
-  /** A run's live viewer's page and files (browser-live.ts): the owner's signed-in page alone, GET or HEAD, for a viewer the
-   *  run's live process has handed over. The bytes are this server's own copy of pi-browser's viewer, never the run's port's:
+  /** A run's live viewer's page and files (browser-live.ts, /v2/runs/{id}/computer/live/*): the owner's signed-in page
+   *  alone, GET or HEAD, for a viewer the run's live process has handed over. The bytes are this server's own copy of pi-browser's viewer, never the run's port's:
    *  only the viewer's WebSocket reaches the run. */
-  async function liveRoute(req: IncomingMessage, res: ServerResponse, runId: string, rest: string): Promise<void> {
+  async function liveRoute(req: IncomingMessage, res: ServerResponse, runId: string, family: LiveFamily, rest: string): Promise<void> {
     if (req.method !== "GET" && req.method !== "HEAD") throw new ApiError("method_not_allowed", `${req.method} is not a method of a run's live view`, {}, { allow: "GET, HEAD" });
     if (!byOwnerSession(req)) {
-      authFailed(`/v2/runs/${runId}/browser/live`, req.headers.authorization === undefined ? "no_credential" : "browser_without_session");
-      throw req.headers.authorization === undefined ? new ApiError("unauthenticated", "a run's live browser view takes the owner's password sign-in in the console") : new ApiError("forbidden", "a run's live browser view takes the owner's password sign-in in the console, never a token");
+      authFailed(`/v2/runs/${runId}/${family}/live`, req.headers.authorization === undefined ? "no_credential" : `${family}_without_session`);
+      throw req.headers.authorization === undefined ? new ApiError("unauthenticated", `a run's live ${family} view takes the owner's password sign-in in the console`) : new ApiError("forbidden", `a run's live ${family} view takes the owner's password sign-in in the console, never a token`);
     }
     await needRun(runId);
     // The run's live viewer from the store (the runner's browser tool wrote it under its claim; liveViewerFor picks a named
     // viewer's handover or the run's open one). The store's live-claim filter answers none for a run no runner holds, as
     // hasProcess did; with no seal key this server serves no live view.
     const handover = sealKey ? await liveViewerFor(store, sealKey, runId, rest) : undefined;
-    if (!handover) throw new ApiError("not_found", "this run's browser has no live view at that address");
+    if (!handover) throw new ApiError("not_found", `this run's ${family} has no live view at that address`);
     await serveViewerFile(req, res, rest);
   }
 
@@ -2620,14 +2648,14 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // A run's id needs no decoding: one that is not an id as sent (a stray or malformed escape) is no run's, and is never
     // decoded here, where a throw would leave the request listener.
     const viewing = LIVE_PATH.exec(raw);
-    if (viewing) return ID.test(viewing[1]!) ? void liveRoute(req, res, viewing[1]!, viewing[2]!).catch(fail) : fail(new ApiError("not_found", "no run's live view at that address"));
+    if (viewing) return ID.test(viewing[1]!) ? void liveRoute(req, res, viewing[1]!, viewing[2] as LiveFamily, viewing[3]!).catch(fail) : fail(new ApiError("not_found", "no run's live view at that address"));
     route(req, res, url, raw.slice(3)).catch(fail);
   });
   // A request's headers come within 10 s, whatever its route: nothing sends more than a few kilobytes of them. Its body
   // keeps Node's 5-minute request timeout, which an upload of a large file needs; the token-less hook route has its own
   // 30 s for its body (push-handler.ts HOOK_BODY_MS), so dribbling senders hold no socket for long.
   server.headersTimeout = 10_000;
-  // The one upgrade this server takes: a run's live browser viewer's WebSocket (browser-live.ts). Every other is refused.
+  // The one upgrade this server takes: a run's live computer viewer's WebSocket (browser-live.ts). Every other is refused.
   server.on("upgrade", (req: IncomingMessage, socket: Duplex, head: Buffer) => {
     socket.on("error", () => socket.destroy());
     const raw = (req.url ?? "/").split("?")[0]!;
@@ -2637,7 +2665,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // address sends its own name as Origin too, which the Origin check below would take, so its Host is what gives it
     // away. Its name alone, on any port, as the HTTP routes check it.
     if (names && !names.has(hostName(req.headers.host) ?? "")) return deny("403 Forbidden");
-    if (!viewing || !ID.test(viewing[1]!) || !/^\/v\/[A-Za-z0-9_-]{22}\/ws$/.test(viewing[2]!)) return deny("404 Not Found");
+    if (!viewing || !ID.test(viewing[1]!) || !/^\/v\/[A-Za-z0-9_-]{22}\/ws$/.test(viewing[3]!)) return deny("404 Not Found");
     // A browser always sends its page's origin on a WebSocket, which no other page's script can forge: this server's own
     // (as this request reaches it, or its public address, which a TLS proxy that rewrites Host or drops
     // X-Forwarded-Proto leaves as the only one the owner's page has), and the owner signed in, or nothing.
@@ -2650,7 +2678,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       const run = ID.test(viewing[1]!) ? await momentOverStore(store, viewing[1]!, viewDepsFor(ownOriginOf())) : undefined;
       // The run's live viewer from the store (the runner's browser tool wrote it under its claim): the store's live-claim
       // filter answers none for a run no runner holds, as hasProcess did; with no seal key no live view is served.
-      const handover = run && sealKey ? await liveViewerById(store, sealKey, run.id, viewing[2]!.slice(3, -3)) : undefined;
+      const handover = run && sealKey ? await liveViewerById(store, sealKey, run.id, viewing[3]!.slice(3, -3)) : undefined;
       if (!handover) return deny("404 Not Found");
       // Gone during the lookup, or the server is closing and has ended its viewers, or is about to.
       if (socket.destroyed || closing) return void socket.destroy();
@@ -2659,7 +2687,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       const admitted = () => held.some((value) => owner.valid(value));
       if (!admitted()) return deny("401 Unauthorized");
       viewers.watch(socket, admitted);
-      proxyLiveUpgrade(req, socket, head, handover, viewing[2]!, () => { piping = true; });
+      proxyLiveUpgrade(req, socket, head, handover, viewing[3]!, () => { piping = true; });
     })().catch(() => (piping ? void socket.destroy() : deny("500 Internal Server Error")));
   });
   const first = options.port ?? DEFAULT_PORT;

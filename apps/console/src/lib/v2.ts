@@ -28,8 +28,22 @@ export type ToolPin = NonNullable<PinnedSetting["pin"]>;
 /** Tool settings by settings key: the server's (PUT /v2/settings/tools, which replaces the whole map) and an agent's own
  *  (`definition.tool_settings`), over the server's. */
 export type ToolSettings = Record<string, ToolSetting>;
+/** The private-network hosts an MCP server's authorization server may be on (none by default): GET and PUT
+ *  /v2/settings/mcp-servers/oauth/private-hosts. Only the owner's password session writes it. */
+export type McpPrivateHosts = Answer<"getMcpPrivateHosts">;
 /** GET /v2/agents/{id}'s `tools`: each tool the agent grants, with its permission and provider in force. */
 export type AgentTool = NonNullable<components["Agent"]["tools"]>[number];
+
+/** One issue in a refusal or a warning, at its field (`parameters.repo`, `secrets.KEY`), with the server's `fix` when it
+ *  names one. */
+export type InputIssue = components["InputIssue"];
+
+/** A template the server offers (GET /v2/templates): what it makes, and what it needs to make it. */
+export type TemplateView = Answer<"listTemplates">["templates"][number];
+/** Applying a template (POST /v2/templates/{name}/apply): its parameters, and the gate names of the tools the owner grants. */
+export type TemplateApply = Body<"applyTemplate">;
+/** What an apply made: the agent, its triggers, and its warnings. */
+export type TemplateApplied = Answer<"applyTemplate">;
 
 /** `so_far_usd` and `unpriced` (serve's costsofar/1), present only while `usd` is null. */
 export type Cost = components["Cost"];
@@ -68,10 +82,10 @@ export type TimelinePage = components["TimelinePage"];
 
 export type RunFile = components["RunFile"];
 export type RunFiles = components["RunFileList"];
-/** GET /v2/runs/{id}/browser (owner session only, no-store): `off`, the run has no browser or it resolves unavailable;
- *  `none`, it has one with no session open (yet, or any more); `live`, a session is open, watched through `viewer`, a
- *  same-origin path whose token is in its fragment (never sent to a server). */
-export type RunBrowser = Answer<"getRunBrowser">;
+/** GET /v2/runs/{id}/computer (owner session only, no-store): `off`, the run has no computer here (`why`); `none`, it has
+ *  one (`kind`) with no session up (yet, or any more); `live`, a session is open, watched through `viewer`, a same-origin
+ *  path whose token is in its fragment (never sent to a server). `hold`: who drives now. */
+export type RunBrowser = Answer<"getRunComputer">;
 
 /** Tool keys (GET /v2/settings/tool-keys, a serve extension). The server never sends a value. */
 /** A secret as every read says it (SecretMeta): its "<plane>:<id>" name, set or not, where from, and its own last change. */

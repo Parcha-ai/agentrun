@@ -18,7 +18,7 @@ import { readRunDbSync } from "../dist/run-db.js";
 import { resolve } from "node:path";
 import { openSqliteStore } from "../dist/store/index.js";
 import { startRunner } from "../dist/runner/runner.js";
-import { dispatchRunner } from "../dist/runner/harness-loops.js";
+import { dispatchRunner, sandboxComputerForClaim } from "../dist/runner/harness-loops.js";
 import { routeOf } from "../dist/runner/model-route.js";
 import { FAUX_ENV, withoutFaux } from "../dist/model.js";
 import { SEAL_KEY_ENV } from "../dist/tool-keys.js";
@@ -41,6 +41,11 @@ export const SECRET_WRITE_PATHS = [
   { methods: ["POST"], path: /^\/triggers$/ },
   { methods: ["POST"], path: /^\/triggers\/[^/]+\/secret$/ },
   { methods: ["PUT"], path: /^\/settings\/webhook$/ },
+  // MCP (mcp-secret-writes.ts): a saved server's PUT (a token or headers it carries), a sign-in's start (a client_secret),
+  // and the private-network OAuth hosts.
+  { methods: ["PUT"], path: /^\/settings\/mcp-servers\/[^/]+$/ },
+  { methods: ["POST"], path: /^\/settings\/mcp-servers\/[^/]+\/oauth\/start$/ },
+  { methods: ["PUT"], path: /^\/settings\/mcp-servers\/oauth\/private-hosts$/ },
 ];
 /** Adds a secret write the client sends from the owner's session (`methods` on `path`, a RegExp over the /v2 path). */
 export const secretWritePath = (methods, path) => void SECRET_WRITE_PATHS.push({ methods, path });
@@ -214,6 +219,72 @@ export async function harnessData(t) {
  *  directory: its owner's after-hook closes them before it removes the directory. */
 const sharing = new Map();
 
+/** Each data directory's trigger store (createServer's `store`), shared by every server serve() starts on it (a restart
+ *  reads the triggers the first one made) and closed once the last of them has stopped. */
+const stores = new Map();
+async function storeFor(data) {
+  let held = stores.get(data);
+  if (!held) {
+    const dir = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "agentrun-store-"));
+    held = { store: await openSqliteStore({ file: join(dir, "store.sqlite"), role: "server" }), dir, servers: 0 };
+    stores.set(data, held);
+  }
+  held.servers += 1;
+  return held;
+}
+async function storeDone(data, held) {
+  held.servers -= 1;
+  if (held.servers > 0 || stores.get(data) !== held) return;
+  stores.delete(data);
+  await held.store.close();
+  await rm(held.dir, { recursive: true, force: true });
+}
+
+/** `store` as a test server's triggers see it: a trigger's agent is put in the store first when it is not there, since
+ *  until the cutover the server keeps its agents in its own files and the store holds only what the triggers write. Test
+ *  support only: the store itself refuses a trigger for an agent it does not hold (store-trigger-schema.test.mjs). */
+function withAgents(store) {
+  const ensure = async (agentId) => {
+    if (typeof agentId === "string" && !(await store.agents.get(agentId))) await store.agents.put({ id: agentId, name: agentId });
+  };
+  const triggers = new Proxy(store.triggers, {
+    get(target, key) {
+      const value = Reflect.get(target, key, target);
+      if (key === "create") return async (trigger, ...rest) => (await ensure(trigger?.agentId), value.call(target, trigger, ...rest));
+      if (key === "update") return async (id, patch, ...rest) => (await ensure(patch?.agentId), value.call(target, id, patch, ...rest));
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  // An agent archived through the server is archived in the store too, its row put first when it is not there.
+  const agents = new Proxy(store.agents, {
+    get(target, key) {
+      const value = Reflect.get(target, key, target);
+      if (key === "archive") return async (id, ...rest) => (await ensure(id), value.call(target, id, ...rest));
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  return { triggers, runs: store.runs, agents };
+}
+
+/** Trigger stores handed to servers a test starts itself (startServe, not serve()): closed when the file's tests are done,
+ *  after every server a test closes in its own hooks. */
+const loose = [];
+after(async () => {
+  for (const { store, dir } of loose.splice(0)) {
+    await store.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+/** A store for a server a test starts with startServe (`{ ...options, store: await triggerStore() }`), as serve() gives its
+ *  own: the triggers' rows, a trigger's agent put there first. `of`: the same store again for a restart on the same data. */
+export async function triggerStore(of) {
+  if (of) return of;
+  const dir = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "agentrun-store-"));
+  const store = await openSqliteStore({ file: join(dir, "store.sqlite"), role: "server" });
+  loose.push({ store, dir });
+  return withAgents(store);
+}
+
 /** A server for test `t`, stopped after it, before its scratch directory goes. On the real models (`faux: undefined`) its
  *  data holds Claude Code and Codex as the first-use installs put them (linkHarnesses; `harnesses: { cli, codex }` to vary
  *  them); `harnesses` says so for any server, `false` for none. */
@@ -233,7 +304,7 @@ export async function startInProcessRunner(data, { faux } = {}) {
   try {
     runner = startRunner({
       store,
-      createLoop: dispatchRunner({ env, data, journal: (claim) => store.journal(claim), store, sealKey, routeOf }),
+      createLoop: dispatchRunner({ env, data, journal: (claim) => store.journal(claim), store, sealKey, routeOf, computerForClaim: sandboxComputerForClaim(env) }),
     });
   } catch (error) {
     await store.close();

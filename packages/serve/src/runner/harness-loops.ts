@@ -7,14 +7,18 @@
 //   - pi runs on the kernel's adapter loop with the run's pi spec (adapterRunSpecFromLaunch);
 //   - a CLI harness (claude-agent, codex, opencode) runs on the adapter loop with its own adapter;
 //   - anything else fails the run in words (the dispatch's UnknownHarness).
-import { DEFAULT_HARNESS, HARNESSES } from "../harness.js";
-import type { RunLaunch } from "../run-launch.js";
-import { adapterRunSpecFromLaunch, type AdapterSpecDeps } from "./adapter-run-spec.js";
+import type { ComputerProvider } from "@parcha/agentrun-computer";
+import { readLaunchBody, type RunLaunch } from "../run-launch.js";
+import { resolveHarness } from "./adapters/index.js";
+import { adapterRunSpecFromLaunch, type AdapterSpecDeps, type ComputerForClaim } from "./adapter-run-spec.js";
+import { dockerComputer } from "./computer.js";
 import { createAdapterLoop } from "./adapter-loop.js";
 import { createDispatchLoop } from "./dispatch.js";
+import { cliRunSpecFromLaunch } from "./cli-run-spec.js";
 import { learningLoopOf } from "./learning-dispatch.js";
 import type { LoopFactory } from "./loop-contract.js";
-import { isWorkflowRevision } from "./workflow-loop.js";
+import { createWorkflowLoop, isWorkflowRevision } from "./workflow-loop.js";
+import { workflowSpecOf } from "./workflow-spec.js";
 
 /** The dispatch's `resolve`, built from the runner's deps: it reads the run's revision (for a workflow revision) and
  *  returns the loop the run runs on, or undefined when this runner does not run it (the dispatch fails it in words). */
@@ -25,37 +29,29 @@ export function resolveRunnerLoop(deps: AdapterSpecDeps): (harness: string, laun
     const run = await deps.store.runs.get(runId);
     const revision = run ? await deps.store.agents.revision(run.revisionId) : undefined;
     if (revision && isWorkflowRevision(revision)) {
-      // TODO(E2r2): createWorkflowLoop(specOf) once the workflow host build helper lands (E2w: WorkflowRunSpec.build, the
-      // model proxy, the tool table, the cap and the decision providers, moved from app.ts's workflow branch). Until then
-      // a workflow run is not taken by this runner.
-      return undefined;
+      // A workflow run on the workflow loop: its claim-time spec (workflow-spec.ts) resolves each tier's model the one way
+      // the runner resolves any (routeProviderOf over the route, the default when no providerOf is given).
+      return createWorkflowLoop(workflowSpecOf({ store: deps.store, ...(deps.env ? { env: deps.env } : {}) }));
     }
     if (harness === "learning") {
-      // A built-in learning run grades on the runner's one model route: the launch's grade model, else the agent of the
-      // run that learned reads its own model (as main grades). ModelRoute carries the grader's route fields, so the one
-      // routeOf serves the grade.
+      // A built-in learning run on the learning loop: its grade goes through the runner's one model route, on the grade
+      // model its launch names (none: the agent's own), at that route's price (learning-dispatch.ts).
       return learningLoopOf({
         store: deps.store,
         data: deps.data,
-        routeOf: async ({ model, agentId }) => {
-          let chosen = model;
-          if (chosen === undefined) {
-            const agent = await deps.store.agents.get(agentId);
-            const revision = agent?.currentRevision ? await deps.store.agents.revision(agent.currentRevision) : undefined;
-            const body = revision?.body as { model?: string } | undefined;
-            chosen = typeof body?.model === "string" ? body.model : undefined;
-          }
-          return deps.routeOf(chosen, deps.env);
-        },
+        routeOf: (grade) => deps.routeOf(grade.model, deps.env),
+        ...(deps.log ? { log: deps.log } : {}),
       });
     }
-    if (harness === DEFAULT_HARNESS) {
-      return createAdapterLoop((claim, adapterRun) => adapterRunSpecFromLaunch(launch, adapterRun, deps, claim));
-    }
-    if ((HARNESSES as readonly string[]).includes(harness)) {
-      // TODO(E2r2): resolveHarness(harness) for claude-agent, codex and opencode on the adapter loop (ws-c3, cutover-cli:
-      // not merged yet).
-      return undefined;
+    // The harness's own entry decides which spec builds the run, by the entry's facts and never the harness's name: an entry
+    // whose visible record the loop keeps (record: "loop") runs the CLI spec (cli-run-spec.ts), one that keeps its own (pi)
+    // runs the pi spec (adapterRunSpecFromLaunch). A harness with no entry is unknown here: the dispatch fails it in words.
+    const runner = resolveHarness(harness);
+    if (runner) {
+      return createAdapterLoop((claim, adapterRun) =>
+        runner.record === "loop"
+          ? cliRunSpecFromLaunch(launch, adapterRun, deps, claim)
+          : adapterRunSpecFromLaunch(launch, adapterRun, deps, claim));
     }
     return undefined;
   };
@@ -69,4 +65,22 @@ export function dispatchRunner(deps: AdapterSpecDeps): LoopFactory {
     launchOf: (runId) => deps.store.runs.launch(runId),
     resolve: resolveRunnerLoop(deps),
   });
+}
+
+/** The claim's computer the runner gives every spec (adapter-run-spec.ts computerForClaim) until its own lands with the
+ *  computers work: none for a runner place; for a sandbox, the Mode 1 Docker container (computer.ts dockerComputer) with
+ *  the run's folder at /workspace, under the claim's epoch (the one fence), reaching what the run's launch allows. */
+export function sandboxComputerForClaim(env: NodeJS.ProcessEnv, makeProvider?: () => Promise<ComputerProvider>): ComputerForClaim {
+  return async (launch, store, deps) => {
+    if ((launch.place as { mode?: unknown } | undefined)?.mode !== "sandbox") return { release: async () => undefined };
+    const boxAllow = readLaunchBody((await store.runs.launch(launch.runId)).body)?.boxAllow;
+    const handle = await dockerComputer(deps.workspace, {
+      runId: launch.runId,
+      epoch: launch.epoch,
+      ...(boxAllow !== undefined ? { boxAllow } : {}),
+      ...(env.AGENTRUN_DOCKER_IMAGE ? { image: env.AGENTRUN_DOCKER_IMAGE } : {}),
+      ...(deps.signal ? { signal: deps.signal } : {}),
+    }, makeProvider);
+    return { computer: handle.run, release: () => handle.release() };
+  };
 }

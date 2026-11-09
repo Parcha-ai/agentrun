@@ -4,15 +4,21 @@ import { ClientError } from "@/lib/client";
 import { httpHref } from "@/lib/safeUrl";
 import type { RunBrowser } from "@/lib/v2";
 
-/** The run's browser, read from GET /v2/runs/{id}/browser and read again every `every` ms while the run is `going`: not
+/** The run's computer as the page shows it: the server's answer, or signed out (a read refused 401), said in the tab. */
+export type BrowserView = RunBrowser | { state: "signed_out" };
+
+/** The run's computer, read from GET /v2/runs/{id}/computer and read again every `every` ms while the run is `going`: not
  *  over (completed, failed, cancelled), so a paused or waiting run is read on too. Null until the first answer, and while
  *  it is `off`. `off` is read from the server's keys now, but a going run's process holds the key it launched with and may
- *  still open a browser, so it is read on; a caller the route refuses (401, 403) is read no more. An ended run has
+ *  still open a browser, so it is read on; a caller the route refuses (401, 403) is read no more: signed out (401) reads
+ *  as `signed_out`, so the tab says why it closed (in the console the same 401 also turns the page to its sign-in, once
+ *  the session read again says it ended; the tab's words are what shows meanwhile, and where no such check runs); a 403
+ *  (a token, never a session) has no tab. An ended run has
  *  nothing to watch: it is not read again, and a browser it showed reads as closed (none), whatever the last read said.
  *  A page opened on an ended run reads once, to know whether it had one. Any other failed read keeps the last answer, so
  *  a page being watched isn't torn down by one bad poll. Nothing about the answer is logged. */
-export function useRunBrowser(read: (() => Promise<RunBrowser>) | undefined, going: boolean, every = 3000): RunBrowser | null {
-  const [now, setNow] = useState<RunBrowser | null>(null);
+export function useRunBrowser(read: (() => Promise<RunBrowser>) | undefined, going: boolean, every = 3000): BrowserView | null {
+  const [now, setNow] = useState<BrowserView | null>(null);
   // A caller the route refuses (401, 403) is read no more, whatever the run does.
   const [refused, setRefused] = useState(false);
   // The newest reader, so a page that passes a new function each render doesn't restart the reads.
@@ -24,7 +30,7 @@ export function useRunBrowser(read: (() => Promise<RunBrowser>) | undefined, goi
   const has = !!read;
   useEffect(() => {
     if (!has || refused) return;
-    if (!going && answered.current) { setNow((prev) => (prev ? { state: "none" } : prev)); return; }
+    if (!going && answered.current) { setNow((prev) => (prev ? closed(prev) : prev)); return; }
     let alive = true;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const once = async () => {
@@ -34,12 +40,13 @@ export function useRunBrowser(read: (() => Promise<RunBrowser>) | undefined, goi
         answered.current = true;
         if (next.state === "off") setNow(null);
         // An ended run's browser is closed, whatever it last said.
-        else if (!going) setNow({ state: "none" });
+        else if (!going) setNow(closed(next));
         // A same answer keeps the same object, so a live viewer's iframe is not touched by a poll.
         else setNow((prev) => (prev && prev.state === next.state && (prev.state !== "live" || (next.state === "live" && prev.viewer === next.viewer)) ? prev : next));
       } catch (e) {
         if (!alive) return;
-        if (e instanceof ClientError && [401, 403].includes(e.status)) { setRefused(true); setNow(null); return; }
+        if (e instanceof ClientError && e.status === 401) { setRefused(true); setNow((prev) => (prev ? { state: "signed_out" } : null)); return; }
+        if (e instanceof ClientError && e.status === 403) { setRefused(true); setNow(null); return; }
       }
       if (alive && going) timer = setTimeout(() => void once(), every);
     };
@@ -49,6 +56,9 @@ export function useRunBrowser(read: (() => Promise<RunBrowser>) | undefined, goi
   return now;
 }
 
+/** A computer that closed with its run: `none`, of the same kind, the agent's. */
+const closed = (from: BrowserView): BrowserView => (from.state === "off" || from.state === "signed_out" ? from : { state: "none", kind: from.kind, hold: "agent" });
+
 /** The Browser tab: the agent's live page, watched through the session's viewer, or that it waits for its first page.
  *  The viewer (a same-origin path, its token in the fragment) is the iframe's src and nothing else: never the address
  *  bar, the history, storage, a log or an error. A new session (a release, then a page again) is a new viewer: the
@@ -56,7 +66,7 @@ export function useRunBrowser(read: (() => Promise<RunBrowser>) | undefined, goi
 export function BrowserPanel({ runId, browser, opens, followUp }: {
   /** The run whose browser this is: only a viewer under its own path is framed. */
   runId: string;
-  browser: RunBrowser;
+  browser: BrowserView;
   /** Whether the run can still open a browser: queued, working, waiting on its question with its process (and any
    *  session) held, or a paused workflow. Otherwise `none` is a browser that closed with the run, never one to wait for. */
   opens: boolean;
@@ -82,6 +92,8 @@ export function BrowserPanel({ runId, browser, opens, followUp }: {
         : browser.state === "live"
         // A viewer that is not this run's own on this origin: said, never framed, and its value not shown.
         ? <p className="px-4 py-12 text-center font-mono text-[13px] text-muted-foreground">The live view can't be shown here.</p>
+        : browser.state === "signed_out"
+        ? <p className="px-4 py-12 text-center font-mono text-[13px] text-muted-foreground">Signed out: sign in to watch.</p>
         : <p className="px-4 py-12 text-center font-mono text-[13px] text-muted-foreground">
             {opens ? "Waiting for the browser. The agent's page shows here once it opens one." : `The browser closed when the run ended.${followUp ? " A follow-up opens a new one if the agent needs it." : ""}`}
           </p>}
@@ -90,12 +102,12 @@ export function BrowserPanel({ runId, browser, opens, followUp }: {
 }
 
 /** The served viewer as the iframe's src: resolved against this page's origin (it is a same-origin path, its token in the
- *  fragment), an http(s) URL (httpHref), on this origin, under this run's own live-view path. Anything else: undefined. */
+ *  fragment), an http(s) URL (httpHref), on this origin, under this run's own live-view path (/computer/live/). Anything else: undefined. */
 export function framedViewer(viewer: string, runId: string): string | undefined {
   let resolved: string;
   try { resolved = new URL(viewer, location.origin).href; } catch { return undefined; }
   const href = httpHref(resolved);
   if (!href) return undefined;
   const url = new URL(href);
-  return url.origin === location.origin && url.pathname.startsWith(`/v2/runs/${encodeURIComponent(runId)}/browser/live/`) ? href : undefined;
+  return url.origin === location.origin && url.pathname.startsWith(`/v2/runs/${encodeURIComponent(runId)}/computer/live/`) ? href : undefined;
 }
