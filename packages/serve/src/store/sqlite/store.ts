@@ -10,7 +10,7 @@ import { DDL, SCHEMA_VERSION } from "../schema.js";
 import {
   CommandTaken, Fenced, RefreshLeaseLost, SchemaVersionUnknown, StoreConstraint, StoreFromEarlierVersion, type AgentRow, type Agents,
   type AlsoRow, type Claim, type Command, type ImportRunInput, type Journal, type NewRevision, type RevisionRow, type RunPatch, type RunRow, type Runs,
-  type JournalReads,
+  type JournalReads, type UpdatedRun,
   type RunState, type Store, type StoreRole, type TemplatePackage, type Templates, type TriggerDef, type TriggerRow, type Triggers, type TriggerScope,
   FINAL_STATES, MCP_REFRESH_CALL_MS, MCP_REFRESH_LEASE_MS, type Learning, type LearningProposal, type Live, type LiveRow, type Mcp, type McpPinRow, type McpServerRow,
   type McpOauth, type McpOauthPendingRow, type SealedKeyRow, type SealedKeys, type Settings, type SettingRow, type TriggerSettingRow, type TriggerSettings,
@@ -266,6 +266,26 @@ class SqliteStore implements Store {
       await writeScopes(tx, row!.id, enabled ? (trigger.scopes ?? []) : []);
     };
 
+    // A run whose sign_in_handed holds one of `hashes` (handedHolderIn), or any running run handed a sign-in at all
+    // (handedAnyIn): the reads forget, the view, the runner's bind and its output check make, over `runs` alone. `not`
+    // drops one run id (a bind's own, so a run is never its own blocker).
+    const handedHolderIn = (
+      tx: Pick<SqliteExecutor, "get">,
+      hashes: string | readonly string[],
+      { not }: { not?: string } = {},
+    ): Promise<{ id: string } | undefined> => {
+      const list = typeof hashes === "string" ? [hashes] : [...hashes];
+      if (list.length === 0) return Promise.resolve(undefined);
+      return tx.get<{ id: string }>(
+        `SELECT id FROM runs WHERE state = 'running' AND sign_in_handed IS NOT NULL${not === undefined ? "" : " AND id != ?"}
+           AND EXISTS (SELECT 1 FROM json_each(sign_in_handed) WHERE value IN (${list.map(() => "?").join(", ")})) LIMIT 1`,
+        ...(not === undefined ? [] : [not]),
+        ...list,
+      );
+    };
+    const handedAnyIn = (tx: Pick<SqliteExecutor, "get">) =>
+      tx.get<{ id: string }>("SELECT id FROM runs WHERE state = 'running' AND sign_in_handed IS NOT NULL AND json_array_length(sign_in_handed) > 0 LIMIT 1");
+
     this.agents = {
       put: async ({ id, name, description = null }) => {
         await db.write([{ sql: "INSERT INTO agents (id, name, description, created_at) VALUES (?, ?, ?, ?) ON CONFLICT (id) DO UPDATE SET name = excluded.name, description = excluded.description", params: [id, name, description, now()] }]);
@@ -410,13 +430,20 @@ class SqliteStore implements Store {
       update: async (claim, patch, rows = {}) => {
         if (Array.isArray(rows) || typeof rows !== "object" || rows === null) throw new TypeError("runs.update's third argument is { also?, take? }");
         const { also = [], take = [] } = rows;
-        return db.transaction(async (tx) => {
+        return db.transaction(async (tx): Promise<UpdatedRun> => {
           const at = now();
           const row = await applyRunPatch(tx, claim, patch, also, at);
           for (const commandId of take) {
             if ((await tx.runCounted("UPDATE commands SET taken_at = ? WHERE id = ? AND run_id = ? AND taken_at IS NULL", at, commandId, claim.runId)) === 0) {
               throw new CommandTaken(claim.runId, commandId);
             }
+          }
+          // The bind's save lease, in this same transaction as the sign_in_handed write just made (applyRunPatch): this run
+          // saves unless another run already holds one of the handed pointers. Excludes this run (it just wrote them), so a
+          // run is never its own blocker. Two binds of one sign-in in one tick thus never both save.
+          if (patch.signInHanded !== undefined && patch.signInHanded !== null && patch.signInHanded.length > 0) {
+            const holder = await handedHolderIn(tx, patch.signInHanded, { not: claim.runId });
+            return { ...row, save: holder === undefined };
           }
           return row;
         });
@@ -592,12 +619,6 @@ class SqliteStore implements Store {
       sweepExpired: async (at) => (await db.write([{ sql: "DELETE FROM mcp_oauth_pending WHERE expires_at <= ?", params: [at] }]))[0]!.changes,
     };
 
-    // A running run whose sign_in_handed array holds `hash` (handedHolder), or any running run handed a sign-in at all
-    // (handedAny): the one read forget and the runner make, over `runs` alone.
-    const handedHolderIn = (tx: Pick<SqliteExecutor, "get">, hash: string) =>
-      tx.get<{ id: string }>("SELECT id FROM runs WHERE state = 'running' AND sign_in_handed IS NOT NULL AND EXISTS (SELECT 1 FROM json_each(sign_in_handed) WHERE value = ?) LIMIT 1", hash);
-    const handedAnyIn = (tx: Pick<SqliteExecutor, "get">) =>
-      tx.get<{ id: string }>("SELECT id FROM runs WHERE state = 'running' AND sign_in_handed IS NOT NULL AND json_array_length(sign_in_handed) > 0 LIMIT 1");
     this.signIns = {
       save: async ({ agentId, provider, name, pointerSealed }) => {
         const at = now();

@@ -150,6 +150,12 @@ export interface RunPatch {
   readonly endedAt?: number | null;
 }
 
+/** The row runs.update answers. When the patch wrote `signInHanded` (the runner's bind at its claim), `save` rides with it:
+ *  whether this run holds the sign-in's save lease — true unless another run already holds one of the handed pointers,
+ *  decided in the same transaction as the sign_in_handed write so two binds of one sign-in never both save. Absent when the
+ *  patch wrote no `signInHanded`. */
+export type UpdatedRun = RunRow & { readonly save?: boolean };
+
 /** A run's launch, as the server writes it at start: its JSON `body` (run-launch.ts: the first input, title, place, effort,
  *  cap, trigger and origin), and `sealed` ciphertext for any secret it carries (sealed with the server's key outside the
  *  store, AAD `run_launch|<run_id>|sealed`), or none. Written once, in the same transaction as the queued run. */
@@ -363,8 +369,10 @@ export interface Runs {
   claimMany(runner: string, k: number, options?: { leaseMs?: number }): Promise<Claim[]>;
   /** Changes the run's row under `claim`, and in the same commit writes `also` and marks `take`'s command rows taken (a
    *  stop the runner applies itself ends the run with its stop row taken, or neither). Refused, nothing written: Fenced when
-   *  the run's epoch is not the claim's; CommandTaken when a command in `take` is taken already, or not the run's. */
-  update(claim: Claim, patch: RunPatch, rows?: { readonly also?: readonly AlsoRow[]; readonly take?: readonly number[] }): Promise<RunRow>;
+   *  the run's epoch is not the claim's; CommandTaken when a command in `take` is taken already, or not the run's. When the
+   *  patch writes `signInHanded` (the runner's bind), the answer carries `save`: whether this run holds the sign-in's save
+   *  lease, decided in this same transaction so two binds of one sign-in never both save (no other run holds a handed pointer). */
+  update(claim: Claim, patch: RunPatch, rows?: { readonly also?: readonly AlsoRow[]; readonly take?: readonly number[] }): Promise<UpdatedRun>;
 }
 
 /** A saved MCP server: its listed tools (each with whether it can be granted, and why not), the owner's prices, and its
