@@ -17,12 +17,16 @@ describe("authMode", () => {
     expect(authMode({ status: signedOut.status, body: signedOut.body })).toBe("sign_in");
     expect(authMode({ status: signedIn.status, body: signedIn.body })).toBe("signed_in");
   });
-  it("a server without accounts (no session route) is reached through the link it printed", () => {
-    expect(authMode({ status: 404, body: null })).toBe("token_link");
-    expect(authMode({ status: 404, body: null }, 401)).toBe("token_link");
+  // A server without accounts answers its session read too (accounts: false), never a 404.
+  it("a server without accounts is reached through the link it printed", () => {
+    expect(authMode({ status: 200, body: { accounts: false, secrets_writable: false, secrets_reason: "token" } })).toBe("token_link");
+    expect(authMode({ status: 200, body: { accounts: false, secrets_writable: false, secrets_reason: "token" } }, 401)).toBe("token_link");
   });
   it("a server without accounts whose protected read already succeeds (a token is sent) is in", () => {
-    expect(authMode({ status: 404, body: null }, 200)).toBe("signed_in");
+    expect(authMode({ status: 200, body: { accounts: false, secrets_writable: true } }, 200)).toBe("signed_in");
+  });
+  it("a 404 is no longer read as a server without accounts", () => {
+    expect(authMode({ status: 404, body: null }, 200)).not.toBe("signed_in");
   });
 });
 

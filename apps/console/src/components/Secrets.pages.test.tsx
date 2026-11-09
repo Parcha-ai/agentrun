@@ -59,7 +59,6 @@ describe("the session that may write secrets", () => {
     expect(secretsWhyNot({ status: 200, body: { secrets_writable: false, secrets_reason: "sign_in" } })).toBe("sign_in");
     expect(secretsWhyNot({ status: 200, body: { accounts: false, secrets_writable: false, secrets_reason: "no_accounts" } })).toBe("no_accounts");
     expect(secretsWhyNot({ status: 200, body: { accounts: false, secrets_writable: false } })).toBe("no_accounts");
-    expect(secretsWhyNot({ status: 404, body: null })).toBe("no_accounts");
     expect(secretsWhyNot({ status: 200, body: { password_set: true, signed_in: true } })).toBe("sign_in");
     // A browser in on the API token alone (no launcher session): it never writes.
     expect(secretsWhyNot({ status: 200, body: { accounts: false, secrets_writable: false, secrets_reason: "token" } })).toBe("token");

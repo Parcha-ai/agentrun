@@ -276,9 +276,9 @@ describe("paging", () => {
 });
 
 describe("the owner's session", () => {
-  it("reads a server without accounts (404 on the session route) as such, instead of throwing", async () => {
-    const { fn } = fakeFetch(() => json(404, { error: { code: "not_found", message: "no route /v2/auth/session", retryable: false } }));
-    expect(await createClient({ fetch: fn }).session()).toEqual({ status: 404, body: null });
+  it("reads a server without accounts by its answer (accounts: false), as any other session read", async () => {
+    const { fn } = fakeFetch(() => json(200, { accounts: false, secrets_writable: true }));
+    expect(await createClient({ fetch: fn }).session()).toEqual({ status: 200, body: { accounts: false, secrets_writable: true } });
   });
   it("signs in and sets up as same-origin JSON, and signs out", async () => {
     const { fn, calls } = fakeFetch(() => json(200, { signed_in: true }));
@@ -343,14 +343,12 @@ describe("allPages and a 422", () => {
 });
 
 describe("the session's errors", () => {
-  it("only a 404 reads as a server without accounts: any other refusal on /auth/session is that refusal", async () => {
-    for (const status of [500, 401, 503]) {
+  it("every refusal on /auth/session is that refusal, a 404 too: a server without accounts answers it 200", async () => {
+    for (const status of [500, 401, 503, 404]) {
       const { fn } = fakeFetch(() => json(status, { error: { code: status === 401 ? "unauthenticated" : "internal", message: "refused", retryable: false } }));
       const err = await createClient({ fetch: fn }).session().catch((e) => e);
       expect(err).toBeInstanceOf(ClientError);
       expect(err.status).toBe(status);
     }
-    const { fn } = fakeFetch(() => json(404, { error: { code: "not_found", message: "no route /v2/auth/session", retryable: false } }));
-    expect(await createClient({ fetch: fn }).session()).toEqual({ status: 404, body: null });
   });
 });
