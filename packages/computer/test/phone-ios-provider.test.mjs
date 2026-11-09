@@ -71,6 +71,7 @@ test("create(options) with platform ios builds an iPhone: machine ios, its group
 		{ kind: "ios", groups: [...IOS_GROUPS] },
 	]);
 	assert.deepEqual(PROVIDERS.find((p) => p.id === "phone-harness").capabilities, CAPABILITIES, "the registry's entry holds the module's configurations");
+	assert.equal(caps.maxComputers, 1, "one session at a time holds an iPhone: the provider holds one computer at once");
 	assert.deepEqual(kindRefusals(caps), []);
 	await assert.rejects(create({ apiKey: KEY, deviceId: IPHONE_ID }), /^Error: deviceId names one of the account's iPhones: give it with platform "ios"$/);
 	await assert.rejects(create({ apiKey: KEY, platform: "ios", deviceId: "iph 1; rm" }), /^Error: deviceId "iph 1; rm" is not a phone id/);

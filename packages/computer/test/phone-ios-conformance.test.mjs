@@ -16,27 +16,40 @@ const reasonOf = (report, id) => report.results.find((r) => r.id === id)?.reason
 const NAVIGATION = new Set(["screen.capture", "apps.list", "apps.current", "apps.launch", "input.drag", "nav.home"]);
 
 /**
- * The fake account holds one iPhone, and the suite keeps the run's shared computer while a case makes its own: the
- * docs' one session per iPhone (409 profile_running) would refuse the second. Here the fake lets them run side by side,
- * so the cases are judged on the provider; how a live run on one iPhone takes them is a question for the first live run.
+ * The fake account holds one iPhone, which one session at a time holds (409 profile_running), as the docs say. The
+ * provider declares maxComputers 1, so the runner ends the run's shared computer before a case that makes its own, and a
+ * case that holds two at once skips in words, owed to maxComputers.
  */
 async function iphoneProvider(fakeOptions = {}) {
-	const fake = fakePhoneHarness({ iphones: [IPHONE_ID], onePerPhone: false, ...fakeOptions });
+	const fake = fakePhoneHarness({ iphones: [IPHONE_ID], ...fakeOptions });
 	const options = { apiKey: KEY, platform: "ios", fetch: fake.fetch, ledger: memoryLedger(), now: fake.clock.now, sleep: fake.clock.sleep, maxLifetimeMs: 10 * 60_000 };
 	return { fake, provider: await create(options), drifted: await create({ ...options, daemonVersion: "0.0.0-drift" }) };
 }
 
-test("a cloud iPhone passes Core through Settings and the screen: launch, a swipe that scrolls, the screenshot; what it does not declare skips", { timeout: 120_000 }, async () => {
+test("a cloud iPhone, one session at a time, passes Core through Settings and the screen; two-at-once cases and what it does not declare skip in words", { timeout: 120_000 }, async () => {
 	const { fake, provider, drifted } = await iphoneProvider();
 	const report = await runConformance(provider, { image: "ios", drifted: () => drifted, patience: 5000, cases: conformanceCases });
 	assert.equal(report.core, "pass", formatReport(report));
 	const got = statuses(report);
-	for (const id of ["health.hello", "health.kind-consistent", "provider.create-release", "provider.list", "provider.attach", "drift.version", "screen.screenshot-size", "touch.swipe", "apps.launch"]) {
+	for (const id of ["health.hello", "health.kind-consistent", "provider.create-release", "provider.list", "provider.stop", "provider.network-change", "drift.version", "screen.screenshot-size", "touch.swipe", "apps.launch"]) {
 		assert.equal(got[id], "pass", `${id}: ${reasonOf(report, id)}`);
 	}
+	for (const [id, n] of [
+		["provider.attach", 2],
+		["provider.release-older", 4],
+	]) {
+		const r = report.results.find((one) => one.id === id);
+		assert.deepEqual([r.status, r.reason, r.undeclared], ["skip", `the case holds ${n} computers at once, and the provider holds at most 1 (maxComputers)`, [`computers:${n}`]], id);
+	}
+	assert.equal(report.results.filter((r) => r.status === "fail").length, 0, formatReport(report));
 	assert.equal(got["touch.tap"], "skip");
 	assert.equal(reasonOf(report, "touch.tap"), "no way to observe a tap on this phone: it declares neither files nor apps.ui_tree");
-	assert.ok(report.results.find((r) => r.id === "touch.tap").undeclared.includes("apps.ui_tree"), "a skip owed to a group the iPhone does not declare");
+	const tap = report.results.find((r) => r.id === "touch.tap");
+	assert.deepEqual([tap.undeclared, tap.owed], [["files", "apps.ui_tree"], true], "a skip the case owed to groups the iPhone does not declare");
+	// The report shows such a skip apart, so a reader sees why Core passed.
+	const text = formatReport(report);
+	assert.match(text, /^ {2}- touch\.tap: owed to undeclared files, apps\.ui_tree: no way to observe a tap on this phone/m);
+	assert.match(text.trimEnd().split("\n").at(-1), / · 1 Core case skipped, owed to undeclared files apps\.ui_tree · /);
 	for (const id of ["apps.launch-terminate", "apps.install-launch", "apps.ui-tree-shape", "input.type-text", "input.key-table-refuses-unknown", "exec.argv", "files.home"]) {
 		assert.equal(got[id], "skip", `${id} needs a group an iPhone does not declare: ${reasonOf(report, id)}`);
 	}
@@ -53,6 +66,14 @@ test("--kind phone passes the iPhone: every case of the required groups that run
 	const report = await runConformance(provider, { image: "ios", kind: "phone", drifted: () => drifted, patience: 5000 });
 	assert.deepEqual(report.kindVerdict, { kind: "phone", verdict: "pass", reasons: [] }, formatReport(report));
 	assert.equal(statuses(report)["apps.launch"], "pass");
+	assert.equal(fake.sessions.size, 0);
+});
+
+test("the first live run's shape, --only health,screen,touch,apps, passes on the one-session iPhone fake", { timeout: 120_000 }, async () => {
+	const { fake, provider, drifted } = await iphoneProvider();
+	const report = await runConformance(provider, { image: "ios", only: ["health", "screen", "touch", "apps"], drifted: () => drifted, patience: 5000 });
+	assert.equal(report.results.filter((r) => r.status === "fail").length, 0, formatReport(report));
+	assert.notEqual(report.core, "fail", formatReport(report));
 	assert.equal(fake.sessions.size, 0);
 });
 

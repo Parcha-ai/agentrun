@@ -64,6 +64,7 @@ test("create(options) builds the phone-harness provider from its options alone: 
 	);
 	assert.deepEqual(PHONE_GROUPS, ["screen", "input.touch", "input.keys", "apps", "apps.terminate", "apps.ui_tree"]);
 	assert.equal(caps.maxLifetimeMs, 30 * 60_000, "30 min by default");
+	assert.equal(caps.maxComputers, undefined, "cloud Androids: as many at once as the account's limit lets");
 	assert.deepEqual(kindRefusals(caps), []);
 	assert.equal(provider.extend, undefined, "the phone harness has no extend");
 	await assert.rejects(create({ fetch: () => assert.fail("no call") }), /options\.apiKey/);

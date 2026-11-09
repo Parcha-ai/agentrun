@@ -477,8 +477,13 @@ test("a phone that declares neither files nor apps.ui_tree skips the touch cases
 	assert.deepEqual(statuses(report), { "touch.tap": "skip", "touch.swipe": "skip" });
 	assert.equal(reasons(report)["touch.tap"], "no way to observe a tap on this phone: it declares neither files nor apps.ui_tree");
 	assert.equal(reasons(report)["touch.swipe"], "no way to observe a swipe on this phone: it declares neither files nor apps.ui_tree");
-	for (const r of report.results) assert.deepEqual(r.undeclared, ["files", "apps.ui_tree"], r.id);
+	for (const r of report.results) assert.deepEqual([r.undeclared, r.owed], [["files", "apps.ui_tree"], true], r.id);
 	assert.equal(report.core, "fail", "no Core case ran, so Core cannot pass");
+	// Shown apart from a skip for a need the case lists: what it was owed to, then its words; and counted apart.
+	const text = formatReport(report).trimEnd().split("\n");
+	assert.ok(text.includes("  - touch.tap: owed to undeclared files, apps.ui_tree: no way to observe a tap on this phone: it declares neither files nor apps.ui_tree"), text.join("\n"));
+	assert.match(text.at(-1), / · 2 Core cases skipped, owed to undeclared files apps\.ui_tree · /);
+	assert.doesNotMatch(text.at(-1), /optional cases? skipped, not declared/, "an owed skip is not counted with the skips for needs");
 	// A skip that names a group the computer declares is a plain one: Core counts it.
 	const plain = await runConformance(fakeDevices({ kind: "android", groups: ["screen", "input.touch", "files"] }).provider, {
 		image: IMAGE,
