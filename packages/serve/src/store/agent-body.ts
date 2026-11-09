@@ -60,6 +60,9 @@ export type WorkflowBody = { workflow: Record<string, unknown>; skills: Record<s
  *  tool-plane.ts pinIssues + canonicalToolSettings, the one copy) is wired in here once that PR is on the base and
  *  AGENT_LAYER_PINS flips to true; this validator does not reimplement it, so while the flag is false a pin is refused. */
 export type ToolSetting = Record<string, string>;
+/** A revision's tool settings as its body keeps them: a map of a tool's key to its settings. The store body holds it as it
+ *  is given (agents-store.ts canonicalizes it through tool-plane); this validator never reimplements it. */
+export type ToolSettings = Record<string, ToolSetting>;
 
 /** The input a revision's body is built from (the control plane's, in the store's own shape). */
 export type RevisionBodyInput =
