@@ -177,6 +177,8 @@ const isLowSurrogate = (unit: number): boolean => unit >= 0xdc00 && unit <= 0xdf
 /** The shortest form a healthy event is cut of: a shorter one (a test's one-letter credential) matches its text by chance,
  *  and cutting it there breaks the answer. An error is cut of every form. */
 const MIN_ECHO = 8;
+/** What may stand beside a short value inside a token of its own: past one of these, it is part of a longer word. */
+const WORD_CHAR = /[A-Za-z0-9_-]/;
 /** A line's end in an event stream: LF, CRLF or a bare CR, as the format has them. */
 const LINE_END = /\r\n|\r|\n/;
 /** The next line end of a piece, searched from `lastIndex`. */
@@ -198,11 +200,40 @@ const LINE_BREAK = /\r\n|\r|\n/g;
  *     name, or its data line whole), and at most EVENT_HOLD of it: past that it is told from what came (a data line whose
  *     type comes first), and one that still cannot be is cut as an error's. Nothing a healthy event sent is kept.
  *   - `as-is`: every piece as it came.
+ * `tokens` (the forms of values too short to tell from text by chance) are cut in an error alone, and only as a whole
+ * token: in an error body anywhere, in an error event only inside a data line's value, never a field's name.
  * A `redact` that throws leaves the cut, and is said.
  */
-export function errorCut(mode: "error" | "events" | "as-is", forms: readonly string[], redact: ((text: string) => string) | undefined, say: (message: string) => void): { push(text: string): string; end(): string } {
+export function errorCut(mode: "error" | "events" | "as-is", forms: readonly string[], redact: ((text: string) => string) | undefined, say: (message: string) => void, tokens: readonly string[] = []): { push(text: string): string; end(): string } {
   /** `text` with every one of `of` cut out. */
   const cutOf = (of: readonly string[], text: string): string => of.reduce((out, form) => out.split(form).join(REDACTED), text);
+  /** `text` with each of `tokens` (short values' forms, longest first) cut where it stands as a whole token: no letter,
+   *  digit, "_" or "-" beside it, and, in an event stream, inside a data line's value, never a field's name or another
+   *  line. `before` is the character just before `text`, `lineHead` the start of its line that came before it; a token
+   *  the text ends on is cut only when `final` (more may follow it), and is otherwise left for the caller to hold. */
+  const cutTokens = (text: string, before: string, lineHead: string, final: boolean): string => {
+    if (!tokens.some((token) => text.includes(token))) return text;
+    let out = "";
+    for (let i = 0; i < text.length; ) {
+      const hit = tokens.find((token) => {
+        if (!text.startsWith(token, i)) return false;
+        const end = i + token.length;
+        if (end === text.length && !final) return false;
+        if (WORD_CHAR.test(i > 0 ? text[i - 1]! : before) || WORD_CHAR.test(text[end] ?? "")) return false;
+        if (mode !== "events") return true;
+        const lineAt = Math.max(text.lastIndexOf("\n", i - 1), text.lastIndexOf("\r", i - 1));
+        return (i > 0 && lineAt >= 0 ? text.slice(lineAt + 1, i) : lineHead + text.slice(0, i)).startsWith("data:");
+      });
+      if (hit) {
+        out += REDACTED;
+        i += hit.length;
+      } else {
+        out += text[i];
+        i += 1;
+      }
+    }
+    return out;
+  };
   const cut = (text: string): string => cutOf(forms, text);
   /** The forms a healthy event is cut of: those long enough not to match its text by chance. */
   const healthyForms = forms.filter((form) => form.length >= MIN_ECHO);
@@ -215,7 +246,7 @@ export function errorCut(mode: "error" | "events" | "as-is", forms: readonly str
       return text;
     }
   };
-  if (mode === "as-is" || !forms.length && !redact) return { push: (text) => text, end: () => "" };
+  if (mode === "as-is" || !forms.length && !tokens.length && !redact) return { push: (text) => text, end: () => "" };
   /** The length of the longest end of `text` that is a proper start of one of `of` (default every form). */
   const startOfForm = (text: string, of: readonly string[] = forms): number => {
     let longest = 0;
@@ -228,18 +259,35 @@ export function errorCut(mode: "error" | "events" | "as-is", forms: readonly str
   const cutter = (host = true) => {
     const of = host ? forms : healthyForms;
     const startOf = (text: string) => startOfForm(text, of);
+    /** The longest end of `text` that is a short value's token, or the start of one, not yet told whole (host only). */
+    const tokenEnd = (text: string): number => {
+      if (!host) return 0;
+      let longest = 0;
+      for (const token of tokens) for (let n = Math.min(token.length, text.length); n > longest; n--) if (text.endsWith(token.slice(0, n))) longest = n;
+      return longest;
+    };
     let held = "";
+    // What came out before `held`: its last character, and the start of the line it ends on (a data line's "data:").
+    let before = "";
+    let lineHead = "";
+    const sent = (out: string): string => {
+      if (!out) return out;
+      before = out.at(-1)!;
+      const lineAt = Math.max(out.lastIndexOf("\n"), out.lastIndexOf("\r"));
+      lineHead = (lineAt >= 0 ? out.slice(lineAt + 1) : lineHead + out).slice(0, 8);
+      return out;
+    };
     return {
       push(text: string): string {
-        const all = host ? redacted(cut(held + text)) : cutOf(of, held + text);
-        let at = all.length - Math.min(all.length, Math.max(startOf(all), host && redact ? REDACT_WINDOW : 0));
+        const all = host ? redacted(cutTokens(cut(held + text), before, lineHead, false)) : cutOf(of, held + text);
+        let at = all.length - Math.min(all.length, Math.max(startOf(all), tokenEnd(all), host && redact ? REDACT_WINDOW : 0));
         // Never between the two UTF-16 halves of a character: each half written alone is two U+FFFD to the client.
         if (at > 0 && at < all.length && isLowSurrogate(all.charCodeAt(at))) at -= 1;
         held = all.slice(at);
-        return all.slice(0, at);
+        return sent(all.slice(0, at));
       },
       end(): string {
-        const rest = held;
+        const rest = host ? cutTokens(held, before, lineHead, true) : held;
         held = "";
         // Text that ends on the start of a form ends on part of a secret: cut too.
         const part = startOf(rest);
@@ -319,7 +367,7 @@ export function errorCut(mode: "error" | "events" | "as-is", forms: readonly str
     return eventCutter.push(text);
   };
   const eventEnds = (): string => {
-    const out = state === "hold" ? (wholeIsError(held) ? redacted(cut(held)) : cutOf(healthyForms, held)) : eventCutter!.end();
+    const out = state === "hold" ? (wholeIsError(held) ? redacted(cutTokens(cut(held), "", "", true)) : cutOf(healthyForms, held)) : eventCutter!.end();
     state = "hold";
     held = "";
     eventCutter = undefined;
@@ -1096,13 +1144,16 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
       res.writeHead(upstream.status, { "content-type": contentType });
       const decoder = new TextDecoder();
       // The provider's own words in an error reach the harness with the credential this proxy sent, and the values of the
-      // headers it added, cut out, then the host's redactor (errorCut): an error answer, or an error event in a stream. Every
-      // value goes in, a short one too: an error is cut of each; a healthy event only of those of MIN_ECHO or more.
+      // headers it added, cut out, then the host's redactor (errorCut): an error answer, or an error event in a stream. The
+      // credential and a header value of MIN_ECHO or more are cut wherever they stand; a shorter header value only in an
+      // error's payload, and only as a whole token, so "1" never cuts "401" and "data" never cuts a data: field.
+      const hostValues = Object.values(hostHeaders);
       const relay = errorCut(
         !upstream.ok ? "error" : /^text\/event-stream\b/i.test(contentType) ? "events" : "as-is",
-        echoForms([credential, ...Object.values(hostHeaders)]),
+        echoForms([credential, ...hostValues.filter((value) => value.length >= MIN_ECHO)]),
         options.redact,
         (message) => say(`model proxy (${policy.id}): ${message}`),
+        echoForms(hostValues.filter((value) => value.length < MIN_ECHO)),
       );
       const write = async (out: string): Promise<void> => {
         if (!out || res.destroyed) return;
