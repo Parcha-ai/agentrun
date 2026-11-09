@@ -7,7 +7,10 @@ import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { startServe } from "../dist/index.js";
-import { agent, client, FAUX, follow, runDir, scratch, serve, triggerStore, withEnv } from "./support.mjs";
+import { agent, client, FAUX, follow, runDir, scratch, secretWritePath, serve, triggerStore, withEnv } from "./support.mjs";
+
+// Removing the outbound webhook takes its secret with it: the client sends it from the owner's session, as the console does.
+secretWritePath(["DELETE"], /^\/settings\/webhook$/);
 
 const sealKey = () => randomBytes(32).toString("base64");
 /** Whether `text` holds any 8 characters of `secret` in a row. */

@@ -5,10 +5,14 @@
 // secret's metadata (`secret`, the one SecretMeta shape) and the words that send the person to the console for it.
 // Rotating a trigger's secret is a secret write: the token is refused it in the secret-write words, at the one check in
 // the server's dispatch.
-import { registerSecretWrite, type SecretMeta, secretMeta } from "./secret-writes.js";
+import { registerSecretWrite, type SecretMeta, secretMeta, secretName } from "./secret-writes.js";
 import type { TriggerAdapter } from "./trigger-adapter.js";
 
+// Replacing a trigger's secret, and removing the outbound webhook (its secret goes with it), are secret writes. A trigger's
+// create and the outbound webhook's first save mint one and write none the caller gave: the token may make them, and is
+// shown no value.
 registerSecretWrite("rotateTriggerSecret", () => true);
+registerSecretWrite("deleteWebhook", () => true);
 
 /** What the token's answer says of a webhook trigger's secret, made and kept but not shown to it. */
 export const TRIGGER_SECRET_WORDS = "Open the console to see this trigger's signing secret once: rotate it there.";
@@ -19,7 +23,7 @@ export const WEBHOOK_SECRET_WORDS = "Open the console to see this webhook's sign
 /** A webhook trigger's minted secret's metadata, named trigger:<id>: made by this server at a console's or a script's
  *  request (source console). `changedAt`: when it was made, where known (its create's or rotation's answer); its row
  *  keeps no time yet, so a read says null. */
-export const triggerSecretMeta = (id: string, set: boolean, changedAt: string | null = null): SecretMeta => secretMeta(`trigger:${id}`, { set, source: "console", changedAt });
+export const triggerSecretMeta = (id: string, set: boolean, changedAt: string | null = null): SecretMeta => secretMeta(secretName("trigger", id), { set, source: "console", changedAt });
 
 /** POST /triggers' first answer, for a trigger that minted `minted` (none for a schedule's) at `at`: its `secret`
  *  metadata, and the value as `signing_secret` to a caller that may hold it, else secret_set and the words. `made` is the
@@ -39,7 +43,7 @@ export const templateTriggerSecret = (i: number) => ({ field: `triggers.${i}.sec
 
 /** The outbound webhook's secret's metadata, named webhook:outbound: set or not, made by this server at a save (source
  *  console), and when. */
-export const webhookSecretMeta = (set: boolean, changedAt: string | null): SecretMeta => secretMeta("webhook:outbound", { set, source: "console", changedAt });
+export const webhookSecretMeta = (set: boolean, changedAt: string | null): SecretMeta => secretMeta(secretName("webhook", "outbound"), { set, source: "console", changedAt });
 
 /** PUT /settings/webhook's answer: the minted value (the first save's) as `signing_secret` to a caller that may hold it,
  *  else the words. `view` carries the `secret` metadata already. */

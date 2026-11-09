@@ -16,7 +16,10 @@ import { startServe } from "../dist/index.js";
 import { ATTEMPTS_KEPT, signatureOf, Webhooks } from "../dist/webhooks.js";
 import { verify } from "../dist/standard-webhooks.js";
 import { schemaProblems } from "./schema-support.mjs";
-import { client, FAUX, follow, printed, runDir, runRecordOf, scratch, serve, startRun, withEnv } from "./support.mjs";
+import { client, FAUX, follow, printed, runDir, runRecordOf, scratch, secretWritePath, serve, startRun, withEnv } from "./support.mjs";
+
+// Removing the outbound webhook takes its secret with it: the client sends it from the owner's session, as the console does.
+secretWritePath(["DELETE"], /^\/settings\/webhook$/);
 
 // The spec's own library, in the lockfile through the Anthropic SDK: what a receiver would install.
 const { Webhook } = createRequire(import.meta.url)("standardwebhooks");

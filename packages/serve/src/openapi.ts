@@ -1278,7 +1278,10 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
     },
     delete: {
       operationId: "deleteWebhook", tags: ["local"], summary: "Remove the webhook; its pending messages are dropped, the log of attempts is kept",
-      responses: { "204": { description: "Removed." }, ...errors(401, 429, 500) },
+      description: "A secret write: its signing secret goes with it. The owner's signed-in session alone (ownerSession), never the token, which is 403 forbidden in words and the webhook kept.",
+      // The owner's password session alone (secret-writes.ts), never the document's bearer.
+      security: [{ ownerSession: [] }],
+      responses: { "204": { description: "Removed." }, ...errors(401, 403, 429, 500) },
       "x-agentrun-serve": "webhook/1",
     },
   },
