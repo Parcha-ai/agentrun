@@ -18,8 +18,7 @@ const { startRunner } = await import("../dist/runner/runner.js");
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { sendCommand } = await import("../dist/runner/commands.js");
 const { MAX_RESTARTS } = await import("../dist/runner/conformance/harness.js");
-const { runGate } = await import("../dist/tool-gate.js");
-const { loadToolSettings } = await import("../dist/tool-plane.js");
+const { adapterRunGate } = await import("../dist/runner/adapter-run-spec.js");
 const TIMING = { leaseMs: 30_000, renewEveryMs: 150, stopMarginMs: 5_000, pollMs: 20, commandPollMs: 30 };
 const quiet = { beforeIntent: async () => {}, beforeResult: async () => {} };
 after(closeOpenSessions);
@@ -38,11 +37,10 @@ async function approvedAfter(t, { tool, args, before, meanwhile }) {
   const base = piAdapterSpec({ script, tools, hooks: quiet }, { fetch: scriptedOrigin(script, requests) });
   const root = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-gate-approved-"));
   const runnerStore = opened.runners[0];
-  // The gate as the dispatch builds it at each claim: the store's settings read at the claim, answered by decide().
+  // The gate as the dispatch builds it (adapterRunGate, the one the spec builder uses).
   const loop = createAdapterLoop(async (claim, run) => {
-    const settings = await loadToolSettings(runnerStore);
-    const gate = runGate({ root, work: root }, claim.runId, { kind: "agentic", body: { approvals: "ask" } }, () => settings);
-    return { ...(await base(claim, run)), gate: (call) => gate.decide(call.tool, call.args) };
+    const gate = await adapterRunGate(runnerStore, claim, { kind: "agentic", body: { approvals: "ask" } }, root);
+    return { ...(await base(claim, run)), gate };
   }, { restartLimit: MAX_RESTARTS });
   const runner = startRunner({ store: runnerStore, createLoop: loop, name: "runner-a", ...TIMING });
   t.after(() => runner.close());

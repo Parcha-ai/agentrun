@@ -7,7 +7,7 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { test } from "node:test";
-import { dropLiveViewer, liveViewer, liveViewerById, putLiveViewer, readLiveViewers } from "../dist/browser-live.js";
+import { dropLiveViewer, liveViewer, liveViewerById, computerViewerLink, liveViewerFor, liveViewerLink, putLiveViewer, readLiveViewers, viewerLink } from "../dist/browser-live.js";
 import { aadOf, sealColumn, sealedAt } from "../dist/store/seal.js";
 import { fakeLiveViewersStore } from "./live-viewers-support.mjs";
 
@@ -16,7 +16,7 @@ const RUN = "run-1";
 const KEY = randomBytes(32);
 const handover = (tag) => ({ port: 40000, id: randomBytes(16).toString("base64url"), token: randomBytes(32).toString("base64url"), tag });
 /** What the readers give for `given`, put at `at`. */
-const read = (given, at) => ({ port: given.port, id: given.id, token: given.token, tag: given.tag, at });
+const read = (given, at, kind = "browser") => ({ kind, port: given.port, id: given.id, token: given.token, tag: given.tag, at });
 
 test("the AAD a viewer's token is sealed under is computer_viewers|<run>/<kind>:<tag>|sealed", () => {
   assert.equal(aadOf(sealedAt.liveViewer("run-1", "browser", "ar-run-1-1")), "computer_viewers|run-1/browser:ar-run-1-1|sealed");
@@ -32,7 +32,7 @@ test("a session's viewer put under the run's claim reads back whole, newest firs
   assert.equal(await putLiveViewer(store, KEY, claim, { ...newer, at: 5 }), true, "a time the runner names is not the store's");
   const all = await readLiveViewers(store, KEY, RUN);
   assert.deepEqual(all, [read(newer, 2_000), read(older, 1_000)]);
-  assert.deepEqual(Object.keys(all[0]).sort(), ["at", "id", "port", "tag", "token"], "a hand-over, and nothing of the row beside it");
+  assert.deepEqual(Object.keys(all[0]).sort(), ["at", "id", "kind", "port", "tag", "token"], "a hand-over and its computer's kind, and nothing of the row beside it");
   assert.deepEqual(await liveViewer(store, KEY, RUN), read(newer, 2_000));
   assert.deepEqual(await liveViewerById(store, KEY, RUN, older.id), read(older, 1_000));
   assert.equal(await liveViewerById(store, KEY, RUN, "AAAAAAAAAAAAAAAAAAAAAA"), undefined);
@@ -177,4 +177,46 @@ test("the token's plaintext reaches no store row: the store is handed the kind, 
     assert.ok(!Buffer.from(v.sealed).includes(given.token), "not in the sealed bytes");
     assert.ok(!JSON.stringify(v).includes(given.token), "nor anywhere in what put was handed");
   }
+});
+
+test("the owner's link over the store is under the run's /computer/live/ path, kind browser: the newest viewer whose port answers, none when none does; the live route finds a viewer's page by its id and the files by the newest", async () => {
+  const store = fakeLiveViewersStore({ start: 1_000 });
+  const claim = store.claim(RUN);
+  const older = handover("ar-run-1-1");
+  const newer = handover("ar-run-1-2");
+  await putLiveViewer(store, KEY, claim, older);
+  store.advance(1_000);
+  await putLiveViewer(store, KEY, claim, newer);
+  assert.equal(viewerLink(RUN, newer, "computer"), `/v2/runs/${RUN}/computer/live/v/${newer.id}#t=${newer.token}`);
+  assert.equal(viewerLink(RUN, newer), `/v2/runs/${RUN}/browser/live/v/${newer.id}#t=${newer.token}`, "the browser's own address by default, as on the base");
+  assert.deepEqual(await liveViewerLink(store, KEY, RUN, async () => true), { viewer: `/v2/runs/${RUN}/browser/live/v/${newer.id}#t=${newer.token}` }, "runBrowserState's dep: the browser's own link");
+  assert.deepEqual(await computerViewerLink(store, KEY, RUN, async () => true), { kind: "browser", viewer: `/v2/runs/${RUN}/computer/live/v/${newer.id}#t=${newer.token}` });
+  assert.deepEqual(await computerViewerLink(store, KEY, RUN, async (h) => h.id === older.id), { kind: "browser", viewer: `/v2/runs/${RUN}/computer/live/v/${older.id}#t=${older.token}` }, "the newest whose port answers");
+  assert.equal(await computerViewerLink(store, KEY, RUN, async () => false), undefined, "none answers: none");
+  assert.equal(await computerViewerLink(store, randomBytes(32), RUN, async () => true), undefined, "no seal opens: none");
+  assert.equal((await liveViewerFor(store, KEY, RUN, `/v/${older.id}`))?.id, older.id);
+  assert.equal((await liveViewerFor(store, KEY, RUN, "/viewer.js"))?.id, newer.id);
+  assert.equal((await liveViewerFor(store, KEY, RUN, "/viewer.css"))?.id, newer.id);
+  for (const rest of ["/v/AAAAAAAAAAAAAAAAAAAAAA", "/other.js", `/v/${older.id}/ws`, "/"]) assert.equal(await liveViewerFor(store, KEY, RUN, rest), undefined, rest);
+  assert.equal(await liveViewerFor(store, KEY, "run-2", "/viewer.js"), undefined, "another run's: none");
+});
+
+test("the readers take any computer kind's row of the run: a desktop row put at kind desktop reads with its kind, sealed under it; GET /computer's link names it, and the live route finds it by its id", async () => {
+  const store = fakeLiveViewersStore({ start: 1_000 });
+  const claim = store.claim(RUN);
+  const browser = handover("ar-run-1-1");
+  await putLiveViewer(store, KEY, claim, browser);
+  store.advance(1_000);
+  // As openComputerView will put it (its tag the computer's ref id), straight on the store until that exists.
+  const desktop = handover("cmp-desktop-1");
+  assert.equal(await store.liveViewers.put(claim, { kind: "desktop", tag: desktop.tag, port: desktop.port, id: desktop.id, sealed: sealColumn(KEY, sealedAt.liveViewer(RUN, "desktop", desktop.tag), desktop.token) }), true);
+  assert.deepEqual(await readLiveViewers(store, KEY, RUN), [read(desktop, 2_000, "desktop"), read(browser, 1_000)]);
+  assert.deepEqual(await computerViewerLink(store, KEY, RUN, async () => true), { kind: "desktop", viewer: `/v2/runs/${RUN}/computer/live/v/${desktop.id}#t=${desktop.token}` });
+  assert.deepEqual(await liveViewerById(store, KEY, RUN, desktop.id), read(desktop, 2_000, "desktop"));
+  assert.equal((await liveViewerFor(store, KEY, RUN, `/v/${desktop.id}`))?.kind, "desktop");
+  assert.equal((await liveViewerFor(store, KEY, RUN, "/viewer.js"))?.id, desktop.id, "the newest, whatever its kind");
+  // A token sealed under another kind's AAD does not open: a row's kind is bound to its seal.
+  const moved = handover("cmp-phone-1");
+  await store.liveViewers.put(claim, { kind: "phone", tag: moved.tag, port: moved.port, id: moved.id, sealed: sealColumn(KEY, sealedAt.liveViewer(RUN, "desktop", moved.tag), moved.token) });
+  assert.equal(await liveViewerById(store, KEY, RUN, moved.id), undefined, "sealed as another kind's: no viewer");
 });
