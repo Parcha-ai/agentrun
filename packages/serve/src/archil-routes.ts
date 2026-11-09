@@ -46,8 +46,8 @@ export type ArchilTest = { ok: true; detail: string } | { ok: false; why: string
 export interface ArchilRoutesOptions {
   /** The server's one store: its settings and sealed keys. */
   readonly store: Pick<Store, "settings" | "sealedKeys">;
-  /** The server's seal key; absent, no key is kept here. */
-  readonly sealKey: Buffer | undefined;
+  /** The server's seal key: there is always one (seal-key.ts ensureSealKey, at the start). */
+  readonly sealKey: Buffer;
   /** Makes the disk for the test (default archilDisk): a test's fake. */
   readonly makeDisk?: (options: ArchilDiskOptions) => ArchilDisk;
   /** The server's environment: an ARCHIL_API_KEY variable overrides the saved key (source "env"). */
@@ -91,15 +91,12 @@ export function createArchilRoutes(options: ArchilRoutesOptions) {
       if (!KEYS.some((key) => key.name === name)) issues.push({ field: `keys.${name}`, reason: "not_allowed", message: `Archil takes ARCHIL_API_KEY alone, not ${name}: no disk token is kept, a computer's mount credential is minted per run from the account key` });
       else if (value !== null && !nonEmpty(value)) issues.push({ field: `keys.${name}`, reason: "wrong_type", message: `${name} is a non-empty string, or null to remove it` });
     }
-    // Kept until the server refuses to start without a seal key (the secrets plan's rule 2); then this branch can't be
-    // reached, and it goes.
-    if (!sealKey && entries.some(([, value]) => value !== null)) issues.push({ field: "keys", reason: "unavailable", message: "this server was given no seal key, so it keeps no key: start it with AGENTRUN_SEAL_KEY" });
     if (issues.length) throw invalid(issues);
     const settings: ArchilSettings = { diskId: (given.diskId as string).trim(), region: (given.region as string).trim(), s3Url: given.s3Url as string, ...(given.image !== undefined ? { image: given.image as string } : {}) };
     for (const [name, value] of entries) {
       const row = KEYS.find((key) => key.name === name)!.row;
       if (value === null) await removeSealedKey(store, row);
-      else await putSealedKey(store, sealKey!, row, value as string);
+      else await putSealedKey(store, sealKey, row, value as string);
     }
     await saveArchilSettings(store, settings);
     return view();

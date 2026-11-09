@@ -22,7 +22,7 @@ const SETTINGS = { diskId: "dsk-00000000000fake0", region: "aws-us-east-1", s3Ur
 const API = "archil-account-secret-0001";
 
 async function setup(t, { disk = new FakeArchilDisk(), ...given } = {}) {
-  const sealKey = "sealKey" in given ? given.sealKey : randomBytes(32);
+  const sealKey = randomBytes(32);
   const { store } = await storeOn(t);
   const made = [];
   const routes = createArchilRoutes({ store, sealKey, ...(given.env ? { env: given.env } : {}), makeDisk: (options) => { made.push(options); return disk; } });
@@ -87,12 +87,6 @@ test("a PUT that is not right is refused before anything is saved, field by fiel
   await refused(call("putWorkspaceArchil", []));
   assert.equal(await inArchilMode(store), false, "nothing saved");
   assert.deepEqual(await store.sealedKeys.all(), []);
-});
-
-test("with no seal key, keys are refused in words, and settings with no key are kept", async (t) => {
-  const { call } = await setup(t, { sealKey: undefined });
-  await assert.rejects(call("putWorkspaceArchil", { ...SETTINGS, keys: { ARCHIL_API_KEY: API } }), (error) => error instanceof ApiError && error.code === "input_invalid" && /AGENTRUN_SEAL_KEY/.test(error.message));
-  assert.equal((await call("putWorkspaceArchil", SETTINGS)).on, true);
 });
 
 test("the test lists the disk's root once with the sealed key, and says why it can't in plain words, never the key", async (t) => {

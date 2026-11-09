@@ -53,6 +53,18 @@ test("served: the Archil routes turn Mode 2 on and off, never echoing the key", 
   assert.equal((await api("DELETE", "/workspace/archil")).body.on, false);
 });
 
+test("served handed no seal key: the server makes its own at the start (seal-key.ts) and keeps a computer key and the Archil account key under it", async (t) => {
+  withEnv(t, {}, ["AGENTRUN_SEAL_KEY"]);
+  const { api } = await served(t, { runner: false, accounts: true, openSetup: true });
+  const saved = await api("PUT", "/computers/faux-sandbox/keys", { FAUX_SANDBOX_KEY: "any-value-2" });
+  assert.equal(saved.status, 200, JSON.stringify(saved.body));
+  assert.deepEqual([saved.body.ready, saved.body.secrets[0].set, saved.body.secrets[0].source], [true, true, "console"]);
+  assert.deepEqual((await api("POST", "/computers/faux-sandbox/test")).body, { ok: true, detail: "Faux sandbox: the faux account answered (no computer was made)" }, "the saved key opens under the key the server made");
+  const on = await api("PUT", "/workspace/archil", { diskId: "dsk-00000000000fake0", region: "aws-us-east-1", s3Url: "https://s3.archil.example", keys: { ARCHIL_API_KEY: "archil-served-key-0002" } });
+  assert.equal(on.status, 200, JSON.stringify(on.body));
+  assert.deepEqual([on.body.on, on.body.secret.set], [true, true]);
+});
+
 test("served: a run's desktop view, take-over and hand-back refuse in words until the store-backed take-over lands; a faux page exists only for a live faux desktop", async (t) => {
   const { api, baseUrl } = await serve(t, { runner: false });
   const view = await api("GET", "/runs/run-404/computer");
