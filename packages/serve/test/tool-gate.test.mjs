@@ -244,7 +244,10 @@ test("web_fetch set to ask on pi, claude-agent and codex at once: each run parks
     const { view, rows, result } = await parked(api, run.runId);
     const at = `${run.decision} on ${run.harness}`;
     assert.deepEqual([view.status, view.state, view.pending?.kind, view.pending?.tool], ["input_required", "waiting", "approval", "web_fetch"], at);
-    assert.match(view.pending.id, /^ap_[0-9a-f]{16}$/);
+    // A pending approval is named by its call: run-view.ts asksOf gives the card the ask's callId, its call row's tool_use_id.
+    const call = rows.find((r) => r.kind === "tool_use" && r.tool_name === "web_fetch");
+    assert.ok(call, `${at}: its call row`);
+    assert.equal(view.pending.id, call.tool_use_id, `${at}: named by its call`);
     assert.deepEqual(JSON.parse(view.pending.args_preview), { url: PAGE });
     assert.ok(Date.parse(view.pending.requested_at) > 0);
     assert.deepEqual(schemaProblems(doc, doc.components.schemas.Run.properties.pending, view.pending), [], at);
