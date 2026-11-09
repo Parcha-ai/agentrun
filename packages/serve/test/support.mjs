@@ -15,7 +15,13 @@ import { processAlive } from "@parcha/agentrun-kernel/host";
 import { openStoreReader } from "@parcha/pi-durable-agent";
 import { startServe } from "../dist/index.js";
 import { readRunDbSync } from "../dist/run-db.js";
-import { openSqliteStore } from "../dist/store/sqlite/store.js";
+import { resolve } from "node:path";
+import { openSqliteStore } from "../dist/store/index.js";
+import { startRunner } from "../dist/runner/runner.js";
+import { dispatchRunner } from "../dist/runner/harness-loops.js";
+import { routeOf } from "../dist/runner/model-route.js";
+import { FAUX_ENV, withoutFaux } from "../dist/model.js";
+import { SEAL_KEY_ENV, sealKeyOf } from "../dist/tool-keys.js";
 
 export const FAUX = new URL("./fixtures/faux-model.mjs", import.meta.url).pathname;
 
@@ -30,6 +36,13 @@ process.env.AGENTRUN_BOXES = "none";
 for (const name of ["npm_config_registry", "NPM_CONFIG_REGISTRY"]) process.env[name] = "http://127.0.0.1:9/";
 // And gives up there at once: no retry with npm's backoff, a short timeout, so a test can never wait on such an install.
 for (const [name, value] of [["fetch_retries", "0"], ["fetch_timeout", "5000"]]) for (const spelling of [`npm_config_${name}`, `NPM_CONFIG_${name.toUpperCase()}`]) process.env[spelling] = value;
+
+/** The store's bytes on disk (the DB and its WAL and shared-memory sidecars), concatenated, for a sealed-at-rest check that
+ *  a secret is never written in the clear: a committed write may still sit in the -wal before a checkpoint, so all three are
+ *  read. The store's rows seal every secret (store/seal.ts), so none of these bytes holds a value in the clear. */
+export function storeBytes(data) {
+  return Buffer.concat(["store.sqlite", "store.sqlite-wal", "store.sqlite-shm"].map((name) => { try { return readFileSync(join(data, name)); } catch { return Buffer.alloc(0); } }));
+}
 
 /** The records of a log another process appends to (a line of JSON each, as the fake docker's): only its whole lines,
  *  each ended by its newline. A file just made and still empty, or a last line still being written, is read as the
@@ -235,9 +248,37 @@ export async function triggerStore(of) {
 /** A server for test `t`, stopped after it, before its scratch directory goes. On the real models (`faux: undefined`) its
  *  data holds Claude Code and Codex as the first-use installs put them (linkHarnesses; `harnesses: { cli, codex }` to vary
  *  them); `harnesses` says so for any server, `false` for none. Its triggers live in a store of their own, one per data
- *  directory (`store: false` for none): until the server opens its own store (the cutover), a firing that starts a run
- *  needs the run port's insert into it (E2). */
-export async function serve(t, { harnesses: asked, store: stored, ...options } = {}) {
+ *  directory (`store: false` for none). A runner beside it (startInProcessRunner, `runner: false` for none) claims and
+ *  runs what it starts. */
+/** Starts an in-process runner beside a test's server on the same data directory, with its own store handle (role runner),
+ *  so a run the server starts is claimed and run as the CLI start's server-and-runner runs it. Its loop is the runner's
+ *  dispatch (dispatch.ts): each claim's launch picks its harness loop — pi on the kernel's adapter loop with the run's pi
+ *  spec, a learning run on the learning loop, its model route the faux model under `faux`. Returns a close() that stops the
+ *  runner and closes its store handle. */
+export async function startInProcessRunner(data, { faux } = {}) {
+  const store = await openSqliteStore({ dataDir: data, role: "runner" });
+  // The runner's env mirrors the server's faux (model.ts FAUX_ENV): its model route reads the faux model from it, so a run
+  // never reaches the network. The seal key, when the server has one, seals the live-viewer tokens the browser tool writes;
+  // a server with none never serves a live view, so a stand-in is enough to satisfy the spec.
+  const env = { ...withoutFaux(process.env), ...(faux ? { [FAUX_ENV]: resolve(faux) } : {}) };
+  const sealKey = sealKeyOf(env[SEAL_KEY_ENV]) ?? Buffer.alloc(32);
+  let runner;
+  try {
+    runner = startRunner({
+      store,
+      createLoop: dispatchRunner({ env, data, journal: (claim) => store.journal(claim), store, sealKey, routeOf }),
+    });
+  } catch (error) {
+    await store.close();
+    throw error;
+  }
+  return async () => {
+    await runner.close().catch(() => {});
+    await store.close().catch(() => {});
+  };
+}
+
+export async function serve(t, { harnesses: asked, store: stored, runner: wantRunner = true, ...options } = {}) {
   const harnesses = asked ?? (Object.hasOwn(options, "faux") && options.faux === undefined);
   const dir = options.data ? undefined : await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "agentrun-serve-"));
   const data = options.data ?? join(dir, "agents");
@@ -247,6 +288,10 @@ export async function serve(t, { harnesses: asked, store: stored, ...options } =
     if (held) await storeDone(data, held);
     throw error;
   });
+  // A runner beside the server on the same data (the CLI start's server-and-runner): it claims and runs what the server
+  // starts, so a test reads a run that runs, not one that queues forever. `runner: false` leaves it off for a test that
+  // wants the server alone. Its loop is the switch's dispatch.
+  const closeRunner = wantRunner === false ? undefined : await startInProcessRunner(data, { faux: Object.hasOwn(options, "faux") ? options.faux : FAUX });
   // A server on another's data (a restart's): its owner's hook closes it before the directory goes.
   if (dir) sharing.set(data, new Set());
   else sharing.get(data)?.add(server);
@@ -254,6 +299,8 @@ export async function serve(t, { harnesses: asked, store: stored, ...options } =
   // it, and noted it here.
   const dockerState = process.env.FAKE_DOCKER_STATE;
   t.after(async () => {
+    // The runner releases its claims and closes its store handle before the server's directory goes.
+    if (closeRunner) await closeRunner();
     await server.close();
     // The servers a test started on this one's data close before it goes: node:test runs after-hooks in the order they
     // were added, so this one runs before theirs, and a directory removed under a server still writing there fails with

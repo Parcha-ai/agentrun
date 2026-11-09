@@ -69,7 +69,7 @@ import { removeEgressDir, RUN_BOX_ALLOW_ENV } from "./box-egress.js";
 import { BehindReadError, checkpointRunDb, MonotonicReads, readRunDb } from "./run-db.js";
 import { holderLives, holderOfClaim, holderOfProcess, holderState, killHolder, LAUNCH_HOLDER, RUN_EPOCH_ENV, RUN_LAUNCH_ENV, type RunHolder, signal } from "./run-holder.js";
 import { firstDoorLine, untilOpened, verifyDoor } from "./door-line.js";
-import { BUDGET_PAUSED, type Approval, type ApprovalAnswer, actingOn, approvalOf, browserPending, budgetPending, cents, centsUp, continuationOf, costOf, costView, type Handed, handedPointers as handedPointersOf, knownToolCostOf, MALFORMED, meaningful, micro, microUp, overByMiss, pauseOf, pausedAt, type Pending, pendingOf, raisedToGo, redactorOf, refusedValuesOf, rowShown as rowShownOf, servedReviewWith, servedRunErrorWith, shownOf, type SoFar, soFarOf, type State, type Status, statusOf as statusOfView, stopped, stoppedAt, SUGGESTED_RAISE_FACTOR, suggestedCap, shownArgs, toolCostOf, usersOf, waitingApproval, WITHHELD_SIGN_IN, withAsks, withdrawn, withOverCap, withPaused } from "./run-view.js";
+import { BUDGET_PAUSED, type Approval, type ApprovalAnswer, actingOn, approvalOf, browserPending, budgetPending, cents, centsUp, continuationOf, costOf, costView, type Handed, handedPointers as handedPointersOf, knownToolCostOf, MALFORMED, meaningful, micro, microUp, overByMiss, pauseOf, pausedAt, type Pending, pendingOf, raisedToGo, redactorOf, refusedValuesOf, rowShown as rowShownOf, servedReviewWith, servedRunErrorWith, shownOf, HELD, outcomeSays, outcomeShows, type SoFar, soFarOf, type State, type Status, statusOf as statusOfView, stopped, stoppedAt, SUGGESTED_RAISE_FACTOR, suggestedCap, shownArgs, toolCostOf, usersOf, waitingApproval, WITHHELD_SIGN_IN, withAsks, withdrawn, withOverCap, withPaused } from "./run-view.js";
 // The cost reads, the served row transforms, the status and pending views and the redaction choke point kept their import
 // path here for the server routes and tests that read them from this module.
 export { costOf, costView, knownToolCostOf, soFarOf, type SoFar, toolCostOf, withOverCap, withPaused, stoppedAt, suggestedCap, SUGGESTED_RAISE_FACTOR, type State, type Status, WITHHELD_SIGN_IN };
@@ -639,33 +639,13 @@ function parkedCallSays(approval: Approval, run: Pick<Run, "meta">, waiting: App
   if (given.decision === "deny") return given.by === "message" ? "Not run: your message declined it" : "Not run: you declined it";
   return approval.resolved ? "Ran once you allowed it; its result went to the agent" : "Allowed: it runs now";
 }
-/** A parked call's own rows once its resume row says what came of it. */
-const HELD = "Held for your approval";
 /** The call a resume (resumeText, its text as the row has it) answers: its head names the call's tool and id. */
 const resumedBy = (text: string, byCall: ReadonlyMap<string, Approval>): Approval | undefined =>
   [...byCall.values()].find((approval) => text.startsWith(`${RESUME_PREFIX}This answers your ${approval.tool} call ${approval.call_id} `));
-/** A resume's row as the approval's outcome: what ran, or what was refused. The tool's name and fixed words, and the
- *  note a person typed with a Deny: its first line, redacted whole with the run's redactor (`redact`) and its links'
- *  query values elided (scrubUrls), as the row's text is (resumeShows), then cut. A declining message adds nothing: it
- *  shows as the person's own row. */
+/** A resume's row as the approval's outcome (run-view.ts outcomeSays, the store path's words too): what ran, or "You
+ *  declined <tool>[: <note>]". */
 function resumeSays(approval: Approval, given: { decision: string; by?: string; note?: string } | undefined, text: string, redact: (text: string) => string): string {
-  const note = given?.decision === "deny" && given.by !== "message" && given.note ? scrubUrls(redact(given.note)).split(/\r?\n/).map((line) => line.trim()).find(Boolean) : undefined;
-  const outcome = resumeOutcome(approval, given, text);
-  // An allowed call that ran: where its result went (the outcome its own rows said before this row carried it).
-  const went = given?.decision !== "deny" && !outcome.endsWith(", and failed") ? "; its result went to the agent" : "";
-  return `${outcome}${went}${note ? `: ${clipPoints(note, DENY_NOTE_CHARS)}` : ""}`;
-}
-/** `text` cut to `max` code points, an ellipsis last when cut: a pair of surrogates is never halved. */
-const clipPoints = (text: string, max: number): string => {
-  const points = Array.from(text);
-  return points.length > max ? `${points.slice(0, max - 1).join("")}…` : text;
-};
-/** At most this many code points of a Deny's note on its resume row's summary; its row's text has the whole of it. */
-const DENY_NOTE_CHARS = 200;
-/** What came of an approval, in fixed words: the head of its resume row's summary and of its text. */
-function resumeOutcome(approval: Approval, given: { decision: string; by?: string } | undefined, text: string): string {
-  if (given?.decision === "deny") return `AgentRun: ${approval.tool} was refused: ${given.by === "message" ? "your message declined it" : "you declined it"}`;
-  return `AgentRun: ${approval.tool} ran once you allowed it${text.includes(" They allowed it, and it ran and failed.") ? ", and failed" : ""}`;
+  return outcomeSays(approval.tool, given ?? { decision: "allow" }, text.includes(" They allowed it, and it ran and failed."), redact);
 }
 /** What a person reads when they open a resume's row: the outcome, then the call's result or the refusal's words, from the
  *  model's message (already redacted whole, as the row's text is), with its head left out. The head is rebuilt exactly as
@@ -673,15 +653,15 @@ function resumeOutcome(approval: Approval, given: { decision: string; by?: strin
  *  quote the gate's words can't move it; a row whose text doesn't start with it shows the outcome alone. The model's own
  *  message is unchanged. */
 function resumeShows(approval: Approval, given: { decision: string; by?: string; args_shown?: string } | undefined, text: string, redact: (text: string) => string): string {
-  const said = resumeOutcome(approval, given, text).replace(/^AgentRun: /, "");
+  const answer = given ?? { decision: "allow" };
+  const failed = text.includes(" They allowed it, and it ran and failed.");
   // The row's text is the message as the Timeline shows it: redacted whole (the run's redactor) and its links scrubbed
   // (scrubUrls), so the gate's head is compared after the same two steps.
   const written = resumeHead(approval, given?.args_shown ?? "(not shown)");
   const head = [scrubUrls(redact(written)), redact(written), scrubUrls(written), written].find((h) => text.startsWith(h));
-  if (head === undefined) return `${said}.`;
-  const rest = text.slice(head.length);
-  if (given?.decision === "deny") return `${said}.${rest.trim() ? `\n${rest.trim()}` : ""}`;
-  return `${said}. Its result:\n${rest.replace(/^ They allowed it, and it ran(?: and failed)?\. Its result:\n?/, "")}`;
+  if (head === undefined) return answer.decision === "deny" ? outcomeShows(approval.tool, answer, "", false) : `${approval.tool} ran once you allowed it${failed ? ", and failed" : ""}.`;
+  const rest = text.slice(head.length).replace(/^ They allowed it, and it ran(?: and failed)?\. Its result:\n?/, "");
+  return outcomeShows(approval.tool, answer, rest, failed);
 }
 // micro and microUp move to run-view.ts (the run's served view), imported above.
 /** For tests only: how long each launch path waits where it refreshes a run's MCP OAuth tokens (mcpFresh). */
