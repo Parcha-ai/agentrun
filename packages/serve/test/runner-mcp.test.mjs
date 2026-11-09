@@ -57,7 +57,7 @@ const lastResult = (sent) => {
  * `script` with the run's MCP (`grants`), its gate the tool gate's permissions over `settings` (an mcp: tool asks by
  * default). Runs until the run is not running, or `until(row)` says so.
  */
-async function mcpRun(t, { script, grants, settings = {}, tools = [ADD, PAID], prices, seal = headers, capUsd, before, until, ms = 20_000, hostTools = {}, events, auth = "bearer", fakeToken = TOKEN, githubAppAccess, launchInput, timing = STEADY, opened = [], renewing, gateOf }) {
+async function mcpRun(t, { script, grants, settings = {}, tools = [ADD, PAID], prices, seal = headers, capUsd, before, until, ms = 20_000, hostTools = {}, events, auth = "bearer", fakeToken = TOKEN, githubAppAccess, launchInput, timing = STEADY, opened = [], renewing }) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-mcp-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -89,9 +89,9 @@ async function mcpRun(t, { script, grants, settings = {}, tools = [ADD, PAID], p
     return {
       ...(await base(claim, run)),
       workRoot: work,
-      // `gateOf`: the run's own gate as the spec builders make it (adapterRunGate over the store's settings), else the plain
-      // permission of `settings`.
-      gate: gateOf ? await gateOf({ store, claim, work }) : (call) => permissionOf(call.tool, settings),
+      // `settings` as a function: the run's own gate as the spec builders make it (adapterRunGate over the store's
+      // settings), made for the claim; else the plain permission of `settings`.
+      gate: typeof settings === "function" ? await settings({ store, claim, work }) : (call) => permissionOf(call.tool, settings),
       ...(mcp ? { mcp } : {}),
       ...(capUsd === undefined ? {} : {
         cap: specCap(capUsd),
@@ -210,7 +210,7 @@ test("R4b: an MCP call outside its server's argument pin is refused in the pin's
     script,
     grants: ["mcp:fake/add"],
     before: ({ server }) => server.settings.put("tool-settings", { "mcp:fake/add": { permission: "allow", pin: { a: 2 } } }),
-    gateOf: ({ store, claim, work }) => adapterRunGate(store, claim, { kind: "agentic", body: {} }, work),
+    settings: ({ store, claim, work }) => adapterRunGate(store, claim, { kind: "agentic", body: {} }, work),
   });
   assert.equal(row.state, "ended", JSON.stringify(row));
   const said = lastResult(sent);
