@@ -18,7 +18,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { MessageOrigin } from "@parcha/pi-durable-agent/timeline";
+import { type MessageOrigin, TRIGGER_LABELS, type TriggerSource } from "@parcha/pi-durable-agent/timeline";
 import { ApiError, type InputIssue, invalid } from "./errors.js";
 import { writeDurableSync } from "./files.js";
 import { EFFORTS } from "./model.js";
@@ -140,9 +140,10 @@ export type TriggerClock = { now(): number; arm(fire: () => void, ms: number): {
 export type TriggerDeps = {
   /** What keeps a target from starting runs here, by field (its agent, its kind, its input). */
   targetIssues(target: Target): Promise<InputIssue[]>;
-  /** Starts the target's run with `input`, as POST /agents/{id}/runs would, under `origin`; its first message is the
-   *  trigger's (`from`, never the person's); ApiError when refused. */
-  start(target: Extract<Target, { kind: "start_run" }>, input: Json, origin: RunTrigger, from: MessageOrigin): Promise<{ run_id: string }>;
+  /** Starts the target's run with `input`, as POST /agents/{id}/runs would, under `origin`, titled `title` (its
+   *  trigger's, never its input's); its first message is the trigger's (`from`, never the person's); ApiError when
+   *  refused. */
+  start(target: Extract<Target, { kind: "start_run" }>, input: Json, origin: RunTrigger, from: MessageOrigin, title: string): Promise<{ run_id: string }>;
   /** Sends `input` to the target's run, as POST /runs/{id}/messages would, under `key` (the run's store takes a message
    *  once per key), as the trigger's (`from`); ApiError when refused. */
   message(target: Extract<Target, { kind: "message_run" }>, input: Json, key: string, from: MessageOrigin): Promise<void | { skipped: string }>;
@@ -671,7 +672,7 @@ export class Triggers {
       if (now.trigger.target.kind === "message_run") return await this.send(triggerId, key);
       let started: { run_id: string };
       try {
-        started = await this.deps.start(now.trigger.target, this.inputOf(now.trigger, now.firing), { id: triggerId, firing_key: key }, this.originOf(now.trigger));
+        started = await this.deps.start(now.trigger.target, this.inputOf(now.trigger, now.firing), { id: triggerId, firing_key: key }, this.originOf(now.trigger), this.titleOf(now.trigger, now.firing));
       } catch (error) {
         // Stopping, the start may have been cut by the close: the firing stays due for the next start, whose origin key
         // finds a run this one made.
@@ -972,6 +973,16 @@ export class Triggers {
   private given(name: string, source: Source | undefined, target: Target, now: number): Target {
     const trigger = { name, source: source ?? { kind: this.adapters[0]!.id }, target } as Trigger;
     return { ...target, input: this.inputOf(trigger, { key: "", by: "manual", nominal_at: second(now), status: "due", at: iso(now) }) };
+  }
+
+  /** A run's title, from the trigger that starts it: "<its source> <its name>" (the word its Timeline row begins with,
+   *  pi-durable-agent's TRIGGER_LABELS), and the event its payload's tag names, when one does ("Webhook reviews:
+   *  pull_request opened"); never its input, which may be a sender's markup. */
+  private titleOf(trigger: Trigger, firing: Firing): string {
+    const source = TRIGGER_LABELS[trigger.source.kind as TriggerSource] ?? trigger.source.kind;
+    const event = firing.attrs?.event;
+    const action = firing.attrs?.action;
+    return `${source} ${trigger.name}${event ? `: ${event}${action ? ` ${action}` : ""}` : ""}`;
   }
 
   /** Who a firing's input is from (pi-durable-agent's MessageOrigin): the trigger, by its definition as it fires, never

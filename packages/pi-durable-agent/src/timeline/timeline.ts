@@ -1,6 +1,6 @@
 import { BROWSER_OPENERS, BROWSER_STEPS, callFailed, endsTurn, failedWith, inputPreview, labelOf, outcomeOf, savedPaths, type LabelFn, type ToolResultView } from "./labels.js";
 import { cut, firstLine, firstSentence, json, obj, scrubUrls, str, utf8Bytes, type Obj } from "./util.js";
-import { BESIDE_SUFFIX, NOTE_SUFFIX, originMatcher, type TriggerSource } from "./origin.js";
+import { BESIDE_SUFFIX, NOTE_SUFFIX, originMatcher, TRIGGER_LABELS, type TriggerSource } from "./origin.js";
 
 export type TimelineKind =
   | "thinking" | "text_block" | "tool_use" | "tool_result" | "phase"
@@ -43,8 +43,9 @@ export type TimelineEvent = {
    *  which counts, as a person's `user_message` does, as the message its turn took (`isMessageRow`). */
   origin?: "server" | "trigger";
   /** On a trigger's row (`origin: "trigger"`) alone: its trigger, from the message's origin, so a client labels the row
-   *  by its source without reading its summary. */
-  trigger?: { id: string; source: TriggerSource; owner: boolean };
+   *  by its source without reading its summary. `name`, the trigger's name as it is now, is serve's to add (this
+   *  projector writes its id): the one the summary shows, so a client drops exactly that prefix, colons and all. */
+  trigger?: { id: string; source: TriggerSource; owner: boolean; name?: string };
   /** `true` on the server's `phase` row of a spend cap's refusal for room (serve), "Paused at the run's cap", origin
    *  server and its id ending NOTE_SUFFIX: the request was not sent and the run paused for a raise; a pause, never a
    *  failure, whether the run waits on its cap now or was raised since. */
@@ -831,9 +832,9 @@ function createProjector(options: TimelineOptions) {
       // A person's message that declined the call: their words are the message the turn took, a row of theirs under a
       // person's rules, with the entry's own id; the server's resume beside it is the server's (`origin: "server"`) but
       // not a message (an id of its own, BESIDE_SUFFIX, which isMessageRow passes over). Any other: the server's row is
-      // that message, with the entry's id and `origin: "server"`. A trigger's message: "Trigger <its id>: …", `origin:
-      // "trigger"`, never the person's.
-      if (origin.kind === "trigger") add(make("phase", conv, base, { summary: `Trigger ${origin.trigger_id}: ${firstLine(text)}`, text, origin: "trigger", trigger: { id: origin.trigger_id, source: origin.source, owner: origin.owner } }));
+      // that message, with the entry's id and `origin: "server"`. A trigger's message: "<its source's label> <its id>: …"
+      // (TRIGGER_LABELS; serve names the trigger as it is now), `origin: "trigger"`, never the person's.
+      if (origin.kind === "trigger") add(make("phase", conv, base, { summary: `${TRIGGER_LABELS[origin.source]} ${origin.trigger_id}: ${firstLine(text)}`, text, origin: "trigger", trigger: { id: origin.trigger_id, source: origin.source, owner: origin.owner } }));
       else if (origin.reason === "approval_declined") {
         const said = redactText(origin.said.trim());
         add(make("phase", conv, `${base}${BESIDE_SUFFIX}`, { summary: `AgentRun: ${firstLine(text)}`, text, origin: "server" }));
