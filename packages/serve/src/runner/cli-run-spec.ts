@@ -35,6 +35,7 @@ import { loadToolSettings } from "../tool-plane.js";
 import { INPUTS_DIR, UPLOADS_DIR, Uploads } from "../uploads.js";
 import { isObject } from "../validate.js";
 import { runFolder, scratchFolder } from "../workspace/paths.js";
+import { DATA_ENV } from "../server-fs.js";
 import { openRunWorkspace } from "../workspace/run-workspace.js";
 import { runTools, type ToolResults } from "../workspace/run-tools.js";
 import type { AdapterRun, AdapterRunSpec } from "./adapter-loop.js";
@@ -150,7 +151,9 @@ export async function cliRunSpecFromLaunch(launch: RunLaunch, run: AdapterRun, d
   // The run's model (the launch's, pinned at start, else the revision's) and its adapter, as main builds them.
   const ref = launch.model ? `${launch.model.provider}/${launch.model.modelId}` : body.model;
   const chosen = await modelsOf(entry, deps.env, ref);
-  const built = await entry.adapter(deps.env, { model: chosen.model, models: chosen.models, unpriced: chosen.unpriced, ...(native.length ? { skills: native } : {}) });
+  // The harness's install is under the runner's data directory (harness-install.ts installDirOf), which the table's
+  // adapter reads from DATA_ENV, as main's per-run process was handed it.
+  const built = await entry.adapter({ ...deps.env, [DATA_ENV]: deps.data }, { model: chosen.model, models: chosen.models, unpriced: chosen.unpriced, ...(native.length ? { skills: native } : {}) });
   // The harness's own files (its home, its state) go in a private directory of the run's scratch, outside the disk, so no
   // Workspace, and none of the run's file tools, reaches them; it works in the run's folder itself, the one its file tools
   // confine to, so a path it builds from its working directory is one they take (as main's harness branch lends both).
