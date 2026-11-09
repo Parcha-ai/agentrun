@@ -68,7 +68,9 @@ test("a journal commit's final run patch and its refusals are one transaction: a
   const { store, file } = await storeOn(t);
   await queued(store);
   const claim = await store.claim("run-1", "runner-a", { leaseMs: 30_000 });
-  const steer = await store.command("run-1", { kind: "steer", body: { text: "too late" } });
+  // A raise, not a person's message: a message waiting at a completed run's end opens the run again instead of being
+  // refused (store-run-reopen.test.mjs), so it would make no refusal here to abort.
+  const steer = await store.command("run-1", { kind: "raise", body: { capUsd: 5 } });
   const journal = store.journal(claim);
   await commitWrites(journal, [{ type: "conversation", value: { id: 1 } }], BACKGROUND_CONTEXT);
   refusalsAbort(file);
@@ -92,7 +94,9 @@ test("a journal commit that lands a final run patch refuses the run's other unta
   const { store } = await storeOn(t);
   await queued(store);
   const claim = await store.claim("run-1", "runner-a", { leaseMs: 30_000 });
-  const steer = await store.command("run-1", { kind: "steer", body: { text: "too late" } });
+  // A raise, not a person's message, as the leftover: a message waiting at a completed run's end opens the run again
+  // (store-run-reopen.test.mjs).
+  const steer = await store.command("run-1", { kind: "raise", body: { capUsd: 5 } });
   const approve = await store.command("run-1", { kind: "approve", body: { approval: "call-1" } });
   const journal = store.journal(claim);
   await commitWrites(journal, [{ type: "conversation", value: { id: 1 } }], BACKGROUND_CONTEXT);

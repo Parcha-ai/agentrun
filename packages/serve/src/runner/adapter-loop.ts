@@ -381,6 +381,10 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
    *  opens idle): the follow-up's steer is this claim's turn, sent by steer() as a tracked turn (`sent`), and the claim waits
    *  for it, so the run's next end comes after that turn's answer. Undefined once the claim has read its delivered rows. */
   let reopen: { sent?: Promise<void> } | undefined;
+  /** The claim's turn has answered: from here to the run's end a person's message is never placed into its session (no
+   *  turn waits on it there, and the end-of-run turn is not the message's to answer). It is left untaken, and the run's end
+   *  opens the run again with it as a new turn (store run-patch.ts refuseLeftovers), as main's does once the end is in. */
+  let answered = false;
   /** The claim's CLI record (record: "loop"), for the end-of-run turn's answer; undefined for an adapter keeping its own. */
   let cliRecord: CliRecord | undefined;
   /** The session's paid requests admitted and not yet booked (its model port's beforeRequest, then its afterRequest), and
@@ -486,7 +490,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     if (!gate || !session || gate.sealed) return { later: "the run is parking: the steer waits for its resume" };
     // The run's job has answered and it is looking back before its end: a person's message is not the end-of-run turn's
     // to answer. Left untaken, so the run's end says it came after the answer.
-    if (reflecting) return { later: "the run has answered and is ending: the steer is not placed in its end-of-run turn" };
+    if (reflecting || answered) return { later: "the run has answered and is ending: the message opens it again as a new turn once its end is in" };
     const text = typeof (command.body as { text?: unknown } | null)?.text === "string" ? (command.body as { text: string }).text : "";
     const requestId = commandRequest(command.id);
     // A reopened run's follow-up, its session idle: sent as a turn of its own, tracked to its end (as the input and a raise's
@@ -832,6 +836,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           await closeSession();
           continue;
         }
+        // The turn answered: a message from here waits for the run's end, which opens the run again with it (steer).
+        if (end === "answered") answered = true;
         if (end === "closed" || (stopReason && stopReason.kind !== "command")) return await interrupted(stopReason?.kind ?? "the Session closed");
         if (end === "stop" && stopReason?.kind === "command") {
           // Bounded, the interrupt included: a tool call that ignores its abort keeps the turn from settling, and the claim

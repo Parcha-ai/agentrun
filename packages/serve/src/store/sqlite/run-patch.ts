@@ -111,10 +111,35 @@ export async function applyRunPatch(tx: Pick<SqliteExecutor, "run" | "get">, cla
   return runOf(row);
 }
 
+/** The one reopen a run that ended may take (runs.reopen, and a run's end with a person's message waiting): back to running
+ *  with no runner (released: a runner claims it at once), its end's own fields cleared, its epoch, journal, cost and
+ *  metrics kept. `where` holds only for an agentic run that ended completed, not imported and not a learning run. */
+export const REOPEN_SET = "state = 'running', runner = NULL, claimed_until = NULL, wake_at = NULL, backoff_until = NULL, ended_at = NULL, summary = NULL, outcome = NULL";
+export const reopenableWhere = (d: Dialect): string => `state = 'ended' AND imported_from IS NULL
+  AND EXISTS (SELECT 1 FROM revisions WHERE revisions.id = runs.revision_id AND revisions.kind = 'agentic')
+  AND NOT EXISTS (SELECT 1 FROM run_launch WHERE run_launch.run_id = runs.id AND ${d.jsonText("run_launch.body", ["harness"])} = 'learning')`;
+
 /** After a write that made the run final has taken its own rows: every command row of the run still untaken is refused
  *  with the end's reason, in that same transaction. The store takes no new row on a final run (RunFinal), so a row the
- *  end left untaken would stay so for good, as it would if the runner died right after the end. */
-export async function refuseLeftovers(tx: Pick<SqliteExecutor, "run">, runId: string, state: RunState | undefined, now: number): Promise<void> {
+ *  end left untaken would stay so for good, as it would if the runner died right after the end.
+ *  But a person's message (a steer row) that came while the run was ending, after its turn's answer (its end-of-run turn,
+ *  or before its end: the adapter loop leaves it untaken), opens a run that ended completed again, in this same
+ *  transaction, as main answers such a message once the end is in (runs.ts message: a completed run opens again, its
+ *  message the next turn): the run is back to running and released (REOPEN_SET), the message waits untaken for the next
+ *  claim, which runs it as a new turn, and only the run's other rows are refused. Every message so lands on one path: in
+ *  before the end, it opens the run here; after it, the store refuses a new row (RunFinal) and runs.reopen takes it. */
+export async function refuseLeftovers(tx: Pick<SqliteExecutor, "run" | "get">, runId: string, state: RunState | undefined, now: number, dialect: Dialect = SQLITE): Promise<void> {
   if (state !== "ended" && state !== "stopped" && state !== "failed") return;
+  if (state === "ended") {
+    const reopened = await tx.get<{ id: string }>(
+      `UPDATE runs SET ${REOPEN_SET} WHERE id = ? AND ${reopenableWhere(dialect)}
+        AND EXISTS (SELECT 1 FROM commands WHERE commands.run_id = runs.id AND commands.taken_at IS NULL AND commands.kind = 'steer') RETURNING id`,
+      runId,
+    );
+    if (reopened) {
+      await tx.run("UPDATE commands SET taken_at = ?, refused = ? WHERE run_id = ? AND taken_at IS NULL AND kind <> 'steer'", now, endedReason(state), runId);
+      return;
+    }
+  }
   await tx.run("UPDATE commands SET taken_at = ?, refused = ? WHERE run_id = ? AND taken_at IS NULL", now, endedReason(state), runId);
 }

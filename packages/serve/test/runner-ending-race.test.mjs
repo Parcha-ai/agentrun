@@ -66,8 +66,10 @@ const releasedAt = (record) => record.calls.find((call) => call.op === "release"
 
 test("(a) a command still with the loop when the run ends: settled by the end in the end's words, nothing taken after the release, and no claim is lost", async (t) => {
   const { server, record, events, control } = await running(t);
-  const steer = await sendCommand(server, "run-1", { kind: "steer", body: { text: "one more thing" } });
-  await until(() => control.commands.length === 1, "the steer reaches the loop");
+  // A raise as the command still with the loop: a person's message (a steer) waiting at a completed run's end opens the run
+  // again instead of being settled by it (store-run-reopen.test.mjs, runner-message-while-working.test.mjs).
+  const steer = await sendCommand(server, "run-1", { kind: "raise", body: { capUsd: 5 } });
+  await until(() => control.commands.length === 1, "the raise reaches the loop");
 
   control.end();
   await sleep(150);
@@ -99,8 +101,8 @@ test("(b) a renew in flight when the run ends, answered after the release: no cl
 
 test("(c) a command() that answers only after finish's wait ran out and the release: no store call and no event follow it", async (t) => {
   const { server, record, events, control } = await running(t, { endWaitMs: 200 });
-  await sendCommand(server, "run-1", { kind: "steer", body: { text: "too late" } });
-  await until(() => control.commands.length === 1, "the steer reaches the loop");
+  await sendCommand(server, "run-1", { kind: "raise", body: { capUsd: 5 } });
+  await until(() => control.commands.length === 1, "the raise reaches the loop");
 
   control.end();
   await until(() => releasedAt(record) !== undefined, "the release, once the wait ran out", 5_000);

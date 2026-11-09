@@ -381,7 +381,8 @@ export class RunStorage implements Journal {
           }
         }
         // A run patch that made the run final: its other untaken rows are refused in this commit, after its own takes.
-        if (patching) await refuseLeftovers(tx, this.#runId, staged?.run?.state, now);
+        // A person's message that came while it was ending opens a completed run again instead (refuseLeftovers).
+        if (patching) await refuseLeftovers(tx, this.#runId, staged?.run?.state, now, this.#dialect);
       }
     });
     this.#nextId = Math.max(this.#nextId, candidateNextId);

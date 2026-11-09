@@ -403,8 +403,8 @@ test("pi through the adapter: a cut step that never answers (its store stalled) 
   await until((row) => row.state === "stopped" && row.runner === null, "the run did not stop");
 });
 
-test("pi through the adapter: a person's steer during the end-of-run turn is not swallowed by it: left for the end's own words, the turn not told", async (t) => {
-  const { server, start, until } = await setup(t);
+test("pi through the adapter: a person's steer during the end-of-run turn is not swallowed by it: left untaken for the end, which opens the run again with it as a new turn of its own, as main's", async (t) => {
+  const { server, start, until, endEntries } = await setup(t);
   // The end-of-run turn calls `slow`; the steer is sent once that call runs, and the call returns once the steer is in.
   let started;
   const reflectCallRuns = new Promise((resolve) => (started = resolve));
@@ -412,9 +412,15 @@ test("pi through the adapter: a person's steer during the end-of-run turn is not
   const steerIn = new Promise((resolve) => (sent = resolve));
   const slow = { name: "slow", replaySafe: true, ask: false, run: async () => (started(), await steerIn, "slow done") };
   let steerRow;
+  // The person sends one message, during the first end-of-run turn. The step is asked again at the reopened run's own end
+  // (its turn answered from its submission then): it sends nothing more.
+  let steered = false;
   const endOfRun = async (input) => {
     if (input.cut) return undefined;
+    const first = !steered;
+    steered = true;
     const steering = (async () => {
+      if (!first) return;
       await reflectCallRuns;
       steerRow = await server.command("run-1", { kind: "steer", body: { text: "one more thing" } });
       sent();
@@ -424,10 +430,11 @@ test("pi through the adapter: a person's steer during the end-of-run turn is not
     return { also: [told("ended" in answer ? `answered:${answer.answer}` : "timed-out")] };
   };
   await start(loopWith(piAdapterSpec({ script: [{ say: "done" }, { call: "slow" }, { say: "a note" }], tools: { slow }, hooks: quiet }), {}, { endOfRun }), "runner-a");
-  await until((row) => row.state === "ended" && row.runner === null, "the run did not end");
+  // The first end opens the run again with the steer (run-patch.ts refuseLeftovers); the run ends once more after its turn.
+  await until((row) => row.state === "ended" && row.runner === null && endEntries() === 2, "the run did not end twice");
   const rows = await server.commands("run-1", 0);
   const steer = rows.find((row) => row.id === steerRow.id);
-  assert.ok(steer.refused !== null, `the steer is refused at the end in words, not taken by the end-of-run turn: ${JSON.stringify(steer)}`);
+  assert.ok(steer.takenAt !== null && steer.refused === null, `the steer is taken as a turn of its own after the end, never by the end-of-run turn nor refused: ${JSON.stringify(steer)}`);
 });
 
 test("pi through the adapter: an end-of-run turn past its deadline is aborted and answers timedOut; the run still ends", async (t) => {
