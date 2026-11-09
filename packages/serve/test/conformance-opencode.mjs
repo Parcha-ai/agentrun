@@ -90,11 +90,12 @@ function tracked(adapter) {
 /** The adapter loop's spec for the suite's setup: OpenCode as the runner's harnesses give it (resolveHarness), on the
  *  stand-in, its model through the session's proxy to the script, the run's visible record kept by the loop. One
  *  sessions folder per loop: a resume on another runner opens the session from the run's journal. */
-export function openCodeSpec({ script, tools, hooks }, options = {}) {
+export function openCodeSpec({ script, tools, hooks, agentId }, options = {}) {
   const sessionsDir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-opencode-conformance-"));
   dirs.push(sessionsDir);
   const harness = resolveHarness("opencode");
   return async (_claim, run) => ({
+    ...(agentId ? { agentId } : {}),
     adapter: tracked(await harness.adapter(
       { run, model: MODEL, provider: { origin: "https://provider.invalid", credential: () => `not-a-secret-${"x"}` }, price: () => 0, sessionsDir, fetch: options.fetch ?? scriptedResponses(script, options.requests) },
       { standIn: { command: process.execPath, args: [STAND_IN] } },
