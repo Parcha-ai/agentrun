@@ -1,6 +1,8 @@
-// A stop withdraws the call that waits for approval in the same write that ends the run: from the first read where the
-// run reads cancelled, nothing is pending and every call it asked about is answered withdrawn in its journal. Nothing
-// reopens the withdrawn call: a later message or approval of the stopped run is refused, and the call is never sent.
+// A stop withdraws the call that waits for approval in the same write that ends the run's turn: from the first read where
+// the run reads stopped (input_required and idle, main's status for a stopped run; cancelled when its stop could only be
+// written on its row), nothing is pending and every call it asked about is answered withdrawn in its journal. Nothing
+// reopens the withdrawn call: a later approval of it, or a command row on the stopped run, is refused, and the call is
+// never sent.
 // - Held at the end's commit (not slept), so reads land between the stop and its end.
 // - A stopped end that withdraws a call and that the journal refuses (or that the journal cannot be read for) is never
 //   written without the withdrawal: the runner says so by the run's name and releases the run, not final, with a backoff
@@ -105,28 +107,34 @@ async function entriesOf(server) {
 /** One read of the run, in the order the run's view reads it (its row, then its journal): its status and what it waits
  *  on, and each call it asked about with the answer its journal holds for it (null for none). */
 async function read(server) {
+  const row = await server.runs.get("run-1");
   const view = await viewOverStore(server, "run-1", DEPS);
   const entries = await entriesOf(server);
   const answers = new Map(entries.filter((entry) => entry.kind === "agentrun.answer").map((entry) => [entry.data.callId, entry.data.decision]));
   const asked = entries.filter((entry) => entry.kind === "agentrun.ask").map((entry) => [entry.data.callId, answers.get(entry.data.callId) ?? null]);
-  return { status: view.status, state: view.state, pending: view.pending, asked };
+  return { final: row.state === "stopped", status: view.status, state: view.state, pending: view.pending, asked };
 }
 
-/** The rule at one read: a run that reads cancelled waits on nothing, and every call it asked about is withdrawn. */
+/** Whether a read says the run's stop is in: its row stopped, read before its view and its journal. It then reads stopped
+ *  by a person (input_required and idle, as main reads a stopped run), or cancelled (a stop written on its row alone). */
+const stoppedRead = (seen) => seen.final || seen.status === "cancelled";
+
+/** The rule at one read: a run that reads stopped waits on nothing, and every call it asked about is withdrawn. */
 function holds(seen) {
-  if (seen.status !== "cancelled") return;
-  assert.equal(seen.pending, null, `cancelled, yet pending: ${JSON.stringify(seen)}`);
+  if (!stoppedRead(seen)) return;
+  assert.equal(seen.pending, null, `stopped, yet pending: ${JSON.stringify(seen)}`);
   assert.ok(seen.asked.length > 0, JSON.stringify(seen));
-  for (const [callId, decision] of seen.asked) assert.equal(decision, "withdrawn", `cancelled, yet ${callId} reads ${decision ?? "waiting"}: ${JSON.stringify(seen)}`);
+  for (const [callId, decision] of seen.asked) assert.equal(decision, "withdrawn", `stopped, yet ${callId} reads ${decision ?? "waiting"}: ${JSON.stringify(seen)}`);
 }
 
-/** Reads until the run reads cancelled, the rule held at every read. */
-const cancelled = (server) =>
+/** Reads until the run reads stopped by a person (its end, with the withdrawal, in its journal), the rule held at every
+ *  read. */
+const stopped = (server) =>
   until(async () => {
     const seen = await read(server);
     holds(seen);
-    return seen.status === "cancelled" && seen;
-  }, "the run reads cancelled", 30_000);
+    return seen.final && seen.status === "input_required" && seen.state === "idle" && seen;
+  }, "the run reads stopped", 30_000);
 
 /** After the stop: its stop row taken, one withdrawn answer in the journal, and nothing reopens, answers or sends the call. */
 async function staysWithdrawn(server, sent) {
@@ -156,7 +164,7 @@ async function releasedAfter(server, tries) {
 /** The waits the runner said it retries in, by the run's name, in order. */
 const waitsSaid = (events) => events.filter((event) => event.type === "error" && event.runId === "run-1" && REFUSED.test(event.message)).map((event) => Number(REFUSED.exec(event.message)[2]));
 
-test("a stop of a run parked on a call ends it withdrawn in one write: every read that says cancelled reads nothing pending and the call withdrawn", { timeout: 60_000 }, async (t) => {
+test("a stop of a run parked on a call ends it withdrawn in one write: every read that says stopped reads nothing pending and the call withdrawn", { timeout: 60_000 }, async (t) => {
   let reached;
   const atEnd = new Promise((resolve) => (reached = resolve));
   let go;
@@ -167,7 +175,7 @@ test("a stop of a run parked on a call ends it withdrawn in one write: every rea
   // Held at the end's commit: the run has taken the stop and not ended yet. Every read here keeps the rule.
   for (let i = 0; i < 5; i++) holds(await read(server));
   go();
-  await cancelled(server);
+  await stopped(server);
   await staysWithdrawn(server, sent);
 });
 
@@ -199,7 +207,7 @@ test("a refused stopped end of a run claimed from parked is not claimed again be
   assert.deepEqual([(await epoch()) - at, waitsSaid(events).length - said], [2, 1], "one claim (and its release) and one refusal for the step");
 });
 
-test("a stop whose end the journal refuses never leaves the run cancelled with its call waiting: it is released with a backoff, said by name, and the next claim only ends it, withdrawn", { timeout: 60_000 }, async (t) => {
+test("a stop whose end the journal refuses never leaves the run stopped with its call waiting: it is released with a backoff, said by name, and the next claim only ends it, withdrawn", { timeout: 60_000 }, async (t) => {
   let refusing = false;
   const { server, clock, now, sent, requests, events, starts } = await runOf(t, { onEnd: async () => {
     if (refusing) throw new Error("the journal refused the end (a test's refusal)");
@@ -213,7 +221,7 @@ test("a stop whose end the journal refuses never leaves the run cancelled with i
   const [asked, loops] = [requests.length, starts.length];
   refusing = false;
   clock.skewMs += BACKOFF_MS;
-  await cancelled(server);
+  await stopped(server);
   await staysWithdrawn(server, sent);
   assert.equal(requests.length, asked, "the retried claim made no model request");
   assert.equal(starts.length, loops, "the retried claim started no loop");
@@ -273,7 +281,7 @@ test("a journal that cannot be read when the stop ends the run: the run is relea
   const asked = requests.length;
   unreadable = false;
   clock.skewMs += BACKOFF_MS;
-  await cancelled(server);
+  await stopped(server);
   await staysWithdrawn(server, sent);
   assert.equal(requests.length, asked, "the retried claim made no model request");
 });
@@ -290,7 +298,7 @@ test("a stop row whose tries a failed resume raised is a stop all the same: the 
   const asked = requests.length;
   spawn("runner-b");
   clock.skewMs += BACKOFF_MS;
-  await cancelled(server);
+  await stopped(server);
   await staysWithdrawn(server, sent);
   assert.equal(requests.length, asked, "the claim after the failed resume made no model request");
   assert.ok(!starts.includes("runner-b"), "the claim after the failed resume started no loop: it only ended the run");

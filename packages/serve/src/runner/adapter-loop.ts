@@ -20,7 +20,7 @@ import { type AdapterSession, type AgentAdapter, type BeforeRequest, type HostTo
 import type { KernelHooks, ToolCall } from "./conformance/subject.js";
 import { type AnswerData, type ApprovalPrice, ASK_PERSON_WAITING, type AskData, type BudgetData, type CallEndData, type CallStartData, type CallStatus, endedAnswer, type EndData, KINDS, type MessageData, type RaiseData, withdrawnAnswers } from "./journal-kinds.js";
 import { endedOnTurnEndingTool, HOST_PHASE, type MessageOrigin, originOf, RUN_RESUMED } from "@parcha/pi-durable-agent/timeline";
-import { type AlsoRow, type Claim, ClaimRefused, type Command, type CommandOutcome, deniedText, endedBy, type EndOfRunAnswer, type EndOfRunTurn, type Loop, type LoopDeps, type LoopEnd, type LoopFactory, noteOf, type StopReason } from "./loop-contract.js";
+import { type AlsoRow, type Claim, ClaimRefused, type Command, type CommandOutcome, deniedText, type EndOfRunAnswer, type EndOfRunTurn, type Loop, type LoopDeps, type LoopEnd, type LoopFactory, noteOf, stopEnd, type StopReason } from "./loop-contract.js";
 import { deniedText as setToDenyText, ENDED_WHILE_WAITING, STOPPED_WHILE_WAITING } from "../refusal-words.js";
 import { ADAPTER_API } from "../turn-end.js";
 import { answerText, REFLECT_NOTE_ONLY, reflectRequestId, underLearning, WRITES } from "./end-of-run.js";
@@ -934,7 +934,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           if (error instanceof ClaimRefused) return await writeEnd(harness, await harness.root(context), gate, { state: "failed", summary: error.message }, []);
           // A person's stop while the spec was built (it waited on a harness's install): the run ends stopped, in the stop's
           // words, its row taken; the work it waited on goes on for the next run. A stop wins over the build's own failure.
-          if (stopReason?.kind === "command") return await writeEnd(harness, await harness.root(context), gate, { state: "stopped", summary: endedBy(stopReason.cancel) }, [stopReason.commandId]);
+          if (stopReason?.kind === "command") return await writeEnd(harness, await harness.root(context), gate, stopEnd(stopReason.cancel), [stopReason.commandId]);
           // A spec that failed after a phase made the run's root (its computer's image build failed): the end goes on that
           // root with why (said: cut of every secret the runner holds), as run()'s catch writes it once the session's root
           // is known, so the timeline keeps the phase row and reads the failure after it.
@@ -1162,8 +1162,15 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         // Taken over from a runner whose lease ran out mid-run: said on the run's timeline once, at this claim's first pass.
         if (restarts === 0 && claim.lost) await noteTakenOver(harness, root, claim.lost.runner);
         // Reopened by a person's follow-up (runs.reopen): its journal holds an end and its session opens idle. Set before the
-        // session is ready, so the follow-up's steer, handed over once it is, is sent as this claim's turn.
-        if (restarts === 0 && session!.state === "idle" && (await entriesOf(gate.journal, root.id, context)).some((entry) => entry.kind === KINDS.end)) reopen = {};
+        // session is ready, so the follow-up's steer, handed over once it is, is sent as this claim's turn. A run a person
+        // stopped opens with the turn they stopped still open in its session (an interrupt writes no end there): that turn
+        // is done, never resumed, so it is settled first (settleOpenTurn, as a host done with a stopped turn settles it),
+        // and the follow-up is a turn of its own.
+        if (restarts === 0) {
+          const lastEnd = (await entriesOf(gate.journal, root.id, context)).findLast((entry) => entry.kind === KINDS.end);
+          if (lastEnd && session!.state === "open_turn" && (lastEnd.data as EndData | undefined)?.state === "stopped") await session!.settleOpenTurn();
+          if (lastEnd && session!.state === "idle") reopen = {};
+        }
         opened();
         await reportHeld(harness, root.id);
         if (restarts > restartLimit + 1) {
@@ -1182,7 +1189,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           // ends as a stop does mid-turn: in the stop's words, its row taken, with what the end-of-run step keeps of a
           // cut run.
           if (stopReason?.kind === "command") {
-            return await writeEnd(harness, root, gate, { state: "stopped", summary: endedBy(stopReason.cancel) }, [stopReason.commandId], await cutRows(claim, spec, "stopped"));
+            return await writeEnd(harness, root, gate, stopEnd(stopReason.cancel), [stopReason.commandId], await cutRows(claim, spec, "stopped"));
           }
           const paused = raising.budget;
           const resumes = raising.resumes;
@@ -1224,7 +1231,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           if (follow === "park") {
             // A person's stop (or cancel) waiting here is taken: the run ends stopped, its waiting calls withdrawn in the
             // end's commit. Released parked instead, its untaken stop would have it claimed again at once, and again.
-            if (stopReason?.kind === "command") return await writeEnd(harness, root, gate, { state: "stopped", summary: endedBy(stopReason.cancel) }, [stopReason.commandId], await cutRows(claim, spec, "stopped"));
+            if (stopReason?.kind === "command") return await writeEnd(harness, root, gate, stopEnd(stopReason.cancel), [stopReason.commandId], await cutRows(claim, spec, "stopped"));
             gate.seal(new Parked());
             return { state: "parked" };
           }
@@ -1299,11 +1306,11 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
             let timer: NodeJS.Timeout | undefined;
             const settled = await Promise.race([settling, new Promise<false>((resolve) => (timer = setTimeout(() => resolve(false), settleMs)))]);
             clearTimeout(timer);
-            // A cancel ends the same way, in its own words (main's "cancelled"); the bound is the same.
-            const words = endedBy(stopReason.cancel);
+            // A cancel ends the same way, in its own words (main's "cancelled") and its own outcome; the bound is the same.
+            const stopped = stopEnd(stopReason.cancel);
             const cut = await cutRows(claim, spec, "stopped");
-            if (!settled) return await writeEnd(harness, root, gate, { state: "failed", summary: `${words}, but the turn did not settle within ${settleMs / 1000} s: a tool call ignored its abort` }, [stopReason.commandId], cut);
-            return await writeEnd(harness, root, gate, { state: "stopped", summary: words }, [stopReason.commandId], cut);
+            if (!settled) return await writeEnd(harness, root, gate, { state: "failed", summary: `${stopped.summary}, but the turn did not settle within ${settleMs / 1000} s: a tool call ignored its abort` }, [stopReason.commandId], cut);
+            return await writeEnd(harness, root, gate, stopped, [stopReason.commandId], cut);
           }
           // The wait in the claim lapsed before the person answered (the cap had no room for more of their time, or the browser
           // it kept went): the run parks on its question, as it does with nothing open.
@@ -1375,13 +1382,13 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           await computerNow.heldAtEnd(Promise.race([stopping, aborted, harness.closed]));
           // Set by stop() during the wait: read past the narrowing TypeScript did before it.
           const cut = stopReason as StopReason | undefined;
-          if (cut?.kind === "command") return await writeEnd(harness, root, gate, { state: "stopped", summary: endedBy(cut.cancel) }, [cut.commandId], await cutRows(claim, spec, "stopped"));
+          if (cut?.kind === "command") return await writeEnd(harness, root, gate, stopEnd(cut.cancel), [cut.commandId], await cutRows(claim, spec, "stopped"));
           if (cut || deps.signal.aborted) return await interrupted(cut?.kind ?? "its claim's signal aborted");
         }
         // The end-of-run step, once, before the end: its rows ride in the end commit. A stop or a lost claim during it
         // writes no end of the job's (a person's stop ends the run stopped; a lost claim leaves it for the next claim).
         const step = await endOfRunStep(claim, spec, data.state === "failed" ? "failed" : "completed");
-        if (step.kind === "stopped") return await writeEnd(harness, root, gate, { state: "stopped", summary: endedBy(stopReason?.kind === "command" ? stopReason.cancel : undefined) }, [step.commandId], await cutRows(claim, spec, "stopped-looking"));
+        if (step.kind === "stopped") return await writeEnd(harness, root, gate, stopEnd(stopReason?.kind === "command" ? stopReason.cancel : undefined), [step.commandId], await cutRows(claim, spec, "stopped-looking"));
         if (step.kind === "interrupted") return await interrupted(stopReason?.kind ?? "its claim's signal aborted");
         return await writeEnd(harness, root, gate, data, [], step.also, failedWith);
       }

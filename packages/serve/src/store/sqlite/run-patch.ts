@@ -118,9 +118,11 @@ export async function applyRunPatch(tx: Pick<SqliteExecutor, "run" | "get">, cla
 
 /** The one reopen a run that ended may take (runs.reopen, and a run's end with a person's message waiting): back to running
  *  with no runner (released: a runner claims it at once), its end's own fields cleared, its epoch, journal, cost and
- *  metrics kept. `where` holds only for an agentic run that ended completed, not imported and not a learning run. */
+ *  metrics kept. `where` holds only for an agentic run that ended completed or that a person stopped (state 'stopped',
+ *  outcome 'stopped': its turn ended, never the run, as main's stop leaves one), not imported and not a learning run. A
+ *  cancelled run, a failed one and a workflow run are over for good. */
 export const REOPEN_SET = "state = 'running', runner = NULL, claimed_until = NULL, wake_at = NULL, backoff_until = NULL, ended_at = NULL, summary = NULL, outcome = NULL";
-export const reopenableWhere = (d: Dialect): string => `state = 'ended' AND imported_from IS NULL
+export const reopenableWhere = (d: Dialect): string => `(state = 'ended' OR (state = 'stopped' AND outcome = 'stopped')) AND imported_from IS NULL
   AND EXISTS (SELECT 1 FROM revisions WHERE revisions.id = runs.revision_id AND revisions.kind = 'agentic')
   AND NOT EXISTS (SELECT 1 FROM run_launch WHERE run_launch.run_id = runs.id AND ${d.jsonText("run_launch.body", ["harness"])} = 'learning')`;
 
@@ -132,10 +134,12 @@ export const reopenableWhere = (d: Dialect): string => `state = 'ended' AND impo
  *  transaction, as main answers such a message once the end is in (runs.ts message: a completed run opens again, its
  *  message the next turn): the run is back to running and released (REOPEN_SET), the message waits untaken for the next
  *  claim, which runs it as a new turn, and only the run's other rows are refused. Every message so lands on one path: in
- *  before the end, it opens the run here; after it, the store refuses a new row (RunFinal) and runs.reopen takes it. */
+ *  before the end, it opens the run here; after it, the store refuses a new row (RunFinal) and runs.reopen takes it.
+ *  A person's stop is the same (reopenableWhere): a message waiting at it is the run's next turn, as main's stop leaves a
+ *  message submitted before it to run; a cancel's refuses it. */
 export async function refuseLeftovers(tx: Pick<SqliteExecutor, "run" | "get">, runId: string, state: RunState | undefined, now: number, dialect: Dialect = SQLITE): Promise<void> {
   if (state !== "ended" && state !== "stopped" && state !== "failed") return;
-  if (state === "ended") {
+  if (state === "ended" || state === "stopped") {
     const reopened = await tx.get<{ id: string }>(
       `UPDATE runs SET ${REOPEN_SET} WHERE id = ? AND ${reopenableWhere(dialect)}
         AND EXISTS (SELECT 1 FROM commands WHERE commands.run_id = runs.id AND commands.taken_at IS NULL AND commands.kind = 'steer') RETURNING id`,

@@ -173,12 +173,29 @@ export async function message(
     const queued = await queue({ kind: "steer", body });
     return { mode, messageId, ...(queued ? { skipped: queued.skipped } : {}) };
   }
-  await sendCommand(store, moment.id, { kind: "steer", body });
+  await steerOrReopen(store, moment.id, { kind: "steer", body });
   return { mode, messageId };
 }
 
 /** A steer command row, as message() writes it. */
 export type SteerCommand = { kind: "steer"; body: Record<string, unknown> };
+
+/** The message's steer row. A run the store holds final takes no new row (RunFinal): one a person stopped (it reads
+ *  input_required and idle, not over) takes the message through runs.reopen instead, which opens it again with the steer
+ *  in one transaction, as main runs a message to a stopped run as its next turn. The store alone says which runs reopen
+ *  (reopenableWhere); any other refuses as before. */
+async function steerOrReopen(store: RunsStore, runId: string, command: SteerCommand): Promise<void> {
+  try {
+    await sendCommand(store, runId, command);
+  } catch (error) {
+    if (!(error instanceof RunFinal)) throw error;
+    try {
+      await store.runs.reopen(runId, command);
+    } catch (again) {
+      throw again instanceof RunFinal ? error : again;
+    }
+  }
+}
 
 /** The raise command rows this run already has, newest last, with the cap each names. */
 async function raiseRows(store: RunsStore, runId: string): Promise<number[]> {

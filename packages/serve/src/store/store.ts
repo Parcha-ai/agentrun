@@ -109,9 +109,19 @@ export interface RevisionRow {
   readonly externalVersion: string | null;
 }
 
-/** How an ended run (state 'ended') ended apart from being done: 'escalated' (it finished its work and waits for a person,
- *  which the v2 status reads as completed with a review) or 'completed'. A failed or stopped run says so in its state. */
-export type RunOutcome = "completed" | "escalated";
+/** How a run ended, beside its state. An ended run (state 'ended'): 'escalated' (it finished its work and waits for a
+ *  person, which the v2 status reads as completed with a review) or 'completed'. A stopped run (state 'stopped'): 'stopped'
+ *  when a person stopped it (its turn ended, never the run: an agentic run reads input_required and idle, as main's
+ *  statusOf reads a stopped run, and a person's message reopens it), 'cancelled' when it was cancelled (over for good). A
+ *  failed run says so in its state. */
+export type RunOutcome = "completed" | "escalated" | "stopped" | "cancelled";
+
+/** Whether `run`, of a revision of `kind`, was stopped by a person and waits for them (state 'stopped', outcome 'stopped',
+ *  an agentic run started here): its turn is over, the run is not. A workflow's stop, a cancel and an imported run's stop
+ *  are over for good. */
+export function stoppedByPerson(run: Pick<RunRow, "state" | "outcome" | "importedFrom">, kind: string): boolean {
+  return run.state === "stopped" && run.outcome === "stopped" && kind === "agentic" && run.importedFrom === null;
+}
 
 /** The harness an imported run came from. */
 export type ImportSource = "claude-code" | "codex" | "pi";
@@ -146,7 +156,7 @@ export interface RunRow {
   readonly costUsd: number | null;
   readonly metrics: unknown;
   readonly summary: string | null;
-  /** An ended run's outcome (RunOutcome), null for a plain completion or a run not ended this way. */
+  /** How the run ended beside its state (RunOutcome), null for a plain completion, a failure, or a run not ended. */
   readonly outcome: RunOutcome | null;
   /** When the run itself was archived (its agent's archive is read apart); null when it is not. */
   readonly archivedAt: number | null;
@@ -165,7 +175,7 @@ export interface RunPatch {
   readonly costUsd?: number | null;
   readonly metrics?: unknown;
   readonly summary?: string | null;
-  /** An ended run's outcome, set in its end commit; null clears it. */
+  /** How the run ended (RunOutcome), set in its end commit; null clears it. */
   readonly outcome?: RunOutcome | null;
   /** The SHA-256 hashes of the sign-in pointers handed to the run, which the runner writes at its claim (under the epoch
    *  fence); null clears them. While the run runs, a sign-in hashing to one of these cannot be forgotten (sign-ins-store.ts). */
@@ -564,12 +574,13 @@ export interface Runs {
   list(filter: { agentId?: string; revisionId?: string; state?: RunState; archived?: boolean; limit?: number }): Promise<RunRow[]>;
   /** Archives the run (its own archive time), or unarchives it: idempotent. */
   archive(runId: string, archived: boolean): Promise<void>;
-  /** A person's follow-up to a run that ended completed: in one transaction, the run goes back to running with no runner
+  /** A person's follow-up to a run that ended completed, or that a person stopped: in one transaction, the run goes back to running with no runner
    *  (released, so a runner claims it at once by the claimable rule's released branch), its end's own fields cleared
    *  (ended_at, summary, outcome, its waits) and everything it did kept (its epoch, its journal, its cost and metrics,
    *  so its next turn is booked on top of what it spent), and `command` (the follow-up's steer) is written untaken for it.
-   *  Only an agentic run that ended completed (state 'ended'), not imported and not a learning run, reopens: a workflow,
-   *  a failed, stopped or cancelled run, any other, or none is RunFinal, and nothing is written. */
+   *  Only an agentic run that ended completed (state 'ended') or that a person stopped (state 'stopped', outcome
+   *  'stopped'), not imported and not a learning run, reopens: a workflow, a failed or cancelled run, any other, or none
+   *  is RunFinal, and nothing is written. */
   reopen(runId: string, command: { kind: string; body?: unknown }): Promise<Command>;
   /** The runs a runner may claim, oldest first: queued; parked with an untaken command or its wake_at passed; running with
    *  no runner (released at a runner's shutdown: it stays running, a run that started keeps that fact) or its claim run

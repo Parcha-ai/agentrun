@@ -81,7 +81,7 @@ test("a stop waiting when the loop fails with no end written ends the run stoppe
   const taken = await commandRow(server, "run-1", stop.id);
   assert.ok(taken.takenAt !== null, "the stop row is taken");
   assert.equal(taken.refused, null, `the stop is taken, never refused: ${JSON.stringify(taken.refused)}`);
-  assert.deepEqual(await endsOf(server), [{ state: "stopped", summary: "stopped by a person" }], "the run's end is in its journal");
+  assert.deepEqual(await endsOf(server), [{ state: "stopped", summary: "stopped by a person", outcome: "stopped" }], "the run's end is in its journal, a person's stop");
   await sleep(TIMING.pollMs * 10);
   assert.equal(claimsOf(record), 1, "claimed once, never again");
 });
@@ -100,7 +100,7 @@ test("a parked run whose resume keeps failing, then is stopped, ends stopped wit
   }, "the stop ends the run", 60_000);
   assert.equal(row.summary, "stopped by a person");
   assert.ok((await commandRow(server, "run-1", stop.id)).takenAt !== null, "the stop row is taken");
-  assert.deepEqual(await endsOf(server), [{ state: "stopped", summary: "stopped by a person" }], "the run's end is in its journal");
+  assert.deepEqual(await endsOf(server), [{ state: "stopped", summary: "stopped by a person", outcome: "stopped" }], "the run's end is in its journal, a person's stop");
   assert.ok(claimsOf(record) >= 2);
 });
 
