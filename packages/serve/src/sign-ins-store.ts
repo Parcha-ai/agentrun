@@ -11,7 +11,7 @@
 // writes sign_in_handed.
 import { createHash } from "node:crypto";
 import { ApiError } from "./errors.js";
-import { type Claim, sealColumn, sealedAt, SignInHandedTo, SignInMissing, type Store, unsealColumn } from "./store/index.js";
+import { type Claim, sealColumn, sealedAt, SignInHandedTo, SignInMissing, type SignInRow, type Store, unsealColumn } from "./store/index.js";
 
 /** The one saved sign-in an agent keeps per provider is named this; the owner's label, never the model's. */
 export const SIGN_IN_NAME = "default";
@@ -51,6 +51,20 @@ function open(sealKey: Buffer | undefined, agentId: string, provider: string, po
 
 /** Saves the one live sign-in for the agent and provider: its pointer sealed, its name (default SIGN_IN_NAME), inserted or
  *  replaced in place. Refused with no seal key (a pointer is never kept in the clear). */
+/** Saves the agent's first sign-in for the provider only when it has none, in the store's one atomic step (saveIfAbsent):
+ *  `saved` true with the row it inserted, or false with the live row another save left, never the one asked for. Refused
+ *  with no seal key, as saveSignIn is. */
+export async function saveSignInIfAbsent(
+  store: SignInsStore,
+  sealKey: Buffer | undefined,
+  signIn: { agentId: string; provider: string; pointer: string; name?: string },
+): Promise<{ saved: boolean; row: SignInRow }> {
+  if (!sealKey) throw new Error("this server keeps no sign-in without a seal key, never in the clear");
+  checkParts(signIn.agentId, signIn.provider);
+  const pointerSealed = sealColumn(sealKey, sealedAt.signIn(signIn.agentId, signIn.provider), signIn.pointer);
+  return store.signIns.saveIfAbsent({ agentId: signIn.agentId, provider: signIn.provider, name: signIn.name ?? SIGN_IN_NAME, pointerSealed });
+}
+
 export async function saveSignIn(
   store: SignInsStore,
   sealKey: Buffer | undefined,
@@ -153,22 +167,20 @@ async function firstSignIn(store: Pick<Store, "signIns">, sealKey: Buffer, agent
   // As far as it answers: the run goes on either way, and a delete that fails is said in the run's log, in the vendor's
   // name and its answer alone (vendorsOver's words; any other's, the error's name), never a pointer or a URL.
   const gone = () => vendors.remove(vendor, made).catch((error: unknown) => log?.(`its browser's extra sign-in could not be removed: ${vendorWords(vendor, error)}`));
+  let won: { saved: boolean; row: { pointerSealed: Uint8Array } };
   try {
-    if ((await store.signIns.get(agentId, vendor)) !== undefined) {
-      await gone();
-      return openSavedPointer(store, sealKey, agentId, vendor);
-    }
-    await saveSignIn(store, sealKey, { agentId, provider: vendor, pointer: made });
+    won = await saveSignInIfAbsent(store, sealKey, { agentId, provider: vendor, pointer: made });
   } catch {
     // Never kept, so never forgotten: the object just made goes at the vendor now, as far as it answers.
     await gone();
     log?.("its browser starts signed out: its first sign-in could not be saved");
     return undefined;
   }
-  const saved = await openSavedPointer(store, sealKey, agentId, vendor);
-  // Another run's first one landed over this one between the look and the save: ours goes, theirs is the agent's.
-  if (saved !== undefined && saved !== "unreadable" && saved.pointer !== made) await gone();
-  return saved;
+  // Another run's first one won (the store's one atomic step): ours goes at the vendor, and the winner's is the agent's,
+  // the one this run is handed. Exactly one object is left, saved.
+  if (!won.saved) await gone();
+  const pointer = open(sealKey, agentId, vendor, won.row.pointerSealed);
+  return pointer === undefined ? "unreadable" : { pointer };
 }
 
 /** Whether every sign-in run `run` was handed (its sign_in_handed hashes) reads back here: a live sign-in of its agent, or
@@ -198,7 +210,7 @@ export async function handedSignInReadsBack(store: Pick<Store, "signIns">, sealK
  * lease end fills it from the run's saved mark. Only under the run's own claim, for what it was handed to save: the
  * agent is the run's own (never the caller's word), its saved pointer is still the one handed, its hash is in the run's
  * sign_in_handed, and the claim still holds the run (a fenced write first: a stale or lost claim verifies nothing). The
- * stamp is conditioned on the saved_at read with the pointer (ifSavedAt), so a sign-in saved afresh meanwhile is never
+ * stamp is conditioned on the save read with the pointer (its number, ifSave), so a sign-in saved afresh meanwhile is never
  * marked by this save. True when the store stamped. Never throws, and never names the pointer.
  */
 export async function verifyRunSignIn(store: Pick<Store, "runs" | "signIns">, sealKey: Buffer | undefined, claim: Claim, signIn: RunSignIn, at: number): Promise<boolean> {
@@ -206,12 +218,12 @@ export async function verifyRunSignIn(store: Pick<Store, "runs" | "signIns">, se
   try {
     const run = await store.runs.get(claim.runId);
     if (!run || !run.signInHanded?.includes(pointerHash(signIn.ref))) return false;
-    // The saved sign-in, read once: its pointer is the one handed, and its saved_at is what the stamp is conditioned on,
+    // The saved sign-in, read once: its pointer is the one handed, and its save number is what the stamp is conditioned on,
     // so an owner's fresh save between this read and the stamp is never marked verified by this run's save.
     const row = await store.signIns.get(run.agentId, signIn.provider);
     if (!row || open(sealKey, run.agentId, signIn.provider, row.pointerSealed) !== signIn.ref) return false;
     await store.runs.update(claim, { signInHanded: [...run.signInHanded] });
-    return await store.signIns.verify(run.agentId, signIn.provider, at, { ifSavedAt: row.savedAt });
+    return await store.signIns.verify(run.agentId, signIn.provider, at, { ifSave: row.save });
   } catch {
     return false;
   }
