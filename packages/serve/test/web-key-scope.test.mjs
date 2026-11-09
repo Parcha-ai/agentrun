@@ -60,7 +60,7 @@ test("the pages a run fetched serve that run alone: another claim's fetch of the
   const [a, b] = [newKey(), newKey()];
   const [toolA, toolB] = [webFetchTool(claimEnv(a)), webFetchTool(claimEnv(b))];
   const url = "https://public.example/shared-page";
-  const read = async (tool) => JSON.parse((await tool.execute({ url }, undefined, {})).content[0].text.split("\n")[0]);
+  const read = async (tool) => (await tool.execute({ url }, {}, {})).details;
   const first = await read(toolA);
   assert.equal(first.ok, true, `run A read the page: ${JSON.stringify(first)}`);
   const second = await read(toolB);
