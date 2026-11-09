@@ -101,13 +101,15 @@ export type RunSignIn = { provider: Vendor; ref: string; save: boolean };
  * runs of one sign-in at once, a Browserbase one held for its settle window past a run that left running). None, too, with no seal key, a pointer that does not open, a browser that keeps none, or
  * an agent that saved none for the vendor. Never throws, and never names the pointer.
  */
-export async function runSignIn(store: Pick<Store, "runs" | "signIns">, sealKey: Buffer | undefined, claim: Claim, resolution: string): Promise<RunSignIn | undefined> {
+export async function runSignIn(store: Pick<Store, "runs" | "signIns">, sealKey: Buffer | undefined, claim: Claim, resolution: string, options: RunSignInOptions = {}): Promise<RunSignIn | undefined> {
   const vendor = (() => { try { return vendorOf(resolution); } catch { return undefined; } })();
   if (!vendor || !sealKey) return undefined;
   try {
     const run = await store.runs.get(claim.runId);
     if (!run) return undefined;
-    const opened = await openSavedPointer(store, sealKey, run.agentId, vendor);
+    let opened = await openSavedPointer(store, sealKey, run.agentId, vendor);
+    // None saved for the vendor: the agent's first one is made now, at the run's launch, as main's forRun makes it.
+    if (opened === undefined && options.vendors) opened = await firstSignIn(store, sealKey, run.agentId, vendor, options.vendors, options.log);
     if (opened === undefined || opened === "unreadable") return undefined;
     const hash = pointerHash(opened.pointer);
     const before = run.signInHanded ?? [];
@@ -121,6 +123,42 @@ export async function runSignIn(store: Pick<Store, "runs" | "signIns">, sealKey:
   } catch {
     return undefined;
   }
+}
+
+/** Where a run's first sign-in is made (the vendors' REST APIs, over the run's own claim keys: sign-ins.ts vendorsOver)
+ *  and where a create that fails is said (the run's log). Absent, none is made. */
+export type RunSignInOptions = { vendors?: { create(vendor: Vendor): Promise<string>; remove(vendor: Vendor, ref: string): Promise<void> }; log?: (line: string) => void };
+
+/** The agent's first sign-in for `vendor`, made at the vendor now (a Browserbase context, a Kernel profile) and saved at
+ *  once, sealed, as main's forRun makes it: the saved pointer, opened. One another run saved meanwhile is the agent's: the
+ *  object this made goes at the vendor, never left holding nothing, and the saved one is answered. A create or a save
+ *  that fails starts the run signed out (undefined), said in the run's log in words that name no pointer. */
+async function firstSignIn(store: Pick<Store, "signIns">, sealKey: Buffer, agentId: string, vendor: Vendor, vendors: NonNullable<RunSignInOptions["vendors"]>, log: RunSignInOptions["log"]): Promise<{ pointer: string } | "unreadable" | undefined> {
+  let made: string;
+  try {
+    made = await vendors.create(vendor);
+  } catch (error) {
+    // vendorsOver's words name the vendor and its answer, never a pointer.
+    log?.(`its browser starts signed out: ${(error as Error)?.message ?? String(error)}`);
+    return undefined;
+  }
+  const gone = () => vendors.remove(vendor, made).catch(() => undefined);
+  try {
+    if ((await store.signIns.get(agentId, vendor)) !== undefined) {
+      await gone();
+      return openSavedPointer(store, sealKey, agentId, vendor);
+    }
+    await saveSignIn(store, sealKey, { agentId, provider: vendor, pointer: made });
+  } catch {
+    // Never kept, so never forgotten: the object just made goes at the vendor now, as far as it answers.
+    await gone();
+    log?.("its browser starts signed out: its first sign-in could not be saved");
+    return undefined;
+  }
+  const saved = await openSavedPointer(store, sealKey, agentId, vendor);
+  // Another run's first one landed over this one between the look and the save: ours goes, theirs is the agent's.
+  if (saved !== undefined && saved !== "unreadable" && saved.pointer !== made) await gone();
+  return saved;
 }
 
 /**
