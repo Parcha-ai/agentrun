@@ -48,13 +48,37 @@ export function fakeClock(start = Date.now()) {
 	};
 }
 
+/**
+ * What `input text <arg>` types, as AOSP's InputShellCommand.sendText reads its argument: a `%` followed by `s` is a
+ * space, and every other character, a lone `%` included, is itself.
+ */
+function inputText(arg) {
+	const out = [...arg];
+	let escaped = false;
+	for (let i = 0; i < out.length; i++) {
+		if (escaped) {
+			escaped = false;
+			if (out[i] === "s") {
+				out[i] = " ";
+				out.splice(--i, 1);
+			}
+		}
+		if (out[i] === "%") escaped = true;
+	}
+	return out.join("");
+}
+
 const json = (status, body, headers = {}) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", ...headers } });
 
 /**
  * The fake. Options: `readyAfter`, how many GETs a new session stays provisioning (default 1); `start`, what a create
  * meets ("ok", "busy", "limit", "credit", "error": the session fails while provisioning); `loseAnswer`, the POST is
  * admitted and then its answer is lost (fetch rejects); `others`, sessions on the account this provider never made;
- * `loseRecovery`, the GET that recovers a create by its key is lost too;
+ * `loseRecovery`, the GET that recovers a create by its key is lost too; `cancelPost`, called once a POST /sessions is
+ * admitted (a test aborts the create's signal in it), after which that fetch rejects as an aborted one does; `stall`,
+ * called with each request's { method, path }: when it answers true, the request is never answered, and only its
+ * signal ends it; `onList`, given GET /sessions' snapshot once it is taken and before it is answered, answers the
+ * list to send (a test makes a phone in between, or leaves a live one out, as a lagging listing would);
  * `code`, the unlock code the phone takes (default the one the API gives); `abi`, what getprop reports; `launchHidden`,
  * a launched app is reported in front (dumpsys) while the screen and the tree still show the launcher; `launchNothing`,
  * `am start` starts nothing at all.
@@ -63,7 +87,7 @@ const json = (status, body, headers = {}) => new Response(JSON.stringify(body), 
  * (com.android.settings.intelligence) on top of Settings' own task. A force-stop of Settings leaves it there, a plain
  * `am start` of Settings resumes that task, search in front, and only `--activity-clear-task` starts Settings afresh.
  */
-export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = false, loseRecovery = false, others = [], code, abi = "x86_64", launchHidden = false, launchNothing = false, clock = fakeClock() } = {}) {
+export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = false, loseRecovery = false, cancelPost, stall, onList, others = [], code, abi = "x86_64", launchHidden = false, launchNothing = false, clock = fakeClock() } = {}) {
 	const requests = [];
 	const adbCalls = [];
 	const sessions = new Map(others.map((s) => [s.id, { ...s }]));
@@ -75,6 +99,14 @@ export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = fa
 		const headers = Object.fromEntries(Object.entries(init.headers ?? {}).map(([k, v]) => [k.toLowerCase(), v]));
 		const body = init.body === undefined ? undefined : JSON.parse(init.body);
 		requests.push({ method, path: u.pathname, headers, body });
+		if (stall?.({ method, path: u.pathname })) {
+			// A request that never answers: only its signal ends it, as an aborted fetch rejects.
+			return new Promise((_, reject) => {
+				const stop = () => reject(init.signal.reason ?? new DOMException("This operation was aborted", "AbortError"));
+				if (init.signal?.aborted) stop();
+				else init.signal?.addEventListener("abort", stop, { once: true });
+			});
+		}
 		if (headers.authorization !== `Bearer ${KEY}`) return json(401, { error: "invalid API key" });
 		const path = u.pathname;
 		if (method === "GET" && path === "/me") return json(200, { id: "acct_1", available: [] });
@@ -98,9 +130,17 @@ export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = fa
 			};
 			sessions.set(id, session);
 			if (loseAnswer) throw new TypeError("fetch failed: the connection was reset");
+			if (cancelPost) {
+				// The caller cancels once the service has admitted the request: fetch rejects as it does on an abort.
+				cancelPost();
+				if (init.signal?.aborted) throw init.signal.reason ?? new DOMException("This operation was aborted", "AbortError");
+			}
 			return json(202, view(session));
 		}
-		if (method === "GET" && path === "/sessions") return json(200, [...sessions.values()].map(view));
+		if (method === "GET" && path === "/sessions") {
+			const snapshot = [...sessions.values()].map(view);
+			return json(200, onList ? await onList(snapshot) : snapshot);
+		}
 		const byKey = /^\/sessions\/requests\/([^/]+)$/.exec(path);
 		if (method === "GET" && byKey) {
 			if (loseRecovery) throw new TypeError("fetch failed: the connection was reset");
@@ -137,7 +177,8 @@ export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = fa
 	const view = ({ gets, ...s }) => ({ ...s, ...(s.state === "provisioning" ? { progress: { phase: "booting" } } : {}) });
 
 	// --- the phone ---------------------------------------------------------------------------------------------------
-	const phone = { connected: new Set(), unlocked: new Set(), foreground: LAUNCHER, running: new Set([LAUNCHER]), screen: "top", offset: 0, page: "", search: "" };
+	/** touches: each `input motionevent` the phone took, with the clock's time it took it. */
+	const phone = { connected: new Set(), unlocked: new Set(), foreground: LAUNCHER, running: new Set([LAUNCHER]), screen: "top", offset: 0, page: "", search: "", touches: [] };
 	const expected = code ?? ADB_CODE;
 	const maxOffset = Math.max(0, HEADER + ROW * ITEMS.length - SCREEN.height);
 
@@ -244,8 +285,23 @@ export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = fa
 	const KEYS = { KEYCODE_HOME: () => (phone.foreground = LAUNCHER), KEYCODE_BACK: back, KEYCODE_APP_SWITCH: () => {}, KEYCODE_DEL: () => (phone.search = phone.search.slice(0, -1)) };
 
 	function shell(command) {
-		const w = words(command);
 		const ok = (stdout = "") => ({ exitCode: 0, stdout: Buffer.from(stdout), stderr: "" });
+		// A chain of commands, as sh runs `a;b`: each in turn (the fake splits only a chain with no quoted words).
+		if (command.includes(";") && !command.includes("'")) {
+			let out = "";
+			for (const part of command.split(";")) {
+				const one = shell(part.trim());
+				if (one.exitCode !== 0) return one;
+				out += one.stdout.toString("utf8");
+			}
+			return ok(out);
+		}
+		const w = words(command);
+		// toybox's sleep takes a decimal fraction of a second; it moves the shared clock on, as every wait here does.
+		if (w[0] === "sleep" && /^\d+(\.\d+)?$/.test(w[1] ?? "")) {
+			clock.sleep(Math.round(Number(w[1]) * 1000));
+			return ok();
+		}
 		if (w[0] === "echo") return ok(`${w.slice(1).join(" ")}\n`);
 		if (w[0] === "unlock") {
 			if (w[1] !== expected) return ok("wrong code\n");
@@ -265,9 +321,12 @@ export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = fa
 			if (phone.foreground === SETTINGS && phone.screen === "top") phone.offset = Math.min(maxOffset, Math.max(0, phone.offset + (y1 - y2)));
 			return ok();
 		}
-		if (w[0] === "input" && w[1] === "motionevent") return ok();
+		if (w[0] === "input" && w[1] === "motionevent") {
+			phone.touches.push({ action: w[2], at: [Number(w[3]), Number(w[4])], ms: clock.now() });
+			return ok();
+		}
 		if (w[0] === "input" && w[1] === "text") {
-			if (phone.foreground === SEARCH_PKG && phone.screen === "search") phone.search += w[2].replaceAll("%s", " ");
+			if (phone.foreground === SEARCH_PKG && phone.screen === "search") phone.search += inputText(w[2]);
 			return ok();
 		}
 		if (w[0] === "input" && w[1] === "keyevent") {
@@ -427,6 +486,8 @@ export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = fa
 		requests: () => requests,
 		/** Every spawned adb's argv. */
 		adbCalls: () => adbCalls.map((c) => c.args),
+		/** Every spawned adb's argv, with the bound it was given. */
+		adbRuns: () => adbCalls.map((c) => ({ args: c.args, timeoutMs: c.timeoutMs })),
 		/** Every request to the local adb server. */
 		serverCalls: () => [...serverCalls],
 		/** The shell commands the phone ran, in order, from an argv or from stdin. */

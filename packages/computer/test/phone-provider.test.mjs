@@ -132,6 +132,18 @@ test("create rents a cloud Android for the lifetime, waits until it is ready, an
 	assert.deepEqual((await provider.list({ run: "r1" })).value, []);
 });
 
+test("release ends only a phone the ledger names: another session on the account is refused not_found with no DELETE, and one already gone is ok", async () => {
+	const { provider, fake } = await setup();
+	fake.sessions.set("sess_other", { id: "sess_other", state: "ready", platform: "android", kind: "emulator", expires_at: fake.clock.now() / 1000 + 600 });
+	const foreign = await provider.release({ id: "sess_other", name: "sess_other" }, "delete");
+	assert.equal(foreign.ok, false, JSON.stringify(foreign));
+	assert.equal(foreign.error.code, "not_found");
+	assert.match(foreign.error.message, /^sess_other is not a phone this provider made: it is not ended$/);
+	assert.equal(fake.sessions.has("sess_other"), true, "the other session still runs");
+	assert.deepEqual(await provider.release({ id: "sess_gone", name: "sess_gone" }, "delete"), { ok: true, value: undefined }, "a phone no one holds any more is ok to release");
+	assert.deepEqual(fake.requests().filter((r) => r.method === "DELETE"), [], "no DELETE for an id the ledger does not name");
+});
+
 test("a session the service ended is gone to attach and list, and the ledger forgets it", async () => {
 	const { provider, fake, ledger } = await setup();
 	const created = await provider.create({ ...SPEC, labels: { run: "r1" } });
@@ -142,6 +154,38 @@ test("a session the service ended is gone to attach and list, and the ledger for
 	assert.deepEqual((await ledger.list()).map((e) => e.id), [other.value.id], "attach forgot the one it found gone");
 	assert.deepEqual((await provider.list({ run: "r1" })).value, []);
 	assert.deepEqual(await ledger.list(), [], "and list the other");
+});
+
+test("list loses no phone a create records while list runs, and forgets one only once its own GET says it is gone", async () => {
+	// A create finishes between list's GET /sessions and its read of the ledger.
+	let provider;
+	let made;
+	let lists = 0;
+	const onList = async (snapshot) => {
+		if (++lists === 1) made = await provider.create({ ...SPEC, labels: { run: "r1" } });
+		return snapshot;
+	};
+	const raced = await setup({ onList });
+	provider = raced.provider;
+	const listed = await provider.list({ run: "r1" });
+	assert.equal(listed.ok, true, JSON.stringify(listed));
+	assert.equal(made.ok, true, JSON.stringify(made));
+	assert.ok(await raced.ledger.get(made.value.id), "the ledger still names the phone made during the list");
+	assert.deepEqual((await provider.list({ run: "r1" })).value.map((info) => info.ref.id), [made.value.id], "and the next list shows it");
+
+	// A listing that leaves out a live phone: list asks for it by its id, and keeps it.
+	let hide;
+	const lagging = await setup({ onList: (snapshot) => snapshot.filter((one) => one.id !== hide) });
+	const kept = await lagging.provider.create({ ...SPEC, labels: { run: "r2" } });
+	hide = kept.value.id;
+	const seen = await lagging.provider.list({ run: "r2" });
+	assert.deepEqual(seen.value.map((info) => [info.ref.id, info.state]), [[hide, "running"]], "listed by its own GET");
+	assert.ok(await lagging.ledger.get(hide), "and kept");
+	assert.ok(lagging.fake.requests().some((r) => r.method === "GET" && r.path === `/sessions/${hide}`), "its own GET was asked");
+	// Once its own GET is a 404, the ledger forgets it.
+	lagging.fake.sessions.delete(hide);
+	assert.deepEqual((await lagging.provider.list({ run: "r2" })).value, []);
+	assert.equal(await lagging.ledger.get(hide), undefined);
 });
 
 test("the service's refusals are words with a code, and never the key", async () => {
@@ -180,6 +224,56 @@ test("a phone that fails or is not ready within readyMs is ended, in words", asy
 	assert.equal(slow.fake.sessions.size, 0);
 });
 
+/** A timer the test fires: each request's bound, as the provider asked for it, with no wall clock. */
+function testTimers() {
+	const made = [];
+	const timeout = (ms) => {
+		const controller = new AbortController();
+		made.push({ ms, fire: () => controller.abort(new DOMException("The operation timed out.", "TimeoutError")) });
+		return controller.signal;
+	};
+	return { timeout, made };
+}
+
+// The hang guard only bounds a failure: on a pass nothing waits on a timer.
+test("each API request has its own bound: a stalled readiness read is cut off by what readyMs has left, and the phone is ended", { timeout: 10_000 }, async () => {
+	const { timeout, made } = testTimers();
+	let stalledNow;
+	const stalled = new Promise((resolve) => (stalledNow = resolve));
+	let reads = 0;
+	const stall = ({ method, path }) => method === "GET" && path === "/sessions/sess_0001" && ++reads === 3 && (stalledNow(), true);
+	const { provider, fake } = await setup({ readyAfter: 10, stall }, { readyMs: 10_000, pollMs: 2000, requestMs: 30_000, timeout });
+	const pending = provider.create(SPEC);
+	await stalled;
+	// Two reads and two polls of 2 s: the third read may take the 6 s readyMs has left, not the 30 s of any request.
+	assert.deepEqual(made.map((one) => one.ms), [30_000, 10_000, 8_000, 6_000]);
+	made.at(-1).fire();
+	const late = await pending;
+	assert.equal(late.ok, false, JSON.stringify(late));
+	assert.equal(late.error.code, "timeout");
+	assert.match(late.error.message, /^the phone sess_0001 was not ready within 10 s: GET \/sessions\/sess_0001: the phone harness did not answer within 6 s; it was ended$/);
+	assert.equal(fake.sessions.size, 0, "the phone was ended");
+	assert.equal(made.at(-1).ms, 30_000, "the DELETE has a bound of its own");
+});
+
+test("a POST that stalls is cut off by its bound and recovered by its Idempotency-Key, never posted again", { timeout: 10_000 }, async () => {
+	const { timeout, made } = testTimers();
+	let stalledNow;
+	const stalled = new Promise((resolve) => (stalledNow = resolve));
+	const stall = ({ method, path }) => method === "POST" && path === "/sessions" && (stalledNow(), true);
+	const { provider, fake } = await setup({ stall }, { requestMs: 30_000, timeout });
+	const pending = provider.create(SPEC);
+	await stalled;
+	// The stalled POST never reached the fake's sessions: recovery finds nothing, and says so in words.
+	made.at(-1).fire();
+	const created = await pending;
+	assert.equal(created.ok, false, JSON.stringify(created));
+	assert.match(created.error.message, /^POST \/sessions: the phone harness did not answer within 30 s; and the service has no session for the request/);
+	const key = fake.requests()[0].headers["idempotency-key"];
+	assert.deepEqual(fake.requests().map((r) => `${r.method} ${r.path}`), ["POST /sessions", `GET /sessions/requests/${key}`]);
+	assert.ok(made.every((one) => one.ms === 30_000), "the POST and the recovery each have a bound");
+});
+
 test("a create whose answer was lost is recovered by its Idempotency-Key, never by a second POST", async () => {
 	const { provider, fake } = await setup({ loseAnswer: true });
 	const created = await provider.create(SPEC);
@@ -210,6 +304,24 @@ test("a create whose answer and whose recovery were both lost leaves no orphan: 
 	assert.deepEqual(await provider.release(listed.value[0].ref, "delete"), { ok: true, value: undefined });
 	assert.deepEqual([...fake.sessions.keys()], ["sess_other"], "the orphan is ended; the other session is untouched");
 	assert.deepEqual(await ledger.list(), []);
+});
+
+test("a create cancelled after the service admitted its POST recovers the phone by its Idempotency-Key and ends it: none is left running", async () => {
+	const controller = new AbortController();
+	const { provider, fake, ledger } = await setup({ cancelPost: () => controller.abort() });
+	const created = await provider.create({ ...SPEC, labels: { run: "r1" } }, { signal: controller.signal });
+	assert.equal(created.ok, false, JSON.stringify(created));
+	assert.equal(created.error.code, "aborted");
+	assert.match(created.error.message, /sess_0001/, "the words name the phone that was made");
+	assert.match(created.error.message, /it was ended$/);
+	const key = fake.requests().find((r) => r.method === "POST").headers["idempotency-key"];
+	assert.deepEqual(
+		fake.requests().map((r) => `${r.method} ${r.path}`),
+		["POST /sessions", `GET /sessions/requests/${key}`, "DELETE /sessions/sess_0001"],
+		"recovered by its key, never posted again, and ended",
+	);
+	assert.equal(fake.sessions.size, 0, "no phone is left running");
+	assert.deepEqual(await ledger.list(), [], "and the ledger names none");
 });
 
 test("connect reaches the phone over adb with its unlock code, which no result or error ever holds; hello is the provider's", async () => {
@@ -446,6 +558,76 @@ test("the client answers the phone groups over adb: a screenshot, touch, keys, b
 	assert.match((await client.call("exec.run", { argv: ["id"], timeoutMs: 1000 })).error.message, /a phone has no shell in the computer protocol/);
 });
 
+test("a swipe of more than two points takes its ms, spread over its segments by their length", async () => {
+	const { provider, fake } = await setup();
+	const { value: ref } = await provider.create(SPEC);
+	const { client } = (await provider.connect(ref)).value;
+	const swiped = await client.call("input.actions", { actions: [{ type: "swipe", path: [[100, 100], [100, 300], [100, 400]], ms: 600 }] });
+	assert.deepEqual(swiped, { ok: true, value: { done: 1 } });
+	const [first, ...rest] = fake.phone.touches;
+	assert.deepEqual(
+		[first, ...rest].map(({ action, at, ms }) => [action, at, ms - first.ms]),
+		[
+			["DOWN", [100, 100], 0],
+			["MOVE", [100, 300], 400],
+			["MOVE", [100, 400], 600],
+			["UP", [100, 400], 600],
+		],
+		"200 px of 300 take 400 ms of 600, and the last 100 px the other 200",
+	);
+	// adb's bound on a timed command leaves room for its own time: 30 s on top of the swipe's or the long press's ms.
+	await client.call("input.actions", { actions: [{ type: "swipe", path: [[10, 10], [10, 500]], ms: 45_000 }, { type: "long_press", at: [10, 10], ms: 40_000 }] });
+	const bound = (pattern) => fake.adbRuns().findLast((one) => pattern.test(one.args.at(-1))).timeoutMs;
+	assert.equal(bound(/^input motionevent DOWN 100 100;/), 30_600);
+	assert.equal(bound(/^input swipe 10 10 10 500 45000$/), 75_000);
+	assert.equal(bound(/^input swipe 10 10 10 10 40000$/), 70_000);
+});
+
+// The hang guard only bounds a failure: on a pass the batch answers in microtasks, with no timer.
+test("a cancelled input batch stops at the action it is on: a wait ends when the signal fires, and no later command runs", { timeout: 10_000 }, async () => {
+	// A wait the cancel interrupts: once armed, the clock's sleep never ends by itself, so only the signal can end it.
+	const clock = fakeClock();
+	let armed = false;
+	let began;
+	const waiting = new Promise((resolve) => (began = resolve));
+	const sleep = (ms) => (armed ? (began(ms), new Promise(() => {})) : clock.sleep(ms));
+	const { provider, fake } = await setup({ clock }, { sleep });
+	const { value: ref } = await provider.create(SPEC);
+	const { client } = (await provider.connect(ref)).value;
+	armed = true;
+	const controller = new AbortController();
+	const call = client.call("input.actions", { actions: [{ type: "wait", ms: 5000 }, { type: "tap", at: [100, 300] }] }, { signal: controller.signal });
+	assert.equal(await waiting, 5000, "the wait began");
+	controller.abort();
+	const waited = await call;
+	assert.equal(waited.ok, true, JSON.stringify(waited));
+	assert.equal(waited.value.done, 0);
+	assert.deepEqual([waited.value.failed?.index, waited.value.failed?.kind], [0, "aborted"]);
+	assert.match(waited.value.failed.message, /^action 0: .*aborted/);
+	assert.equal(fake.shells().filter((command) => command.startsWith("input tap")).length, 0, "no tap ran");
+
+	// A cancel during a command: the batch stops before the next one.
+	const other = fakePhoneHarness();
+	const cancel = new AbortController();
+	const adb = {
+		server: other.adb.server,
+		run: async (args, options) => {
+			const ran = await other.adb.run(args, options);
+			if (args.at(-1)?.startsWith("input tap")) cancel.abort();
+			return ran;
+		},
+	};
+	const second = await create({ apiKey: KEY, fetch: other.fetch, adb, ledger: memoryLedger(), now: other.clock.now, sleep: other.clock.sleep });
+	const { value: phone2 } = await second.create(SPEC);
+	const { client: client2 } = (await second.connect(phone2)).value;
+	const tapped = await client2.call("input.actions", { actions: [{ type: "tap", at: [100, 300] }, { type: "tap", at: [100, 300] }, { type: "button", name: "back" }] }, { signal: cancel.signal });
+	assert.equal(tapped.ok, true, JSON.stringify(tapped));
+	assert.equal(tapped.value.done, 1);
+	assert.deepEqual([tapped.value.failed?.index, tapped.value.failed?.kind], [1, "aborted"]);
+	assert.equal(other.shells().filter((command) => command.startsWith("input tap")).length, 1, "one tap ran, the second did not");
+	assert.equal(other.shells().filter((command) => command.startsWith("input keyevent")).length, 0, "nor the button after it");
+});
+
 test("typing into Settings' search reads back from the tree", async () => {
 	const { provider } = await setup();
 	const { value: ref } = await provider.create(SPEC);
@@ -455,6 +637,20 @@ test("typing into Settings' search reads back from the tree", async () => {
 	const tree = (await client.call("apps.ui_tree", {})).value;
 	const find = (n) => (n.id === SEARCH_FIELD ? n : n.children.map(find).find(Boolean));
 	assert.equal(find(tree.root)?.text, "Hello, agentrun! 123");
+});
+
+test("a literal %s is typed as %s, not as a space: input text's escape never meets text that holds it", async () => {
+	const { provider } = await setup();
+	const { value: ref } = await provider.create(SPEC);
+	const { client } = (await provider.connect(ref)).value;
+	const find = (n) => (n.id === SEARCH_FIELD ? n : n.children.map(find).find(Boolean));
+	for (const text of ["format %s", "%s%s", "50% sure", "%%s and %", "s%", "%ss %"]) {
+		await client.call("apps.launch", { id: SETTINGS });
+		const typed = await client.call("input.actions", { actions: [{ type: "tap", at: [100, 40] }, { type: "type", text }] });
+		assert.deepEqual(typed, { ok: true, value: { done: 2 } }, text);
+		assert.equal(find((await client.call("apps.ui_tree", {})).value.root)?.text, text, "what the phone got");
+		await client.call("apps.terminate", { id: SETTINGS });
+	}
 });
 
 test("apps.launch puts the named app in front, even when its task holds another app's activity on top", async () => {
@@ -481,6 +677,32 @@ test("a drifted twin's phone is refused at connect, in the drift check's words",
 	const refused = await drifted.connect(ref);
 	assert.equal(refused.error.code, "refused");
 	assert.match(refused.error.message, new RegExp(`hello: the daemon reports version 0\\.0\\.0-drift, expected ${provider.version.replaceAll(".", "\\.")}`));
+});
+
+test("a ledger put that fails once the phone's id is known ends the phone and answers in words: at the first put, and at the last one once ready", async () => {
+	for (const [nth, when] of [
+		[1, "the put of the id the POST answered"],
+		[2, "the put of the deadline once ready"],
+	]) {
+		// The pending entry is written; the nth put of the session's own entry fails.
+		const base = memoryLedger();
+		let puts = 0;
+		const ledger = {
+			...base,
+			put: (entry) => {
+				if (entry.request === undefined && ++puts === nth) throw new Error("the disk is full");
+				return base.put(entry);
+			},
+		};
+		const { provider, fake } = await setup({ readyAfter: 2 }, { ledger });
+		let created;
+		await assert.doesNotReject(async () => (created = await provider.create(SPEC)), when);
+		assert.equal(created.ok, false, `${when}: ${JSON.stringify(created)}`);
+		assert.equal(created.error.code, "phone", when);
+		assert.match(created.error.message, /the phone ledger could not be written: the disk is full; the phone was ended$/, when);
+		assert.ok(fake.requests().some((r) => r.method === "DELETE" && r.path === "/sessions/sess_0001"), `${when}: DELETE sent`);
+		assert.equal(fake.sessions.size, 0, `${when}: no phone is left running`);
+	}
 });
 
 test("an unreadable ledger is a result in words from list and testConnection, never a throw; create makes no phone without one", async () => {
