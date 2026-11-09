@@ -20,18 +20,34 @@ import { keptOf, learnedOf, lostOf, type DroppedData, type GradedData, type Kept
 import type { Store } from "../store/store.js";
 
 /** A run's learning end: the Learning fields its end sets. */
-export type RunLearningEnd = Pick<Learning, "state" | "reason" | "detail" | "at" | "problems" | "verdict" | "graded" | "merged" | "cost_usd" | "tokens" | "learned" | "pending" | "skills" | "workflows" | "lost">;
+export type RunLearningEnd = Pick<Learning, "state" | "reason" | "detail" | "at" | "problems" | "verdict" | "graded" | "merged" | "cost_usd" | "tokens" | "learned" | "pending" | "skills" | "workflows" | "lost" | "answered_at" | "job_cost_usd" | "look_back_usd">;
 
-/** The kept row as the end-of-run hook writes it (runner/reflect-hook.ts): proposed with the proposal, or dropped. */
-type KeptRow = { readonly state?: string; readonly reason?: string; readonly detail?: string; readonly problems?: Learning["problems"]; readonly left?: Learning["problems"]; readonly proposal?: KeptProposal };
+/** The kept row as the end-of-run hook writes it (runner/reflect-hook.ts): proposed with the proposal, or dropped, with
+ *  when the job answered, its cost and what looking back cost once the run looked back. */
+type KeptRow = {
+  readonly state?: string; readonly reason?: string; readonly detail?: string; readonly problems?: Learning["problems"]; readonly left?: Learning["problems"]; readonly proposal?: KeptProposal;
+  readonly answered_at?: unknown; readonly job_cost_usd?: unknown; readonly look_back_usd?: unknown;
+};
 
 const timeOf = (ms: number) => new Date(ms).toISOString();
+const usdOrNull = (value: unknown): number | null => (typeof value === "number" && Number.isFinite(value) ? value : null);
+
+/** What a kept row says of a run that looked back (learning-run.ts closeLearning's fields): none for one that did not. */
+function answeredOf(row: KeptRow): Pick<Learning, "answered_at" | "job_cost_usd" | "look_back_usd"> {
+  if (typeof row.answered_at !== "string") return {};
+  return { answered_at: row.answered_at, job_cost_usd: usdOrNull(row.job_cost_usd), look_back_usd: usdOrNull(row.look_back_usd) };
+}
 
 /** Run `runId`'s learning end; null when the run kept no learning. Proposed while its learning run has not ended. */
 export async function runLearningEnd(store: Store, runId: string): Promise<RunLearningEnd | null> {
   const kept = await store.learning.proposal(runId);
   if (!kept) return null;
   const row = (kept.proposal ?? {}) as KeptRow;
+  return { ...(await endOfKept(store, kept, row)), ...answeredOf(row) };
+}
+
+/** The learning end a kept row and its learning run's journal say. */
+async function endOfKept(store: Store, kept: NonNullable<Awaited<ReturnType<Store["learning"]["proposal"]>>>, row: KeptRow): Promise<RunLearningEnd> {
   const at = timeOf(kept.createdAt);
   // Dropped before it was proposed (a cut run, nothing to keep, the checks): its end is the kept row's.
   if (row.state !== "proposed" || !row.proposal) {

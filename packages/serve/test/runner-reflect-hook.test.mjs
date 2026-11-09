@@ -8,6 +8,9 @@ import { parseReflection, reflectPrompt } from "../dist/learn/index.js";
 import { said, STOPPED } from "../dist/learning-words.js";
 
 const claim = { runId: "run-1", runner: "runner-a", epoch: 1, until: 0, from: "running" };
+/** The hooks' clock, and what a run that looked back keeps of its answer with it: its spend reads 0.01 throughout. */
+const AT = Date.UTC(2026, 10, 9, 5, 0, 0);
+const ANSWERED = { answered_at: new Date(AT).toISOString(), job_cost_usd: 0.01, look_back_usd: 0 };
 
 /** A hook over fake deps; `answer` is what the turn's ask resolves with. */
 function hookWith({ facts = {}, answer = { ended: true, answer: "```note\n...\n```" }, check } = {}) {
@@ -21,6 +24,7 @@ function hookWith({ facts = {}, answer = { ended: true, answer: "```note\n...\n`
       return check ? check(input) : { state: "proposed", notes: 1, skills: 0, workflows: 0, proposal: { seed: "abc", notes: [{ file: "a.md", text: "x" }], asked: ["Find the bug."] } };
     },
     newRunId: () => "run-learn-1",
+    now: () => AT,
   };
   const hook = createReflectHook(deps);
   const input = (outcome = "completed") => ({
@@ -100,7 +104,7 @@ test("a proposal keeps the turn and queues one learning run beside the end", asy
   assert.equal(calls.checked[0].outcome, "failed", "the checks read how the job ended");
   assert.deepEqual(rows, {
     also: [
-      { table: "learning_proposals", row: { turn: { answer: "```note\n...\n```", asked: ["Find the bug."] }, proposal: { state: "proposed", notes: 1, skills: 0, workflows: 0, proposal: { seed: "abc", notes: [{ file: "a.md", text: "x" }], asked: ["Find the bug."] }, detail: said.proposed(1, 0, 0) } } },
+      { table: "learning_proposals", row: { turn: { answer: "```note\n...\n```", asked: ["Find the bug."] }, proposal: { state: "proposed", notes: 1, skills: 0, workflows: 0, proposal: { seed: "abc", notes: [{ file: "a.md", text: "x" }], asked: ["Find the bug."] }, detail: said.proposed(1, 0, 0), ...ANSWERED } } },
       { table: "learning_run", row: { id: "run-learn-1" } },
     ],
   });
@@ -117,7 +121,7 @@ test("an answer with nothing to keep, or out of format, or refused by the checks
     assert.ok(rows !== undefined, `${result.reason}: the learning's end is kept`);
     assert.equal(rows.also.length, 1, `${result.reason}: one row`);
     assert.equal(rows.also[0].table, "learning_proposals");
-    assert.deepEqual(rows.also[0].row.proposal, { ...result, state: "dropped", detail }, result.reason);
+    assert.deepEqual(rows.also[0].row.proposal, { ...result, state: "dropped", detail, ...ANSWERED }, result.reason);
     assert.ok(!rows.also.some((row) => row.table === "learning_run"), `${result.reason}: no learning run`);
   }
 });
@@ -129,7 +133,8 @@ test("a turn past its deadline, one the cap refused, and one that failed: droppe
     [{ failed: { code: "run-failed", message: "the model refused" } }, "reflect_failed", said.stopped(STOPPED.failed)],
   ]) {
     const { hook, input, calls } = hookWith({ answer });
-    assert.deepEqual(await hook(input()), { also: [dropped(reason, detail)] }, reason);
+    const after = dropped(reason, detail);
+    assert.deepEqual(await hook(input()), { also: [{ ...after, row: { ...after.row, proposal: { ...after.row.proposal, ...ANSWERED } } }] }, reason);
     assert.deepEqual(calls.checked, [], `${reason}: nothing checked`);
   }
 });
@@ -243,5 +248,5 @@ test("a run that never looked back keeps no answer time and no look-back cost", 
 
 test("checks that fail on their own drop the learning, saying so, and queue no run", async () => {
   const { hook, input } = hookWith({ check: () => { throw new Error("no seed"); } });
-  assert.deepEqual(await hook(input()), { also: [{ table: "learning_proposals", row: { turn: { answer: "```note\n...\n```", asked: ["Find the bug."] }, proposal: { state: "dropped", reason: "propose_failed", detail: said.stopped(STOPPED.notChecked) } } }] });
+  assert.deepEqual(await hook(input()), { also: [{ table: "learning_proposals", row: { turn: { answer: "```note\n...\n```", asked: ["Find the bug."] }, proposal: { state: "dropped", reason: "propose_failed", detail: said.stopped(STOPPED.notChecked), ...ANSWERED } } }] });
 });
