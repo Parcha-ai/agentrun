@@ -328,6 +328,25 @@ test("the token that lists a github_app server's tools comes from the first inst
   assert.deepEqual(server.github.revoked, [listing[0].token, listing[1].token], "both scouts revoked");
 });
 
+test("GitHub not answering the listing's read of an installation's repositories (a 503, a 429) is 502 github_failed, \"GitHub didn't answer: try again\", never github_not_connected: a preview, a save and a refresh each, and nothing stored changes", { timeout: 60_000 }, async (t) => {
+  const { server, entry } = await connectedForListing(t);
+  assert.equal((await server.api("PUT", "/settings/mcp-servers/gh", entry)).status, 200);
+  const before = (await server.api("GET", "/settings/mcp-servers/gh")).body;
+  for (const status of [503, 429]) {
+    server.github.failures.repositories = status;
+    const tries = [["POST", "/settings/mcp-servers/preview", entry], ["PUT", "/settings/mcp-servers/other", entry], ["POST", "/settings/mcp-servers/gh/refresh"]];
+    for (const [method, path, body] of tries) {
+      const refused = await server.api(method, path, body);
+      assert.deepEqual([refused.status, refused.body.error?.code, refused.body.error?.retryable], [502, "github_failed", true], `${status} ${method} ${path}: ${JSON.stringify(refused.body)}`);
+      assert.match(refused.body.error.message, /GitHub didn't answer: try again/);
+    }
+  }
+  assert.equal((await server.api("GET", "/settings/mcp-servers/other")).status, 404, "nothing saved");
+  assert.deepEqual((await server.api("GET", "/settings/mcp-servers/gh")).body, before, "the saved one unchanged");
+  const scouts = listingTokens(server).filter((token) => !token.repositories);
+  assert.deepEqual(server.github.revoked, scouts.map((token) => token.token), "every scout revoked, the refused ones too");
+});
+
 test("a github_app server saved at an origin that is no longer GitHub's hosted MCP gets no token: its preview by name is refused, and a run's launch mints none", { timeout: 120_000 }, async (t) => {
   const { server } = await withGitHubMcp(t);
   await server.close();
