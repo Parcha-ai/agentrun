@@ -439,8 +439,10 @@ provider declares, either way.
   connection go. After the end, `input()` refuses in words.
 
 `daemonWatch` is the one implementation behind every provider's `watch()` (Docker, Daytona, Modal, E2B, Orgo, the
-phone harness): a computer whose hello has no `screen` is refused as `unsupported`. `toAction(event, kind)` maps the
-viewer's `ViewerEvent`s, in the screen's upright pixels, to input actions:
+phone harness): a computer whose hello has no `screen` is refused as `unsupported`. It adapts the internal seam,
+`watchScreen(connection, options)`: pull-paced `frames` (each `next()` the ack), `act(actions)` and `close()`, whose
+failures are `ScreenWatchError`s. `toAction(event, kind)` maps the viewer's `ViewerEvent`s, in the screen's upright
+pixels, to input actions, or to a `Refusal` (`{ field, message }`) for what a kind cannot take:
 - a desktop takes the mouse (a move, and a button down or up at a point), the wheel (in clicks, about 120 px a
   notch), keys (combos with the modifiers held) and typed text;
 - a phone (`android`, `ios`) takes taps, swipes, back, home and recents (`app_switch`), keys and typed text;
