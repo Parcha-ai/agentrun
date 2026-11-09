@@ -7,13 +7,14 @@
 // - drop: the claim's epoch alone, as run_live's drop; one kind's tag, a whole kind, or all of the run's rows;
 // - of: newest first, only rows of the run's epoch, under a live lease, by the run's runner, each carrying its kind;
 // - the rows go with the run's end (its end commit), with a take or reclaim of the run (a newer epoch), and with the run.
-// The table's rows are read raw here (node:sqlite on the store's file) to tell a row not written from one not shown.
+// The table's rows are read raw here (store-target.mjs raw: the store's file, or its Postgres schema) to tell a row not
+// written from one not shown.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { StoreConstraint } from "../dist/store/store.js";
 import { queued, storeOn } from "./store-helpers.mjs";
+import { raw } from "./store-target.mjs";
 
 const { sealedAt, sealColumn, unsealColumn } = await import("../dist/store/seal.js");
 const { readRun } = await import("../dist/store-reads/runs.js");
@@ -24,12 +25,12 @@ const TOKEN = `not-a-secret-${"viewer-token-0123456789"}`;
 const viewer = (runId, tag, { kind = "browser", port = 47_001, id = `viewer-${kind}-${tag}` } = {}) => ({ kind, tag, port, id, sealed: sealColumn(KEY, sealedAt.liveViewer(runId, kind, tag), TOKEN) });
 
 /** The table's rows for `runId`, raw: what the store holds, whatever of() shows. */
-function rawRows(file, runId) {
-  const db = new DatabaseSync(file, { readOnly: true, timeout: 5_000 });
+async function rawRows(file, runId) {
+  const db = await raw(file, { readOnly: true });
   try {
-    return db.prepare("SELECT kind, tag, port, viewer_id, at, runner, epoch FROM computer_viewers WHERE run_id = ? ORDER BY kind, tag").all(runId);
+    return await db.all("SELECT kind, tag, port, viewer_id, at, runner, epoch FROM computer_viewers WHERE run_id = ? ORDER BY kind, tag", runId);
   } finally {
-    db.close();
+    await db.close();
   }
 }
 
@@ -83,7 +84,7 @@ test("the kind CHECK refuses an unknown kind: the store rejects it, and nothing 
   await queued(store, "run-1");
   const claim = await store.claim("run-1", "runner-a", { leaseMs: 60_000 });
   await assert.rejects(store.liveViewers.put(claim, viewer("run-1", "main", { kind: "tablet" })), StoreConstraint, "an unknown kind is refused");
-  assert.deepEqual(rawRows(file, "run-1"), [], "nothing written");
+  assert.deepEqual(await rawRows(file, "run-1"), [],"nothing written");
   assert.equal(await store.liveViewers.put(claim, viewer("run-1", "main", { kind: "phone" })), true, "a known kind writes");
 });
 
@@ -95,16 +96,16 @@ test("a drop by kind leaves the other kind; a drop with no kind clears all; a st
   await store.liveViewers.put(claim, viewer("run-1", "main", { kind: "desktop" }));
   await store.liveViewers.put(claim, viewer("run-1", "second", { kind: "desktop" }));
   await store.liveViewers.drop(claim, "desktop", "second");
-  assert.deepEqual(rawRows(file, "run-1").map((row) => `${row.kind}/${row.tag}`), ["browser/main", "desktop/main"], "one kind's one tag");
+  assert.deepEqual((await rawRows(file, "run-1")).map((row) => `${row.kind}/${row.tag}`), ["browser/main", "desktop/main"], "one kind's one tag");
   await store.liveViewers.drop(claim, "desktop");
-  assert.deepEqual(rawRows(file, "run-1").map((row) => `${row.kind}/${row.tag}`), ["browser/main"], "the kind's rows go, the browser row left");
+  assert.deepEqual((await rawRows(file, "run-1")).map((row) => `${row.kind}/${row.tag}`), ["browser/main"], "the kind's rows go, the browser row left");
   clock.now += 1_001;
   await store.liveViewers.drop(claim);
-  assert.deepEqual(rawRows(file, "run-1"), [], "all of the run's, under its epoch though its lease ran out");
+  assert.deepEqual(await rawRows(file, "run-1"), [],"all of the run's, under its epoch though its lease ran out");
   const current = await store.claim("run-1", "runner-b", { leaseMs: 60_000 });
   await store.liveViewers.put(current, viewer("run-1", "main"));
   await store.liveViewers.drop(claim);
-  assert.equal(rawRows(file, "run-1").length, 1, "a stale epoch drops nothing");
+  assert.equal((await rawRows(file, "run-1")).length, 1, "a stale epoch drops nothing");
 });
 
 test("a stale epoch's put is refused: false, and nothing of it written", async (t) => {
@@ -114,7 +115,7 @@ test("a stale epoch's put is refused: false, and nothing of it written", async (
   await store.release(old);
   const current = await store.claim("run-1", "runner-b", { leaseMs: 60_000 });
   assert.equal(await store.liveViewers.put(old, viewer("run-1", "main")), false, "the epoch moved on");
-  assert.deepEqual(rawRows(file, "run-1"), [], "nothing written");
+  assert.deepEqual(await rawRows(file, "run-1"), [],"nothing written");
   assert.equal(await store.liveViewers.put(current, viewer("run-1", "main")), true);
   assert.deepEqual((await store.liveViewers.of("run-1")).map((row) => row.runner), ["runner-b"]);
 });
@@ -126,7 +127,7 @@ test("a lapsed lease's put is refused: false, and nothing of it written, the epo
   clock.now += 1_001;
   assert.equal((await store.runs.get("run-1")).epoch, claim.epoch, "no one retook it");
   assert.equal(await store.liveViewers.put(claim, viewer("run-1", "main")), false, "its lease ran out");
-  assert.deepEqual(rawRows(file, "run-1"), [], "nothing written");
+  assert.deepEqual(await rawRows(file, "run-1"), [],"nothing written");
 });
 
 test("of() is empty after the lease lapses, though no purge has run: the row is still held", async (t) => {
@@ -136,7 +137,7 @@ test("of() is empty after the lease lapses, though no purge has run: the row is 
   assert.equal(await store.liveViewers.put(claim, viewer("run-1", "main")), true);
   clock.now += 1_001;
   assert.deepEqual(await store.liveViewers.of("run-1"), [], "a lapsed claim names no viewer");
-  assert.equal(rawRows(file, "run-1").length, 1, "the row is still there: of() hides it, no purge took it");
+  assert.equal((await rawRows(file, "run-1")).length, 1, "the row is still there: of() hides it, no purge took it");
 });
 
 test("of() shows only the run's runner's rows at its epoch: a row another runner wrote at that epoch is not shown", async (t) => {
@@ -144,11 +145,11 @@ test("of() shows only the run's runner's rows at its epoch: a row another runner
   await queued(store, "run-1");
   const claim = await store.claim("run-1", "runner-a", { leaseMs: 60_000 });
   assert.equal(await store.liveViewers.put(claim, viewer("run-1", "main")), true);
-  const db = new DatabaseSync(file, { timeout: 5_000 });
+  const db = await raw(file);
   try {
-    db.prepare("INSERT INTO computer_viewers (run_id, kind, tag, port, viewer_id, sealed, at, runner, epoch) VALUES (?, 'browser', ?, ?, ?, ?, ?, ?, ?)").run("run-1", "planted", 1, "x", new Uint8Array([1]), 0, "runner-z", claim.epoch);
+    await db.run("INSERT INTO computer_viewers (run_id, kind, tag, port, viewer_id, sealed, at, runner, epoch) VALUES (?, 'browser', ?, ?, ?, ?, ?, ?, ?)", "run-1", "planted", 1, "x", new Uint8Array([1]), 0, "runner-z", claim.epoch);
   } finally {
-    db.close();
+    await db.close();
   }
   assert.deepEqual((await store.liveViewers.of("run-1")).map((row) => row.tag), ["main"], "runner-z's row, at the run's epoch, is not the run's runner's");
 });
@@ -160,7 +161,7 @@ test("the run's end purges every kind's rows, in its end commit", async (t) => {
   await store.liveViewers.put(claim, viewer("run-1", "main", { kind: "browser" }));
   await store.liveViewers.put(claim, viewer("run-1", "main", { kind: "desktop" }));
   await store.runs.update(claim, { state: "ended" });
-  assert.deepEqual(rawRows(file, "run-1"), [], "gone with the end, every kind");
+  assert.deepEqual(await rawRows(file, "run-1"), [],"gone with the end, every kind");
 });
 
 test("a reclaim purges every kind's rows of the older epoch, in the claim's own transaction", async (t) => {
@@ -172,7 +173,7 @@ test("a reclaim purges every kind's rows of the older epoch, in the claim's own 
   clock.now += 1_001;
   const second = await store.claim("run-1", "runner-b", { leaseMs: 60_000 });
   assert.ok(second && second.epoch > first.epoch, "taken again at a newer epoch");
-  assert.deepEqual(rawRows(file, "run-1"), [], "the lapsed claim's rows went with the take, every kind");
+  assert.deepEqual(await rawRows(file, "run-1"), [],"the lapsed claim's rows went with the take, every kind");
 });
 
 test("the sealed bytes open only at their own column: the run, the kind and the tag they were put for", async (t) => {
@@ -203,14 +204,14 @@ test("the rows go with the run", async (t) => {
   await queued(store, "run-1");
   const claim = await store.claim("run-1", "runner-a", { leaseMs: 60_000 });
   await store.liveViewers.put(claim, viewer("run-1", "main"));
-  const db = new DatabaseSync(file, { timeout: 5_000 });
+  const db = await raw(file);
   try {
-    db.exec("PRAGMA foreign_keys = ON");
-    db.prepare("DELETE FROM computer_viewers WHERE run_id = 'none'").run();
-    const fk = db.prepare("SELECT \"table\" FROM pragma_foreign_key_list('computer_viewers')").all();
-    const onDelete = db.prepare("SELECT on_delete FROM pragma_foreign_key_list('computer_viewers')").all();
-    assert.deepEqual([fk.map((row) => row.table), onDelete.map((row) => row.on_delete)], [["runs"], ["CASCADE"]], "computer_viewers.run_id references runs, on delete cascade");
+    // The schema's own record of the foreign key: SQLite's pragma, Postgres's catalog.
+    const fk = db.kind === "sqlite"
+      ? (await db.all("SELECT \"table\", on_delete FROM pragma_foreign_key_list('computer_viewers')")).map((row) => [row.table, row.on_delete])
+      : (await db.all("SELECT confrelid::regclass::text AS \"table\", confdeltype FROM pg_constraint WHERE conrelid = 'computer_viewers'::regclass AND contype = 'f'")).map((row) => [row.table, row.confdeltype === "c" ? "CASCADE" : row.confdeltype]);
+    assert.deepEqual(fk, [["runs", "CASCADE"]], "computer_viewers.run_id references runs, on delete cascade");
   } finally {
-    db.close();
+    await db.close();
   }
 });

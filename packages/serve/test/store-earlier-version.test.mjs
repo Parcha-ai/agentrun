@@ -6,7 +6,10 @@ import { mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync
 import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { after, test } from "node:test";
+import { after, test as nodeTest } from "node:test";
+import { sqliteAdapterTests } from "./store-target.mjs";
+
+const test = sqliteAdapterTests(nodeTest, "an earlier version's data directory files");
 
 const { openSqliteStore } = await import("../dist/store/index.js");
 

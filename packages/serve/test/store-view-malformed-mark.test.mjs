@@ -6,11 +6,11 @@
 // store-backed view: on this base the server's own routes still read runs from their files.)
 import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
-import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { commitWrites } from "@earendil-works/pi-durable/testing";
 import { storeOn, T0 } from "./store-helpers.mjs";
+import { raw } from "./store-target.mjs";
 
 const { viewOverStore, summaryOverStore } = await import("../dist/store-view.js");
 const { saveSignIn, signInsOverStore } = await import("../dist/sign-ins-store.js");
@@ -34,9 +34,10 @@ test("malformed sign_in_handed marks in the store-backed run view: each withhold
   const hash = createHash("sha256").update(pointer).digest("hex");
   /** The run's view and summary as served with sign_in_handed set to `mark` as written. */
   const servedWith = async (mark) => {
-    const db = new DatabaseSync(file);
-    db.prepare("UPDATE runs SET sign_in_handed = ? WHERE id = ?").run(JSON.stringify(mark), "run-1");
-    db.close();
+    // Written as no writer writes it, past the store, on whichever store this is (store-target.mjs raw).
+    const db = await raw(file);
+    await db.run("UPDATE runs SET sign_in_handed = ? WHERE id = ?", JSON.stringify(mark), "run-1");
+    await db.close();
     return JSON.stringify([await viewOverStore(store, "run-1", deps), await summaryOverStore(store, "run-1", deps)]);
   };
 

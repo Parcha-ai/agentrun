@@ -191,6 +191,21 @@ test('a recorded event stream (.sse) is archived and scanned as text: a machine 
   assert.ok(blocked.findings.some(finding => finding.path === path));
 });
 
+test('a SQL migration (.sql) is archived and scanned as text: a machine path planted in one stops the export', async t => {
+  const f = await fixture(t);
+  const path = 'packages/x/src/store/postgres/migrations/0001_initial.sql';
+  await f.write(path, '-- the schema\nCREATE TABLE runs (id TEXT PRIMARY KEY);\n');
+  await f.run();
+  const receipt = JSON.parse(await readFile(join(f.root, '.release/source-export-receipt.json'), 'utf8'));
+  assert.ok((await f.listing()).includes(`agentrun-dsl-source/${path}\n`));
+  assert.equal(receipt.files.find(file => file.path === path)?.kind, 'text');
+  const machinePath = ['', 'home', 'someone', 'dump.sql'].join('/');
+  await f.write(path, `-- restored from ${machinePath}\nCREATE TABLE runs (id TEXT PRIMARY KEY);\n`);
+  await assert.rejects(f.run(), /Source export blocked/);
+  const blocked = JSON.parse(await readFile(join(f.root, '.release/source-export-receipt.json'), 'utf8'));
+  assert.ok(blocked.findings.some(finding => finding.path === path));
+});
+
 test('a /home/ or /Users/ right after a path parameter is an API route, not a machine path; a real one still stops the export', async t => {
   const f = await fixture(t);
   const route = 'packages/x/lib/routes.mjs';

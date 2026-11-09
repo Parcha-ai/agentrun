@@ -10,10 +10,10 @@ import { randomBytes } from "node:crypto";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { BROWSER_LIVE_DIR, dropLiveViewer, liveViewerById, liveViewerFor, liveViewerLink, putLiveViewer, readHandovers, readLiveViewers, sessionHandovers } from "../dist/browser-live.js";
 import { queued, storeOn } from "./store-helpers.mjs";
+import { raw, storeAtRest } from "./store-target.mjs";
 
 /** A test seal key, no real one. */
 const KEY = randomBytes(32);
@@ -27,13 +27,13 @@ const filesUnder = (dir) => readdirSync(dir, { withFileTypes: true }).flatMap((e
   const path = join(dir, entry.name);
   return entry.isDirectory() ? filesUnder(path) : entry.isFile() ? [[path, readFileSync(path)]] : [];
 });
-/** Every computer_viewers row, every column, raw. */
-const rawRows = (file) => {
-  const db = new DatabaseSync(file, { readOnly: true, timeout: 5_000 });
+/** Every computer_viewers row, every column, raw (the store's file, or its Postgres schema). */
+const rawRows = async (file) => {
+  const db = await raw(file, { readOnly: true });
   try {
-    return db.prepare("SELECT * FROM computer_viewers ORDER BY run_id, kind, tag").all();
+    return await db.all("SELECT * FROM computer_viewers ORDER BY run_id, kind, tag");
   } finally {
-    db.close();
+    await db.close();
   }
 };
 const holds = (rows, text) => rows.some((row) => Object.values(row).some((value) => (value instanceof Uint8Array ? Buffer.from(value).includes(text) : String(value).includes(text))));
@@ -68,7 +68,7 @@ test("on the runner path the browser's hand-over goes to the store under the run
   assert.deepEqual((await readLiveViewers(r.store, KEY, "run-1")).map((v) => v.tag), [a.tag], "its own row alone");
   await handed.released();
   assert.deepEqual(await readLiveViewers(r.store, KEY, "run-1"), [], "every row of the run");
-  assert.deepEqual(rawRows(r.file), []);
+  assert.deepEqual(await rawRows(r.file), []);
 });
 
 test("without the seam (the old per-run process) the hand-over is the run's directory's files, as before", async (t) => {
@@ -77,7 +77,7 @@ test("without the seam (the old per-run process) the hand-over is the run's dire
   const a = viewer("ar-run-1-1");
   await handed.changed(a.row, "created");
   assert.deepEqual((await readHandovers(r.root)).map(({ id, token, tag }) => ({ id, token, tag })), [{ id: a.id, token: a.token, tag: a.tag }]);
-  assert.deepEqual(rawRows(r.file), [], "nothing in the store");
+  assert.deepEqual(await rawRows(r.file), [], "nothing in the store");
   await handed.changed(a.row, "released");
   assert.deepEqual(await readHandovers(r.root), []);
   await handed.changed(a.row, "created");
@@ -115,10 +115,12 @@ test("on the runner path the viewer's token is in no computer_viewers column in 
   await r.store.command("run-1", { kind: "steer", body: { content: "go on" } });
   await r.store.flush();
   assert.equal((await liveViewerById(r.store, KEY, "run-1", a.id))?.token, a.token, "the owner's read opens it");
-  const rows = rawRows(r.file);
+  const rows = await rawRows(r.file);
   assert.equal(rows.length, 1);
   assert.equal(holds(rows, a.token), false, "no column holds it in plaintext");
   assert.deepEqual(filesUnder(r.dir).filter(([, bytes]) => bytes.includes(a.token)).map(([path]) => path), [], "no file under the data directory holds it");
+  // The store at rest, whichever it is (its file and WAL, or every column of its Postgres schema).
+  assert.deepEqual((await storeAtRest(r.file)).filter(([, bytes]) => bytes.includes(a.token)).map(([where]) => where), [], "nothing in the store at rest holds it");
   assert.equal(JSON.stringify(await r.store.commands("run-1", 0)).includes(a.token), false, "no command row");
 });
 
