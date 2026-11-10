@@ -1,5 +1,5 @@
 // What a run's learning must never keep, on the runner path (runner/learning-end.ts, reflect-hook.ts, the checks in
-// propose.ts): a key the run holds, asked to be kept in the person's own words; a key handed over by the launcher,
+// propose.ts): the server's API token, asked to be kept in the person's own words; a key handed over by the launcher,
 // base64-wrapped; an edit or a note left out unread that hides a secret's shape, which refuses the whole answer; and
 // anything the run put in its copy of the folder, links among it, which is never read. Each is learn-merge's custody
 // case, ported from the server's own check to the runner's: no git object holds the value, the run's kept learning
@@ -41,12 +41,10 @@ async function plans(api, id, plan, extra = {}) {
   assert.equal(res.status, 200, JSON.stringify(res.body));
 }
 
-test("a note that holds a key the run holds, asked to be kept in the person's words, is refused as secret_value: no git object, no kept learning and nothing the run shows holds it", { timeout: 120_000 }, async (t) => {
-  // A key the runner holds (a key-named value in its environment): the runner's run has no door token of its own.
-  const key = `not-a-secret-${"door"}-${randomBytes(12).toString("hex")}`;
-  withEnv(t, { LEARN_PROBE_API_KEY: key });
+test("a note that holds the server's API token, asked to be kept in the person's words, is refused as secret_value: no git object, no kept learning and nothing the run shows holds it", { timeout: 120_000 }, async (t) => {
+  // The server's own API token: the runner never holds it, and its learning end refuses it among the store's secrets.
   const server = await serve(t, { learning: "on", faux: LEARN });
-  const { api, data } = server;
+  const { api, data, token: key } = server;
   await made(api, learner("doorman"));
   const runId = await started(api, "doorman", `Remember for next time: The door takes ${key}`);
   const { view, rows } = await ended(api, runId);

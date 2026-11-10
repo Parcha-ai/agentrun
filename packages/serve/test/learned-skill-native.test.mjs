@@ -13,7 +13,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { agentFolderOf } from "../dist/files.js";
 import { seedOf } from "../dist/learning.js";
-import { ended, git, resnap, SKILL_GATE_TODO } from "./learn-support.mjs";
+import { ended, git, resnap, SEED_LAY_SERVED_TODO } from "./learn-support.mjs";
 import { agent, runDir, scratch, serve } from "./support.mjs";
 import { copyStandIn } from "../../run-adapters-codex/test/stand-in.mjs";
 
@@ -83,7 +83,7 @@ async function ranWithSkill(api, data, id, harness, content) {
   return { runId: run.body.run_id, rows };
 }
 
-test("a codex run gets the skill its agent learned as Codex's own: seeded in its session's CODEX_HOME/skills, read_skill_file among its tools, and a read of it returns the SKILL.md", { timeout: 120_000, skip: (noSetpriv) || SKILL_GATE_TODO }, async (t) => {
+test("a codex run gets the skill its agent learned as Codex's own: seeded in its session's CODEX_HOME/skills, read_skill_file among its tools, and a read of it returns the SKILL.md", { timeout: 120_000, skip: (noSetpriv) || SEED_LAY_SERVED_TODO }, async (t) => {
   const gw = await gateway(t, () => said("Codex answered."));
   const dir = await scratch(t);
   const standIn = join(dir, "codex-stand-in.mjs");
@@ -111,7 +111,7 @@ test("a codex run gets the skill its agent learned as Codex's own: seeded in its
   assert.ok(outputs.some((output) => output.includes(RULE)), `the read returns the learned SKILL.md: ${JSON.stringify(outputs)}`);
 });
 
-test("an opencode run gets the skill its agent learned as OpenCode's own: named in its instructions, read_skill_file among its tools, and a read of it returns the SKILL.md", { timeout: 120_000, skip: (noSetpriv) || SKILL_GATE_TODO }, async (t) => {
+test("an opencode run gets the skill its agent learned as OpenCode's own: named in its instructions, read_skill_file among its tools, and a read of it returns the SKILL.md", { timeout: 120_000, skip: (noSetpriv) || SEED_LAY_SERVED_TODO }, async (t) => {
   const gw = await gateway(t, (body) => {
     const reads = (body.tools ?? []).find((tool) => String(tool.name).endsWith("read_skill_file"));
     const answered = (body.input ?? []).some((item) => item?.type === "function_call_output");

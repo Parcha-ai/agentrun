@@ -18,12 +18,12 @@ const FAUX_JEV = new URL("./fixtures/faux-jev.mjs", import.meta.url).pathname;
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
 const FAUX_MONID = new URL("./fixtures/faux-monid.mjs", import.meta.url).pathname;
 const PLAN = [["check-units.md", note("Check units", "Convert every amount to one unit before comparing")]];
-/** A key the host holds (a key-named value in the environment the runner starts with, which its learning end refuses:
- *  runner/redact.ts runnerSecrets), for a user's message to quote. */
-const hostKey = (t) => {
-  const token = `not-a-secret-${"probe"}-${randomBytes(12).toString("hex")}`;
-  withEnv(t, { LEARN_PROBE_API_KEY: token });
-  return token;
+/** A webhook trigger's signing secret, made on the server for the case (a secret it keeps sealed, which the runner's
+ *  learning end refuses: storeSecrets), for a user's message to quote. */
+const triggerSecret = async (api) => {
+  const made = await api("POST", "/triggers", { name: "on push", source: { kind: "webhook" }, target: { kind: "start_run", agent_id: "straddled", input: { content: "Go." }, max_cost_usd: 0.5 } });
+  assert.equal(made.status, 201, JSON.stringify(made.body));
+  return made.body.signing_secret;
 };
 const callsIn = (file) => (existsSync(file) ? readFileSync(file, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line)) : []);
 
@@ -150,11 +150,11 @@ test("the grader runs on the model the server names for it, --grade-model (AGENT
   assert.deepEqual(named, [null, "faux-strong", "faux-grader", "faux-named"], "capabilities.learning.grade_model");
 });
 
-test("the grader reads what the user said in the run, in order and cut of the host's secrets, and never the end-of-run turn's message", { timeout: 150_000 }, async (t) => {
+test("the grader reads what the user said in the run, in order and cut of the server's secrets, and never the end-of-run turn's message", { timeout: 150_000 }, async (t) => {
   const calls = join(await scratch(t), "calls.jsonl");
   withEnv(t, { AGENTRUN_TEST_FAUX_CALLS: calls }, ["AGENTRUN_TEST_FAUX_GRADE_HOLD", "TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AGENT_MODEL_STRONG", "AGENTRUN_SERVE_GRADE_MODEL"]);
-  const token = hostKey(t);
-  const { api, data } = await serve(t, { learning: "on", faux: LEARN });
+  // The server's own API token, which the runner never holds: its learning end refuses it from the store's secrets.
+  const { api, data, token } = await serve(t, { learning: "on", faux: LEARN });
   await made(api, learner("asked", { plan: PLAN }));
   const runId = await started(api, "asked", `For next time: answer in tables. The server's token is ${token}.`);
   await ended(api, runId);
@@ -221,12 +221,13 @@ test("a follow-up sent while the run works, past 2,000 characters, reaches the g
   assert.ok(call.asked[1].includes("actually no, never include those") && /\n\[\d+ characters left out in the middle\]\n/.test(call.asked[1]), call.asked[1].slice(-160));
 });
 
-test("a host secret the user's message holds across either point it is shortened at shows no part of itself: each message is cut of the host's secrets whole first, then shortened to its head and its tail, in the proposal and in the grader's prompt", { timeout: 150_000 }, async (t) => {
+test("a server secret the user's message holds across either point it is shortened at shows no part of itself: each message is cut of the server's secrets whole first, then shortened to its head and its tail, in the proposal and in the grader's prompt", { timeout: 150_000 }, async (t) => {
   const calls = join(await scratch(t), "calls.jsonl");
-  withEnv(t, { AGENTRUN_TEST_FAUX_CALLS: calls }, ["AGENTRUN_TEST_FAUX_GRADE_HOLD", "TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AGENT_MODEL_STRONG", "AGENTRUN_SERVE_GRADE_MODEL"]);
-  const token = hostKey(t);
+  withEnv(t, { AGENTRUN_TEST_FAUX_CALLS: calls, AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") }, ["AGENTRUN_SEAL_KEY", "AGENTRUN_TEST_FAUX_GRADE_HOLD", "TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AGENT_MODEL_STRONG", "AGENTRUN_SERVE_GRADE_MODEL"]);
   const { api, data } = await serve(t, { learning: "on", faux: LEARN });
   await made(api, learner("straddled", { plan: PLAN }));
+  // A webhook trigger's signing secret, which the server keeps sealed and the runner never holds.
+  const token = await triggerSecret(api);
   // The token sits across the head's end (about 650 characters in) and again across the tail's start (300 from the
   // end). The message stays within what a run's own record of it holds (2,000 characters).
   const message = `${"Look at this. ".repeat(60).slice(0, 640)}${token} and the rest of what the user said. ${"More. ".repeat(100)}${token} and the last words the user said.${" End.".repeat(50)}`;
