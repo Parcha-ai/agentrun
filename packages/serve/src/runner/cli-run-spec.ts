@@ -52,6 +52,8 @@ import { claimSecrets, withModelKeys } from "./claim-secrets.js";
 import { mcpForClaim } from "./mcp-run.js";
 import { TOOL_PLANE_ENV } from "../tool-plane.js";
 import { resolveHarness } from "./adapters/index.js";
+import { bookedCostOf } from "./booked-cost.js";
+import { journalEntries } from "./journal-reader.js";
 import { entriesOf } from "./loop.js";
 import type { Claim } from "./loop-contract.js";
 import { runMetrics } from "./metrics.js";
@@ -391,13 +393,15 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     workRoot: root,
     // The end's metrics and cost from the run's journal; a CLI run's carry its model.
     endPatch: async () => {
-      const entries = await entriesOf(deps.journal(claim), ROOT_CONVERSATION_ID, context);
-      const { metrics, costUsd } = runMetrics(entries as never, { ...(launch.effort !== undefined ? { effort: launch.effort } : {}), model: `${chosen.model.provider}/${chosen.model.modelId}` });
-      // Its paid tool calls (a Parallel extract or search, a monid call), booked on the run's one ledger in their own
-      // session, are the run's cost too, as the pi spec's.
-      const paid = run.ledger?.paid ? run.ledger.paid.spentUsd() : 0;
-      const total = costUsd === null || paid === null ? null : costUsd + paid;
-      return { ...(total !== null ? { costUsd: total } : {}), metrics };
+      const journal = deps.journal(claim);
+      const entries = await entriesOf(journal, ROOT_CONVERSATION_ID, context);
+      const { metrics } = runMetrics(entries as never, { ...(launch.effort !== undefined ? { effort: launch.effort } : {}), model: `${chosen.model.provider}/${chosen.model.modelId}` });
+      // Its cost is what its sessions booked (booked-cost.ts): its model requests and its paid tool calls (a Parallel
+      // extract or search, a monid call), each at its runner.turn's figure, the run's one ledger. Its record's model
+      // messages carry no cost, so they never price it. Unknown once one is; 0 before any request.
+      const booked = bookedCostOf((await journalEntries(journal, context)) as never, { settled: true });
+      const costUsd = booked ? booked.usd : 0;
+      return { ...(costUsd !== null ? { costUsd } : {}), metrics };
     },
     // The run's Archil mount credential is revoked at its end on every outcome, even with no computer (idempotent with
     // the computer's release). A run that minted none revokes nothing.

@@ -21,6 +21,7 @@ import { mergedNote, parseNoteFile } from "../learn/notes.js";
 import type { LearnedFile, NoteLearned, Tokens } from "../learning.js";
 import { learnedPlace } from "../learn/skills.js";
 import { notKept, said, STOPPED } from "../learning-words.js";
+import { bookedCostOf } from "./booked-cost.js";
 import { journalEntries } from "./journal-reader.js";
 import { KINDS } from "./journal-kinds.js";
 import type { Claim, Command, CommandOutcome, Journal, Loop, LoopDeps, LoopEnd, StopReason } from "./loop-contract.js";
@@ -193,7 +194,11 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
           if (!rooted && !(await journal.conversation(ROOT, context))) writes.push({ type: "conversation", value: { id: ROOT } } as StorageWrite);
           const id = await journal.mintId();
           writes.push({ type: "entry", value: { id, conversationId: ROOT, kind, data } } as StorageWrite);
-          if (end) journal.stage({ run: { state: end }, effect: id, ...(take !== undefined ? { take: [{ command: take, effect: id }] } : {}) });
+          // An end writes the run's cost: what its grade booked (booked-cost.ts), unknown once one request's is; 0 when it
+          // asked none. A park ends nothing, so it writes none.
+          const booked = end && end !== "parked" ? bookedCostOf((await journalEntries(journal, context)) as never, { settled: true }) : undefined;
+          const cost = end && end !== "parked" ? (booked ? booked.usd : 0) : null;
+          if (end) journal.stage({ run: { state: end, ...(cost !== null ? { costUsd: cost } : {}) }, effect: id, ...(take !== undefined ? { take: [{ command: take, effect: id }] } : {}) });
           const result = await journal.commit([writes], () => {}, context);
           if (result.stored === 0) throw result.refused;
           rooted = true;

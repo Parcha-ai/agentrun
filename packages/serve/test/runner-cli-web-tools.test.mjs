@@ -180,9 +180,11 @@ for (const harness of Object.keys(HARNESSES)) {
     assert.deepEqual(paid.map((record) => [record.key, record.data.model]), [[TOOL_SESSION, `paid:${EXTRACT.name}`]], `booked once, on the run's paid-tools session: ${JSON.stringify(records.map((one) => [one.key, one.kind, one.data?.model ?? null]))}`);
     const booked = records.filter((record) => record.key === TOOL_SESSION && record.kind === "runner.turn" && record.data?.turn === paid[0].data.turn);
     assert.deepEqual(booked.map((record) => eight(record.data.usd)), [eight(FEE)], `booked at the extract's fee, once: ${JSON.stringify(booked)}`);
-    // The run's cost holds the fee once, beside what its end's metrics read of its record (metrics.ts runMetrics), as the
-    // pi spec's end adds its paid tool calls: on its row and on its view.
-    assert.equal(eight(row.costUsd ?? 0), eight((recorded ?? 0) + FEE), `the run row's cost holds the fee once: ${row.costUsd}, its record's ${recorded}`);
+    // The run's cost is every request its sessions booked, the fee once beside its model requests (its record's own
+    // messages carry no cost: `recorded` reads none), on its row and on its view.
+    const bookedAll = eight(records.filter((record) => record.kind === "runner.turn").reduce((sum, record) => sum + (record.data?.bookedUsd ?? record.data?.usd ?? 0), 0));
+    assert.ok(bookedAll > eight(FEE) && (recorded ?? 0) === 0, `its model requests are booked beside the fee: ${bookedAll}, its record's ${recorded}`);
+    assert.equal(eight(row.costUsd ?? 0), bookedAll, `the run row's cost holds the fee once, beside its model requests: ${row.costUsd}`);
     assert.equal(eight(view?.cost?.usd ?? 0), eight(row.costUsd ?? 0), `the view's cost is the row's: ${JSON.stringify(view?.cost)}`);
   });
 

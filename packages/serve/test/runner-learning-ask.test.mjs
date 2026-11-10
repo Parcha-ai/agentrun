@@ -14,6 +14,7 @@ const { learningLoopFactory } = await import("../dist/runner/learning-factory.js
 const { bookedAsk } = await import("../dist/runner/learning-ask.js");
 const { journalSessions } = await import("../dist/runner/sessions.js");
 const { runLearningEnd } = await import("../dist/store-reads/learning.js");
+const { runTimeline } = await import("../dist/store-reads/journal.js");
 const { beforeRequestOf } = await import("../../run-adapters/dist/kernel/cap/index.js");
 
 const MODEL = "claude-sonnet-4-5";
@@ -90,6 +91,12 @@ test("the grader's ask is booked in the learning run's own records: its dollars 
   assert.equal(eight(learning.cost_usd.grade), usd, `the grade's dollars: ${JSON.stringify(learning.cost_usd)}`);
   assert.deepEqual(learning.tokens.grade, { input: USED.input, cache_read: 0, cache_write: 0, output: USED.output }, "the grade's tokens, from the ask's usage");
   assert.equal(eight(await spendInRecords(store, "learn-1")), usd, "booked in the learning run's own records, as a reopened run reads its spend");
+  // The learning run's own cost is its grade's, never $0: on its row (its end writes it) and on its view (its usage row).
+  const row = await store.runs.get("learn-1");
+  assert.equal(eight(row.costUsd ?? 0), usd, `the learning run's row costs the grade: ${row.costUsd}`);
+  const usage = (await runTimeline(store, "learn-1", ctx, { settled: true, ended: true })).findLast((one) => one.kind === "usage");
+  assert.equal(eight(usage?.usage?.usd ?? 0), usd, `its usage row says the grade's cost: ${JSON.stringify(usage)}`);
+  assert.equal(usage.usage.requests, 1, "over its one grade request");
 });
 
 test("a learning run whose cap leaves no room for the grade sends nothing: the cap refuses the ask before it leaves", async (t) => {
@@ -100,4 +107,5 @@ test("a learning run whose cap leaves no room for the grade sends nothing: the c
   assert.equal(learning?.state, "dropped", JSON.stringify(learning));
   assert.equal(learning.reason, "grade_failed", "the grade could not be made");
   assert.equal(await spendInRecords(store, "learn-1"), 0, "nothing spent");
+  assert.equal((await store.runs.get("learn-1")).costUsd, 0, "and its row costs nothing");
 });

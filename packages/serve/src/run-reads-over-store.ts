@@ -15,7 +15,9 @@ import { costOf, WITHHELD_SIGN_IN } from "./run-view.js";
 import { ChangeClock, type Page, RowLog } from "./rows.js";
 import { listFiles, sendFile, type FileView } from "./run-files.js";
 import { readLaunchBody } from "./run-launch.js";
-import { runTimeline } from "./store-reads/journal.js";
+import { DECISION_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
+import { bookedCostOf, costIsBooked } from "./runner/booked-cost.js";
+import { runEntries, runTimeline } from "./store-reads/journal.js";
 import { StoreLaunchMissing, type Store } from "./store/index.js";
 import { isUnavailable, type Plane, recheckPlane, whyUnavailable } from "./tool-plane.js";
 import type { Workspace } from "./workspace/index.js";
@@ -114,8 +116,13 @@ export async function runGraphView(store: Store, runId: string, deps: RunReadsDe
   const status = String(view.status);
   const ended = view.ended_at !== null;
   const launch = await store.runs.launch(runId).then((row) => readLaunchBody(row.body), (error) => (error instanceof StoreLaunchMissing ? undefined : Promise.reject(error)));
-  // The run's model-node cost from its rows once it ended (0 before), as the old graph read it from run.rows.
-  const rows = ended ? await runTimeline(store, runId, deps.context) : [];
+  // The run's model-node cost once it ended (0 before): what its sessions booked (booked-cost.ts), its model nodes', its
+  // `llm` calls' and its paid tools', all but its decisions, which the graph sums from their receipts. Its `llm` calls'
+  // answers are then all in it (llmRead), never counted again from the node log. A run that booked nothing reads its rows,
+  // as the old graph read run.rows.
+  const entries = ended ? await runEntries(store, runId, deps.context) : [];
+  const booked = ended && costIsBooked(entries, false) ? bookedCostOf(entries, { settled: true, except: [DECISION_SESSION] }) : undefined;
+  const rows = ended && !booked ? await runTimeline(store, runId, deps.context) : [];
   // Every field it serves is cut by the run's one cut (graph-served.ts servedGraphView): its nodes, decisions and calls by
   // servedPart, and every other field (its workflow, its structure, any added later) whole.
   const cut = await deps.cutValues(store, runId);
@@ -128,8 +135,8 @@ export async function runGraphView(store: Store, runId: string, deps: RunReadsDe
     storeFile: "",
     root: "",
     input: launch?.input ?? {},
-    modelCost: ended ? costOf(rows) : 0,
-    llmRead: 0,
+    modelCost: booked ? booked.usd : ended ? costOf(rows) : 0,
+    llmRead: booked ? Number.MAX_SAFE_INTEGER : 0,
     store,
     context: deps.context,
   }), cut.values, graphParts);

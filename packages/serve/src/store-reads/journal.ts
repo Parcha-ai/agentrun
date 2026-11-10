@@ -4,7 +4,8 @@
 // The renderer and the hearing keep their words; only where the entries come from changes.
 import type { Context } from "@earendil-works/chord";
 import type { EntryLike, TimelineEvent, TimelineOptions } from "@parcha/pi-durable-agent/timeline";
-import { timelineOf, TOOL_COST } from "@parcha/pi-durable-agent/timeline";
+import { costLabel, timelineOf, TOOL_COST } from "@parcha/pi-durable-agent/timeline";
+import { type BookedCost, bookedCostOf, costIsBooked } from "../runner/booked-cost.js";
 import { RUNNER_RECORDS } from "@parcha/agentrun-kernel";
 import { TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
 import { Hearing } from "../heard.js";
@@ -102,16 +103,48 @@ export function withPaidCosts(entries: readonly EntryLike[]): EntryLike[] {
   return out;
 }
 
+/** Whether `entries` are a CLI harness's record (its loop's calls and messages). */
+export const isCliRecord = (entries: readonly EntryLike[]): boolean => entries.some((entry) => entry.kind === KINDS.message || entry.kind === KINDS.callStart || entry.kind === KINDS.callEnd);
+
+const dollars = (usd: number): string => (usd === 0 ? "$0" : `$${usd.toFixed(4)}`);
+
+/** `rows` with their usage row saying what the run's sessions booked (`booked`), for a run whose record carries no booked
+ *  cost of its own (booked-cost.ts costIsBooked): its cost, its paid model requests and charges, in the renderer's words.
+ *  The renderer's own row read its answers' costs, which are $0 there, so it is replaced, kept where it stood; a run with
+ *  none gets one at the end. */
+function withBookedUsage(rows: readonly TimelineEvent[], booked: BookedCost, options: TimelineOptions): TimelineEvent[] {
+  const at = rows.findIndex((row) => row.kind === "usage");
+  const { usd, soFarUsd, unpriced, requests, charges } = booked;
+  const base = at >= 0 ? rows[at]! : undefined;
+  const root = base?.conversation_id ?? rows[0]?.conversation_id ?? 0;
+  const paid = charges ? ` and ${charges} paid tool call${charges === 1 ? "" : "s"}` : "";
+  const spent = usd !== null ? dollars(usd) : `${dollars(soFarUsd)} known, ${unpriced} not priced,`;
+  const stamp = base?.timestamp ?? rows.at(-1)?.timestamp ?? new Date(0).toISOString();
+  const row: TimelineEvent = {
+    id: `${root}:usage`, timestamp: stamp, created_at: base?.created_at ?? stamp, kind: "usage", agent_label: null, tool_name: null, tool_use_id: null,
+    tool_status: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null, text: null, conversation_id: root,
+    seq: (rows.at(-1)?.seq ?? rows.length) + 1,
+    ...base,
+    summary: requests === 0 && !charges ? "no model request sent" : `${costLabel(options.ended === true)}: ${spent} over ${requests} model request${requests === 1 ? "" : "s"}${paid}`,
+    usage: { usd, requests, ...(usd === null ? { so_far_usd: soFarUsd, unpriced } : {}), ...(base?.usage?.not_metered ? { not_metered: base.usage.not_metered } : {}) },
+  };
+  if (at < 0) return [...rows, row];
+  return rows.map((each, i) => (i === at ? row : each)).filter((each, i) => i === at || each.kind !== "usage");
+}
+
 /** A run's timeline rows, the renderer (timelineOf) unchanged, over the one store's entries, with a CLI harness's record
  *  rendered as its pi-shaped entries (piShaped) and its paid tool charges read back from the paid-tools session
- *  (withPaidCosts). The usage row the renderer folds from the model turns is dropped for a CLI run: its record carries no
- *  per-request cost, so the run's cost reads from its stored total (costView over no usage row), as it did before this
- *  rendering existed, never a $0/unknown usage row. The end-of-run turn's rows are labelled as the server labels them
+ *  (withPaidCosts). A run whose record carries no booked cost of its own (a CLI harness's, a workflow's, a learning
+ *  run's: booked-cost.ts costIsBooked) has its usage row say what its sessions booked (withBookedUsage), the figures its
+ *  cap holds it to, never the $0 its answers carry. The end-of-run turn's rows are labelled as the server labels them
  *  (learning-run.ts labelled). */
 export async function runTimeline(store: Store, runId: string, context: Context, options: TimelineOptions = {}): Promise<TimelineEvent[]> {
   const entries = await runEntries(store, runId, context);
-  const cli = entries.some((entry) => entry.kind === KINDS.message || entry.kind === KINDS.callStart || entry.kind === KINDS.callEnd);
-  const rows = timelineOf(withPaidCosts(cli ? piShaped(entries) : entries), options).filter((row) => !cli || row.kind !== "usage");
+  const cli = isCliRecord(entries);
+  const rendered = timelineOf(withPaidCosts(cli ? piShaped(entries) : entries), options);
+  // A CLI run that booked nothing keeps no usage row: its record has no cost, so it reads its stored total.
+  const booked = costIsBooked(entries, cli) ? bookedCostOf(entries, { settled: options.settled === true }) : undefined;
+  const rows = booked ? withBookedUsage(rendered, booked, options) : cli ? rendered.filter((row) => row.kind !== "usage") : rendered;
   return labelled((await runReflect(store, runId, context)) as Reflect | undefined, rows);
 }
 
