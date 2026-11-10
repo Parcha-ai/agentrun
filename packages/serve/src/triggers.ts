@@ -84,10 +84,15 @@ const ENDED = new Set(["completed", "failed", "cancelled"]);
 const LOST_AT_SETUP = "The server stopped while setting up the run.";
 /** Why a message_run trigger turned itself off: the run it messages is gone. */
 const RUN_DELETED = "its run was deleted";
+const CONVERSATION_RUN_DELETED = "The conversation's run was deleted.";
 
 /** `max_cost_usd`: each run's cap; absent, the agent's default as it stands when the firing starts (one of the two is
  *  required: server.ts targetIssues and start). */
-export type Target = { kind: "start_run"; agent_id: string; input: Json; max_cost_usd?: number; effort?: string } | { kind: "message_run"; run_id: string; input: Json };
+/** `include_last_answer`: each firing's input carries the trigger's last run's answer (lastAnswerTag). */
+export type Target = { kind: "start_run"; agent_id: string; input: Json; max_cost_usd?: number; effort?: string; include_last_answer?: true } | { kind: "message_run"; run_id: string; input: Json };
+/** How a trigger's last run ended, as GET /v2/runs/{id} serves it: its status, its end, and its final answer (null but for
+ *  a completed run's). */
+export type LastRun = { status: string; ended_at: string | null; answer: string | null };
 /** A trigger as the engine reads its row. */
 type Trigger = Omit<TriggerRow, "source" | "target"> & { source: Source; target: Target };
 /** What a trigger.failed webhook message says (webhooks.ts). */
@@ -95,7 +100,7 @@ export type TriggerFailed = { trigger_id: string; name: string; firing_key: stri
 /** A run's provenance, kept in its serve.json: the trigger that started it, and the firing. `name`: the trigger's name as
  *  it was at the firing, put on the run so its Timeline row names the trigger without a store read (runs.ts
  *  servedTriggerRow); a rename pushes the new name (server.ts triggerChanged). */
-export type RunTrigger = { id: string; firing_key: string; name?: string };
+export type RunTrigger = { id: string; firing_key: string; name?: string; conversation?: string };
 /** The engine's clock and its one timer: Date.now and setTimeout, or a test's. */
 export type TriggerClock = { now(): number; arm(fire: () => void, ms: number): { clear(): void } };
 export type TriggerDeps = {
@@ -119,6 +124,9 @@ export type TriggerDeps = {
   settings(adapterId: string): { mint(scope: string, field: string): Promise<string>; remove(scope: string): Promise<void> } | undefined;
   /** A run's status, or null when there is no such run. */
   statusOf(runId: string): Promise<string | null>;
+  /** How a run ended and its answer, read as GET /v2/runs/{id} reads it; null when there is no such run. Only a target
+   *  with include_last_answer asks. */
+  lastRun?(runId: string): Promise<LastRun | null>;
   /** The run the store started under origin `key`, if one: a firing left due by a server that went down mid-start.
    *  `setup_lost`: that server went down before it set the run up, so the run never started. */
   runOf(key: string): Promise<{ run_id: string; setup_lost: boolean } | null>;
@@ -181,13 +189,14 @@ function targetOf(value: unknown, issues: InputIssue[]): Target | undefined {
     return issues.length > before ? undefined : { kind: "message_run", run_id: value.run_id as string, input: { content: (value.input as Json).content } };
   }
   if (value.kind !== "start_run") return bad("kind", "not_an_option", `target.kind is one of ${TARGET_KINDS.join(", ")}`), undefined;
-  issues.push(...unknownFields(value, ["kind", "agent_id", "input", "max_cost_usd", "effort"]).map((i) => ({ ...i, field: `target.${i.field}` })));
+  issues.push(...unknownFields(value, ["kind", "agent_id", "input", "max_cost_usd", "effort", "include_last_answer"]).map((i) => ({ ...i, field: `target.${i.field}` })));
   if (typeof value.agent_id !== "string" || !ID.test(value.agent_id)) bad("agent_id", value.agent_id === undefined ? "missing" : "wrong_type", "agent_id is an agent's id");
   if (!isObject(value.input)) bad("input", value.input === undefined ? "missing" : "wrong_type", "input is the run's input, as POST /agents/{agent_id}/runs takes it: {content}");
   if (value.max_cost_usd !== undefined && !(typeof value.max_cost_usd === "number" && value.max_cost_usd > 0 && Number.isFinite(value.max_cost_usd))) bad("max_cost_usd", "wrong_type", "max_cost_usd is a number above 0");
   if (value.effort !== undefined && !(EFFORTS as readonly unknown[]).includes(value.effort)) bad("effort", "not_an_option", `effort is one of ${EFFORTS.join(", ")}`);
+  if (value.include_last_answer !== undefined && typeof value.include_last_answer !== "boolean") bad("include_last_answer", "wrong_type", "include_last_answer is true or false");
   if (issues.length > before) return undefined;
-  return { kind: "start_run", agent_id: value.agent_id as string, input: value.input as Json, ...(typeof value.max_cost_usd === "number" ? { max_cost_usd: value.max_cost_usd } : {}), ...(typeof value.effort === "string" ? { effort: value.effort } : {}) };
+  return { kind: "start_run", agent_id: value.agent_id as string, input: value.input as Json, ...(typeof value.max_cost_usd === "number" ? { max_cost_usd: value.max_cost_usd } : {}), ...(typeof value.effort === "string" ? { effort: value.effort } : {}), ...(value.include_last_answer === true ? { include_last_answer: true as const } : {}) };
 }
 
 /** `catchup_window_s` and `max_active_runs`, as given (absent: undefined; `max_active_runs: null`, cleared). */
@@ -451,7 +460,9 @@ export class Triggers {
     const trust = this.adapter(trigger.source).trust ?? SENDER_STARTS;
     const actor = event.actor ?? "sender";
     const key = firingKey(by, id, event.key);
-    // The same key again is its firing as it stands, whoever sent it: trust was held to when it was first taken.
+    // The same key again is its firing as it stands, whoever sent it: trust was held to when it was first taken. Read past
+    // the prune, so a key kept past its day is new again.
+    await this.prune(trigger);
     const known = await this.store.triggers.firing(id, key);
     if (known) return known.status === "ignored" ? { created: false, firing: { ok: "duplicate" } } : { created: false, firing: firingView(known) };
     const now = this.clock.now();
@@ -464,7 +475,7 @@ export class Triggers {
     const reply = kept && !(unstarted && event.opens === true);
     if (reply ? !trust.steer.includes(actor) : !trust.start.includes(actor) || (conversation !== undefined && event.opens !== true)) return undefined;
     const attrs = { ...(event.attrs ?? {}), ...(conversation === undefined ? {} : { [CONVERSATION]: conversation }), ...(reply ? { [REPLY]: "1" } : {}) };
-    const recorded = await this.record(trigger, { key, by, nominalAt: Math.floor(now / 1000) * 1000, status: "due", payload: cut(event.text), ...(Object.keys(attrs).length ? { attrs } : {}) }, { room: true });
+    const recorded = await this.record(trigger, { key, by, nominalAt: Math.floor(now / 1000) * 1000, status: "due", payload: cut(event.text), ...(Object.keys(attrs).length ? { attrs } : {}) }, { room: true, pruned: true });
     if (recorded.created && conversation !== undefined) {
       await this.store.triggers.keepConversation({ triggerId: id, key: conversation, at: now });
       // Conversations untouched for CONVERSATION_KEPT_MS go, and the oldest past CONVERSATIONS_KEPT.
@@ -481,13 +492,9 @@ export class Triggers {
     return (await this.store.triggers.pending()).some((f) => f.triggerId === id && f.status === "due" && conversationOf(f.attrs) === key && !isReply(f.attrs));
   }
 
-  /** The conversation trigger `triggerId`'s firing `key` started a run in, if it started one: where a line about the run
-   *  is posted (a Slack trigger's thread). */
-  async conversationOfFiring(triggerId: string, key: string): Promise<{ trigger: Trigger; conversation: string } | undefined> {
-    const firing = await this.store.triggers.firing(triggerId, key);
-    const conversation = firing && !isReply(firing.attrs) ? conversationOf(firing.attrs) : undefined;
-    const trigger = conversation === undefined ? undefined : await this.find(triggerId);
-    return trigger && conversation !== undefined ? { trigger, conversation } : undefined;
+  /** Trigger `triggerId`, when a run it started in a conversation is to be told of (its source's line in the thread). */
+  async triggerOf(triggerId: string): Promise<Trigger | undefined> {
+    return this.find(triggerId);
   }
 
   /** PATCH: any of name, enabled, source, target, catchup_window_s and max_active_runs. Enabled again, or its source changed, a trigger goes on from now: a
@@ -679,7 +686,11 @@ export class Triggers {
       if (this.closed) return;
       // A key stays bound to its run: one lost at setup is this firing's failure, never fired again.
       if (prior?.setup_lost) return void (await this.failed(triggerId, key, { code: "run_failed", message: LOST_AT_SETUP }, prior.run_id, LOST_AT_SETUP));
-      if (prior) return void (await this.started(triggerId, key, prior.run_id));
+      // The conversation this firing starts, if it starts one: kept on the run's trigger (its launch row), as the store
+      // clears a firing's attrs once its run starts.
+      const conversation = conversationOf(firing.attrs);
+      const opened = conversation === undefined ? undefined : { key: conversation, at: firing.nominalAt };
+      if (prior) return void (await this.started(triggerId, key, prior.run_id, opened));
       const trigger = await this.find(triggerId);
       if (!trigger) return;
       // Its agent archived since the firing was recorded (a firing waiting on its cap, or due on a retry): skipped, never a
@@ -697,9 +708,12 @@ export class Triggers {
       const now = await this.find(triggerId);
       if (!now) return;
       if (now.target.kind === "message_run") return void (await this.send(now, firing));
+      // The last run's answer, read before the start; a read that fails is a line, never a held firing.
+      const last = now.target.include_last_answer ? await this.lastAnswerTag(now.lastRunId) : "";
+      if (this.closed) return;
       let started: { run_id: string };
       try {
-        started = await this.deps.start(now.target, this.inputOf(now, firing), { id: triggerId, firing_key: key, name: now.name }, this.originOf(now), this.titleOf(now, firing));
+        started = await this.deps.start(now.target, this.inputOf(now, firing, last), { id: triggerId, firing_key: key, name: now.name, ...(conversation !== undefined ? { conversation } : {}) }, this.originOf(now), this.titleOf(now, firing));
       } catch (error) {
         // Stopping, the start may have been cut by the close: the firing stays due for the next start, whose origin key
         // finds a run this one made.
@@ -711,7 +725,7 @@ export class Triggers {
         return void (await this.answered(triggerId, key, error));
       }
       if (this.closed) return;
-      await this.started(triggerId, key, started.run_id);
+      await this.started(triggerId, key, started.run_id, opened);
     } catch (error) {
       if (this.closed) return;
       await this.failedTry(triggerId, key, error);
@@ -736,10 +750,18 @@ export class Triggers {
     }
     if (target.kind !== "message_run") return;
     if (!(await this.store.runs.get(target.run_id))) {
+      // A conversation's run deleted ends that conversation alone; a message_run target's ends the trigger.
+      if (isReply(firing.attrs)) return void (await this.store.triggers.settle(trigger.id, firing.key, { status: "skipped", reason: CONVERSATION_RUN_DELETED }));
       await this.store.triggers.update(trigger.id, { enabled: false, nextAt: null, disabled: { at: iso(this.clock.now()), reason: "source_unreadable", detail: RUN_DELETED } });
       await this.store.triggers.settle(trigger.id, firing.key, { status: "skipped", reason: RUN_DELETED });
       this.deps.say({ condition: "trigger_source_unreadable", trigger: trigger.id, error: RUN_DELETED });
       return;
+    }
+    // A conversation's run that has ended takes no more messages (a run is not opened again): its reply is skipped, never a
+    // failure that counts toward the trigger's pause.
+    if (isReply(firing.attrs)) {
+      const status = await this.deps.statusOf(target.run_id);
+      if (status !== null && ENDED.has(status)) return void (await this.store.triggers.settle(trigger.id, firing.key, { status: "skipped", reason: `The conversation's run ended ${status}: it takes no more messages.` }));
     }
     const bound = adapterIn(this.adapters, firing.by)?.delivery === "clock" ? { max: 1, reason: "A message from this trigger is already waiting." } : { max: DUE_KEPT, reason: `${DUE_KEPT} messages from this trigger are already waiting for its run.` };
     let skipped: string | undefined;
@@ -816,12 +838,11 @@ export class Triggers {
     await this.failed(triggerId, key, errorOf(error), runId);
   }
 
-  private async started(triggerId: string, key: string, runId: string): Promise<void> {
+  private async started(triggerId: string, key: string, runId: string, conversation?: { key: string; at: number }): Promise<void> {
     await this.store.triggers.settle(triggerId, key, { status: "started", runId }, { reset: true });
-    // A conversation's start: its run, which its later events message.
-    const firing = await this.store.triggers.firing(triggerId, key);
-    const conversation = firing && !isReply(firing.attrs) ? conversationOf(firing.attrs) : undefined;
-    if (conversation !== undefined) await this.store.triggers.keepConversation({ triggerId, key: conversation, runId, at: this.clock.now() });
+    // A conversation's start: its run, which its later events message. Its time is the event's, not the start's: a run
+    // starting is no touch of the conversation.
+    if (conversation !== undefined) await this.store.triggers.keepConversation({ triggerId, key: conversation.key, runId, at: conversation.at });
     this.deps.say({ condition: "trigger_fired", trigger: triggerId, firing: key, run: runId });
   }
 
@@ -845,8 +866,8 @@ export class Triggers {
   /** `firing` recorded for `trigger` (pruned first, so a key past its day is no longer known): `created` false and the
    *  key's firing as it stands when it is known. `room`: refused (429, retryable, nothing written) while the trigger holds
    *  DUE_KEPT firings due. */
-  private async record(trigger: Trigger, firing: NewFiring, { room = false } = {}): Promise<{ created: boolean; firing: FiringRow }> {
-    await this.prune(trigger);
+  private async record(trigger: Trigger, firing: NewFiring, { room = false, pruned = false } = {}): Promise<{ created: boolean; firing: FiringRow }> {
+    if (!pruned) await this.prune(trigger);
     let recorded: { created: boolean[] } | undefined;
     try {
       recorded = await this.store.triggers.record(trigger.id, [firing], room ? { room: DUE_KEPT } : {});
@@ -1019,9 +1040,30 @@ export class Triggers {
     return { kind: "trigger", trigger_id: trigger.id, source: trigger.source.kind as Extract<MessageOrigin, { kind: "trigger" }>["source"], owner: this.adapter(trigger.source).owner };
   }
 
-  /** The run's input: the trigger's, then a pushed firing's payload marked untrusted (tagged with its source and what the
-   *  source says of it), then a line saying what fired it and when, in the trigger's zone. */
-  private inputOf(trigger: Trigger, firing: Pick<FiringRow, "by" | "nominalAt" | "payload"> & { attrs?: unknown }): Json {
+  /** The trigger's last run's answer, for a target with include_last_answer: none when it has no last run; a completed
+   *  run's final answer in a <last-run-answer> tag, untrusted, cut to PAYLOAD_KEPT_BYTES with its closing tag escaped as
+   *  the payload's is; else one line saying how it ended (or that it has not), in the tag's place. */
+  private async lastAnswerTag(runId: string | null): Promise<string> {
+    if (!runId) return "";
+    let last: LastRun | null;
+    try {
+      last = this.deps.lastRun ? await this.deps.lastRun(runId) : null;
+    } catch {
+      return `\n\n(The last run, ${runId}: its answer could not be read.)`;
+    }
+    if (!last) return `\n\n(The last run, ${runId}, is gone, with no answer.)`;
+    if (last.status === "completed" && last.answer) {
+      const answer = cut(last.answer, "answer").replace(/<(\/last-run-answer)/gi, "<\\$1");
+      return `\n\n<last-run-answer run="${runId}"${last.ended_at ? ` ended_at="${last.ended_at}"` : ""} untrusted>\n${answer}\n</last-run-answer>`;
+    }
+    if (last.status === "completed") return `\n\n(The last run, ${runId}, completed with no answer.)`;
+    return last.ended_at ? `\n\n(The last run, ${runId}, ended ${last.status} with no answer.)` : `\n\n(The last run, ${runId}, has not ended (${last.status}), so it has no answer yet.)`;
+  }
+
+  /** The run's input: the trigger's, then its last run's answer when the target asks for it (`last`, lastAnswerTag), then a
+   *  pushed firing's payload marked untrusted (tagged with its source and what the source says of it), then a line saying
+   *  what fired it and when, in the trigger's zone. */
+  private inputOf(trigger: Trigger, firing: Pick<FiringRow, "by" | "nominalAt" | "payload"> & { attrs?: unknown }, last = ""): Json {
     const adapter = this.adapter(trigger.source);
     const when = local(firing.nominalAt, adapter.zone?.(trigger.source) ?? "UTC");
     const what = `the ${adapter.label} "${trigger.name}"`;
@@ -1032,7 +1074,7 @@ export class Triggers {
     // An event in a conversation whose run started is its message and that line alone.
     if (isReply(firing.attrs)) return { content: `${payload.trimStart()}\n\n${line}` };
     const { input } = trigger.target;
-    return typeof input.content === "string" ? { ...input, content: `${input.content}${payload}\n\n${line}` } : input;
+    return typeof input.content === "string" ? { ...input, content: `${input.content}${last}${payload}\n\n${line}` } : input;
   }
 }
 
@@ -1066,11 +1108,11 @@ function tagAttrs(attrs: unknown): string {
   return Object.entries(attrs).filter(([name, value]) => /^[a-z][a-z0-9_-]{0,31}$/.test(name) && name !== "source" && name !== "untrusted" && name !== CONVERSATION && name !== REPLY && typeof value === "string").map(([name, value]) => ` ${name}="${escape(value as string)}"`).join("");
 }
 
-/** `text` cut to PAYLOAD_KEPT_BYTES of UTF-8 at a character's start, and said to be cut. */
-function cut(text: string): string {
+/** `text` cut to PAYLOAD_KEPT_BYTES of UTF-8 at a character's start, and said to be cut (the `what` it was). */
+function cut(text: string, what = "payload"): string {
   const bytes = Buffer.from(text, "utf8");
   if (bytes.length <= PAYLOAD_KEPT_BYTES) return text;
   let end = PAYLOAD_KEPT_BYTES;
   while (end > 0 && (bytes[end]! & 0xc0) === 0x80) end--;
-  return `${bytes.subarray(0, end).toString("utf8")}\n[cut: the payload was ${bytes.length} bytes, past ${PAYLOAD_KEPT_BYTES}]`;
+  return `${bytes.subarray(0, end).toString("utf8")}\n[cut: the ${what} was ${bytes.length} bytes, past ${PAYLOAD_KEPT_BYTES}]`;
 }

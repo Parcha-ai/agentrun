@@ -190,19 +190,10 @@ test("a trigger that would start an uncapped run, a workflow's included, or fire
   assert.deepEqual((await api("GET", "/triggers")).body.triggers, [], "nothing kept");
   assert.equal((await api("DELETE", "/triggers/trg_none")).status, 404);
   // A capped one on a workflow agent is taken, as one on an agentic agent is: a workflow run's spend is capped (#1861).
-
-  assert.deepEqual((await api("GET", "/capabilities")).body.features.triggers, { routes: true, sources: ["schedule", "webhook", "slack"], targets: ["start_run", "message_run"], min_every_s: 60, history_kept: 200, catchup_window_s: 3600, failures_to_pause: 5, webhook: { signing: "standard-webhooks/v1", signatures: ["standard", "github", "slack"], tolerance_s: 300, max_body_bytes: 262144, payload_kept_bytes: 16384, at_rest: "unavailable" } });
-});
-
-test("a capped trigger on a workflow agent is taken, as one on an agentic agent is: a workflow run's spend is capped", { timeout: 120_000 }, async (t) => {
-  const { api } = await serve(t, { triggerClock: fakeClock("2026-06-01T00:00:00Z") });
-  assert.equal((await api("POST", "/agents", flowAgent("flow"))).status, 201);
-  const onFlow = schedule("flow", { every_s: 600 });
-  onFlow.target.input = { question: "What is six times seven?" };
   const taken = await api("POST", "/triggers", onFlow);
   assert.equal(taken.status, 201, JSON.stringify(taken.body));
   assert.deepEqual((await api("GET", "/triggers")).body.triggers.map((trigger) => [trigger.target.agent_id, trigger.target.max_cost_usd]), [["flow", 0.5]]);
-  assert.deepEqual((await api("GET", "/capabilities")).body.features.triggers, { routes: true, sources: ["schedule", "webhook", "github"], targets: ["start_run", "message_run"], min_every_s: 60, history_kept: 200, catchup_window_s: 3600, failures_to_pause: 5, webhook: { signing: "standard-webhooks/v1", signatures: ["standard", "github"], tolerance_s: 300, max_body_bytes: 262144, payload_kept_bytes: 16384, at_rest: "sealed" } });
+  assert.deepEqual((await api("GET", "/capabilities")).body.features.triggers, { routes: true, sources: ["schedule", "webhook", "github", "slack"], targets: ["start_run", "message_run"], min_every_s: 60, history_kept: 200, catchup_window_s: 3600, failures_to_pause: 5, webhook: { signing: "standard-webhooks/v1", signatures: ["standard", "github", "slack"], tolerance_s: 300, max_body_bytes: 262144, payload_kept_bytes: 16384, at_rest: "sealed" } });
   // A server started with no seal key handed over has one all the same (ensureSealKey): what it keeps is always sealed.
   assert.equal((await api("GET", "/capabilities")).body.features.webhooks.at_rest, "sealed");
 });
@@ -479,3 +470,38 @@ test("archiving an agent answers the triggers it turned off; while it is archive
 // Superseded: "a triggers file holding a malformed trigger leaves the server up". The triggers keep no file: their rows
 // are the store's STRICT tables, which refuse a malformed row at its write (store-trigger-schema), and a data directory an
 // earlier build left is refused at the store's open (store-earlier-version).
+
+test("a schedule whose target sets include_last_answer hands its next run what the last one answered, through the API: the flag is kept and shown, the run's input carries the answer as GET /runs/{id} serves it, and a value that is not true or false is 422", { timeout: 180_000 }, async (t) => {
+  const { api, store } = await serve(t);
+  await made(api, "digest");
+  const body = schedule("digest", { every_s: 3600 });
+  body.target.include_last_answer = true;
+  const created = await api("POST", "/triggers", body);
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  const { id } = created.body;
+  assert.equal((await api("GET", `/triggers/${id}`)).body.target.include_last_answer, true, "kept and shown");
+  const fire = async (key, n) => {
+    const fired = await api("POST", `/triggers/${id}/fire`, undefined, { "idempotency-key": key });
+    assert.ok(fired.status < 300, JSON.stringify(fired.body));
+    return (await firings(api, id, n))[0];
+  };
+  /** A run's input as its launch keeps it (the store's run_launch row). */
+  const inputOf = async (runId) => {
+    const { input } = (await store.runs.launch(runId)).body;
+    return typeof input?.content === "string" ? input.content : input?.input?.content;
+  };
+  const first = await fire("by-hand-1", 1);
+  assert.doesNotMatch(await inputOf(first.run_id), /last-run-answer|The last run/, "no last run: nothing");
+  await follow(api, first.run_id, ["completed"]);
+  const view = (await api("GET", `/runs/${first.run_id}`)).body;
+  assert.ok(view.result?.final_answer, JSON.stringify(view.result));
+  const second = await fire("by-hand-2", 2);
+  assert.notEqual(second.run_id, first.run_id);
+  const answer = view.result.final_answer.replace(/<(\/last-run-answer)/gi, "<\\$1");
+  assert.ok((await inputOf(second.run_id)).startsWith(`Say hello.\n\n<last-run-answer run="${first.run_id}" ended_at="${view.ended_at}" untrusted>\n${answer}\n</last-run-answer>\n\n(Started by hand from the schedule "nightly" at `), await inputOf(second.run_id));
+  const wrong = await api("POST", "/triggers", { ...schedule("digest", { every_s: 3600 }), name: "odd", target: { ...body.target, include_last_answer: "yes" } });
+  assert.deepEqual([wrong.status, wrong.body.error.fields.map((f) => [f.field, f.reason])], [422, [["target.include_last_answer", "wrong_type"]]]);
+  const doc = (await api("GET", "/openapi.json")).body;
+  const startRun = doc.paths["/triggers"].post.requestBody.content["application/json"].schema;
+  assert.match(JSON.stringify(startRun) + JSON.stringify(doc.components?.schemas ?? {}), /"include_last_answer":\{"type":"boolean","default":false/, "the field is in the API document");
+});

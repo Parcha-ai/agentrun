@@ -37,9 +37,9 @@ type Told = { wait?: string; ended?: string; at: string };
  *  `<!channel>`, no `<@U...>`) and make no link. */
 export const slackText = (text: string): string => text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
-/** The one line a run's moment posts in its thread. Waiting, by `pending.kind`: a question is answered by a reply in the
- *  thread; an approval (a tool call waiting on its owner's OK, which names the tool) only in the console, as no reply
- *  approves; a pause at the cap by a raise; a stop by a reply that goes on; any other kind, at the run. Ended: its status,
+/** The one line a run's moment posts in its thread. Waiting, by `pending.kind`: a question, a stop and an approval (a tool
+ *  call waiting on its owner's OK, which names the tool) in the console, as no reply in the thread answers what a run
+ *  waits on; a pause at the cap by a raise; any other kind, at the run. Ended: its status,
  *  and with `answer` (given when the thread's trigger posts it, its source's post_answer) the run's final answer, escaped and cut to ANSWER_POSTED_CHARS. `base`:
  *  the console's public URL, for the run's link; none, no link. */
 export function slackLine(type: "run.needs_input" | "run.ended", run: RunNotice, { base, answer }: { base: string | null; answer?: string | null }): string {
@@ -53,9 +53,11 @@ export function slackLine(type: "run.needs_input" | "run.ended", run: RunNotice,
       const of = typeof pending?.tool === "string" && pending.tool ? ` of ${slackText(pending.tool)}` : "";
       return `Waiting for your approval${of}: approve in the console${link ? ` ${link}` : "."}`;
     }
+    // No reply in the thread answers a run's question or goes on after a stop yet (a trigger's message answers nothing a
+    // run waits on): the line sends the person to the console.
     if (kind === "question" || kind === "stopped") {
-      const head = kind === "question" ? "Waiting for your answer: reply in this thread" : "Stopped: reply in this thread to go on";
-      return link ? `${head}, or ${link}` : `${head}.`;
+      const head = kind === "question" ? "Waiting for your answer: answer in the console" : "Stopped: go on from the console";
+      return link ? `${head} ${link}` : `${head}.`;
     }
     return link ? `Waiting: ${link}` : "Waiting: open the run in the console.";
   }
@@ -124,7 +126,9 @@ export class Slack {
    *  `thread`: one line queued for its thread, once per moment, in the same write as the ledger. `answer`: the run's
    *  final answer, given only when the thread's trigger posts it (its source's post_answer). */
   emit(type: "run.needs_input" | "run.ended", run: RunNotice, marker: string, thread: { channel: string; thread_ts: string }, answer?: string | null): void {
-    if (this.closed || !this.settings() || this.settings()!.disabled) return;
+    if (this.closed || !this.settings()) return;
+    // Posting is off (Slack refused the bot token): nothing is queued for this moment, then or later, and that is said.
+    if (this.settings()!.disabled) return void this.say({ condition: "slack_post_off", run: run.run_id, type });
     const told = this.told[run.run_id];
     const ends = type === "run.ended";
     if ((ends ? told?.ended : told?.wait) === marker) return;

@@ -74,9 +74,9 @@ export type TriggerAdapter = {
    *  words (422). `api`: its service's address, in place of its own (a test's). */
   check?(values: Readonly<Record<string, string>>, api?: string): Promise<Record<string, string>>;
   /** Who may start a run through it and who may steer one (a message in a conversation its run started), held to by
-   *  the kernel for every event (triggers.ts receiveEvent); `answers: "question"`: a steering message may answer the
-   *  run's question, never an approval or a cap. Absent: whoever passed the check may start one (`sender`), and no one
-   *  steers. */
+   *  the kernel for every event (triggers.ts receiveEvent). `answers: "question"`, a steering message that answers the
+   *  run's question, is not taken yet: no run takes a trigger's message as an answer, so a trigger of a source that asks
+   *  for it is refused at its create. Absent: whoever passed the check may start one (`sender`), and no one steers. */
   trust?: Trust;
   /** Whether each firing of a trigger of `source` starts its own run, its last run active or not (a webhook that takes
    *  only the events it names). Default false: a firing while the last run is active is skipped. */

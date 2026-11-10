@@ -86,3 +86,26 @@ test("disable and enable change the trigger and its scope rows together", async 
   await store.triggers.enable("trg-1", [{ kind: "schedule", scope: "trg-1" }]);
   assert.equal((await store.triggers.get("trg-1"))?.enabled, true);
 });
+
+test("a trigger's conversations: kept by key, its run named once and never moved, its last time only forward; pruned past its age and past the newest it keeps; gone with its trigger", async (t) => {
+  const { store, clock } = await storeOn(t);
+  await withTrigger(store);
+  await store.triggers.fire({ triggerId: "trg-1", key: "k1", by: "schedule" }, { id: "run-1", agentId: "agent-1", revisionId: "rev-1" });
+  const at = clock.now;
+  assert.equal(await store.triggers.conversation("trg-1", "C1:1.0"), undefined, "none yet");
+  await store.triggers.keepConversation({ triggerId: "trg-1", key: "C1:1.0", at });
+  assert.deepEqual(await store.triggers.conversation("trg-1", "C1:1.0"), { triggerId: "trg-1", key: "C1:1.0", runId: null, createdAt: at, lastAt: at }, "kept before its run started");
+  await store.triggers.keepConversation({ triggerId: "trg-1", key: "C1:1.0", runId: "run-1", at: at + 10 });
+  await store.triggers.keepConversation({ triggerId: "trg-1", key: "C1:1.0", at: at + 5 });
+  assert.deepEqual(await store.triggers.conversation("trg-1", "C1:1.0"), { triggerId: "trg-1", key: "C1:1.0", runId: "run-1", createdAt: at, lastAt: at + 10 }, "its run named; a later write without one keeps it, an earlier time does not go back");
+  for (const [key, ago] of [["old", 31_000], ["a", 3], ["b", 2], ["c", 1]]) await store.triggers.keepConversation({ triggerId: "trg-1", key, at: at - ago });
+  const pruned = await store.triggers.pruneConversations("trg-1", { keptMs: 30_000, kept: 3, now: at });
+  assert.equal(pruned, 2, "the stale one and the oldest past three");
+  const kept = [];
+  for (const key of ["C1:1.0", "old", "a", "b", "c"]) if (await store.triggers.conversation("trg-1", key)) kept.push(key);
+  assert.deepEqual(kept, ["C1:1.0", "b", "c"]);
+  assert.equal(await store.triggers.pruneConversations("trg-1", { keptMs: 30_000, kept: 3, now: at }), 0, "nothing more");
+  assert.equal(await store.triggers.conversation("trg-2", "C1:1.0"), undefined, "another trigger's are its own");
+  await store.triggers.remove("trg-1");
+  assert.equal(await store.triggers.conversation("trg-1", "C1:1.0"), undefined, "gone with its trigger");
+});

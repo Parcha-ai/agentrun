@@ -383,9 +383,9 @@ const SOURCE_SETTINGS = closed({
   configured: { type: "boolean", description: "Whether every secret field is set." },
   managed: { type: ["string", "null"], description: "The flow that writes these settings, when one of its own does (PUT and DELETE are refused 409 `settings_managed`); else null." },
   values: { type: "object", additionalProperties: { type: ["string", "null"] }, description: "Each public field, as it stands (who a Slack app is: `team_id`, `bot_user_id`, `bot_id`, `app_id`; when it was saved, `updated_at`; why posting is off, `disabled_at` and `disabled_reason`), null when unset." },
-  secrets: { type: "object", additionalProperties: { type: "boolean" }, description: "Each secret field (a Slack app's `signing_secret` and `bot_token`): whether it is set. Never its value." },
+  secrets: { type: "array", items: { $ref: "#/components/schemas/SecretMeta" }, description: "Each secret field (a Slack app's `signing_secret` and `bot_token`), in the order the source declares them, as every secret's view says it (SecretMeta): named source:<source>:<field>, source `console`, changed_at its settings' `updated_at` where they keep one. Never a value." },
 });
-const SOURCE_PARAM = { name: "source", in: "path", required: true, schema: { type: "string" }, description: "A trigger source whose settings are the server's (`slack`)." };
+const SOURCE_PARAM = { name: "source", in: "path", required: true, schema: { type: "string" }, description: "A trigger source whose settings are the server's (`slack`; `github`, shown here and written by Connect GitHub)." };
 const SOURCES_MARK = { "x-agentrun-serve": "sources/1" };
 /** GET /settings/webhook (webhooks.ts): the webhook, or none; never its secret. */
 const WEBHOOK_VIEW = { oneOf: [closed({ configured: { const: false }, secret: WEBHOOK_SECRET_META }), WEBHOOK_SET] };
@@ -668,7 +668,11 @@ const START_RUN = closedWith(
     agent_id: { type: "string", description: "The agent whose run each firing starts, an agentic agent or a workflow: capped either way." },
     input: { type: "object", description: "The run's input, as POST /agents/{agent_id}/runs takes it: `{content}`. Each run's content ends with a line naming the trigger and the time it fired for, in its zone." },
   },
-  { effort: { $ref: "#/components/schemas/Effort" }, max_cost_usd: { type: "number", exclusiveMinimum: 0, description: "Each run's spend cap. Absent, the agent's default (its definition's `max_cost_usd`) as it stands when the firing starts; one of the two is required, so every run a trigger starts is capped: a target with neither is 422, and a firing that finds neither (the agent's default removed since) fails." } },
+  {
+    effort: { $ref: "#/components/schemas/Effort" },
+    max_cost_usd: { type: "number", exclusiveMinimum: 0, description: "Each run's spend cap. Absent, the agent's default (its definition's `max_cost_usd`) as it stands when the firing starts; one of the two is required, so every run a trigger starts is capped: a target with neither is 422, and a firing that finds neither (the agent's default removed since) fails." },
+    include_last_answer: { type: "boolean", default: false, description: "Each firing's input carries the trigger's last run's final answer, after `input.content`, as `<last-run-answer run=\"run_…\" ended_at=\"…\" untrusted>…</last-run-answer>`: untrusted, cut to 16 KiB, its closing tag escaped. No last run: nothing. A last run that did not complete (failed, cancelled, still working): one line in the tag's place saying so; the firing is never held for it. A schedule's run sees the one before it (last week's digest)." },
+  },
 );
 const TRIGGER_TARGET = {
   oneOf: [
@@ -1541,14 +1545,15 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       operationId: "putSourceSettings", tags: ["local"], summary: "Set a trigger source's settings that are the server's",
       description: `One route for every trigger source whose settings are the server's, driven by its settings' fields: each secret field, once each, and the public fields a save may give. The source checks them before anything is kept, and fills the public fields it learns: \`slack\`'s bot token is checked with Slack's auth.test, which names the workspace and the app's bot user (\`team_id\`, \`bot_user_id\`, \`bot_id\`), and its \`app_id\`, when given, is checked against each event's \`api_app_id\`. Then they are kept whole, in the source's sealed settings under the seal key the server was handed (409 \`no_sealing_key\` with none), what an earlier save kept gone first, and never shown again. For \`slack\`: \`{signing_secret, bot_token, app_id?}\`; Slack's Event Subscriptions Request URL is POST /hooks/slack, and a save turns posting on again after Slack refused the bot token. A source whose settings a flow of its own writes is 409 \`settings_managed\`.`,
       parameters: [SOURCE_PARAM],
-      requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: { type: "string", minLength: 1, maxLength: 512 } } } } },
-      responses: { "200": json(SOURCE_SETTINGS, "Set."), ...errors(400, 401, 404, 409, 415, 422, 429, 500), "424": { description: "`upstream_failed`: the source's service did not answer its check (Slack's auth.test named no workspace or bot user, or was not reached).", content: { "application/json": { schema: ref("schemas/Error") } } } },
+      requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: { type: "string", minLength: 1, maxLength: 512, "x-agentrun-secret": true }, description: "The source's fields, by name; its secret fields among them. A secret write: it takes the owner's signed-in session (403 with the API token)." } } } },
+      responses: { "200": json(SOURCE_SETTINGS, "Set."), ...errors(400, 401, 403, 404, 409, 415, 422, 429, 500), "424": { description: "`upstream_failed`: the source's service did not answer its check (Slack's auth.test named no workspace or bot user, or was not reached).", content: { "application/json": { schema: ref("schemas/Error") } } } },
       ...SOURCES_MARK,
     },
     delete: {
       operationId: "deleteSourceSettings", tags: ["local"], summary: "Remove a trigger source's settings that are the server's: its requests are refused, and nothing more is posted",
       parameters: [SOURCE_PARAM],
-      responses: { "204": { description: "Removed." }, ...errors(401, 404, 409, 429, 500) },
+      description: "A secret write: it takes the owner's signed-in session (403 with the API token).",
+      responses: { "204": { description: "Removed." }, ...errors(401, 403, 404, 409, 429, 500) },
       ...SOURCES_MARK,
     },
   },

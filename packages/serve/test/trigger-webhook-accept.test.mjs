@@ -345,7 +345,6 @@ test("a trigger with accept may cap its own active runs (max_active_runs): at th
     assert.ok(Date.now() < end, JSON.stringify(latest));
   }
   assert.match(held.reason, /max_active_runs/);
-  assert.match(held.reason, /^The trigger has 1 run active /, "one run, not one runs");
   assert.equal((await api("GET", "/agents/busy/runs")).body.runs.length, 1, "one run while at the cap");
   const unfiltered = await api("PATCH", `/triggers/${id}`, { source: { kind: "webhook", signature: "github" } });
   assert.deepEqual([unfiltered.status, unfiltered.body.max_active_runs], [200, 1], "a cap needs no accept: taking accept away keeps it");

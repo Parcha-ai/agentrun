@@ -76,7 +76,7 @@ export const slack: TriggerAdapter = {
   delivery: "push",
   owner: false,
   describe: '{kind: "slack", channels, post_answer?}',
-  fires: "a mention of the server's Slack app (`slack`, PUT /settings/slack)",
+  fires: "a mention of the server's Slack app (`slack`, PUT /settings/sources/slack)",
   firedBy: "`slack`: a Slack message (a mention, or a reply in a thread the trigger started), its key from the trigger and the message's team, channel and ts, so Slack's retries and the same message told twice are one firing.",
   schemas: [
     closedSchema(

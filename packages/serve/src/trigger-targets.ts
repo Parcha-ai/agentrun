@@ -11,7 +11,7 @@ import type { Store } from "./store/index.js";
 import type { AgentEntry } from "./agents-store.js";
 import type { MessageOrigin } from "@parcha/pi-durable-agent/timeline";
 import type { Json } from "./validate.js";
-import type { RunTrigger, Target } from "./triggers.js";
+import type { LastRun, RunTrigger, Target } from "./triggers.js";
 
 /** Why a trigger may not message a run with no cap (server.ts NO_CAP). */
 const NO_CAP = "The run has no spend cap: a trigger only messages a run with one, as every turn it drives is capped.";
@@ -30,6 +30,8 @@ export interface TriggerTargetDeps {
   momentOf(runId: string): Promise<RunMoment | undefined>;
   /** A run's v2 status, or null for an unknown run (the run view): the trigger engine's overlap and active-run checks. */
   runStatus(runId: string): Promise<string | null>;
+  /** A run's status, end and final answer as GET /v2/runs/{id} serves them (the run view), or null for an unknown run. */
+  runEnd(runId: string): Promise<LastRun | null>;
 }
 
 /** The trigger-facing run policy: the subset of the trigger engine's deps this module owns. The engine's other deps (an
@@ -39,6 +41,7 @@ export type TriggerTargets = {
   start(target: Extract<Target, { kind: "start_run" }>, input: Json, origin: RunTrigger, from: MessageOrigin): Promise<{ run_id: string }>;
   message(target: Extract<Target, { kind: "message_run" }>, input: Json, key: string, from: MessageOrigin): Promise<void | { skipped: string }>;
   statusOf(runId: string): Promise<string | null>;
+  lastRun(runId: string): Promise<LastRun | null>;
   runOf(key: string): Promise<{ run_id: string; setup_lost: boolean } | null>;
 };
 
@@ -97,6 +100,9 @@ export function triggerTargets(store: Store & RunsStore, deps: TriggerTargetDeps
     },
     statusOf(runId) {
       return deps.runStatus(runId);
+    },
+    lastRun(runId) {
+      return deps.runEnd(runId);
     },
     async runOf(key) {
       const found = await runOfOrigin(store, key);

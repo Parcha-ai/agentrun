@@ -1128,13 +1128,13 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   stops.push(async () => slack.close());
   // A run a Slack trigger started is told in its thread when it needs its person and when it ends, beside the webhook's
   // notice (the run follower below). Its thread is the conversation its trigger's firing started it in: the run's launch
-  // names the trigger and the firing (triggers.ts conversationOfFiring).
+  // names the trigger and the conversation it started in (triggers.ts RunTrigger).
   const slackThreadOf = async (runId: string): Promise<{ channel: string; thread_ts: string; post_answer: boolean } | undefined> => {
     const launch = await store.runs.launch(runId).catch(() => undefined);
     const trigger = isObject(launch?.body) && isObject(launch.body.trigger) ? launch.body.trigger : undefined;
-    if (typeof trigger?.id !== "string" || typeof trigger.firing_key !== "string") return undefined;
-    const found = await triggers.conversationOfFiring(trigger.id, trigger.firing_key);
-    return found?.trigger.source.kind === "slack" ? { ...threadIn(found.conversation), post_answer: found.trigger.source.post_answer === true } : undefined;
+    if (typeof trigger?.id !== "string" || typeof trigger.conversation !== "string") return undefined;
+    const found = await triggers.triggerOf(trigger.id);
+    return found?.source.kind === "slack" ? { ...threadIn(trigger.conversation), post_answer: found.source.post_answer === true } : undefined;
   };
   // An answer-bearing end whose run cannot be read yet (a busy store) is read again after each of these waits, never
   // told without its answer; past the last it stays untold here, and the next start's catch-up tells it.
@@ -1300,6 +1300,14 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     needAgent,
     momentOf: (runId: string) => momentOverStore(store, runId, viewDepsFor(ownOriginOf())),
     runStatus: async (runId: string) => ((await viewOverStore(store, runId, viewDepsFor(ownOriginOf())))?.status as string | undefined) ?? null,
+    // A trigger's last run's answer (include_last_answer): the run's view, as GET /v2/runs/{id} serves it, its answer cut
+    // of the secrets the run held.
+    runEnd: async (runId: string) => {
+      const view = await viewOverStore(store, runId, viewDepsFor(ownOriginOf()));
+      if (!view) return null;
+      const answer = (view.result as { final_answer?: unknown } | null)?.final_answer;
+      return { status: String(view.status), ended_at: (view.ended_at as string | null) ?? null, answer: typeof answer === "string" ? answer : null };
+    },
   };
   const targets = triggerTargets(store, triggerDeps);
   const expected = digest(`Bearer ${token}`);
