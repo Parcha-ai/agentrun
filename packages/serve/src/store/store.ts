@@ -1014,13 +1014,15 @@ export class StoreOwned extends Error {
 
 
 /** A data directory an earlier version wrote (its store, agent homes, run databases or settings files): this version
- *  neither reads nor moves it. `found`: what was found, relative to the directory. */
+ *  neither reads nor moves it, and its words give the two ways on: keep the directory with the earlier version, or start
+ *  this one on a new directory and add the agents again. `found`: what was found, relative to the directory. */
 export class StoreFromEarlierVersion extends Error {
   readonly found: readonly string[];
   constructor(dataDir: string, found: readonly string[]) {
     super(
-      `${dataDir} holds an earlier version's data (${found.join(", ")}), which this version does not read or move: ` +
-        "start with a new, empty directory, and add your MCP servers, keys and sign-ins there again.",
+      `${dataDir} holds an earlier version's data (${found.join(", ")}), which this version does not read or move. ` +
+        "Keep this directory with the earlier version, or start this version on a new, empty directory and add your " +
+        "agents, MCP servers, keys and sign-ins there again.",
     );
     this.name = "StoreFromEarlierVersion";
     this.found = found;
@@ -1060,11 +1062,20 @@ export class StoreLaunchMissing extends Error {
   }
 }
 
-/** A row the store's constraints refuse (a duplicate id or name, a revision of an unknown agent, a bad kind). */
+/** Which of a table's rules refused a row, as both databases report it by code (never by its message's words). */
+export type ConstraintRule = "check" | "unique" | "foreign_key" | "not_null";
+
+/** A row the store's constraints refuse (a duplicate id or name, a revision of an unknown agent, a bad kind). When the
+ *  database said which rule refused it, `rule`; for a duplicate, `unique`: the table and the columns whose values were
+ *  taken already (a primary key's or a UNIQUE's), so a caller tells "the name is taken" from any other refusal. */
 export class StoreConstraint extends Error {
-  constructor(message: string) {
+  readonly rule?: ConstraintRule;
+  readonly unique?: { readonly table: string; readonly columns: readonly string[] };
+  constructor(message: string, details: { rule?: ConstraintRule; unique?: { table: string; columns: readonly string[] } } = {}) {
     super(message);
     this.name = "StoreConstraint";
+    if (details.rule) this.rule = details.rule;
+    if (details.unique) this.unique = details.unique;
   }
 }
 

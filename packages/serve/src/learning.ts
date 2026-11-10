@@ -228,7 +228,7 @@ export type Pin = { seed: string | null; section?: string; given?: NoteUsed[]; s
 /** What a run is seeded from: main's commit (null when the folder has none yet), its index and its active notes by
  *  file, and the name of every entry at its top. `skipped` names what was there and not read. `recent`, when seedOf read it: the active notes' files, the one
  *  changed last on main first. `skills`, when seedOf read them: the skills the agent wrote, the one changed last on main
- *  first. */
+ *  first. `workflows`: its active learned workflows, by name. */
 export type Seed = { sha: string | null; index?: string; notes: Record<string, string>; files: string[]; skipped: string[]; recent?: string[]; skills?: LearnedSkill[]; workflows?: LearnedWorkflow[] };
 /** A workflow the agent learned, as a run may run it: its name, the line its README says what it does with, and its
  *  workflow.json whole. */
@@ -340,9 +340,9 @@ export type SeedReader = (commit: string | null) => Promise<SeedRead>;
  *  status, with its place in main's log (0 the newest), and each skill's place by its name. */
 export type SeedOrder = { readonly notes: readonly { file: string; order: number }[]; readonly skills?: readonly { name: string; order: number }[] };
 
-/** A run's seed from the folder's read at `commit` (`read`): its index, its notes the one changed last first, and its
+/** A run's seed from the folder's read at `commit` (`read`): its index, its notes the one changed last first, its
  *  skills grouped by folder, the one changed last first, each with its files while it could fit a run's budget at all
- *  (LEARNED_SKILLS_BUDGET), else held by its size alone. A path that is neither (a file deeper than the folder's top, a
+ *  (LEARNED_SKILLS_BUDGET), else held by its size alone, and its active learned workflows by name. A path that is none (a file deeper than the folder's top, a
  *  skill folder named out of shape) is named in `skipped`. A skill the read refused is not in it, and is said in one
  *  `warn` line of the run. No commit yet (null, read as null) is an empty seed whose commit stays null; a read that fails
  *  throws, saying why, and the run starts with nothing learned (or, opened again, keeps what it has). No git here: the
@@ -353,6 +353,7 @@ export async function seedFrom(commit: string | null, read: SeedReader, { order,
   for (const { skill, why } of got.refused) warn?.(`starts without the skill ${skill} its agent learned: ${why}`);
   const seed: Seed = { sha: commit, notes: {}, files: [], skipped: [], recent: [], skills: [] };
   const skills = new Map<string, Record<string, string>>();
+  const flows = new Map<string, Record<string, string>>();
   for (const { path, text } of got.files) {
     if (path === INDEX_FILE) seed.index = text;
     else if (NOTE_FILE.test(path)) seed.notes[path] = text;
@@ -360,6 +361,7 @@ export async function seedFrom(commit: string | null, read: SeedReader, { order,
       const [top, name = "", ...rest] = path.split("/");
       const file = rest.join("/");
       if (top === SKILLS_DIR && SKILL_NAME.test(name) && SKILL_FILE_PATH.test(file)) (skills.get(name) ?? skills.set(name, {}).get(name)!)[file] = text;
+      else if (top === WORKFLOWS_DIR && WORKFLOW_NAME.test(name) && (file === "README.md" || file === "workflow.json")) (flows.get(name) ?? flows.set(name, {}).get(name)!)[file] = text;
       else seed.skipped.push(path);
     }
   }
@@ -373,6 +375,21 @@ export async function seedFrom(commit: string | null, read: SeedReader, { order,
     const bytes = Object.values(files).reduce((sum, text) => sum + Buffer.byteLength(text, "utf8"), 0);
     return bytes > LEARNED_SKILLS_BUDGET ? { name, bytes } : { name, bytes, files };
   });
+  // The active learned workflows, by name, each with its workflow.json whole. The read gives an active one's README.md
+  // and workflow.json; its front matter is read again here: one that does not read one way (readmeFront) could hold a
+  // status another reader sees, so it is never read as active, and is named in `skipped`.
+  seed.workflows = [];
+  for (const name of [...flows.keys()].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))) {
+    const { "README.md": readme, "workflow.json": workflow } = flows.get(name)!;
+    if (readme === undefined || workflow === undefined) continue;
+    const front = readmeFront(readme);
+    if (!front) {
+      seed.skipped.push(`${WORKFLOWS_DIR}/${name} (its README.md's front matter does not read one way)`);
+      continue;
+    }
+    if ((front.get("status") ?? "active") !== "active") continue;
+    seed.workflows.push({ name, description: front.get("description") ?? "", workflow });
+  }
   return seed;
 }
 
@@ -415,31 +432,6 @@ export function readmeFront(text: string): Map<string, string> | undefined {
   return front;
 }
 
-/** The active learned workflows of the folder's snapshot, each with its workflow.json whole, by name, and what was
- *  left out. One whose README's front matter does not read one way (readmeFront) could hold a status another reader
- *  sees: never read as active, and named in `skipped`. */
-const workflowsOf = (ws: Workspace): Promise<{ workflows: LearnedWorkflow[]; skipped: string[] }> => readLearning(ws, async ({ snapshot, body }) => {
-  const workflows: LearnedWorkflow[] = [];
-  const skipped: string[] = [];
-  for (const item of (snapshot?.workflows ?? []).filter((one) => one.status === "active")) {
-    const json = item.files.find(({ path }) => path === `${WORKFLOWS_DIR}/${item.name}/workflow.json`);
-    if (!json) continue;
-    const front = readmeFront(await body(item.file, item.oid));
-    if (!front) {
-      skipped.push(`${WORKFLOWS_DIR}/${item.name} (its README.md's front matter does not read one way)`);
-      continue;
-    }
-    if ((front.get("status") ?? "active") !== "active") continue;
-    workflows.push({ name: item.name, description: front.get("description") ?? "", workflow: await body(json.path, json.oid) });
-  }
-  return { workflows, skipped };
-});
-/** The seed's learned workflows: none while a body is not main's (a write in flight), so the run starts without them. */
-const workflowsNow = (ws: Workspace): Promise<{ workflows: LearnedWorkflow[]; skipped: string[] }> => workflowsOf(ws).catch((error: unknown) => {
-  if (error instanceof FolderBusy) return { workflows: [], skipped: [] };
-  throw error;
-});
-
 /** The seed of a run of agent `agentId` about to be made: main's commit, the folder made first when it is absent (the
  *  learning script's init), and what main holds for a run (seedFrom over the folder's read): its index, its active
  *  notes the one changed last first, its active skills, and its active learned workflows. A skill the read refused is
@@ -449,11 +441,7 @@ export function seedOf(data: string, agentId: string, warn?: (line: string) => v
     const { workspace, end } = learningFolderOf(data, agentId);
     try {
       const main = await learningInit(workspace);
-      const seed = await seedFrom(main, readerOf(workspace), { order: orderOf(await readSnapshot(workspace)), ...(warn ? { warn } : {}) });
-      const flows = await workflowsNow(workspace);
-      seed.workflows = flows.workflows;
-      seed.skipped.push(...flows.skipped);
-      return seed;
+      return await seedFrom(main, readerOf(workspace), { order: orderOf(await readSnapshot(workspace)), ...(warn ? { warn } : {}) });
     } finally {
       await end();
     }
@@ -663,6 +651,27 @@ export async function chooseSkills(work: Workspace, seed: Seed, own: readonly st
   return { taken, left };
 }
 
+/** Which of `seed`'s learned workflows a run may run (its `learned_workflow` tool), in the seed's order: each while its
+ *  line (workflowLine) fits what is left of the tool's description budget (LEARNED_WORKFLOWS_BUDGET). One that does not,
+ *  or holds a host secret (`shown`), is left out and named in `left`, but for one whose name is itself a secret, never
+ *  named. Main's start (pinSeed) and a runner's claim (runner/learning-seed.ts) choose them the one way. */
+export function chooseWorkflows(seed: Seed, shown: Shown): { flows: LearnedWorkflow[]; left: string[] } {
+  const flows: LearnedWorkflow[] = [];
+  const left: string[] = [];
+  let room = LEARNED_WORKFLOWS_BUDGET;
+  for (const flow of seed.workflows ?? []) {
+    if (shown.holds(flow.workflow) || shown.holds(flow.description) || shown.holds(flow.name)) {
+      // Named, but for a name that is itself a secret.
+      if (!shown.holds(flow.name)) left.push(flow.name);
+      continue;
+    }
+    const bytes = Buffer.byteLength(`${workflowLine(flow)}\n`, "utf8");
+    if (bytes > room) left.push(flow.name);
+    else (room -= bytes), flows.push(flow);
+  }
+  return { flows, left };
+}
+
 /** Writes `seed` into the run just made in `runDir`, its files through the run's Workspace (`work`): the index and each
  *  active note into `.learning/`, made fresh (whatever was there goes), then the pin, with what the run reads under
  *  `# Learned` (learnedOf) and the learned skills it gets beside the revision's `own` skill files (chooseSkills), then
@@ -676,22 +685,9 @@ export async function pinSeed(runDir: string, work: Workspace, seed: Seed, optio
     const { section, given } = learnedParts(seed, options);
     const { taken, left } = await chooseSkills(work, seed, options.own ?? [], options.shown);
     const skills = taken.flatMap(({ name, files = {} }) => Object.keys(files).sort().map((path) => `${name}/${path}`));
-    // The learned workflows the run may run, whole, in its directory before the pin names them (a reopen keeps them):
-    // by name, each while its line fits what is left of the tool's description budget; one that does not, or holds a
-    // secret, is left out, and the pin names it.
-    const flows: LearnedWorkflow[] = [];
-    const flowsLeft: string[] = [];
-    let room = LEARNED_WORKFLOWS_BUDGET;
-    for (const flow of seed.workflows ?? []) {
-      if (options.shown.holds(flow.workflow) || options.shown.holds(flow.description) || options.shown.holds(flow.name)) {
-        // Named, but for a name that is itself a secret.
-        if (!options.shown.holds(flow.name)) flowsLeft.push(flow.name);
-        continue;
-      }
-      const bytes = Buffer.byteLength(`${workflowLine(flow)}\n`, "utf8");
-      if (bytes > room) flowsLeft.push(flow.name);
-      else (room -= bytes), flows.push(flow);
-    }
+    // The learned workflows the run may run (chooseWorkflows), whole, in its directory before the pin names them (a
+    // reopen keeps them); the ones left out the pin names.
+    const { flows, left: flowsLeft } = chooseWorkflows(seed, options.shown);
     if (flows.length) await writeDurable(join(runDir, LEARNED_WORKFLOWS_FILE), `${JSON.stringify(flows)}\n`);
     const pin: Pin = { seed: seed.sha, ...(section ? { section } : {}), ...(given.length ? { given: given.map(({ file, name }) => ({ file, name })) } : {}), ...(skills.length ? { skills } : {}), ...(left.length ? { skills_left_out: left } : {}), ...(flows.length ? { workflows: flows.map(({ name }) => name) } : {}), ...(flowsLeft.length ? { workflows_left_out: flowsLeft } : {}) };
     // The pin names the skills before they are laid: a server that goes down while they are takes them back (dropSeed).

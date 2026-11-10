@@ -476,6 +476,12 @@ function diagnosticOf(text: string): string | undefined {
  *  reads as the agent acting while the person had the browser. "then <what it did>" only for a call that succeeded: one
  *  that failed after its wait reads "Waited for you 11 s: <its label> failed: …", never as having acted. */
 const WAITED_FOR_PERSON = "waited_for_person_ms";
+/** A browser act the person's take made stale (pi-browser's `page_changed_while_held` in its result's details): the person
+ *  drove the page while the call waited, so the call did nothing and the agent takes a new look. Its rows say so in these
+ *  words, neutral, never as a failure. */
+const PAGE_CHANGED_WHILE_HELD = "page_changed_while_held";
+export const PAGE_CHANGED_ROW = "The page changed while you had the browser; the agent takes a new look";
+const pageChanged = (tool: string, result: { details?: unknown } | undefined): boolean => BROWSER_STEPS.has(tool) && obj(result?.details)?.[PAGE_CHANGED_WHILE_HELD] === true;
 const waitedFirst = (tool: string, result: ToolResultView | undefined, said: string): string => {
   const ms = obj(result?.details)?.[WAITED_FOR_PERSON];
   if (!BROWSER_STEPS.has(tool) || typeof ms !== "number" || !Number.isFinite(ms) || ms <= 0) return said;
@@ -494,7 +500,7 @@ function createProjector(options: TimelineOptions) {
     const named = (value: unknown) => (typeof value === "string" && value ? options.path!(value) : value);
     return "path" in args || "file_path" in args ? { ...args, ...("path" in args ? { path: named(args.path) } : {}), ...("file_path" in args ? { file_path: named(args.file_path) } : {}) } : args;
   };
-  const label = (tool: string, args: Obj, result?: ToolResultView) => waitedFirst(tool, result, labelOf(tool, shown(args), result, options.labels));
+  const label = (tool: string, args: Obj, result?: ToolResultView) => (pageChanged(tool, result) ? PAGE_CHANGED_ROW : waitedFirst(tool, result, labelOf(tool, shown(args), result, options.labels)));
   const seen = new Set<string>();
   const calls = new Map<string, OpenCall>();
   // Results stored before their call (a harness bridge once wrote a result before the answer holding its call), by
@@ -592,10 +598,10 @@ function createProjector(options: TimelineOptions) {
    *  result's summary and preview) comes from `shown`, its whole text as the host's `redact` makes it (shownOf, once per
    *  result), before any of it is taken or cut, so none keeps a piece of a key. Whether it failed, and why, is read from
    *  the output as it came (`view`), as its status is; only the words the summary shows of that are redacted. */
-  const resultRow = (conv: number, rowId: string, tool: { name: string; callId: string | null; round?: number }, named: string, view: { text: string; isError: boolean }, shown: { text: string }, parent?: string) => {
+  const resultRow = (conv: number, rowId: string, tool: { name: string; callId: string | null; round?: number }, named: string, view: { text: string; isError: boolean; details?: unknown }, shown: { text: string }, parent?: string) => {
     const outcome = outcomeOf(tool.name, view);
     return make("tool_result", conv, rowId, {
-      summary: view.isError ? `${named} failed: ${failure(shown.text)}` : outcome ? `${named}: ${saidOf(outcome.text)}` : `${named}: ok`, tool_name: tool.name, tool_use_id: tool.callId,
+      summary: !view.isError && pageChanged(tool.name, view) ? PAGE_CHANGED_ROW : view.isError ? `${named} failed: ${failure(shown.text)}` : outcome ? `${named}: ${saidOf(outcome.text)}` : `${named}: ok`, tool_name: tool.name, tool_use_id: tool.callId,
       tool_status: failedWith(view, outcome) ? "failed" : "success", tool_result_preview: shown.text ? cut(scrubUrls(shown.text), caps.preview) : null,
       tool_result_size_bytes: utf8Bytes(view.text), round: tool.round, parent_tool_use_id: parent,
     });
