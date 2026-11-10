@@ -107,6 +107,29 @@ test("an OAuth access token that runs out mid-run: the next call refreshes it fi
   for (const authorization of new Set(seen.filter(Boolean))) assert.ok(held.includes(authorization) && held.includes(authorization.replace(/^Bearer /, "")), "held, whole and bare");
 });
 
+test("an OAuth access token near its end, its authorization server hanging: the call goes at once on the current token, the refresh behind it", async (t) => {
+  const on = await registryOn(t);
+  const oauth = await startFakeOAuth();
+  const seen = [];
+  const mcp = await startFakeMcp({ token: oauth.accepts, oauth: oauth.issuer, inspect: (headers) => seen.push(headers.authorization) });
+  t.after(() => Promise.all([mcp.close(), oauth.close()]));
+  await signedIn(on.registry, "docs", mcp);
+  const call = await claimed(t, on, "docs");
+  assert.deepEqual(await call("call-1"), { text: "5" });
+  const current = seen.at(-1);
+  // A minute left by the store's clock, inside the refresh margin, and the authorization server stops answering.
+  on.clock.now += HOUR - 60_000;
+  oauth.hang();
+  const asked = oauth.next("/token");
+  const from = seen.length;
+  assert.deepEqual(await call("call-2"), { text: "5" }, "the call went, not held by the refresh");
+  assert.ok(seen.slice(from).length > 0 && seen.slice(from).every((authorization) => authorization === current), "on the current token");
+  assert.equal((await asked).form.grant_type, "refresh_token", "the refresh was sent behind the call");
+  // A second call while that refresh hangs starts none of its own.
+  assert.deepEqual(await call("call-3"), { text: "5" });
+  assert.equal(oauth.log.filter((entry) => entry.path === "/token" && entry.form.grant_type === "refresh_token").length, 1, "one refresh");
+});
+
 test("every credential value the claim hands over is held by the run's redactor as it is handed over: a header's and a bearer's token alone, and a github_app token at its mint and at its mint again", async (t) => {
   const on = await registryOn(t);
   const fake = await startFakeMcp({ token: TOKEN });

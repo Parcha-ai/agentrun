@@ -38,8 +38,8 @@
 // auth, credential_changed_at and its token's end by the store's clock; no tools, no sealed bytes): a server removed
 // since loses its entry, so the call is refused unsent; a credential replaced or a server moved since is opened again, so
 // the next call sends the new one (or is refused for the move); and an OAuth access token within REFRESH_MARGIN_MS of its
-// end is refreshed first, through open's lease path, then the call goes. Concurrent calls to one server share one such
-// open.
+// end is refreshed through open's lease path: behind the call while the token is still valid (the call goes at once on
+// it), waited on only when it has run out. Concurrent calls to one server share one such open.
 import { randomUUID } from "node:crypto";
 import { EndpointRefused, REFRESH_REQUEST_MS, refreshed, refused, RequestUnsent, type Seen, systemNetwork, type OAuthNetwork, type TokenSet } from "../mcp-oauth.js";
 import { type McpCredentials, type McpPin, mcpPinOf } from "../mcp-gateway.js";
@@ -113,7 +113,7 @@ export interface McpClaimStep {
   /** Drop every credential held: the loop ended, or the claim is lost. */
   release(): void;
   /** Before each call of `server` (the gateway's beforeCall): its row stamp read (opened again when it changed or its
-   *  access token is near its end, refreshed first; its entry dropped when it is no longer saved), then a github_app token
+   *  access token near its end refreshed behind the call while still valid, waited on once run out; its entry dropped when it is no longer saved), then a github_app token
    *  whose App was disconnected or replaced since it was minted is dropped, revoked, and the call refused in words. */
   beforeCall(server: string, signal: AbortSignal): Promise<void>;
 }
@@ -146,6 +146,8 @@ export async function mcpClaim(options: McpClaimOptions): Promise<McpClaimStep> 
   const gone = new Set<string>();
   /** The opens check() started, by server: concurrent calls share one. */
   const reopening = new Map<string, Promise<unknown>>();
+  // Servers whose refresh behind a still-valid token is going: one at a time per server from this claim.
+  const behindGoing = new Set<string>();
 
   // A github_app server's installation token: minted at each claim, refreshed mid-run, held here only.
   const github = githubTokens(options.githubApp, { now, ...(options.githubTimer ? { arm: options.githubTimer } : {}) });
@@ -221,9 +223,9 @@ export async function mcpClaim(options: McpClaimOptions): Promise<McpClaimStep> 
   };
 
   /** One pinned server's credential, opened, refreshed when due (awaited for an expired token; behind it for one near
-   *  its expiry, or awaited too when `first`: a call waits on it, check()). `again`: a row another claim's refresh left,
+   *  its expiry, at the claim and before a call alike). `again`: a row another claim's refresh left,
    *  opened as it is, never refreshed from here once more. */
-  const open = async (name: string, pinnedUrl: string, again?: McpServerRow, first = false): Promise<{ awaited: boolean }> => {
+  const open = async (name: string, pinnedUrl: string, again?: McpServerRow): Promise<{ awaited: boolean }> => {
     const row = again ?? (await store.mcp.server(name));
     // Forgotten since the pin: its entry goes (an earlier open's URL and headers with it), so the gateway finds no URL
     // for it and refuses its calls unsent.
@@ -334,14 +336,16 @@ export async function mcpClaim(options: McpClaimOptions): Promise<McpClaimStep> 
       }
     };
     if (left() > 0) {
-      // Still valid: used at once, refreshed behind it; or, for a call about to leave (`first`), refreshed before it, the
-      // token held meanwhile still the one a refresh with no answer leaves.
+      // Still valid: used at once, refreshed behind it (one at a time per server from this claim: a call that finds one
+      // going starts none), so an authorization server that is slow or down never holds a call whose token still works.
       entry({ headers: bearer(set) });
-      if (!first) {
-        void settle(AbortSignal.any([signal, behind.signal])).catch(() => undefined);
-        return { awaited: false };
+      if (!behindGoing.has(name)) {
+        behindGoing.add(name);
+        void settle(AbortSignal.any([signal, behind.signal])).catch(() => undefined).finally(() => behindGoing.delete(name));
       }
+      return { awaited: false };
     }
+    // Run out: the refresh is waited on, bounded by its call's deadline.
     await settle(signal);
     return { awaited: true };
   };
@@ -373,7 +377,7 @@ export async function mcpClaim(options: McpClaimOptions): Promise<McpClaimStep> 
     if (!changed && !due) return;
     let going = reopening.get(name);
     if (!going) {
-      going = open(name, pin[name]!.url, undefined, true).finally(() => reopening.delete(name));
+      going = open(name, pin[name]!.url).finally(() => reopening.delete(name));
       reopening.set(name, going);
     }
     await going;
@@ -382,7 +386,7 @@ export async function mcpClaim(options: McpClaimOptions): Promise<McpClaimStep> 
   await fresh();
   // Before each call (the gateway's beforeCall; both doors meet in it, and a throw refuses the call unsent): the server's
   // row stamp first (removed: dropped and refused; changed: opened again; an access token near its end: refreshed under
-  // the lease first), then a github_app token's App (disconnected or replaced since the mint: dropped and refused).
+  // the lease, behind the call while still valid, waited on once run out), then a github_app token's App (disconnected or replaced since the mint: dropped and refused).
   const beforeCall = async (server: string, signal: AbortSignal): Promise<void> => {
     signal.throwIfAborted();
     if (released) return;
