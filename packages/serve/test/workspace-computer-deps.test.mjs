@@ -401,3 +401,28 @@ test("the claim's Docker provider is built with the named data volume where this
   await answer.release();
   assert.deepEqual([record.loaded[2][1].volume, record.loaded[2][1].daemonCache], [undefined, undefined]);
 });
+
+// On a named data volume the Docker provider isn't on the Docker host, so its egress proxy needs the host's own
+// addresses: the union of the read through the socket and AGENTRUN_DOCKER_HOST_ADDRESSES. A failed read leaves the
+// operator's; with neither, none is given (the provider refuses an allow-list there, and the server's start says so).
+// On a host no read is made: the provider reads its own interfaces.
+test("on a named data volume the Docker provider's host addresses are the read's and the operator's, unioned; a failed read leaves the operator's; on a host nothing is read", async () => {
+  const compose = async () => ({ paths: { at: "/data", volume: "agentrun_agentrun-data" } });
+  const claimWith = async ({ dockerPaths, read, named }) => {
+    const root = scratch();
+    const sealKey = randomBytes(32);
+    const store = await savedKeysStore(sealKey);
+    const record = { created: [], released: [], loaded: [] };
+    let reads = 0;
+    const load = async (id, options) => (record.loaded.push([id, options]), fakeSandbox(root, record));
+    const env = { ...ENV, ...(named ? { AGENTRUN_DOCKER_HOST_ADDRESSES: named } : {}) };
+    const { computerForClaim, computerDeps } = computerDepsFrom({ env, store, sealKey, kinds: KINDS, load, dockerPaths, hostAddresses: async () => (reads++, read) });
+    const answer = await computerForClaim({ runId: "run-1", epoch: 1, computer: { kind: "sandbox", provider: "docker" } }, store, { ...computerDeps, mode: 1, workspace: localWorkspace(root), sealKey });
+    await answer.release();
+    return { egress: record.loaded[0][1].egress, reads };
+  };
+  assert.deepEqual(await claimWith({ dockerPaths: compose, read: { addresses: ["203.0.113.7", "172.17.0.1"] }, named: "198.51.100.9,203.0.113.7" }), { egress: { hostAddresses: ["203.0.113.7", "172.17.0.1", "198.51.100.9"] }, reads: 1 });
+  assert.deepEqual(await claimWith({ dockerPaths: compose, read: { why: "it failed" }, named: "198.51.100.9" }), { egress: { hostAddresses: ["198.51.100.9"] }, reads: 1 });
+  assert.deepEqual(await claimWith({ dockerPaths: compose, read: { why: "it failed" } }), { egress: undefined, reads: 1 }, "none made up");
+  assert.deepEqual(await claimWith({ dockerPaths: async () => ({ here: true }), read: { addresses: ["203.0.113.7"] } }), { egress: undefined, reads: 0 }, "no read on a host");
+});

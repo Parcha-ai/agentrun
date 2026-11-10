@@ -198,6 +198,13 @@ switch (args[0]) {
       else if (args[i] === "--user") container.Config.User = args[++i];
     }
     container.Config.Env = container.env;
+    // The server's read of the Docker host's addresses (docker-host-addresses.ts): its answer is `host-addresses.json` in
+    // the state directory (the host's interfaces and host.docker.internal's), else none; `host-addresses-fail` fails it.
+    if (container.Config.Labels["agentrun.read"] === "host-addresses") {
+      note("host-reads.jsonl", args);
+      if (existsSync(join(state, "host-addresses-fail"))) fail(readFileSync(join(state, "host-addresses-fail"), "utf8").trim() || "docker: Error response from daemon: the fake's read failed.", 125);
+      done(existsSync(join(state, "host-addresses.json")) ? readFileSync(join(state, "host-addresses.json"), "utf8") : `${JSON.stringify({ interfaces: ["127.0.0.1", "::1"], gateway: [] })}\n`);
+    }
     // Docker's `run` pulls an image it does not have, inside the call: the fake notes whether it would have, in
     // `made.jsonl`, which outlives the container.
     const image = args[args.indexOf("--entrypoint") + 2];

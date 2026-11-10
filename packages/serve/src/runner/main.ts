@@ -10,6 +10,7 @@
 import { mkdirSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { dockerPathsForRuns } from "../box-paths.js";
+import { hostAddressesOnce } from "../docker-host-addresses.js";
 import { SECRET_NAMES, secret } from "../secrets.js";
 import { migrationsIn, openStore, SchemaVersionUnknown, type Store, storePlace, storeTarget } from "../store/index.js";
 import { SCHEMA_VERSION } from "../store/schema.js";
@@ -112,7 +113,7 @@ export function runnerLoop(store: Store, dataDir: string, env: NodeJS.ProcessEnv
   // The run's computer at its claim, composed once (workspace/computer-deps.ts): none for the runner's place, a box's
   // computer by the agent's setting, its keys read from the run environment first, then the store's sealed rows; a
   // Docker computer's mounts by where this process's Docker has the data directory (box-paths.ts), read once.
-  const computers = computerDepsFrom({ env: runs, store, sealKey, dockerPaths: () => dockerPathsForRuns(runs, dataDir) });
+  const computers = computerDepsFrom({ env: runs, store, sealKey, dockerPaths: () => dockerPathsForRuns(runs, dataDir), hostAddresses: () => hostAddressesOnce(runs) });
   const deps = {
     env: runs, data: dataDir, journal: (claim: Parameters<Store["journal"]>[0]) => store.journal(claim), store, sealKey, routeOf,
     computerForClaim: computers.computerForClaim, computerDeps: computers.computerDeps,

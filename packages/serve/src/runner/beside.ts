@@ -26,7 +26,8 @@ export async function runnerBeside(dataDir: string, { loops, env }: { loops?: nu
   // process's Docker has the data directory (box-paths.ts), read once.
   const runs = env ?? runEnv(process.env);
   const { dockerPathsForRuns } = await import("../box-paths.js");
-  const computers = computerDepsFrom({ env: runs, store, sealKey, dockerPaths: () => dockerPathsForRuns(runs, dataDir) });
+  const { hostAddressesOnce } = await import("../docker-host-addresses.js");
+  const computers = computerDepsFrom({ env: runs, store, sealKey, dockerPaths: () => dockerPathsForRuns(runs, dataDir), hostAddresses: () => hostAddressesOnce(runs) });
   const createLoop = dispatchRunner({ env: runs, data: dataDir, journal: (claim) => store.journal(claim), store, sealKey, routeOf, computerForClaim: computers.computerForClaim, computerDeps: computers.computerDeps });
   const runner = startRunner({ store, createLoop, ...(loops !== undefined ? { loops } : {}) });
   return { runner, close: async () => { await runner.close(); await store.close(); } };

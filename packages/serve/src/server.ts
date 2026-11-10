@@ -80,6 +80,7 @@ import { type BoxOffer, boxesByDefault, boxesLog, boxRegistry, daytonaApi, enabl
 import { type DockerNetwork, egressParentTooLong, FAUX_EGRESS_ENV, MAX_EGRESS_PARENT, sweepEgressDirs } from "./box-egress.js";
 import { type EgressContainer, startEgressContainer } from "./box-egress-vm.js";
 import { dockerComputerRefusal, type DockerPaths, dockerPathsOf, egressParentOf, FAUX_MOUNTINFO_ENV } from "./box-paths.js";
+import { hostAddressesOnce, noHostAddresses, unionOf } from "./docker-host-addresses.js";
 import { boxImageOf, clearImage, type DockerImage, dockerImage, type ImageState, withImage } from "./box-image.js";
 import { startBoxRelay } from "./box-relay.js";
 import { vmRelay, type VmSdk } from "./box-relay-vm.js";
@@ -983,9 +984,15 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // dockerComputerRefusal), where capabilities, the run's start (dockerAnswers) and a place's box check all read it: no
   // run starts only to fail at its create.
   const dockerElsewhere = fauxBox || !boxes.provider("docker") ? undefined : dockerComputerRefusal(dockerPaths, env);
+  // From a container, a Docker computer keeps this server's allow-list only knowing the Docker host's own addresses: the
+  // union of the read through the socket and AGENTRUN_DOCKER_HOST_ADDRESSES (docker-host-addresses.ts), the same read the
+  // runner beside this server takes. Said at the start with what was found; with none, Docker isn't offered, in words.
+  const hostAddresses = dockerElsewhere === undefined && boxPaths && boxAllow !== "none" ? unionOf(await hostAddressesOnce(env), dockerHostAddressesOf(env)) : undefined;
+  if (hostAddresses) log?.(logLine("docker_host_addresses", { addresses: hostAddresses.addresses.join(",") || "none", ...(hostAddresses.why ? { read: hostAddresses.why } : {}) }));
+  const dockerRefused = dockerElsewhere ?? (hostAddresses && hostAddresses.addresses.length === 0 ? noHostAddresses(hostAddresses.why ?? "the read through Docker's socket found none") : undefined);
   const dockerNetwork = (offer: BoxOffer): BoxOffer => {
     if (!offer.available) return offer;
-    if (dockerElsewhere !== undefined) return { id: offer.id, available: false, state: "unavailable", reason: dockerElsewhere };
+    if (dockerRefused !== undefined) return { id: offer.id, available: false, state: "unavailable", reason: dockerRefused };
     if (boxNetwork.allow === "none") return { ...offer, network: "none", network_reason: boxNetwork.reason };
     const proxy = egress?.state();
     return proxy && proxy.state !== "ready" ? { ...offer, network: "none", network_reason: proxy.reason } : { ...offer, network: "allowlist" };

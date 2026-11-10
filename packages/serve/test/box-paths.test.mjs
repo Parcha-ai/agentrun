@@ -221,6 +221,46 @@ test("the server in a container with no named data volume: a run naming a Docker
   assert.deepEqual(fake.runs(), [], "no box or computer is made");
 });
 
+// compose.yaml's own layout (its data a named volume, Docker Engine 26+) under an allow-list: a Docker computer keeps
+// the list only knowing the Docker host's own addresses, the union of the read through the socket (one container on the
+// host's network, docker-host-addresses.ts) and AGENTRUN_DOCKER_HOST_ADDRESSES, read once at the start. With none,
+// Docker isn't offered, in words that name both ways out; under none no read is made.
+const COMPOSE_MOUNTS = (data) => ({ mounts: [{ Type: "volume", Name: "agentrun_agentrun-data", Source: "/var/lib/docker/volumes/agentrun_agentrun-data/_data", Destination: data, RW: true }], volumes: { "agentrun_agentrun-data": data } });
+const hostReads = (fake) => jsonLines(join(fake.state, "host-reads.jsonl"));
+
+test("compose's layout under an allow-list: the Docker host's addresses read once through the socket, Docker offered; a failed read with no AGENTRUN_DOCKER_HOST_ADDRESSES is refused in words, with it offered", { timeout: 180_000 }, async (t) => {
+  const NO_ADDRESSES = "the server runs in a container and doesn't know the Docker host's own addresses (the read through Docker's socket failed (exit 125: docker: Error response from daemon: the fake's read failed.)), so a Docker computer can't keep this server's allow-list: set AGENTRUN_DOCKER_HOST_ADDRESSES to the host's IP addresses, or AGENTRUN_BOX_ALLOW=none for no network";
+  for (const [given, available] of [
+    [{ read: { interfaces: ["127.0.0.1", "172.17.0.1", "203.0.113.7"], gateway: [] } }, true],
+    [{ fail: true }, false],
+    [{ fail: true, named: "198.51.100.9" }, true],
+  ]) {
+    const data = await dataDir(t);
+    const fake = await containerDocker(t, COMPOSE_MOUNTS(data));
+    if (given.read) await writeFile(join(fake.state, "host-addresses.json"), `${JSON.stringify(given.read)}\n`);
+    if (given.fail) await writeFile(join(fake.state, "host-addresses-fail"), "");
+    withEnv(t, given.named ? { AGENTRUN_DOCKER_HOST_ADDRESSES: given.named } : {}, ["AGENTRUN_DOCKER_HOST_ADDRESSES"]);
+    const { api } = await serve(t, { data, faux: PROBE, fauxEgress: FAKE_EGRESS, fauxMountinfo: fake.mountinfo });
+    const offer = await docker(api);
+    assert.equal(offer.available, available, JSON.stringify({ given, offer }));
+    if (!available) assert.equal(offer.reason, NO_ADDRESSES);
+    const reads = hostReads(fake);
+    assert.equal(reads.length, 1, "one read at the start");
+    assert.deepEqual([reads[0][reads[0].indexOf("--network") + 1], reads[0][reads[0].indexOf("--user") + 1]], ["host", "65534:65534"]);
+  }
+});
+
+test("compose's layout under AGENTRUN_BOX_ALLOW=none: no address is needed, none is read, and Docker is offered with no network", { timeout: 120_000 }, async (t) => {
+  const data = await dataDir(t);
+  const fake = await containerDocker(t, COMPOSE_MOUNTS(data));
+  await writeFile(join(fake.state, "host-addresses-fail"), "");
+  withEnv(t, { AGENTRUN_BOX_ALLOW: "none" });
+  const { api } = await serve(t, { data, faux: PROBE, fauxEgress: FAKE_EGRESS, fauxMountinfo: fake.mountinfo });
+  const offer = await docker(api);
+  assert.deepEqual([offer.available, offer.network], [true, "none"], JSON.stringify(offer));
+  assert.deepEqual(hostReads(fake), []);
+});
+
 test("a server whose AGENTRUN_DOCKER_HOST_ADDRESSES holds an entry that is no IP address doesn't start, naming the entry", async (t) => {
   withEnv(t, { AGENTRUN_DOCKER_HOST_ADDRESSES: "172.17.0.1,host.docker.internal" });
   await assert.rejects(serve(t, { data: await dataDir(t), faux: PROBE }), { message: `AGENTRUN_DOCKER_HOST_ADDRESSES is a comma list of the Docker host's own IP addresses (such as 172.17.0.1): "host.docker.internal" is not an IP address` });

@@ -19,6 +19,7 @@ import { posix } from "node:path";
 import { type ComputerSpec, DEFAULT_DOCKER_IMAGE, DOCKER_RECIPE, DOCKER_RECIPE_HAS, PROVIDERS, providerFor, readBackOf, servingRefusals, SETTING_KINDS } from "@parcha/agentrun-computer";
 import { DOCKER_IMAGE_ENV } from "../box-image.js";
 import type { DockerPaths } from "../box-paths.js";
+import { type HostRead, unionOf } from "../docker-host-addresses.js";
 import type { ProviderFactories } from "../computer-keys.js";
 import type { FauxComputers } from "../faux-computers.js";
 import { envValue, type KeyEnv, keyReader } from "../key-meta.js";
@@ -88,6 +89,9 @@ export interface ComputerDepsOptions {
    *  provider is first built: in a container with a named data volume, the provider mounts by that volume
    *  (dockerVolumeOf). Absent: as on a host. */
   readonly dockerPaths?: () => Promise<DockerPaths>;
+  /** The Docker host's own addresses, read through its socket (docker-host-addresses.ts hostAddressesOnce), for a server
+   *  in a container of its Docker's: unioned with AGENTRUN_DOCKER_HOST_ADDRESSES. Absent: the operator's alone. */
+  readonly hostAddresses?: () => Promise<HostRead>;
   /** Whether a provider that binds a folder of this machine answers here now (Docker), for the Mode 1 default. */
   readonly answers?: ComputerForClaimDeps["answers"];
   /** The live view's registration for a desktop or a phone (proxy-only): absent, no view is opened. */
@@ -170,17 +174,24 @@ export function computerDepsFrom(options: ComputerDepsOptions): { computerForCla
   // recipe's bare tag, which no registry has.
   const named = envValue(env, DOCKER_IMAGE_ENV);
   const dockerImage = named !== undefined ? { image: named } : { recipe: DOCKER_RECIPE };
-  // And the Docker host's own addresses when the operator names them (AGENTRUN_DOCKER_HOST_ADDRESSES), for its egress
-  // proxy where this server is not on the Docker host; none named, none given, and the provider keeps refusing an
-  // allow-list there.
-  const hostAddresses = dockerHostAddressesOf(env);
-  const docker = { image: dockerImage, ...(hostAddresses ? { egress: { hostAddresses } } : {}) };
-  // And, for a server in a container of its Docker's, the named volume that holds its data and the daemon copy's place
-  // under it (dockerVolumeOf): where this process's Docker has the data, read once, when a Docker provider is first built.
+  // The operator's Docker host addresses (AGENTRUN_DOCKER_HOST_ADDRESSES), checked once here.
+  const namedAddresses = dockerHostAddressesOf(env);
+  // Where this process's Docker has the data, read once, when a Docker provider is first built.
   let paths: Promise<DockerPaths> | undefined;
-  const volumeOf = async (): Promise<DockerVolume | undefined> => (options.dockerPaths ? dockerVolumeOf(await (paths ??= options.dockerPaths())) : undefined);
+  /** The Docker provider's options beside its image: for a server in a container of its Docker's, the named volume that
+   *  holds its data and the daemon copy's place under it (dockerVolumeOf), and the Docker host's own addresses for its
+   *  egress proxy, the union of the read through the socket (`hostAddresses`) and the operator's; on a host, the
+   *  operator's alone (the provider reads its own interfaces). With none, none are given, and the provider refuses an
+   *  allow-list where it isn't on the Docker host, in its words. */
+  const dockerOptions = async (): Promise<Record<string, unknown>> => {
+    const where = options.dockerPaths ? await (paths ??= options.dockerPaths()) : ({ here: true } as const);
+    const volume = dockerVolumeOf(where);
+    const read = volume && options.hostAddresses ? await options.hostAddresses() : undefined;
+    const addresses = read ? unionOf(read, namedAddresses).addresses : (namedAddresses ?? []);
+    return { image: dockerImage, ...(volume ?? {}), ...(addresses.length > 0 ? { egress: { hostAddresses: addresses } } : {}) };
+  };
   const load = options.load ?? (providerFor as unknown as ProviderLoad);
-  const providers = computerProviderMakers({ load: async (id, given) => load(id, id === "docker" ? { ...given, ...docker, ...(await volumeOf()) } : given) });
+  const providers = computerProviderMakers({ load: async (id, given) => load(id, id === "docker" ? { ...given, ...(await dockerOptions()) } : given) });
   const computerDeps: ComputerDeps = {
     kinds,
     providers,
