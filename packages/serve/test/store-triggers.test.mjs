@@ -125,3 +125,20 @@ test("two keeps of one conversation at once, each naming its own run, are one st
     assert.equal((await store.triggers.conversation("trg-1", key)).runId, kept.runId, "the first run stays the conversation's");
   }
 });
+
+test("a run started from an older event after a newer reply was kept keeps the newer last_at, and the prune keeps that thread", async (t) => {
+  const { store, clock } = await storeOn(t);
+  await withTrigger(store);
+  await store.triggers.fire({ triggerId: "trg-1", key: "k1", by: "schedule" }, { id: "run-1", agentId: "agent-1", revisionId: "rev-1" });
+  const opened = clock.now;
+  const replied = opened + 60_000;
+  // The thread's mention, then a reply in it, then the mention's run starting: stamped with the mention's (older) time.
+  await store.triggers.keepConversation({ triggerId: "trg-1", key: "C1:1.0", at: opened });
+  await store.triggers.keepConversation({ triggerId: "trg-1", key: "C1:1.0", at: replied });
+  await store.triggers.keepConversation({ triggerId: "trg-1", key: "C1:1.0", runId: "run-1", at: opened });
+  assert.deepEqual(await store.triggers.conversation("trg-1", "C1:1.0"), { triggerId: "trg-1", key: "C1:1.0", runId: "run-1", createdAt: opened, lastAt: replied });
+  // A prune whose cut falls between the two times: stale by the mention's time, live by the reply's. Kept.
+  const keptMs = 30_000;
+  assert.equal(await store.triggers.pruneConversations("trg-1", { keptMs, kept: 10, now: replied + keptMs - 1 }), 0);
+  assert.equal((await store.triggers.conversation("trg-1", "C1:1.0")).runId, "run-1", "the thread and its run are kept");
+});
