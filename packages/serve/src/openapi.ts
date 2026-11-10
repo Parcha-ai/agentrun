@@ -412,7 +412,7 @@ const LEARNING_REASON = {
     "`seed_failed`: the agent's learning folder could not be read or made, or its notes copied, so the run started with nothing learned.",
     "`no_budget`: the run's cap left no room for the end-of-run turn, or refused its request. `unknown_cost`: a capped run whose spend is unknown.",
     "`cancelled`: a person cancelled the run. `crashed`: the run's process went. `reflect_timeout`, `reflect_failed`: the end-of-run turn did not end in time, or ended on an error.",
-    "`empty`: the turn's answer gave no note. `unparsed`: it gave notes out of format (no ```note block, one not closed or named twice), and none was kept. `propose_failed`: what it answered could not be checked. `checker`: the checks refused it, at its end or at the merge, and nothing was written to git.",
+    "`empty`: the turn's answer gave no note, or the run was not asked its end-of-run turn because its only tool work was its learned workflows, each answering, with nothing said after its first message (its `detail` says so). `unparsed`: it gave notes out of format (no ```note block, one not closed or named twice), and none was kept. `propose_failed`: what it answered could not be checked. `checker`: the checks refused it, at its end or at the merge, and nothing was written to git.",
     "`grader`: the grader's verdict was not to keep them. `grade_failed`: the grader gave no verdict, or the grade or the merge failed.",
   ].join(" "),
 };

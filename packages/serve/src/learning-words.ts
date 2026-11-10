@@ -124,6 +124,9 @@ export const said = {
     return dropped ? `${base}${base.endsWith(".") ? "" : "."} ${dropped}` : base;
   },
   empty: "Nothing new to remember from this run.",
+  /** A run whose only work was its learned workflows, each answering, with nothing said after its first message: it was
+   *  not asked to look back (runner/learning-end.ts onlyLearnedWorkflows). */
+  onlyWorkflow: "Nothing new: the run only ran a learned workflow.",
   /** A merge whose every item the owner has since retired: nothing it learned is kept now. */
   retiredSince: "What it learned was retired since.",
   /** The run's answer gave its notes, but not in the format asked for, so none was read. */
