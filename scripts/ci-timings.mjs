@@ -1,10 +1,10 @@
 // Rewrites scripts/ci-timings.json, the weights scripts/ci-plan.mjs shards by, from CI job logs (GitHub-hosted runners).
 //   node scripts/ci-timings.mjs <job log>...
 // A log is a job's raw log (`gh api repos/<owner>/<repo>/actions/jobs/<id>/logs`): test shards and pi parts, from runs
-// on GitHub's runners (pull requests run every job there). For each suite a log runs, it reads node --test's TAP (each
-// top-level test's duration_ms, credited to the file that declares a test of that name) or vitest's per-file lines, and
-// the suite's wall time (node --test's closing duration_ms, vitest's Duration); for a pi part, each workspace's
-// type-check. It writes the median over the logs of each file's seconds, each suite's file total over its wall time
+// on GitHub's runners (pull requests run every job there). For each suite a log runs, it reads node --test's TAP or spec
+// reporter (each top-level test's time, credited to the file that declares a test of that name) or vitest's per-file
+// lines, and the suite's wall time (node --test's closing duration_ms, vitest's Duration); for a pi part, each
+// workspace's type-check. It writes the median over the logs of each file's seconds, each suite's file total over its wall time
 // (its parallelism), the wall of each suite scripts/ci-shards.json runs whole, and each type-check. A test whose name
 // matches no file, or several, is left out: its file keeps its suite's median weight, as a new file does.
 import { readFileSync, writeFileSync } from 'node:fs';
@@ -50,6 +50,13 @@ export function readLog(text, rootSuites) {
       continue;
     }
     if (!current) continue;
+    // node --test's spec reporter (node 24's default): a top-level test is an unindented ✔, ✖ or ﹣ line with its time; the
+    // recap of failures after `✖ failing tests:` repeats them, so it is not counted again.
+    if (line === '✖ failing tests:') { current.recap = true; continue; }
+    const spec = /^[✔✖﹣] (.*) \(([\d.]+)ms\)(?: # .*)?$/.exec(line);
+    if (spec) { if (!current.recap) current.tests.push([spec[1], Number(spec[2]) / 1000]); continue; }
+    const specWall = /^ℹ duration_ms ([\d.]+)$/.exec(line);
+    if (specWall) { current.wall = Number(specWall[1]) / 1000; continue; }
     const result = /^(?:not )?ok \d+ - (.*?)(?: # (?:SKIP|TODO).*)?$/.exec(line);
     if (result) { pending = result[1]; continue; }
     const duration = /^ {2}duration_ms: ([\d.]+)$/.exec(line);
@@ -61,6 +68,7 @@ export function readLog(text, rootSuites) {
     const vitestWall = /^\s*Duration\s+([\d.]+)(m?s)\b/.exec(line);
     if (vitestWall) current.wall = Number(vitestWall[1]) / (vitestWall[2] === 'ms' ? 1000 : 1);
   }
+  for (const suite of suites) delete suite.recap;
   return { suites, typechecks };
 }
 
