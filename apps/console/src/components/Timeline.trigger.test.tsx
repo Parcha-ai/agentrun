@@ -31,7 +31,7 @@ function render(entries: unknown[] = ENTRIES, served: (row: TimelineRow) => Time
   act(() => root!.render(createElement(Timeline, { rows, live: false })));
   return [...host.querySelectorAll("li")].map((li) => ({
     label: li.querySelector("button > span > span")!.childNodes[0]?.textContent,
-    title: [...li.querySelectorAll("span")].find((s) => s.classList.contains("text-[15px]"))!.textContent,
+    title: [...li.querySelectorAll("span")].find((s) => s.classList.contains("text-prose"))!.textContent,
   }));
 }
 

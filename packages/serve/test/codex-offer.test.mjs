@@ -23,7 +23,7 @@ const codexOf = async (given) => (await harnessOffers(given)).find((h) => h.id =
 test("codex is offered on the pinned build: available with a model key, unavailable for the key it names without one", { skip }, async (t) => {
   const data = await scratch(t);
   await linkHarnesses(data);
-  assert.deepEqual(await codexOf({ AGENTRUN_SERVE_DATA: data, OPENAI_API_KEY: "fake-test-key" }), { id: "codex", available: true, steer: false, default_model: "openai/gpt-6.1-sol", run_memory_mib: 192 }, "on the key's default model (model.ts MODEL_KEYS)");
+  assert.deepEqual(await codexOf({ AGENTRUN_SERVE_DATA: data, OPENAI_API_KEY: "fake-test-key" }), { id: "codex", available: true, steer: false, keys: ["OPENAI_API_KEY", "OPENROUTER_API_KEY"], default_model: "openai/gpt-6.1-sol", run_memory_mib: 192 }, "on the key's default model (model.ts MODEL_KEYS)");
   const keyless = await codexOf({ AGENTRUN_SERVE_DATA: data });
   assert.equal(keyless.available, false);
   assert.match(keyless.reason, /^codex needs OPENAI_API_KEY, OPENROUTER_API_KEY \(OpenAI's models through OpenRouter\), or a gateway in AGENT_MODEL_BASE_URL\.$/);

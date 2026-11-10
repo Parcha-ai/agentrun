@@ -17,7 +17,7 @@
 // used gives its server's calls a reason (mcp-probe.ts UNUSABLE) and they are refused unsent: sealed under another key
 // or for another origin than its row's url (damaged), a sign-in refused or expired (signedOut), a refresh that got no
 // answer (silent), an address the check refuses (blocked). A runner never starts without the seal key
-// (seal-key.ts ensureSealKey), so a claim always has one.
+// (seal-key.ts bootSealKey), so a claim always has one.
 //
 // fresh(). After the pin check and before the loop, and again on a command-row resume: an OAuth access token past its
 // expiry is refreshed, bounded (the call within MCP_REFRESH_CALL_MS; a request not yet dialled within 4 s, and tried again
@@ -74,7 +74,7 @@ export interface McpClaimOptions {
   claim: Pick<Claim, "runId" | "epoch">;
   /** The run's granted tools, by catalog name (`mcp:<server>/<tool>` among them). */
   grants: readonly string[];
-  /** The runner's seal key (the server's): a runner never starts without one (seal-key.ts ensureSealKey). */
+  /** The runner's seal key (the server's): a runner never starts without one (seal-key.ts bootSealKey). */
   sealKey: Buffer;
   /** The claim's signal: aborted when the claim is lost or the runner stops. */
   signal: AbortSignal;

@@ -329,10 +329,10 @@ if (!values["no-runner"]) {
   try {
     // The beside-runner sees the server's test switches (server.ts fauxEnvOf: --faux and its modules), which the CLI hands
     // the server as options, never through this process's environment: without them a --faux start's runner looks its faux
-    // model up in pi-ai's own catalog and every run fails on its first request. Assigned onto runEnv's result, never spread:
-    // its secrets are non-enumerable and a spread drops them.
-    const { runEnv } = await import("./runner/main.js");
-    runnerProc = await runnerBeside(data, { env: Object.assign(runEnv(process.env), fauxEnvOf(serveOptions)) });
+    // model up in pi-ai's own catalog and every run fails on its first request. A test switch this process inherited from
+    // its shell is taken out first, as the server's own environment drops it (runner/main.ts besideRunEnv).
+    const { besideRunEnv } = await import("./runner/main.js");
+    runnerProc = await runnerBeside(data, { env: besideRunEnv(process.env, fauxEnvOf(serveOptions)) });
   } catch (error) {
     console.error(`agentrun-serve: the runner could not start: ${(error as Error).message}`);
     await serve.close();

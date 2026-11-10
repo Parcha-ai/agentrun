@@ -17,7 +17,8 @@ const { openSqliteStore } = await import("../dist/store/index.js");
 const { startRunner } = await import("../dist/runner/runner.js");
 const { createWorkflowLoop } = await import("../dist/runner/workflow-loop.js");
 const { workflowSpecOf } = await import("../dist/runner/workflow-spec.js");
-const { deniedText } = await import("../dist/refusal-words.js");
+const { callNodeAskText, deniedText } = await import("../dist/refusal-words.js");
+const { TOOL_SETTINGS_KEY } = await import("../dist/tool-plane.js");
 const { sendCommand } = await import("../dist/runner/commands.js");
 const { parallelSearchFee } = await import("../dist/paid-calls.js");
 const { FAUX_PARALLEL_ENV } = await import("../dist/decisions.js");
@@ -77,7 +78,7 @@ function wordsOrigin(words, output = 10) {
 
 /** run-1, a workflow run of `workflow` (its revision granting `tools`, with `toolSettings`), on a runner whose models go
  *  to `fetch`; its row once it leaves running. */
-async function runOn(t, { workflow, tools = ["llm"], toolSettings, fetch, capUsd = 100, plane, env, during }) {
+async function runOn(t, { workflow, tools = ["llm"], toolSettings, fetch, capUsd = 100, plane, env, during, serverToolSettings, runnerStore = (store) => store }) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-call-nodes-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -88,13 +89,14 @@ async function runOn(t, { workflow, tools = ["llm"], toolSettings, fetch, capUsd
     await server.close().catch(() => {});
     rmSync(dir, { recursive: true, force: true });
   });
+  if (serverToolSettings) await server.settings.put(TOOL_SETTINGS_KEY, serverToolSettings);
   await server.agents.create({ id: "agent-1", name: "Calls" }, { id: "rev-1", kind: "workflow", body: { workflow, tools, ...(toolSettings ? { toolSettings } : {}) } });
   await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: {}, title: "t", place: { mode: "runner" }, max_cost_usd: capUsd, ...(plane ? { plane } : {}) } });
   const providerOf = () => ({
     modelId: "faux-priced", api: "anthropic-messages", origin: "https://faux.invalid", credential: () => `not-a-secret-${"n"}`,
     policy: anthropicPolicy({ model: "faux-priced", tools: [] }), price: (_model, usage) => (usage.output ?? 0) * 100 / 1e6, capModel: PRICED, fetch,
   });
-  runner = startRunner({ store, createLoop: createWorkflowLoop(workflowSpecOf({ store, providerOf, ...(env ? { env } : {}) })), name: "runner-a", ...TIMING });
+  runner = startRunner({ store, createLoop: createWorkflowLoop(workflowSpecOf({ store: runnerStore(store), providerOf, ...(env ? { env } : {}) })), name: "runner-a", ...TIMING });
   const from = Date.now();
   let acted = false;
   for (;;) {
@@ -157,6 +159,38 @@ test("a call node whose tool the agent's settings deny is refused at the call in
   const words = deniedText("llm", undefined, "agent");
   assert.ok((await row.journalText()).includes(words), `the node's failure is in main's words: ${words}`);
   assert.deepEqual(origin.counts, { "CALL-ONE": 0 }, "nothing sent");
+});
+
+/** The runner's store with its read of the server's tool settings failing (a store that does not answer that read). */
+const settingsUnread = (store) => new Proxy(store, {
+  get(target, name) {
+    if (name !== "settings") {
+      const value = Reflect.get(target, name, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    }
+    const settings = target.settings;
+    return new Proxy(settings, {
+      get(inner, key) {
+        const value = Reflect.get(inner, key, inner);
+        if (key !== "get") return typeof value === "function" ? value.bind(inner) : value;
+        return async (name, ...rest) => {
+          if (name === TOOL_SETTINGS_KEY) throw new Error("the settings read failed");
+          return value.call(inner, name, ...rest);
+        };
+      },
+    });
+  },
+});
+
+test("a call node whose server's tool settings never read is refused, never run on the revision's own allow: the server's deny it could not see stands (#2172)", async (t) => {
+  const origin = wordsOrigin(["CALL-ONE"]);
+  // The revision allows llm; the server denies it; the runner's every read of the server's settings fails.
+  const row = await runOn(t, { workflow: anyOutCall("CALL-ONE"), toolSettings: { llm: { permission: "allow" } }, serverToolSettings: { llm: { permission: "deny" } }, runnerStore: settingsUnread, fetch: origin.fetch });
+  assert.deepEqual(origin.counts, { "CALL-ONE": 0 }, `nothing sent: ${JSON.stringify({ state: row.state, summary: row.summary })}`);
+  assert.equal(row.state, "failed", JSON.stringify({ state: row.state, summary: row.summary, why: whyIn(await row.journalText()) }));
+  // As the agentic gate with no settings read: every tool asks, and a call node cannot wait, so it is refused in the ask's words.
+  const words = callNodeAskText("llm");
+  assert.ok((await row.journalText()).includes(words), `the node's failure is in the ask's words: ${words}; got ${JSON.stringify(whyIn(await row.journalText()))}`);
 });
 
 /** One `llm` call node asking for at most `maxTokens` output: its hold is that output at $100 a million (input free). */

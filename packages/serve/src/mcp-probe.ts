@@ -79,8 +79,8 @@ export type McpPrices = Record<string, number>;
 export type HeaderMap = Record<string, string>;
 export type Auth = { type: AuthType; headers?: HeaderMap };
 
-/** How a server gets a seal key: what its launcher does (launcher/agentrun-serve). */
-export const SEAL_KEY_HOW = `Start it with its launcher, agentrun-serve, which keeps one in agentrun/seal.key under $XDG_CONFIG_HOME (~/.config by default), made at the first start, 0600 in a 0700 directory; or hand it ${SEAL_KEY_ENV} (32 random bytes in base64).`;
+/** How a server gets a seal key (seal-key.ts). */
+export const SEAL_KEY_HOW = `The server keeps one in seal/seal.key in its data directory, made at the first start, 0600 in a 0700 directory; or hand it ${SEAL_KEY_ENV} (32 random bytes in base64).`;
 
 export const notFound = (name: string) => new ApiError("not_found", `No MCP server ${name}: GET /v2/settings/mcp-servers lists them.`);
 export const credentialMissing = (type: AuthType, message: string): InputIssue => ({ field: type === "bearer" ? "auth.token" : type === "oauth" ? "auth.type" : "auth.headers", reason: "missing", message: type === "oauth" ? `${message} An OAuth server is signed in to first: POST /v2/settings/mcp-servers/{name}/oauth/start.` : message });
