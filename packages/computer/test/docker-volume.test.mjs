@@ -169,7 +169,7 @@ test("compose: an allowlist's proxy mounts its code from a copy staged below the
 	assert.deepEqual(listed.ok && listed.value.map((info) => info.network), [{ allow: ["pypi.org"] }]);
 });
 
-test("compose: the staged code is reused when it holds the same bytes, and written again when a file of it was changed", async () => {
+test("compose: the staged code is reused when it holds the same bytes; one a file of which was changed is left as it is, and a new copy is published beside it", async () => {
 	const paths = layout();
 	const { provider, calls } = withVolume(paths);
 	const spec = { ...SPEC, network: { allow: ["pypi.org"] } };
@@ -183,11 +183,21 @@ test("compose: the staged code is reused when it holds the same bytes, and writt
 	assert.equal(subpathOf(again.calls()), first, "the same copy, by its content");
 	assert.equal(statSync(join(at, "docker", CODE_FILES[0])).ino, before.ino, "not written again");
 	assert.deepEqual(readdirSync(join(paths.root, "cache")).filter((entry) => entry.startsWith(".egress-")), [], "no temporary directory is left");
-	// A copy someone changed is written again before a proxy mounts it.
+	// A copy someone changed may still be mounted in a running proxy: it is never removed or written over. A new copy is
+	// published beside it, the proxy mounts that one, and later creates reuse it.
 	writeFileSync(join(at, "docker", CODE_FILES[0]), "tampered");
 	const third = withVolume(paths);
 	assert.equal((await third.provider.create(spec)).ok, true);
-	assert.ok(readFileSync(join(at, "docker", CODE_FILES[0])).equals(readFileSync(join(BUILT, CODE_FILES[0]))), "the build's bytes again");
+	assert.equal(readFileSync(join(at, "docker", CODE_FILES[0]), "utf8"), "tampered", "the changed copy is left as it is");
+	assert.equal(statSync(join(at, "docker", CODE_FILES[0])).ino, before.ino);
+	const beside = subpathOf(third.calls());
+	assert.match(beside, new RegExp(`^${first}-[0-9a-f]{16}$`));
+	assert.ok(readFileSync(join(paths.root, beside, "docker", CODE_FILES[0])).equals(readFileSync(join(BUILT, CODE_FILES[0]))), "the new copy holds the build's bytes");
+	const fourth = withVolume(paths);
+	assert.equal((await fourth.provider.create(spec)).ok, true);
+	assert.equal(subpathOf(fourth.calls()), beside, "the copy beside it is reused");
+	const computer = fourth.names().find((name) => !name.endsWith("-egress"));
+	assert.deepEqual(await fourth.provider.network({ id: "", name: computer }), { ok: true, value: { allow: ["pypi.org"] } }, "and the read-back holds the proxy to it");
 });
 
 test("without the volume option, create binds the daemon's copy and the run's folder as before", async () => {

@@ -907,7 +907,11 @@ await docker.create({ image: "debian:bookworm-slim", lifetimeMs: 600_000, networ
   not have either. With the option, `create` stages those four files below the volume's root first, as it stages the
   daemon: in `daemonCache`, in `egress-<sha256 of the files>/` (`docker/` holding the three modules, `package.json`
   beside it; 0755 directories, 0644 files), written in a temporary directory and renamed into place, and reused when
-  one with the same bytes and modes is there (one that differs is written again). The proxy then mounts that one
+  one with the same bytes and modes is there. A published tree, the daemon's or the proxy's, is never removed or written
+  over, since a running computer may have it mounted: providers sharing `daemonCache` that stage at once use the tree
+  the first one renamed into place, and a tree at that name that no longer holds the same (a hand edit) is left as it
+  is, the new one published beside it as `<name>-<random>`. A source that is not a regular file (a named pipe) is
+  refused in words, never waited on. The proxy then mounts that one
   directory, the layout it runs from, whole at `/code` as the volume's subpath, read-only, and the read-back holds it to
   it. The egress volume is a named volume of its own, as before. In a container the provider still needs
   `egress.hostAddresses` for an allowlist (see the egress proxy).

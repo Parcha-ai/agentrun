@@ -98,7 +98,8 @@ export function daemonCopy(source: string, directory: string, fs: CopyFs = NODE_
 /**
  * `directory`, made if missing and checked as daemonCopy checks its own (privateDirectory: this user's, 0700, no link,
  * nothing above it another user may write), as a path with no link in it; made again once when a cleaner removes it
- * partway. For what else the provider keeps beside the daemon's copy (the egress proxy's code, src/docker/egress-copy.ts).
+ * partway. For what else the provider keeps beside the daemon's copy: the trees the volume option stages
+ * (src/docker/stage.ts), the daemon's directory and the egress proxy's code.
  */
 export function privateCacheDirectory(directory: string): Result<string> {
 	const uid = process.getuid?.();
