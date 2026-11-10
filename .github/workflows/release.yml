@@ -181,6 +181,7 @@ jobs:
             ${{ runner.temp }}/python-dist
             .release/python-plan.json
           if-no-files-found: ignore
+          include-hidden-files: true
 
   # AgentRun Server's container image, built from the same reviewed tag once the packages are published and verified.
   # It runs only after the approved publish job and pushes with this run's GITHUB_TOKEN, so it needs no environment.

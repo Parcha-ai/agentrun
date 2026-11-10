@@ -147,6 +147,7 @@ test('release.yml publishes parcha-agentrun only after the npm packages, by trus
   assert.equal(kept.if, 'always()', 'kept whether the job passed or not');
   assert.match(kept.with.path, /\$\{\{ runner\.temp \}\}\/python-dist/);
   assert.match(kept.with.path, /\.release\/python-plan\.json/);
+  assert.equal(kept.with['include-hidden-files'], true, 'the plan sits under the hidden .release/, which upload-artifact leaves out unless told');
   const evidence = workflow.jobs.publish.steps.find((step) => /^actions\/upload-artifact@/.test(step.uses ?? ''));
   assert.equal(kept.with['retention-days'], evidence.with['retention-days'], 'kept as long as the publish job keeps its evidence');
 });
