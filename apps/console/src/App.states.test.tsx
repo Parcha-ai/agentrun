@@ -204,7 +204,7 @@ describe("errors in plain words, each with a next step", () => {
     expect(host.querySelector('[role="alert"]')!.textContent).toContain("The runs could not be read.");
     expect(host.textContent).not.toContain("internal: The store");
     await act(async () => { button(host, /^Try again$/)!.click(); });
-    await wait(() => !!host.textContent?.includes("No runs yet."), "Try again reads the runs again");
+    await wait(() => !!host.textContent?.includes("No runs yet"), "Try again reads the runs again");
     expect(calls).toBe(2);
   });
 
