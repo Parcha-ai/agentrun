@@ -5,6 +5,7 @@ import { FilePicker, type UploadLimits, useAttachments } from "@/components/File
 import { Button } from "@/components/ui/button";
 import { Picker } from "@/components/ui/picker";
 import type { Agent } from "@/lib/agentForm";
+import { agentsByName } from "@/lib/agents";
 import { ClientError } from "@/lib/client";
 import { curlFor, exampleHint, exampleInput, keeper, type StartBody, startBody, submitStart } from "@/lib/runStart";
 import { sendUpload, type Upload } from "@/lib/uploads";
@@ -100,7 +101,7 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
         <div className="flex min-w-0 items-center gap-2 text-[12px]">
           <label htmlFor="playground-agent" className="caps text-muted-foreground">Agent</label>
           <Picker id="playground-agent" label="Agent" value={agentId} onChange={(id) => { setAgentId(id); setRevision(""); onAgent?.(id); }}
-            options={agents.map((a) => ({ value: a.agent_id, label: a.definition.name }))} className="w-56 max-w-[60vw]" />
+            options={agentsByName(agents).map((a) => ({ value: a.agent_id, label: a.definition.name }))} className="w-56 max-w-[60vw]" />
         </div>
         <span className="font-mono text-[12px]"><span className="text-primary">POST</span> <span className="text-muted-foreground">/v2/agents/{agentId || "{agent_id}"}/runs</span></span>
         <span className="flex-1" />

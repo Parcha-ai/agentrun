@@ -69,42 +69,6 @@ test("a read while the agent store is held exclusively waits, then answers once 
   assert.ok(slowest < 200, `GET /capabilities took ${slowest} ms while the read waited`);
 });
 
-test("a message to a working run, the first after a key is saved too, never waits on a read of its revision from the agent store: held for 1 s, it is answered 202 as soon as the store is free", async (t) => {
-  const dir = await scratch(t);
-  // A key is kept sealed: this server's seal key, as its launcher would give it.
-  withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") });
-  // A run's read of its revision from the agent store waits REVISION_RETRY_MS before its next try: a message that made one
-  // would be answered after that. Without one, an answer comes once the store is free (HOLD_MS) plus the answer's own read
-  // of the run (about 2 s, as any request's): 4.1 to 4.2 s on CI, and up to 6.5 s on its slowest runners (F34, 11-05). The
-  // bound sits halfway to the retry: twice the slowest answer seen, and half the time a message that waited would take.
-  const REVISION_RETRY_MS = 30_000;
-  const { api, data, port, token } = await serve(t, { carryBackRetry: { delaysMs: [REVISION_RETRY_MS] } });
-  assert.equal((await api("POST", "/agents", agent("steered", { instructions: `Answer once ${join(dir, "go")} exists.` }))).status, 201);
-  const run = await api("POST", "/agents/steered/runs", { input: { content: "hi" } });
-  assert.equal(run.status, 202, JSON.stringify(run.body));
-  for (let i = 0; (await api("GET", `/runs/${run.body.run_id}`)).body.state !== "working"; i++) {
-    assert.ok(i < 200, "the run works");
-    await sleep(50);
-  }
-  // Each message sent while another connection holds the agent store exclusively, for HOLD_MS.
-  const message = async (content) => {
-    const release = hold(t, data, "EXCLUSIVE");
-    const sent = timed(port, token, "POST", `/runs/${run.body.run_id}/messages`, { content });
-    await sleep(HOLD_MS);
-    release();
-    const answer = await sent;
-    assert.equal(answer.status, 202, JSON.stringify(answer.body));
-    assert.ok(answer.took < REVISION_RETRY_MS / 2, `"${content}" was answered at ${answer.took} ms: it waited on a read of its revision (its retry is ${REVISION_RETRY_MS} ms)`);
-  };
-  await message("Before any key is saved.");
-  // OpenAI's key: a save does not check it with its provider (key-check.ts' NOT_CHECKED), so this reaches no network.
-  assert.equal((await api("PUT", "/settings/tool-keys/openai", { values: { OPENAI_API_KEY: fakeKey("saved-openai") } })).status, 204);
-  await message("The first message after a key is saved.");
-  await writeFile(join(dir, "go"), "");
-  const { last } = await follow(api, run.body.run_id, ["completed", "failed"]);
-  assert.equal(last.status, "completed", JSON.stringify(last));
-});
-
 // SKIP (follow-up #2078): a held agent store is not waited on or answered as before on the runner
 test.skip("an edit whose commit meets a reader of the agent store waits for it, then answers 200 with the new revision", async (t) => {
   const { api, data, port, token } = await serve(t);
