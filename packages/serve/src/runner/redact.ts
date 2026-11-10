@@ -29,6 +29,11 @@ export function secretRedactor(values: readonly string[]): Redact {
   return (text) => (text ? redactedAnswer(text, kept) : text);
 }
 
+/** The redactor over every secret this process's environment holds (runnerSecrets): a runner's default when it is
+ *  handed none, so a runner started with none still cuts the keys it was started with. The one place the runner's
+ *  redactor reads the environment; runner.ts reads no environment or argv itself. */
+export const processSecretRedactor = (): Redact => secretRedactor(runnerSecrets(process.env));
+
 /** A redactor that takes more values as the runner opens them (`hold`): the runner's one is this, so a key a claim opens
  *  from the store (claim-secrets.ts) is cut everywhere the runner's redactor reaches, as a key in its environment is. */
 export interface HeldRedact extends Redact {
