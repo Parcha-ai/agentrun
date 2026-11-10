@@ -407,8 +407,10 @@ describe("App, an agent's address", () => {
     expect(host.querySelector('[role="tab"]')?.textContent).toBe("Runs");
     expect(host.textContent).not.toContain("Save revision");
     await act(async () => { location.hash = "#/agents/calc/edit"; window.dispatchEvent(new HashChangeEvent("hashchange")); });
-    await wait(() => !!host.textContent?.includes("Save revision"));
-    expect(host.textContent).toContain("Save revision");
+    // The editor's Save, off until an edit: "Saved", with the revision once revisions are read.
+    const saveButton = () => [...host.querySelectorAll("button")].find((b) => /^(Save revision|Saved)/.test(b.textContent?.trim() ?? ""));
+    await wait(() => !!saveButton());
+    expect(saveButton()).toBeTruthy();
     expect(host.querySelector('[role="tab"]')).toBeNull();
   });
 });

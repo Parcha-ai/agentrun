@@ -133,6 +133,30 @@ export function toolsFor(harness: string, offers: ToolOffer[]): ToolOffer[] {
   return offers.filter((t) => !t.call_only && (t.harnesses ? t.harnesses.includes(harness) : harness === "pi" || FILE_TOOLS.includes(t.name)));
 }
 
+/** Whether a granted tool (a built-in's name, or an MCP grant `mcp:<server>/<tool>`) runs on `harness` here. A built-in
+ *  is capabilities' `tools[].harnesses` (toolsFor); a call-only one runs in a workflow's call node, whatever its harness;
+ *  an MCP grant runs on the harnesses `features.mcp_client.harnesses` lists (none listed: the server says at the save).
+ *  A name capabilities don't list is the server's to judge, and kept. */
+export function runsOn(harness: string, tool: string, offers: ToolOffer[], { mcpHarnesses, workflow = false }: { mcpHarnesses?: readonly string[]; workflow?: boolean } = {}): boolean {
+  if (tool.startsWith("mcp:")) return !mcpHarnesses || mcpHarnesses.includes(harness);
+  const offer = offers.find((t) => t.name === tool);
+  if (!offer) return true;
+  if (offer.call_only) return workflow;
+  return toolsFor(harness, offers).some((t) => t.name === tool);
+}
+
+/** Why a granted tool doesn't run on `harness` here (runsOn says it doesn't), in the form's words. */
+export const notOn = (harness: string, tool: string, mcpHarnesses?: readonly string[]): string =>
+  tool.startsWith("mcp:") ? `${harness} doesn't run MCP tools on this server${mcpHarnesses?.length ? `: ${mcpHarnesses.join(" and ")} do` : ""}` : `Not on ${harness} on this server`;
+
+/** A harness switch's tools: of the ticked ones and those an earlier switch took off (`held`), the ones `harness` runs
+ *  here stay ticked, in their order, and the rest are taken off and held, so switching back ticks them again. A tool
+ *  unticked by hand is in neither, and stays off. */
+export function toolsOnSwitch(harness: string, tools: readonly string[], held: readonly string[], offers: ToolOffer[], opts: { mcpHarnesses?: readonly string[]; workflow?: boolean } = {}): { tools: string[]; held: string[] } {
+  const all = [...tools, ...held.filter((t) => !tools.includes(t))];
+  return { tools: all.filter((t) => runsOn(harness, t, offers, opts)), held: all.filter((t) => !runsOn(harness, t, offers, opts)) };
+}
+
 /** Why `tool` cannot be ticked on an agent whose definition names `place`: a sandbox-only tool (bash) runs in a box, and
  *  this form shows no place, so a new agent's is the runner. Undefined when it can be ticked. */
 export const sandboxReason = (tool: ToolOffer, place: unknown): string | undefined =>
