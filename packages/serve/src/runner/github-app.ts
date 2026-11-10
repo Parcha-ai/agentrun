@@ -57,7 +57,8 @@ export async function githubAppAccess(
     target,
     // The App read again before each mint: one disconnected or replaced since the claim makes no token for this run.
     mint: async (to) => {
-      const still = await appOf(store, sealKey).catch(() => undefined);
+      // A read that fails throws on: the step's github_failed path keeps the token held until it expires, never a disconnect.
+      const still = await appOf(store, sealKey);
       if (!still || still.appId !== app.appId || still.pem !== app.pem) return { ok: false, reason: "disconnected", message: "the GitHub App was disconnected or replaced on this server" };
       const minted = await mintInstallationToken(api, app.appId, app.pem, to, now());
       if (minted.ok) hold?.([minted.token]);

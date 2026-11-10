@@ -276,3 +276,77 @@ test("a per-call check that fails (the App's read throws) refuses the call unsen
     assert.equal((await doors[door]()).text, "2", `${door}: the next call checks and goes through`);
   }
 });
+
+/** An access whose tokens are numbered (`token-1`, …), each good for an hour on `clock`, whose App check waits on
+ *  `answer` once `checking` is set, and which records every revoke. */
+function countedAccess(clock) {
+  const revoked = [];
+  let made = 0;
+  const check = { pending: undefined };
+  const mints = { held: undefined };
+  return {
+    revoked,
+    check,
+    mints,
+    access: {
+      target: { repo: "acme/widgets" },
+      mint: async () => {
+        if (mints.held) await mints.held.promise;
+        return { ok: true, token: `token-${++made}`, expires_at: clock.now + 3_600_000 };
+      },
+      same: () => (check.pending ? check.pending.promise : Promise.resolve(true)),
+      revoke: async (token) => void revoked.push(token),
+    },
+  };
+}
+
+test("an App gone while a refresh replaces the token during the per-call check: the replacement is dropped and revoked, the call refused, never sent on it", async () => {
+  const clock = { now: 1_000_000 };
+  const { access, revoked, check } = countedAccess(clock);
+  const refreshes = [];
+  const tokens = githubTokens(access, { now: () => clock.now, arm: (fire) => (refreshes.push(fire), { clear() {} }) });
+  const put = [];
+  await tokens.open("gh", (entry) => put.push(entry));
+  assert.deepEqual(put.at(-1), { headers: { authorization: "Bearer token-1" } });
+  check.pending = Promise.withResolvers();
+  const checking = tokens.check("gh");
+  // The refresh lands while the App's read waits: token-2 is held now.
+  refreshes[0]();
+  for (let i = 0; i < 20 && put.length < 2; i++) await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(put.at(-1), { headers: { authorization: "Bearer token-2" } });
+  check.pending.resolve(false);
+  await checking;
+  assert.deepEqual(put.at(-1), { unopened: GITHUB_UNUSABLE.disconnected }, "the server's calls refused in words");
+  assert.deepEqual(revoked.sort(), ["token-1", "token-2"], "the replacement and the token it replaced, both revoked");
+});
+
+test("a run's release revokes every token still good: the one held, one a refresh replaced, and one a mint gives back after the release", async () => {
+  const clock = { now: 1_000_000 };
+  const { access, revoked, mints } = countedAccess(clock);
+  const refreshes = [];
+  const tokens = githubTokens(access, { now: () => clock.now, arm: (fire) => (refreshes.push(fire), { clear() {} }) });
+  await tokens.open("gh", () => {});
+  refreshes[0]();
+  for (let i = 0; i < 20 && refreshes.length < 2; i++) await new Promise((resolve) => setImmediate(resolve));
+  // A second server's mint is still out when the run's access ends.
+  mints.held = Promise.withResolvers();
+  const late = tokens.open("gh2", () => {});
+  tokens.release();
+  assert.deepEqual(revoked.sort(), ["token-1", "token-2"], "the held token and the one its refresh replaced");
+  mints.held.resolve();
+  await late;
+  assert.deepEqual(revoked.sort(), ["token-1", "token-2", "token-3"], "and the token the late mint gave back");
+});
+
+test("an App read that fails before a mint is a failed mint, never a disconnect: the token held is kept until it expires", async (t) => {
+  const github = await fakeGitHub(t);
+  const { store } = await storeOn(t);
+  await connected(store);
+  const access = await githubAppAccess(store, KEY, { content: "Fix https://github.com/acme/widgets" }, { api: github.api });
+  const get = store.triggerSettings.get.bind(store.triggerSettings);
+  store.triggerSettings.get = async () => {
+    throw new Error("the store could not be read (a test's)");
+  };
+  await assert.rejects(access.mint(access.target), /could not be read/, "the read's error comes through, for the claim step's github_failed");
+  store.triggerSettings.get = get;
+});

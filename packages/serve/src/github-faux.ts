@@ -71,9 +71,10 @@ export async function startFauxGitHub(): Promise<FauxGitHub> {
     let body = "";
     req.setEncoding("utf8").on("data", (chunk: string) => (body += chunk)).on("end", () => handle(req, res, body));
   });
-  await new Promise<void>((resolve, reject) => server.once("error", reject).listen(0, "127.0.0.1", () => resolve()));
+  const host = "127.0.0.1";
+  await new Promise<void>((resolve, reject) => server.once("error", reject).listen(0, host, () => resolve()));
   return {
-    url: `http://127.0.0.1:${(server.address() as AddressInfo).port}`,
+    url: `http://${host}:${(server.address() as AddressInfo).port}`,
     app,
     close: () => new Promise<void>((resolve) => (server.close(() => resolve()), server.closeAllConnections())),
   };
