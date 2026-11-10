@@ -11,6 +11,17 @@
 // the plan: POST /computers takes workspace_id, name (≤ 80), os, ram, cpu, template_ref and ends_in_hours (1 to 720,
 // after which Orgo deletes the computer); DELETE /computers/{id} answers 404 computer_not_found once it is gone and 409
 // computer_waking while it wakes; POST /computers/{id}/extend { hours } with an Idempotency-Key lengthens Orgo's end.
+//
+// An Archil mount (the run's folder on the owner's disk at /workspace) needs the Orgo template box/build-orgo.mjs
+// publishes and builds: the archil client, the root helper and the tool user baked in, no sudo. The spec's image names
+// that template; the shared Archil steps (mount-archil.ts) then run as root through the channel, before init starts,
+// as on Daytona, Modal and E2B. The token reaches only the helper's fd 0, through the channel's stdio (the root
+// terminal, made raw), never a bash call's command line, a file or an environment.
+//
+// Nothing here wakes a computer that is not running: Orgo suspends one on request or when its owner sets it to sleep
+// when idle, and any action (a bash call, the terminal) wakes it. list, attach, network, connect and extend read inside
+// only a running computer, and release lets a suspended Archil computer's folder go to the run's next claim, which
+// revokes the hold, instead of waking it to check in.
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -18,9 +29,29 @@ import { childCommands, type DaemonExpected, daemonDrift } from "./child.js";
 import { DaemonClient } from "./client.js";
 import { DESKTOP_GROUPS } from "./desktop.js";
 import { COMPUTER_LABEL, DAEMON_IN_COMPUTER, helloDrift, type ProbeReport, probeNetworkDrift, probeNotes, probeReportOf, SOCKET_DIR, WORK } from "./drift.js";
+import { releaseOlder } from "./janitor.js";
 import { EPOCH_LABEL, RUN_LABEL } from "./labels.js";
 import type { KindCapabilities } from "./kinds.js";
-import { checkMount, type MountKind } from "./mount.js";
+import { checkMount, type MountKind, type MountReadBack } from "./mount.js";
+import {
+	ARCHIL_HELPER,
+	ARCHIL_MOUNT_LABEL,
+	ARCHIL_TOOL_UID,
+	type ArchilMount,
+	type ArchilRoot,
+	archilLabels,
+	archilMount,
+	archilRefusals,
+	archilRelease,
+	claimEpoch,
+	mountDrift,
+	type ProviderNote,
+	type RecordedArchil,
+	readArchilMount,
+	recordedArchil,
+	recordedMount,
+	syncingClient,
+} from "./mount-archil.js";
 import { type OrgoChannel, type OrgoRest, type OrgoStart, type OrgoWebSocketFactory, ORGO_API_URL, orgoRest, orgoTerminalChannel, START_LOG } from "./orgo-channel.js";
 import type { Group } from "./protocol.js";
 import {
@@ -42,8 +73,8 @@ import { type ComputerError, fail, ok, type Result } from "./result.js";
 import { daemonWatch, type ScreenWatch, type ScreenWatchHandlers, type WatchOptions } from "./screen-watch.js";
 import { listTested } from "./test-connection.js";
 
-/** The mount kinds an Orgo computer takes: none yet (an Archil mount needs an Orgo template that bakes the helper). */
-export const MOUNT: readonly MountKind[] = [];
+/** The mount kinds an Orgo computer takes: Archil, from the template box/build-orgo.mjs builds. */
+export const MOUNT: readonly MountKind[] = ["archil"];
 
 /** The groups every Orgo computer offers: a Linux shell, files and processes, and the desktop's screen and input. */
 const GROUPS: Group[] = ["exec", "files", "processes", ...DESKTOP_GROUPS];
@@ -74,6 +105,8 @@ export interface OrgoTimeouts {
 	goneMs: number;
 	/** The pause between two reads while create or release waits. */
 	pollMs: number;
+	/** Each step of an Archil mount, and its release: the preflight, mount, serve, checkin. */
+	mountMs: number;
 }
 
 export interface OrgoProviderOptions {
@@ -102,6 +135,8 @@ export interface OrgoProviderOptions {
 	timeouts?: Partial<OrgoTimeouts>;
 	/** The addresses the probe tries, host:port over TCP or host:port/udp, to show none of them answers. */
 	probeTargets?: string[];
+	/** What is no failure of the call it came from: a release whose final sync or checkin did not let the folder go cleanly. */
+	onNote?: ProviderNote;
 }
 
 const VERSION: string = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
@@ -114,8 +149,11 @@ const CPU_FOR_RAM: Record<number, number> = { 4: 1, 8: 2, 16: 4, 32: 6 };
 /** The vCPUs a computer may ask for on its own (8 needs Orgo to set the account up). */
 const CPUS = [0.5, 1, 2, 4, 6];
 const NAME_MAX = 80;
-/** A name of this provider's making: computer-<12 hex>, the run label's hash, the epoch label, the deadline (base 36 s). */
-const NAME = /^computer-([0-9a-f]{12})(?:-r([a-z2-7]{16}))?(?:-e(0|[1-9][0-9]{0,15}))?(?:-d([0-9a-z]{1,11}))?$/;
+/**
+ * A name of this provider's making: computer-<12 hex>, the run label's hash, the epoch label, -ma for an Archil mount,
+ * the deadline (base 36 s).
+ */
+const NAME = /^computer-([0-9a-f]{12})(?:-r([a-z2-7]{16}))?(?:-e(0|[1-9][0-9]{0,15}))?(-ma)?(?:-d([0-9a-z]{1,11}))?$/;
 /** An Orgo template: namespace/name@version. */
 const TEMPLATE = /^[a-z0-9][a-z0-9_.-]{0,63}\/[a-z0-9][a-z0-9_.-]{0,63}@[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$/;
 /** Orgo's base desktop, no template: the image a spec names for a plain Linux desktop, and the default for kind desktop. */
@@ -127,7 +165,13 @@ const USER = /^(\d+):(\d+)$/;
 const DISPLAY = /^:(\d{1,5})(?:\.\d{1,5})?$/;
 const TARGET = /^(?:\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9.-]+):[0-9]{1,5}(?:\/udp)?$/;
 const DEFAULT_PROBE_TARGETS = ["1.1.1.1:443", "8.8.8.8:443", "[2606:4700:4700::1111]:443", "1.1.1.1:53/udp", "[2606:4700:4700::1111]:53/udp"];
-const DEFAULTS: OrgoTimeouts = { requestMs: 30_000, createMs: 300_000, uploadMs: 120_000, execMs: 60_000, helloMs: 30_000, probeMs: 30_000, listMs: 60_000, goneMs: 120_000, pollMs: 1_000 };
+const DEFAULTS: OrgoTimeouts = { requestMs: 30_000, createMs: 300_000, uploadMs: 120_000, execMs: 60_000, helloMs: 30_000, probeMs: 30_000, listMs: 60_000, goneMs: 120_000, pollMs: 1_000, mountMs: 120_000 };
+/**
+ * A root step that reads its stdin (the helper's mount and revoke, the token on fd 0): its argv, then its exit code on
+ * a line of its own, so the channel's stdio, which has no exit code, tells a failed step from a done one.
+ */
+const STDIN_STEP_SCRIPT = ["# agentrun-computer: orgo-archil-stdin", '"$@"', 'echo "agentrun-exit $?"'].join("\n");
+const STEP_EXIT = /^agentrun-exit (\d{1,3})\r?$/m;
 const DEFAULT_DAEMON_PATH = fileURLToPath(new URL("./computerd-linux-amd64", import.meta.url));
 /** The labels file: every label, the deadline and its most, the image and sizes, root's, readable by all. */
 export const LABELS_FILE = "/opt/agentrun/labels.json";
@@ -255,14 +299,16 @@ function runHash(run: string): string {
 
 /**
  * The name of a computer with these labels: computer-<hex>, then -r<the run label's hash> and -e<the epoch label> when
- * the labels carry a run and an epoch that is one, then -d<the deadline> when given: whole seconds since the epoch,
- * rounded up (never before init's own), in base 36, the janitor's deadline. Only those: a name is no place for a label's
- * value. Everything but the deadline is the name's stable part, which a rename on extend keeps.
+ * the labels carry a run and an epoch that is one, then -ma for a computer with an Archil mount, then -d<the deadline>
+ * when given: whole seconds since the epoch, rounded up (never before init's own), in base 36, the janitor's deadline.
+ * Only those: a name is no place for a label's value. The mark lets list() and connect know an Archil computer with
+ * nothing run inside it, and list() reads the mount's source only in a computer that has it. Everything but the
+ * deadline is the name's stable part, which a rename on extend keeps.
  */
-export function orgoName(labels: Record<string, string>, hex: string, deadline?: Date): string {
+export function orgoName(labels: Record<string, string>, hex: string, deadline?: Date, mount?: "archil"): string {
 	const run = labels[RUN_LABEL];
 	const epoch = labels[EPOCH_LABEL];
-	const stable = `computer-${hex}${typeof run === "string" && run !== "" ? `-r${runHash(run)}` : ""}${typeof epoch === "string" && /^(?:0|[1-9][0-9]{0,15})$/.test(epoch) ? `-e${epoch}` : ""}`;
+	const stable = `computer-${hex}${typeof run === "string" && run !== "" ? `-r${runHash(run)}` : ""}${typeof epoch === "string" && /^(?:0|[1-9][0-9]{0,15})$/.test(epoch) ? `-e${epoch}` : ""}${mount === "archil" ? "-ma" : ""}`;
 	return deadline === undefined ? stable : withDeadline(stable, deadline);
 }
 
@@ -272,14 +318,15 @@ function withDeadline(stable: string, deadline: Date): string {
 }
 
 /** What a name of this provider's making says, or undefined for any other name: its stable part, and its deadline. */
-function nameParts(name: unknown): { hex: string; run?: string; epoch?: string; stable: string; deadline?: Date } | undefined {
+function nameParts(name: unknown): { hex: string; run?: string; epoch?: string; archil: boolean; stable: string; deadline?: Date } | undefined {
 	const match = typeof name === "string" ? NAME.exec(name) : null;
 	if (match === null) return undefined;
-	const seconds = match[4] === undefined ? Number.NaN : Number.parseInt(match[4], 36);
+	const seconds = match[5] === undefined ? Number.NaN : Number.parseInt(match[5], 36);
 	return {
 		hex: match[1] as string,
 		...(match[2] ? { run: match[2] } : {}),
 		...(match[3] !== undefined ? { epoch: match[3] } : {}),
+		archil: match[4] !== undefined,
 		stable: (name as string).replace(/-d[0-9a-z]+$/, ""),
 		...(Number.isSafeInteger(seconds) ? { deadline: new Date(seconds * 1000) } : {}),
 	};
@@ -292,6 +339,9 @@ function labelProblem(key: string, value: unknown): string | undefined {
 	if (typeof value !== "string") return `the label ${key} must be a string`;
 	if (key === "" || key.includes("\0") || value.includes("\0")) return `the label ${JSON.stringify(key)} must be a non-empty name, and neither holds a NUL byte`;
 	if (key === COMPUTER_LABEL || key.startsWith(`${COMPUTER_LABEL}.`)) return `the label ${key} is in the provider's own namespace (${COMPUTER_LABEL})`;
+	// The mount's record is the provider's to write, from the spec's mount: a caller's would turn on syncing, and list a
+	// mount that is not there.
+	if (key === ARCHIL_MOUNT_LABEL) return `the label ${ARCHIL_MOUNT_LABEL} is the provider's own: it records a spec's mount, so a spec names a mount, never this label`;
 	return undefined;
 }
 
@@ -323,6 +373,13 @@ function labelsOf(text: string): LabelsFile | string {
 	return `the labels file ${LABELS_FILE} is not the one create writes`;
 }
 
+/** The Archil mount a labels file's agentrun.mount label records (recordedArchil, shared), or undefined when it has none. */
+function archilOf(labels: Record<string, string>): RecordedArchil | undefined {
+	if (labels[ARCHIL_MOUNT_LABEL] === undefined) return undefined;
+	const mount = recordedMount(labels);
+	return recordedArchil(labels, mount === undefined ? { other: `the label ${ARCHIL_MOUNT_LABEL} records a mount this provider never makes` } : { mount });
+}
+
 /**
  * Orgo desktops: see the module's header. A spec's image is "linux" (Orgo's base desktop) or an Orgo template
  * (namespace/name@version); cpus and memoryMb are Orgo's sizes; the network is none.
@@ -341,10 +398,11 @@ export class OrgoProvider implements ComputerProvider {
 	readonly #display: string;
 	readonly #timeouts: OrgoTimeouts;
 	readonly #probeTargets: string[];
+	readonly #onNote: ProviderNote | undefined;
 	/** Each computer's extend in flight, by id: the next waits for it, so two never read the same old deadline. */
 	readonly #extending = new Map<string, Promise<unknown>>();
 
-	constructor({ apiKey, workspaceId, apiUrl = ORGO_API_URL, fetch, webSocket, channel, daemonPath = DEFAULT_DAEMON_PATH, maxLifetimeMs = MAX_LIFETIME_MS, user = "2510:2510", start = "bash", display = ":99", timeouts = {}, probeTargets = DEFAULT_PROBE_TARGETS }: OrgoProviderOptions) {
+	constructor({ apiKey, workspaceId, apiUrl = ORGO_API_URL, fetch, webSocket, channel, daemonPath = DEFAULT_DAEMON_PATH, maxLifetimeMs = MAX_LIFETIME_MS, user = "2510:2510", start = "bash", display = ":99", timeouts = {}, probeTargets = DEFAULT_PROBE_TARGETS, onNote }: OrgoProviderOptions) {
 		if (typeof apiKey !== "string" || apiKey === "") throw new Error("options.apiKey, an Orgo API key, is required");
 		if (typeof workspaceId !== "string" || !WORKSPACE_ID.test(workspaceId)) throw new Error("options.workspaceId, the Orgo workspace this deployment's computers live in, is required");
 		let url: URL;
@@ -377,6 +435,7 @@ export class OrgoProvider implements ComputerProvider {
 		this.#display = display;
 		this.#timeouts = merged;
 		this.#probeTargets = [...probeTargets];
+		this.#onNote = onNote;
 	}
 
 	/**
@@ -419,7 +478,14 @@ export class OrgoProvider implements ComputerProvider {
 			const bad = entries === undefined ? "labels must map names to strings" : entries.map(([key, value]) => labelProblem(key, value)).find(Boolean);
 			if (bad) refuse("labels", bad);
 		}
-		refusals.push(...checkMount(mount, MOUNT));
+		refusals.push(...checkMount(mount, MOUNT), ...archilRefusals(given as unknown as ComputerSpec));
+		if ((mount as { kind?: unknown } | undefined)?.kind === "archil") {
+			// Orgo's base desktop has no helper, no archil client and sudo: only a template box/build-orgo.mjs built does.
+			if (image === BASE) refuse("image", `a computer with an Archil mount is made from the Orgo template box/build-orgo.mjs builds (namespace/name@version), never Orgo's base desktop "${BASE}", which has no root helper and has sudo`);
+			if (this.#uid !== String(ARCHIL_TOOL_UID) || this.#gid !== String(ARCHIL_TOOL_UID)) {
+				refuse("mount", `a computer with an Archil mount runs its tools as agentrun-tool, ${ARCHIL_TOOL_UID}:${ARCHIL_TOOL_UID}, the user its template makes with no way to root; this provider's user is ${this.#uid}:${this.#gid}`);
+			}
+		}
 		for (const [field, value] of Object.entries(given)) {
 			if (SPEC_FIELDS.has(field) || field === "mount" || value === undefined) continue;
 			if (field === "user") refuse(field, `an Orgo computer's tools run as the provider's user (${this.#uid}:${this.#gid}, the remote tool user), never as one a spec names`);
@@ -440,12 +506,14 @@ export class OrgoProvider implements ComputerProvider {
 			return fail("not_found", `no daemon binary at ${this.#daemonPath}: run npm run build:daemon -w @parcha/agentrun-computer`);
 		}
 		if (signal?.aborted) return fail("aborted", "create was aborted before Orgo was called");
-		const labels = { ...spec.labels };
+		const archil = spec.mount?.kind === "archil" ? spec.mount : undefined;
+		// An Archil computer's mount, kind and source, never the token: what list() reports and attach reads back against.
+		const labels = { ...spec.labels, ...(archil === undefined ? {} : archilLabels(archil)) };
 		const now = Date.now();
 		const deadline = new Date(now + spec.lifetimeMs).toISOString();
 		const maxDeadline = new Date(now + this.#maxLifetimeMs).toISOString();
 		// The janitor's deadline is in the name, so list() and the sweep read it with nothing run inside.
-		const name = orgoName(labels, randomBytes(6).toString("hex"), new Date(deadline));
+		const name = orgoName(labels, randomBytes(6).toString("hex"), new Date(deadline), archil === undefined ? undefined : "archil");
 		if (name.length > NAME_MAX || nameParts(name) === undefined) return fail("invalid", `the name ${name} is not one Orgo holds: at most ${NAME_MAX} of letters, digits and dashes`);
 		const ram = spec.memoryMb === undefined ? 4 : spec.memoryMb / 1024;
 		const cpu = spec.cpus ?? (CPU_FOR_RAM[ram] as number);
@@ -469,7 +537,7 @@ export class OrgoProvider implements ComputerProvider {
 		if (typeof id !== "string" || !COMPUTER_ID.test(id)) return fail("orgo", `Orgo's create answered no computer id${await this.#deleteNamed(name)}`);
 		const ref = { id, name };
 		const file: LabelsFile = { name, labels, deadline, maxDeadline, image: spec.image, cpus: cpu, memoryMb: ram * 1024 };
-		const prepared = await this.#prepare(ref, made.value.status, file, daemon, signal);
+		const prepared = await this.#prepare(ref, made.value.status, file, daemon, signal, archil);
 		if (signal?.aborted) return this.#abandon(ref, { code: "aborted", message: "create was aborted" });
 		if (prepared.ok) return ok(prepared.value.length > 0 ? { ...ref, notes: prepared.value } : ref);
 		return this.#abandon(ref, prepared.error);
@@ -478,9 +546,12 @@ export class OrgoProvider implements ComputerProvider {
 	/**
 	 * Everything between Orgo's answer and a computer that passed the drift check: running, computerd uploaded and
 	 * installed (its sha256 read back), Orgo's X server's path socket there, the labels file, init started, its first
-	 * connection, then the daemon's report and the probe. Its value is the probe's notes.
+	 * connection, then the daemon's report and the probe. Its value is the probe's notes. An Archil computer mounts the
+	 * run's folder after the labels file (the takeover lists this computer by it) and before root's ports are read and its
+	 * sockets locked, so the archil client's are among them; a folder mounted for a computer create then gives up on is let
+	 * go before the delete.
 	 */
-	async #prepare(ref: ComputerRef, status: string, file: LabelsFile, daemon: Buffer, signal?: AbortSignal): Promise<Result<string[]>> {
+	async #prepare(ref: ComputerRef, status: string, file: LabelsFile, daemon: Buffer, signal?: AbortSignal, archil?: ArchilMount): Promise<Result<string[]>> {
 		const { uploadMs, execMs } = this.#timeouts;
 		const running = status === "running" ? ok(undefined) : await this.#untilRunning(ref, signal);
 		if (!running.ok) return running;
@@ -504,6 +575,25 @@ export class OrgoProvider implements ComputerProvider {
 		}
 		const written = await this.#writeLabels(ref, file, signal);
 		if (!written.ok) return written;
+		if (archil === undefined) return this.#boot(ref, commands, socket, signal);
+		const root = this.#root(ref);
+		const mounted = await archilMount({
+			root,
+			mount: archil,
+			self: ref,
+			releaseOlder: () => releaseOlder(this, file.labels[RUN_LABEL] as string, claimEpoch(file.labels), signal ? { signal } : {}),
+			timeoutMs: this.#timeouts.mountMs,
+			...(signal ? { signal } : {}),
+		});
+		if (!mounted.ok) return mounted;
+		const started = await this.#boot(ref, commands, socket, signal, recordedArchil(file.labels, { mount: { kind: "archil", disk: archil.disk, region: archil.region, folder: archil.folder } }));
+		if (!started.ok || signal?.aborted) await archilRelease({ root, client: undefined, timeoutMs: this.#timeouts.mountMs });
+		return started;
+	}
+
+	/** The rest of #prepare from the labels file on: root's ports, the lockdown, init started, its first connection checked. */
+	async #boot(ref: ComputerRef, commands: ReturnType<typeof childCommands>, socket: string, signal?: AbortSignal, archil?: RecordedArchil): Promise<Result<string[]>> {
+		const { execMs } = this.#timeouts;
 		// Every port root listens on in Orgo's own network, read before init starts in a network of its own.
 		const ports = await this.#rootPorts(ref, signal);
 		if (!ports.ok) return ports;
@@ -518,7 +608,7 @@ export class OrgoProvider implements ComputerProvider {
 			return fail(opened.error.code, `the daemon did not answer: ${opened.error.message}; in the computer: ${await this.#status(ref, signal)}`);
 		}
 		try {
-			const inside = await this.#checkInside(opened.value, ref.name, ports.value, signal);
+			const inside = await this.#checkInside(opened.value, ref.name, ports.value, signal, archil);
 			if (!inside.ok) return inside;
 			return ok([
 				...inside.value,
@@ -596,15 +686,78 @@ export class OrgoProvider implements ComputerProvider {
 
 	/**
 	 * The daemon's report (hello with the desktop groups, its credentials, home and binary) and the probe, which refuses
-	 * on an answer from any target and records a silent accept in the notes it returns.
+	 * on an answer from any target and records a silent accept in the notes it returns; and, for an Archil computer, the
+	 * mount read back from inside (readArchilMount), held to the one recorded. Its value says what was read back of the
+	 * mount (mount), apart from the notes.
 	 */
-	async #checkInside(connection: ComputerConnection, name: string, ports: readonly number[], signal?: AbortSignal): Promise<Result<string[]>> {
+	async #checkInside(connection: ComputerConnection, name: string, ports: readonly number[], signal?: AbortSignal, archil?: RecordedArchil): Promise<Result<string[]> & { mount?: MountReadBack }> {
 		const found = await daemonDrift(connection, this.#daemonExpected(), this.#timeouts.helloMs, signal);
 		if (!found.ok) return found;
 		const probe = await this.#probe(connection, name, ports, signal);
 		if (!probe.ok) return probe;
 		const drift = [...found.value, ...probeNetworkDrift(probe.value)];
-		return drift.length === 0 ? ok(probeNotes(probe.value, "none")) : fail("refused", `it did not match its spec: ${drift.join("; ")}`);
+		const notes = probeNotes(probe.value, "none");
+		if (archil === undefined) return drift.length === 0 ? ok(notes) : fail("refused", `it did not match its spec: ${drift.join("; ")}`);
+		const mount = await readArchilMount(connection.client, archil, { name, timeoutMs: this.#timeouts.helloMs, ...(signal ? { signal } : {}) });
+		if (!mount.ok) return mount;
+		drift.push(...mountDrift(archil.expected, mount.value));
+		const read = mount.value === undefined ? {} : { mount: mount.value };
+		return drift.length === 0 ? { ...ok(notes), ...read } : fail("refused", `it did not match its spec: ${drift.join("; ")}`);
+	}
+
+	/**
+	 * Root's channel for the Archil steps. A step with stdin (mount and revoke, the token as one line) runs through the
+	 * channel's stdio, the root terminal made raw with no echo: the token is written to the helper's fd 0 and nowhere
+	 * else, never a bash call's command line, a file or an environment; its exit code is the line STDIN_STEP_SCRIPT prints
+	 * after it. A step with none (the preflight, serve, checkin) is a bash call. Either is bounded by timeoutMs and the
+	 * signal; an error's words never hold the token (what the helper printed is scrubbed by the caller).
+	 */
+	#root(ref: ComputerRef): ArchilRoot {
+		return {
+			run: async (argv, { stdin, timeoutMs, signal }) => {
+				const bounded = signal ? { signal } : {};
+				if (stdin === undefined) return this.#channel.run(ref.id, argv, { timeoutMs, ...bounded });
+				const deadline = Date.now() + timeoutMs;
+				const what = `root's ${argv[0] === ARCHIL_HELPER ? `agentrun-archil ${argv[1]}` : argv[0]} in ${ref.name}`;
+				const opened = await this.#channel.stdio(ref.id, ["sh", "-c", STDIN_STEP_SCRIPT, "sh", ...argv], { timeoutMs, ...bounded });
+				if (!opened.ok) return fail(opened.error.code, `${what} did not start: ${opened.error.message}`);
+				const stream = opened.value;
+				let output = "";
+				let ended = false;
+				let wake: () => void = () => {};
+				const changed = () => wake();
+				stream.readable.on("data", (chunk: Buffer | string) => {
+					output = (output + chunk.toString()).slice(-65536);
+					changed();
+				});
+				stream.readable.on("end", () => {
+					ended = true;
+					changed();
+				});
+				signal?.addEventListener("abort", changed, { once: true });
+				try {
+					stream.writable.write(stdin);
+					for (;;) {
+						const exit = STEP_EXIT.exec(output);
+						if (exit) return ok({ exitCode: Number(exit[1]), output: output.slice(0, exit.index) });
+						if (signal?.aborted) return fail("aborted", `${what} was aborted`);
+						if (ended) return fail("orgo", `${what} ended before it said its exit code: ${stream.said() || "the terminal closed"}`);
+						const left = deadline - Date.now();
+						if (left <= 0) return fail("timeout", `${what} did not end within ${seconds(timeoutMs)}`);
+						await new Promise<void>((done) => {
+							const timer = setTimeout(done, left);
+							wake = () => {
+								clearTimeout(timer);
+								done();
+							};
+						});
+					}
+				} finally {
+					signal?.removeEventListener("abort", changed);
+					await stream.close();
+				}
+			},
+		};
 	}
 
 	#daemonExpected(): DaemonExpected {
@@ -755,7 +908,9 @@ export class OrgoProvider implements ComputerProvider {
 		if (!opened.ok) return opened;
 		const { kind, groups } = this.capabilities();
 		const drift = helloDrift(opened.value.hello, { version: VERSION, kind, groups, arch: "amd64" });
-		if (drift.length === 0) return opened;
+		// An Archil computer's client syncs the run's folder after every call that may change it, before it answers. Its
+		// name's mark says so with nothing read inside; only create names a computer, so a caller's label never turns it on.
+		if (drift.length === 0) return nameParts(found.value.name)?.archil ? ok({ ...opened.value, client: syncingClient(opened.value.client) }) : opened;
 		await opened.value.close();
 		return fail("refused", `the daemon in ${ref.name} does not match this provider: ${drift.join("; ")}`);
 	}
@@ -795,7 +950,7 @@ export class OrgoProvider implements ComputerProvider {
 		const file = await this.#readLabels(ref, signal);
 		if (!file.ok) return file;
 		const found: string[] = [];
-		const parts = nameParts(record.name) as { run?: string; epoch?: string };
+		const parts = nameParts(record.name) as { run?: string; epoch?: string; archil: boolean };
 		const { labels } = file.value;
 		if (typeof file.value.name !== "string" || !sameComputer(file.value.name, record.name)) found.push(`name: Orgo's is ${record.name}, the labels file's ${show(file.value.name)}`);
 		const run = labels[RUN_LABEL];
@@ -803,18 +958,24 @@ export class OrgoProvider implements ComputerProvider {
 		if ((parts.epoch ?? "") !== (labels[EPOCH_LABEL] ?? "")) found.push(`epoch: the name says ${show(parts.epoch)}, the labels file ${show(labels[EPOCH_LABEL])}`);
 		const deadline = new Date(file.value.deadline);
 		if (Number.isNaN(deadline.getTime())) found.push(`deadline: the labels file reads ${show(file.value.deadline)}, not a time`);
+		const archil = archilOf(labels);
+		if (parts.archil !== (archil !== undefined)) found.push(`mount: the name ${archil === undefined ? "marks an Archil mount, and the labels file records none" : "marks no Archil mount, and the labels file records one"}`);
 		let notes: string[] = [];
 		let kind: AttachedComputer["spec"]["kind"];
+		let mount: MountReadBack | undefined;
 		if (found.length === 0) {
 			const ports = await this.#rootPorts(ref, signal);
 			if (!ports.ok) return ports;
 			const opened = await this.#open(ref, signal);
 			if (!opened.ok) return opened;
 			try {
-				const inside = await this.#checkInside(opened.value, ref.name, ports.value, signal);
+				const inside = await this.#checkInside(opened.value, ref.name, ports.value, signal, archil);
 				if (!inside.ok && inside.error.code !== "refused") return inside;
 				if (!inside.ok) found.push(inside.error.message.replace(/^it did not match its spec: /, ""));
-				else notes = inside.value;
+				else {
+					notes = inside.value;
+					mount = inside.mount;
+				}
 			} finally {
 				await opened.value.close();
 			}
@@ -832,6 +993,7 @@ export class OrgoProvider implements ComputerProvider {
 				workdir: WORK,
 				deadline,
 				...(kind === undefined ? {} : { kind }),
+				...(mount === undefined ? {} : { mount }),
 			},
 			...(notes.length > 0 ? { notes } : {}),
 		});
@@ -840,7 +1002,9 @@ export class OrgoProvider implements ComputerProvider {
 	/**
 	 * Every computer of this provider in the workspace that carries all of these labels. The run and the epoch are read
 	 * from the name, with nothing run in a computer, so a stopped one is listed too; any other label is read from the
-	 * labels file of a running computer (a stopped one is not woken, so it proves no such label and is left out).
+	 * labels file of a running computer (a stopped one is not woken, so it proves no such label and is left out). An
+	 * Archil computer, marked in its name, reports the mount its labels file records when it runs, and in words when it
+	 * does not: nothing is run in a suspended, frozen or stopped computer, whatever list is asked.
 	 */
 	async list(labels: Record<string, string>, { signal }: CallContext = {}): Promise<Result<ComputerInfo[]>> {
 		const problem = filterProblem(labels);
@@ -862,15 +1026,26 @@ export class OrgoProvider implements ComputerProvider {
 			};
 			// The janitor's deadline is the name's; a name of an older make has none, and Orgo's end stands for it.
 			let deadline: Date | undefined = parts.deadline ?? (typeof record.ends_at === "string" ? new Date(record.ends_at) : undefined);
-			if (others.length > 0) {
-				if (record.status !== "running") continue;
-				const file = await this.#readLabels(ref, signal);
-				if (!file.ok) continue;
-				if (!others.every((key) => file.value.labels[key] === labels[key])) continue;
-				read = { ...file.value.labels };
-				deadline = parts.deadline ?? new Date(file.value.deadline);
+			let mount: MountReadBack | undefined;
+			// Only a computer Orgo reads running is read inside: any action wakes a suspended or stopped one, and one on its
+			// way (creating, resuming) may not answer yet.
+			const readable = record.status === "running";
+			if (others.length > 0 && !readable) continue;
+			if (others.length > 0 || parts.archil) {
+				const file = readable ? await this.#readLabels(ref, signal) : undefined;
+				if (others.length > 0) {
+					if (!file?.ok || !others.every((key) => file.value.labels[key] === labels[key])) continue;
+					read = { ...file.value.labels };
+					deadline = parts.deadline ?? new Date(file.value.deadline);
+				}
+				// An Archil computer's mount is the one its labels file records, under its epoch label; its name marks one.
+				if (parts.archil) {
+					if (file === undefined) mount = { other: `an Archil mount, whose source only its labels file records: ${ref.name} is ${record.status}, and a read would wake it` };
+					else if (!file.ok) mount = { other: `an Archil mount, whose source its labels file did not give (${file.error.message})` };
+					else mount = archilOf(file.value.labels)?.expected ?? { other: `the name marks an Archil mount, and the labels file ${LABELS_FILE} records none` };
+				}
 			}
-			infos.push({ ref, labels: read, deadline, state: running ? "running" : "stopped", network: "none" });
+			infos.push({ ref, labels: read, deadline, state: running ? "running" : "stopped", network: "none", ...(mount === undefined ? {} : { mount }) });
 		}
 		return ok(infos);
 	}
@@ -902,7 +1077,13 @@ export class OrgoProvider implements ComputerProvider {
 		}
 	}
 
-	/** delete: idempotent, a computer Orgo no longer has is done; it waits until Orgo no longer has it. No stop. */
+	/**
+	 * delete: idempotent, a computer Orgo no longer has is done; it waits until Orgo no longer has it. No stop. A running
+	 * Archil computer lets go of the run's folder first (archilRelease: the final sync through computerd, then checkin as
+	 * root). One Orgo does not read running is not woken to check in: every call that changed the folder synced before
+	 * it answered, and the run's next claim revokes the hold left behind. Either way a folder not let go cleanly is no
+	 * failure of the release: it is said through onNote, and the release succeeds once the computer is gone.
+	 */
 	async release(ref: ComputerRef, how: "stop" | "delete", { signal }: CallContext = {}): Promise<Result<void>> {
 		const problem = refProblem(ref);
 		if (problem) return fail("invalid", problem);
@@ -912,7 +1093,25 @@ export class OrgoProvider implements ComputerProvider {
 		if (!read.ok) return read.error.code === "not_found" ? ok(undefined) : read;
 		if (read.value.status === "deleted") return ok(undefined);
 		if (!this.#ours(read.value, ref.name)) return fail("not_found", `no Orgo computer of this provider is ${ref.name} (${ref.id}), so it is left as it is`);
-		return this.#delete(ref, signal);
+		if (!nameParts(read.value.name)?.archil) return this.#delete(ref, signal);
+		const letGo =
+			read.value.status === "running"
+				? await this.#letGo(ref, signal)
+				: fail("refused", `the run's folder was not let go: ${ref.name} is ${read.value.status}, and a checkin would wake it; the run's next claim revokes its hold`);
+		const deleted = await this.#delete(ref, signal);
+		if (!deleted.ok || letGo.ok) return deleted;
+		this.#onNote?.({ computer: ref.name, note: `${ref.name} was deleted, and ${letGo.error.message}` });
+		return deleted;
+	}
+
+	/** A running Archil computer's folder let go: the final sync through a connection when it answers, then checkin as root. */
+	async #letGo(ref: ComputerRef, signal?: AbortSignal): Promise<Result<void>> {
+		const opened = await this.#open(ref, signal);
+		try {
+			return await archilRelease({ root: this.#root(ref), client: opened.ok ? opened.value.client : undefined, timeoutMs: this.#timeouts.mountMs, ...(signal ? { signal } : {}) });
+		} finally {
+			if (opened.ok) await opened.value.close();
+		}
 	}
 
 	/**

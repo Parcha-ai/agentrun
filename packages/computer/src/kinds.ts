@@ -113,7 +113,7 @@ function entry(fields: Omit<ProviderEntry, "kinds">): ProviderEntry {
 
 /**
  * Every provider Settings offers, each with its provider file in the registry;
- * a unit test then holds each to its module (CAPABILITIES, MOUNT). daytona, modal and e2b take archil mounts.
+ * a unit test then holds each to its module (CAPABILITIES, MOUNT). daytona, modal, e2b and orgo take archil mounts.
  */
 export const PROVIDERS: readonly ProviderEntry[] = [
 	entry({ id: "docker", label: "Docker", keys: [], mounts: ["bind"], metered: false, capabilities: [SANDBOX, LINUX_DESKTOP] }),
@@ -155,7 +155,8 @@ export const PROVIDERS: readonly ProviderEntry[] = [
 		id: "orgo",
 		label: "Orgo",
 		keys: [{ name: "ORGO_API_KEY", required: true }],
-		mounts: [],
+		// From the template box/build-orgo.mjs builds, never the base desktop (defaultImage): check() refuses that.
+		mounts: ["archil"],
 		metered: true,
 		capabilities: [LINUX_DESKTOP],
 		defaultImage: { desktop: ORGO_BASE_IMAGE },

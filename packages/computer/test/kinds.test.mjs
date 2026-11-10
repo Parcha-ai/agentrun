@@ -91,7 +91,8 @@ test("PROVIDERS is the agreed table of ids, labels, key names, mounts and meteri
 	assert.deepEqual(kinds, { docker: ["sandbox", "desktop"], daytona: ["sandbox"], modal: ["sandbox"], e2b: ["sandbox", "desktop"], orgo: ["desktop"], "phone-harness": ["phone"], browserbase: ["browser"], kernel: ["browser"] });
 	const mounts = Object.fromEntries(PROVIDERS.map((entry) => [entry.id, entry.mounts]));
 	assert.deepEqual(mounts.docker, ["bind"]);
-	for (const id of ["orgo", "phone-harness", "browserbase", "kernel"]) assert.deepEqual(mounts[id], [], id);
+	for (const id of ["daytona", "modal", "e2b", "orgo"]) assert.deepEqual(mounts[id], ["archil"], id);
+	for (const id of ["phone-harness", "browserbase", "kernel"]) assert.deepEqual(mounts[id], [], id);
 });
 
 test("PROVIDERS' default images: each kind is one of the entry's own, and each value is its module's constant", async () => {

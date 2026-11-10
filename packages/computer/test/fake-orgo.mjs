@@ -3,9 +3,15 @@
 // terminal channel makes), a fake OrgoChannel holding each computer's files, its labels file, its X socket and a fake
 // computerd behind the stdio bridge, and a fake terminal WebSocket (JSON frames, a root shell in a PTY) for the channel's
 // own test. It records every request with its headers. Nothing reaches the network, and no key leaves the fake.
+//
+// An Archil computer's root steps (the shared ones, src/mount-archil.ts) run as the template build-orgo.mjs makes it:
+// the preflight, serve and checkin through bash, mount and revoke through the stdio bridge with the token on stdin; a
+// done mount puts fuse.archil at /workspace in the computer's mount table, serve makes mount.sync answer, and checkin
+// takes both away, as fake-modal.mjs does.
 import { createHash } from "node:crypto";
 import { PassThrough, Writable } from "node:stream";
 import { scriptOf } from "./fake-e2b.mjs";
+import { GOOD_PREFLIGHT, mountsOf, rootVerb } from "./fake-modal.mjs";
 import { netDevText } from "./net-dev.mjs";
 
 export const VERSION = JSON.parse(await (await import("node:fs/promises")).readFile(new URL("../package.json", import.meta.url), "utf8")).version;
@@ -149,34 +155,66 @@ export function markOf(argv) {
  *    them (default 8231 and 5900);
  *  - sockets: the path sockets of Orgo's desktop the lockdown script makes root's alone, as it prints them (default
  *    root's D-Bus buses, as live run 4 found them);
- *  - lockdown: { exitCode, output } the lockdown script answers instead (a socket it could not lock).
+ *  - lockdown: { exitCode, output } the lockdown script answers instead (a socket it could not lock);
+ *  - archil: what a root step answers, by verb (preflight, mount, revoke, serve, checkin): { exitCode, output }, a
+ *    function (argv, stdin, box) => one, or "hang" (it never ends); default GOOD_PREFLIGHT for the preflight and exit 0;
+ *  - stdinStep: "ok" (default), or "dies": the terminal of a step with stdin closes before it prints its exit code;
+ *  - events: an array every root step, daemon call and REST call a test logs is pushed to, as { computer, what }.
  * The status script answers what the computer holds: init running or not, its socket, its log's tail. The daemon holds
  * its programs to their own loopback when init was started with --own-network, and else shares Orgo's network.
  * channel.calls holds every call, { op, computer, argv | path, how }; channel.boxes each computer's state, its
- * probes' targets in box.probes.
+ * probes' targets in box.probes; channel.rootRuns each root step, { computer, verb, argv, stdin, via } (via is "bash"
+ * or "stdio"); box.syncs counts each mount.sync.
  */
-export function fakeOrgoChannel({ install = 0, sha = "ok", x11 = true, box: boxPatch = {}, notListening = 0, startFails, bridge = "ok", initDies = false, rootPorts = [8231, 5900], sockets = ["/run/dbus/system_bus_socket", "/tmp/dbus-3fd5ustF2v"], lockdown } = {}) {
+export function fakeOrgoChannel({ install = 0, sha = "ok", x11 = true, box: boxPatch = {}, notListening = 0, startFails, bridge = "ok", initDies = false, rootPorts = [8231, 5900], sockets = ["/run/dbus/system_bus_socket", "/tmp/dbus-3fd5ustF2v"], lockdown, archil = {}, stdinStep = "ok", events = [] } = {}) {
 	const boxes = new Map();
 	const calls = [];
+	const rootRuns = [];
 	let waiting = notListening;
 	const boxOf = (id) => {
-		if (!boxes.has(id)) boxes.set(id, { files: new Map(), labels: undefined, x11, init: undefined, daemon: undefined, streams: [], extended: [], probes: [] });
+		if (!boxes.has(id)) boxes.set(id, { files: new Map(), labels: undefined, x11, init: undefined, daemon: undefined, streams: [], extended: [], probes: [], syncs: 0 });
 		return boxes.get(id);
+	};
+	/** One root step of the Archil ones, as the template's helper answers it; undefined while it hangs. */
+	const root = (computer, verb, argv, stdin, via) => {
+		const box = boxOf(computer);
+		rootRuns.push({ computer, verb, argv: [...argv], stdin, via });
+		events.push({ computer, what: `root ${verb}` });
+		const given = archil[verb];
+		if (given === "hang") return undefined;
+		const answer = typeof given === "function" ? given(argv, stdin, box) : (given ?? (verb === "preflight" ? { exitCode: 0, output: GOOD_PREFLIGHT } : { exitCode: 0, output: "" }));
+		if (answer.exitCode === 0) {
+			if (verb === "mount" || verb === "revoke") box.mounted = { disk: argv[2], region: argv[3], folder: argv[4] };
+			if (verb === "serve") box.served = true;
+			if (verb === "checkin") Object.assign(box, { mounted: undefined, served: false });
+		}
+		return answer;
 	};
 	const channel = {
 		calls,
 		boxes,
 		boxOf,
+		rootRuns,
+		events,
 		async upload(computer, path, bytes) {
 			calls.push({ op: "upload", computer, path, size: bytes.length });
 			boxOf(computer).files.set(path, Buffer.from(bytes));
 			return { ok: true, value: undefined };
 		},
-		async run(computer, argv) {
+		async run(computer, argv, { timeoutMs } = {}) {
 			const mark = markOf(argv);
-			calls.push({ op: "run", computer, argv: [...argv], kind: mark?.kind });
+			const verb = rootVerb(argv);
+			calls.push({ op: "run", computer, argv: [...argv], kind: verb === undefined ? mark?.kind : `archil-${verb}` });
 			const box = boxOf(computer);
 			const done = (exitCode, output = "") => ({ ok: true, value: { exitCode, output } });
+			if (verb !== undefined) {
+				const answer = root(computer, verb, argv, undefined, "bash");
+				if (answer === undefined) {
+					await new Promise((resolve) => setTimeout(resolve, timeoutMs ?? 0));
+					return { ok: false, error: { code: "timeout", message: `bash in ${computer} did not end within ${(timeoutMs ?? 0) / 1000} s` } };
+				}
+				return done(answer.exitCode, answer.output);
+			}
 			if (mark?.kind === "install") {
 				const [staging, daemon] = mark.args;
 				const bytes = box.files.get(staging);
@@ -217,6 +255,7 @@ export function fakeOrgoChannel({ install = 0, sha = "ok", x11 = true, box: boxP
 			calls.push({ op: "stdio", computer, argv: [...argv], kind: mark?.kind });
 			if (bridge === "timeout") return { ok: false, error: { code: "timeout", message: `computerd's bridge in ${computer} did not start within 0.5 s` } };
 			const box = boxOf(computer);
+			if (mark?.kind === "orgo-archil-stdin") return { ok: true, value: stdinStepStream(computer, mark.args) };
 			const readable = new PassThrough();
 			const listening = box.init !== undefined && !(waiting > 0);
 			if (box.init !== undefined && waiting > 0) waiting--;
@@ -231,6 +270,7 @@ export function fakeOrgoChannel({ install = 0, sha = "ok", x11 = true, box: boxP
 						const request = JSON.parse(buffered.slice(0, at));
 						buffered = buffered.slice(at + 1);
 						if (typeof request.id !== "number") continue;
+						events.push({ computer, what: `daemon ${request.method}` });
 						const reply = answer(box, request, boxPatch);
 						if (reply !== undefined) readable.write(`${JSON.stringify({ jsonrpc: "2.0", id: request.id, ...reply })}\n`);
 					}
@@ -243,6 +283,34 @@ export function fakeOrgoChannel({ install = 0, sha = "ok", x11 = true, box: boxP
 			return { ok: true, value: stream };
 		},
 	};
+	/**
+	 * The root terminal running STDIN_STEP_SCRIPT around a helper step: the first line typed is its stdin; then what it
+	 * printed, and `agentrun-exit <code>`, and the terminal ends.
+	 */
+	function stdinStepStream(computer, argv) {
+		const readable = new PassThrough();
+		let typed = "";
+		let ran = false;
+		const writable = new Writable({
+			write(chunk, _encoding, callback) {
+				typed += chunk.toString("utf8");
+				const at = typed.indexOf("\n");
+				if (!ran && at >= 0) {
+					ran = true;
+					const answer = root(computer, argv[1], argv, typed.slice(0, at + 1), "stdio");
+					if (answer !== undefined) {
+						queueMicrotask(() => {
+							if (answer.output) readable.write(answer.output.endsWith("\n") ? answer.output : `${answer.output}\n`);
+							if (stdinStep !== "dies") readable.write(`agentrun-exit ${answer.exitCode}\n`);
+							readable.end();
+						});
+					}
+				}
+				callback();
+			},
+		});
+		return { readable, writable, close: async () => void readable.end(), said: () => (stdinStep === "dies" ? "the terminal closed (1006)" : "") };
+	}
 	return channel;
 }
 
@@ -259,6 +327,16 @@ function answer(box, { method, params }, patch) {
 		const text = netDevText(interfaces);
 		return result({ data: Buffer.from(text).toString("base64"), size: text.length, eof: true });
 	}
+	if (method === "files.read" && params.path === "/proc/self/mounts") {
+		const text = mountsOf(box);
+		return result({ data: Buffer.from(text).toString("base64"), size: text.length, eof: true });
+	}
+	if (method === "mount.sync") {
+		box.syncs++;
+		if (!box.served) return error("not_found", "no Archil sync server at /run/agentrun-archil/archil.sock");
+		return result({ exitCode: box.syncExit ?? 0 });
+	}
+	if (["files.write", "files.move", "files.remove", "files.mkdir"].includes(method)) return result(method === "files.write" ? { written: 0 } : {});
 	if (method === "hello") return result({ version: VERSION, os: "linux", arch: "amd64", kind: reaches ? "desktop" : "linux", groups: reaches ? [...DESKTOP_GROUPS] : DESKTOP_GROUPS.slice(0, 3), ...patch.hello });
 	if (method === "ping") return result({});
 	if (method === "files.read" && params.path === "/proc/self/status") {

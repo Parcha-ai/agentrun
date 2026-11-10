@@ -402,7 +402,7 @@ in the kernel's tool registry, keyed by these groups.
   | daytona | Daytona | sandbox | `DAYTONA_API_KEY`; `DAYTONA_API_URL`, `DAYTONA_TARGET` (optional) | archil | yes |
   | modal | Modal | sandbox | `MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET` | archil | yes |
   | e2b | E2B | sandbox, desktop | `E2B_API_KEY` | archil | yes |
-  | orgo | Orgo | desktop | `ORGO_API_KEY` | none | yes |
+  | orgo | Orgo | desktop | `ORGO_API_KEY` | archil | yes |
   | phone-harness | Phone harness | phone | `PHONE_HARNESS_API_KEY` | none | yes |
   | browserbase | Browserbase | browser | `BROWSERBASE_API_KEY`, `BROWSERBASE_PROJECT_ID` | none | yes |
   | kernel | Kernel | browser | `KERNEL_API_KEY` | none | yes |
@@ -826,7 +826,7 @@ const made = await docker.create({ image: "debian:bookworm-slim", lifetimeMs: 60
   computer), or `{ kind: "archil", disk, region, folder, token }`, the run's folder (such as
   `agents/<a>/runs/<r>/work`) inside an Archil disk in its region, mounted in a remote computer.
   `capabilities().mount` lists the kinds a provider takes; absent, it takes none. Each provider file also exports
-  `MOUNT` beside its `create`, the same kinds (Docker `["bind"]`; Modal and Daytona `[]` for now), so a caller tells which
+  `MOUNT` beside its `create`, the same kinds (Docker `["bind"]`; Daytona, Modal, E2B and Orgo `["archil"]`), so a caller tells which
   provider binds a local folder from the registry (`providerModule(id)`) without building one.
 - `checkMount(mount, declared)` (`src/mount.ts`) is the one rule every provider's `check` runs, with no vendor call: a
   kind the provider does not declare is refused in words (`this provider does not take a mount of kind archil; it takes
@@ -863,6 +863,17 @@ const made = await docker.create({ image: "debian:bookworm-slim", lifetimeMs: 60
   `/workspace` is `{ kind: "bind", path }`; a read-only one, a volume or two mounts there is `{ other }`, and `attach`
   refuses such a computer. The drift check (below) holds a computer to the mount it was asked for: the bind there, from
   that path, read-write, `rprivate`, and no other mount.
+- **Orgo takes an Archil mount from its own template.** Orgo builds no Dockerfile: `box/build-orgo.mjs` writes the box
+  recipe as an Orgo template's install steps (the Dockerfile's archil pins, the helper's bytes checked by sha256, the
+  tool user, no sudo), publishes and builds it with `ORGO_API_KEY` (Orgo's Scale plan), and prints its ref; a spec
+  names that ref as its `image` (Orgo's base desktop, `"linux"`, is refused: it has no helper and has sudo). The shared
+  Archil steps run as root through the OrgoChannel before init starts. Mount and revoke read the token on fd 0
+  through the channel's stdio (Orgo's root terminal, made raw with no echo), never a bash call's command line; the
+  step's exit code is the line it prints after the helper. The name marks the mount (`-ma`), so `connect` syncs and
+  `list` reads the mount's source from the labels file of that computer alone. Nothing runs in a computer Orgo does
+  not read `running` (any action wakes a suspended one): `list` reports such a computer's mount in words, and
+  `release` deletes it without waking it to check in, a note (`onNote`) saying the run's next claim revokes its hold.
+  `npm run conformance -- --provider orgo` takes the run folders with `COMPUTER_ORGO_TEMPLATE` naming the template.
 
 ### The image: `ensureImage`
 

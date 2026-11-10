@@ -6,8 +6,20 @@
 // The daemon is uploaded into each computer (dist/computerd-linux-amd64, `npm run build:daemon`); the drifted provider
 // uploads one built with Go as version <version>-drift. Every computer of a run lives at most 1 h, Orgo's shortest end
 // (ends_in_hours 1): Orgo deletes it then whatever happens to the run.
+//
+// For the mount cases, mountFor("archil") makes a fresh run folder on the Archil disk COMPUTER_ARCHIL_DISK names (in
+// COMPUTER_ARCHIL_REGION, mounted with the disk token COMPUTER_ARCHIL_TOKEN), and reaches it from outside through the
+// disk's object API (the shared archilRunFolder, ./archil.ts); with no disk named it makes none, and the cases are
+// skipped. An Archil computer starts from the template box/build-orgo.mjs builds: COMPUTER_ORGO_TEMPLATE names it.
+import type { MountKind } from "../mount.js";
+import type { ProviderNote } from "../mount-archil.js";
 import { create, ORGO_BASE_IMAGE, type OrgoChannel, type OrgoProvider, type OrgoWebSocketFactory } from "../orgo.js";
+import { type ArchilRunFolderOptions, archilRunFolder, archilSettings } from "./archil.js";
 import { buildDriftDaemon, DRIFT_VERSION } from "./drift-daemon.js";
+import type { RunFolder } from "./types.js";
+
+/** The Archil disk's settings for the mount cases, by name (COMPUTER_ARCHIL_*: all five, or none). */
+export { ARCHIL_ENV } from "./archil.js";
 
 /** The environment this module reads, by name: the live switch, the run's template, and the provider's settings. */
 export const ENV = {
@@ -28,7 +40,8 @@ export const CONFORMANCE_MAX_LIFETIME_MS = 60 * 60_000;
 
 /** For the run's report: what this configuration means for the suite. */
 export const conformanceNotes: string[] = [
-	"orgo: a Linux desktop on Orgo with computerd inside, on Orgo's own X display :99, its tools as 2510:2510; janitor-ended at the exact deadline its name carries, and within 1 h whatever happens (Orgo deletes it at ends_in_hours 1, the backstop); network none is init's own namespace (--own-network), probed from inside at the outside and at every port root listens on, since Orgo has no egress control; the desktop's path sockets are root's alone but the display's; no mount.",
+	"orgo: a Linux desktop on Orgo with computerd inside, on Orgo's own X display :99, its tools as 2510:2510; janitor-ended at the exact deadline its name carries, and within 1 h whatever happens (Orgo deletes it at ends_in_hours 1, the backstop); network none is init's own namespace (--own-network), probed from inside at the outside and at every port root listens on, since Orgo has no egress control; the desktop's path sockets are root's alone but the display's.",
+	"orgo mount: archil only, from the template box/build-orgo.mjs builds (COMPUTER_ORGO_TEMPLATE); the token reaches the root helper's fd 0 through Orgo's root terminal, made raw with no echo; a suspended computer is never woken to check in, so its hold is left to the run's next claim.",
 ];
 
 export interface OrgoModuleOptions {
@@ -42,6 +55,10 @@ export interface OrgoModuleOptions {
 	daemonPath?: string;
 	/** Builds this package's daemon for linux/amd64 stamped with version, and gives its path; default go build. */
 	buildDaemon?: (version: string) => Promise<string>;
+	/** For mountFor("archil"): the disk's object API, or the SDK's Archil client, in place of the host's disk package. */
+	archil?: Pick<ArchilRunFolderOptions, "objects" | "Archil" | "baseUrl">;
+	/** Told what is no failure of a release: an Archil folder not let go cleanly. */
+	onNote?: ProviderNote;
 }
 
 function live(env: Record<string, string | undefined>): void {
@@ -65,7 +82,7 @@ export function conformanceImage({ env = process.env }: Pick<OrgoModuleOptions, 
 	return env[ORGO_ENV.template] || ORGO_BASE_IMAGE;
 }
 
-function build({ env = process.env, fetch, webSocket, channel }: OrgoModuleOptions, daemonPath: string | undefined): OrgoProvider {
+function build({ env = process.env, fetch, webSocket, channel, onNote }: OrgoModuleOptions, daemonPath: string | undefined): OrgoProvider {
 	return create({
 		...settingsFromEnv(env),
 		maxLifetimeMs: CONFORMANCE_MAX_LIFETIME_MS,
@@ -73,7 +90,21 @@ function build({ env = process.env, fetch, webSocket, channel }: OrgoModuleOptio
 		...(webSocket ? { webSocket } : {}),
 		...(channel ? { channel } : {}),
 		...(daemonPath === undefined ? {} : { daemonPath }),
+		...(onNote ? { onNote } : {}),
 	});
+}
+
+/**
+ * A run folder for an Archil mount, and none for any other kind (an Orgo computer takes no bind): a fresh folder on the
+ * disk the COMPUTER_ARCHIL_* names name (archilSettings), none when they name none (archilRunFolder, ./archil.ts).
+ * Reaching it is a call to Archil, so it needs the live switch.
+ */
+export async function mountFor(kind: MountKind, { env = process.env, archil = {} }: OrgoModuleOptions = {}): Promise<RunFolder | undefined> {
+	if (kind !== "archil") return undefined;
+	const settings = archilSettings(env);
+	if (settings === undefined) return undefined;
+	live(env);
+	return archilRunFolder({ ...settings, ...archil });
 }
 
 /** The provider the CLI runs; throws in words without the live switch, or when a setting is missing or wrong. */

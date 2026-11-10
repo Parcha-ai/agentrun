@@ -58,7 +58,7 @@ test("Orgo: the provider takes its key and workspace as options, reads no enviro
 	const built = create({ apiKey: KEY, workspaceId: WORKSPACE, fetch: api.fetch });
 	assert.ok(built instanceof OrgoProvider);
 	assert.equal(built.id, "orgo");
-	assert.deepEqual(MOUNT, []);
+	assert.deepEqual(MOUNT, ["archil"]);
 	assert.deepEqual(CAPABILITIES, [{ kind: "desktop", groups: ["exec", "files", "processes", "screen", "input.pointer", "input.keys"] }], "what a built provider declares, known without building one");
 	assert.equal(orgo.ENV, undefined, "the library names no environment variable");
 	assert.equal(orgo.fromEnv, undefined, "every setting is an option");
@@ -80,7 +80,7 @@ test("Orgo testConnection: one read of the workspace, which makes nothing; ok wi
 	assert.ok(!refused.error.message.includes("not-a-secret"));
 });
 
-test("Orgo: a Linux desktop with computerd as a child of Orgo's own agent, network none, Orgo's lifetime, delete, no mount; it serves the desktop kind", () => {
+test("Orgo: a Linux desktop with computerd as a child of Orgo's own agent, network none, Orgo's lifetime, delete, archil mounts; it serves the desktop kind", () => {
 	const { provider } = setup();
 	assert.deepEqual(provider.capabilities(), {
 		kind: "desktop",
@@ -93,7 +93,7 @@ test("Orgo: a Linux desktop with computerd as a child of Orgo's own agent, netwo
 		groups: ["exec", "files", "processes", "screen", "input.pointer", "input.keys"],
 		maxLifetimeMs: 720 * HOUR,
 		release: ["delete"],
-		mount: [],
+		mount: ["archil"],
 		vendorAgentPorts: [5999, 6080, 8080],
 	});
 	assert.equal(serves(provider.capabilities(), "desktop"), true);
@@ -101,7 +101,7 @@ test("Orgo: a Linux desktop with computerd as a child of Orgo's own agent, netwo
 	assert.equal(typeof provider.extend, "function");
 });
 
-test("Orgo check(): network none, Orgo's sizes, at most 720 h, a template or the base image; no user, workdir, pids or mount; labels outside the provider's namespace", () => {
+test("Orgo check(): network none, Orgo's sizes, at most 720 h, a template or the base image; no user, workdir, pids or bind mount; labels outside the provider's namespace", () => {
 	const { provider, api } = setup();
 	assert.deepEqual(provider.check(SPEC), []);
 	assert.deepEqual(provider.check({ ...SPEC, image: "default/my-desktop@1.0.0", cpus: 2, memoryMb: 8192 }), []);
@@ -115,7 +115,7 @@ test("Orgo check(): network none, Orgo's sizes, at most 720 h, a template or the
 		[{ user: "1000:1000" }, "user", /2510:2510/],
 		[{ workdir: "/srv" }, "workdir", /\/work/],
 		[{ pids: 100 }, "pids", /pids/],
-		[{ mount: { kind: "bind", path: "/" } }, "mount", /no mount kind/],
+		[{ mount: { kind: "bind", path: "/" } }, "mount", /takes archil/],
 		[{ labels: { "agentrun.computer.name": "x" } }, "labels", /namespace/],
 	]) {
 		const refusals = provider.check({ ...SPEC, ...change });
