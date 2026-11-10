@@ -15,7 +15,8 @@ import { firings, keyOf } from "./trigger-support.mjs";
 
 const REPO = "acme/widgets";
 const ACCEPT = '[{ event: pull_request, actions: [opened, reopened, synchronize, ready_for_review], where: [{ pointer: /repository/full_name, in: ["${parameters.repo}"] }] }]';
-const CONNECT_WORDS = "Connect GitHub in Settings, then apply again to review pull requests automatically.";
+/** What a skipped github trigger's warning says: what to do, then what it would run on, in the template's own words. */
+const connectWords = (subject) => `Connect GitHub in Settings, then apply again so it runs by itself: ${subject} runs on each pull request to ${REPO}.`;
 const pr = (repo, extra = {}) => ({ action: "opened", number: 12, pull_request: { number: 12, draft: false, title: "Add a thing" }, repository: { full_name: repo }, installation: { id: 777 }, sender: { login: "dev" }, ...extra });
 
 /** A template package in a directory of its own: code-review with the github trigger proposed for it, its repository a
@@ -79,7 +80,7 @@ test("(b) GitHub not connected: the agent is still made, its github trigger is s
     const agent = await server.api("GET", `/agents/${applied.body.agent_id}`);
     assert.equal(agent.status, 200, JSON.stringify(agent.body));
     assert.equal(agent.body.archived_at ?? null, null, `${template}: made, and not archived`);
-    assert.deepEqual(applied.body.warnings.filter((w) => w.field === "triggers.0"), [{ field: "triggers.0", reason: "not_set_up_here", message: CONNECT_WORDS }], template);
+    assert.deepEqual(applied.body.warnings.filter((w) => w.field === "triggers.0"), [{ field: "triggers.0", reason: "not_set_up_here", message: connectWords(template === "code-review" ? "Code review" : "Repo watch") }], template);
     assert.deepEqual((await server.api("GET", "/triggers")).body.triggers, [], `${template}: no trigger`);
   }
 });
