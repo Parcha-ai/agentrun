@@ -41,6 +41,7 @@ import {
 	type ComputerRef,
 	type ComputerSpec,
 	checkLifetime,
+	type NetworkForm,
 	type NetworkPolicy,
 	type NetworkSpec,
 	type Refusal,
@@ -173,6 +174,8 @@ interface CallInit {
  * the toolbox, from a snapshot of box/Dockerfile, with the daemon user agentrun-tool (daemonUser "2510:2510").
  */
 export const MOUNT: readonly MountKind[] = ["archil"];
+/** The network a Daytona computer's programs get: none, a network of their own (isolation.ts OWN_NETWORK_ONLY). */
+export const NETWORK: readonly NetworkForm[] = ["none"];
 
 /** The machine kind and groups of its one configuration: a linux computer. */
 export const CAPABILITIES: readonly KindCapabilities[] = [{ kind: "linux", groups: ["exec", "files", "processes"] }];
@@ -688,7 +691,7 @@ export class DaytonaProvider implements ComputerProvider {
 		return {
 			kind: "linux",
 			lifetime: "vendor",
-			network: ["none"],
+			network: [...NETWORK],
 			isolation: this.#class === "linux-vm" ? "vm" : "container",
 			os: "linux",
 			daemon: "child",

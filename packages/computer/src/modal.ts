@@ -52,6 +52,7 @@ import {
 	type ComputerSpec,
 	type CreatedComputer,
 	checkLifetime,
+	type NetworkForm,
 	type NetworkPolicy,
 	type NetworkSpec,
 	type Refusal,
@@ -184,6 +185,8 @@ export interface ModalProviderOptions {
 
 /** The mount kinds a Modal computer takes, as capabilities().mount declares them: the run's folder on an Archil disk. */
 export const MOUNT: readonly MountKind[] = ["archil"];
+/** The network a Modal computer's programs get: none, a network of their own (isolation.ts OWN_NETWORK_ONLY). */
+export const NETWORK: readonly NetworkForm[] = ["none"];
 
 /** The machine kind and groups of its one configuration: a linux computer. */
 export const CAPABILITIES: readonly KindCapabilities[] = [{ kind: "linux", groups: ["exec", "files", "processes"] }];
@@ -781,7 +784,7 @@ export class ModalProvider implements ComputerProvider {
 		return {
 			kind: "linux",
 			lifetime: "vendor",
-			network: ["none"],
+			network: [...NETWORK],
 			networkReadBack: false,
 			isolation: "vm",
 			os: "linux",

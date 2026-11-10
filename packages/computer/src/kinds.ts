@@ -14,7 +14,7 @@ import type { MountKind } from "./mount.js";
 import { ORGO_BASE_IMAGE } from "./orgo.js";
 import { PHONE_IMAGE } from "./phone-harness.js";
 import type { ComputerKind, Group } from "./protocol.js";
-import type { ComputerCapabilities } from "./provider.js";
+import type { ComputerCapabilities, NetworkForm } from "./provider.js";
 import type { Result } from "./result.js";
 
 /**
@@ -88,6 +88,12 @@ export interface ProviderEntry {
 	keys: readonly ProviderKey[];
 	/** The mount kinds its computers take; [] cannot mount the run's folder. Its module's MOUNT, once its file lands. */
 	mounts: readonly MountKind[];
+	/**
+	 * The network forms its computers make: its module's NETWORK, which its capabilities().network returns. ["none"]: a
+	 * remote computer whose programs run in a network of their own; ["open"]: the vendor's own network, which no
+	 * allowlist of this server reaches; Docker's makes all three.
+	 */
+	network: readonly NetworkForm[];
 	/** The vendor bills by time; prices are the vendor's page, not ours. */
 	metered: boolean;
 	/**
@@ -113,10 +119,10 @@ function entry(fields: Omit<ProviderEntry, "kinds">): ProviderEntry {
 
 /**
  * Every provider Settings offers, each with its provider file in the registry;
- * a unit test then holds each to its module (CAPABILITIES, MOUNT). daytona, modal and e2b take archil mounts.
+ * a unit test then holds each to its module (CAPABILITIES, MOUNT, NETWORK). daytona, modal and e2b take archil mounts.
  */
 export const PROVIDERS: readonly ProviderEntry[] = [
-	entry({ id: "docker", label: "Docker", keys: [], mounts: ["bind"], metered: false, capabilities: [SANDBOX, LINUX_DESKTOP] }),
+	entry({ id: "docker", label: "Docker", keys: [], mounts: ["bind"], network: ["none", "open", "allow"], metered: false, capabilities: [SANDBOX, LINUX_DESKTOP] }),
 	entry({
 		id: "daytona",
 		label: "Daytona",
@@ -126,6 +132,7 @@ export const PROVIDERS: readonly ProviderEntry[] = [
 			{ name: "DAYTONA_TARGET", required: false },
 		],
 		mounts: ["archil"],
+		network: ["none"],
 		metered: true,
 		capabilities: [SANDBOX],
 		defaultImage: { sandbox: DAYTONA_DEFAULT_SNAPSHOT },
@@ -138,6 +145,7 @@ export const PROVIDERS: readonly ProviderEntry[] = [
 			{ name: "MODAL_TOKEN_SECRET", required: true },
 		],
 		mounts: ["archil"],
+		network: ["none"],
 		metered: true,
 		capabilities: [SANDBOX],
 		defaultImage: { sandbox: MODAL_DEFAULT_IMAGE },
@@ -147,6 +155,7 @@ export const PROVIDERS: readonly ProviderEntry[] = [
 		label: "E2B",
 		keys: [{ name: "E2B_API_KEY", required: true }],
 		mounts: ["archil"],
+		network: ["none"],
 		metered: true,
 		capabilities: [SANDBOX, LINUX_DESKTOP],
 		defaultImage: { sandbox: E2B_BASE_TEMPLATE, desktop: E2B_DESKTOP_TEMPLATE },
@@ -156,6 +165,7 @@ export const PROVIDERS: readonly ProviderEntry[] = [
 		label: "Orgo",
 		keys: [{ name: "ORGO_API_KEY", required: true }],
 		mounts: [],
+		network: ["none"],
 		metered: true,
 		capabilities: [LINUX_DESKTOP],
 		defaultImage: { desktop: ORGO_BASE_IMAGE },
@@ -165,6 +175,7 @@ export const PROVIDERS: readonly ProviderEntry[] = [
 		label: "Phone harness",
 		keys: [{ name: "PHONE_HARNESS_API_KEY", required: true }],
 		mounts: [],
+		network: ["open"],
 		metered: true,
 		capabilities: [{ kind: "android", groups: ["screen", "input.touch", "input.keys", "apps", "apps.ui_tree"] }],
 		defaultImage: { phone: PHONE_IMAGE },
@@ -177,6 +188,7 @@ export const PROVIDERS: readonly ProviderEntry[] = [
 			{ name: "BROWSERBASE_PROJECT_ID", required: true },
 		],
 		mounts: [],
+		network: ["open"],
 		metered: true,
 		capabilities: [{ kind: "browser", groups: ["cdp", "stream"] }],
 		defaultImage: { browser: BROWSER_IMAGE },
@@ -186,6 +198,7 @@ export const PROVIDERS: readonly ProviderEntry[] = [
 		label: "Kernel",
 		keys: [{ name: "KERNEL_API_KEY", required: true }],
 		mounts: [],
+		network: ["open"],
 		metered: true,
 		capabilities: [{ kind: "browser", groups: ["cdp", "stream"] }],
 		defaultImage: { browser: BROWSER_IMAGE },

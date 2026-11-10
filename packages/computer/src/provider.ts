@@ -5,6 +5,9 @@ import type { Result } from "./result.js";
 import type { ScreenWatch, ScreenWatchHandlers, WatchOptions } from "./screen-watch.js";
 
 export type NetworkSpec = "none" | "open" | { allow: string[] };
+/** A network's form, as a provider declares the ones it makes (capabilities().network, its module's NETWORK): "allow" is
+ *  NetworkSpec's allowlist. */
+export type NetworkForm = "none" | "open" | "allow";
 
 export interface ComputerSpec {
 	image: string;
@@ -52,7 +55,8 @@ export interface ComputerCapabilities {
 	kind: ComputerKind;
 	/** Who ends a computer at its deadline: the vendor, or our janitor by label. */
 	lifetime: "vendor" | "janitor";
-	network: Array<"none" | "open" | "allow">;
+	/** The network forms it makes: its module's NETWORK, which the kind registry's entry holds too. */
+	network: NetworkForm[];
 	/** With network "allow": what an allowlist may hold and which ports it opens. */
 	allow?: AllowCapability;
 	/**

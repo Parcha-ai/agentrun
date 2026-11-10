@@ -34,6 +34,7 @@ import {
 	type ComputerSpec,
 	type CreatedComputer,
 	checkLifetime,
+	type NetworkForm,
 	type NetworkPolicy,
 	type NetworkSpec,
 	type Refusal,
@@ -44,6 +45,8 @@ import { listTested } from "./test-connection.js";
 
 /** The mount kinds an Orgo computer takes: none yet (an Archil mount needs an Orgo template that bakes the helper). */
 export const MOUNT: readonly MountKind[] = [];
+/** The network an Orgo desktop's programs get: none, a network of their own. */
+export const NETWORK: readonly NetworkForm[] = ["none"];
 
 /** The groups every Orgo computer offers: a Linux shell, files and processes, and the desktop's screen and input. */
 const GROUPS: Group[] = ["exec", "files", "processes", ...DESKTOP_GROUPS];
@@ -390,7 +393,7 @@ export class OrgoProvider implements ComputerProvider {
 		return {
 			kind: "desktop",
 			lifetime: "janitor",
-			network: ["none"],
+			network: [...NETWORK],
 			networkReadBack: false,
 			isolation: "vm",
 			os: "linux",
