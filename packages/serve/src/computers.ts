@@ -7,7 +7,7 @@
 // server's seal key (server-keys.ts); a provider is handed its keys only at the claim, or for its test, both through
 // computer-keys.ts (providerOptions, testConnection), which maps a key's name onto the option it fills.
 import { KEY_TABLE, type KeyTable, type OptionsAnswer, type ProviderFactories, type ProviderSettings, providerOptions, testConnection } from "./computer-keys.js";
-import { COMPUTER_KINDS, type ComputerKind, type ComputerSetting } from "./computer-setting.js";
+import { BROWSER_COMPUTER_REFUSED, COMPUTER_KINDS, type ComputerKind, type ComputerSetting, isRefusedBrowserComputer } from "./computer-setting.js";
 import { inArchilMode } from "./archil-settings.js";
 import { ApiError, invalid } from "./errors.js";
 import { type KeyEnv, type KeyMeta, keyMetaOf, envValue } from "./key-meta.js";
@@ -133,13 +133,16 @@ export function createComputerRoutes(options: ComputerRoutesOptions) {
       kinds: COMPUTER_KINDS.map((kind): KindView => {
         const spec = kinds.SETTING_KINDS[kind];
         const serving = kinds.PROVIDERS.filter((provider) => provider.kinds.includes(kind));
+        // A browser computer is refused here for now (computer-setting.ts BROWSER_COMPUTER_REFUSED): not offered, and no
+        // provider of it ready, in those words.
+        const refused = isRefusedBrowserComputer(kind) ? BROWSER_COMPUTER_REFUSED : undefined;
         const providers = serving.map((provider): ProviderView => {
           const missing = missingKeys(provider, saved);
-          const why = modeRefusal(kind, provider, mode) ?? (missing.length ? keysWhy(provider, missing) : undefined);
+          const why = refused ?? modeRefusal(kind, provider, mode) ?? (missing.length ? keysWhy(provider, missing) : undefined);
           return { id: provider.id, name: provider.label, metered: provider.metered, secrets: provider.keys.map((key) => metas.get(secretName("computer", provider.id, key.name))!), required: provider.keys.filter((key) => key.required).map((key) => secretName("computer", provider.id, key.name)), ready: why === undefined, ...(why ? { why } : {}) };
         });
-        const offered = kind === "none" || serving.some((provider) => modeRefusal(kind, provider, mode) === undefined);
-        const why = offered ? undefined : serving.length ? `no provider of a ${kind} computer can reach this server's run folders` : `no provider serves a ${kind} computer`;
+        const offered = kind === "none" || (!refused && serving.some((provider) => modeRefusal(kind, provider, mode) === undefined));
+        const why = offered ? undefined : refused ?? (serving.length ? `no provider of a ${kind} computer can reach this server's run folders` : `no provider serves a ${kind} computer`);
         return { kind, offered, ...(why ? { why } : {}), groups: [...spec.required, ...spec.optional], tools: [...tools(kind)], providers };
       }),
     };

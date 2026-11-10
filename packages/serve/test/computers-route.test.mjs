@@ -36,7 +36,7 @@ test("refusals: an unknown provider is not_found; a body that is not an object, 
   await refused(settingsComputerRoute(computers, "nope", {}), "not_found");
 });
 
-test("capabilities.computers: the kinds this server offers, in the registry's order", async (t) => {
-  assert.deepEqual(await computerCapabilities(await routes(t)), { kinds: ["none", "sandbox", "desktop", "phone", "browser"] });
-  assert.deepEqual(await computerCapabilities(await routes(t, "disk")), { kinds: ["none", "sandbox", "desktop", "phone", "browser"] }, "Mode 2: Daytona, Modal and E2B mount the owner's disk from Archil, so the sandbox is offered");
+test("capabilities.computers: the kinds this server offers, in the registry's order (no browser computer, refused here for now)", async (t) => {
+  assert.deepEqual(await computerCapabilities(await routes(t)), { kinds: ["none", "sandbox", "desktop", "phone"] });
+  assert.deepEqual(await computerCapabilities(await routes(t, "disk")), { kinds: ["none", "sandbox", "desktop", "phone"] }, "Mode 2: Daytona, Modal and E2B mount the owner's disk from Archil, so the sandbox is offered");
 });

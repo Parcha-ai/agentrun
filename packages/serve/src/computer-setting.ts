@@ -27,13 +27,24 @@ export const computerOfPlace = (place: PlaceView): ComputerSetting => (place.mod
 /** Whether two settings are the one setting. */
 export const sameComputer = (a: ComputerSetting, b: ComputerSetting): boolean => a.kind === b.kind && (a.kind === "none" || a.provider === (b as { provider: string }).provider);
 
-/** What is wrong with `value` as a computer setting, at `field`: its shape only (the providers are the server's). */
+/** Why a browser computer is refused on this server for now: nothing here wires a Browser computer's CDP connection into
+ *  a run, so a run of one would fail at its start. Refused instead, in these words, at the agent's save (computerIssues),
+ *  at a run's start (resolve-computer.ts computerReadiness) and in Settings → Computers (computers.ts view). The browser
+ *  tool (Settings → Tools) browses the web without one. */
+export const BROWSER_COMPUTER_REFUSED = "Browser computers don't run on this server yet: use the browser tool (Settings → Tools) for web browsing.";
+
+/** Whether a computer setting's kind is a browser computer's, which this server refuses for now (BROWSER_COMPUTER_REFUSED). */
+export const isRefusedBrowserComputer = (kind: unknown): boolean => kind === "browser";
+
+/** What is wrong with `value` as a computer setting, at `field`: its shape (the providers are the server's), and a
+ *  browser computer, refused here for now (BROWSER_COMPUTER_REFUSED). */
 export function computerIssues(value: unknown, field: string): InputIssue[] {
   const bad = (reason: string, message: string, fix?: string): InputIssue[] => [{ field, reason, message, ...(fix ? { fix } : {}) }];
   if (!isObject(value)) return bad("wrong_type", `${field} is an object: {kind}, or {kind, provider}`);
   const extra = Object.keys(value).filter((key) => key !== "kind" && key !== "provider");
   if (extra.length) return bad("not_allowed", `${field} keeps only kind and provider, not ${extra.join(" or ")}`, `Remove ${extra.map((key) => `${field}.${key}`).join(" and ")}.`);
   if (typeof value.kind !== "string" || !(COMPUTER_KINDS as readonly string[]).includes(value.kind)) return bad(value.kind === undefined ? "missing" : "not_an_option", `${field}.kind is one of ${COMPUTER_KINDS.join(", ")}`);
+  if (isRefusedBrowserComputer(value.kind)) return bad("not_an_option", BROWSER_COMPUTER_REFUSED, `Set ${field} to {"kind": "none"} and grant the browser tool.`);
   if (value.kind === "none") return value.provider === undefined ? [] : bad("not_allowed", "no computer names no provider", `Remove ${field}.provider.`);
   if (typeof value.provider !== "string" || value.provider === "") return bad("missing", `a ${value.kind} computer names its provider (Settings → Computers lists them)`);
   return [];

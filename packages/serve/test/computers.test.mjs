@@ -8,6 +8,7 @@ import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { test } from "node:test";
 import { clearArchilSettings, saveArchilSettings } from "../dist/archil-settings.js";
+import { BROWSER_COMPUTER_REFUSED } from "../dist/computer-setting.js";
 import { createComputerRoutes, folderModeOf, KeysRefused } from "../dist/computers.js";
 import { getSealedKey } from "../dist/server-keys.js";
 import { ARCHIL_KINDS, fakeFactories, KINDS, tools } from "./fixtures/computer-kinds.mjs";
@@ -45,7 +46,7 @@ test("an environment variable with a key's name overrides the saved one: source 
 const kindOf = (view, kind) => view.kinds.find((one) => one.kind === kind);
 const providerOf = (view, kind, id) => kindOf(view, kind).providers.find((one) => one.id === id);
 
-test("Mode 1 (run folders on this machine): a sandbox is Docker's alone; a desktop, phone or browser is any provider's, ready once its keys are saved", async (t) => {
+test("Mode 1 (run folders on this machine): a sandbox is Docker's alone; a desktop or phone is any provider's, ready once its keys are saved (a browser is refused here for now)", async (t) => {
   const { routes } = await setup(t);
   const view = await routes.view();
   assert.deepEqual(view.kinds.map((kind) => kind.kind), ["none", "sandbox", "desktop", "phone", "browser"]);
@@ -97,12 +98,12 @@ test("a key save takes only the provider's declared names, seals each in the sto
   await assert.rejects(routes.saveKeys("browserbase", { BROWSERBASE_API_KEY: 7 }), (error) => error instanceof KeysRefused && error.fields[0].reason === "wrong_type");
   assert.deepEqual(await store.sealedKeys.all(), [], "nothing saved when any name is refused");
   const saved = await routes.saveKeys("browserbase", { BROWSERBASE_API_KEY: "good-b1", BROWSERBASE_PROJECT_ID: "good-proj" });
-  assert.deepEqual(saved, { id: "browserbase", name: "Browserbase", metered: true, secrets: [{ name: "computer:browserbase:BROWSERBASE_API_KEY", set: true, source: "console", changed_at: CHANGED }, { name: "computer:browserbase:BROWSERBASE_PROJECT_ID", set: true, source: "console", changed_at: CHANGED }], required: ["computer:browserbase:BROWSERBASE_API_KEY", "computer:browserbase:BROWSERBASE_PROJECT_ID"], ready: true }, "the shared secret shape: set, where from, when changed; never a value");
+  assert.deepEqual(saved, { id: "browserbase", name: "Browserbase", metered: true, secrets: [{ name: "computer:browserbase:BROWSERBASE_API_KEY", set: true, source: "console", changed_at: CHANGED }, { name: "computer:browserbase:BROWSERBASE_PROJECT_ID", set: true, source: "console", changed_at: CHANGED }], required: ["computer:browserbase:BROWSERBASE_API_KEY", "computer:browserbase:BROWSERBASE_PROJECT_ID"], ready: false, why: BROWSER_COMPUTER_REFUSED }, "the shared secret shape: set, where from, when changed; never a value (a browser computer is refused here for now, its keys saved or not)");
   assert.ok(!JSON.stringify(saved).includes("good-b1"), "never echoed");
   assert.ok(!JSON.stringify(await routes.view()).includes("good-b1"), "nor in the view");
   assert.equal(await getSealedKey(store, sealKey, "BROWSERBASE_API_KEY"), "good-b1", "sealed, and opens with the server's key");
   assert.ok(!Buffer.from(await store.sealedKeys.get("BROWSERBASE_API_KEY")).toString("latin1").includes("good-b1"), "the store holds ciphertext only");
-  assert.equal((await routes.saveKeys("browserbase", { BROWSERBASE_PROJECT_ID: null })).ready, false, "null removes");
+  assert.equal((await routes.saveKeys("browserbase", { BROWSERBASE_PROJECT_ID: null })).secrets[1].set, false, "null removes");
   assert.equal(await routes.saveKeys("nope", {}), undefined, "an unknown provider");
 });
 

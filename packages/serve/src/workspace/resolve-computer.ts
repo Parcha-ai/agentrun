@@ -18,6 +18,7 @@
 // plane shows bash unavailable by it), and the claim's runTools takes the same rule over the computer it started.
 import type { CdpSession, ShellPlace } from "@parcha/agentrun-kernel/kernel";
 import type { ComputerClient, ComputerSettingKind, Group, KindCapabilities, MountKind, MountReadBack, MountSpec, ProviderEntry, Result } from "@parcha/agentrun-computer";
+import { BROWSER_COMPUTER_REFUSED, isRefusedBrowserComputer } from "../computer-setting.js";
 import type { MountCheck } from "./attach.js";
 import type { RunComputer } from "./run-tools.js";
 import type { Workspace } from "./workspace.js";
@@ -82,6 +83,8 @@ export const providerKeys = (registry: Pick<KindRegistry, "PROVIDERS">, keyOf: (
  *  words here, at the start, where the claim would only fail to launch it. Asked here, not in resolveComputer: the claim
  *  has no such answer and launches it. Absent: not asked. */
 export async function computerReadiness(setting: ComputerSetting, mode: 1 | 2, registry: KindRegistry, keyOf: (name: string) => Promise<string | undefined>, answers?: (provider: string) => true | string): Promise<{ readonly ok: true } | { readonly refused: string; readonly box?: string }> {
+  // A browser computer saved before its save was refused: refused here, at the start, never a failure once the run works.
+  if (isRefusedBrowserComputer(setting.kind)) return { refused: BROWSER_COMPUTER_REFUSED };
   const resolved = await resolveComputer(setting, mode, registry, {
     keysOf: providerKeys(registry, keyOf),
     // A setting is given, so the Mode 1 default (the only asker) is never read; and nothing is launched.
