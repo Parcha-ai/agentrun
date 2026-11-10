@@ -14,7 +14,7 @@ import { harnessOfBody } from "./harness.js";
 import { storedHarness } from "./harness-table.js";
 import {
   AgentBodyInvalid, type AgenticBody, type AgentRow, bodyOf, canonical, isObject, type NewRevision, type RevisionBodyInput,
-  type RevisionComputer, type RevisionPlace, type RevisionRow, type Store, StoreConstraint, type ToolSettings, type WorkflowBody,
+  type RevisionComputer, type RevisionMcpPin, type RevisionPlace, type RevisionRow, type Store, StoreConstraint, type ToolSettings, type WorkflowBody,
 } from "./store/index.js";
 import { canonicalToolSettings, settingsIssues, type ToolSettingsMap } from "./tool-plane.js";
 import { computerOfPlace, type PlaceView, settingOfDefinition } from "./computer-setting.js";
@@ -150,6 +150,17 @@ function newRevisionOf(definition: Json, files: Record<string, string>): NewRevi
   return { id: uuidv7(), kind: input.kind, body, skills };
 }
 
+/** What a save pins beside a checked revision: its granted MCP tools as the registry holds them now (server.ts, over
+ *  mcp-snapshot.ts revisionPinOf), or undefined when it grants none. May refuse the save (an input error). */
+export type PinAtSave = (revision: NewRevision) => Promise<RevisionMcpPin | undefined>;
+
+/** `revision` with its MCP tools pinned into its body (`mcpPin`), after its check: part of the body, so a save whose
+ *  servers' tools changed since is a new revision, and one that changes nothing is none. As it is without a pin. */
+async function pinned<T extends NewRevision>(revision: T, pin: PinAtSave | undefined): Promise<T> {
+  const mcpPin = pin ? await pin(revision) : undefined;
+  return mcpPin ? { ...revision, body: { ...(revision.body as Record<string, unknown>), mcpPin } } : revision;
+}
+
 /** `definition.version`, when given, is the number of the revision the request leaves current. */
 function checkVersion(definition: Json, version: number): void {
   if (definition.version !== undefined && definition.version !== version) {
@@ -201,7 +212,7 @@ export async function listAgents(store: AgentsStore, options: { archived?: boole
 export async function createAgent(
   store: AgentsStore,
   { definition, skills = {}, note }: DefinitionBody,
-  options: { check?: (revision: NewRevision) => Promise<void>; fresh?: { place: RevisionPlace; tools: readonly string[] } } = {},
+  options: { check?: (revision: NewRevision) => Promise<void>; fresh?: { place: RevisionPlace; tools: readonly string[] }; pin?: PinAtSave } = {},
 ): Promise<AgentEntry> {
   const given = typeof definition.id === "string" ? definition.id : undefined;
   if (given !== undefined && !ID_PATTERN.test(given)) throw invalid([{ field: "definition.id", reason: "invalid", message: `definition.id does not match ${ID_PATTERN.source}` }]);
@@ -210,9 +221,10 @@ export async function createAgent(
   const stamped = options.fresh && definition.place === undefined && definition.computer === undefined && !isObject(definition.workflow)
     ? { place: options.fresh.place, ...(definition.tools === undefined ? { tools: [...options.fresh.tools] } : {}) }
     : {};
-  const revision = makeRevision({ ...definition, ...stamped }, skills, note);
+  const made = makeRevision({ ...definition, ...stamped }, skills, note);
   checkVersion(definition, 1);
-  await options.check?.(revision);
+  await options.check?.(made);
+  const revision = await pinned(made, options.pin);
   const id = given ?? uuidv7();
   const name = definition.name as string;
   try {
@@ -246,7 +258,7 @@ export async function commitAgent(
   store: AgentsStore,
   read: AgentEntry,
   { definition, skills, note }: DefinitionBody,
-  { ifCurrent, check, contract = false }: { ifCurrent?: string | null; check?: (revision: NewRevision) => Promise<void>; contract?: boolean } = {},
+  { ifCurrent, check, contract = false, pin }: { ifCurrent?: string | null; check?: (revision: NewRevision) => Promise<void>; contract?: boolean; pin?: PinAtSave } = {},
 ): Promise<AgentEntry> {
   const entry = (await getAgent(store, read.agent.id)) ?? read;
   refuseExternal(entry.agent);
@@ -279,8 +291,10 @@ export async function commitAgent(
         ...(definition.cap_mode === undefined && currentBody.capMode !== undefined ? { cap_mode: currentBody.capMode } : {}),
       }
     : {};
-  const revision = makeRevision({ ...definition, ...carried }, files, note);
-  await check?.(revision);
+  const made = makeRevision({ ...definition, ...carried }, files, note);
+  await check?.(made);
+  // Pinned again at every edit, never carried: the edit's grants as the registry holds them now.
+  const revision = await pinned(made, pin);
   if (!contract && current && sameRevision(current, revision)) {
     checkVersion(definition, entry.version);
     return entry;

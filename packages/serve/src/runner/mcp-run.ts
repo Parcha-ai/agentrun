@@ -46,6 +46,8 @@ export interface McpForClaimOptions {
   readonly sealKey: Buffer;
   /** The run's granted tools, by catalog name (`mcp:<server>/<tool>` among them), as its revision grants them. */
   readonly grants: readonly string[];
+  /** The pin its revision's save made (the revision body's `mcpPin`), when it has one (mcpClaim's revisionPin). */
+  readonly revisionPin?: unknown;
   /** The loop's Harness for this pass (AdapterRun.harness): a call's records (not metered) go on the run's root through it. */
   readonly harness: Pick<Harness, "commit">;
   /** The run's work folder, where an answer too long for the model is filed. */
@@ -113,6 +115,7 @@ export async function mcpForClaim(options: McpForClaimOptions): Promise<ClaimMcp
       store: options.store,
       claim: options.claim,
       grants: options.grants,
+      ...(options.revisionPin !== undefined ? { revisionPin: options.revisionPin } : {}),
       sealKey: options.sealKey,
       signal: held.signal,
       ...(options.bounds ? { bounds: options.bounds } : {}),

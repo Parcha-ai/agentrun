@@ -350,6 +350,21 @@ const TOOL_SETTINGS_ANSWER = {
 /** GET /agents/{agent_id}'s `tools`: each tool the agent's current revision grants, in capabilities.tools' order; one
  *  with a provider choice with the provider in force, where it came from, the server's (its default), and what it
  *  resolves to on the agent's harness and model. */
+/** GET /agents/{agent_id}'s `mcp_drift` (server.ts getAgent, mcp-snapshot.ts mcpDriftOf). */
+const MCP_DRIFT = {
+  type: "array",
+  description: "Each MCP server whose tools the agent's current revision pinned when it was saved, and whose saved entry has moved since: its listed tools changed (tools_changed), its address changed (address_changed), or it is no longer saved (removed). A save pins each granted mcp:<server>/<tool> as the server's saved snapshot holds it, with the owner's prices, and the agent's runs call those tools whatever the server lists later; save the agent again (PUT /agents/{agent_id}/definition) to pin them as they are now. Empty when nothing moved, or the revision pinned none (one saved before pins were made at the save, whose runs pin at their first start).",
+  "x-agentrun-serve": "mcpdrift/1",
+  items: {
+    type: "object", additionalProperties: false, required: ["server", "pinned_version", "current_version", "reason"],
+    properties: {
+      server: { type: "string", description: "The MCP server's name." },
+      pinned_version: { type: "string", description: "The version of the server's tools the save pinned: sha256: and the hash of their canonical JSON." },
+      current_version: { type: ["string", "null"], description: "The version of the tools it lists now; null when it is no longer saved." },
+      reason: { enum: ["tools_changed", "address_changed", "removed"] },
+    },
+  },
+} as const;
 const AGENT_TOOLS = {
   type: "array",
   description: "Each tool the agent's current revision grants, in capabilities.tools' order, with its permission (permission, where it came from as permission_from, default_permission, permissions). A tool with a provider choice (web_search, web_fetch, browser) carries the provider in force (provider), where it came from (provider_from: agent, its own tool_settings; server, the server's settings; default, the built-in default), the one that applies when the agent sets none (default_provider, the server's), and what it resolves to on the agent's harness and model (resolved). Only GET /agents/{agent_id} answers it.",
@@ -1989,6 +2004,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
     },
     console_url: CONSOLE_URL("agent"),
     tools: AGENT_TOOLS,
+    mcp_drift: MCP_DRIFT,
     kind: { enum: ["agentic", "workflow", null], description: "The current revision's kind; null before the agent has one.", "x-agentrun-serve": "serve/1" },
     revision: { type: ["string", "null"], description: "The current revision's id; null before the agent has one.", "x-agentrun-serve": "serve/1" },
     revisions: { type: "integer", minimum: 0, description: "How many revisions the agent has.", "x-agentrun-serve": "serve/1" },
@@ -2401,7 +2417,8 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
   // agent in a list, a create or a save does not: its 200 is the contract's Agent with `tools` required.
   const getAgent = (doc.paths["/agents/{agent_id}"] as Json).get as Json & { responses: Record<string, Json & { content: Record<string, Json> }> };
   const agentAnswer = getAgent.responses["200"]!.content["application/json"]!;
-  agentAnswer.schema = { allOf: [agentAnswer.schema as Json, { type: "object", required: ["tools"], properties: { tools: AGENT_TOOLS } }] };
+  // It sends `mcp_drift` too (mcpdrift/1): each MCP server whose tools the agent's save pinned and that moved since.
+  agentAnswer.schema = { allOf: [agentAnswer.schema as Json, { type: "object", required: ["tools", "mcp_drift"], properties: { tools: AGENT_TOOLS, mcp_drift: MCP_DRIFT } }] };
   getAgent["x-agentrun-serve-changed"] = { responses: "agenttools/1" };
   changed.push("GET /agents/{agent_id}");
   // upload/2: POST /files also takes a file's bytes in one call (`path` in the query, the bytes the body), answered as

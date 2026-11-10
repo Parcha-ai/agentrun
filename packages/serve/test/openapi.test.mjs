@@ -170,7 +170,9 @@ test("the contract's operations are as vendored; this server's own are added and
       // (the same schema as Agent.tools); its headers, its other answers and the rest as vendored.
       assert.deepEqual(changes, { responses: "agenttools/1" });
       const vendoredOk = original.responses["200"];
-      assert.deepEqual(op.responses["200"].content["application/json"].schema, { allOf: [vendoredOk.content["application/json"].schema, { type: "object", required: ["tools"], properties: { tools: doc.components.schemas.Agent.properties.tools } }] });
+      // mcpdrift/1: and `mcp_drift`, each pinned MCP server that moved since the agent's save.
+      assert.equal(doc.components.schemas.Agent.properties.mcp_drift["x-agentrun-serve"], "mcpdrift/1");
+      assert.deepEqual(op.responses["200"].content["application/json"].schema, { allOf: [vendoredOk.content["application/json"].schema, { type: "object", required: ["tools", "mcp_drift"], properties: { tools: doc.components.schemas.Agent.properties.tools, mcp_drift: doc.components.schemas.Agent.properties.mcp_drift } }] });
       const { content: _a, ...ok } = op.responses["200"];
       const { content: _b, ...okVendored } = vendoredOk;
       assert.deepEqual(ok, okVendored);
@@ -730,6 +732,10 @@ test("what this server always sends is required in the document: a run's revisio
   assert.deepEqual(schemaProblems(doc, agentAnswer, agentRead), [], JSON.stringify(agentRead));
   const { tools: _tools, ...toolless } = agentRead;
   assert.notDeepEqual(schemaProblems(doc, agentAnswer, toolless), [], "an agent without tools is not the document's");
+  // And its MCP drift (mcpdrift/1): empty for an agent whose save pinned nothing, never absent.
+  assert.deepEqual(agentRead.mcp_drift, []);
+  const { mcp_drift: _drift, ...driftless } = agentRead;
+  assert.notDeepEqual(schemaProblems(doc, agentAnswer, driftless), [], "an agent read without mcp_drift is not the document's");
 
   const answer = doc.paths["/triggers/{trigger_id}"].get.responses["200"].content["application/json"].schema;
   const write = doc.paths["/triggers"].post.requestBody.content["application/json"].schema;

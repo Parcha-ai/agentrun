@@ -53,7 +53,12 @@ export type RevisionComputer = { kind: string; provider?: string };
  *  pin?}), checked and made canonical by the caller (agents-store.ts, through tool-plane's settingsIssues +
  *  canonicalToolSettings, the one copy). The store body holds it as it is given; this validator never reimplements it. */
 export type ToolSettings = Record<string, unknown>;
-export type AgenticBody = { instructions: string; skills: Record<string, string>; tools: string[]; model?: string; thinking?: string; prompts?: Record<string, PromptVariant>; harness?: string; place?: RevisionPlace; computer?: RevisionComputer; learning?: boolean; toolSettings?: ToolSettings; maxCostUsd?: number; capMode?: string; approvals?: "ask" | "never" };
+/** The MCP tools a revision's save pinned (mcp-snapshot.ts McpRevisionPin): per granted server its URL, the granted tools as
+ *  its snapshot held them, the owner's prices and the snapshot's version. Written by the save beside the checked body
+ *  (agents-store.ts), never by a definition; part of the body, so a save after the server's tools changed is a new
+ *  revision, and one that changes nothing is none. */
+export type RevisionMcpPin = Record<string, { url: string; version: string; tools: unknown[]; prices?: Record<string, number> }>;
+export type AgenticBody = { instructions: string; skills: Record<string, string>; tools: string[]; model?: string; thinking?: string; prompts?: Record<string, PromptVariant>; harness?: string; place?: RevisionPlace; computer?: RevisionComputer; learning?: boolean; toolSettings?: ToolSettings; maxCostUsd?: number; capMode?: string; approvals?: "ask" | "never"; mcpPin?: RevisionMcpPin };
 export type WorkflowBody = { workflow: Record<string, unknown>; skills: Record<string, string>; tools: string[]; harness?: string; place?: RevisionPlace; computer?: RevisionComputer; toolSettings?: ToolSettings; maxCostUsd?: number; capMode?: string; approvals?: "ask" | "never" };
 
 /** The input a revision's body is built from (the control plane's, in the store's own shape). `toolSettings` is already

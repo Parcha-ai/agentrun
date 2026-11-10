@@ -106,6 +106,7 @@ import { MCP_AUTH_TYPES, type McpTool } from "./mcp-probe.js";
 import { mcpServersOverStore } from "./mcp-servers-store.js";
 import { privateHostsRoute } from "./mcp-private-hosts.js";
 import { metaToolOf } from "./mcp-meta.js";
+import { isRevisionPin, mcpDriftOf, revisionPinOf } from "./mcp-snapshot.js";
 import { MCP_SETTINGS_PAGE, signInCookie, startedHere } from "./mcp-oauth.js";
 import { type RunNotice, WEBHOOK_EVENTS, Webhooks } from "./webhooks.js";
 import { appPermissionWarnings } from "./template-github-permissions.js";
@@ -899,6 +900,19 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       return meta ? { ...bound, grantable: false as const, reason: meta.reason } : bound;
     });
   };
+  // A revision's MCP tools as a run's check reads them: a server its save pinned (mcp-snapshot.ts) and still saved answers
+  // with the pinned tools, which its runs call whatever the registry lists since; a server no longer saved, or one not
+  // pinned, as the registry has it (mcpTools: none for a server gone, which refuses the run as before).
+  const mcpToolsOf = (pin: unknown) => (isRevisionPin(pin)
+    ? (server: string) => {
+        const pinned = Object.hasOwn(pin, server) ? pin[server] : undefined;
+        if (!pinned || !mcpMeta.has(server)) return mcpTools(server);
+        return pinned.tools.map((tool) => {
+          const meta = metaToolOf(pinned.url, tool.name);
+          return meta ? { ...tool, grantable: false as const, reason: meta.reason } : tool;
+        });
+      }
+    : mcpTools);
   // The server's tool settings, in the store: capabilities say what they resolve to, again after a PUT. load() reads them
   // once here.
   const settings = toolSettingsOverStore(store);
@@ -1128,12 +1142,25 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // the server makes (store-reads) under `.store`. `.request` is a thin pass-through — the store runs its own transactions,
   // so a call needs no outer serialization. The old Agents class and its per-agent home store are gone.
   const ctx = BACKGROUND_CONTEXT;
+  /** A save's pin (mcp-snapshot.ts): each granted MCP tool as the registry's rows hold it now, read from the store (with
+   *  the owner's prices, which the in-memory snapshot does not keep), after the save's own check. A tool the check let
+   *  through that cannot be pinned (gone since, or refused by the claim's own rules) refuses the save, by field. */
+  const pinAtSave = async (revision: NewRevision) => {
+    const tools = revision.kind === "agentic" ? ((revision.body as AgenticBody).tools ?? []) : [];
+    if (!tools.some((tool) => tool.startsWith("mcp:"))) return undefined;
+    const rows = new Map((await store.mcp.servers()).map((row) => [row.name, row]));
+    try {
+      return revisionPinOf(tools, rows);
+    } catch (error) {
+      throw invalid([{ field: "definition.tools", reason: "not_an_option", message: (error as Error).message }]);
+    }
+  };
   const agents = {
     get: (id: string) => getAgent(store, id),
     list: (options: { archived?: boolean } = {}) => listAgents(store, options),
     create: (body: DefinitionBody, check?: (revision: NewRevision) => Promise<void>, fresh?: { place: RevisionPlace; tools: readonly string[] }) =>
-      createAgent(store, body, { ...(check ? { check } : {}), ...(fresh ? { fresh } : {}) }),
-    commit: (entry: AgentEntry, body: DefinitionBody, options: { ifCurrent?: string | null; check?: (revision: NewRevision) => Promise<void>; contract?: boolean } = {}) => commitAgent(store, entry, body, options),
+      createAgent(store, body, { ...(check ? { check } : {}), ...(fresh ? { fresh } : {}), pin: pinAtSave }),
+    commit: (entry: AgentEntry, body: DefinitionBody, options: { ifCurrent?: string | null; check?: (revision: NewRevision) => Promise<void>; contract?: boolean } = {}) => commitAgent(store, entry, body, { ...options, pin: pinAtSave }),
     revisions: (id: string) => agentRevisions(store, id),
     revision: (agentId: string, revisionId: string) => agentRevision(store, agentId, revisionId),
     setCurrent: (entry: AgentEntry, revisionId: string) => setCurrentRevision(store, entry, revisionId),
@@ -1599,7 +1626,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  does not have yet. `capped`: the run has a spend cap, which a web tool's resolution reads (tool-plane.ts). */
   async function runnable(revision: Revision, place: Place, { capped = false }: { capped?: boolean } = {}): Promise<void> {
     const shape = { ...shapeOf(revision), place, ...(revision.body.place ? {} : { unnamed: true as const }) };
-    const blockers = await blockersOf(env, shape, settings.get(), { capped, boxes: boxOffers, computerReady, offers, mcp: mcpTools, decisionPrice });
+    const blockers = await blockersOf(env, shape, settings.get(), { capped, boxes: boxOffers, computerReady, offers, mcp: mcpToolsOf((revision.body as { mcpPin?: unknown }).mcpPin), decisionPrice });
     if (!blockers.length) return;
     const message = blockers.map((b) => b.message).join(" ");
     // Each blocker as a 422 names its issue: its field, reason and message, and the fix when it has one.
@@ -2486,7 +2513,11 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const entry = await needAgent(id);
         // The tools its current revision grants, as capabilities list them, each with its provider for this agent.
         const tools = entry.revision ? agentTools(env, settings.get(), await toolingOf(entry.revision as unknown as Revision), caps.tools.map((tool) => tool.name)) : [];
-        return send(res, 200, { ...agentView(entry, linkOrigin(req), await agentExtra(entry)), tools }, { etag: etagOf(entry) });
+        // Each MCP server its current revision pinned at its save whose tools (or address) moved since, or that is gone:
+        // its runs keep the pinned tools until the agent is saved again.
+        const pin = (entry.revision?.body as AgenticBody | undefined)?.mcpPin;
+        const mcp_drift = pin ? mcpDriftOf(pin, new Map((await store.mcp.servers()).map((row) => [row.name, row]))) : [];
+        return send(res, 200, { ...agentView(entry, linkOrigin(req), await agentExtra(entry)), tools, mcp_drift }, { etag: etagOf(entry) });
       }
       case "updateDefinition": {
         const entry = await needAgent(id);

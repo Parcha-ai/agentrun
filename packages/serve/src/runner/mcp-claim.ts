@@ -1,12 +1,17 @@
 // The runner's MCP claim step: once per claim, before the run's loop starts.
 //
-// The pin. A run's pin (the granted MCP tools as their servers listed them, each server's URL then, its prices) is made
-// at its first claim by mcpPinOf over the registry's rows and written by store.mcp.pinOnce: in its own store transaction,
+// The pin. A run's pin (the granted MCP tools as their servers listed them, each server's URL then, its prices) is its
+// revision's, made when the agent was saved (mcp-snapshot.ts, the revision body's `mcpPin`): used as it is, no pin is
+// made or written at the claim, so a refresh of a server after the save never changes the agent's runs. A run already
+// pinned (a pin row from before) keeps its row. A revision with no pin (saved before pins were made at the save, or an
+// inline agent's) has its run's pin made at its first claim, as before: by mcpPinOf over the registry's rows and written
+// by store.mcp.pinOnce: in its own store transaction,
 // behind the claim's epoch fence, inserted only when the run has none. So it exists before anything is sent, is written
 // once and never rewritten, and a crash between it and the loop's first commit leaves it for the next claim to read as
 // written (the first claim's snapshot, by design), rather than in the same commit as the first journal entries. A pin
 // that cannot be made refuses the claim in its words.
-// At every claim the pin is checked again: a pinned tool that is a meta tool now refuses the claim in words, nothing sent.
+// At every claim the pin is checked again: a pinned tool that is a meta tool now refuses the claim in words, nothing sent;
+// so is a revision's pinned tool that declares a header it cannot send, or a grant its revision's pin does not hold.
 //
 // The credentials. The pinned servers' credentials are unsealed (store/seal.ts openMcpCredential) into this step's
 // memory only: handed to the run's gateway, never written to the journal, a command row, the timeline or a log line. The
@@ -32,7 +37,8 @@
 // confirmed again: a claim lost meanwhile is Fenced, and the loop never starts.
 import { randomUUID } from "node:crypto";
 import { EndpointRefused, REFRESH_REQUEST_MS, refreshed, refused, RequestUnsent, type Seen, systemNetwork, type OAuthNetwork, type TokenSet } from "../mcp-oauth.js";
-import { type McpCredentials, type McpPin, mcpPinOf } from "../mcp-gateway.js";
+import { type McpCredentials, mcpHeaderProblem, mcpNameOf, type McpPin, mcpPinOf } from "../mcp-gateway.js";
+import { isRevisionPin, runPinOf } from "../mcp-snapshot.js";
 import { META_REASON, metaToolOf } from "../mcp-meta.js";
 import { boundTool, type McpTool } from "../mcp-probe.js";
 import { privateOAuthHosts } from "../mcp-private-hosts.js";
@@ -59,6 +65,8 @@ export interface McpClaimOptions {
   claim: Pick<Claim, "runId" | "epoch">;
   /** The run's granted tools, by catalog name (`mcp:<server>/<tool>` among them). */
   grants: readonly string[];
+  /** The pin its revision's save made (the revision body's `mcpPin`), when it has one: the run's pin, read as it is. */
+  revisionPin?: unknown;
   /** The runner's seal key (the server's): a runner never starts without one (seal-key.ts bootSealKey). */
   sealKey: Buffer;
   /** The claim's signal: aborted when the claim is lost or the runner stops. */
@@ -325,7 +333,7 @@ export async function mcpClaim(options: McpClaimOptions): Promise<McpClaimStep> 
 }
 
 /** The run's pin: read, and checked against the meta tools known now; or made at its first claim and written once. */
-async function pinOf({ store, claim, grants, githubMcpOrigin = GITHUB_MCP_ORIGIN }: McpClaimOptions): Promise<McpPin | undefined> {
+async function pinOf({ store, claim, grants, revisionPin, githubMcpOrigin = GITHUB_MCP_ORIGIN }: McpClaimOptions): Promise<McpPin | undefined> {
   // A github_app server anywhere but GitHub's hosted MCP ends the run here, before any token is minted or anything sent:
   // the App's tokens go to GitHub alone (github.ts githubMcpUrl, the one check).
   const offGithub = (server: string, url: string, auth: string | undefined) => {
@@ -341,6 +349,26 @@ async function pinOf({ store, claim, grants, githubMcpOrigin = GITHUB_MCP_ORIGIN
     return pinned;
   }
   if (!grants.some((name) => name.startsWith("mcp:"))) return undefined;
+  // Pinned at its save: the revision's pin is the run's, checked as a pin made here would be, and written nowhere.
+  if (revisionPin !== undefined) {
+    if (!isRevisionPin(revisionPin)) throw new McpClaimRefused("The agent's saved MCP pin does not read: save the agent again to pin its MCP tools. Nothing was sent.");
+    const pinned = runPinOf(revisionPin);
+    for (const name of grants) {
+      const named = mcpNameOf(name);
+      if (named && !pinned[named.server]?.tools.some((tool) => tool.name === named.tool)) throw new McpClaimRefused(`The MCP tool ${name} is not in the tools the agent's save pinned: save the agent again to pin it. Nothing was sent.`);
+    }
+    for (const [server, { url, tools }] of Object.entries(pinned)) {
+      for (const tool of tools) {
+        if (metaToolOf(url, tool.name)) throw new McpClaimRefused(`mcp:${server}/${tool.name} can't be granted: ${META_REASON}`);
+        const declared = mcpHeaderProblem(tool.inputSchema);
+        if (declared) throw new McpClaimRefused(`The MCP tool mcp:${server}/${tool.name} declares a header it cannot send: ${declared}.`);
+      }
+      // A server deleted since the save is refused at the run's start (server.ts runnable); one deleted while it runs
+      // has its calls refused unsent (the gateway finds no URL for it), as with a pin made here.
+      offGithub(server, url, (await store.mcp.server(server))?.auth);
+    }
+    return Object.keys(pinned).length ? pinned : undefined;
+  }
   const rows = new Map((await store.mcp.servers()).map((row) => [row.name, row]));
   let made: McpPin;
   try {
