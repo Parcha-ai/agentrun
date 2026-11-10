@@ -25,9 +25,9 @@ export function toolRows(choices: readonly ToolChoice[], gates: readonly ToolGat
  *  it are refused (`also`: the server pins the tool too, and both hold); or, for a pin that doesn't read, that every call is
  *  refused. Nothing for a setting with no pin. */
 export function PinNote({ setting, label = "Pinned", also = false }: { setting?: ToolSetting; label?: string; also?: boolean }) {
-  if (setting?.pin_broken) return <p className="max-w-[640px] text-[12px] text-warning-text" role="note">{PIN_BROKEN}</p>;
+  if (setting?.pin_broken) return <p className="max-w-[640px] text-small text-warning-text" role="note">{PIN_BROKEN}</p>;
   if (!setting?.pin) return null;
-  return <p className="max-w-[640px] text-[12px] text-muted-foreground" role="note"><span className="text-foreground">{label}:</span> {pinLine(setting.pin)}. {PIN_HOLDS}{also ? " This server pins it too; both hold." : ""}</p>;
+  return <p className="max-w-[640px] text-small text-muted-foreground" role="note"><span className="text-foreground">{label}:</span> {pinLine(setting.pin)}. {PIN_HOLDS}{also ? " This server pins it too; both hold." : ""}</p>;
 }
 
 /** Said once above a table where ask can't be answered: accounts off. */
@@ -65,15 +65,15 @@ export function ToolTable({ label, rows, settings, fallbackOf, permissionFallbac
   const askOff = rows.some((r) => r.gate?.ask_needs === "password");
   // The permission right after the tool's name: the column a person looks for first (whether it runs, asks or is refused).
   const heads = ["Tool", ...(permissions ? ["Permission"] : []), ...(providers ? ["Provider", "Resolves to"] : [])];
-  const none = <span className="font-mono text-[12px] text-muted-foreground">—</span>;
+  const none = <span className="font-mono text-small text-muted-foreground">—</span>;
   // Wider than a phone (375 px): the table scrolls in its own box, as MissionAnalytics' tables do, never the page. The box
   // is positioned so the header's sr-only "Reset" (absolute) is placed in it, not past it on the page.
   return (
     <>
-      {askOff && <p className="mb-2 text-[12px] text-warning-text">{ASK_OFF}</p>}
+      {askOff && <p className="mb-2 text-small text-warning-text">{ASK_OFF}</p>}
       <div className="relative overflow-x-auto">
         <table aria-label={label} className="w-full border text-left">
-          <thead><tr className="border-b">{heads.map((c) => <th key={c} className="caps px-3 py-2 text-[11px] font-semibold text-muted-foreground">{c}</th>)}<th><span className="sr-only">Reset</span></th></tr></thead>
+          <thead><tr className="border-b">{heads.map((c) => <th key={c} className="caps px-3 py-2 text-label font-semibold text-muted-foreground">{c}</th>)}<th><span className="sr-only">Reset</span></th></tr></thead>
           <tbody>
             {rows.map(({ name, choice: t, gate }) => {
               const fallback = t ? fallbackOf(t) : "";
@@ -91,17 +91,17 @@ export function ToolTable({ label, rows, settings, fallbackOf, permissionFallbac
               return (
                 <Fragment key={name}>
                   <tr data-tool={name} data-set={set || permissionSet ? "" : undefined} className="border-b align-top last:border-b-0">
-                    <td className="px-3 py-2.5 font-mono text-[13px]">{name}</td>
+                    <td className="px-3 py-2.5 font-mono text-body">{name}</td>
                     {permissions && <td className="px-3 py-2">
                       {gate ? <>
                         <Picker small label={`${name} permission`} value={permission} disabled={busy || held} onChange={(v) => { const chosen = v as Permission; onEdit((current) => withPermission(current, name, chosen, gateFallback)); }}
                           className={cn("w-36", permissionSet && "border-primary text-primary")}
                           options={gate.permissions.map((p) => ({ value: p, label: `${p}${p === gateFallback ? " (default)" : ""}`, ...(p === "ask" && gate.ask_needs === "password" && !unattended ? { disabled: true, title: "No one can approve a call here: it takes the owner's password sign-in." } : {}) }))} />
-                        {permissionSet && !held && <span className="mt-1 block font-mono text-[11px] text-muted-foreground">default: {gateFallback}</span>}
-                        {denied && <span className="mt-1 block max-w-[260px] text-[11px] text-warning-text">{SERVER_DENY}</span>}
-                        {permission === "deny" && <span className="mt-1 block max-w-[260px] text-[11px] text-muted-foreground">{DENY_ONLY}</span>}
-                        {permission === "ask" && unattended && !denied && <span className="mt-1 block max-w-[220px] text-[11px] text-warning-text">Runs without asking: Never ask is on.</span>}
-                        {permission === "ask" && gate.ask_needs === "password" && !unattended && <span className="mt-1 block max-w-[220px] text-[11px] text-warning-text">Each call is refused: no one can approve it here.</span>}
+                        {permissionSet && !held && <span className="mt-1 block font-mono text-label text-muted-foreground">default: {gateFallback}</span>}
+                        {denied && <span className="mt-1 block max-w-[260px] text-label text-warning-text">{SERVER_DENY}</span>}
+                        {permission === "deny" && <span className="mt-1 block max-w-[260px] text-label text-muted-foreground">{DENY_ONLY}</span>}
+                        {permission === "ask" && unattended && !denied && <span className="mt-1 block max-w-[220px] text-label text-warning-text">Runs without asking: Never ask is on.</span>}
+                        {permission === "ask" && gate.ask_needs === "password" && !unattended && <span className="mt-1 block max-w-[220px] text-label text-warning-text">Each call is refused: no one can approve it here.</span>}
                       </> : none}
                     </td>}
                     {providers && <td className="px-3 py-2">
@@ -109,8 +109,8 @@ export function ToolTable({ label, rows, settings, fallbackOf, permissionFallbac
                         <Picker small label={`${name} provider`} value={provider} disabled={busy} onChange={(v) => pick(v as ToolSetting["provider"])}
                           className={cn("w-56 max-w-full", set && "border-primary text-primary")}
                           options={t.providers.map((p) => ({ value: p, label: `${providerLabel(p, name)}${p === fallback ? " (default)" : ""}` }))} />
-                        {providerHelp(provider, name) && <span className="mt-1 block max-w-[300px] text-[11px] text-muted-foreground">{providerHelp(provider, name)}</span>}
-                        {set && <span className="mt-1 block font-mono text-[11px] text-muted-foreground">default: {providerLabel(fallback, name)}</span>}
+                        {providerHelp(provider, name) && <span className="mt-1 block max-w-[300px] text-label text-muted-foreground">{providerHelp(provider, name)}</span>}
+                        {set && <span className="mt-1 block font-mono text-label text-muted-foreground">default: {providerLabel(fallback, name)}</span>}
                       </> : none}
                     </td>}
                     {providers && <td className="px-3 py-2.5">{t ? resolvesOf(t, provider) : none}</td>}
@@ -120,7 +120,7 @@ export function ToolTable({ label, rows, settings, fallbackOf, permissionFallbac
                   </tr>
                   {noteOf?.(name) ? <tr data-note={name}><td colSpan={heads.length + 1} className="px-3 pb-2.5">{noteOf(name)}</td></tr> : null}
                   {issues[name]?.length ? (
-                    <tr><td colSpan={heads.length + 1} className="px-3 pb-2.5">{issues[name].map((m) => <p key={m} className="font-mono text-[12px] text-destructive-text" role="alert">{m}</p>)}</td></tr>
+                    <tr><td colSpan={heads.length + 1} className="px-3 pb-2.5">{issues[name].map((m) => <p key={m} className="font-mono text-small text-destructive-text" role="alert">{m}</p>)}</td></tr>
                   ) : null}
                 </Fragment>
               );
@@ -135,7 +135,7 @@ export function ToolTable({ label, rows, settings, fallbackOf, permissionFallbac
 /** A resolution, said plainly: an unavailable one in the warning colour with the server's reason. */
 export function Resolves({ value, prefix, tool }: { value: string | undefined; prefix?: string; tool?: string }) {
   const r = resolution(value, tool);
-  return <span className={cn("block font-mono text-[12px]", r.unavailable ? "text-warning-text" : "text-muted-foreground")}>{prefix}{r.text}</span>;
+  return <span className={cn("block font-mono text-small", r.unavailable ? "text-warning-text" : "text-muted-foreground")}>{prefix}{r.text}</span>;
 }
 
 /** What a capability resolves to on each harness, one line each. */
@@ -213,10 +213,10 @@ export function AgentToolSettings({ agent, harness, model, tools, choices, gates
   const { byTool, rest } = issuesFor(issues, "definition.tool_settings", rows.map((t) => t.name));
   return (
     <section aria-label="Tool settings" ref={section}>
-      <div className="mb-2"><span className="caps text-[12px] font-semibold">Tool settings</span></div>
+      <div className="mb-2"><span className="caps text-small font-semibold">Tool settings</span></div>
       {/* What ask means here: an agentic run waits for the owner's approval at each call; a workflow's call node can't
           wait, so the server refuses the start (its asks blocker, runnable.ts), in the same words. */}
-      <p className="-mt-1 mb-2 text-[12px] text-muted-foreground">Each of these tools takes this server's setting (its default here) unless it is changed here. {callTools ? "A call node can't wait for an approval: a tool set to ask stops the run from starting. Set it to allow." : unattended ? "Never ask is on: a tool on ask runs without waiting for you. A tool set to deny still holds." : "A tool on ask makes the run wait for your approval at each call."}</p>
+      <p className="-mt-1 mb-2 text-small text-muted-foreground">Each of these tools takes this server's setting (its default here) unless it is changed here. {callTools ? "A call node can't wait for an approval: a tool set to ask stops the run from starting. Set it to allow." : unattended ? "Never ask is on: a tool on ask runs without waiting for you. A tool set to deny still holds." : "A tool on ask makes the run wait for your approval at each call."}</p>
       <ToolTable label="This agent's tool settings" unattended={unattended} rows={rows} settings={value} fallbackOf={(t) => t.provider} issues={byTool} onEdit={(edit) => onChange(edit(value))}
         // A pin: the agent's own, the server's beside it where it pins the tool too; the server's alone where only it does.
         noteOf={(name) => {
@@ -248,9 +248,9 @@ export function AgentToolSettings({ agent, harness, model, tools, choices, gates
           const savedModel = (model ?? "") === ((agent?.definition.model as string | undefined) ?? "");
           if (!own && harness === (agent?.definition.harness ?? "pi") && savedModel && known) return <Resolves value={known} prefix={`${harness}: `} tool={t.name} />;
           if (!own && !saved[t.name] && !model) return <Resolves value={t.resolves[harness]} prefix={`${harness}: `} tool={t.name} />;
-          return <span className="block font-mono text-[12px] text-muted-foreground">once saved</span>;
+          return <span className="block font-mono text-small text-muted-foreground">once saved</span>;
         }} />
-      {rest.map((m) => <p key={m} className="mt-2 font-mono text-[12px] text-destructive-text" role="alert">{m}</p>)}
+      {rest.map((m) => <p key={m} className="mt-2 font-mono text-small text-destructive-text" role="alert">{m}</p>)}
     </section>
   );
 }

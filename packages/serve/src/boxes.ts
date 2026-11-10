@@ -36,8 +36,10 @@ export type BoxId = (typeof BOX_IDS)[number];
  *  more than the probe did (box-image.ts): `preparing` is available, its image still coming. */
 /** A box as capabilities show it. `network`: what an available box reaches (BOX_NETWORKS), with `network_reason` when
  *  it is available and has none for a cause of its own (a Docker in a VM, a daemon elsewhere; a Daytona that could not
- *  keep its domain list). */
-export type BoxOffer = { id: BoxId; available: boolean; state?: BoxState; reason?: string; network?: BoxNetwork; network_reason?: string };
+ *  keep its domain list). `host_addresses`: for Docker from a container (compose.yaml), the Docker host's own addresses
+ *  its computers' egress proxy refuses as the host's (docker-host-addresses.ts: the read through the socket and
+ *  AGENTRUN_DOCKER_HOST_ADDRESSES). */
+export type BoxOffer = { id: BoxId; available: boolean; state?: BoxState; reason?: string; network?: BoxNetwork; network_reason?: string; host_addresses?: string[] };
 /** What an available box reaches: the hosts of `places.allow` (`allowlist`), or nothing (`none`). */
 export const BOX_NETWORKS = ["allowlist", "none"] as const;
 export type BoxNetwork = (typeof BOX_NETWORKS)[number];

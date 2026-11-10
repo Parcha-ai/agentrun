@@ -43,6 +43,11 @@ COPY --from=build --chown=root:root /src /opt/agentrun
 # The build fails if any of it is left anywhere in the tree, a nested copy included, or if the Codex CLI the tree holds
 # is not the build its adapter is pinned to.
 RUN sh /opt/agentrun/packages/serve/docker/image-check.sh /opt/agentrun
+# The package's own command on PATH, so the words the console and the CLI give work in the image's shell as written
+# (`agentrun-serve reset-password --data /data`, on Render's Shell too). The launcher finds dist/cli.js beside itself through
+# its real path, so a link to it runs the same server CLI.
+RUN ln -s /opt/agentrun/packages/serve/launcher/agentrun-serve /usr/local/bin/agentrun-serve \
+ && [ "$(command -v agentrun-serve)" = /usr/local/bin/agentrun-serve ]
 WORKDIR /opt/agentrun
 USER node
 ENV NODE_ENV=production
