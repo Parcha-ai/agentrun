@@ -117,6 +117,10 @@ function setupCodeOnce(): string | null {
   return capturedSetup.code;
 }
 
+/** The wait before the `n`th next read of a session that couldn't be read (0 first): 1 s, doubling to 30 s, and never an
+ *  end: a server that takes minutes to start (a host's first start, a redeploy) is read until it answers. */
+export const sessionRetryMs = (n: number): number => Math.min(1000 * 2 ** n, 30_000);
+
 /** How often the console reads an import under way, and how many failed reads in a row end its watch. */
 export const IMPORT_POLL_MS = 1000;
 const IMPORT_READ_TRIES = 30;
@@ -188,7 +192,7 @@ export function App() {
   // The first read of the session decides the page. One that fails (the server's answer unreadable, a proxy's page in its
   // place, the connection cut) is said as it is and tried again, 1 s after the first, doubling to 30 s, with Retry now:
   // never a sign-in, which would claim the server has a password when the page can't know (#2222).
-  const [sessionUnread, setSessionUnread] = useState<string | null>(null);
+  const [sessionUnread, setSessionUnread] = useState<{ problem: string; starting: boolean } | null>(null);
   const [sessionTry, setSessionTry] = useState(0);
   // Only the newest read decides, and only while nothing has: an older one (a Retry now before it answered) that lands
   // after a newer one opened setup or sign-in, or after the owner signed in, changes nothing.
@@ -204,9 +208,17 @@ export function App() {
       },
       (e) => {
         if (!live || authNow.current !== null) return;
-        const ms = Math.min(1000 * 2 ** sessionTry, 30_000);
-        // A refusal with no error of the server's own (http_error) is another's page in its place: the status alone.
-        setSessionUnread(e instanceof ClientError ? `GET /v2/auth/session answered ${e.status}${e.code === "http_error" ? ", not as this server answers" : `: ${e.message}`}` : problemOf(e));
+        const ms = sessionRetryMs(sessionTry);
+        // A refusal with no error of the server's own (http_error) is another's page in its place: the status alone. A
+        // gateway's 502, 503 or 504 page is the host's edge while the server starts (on Render, about a minute after a
+        // one-click create; again at a redeploy or a wake): said as starting, and asked again, with no end.
+        const refusal = e instanceof ClientError ? e : null;
+        const foreign = refusal?.code === "http_error";
+        const starting = foreign && [502, 503, 504].includes(refusal!.status);
+        setSessionUnread({
+          problem: refusal === null ? problemOf(e) : starting ? `Its address answered ${refusal.status}, not the server.` : `GET /v2/auth/session answered ${refusal.status}${foreign ? ", not as this server answers" : `: ${refusal.message}`}`,
+          starting,
+        });
         timer = setTimeout(() => setSessionTry((n) => n + 1), ms);
       },
     );
@@ -236,7 +248,7 @@ export function App() {
     })();
     return () => { live = false; };
   }, [v2, auth]);
-  if (auth === null && sessionUnread !== null) return <SessionUnread problem={sessionUnread} onRetry={() => setSessionTry((n) => n + 1)} />;
+  if (auth === null && sessionUnread !== null) return <SessionUnread problem={sessionUnread.problem} starting={sessionUnread.starting} onRetry={() => setSessionTry((n) => n + 1)} />;
   if (auth === null) return <ConnectionProvider connection={connection}><Starting /></ConnectionProvider>;
   if (auth !== "signed_in") {
     return (

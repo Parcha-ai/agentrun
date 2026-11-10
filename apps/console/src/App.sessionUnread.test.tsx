@@ -1,7 +1,7 @@
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { App } from "./App";
+import { App, sessionRetryMs } from "./App";
 
 // The first read of the session (GET /v2/auth/session) decides the page: setup, sign-in, or the console. One that fails
 // (another's page in the server's place, a refusal) is never read as "this server has a password" (#2222): the page says
@@ -94,5 +94,24 @@ describe("App, a first session read that fails", () => {
     for (let i = 0; i < 5; i++) await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
     expect(heading(host), "the console stays, not setup").not.toBe("Start building");
     expect(host.querySelector('input[aria-label="New password"]')).toBeNull();
+  });
+
+  it("a gateway's 502 page while the server starts (as Render's edge answers for about a minute) says it is starting, never Sign in, and opens setup once the JSON comes", async () => {
+    const gateway = () => new Response("<!DOCTYPE html><html><body>Bad Gateway</body></html>", { status: 502, headers: { "content-type": "text/html; charset=utf-8" } });
+    const { host, reads } = open(3, gateway);
+    await until(() => heading(host) === "This server is starting", "the page says the server is starting");
+    expect(host.textContent).toContain("Its address answered 502, not the server.");
+    expect(host.textContent).toContain("Trying again");
+    expect(host.textContent).not.toContain("Sign in");
+    await until(() => heading(host) === "Start building", "the reads go on until the server answers, then setup", 12_000);
+    expect(reads.session).toBe(4);
+  }, 20_000);
+
+  it("keeps asking past two minutes: the waits grow from 1 s to 30 s and never end", () => {
+    const waits = Array.from({ length: 12 }, (_, n) => sessionRetryMs(n));
+    expect(waits.slice(0, 6)).toEqual([1000, 2000, 4000, 8000, 16000, 30000]);
+    expect(waits.every((ms) => ms > 0 && ms <= 30_000)).toBe(true);
+    expect(waits.reduce((a, b) => a + b, 0)).toBeGreaterThan(120_000);
+    expect(sessionRetryMs(1000)).toBe(30_000);
   });
 });

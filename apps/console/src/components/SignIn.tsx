@@ -135,14 +135,17 @@ function Field({ label, note, children }: { label: string; note?: string; childr
 
 /** The card a first load shows while this server's session can't be read (`GET /v2/auth/session` failed): what failed,
  *  that it is tried again on its own, and Retry now. Never a sign-in or a setup: without the session's answer the page
- *  can't tell whether the server has its owner yet. */
-export function SessionUnread({ problem, onRetry }: { problem: string; onRetry: () => void }) {
+ *  can't tell whether the server has its owner yet. `starting`: the address answered with a gateway's page (502, 503 or
+ *  504, not the server's JSON), as a host's edge does while the server starts, redeploys or wakes. */
+export function SessionUnread({ problem, starting = false, onRetry }: { problem: string; starting?: boolean; onRetry: () => void }) {
   return (
     <main className="grid min-h-dvh place-items-center bg-[#080808] p-6 text-[#f5f5f5]">
       <div className="w-full max-w-[440px] border border-[#333] p-8">
         <span className="flex items-center gap-1.5 font-mono text-[22px] font-semibold" aria-label="AgentRun"><ChevronRight className="size-5 text-primary" aria-hidden /><span>agent<span className="text-primary">.run()</span></span></span>
-        <h1 className="mb-3 mt-8 text-2xl">Can't read this server's sign-in</h1>
-        <p className="mb-4 text-[15px] leading-relaxed text-[#aaa]">The page asked the server whether it has its owner yet, and got no answer it could read, so it can't show setup or sign-in. It asks again on its own.</p>
+        <h1 className="mb-3 mt-8 text-2xl">{starting ? "This server is starting" : "Can't read this server's sign-in"}</h1>
+        <p className="mb-4 text-[15px] leading-relaxed text-[#aaa]">{starting
+          ? "Its address answers for it until it is up (a first start, a redeploy or a wake can take a minute or two). Trying again…"
+          : "The page asked the server whether it has its owner yet, and got no answer it could read, so it can't show setup or sign-in. It asks again on its own."}</p>
         <p className="mb-6 break-words font-mono text-[13px] text-destructive-text" role="alert">{problem}</p>
         <button type="button" onClick={onRetry} className="caps h-10 w-full border border-primary bg-primary text-[13px] text-black hover:bg-primary/90">Retry now</button>
       </div>
