@@ -90,6 +90,9 @@ test("a learning run's grade goes where the runner's route sends it, for the gra
   const learning = await runLearningEnd(store, "run-1");
   assert.equal(learning?.state, "merged", JSON.stringify(learning));
   assert.equal(eight(learning.cost_usd.grade), eight((USED.input * 3 + USED.output * 15) / 1e6), "the grade's dollars, booked");
+  // The learning run's own row keeps them as its cost: what GET /usage's learning meter reads (store learning.spend).
+  assert.equal(eight((await store.runs.get("learn-1")).costUsd), eight(learning.cost_usd.grade), "the learning run's cost is the grade's");
+  assert.deepEqual((await store.learning.spend({ from: 0, to: Number.MAX_SAFE_INTEGER })).map((one) => eight(one.costUsd)), [eight(learning.cost_usd.grade)]);
 });
 
 test("with no grade model named, the route is asked for the agent's own: the run is graded on it, as main grades", async (t) => {
@@ -123,4 +126,5 @@ test("a grader that never answers is cut at the grade's bound: the learning is d
   const learning = await runLearningEnd(store, "run-1");
   assert.deepEqual([learning?.state, learning?.reason], ["dropped", "grade_failed"], JSON.stringify(learning));
   assert.equal(learning.cost_usd.grade, null, "what the cut grade spent is unknown");
+  assert.equal((await store.runs.get("learn-1")).costUsd, null, "and its learning run's cost is unknown too, never $0");
 });

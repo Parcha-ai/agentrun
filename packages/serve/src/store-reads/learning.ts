@@ -122,19 +122,12 @@ export async function learningCountsOverStore(store: Store, filter: AnalyticsFil
   return out;
 }
 
-/** What learning spent outside any run (GET /usage's `learning` meter), one entry per run whose learning ended (merged or
- *  dropped), as the learning ledger's lines gave it: its agent, when its learning ended, and what its grade cost: 0 for a
- *  run never graded, null when the grade's spend is unknown (a grade that failed), never $0 then. An imported run keeps
- *  no learning in the store. */
-export async function learningSpendOverStore(store: Store): Promise<{ agent: string; at: string; cost: number | null }[]> {
-  const out: { agent: string; at: string; cost: number | null }[] = [];
-  for (const run of await store.runs.list({})) {
-    if (run.importedFrom) continue;
-    const end = await runLearningEnd(store, run.id);
-    if (!end || (end.state !== "merged" && end.state !== "dropped")) continue;
-    out.push({ agent: run.agentId, at: end.at, cost: end.cost_usd ? end.cost_usd.grade : 0 });
-  }
-  return out;
+/** What learning spent outside any run (GET /usage's `learning` meter) in [from, to) (ms), one entry per run whose
+ *  learning ended then, as the learning ledger's lines gave it: its agent, when its learning ended, and what its grade
+ *  cost: 0 for a run never graded, null when the grade's spend is unknown (a grade that failed), never $0 then. One read
+ *  of the store (Learning.spend), whatever the number of runs. */
+export async function learningSpendOverStore(store: Store, window: { from: number; to: number }): Promise<{ agent: string; at: string; cost: number | null }[]> {
+  return (await store.learning.spend(window)).map((one) => ({ agent: one.agentId, at: timeOf(one.at), cost: one.costUsd }));
 }
 
 /** An agent's learning counts as its learning view gives them (GET /agents/{id}/learning, learning-run.ts ofAgent's

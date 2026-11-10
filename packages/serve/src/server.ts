@@ -2112,7 +2112,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     }
     // What learning spent on this server, outside any run (store-reads/learning.ts learningSpendOverStore): each run's grade, on
     // the day its learning ended.
-    for (const entry of await learningSpendOverStore(store)) {
+    for (const entry of await learningSpendOverStore(store, { from, to })) {
       const at = Date.parse(entry.at);
       if (at >= from && at < to) add(lineKey(entry.agent, entry.at, "learning"), entry.cost);
     }
