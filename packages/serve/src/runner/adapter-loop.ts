@@ -587,30 +587,43 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     return { taken: true };
   };
 
+  /** A hand-back that reaches a loop whose pass is over, or never opened, waits for the run's next claim. */
+  const HAND_BACK_LATER = "the run is parking or ending: the hand-back waits for its next claim";
   /** Hand-backs one at a time: each decides on the journal the one before it left, so a second answer meets the first. */
   let handing: Promise<unknown> = Promise.resolve();
   /** A person's answer to the agent's browser hand-over (hand-back.ts): the first for an ask is its answer, committed as
    *  the answered hand-over entry at the row's own time, the row taken in that commit. A row after the ask lapsed writes
-   *  the expiry (at the expiry's time) and is refused; one for an ask answered already, or never made, is refused. */
+   *  the expiry (at the expiry's time) and is refused; one for an ask answered already, or never made, is refused. `later`
+   *  when this claim can no longer say, as an approval's (waitsFor): its Harness never opened, or its pass is over. */
   const handBack = (command: Command): Promise<CommandOutcome> => {
     const turn = handing.then(async (): Promise<CommandOutcome> => {
       await Promise.race([ready, (finished ?? new Promise<never>(() => {})).then(() => undefined, () => undefined)]);
       const [theGate, theHarness, theRoot] = [gate, harness, root];
-      if (!theGate || !theHarness || !theRoot) return { refused: handBackOf([], command.body, command.createdAt).refused! };
-      // The person's answer takes its row in the commit that writes it: staged for the answer this row would write (its ask,
-      // its outcome, at its own time). Decided and written in one commit (answerOnce), so no other writer's answer (the
-      // browser host's give or expiry) lands between: a row whose commit writes nothing, or the ask's expiry, takes none,
-      // and the staging matches nothing (an answered ask is never answered again).
-      const { ask, outcome } = (command.body ?? {}) as { ask?: unknown; outcome?: unknown };
-      const at = new Date(command.createdAt).toISOString();
-      const landed = typeof ask === "string" ? theGate.expect(writesEntry(KINDS.handover, (data) => data.id === ask && data.state === outcome && data.at === at), { take: [command.id] }) : undefined;
-      landed?.catch(() => undefined);
-      const { write, refused } = await answerOnce((change) => theHarness.commit(change, context), theRoot.id, (entries) => handBackOf(entries, command.body, command.createdAt));
-      if (write && refused === undefined) await landed;
-      return refused === undefined ? { taken: true } : { refused };
+      if (!theGate || !theHarness || !theRoot || theGate.sealed) return { later: HAND_BACK_LATER };
+      try {
+        return await handBackThrough(command, theGate, theHarness, theRoot);
+      } catch (error) {
+        // Sealed while it read or wrote: closeSession seals, then closes the Harness the answer went through.
+        if (theGate.sealed) return { later: HAND_BACK_LATER };
+        throw error;
+      }
     });
     handing = turn.catch(() => undefined);
     return turn;
+  };
+  /** A hand-back's answer, decided and written through the pass's open Harness. */
+  const handBackThrough = async (command: Command, theGate: Gate, theHarness: Harness, theRoot: Conversation): Promise<CommandOutcome> => {
+    // The person's answer takes its row in the commit that writes it: staged for the answer this row would write (its ask,
+    // its outcome, at its own time). Decided and written in one commit (answerOnce), so no other writer's answer (the
+    // browser host's give or expiry) lands between: a row whose commit writes nothing, or the ask's expiry, takes none,
+    // and the staging matches nothing (an answered ask is never answered again).
+    const { ask, outcome } = (command.body ?? {}) as { ask?: unknown; outcome?: unknown };
+    const at = new Date(command.createdAt).toISOString();
+    const landed = typeof ask === "string" ? theGate.expect(writesEntry(KINDS.handover, (data) => data.id === ask && data.state === outcome && data.at === at), { take: [command.id] }) : undefined;
+    landed?.catch(() => undefined);
+    const { write, refused } = await answerOnce((change) => theHarness.commit(change, context), theRoot.id, (entries) => handBackOf(entries, command.body, command.createdAt));
+    if (write && refused === undefined) await landed;
+    return refused === undefined ? { taken: true } : { refused };
   };
 
   /** A person's take-over or hand-back of the run's desktop or phone (computer-journal.ts): applied to the hold, and taken
