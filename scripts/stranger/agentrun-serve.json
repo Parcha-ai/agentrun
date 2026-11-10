@@ -12,6 +12,7 @@
     "run-adapters",
     "run-adapters-claude-agent",
     "run-adapters-codex",
+    "computer",
     "serve"
   ],
   "companions": [
@@ -25,7 +26,8 @@
     "@parcha/agentrun-decisions",
     "@parcha/agentrun-kernel",
     "@parcha/agentrun-harness-claude",
-    "@parcha/agentrun-harness-codex"
+    "@parcha/agentrun-harness-codex",
+    "@parcha/agentrun-computer"
   ],
   "peers": [
     "@earendil-works/chord",

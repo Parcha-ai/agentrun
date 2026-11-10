@@ -11,12 +11,10 @@ import { test } from "node:test";
 import { isMessageRow } from "@parcha/pi-durable-agent/timeline";
 import { ROUTES } from "../dist/server.js";
 import { call, follow, runDir, scratch, serve, withEnv } from "./support.mjs";
-import { firings, made } from "./trigger-support.mjs";
-import { fauxTable } from "./fixtures/faux-table.mjs";
+import { MESSAGE_RUN, RUN_EXEC, firings, made } from "./trigger-support.mjs";
 
 const { Webhook } = createRequire(import.meta.url)("standardwebhooks");
 const SEAL = { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") };
-const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
 const HOOK_401 = { code: "unauthenticated", message: "this route needs a request signed by the webhook trigger's secret", retryable: false };
 const hooked = (agentId) => ({ name: "on push", source: { kind: "webhook" }, target: { kind: "start_run", agent_id: agentId, input: { content: "Triage this event." }, max_cost_usd: 0.5 } });
 
@@ -36,10 +34,12 @@ test("no route but POST /v2/hooks/{id} (and capabilities, the document and healt
   withEnv(t, SEAL);
   const { api, baseUrl } = await serve(t);
   await made(api, "triage");
-  const { id, secret } = (await api("POST", "/triggers", hooked("triage"))).body;
+  const { id, signing_secret: secret } = (await api("POST", "/triggers", hooked("triage"))).body;
   const at = port(baseUrl);
   // mcpOAuthClient: the OAuth client metadata document an authorization server fetches, public by design (mcp-oauth.ts).
-  const open = new Set(["getCapabilities", "getOpenapi", "getHealth", "receiveHook", "mcpOAuthClient"]);
+  // getAuthSession: the session read, public by design: the console reads it before sign-in (accounts, and whether this
+  // caller may write secrets), and it names no one (owner-auth.test.mjs pins its shapes).
+  const open = new Set(["getCapabilities", "getOpenapi", "getHealth", "receiveHook", "mcpOAuthClient", "getAuthSession"]);
   for (const route of ROUTES) {
     const path = `/v2${route.pattern.source.replace(/^\^|\$$/g, "").replace(/\\\//g, "/").replace(/\\\./g, ".").replace(/\(\[\^\/\]\+\)|\(\.\+\)/g, "x-id")}`;
     const answer = await raw(at, { method: route.method, path, headers: { "content-type": "application/json" }, body: ["POST", "PUT", "PATCH"].includes(route.method) ? "{}" : undefined });
@@ -92,7 +92,7 @@ test("malformed, duplicated or oversized webhook headers, a webhook-id past 255 
   withEnv(t, SEAL);
   const { api, baseUrl } = await serve(t);
   await made(api, "triage");
-  const { id, secret } = (await api("POST", "/triggers", hooked("triage"))).body;
+  const { id, signing_secret: secret } = (await api("POST", "/triggers", hooked("triage"))).body;
   const at = port(baseUrl);
   const body = "{}";
   const good = signed(secret, body);
@@ -123,12 +123,12 @@ test("malformed, duplicated or oversized webhook headers, a webhook-id past 255 
   assert.deepEqual((await api("GET", `/triggers/${id}/firings`)).body.firings, [], "none fired");
 });
 
-test("the signature covers the exact bytes: a body serialised again differently fails; the content type is not trusted; a signed body that is no JSON fires with its raw text as the payload; the 401's log line holds no signature, secret or body", { timeout: 120_000 }, async (t) => {
+test("the signature covers the exact bytes: a body serialised again differently fails; the content type is not trusted; a signed body that is no JSON fires with its raw text as the payload; the 401's log line holds no signature, secret or body", { timeout: 120_000, skip: RUN_EXEC }, async (t) => {
   withEnv(t, SEAL);
   const lines = [];
   const { api, baseUrl, data } = await serve(t, { log: (line) => lines.push(line) });
   await made(api, "triage");
-  const { id, secret } = (await api("POST", "/triggers", hooked("triage"))).body;
+  const { id, signing_secret: secret } = (await api("POST", "/triggers", hooked("triage"))).body;
   const at = port(baseUrl);
   const sent = '{"a":1,"marker":"BODY-MARKER-1"}';
   const headers = signed(secret, sent);
@@ -151,81 +151,49 @@ test("the signature covers the exact bytes: a body serialised again differently 
   }
 });
 
-// pi keeps a message under its request id; another harness's door keeps its admission under `door <request id>`.
-for (const [harness, options] of [["pi", {}], ["claude-agent", { harnessTable: fauxTable(FAUX_HARNESS) }]])
-test(`a message a run already took (${harness}), its firing left due by a restart, settles sent without sending it again or opening the completed run`, { timeout: 180_000 }, async (t) => {
-  withEnv(t, SEAL);
-  const data = join(await scratch(t), "agents");
-  const first = await serve(t, { data, ...options });
-  await made(first.api, "chat", harness === "pi" ? {} : { harness });
-  const run = (await first.api("POST", "/agents/chat/runs", { input: { content: "Say hello." }, max_cost_usd: 1 })).body;
-  await follow(first.api, run.run_id, ["completed"]);
-  const { id, secret } = (await first.api("POST", "/triggers", { name: "inbox", source: { kind: "webhook" }, target: { kind: "message_run", run_id: run.run_id, input: { content: "A new event came in." } } })).body;
-  const body = '{"ticket":7}';
-  assert.equal((await call(port(first.baseUrl), { method: "POST", path: `/v2/hooks/${id}`, headers: signed(secret, body), body })).status, 202);
-  const [sent] = await firings(first.api, id, 1);
-  assert.equal(sent.status, "sent");
-  await follow(first.api, run.run_id, ["completed"]);
-  await first.close();
-  // The server went down after the run took the message and before the firing's write: it reads due.
-  const file = join(data, "triggers.json");
-  const kept = JSON.parse(await readFile(file, "utf8"));
-  Object.assign(kept.triggers[0].firings[0], { status: "due", payload: body });
-  delete kept.triggers[0].firings[0].run_id;
-  await writeFile(file, JSON.stringify(kept));
-  const second = await serve(t, { data, ...options });
-  const [again] = await firings(second.api, id, 1);
-  assert.deepEqual([again.status, again.run_id], ["sent", run.run_id]);
-  const read = (await second.api("GET", `/runs/${run.run_id}`)).body;
-  assert.equal(read.status, "completed", "not opened again");
-  const { rows } = await follow(second.api, run.run_id, ["completed"]);
-  assert.equal(rows.filter(isMessageRow).length, 2, "the message once");
-});
 
-const FAUX_WEB_HOLD = new URL("./fixtures/faux-web-hold.mjs", import.meta.url).pathname;
-
-/** A claude-agent run held on a fetch until `go` exists, and a message_run webhook trigger to it whose one event its
- *  door has refused as busy (answers false: whenBusy reject): the firing is due, to be tried again. */
-async function refusedWhileBusy(api, baseUrl, go) {
-  await made(api, "held", { harness: "claude-agent", instructions: `Hold the answer until ${go}.`, tools: ["web_fetch"] });
-  const run = (await api("POST", "/agents/held/runs", { input: { content: "hi" }, max_cost_usd: 1 })).body;
+/** A run whose turn holds until `go` exists, and a message_run webhook trigger to it whose one event is queued for it at
+ *  once: the firing sent with its command row (answers false, the trigger's origin), which the run has not taken, never
+ *  kept due to be tried again. */
+async function queuedWhileBusy(api, baseUrl, store, go) {
+  await made(api, "held");
+  const run = (await api("POST", "/agents/held/runs", { input: { content: `Hold the answer until ${go}.` }, max_cost_usd: 1 })).body;
   await follow(api, run.run_id, ["working"], { deadlineMs: 30_000 });
-  const { id, secret } = (await api("POST", "/triggers", { name: "inbox", source: { kind: "webhook" }, target: { kind: "message_run", run_id: run.run_id, input: { content: "A new event came in." } } })).body;
+  const { id, signing_secret: secret } = (await api("POST", "/triggers", { name: "inbox", source: { kind: "webhook" }, target: { kind: "message_run", run_id: run.run_id, input: { content: "A new event came in." } } })).body;
   const body = '{"ticket":8}';
   assert.equal((await call(port(baseUrl), { method: "POST", path: `/v2/hooks/${id}`, headers: signed(secret, body), body })).status, 202);
-  for (const end = Date.now() + 30_000; ; await new Promise((resolve) => setTimeout(resolve, 50))) {
-    const [firing] = (await api("GET", `/triggers/${id}/firings`)).body.firings;
-    if (firing?.status === "due" && firing.retry_at && /working/.test(firing.reason ?? "")) return { run, id };
-    assert.ok(Date.now() < end, JSON.stringify(firing));
-  }
+  const [sent] = await firings(api, id, 1);
+  assert.deepEqual([sent.status, sent.run_id, sent.retry_at ?? null, sent.error], ["sent", run.run_id, null, null], JSON.stringify(sent));
+  const queued = (await store.commands(run.run_id, 0)).filter((c) => c.body?.origin?.trigger_id === id);
+  assert.deepEqual(queued.map((c) => [c.kind, c.body.answers, c.takenAt]), [["steer", false, null]], "one row, not taken while the turn works");
+  assert.equal((await api("GET", `/runs/${run.run_id}`)).body.status, "working", "the run still on its turn");
+  return { run, id };
 }
 
 const userMessages = (rows) => rows.filter(isMessageRow).length;
 
-// A harness's door (claude-agent here; codex and opencode take the same door) refuses a firing's message while a turn
-// works. The refusal is not the request's outcome: the retry after the turn ends reaches the run.
-test("a busy claude-agent run refuses a firing's message and keeps no refusal: once its turn ends, the retried firing's message reaches it, once", { timeout: 180_000 }, async (t) => {
+// A firing's message to a run whose turn works is a command row queued at once (answers false), never a refusal kept due
+// and tried again: the run takes it at its next safe point, after the turn, whatever its harness (the runner reads the row).
+test("a busy run gets a firing's message as a queued command row at once: once its turn ends it takes it, once", { timeout: 180_000, skip: MESSAGE_RUN }, async (t) => {
   withEnv(t, SEAL);
-  const { api, baseUrl } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS), fauxWeb: FAUX_WEB_HOLD });
+  const { api, baseUrl, store } = await serve(t);
   const go = join(await scratch(t), "go");
-  const { run, id } = await refusedWhileBusy(api, baseUrl, go);
+  const { run } = await queuedWhileBusy(api, baseUrl, store, go);
   await writeFile(go, "");
-  const [sent] = await firings(api, id, 1);
-  assert.deepEqual([sent.status, sent.run_id, sent.error], ["sent", run.run_id, null], JSON.stringify(sent));
   const { rows } = await follow(api, run.run_id, ["completed"], { deadlineMs: 55_000 });
   assert.equal(userMessages(rows), 2, "its message, once, after the turn it waited for");
   assert.ok(rows.some((row) => row.summary === "Answer 2."), "and answered");
 });
 
-test("a server that stops after a busy claude-agent run refused a firing's message sends it on its next start: a refusal is not a message the run took", { timeout: 240_000 }, async (t) => {
+test("a firing's message queued for a busy run outlives the server's restart: the run takes it once, after its turn, and the next server sends nothing again", { timeout: 240_000, skip: MESSAGE_RUN }, async (t) => {
   withEnv(t, SEAL);
   const data = join(await scratch(t), "agents");
   const go = join(await scratch(t), "go");
-  const first = await serve(t, { data, harnessTable: fauxTable(FAUX_HARNESS), fauxWeb: FAUX_WEB_HOLD });
-  const { run, id } = await refusedWhileBusy(first.api, first.baseUrl, go);
+  const first = await serve(t, { data });
+  const { run, id } = await queuedWhileBusy(first.api, first.baseUrl, first.store, go);
   await first.close();
   await writeFile(go, "");
-  const second = await serve(t, { data, harnessTable: fauxTable(FAUX_HARNESS), fauxWeb: FAUX_WEB_HOLD });
+  const second = await serve(t, { data });
   const [sent] = await firings(second.api, id, 1);
   assert.deepEqual([sent.status, sent.run_id, sent.error], ["sent", run.run_id, null], JSON.stringify(sent));
   const { rows } = await follow(second.api, run.run_id, ["completed"], { deadlineMs: 55_000 });

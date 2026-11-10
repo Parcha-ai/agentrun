@@ -40,7 +40,7 @@ export type AskOutcome = "done" | "cancelled" | "expired";
 /** An ask's pending record, as the server reads it. */
 export type PendingAsk = { id: string; tag: string; instruction: string; completion_condition: string; asked_at: string; expires_at: string };
 /** `reason`: why, for the agent, when the run's cap ended the ask (kept with the answer, so a restart still tells it). */
-type Answer = { outcome: AskOutcome; at: string; reason?: string };
+export type Answer = { outcome: AskOutcome; at: string; reason?: string };
 
 /** An ask's id: 32 characters (askIdOf). A record named otherwise (an earlier build's 22, named by the request id alone,
  *  shared across sessions) is no ask: never read, shown, answered or taken up. */
@@ -224,8 +224,28 @@ const TAKE_ENDED: Record<Exclude<HoldEnd, "answered" | "cap">, string> = {
 const CAP_ENDED = "The agent's hand-over ended at the run's spend cap";
 const ASK_ENDED: Record<AskOutcome, string> = { done: GIVEN_BACK, cancelled: "You cancelled the agent's hand-over", expired: "The agent's hand-over expired before you answered it" };
 
-/** A take-over's share of its session's person time (an ask's is `ask:<id>`). */
+/** The hand-over entry an ask commits: the whole ask, as the server reads it (browser-commands.ts), its session's tag as
+ *  `session`, and its instruction again as `reason` (the timeline's words). */
+const waitingEntry = (ask: PendingAsk): Record<string, string> => ({
+  state: "waiting",
+  id: ask.id,
+  session: ask.tag,
+  instruction: ask.instruction,
+  completion_condition: ask.completion_condition,
+  asked_at: ask.asked_at,
+  expires_at: ask.expires_at,
+  reason: ask.instruction,
+});
+
+/** A take-over's share of its session's person time (an ask's is `ask:<id>`; a wait on an ask_person answer's,
+ *  `wait:<call id>`). */
 const TAKE_USER = "take";
+/** What the person's time is held for while the run waits in its claim on their answer to its question, in the cap's words. */
+const WAIT_WHAT = "keeping the browser open while you answer";
+/** Why such a wait ends when a session it kept open is let go (released, idle or lost). */
+const WAIT_SESSION_GONE = "the browser session it kept open for the person was let go";
+/** Why such a wait ends at its bound: the one a browser hand-over's ask waits (holdMs, PERSON_HOLD_MS by default). */
+const waitExpired = (holdMs: number) => `the person did not answer within ${holdMs >= 60_000 ? `${Math.round(holdMs / 60_000)} minutes` : `${Math.round(holdMs / 1000)} seconds`}, the bound a browser hand-over waits`;
 /** A root entry of the run's: a timeline row's source. A phase's carries `at` (ms), when what it says happened, so its row
  *  shows that time, not the time of the log before it (a model request's start, a call's result). */
 type Note = (kind: string, data: Record<string, string | number>) => Promise<void>;
@@ -253,6 +273,16 @@ export function personHands(options: {
   carry?(tag: string, seconds: number): void;
   /** How many waiting rows session `tag` has in the run's timeline (each ask on it writes one, in the order asked). */
   waiting?(tag: string): Promise<number>;
+  /** On the runner's path: ask `id`'s answer as the run's journal has it (its first answered hand-over entry), or
+   *  undefined. Given, an ask's answers are journal entries: the person's (a browser_hand_back row the runner applies),
+   *  and those this process writes through `note` (the live view's hand-back, the ask's expiry at the expiry's time, its
+   *  end at the cap). The answer files are neither read nor written. */
+  answered?(id: string): Promise<Answer | undefined>;
+  /** On the runner's path: writes ask `id`'s answer (the hand-over entry `data`) unless the run's journal has one, read
+   *  and written in one commit (runner/hand-back.ts answerOnce), and gives back the answer that stands, so an ask has
+   *  exactly one answered entry whoever writes it (a person's hand-back row the runner applies, this process's give or
+   *  expiry). Without it, the answer is written through `note` after a read. */
+  answer?(id: string, data: Record<string, string>): Promise<Answer>;
   /** For tests: called between an ask's record and its row. */
   afterRecord?: () => void;
 }) {
@@ -267,6 +297,43 @@ export function personHands(options: {
   let closed = false;
   const CLOSED = { refused: "the run's process is letting go of the browser" };
   const note = (kind: string, data: Record<string, string | number>): Promise<void> => options.note(kind, data).catch(() => undefined);
+  /** The run's journal holds the answers (options.answered): the runner's path. */
+  const journal = options.answered;
+  /** Each ask's answer as the journal has it, once read: an answer never changes. */
+  const fromJournal = new Map<string, Answer>();
+  /** The answer this process is writing for an ask, if any: a read waits for it. */
+  const writing = new Map<string, Promise<void>>();
+  /** Ask `id`'s answer from the journal, read through. */
+  const journalRead = async (id: string): Promise<Answer | undefined> => {
+    const known = fromJournal.get(id);
+    if (known || !journal) return known;
+    const found = await journal(id).catch(() => undefined);
+    if (found) fromJournal.set(id, found);
+    return found;
+  };
+  /** Ask `id`'s answer from the journal, once any this process is writing is in. */
+  const readJournal = async (id: string): Promise<Answer | undefined> => {
+    await writing.get(id);
+    return journalRead(id);
+  };
+  /** Ask `id` answered `outcome` at `at` in the journal, unless it has an answer there (the first is its answer). A write
+   *  the journal refused leaves the answer this process gave, so the agent's wait still ends. */
+  const answerInJournal = (id: string, tag: string, outcome: AskOutcome, at: string, reason?: string): Promise<void> => {
+    const write = (writing.get(id) ?? Promise.resolve()).then(async () => {
+      if (await journalRead(id)) return;
+      const data = { state: outcome, id, session: tag, at, ...(reason !== undefined ? { reason } : {}) };
+      if (options.answer) {
+        // Read and written in one commit: an answer another writer committed since the read above stands, never a second.
+        const stood = await options.answer(id, data).catch(() => undefined);
+        fromJournal.set(id, stood ?? { outcome, at, ...(reason !== undefined ? { reason } : {}) });
+        return;
+      }
+      await note("agent.handover", data);
+      if (!(await journalRead(id))) fromJournal.set(id, { outcome, at, ...(reason !== undefined ? { reason } : {}) });
+    });
+    writing.set(id, write);
+    return write;
+  };
 
   /** The person's time on each session, held once under the cap for everyone who needs it there (a take-over, an ask), and
    *  dropped when the last of them is over: a take then an ask, or an ask then a take, holds it once. `ready` settles when
@@ -278,6 +345,10 @@ export function personHands(options: {
   type Ledger = { holds: Array<{ drop(): void }>; users: Set<string>; ready: Promise<{ refused: string } | undefined>; timer?: unknown; refused?: string; since: number; until: number; turns: Promise<unknown> };
   const now = options.now ?? Date.now;
   const ledgers = new Map<string, Ledger>();
+  /** The runs' waits in their claim on the person's answer (wait), by user: the sessions each keeps open, and its lapse. */
+  const waits = new Map<string, { tags: ReadonlySet<string>; lapse(words: string): void }>();
+  /** The sessions let go (sessionEnded), by tag: a wait whose hold was being admitted as one went still sees it. */
+  const ended = new Set<string>();
   /** `work` on `ledger` once every extension before it is done. */
   const inTurn = <T>(ledger: Ledger, work: () => Promise<T>): Promise<T> => {
     const run = ledger.turns.then(work, work);
@@ -300,7 +371,13 @@ export function personHands(options: {
           // The cap refused to hold more of the person's time here: whoever comes now (a take-over, a new ask) needs more of
           // it, so asks the cap itself, in its own words; with room again, it holds the next stretch and the holding goes on.
           if (known.refused) {
-            const hold = await options.personTime(what, holdMs / 1000, { pauses, tag, from: now() }).catch(() => ({ refused: "the person's time could not be held" }));
+            // Re-held from max(where coverage ends, now): a ledger refused at its coverage end has no live users over the
+            // idle gap since (the reserve and any calls already cover it), so re-holding from `until` would hold that gap a
+            // second time and could falsely refuse a person returning long after. again() differs: it runs only while the
+            // ledger has live users, so its from-until never spans an idle gap.
+            const from = Math.max(known.until, now());
+            const seconds = Math.max(0, now() + holdMs - from) / 1000;
+            const hold = await options.personTime(what, seconds, { pauses, tag, from }).catch(() => ({ refused: "the person's time could not be held" }));
             if ("refused" in hold) return { refused: hold.refused };
             if (ledgers.get(tag) !== known) {
               hold.drop();
@@ -380,6 +457,8 @@ export function personHands(options: {
       ledger.refused = hold.refused;
       if (ledger.users.has(TAKE_USER)) options.gates(tag).give?.("cap", hold.refused);
       for (const user of [...ledger.users]) if (user.startsWith("ask:")) capAsk(user.slice(4), hold.refused);
+      // A wait on the person's answer ends too: the run parks on its question, its browser let go.
+      for (const user of [...ledger.users]) if (user.startsWith("wait:")) waits.get(user)?.lapse(hold.refused);
     }), holdMs);
   };
   /** `user` is done with session `tag`: the last one out drops what was held. */
@@ -398,6 +477,12 @@ export function personHands(options: {
     const dir = askDir(options.root);
     if (!dir || settled.has(id)) return;
     capped.set(id, words);
+    if (journal) {
+      // The runner's path: the end is the journal's answer, now, unless the ask has one there already.
+      const tag = open.get(id)?.tag ?? pendingOf(readOwn(dir, `${id}.json`), id)?.tag;
+      if (tag) void answerInJournal(id, tag, "expired", new Date(now()).toISOString(), words).then(() => settle(id), () => undefined);
+      return;
+    }
     answerOnce(dir, id, "expired", words, now());
     settle(id);
   };
@@ -407,8 +492,16 @@ export function personHands(options: {
    *  settled here, whose row (settle's) says the hand-back. */
   const givenDone = (tag: string): boolean => {
     const dir = askDir(options.root);
-    const waiting = dir ? asksIn(options.root).find(({ ask, answer }) => !answer && ask.tag === tag && Date.parse(ask.expires_at) > Date.now())?.ask : undefined;
+    // On the runner's path an ask's answer is the journal's (an answer file is never read there).
+    const unanswered = (ask: PendingAsk, answer: Answer | undefined) => (journal ? !fromJournal.has(ask.id) : !answer);
+    const waiting = dir ? asksIn(options.root).find(({ ask, answer }) => unanswered(ask, answer) && ask.tag === tag && Date.parse(ask.expires_at) > Date.now())?.ask : undefined;
     if (!dir || !waiting || settled.has(waiting.id)) return false;
+    if (journal) {
+      // Written as the journal's answer, now, unless the ask has one there already (a person's answer that came first
+      // writes its own row, settle's, as this one would).
+      void answerInJournal(waiting.id, tag, "done", new Date(now()).toISOString()).then(() => settle(waiting.id), () => undefined);
+      return true;
+    }
     answerOnce(dir, waiting.id, "done", undefined, now());
     return settle(waiting.id) !== undefined;
   };
@@ -449,9 +542,9 @@ export function personHands(options: {
   const reshow = async (id: string): Promise<void> => {
     const dir = askDir(options.root);
     const kept = dir && options.waiting ? pendingOf(readOwn(dir, `${id}.json`), id) : undefined;
-    if (!dir || !kept || settled.has(id) || answerOf(readOwn(dir, `${id}.answer.json`)) || Date.parse(kept.expires_at) <= Date.now()) return;
+    if (!dir || !kept || settled.has(id) || (journal ? await readJournal(id) : answerOf(readOwn(dir, `${id}.answer.json`))) || Date.parse(kept.expires_at) <= Date.now()) return;
     const nth = asksIn(options.root).map(({ ask: each }) => each).filter((each) => each.tag === kept.tag).reverse().findIndex((each) => each.id === id) + 1;
-    if (nth > 0 && (await options.waiting!(kept.tag)) < nth) await note("agent.handover", { state: "waiting", reason: kept.instruction, session: kept.tag });
+    if (nth > 0 && (await options.waiting!(kept.tag)) < nth) await note("agent.handover", waitingEntry(kept));
   };
 
   /** Ask `id`'s answer, once there is one (the person's, or `expired` once it is due, written here): its hold dropped, any
@@ -462,8 +555,9 @@ export function personHands(options: {
     const ask = adopt(id);
     const dir = askDir(options.root);
     if (!ask || !dir) return undefined;
-    const written = answerOf(readOwn(dir, `${id}.answer.json`));
-    const answered = written?.outcome ?? (Date.now() >= ask.expiresAt ? answerOnce(dir, id, "expired", undefined, now()) : undefined);
+    // On the runner's path the answer is the journal's, as last read (refresh writes a lapsed ask's expiry there first).
+    const written = journal ? fromJournal.get(id) : answerOf(readOwn(dir, `${id}.answer.json`));
+    const answered = written?.outcome ?? (!journal && Date.now() >= ask.expiresAt ? answerOnce(dir, id, "expired", undefined, now()) : undefined);
     if (!answered) return undefined;
     // The cap's words, kept with the answer: a process that takes the ask up after a restart tells them too.
     if (written?.reason !== undefined && !capped.has(id)) capped.set(id, written.reason);
@@ -478,8 +572,15 @@ export function personHands(options: {
     if (!open.size && poll) (clearInterval(poll), (poll = undefined));
     return answered;
   };
+  /** On the runner's path, before settle reads ask `id`: its answer read from the journal, or, once it lapsed with none,
+   *  its expiry written there at the expiry's time (the first answer stands, whoever's it is). */
+  const refresh = async (id: string): Promise<void> => {
+    if (!journal || settled.has(id) || (await readJournal(id))) return;
+    const ask = adopt(id);
+    if (ask && Date.now() >= ask.expiresAt) await answerInJournal(id, ask.tag, "expired", new Date(ask.expiresAt).toISOString());
+  };
   const watch = () => {
-    poll ??= setInterval(() => { for (const id of [...open.keys()]) settle(id); }, options.pollMs ?? 500);
+    poll ??= setInterval(() => { for (const id of [...open.keys()]) void refresh(id).then(() => settle(id), () => undefined); }, options.pollMs ?? 500);
     poll.unref();
   };
 
@@ -559,7 +660,7 @@ export function personHands(options: {
         // The row is what shows the person the ask (askShown): one that cannot be written fails the request, plainly, and
         // leaves nothing behind (its hold, its open entry, its record), so the agent's next request makes it afresh.
         try {
-          await options.note("agent.handover", { state: "waiting", reason: record.instruction, session: ask.sessionTag });
+          await options.note("agent.handover", waitingEntry(record));
         } catch {
           if (open.get(id)?.drop) open.get(id)!.drop();
           open.delete(id);
@@ -577,15 +678,66 @@ export function personHands(options: {
         // An id of no shape this build makes (an earlier build's, named by the request id alone) names no ask here: gone, so
         // the agent's wait ends (it may ask again), never polled forever or matched to another session's record.
         if (!ID.test(interactionId)) return "expired";
+        await refresh(interactionId);
         const answered = settle(interactionId) || "pending";
         // Ended at the cap: the agent is told so, in the cap's words.
         const words = capped.get(interactionId);
         return answered === "expired" && words !== undefined ? { outcome: answered, reason: words } : answered;
       },
     },
+    /** The run waits in its claim on the person's answer to its question (ask_person call `callId`, runner/adapter-loop.ts
+     *  waitInClaim) with its browser sessions `tags` kept open: the person's time on each is held under the cap as a
+     *  hand-over's is (acquire: one hold per session, shared with a take-over or an ask on it, this wait's share
+     *  `wait:<callId>`, held through the wait's bound; the time used carried to the session's next charge when the last
+     *  share goes). Bounded as a hand-over's ask is: holdMs from `since` (PERSON_HOLD_MS; `since` is when the wait first
+     *  started, so a later claim's wait keeps the first one's bound; refused at once past it), past which it lapses, the run parks
+     *  and its release lets the browser go, booking its time to then. `pauses: false`: a refusal pauses nothing, the run
+     *  parks on its question as it would with no browser. Refused in the cap's words when there is no room. `lapsed`
+     *  settles, in words, at the bound, when the cap refuses a re-hold (a take-over's sharing the session), or when a
+     *  session it keeps is let go (sessionEnded); drop() lets the shares go, once. */
+    async wait(callId: string, tags: readonly string[], since: number = now()): Promise<{ refused: string } | { lapsed: Promise<string>; drop(): void }> {
+      const user = `wait:${callId}`;
+      const held: string[] = [];
+      let bound: unknown;
+      const letGo = () => {
+        if (bound !== undefined) timers.clear(bound);
+        bound = undefined;
+        for (const tag of held.splice(0)) release(tag, user);
+      };
+      const expiresAt = since + holdMs;
+      if (expiresAt <= now()) return { refused: waitExpired(holdMs) };
+      for (const tag of new Set(tags)) {
+        const refused = await acquire(tag, user, WAIT_WHAT, false, expiresAt);
+        if (refused) {
+          letGo();
+          return refused;
+        }
+        held.push(tag);
+      }
+      let lapse: (words: string) => void = () => {};
+      const lapsed = new Promise<string>((resolve) => (lapse = resolve));
+      const entry = { tags: new Set(held), lapse };
+      waits.set(user, entry);
+      bound = timers.set(() => lapse(waitExpired(holdMs)), Math.max(0, expiresAt - now()));
+      // A session let go while its hold was being admitted: told before this wait was there to hear it.
+      if (held.some((tag) => ended.has(tag))) lapse(WAIT_SESSION_GONE);
+      return {
+        lapsed,
+        drop: () => {
+          if (waits.get(user) === entry) waits.delete(user);
+          letGo();
+        },
+      };
+    },
+    /** Session `tag` was let go (its release, whatever made it): a wait that kept it open for the person lapses. */
+    sessionEnded(tag: string): void {
+      ended.add(tag);
+      for (const wait of [...waits.values()]) if (wait.tags.has(tag)) wait.lapse(WAIT_SESSION_GONE);
+    },
     /** The run's process lets go: its holds dropped, its poll stopped. */
     close(): void {
       closed = true;
+      waits.clear();
       if (poll) clearInterval(poll);
       poll = undefined;
       for (const ask of open.values()) ask.drop();

@@ -2,7 +2,9 @@
 // suite owns the store, the runners, the tools, the crash and the checks; a harness brings loops whose model plays the
 // suite's script through the kernel, and the kernel's two hook points. Its journal is read with the kernel's one reader
 // (runner/journal-reader.ts), the same for every harness.
-import type { LoopFactory } from "../loop-contract.js";
+import type { Context } from "@earendil-works/chord";
+import type { CallRecord } from "../journal-reader.js";
+import type { Journal, LoopFactory } from "../loop-contract.js";
 
 /** One step of the model's script: call a tool, say a text, or say the text of the last steer it was given. */
 export type ScriptStep =
@@ -51,6 +53,8 @@ export interface ConformanceSetup {
   readonly script: readonly ScriptStep[];
   readonly tools: Readonly<Record<ToolName, SuiteTool>>;
   readonly hooks: KernelHooks;
+  /** The run's agent, for the subject's spec to name (AdapterRunSpec.agentId): the end-of-run step is asked with it. */
+  readonly agentId?: string;
 }
 
 export type ConformanceCase =
@@ -70,6 +74,7 @@ export type ConformanceCase =
   | "approval-names-its-call"
   | "approval-double-click"
   | "message-never-answers"
+  | "end-of-run-answer"
   | "fault-effects-once"
   | "fault-restarts-bounded"
   | "length-ends-failed"
@@ -83,6 +88,13 @@ export interface ConformanceSubject {
   /** Where a runner process finds this subject (an importable module and its export), for the cases whose crash is a real
    *  process's death. Without it those cases are skipped, saying so. */
   readonly process?: { readonly module: string; readonly export: string };
+  /** The facts its adapter declares (AdapterFacts), the cases they rule out derived from them (harness.ts, `factsRuleOut`):
+   *  a fact the adapter changes moves its cases with it, never a list kept by hand. */
+  readonly facts?: { readonly id: string; readonly steer: boolean; readonly rerunsStarted?: false; readonly recoversCutAnswers?: number };
   /** Cases this harness cannot model yet, each with why: reported as skipped with that reason, never as passed. */
   readonly unsupported?: Partial<Record<ConformanceCase, string>>;
+  /** How the suite reads this subject's calls, when they are not the kernel's call records: a workflow's calls are the DSL
+   *  engine's effect records (agentrun.effects), which the kernel's one reader (callsOf) passes over. Reads them from the
+   *  run's journal. Absent: the kernel's one reader. */
+  readCalls?(journal: Journal, context: Context): Promise<CallRecord[]>;
 }

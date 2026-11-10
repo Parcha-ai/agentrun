@@ -36,3 +36,23 @@ test("an MCP server's read gives each tool's permission in force under the serve
     assert.deepEqual([own.default_permission, own.permissions], [set[name].permission, set[name].permissions], name);
   }
 });
+
+test("the run-grant check reads the saved MCP servers from the store: a grant works once the server is saved, and is refused once it is removed", async (t) => {
+  // The server keeps a snapshot of the saved servers' tools for the grant check, and is its only writer (a run's runner reads
+  // the MCP rows itself at claim): the snapshot is refreshed on each save and delete, so the grant check reads what is saved now.
+  const { api } = await serve(t);
+  const server = await startFakeMcp({});
+  t.after(() => server.close());
+  // Not saved yet: a grant of its tool is refused, naming the server.
+  const before = await api("POST", "/agents", agent("before", { tools: ["mcp:fake/add"] }));
+  assert.equal(before.status, 422, JSON.stringify(before.body));
+  assert.match(JSON.stringify(before.body), /No MCP server fake is saved/);
+  // Saved: the snapshot is refreshed, so the grant works.
+  assert.equal((await api("PUT", "/settings/mcp-servers/fake", { url: server.url, auth: NONE })).status, 200);
+  assert.equal((await api("POST", "/agents", agent("granted", { tools: ["mcp:fake/add"] }))).status, 201);
+  // Removed: the snapshot is refreshed again, so a new grant is refused once more.
+  assert.equal((await api("DELETE", "/settings/mcp-servers/fake")).status, 204);
+  const after = await api("POST", "/agents", agent("after", { tools: ["mcp:fake/add"] }));
+  assert.equal(after.status, 422, JSON.stringify(after.body));
+  assert.match(JSON.stringify(after.body), /No MCP server fake is saved/);
+});

@@ -22,7 +22,7 @@ let temporary;
 
 try {
   const [major, minor] = process.versions.node.split('.').map(Number);
-  assert.ok(major > 22 || major === 22 && minor >= 19, 'Source verification requires Node.js >=22.19.0');
+  assert.ok(major > 24 || major === 24 && minor >= 11, 'Source verification requires Node.js >=24.11.0');
   assert.equal(process.argv.length, 2, 'Usage: node scripts/verify-source.mjs');
   temporary = await mkdtemp(join(tmpdir(), 'agentrun-source-consumer-'));
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => /^(?:PATH|SystemRoot|TMPDIR|TEMP|TMP|LANG|LC_ALL)$/i.test(key)));

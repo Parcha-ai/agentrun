@@ -418,10 +418,6 @@ function openFigures(entries: readonly EntryLike[]): { generation: Figure[]; com
 export function spentIn(storeFile: string): number | null {
   if (!existsSync(storeFile)) return 0;
   // Fresh, read-only and lock-free (run-db.ts): its process may hold it.
-  const entries: EntryLike[] = [];
-  // The store's own entries, as read (without the answers written below for a stopped request): openFigures reads them.
-  const read: EntryLike[] = [];
-  let marked = false;
   const rows: EntryLike[] = [];
   readRunDbSync(storeFile, false, (db) => {
     // A read made again (its file changed during it) starts from none.
@@ -431,6 +427,20 @@ export function spentIn(storeFile: string): number | null {
       rows.push(entry);
     }
   });
+  return spentFrom(rows);
+}
+
+/** What the run's model requests cost, from its entries in log order: the one computation, shared by spentIn (reading a
+ *  settled run's own database) and the one-store reader (store-reads, reading A's journal). These readings are the cap's
+ *  own, on its copy of the entries (the run's shown cost is the timeline's, unchanged): a request stopped before its end
+ *  counts at the figure its end mark holds (HELD_FIELD), and one a crash cut (marked as sent, no answer, no end) at the
+ *  figure its start mark holds (openFigures), each the worst case the cap held for it; without that figure either stays
+ *  cut, at an unknown cost. This cap's refusals are left out, as none left. Unknown is null, which a cap never reads as $0. */
+export function spentFrom(rows: readonly EntryLike[]): number | null {
+  // The store's own entries, as read (without the answers written below for a stopped request): openFigures reads them.
+  const entries: EntryLike[] = [];
+  const read: EntryLike[] = [];
+  let marked = false;
   // pi's error entry for a request that ended on an error after its response began is left out, as an aborted one is: its
   // end mark (`error`) counts it at its hold. pi writes the entry as the mark is written, before it or after, so each such
   // mark takes the nearest error entry not yet taken among those after the earliest start holding its figure (a request's
@@ -641,35 +651,41 @@ export function metersIn(storeFile: string): Meters {
  *  unknown cost is known to have spent on each (server.ts /usage). */
 export function meterFiguresIn(storeFile: string): Meters & { known: { tokens: number; browser: number; others: number } } {
   if (!existsSync(storeFile)) return { tools: 0, tokens: null, browser: { usd: 0, seconds: 0 }, others: 0, known: { tokens: 0, browser: 0, others: 0 } };
-  return readRunDbSync(storeFile, false, (db) => {
-    const rows = db.prepare("SELECT conversation_id AS conversation, record FROM entries ORDER BY rowid").all().map((row) => ({ conversation: Number(row.conversation), entry: JSON.parse(String(row.record)) as EntryLike }));
-    const root = rows.reduce((min, row) => Math.min(min, row.conversation), Infinity);
-    const marks = new Set<unknown>();
-    const charges: (number | undefined)[] = [];
-    const browser = { usd: 0 as number | null, seconds: 0 };
-    const others: (number | undefined)[] = [];
-    // Each meter's known dollars, whether or not one of its charges is unknown: what a run of unknown cost is known to
-    // have spent on it (server.ts /usage).
-    const known = { tokens: 0, browser: 0, others: 0 };
-    for (const { entry } of rows) {
-      const data = (entry.data ?? {}) as Record<string, unknown>;
-      if (entry.kind === TOOL_STARTED) marks.add(data.call);
-      else if (entry.kind === TOOL_COST) marks.delete(data.call), charges.push(figureOf(data.usd));
-      if (entry.kind === TOOL_COST && data.tool !== "browser") others.push(figureOf(data.usd)), (known.others += figureOf(data.usd) ?? 0);
-      if (entry.kind !== TOOL_COST || data.tool !== "browser") continue;
-      const usd = figureOf(data.usd);
-      known.browser += usd ?? 0;
-      browser.usd = browser.usd === null || usd === undefined ? null : browser.usd + usd;
-      browser.seconds += figureOf(data.seconds) ?? 0;
-    }
-    const tools = marks.size || charges.some((usd) => usd === undefined) ? null : (charges as number[]).reduce((sum, usd) => sum + usd, 0);
-    const rest = rows.filter(({ conversation, entry }) => conversation === root && entry.kind !== TOOL_STARTED && entry.kind !== TOOL_COST).map(({ entry }) => entry);
-    const usage = timelineOf(rest, { settled: true }).find((row) => row.kind === "usage");
-    const otherTools = marks.size || others.some((usd) => usd === undefined) ? null : (others as number[]).reduce((sum, usd) => sum + usd, 0);
-    known.tokens = usage ? (usage.usage?.usd ?? usage.usage?.so_far_usd ?? 0) : 0;
-    const notMetered = usage?.usage?.not_metered;
-    return { tools, tokens: usage ? (usage.usage?.usd ?? null) : 0, browser, others: otherTools, known, ...(notMetered ? { notMetered } : {}) };
-  });
+  return readRunDbSync(storeFile, false, (db) => meterFiguresFrom(db.prepare("SELECT conversation_id AS conversation, record FROM entries ORDER BY rowid").all().map((row) => ({ conversation: Number(row.conversation), entry: JSON.parse(String(row.record)) as EntryLike }))));
+}
+
+/** meterFiguresIn's figures from a run's entries by conversation, in log order: the one computation, shared by
+ *  meterFiguresIn (reading a settled run's own database) and the one-store reader (store-reads/cap.ts metersOverStore, over
+ *  A's journal). Only where the entries come from changes; the figures do not (the money-parity rule), as spentFrom is to
+ *  spentIn. A paid tool's charge reaches it as the TOOL_COST / TOOL_UNMETERED the store reader folds back in from the
+ *  paid-tools session (store-reads/journal.ts withPaidCosts), as the file-backed run's root held each natively. */
+export function meterFiguresFrom(rows: readonly { conversation: number; entry: EntryLike }[]): Meters & { known: { tokens: number; browser: number; others: number } } {
+  const root = rows.reduce((min, row) => Math.min(min, row.conversation), Infinity);
+  const marks = new Set<unknown>();
+  const charges: (number | undefined)[] = [];
+  const browser = { usd: 0 as number | null, seconds: 0 };
+  const others: (number | undefined)[] = [];
+  // Each meter's known dollars, whether or not one of its charges is unknown: what a run of unknown cost is known to
+  // have spent on it (server.ts /usage).
+  const known = { tokens: 0, browser: 0, others: 0 };
+  for (const { entry } of rows) {
+    const data = (entry.data ?? {}) as Record<string, unknown>;
+    if (entry.kind === TOOL_STARTED) marks.add(data.call);
+    else if (entry.kind === TOOL_COST) marks.delete(data.call), charges.push(figureOf(data.usd));
+    if (entry.kind === TOOL_COST && data.tool !== "browser") others.push(figureOf(data.usd)), (known.others += figureOf(data.usd) ?? 0);
+    if (entry.kind !== TOOL_COST || data.tool !== "browser") continue;
+    const usd = figureOf(data.usd);
+    known.browser += usd ?? 0;
+    browser.usd = browser.usd === null || usd === undefined ? null : browser.usd + usd;
+    browser.seconds += figureOf(data.seconds) ?? 0;
+  }
+  const tools = marks.size || charges.some((usd) => usd === undefined) ? null : (charges as number[]).reduce((sum, usd) => sum + usd, 0);
+  const rest = rows.filter(({ conversation, entry }) => conversation === root && entry.kind !== TOOL_STARTED && entry.kind !== TOOL_COST).map(({ entry }) => entry);
+  const usage = timelineOf(rest, { settled: true }).find((row) => row.kind === "usage");
+  const otherTools = marks.size || others.some((usd) => usd === undefined) ? null : (others as number[]).reduce((sum, usd) => sum + usd, 0);
+  known.tokens = usage ? (usage.usage?.usd ?? usage.usage?.so_far_usd ?? 0) : 0;
+  const notMetered = usage?.usage?.not_metered;
+  return { tools, tokens: usage ? (usage.usage?.usd ?? null) : 0, browser, others: otherTools, known, ...(notMetered ? { notMetered } : {}) };
 }
 
 /** What the paid tools of `entries` (TOOL_STARTED and TOOL_COST) spent, as the cap counts it: each charge, and a call

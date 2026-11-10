@@ -1,14 +1,15 @@
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { LiveRun } from "./LiveRun";
+import { cost } from "@/lib/format";
 import type { Run, TimelinePage } from "@/lib/v2";
 
 // Archive's answer can describe the run as it was before a newer read landed: the page keeps the newer state and takes
 // only archived_at from the answer, then reads the run again.
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 let root: ReturnType<typeof createRoot> | undefined;
-afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
+afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; vi.useRealTimers(); });
 
 const at = (status: Run["status"], archived: boolean): Run => ({ sha: null, updated_at: "2026-11-04T00:00:00Z", poll_after_ms: 0,
   run_id: "r1", agent_id: "calc", agent_version: 1, revision: "rv1", kind: "agentic", status, state: status === "working" ? "working" : "idle", title: "What is two and two?",
@@ -142,5 +143,75 @@ describe("LiveRun, a run paused at its spend cap", () => {
     expect(reads).toBeGreaterThan(before);
     expect(host.textContent).not.toContain("Paused at its $0.05 spend cap");
     expect(host.querySelector('input[aria-label="New cap in dollars"]')).toBeNull();
+  });
+});
+
+// A working run's cost moves with each priced request: every timeline page carries the run's cost as it stands, and the
+// header follows the newest page's, never the first read's (made before any priced request) until the run ends.
+describe("LiveRun, a working run's cost", () => {
+  it("the header reads the newest timeline page's cost while the run works, not the first read's $0", async () => {
+    const zero = { usd: 0, basis: "estimate", charge_state: null, cap_usd: null };
+    const priced = { usd: 0.0126, basis: "estimate", charge_state: null, cap_usd: null };
+    let pages = 0;
+    const v2 = {
+      // Every read of the run says working; the first one was made before any priced request, so it says $0.
+      getRun: async () => ({ ...at("working", false), cost: zero }),
+      listFiles: async () => ({ run_id: "r1", files: [], complete: true, truncated: false }),
+      // The first page carries the cost as it stands now; the follow-up read then waits, as a long poll does.
+      getTimeline: async (_id: string, o: { signal?: AbortSignal }) => (++pages === 1
+        ? { cost: priced, run_id: "r1", status: "working", state: "working", rows: [], drop: [], reset: true, unchanged: false, final: false, has_more: false, next_after: 0 } as unknown as TimelinePage
+        : new Promise<TimelinePage>((_, reject) => o.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true }))),
+      listRevisions: async () => ({ revisions: [], next_cursor: null }),
+    };
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    act(() => root!.render(createElement(LiveRun, { v2: v2 as never, runId: "r1", caps: null, agentName: () => "Calc" })));
+    const settle = async () => { for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
+    await settle();
+    const header = () => host.querySelector("header")?.textContent ?? "";
+    expect(header()).toContain("Working");
+    expect(pages).toBeGreaterThanOrEqual(1);
+    // In the header's own words for each figure: the page's $0.0126, never the first read's $0.
+    expect(cost(priced as Run["cost"])).not.toBe(cost(zero as Run["cost"]));
+    expect(header()).toContain(cost(priced as Run["cost"]));
+    expect(header()).not.toContain(cost(zero as Run["cost"]));
+  });
+  it("follows each later page's cost while the run works, then the run's own read once it ends", async () => {
+    // Fake timers: the follow loop's pause between reads is stepped through, never waited for.
+    vi.useFakeTimers();
+    const at$ = (usd: number) => ({ usd, basis: "estimate", charge_state: null, cap_usd: null });
+    const page = (usd: number, status: Run["status"]) => ({ cost: at$(usd), run_id: "r1", status, state: status === "working" ? "working" : "idle", rows: [], drop: [], reset: false, unchanged: false, final: status !== "working", has_more: false, next_after: 0 }) as unknown as TimelinePage;
+    // The pages, one per read: the test hands each out in turn.
+    const waiting: ((p: TimelinePage) => void)[] = [];
+    let ended = false;
+    const v2 = {
+      getRun: async () => (ended ? { ...at("completed", false), cost: at$(0.08) } : { ...at("working", false), cost: at$(0) }),
+      listFiles: async () => ({ run_id: "r1", files: [], complete: true, truncated: false }),
+      getTimeline: () => new Promise<TimelinePage>((resolve) => { waiting.push(resolve); }),
+      listRevisions: async () => ({ revisions: [], next_cursor: null }),
+    };
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    act(() => root!.render(createElement(LiveRun, { v2: v2 as never, runId: "r1", caps: null, agentName: () => "Calc" })));
+    const step = async (ms: number) => { await act(async () => { await vi.advanceTimersByTimeAsync(ms); }); };
+    const header = () => host.querySelector("header")?.textContent ?? "";
+    // The follow loop keeps a short pause between reads: step past it until it asks for the next page, then hand that one out.
+    const hand = async (p: TimelinePage) => {
+      for (let i = 0; i < 20 && !waiting.length; i++) await step(50);
+      expect(waiting.length).toBeGreaterThan(0);
+      waiting.shift()!(p);
+      for (let i = 0; i < 5; i++) await step(0);
+    };
+    await hand(page(0.0126, "working"));
+    expect(header()).toContain(cost(at$(0.0126) as Run["cost"]));
+    await hand(page(0.05, "working"));
+    expect(header()).toContain(cost(at$(0.05) as Run["cost"]));
+    expect(header()).not.toContain(cost(at$(0.0126) as Run["cost"]));
+    // The run ends: its own read (at its end) has the final figure, which the header shows, not the last page's.
+    ended = true;
+    await hand(page(0.09, "completed"));
+    expect(header()).toContain("Completed");
+    expect(header()).toContain(cost(at$(0.08) as Run["cost"], { ended: true }));
+    expect(header()).not.toContain(cost(at$(0.09) as Run["cost"]));
   });
 });

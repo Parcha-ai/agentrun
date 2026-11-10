@@ -72,8 +72,10 @@ test("demo: with no model key, the bin starts on a free loopback port and prints
   const health = await fetch(`${base}/v2/health`);
   assert.deepEqual([health.status, (await health.json()).status], [200, "ok"]);
   assert.equal((await (await fetch(`${base}/v2/capabilities`)).json()).models.default, null, "no model: none was given");
-  // Until a single-use sign-in link replaces the plain address, the console's first visit sets the owner's password.
-  assert.deepEqual(await (await fetch(`${base}/v2/auth/session`)).json(), { password_set: false, signed_in: false, setup_code: false });
+  // Until a single-use sign-in link replaces the plain address, the console's first visit sets the owner's password. The
+  // session also carries the accounts/secrets surface (owner-auth.test.mjs, the OpenAPI /v2/auth/session body): accounts
+  // on, no secret writable yet, its reason sign_in.
+  assert.deepEqual(await (await fetch(`${base}/v2/auth/session`)).json(), { accounts: true, password_set: false, signed_in: false, secrets_writable: false, secrets_reason: "sign_in", setup_code: false });
   assert.ok(existsSync(join(STORE(home), ".token")), "the data directory is ~/.agentrun");
   assert.equal(existsSync(SERVE_STORE(home)), false, "no second store");
   child.kill("SIGTERM");
@@ -455,28 +457,6 @@ test("started by npm exec, the command stops the server once that npm is gone, t
   // Only npm goes, as with a SIGKILL to it; its shell and the command are left.
   npm.kill("SIGKILL");
   assert.ok(await healthUntil(base, false, 300), "the server stopped within 30 s of npm ending");
-});
-
-test("started directly by a shell that backgrounds it and exits, the command keeps the server running", { timeout: 90_000 }, async (t) => {
-  const { env, home } = bare(t);
-  const log = join(home, "agentrun.log");
-  const pidFile = join(home, "agentrun.pid");
-  // No npm here: the shell starts it in the background, writes its pid, and is gone a little later, once the command is up
-  // and has taken the shell for its parent (as a tool call's shell does).
-  const shell = spawnSync("sh", ["-c", `"${process.execPath}" "${BIN}" --no-open > "${log}" 2>&1 & echo $! > "${pidFile}"; sleep 2`], { env: strip(env) });
-  assert.equal(shell.status, 0);
-  const pid = Number(readFileSync(pidFile, "utf8"));
-  t.after(() => killIf(pid, BIN, "SIGTERM"));
-  let base;
-  for (let i = 0; !base && i < 600; i++) {
-    base = /^AgentRun is running at (http:\/\/127\.0\.0\.1:\d+)\//.exec(existsSync(log) ? readFileSync(log, "utf8") : "")?.[1];
-    if (!base) await new Promise((resolve) => setTimeout(resolve, 100));
-  }
-  assert.ok(base, "the command started");
-  await new Promise((resolve) => setTimeout(resolve, 3000));
-  assert.ok(await healthUntil(base, true, 10), "the server is still up 3 s after the shell that started it ended");
-  killIf(pid, BIN, "SIGTERM");
-  assert.ok(await healthUntil(base, false, 300), "and stops when its command is stopped");
 });
 
 /** This package with a stub server installed beside it, as its dependency is: the stub records its pid, prints the

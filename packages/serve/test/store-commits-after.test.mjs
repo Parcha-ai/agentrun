@@ -118,7 +118,7 @@ test("a commit rolled back by a fence failure after its writes leaves no row in 
     all: async (sql, ...params) => (miss(sql) ? [] : tx.all(sql, ...params)),
     step: (statement) => tx.step(statement),
   });
-  const connection = { get: (...args) => db.connection.get(...args), all: (...args) => db.connection.all(...args), transaction: (work, options) => db.connection.transaction((tx) => work(wrap(tx)), options) };
+  const connection = { dialect: db.connection.dialect, get: (...args) => db.connection.get(...args), all: (...args) => db.connection.all(...args), transaction: (work, options) => db.connection.transaction((tx) => work(wrap(tx)), options) };
   const storage = await RunStorage.open(connection, claim);
   await commitWrites(storage, [{ type: "conversation", value: { id: ROOT } }], context);
   const tk = await storage.mintId();

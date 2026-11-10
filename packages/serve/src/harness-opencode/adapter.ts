@@ -11,7 +11,7 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { READ_SKILL_FILE, readSkillFileTool, skillProblems, toolSchemaProblems, type HostSkill } from "@parcha/agentrun-kernel";
-import type { AdapterEvent, AdapterSession, AgentAdapter, HostTool, SessionSpec, TurnStatus } from "@parcha/agentrun-kernel";
+import type { AdapterEvent, AdapterSession, AgentAdapter, GateCall, HostTool, SessionSpec, TurnStatus } from "@parcha/agentrun-kernel";
 import { abortedOutcome, openDrive, pendingSubmissions, SessionHalt, type Drive, type HostTool as KernelTool } from "@parcha/agentrun-kernel/kernel";
 import { recoveryNote, settleTurn, transcriptOf } from "@parcha/agentrun-kernel/process";
 import { serialWriter, startModelProxy, type ModelProxyOptions } from "@parcha/agentrun-kernel/host";
@@ -184,6 +184,8 @@ export function openCodeAdapter(options: OpenCodeAdapterOptions): AgentAdapter {
         ...(options.eventConnectMs ? { eventConnectMs: options.eventConnectMs } : {}),
         ...(options.log ? { log: options.log } : {}),
         ...(options.fetch ? { fetch: options.fetch } : {}),
+        // The host's gate, asked by the kernel's tool bridge before anything of a call is written.
+        ...(io.gate ? { gate: (call: GateCall) => io.gate!(call) } : {}),
       }, (c) => void (control = c));
 
       const live = (event: unknown) => {
@@ -213,9 +215,12 @@ export function openCodeAdapter(options: OpenCodeAdapterOptions): AgentAdapter {
         interrupted = false;
         running = (async () => {
           let outcome: { status: TurnStatus; error?: string };
+          // The turn's answer cut at the model's output limit, as its end in the records says: told on its turn_end.
+          let cut: { stopReason: "length"; outputTokens?: number } | undefined;
           try {
             await harness.drive(current);
-            const ended = turnsIn(current).slice(before).at(-1)?.data as { status?: TurnStatus; error?: string } | undefined;
+            const ended = turnsIn(current).slice(before).at(-1)?.data as { status?: TurnStatus; error?: string; stopReason?: unknown; outputTokens?: unknown } | undefined;
+            if (ended?.stopReason === "length") cut = { stopReason: "length", ...(typeof ended.outputTokens === "number" ? { outputTokens: ended.outputTokens } : {}) };
             // A turn its interrupt stopped has no end in the records (it stays open): interrupted.
             outcome = ended?.status ? { status: ended.status, ...(ended.error ? { error: ended.error } : {}) } : interrupted ? { status: "interrupted" } : { status: "failed", error: "the turn ended with no outcome in the session's records" };
           } catch (error) {
@@ -228,7 +233,7 @@ export function openCodeAdapter(options: OpenCodeAdapterOptions): AgentAdapter {
             // codex's adapter does).
             if (current.signal.aborted) state = holdsTurn(current.state()) ? "open_turn" : "idle";
           }
-          io.onEvent({ type: "turn_end", status: outcome.status });
+          io.onEvent({ type: "turn_end", status: outcome.status, ...(cut && outcome.status === "completed" ? cut : {}) });
           return outcome;
         })();
         return running;

@@ -56,17 +56,17 @@ const REFUSED = "this route needs a request signed by the webhook trigger's secr
 export type PushDeps = {
   adapters: readonly TriggerAdapter[];
   /** The source of trigger `id`, when it is a trigger of a pushed source that is on. */
-  hooked(id: string): Source | undefined;
+  hooked(id: string): Promise<Source | undefined>;
   /** How long a hook's body has to arrive, whole (default HOOK_BODY_MS): a test's seam. */
   bodyMs?: number;
   /** A request trigger `id` ignored, under the key its event would have (triggers.ts ignored): kept for its day. */
-  ignored?(id: string, eventId: string): void;
-  /** Its firing for the event, recorded (triggers.ts receive), with what the source says of it (`attrs`). */
-  receive(id: string, eventId: string, payload: string, attrs?: Record<string, string>): { created: boolean; firing: unknown };
-  /** The triggers of the pushed source `kind`, on, that listen on `scope` (its adapter's scopeOf). */
-  scoped(kind: string, scope: string): string[];
+  ignored?(id: string, eventId: string): Promise<void>;
+  /** Its firing for the event, recorded (triggers.ts receive, in the store), with what the source says of it (`attrs`). */
+  receive(id: string, eventId: string, payload: string, attrs?: Record<string, string>): Promise<{ created: boolean; firing: unknown }>;
+  /** The triggers of the pushed source `kind`, on, that listen on `scope` (their scope rows). */
+  scoped(kind: string, scope: string): Promise<string[]>;
   /** The triggers of the pushed source `kind` that are on, with their sources: the ones its adapter's takes reads. */
-  listening?(kind: string): { id: string; source: Source }[];
+  listening?(kind: string): Promise<{ id: string; source: Source }[]>;
   /** A notice about source `adapterId`'s own connection, verified as the source's (PushContext.notice): checked and
    *  answered by the server's code for it, or undefined when it takes none. */
   notice?(adapterId: string, event: string, body: unknown): Promise<{ status: number; body: Record<string, unknown> } | undefined>;
@@ -92,7 +92,7 @@ export async function receivePush(deps: PushDeps, req: IncomingMessage, segment:
   // settings are a trigger's). A path that names no such trigger is checked as the first such source's, against the
   // decoy: the same work and the same 401, so no id is learned by asking.
   const own = deps.adapters.find((a) => a.id === name && a.push && a.settings?.scope === "server");
-  const named = own || !ID.test(name) ? undefined : deps.hooked(name);
+  const named = own || !ID.test(name) ? undefined : await deps.hooked(name);
   const trigger = named && deps.adapters.find((a) => a.id === named.kind && a.push && a.settings?.scope === "trigger");
   const adapter = own ?? trigger ?? deps.adapters.find((a) => a.push && a.settings?.scope === "trigger");
   const push = adapter?.push;
@@ -119,7 +119,7 @@ export async function receivePush(deps: PushDeps, req: IncomingMessage, segment:
   // Verified, and not an event its trigger takes: answered, so the sender does not send it again, and said once.
   if (!Array.isArray(events)) {
     deps.say({ condition: "hook_ignored", source: adapter.id, route, ...(pathTrigger ? { trigger: pathTrigger } : {}), reason: events.ignored, ...(events.event ? { event: events.event } : {}) });
-    if (pathTrigger && events.key !== undefined) deps.ignored?.(pathTrigger, events.key);
+    if (pathTrigger && events.key !== undefined) await deps.ignored?.(pathTrigger, events.key);
     return { status: 200, body: { ok: "ignored" } };
   }
   if (!events.length) {
@@ -129,7 +129,8 @@ export async function receivePush(deps: PushDeps, req: IncomingMessage, segment:
   // A trigger's own path: each event is its own firing. One (a webhook's request) is answered as its firing; more, as a
   // server-wide source's are, by the firings they made.
   if (pathTrigger) {
-    const fired = events.map((event) => deps.receive(pathTrigger, event.key, event.text, event.attrs));
+    const fired: { created: boolean; firing: unknown }[] = [];
+    for (const event of events) fired.push(await deps.receive(pathTrigger, event.key, event.text, event.attrs));
     if (fired.length > 1) return { status: fired.some((f) => f.created) ? 202 : 200, body: { firings: fired.map((f) => f.firing) } };
     const { created, firing } = fired[0]!;
     return { status: created ? 202 : 200, body: firing, ...(created ? {} : { headers: { "idempotent-replayed": "true" } }) };
@@ -144,14 +145,14 @@ export async function receivePush(deps: PushDeps, req: IncomingMessage, segment:
     let refused: unknown;
     let taken = false;
     for (const event of events) {
-      for (const { id, source } of deps.listening?.(adapter.id) ?? []) {
+      for (const { id, source } of (await deps.listening?.(adapter.id)) ?? []) {
         if (adapter.takes(source, event) !== undefined) {
-          deps.ignored?.(id, event.key);
+          await deps.ignored?.(id, event.key);
           continue;
         }
         taken = true;
         try {
-          fired.push(deps.receive(id, event.key, event.text, event.attrs));
+          fired.push(await deps.receive(id, event.key, event.text, event.attrs));
         } catch (error) {
           if (!(error instanceof ApiError) || error.code !== "rate_limited") throw error;
           refused = error;
@@ -170,8 +171,8 @@ export async function receivePush(deps: PushDeps, req: IncomingMessage, segment:
   // and is said with their ids, so no event fires twice or reaches whichever came first.
   const fired: { created: boolean; firing: unknown }[] = [];
   for (const event of events) {
-    const ids = event.scope === undefined ? [] : deps.scoped(adapter.id, event.scope);
-    if (ids.length === 1) fired.push(deps.receive(ids[0]!, event.key, event.text, event.attrs));
+    const ids = event.scope === undefined ? [] : await deps.scoped(adapter.id, event.scope);
+    if (ids.length === 1) fired.push(await deps.receive(ids[0]!, event.key, event.text, event.attrs));
     else if (!ids.length) deps.say({ condition: "hook_no_trigger", source: adapter.id, route, scope: String(event.scope ?? "") });
     else deps.say({ condition: "hook_scope_ambiguous", source: adapter.id, route, scope: String(event.scope), triggers: ids.join(",") });
   }

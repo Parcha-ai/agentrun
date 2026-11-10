@@ -9,17 +9,18 @@
 // that SIGKILLs itself at the point, since a frozen loop can hide a write a real crash would cut.
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { once } from "node:events";
 import { appendFileSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { openSqliteStore, RunFinal, type RunRow, type Store } from "../../store/index.js";
+import { dropPostgresSchema, openPostgresStore, openStore, RunFinal, type RunRow, type Store, StoreConstraint, type StoreRole, storeTarget } from "../../store/index.js";
 import { sendCommand } from "../commands.js";
 import { callsOf, journalRecords, messagesOf, type CallRecord, type MessageRecord } from "../journal-reader.js";
 import { type AnswerData, KINDS } from "../journal-kinds.js";
-import type { LoopFactory } from "../loop-contract.js";
+import type { EndOfRunAnswer, EndOfRunTurn, LoopDeps, LoopFactory } from "../loop-contract.js";
 import { timelineReducer, type TimelineEvent } from "@parcha/pi-durable-agent/timeline";
 import { emptyState, translate } from "../../live/translate.js";
 
@@ -128,6 +129,19 @@ function crashAt(point: keyof KernelHooks, holder: { runner?: Runner; crashed?: 
   };
 }
 
+/** The Postgres store each registered subject's worlds open (registerHarnessConformance's `storeUrl`), by the subject
+ *  object the suite's cases are handed: none for the data directory's SQLite store. */
+const STORE_URLS = new WeakMap<ConformanceSubject, string>();
+/** Cases a Postgres store can't pass yet, each with what it waits on: they run on SQLite and are skipped on Postgres. */
+const POSTGRES_PENDING: Readonly<Record<string, string>> = {
+  "approval-double-click": "waits on the Postgres commands_one_answer migration (pgstore-1): the one-answer index is SQLite's today",
+};
+
+/** A store in a data directory of its own, one queued run, and runners started on it (each its own connection). */
+/** The suite's short lease, for the crash cases: a crashed runner's claim must run out for the second runner to take
+ *  the run over. */
+const TAKEOVER: Partial<typeof TIMING> = {};
+
 /** The stores' clock skew a runner process reads (child.ts): the file holds the milliseconds the clock moved, so the
  *  process's store moves with the case's (runOut). */
 export const storeClockOf = (file: string | undefined): (() => number) => {
@@ -135,15 +149,34 @@ export const storeClockOf = (file: string | undefined): (() => number) => {
   return () => Date.now() + (existsSync(file) ? Number(readFileSync(file, "utf8")) || 0 : 0);
 };
 
+/** Opens a store of a case's world (the server's, a runner's, a runner process's: child.ts) on the case's clock, real time
+ *  plus its skew (storeClockOf `clockFile`), so runOut moves the clock every store judges a lease on. SQLite judges a lease
+ *  on its store clock `now`. Postgres judges one on the database's clock (store/postgres/dialect.ts DATABASE_NOW_MS), which
+ *  no skew file moves: a crashed runner's claim would hold for the steady lease's 10 real minutes and nobody take the run
+ *  over. So on Postgres the case's clock is the store's test clock (testClock), bound into every deadline as SQLite binds
+ *  its own, as the store's tests do (test/store-helpers.mjs). */
+export function openCaseStore({ dataDir, role, url, env, clockFile }: { dataDir: string; role: StoreRole; url: string; env: NodeJS.ProcessEnv; clockFile?: string }): Promise<Store> {
+  const now = storeClockOf(clockFile);
+  const target = storeTarget(dataDir, env, url);
+  if (target.kind === "sqlite") return openStore({ dataDir, role, now, url, env });
+  return openPostgresStore({ url: target.url, schema: target.schema, role, testClock: now });
+}
+
 /** A store in a data directory of its own, one queued run, and runners started on it (each its own connection). Every
  *  store's clock is real time plus the case's skew (runOut), a runner process's too, through `clockFile`. */
 async function world(subject: ConformanceSubject, t: { after(fn: () => unknown): void }, timing: Partial<typeof TIMING> = STEADY) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-conformance-"));
+  // The store the suite was handed (store/open.ts): on Postgres, a schema of this world's own, dropped after it. The URL
+  // goes to each opener by hand, and to a runner process in its config, never through an environment (a secret is read
+  // by name: store/open.ts); the environment names only the schema.
+  const target = storeTarget(dir, {}, STORE_URLS.get(subject) ?? "");
+  const storeEnv: Record<string, string> = target.kind === "postgres" ? { AGENTRUN_STORE_SCHEMA: `${target.schema}_c${randomBytes(6).toString("hex")}` } : {};
+  const env = { ...process.env, ...storeEnv };
+  const url = target.kind === "postgres" ? target.url : "";
   const clockFile = join(dir, "store-clock-skew");
-  const now = storeClockOf(clockFile);
   /** A lost claim runs out: every store's now moves past its until (a crashed runner's, or a stopped process's). */
   const runOut = () => writeFileSync(clockFile, String((Number(existsSync(clockFile) ? readFileSync(clockFile, "utf8") : 0) || 0) + RUN_OUT_MS));
-  const server = await openSqliteStore({ dataDir: dir, role: "server", now });
+  const server = await openCaseStore({ dataDir: dir, role: "server", url, env, clockFile });
   const stores: Store[] = [server];
   const runners: Runner[] = [];
   /** What the runners said (claims, releases, errors): shown with a case's failure. */
@@ -152,13 +185,47 @@ async function world(subject: ConformanceSubject, t: { after(fn: () => unknown):
     for (const runner of runners) await runner.close();
     for (const store of stores.reverse()) await store.close().catch(() => undefined);
     rmSync(dir, { recursive: true, force: true });
+    if (target.kind === "postgres") await dropPostgresSchema(target.url, storeEnv.AGENTRUN_STORE_SCHEMA!);
   });
   await server.agents.create({ id: "agent-1", name: "Conformance" }, { id: "rev-1", kind: "agentic", body: { instructions: "Follow the script." } });
   await server.runs.create({ id: RUN, agentId: "agent-1", revisionId: "rev-1" });
   /** The command rows a runner has handed to a loop's command(): with the loop, whether or not taken yet. */
   const handed = new Set<number>();
-  const start = async (name: string, setup: ConformanceSetup, holder?: { runner?: Runner }) => {
-    const store = await openSqliteStore({ dataDir: dir, role: "runner", now });
+  /** Each runner's claims in flight (store.runs.claimMany), by its name: what claimsSettled waits for. */
+  const claiming = new Map<string, Set<Promise<unknown>>>();
+  /** `store` as runner `name` is handed it: the same store, its claims in flight counted (claiming). */
+  const claimsCounted = (store: Store, name: string): Store => {
+    const pending = new Set<Promise<unknown>>();
+    claiming.set(name, pending);
+    const runs = new Proxy(store.runs, {
+      get(target, property) {
+        const value: unknown = Reflect.get(target, property, target);
+        if (typeof value !== "function") return value;
+        if (property !== "claimMany") return value.bind(target);
+        return (...args: unknown[]) => {
+          const claimed = value.apply(target, args) as Promise<unknown>;
+          pending.add(claimed);
+          void claimed.finally(() => pending.delete(claimed)).catch(() => undefined);
+          return claimed;
+        };
+      },
+    });
+    return new Proxy(store, {
+      get(target, property) {
+        if (property === "runs") return runs;
+        const value: unknown = Reflect.get(target, property, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+  };
+  /** Once runner `name` is killed (crashAt), its claim already in flight settles, judged on the clock it was sent at: a
+   *  dead process sends nothing after it dies. A case runs the lease out only after this, else that claim (on Postgres,
+   *  a transaction still on its way to the database) reads the moved clock, takes the run back from the runner that sent
+   *  it (Claim.lost names that same runner), gives it back as a run it still holds, and the runner that then takes it over
+   *  claims a released run, not a lost one: the timeline never says the run went on after the crashed runner was lost. */
+  const claimsSettled = async (name: string) => void (await Promise.allSettled([...(claiming.get(name) ?? [])]));
+  const start = async (name: string, setup: ConformanceSetup, holder?: { runner?: Runner }, more: Pick<LoopDeps, "endOfRun"> = {}) => {
+    const store = await openCaseStore({ dataDir: dir, role: "runner", url, env, clockFile });
     stores.push(store);
     // Each journal commit's outcome, by the claim's epoch (as child.ts records its process's): what a loop wrote, and
     // whether a loop that lost its claim wrote anything after; and each command row handed to the loop.
@@ -166,6 +233,7 @@ async function world(subject: ConformanceSubject, t: { after(fn: () => unknown):
     const observedLoop: LoopFactory = (deps) => {
       const loop = factory({
         ...deps,
+        ...more,
         journal: (claim) =>
           new Proxy(deps.journal(claim), {
             get(target, property) {
@@ -187,7 +255,7 @@ async function world(subject: ConformanceSubject, t: { after(fn: () => unknown):
       });
       return { ...loop, command: (command) => (handed.add(command.id), loop.command(command)) };
     };
-    const runner = startRunner({ store, createLoop: observedLoop, name, ...TIMING, ...timing, onEvent: (event) => events.push({ runner: name, at: Date.now(), ...event }) });
+    const runner = startRunner({ store: claimsCounted(store, name), createLoop: observedLoop, name, ...TIMING, ...timing, onEvent: (event) => events.push({ runner: name, at: Date.now(), ...event }) });
     runners.push(runner);
     if (holder) holder.runner = runner;
     return runner;
@@ -195,11 +263,13 @@ async function world(subject: ConformanceSubject, t: { after(fn: () => unknown):
   const run = async (): Promise<RunRow> => (await server.runs.get(RUN))!;
   const read = async (): Promise<{ calls: CallRecord[]; messages: MessageRecord[]; answers: AnswerData[] }> => {
     const row = await run();
-    // pi's tool tasks and the CLI record alike: the kernel's one reader.
-    const entries = await journalRecords(server.journal({ runId: RUN, runner: "conformance-reader", epoch: row.epoch, until: 0, from: row.state }), BACKGROUND_CONTEXT);
+    // pi's tool tasks and the CLI record alike: the kernel's one reader. A subject whose calls are not the kernel's (a
+    // workflow's are the DSL engine's effect records) reads them its own way (subject.readCalls).
+    const journal = server.journal({ runId: RUN, runner: "conformance-reader", epoch: row.epoch, until: 0, from: row.state });
+    const entries = await journalRecords(journal, BACKGROUND_CONTEXT);
     // The answers to the run's asks: one place for every harness, the resume row's source.
     const answers = entries.entries.filter((entry) => entry.kind === KINDS.answer).map((entry) => entry.data as unknown as AnswerData);
-    return { calls: callsOf(entries), messages: messagesOf(entries), answers };
+    return { calls: subject.readCalls ? await subject.readCalls(journal, BACKGROUND_CONTEXT) : callsOf(entries), messages: messagesOf(entries), answers };
   };
   const ended = (state: RunRow["state"], ms = 15_000) =>
     until(async () => {
@@ -233,7 +303,7 @@ async function world(subject: ConformanceSubject, t: { after(fn: () => unknown):
     assert.ok(ask, "the run wrote its ask");
     return String((ask.data as { callId?: unknown }).callId);
   };
-  return { dir, clockFile, runOut, server, start, run, read, ended, commandRow, askedCall, events, handedOver: (id: number) => handed.has(id), liveRows };
+  return { dir, storeUrl: url, storeEnv, clockFile, runOut, claimsSettled, server, start, run, read, ended, commandRow, askedCall, events, handedOver: (id: number) => handed.has(id), liveRows };
 }
 
 interface Case {
@@ -339,7 +409,9 @@ async function crashThenResume(subject: ConformanceSubject, t: { after(fn: () =>
   const holder: { runner?: Runner; crashed?: boolean } = {};
   await w.start("runner-a", { script, tools, hooks: crashAt(point, holder) }, holder);
   await until(() => holder.crashed, `the crash at ${point}`, EVENT_WAIT_MS);
-  // The crashed runner's claim runs out (the stores' clock moves past its until), and runner-b takes the run over.
+  // The crashed runner's claim runs out (the stores' clock moves past its until), and runner-b takes the run over. First
+  // the claim its poll had in flight when it died settles, on the clock it was sent at (claimsSettled).
+  await w.claimsSettled("runner-a");
   w.runOut();
   await w.start("runner-b", { script, tools, hooks: quiet });
   const row = await w.ended("ended", EVENT_WAIT_MS);
@@ -376,6 +448,12 @@ export function processStopped(
 
 /** The runner process the process cases start (child.ts), and its environment: never a test runner's own. */
 const CHILD = fileURLToPath(new URL("./child.js", import.meta.url));
+
+/** How a process case starts its runner process: its config (`config`) on argv, and the store's URL, which may hold a
+ *  password, on stdin, never argv or the environment, which another process of the user reads (ps, /proc). */
+export function processLaunch(config: object, storeUrl: string): { args: string[]; stdin: string } {
+  return { args: [CHILD, JSON.stringify(config)], stdin: `${JSON.stringify({ storeUrl })}\n` };
+}
 const childEnv = () => {
   const env = { ...process.env };
   delete env.NODE_TEST_CONTEXT;
@@ -389,8 +467,10 @@ async function processCrashThenResume(subject: ConformanceSubject, t: { after(fn
   const countFile = join(w.dir, "tool-runs");
   const { tools, ran } = suiteTools(countFile);
   const eventsFile = join(w.dir, "runner-process-events.jsonl");
-  const config = { dataDir: w.dir, module: subject.process!.module, export: subject.process!.export, tool, point, countFile, eventsFile, clockFile: w.clockFile, ...(stall ? { stopOnce: true } : {}) };
-  const child = spawn(process.execPath, [CHILD, JSON.stringify(config)], { env: childEnv(), stdio: ["ignore", "ignore", "pipe"] });
+  const config = { dataDir: w.dir, storeEnv: w.storeEnv, module: subject.process!.module, export: subject.process!.export, tool, point, countFile, eventsFile, clockFile: w.clockFile, ...(stall ? { stopOnce: true } : {}) };
+  const launch = processLaunch(config, w.storeUrl);
+  const child = spawn(process.execPath, launch.args, { env: childEnv(), stdio: ["pipe", "ignore", "pipe"] });
+  child.stdin!.end(launch.stdin);
   // Its end, listened for from its start: a process that ends while the case waits on something else (the fence's wait
   // returns on that end) is never missed by the wait for its death below.
   const exited = once(child, "exit").catch((error: unknown) => ["error", String(error)]) as Promise<[number | string | null, string | null]>;
@@ -647,7 +727,8 @@ const CASES: readonly Case[] = [
       await w.ended("ended");
       assert.equal(ran.asked, 0, "denied, it never ran");
       const { answers, messages } = await w.read();
-      assert.deepEqual(answers, [{ callId, approved: false, note: "not on a Friday" }], "the answer keeps the note");
+      // The fields this case is about; its time is the loop's clock's (adapter-pi-approval-entries pins it).
+      assert.deepEqual(answers.map(({ callId: id, approved, decision, note }) => ({ callId: id, approved, decision, note })), [{ callId, approved: false, decision: "deny", note: "not on a Friday" }], "the answer is a deny that keeps the note");
       const said = messages.filter((message) => message.role === "model").map((message) => message.text);
       assert.equal(said.length, 1, `the model answered once: ${JSON.stringify(messages)}`);
       // Main's words for a call a person denied (tool-gate.ts refusedText), the note with them. The harness may frame a
@@ -722,7 +803,7 @@ const CASES: readonly Case[] = [
   },
   {
     id: "approval-double-click",
-    title: "a double-clicked approval runs the call once: the first answers it, the second is refused in words",
+    title: "a double-clicked approval runs the call once: the first answers it, and the store refuses the second (one answer per approval)",
     async body(subject, t) {
       const w = await world(subject, t);
       const { tools, ran } = suiteTools();
@@ -730,15 +811,10 @@ const CASES: readonly Case[] = [
       await w.ended("parked");
       const callId = await w.askedCall();
       const first = await sendCommand(w.server, RUN, { kind: "approve", body: { approval: callId } });
-      const second = await sendCommand(w.server, RUN, { kind: "approve", body: { approval: callId } });
+      await assert.rejects(sendCommand(w.server, RUN, { kind: "approve", body: { approval: callId } }), StoreConstraint, "a second answer to one approval is never written");
       await w.ended("ended");
       assert.equal(ran.asked, 1, "the call ran once");
       assert.equal((await w.commandRow(first.id)).refused, null, "the first approve answered it");
-      const late = await until(async () => {
-        const row = await w.commandRow(second.id);
-        return row.takenAt !== null && row;
-      }, "the second approve answered");
-      assert.match(late.refused ?? "", /\w/, `the second approve is refused in words: ${JSON.stringify(late)}`);
       const { calls } = await w.read();
       assert.deepEqual(calls.map((call) => [call.tool, call.status]), [["asked", "done"]]);
     },
@@ -765,6 +841,34 @@ const CASES: readonly Case[] = [
       await sendCommand(w.server, RUN, { kind: "approve", body: { approval: callId } });
       await w.ended("ended", 30_000);
       assert.equal(ran.asked, 1, "approved, it ran once");
+    },
+  },
+  {
+    // The end-of-run step's turn (loop-contract.ts EndOfRunTurn) through the run's own session: its answer is read from
+    // the submission its request id names, whoever keeps the record (pi's adapter, or the loop for a CLI), so the step
+    // gets it, never "unanswered"; and the loop's record never writes that turn as a message (its prompt as the person's,
+    // its answer as the model's). Taking the CLI record's submission away turns this red for a CLI subject.
+    id: "end-of-run-answer",
+    title: "the end-of-run turn's answer is read, never unanswered, and the loop's record never shows that turn as a message",
+    async body(subject, t) {
+      const w = await world(subject, t);
+      const { tools } = suiteTools();
+      const prompt = "What did you learn?";
+      const answers: EndOfRunAnswer[] = [];
+      const endOfRun: EndOfRunTurn = async (input) => {
+        answers.push(await input.ask(prompt, { origin: "reflect", deadlineMs: 10_000 }));
+        return undefined;
+      };
+      await w.start("runner-a", { script: [{ say: "the job's answer" }, { say: "a note" }], tools, hooks: quiet, agentId: "agent-1" }, undefined, { endOfRun });
+      await w.ended("ended");
+      assert.equal(answers.length, 1, "asked once");
+      const answer = answers[0]!;
+      assert.ok("ended" in answer && answer.answer !== "", `the step read the turn's answer: ${JSON.stringify(answers)}`);
+      const row = await w.run();
+      const { entries } = await journalRecords(w.server.journal({ runId: RUN, runner: "conformance-reader", epoch: row.epoch, until: 0, from: row.state }), BACKGROUND_CONTEXT);
+      const shown = entries.filter((entry) => entry.kind === KINDS.message).map((entry) => (entry.data as { text?: string }).text);
+      assert.ok(!shown.includes(prompt), `the step's prompt is not a message: ${JSON.stringify(shown)}`);
+      assert.ok(!shown.includes(answer.answer), `the turn's answer is not a message: ${JSON.stringify(shown)}`);
     },
   },
   {
@@ -797,6 +901,26 @@ const CASES: readonly Case[] = [
   },
 ];
 
+
+const CLI_NEVER_RERUNS = "a CLI never reruns a call that started; only the model calls again (its adapter's facts: rerunsStarted false)";
+
+/** The cases a harness's declared facts rule out, each with why: what it does by design, not what it cannot model yet. */
+export function factsRuleOut(facts: ConformanceSubject["facts"]): Partial<Record<ConformanceCase, string>> {
+  if (!facts) return {};
+  const noSteer = `${facts.id} takes no message mid-turn (its adapter's facts: steer false), so the loop refuses a steer for it in words`;
+  return {
+    // steer-origin steers the turn in flight too: its message is taken mid-turn, or never.
+    ...(facts.steer ? {} : { "steer-mid-turn": noSteer, "steer-origin": noSteer }),
+    ...(facts.rerunsStarted === false ? { "replay-safe-rerun": CLI_NEVER_RERUNS, "fault-restarts-bounded": CLI_NEVER_RERUNS } : {}),
+    // A harness that resumes a cut answer itself never ends a turn on the cut; one whose cut ends its turn never goes on
+    // from it in the same turn.
+    ...(facts.recoversCutAnswers !== undefined && facts.recoversCutAnswers > 0
+      ? { "length-ends-failed": `${facts.id} resumes an answer its output limit cut itself, up to ${facts.recoversCutAnswers} times in one turn (its adapter's facts: recoversCutAnswers ${facts.recoversCutAnswers})` }
+      : {}),
+    ...(facts.recoversCutAnswers === 0 ? { "length-mid-run": `a cut ends ${facts.id}'s turn, as pi's does (its adapter's facts: recoversCutAnswers 0)` } : {}),
+  };
+}
+
 /** What a run whose answer was cut at the model's output limit says (loop-contract.ts cutAtLimit). */
 const CUT_AT_LIMIT = /^the model stopped at its output limit( \(\d+ tokens\))? before finishing its answer$/;
 
@@ -808,15 +932,22 @@ async function settledRun(w: { run(): Promise<RunRow> }): Promise<RunRow> {
   }, "the run ends and is released");
 }
 
-/** Registers the six cases for `subject` with `test` (node:test). A case the subject cannot model is skipped with its
- *  reason, never passed. */
-export function registerHarnessConformance(subject: ConformanceSubject, { test }: { test: TestFunction }): void {
+/** Registers the cases for `subject` with `test` (node:test). A case its facts rule out, or one it cannot model yet, is
+ *  skipped with its reason, never passed. */
+/** Registers the suite's cases for `subject` with `test`. `storeUrl`: the Postgres store every case's world opens (each
+ *  in a schema of its own), handed by the caller; without it, the data directory's SQLite store. */
+export function registerHarnessConformance(given: ConformanceSubject, { test, storeUrl }: { test: TestFunction; storeUrl?: string }): void {
+  // The subject object the cases are handed, which names the store their worlds open.
+  const subject: ConformanceSubject = Object.create(given) as ConformanceSubject;
+  if (storeUrl) STORE_URLS.set(subject, storeUrl);
+  const ruledOut = factsRuleOut(subject.facts);
   for (const entry of CASES) {
     const processCase = entry.id.endsWith("-process");
-    const skip = subject.unsupported?.[entry.id] ?? (processCase && !subject.process ? "it names no module a runner process can load (subject.process)" : undefined);
-    test(`${subject.name}: ${entry.title}`, { timeout: CASE_TIMEOUT_MS, ...(skip ? { skip: `${subject.name} cannot model this yet: ${skip}` } : {}) }, (t) =>
-      entry.body(subject, t),
-    );
+    const byFacts = ruledOut[entry.id];
+    const notYet = subject.unsupported?.[entry.id] ?? (processCase && !subject.process ? "it names no module a runner process can load (subject.process)" : undefined);
+    const onPostgres = storeUrl ? POSTGRES_PENDING[entry.id] : undefined;
+    const skip = byFacts ? `${subject.name} does not do this by design: ${byFacts}` : notYet ? `${subject.name} cannot model this yet: ${notYet}` : onPostgres ? `on Postgres, ${onPostgres}` : undefined;
+    test(`${subject.name}: ${entry.title}`, { timeout: CASE_TIMEOUT_MS, ...(skip ? { skip } : {}) }, (t) => entry.body(subject, t));
   }
 }
 

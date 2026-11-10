@@ -700,7 +700,7 @@ The types the package exports:
   `CapturedState`, `VaultCookie` and `VaultEntry`.
 - **Runs.** `RunPaths`, `RunStart`, `RunSeed` (plain data, so a host can carry it to the run's side), `CarryBack`,
   `ProfileStore` and `ProfileTarget` (the host's Harness, or any Session on the run store).
-- **Store.** `Agent`, `AgentRow`, `Revision`, `RevisionRow`, `RevisionKind`, `AgenticBody`, `WorkflowBody`, `RevisionPlace` (a body's optional `{mode, box?}`, ids its host knows), `NewRevision`, `StartedRun`, `RunOrigin` (`store.startRun`'s `{ key, fingerprint? }`), `RunRow`, `RunState`, `ArchiveKind` (`"agent" | "run"`), `StoreStats` (what `stats` answers), `StoreAnalytics` with `AnalyticsGroup`, `AnalyticsFilter` and `PendingEnd` (what `analytics` answers and takes), `StoredMetrics` (a run's metrics as `carryBack`, `importRun` and `runMetrics` carry them), and for an imported run `ImportedRun`, `ImportedFrom` and `ImportSource` (`"claude-code" | "codex" | "pi"`).
+- **Store.** `Agent`, `AgentRow`, `Revision`, `RevisionRow`, `RevisionKind`, `AgenticBody`, `WorkflowBody`, `RevisionPlace` (a body's optional `{mode, box?}`, ids its host knows), `RevisionComputer` (a body's optional `{kind, provider?}`: the computer its runs get), `NewRevision`, `StartedRun`, `RunOrigin` (`store.startRun`'s `{ key, fingerprint? }`), `RunRow`, `RunState`, `ArchiveKind` (`"agent" | "run"`), `StoreStats` (what `stats` answers), `StoreAnalytics` with `AnalyticsGroup`, `AnalyticsFilter` and `PendingEnd` (what `analytics` answers and takes), `StoredMetrics` (a run's metrics as `carryBack`, `importRun` and `runMetrics` carry them), and for an imported run `ImportedRun`, `ImportedFrom` and `ImportSource` (`"claude-code" | "codex" | "pi"`).
 - **Packs.** `PackOptions`, `Skipped`, `HomeManifest` (the manifest's fields, in [Moving a home](#moving-a-home)),
   `ImportOptions`, `ImportReport`, and `HomeCheck` (`{ name, status, message, detail? }`, `status` being `ok`, `warn`
   or `fail`). `ImportStep` and `ImportOptions.inject` belong to this package's tests and are not part of its contract.
@@ -727,6 +727,7 @@ No dependency, no Node built-in, and no thrown error of its own: a page, a viewe
 | `callFailed(tool, result)` | Whether a finished call failed: an error, or a result its tool's outcome reads as failed (a refused fetch). A result row's `tool_status` and `runMetricsOf`'s tool `errors` both read it |
 | `registerOutcome(tool, outcome)` | How a host's tool tells its outcome from a result it returned, not an error: `outcome(result)` gives `{ failed, text }`, and the result row reads `<label>: <text>`, with `tool_status` `failed` when `failed`, in place of `<label>: ok`. `web_fetch` has its own: a page with `ok: false` reads `refused: …` or `failed: …` |
 | `registerTurnEnding(tool)` | A host's tool that ends its turn (pi's `terminate`, as an ask-the-person tool does). A message after a round whose tools all end the turn is the person's next message, never a `(steer)` |
+| `endedOnTurnEndingTool(entries)` | The id of the call a turn ended waiting on a person by, or `undefined`: the last meaningful row is a successful result of a tool that ends its turn. The one rule both a run's view (`input_required`) and its runner (the park) read, so the two agree |
 | `labelOf(tool, args, result?, extra?)` | The label of one call. An unknown tool gets `Using tool: <name>` |
 | `foldLabel(tool, calls)` | One line for several calls of one tool, from their input and output previews |
 | `inputPreview(args, max)` | The input worth showing, or `null`: a `description`, `command`, `query`, `file_path`, `url`, `path` or `code` argument, with a URL's query values dropped, cut to `max` |
@@ -790,7 +791,8 @@ It loads `@parcha/agentrun-dsl` and `@parcha/agentrun-pi` only when one of its f
 | `readWorkflowRun(run)` | The run as its store shows it, read-only: no write, no lock, no Harness. With `run.state` (the runs row's) ended and no write-ahead log beside the store, it opens the store as an immutable file and makes no file in the run's directory. Working means live: an ended run's interrupted nodes read `stopped`, or `failed` when the run failed. A run in the driver's keyed layout is refused as `format` |
 | `revisionGraph(revision, parent?)` | The revision's graph (the DSL's `workflowGraph`), and the DSL's `graphDiff` from its parent when the parent is a workflow revision; an agentic parent, or none, gives no diff |
 
-Its types: `WorkflowBody`, `WorkflowIssue`, `WorkflowRunStart` (the part of a store's started run it reads), `WorkflowRunView`,
+Its types: `WorkflowBody`, `WorkflowIssue`, `WorkflowRunStart` (the part of a store's started run it reads), `WorkflowStorage`
+(the reads `readWorkflowRun` and `workflowCarry` take in place of a store file: a run's journal in a shared store), `WorkflowRunView`,
 `RunState`, `RunNodeState` (the DSL's `NodeState` and `stopped`), and the DSL's `WorkflowGraph`, `GraphDiff`, `NodeState`
 and `WorkflowOutcome`.
 

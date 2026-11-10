@@ -73,13 +73,6 @@ export const Textarea = React.forwardRef<HTMLTextAreaElement, React.TextareaHTML
 ));
 Textarea.displayName = "Textarea";
 
-/** The browser's own select, in the field's skin: for a short list in a dense row. A list that should open under its
- *  field on a phone, or whose options need more than a line, is a Picker. */
-export const NativeSelect = React.forwardRef<HTMLSelectElement, React.SelectHTMLAttributes<HTMLSelectElement> & { fieldSize?: "sm" | "md" }>(({ className, fieldSize = "md", ...props }, ref) => (
-  <select ref={ref} {...props} {...useWiring(props)} className={cn(fieldClass, "w-auto", fieldSize === "sm" ? "h-control-sm" : "h-control-md", className)} />
-));
-NativeSelect.displayName = "NativeSelect";
-
 type Choice = Omit<React.InputHTMLAttributes<HTMLInputElement>, "type"> & { label: React.ReactNode; note?: React.ReactNode };
 const choice = (type: "checkbox" | "radio") => {
   const C = React.forwardRef<HTMLInputElement, Choice>(({ label, note, className, disabled, ...props }, ref) => (

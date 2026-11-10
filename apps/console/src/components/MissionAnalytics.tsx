@@ -1,4 +1,5 @@
 import { cn } from "@/lib/utils";
+import { Picker } from "@/components/ui/picker";
 import { type Analytics, type AnalyticsGroup, cachedShare, compact, coverage, duration, groupCost, type MissionView, outcomes, percent, RANGES, type StatsRange, successRate, trendDays } from "@/lib/mission";
 
 /** The range and agent picker over the analytics, one row above them. */
@@ -13,10 +14,8 @@ export function AnalyticsFilter({ range, onRange, agent, agents, onAgent }: { ra
         ))}
       </div>
       {onAgent && agents.length > 0 && (
-        <select aria-label="Agent" value={agent ?? ""} onChange={(e) => onAgent(e.target.value || null)} className="h-[38px] border bg-background px-3 font-mono text-[13px]">
-          <option value="">All agents</option>
-          {agents.map((a) => <option key={a.agentId} value={a.agentId}>{a.name}</option>)}
-        </select>
+        <Picker label="Agent" value={agent ?? ""} onChange={(v) => onAgent(v || null)} className="h-[38px] w-56"
+          options={[{ value: "", label: "All agents" }, ...agents.map((a) => ({ value: a.agentId, label: a.name }))]} />
       )}
     </div>
   );

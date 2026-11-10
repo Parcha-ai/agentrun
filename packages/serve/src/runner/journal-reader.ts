@@ -4,9 +4,12 @@
 // agentrun.* entries (runner/journal-kinds.ts). A run's stop reason is on its run row (its end commit's summary).
 import type { Context } from "@earendil-works/chord";
 import { type MessageOrigin, originOf } from "@parcha/pi-durable-agent/timeline";
-import type { ConversationId, ConversationRecord, EntryRecord, TaskRecord } from "@earendil-works/pi-durable";
+import type { ConversationId, ConversationRecord, EntryRecord, SubmissionRecord, TaskRecord } from "@earendil-works/pi-durable";
+import { reflectFrom } from "./end-of-run.js";
 import { type CallEndData, type CallStartData, KINDS, type MessageData, type MessageRole, type SessionKeyData } from "./journal-kinds.js";
-import type { Journal } from "./loop-contract.js";
+// Reads only (JournalReads): a run's live journal (journal(claim)) and the server's read-only view (store.readJournal) both
+// satisfy it, so the same reader runs over either. A full Journal is assignable, so the runner's callers are unchanged.
+import type { JournalReads } from "../store/store.js";
 
 export interface CallRecord {
   readonly callId: string;
@@ -23,14 +26,18 @@ export interface MessageRecord {
   readonly role: MessageRole;
   readonly text: string;
   readonly entry: number;
+  /** The end-of-run turn's (end-of-run.ts reflectFrom): its message and its answer, never the run's own. */
+  readonly learning?: true;
   /** Who wrote a message the person did not type (a trigger's): the Timeline's attribution, as the message carries it. */
   readonly origin?: MessageOrigin;
 }
 
-/** What the reader reads: every entry and every task of the run. */
+/** What the reader reads: every entry and every task of the run, and its submissions (where its end-of-run turn began:
+ *  end-of-run.ts reflectFrom). */
 export interface JournalRecords {
   readonly entries: readonly EntryRecord[];
   readonly tasks: readonly TaskRecord<unknown, unknown, unknown>[];
+  readonly submissions?: readonly SubmissionRecord[];
 }
 
 const PAGE = 500;
@@ -50,18 +57,19 @@ async function scanAll<T>(scan: (cursor: unknown) => Promise<{ items: readonly T
 }
 
 /** Every entry and task of the run: conversations in id order, each one's entries oldest first; tasks in id order. */
-export async function journalRecords(journal: Journal, context: Context): Promise<JournalRecords> {
+export async function journalRecords(journal: JournalReads, context: Context): Promise<JournalRecords> {
   const conversations = await scanAll<ConversationRecord>((cursor) => journal.scanConversations({ order: "ascending" } as never, PAGE, cursor as never, context));
   const entries: EntryRecord[] = [];
   for (const conversation of conversations) {
     entries.push(...(await scanAll<EntryRecord>((cursor) => journal.scanEntries({ conversationId: conversation.id as ConversationId, order: "ascending" }, PAGE, cursor as never, context))));
   }
   const tasks = await scanAll<TaskRecord<unknown, unknown, unknown>>((cursor) => journal.scanTasks({ order: "ascending" } as never, PAGE, cursor as never, context) as never);
-  return { entries, tasks };
+  const submissions = await scanAll<SubmissionRecord>((cursor) => journal.scanSubmissions({ order: "ascending" } as never, PAGE, cursor as never, context) as never);
+  return { entries, tasks, submissions };
 }
 
 /** Every entry of the run (the CLI record and pi's entries alike). */
-export async function journalEntries(journal: Journal, context: Context): Promise<EntryRecord[]> {
+export async function journalEntries(journal: JournalReads, context: Context): Promise<EntryRecord[]> {
   return [...(await journalRecords(journal, context)).entries];
 }
 
@@ -136,28 +144,33 @@ function piText(entry: EntryRecord): string {
  *  a pi.assistant entry with no text, only tool calls, is no message). */
 export function messagesOf(from: readonly EntryRecord[] | JournalRecords): MessageRecord[] {
   const out: MessageRecord[] = [];
-  for (const entry of recordOf(asRecords(from).entries)) {
+  const records = asRecords(from);
+  // The end-of-run turn's, from the entry its input placed on (the reader's tag, as the server's labelled() reads it).
+  const from_ = reflectFrom(records.submissions ?? []);
+  const turn = (entry: number) => (from_ !== undefined && entry >= from_ ? { learning: true as const } : {});
+  for (const entry of recordOf(records.entries)) {
+    const at = entryNumber(entry);
     if (entry.kind === KINDS.message) {
       const { origin, ...data } = dataOf<MessageData>(entry);
       const known = originOf(origin);
-      out.push({ ...data, entry: entryNumber(entry), ...(known ? { origin: known } : {}) });
+      out.push({ ...data, entry: at, ...(known ? { origin: known } : {}), ...turn(at) });
     } else if (entry.kind === PI.user || entry.kind === KINDS.input) {
       // A pi input under the host's kind carries who wrote it (a trigger's message); pi's own user entry is the person's.
       const known = entry.kind === KINDS.input ? originOf((entry.data as { origin?: unknown } | undefined)?.origin) : undefined;
-      out.push({ role: entry.byTaskId === undefined ? "person" : "steer", text: piText(entry), entry: entryNumber(entry), ...(known ? { origin: known } : {}) });
+      out.push({ role: entry.byTaskId === undefined ? "person" : "steer", text: piText(entry), entry: at, ...(known ? { origin: known } : {}), ...turn(at) });
     }
     else if (entry.kind === PI.assistant) {
       const text = piText(entry);
-      if (text !== "") out.push({ role: "model", text, entry: entryNumber(entry) });
+      if (text !== "") out.push({ role: "model", text, entry: at, ...turn(at) });
     }
   }
   return out.sort((a, b) => a.entry - b.entry);
 }
 
-export async function calls(journal: Journal, context: Context): Promise<CallRecord[]> {
+export async function calls(journal: JournalReads, context: Context): Promise<CallRecord[]> {
   return callsOf(await journalRecords(journal, context));
 }
 
-export async function messages(journal: Journal, context: Context): Promise<MessageRecord[]> {
+export async function messages(journal: JournalReads, context: Context): Promise<MessageRecord[]> {
   return messagesOf(await journalRecords(journal, context));
 }

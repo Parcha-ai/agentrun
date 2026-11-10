@@ -162,7 +162,7 @@ Import from `@/components/ui`.
 | A row or a card someone presses | A plain `<button>` or `<a>` with `hover:bg-accent` and `text-left` | `Button`. |
 | A state or a kind | `Chip` with a tone; a run's state through `StatusBadge` | A hand-built span. |
 | A text field | `Field` around `Input` or `Textarea` | A bare `<input>` with its own classes. |
-| A choice from a list | `Picker` (opens under its field); `NativeSelect` for a short list in a dense row | A bare `<select>`. |
+| A choice from a list | `Picker` (opens under its field), for every list | A bare `<select>`. |
 | One choice of a few, all in view | `Segmented`; `Radio`s in a `<Field group>` when each needs a sentence | Buttons that look like tabs. |
 | Any of several | `Checkbox` | |
 | On or off, taking effect at once | `Switch` | A checkbox. |

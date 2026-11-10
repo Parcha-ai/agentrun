@@ -50,8 +50,10 @@ export interface HostTool {
    *  screenshot), which a harness that can show them sends the model with the text; `parked`: the host parked the call
    *  for a person's approval, so it did not run, and the text says it waits. `sessionDir` is the runner's own,
    *  when it has one: a tool that runs a node of its own (the delegate) gives its child a private directory the same
-   *  way, by the child's key. */
-  call(args: unknown, context: { callId: string; signal: AbortSignal; sessionDir?: (key: string) => string; /** The kernel's attempt at this call: 0 the first time; above 0 when a crash cut an earlier attempt of a replay-safe tool and this one runs it again, so the earlier one may have been sent. */ attempt?: number }): Promise<{ text: string; isError?: boolean; images?: readonly ToolImage[]; parked?: true }>;
+   *  way, by the child's key. `model`: the calling session's model as its harness resolves it (pi's: a pi-ai Model, whose
+   *  input and input limits a file read sizes an image by); `output`: where the call's output goes while it runs (the
+   *  session's live view of the running tool). Each is absent where a harness has none to give. */
+  call(args: unknown, context: { callId: string; signal: AbortSignal; sessionDir?: (key: string) => string; /** The kernel's attempt at this call: 0 the first time; above 0 when a crash cut an earlier attempt of a replay-safe tool and this one runs it again, so the earlier one may have been sent. */ attempt?: number; model?: unknown; output?(chunk: string): void }): Promise<{ text: string; isError?: boolean; images?: readonly ToolImage[]; parked?: true }>;
 }
 
 /** A tool of a remote MCP server, as the server listed it when its owner saved it (the run's pinned copy). */
@@ -138,6 +140,13 @@ export interface ModelRequest {
   /** The least output it may be limited to and still answer: its answer's 1,024 tokens, plus the least thinking its
    *  provider takes when it thinks (the proxy's policy says). Absent: 1,024. */
   outputTokensLeast?: number;
+  /** What it charges beside its tokens (a decision's per-request and per-image prices), in USD: held with them. */
+  feeUsd?: number;
+  /** A paid tool call, no model request (a web search's request, a monid call): held at `feeUsd` alone by the cap's tool
+   *  rule, `name` and `basis` in a refusal's words. `call`: the tool call it was booked under, written on its
+   *  runner.request so the run view puts its charge under that call. `charged_by`: who charges for it (the tool's
+   *  provider: parallel, monid, an MCP server, a browser vendor), written there too, as main's charge row names it. */
+  paid?: { name: string; basis: string; call?: string; charged_by?: string };
   /** A side call, never its turn's own: on another model than the session's (a client's title, a summary), or the
    *  host's own request beside the harness's (`host`). */
   side?: true;
@@ -165,6 +174,10 @@ export interface ModelUsage {
   /** A request a crash cut off: it left, and no answer came back to this run. Its tokens are unknown (0 here) and its
    *  price is null; the provider may have billed it. */
   cut?: boolean;
+  /** A paid step's hold given back unused (a workflow call node's, its effect never sent the paid request it held for):
+   *  nothing was sent and nothing charged, at usd 0. Its record says so, so no reader takes it for a $0 charge or an
+   *  unpriced one. */
+  givenBack?: true;
   /** The ids the provider's response gave the request, by header name (the provider's `request-id`, a gateway's call
    *  id such as LiteLLM's `x-litellm-call-id`): what joins this booking to the provider's own log. A cut request has
    *  them only if its response had begun. */
@@ -227,7 +240,22 @@ export interface SessionIO {
    *  a harness works in an empty directory of its own. */
   cwd?: string;
   onEvent(event: AdapterEvent): void;
+  /** The host's gate, asked about a call of a host tool before anything of it is written (before its intent, and before
+   *  the flush a call that runs at most once takes): "allow" runs it; a deny answers the model with the host's words and
+   *  runs nothing; a park holds the call, writing nothing, until the session's signal is aborted (the run parks on a
+   *  person). Absent: every call runs. */
+  gate?(call: GateCall, context?: unknown): Promise<GateAnswer>;
 }
+
+/** A call as the host's gate is asked about it. */
+export interface GateCall {
+  readonly callId: string;
+  readonly tool: string;
+  readonly args: Record<string, unknown>;
+}
+
+/** The host's answer before a call's intent: run it, refuse it in these words, or park the run on it. */
+export type GateAnswer = "allow" | { readonly deny: string } | { readonly park: true };
 
 /** An event of a session, as the adapter reports it. The runner adds the node it belongs to. A call's `tool_end` is sent
  *  only once its outcome is durable in the session's records, so a host never shows a result its store does not have;
@@ -235,9 +263,14 @@ export interface SessionIO {
  *  `tool_end`: its turn's `turn_end` closes it. */
 export type AdapterEvent =
   | { type: "text"; delta: string }
+  /** The model's message ended inside the turn, and another may follow in it (a CLI that resumes a cut answer itself):
+   *  what it said so far is one message. */
+  | { type: "text_end" }
   | { type: "tool_start"; callId: string; name: string; args: unknown; parent?: string }
   | { type: "tool_end"; callId: string; name: string; isError: boolean; result?: string; truncated?: true }
-  | { type: "turn_end"; status: TurnStatus };
+  /** `stopReason: "length"` only when the turn's final answer was cut at the model's output limit (unfinished), with that
+   *  answer's output tokens when the adapter knows them: a host reads the answer as cut, never as the run's end. */
+  | { type: "turn_end"; status: TurnStatus; stopReason?: "length"; outputTokens?: number };
 
 /** An event as a host receives it: the adapter's, the runner's own, and the node each belongs to. */
 export type HarnessEvent = (AdapterEvent
@@ -252,8 +285,9 @@ export type SessionState = "new" | "open_turn" | "idle";
 export interface AdapterSession {
   readonly state: SessionState;
   /** Place the input, then send it: a new turn. `id`: the input's own request id (a follow-up's, such as a raised run's
-   *  turn), so placing it again is the same input, never the run's first one. */
-  send(text: string, options?: { id?: string }): Promise<void>;
+   *  turn), so placing it again is the same input, never the run's first one. `origin`: who wrote it when the person did
+   *  not (a trigger's first input, its launch's): an adapter that keeps the run's record writes it with the input. */
+  send(text: string, options?: { id?: string; origin?: { readonly [key: string]: unknown } }): Promise<void>;
   /** Resume the turn a crash cut off, from the session's records. Only when `state` is `open_turn`. */
   recover(): Promise<void>;
   /** Record the open turn as ended, interrupted, and send nothing: the turn is not to be resumed (a person stopped it, and
@@ -302,6 +336,14 @@ export interface AdapterFacts {
   readonly wire: Wire;
   /** Whether it takes a message mid-turn (else a message waits for the turn's end). */
   readonly steer: boolean;
+  /** False when a tool call that started is never run again by a restart, replay-safe or not: the harness's own process
+   *  holds the turn, and only its model calls again (a CLI). Absent: a restart reruns a replay-safe call, by the
+   *  kernel's rule. */
+  readonly rerunsStarted?: false;
+  /** How many times the harness resumes an answer its model's output limit cut, itself, inside one turn (a CLI's own
+   *  recovery): above 0, a turn never ends on such a cut until those run out; 0, a cut ends its turn, as pi's does.
+   *  Absent: not declared. */
+  readonly recoversCutAnswers?: number;
   /** What one run of it holds in memory, in MiB: the host admits runs by it. */
   readonly runMib: number;
   /** Whether it binds a session's remote MCP servers (its own MCP client, at the session's gateway). */

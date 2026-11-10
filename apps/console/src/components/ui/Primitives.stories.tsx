@@ -2,7 +2,7 @@ import type { Meta, StoryObj } from "@storybook/react";
 import { Archive, Bot, Copy, History, LayoutDashboard, MoreHorizontal, Pencil, Play, Plus, Trash2 } from "lucide-react";
 import { useId, useState } from "react";
 import { Block, Themes } from "@/design/Themes";
-import { Banner, Button, Checkbox, Chip, ConfirmDialog, Dialog, Field, Input, Menu, MenuItem, MenuSeparator, NativeSelect, NavItem, Picker, Radio, Segmented, Spinner, Switch, tabPanelProps, Tabs, Textarea, Tip, ToastProvider, useToast } from ".";
+import { Banner, Button, Checkbox, Chip, ConfirmDialog, Dialog, Field, Input, Menu, MenuItem, MenuSeparator, NavItem, Picker, Radio, Segmented, Spinner, Switch, tabPanelProps, Tabs, Textarea, Tip, ToastProvider, useToast } from ".";
 
 // Every primitive in every variant and state, in both themes. docs/console-design-system.md says which to reach for.
 const meta: Meta = { title: "Design system/Primitives" };
@@ -62,7 +62,7 @@ function FieldsDemo() {
       <Field label="Cost cap" optional error="Enter an amount in dollars, like 2.50."><Input defaultValue="two dollars" inputMode="decimal" /></Field>
       <Field label="Instructions" warning="Long instructions cost more on every run."><Textarea rows={3} placeholder="Describe what the agent does, how, and its rules." /></Field>
       <Field label="Description"><Input readOnly defaultValue="Read-only: checks invoices against purchase orders" /></Field>
-      <Field label="Effort"><NativeSelect defaultValue="medium"><option>low</option><option>medium</option><option>high</option></NativeSelect></Field>
+      <Field label="Effort"><Picker value="medium" onChange={() => {}} label="Effort" options={[{ value: "low", label: "low" }, { value: "medium", label: "medium" }, { value: "high", label: "high" }]} /></Field>
       <div>
         <p id="model-label" className="caps mb-2 text-small font-semibold">Model (Picker)</p>
         <Picker label="Model" value={model} onChange={setModel} className="w-full" options={[{ value: "sonnet", label: "Claude Sonnet" }, { value: "opus", label: "Claude Opus" }, { value: "haiku", label: "Claude Haiku" }]} />

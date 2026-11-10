@@ -1,7 +1,7 @@
 import { type Place, type Places, placeOf } from "./place";
 import type { ClientError } from "./client";
 import type { NoteProblem } from "./learning";
-import type { AgentTool, Approvals, ToolSettings } from "./v2";
+import type { AgentTool, Approvals, Computer, ToolSettings } from "./v2";
 import { decisionStarter, STARTER_PROVIDERS } from "./decisionStarter";
 import { workflowStarter } from "./workflowStarter";
 
@@ -15,8 +15,8 @@ export type Definition = { version: number; approvals?: Approvals; name: string;
 export type SaveWarning = { field: string; reason: string; message: string };
 /** `warnings`: on a create's or an edit's answer only (never on a read of the agent); the console keeps a create's for
  *  the agent's page that opens after it (client.ts). */
-export type Agent = { agent_id: string; kind: "agentic" | "workflow"; revision: string; revisions: number; definition: Definition; archived_at: string | null; runs?: { count: number; live: number }; warnings?: SaveWarning[]; tools?: AgentTool[] };
-export type AgentFields = Partial<Pick<Definition, "name" | "description" | "instructions" | "harness" | "thinking" | "model" | "tools" | "workflow" | "learning" | "tool_settings" | "max_cost_usd" | "approvals">> & { workflowText?: string; maxCostText?: string; place?: Place };
+export type Agent = { agent_id: string; kind: "agentic" | "workflow"; revision: string; revisions: number; definition: Definition; archived_at: string | null; runs?: { count: number; live: number }; warnings?: SaveWarning[]; tools?: AgentTool[]; learning?: { pending: number } };
+export type AgentFields = Partial<Pick<Definition, "name" | "description" | "instructions" | "harness" | "thinking" | "model" | "tools" | "workflow" | "learning" | "tool_settings" | "max_cost_usd" | "approvals">> & { workflowText?: string; maxCostText?: string; place?: Place; computer?: Computer };
 
 /** The body of a definition edit: the current definition with the edited fields; name and
  *  description stay as the agent was created. Every field the
@@ -26,6 +26,10 @@ export function editBody(agent: Agent, fields: AgentFields, note: string): { def
   // The agent store keeps an agent's id, name and description from its creation: an edit never sends a changed one.
   const { name: _name, description: _description, ...editable } = fields as AgentFields & { id?: string };
   const edited: Definition = { ...agent.definition, ...editable };
+  // The computer is the setting; place is the server's view of it. A definition with a computer goes without its place,
+  // which would still say the old computer after a change (the server writes place from computer).
+  const current: Definition = { ...agent.definition };
+  if (edited.computer !== undefined) { delete edited.place; delete current.place; }
   // A workflow revision takes no instructions, model or thinking beside its workflow (validate.ts refuses each).
   if (agent.kind === "workflow") { delete edited.thinking; delete edited.instructions; delete edited.model; }
   // An empty model is no model: the server's default. No tool settings of its own are none: the server's.
@@ -34,7 +38,7 @@ export function editBody(agent: Agent, fields: AgentFields, note: string): { def
   for (const key of Object.keys(edited)) if (edited[key] === undefined) delete edited[key];
   // serve makes no revision for a definition equal to the current one (a note alone changes nothing): then the version
   // is the current one's. A changed definition is the next revision, number revisions + 1.
-  const unchanged = same({ ...edited, version: 0 }, { ...agent.definition, version: 0 });
+  const unchanged = same({ ...edited, version: 0 }, { ...current, version: 0 });
   edited.version = unchanged ? agent.definition.version : agent.revisions + 1;
   return { definition: edited, ...(note.trim() ? { note: note.trim() } : {}), unchanged };
 }
@@ -79,14 +83,14 @@ export const DEFAULT_INSTRUCTIONS = "You are a helpful agent. Do the task you're
 /** The body that creates an agent: its first revision, with what the form names and no skills yet. A starter choice
  *  (Decision, Workflow) makes a workflow agent from that starter (Decision's on the server's decision provider), with no
  *  instructions, harness, thinking, model or tools: a workflow revision keeps none of those beside its workflow. */
-export function createBody(f: { name: string; description: string; instructions: string; harness: string; tools: string[]; approvals?: Approvals; thinking?: string; model?: string; learning?: boolean; decisionProvider?: string; tool_settings?: ToolSettings; place?: Place; max_cost_usd?: number }): { definition: Definition } {
+export function createBody(f: { name: string; description: string; instructions: string; harness: string; tools: string[]; approvals?: Approvals; thinking?: string; model?: string; learning?: boolean; decisionProvider?: string; tool_settings?: ToolSettings; computer?: Computer; max_cost_usd?: number }): { definition: Definition } {
   if (isStarter(f.harness)) {
     return { definition: { version: 1, name: f.name, ...(f.description.trim() ? { description: f.description } : {}), workflow: STARTERS[f.harness]!(f.decisionProvider), skills: [], tools: [] } };
   }
   return {
     definition: {
       version: 1, name: f.name, ...(f.description.trim() ? { description: f.description } : {}), instructions: f.instructions, harness: f.harness,
-      ...(f.thinking ? { thinking: f.thinking } : {}), ...(f.model?.trim() ? { model: f.model.trim() } : {}), ...(f.place ? { place: f.place } : {}), ...(f.learning ? { learning: true } : {}), ...(f.max_cost_usd !== undefined ? { max_cost_usd: f.max_cost_usd } : {}), skills: [], tools: f.tools,
+      ...(f.thinking ? { thinking: f.thinking } : {}), ...(f.model?.trim() ? { model: f.model.trim() } : {}), ...(f.computer ? { computer: f.computer } : {}), ...(f.learning ? { learning: true } : {}), ...(f.max_cost_usd !== undefined ? { max_cost_usd: f.max_cost_usd } : {}), skills: [], tools: f.tools,
       ...(f.tool_settings && Object.keys(f.tool_settings).length ? { tool_settings: f.tool_settings } : {}),
       // Approvals: sent only when it never asks (ask is the server's default).
       ...(f.approvals === "never" ? { approvals: "never" as const } : {}),

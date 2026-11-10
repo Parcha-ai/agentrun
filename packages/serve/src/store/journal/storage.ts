@@ -37,16 +37,19 @@ import {
   type TaskRecord,
 } from "@earendil-works/pi-durable";
 import { PI_TABLE as T } from "../schema.js";
-import type { Connection } from "../sqlite/connection.js";
-import { claimFence } from "../fence.js";
+import { type Dialect, SQLITE } from "../dialect.js";
+import type { StoreConnection } from "../sqlite/connection.js";
+import { claimFence, storeNow } from "../fence.js";
 import { applyRunPatch, refuseLeftovers } from "../sqlite/run-patch.js";
 import { type Claim, CommandTaken, Fenced, type Journal, type Staged } from "../store.js";
 
 /** A run's claim, as the journal is opened under it: the run and the epoch its claim holds. */
 export type JournalClaim = Pick<Claim, "runId" | "epoch">;
 
-/** The store's connection as the journal uses it (sqlite/connection.ts): reads, and one interactive transaction per commit. */
-export type JournalConnection = Pick<Connection, "get" | "all" | "transaction">;
+/** The store's connection as the journal uses it (sqlite/connection.ts StoreConnection, on SQLite or Postgres): reads, and
+ *  one interactive transaction per commit. Its dialect (store/dialect.ts) when it names one; a connection that names none
+ *  is SQLite's, as every connection was before there were two. */
+export type JournalConnection = Pick<StoreConnection, "get" | "all" | "transaction"> & { readonly dialect?: Dialect };
 
 /** A value a statement binds. */
 type SqliteValue = null | number | bigint | string | Uint8Array;
@@ -187,6 +190,8 @@ function watchCalls(executor: SqliteExecutor, calls: { failed: boolean }): Sqlit
 /** pi-durable's Storage for one run in the one store. */
 export class RunStorage implements Journal {
   readonly #db: JournalConnection;
+  /** What the connection's database says differently (store/dialect.ts): SQLite's when it names none. */
+  readonly #dialect: Dialect;
   readonly #read: Pick<SqliteExecutor, "get" | "all">;
   readonly #runId: string;
   readonly #epoch: number;
@@ -210,6 +215,7 @@ export class RunStorage implements Journal {
    *  on first use, by its first commit or mintId. `now`: the store's clock (epoch ms). */
   constructor(db: JournalConnection, claim: JournalClaim, now: () => number = Date.now, onClose?: () => void) {
     this.#db = db;
+    this.#dialect = db.dialect ?? SQLITE;
     this.#read = readsOf(db);
     this.#runId = claim.runId;
     this.#epoch = claim.epoch;
@@ -323,9 +329,18 @@ export class RunStorage implements Journal {
     // only its own statements, never a model or a tool.
     await this.#transaction(async (tx) => {
       // The claim's fence (store/fence.ts): its epoch, and its lease not run out on the store's clock, read here inside the
-      // transaction so the check and the commit are one.
-      const fence = claimFence({ runId: this.#runId, epoch: this.#epoch }, this.#now());
-      if ((await tx.runCounted(`UPDATE runs SET epoch = epoch WHERE ${fence.where}`, ...fence.params)) === 0) {
+      // transaction so the check and the commit are one, once the run's row is held (a no-op on SQLite's one writer). Held
+      // shared (dialect shareLock): a claim, a release or the run's end, which move the epoch, waits for this commit; a
+      // renew, which moves only the lease, never does. A commit whose staged patch moves the run's state (an end, a park)
+      // holds the row as every other state or epoch move does (lockRow "update"): a command's or a put's insert, which
+      // holds it shared, waits for it and reads the run as it leaves it, never lands beside an end.
+      if (staged?.run?.state !== undefined) await this.#dialect.lockRow(tx, "runs", "id", this.#runId, "update");
+      else await tx.run(`SELECT 1 FROM runs WHERE id = ?${this.#dialect.shareLock}`, this.#runId);
+      // The journal's ids and seqs are read and moved on by one commit of the run at a time (the run's journal key, never
+      // its row, so a renew stays free): two commits in flight never take one seq.
+      await this.#dialect.lockKey(tx, `journal:${this.#runId}`);
+      const fence = claimFence({ runId: this.#runId, epoch: this.#epoch }, storeNow(this.#dialect, this.#now));
+      if ((await tx.get(`SELECT 1 AS held FROM runs WHERE ${fence.where}`, ...fence.params)) === undefined) {
         throw new Fenced(this.#runId, this.#epoch);
       }
       const metadata = await this.#readMetadata(tx);
@@ -367,7 +382,7 @@ export class RunStorage implements Journal {
         // them), then the takes.
         const now = this.#now();
         if (patching && (staged?.run !== undefined || (staged?.also ?? []).length > 0)) {
-          await applyRunPatch(tx, { runId: this.#runId, epoch: this.#epoch }, staged?.run ?? {}, staged?.also ?? [], now);
+          await applyRunPatch(tx, { runId: this.#runId, epoch: this.#epoch }, staged?.run ?? {}, staged?.also ?? [], now, this.#dialect);
         }
         for (const commandId of taking) {
           if ((await tx.runCounted("UPDATE commands SET taken_at = ? WHERE id = ? AND run_id = ? AND taken_at IS NULL", now, commandId, this.#runId)) === 0) {
@@ -402,6 +417,44 @@ export class RunStorage implements Journal {
    */
   publishing(publish: () => void, _context: Context): void {
     publish();
+  }
+
+  /**
+   * Applies `batches` to this run's journal inside `tx` — the caller's transaction, not one of its own — each batch a
+   * commit with its own seq, checked then written as commit() does, but with no staging, no takes and no publication: for
+   * a one-shot write that must land in the same transaction as other rows (an import's run row and its launch row). Fenced
+   * by the claim fence's inserted-here form (store/fence.ts): only the never-claimed row this transaction's own insert
+   * returned (`insertedHere`, its rowid) passes, never another run's; else nothing is written and the caller's
+   * transaction rolls back. A refused batch throws, so an import is all or nothing. Returns the seqs stored. Never
+   * interleave it with commit() on the same journal: it is for a fresh run's single import, not a live run's loop.
+   */
+  async applyIn(tx: SqliteExecutor, batches: readonly (readonly StorageWrite[])[], insertedHere: number | "this-transaction"): Promise<Seq[]> {
+    this.#assertOpen();
+    const fence = claimFence({ runId: this.#runId, epoch: this.#epoch }, storeNow(this.#dialect, this.#now), { insertedHere });
+    if ((await tx.runCounted(`UPDATE runs SET epoch = epoch WHERE ${fence.where}`, ...fence.params)) === 0) {
+      throw new Fenced(this.#runId, this.#epoch);
+    }
+    const metadata = await this.#readMetadata(tx);
+    if (Number.isNaN(this.#nextId)) this.#nextId = Number(metadata.next_id);
+    let candidateNextId = this.#nextId;
+    let next = Number(metadata.next_seq);
+    const seqs: Seq[] = [];
+    for (const writes of batches) {
+      const documentActions = this.#prepareDocumentActions(writes);
+      await this.#checkBatch(tx, writes, documentActions);
+      const seq = seqOf(next++);
+      await this.#applyBatch(tx, writes, documentActions, seq);
+      seqs.push(seq);
+      candidateNextId = Math.max(candidateNextId, this.#candidateNextId(writes));
+    }
+    if (seqs.length > 0) {
+      await tx.run(
+        `INSERT INTO ${T.metadata} (run_id, next_id, next_seq) VALUES (?, ?, ?) ON CONFLICT (run_id) DO UPDATE SET next_id = excluded.next_id, next_seq = excluded.next_seq`,
+        this.#runId, String(Math.max(Number(metadata.next_id), candidateNextId)), next,
+      );
+    }
+    this.#nextId = Math.max(this.#nextId, candidateNextId);
+    return seqs;
   }
 
   async #readMetadata(executor: SqliteExecutor): Promise<{ next_id: string; next_seq: number }> {
@@ -974,7 +1027,8 @@ export class RunStorage implements Journal {
   }
 
   async #claimId(executor: SqliteExecutor, id: number, table: string): Promise<void> {
-    await executor.run(`INSERT OR IGNORE INTO ${T.recordIds} (run_id, id, record_type) VALUES (?, ?, ?)`, this.#runId, id, table);
+    const d = this.#dialect;
+    await executor.run(`${d.insertOrIgnore} INTO ${T.recordIds} (run_id, id, record_type) VALUES (?, ?, ?)${d.onConflictIgnore}`, this.#runId, id, table);
   }
 
   /** Resolve each copy to a base of its source's state before this batch, which may not change the source. */

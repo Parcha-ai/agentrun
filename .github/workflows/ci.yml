@@ -20,10 +20,11 @@ env:
   npm_config_fetch_retry_maxtimeout: '120000'
 
 # A new push to a pull request replaces its running checks. Merge-queue candidates and main keep every run: each head
-# needs its own verdict.
+# needs its own verdict. So does the cutover branch's pull request: many lanes land on it in turn, and each push keeps
+# its own run (grouped by its commit, never cancelled), so every head gets a complete result.
 concurrency:
-  group: ci-${{ github.event_name }}-${{ github.event.pull_request.number || github.event.merge_group.head_sha || github.run_id }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ci-${{ github.event_name }}-${{ github.head_ref == 'untangle/cutover' && github.sha || (github.event.pull_request.number || github.event.merge_group.head_sha || github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' && github.head_ref != 'untangle/cutover' }}
 
 jobs:
   build:
@@ -38,7 +39,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node: ${{ fromJSON(github.event_name == 'merge_group' && '["22.23.2"]' || '["22.19.0","22.23.2","24.21.0"]') }}
+        node: ${{ fromJSON(github.event_name == 'merge_group' && '["24.21.0"]' || '["24.11.0","24.21.0"]') }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -87,15 +88,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 22.19 = the supported floor, 22.23 = release toolchain, 24.21 = the active LTS line. The merge queue runs the release
-        # toolchain only: every pull request and every push to main runs all three.
-        node: ${{ fromJSON(github.event_name == 'merge_group' && '["22.23.2"]' || '["22.19.0","22.23.2","24.21.0"]') }}
+        # 24.11 = the supported floor (first 24 LTS), 24.21 = current. The merge queue runs current only: every pull
+        # request and every push to main runs both.
+        node: ${{ fromJSON(github.event_name == 'merge_group' && '["24.21.0"]' || '["24.11.0","24.21.0"]') }}
         shard: [checks, packages, source, gh-1, gh-2, lean-1, lean-2, any-1, any-2, any-3, any-4, any-5, any-6]
-        # The downloaded source's consumer runs on the release toolchain only, as it did in `checks`.
+        # The downloaded source's consumer runs on current only, as it did in `checks`.
         exclude:
-          - node: '22.19.0'
-            shard: source
-          - node: '24.21.0'
+          - node: '24.11.0'
             shard: source
     steps:
       - uses: actions/checkout@v4
@@ -145,7 +144,7 @@ jobs:
       - if: matrix.shard == 'checks'
         run: node scripts/check-generated.mjs
       # TypeScript 5.4.5, not a Node version: in the merge queue it runs on the one Node there.
-      - if: matrix.shard == 'checks' && (matrix.node == '22.19.0' || github.event_name == 'merge_group')
+      - if: matrix.shard == 'checks' && (matrix.node == '24.11.0' || github.event_name == 'merge_group')
         run: node scripts/check-typescript-floor.mjs
       # verify-packages --console then checks the packed server carries the console, its files scanned like every packed file.
       - if: matrix.shard == 'packages'
@@ -162,12 +161,12 @@ jobs:
           AGENTRUN_CLAUDE_AGENT_REQUIRE_BINARY: '1'
           # The Codex adapter's tool-off test runs on the pinned binary (a dev dependency): here a missing one fails, not skips.
           AGENTRUN_CODEX_REQUIRE_BINARY: '1'
-          # On 22.23.2 the lean pool's shards record every workflow their DSL, pi and example tests validate or run
+          # On 24.21.0 the lean pool's shards record every workflow their DSL, pi and example tests validate or run
           # (spec/lean/sweep, preloaded above), for the lean job's validator sweep. Empty elsewhere: no hook.
-          LEAN_SWEEP_DIR: ${{ matrix.node == '22.23.2' && startsWith(matrix.shard, 'lean-') && format('{0}/lean-sweep', runner.temp) || '' }}
+          LEAN_SWEEP_DIR: ${{ matrix.node == '24.21.0' && startsWith(matrix.shard, 'lean-') && format('{0}/lean-sweep', runner.temp) || '' }}
       # The lean job reads these and fails on a missing one; a shard with none marks this step red, never the shard.
       - name: Keep the workflows the tests validated, for the lean job
-        if: matrix.node == '22.23.2' && startsWith(matrix.shard, 'lean-')
+        if: matrix.node == '24.21.0' && startsWith(matrix.shard, 'lean-')
         continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
@@ -185,6 +184,44 @@ jobs:
           include-hidden-files: true
           if-no-files-found: ignore
 
+  serve-postgres:
+    # @parcha/agentrun-serve's store on Postgres (`npm run test:pg`), against a Postgres service container. Advisory: not
+    # in verify's needs nor a required check, until it has run green.
+    name: serve store on Postgres
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # The service container's own throwaway login, made for this job and gone with it; the test's URL is built from
+    # these in its step, so no connection string with a password is written anywhere.
+    env:
+      PGUSER: agentrun
+      PGPASSWORD: agentrun
+      PGDATABASE: agentrun
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: agentrun
+          POSTGRES_PASSWORD: agentrun
+          POSTGRES_DB: agentrun
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U agentrun -d agentrun"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.21.0'
+          cache: npm
+      - run: npm install --global npm@11.21.0 --ignore-scripts
+      - run: node scripts/npm-ci-retry.mjs --ignore-scripts
+      - run: npm run build
+      - name: The store's suite on Postgres
+        run: AGENTRUN_TEST_PG_URL="postgres://${PGUSER}:${PGPASSWORD}@127.0.0.1:5432/${PGDATABASE}" npm run test:pg -w packages/serve
+
   console:
     # apps/console, the server's console: a private app with its own lockfile (React, Vite, Storybook), outside the
     # workspaces. Its typecheck, tests, build and Storybook build run here; verify needs it like the test shards.
@@ -198,7 +235,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '22.23.2'
+          node-version: '24.21.0'
           cache: npm
           cache-dependency-path: apps/console/package-lock.json
       - run: node ../../scripts/npm-ci-retry.mjs --ignore-scripts
@@ -223,7 +260,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '22.23.2'
+          node-version: '24.21.0'
           cache: npm
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
@@ -232,7 +269,7 @@ jobs:
       - run: node scripts/npm-ci-retry.mjs --ignore-scripts
       - uses: actions/download-artifact@v4
         with:
-          name: build-22.23.2
+          name: build-24.21.0
           path: ${{ runner.temp }}/build
       - name: The build job's output, for this tree and this Node
         run: node scripts/ci-build-output.mjs unpack "$RUNNER_TEMP/build"
@@ -244,19 +281,14 @@ jobs:
         run: python -m unittest discover -s python/tests -v
 
   verify:
-    # The required checks keep their names: verify (<node>) passes when every test shard and the console passed. It reads
-    # `needs`, not the jobs API, so an API error cannot fail a required check. A red 24.21 shard now fails verify (22.x)
-    # too. In the merge queue the test shards run on 22.23.2 only and every verify (<node>) still runs:
-    # `needs.test.result` is the result of the shards that ran.
-    name: verify (${{ matrix.node }})
+    # The one required check: it passes when every test shard (both Node versions) and the console passed. It reads
+    # `needs`, not the jobs API, so an API error cannot fail a required check. `needs.test.result` is the result of
+    # every matrix instance of `test`, so a red shard on either Node fails this job.
+    name: verify
     needs: [test, console]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    strategy:
-      fail-fast: false
-      matrix:
-        node: ['22.19.0', '22.23.2', '24.21.0']
     steps:
       - name: Every test shard and the console passed
         env:
@@ -266,7 +298,7 @@ jobs:
 
   transport-docker:
     # @parcha/pi-transport's formatter and linter, and its box conformance suite on real Docker containers. They are not
-    # part of the verify matrix: the suite needs a Docker daemon and an image, not three Node versions. A daemon that
+    # part of the verify matrix: the suite needs a Docker daemon and an image, not both Node versions. A daemon that
     # cannot start a box fails a test here instead of skipping it. Then serve's boxed tools on the same daemon, advisory
     # (a failure shows, and blocks nothing): a sandbox run's bash and file tools in a box with no network and no key.
     runs-on: ubuntu-latest
@@ -275,7 +307,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '22.23.2'
+          node-version: '24.21.0'
           cache: npm
       - run: npm install --global npm@11.21.0 --ignore-scripts
       - run: node scripts/npm-ci-retry.mjs --ignore-scripts
@@ -307,7 +339,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '22.23.2'
+          node-version: '24.21.0'
           cache: npm
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
@@ -325,9 +357,24 @@ jobs:
         env:
           AGENTRUN_COMPUTER_LIVE_DOCKER: '1'
 
+  deploy-compose:
+    # The deploy image and stack (deploy/compose.yaml): the image built from this checkout, a server and two runners
+    # from it on one store, and a run of an agent in the runner's place completed on a faux model (no key, no network).
+    # Outside the verify matrix: it needs a Docker daemon, not both Node versions. deploy/walk/reclaim.sh, the takeover
+    # walk, is run by hand: it takes about three minutes, half of them waiting out a lease.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.21.0'
+      - name: The image built, and the stack's smoke
+        run: sh deploy/walk/smoke.sh
+
   real-chrome:
     # @parcha/pi-browser's suites that drive a real local Chrome (the coding agent's default provider, the cdp provider, Stagehand's
-    # driver and its trace-export seal). They are not part of the verify matrix: they need one pinned browser, not three Node versions.
+    # driver and its trace-export seal). They are not part of the verify matrix: they need one pinned browser, not both Node versions.
     # Chrome for Testing is used because the runner's own Chrome answers Extensions.loadUnpacked with "Method not available", so
     # Stagehand's extension cannot load in it. A missing or incapable Chrome fails a test here instead of skipping it.
     needs: [build]
@@ -339,7 +386,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '22.23.2'
+          node-version: '24.21.0'
           cache: npm
       - uses: actions/cache@v4
         with:
@@ -359,7 +406,7 @@ jobs:
       - run: node scripts/npm-ci-retry.mjs --ignore-scripts
       - uses: actions/download-artifact@v4
         with:
-          name: build-22.23.2
+          name: build-24.21.0
           path: ${{ runner.temp }}/build
       - name: The build job's output, for this tree and this Node
         run: node scripts/ci-build-output.mjs unpack "$RUNNER_TEMP/build"
@@ -378,7 +425,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '22.23.2'
+          node-version: '24.21.0'
           cache: npm
       - uses: actions/cache@v4
         with:
@@ -396,7 +443,7 @@ jobs:
       - run: node scripts/npm-ci-retry.mjs --ignore-scripts
       - uses: actions/download-artifact@v4
         with:
-          name: build-22.23.2
+          name: build-24.21.0
           path: ${{ runner.temp }}/build
       - name: The build job's output, for this tree and this Node
         run: node scripts/ci-build-output.mjs unpack "$RUNNER_TEMP/build"
@@ -417,13 +464,13 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '22.23.2'
+          node-version: '24.21.0'
           cache: npm
       - run: npm install --global npm@11.21.0 --ignore-scripts
       - run: node scripts/npm-ci-retry.mjs --ignore-scripts
       - uses: actions/download-artifact@v4
         with:
-          name: build-22.23.2
+          name: build-24.21.0
           path: ${{ runner.temp }}/build
       - name: The build job's output, for this tree and this Node
         run: node scripts/ci-build-output.mjs unpack "$RUNNER_TEMP/build"
@@ -445,7 +492,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '22.23.2'
+          node-version: '24.21.0'
           cache: npm
       - run: npm install --global npm@11.21.0 --ignore-scripts
       - run: node scripts/npm-ci-retry.mjs --ignore-scripts
@@ -500,13 +547,13 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '22.23.2'
+          node-version: '24.21.0'
           cache: npm
       - run: npm install --global npm@11.21.0 --ignore-scripts
       - run: node scripts/npm-ci-retry.mjs --ignore-scripts
       - uses: actions/download-artifact@v4
         with:
-          name: build-22.23.2
+          name: build-24.21.0
           path: ${{ runner.temp }}/build
       - name: The build job's output, for this tree and this Node
         run: node scripts/ci-build-output.mjs unpack "$RUNNER_TEMP/build"
@@ -571,7 +618,7 @@ jobs:
     # The Lean model of the workflow language (spec/lean): proofs, axiom audit, the model's
     # side of the conformance corpus, and the validator sweep. The TypeScript side of the
     # conformance corpus runs in `npm test` above. The sweep's workflows come from the lean
-    # pool's test shards on 22.23.2, so it waits for them; it runs when one failed too, and the sweep fails
+    # pool's test shards on 24.21.0, so it waits for them; it runs when one failed too, and the sweep fails
     # if a shard's captures are missing. verify does not need it.
     needs: [test]
     if: ${{ !cancelled() }}
@@ -606,7 +653,7 @@ jobs:
         run: lake exe conformance
       - uses: actions/setup-node@v4
         with:
-          node-version: '22.23.2'
+          node-version: '24.21.0'
           cache: npm
       - run: npm install --global npm@11.21.0 --ignore-scripts
       - name: Build the DSL, whose validator gives TypeScript's verdicts

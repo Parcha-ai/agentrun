@@ -6,42 +6,27 @@
 import type { AnalyticsFilter, AnalyticsGroup, PendingEnd, RunRow, StoreAnalytics, StoreStats } from "@parcha/pi-durable-agent";
 import { nameOf } from "@parcha/pi-durable-agent/timeline";
 import { ApiError } from "./errors.js";
-import { type Runs, type Status, statusOf } from "./runs.js";
+import { type Status } from "./run-view.js";
 import { ID } from "./validate.js";
 
 type Bucket = "active" | "needs_input" | "status_unknown";
-/** Where a running row this server holds is counted, by its status (a paused workflow run is held, so active). One it
- *  holds as ended is pending (pendingOf), never here. */
+/** Where a running row is counted, by its status (a paused workflow run is active). Over the store a run's status is its
+ *  view's (viewOverStore); a run with none here is unknown, never active or not waiting. */
 const BUCKET: Partial<Record<Status, Bucket>> = { queued: "active", working: "active", paused: "active", input_required: "needs_input" };
-/** The state a held run's end will have in the store, by the status it reads (an escalation reads completed until then). */
-const END_OF: Partial<Record<Status, PendingEnd>> = { completed: "completed", failed: "failed", cancelled: "stopped" };
-
-/** The running rows this server holds as ended, by the state their end will have: a run reads ended as soon as its turn
- *  ends, and its end and metrics reach the store after its process has let it go. Counted by what the server holds; their
- *  metrics, cost and effort are left out until the store has their end (analytics' `pending`), never counted as running
- *  or as an unknown cost. */
-export function pendingOf(running: readonly string[], runs: Runs): Record<string, PendingEnd> {
-  const pending: Record<string, PendingEnd> = {};
-  for (const id of running) {
-    const run = runs.held(id);
-    const end = run && END_OF[statusOf(run).status];
-    if (end) pending[id] = end;
-  }
-  return pending;
-}
 
 /** As GET /usage rounds its sums; null stays null. */
 const round = (usd: number | null) => (usd === null ? null : Math.round(usd * 1e6) / 1e6);
 
-export function statsView(stats: StoreStats, runs: Runs, pending: Readonly<Record<string, PendingEnd>> = pendingOf(stats.running, runs)) {
+/** GET /stats's counts, from the store's aggregates (StoreStats) and each running row's status read over the store
+ *  (`statusOf`, viewOverStore): the runner writes a run's end to the store before it lets it go, so this server holds no
+ *  run ended-but-unstored, and `pending` is empty (kept a parameter for an older server's shape). */
+export function statsView(stats: StoreStats, statusOf: (id: string) => Status | undefined, pending: Readonly<Record<string, PendingEnd>> = {}) {
   const running: Record<Bucket, number> = { active: 0, needs_input: 0, status_unknown: 0 };
   for (const id of stats.running) {
     if (pending[id]) continue;
-    const run = runs.held(id);
-    running[(run && BUCKET[statusOf(run).status]) ?? "status_unknown"] += 1;
+    const status = statusOf(id);
+    running[(status && BUCKET[status]) ?? "status_unknown"] += 1;
   }
-  // Each pending run is one of the store's running rows, which its cost counts as unknown (stats.running and the cost's
-  // sums leave out the same archived runs and agents).
   const ends = Object.values(pending);
   const usd = round(stats.cost.usd);
   return {

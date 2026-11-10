@@ -9,7 +9,7 @@ import { parseArgs } from "node:util";
 import { spawn } from "node:child_process";
 import { accessSync, chmodSync, constants as fsConstants, statSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { defaultData, removeOwnRecord, SERVER_FILE, writeDurableSync } from "./files.js";
+import { defaultData, removeOwnRecord, SERVER_FILE, writeDurableSync } from "./server-fs.js";
 import { startedWith } from "./adapters.js";
 import { REPEAT_MS, stopOnSignals } from "./stop-signals.js";
 import { canOpen } from "./host.js";
@@ -17,13 +17,17 @@ import { resetPassword } from "./owner.js";
 import type { ImageState } from "./box-image.js";
 import { banner, boxImageLine } from "./print.js";
 import type { LearningMode } from "./learning.js";
-import { DEFAULT_PORT, type Serve, startServe } from "./server.js";
+import { DEFAULT_PORT, fauxEnvOf, type Serve, type ServeOptions, startServe } from "./server.js";
+import { runnerBeside } from "./runner/beside.js";
 
-const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--open] [--faux MODULE] [--faux-browser MODULE] [--allow-host NAME ...] [--max-runs N] [--drain-timeout D] [--documents DIR] [--allow-code-nodes] [--learning on|off] [--learning-budget BYTES] [--grade-model MODEL]
+
+const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--open] [--faux MODULE] [--faux-browser MODULE] [--allow-host NAME ...] [--max-runs N] [--drain-timeout D] [--documents DIR] [--allow-code-nodes] [--learning on|off] [--learning-budget BYTES] [--grade-model MODEL] [--no-runner]
        agentrun-serve reset-password [--data DIR]
        agentrun-serve validate-template DIR
        agentrun-serve eval-template DIR [--case NAME ...] [--runs N] [--server URL] [--grader-model PROVIDER/MODEL] [--report FILE] [--faux MODULE]
        agentrun-serve import [--data DIR] [--from claude-code,codex,pi] [--dry-run] [--include-deleted] [--all] [--verbose] [--port N]
+       agentrun-serve runner --data DIR [--loops N] [--name NAME]
+       agentrun-serve runner --check --data DIR [--name NAME]
 
   --data DIR        the agent store and its runs (default ~/.local/share/agentrun/agents); the token is DIR/.token, mode 0600
   --listen ADDR     the address to listen on (default 127.0.0.1); on any other, every Host name is served and the token
@@ -51,6 +55,8 @@ const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--
                     notes changed last, whole, while they fit
   --grade-model MODEL the model that grades what a run proposes to learn (default AGENTRUN_SERVE_GRADE_MODEL, else the
                     strong tier, AGENT_MODEL_STRONG, else each run's own model), named as the strong tier takes one
+  --no-runner       run the server alone, with no runner beside it (default: one runner beside the server); start one or
+                    more \`agentrun-serve runner --data DIR\` processes on the same data directory to claim and run runs
 
 Without --faux, a revision's model ("provider/model-id", or AGENT_MODEL when it names none; a workflow node's tier maps
 to AGENT_MODEL_FAST or AGENT_MODEL_STRONG, each falling back to AGENT_MODEL) is served by pi-ai's providers with their
@@ -61,8 +67,11 @@ published port, or a proxy's URL), and the link printed uses it; with none, Rend
 end, and per refused credential; AGENTRUN_LOG=quiet leaves out the request lines.
 
 The page is for one person, who signs in with a password (AGENTRUN_ACCOUNTS=0 turns this off; the token works for
-scripts and the CLI either way). With no AGENTRUN_PUBLIC_URL the first visit to the page sets the password; with it, the
-setup link this server prints carries a code. Forgot the password: \`agentrun-serve reset-password --data DIR\` where the
+scripts and the CLI either way). With no AGENTRUN_PUBLIC_URL, listening on loopback, the first visit to the page sets the
+password; with it, or on any other address, the setup link this server prints carries a code. Sign-in tries are limited
+per address (an IPv6 one by its /64) and wrong passwords per server; past the limit a try waits, a minute at most.
+Behind a proxy, set AGENTRUN_TRUSTED_PROXIES to its addresses or ranges (comma-separated; or loopback, linklocal,
+uniquelocal) so each visitor counts by the address its X-Forwarded-For names; unset, that header is never read. Forgot the password: \`agentrun-serve reset-password --data DIR\` where the
 data directory is (inside the container) clears it and signs every browser out, and the next visit sets a new one.
 
 \`agentrun-serve import\` reads the Claude Code, Codex and pi sessions in your own home (~/.claude/projects,
@@ -124,7 +133,7 @@ if (process.argv[2] === "validate-template") {
 // 0: every case passed; 1: one failed; 2: the flags, the package or a case is wrong, and nothing ran. --data is taken and
 // ignored, as validate-template's is: the npx launcher hands every server command one, and an eval's store is a temp one.
 if (process.argv[2] === "eval-template") {
-  const { CaseError, evalTemplate, markdownReport } = await import("./template-eval.js");
+  const { CaseError, evalTemplate, exitCodeOf, markdownReport } = await import("./template-eval.js");
   const { PackageError } = await import("./templates.js");
   const usage = (message: string): never => (console.error(`agentrun-serve eval-template: ${message}\n\n${USAGE}`), process.exit(2));
   const read = () => {
@@ -183,7 +192,7 @@ if (process.argv[2] === "eval-template") {
     stop.signal.throwIfAborted();
     if (given.report !== undefined) writeFileSync(resolve(given.report), `${JSON.stringify(report, null, 2)}\n`);
     process.stdout.write(markdownReport(report));
-    process.exit(report.pass ? 0 : 1);
+    process.exit(exitCodeOf(report));
   } catch (error) {
     if (stop.signal.aborted) {
       console.error("agentrun-serve eval-template: stopped; no report.");
@@ -193,6 +202,14 @@ if (process.argv[2] === "eval-template") {
     console.error(error.message);
     process.exit(2);
   }
+}
+
+// The runner process (runner/main.ts): beside the server, its own store connection in --data, claiming runs until SIGTERM
+// or SIGINT. Its exit: 2 bad arguments, 3 a store schema it does not know, 1 anything else, 0 closed. `--check` reads its
+// heartbeat (0 fresh, 1 not).
+if (process.argv[2] === "runner") {
+  const { runnerMain } = await import("./runner/main.js");
+  process.exit(await runnerMain(process.argv.slice(3)));
 }
 
 if (process.argv[2] === "import") {
@@ -220,6 +237,7 @@ try {
       learning: { type: "string" },
       "grade-model": { type: "string" },
       "learning-budget": { type: "string" },
+      "no-runner": { type: "boolean", default: false },
       help: { type: "boolean", short: "h", default: false },
     },
   }));
@@ -277,8 +295,10 @@ const onBoxImage = (state: ImageState) => {
 // How it was started, for the hints that start it again (adapters.ts npxLine): itself and its runs read it.
 Object.assign(process.env, startedWith({ ...(values.port !== undefined ? { port: values.port } : {}), open: values.open === true }));
 let serve: Serve;
+let serveOptions: ServeOptions;
+const trustedProxies = (process.env.AGENTRUN_TRUSTED_PROXIES ?? "").split(",").map((entry) => entry.trim()).filter(Boolean);
 try {
-  serve = await startServe({
+  serve = await startServe(serveOptions = {
     onBoxImage,
     data, port, ...(values.port === undefined ? { nextFreePort: true } : {}), ...(values.listen ? { host: values.listen } : {}), ...(given ? { token: given } : {}), ...(values.faux ? { faux: values.faux } : {}), ...(values["faux-browser"] ? { fauxBrowser: values["faux-browser"] } : {}), allowHosts: values["allow-host"],
     ...(values["max-runs"] !== undefined ? { maxRuns: Number(values["max-runs"]) } : {}),
@@ -286,16 +306,37 @@ try {
     // The public address is the server's with accounts on or off: the Host names it serves, the webhook URLs it gives.
     ...(publicUrl ? { publicUrl } : {}),
     ...(accounts ? { accounts, openSetup: !publicUrl, countSessions: true } : {}),
+    // The proxies whose X-Forwarded-For the sign-in limit reads (comma-separated); none unless set.
+    ...(trustedProxies.length ? { trustedProxies } : {}),
   });
 } catch (error) {
   console.error(`agentrun-serve: ${(error as Error).message}`);
   process.exit(1);
 }
+// The start launches one runner beside the server on the same data dir (design: "server and runner"): it claims and runs
+// every run, sharing only the store. With --no-runner the server runs alone, so the operator starts one or more separate
+// `agentrun runner --data DIR` processes on the same data directory instead.
+let runnerProc: Awaited<ReturnType<typeof runnerBeside>> | undefined;
+if (!values["no-runner"]) {
+  try {
+    // The beside-runner sees the server's test switches (server.ts fauxEnvOf: --faux and its modules), which the CLI hands
+    // the server as options, never through this process's environment: without them a --faux start's runner looks its faux
+    // model up in pi-ai's own catalog and every run fails on its first request. Assigned onto runEnv's result, never spread:
+    // its secrets are non-enumerable and a spread drops them.
+    const { runEnv } = await import("./runner/main.js");
+    runnerProc = await runnerBeside(data, { env: Object.assign(runEnv(process.env), fauxEnvOf(serveOptions)) });
+  } catch (error) {
+    console.error(`agentrun-serve: the runner could not start: ${(error as Error).message}`);
+    await serve.close();
+    process.exit(1);
+  }
+}
 // A token from the environment is the operator's already, and the stored one is printed by the start that made it only.
 const source = given ? "env" : serve.tokenMade ? "made" : "file";
 for (const line of banner({ url: serve.url, baseUrl: serve.baseUrl, data, token: serve.token, source, accounts, boxes: serve.boxesLine, ...(values.listen ? { listen: values.listen } : {}), ...(publicUrl ? { publicUrl } : {}) })) console.log(line);
-// With a public address the setup link and its code are printed as the code is made (owner.ts).
-if (serve.setupUrl && !publicUrl) console.log(`Set your password: ${serve.setupUrl} (the first visit sets it)`);
+// Open setup (no public address, a loopback listener): the link that sets the password. Any other start printed the
+// setup link with its code as the code was made (owner.ts).
+if (serve.setupUrl && serve.setupOpen) console.log(`Set your password: ${serve.setupUrl} (the first visit sets it)`);
 bannered = true;
 for (const line of early.splice(0)) console.log(line);
 // The console's page, once the server listens: never its sign-in link, whose token would sit in the opener's arguments
@@ -307,7 +348,7 @@ const record = join(resolve(data), SERVER_FILE);
 // (stop-signals.ts). The stop is in place before the record is written: a SIGTERM sent the moment the record appears is
 // a clean stop that removes it, never the default end by signal that leaves it behind.
 const stop = stopOnSignals({
-  close: () => (removeOwnRecord(record), serve.close()),
+  close: () => (removeOwnRecord(record), Promise.all([runnerProc?.close() ?? Promise.resolve(), serve.close()]).then(() => undefined)),
   stopping: () => serve.stopping(),
   done: (code) => (removeOwnRecord(record), process.exit(code)),
   say: (line) => console.error(line),

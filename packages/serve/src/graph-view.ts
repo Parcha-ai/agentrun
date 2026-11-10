@@ -7,7 +7,9 @@
 // Where the frame and the receipts come from: while the run goes its process holds its store exclusively, so they are
 // the process's live view (pause.ts `live.json`), and the store is never opened (an open racing the process's own would
 // fail it). Once the run ended, the store.
+import type { Context } from "@earendil-works/chord";
 import { llmAnswers, type NodeLine, readLiveView, readNodeLog } from "./pause.js";
+import type { Store } from "./store/store.js";
 
 export type GraphNodeStatus = "pending" | "working" | "done" | "failed" | "stopped" | "escalated" | "not_run" | "needs_review";
 type Item = { index: number; status: GraphNodeStatus; executionPath: string; label?: string; branches?: Record<string, string> };
@@ -27,6 +29,10 @@ export type GraphInput = {
   modelCost: number | null;
   /** How many of its llm calls' answers its node log held when its rows were last read: their cost is in `modelCost`. */
   llmRead?: number;
+  /** The one store and a context: when both are given, an ended run's view, pin and decisions read from A's journal
+   *  (store.readJournal) instead of its per-run store file. The cut passes them; without them the file path is read. */
+  store?: Store;
+  context?: Context;
 };
 
 type Frame = { done?: string[]; states?: Record<string, unknown>; inputs?: Record<string, unknown>; steps?: Record<string, unknown>; routes?: Record<string, { branch?: string }>; decisions?: Record<string, Record<string, { status?: string }>>; failures?: Record<string, unknown>; partial?: { path?: string } };
@@ -34,7 +40,7 @@ type Frame = { done?: string[]; states?: Record<string, unknown>; inputs?: Recor
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 const escape = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const at = (state: unknown, path: string): unknown => path.split(".").reduce<unknown>((value, key) => (isObject(value) ? value[key] : undefined), state);
-/** A map item's label: the item, or its name, whole. The server redacts it, then cuts it (runs.ts servedGraph), so the
+/** A map item's label: the item, or its name, whole. The server redacts it, then cuts it (graph-served.ts servedGraphView), so the
  *  whole label is what redaction sees: a key saved since an earlier poll is still found in it. */
 const labelOf = (item: unknown): string | undefined => {
   if (typeof item === "string") return item;
@@ -58,7 +64,24 @@ export async function runGraph(given: GraphInput) {
   let pin: Frame;
   let receipts: Array<Record<string, unknown>>;
   let readAt = new Date().toISOString();
-  if (given.ended) {
+  if (given.ended && given.store && given.context) {
+    // From the one store's journal (store.readJournal), no file: the run's view and pin as readWorkflowRun reads them over
+    // A, and its decisions as receipts. The same answers as the file path; the cut passes the store and a context.
+    const { store, context } = given;
+    const [{ decisionsOverStore }, { readWorkflowRunOver }] = await Promise.all([import("./store-reads/decisions.js"), import("./store-reads/workflow.js")]);
+    // The one reader of a workflow run's view over A (node status, outcome, escalation): the workflow-loop builder's.
+    view = (await readWorkflowRunOver(store, id, context)) ?? { status: {} };
+    const reads = store.readJournal(id);
+    try {
+      // The pin frame is the driver document's `state.pin`, as readWorkflowRun reads it internally over the journal.
+      const driver = await reads.findDocument({ kind: "agentrun.driver", scope: { kind: "session" }, key: id } as never, "current", context);
+      const driverValue = driver ? ((await reads.document(driver.id, "current", context))?.value as { state?: { pin?: Frame } } | undefined) : undefined;
+      pin = driverValue?.state?.pin ?? {};
+    } finally {
+      await reads.close(context);
+    }
+    receipts = await decisionsOverStore(store, id, context);
+  } else if (given.ended) {
     // Lock-free, as every server read of a run's database (run-db.ts): nothing made beside it, never a lock to wait on.
     view = await readWorkflowRun({ runId: id, storePath: given.storeFile, revision: { body: { workflow: given.workflow } } as never }, { unlocked: true });
     pin = ((readJournal(given.storeFile, id, { unlocked: true })?.state as { pin?: Frame } | undefined)?.pin) ?? {};

@@ -79,7 +79,8 @@ test("a first line that is not a door line for this epoch names no door: another
   }
 });
 
-test("through a run: the row's holder names the door its process proved, with the launch's nonce, which neither a tool's process (its environment, its descriptors) nor the run's own starting environment holds", { timeout: 120_000 }, async (t) => {
+// SKIP (follow-up #2078): it checks the run process's door (its nonce proof and relaunches), and runs no longer have their own process
+test.skip("through a run: the row's holder names the door its process proved, with the launch's nonce, which neither a tool's process (its environment, its descriptors) nor the run's own starting environment holds", { timeout: 120_000 }, async (t) => {
   if (process.platform !== "linux") return t.skip("reads /proc");
   const { api, data } = await serve(t, { faux: PROBE, fauxBox: FAUX_BOX });
   const made = await api("POST", "/agents", { definition: { id: "env", name: "env", instructions: "Probe.", place: SANDBOX, tools: ["bash"] } });
@@ -163,7 +164,8 @@ test("a door that answers nothing until the deadline (its process busy) is waite
   assert.ok(held.length >= 1, "it was asked");
 });
 
-test("through a run whose process never opens it: one line naming the cause, its process stopped at the ready time, and a request's 503 says why", { timeout: 120_000 }, async (t) => {
+// SKIP (follow-up #2078): it checks the run process's door (its nonce proof and relaunches), and runs no longer have their own process
+test.skip("through a run whose process never opens it: one line naming the cause, its process stopped at the ready time, and a request's 503 says why", { timeout: 120_000 }, async (t) => {
   const lines = [];
   const write = process.stderr.write;
   process.stderr.write = function (chunk, ...rest) {
@@ -199,7 +201,8 @@ test("through a run whose process never opens it: one line naming the cause, its
   assert.equal(said().length, 4, said().join(""));
 });
 
-test("through a run whose door does not answer its launch's nonce: its process is stopped, by this server's own handle, then the run opened again, at most MAX_RELAUNCHES times, and it fails saying why", { timeout: 120_000 }, async (t) => {
+// SKIP (follow-up #2078): it checks the run process's door (its nonce proof and relaunches), and runs no longer have their own process
+test.skip("through a run whose door does not answer its launch's nonce: its process is stopped, by this server's own handle, then the run opened again, at most MAX_RELAUNCHES times, and it fails saying why", { timeout: 120_000 }, async (t) => {
   const lines = [];
   const write = process.stderr.write;
   process.stderr.write = function (chunk, ...rest) {
@@ -223,7 +226,8 @@ test("through a run whose door does not answer its launch's nonce: its process i
   assert.match(failed.error.message, /went 4 times before the run ended: its process's door did not answer this launch's nonce$/);
 });
 
-test("through a run whose process fails at its start and is still exiting when its door's proof fails: that one process's own exit fails the run, and it is never stopped or opened again", { timeout: 120_000 }, async (t) => {
+// SKIP (follow-up #2078): it checks the run process's door (its nonce proof and relaunches), and runs no longer have their own process
+test.skip("through a run whose process fails at its start and is still exiting when its door's proof fails: that one process's own exit fails the run, and it is never stopped or opened again", { timeout: 120_000 }, async (t) => {
   const lines = [];
   const write = process.stderr.write;
   process.stderr.write = function (chunk, ...rest) {

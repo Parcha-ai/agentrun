@@ -29,6 +29,7 @@ import * as pages from "../dist/web-fetch-direct.js";
 import * as background from "../dist/background.js";
 import * as hosts from "../dist/host-tools.js";
 import { CLIP, monidText } from "../dist/monid.js";
+import { localWorkspace } from "../dist/workspace/index.js";
 import { LEARNED_CLIP, learnedText, learnedWorkflowTool } from "../dist/learned-workflow.js";
 import * as web from "../dist/web-fetch.js";
 import * as search from "../dist/web-search.js";
@@ -76,7 +77,9 @@ test("every host tool's largest result is within the host's result bound, which 
   // monid's three: one answer far past CLIP, the whole filed under work/, by the longest run id it files by.
   const work = join(dir, "work");
   await mkdir(work);
-  const monid = [await monidText({ runId: "r".repeat(80), output: '"'.repeat(3 * CLIP) }, work, "run"), await monidText({ runId: "w".repeat(80), output: wide.repeat(3 * CLIP) }, work, "run")];
+  const ws = localWorkspace(work);
+  const monid = [await monidText({ runId: "r".repeat(80), output: '"'.repeat(3 * CLIP) }, ws, "run"), await monidText({ runId: "w".repeat(80), output: wide.repeat(3 * CLIP) }, ws, "run")];
+  assert.ok(monid.every((text) => text.includes("the whole answer is in the run's files at evidence/monid/")), "filed through the run's Workspace");
   for (const name of ["monid.discover", "monid.inspect", "monid.run"]) keep(name, ...monid);
 
   // learned_workflow: a workflow's output far past LEARNED_CLIP, as JSON (quotes escaped), and in three-byte text.

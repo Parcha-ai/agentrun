@@ -23,6 +23,12 @@ import { toolsView } from "./tools.js";
 import { MODEL_KEYS } from "./model.js";
 import { TOOL_KEY_ROWS } from "./key-words.js";
 import { isObject, unknownFields } from "./validate.js";
+import { registerSecretWrite, type SecretMeta, secretMeta, secretName } from "./secret-writes.js";
+
+// Every value a person saves here is a secret (a tool's key, a model provider's key; BROWSERBASE_PROJECT_ID is kept the
+// same way): saving one, replacing it or removing it takes the owner's session (secret-writes.ts), never the token.
+registerSecretWrite("saveToolKey", () => true);
+registerSecretWrite("deleteToolKey", () => true);
 
 export const TOOL_KEYS_FILE = "tool-keys.json";
 export const SEAL_KEY_ENV = "AGENTRUN_SEAL_KEY";
@@ -92,6 +98,17 @@ const keptCheck = (entry: unknown): KeyCheck | undefined =>
   : entry.state === "accepted" && typeof entry.at === "string" ? { state: "accepted", at: entry.at }
   : entry.state === "not_checked" && typeof entry.reason === "string" ? { state: "not_checked", reason: entry.reason, ...(typeof entry.at === "string" ? { at: entry.at } : {}) }
   : undefined;
+
+/** A key row's secrets as every secret's view says them (secret-writes.ts SecretMeta): one per field, named
+ *  "<kind>:<FIELD>" (tool:MONID_API_KEY, model:OPENROUTER_API_KEY); source env when the server is started with it, console
+ *  when the owner saved it; `changedAt` the time that field's own value was saved (its own row in the store, its own entry
+ *  in the file), null when not known. */
+export function rowSecrets(row: { kind: "tool" | "model" }, fields: readonly { name: string; set: boolean; source: "server" | "stored" | null }[], changedAt: (name: string) => string | null): SecretMeta[] {
+  return fields.map((field) => secretMeta(secretName(row.kind, field.name), {
+    set: field.set,
+    ...(field.source === "server" ? { source: "env" as const } : field.source === "stored" ? { source: "console" as const, changedAt: changedAt(field.name) } : {}),
+  }));
+}
 
 /** The seal key `text` gives: 32 bytes in base64 (or base64url), else none. */
 export function sealKeyOf(text: string | undefined): Buffer | undefined {
@@ -179,7 +196,8 @@ export class ToolKeys {
         return { name, set: false, source: null, ...(opened ? { stored_unreadable: true as const } : {}) };
       });
       const check = fields[0].source === "stored" && kept !== "unreadable" ? (kept.checks[row.id] ?? UNCHECKED) : fields[0].source === "server" ? (this.started[row.id] ?? null) : null;
-      return { id: row.id, kind: row.kind, label: row.label, ...rowUnlocks(row, tools, providers, offers), fields, check };
+      const secrets = rowSecrets(row, fields, (name) => (kept !== "unreadable" && isObject(kept.fields[name]) && typeof kept.fields[name].changed_at === "string" ? kept.fields[name].changed_at : null));
+      return { id: row.id, kind: row.kind, label: row.label, ...rowUnlocks(row, tools, providers, offers), fields, secrets, check };
     });
     // A file that does not read as a whole names no field: which it held is unknown.
     const reason = kept === "unreadable" ? "file_unreadable" : UNREADABLE.find((why) => again.some((field) => field.why === why));
@@ -247,7 +265,9 @@ export class ToolKeys {
     const kept = this.kept();
     // A file that does not read is replaced: what it held opens nowhere.
     const { fields, checks }: Kept = kept === "unreadable" ? { fields: {}, checks: {} } : kept;
-    for (const [name, value] of Object.entries(values)) fields[name] = { sealed: seal(this.key!, Buffer.from(value as string, "utf8"), aad(name)).toString("base64"), check: this.sealCheck };
+    // Each field keeps its own changed_at: saving one key never moves another's.
+    const at = new Date().toISOString();
+    for (const [name, value] of Object.entries(values)) fields[name] = { sealed: seal(this.key!, Buffer.from(value as string, "utf8"), aad(name)).toString("base64"), check: this.sealCheck, changed_at: at };
     if (values[row.fields[0]] !== undefined) delete checks[row.id];
     if (check) checks[row.id] = check;
     this.write(fields, checks);

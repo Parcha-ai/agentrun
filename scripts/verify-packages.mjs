@@ -22,7 +22,7 @@ const requireConsole = process.argv.includes('--console');
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const receiptDir = join(root, '.release');
 const [major, minor] = process.versions.node.split('.').map(Number);
-assert.ok(major > 22 || major === 22 && minor >= 19, 'Package verification requires Node.js >=22.19.0');
+assert.ok(major > 24 || major === 24 && minor >= 11, 'Package verification requires Node.js >=24.11.0');
 const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/(?:API_KEY|TOKEN|SECRET|PASSWORD|PRIVATE_KEY|NODE_OPTIONS|NODE_PATH)/i.test(key)));
 const receipt = { status: 'running', startedAt: new Date().toISOString(), node: process.version, packages: [], demos: [], checks: [], limitations: ['The content scan is heuristic, not proof of complete secret detection.', 'Smoke tests use fake adapters and prohibit networking; live provider behavior is verified separately.', 'License and publication ownership remain separate release decisions.'] };
 await mkdir(receiptDir, { recursive: true });

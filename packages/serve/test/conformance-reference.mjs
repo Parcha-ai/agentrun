@@ -7,10 +7,9 @@ import { commitWrites } from "@earendil-works/pi-durable/testing";
 
 const { callsOf, journalEntries, messagesOf } = await import("../dist/runner/journal-reader.js");
 const { KINDS } = await import("../dist/runner/journal-kinds.js");
-const { deniedText, endedBy, noteOf } = await import("../dist/runner/loop-contract.js");
+const { cutAtLimit, deniedText, endedBy, noteOf } = await import("../dist/runner/loop-contract.js");
 const { MAX_RESTARTS } = await import("../dist/runner/conformance/harness.js");
 const { RUN_RESUMED } = await import("@parcha/pi-durable-agent/timeline");
-const { cutAtLimit } = await import("../dist/runner/loop-contract.js");
 
 /** A task that kept faulting: the run fails, saying so. */
 class RestartsRanOut extends Error {}
@@ -37,6 +36,9 @@ export const referenceSubject = {
   name: "reference",
   process: { module: import.meta.url, export: "referenceSubject" },
   createLoop: (setup) => (deps) => referenceLoop(setup, deps),
+  unsupported: {
+    "end-of-run-answer": "the reference loop has no end-of-run step (LoopDeps.endOfRun): it writes its end after the job's turn",
+  },
 };
 
 function referenceLoop({ script, tools, hooks }, deps) {
@@ -176,7 +178,7 @@ function referenceLoop({ script, tools, hooks }, deps) {
                 await waitForCommand();
               }
               inbox.splice(inbox.indexOf(answer), 1);
-              await append(KINDS.answer, { callId, approved: answer.kind === "approve", ...noteOf(answer) }, { take: [answer.id] });
+              await append(KINDS.answer, { callId, approved: answer.kind === "approve", decision: answer.kind === "approve" ? "allow" : "deny", answeredAt: new Date().toISOString(), ...noteOf(answer) }, { take: [answer.id] });
               if (answer.kind === "deny") continue;
             }
           }

@@ -1,4 +1,4 @@
-// A fake `docker` for run-box.test.mjs, run by a `docker` script first on PATH: it never reaches a daemon. Each call's
+// A fake `docker` for the box tests, run by a `docker` script first on PATH: it never reaches a daemon. Each call's
 // arguments go to `$FAKE_DOCKER_STATE/argv.jsonl`, and each container is a file under `containers/`. `exec` runs the
 // command on this machine, the container's mount targets mapped to their sources (one with no mount at /workspace has a
 // /workspace of its own under the state directory, never this machine's) and its `--env` its whole environment

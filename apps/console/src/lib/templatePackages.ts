@@ -28,6 +28,18 @@ export function needsOf(t: TemplateView, { secrets = true, mcp = true } = {}): [
   return out;
 }
 
+/** The values a parameter takes, as the form's text: its `enum` (the server's closed set), else a pattern that is a plain
+ *  anchored alternation of words (`^(crm|slack|none)$`). The form offers those as a choice; a number's choice is sent
+ *  as a number (parametersOf). A boolean keeps its checkbox. Any other pattern is the server's to check, and is never
+ *  shown. */
+export function choicesOf(p: TemplateView["parameters"][string]): string[] | null {
+  if (p.type === "boolean") return null;
+  if (p.enum?.length) return p.enum.map(String);
+  // Letters, digits, _ and - only: a "." (any character to the server) or anything else is no fixed list.
+  const m = p.pattern ? /^\^\(([A-Za-z0-9_-]+(?:\|[A-Za-z0-9_-]+)+)\)\$$/.exec(p.pattern) : null;
+  return m ? m[1].split("|") : null;
+}
+
 /** The parameters form's text, by parameter name ("true"/"false" for a boolean). */
 export type ParameterText = Record<string, string>;
 
