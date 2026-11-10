@@ -8,13 +8,14 @@ export type PickerOption = { value: string; label: string };
  *  start" and kept inside the viewport), in place of a native <select>, which a phone opens detached from the field.
  *  Keyboard and typeahead as a listbox has them (arrows, Home/End, Enter, Esc, letters). Styled as the console's fields:
  *  square corners, the field's border, 40 px rows and body text. `label` names it for assistive technology; `id` lets a
- *  visible label point at it. */
-export function Picker({ value, onChange, options, label, id, className }: { value: string; onChange: (value: string) => void; options: PickerOption[]; label: string; id?: string; className?: string }) {
+ *  visible label point at it. `placeholder` is what the field reads while nothing is picked, in the muted text a
+ *  field's placeholder has, so the field is never a blank box. */
+export function Picker({ value, onChange, options, label, id, className, placeholder }: { value: string; onChange: (value: string) => void; options: PickerOption[]; label: string; id?: string; className?: string; placeholder?: string }) {
   const picked = options.find((o) => o.value === value);
   return (
     <Listbox value={value} onChange={onChange}>
       <ListboxButton id={id} aria-label={label} className={cn("flex h-control-md min-w-0 items-center justify-between gap-2 border bg-background px-3 text-left border-input font-mono text-body hover:border-foreground/60 focus-visible:outline-offset-0 data-[open]:border-foreground", className)}>
-        <span className="min-w-0 truncate">{picked?.label ?? ""}</span>
+        <span className={cn("min-w-0 truncate", !picked && "text-muted-foreground")}>{picked?.label ?? placeholder ?? ""}</span>
         <ChevronDown className="size-4 shrink-0 text-muted-foreground" aria-hidden />
       </ListboxButton>
       <ListboxOptions anchor="bottom start" data-picker-list=""

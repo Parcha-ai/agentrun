@@ -2,7 +2,7 @@ import { ToolBlockers } from "@/components/ToolBlockers";
 import { ArrowRight, Copy, Play } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { FilePicker, type UploadLimits, useAttachments } from "@/components/FilePicker";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { Picker } from "@/components/ui/picker";
 import { Input, Textarea } from "@/components/ui/field";
 import type { Agent } from "@/lib/agentForm";
@@ -82,7 +82,7 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
   const body: StartBody = built.ok ? built.body : { input: kind === "agentic" ? { content: text } : text, ...(attachments.fileIds.length ? { file_ids: attachments.fileIds } : {}) };
   const key = agentId ? keys.keyFor(agentId, body) : "";
   const code = lang === "curl" ? curlFor(origin, agentId, body, key)
-    : `const res = await fetch(${JSON.stringify(`${origin}/v2/agents/${agentId}/runs`)}, {\n  method: "POST",\n  headers: {\n    Authorization: \`Bearer \${process.env.AGENTRUN_TOKEN}\`,\n    "Content-Type": "application/json",\n    "Idempotency-Key": ${JSON.stringify(key)},\n  },\n  body: JSON.stringify(${JSON.stringify(body, null, 2).replace(/\n/g, "\n  ")}),\n});\nconsole.log(res.status, await res.json());`;
+    : `const res = await fetch(${JSON.stringify(`${origin}/v2/agents/${agentId || "{agent_id}"}/runs`)}, {\n  method: "POST",\n  headers: {\n    Authorization: \`Bearer \${process.env.AGENTRUN_TOKEN}\`,\n    "Content-Type": "application/json",\n    "Idempotency-Key": ${JSON.stringify(key)},\n  },\n  body: JSON.stringify(${JSON.stringify(body, null, 2).replace(/\n/g, "\n  ")}),\n});\nconsole.log(res.status, await res.json());`;
   const send = async () => {
     if (!built.ok || !onSend || attachments.busy) return;
     setSending(true);
@@ -95,11 +95,14 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden">
       <div aria-label="Playground agent" className="flex shrink-0 flex-wrap items-center gap-3 border-b px-5 py-3 md:px-6">
-        <div className="flex min-w-0 items-center gap-2 text-small">
-          <label htmlFor="playground-agent" className="caps text-muted-foreground">Agent</label>
-          <Picker id="playground-agent" label="Agent" value={agentId} onChange={(id) => { setAgentId(id); setRevision(""); onAgent?.(id); }}
-            options={agents.map((a) => ({ value: a.agent_id, label: a.definition.name }))} className="w-56 max-w-[60vw]" />
-        </div>
+        {/* No agent to pick: no field stands here, and the Request panel below says how to make the first one. */}
+        {agents.length > 0 && (
+          <div className="flex min-w-0 items-center gap-2 text-small">
+            <label htmlFor="playground-agent" className="caps text-muted-foreground">Agent</label>
+            <Picker id="playground-agent" label="Agent" placeholder="Pick an agent" value={agentId} onChange={(id) => { setAgentId(id); setRevision(""); onAgent?.(id); }}
+              options={agents.map((a) => ({ value: a.agent_id, label: a.definition.name }))} className="w-56 max-w-[60vw]" />
+          </div>
+        )}
         <span className="font-mono text-small"><span className="text-primary-text">POST</span> <span className="text-muted-foreground">/v2/agents/{agentId || "{agent_id}"}/runs</span></span>
         <span className="flex-1" />
         <span className="caps text-label text-muted-foreground">Live API</span>
@@ -108,53 +111,81 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
       {/* Two columns only when the window is wide AND tall enough: a short one folds to one panel (short:), full width. */}
       <div className="grid min-h-0 flex-1 grid-cols-1 lg:[@media(min-height:501px)]:grid-cols-2">
         <section aria-label="Request" className={cn("flex min-h-0 flex-col border-b lg:border-b-0 lg:border-r", showCode && "short:hidden")}>
-          <header className="flex items-center justify-between border-b px-5 py-3 md:px-6">
-            <span className="text-lead font-semibold">Request</span>
-            <span className="flex gap-4 text-small">{(["form", "json"] as const).map((v) => <button key={v} type="button" onClick={() => setView(v)} className={cn("border-b pb-1 capitalize", view === v ? "border-foreground" : "border-transparent text-muted-foreground")}>{v === "json" ? "JSON" : "Form"}</button>)}</span>
-          </header>
-          <div className="min-h-0 flex-1 space-y-6 overflow-auto px-5 py-6 md:px-6">
-            <div><h2 className="text-xl font-semibold">Start a run</h2><p className="mt-1 text-body text-muted-foreground">{agent ? `${agent.definition.name}: ${kind === "agentic" ? "an" : "a"} ${kind} agent.` : "Pick an agent."} The server answers 202 with the run; follow it on its page.</p></div>
-            {view === "json" ? (
-              <>
-                <pre className="overflow-auto border bg-card p-4 font-mono text-small leading-[1.7]">{JSON.stringify(body, null, 2)}</pre>
-                {/* The files the request's file_ids come from, and how far they are sent, in this view too. */}
-                <Label name="file_ids" note="Empty names none.">
-                  <FilePicker attachments={attachments} limits={limits} />
-                </Label>
-              </>
-            ) : (
-              <>
-                <Label name={kind === "agentic" ? "input.content" : "input"} required error={!built.ok && built.field === "input" && text ? built.message : undefined}>
-                  <Textarea value={text} onChange={(e) => setText(e.target.value)} rows={kind === "agentic" ? 4 : 7} placeholder={placeholder} />
-                  {example && (
-                    <p className="mt-1 font-mono text-label text-muted-foreground">
-                      {example.from === "example" ? "The workflow's example input. Edit it, then start." : "The workflow's input, its fields empty. Fill them in, then start."}
-                      {example.fields.length > 0 && <> Fields: {example.fields.map((f, k) => <span key={f.name} title={f.note}>{k ? ", " : ""}<span className="text-foreground">{f.name}</span></span>)}.</>}
-                    </p>
-                  )}
-                </Label>
-                <Label name="file_ids" note="Empty names none.">
-                  <FilePicker attachments={attachments} limits={limits} />
-                </Label>
-                <Label name="revision" note="Empty runs the current revision.">
-                  <Picker label="Revision" value={revision} onChange={setRevision} className="w-full"
-                    options={[{ value: "", label: "The current revision" }, ...revisions.map((r) => ({ value: r.revision, label: `rev ${r.version}${r.current ? " (current)" : ""}${r.note ? `: ${r.note}` : ""}` }))]} />
-                </Label>
-                <Label name="effort" note="How hard the model thinks. Empty uses the agent's own.">
-                  <div className="flex gap-2">{["", ...efforts].map((e) => <Button key={e || "default"} type="button" size="sm" aria-pressed={effort === e} onClick={() => setEffort(e)} className={effort === e ? "border-foreground hover:border-foreground" : "text-muted-foreground"}>{e || "default"}</Button>)}</div>
-                </Label>
-                {kind === "agentic" && (
-                  <Label name="max_cost_usd" note="A spend cap in dollars; empty means none." error={!built.ok && built.field === "max_cost_usd" ? built.message : undefined}>
-                    <Input value={cap} onChange={(e) => setCap(e.target.value)} inputMode="decimal" placeholder="e.g. 0.50" />
+          {agents.length === 0 ? (
+            // No agents: a form that cannot send helps no one. The way to the first agent, then what a request takes.
+            <>
+              <header className="flex items-center justify-between border-b px-5 py-3 md:px-6"><span className="pb-1 text-lead font-semibold">Request</span></header>
+              <div className="min-h-0 flex-1 space-y-6 overflow-auto px-5 py-6 md:px-6">
+                <div className="border border-primary/50 bg-primary/5 p-5">
+                  <p className="caps text-label text-primary-text">No agents yet</p>
+                  <h2 className="mt-2 text-xl font-semibold">Start a run</h2>
+                  <p className="mt-1 text-lead text-muted-foreground">Runs start from an agent. Make one, then send its first request here.</p>
+                  <div className="mt-5 flex flex-wrap gap-2">
+                    <a href="#/agents/new" className={buttonVariants({ variant: "solid", size: "lg" })}>Create an agent</a>
+                    <a href="#/templates" className={buttonVariants({ variant: "outline", size: "lg" })}>Browse templates</a>
+                  </div>
+                </div>
+                <div>
+                  <h3 className="caps text-label text-muted-foreground">What a request takes</h3>
+                  <dl className="mt-3 divide-y border-y">
+                    {Object.entries(NOTES).map(([name, note]) => (
+                      <div key={name} className="flex flex-wrap items-baseline gap-x-4 gap-y-1 py-3"><dt className="w-40 font-mono text-body">{name}</dt><dd className="text-small text-muted-foreground">{note}</dd></div>
+                    ))}
+                  </dl>
+                </div>
+              </div>
+            </>
+          ) : (
+            <>
+            <header className="flex items-center justify-between border-b px-5 py-3 md:px-6">
+              <span className="text-lead font-semibold">Request</span>
+              <span className="flex gap-4 text-small">{(["form", "json"] as const).map((v) => <button key={v} type="button" onClick={() => setView(v)} className={cn("border-b pb-1 capitalize", view === v ? "border-foreground" : "border-transparent text-muted-foreground")}>{v === "json" ? "JSON" : "Form"}</button>)}</span>
+            </header>
+            <div className="min-h-0 flex-1 space-y-6 overflow-auto px-5 py-6 md:px-6">
+              <div><h2 className="text-xl font-semibold">Start a run</h2><p className="mt-1 text-body text-muted-foreground">{agent ? `${agent.definition.name}: ${kind === "agentic" ? "an" : "a"} ${kind} agent.` : "Pick an agent."} The server answers 202 with the run; follow it on its page.</p></div>
+              {view === "json" ? (
+                <>
+                  <pre className="overflow-auto border bg-card p-4 font-mono text-small leading-[1.7]">{JSON.stringify(body, null, 2)}</pre>
+                  {/* The files the request's file_ids come from, and how far they are sent, in this view too. */}
+                  <Label name="file_ids" note={NOTES.file_ids}>
+                    <FilePicker attachments={attachments} limits={limits} />
                   </Label>
-                )}
-              </>
-            )}
-          </div>
-          <footer className="flex shrink-0 items-center justify-between gap-3 border-t px-5 py-3 md:px-6">
-            <span className="text-small text-muted-foreground">Sends a real request to this server.</span>
-            <Button variant="primary" size="lg" onClick={send} disabled={!built.ok || !onSend || sending || !agentId || attachments.busy} title={attachments.busy ? "Waiting for the files to be sent" : undefined}><Play aria-hidden /> {sending ? "Sending" : "Send request"}</Button>
-          </footer>
+                </>
+              ) : (
+                <>
+                  <Label name={kind === "agentic" ? "input.content" : "input"} required error={!built.ok && built.field === "input" && text ? built.message : undefined}>
+                    <Textarea value={text} onChange={(e) => setText(e.target.value)} rows={kind === "agentic" ? 4 : 7} placeholder={placeholder} />
+                    {example && (
+                      <p className="mt-1 font-mono text-label text-muted-foreground">
+                        {example.from === "example" ? "The workflow's example input. Edit it, then start." : "The workflow's input, its fields empty. Fill them in, then start."}
+                        {example.fields.length > 0 && <> Fields: {example.fields.map((f, k) => <span key={f.name} title={f.note}>{k ? ", " : ""}<span className="text-foreground">{f.name}</span></span>)}.</>}
+                      </p>
+                    )}
+                  </Label>
+                  <Label name="file_ids" note={NOTES.file_ids}>
+                    <FilePicker attachments={attachments} limits={limits} />
+                  </Label>
+                  <Label name="revision" note={NOTES.revision}>
+                    <Picker label="Revision" value={revision} onChange={setRevision} className="w-full"
+                      options={[{ value: "", label: "The current revision" }, ...revisions.map((r) => ({ value: r.revision, label: `rev ${r.version}${r.current ? " (current)" : ""}${r.note ? `: ${r.note}` : ""}` }))]} />
+                  </Label>
+                  <Label name="effort" note={NOTES.effort}>
+                    <div className="flex gap-2">{["", ...efforts].map((e) => <Button key={e || "default"} type="button" size="sm" aria-pressed={effort === e} onClick={() => setEffort(e)} className={effort === e ? "border-foreground hover:border-foreground" : "text-muted-foreground"}>{e || "default"}</Button>)}</div>
+                  </Label>
+                  {kind === "agentic" && (
+                    <Label name="max_cost_usd" note={NOTES.max_cost_usd} error={!built.ok && built.field === "max_cost_usd" ? built.message : undefined}>
+                      <Input value={cap} onChange={(e) => setCap(e.target.value)} inputMode="decimal" placeholder="e.g. 0.50" />
+                    </Label>
+                  )}
+                </>
+              )}
+            </div>
+            <footer className="flex shrink-0 items-center justify-between gap-3 border-t px-5 py-3 md:px-6">
+              <span className="text-small text-muted-foreground">Sends a real request to this server.</span>
+              <Button variant="primary" size="lg" onClick={send} disabled={!built.ok || !onSend || sending || !agentId || attachments.busy} title={attachments.busy ? "Waiting for the files to be sent" : undefined}><Play aria-hidden /> {sending ? "Sending" : "Send request"}</Button>
+            </footer>
+            </>
+          )}
         </section>
         <section aria-label="Code and response" className={cn("flex min-h-0 flex-col", !showCode && "short:hidden")}>
           <header className="flex items-center justify-between border-b px-5 py-3 md:px-6">
@@ -196,6 +227,15 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
   );
 }
 
+/** What each field of a start request is, said once: under the form's fields, and as the read-only list a server
+ *  with no agents shows in the form's place. */
+const NOTES = {
+  "input.content": "Required. The run's first message.",
+  file_ids: "Empty names none.",
+  revision: "Empty runs the current revision.",
+  effort: "How hard the model thinks. Empty uses the agent's own.",
+  max_cost_usd: "A spend cap in dollars; empty means none.",
+} as const;
 
 function Label({ name, required, note, error, children }: { name: string; required?: boolean; note?: string; error?: string; children: React.ReactNode }) {
   return (
