@@ -141,9 +141,6 @@ function dispatchLoop(deps: DispatchDeps, loopDeps: LoopDeps): Loop {
       }
     }
   }
-    if (earlyStop) void inner.stop(earlyStop);
-    return end;
-  }
 
   return {
     start(claim) {
