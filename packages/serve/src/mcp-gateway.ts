@@ -234,11 +234,12 @@ export interface McpGatewayOptions {
    *  address it checked (`send`; none, `fetch` as it is). A refusal is said to the model, nothing sent. None: every
    *  request goes as `fetch` sends it. */
   reach?: (url: string, signal: AbortSignal) => Promise<{ refused: string } | { send?: typeof fetch }>;
-  /** Before each call leaves (after the gate, before the checks that refuse it unsent): with liveCredentials, the
-   *  runner's MCP claim step reads the server's row again and brings `credentials` up to date (mcp-claim.ts check): a
-   *  server removed since is refused unsent, a credential replaced is the one sent, and an access token near its end is
-   *  refreshed first. Its failure refuses the call unsent. */
-  before?: (server: string) => Promise<void>;
+  /** The claim's per-call check of a server's credential (its custody stamp): awaited before each call is checked for
+   *  sending, it may drop the credential (`credentials[server].unopened`), which the call then refuses unsent; one that
+   *  throws (a store read failed, the call was stopped) refuses the call unsent too, in words, and the run goes on. Only
+   *  the runner's MCP claim step passes it, with liveCredentials: a github_app token whose App was disconnected or
+   *  replaced. Both doors meet in it: pi's host tools and a CLI harness's session proxy each end in the same call. */
+  beforeCall?: (server: string, signal: AbortSignal) => Promise<void>;
 }
 
 /** What a call with no call id answers where a gate must know it by one: nothing was sent. */
@@ -431,11 +432,13 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
 
   /** A call the gate let go: a priced one under the run's cap and booked, an unpriced one marked not metered. */
   const sent = async (server: string, tool: string, args: Record<string, unknown>, callId: string, signal: AbortSignal): Promise<McpCallResult> => {
-    if (options.before) {
+    // The credential's custody checked first: one the claim drops now is refused below, unsent. A check that could not
+    // be made (a store read failed, the call was stopped) refuses this call unsent too, in words: never sent unchecked.
+    if (options.beforeCall) {
       try {
-        await options.before(server);
+        await options.beforeCall(server, signal);
       } catch {
-        return said(`The MCP server ${server}'s credential could not be checked just now; nothing was sent. Try again.`, true);
+        return said(`The MCP server ${server}'s credential can't be used right now: it could not be checked just now. Nothing was sent.`, true);
       }
     }
     const why = unsendable(server, tool);

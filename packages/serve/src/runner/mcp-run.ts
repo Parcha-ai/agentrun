@@ -145,9 +145,7 @@ export async function mcpForClaim(options: McpForClaimOptions): Promise<ClaimMcp
       const at = await mcpServerAt(new URL(url), signal, network, { allowed: await privateOAuthHosts(options.store), loopback: true });
       return "refused" in at ? { refused: at.refused } : { send: dialAt(network, at.address, options.fetch ?? fetch) as typeof fetch };
     },
-    // Each call's server read again first (mcp-claim.ts check): removed, refused unsent; replaced, the new credential
-    // sent; an access token near its end, refreshed before the call.
-    before: (server) => step.check(server),
+    beforeCall: step.beforeCall,
     work: options.work,
     commit: () => <T>(change: (tx: unknown) => Promise<T>) => options.harness.commit(change as never, BACKGROUND_CONTEXT) as Promise<T>,
     ...(options.fetch ? { fetch: options.fetch } : {}),

@@ -9,6 +9,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { PackageError, readPackage } from "../dist/templates.js";
+import { githubTriggerUnconnected } from "../dist/templates.js";
 import { connect, connectable, deliver, firstInput } from "./github-support.mjs";
 import { scratch } from "./support.mjs";
 import { firings, keyOf } from "./trigger-support.mjs";
@@ -105,4 +106,34 @@ test("(c) end to end: a signed pull_request for the template's repository fires 
   const { content } = await firstInput(t, server, firing.run_id);
   assert.match(content, /^Review the pull request\./);
   assert.match(content, /repo="acme\/widgets"/);
+});
+
+test("the code-review package as it ships: its pull-requests trigger takes the repo parameter in its where, so a pull_request for that repository fires a run and one for another fires none; with GitHub not connected its own words say what connecting does", { timeout: 120_000 }, async (t) => {
+  const server = await connectable(t);
+  const unconnected = await server.api("POST", "/templates/code-review/apply", { parameters: { repo: REPO } });
+  assert.equal(unconnected.status, 201, JSON.stringify(unconnected.body));
+  assert.deepEqual(unconnected.body.warnings.filter((w) => w.field === "triggers.0"), [{ field: "triggers.0", reason: "not_set_up_here", message: CONNECT_WORDS }]);
+  await connect(server);
+  const applied = await server.api("POST", "/templates/code-review/apply", { parameters: { repo: REPO } });
+  assert.equal(applied.status, 201, JSON.stringify(applied.body));
+  const [id] = applied.body.trigger_ids;
+  const trigger = (await server.api("GET", `/triggers/${id}`)).body;
+  assert.deepEqual(trigger.source.accept[0].where, [{ pointer: "/repository/full_name", in: [REPO] }], "the repo parameter filled in");
+  assert.deepEqual(applied.body.warnings.filter((w) => w.field === "triggers.0"), [{ field: "triggers.0", reason: "not_an_option", message: `Code review runs on each pull request to ${REPO}.` }]);
+  const { webhook_secret: secret } = server.github.app;
+  assert.deepEqual((await deliver(server.baseUrl, secret, "pull_request", pr("acme/other"))).body, { ok: "ignored" }, "another repository: no trigger takes it");
+  const fired = await deliver(server.baseUrl, secret, "pull_request", pr(REPO));
+  assert.equal(fired.status, 202, JSON.stringify(fired.body));
+  const hash = `sha256:${createHash("sha256").update(fired.body_text).digest("hex")}`;
+  assert.deepEqual(fired.body.firings.map((f) => f.key), [keyOf("github", id, hash)]);
+  const [firing] = await firings(server.api, id, 1);
+  assert.equal((await server.api("GET", `/runs/${firing.run_id}`)).body.agent_id, applied.body.agent_id);
+});
+
+test("a skipped github trigger's words come from its template: the verb its description starts with, on the events its trigger takes; else that it runs on each event", () => {
+  const on = (...events) => ({ kind: "github", accept: events.map((event) => ({ event })) });
+  assert.equal(githubTriggerUnconnected("Reviews a pull request or a diff for correctness.", on("pull_request")), CONNECT_WORDS, "code-review's, unchanged");
+  assert.equal(githubTriggerUnconnected("Writes release notes from the merged pull requests.", on("release")), "Connect GitHub in Settings, then apply again to write releases automatically.");
+  assert.equal(githubTriggerUnconnected("Researches each issue a person opens.", on("issues", "issue_comment")), "Connect GitHub in Settings, then apply again to research issues and comments automatically.");
+  assert.equal(githubTriggerUnconnected("Business due diligence on one company.", on("pull_request")), "Connect GitHub in Settings, then apply again so it runs on each pull request automatically.", "a description that starts with no verb");
 });

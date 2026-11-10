@@ -142,8 +142,24 @@ export function githubTriggerWords(packageName: string, source: Json): string {
 }
 const GITHUB_EVENT_WORDS: Record<string, string> = { pull_request: "pull request", pull_request_review: "pull request review", pull_request_review_comment: "review comment", issue_comment: "comment", issues: "issue" };
 
-/** What an apply says of a github trigger it skipped because GitHub is not connected here. */
-export const GITHUB_TRIGGER_UNCONNECTED = "Connect GitHub in Settings, then apply again to review pull requests automatically.";
+/** What an apply says of a github trigger it skipped because GitHub is not connected here, in the template's own words:
+ *  the verb its description starts with ("Reviews …" → review) on the events its trigger takes ("Connect GitHub in
+ *  Settings, then apply again to review pull requests automatically."); a description that starts otherwise says the
+ *  agent runs on each event. */
+export function githubTriggerUnconnected(description: string, source: Json): string {
+  const rules = Array.isArray(source.accept) ? source.accept.filter(isObject) : [];
+  const nouns = [...new Set(rules.map((rule) => GITHUB_EVENT_WORDS[String(rule.event)] ?? String(rule.event).replace(/_/g, " ")))];
+  const and = (words: string[]) => (words.length < 2 ? words.join("") : `${words.slice(0, -1).join(", ")} and ${words.at(-1)}`);
+  const or = (words: string[]) => (words.length < 2 ? words.join("") : `${words.slice(0, -1).join(", ")} or ${words.at(-1)}`);
+  // A third person's verb, "Reviews", "Writes" or "Researches" (never "Business" or "Every"): its stem is what the agent
+  // does.
+  const word = /^[A-Z][a-z]+\b/.exec(description.trim())?.[0].toLowerCase() ?? "";
+  const stem = /(?:ch|sh|x|z|ss)es$/.test(word) ? word.slice(0, -2) : /[^s]s$/.test(word) ? word.slice(0, -1) : undefined;
+  return stem
+    ? `Connect GitHub in Settings, then apply again to ${stem} ${and(nouns.map(plural))} automatically.`
+    : `Connect GitHub in Settings, then apply again so it runs on each ${or(nouns)} automatically.`;
+}
+const plural = (noun: string) => (/(?:ch|sh|x|s)$/.test(noun) ? `${noun}es` : `${noun}s`);
 
 /** Every string in `value`, deep. */
 const strings = (value: unknown): string[] => (typeof value === "string" ? [value] : Array.isArray(value) ? value.flatMap(strings) : isObject(value) ? Object.values(value).flatMap(strings) : []);

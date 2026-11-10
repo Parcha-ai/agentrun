@@ -110,11 +110,12 @@ export interface McpClaimStep {
   /** Refresh what has expired, and open the credentials again; then confirm the claim. Before a resumed loop's next
    *  model request. */
   fresh(): Promise<void>;
-  /** Before each call to pinned server `name` (the gateway's `before`): its row stamp read; opened again when it changed
-   *  or its access token is near its end (refreshed first), its entry dropped when it is no longer saved. */
-  check(name: string): Promise<void>;
   /** Drop every credential held: the loop ended, or the claim is lost. */
   release(): void;
+  /** Before each call of `server` (the gateway's beforeCall): its row stamp read (opened again when it changed or its
+   *  access token is near its end, refreshed first; its entry dropped when it is no longer saved), then a github_app token
+   *  whose App was disconnected or replaced since it was minted is dropped, revoked, and the call refused in words. */
+  beforeCall(server: string, signal: AbortSignal): Promise<void>;
 }
 
 type OAuthCredential = McpCredential & { type: "oauth"; set: TokenSet; expired?: true };
@@ -379,7 +380,16 @@ export async function mcpClaim(options: McpClaimOptions): Promise<McpClaimStep> 
   };
 
   await fresh();
-  return { pin, credentials, fresh, check, release };
+  // Before each call (the gateway's beforeCall; both doors meet in it, and a throw refuses the call unsent): the server's
+  // row stamp first (removed: dropped and refused; changed: opened again; an access token near its end: refreshed under
+  // the lease first), then a github_app token's App (disconnected or replaced since the mint: dropped and refused).
+  const beforeCall = async (server: string, signal: AbortSignal): Promise<void> => {
+    signal.throwIfAborted();
+    if (released) return;
+    await check(server);
+    if (!released) await github.check(server);
+  };
+  return { pin, credentials, fresh, release, beforeCall };
 }
 
 /** The run's pin: read, and checked against the meta tools known now; or made at its first claim and written once. */

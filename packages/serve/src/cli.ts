@@ -21,7 +21,7 @@ import { DEFAULT_PORT, fauxEnvOf, type Serve, type ServeOptions, startServe } fr
 import { runnerBeside } from "./runner/beside.js";
 
 
-const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--open] [--faux MODULE] [--faux-browser MODULE] [--allow-host NAME ...] [--max-runs N] [--drain-timeout D] [--documents DIR] [--allow-code-nodes] [--learning on|off] [--learning-budget BYTES] [--grade-model MODEL] [--no-runner]
+const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--open] [--faux MODULE] [--faux-browser MODULE] [--faux-github] [--allow-host NAME ...] [--max-runs N] [--drain-timeout D] [--documents DIR] [--allow-code-nodes] [--learning on|off] [--learning-budget BYTES] [--grade-model MODEL] [--no-runner]
        agentrun-serve reset-password [--data DIR]
        agentrun-serve validate-template DIR
        agentrun-serve eval-template DIR [--case NAME ...] [--runs N] [--server URL] [--grader-model PROVIDER/MODEL] [--report FILE] [--faux MODULE]
@@ -39,6 +39,9 @@ const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--
   --faux-browser MODULE
                     with --faux only: the browser tool's provider and driver from MODULE's default export (a fake
                     browser, no vendor, no key), for the console's real-browser tests
+  --faux-github     with --faux only: a fake GitHub App, connected at the start and answered in this process, so
+                    GitHub triggers run with nothing sent to GitHub; its webhook secret is in DIR/faux-github.json.
+                    On a scratch data directory: refused where another GitHub App is connected
   --allow-host NAME another Host name to accept (repeatable)
   --max-runs N      the most runs at once (default AGENTRUN_MAX_RUNS, else as many pi runs as this host's memory
                     holds); each run also reserves its harness's memory, and over either a new run is 429
@@ -226,6 +229,7 @@ try {
       open: { type: "boolean", default: false },
       faux: { type: "string" },
       "faux-browser": { type: "string" },
+      "faux-github": { type: "boolean", default: false },
       "allow-host": { type: "string", multiple: true, default: [] },
       "max-runs": { type: "string" },
       "drain-timeout": { type: "string" },
@@ -267,6 +271,10 @@ if (values["faux-browser"] && !values.faux) {
   console.error(`--faux-browser goes with --faux\n\n${USAGE}`);
   process.exit(2);
 }
+if (values["faux-github"] && !values.faux) {
+  console.error(`--faux-github goes with --faux\n\n${USAGE}`);
+  process.exit(2);
+}
 const budget = values["learning-budget"];
 if (budget !== undefined && !/^\d+$/.test(budget)) {
   console.error(`--learning-budget takes a whole number of bytes\n\n${USAGE}`);
@@ -296,7 +304,7 @@ let serveOptions: ServeOptions;
 try {
   serve = await startServe(serveOptions = {
     onBoxImage,
-    data, port, ...(values.port === undefined ? { nextFreePort: true } : {}), ...(values.listen ? { host: values.listen } : {}), ...(given ? { token: given } : {}), ...(values.faux ? { faux: values.faux } : {}), ...(values["faux-browser"] ? { fauxBrowser: values["faux-browser"] } : {}), allowHosts: values["allow-host"],
+    data, port, ...(values.port === undefined ? { nextFreePort: true } : {}), ...(values.listen ? { host: values.listen } : {}), ...(given ? { token: given } : {}), ...(values.faux ? { faux: values.faux } : {}), ...(values["faux-browser"] ? { fauxBrowser: values["faux-browser"] } : {}), ...(values["faux-github"] ? { fauxGitHub: true } : {}), allowHosts: values["allow-host"],
     ...(values["max-runs"] !== undefined ? { maxRuns: Number(values["max-runs"]) } : {}),
     ...(values["drain-timeout"] ? { drainTimeout: values["drain-timeout"] } : {}), ...(values.documents ? { documents: values.documents } : {}), ...(values["allow-code-nodes"] ? { allowCodeNodes: true } : {}), ...(values.learning !== undefined ? { learning: values.learning as LearningMode } : {}), ...(values["grade-model"] ? { gradeModel: values["grade-model"] } : {}), ...(budget !== undefined ? { learningBudget: Number(budget) } : {}), log: (line) => void process.stdout.write(`${line}\n`),
     // The public address is the server's with accounts on or off: the Host names it serves, the webhook URLs it gives.
