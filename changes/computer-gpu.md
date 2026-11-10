@@ -17,7 +17,9 @@ GPU computers on Modal and Daytona. `ComputerSpec.gpu: { type, count }` asks for
   - Each GPU comes with 16 vCPU, 192 GiB of memory and 512 GiB of disk by default (`perGpu`).
   - The org needs GPU credits.
   - The read-back's `gpu` and `gpuType` must match, and `attach` reports them.
-- Conformance: `provider.check-refuses` holds every provider to the GPU rule. A new Full case, `gpu.present` (group `gpu`), makes one computer with the GPU the run names (`--gpu <type>[:<count>]`). It checks attach's read-back and `nvidia-smi -L` run as the computer's user. Without `--gpu` the case skips, since a GPU bills by the second.
+- Conformance: `provider.check-refuses` holds every provider to the GPU rule. Two new Full cases in group `gpu` each make one computer with the GPU the run names (`--gpu <type>[:<count>]`). Without `--gpu` they skip, since a GPU bills by the second.
+  - `gpu.present` checks attach's read-back and `nvidia-smi -L` run as the computer's user. It also records, with nothing mounted, what that user sees of FUSE.
+  - `gpu.archil` makes the computer with the run's Archil folder too, and checks that the folder reads at `/workspace` and that a program's write there is on the disk after release. It skips where `gpu.mounts` leaves out `archil`.
 - Serve: an agent's sandbox computer takes an optional `gpu: { type, count }`.
   - The save checks its shape, and only a sandbox takes one (422). The revision keeps it.
   - The run's start (409 `agent_not_runnable`) and the claim hold it to what the provider declares, in `checkGpu`'s words. The server's folder mode counts as the mount.

@@ -3,9 +3,9 @@
 // Full case gpu.present, run only where gpu is declared and the run names the GPU it pays for, finds the GPUs in
 // attach's read-back and in nvidia-smi as the computer's user. Also checkGpu, the rule every provider's check() shares.
 import assert from "node:assert/strict";
-import test from "node:test";
+import test, { after } from "node:test";
 import { checkGpu, conformanceCases, runConformance } from "../dist/index.js";
-import { fakeComputers } from "./fake-computer.mjs";
+import { fakeComputers, fakeRunFolders } from "./fake-computer.mjs";
 
 const IMAGE = "fixture:image";
 const GPU = { types: ["T4", "A100-80GB"], max: 4 };
@@ -74,4 +74,37 @@ test("gpu.present passes where attach reads back the GPUs asked and nvidia-smi l
 	}
 	const refused = await run({ gpu: GPU }, ["gpu.present"], { gpu: { type: "H100", count: 1 } });
 	assert.equal(statuses(refused)["gpu.present"], "fail", "a GPU the provider does not offer fails the case's own check");
+});
+
+test("gpu.present records what the computer's user sees of FUSE, as evidence only: nothing is mounted, and a computer with no FUSE still passes", async () => {
+	const report = await run({ gpu: GPU }, ["gpu.present"], { gpu: { type: "T4", count: 1 } });
+	assert.equal(statuses(report)["gpu.present"], "pass", reasonOf(report, "gpu.present"));
+	assert.ok(report.results[0].observed.some((line) => line.startsWith("FUSE as the computer's user sees it, nothing mounted")), JSON.stringify(report.results[0].observed));
+});
+
+test("gpu.archil: one computer with the GPU and the run's Archil folder, where the provider's GPU computers take an Archil mount; skipped where gpu.mounts leaves it out, and where the run gives no folder", async () => {
+	const [found] = conformanceCases.filter((c) => c.id === "gpu.archil");
+	assert.deepEqual([found.level, found.group, [...found.needs]], ["full", "gpu", ["gpu", "mount:archil"]]);
+	const folders = fakeRunFolders();
+	after(() => folders.remove());
+	const asked = { type: "T4", count: 1 };
+	const archil = (gpu, options = {}) => fakeComputers({ gpu, mount: ["archil"], disks: folders.disks, ...options });
+	const ids = conformanceCases.filter((c) => c.id === "gpu.archil");
+
+	const fakes = archil(GPU);
+	const passing = await runConformance(fakes.provider, { image: IMAGE, cases: ids, gpu: asked, mountFor: folders.mountFor });
+	assert.equal(statuses(passing)["gpu.archil"], "pass", reasonOf(passing, "gpu.archil"));
+	assert.equal(fakes.made.length, 1, "one computer, with both");
+	assert.ok(passing.results[0].observed.some((line) => line.includes("GPU 0: NVIDIA T4")), JSON.stringify(passing.results[0].observed));
+
+	const unproven = await runConformance(archil({ ...GPU, mounts: [] }).provider, { image: IMAGE, cases: ids, gpu: asked, mountFor: folders.mountFor });
+	assert.equal(statuses(unproven)["gpu.archil"], "skip");
+	assert.match(reasonOf(unproven, "gpu.archil"), /GPU computers take no archil mount/);
+	const folderless = await runConformance(archil(GPU).provider, { image: IMAGE, cases: ids, gpu: asked });
+	assert.equal(statuses(folderless)["gpu.archil"], "skip", "no run folder given");
+
+	// The mount is checked before the GPU verdict: a computer whose image lacks nvidia-smi fails on the GPU alone.
+	const unseen = await runConformance(archil(GPU, { gpuUnseen: true }).provider, { image: IMAGE, cases: ids, gpu: asked, mountFor: folders.mountFor });
+	assert.equal(statuses(unseen)["gpu.archil"], "fail");
+	assert.match(reasonOf(unseen, "gpu.archil"), /nvidia-smi -L as the computer's user/);
 });
