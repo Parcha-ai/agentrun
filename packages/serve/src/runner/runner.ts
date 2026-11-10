@@ -16,7 +16,8 @@ import { KINDS, withdrawnAnswers } from "./journal-kinds.js";
 import { journalEntries } from "./journal-reader.js";
 import { type Claim, type Command, endedBy, type Journal, type Loop, type LoopEnd, type LoopFactory, type StopReason } from "./loop-contract.js";
 import { isFenced, type RunnerStore } from "./store-port.js";
-import { heldRedactor, type Redact, runnerSecrets, secretRedactor } from "./redact.js";
+import { heldRedactor, processSecretRedactor, type Redact } from "./redact.js";
+import { type LiveTickerOptions, withLiveTicker } from "./live-ticker.js";
 
 /** Most runs a runner holds at once, unless told (RunnerOptions.loops). */
 export const RUNNER_LOOPS = 300;
@@ -51,6 +52,10 @@ export const END_RETRY_AT_CAP = 11;
 export interface RunnerOptions {
   store: RunnerStore;
   createLoop: LoopFactory;
+  /** The runs' live view (live-ticker.ts): each loop's held state written to the store once a tick, by this runner's one
+   *  ticker, until close() has let every loop end. On by default where the store has a live view; its options (the tick),
+   *  or false for a test that wraps its loops in a ticker of its own or wants none. */
+  live?: false | LiveTickerOptions;
   /** This runner's name in the runs it claims (runs.runner). Default: host, pid and a random part. */
   name?: string;
   /** Most runs held at once. */
@@ -95,6 +100,9 @@ export interface RunnerOptions {
    *  loop is turning. The runner process writes its heartbeat from it (runner/main.ts), so a check sees a runner that is
    *  idle and well, and not one whose loop has stopped. A throw is the caller's. */
   onBeat?: () => void;
+  /** For tests: the claim deadline's clock (the deadline a claim not renewed in time is lost at, and the time its claimed
+   *  until is reckoned from). Default: the real one. Nothing else in the runner reads it. */
+  clock?: { now(): number; setTimeout(fn: () => void, ms: number): unknown; clearTimeout(handle: unknown): void };
 }
 
 export type RunnerEvent =
@@ -132,7 +140,7 @@ interface Held {
   delivering: boolean;
   /** The delivery under way, which the end waits for (up to endWaitMs) before it writes. */
   inFlight?: Promise<void>;
-  deadline?: NodeJS.Timeout;
+  deadline?: unknown;
   done?: Promise<void>;
 }
 
@@ -160,9 +168,10 @@ export function startRunner(options: RunnerOptions): Runner {
     endRetryCapMs = END_RETRY_CAP_MS,
     endRetryAtCap = END_RETRY_AT_CAP,
     onEvent = () => {},
-    redact: given = secretRedactor(runnerSecrets(process.env)),
+    redact: given = processSecretRedactor(),
     now = Date.now,
     onBeat = () => {},
+    clock = { now: () => Date.now(), setTimeout: (fn: () => void, ms: number) => setTimeout(fn, ms), clearTimeout: (handle: unknown) => clearTimeout(handle as NodeJS.Timeout) },
   } = options;
   // The one instance every run's loop gets (LoopDeps.redact), able to hold what each claim opens from the store
   // (redact.ts holdClaimed): a stored key is cut wherever a key of the runner's environment is.
@@ -179,6 +188,11 @@ export function startRunner(options: RunnerOptions): Runner {
   if (!(stopMarginMs < leaseMs && renewEveryMs < leaseMs - stopMarginMs)) {
     throw new RangeError(`a claim of ${leaseMs} ms must be renewed (every ${renewEveryMs} ms) before its stop margin (${stopMarginMs} ms)`);
   }
+  // The runs' live view: every loop this runner makes reports its run's held state to the one ticker, which writes it
+  // once a tick and is closed at the end of close(), after the drain and the loops' stop.
+  const { live = {} } = options;
+  const ticker = live !== false && store.live ? withLiveTicker({ live: store.live }, createLoop, live) : undefined;
+  const loopsOf: LoopFactory = ticker?.createLoop ?? createLoop;
   const emit = (event: RunnerEvent) => {
     try {
       // An error's text is cut of every secret the runner holds before anyone hears it.
@@ -246,8 +260,8 @@ export function startRunner(options: RunnerOptions): Runner {
   };
 
   const armDeadline = (held: Held, at: number) => {
-    clearTimeout(held.deadline);
-    held.deadline = setTimeout(() => loseClaim(held, "not-renewed"), Math.max(0, at - Date.now()));
+    clock.clearTimeout(held.deadline);
+    held.deadline = clock.setTimeout(() => loseClaim(held, "not-renewed"), Math.max(0, at - clock.now()));
   };
 
   /** The claim is gone (fenced) or about to run out unrenewed: write nothing more, and stop the loop. */
@@ -256,7 +270,7 @@ export function startRunner(options: RunnerOptions): Runner {
     // is no lost claim, and its loop has already stopped.
     if (held.fence.lost || held.ending || killed) return;
     held.fence.lost = true;
-    clearTimeout(held.deadline);
+    clock.clearTimeout(held.deadline);
     emit({ type: "claim-lost", runId: held.claim.runId, epoch: held.claim.epoch, why });
     stopLoop(held, { kind: "claim-lost" });
     held.abort.abort(new ClaimLost(`run ${held.claim.runId}: claim lost (${why})`));
@@ -276,7 +290,7 @@ export function startRunner(options: RunnerOptions): Runner {
     const due = [...runs.values()].filter((held) => !held.renewing && !held.fence.lost && !held.ending);
     if (due.length === 0) return;
     for (const held of due) held.renewing = true;
-    const sentAt = Date.now();
+    const sentAt = clock.now();
     try {
       const results = await store.renewMany(due.map((held) => held.claim), { leaseMs });
       results.forEach((result, i) => {
@@ -476,7 +490,7 @@ export function startRunner(options: RunnerOptions): Runner {
     // Whether the runner asked the loop to stop before it ended (only stopLoop sets this).
     const stoppedBefore = held.stopping;
     held.ending = true;
-    clearTimeout(held.deadline);
+    clock.clearTimeout(held.deadline);
     const { claim } = held;
     // A command still with the loop: its refusal is written before anything of the end, never after the release. A loop
     // that does not answer within endWaitMs has its answer dropped (the claim is sealed first).
@@ -579,7 +593,7 @@ export function startRunner(options: RunnerOptions): Runner {
     const delivered = new Promise<void>((resolve) => (firstDelivered = resolve));
     // Set below, once held is made: the loop's end commit lands only after start(), well after.
     let ending: () => void = () => {};
-    const loop = createLoop({
+    const loop = loopsOf({
       journal: (forClaim) => fenced(store.journal(forClaim), fence, forClaim.runId, () => ending()),
       flush: () => store.flush(),
       signal: abort.signal,
@@ -590,7 +604,7 @@ export function startRunner(options: RunnerOptions): Runner {
     // The loop's own end landed: the run is ending from here, its teardown included (no renew, no lost claim).
     ending = () => {
       held.ending = true;
-      clearTimeout(held.deadline);
+      clock.clearTimeout(held.deadline);
     };
     runs.set(claim.runId, held);
     armDeadline(held, sentAt + leaseMs - stopMarginMs);
@@ -618,7 +632,7 @@ export function startRunner(options: RunnerOptions): Runner {
       if (free <= 0) return;
       // One store call claims the batch, each run at its own epoch + 1 (store.runs.claimMany): filling 300 loops, or
       // taking a dead runner's runs over, is one transaction, not 300.
-      const sentAt = Date.now();
+      const sentAt = clock.now();
       const claims = await store.runs.claimMany(name, free, { leaseMs });
       // A run whose untaken stop row has tries failed to apply that stop before: its claim only ends it (endRetried). Either
       // source of tries counts: a refused stopped end (endRefused, released running) or a failed resume (resumeFailed's
@@ -681,7 +695,7 @@ export function startRunner(options: RunnerOptions): Runner {
     clearTimeout(pollTimer);
     clearTimeout(commandTimer);
     clearInterval(renewTimer);
-    for (const held of runs.values()) clearTimeout(held.deadline);
+    for (const held of runs.values()) clock.clearTimeout(held.deadline);
   };
 
   return {
@@ -720,11 +734,16 @@ export function startRunner(options: RunnerOptions): Runner {
       clearTimeout(timeout);
       for (const held of runs.values()) held.fence.lost = true;
       stopTimers();
+      // The live view's last tick, once every loop has ended or been given up: a draining run kept its live view to the
+      // end of its loop.
+      await ticker?.close();
     },
     kill() {
       killed = true;
       closed = true;
       stopTimers();
+      // A crash writes nothing more: the live view's ticker stops at once, beside a new holder of its runs.
+      ticker?.stop();
     },
   };
 }

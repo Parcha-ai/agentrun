@@ -189,8 +189,8 @@ The token is in the log of the start that made it. On a stop the server gives a 
 (`--drain-timeout 6s`) to finish its turn, so a busy `docker stop` ends in about 7.5 s, inside Docker's default 10 s
 grace, and Compose's `stop_grace_period` is 15 s; a turn cut off resumes at the next start. Compose publishes the port
 on this machine's loopback only (port 7340, or `AGENTRUN_PORT`; set `AGENTRUN_PUBLIC_URL` with it, so the printed link names that port), and
-the volume `agentrun-data` keeps `/data` across `down` and `up`. In the container the server listens on `0.0.0.0`, and
-every route but `GET /v2/capabilities` and `GET /v2/health` still needs the token. Compose's `healthcheck` and
+the volume `agentrun-data` keeps `/data` across `down` and `up`. In the container the server listens on `0.0.0.0`, so
+setup takes the code the start prints (`Set up this server: <url>/setup#code=<code>`), and every route but `GET /v2/capabilities` and `GET /v2/health` still needs the token. Compose's `healthcheck` and
 `render.yaml`'s `healthCheckPath` are `GET /v2/health`.
 
 `render.yaml` at the repository's root is a Render blueprint for the same image: one web service with a 1 GB disk at
@@ -1607,7 +1607,10 @@ shows it. It is kept sealed under `AGENTRUN_SEAL_KEY` in `DIR/trigger-settings-w
 sealed settings have a file of their own), so with no seal key no webhook trigger is made (`409 no_sealing_key`).
 `POST /v2/triggers/{id}/secret` makes a new one, shown once, and the old one signs nothing from then on. Like every
 secret this server keeps (its tokens, its outbound webhook's secret), it is cut from what a run shows, from what an
-import keeps and from every learning text. A secret that does not open under the seal key the server starts with is
+import keeps and from every learning text. A secret replaced by a rotation, or whose trigger is deleted, is kept too,
+sealed in a retired row of its own (scope `retired:<trigger>:<n>`), never a setting and in no `GET`: a run that quoted it
+before is still cut on every later server. Retired rows are kept for good for now; dropping one once no run older than
+it is left is still to come. A secret that does not open under the seal key the server starts with is
 said in its log (`condition=trigger_setting_unopened`, naming the trigger), and its trigger is refused until a new
 secret is made. A `trigger-settings-webhook.json` that does not read is never written over: until it is fixed or moved
 away, no webhook trigger is made or rotated (`409 store_unreadable`) and none fires.
@@ -2155,14 +2158,27 @@ send the browser to `/`, which keeps a link's `#code`.
 ## Your password
 
 AgentRun Server is for one person, who signs in to the console with a password (`AGENTRUN_ACCOUNTS=0` turns this off). With
-no `AGENTRUN_PUBLIC_URL`, the start prints `Set your password: <url>/setup`, and the first visit sets it, 12 characters or
-more. With it, the start prints `Set up this server: <url>/setup#code=<code>`, and setup takes that code (or the token as
-the Bearer). The server keeps a scrypt hash of the password, never the password, in `DIR/owner.json`, and signs its
+no `AGENTRUN_PUBLIC_URL`, listening on loopback (the default), the start prints `Set your password: <url>/setup`, and the
+first visit sets it, 12 characters or more. With a public address, or listening on any other address (`0.0.0.0` in the
+image, a LAN address), the start prints `Set up this server: <url>/setup#code=<code>`, and setup takes that code (or the
+token as the Bearer): anyone who reaches the port could otherwise set the password first. The server keeps a scrypt hash of the password, never the password, in `DIR/owner.json`, and signs its
 session cookies with the key in `DIR/.session-secret`; both are 0600, and no run reaches either. A session lasts 30 days.
 **Sign out** (`POST /v2/auth/sign-out`) signs out this browser: its session is revoked on the server (a copy of its
 cookie stops working too) and its cookie cleared, and every other browser stays signed in. **Sign out everywhere** (`POST /v2/auth/sign-out-everywhere`) ends every session on every browser and phone,
-this one too. Sign-in tries are limited per address, ten in 15 minutes, and the limit keeps up to 10,000 addresses: past that a
-new address gets a 429 until older ones expire, and an address already limited stays limited. Forgot it: run
+this one too.
+
+Sign-in tries are limited, and never for good. Each address (an IPv6 one by its /64) has ten tries in 15 minutes; past
+them each next try waits a second after the last, twice that the time after, never more than a minute. The whole server
+takes 100 wrong passwords in 15 minutes; past them every try, from any address, waits the same way after the last wrong
+one. A refused try is a 429 that says how long (`retry-after`, `retry_after_ms`). The limit counts up to 10,000 addresses
+at once; a new one past that is held by the server's budget only, and no address counted is ever dropped to make room.
+Behind a proxy every visitor would be the proxy's address, so one guesser would hold the owner too: set
+`AGENTRUN_TRUSTED_PROXIES` to the proxy's addresses or ranges (comma-separated, or `loopback`, `linklocal`,
+`uniquelocal`), and a request from one of them counts under the client its `X-Forwarded-For` names (the nearest address
+that is not itself a trusted proxy). Unset, that header is never read. `render.yaml` sets it to `uniquelocal`, the private
+ranges Render's proxy reaches a service from.
+
+Forgot it: run
 `agentrun-serve reset-password --data DIR` where the data directory is (`docker exec agentrun node
 /opt/agentrun/packages/serve/dist/cli.js reset-password --data /data` in the image). It clears the password and signs every
 browser out, and the next visit sets a new one. The token works for scripts and the CLI either way.

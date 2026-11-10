@@ -26,18 +26,23 @@ const stubRoute = async () => ({ model: "faux-1", provider: { api: "anthropic-me
 /**
  * Build a run's AdapterRunSpec through the dispatch's spec builder.
  *   body     the pinned revision's body (tools, approvals, instructions, toolSettings, harness)
+ *   kind     the revision's kind ("agentic" by default)
  *   launch   the launch body (merged over sane defaults: a runner place, a person's first message)
  *   settings the server's tool settings saved in the one store (store.settings), or none
  *   routeOf  the model route (a stub by default)
  *   uploads  [{ path, text, contentType? }] reserved and received as ready files, their ids put on launch.files
  *   env      the runner process's environment the claim's tools are handed (claim-secrets.ts scopes it); {} by default
  *   keys     server keys saved sealed in the one store (store.sealedKeys), as the settings API saves them
+ *   ledger   the run's one ledger as the adapter loop hands it (run.ledger), or none: the learned_workflow tool's model
+ *            nodes take the session's proxied models from it
  *   before   called with the server's store once the run is made, before the runner claims it (a test arranges the run there),
  *            then the seal key and the run's data dir (where a test lands what the claim reads, e.g. a learning seed)
+ *   computer the claim-time computer, as the runner composes it: given { store, sealKey }, it returns { computerForClaim,
+ *            computerDeps } (computerDepsFrom's); none by default (a runner place makes no computer)
  */
 export async function specFor(t, options = {}) {
-  strictOptions("specFor", options, ["body", "skills", "launch", "settings", "routeOf", "uploads", "env", "keys", "before"]);
-  const { body = {}, skills, launch = {}, settings, routeOf = stubRoute, uploads = [], env = {}, keys = {}, before } = options;
+  strictOptions("specFor", options, ["body", "kind", "skills", "launch", "settings", "routeOf", "uploads", "env", "keys", "ledger", "before", "computer"]);
+  const { body = {}, kind = "agentic", skills, launch = {}, settings, routeOf = stubRoute, uploads = [], env = {}, keys = {}, ledger, before, computer } = options;
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-spec-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -49,8 +54,11 @@ export async function specFor(t, options = {}) {
     rmSync(dir, { recursive: true, force: true });
   });
   // `skills`: the revision's skill files (path to text), kept on its row as the store keeps them; the body names each path.
-  await server.agents.create({ id: "agent-1", name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", ...(skills ? { skills: Object.fromEntries(Object.keys(skills).map((path) => [path, "0".repeat(64)])) } : {}), ...body }, ...(skills ? { skills } : {}) });
-  await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" });
+  await server.agents.create({ id: "agent-1", name: "Agent" }, { id: "rev-1", kind, body: { instructions: "Answer.", ...(skills ? { skills: Object.fromEntries(Object.keys(skills).map((path) => [path, "0".repeat(64)])) } : {}), ...body }, ...(skills ? { skills } : {}) });
+  const launchOf = (fileIds) => ({ input: { content: "Do the thing." }, title: "t", place: { mode: "runner" }, model: { provider: "anthropic", modelId: "claude-sonnet-5.5" }, ...(fileIds.length ? { files: fileIds } : {}), ...launch });
+  // A claim-time computer reads the run's launch row (its box_allow), as the runner's store has it: such a run is made
+  // with its launch.
+  await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, ...(computer ? [{ body: launchOf([]) }] : []));
   if (settings !== undefined) await server.settings.put("tool-settings", settings);
   for (const [name, value] of Object.entries(keys)) await putSealedKey(server, SEAL_KEY, name, value);
   if (before) await before(server, SEAL_KEY, dir);
@@ -76,11 +84,12 @@ export async function specFor(t, options = {}) {
   // The run's root conversation (ROOT_CONVERSATION_ID), as the adapter loop makes it when the session opens: a host tool's
   // paid mark commits there (paid-calls.ts), so a test that runs a tool needs it, as a claim on the loop has it.
   await harness.commit((tx) => tx.createRootConversation(), ctx);
-  const run = { harness, registry, setModels: (given) => (models = given) };
+  const run = { harness, registry, setModels: (given) => (models = given), ...(ledger ? { ledger } : {}) };
   // The one shared claim-time computer (none for a runner place); a test gives its own, as the runner would.
-  const computerForClaim = async () => ({ release: async () => {} });
-  const deps = { env, data: dir, journal: (c) => store.journal(c), store, sealKey: SEAL_KEY, routeOf, computerForClaim };
-  const launchBody = { input: { content: "Do the thing." }, title: "t", place: { mode: "runner" }, model: { provider: "anthropic", modelId: "claude-sonnet-5.5" }, ...(fileIds.length ? { files: fileIds } : {}), ...launch };
+  const composed = computer?.({ store, sealKey: SEAL_KEY });
+  const computerForClaim = composed?.computerForClaim ?? (async () => ({ release: async () => {} }));
+  const deps = { env, data: dir, journal: (c) => store.journal(c), store, sealKey: SEAL_KEY, routeOf, computerForClaim, ...(composed ? { computerDeps: composed.computerDeps } : {}) };
+  const launchBody = launchOf(fileIds);
   const spec = await adapterRunSpecFromLaunch(launchBody, run, deps, claim);
   return { spec, store, server, claim, dir, run, workFolder };
 }

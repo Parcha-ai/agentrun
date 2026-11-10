@@ -41,7 +41,11 @@ export type Request =
   | { op: "close" };
 /** An error as the worker reports it: busy (the lock outlasted busy_timeout), constraint, miss (an expectation), owned
  *  (another server holds the store), closed, or sql (anything else). */
-export type WorkerError = { kind: "busy" | "constraint" | "sql" | "closed" | "owned"; message: string } | { kind: "miss"; message: string; miss: Miss };
+export type WorkerError =
+  | { kind: "busy" | "sql" | "closed" | "owned"; message: string }
+  /** `errcode`: SQLite's extended result code, which names the rule (CHECK, UNIQUE, PRIMARYKEY, FOREIGNKEY, NOTNULL). */
+  | { kind: "constraint"; message: string; errcode: number }
+  | { kind: "miss"; message: string; miss: Miss };
 export type Reply = { id: number; ok: true; value: unknown } | { id: number; ok: false; error: WorkerError };
 
 /** A statement's expectation failed: carried out of the transaction, which is rolled back. */
@@ -153,7 +157,7 @@ function errorOf(error: unknown): WorkerError {
   // SQLITE_BUSY (5) and SQLITE_LOCKED (6), with their extended codes in the high bytes.
   if (typeof e?.errcode === "number" && ((e.errcode & 0xff) === 5 || (e.errcode & 0xff) === 6)) return { kind: "busy", message };
   // SQLITE_CONSTRAINT (19).
-  if (typeof e?.errcode === "number" && (e.errcode & 0xff) === 19) return { kind: "constraint", message };
+  if (typeof e?.errcode === "number" && (e.errcode & 0xff) === 19) return { kind: "constraint", message, errcode: e.errcode };
   return { kind: "sql", message };
 }
 

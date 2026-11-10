@@ -40,6 +40,9 @@ export default async function fakeMonid(url, init = {}) {
   calls.push({ method, path, body, authorized });
   if (process.env.AGENTRUN_TEST_FAUX_MONID_CALLS) appendFileSync(process.env.AGENTRUN_TEST_FAUX_MONID_CALLS, `${JSON.stringify({ pid: process.pid, method, path, authorized, key })}\n`);
   if (process.env.AGENTRUN_TEST_FAUX_MONID_STALL) await new Promise((go) => { held.push({ go, signal: init.signal }); for (const reached of waiting.splice(0)) reached(init.signal); });
+  // A vendor that echoes the key it was sent in an error (the secrets harness's planted stored key): on the one path
+  // AGENTRUN_TEST_FAUX_MONID_ECHO names, a 400 whose message holds the key whole.
+  if (process.env.AGENTRUN_TEST_FAUX_MONID_ECHO && path === process.env.AGENTRUN_TEST_FAUX_MONID_ECHO) return json(400, { code: 400, message: `No such endpoint for the key ${given}` });
   if (process.env.AGENTRUN_TEST_FAUX_MONID_STATUS) return json(Number(process.env.AGENTRUN_TEST_FAUX_MONID_STATUS), { code: Number(process.env.AGENTRUN_TEST_FAUX_MONID_STATUS), message: "This key may not use this endpoint." });
   if (process.env.AGENTRUN_TEST_FAUX_MONID_DOWN) throw new TypeError("fetch failed", { cause: Object.assign(new Error("getaddrinfo ENOTFOUND api.monid.ai"), { code: "ENOTFOUND" }) });
   if (!authorized) return json(401, { code: 401, message: "Missing or invalid API key" });

@@ -1,7 +1,8 @@
-import { Archive, ArrowLeft, ArrowRight, Check, Eye, FileText, History, Settings, TriangleAlert, Workflow, Wrench } from "lucide-react";
+import { Archive, ArrowLeft, ArrowRight, Check, Eye, FileText, History, Monitor, Settings, TriangleAlert, Workflow, Wrench } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { LearningField } from "@/components/LearningSwitch";
 import { McpToolPicker } from "@/components/McpToolPicker";
+import { ComputerSetting } from "@/components/ComputerSetting";
 import { PlaceSetting } from "@/components/PlaceSetting";
 import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
@@ -12,7 +13,9 @@ import type { WorkflowCheck } from "@/lib/client";
 import { markdown, when } from "@/lib/format";
 import { harnessDefault, modelLabel, NO_DEFAULT } from "@/lib/models";
 import type { McpServer } from "@/lib/mcp";
-import { newAgentPlace, placeOf } from "@/lib/place";
+import { computerOfPlace, newAgentPlace, placeOf } from "@/lib/place";
+import { placeOfComputer } from "@/lib/computers";
+import type { ComputerKindView } from "@/lib/v2";
 import type { Places } from "@/lib/place";
 import type { ToolSettings } from "@/lib/v2";
 import { callNodeTools, SERVER_DENY, serverDenies, type ToolChoice, type ToolGate } from "@/lib/toolSettings";
@@ -22,10 +25,12 @@ import { type Approvals, NEVER_ASK_LINE } from "@/lib/v2";
 /** A revision as GET /v2/agents/{id}/revisions lists it; `definition` is what it holds (a workflow revision's workflow). */
 export type Revision = { revision: string; version: number; current: boolean; note: string | null; created_at: string; definition?: Agent["definition"] };
 /** `decisionProvider`: the decision provider a new decision agent's judge names (agentForm's decisionProvider); none when
- *  the server runs no decision workflows a starter can use, and then Decision is offered disabled. `modelSource`:
- *  capabilities' `models.source`; `routePrefix`, its `models.route_prefix`, the routing prefix taken off model ids. A harness's `default_model` is the
- *  model the server runs for it when a definition names none (null: none). */
-export type EditorCaps = { harnesses: { id: string; available: boolean; reason?: string; default_model?: string | null }[]; tools: ToolOffer[]; thinking: string[]; defaultModel?: string; modelSource?: string; routePrefix?: string | null; decisionProvider?: string; places?: Places | null; learning?: "on" | "off"; mcp?: boolean; mcpHarnesses?: string[] };
+ *  the server runs no decision workflows a starter can use, and then Decision is offered disabled. `routePrefix`:
+ *  capabilities' `models.route_prefix`, the routing prefix taken off model ids. A harness's `default_model` is the model
+ *  the server runs for it when a definition names none (null: none). */
+/** `computers`: the server's computers list (capabilities.computers.kinds), the Computer step's kinds; null on a server
+ *  that lists none, where the step shows where runs go (places). */
+export type EditorCaps = { computers?: ComputerKindView[] | null; harnesses: { id: string; available: boolean; reason?: string; default_model?: string | null }[]; tools: ToolOffer[]; thinking: string[]; routePrefix?: string | null; decisionProvider?: string; places?: Places | null; learning?: "on" | "off"; mcp?: boolean; mcpHarnesses?: string[] };
 export type EditorProps = {
   /** The agent being edited, or null for a new one. */
   agent: Agent | null;
@@ -58,7 +63,7 @@ export type EditorProps = {
   /** A tool whose permission the Tools step opens on, focused (a start refused for it links here). */
   focusTool?: string;
 };
-type Step = "context" | "workflow" | "tools" | "settings" | "history";
+type Step = "context" | "workflow" | "computer" | "tools" | "settings" | "history";
 /** The workflow in the form's text, when it parses; else undefined (the saved one stands). */
 const parsedWorkflow = (text: string | undefined): unknown => { try { return text ? JSON.parse(text) : undefined; } catch { return undefined; } };
 
@@ -73,6 +78,7 @@ function workflowIssues(problem: SaveProblem | null, workflow: boolean): { path:
 const STEPS: { id: Step; label: string; note: string; Icon: typeof FileText }[] = [
   { id: "context", label: "Context", note: "Name, description and instructions", Icon: FileText },
   { id: "workflow", label: "Workflow", note: "Its graph and its JSON", Icon: Workflow },
+  { id: "computer", label: "Computer", note: "Where it runs and what it drives", Icon: Monitor },
   { id: "tools", label: "Tools & skills", note: "What this agent can do", Icon: Wrench },
   { id: "settings", label: "Settings", note: "Harness, thinking and model", Icon: Settings },
   { id: "history", label: "History", note: "Revisions and the current one", Icon: History },
@@ -84,7 +90,7 @@ const STEPS: { id: Step; label: string; note: string; Icon: typeof FileText }[] 
 export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent, onArchive, onReload, onBack, step: initialStep, problem: initialProblem = null, notice, draft, validate, providerChoices = [], permissionGates = [], focusTool, mcpServers = null, serverToolSettings, onRetryMcp }: EditorProps) {
   const creating = !agent;
   const d = agent?.definition;
-  const [step, setStep] = useState<Step>(initialStep ?? (agent?.kind === "workflow" ? "workflow" : "context"));
+  const [chosen, setStep] = useState<Step>(initialStep ?? (agent?.kind === "workflow" ? "workflow" : "context"));
   // Tools are on by default: a new agent starts with every tool its harness runs here; an agent keeps its own. A new
   // agent starts on the place the server gives new agents (a sandbox where it has a box: bash ticked too); else none.
   const startPlace = creating ? newAgentPlace(caps.places) : undefined;
@@ -128,7 +134,10 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
   const choices = harnessOptions(caps.harnesses, creating ? { available: !!caps.decisionProvider } : undefined);
   // `revisions` counts them; the current one is the agent's `revision`, which can be an earlier one after "Make current".
   const current = revisions.find((r) => r.revision === agent?.revision) ?? revisions.find((r) => r.current);
-  const steps = STEPS.filter((s) => !(creating && s.id === "history") && (s.id !== "workflow" || workflow) && !(starting && s.id === "tools"));
+  // The Computer step is an agentic agent's (a workflow runs on the runner), on a server that lists where runs can go.
+  const steps = STEPS.filter((s) => !(creating && s.id === "history") && (s.id !== "workflow" || workflow) && !(starting && s.id === "tools") && (s.id !== "computer" || (!workflow && !starting && !!(caps.computers || caps.places))));
+  // A step this agent or server has none of (the Computer step on a server that lists no places) opens the first one.
+  const step: Step = steps.some((s) => s.id === chosen) ? chosen : steps[0]!.id;
   const at = steps.findIndex((s) => s.id === step);
   const save = async () => {
     if (!onSave) return;
@@ -159,8 +168,8 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
   };
   // The model a definition that names none runs on, for this harness, as a person reads it: the gateway's routing prefix
   // off, the full id in a title.
-  const fallback = harnessDefault(f.harness ?? "pi", caps.harnesses, caps.defaultModel);
-  const modelDefault = fallback ? modelLabel(fallback, { source: caps.modelSource, default: caps.defaultModel, route_prefix: caps.routePrefix }) : undefined;
+  const fallback = harnessDefault(f.harness ?? "pi", caps.harnesses);
+  const modelDefault = fallback ? modelLabel(fallback, caps.routePrefix) : undefined;
   // The tools that reach the web which this agent's harness runs here, for the Tools step's hint when it has none of them.
   const webHere = toolsFor(f.harness ?? "pi", caps.tools).filter((t) => reachesWeb([t.name])).map((t) => t.name);
 
@@ -251,6 +260,27 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
           {step === "workflow" && (
             <WorkflowEditor text={f.workflowText ?? ""} onText={(t) => set({ workflowText: t })} base={workflow ? d!.workflow : undefined}
               baseLabel={current ? `rev ${current.version}` : undefined} validate={validate} tools={f.tools} serverIssues={workflowIssues(problem, workflow)} />
+          )}
+
+          {step === "computer" && !workflow && !starting && caps.computers && (
+            <div className="max-w-4xl space-y-8">
+              {/* The computer picked, else the one saved, else the place the form starts on as a computer (the server's
+                  default for a new agent). A pick sets the place it is too, so a tool a box opens (bash) follows it. */}
+              <ComputerSetting kinds={caps.computers} value={f.computer ?? (d?.computer as AgentFields["computer"]) ?? computerOfPlace(f.place ?? { mode: "runner" })}
+                onChange={(computer) => {
+                  const place = placeOfComputer(computer);
+                  const sandboxOnly = new Set(caps.tools.filter((t) => t.sandbox_only).map((t) => t.name));
+                  set({ computer, place, ...(place.mode === "runner" ? { tools: (f.tools ?? []).filter((t) => !sandboxOnly.has(t)) } : {}) });
+                }} error={fieldError("computer") ?? fieldError("place")} warning={fieldWarning("computer") ?? fieldWarning("place")} />
+            </div>
+          )}
+          {step === "computer" && !workflow && !starting && !caps.computers && caps.places && (
+            <div className="max-w-3xl space-y-8">
+              {/* A pick is saved as the computer, the setting the server keeps place as a view of; the form's place still
+                  decides which tools a box opens (bash). */}
+              <PlaceSetting value={f.place} saved={d?.place} places={caps.places} tools={caps.tools} picked={f.tools ?? []}
+                onChange={(next) => set({ ...next, ...(next.place ? { computer: computerOfPlace(next.place) } : {}) })} error={fieldError("computer") ?? fieldError("place")} warning={fieldWarning("computer") ?? fieldWarning("place")} />
+            </div>
           )}
 
           {step === "tools" && (
@@ -368,7 +398,6 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
                   <input id="agent-max-cost" inputMode="decimal" value={f.maxCostText ?? ""} onChange={(e) => set({ maxCostText: e.target.value })} placeholder="e.g., 2.50" className={input} />
                 </Field>
               )}
-              {!workflow && !starting && caps.places && <PlaceSetting value={f.place} saved={d?.place} places={caps.places} tools={caps.tools} picked={f.tools ?? []} onChange={set} error={fieldError("place")} warning={fieldWarning("place")} />}
               {!workflow && !starting && caps.learning && <LearningField fields={f} onFields={set} saved={d?.learning} server={caps.learning} error={fieldError("learning")} warning={fieldWarning("learning")} />}
             </div>
           )}

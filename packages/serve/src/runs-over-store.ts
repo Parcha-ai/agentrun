@@ -12,7 +12,7 @@
 import { randomBytes } from "node:crypto";
 import type { Revision } from "@parcha/pi-durable-agent";
 import type { MessageOrigin } from "@parcha/pi-durable-agent/timeline";
-import type { AgentEntry } from "./agents-store.js";
+import { type AgentEntry, type ExternalRef, externalKey, getAgent } from "./agents-store.js";
 import { CAP_TOLERANCE, money } from "./cap.js";
 import { ApiError, type InputIssue, invalid, unsupported } from "./errors.js";
 import { harnessOfBody } from "./harness.js";
@@ -22,7 +22,7 @@ import { type Place, resolvePlace } from "./place.js";
 import { launchBody, type RunLaunch } from "./run-launch.js";
 import type { ApprovalDecision, RunMoment } from "./run-view.js";
 import { sendCommand } from "./runner/commands.js";
-import { RunFinal, type RunOrigin, type RunRow, type Store, StoreConstraint } from "./store/index.js";
+import { ExternalBodyConflict, type NewRevision, RunFinal, type RunOrigin, type RunRow, type Store, StoreConstraint } from "./store/index.js";
 import { toolingOf } from "./tools.js";
 import { type Plane, planeFor, type ToolSettingsMap } from "./tool-plane.js";
 import type { RunTrigger } from "./triggers.js";
@@ -104,13 +104,12 @@ export async function cancel(store: RunsStore, moment: RunMoment): Promise<boole
 
 /** Pauses a workflow run, or resumes it (pauseRun/resumeRun): a pause or resume command the run's runner reads and applies.
  *  Verbatim from runs.ts pause: an agentic run has no pause here (501, a turn is stopped instead), an ended or cancelling one
- *  takes none (409). Returns the run id and whether it is paused; the route adds the run's status from its view.
- *  (The runner's "pause"/"resume" command kinds are added on the runner side; written through the store directly until they
- *  are in runner/commands.ts's COMMAND_KINDS, then this routes through sendCommand like the others — a named TODO.) */
+ *  takes none (409). Returns the run id and whether it is paused; the route adds the run's status from its view. The runner
+ *  acks the command in an agentrun.pause or agentrun.resume entry's commit (runner/commands.ts COMMAND_KINDS). */
 async function pauseOrResume(store: RunsStore, moment: RunMoment, paused: boolean): Promise<{ run_id: string; paused: boolean }> {
   if (moment.kind !== "workflow") throw unsupported("runs.pause", "Only a workflow run pauses here: an agentic run's turn is stopped with POST /runs/{id}/stop.");
   if (moment.terminal || moment.cancelled) throw finished(moment);
-  await store.command(moment.id, { kind: paused ? "pause" : "resume", body: {} });
+  await sendCommand(store, moment.id, { kind: paused ? "pause" : "resume", body: {} });
   return { run_id: moment.id, paused };
 }
 
@@ -129,13 +128,15 @@ export type MessageMode = "steer" | "answer" | "follow_up";
  *  call waiting for approval is a deny with the person's words as the reason (as runs.ts declineBy did); every other message
  *  is a steer, which the runner places into the turn in flight, answers a question with, or runs as a follow-up turn, by the
  *  run's state. `answers: false` is a trigger's message, which never answers a person: refused while the run waits on one,
- *  and never a deny of an approval. The mode is the label the v2 answer reports, from the run's moment. */
+ *  and never a deny of an approval. The mode is the label the v2 answer reports, from the run's moment. `queue`: the steer's
+ *  write when it is not this run's own (a trigger's: its firing marked with it, within its bound, store.triggers.message),
+ *  which may skip it, in words. */
 export async function message(
   store: RunsStore,
   moment: RunMoment,
   content: string,
-  { requestId, answers = true, origin }: { requestId?: string; answers?: boolean; origin?: unknown } = {},
-): Promise<{ mode: MessageMode; messageId: string }> {
+  { requestId, answers = true, origin, queue }: { requestId?: string; answers?: boolean; origin?: unknown; queue?: (command: SteerCommand) => Promise<{ skipped: string } | void> } = {},
+): Promise<{ mode: MessageMode; messageId: string; skipped?: string }> {
   if (moment.importedSource !== undefined) throw importedRefusal(moment);
   // A cancelled run takes no message, whether or not its end is written yet.
   if (moment.cancelled) throw finished(moment);
@@ -144,11 +145,19 @@ export async function message(
   if (!answers && moment.waitsOnPerson) throw waitingRefusal();
   // A person's message while a tool call waits for approval declines it, with the message as the reason: a deny the run's
   // gate acts on as any deny, resuming the session with the refusal and the person's words in one turn. A trigger's never
-  // does (answers false, refused above).
+  // does (answers false, refused above). Marked as the person's message (`by`), so its approval reads "Declined by your
+  // message", as main's declineBy kept it. A person's answer to that call written first (not taken yet) stands, and the store refuses this deny (one answer per
+  // approval): the message is then a message like any other, below.
   if (answers && moment.kind === "agentic" && moment.waitingApprovalId !== undefined) {
     const messageId = newMessageId();
-    await sendCommand(store, moment.id, { kind: "deny", body: { approval: moment.waitingApprovalId, note: content } });
-    return { mode: "answer", messageId };
+    const declined = await sendCommand(store, moment.id, { kind: "deny", body: { approval: moment.waitingApprovalId, note: content, by: "message" } }).then(
+      () => true,
+      (error: unknown) => {
+        if (error instanceof StoreConstraint) return false;
+        throw error;
+      },
+    );
+    if (declined) return { mode: "answer", messageId };
   }
   if (moment.terminal) throw finished(moment);
   // Paused at its cap: a message would be refused for the same room, so the cap is raised first.
@@ -160,9 +169,16 @@ export async function message(
   if (mode === "answer" && !answers) throw waitingRefusal();
   const messageId = requestId ?? newMessageId();
   const body: Record<string, unknown> = { text: content, ...(answers ? {} : { answers: false }), ...(origin !== undefined ? { origin } : {}) };
+  if (queue) {
+    const queued = await queue({ kind: "steer", body });
+    return { mode, messageId, ...(queued ? { skipped: queued.skipped } : {}) };
+  }
   await sendCommand(store, moment.id, { kind: "steer", body });
   return { mode, messageId };
 }
+
+/** A steer command row, as message() writes it. */
+export type SteerCommand = { kind: "steer"; body: Record<string, unknown> };
 
 /** The raise command rows this run already has, newest last, with the cap each names. */
 async function raiseRows(store: RunsStore, runId: string): Promise<number[]> {
@@ -192,24 +208,41 @@ export async function raiseCap(store: RunsStore, moment: RunMoment, cap: number)
   return { resumed: false, ...(moment.live ? { note: `The run's process keeps the ${money(from)} cap it was opened with; the ${money(cap)} cap holds from its next process.` } : {}) };
 }
 
-/** The refusal for a tool call already answered, in the old runs.ts words, by how it was answered. */
-function alreadyAnswered(id: string, decision: ApprovalDecision): ApiError {
-  const how = decision === "canceled" ? "canceled with its run" : decision === "withdrawn" ? "withdrawn when its run was stopped" : `answered: ${decision}`;
+/** The refusal for a tool call already answered, in the old runs.ts words, by how it was answered; a withdrawal by a run
+ *  that ended (completed or failed, `ended`) says its run ended, never that it was stopped. */
+function alreadyAnswered(id: string, decision: ApprovalDecision, ended = false): ApiError {
+  const how = decision === "canceled" ? "canceled with its run" : decision === "withdrawn" ? (ended ? "withdrawn when its run ended" : "withdrawn when its run was stopped") : `answered: ${decision}`;
   return new ApiError("not_continuable", `The tool call ${id} was already ${how}.`, { details: { reason: "already_answered", decision } });
 }
 
+/** The answer to approval `id` of run `runId` already written as a command, taken by its runner or not: the first approve or
+ *  deny naming it that the runner has not refused (the store keeps one, schema.ts COMMANDS_ONE_ANSWER). A refused one (its
+ *  run could not resume) answers nothing, so the person may answer again. */
+async function sentAnswer(store: RunsStore, runId: string, id: string): Promise<{ decision: "allow" | "deny" } | undefined> {
+  const row = (await store.commands(runId, 0)).find((command) => (command.kind === "approve" || command.kind === "deny") && command.refused === null && isObject(command.body) && command.body.approval === id);
+  return row && { decision: row.kind === "approve" ? "allow" : "deny" };
+}
+
 /** A person's answer to the tool call `id` that waits for approval (tool-gate.ts): an approve or deny command row the run's
- *  runner reads and acts on. The first answer wins — the same one again changes nothing, another is 409 already-answered —
- *  and a run with no such waiting call is 404. The note is the person's words, carried on the command for the run's gate. */
+ *  runner reads and acts on. The first answer wins from the moment it is written, before the runner takes it — the same one
+ *  again changes nothing, another is 409 already-answered — and a run with no such waiting call is 404. Two answers at once
+ *  each write or lose to the store's one-answer index, and the one that loses reads the one that won. The note is the
+ *  person's words, carried on the command for the run's gate. */
 export async function approve(store: RunsStore, moment: RunMoment, id: string, decision: "allow" | "deny", note?: string): Promise<void> {
-  const given = moment.answeredApprovals?.[id];
-  if (!given && !(moment.approvalIds?.has(id) ?? false)) throw new ApiError("not_found", `The run ${moment.id} has no tool call ${id} waiting for approval.`);
-  if (given) {
-    if (given.decision === decision) return;
-    throw alreadyAnswered(id, given.decision);
-  }
+  const settle = (given: { decision: ApprovalDecision; ended?: true }): void => {
+    if (given.decision !== decision) throw alreadyAnswered(id, given.decision, given.ended === true);
+  };
+  const given = moment.answeredApprovals?.[id] ?? (await sentAnswer(store, moment.id, id));
+  if (given) return settle(given);
+  if (!(moment.approvalIds?.has(id) ?? false)) throw new ApiError("not_found", `The run ${moment.id} has no tool call ${id} waiting for approval.`);
   const body: Record<string, unknown> = { approval: id, ...(note !== undefined ? { note } : {}) };
-  await sendCommand(store, moment.id, { kind: decision === "allow" ? "approve" : "deny", body });
+  try {
+    await sendCommand(store, moment.id, { kind: decision === "allow" ? "approve" : "deny", body });
+  } catch (error) {
+    const won = error instanceof StoreConstraint ? await sentAnswer(store, moment.id, id) : undefined;
+    if (!won) throw error;
+    settle(won);
+  }
 }
 
 // ---- start -----------------------------------------------------------------------------------------------------------
@@ -271,7 +304,7 @@ export interface StartDeps {
   /** The run's model, pinned at start: resolved exactly as the old per-run process resolved it from the revision and agent
    *  (app.ts's runModels / wireModels over revision.body.model on its harness). The runner reads launch.model alone, so one
    *  resolution happens, here. Required. */
-  modelOf(entry: AgentEntry, revision: Revision): { provider: string; modelId: string } | undefined;
+  modelOf(entry: AgentEntry, revision: Revision): Promise<{ provider: string; modelId: string } | undefined>;
   /** The server's learning switch (learning.ts LearningMode): a run learns only when it is not "off" and its revision says
    *  so. Absent, no run learns. */
   readonly learning?: LearningMode;
@@ -288,6 +321,8 @@ export interface StartDeps {
  *  it must have a cap (a trigger's), and who its first message is from when the person did not write it. */
 export interface StartOptions {
   readonly trigger?: RunTrigger;
+  /** The run's title when its starter names one (a trigger's: "<Source> <name>"), else it is made from its input. */
+  readonly title?: string;
   readonly origin?: RunOrigin;
   readonly capped?: boolean;
   readonly from?: MessageOrigin;
@@ -314,17 +349,87 @@ async function learningStartFor(deps: StartDeps, entry: AgentEntry, revision: Re
 }
 
 /** Starts a run of `entry`'s agent from a create body, as POST /agents/{id}/runs starts it: every check the old start made
- *  before a run started, in the same order and words (the body's fields, the revision it pins, the input against its schema,
- *  the cap rules, the plane this host resolves, whether the revision can run here), then an INSERT — a queued run and its
- *  launch body in one transaction (store.runs.create), which a runner reads at its claim. No process, no door, no setup
- *  file: where the run runs is the runner's. Under `origin`, a key that already started a run gets that run (the store's
- *  one-run-per-key), so a retry never starts a second. */
-export async function startRun(store: Pick<Store, "runs" | "runOfOrigin">, deps: StartDeps, entry: AgentEntry, body: Json, { trigger, origin, capped = false, from }: StartOptions = {}): Promise<RunRow> {
+ *  before a run started (prepareLaunch), then an INSERT — a queued run and its launch body in one transaction
+ *  (store.runs.create), which a runner reads at its claim. No process, no door, no setup file: where the run runs is the
+ *  runner's. Under `origin`, a key that already started a run gets that run (the store's one-run-per-key), so a retry never
+ *  starts a second. */
+export async function startRun(store: Pick<Store, "runs" | "runOfOrigin">, deps: StartDeps, entry: AgentEntry, body: Json, { trigger, origin, capped = false, from, title }: StartOptions = {}): Promise<RunRow> {
+  const { launch, revision } = await prepareLaunch(deps, entry, body, { ...(trigger ? { trigger } : {}), capped, ...(from ? { from } : {}), ...(title !== undefined ? { title } : {}) });
+  const runId = (deps.newRunId ?? uuidv7)();
+  try {
+    return await store.runs.create({ id: runId, agentId: entry.agent.id, revisionId: revision.id, ...(origin ? { origin } : {}) }, { body: launchBody(launch) });
+  } catch (error) {
+    // Only another writer of the store got here first under the same origin key: its run is the one asked for.
+    if (origin && error instanceof StoreConstraint) {
+      const existing = await store.runOfOrigin(origin.key);
+      const row = existing && (await store.runs.get(existing.runId));
+      if (row) return row;
+    }
+    throw error;
+  }
+}
+
+/** An agent given inline (POST /runs): its reference in its source with the version, its name and description, and the
+ *  revision its checked definition makes (agents-store makeRevision), not yet stored. */
+export interface InlineAgent {
+  readonly external: ExternalRef & { readonly version: string };
+  readonly name: string;
+  readonly description: string | null;
+  readonly revision: NewRevision & { readonly note?: string };
+}
+
+/** Starts a run of an agent given inline, as POST /agents/{id}/runs starts a run of a stored one: the same checks over the
+ *  revision the definition makes (prepareLaunch), then ONE transaction (store.runs.createInline) that writes the agent on
+ *  its reference's first run and the revision on its version's first run, or reads them, then the run and its launch. The
+ *  agent already mapped to the reference is the run's (its id, its learning), so a run of a later version learns from the
+ *  earlier ones. A different definition under a version already run is 409 external_body_conflict, nothing written; under
+ *  `origin`, a key that already started a run gets that run, as startRun's. */
+export async function startInline(store: Pick<Store, "runs" | "runOfOrigin" | "agents">, deps: StartDeps, inline: InlineAgent, body: Json, { origin }: { origin?: RunOrigin } = {}): Promise<RunRow> {
+  const { external, revision } = inline;
+  const ref = externalKey(external);
+  const mapped = await store.agents.byExternal(ref);
+  const entry: AgentEntry = (mapped && (await getAgent(store, mapped.id))) || {
+    agent: { id: uuidv7(), name: inline.name, description: inline.description, currentRevision: null, createdAt: Date.now(), archivedAt: null, externalRef: ref },
+    revision: null, version: 0, revisions: 0, sizes: new Map(),
+  };
+  // A store revision is the revision the run path reads as a pi Revision (its body is the revision body), as pinnedOf hands
+  // one across.
+  const { launch } = await prepareLaunch(deps, entry, body, { revision: revision as unknown as Revision });
+  const runId = (deps.newRunId ?? uuidv7)();
+  try {
+    return await store.runs.createInline({
+      agent: { id: entry.agent.id, name: inline.name, description: inline.description, ref },
+      revision: { id: revision.id, version: external.version, kind: revision.kind, body: revision.body, skills: revision.skills, ...(revision.note !== undefined ? { note: revision.note } : {}) },
+      run: { id: runId, ...(origin ? { origin } : {}) },
+      launch: { body: launchBody(launch) },
+    });
+  } catch (error) {
+    if (error instanceof ExternalBodyConflict) {
+      const { source, kind, id, version } = external;
+      throw new ApiError("external_body_conflict", `${source} ${kind} ${id} version ${version} already ran here with a different definition. A version's definition never changes here: publish a new version and run that.`, { details: { external: { source, kind, id, version } } });
+    }
+    if (origin && error instanceof StoreConstraint) {
+      const existing = await store.runOfOrigin(origin.key);
+      const row = existing && (await store.runs.get(existing.runId));
+      if (row) return row;
+    }
+    throw error;
+  }
+}
+
+/** A run's launch from its create body, with every check the old start made before a run started, in the same order and
+ *  words: the body's fields, the revision it pins, the input against its schema, the cap rules, the plane this host
+ *  resolves, whether the revision can run here; then its title, plane, model and learning start. Nothing is written: the
+ *  caller INSERTs the run with it (startRun; an inline agent's run, which writes its agent and revision in the same
+ *  transaction). `revision`: the revision the run starts on, given (an inline agent's, not yet stored), in place of the
+ *  one the body pins or the agent's current (deps.pinnedOf). */
+export async function prepareLaunch(deps: StartDeps, entry: AgentEntry, body: Json, { trigger, capped = false, from, title: given, revision: onRevision }: Omit<StartOptions, "origin"> & { readonly revision?: Revision } = {}): Promise<{ launch: RunLaunch; revision: Revision }> {
+  const pinnedOf = onRevision ? async () => ({ revision: onRevision, version: entry.version }) : () => deps.pinnedOf(entry, body);
   const issues = deps.runBodyIssues(body);
   if (issues.length) {
     // Told from the revision the run would start on (a pinned one, else the current), once it reads as one: a pin that is
     // malformed or names no revision gets the refusal alone, no hint.
-    const on = issues.some((issue) => issue.field === "revision") ? undefined : await deps.pinnedOf(entry, body);
+    const on = issues.some((issue) => issue.field === "revision") ? undefined : await pinnedOf();
     throw deps.told(invalid(on ? await deps.explainRun(issues, body, on.revision) : issues));
   }
   if (body.quote_id !== undefined) throw unsupported("quotes", "This server has no billing, so it takes no quotes.");
@@ -332,7 +437,7 @@ export async function startRun(store: Pick<Store, "runs" | "runOfOrigin">, deps:
   // copy into the run's work/inputs/ at its claim.
   const fileIds = Array.isArray(body.file_ids) ? (body.file_ids as string[]) : [];
   if (fileIds.length) await deps.readyFiles(fileIds);
-  const pinned = await deps.pinnedOf(entry, body);
+  const pinned = await pinnedOf();
   if (!pinned) throw invalid([{ field: "revision", reason: "not_an_option", message: typeof body.revision === "string" ? `${body.revision} is not a revision of the agent ${entry.agent.id}` : `the agent ${entry.agent.id} has no current revision` }]);
   const { revision } = pinned;
   const rbody = revision.body as StartBody;
@@ -350,13 +455,14 @@ export async function startRun(store: Pick<Store, "runs" | "runOfOrigin">, deps:
   // The title shows on the run's page, the runs list and Mission Control: built from its input as shown, each held value
   // redacted before a long one is cut (a cut key could no longer be found).
   const shown = redactedOutput(input, deps.serverSecrets());
-  const title = revision.kind === "workflow" ? deps.workflowTitle(entry.agent.name || entry.agent.id, isObject(shown) ? shown : {}) : typeof input.content === "string" ? input.content : (Object.values(input).find((v): v is string => typeof v === "string") ?? JSON.stringify(input));
+  // A starter's title (a trigger's "<Source> <name>") is shown words too: cut as the input is, then as every title is below.
+  const title = given !== undefined ? String(redactedOutput(given, deps.serverSecrets())) : revision.kind === "workflow" ? deps.workflowTitle(entry.agent.name || entry.agent.id, isObject(shown) ? shown : {}) : typeof input.content === "string" ? input.content : (Object.values(input).find((v): v is string => typeof v === "string") ?? JSON.stringify(input));
   // Its tools' providers, resolved before the run exists (tool-plane.ts) and kept in its launch body, so a claim reads them
   // back, never the settings of that moment. (The old start wrote them to serve.json; now they ride the launch row.)
   const tooling = await toolingOf(revision);
   const plane: Plane = tooling ? planeFor(deps.planeEnv(), tooling, deps.toolSettings(), { capped: cap !== undefined, run: true }) : {};
   // The run's model, resolved once, at start (the runner reads launch.model only).
-  const model = deps.modelOf(entry, revision);
+  const model = await deps.modelOf(entry, revision);
   // The run's learning start, decided here as the old start did (learning-run.ts onStart): a run learns when the server's
   // learning is on and its revision says so; then its seed is read now and the notes its # Learned section names (givenOf,
   // the one decision) are pinned in the launch for the runner to put in the prompt. A seed that cannot be read starts it with
@@ -380,18 +486,7 @@ export async function startRun(store: Pick<Store, "runs" | "runOfOrigin">, deps:
     ...(from ? { inputOrigin: from } : {}),
     ...(model ? { model } : {}),
   };
-  const runId = (deps.newRunId ?? uuidv7)();
-  try {
-    return await store.runs.create({ id: runId, agentId: entry.agent.id, revisionId: revision.id, ...(origin ? { origin } : {}) }, { body: launchBody(launch) });
-  } catch (error) {
-    // Only another writer of the store got here first under the same origin key: its run is the one asked for.
-    if (origin && error instanceof StoreConstraint) {
-      const existing = await store.runOfOrigin(origin.key);
-      const row = existing && (await store.runs.get(existing.runId));
-      if (row) return row;
-    }
-    throw error;
-  }
+  return { launch, revision };
 }
 
 /** For tests and the switch: the issue list an input refusal carries. */

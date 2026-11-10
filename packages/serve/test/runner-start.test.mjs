@@ -10,8 +10,17 @@
 //   - SIGTERM hands a held run back at once, for another runner to claim;
 //   - `--check` passes while its heartbeat file (runner-<name>.alive under --data) is younger than twice its renew
 //     interval, and fails in words when it is not;
-//   - a run's own process environment (what its agent's bash sees) holds none of the runner's secrets: the store URL with
-//     its password, the seal key, the server's token and API key, the model key.
+//   - a runner-placed run's agent under the started runner has no bash (no computer mounts its folder, which is one of
+//     this server's own): bash is not offered, and a model's call of it (`env`) answers that it is not available, so
+//     nothing of the runner's environment reaches the model: the store URL with its password (the real test Postgres's,
+//     with AGENTRUN_TEST_PG_URL; on SQLite another AGENTRUN_STORE_* value), the seal key, the server's token and API key,
+//     the model key. A shell in a computer runs on the fixed environment (runner-secret-edge.test.mjs);
+//   - the runner's strip itself, where its output goes: the run environment it hands its loops (runEnv: a claimed run's
+//     model route and computer read it in the runner's own process), and the environment a claimed run's host tools are
+//     handed (claim-secrets.ts over runEnv, as the dispatch builds each claim's ToolHost.env), each with none of the
+//     runner's own secrets by name or by value, read or listed. A CLI harness's process (codex, claude-agent, opencode)
+//     is spawned on its own allowlist (PATH, LANG, TZ and the harness's own names), never on the run environment, so
+//     there is nothing of runEnv's in it to pin.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
@@ -21,8 +30,9 @@ import { createInterface } from "node:readline";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { dockerHost } from "./docker-host-fake.mjs";
-import { openSqliteStore } from "../dist/store/index.js";
+import { openPostgresStore, openSqliteStore } from "../dist/store/index.js";
 import { until } from "./runner-support.mjs";
+import { dropSchema, freshSchema, onPostgres, PG_URL, postgresOnly } from "./store-target.mjs";
 
 const { fakeAnthropic } = await import("@parcha/agentrun-harness-claude/testing");
 const main = await import("../dist/runner/main.js");
@@ -32,15 +42,18 @@ const LAUNCHER = fileURLToPath(new URL("../launcher/agentrun-serve", import.meta
 const MODEL = { provider: "anthropic", modelId: "claude-sonnet-4-5" };
 const READY = /^Runner (\S+) ready: store sqlite schema v(\d+), (\d+) loops$/;
 const SEAL = Buffer.alloc(32, 5).toString("base64");
-/** Values planted where the runner holds secrets: none may reach a run's own process. */
+/** The ready line of a runner on `kind`'s store. */
+const READY_ON = (kind) => new RegExp(`^Runner (\\S+) ready: store ${kind} schema v(\\d+), (\\d+) loops$`);
+/** Values planted where the runner holds secrets: none may reach a run's own process. The store's own (its URL with its
+ *  password) are planted per store by storePlant: a store URL is the live store to a runner, never a dummy. */
 const PLANT = {
-  AGENTRUN_STORE_URL: `postgres://runner:${"plantedstorepass"}@db.invalid:5432/agentrun`,
   AGENTRUN_TOKEN: `planted-token-${"t1".repeat(10)}`,
   AGENTRUN_API_KEY: `planted-apikey-${"a1".repeat(10)}`,
   ANTHROPIC_API_KEY: `planted-model-${"k1".repeat(10)}`,
 };
-/** The names of the runner's planted secrets (PLANT and the seal key) whose value is in `text`. */
-const plantedIn = (text) => [...Object.entries(PLANT), ["AGENTRUN_SEAL_KEY", SEAL]].filter(([, value]) => text.includes(value)).map(([name]) => name);
+/** The names of the runner's planted secrets (PLANT, the store's own `plant` from storePlant, and the seal key) whose
+ *  value is in `text`. */
+const plantedIn = (text, plant = {}) => [...Object.entries(PLANT), ...Object.entries(plant), ["AGENTRUN_SEAL_KEY", SEAL]].filter(([, value]) => text.includes(value)).map(([name]) => name);
 
 function scratch(t, name) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), name));
@@ -56,6 +69,32 @@ async function serverData(t, runs = [], dir = scratch(t, "agentrun-runner-start-
   for (const id of runs) await server.runs.create({ id, agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { content: "Go." }, title: id, place: { mode: "runner" }, harness: "pi", model: MODEL } });
   await server.close();
   return dir;
+}
+
+/** The store of a rule-5 case (a runner's secrets reach none of its runs or computers) and the secrets the runner holds
+ *  for it, set up by the server: agent-1 with `agent` as its body and `runs` ([id, title, place]) queued on pi with MODEL.
+ *  On Postgres (AGENTRUN_TEST_PG_URL): the real test store's URL, its password in it, and a schema of the case's own, which
+ *  the runner opens (a store URL is the live store to a runner, never a dummy). On SQLite, the data directory's store and
+ *  no store URL (it would switch the store): the schema name, and a password-bearing value under another name the runner
+ *  keeps to itself (AGENTRUN_STORE_*), so its strip is still pinned. `open()`: the store as a runner opens it, to read
+ *  its rows. One builder for both rule-5 cases. */
+async function storePlant(t, { agent = { instructions: "Answer.", tools: ["bash"] }, runs = [] } = {}) {
+  const dir = scratch(t, "agentrun-runner-start-");
+  const setUp = async (server) => {
+    await server.agents.create({ id: "agent-1", name: "Agent" }, { id: "rev-1", kind: "agentic", body: agent });
+    for (const [id, title, place] of runs) await server.runs.create({ id, agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { content: "Go." }, title, place, harness: "pi", model: MODEL } });
+    await server.close();
+  };
+  if (!onPostgres) {
+    await setUp(await openSqliteStore({ dataDir: dir, role: "server" }));
+    const plant = { AGENTRUN_STORE_SCHEMA: "planted_schema", AGENTRUN_STORE_PASSWORD: `postgres://runner:${"plantedstorepass"}@db.invalid:5432/agentrun` };
+    return { dir, kind: "sqlite", plant, open: () => openSqliteStore({ dataDir: dir, role: "runner" }) };
+  }
+  const schema = await freshSchema();
+  t.after(() => dropSchema(schema));
+  await setUp(await openPostgresStore({ url: PG_URL, schema, role: "server" }));
+  const plant = { AGENTRUN_STORE_URL: PG_URL, AGENTRUN_STORE_SCHEMA: schema };
+  return { dir, kind: "postgres", plant, open: () => openPostgresStore({ url: PG_URL, schema, role: "runner" }) };
 }
 
 /** The launcher started as `agentrun-serve runner ...args`, its environment built whole (no NODE_TEST_CONTEXT from this
@@ -98,19 +137,6 @@ function runnerChild(t, args, extra = {}, { cwd } = {}) {
   });
   return { child, out, err, exited, line };
 }
-
-test("started by its launcher with a store URL that holds a database password, the runner's own environment holds neither the URL nor its name, and its store opens", async (t) => {
-  const dir = await serverData(t);
-  const child = runnerChild(t, ["--data", dir], { AGENTRUN_STORE_URL: PLANT.AGENTRUN_STORE_URL, AGENTRUN_RUNNER_NAME: "runner-custody" });
-  await child.line(READY);
-  // The launcher execs the runner in its own process: its pid is the runner's.
-  const environ = readFileSync(`/proc/${child.child.pid}/environ`, "utf8");
-  assert.ok(environ.includes("AGENTRUN_RUNNER_NAME=runner-custody"), "the runner's own environment is read");
-  assert.ok(!environ.includes("plantedstorepass"), "no database password in the runner's environment");
-  assert.ok(!environ.split("\0").some((entry) => entry.startsWith("AGENTRUN_STORE_URL=")), "no store URL in the runner's environment");
-  child.child.kill("SIGTERM");
-  assert.deepEqual(await child.exited, { code: 0, signal: null });
-});
 
 test("bad arguments: the runner exits 2 in runnerArgs' words, and claims nothing", async (t) => {
   const none = runnerChild(t, []);
@@ -241,20 +267,19 @@ test("a box-placed run gets its Docker computer through the runner process (the 
   const shim = docker.dir;
   const fake = await fakeAnthropic({ reply: () => ({ text: "Done." }) });
   t.after(() => fake.close());
-  const dir = scratch(t, "agentrun-runner-box-");
-  const server = await openSqliteStore({ dataDir: dir, role: "server" });
-  await server.agents.create({ id: "agent-1", name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer." } });
-  await server.runs.create({ id: "run-box", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { content: "Go." }, title: "box", place: { mode: "sandbox", box: "docker" }, harness: "pi", model: MODEL } });
-  await server.runs.create({ id: "run-here", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { content: "Go." }, title: "here", place: { mode: "runner" }, harness: "pi", model: MODEL } });
-  await server.close();
+  const { dir, kind, plant, open } = await storePlant(t, {
+    agent: { instructions: "Answer." },
+    runs: [["run-box", "box", { mode: "sandbox", box: "docker" }], ["run-here", "here", { mode: "runner" }]],
+  });
   const child = runnerChild(t, ["--data", dir, "--loops", "2"], {
     PATH: `${shim}:${dirname(process.execPath)}:/usr/bin:/bin`,
-    // Every secret the runner holds, planted (the seal key is runnerChild's own): none may reach the computer.
-    ...PLANT, ANTHROPIC_BASE_URL: fake.url, AGENTRUN_RUNNER_NAME: "runner-box",
+    // Every secret the runner holds, planted (the seal key is runnerChild's own; the store's are the plant): none may
+    // reach the computer.
+    ...PLANT, ...plant, ANTHROPIC_BASE_URL: fake.url, AGENTRUN_RUNNER_NAME: "runner-box",
   });
-  await child.line(READY);
+  await child.line(READY_ON(kind));
   const states = async () => {
-    const store = await openSqliteStore({ dataDir: dir, role: "runner" });
+    const store = await open();
     try {
       return Object.fromEntries(await Promise.all(["run-box", "run-here"].map(async (id) => [id, await store.runs.get(id)])));
     } finally {
@@ -282,23 +307,120 @@ test("a box-placed run gets its Docker computer through the runner process (the 
   assert.ok(!runs[0].some((arg) => arg.includes("run-here")), "none for the runner-placed run");
   // Rule 5: a key goes into the server-side provider call alone. Every docker call made for the computer (its argv, so its
   // labels and its --env too) holds none of the runner's secrets.
-  assert.deepEqual(plantedIn(JSON.stringify(docker.calls())), [], "the computer's argv, labels and env hold none of the runner's secrets");
+  assert.deepEqual(plantedIn(JSON.stringify(docker.calls()), plant), [], "the computer's argv, labels and env hold none of the runner's secrets");
   // The runner stops with the run held: handed back for the next claim, whose computer releases this one by its lower
   // epoch (the one fence). A release at the run's end is the composer's (workspace-computer-deps: docker rm).
   child.child.kill("SIGTERM");
   assert.deepEqual(await child.exited, { code: 0, signal: null });
 });
 
-test("a run's own process under the started runner holds none of the runner's secrets: its agent's bash `env` shows no store URL, seal key, token, API key or model key", async (t) => {
+test("under the launcher, a runner given AGENTRUN_STORE_URL opens that Postgres store, and its process environment holds neither the URL nor its name", postgresOnly("a store URL is a Postgres store's"), async (t) => {
+  // The launcher takes the URL (its password in it) out of the environment into its pipe (agentrun-serve's list); the
+  // runner reads it back by name (secrets.ts secret), so it opens the store the URL names, never the data directory's.
+  const { dir, plant } = await storePlant(t);
+  const child = runnerChild(t, ["--data", dir], { ...PLANT, ...plant, AGENTRUN_RUNNER_NAME: "runner-url" });
+  await child.line(READY_ON("postgres"));
+  // The launcher execs the runner in its own process (exec env node ...): its environment as it started, from /proc.
+  const environ = readFileSync(`/proc/${child.child.pid}/environ`, "latin1").split("\0");
+  assert.ok(environ.includes("AGENTRUN_RUNNER_NAME=runner-url"), "the runner's own environment, read whole");
+  assert.deepEqual(environ.filter((entry) => entry.startsWith("AGENTRUN_STORE_URL=") || entry.includes(plant.AGENTRUN_STORE_URL)), [], "no store URL, by name or value");
+  child.child.kill("SIGTERM");
+  assert.deepEqual(await child.exited, { code: 0, signal: null });
+});
+
+test("started without its launcher (node dist/cli.js runner), a runner reads AGENTRUN_STORE_URL from its own environment, as the capabilities say, and opens that Postgres store", postgresOnly("a store URL is a Postgres store's"), async (t) => {
+  // No launcher, no pipe: secrets.ts secret falls back to this process's own environment, where a process of its user can
+  // read it (the capabilities' words for a server started another way).
+  const { dir, plant } = await storePlant(t);
+  const config = scratch(t, "agentrun-runner-config-");
+  const env = { PATH: `${dirname(process.execPath)}:/usr/bin:/bin`, HOME: config, XDG_CONFIG_HOME: config, TMPDIR: process.env.TMPDIR ?? tmpdir(), AGENTRUN_SEAL_KEY: SEAL, AGENTRUN_RUNNER_NAME: "runner-bare", ...plant };
+  const cli = fileURLToPath(new URL("../dist/cli.js", import.meta.url));
+  const child = spawn(process.execPath, [cli, "runner", "--data", dir], { env, stdio: ["ignore", "pipe", "pipe"] });
+  const exited = new Promise((resolve) => child.on("exit", (code, signal) => resolve({ code, signal })));
+  t.after(async () => {
+    if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+    await exited;
+  });
+  const err = [];
+  createInterface({ input: child.stderr }).on("line", (line) => err.push(line));
+  const ready = await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`no ready line within 30000 ms: ${err.join("\n")}`)), 30_000);
+    createInterface({ input: child.stdout }).on("line", (line) => {
+      if (READY_ON("postgres").test(line)) {
+        clearTimeout(timer);
+        resolve(line);
+      }
+    });
+    exited.then(() => reject(new Error(`exited before ready: ${err.join("\n")}`)));
+  });
+  assert.match(ready, /^Runner runner-bare ready: store postgres /);
+  child.kill("SIGTERM");
+  assert.deepEqual(await exited, { code: 0, signal: null });
+});
+
+test("a runner-placed run's agent under the started runner has no bash: it is not offered, a model's `env` call answers that it is not available, and no store URL, seal key, token, API key or model key reaches the model", async (t) => {
   let asked = 0;
   const fake = await fakeAnthropic({ reply: () => (++asked === 1 ? { tool: { name: "bash", input: { command: "env" } } } : { text: "Done." }) });
   t.after(() => fake.close());
-  const dir = await serverData(t, ["run-env"]);
-  const child = runnerChild(t, ["--data", dir], { ...PLANT, ANTHROPIC_BASE_URL: fake.url, AGENTRUN_RUNNER_NAME: "runner-env" });
-  await child.line(READY);
-  await until(() => fake.messages().length >= 2, "the run's agent ran `env` and sent its output back", 60_000);
+  const { dir, kind, plant } = await storePlant(t, { runs: [["run-env", "run-env", { mode: "runner" }]] });
+  const child = runnerChild(t, ["--data", dir], { ...PLANT, ...plant, ANTHROPIC_BASE_URL: fake.url, AGENTRUN_RUNNER_NAME: "runner-env" });
+  await child.line(READY_ON(kind));
+  await until(() => fake.messages().length >= 2, "the run's agent called bash and its answer went back", 60_000);
+  assert.ok(!fake.messages()[0].tools.some((name) => name.startsWith("bash")), `no bash family offered: ${fake.messages()[0].tools}`);
   const shown = Object.values(fake.messages()[1].results ?? {}).join("\n");
-  assert.match(shown, /^PATH=/m, `the bash ran env: ${shown.slice(0, 200)}`);
-  assert.deepEqual(plantedIn(shown), [], "no secret of the runner's in the run's own environment");
-  assert.ok(!/AGENTRUN_STORE_URL|AGENTRUN_SEAL_KEY|AGENTRUN_TOKEN|AGENTRUN_API_KEY/.test(shown), "nor their names");
+  assert.match(shown, /bash is not available/, `the bash call answers that it is not available: ${shown.slice(0, 200)}`);
+  assert.ok(!/^PATH=/m.test(shown), "no command ran");
+  assert.deepEqual(plantedIn(JSON.stringify(fake.messages().map((one) => one.body)), plant), [], "no secret of the runner's reached the model");
+  assert.ok(!/AGENTRUN_STORE_|AGENTRUN_SEAL_KEY|AGENTRUN_TOKEN|AGENTRUN_API_KEY/.test(shown), "nor their names");
+});
+
+/** The runner's own secrets as it holds them: the store's connection (the real test Postgres's URL, its password in it, on
+ *  Postgres), another store name, the seal key and the server's token and API key, beside the model key. */
+const RUNNER_OWN = {
+  ...PLANT,
+  AGENTRUN_STORE_URL: onPostgres ? PG_URL : `postgres://runner:${"plantedstorepass"}@db.invalid:5432/agentrun`,
+  AGENTRUN_STORE_SCHEMA: "planted_schema",
+  AGENTRUN_SEAL_KEY: SEAL,
+};
+/** The runner's own names (RUNNER_OWN's but the model key, which a run's model needs) found in `env`, by name (every own
+ *  name, enumerable or not: secrets.ts gives a run its pipe's secrets readable by name but not listed) or by value under
+ *  any name. */
+function runnerOwnIn(env) {
+  const names = Object.getOwnPropertyNames(env);
+  const values = names.map((name) => String(env[name])).join("\n");
+  const own = ["AGENTRUN_STORE_URL", "AGENTRUN_STORE_SCHEMA", "AGENTRUN_SEAL_KEY", "AGENTRUN_TOKEN", "AGENTRUN_API_KEY"];
+  return {
+    names: names.filter((name) => /^AGENTRUN_STORE_|^AGENTRUN_SEAL_KEY$|^AGENTRUN_TOKEN$|^AGENTRUN_API_KEY$/.test(name)),
+    values: own.filter((name) => values.includes(RUNNER_OWN[name])),
+  };
+}
+
+test("the run environment the runner hands its loops holds none of the runner's own secrets: no store URL or other AGENTRUN_STORE_ name, seal key, token or API key, by name or value, listed or not", () => {
+  const env = main.runEnv({ PATH: "/usr/bin:/bin", LANG: "C.UTF-8", AGENTRUN_RUNNER_NAME: "runner-env", ...RUNNER_OWN });
+  assert.equal(env.LANG, "C.UTF-8", "a name the runner does not keep to itself passes through");
+  assert.deepEqual(runnerOwnIn(env), { names: [], values: [] }, "none of the runner's own names, nor their values under another name");
+});
+
+test("the environment a claimed run's host tools are handed holds none of the runner's own secrets: no store URL or other AGENTRUN_STORE_ name, seal key, token or API key, by name or value, listed or not", async () => {
+  // As the dispatch builds each claim's ToolHost.env (runner/adapter-run-spec.ts): claimSecrets over the run environment
+  // the runner hands its loops, for a revision whose tools unlock keys (none saved here, so none is added).
+  const { claimSecrets } = await import("../dist/runner/claim-secrets.js");
+  const runs = main.runEnv({ PATH: "/usr/bin:/bin", LANG: "C.UTF-8", AGENTRUN_RUNNER_NAME: "runner-tools", ...RUNNER_OWN });
+  const store = { sealedKeys: { get: async () => undefined } };
+  const tools = await claimSecrets({ store, sealKey: Buffer.from(SEAL, "base64"), env: runs }, { kind: "agentic", body: { tools: ["bash", "web_search", "monid.run"] } }, {});
+  assert.equal(tools.LANG, "C.UTF-8", "the run environment's other names reach the tools");
+  assert.deepEqual(runnerOwnIn(tools), { names: [], values: [] }, "none of the runner's own names, nor their values under another name");
+});
+
+test("a claimed run's host tools are cut of the server's secrets even from an environment that still holds them: no store URL, seal key, token or API key, by name or value", async () => {
+  // The second strip, apart from runEnv's: claimSecrets cuts every secret on the launcher's list (secrets.ts
+  // withoutSecrets) from whatever environment it is given, so a run environment that kept one still hands the tools none.
+  const { claimSecrets } = await import("../dist/runner/claim-secrets.js");
+  const store = { sealedKeys: { get: async () => undefined } };
+  const tools = await claimSecrets({ store, sealKey: Buffer.from(SEAL, "base64"), env: { PATH: "/usr/bin:/bin", LANG: "C.UTF-8", ...RUNNER_OWN } }, { kind: "agentic", body: { tools: ["bash", "web_search", "monid.run"] } }, {});
+  assert.equal(tools.LANG, "C.UTF-8", "the environment's other names reach the tools");
+  const listed = ["AGENTRUN_STORE_URL", "AGENTRUN_SEAL_KEY", "AGENTRUN_TOKEN", "AGENTRUN_API_KEY"];
+  const names = Object.getOwnPropertyNames(tools);
+  const values = names.map((name) => String(tools[name])).join("\n");
+  assert.deepEqual({ names: names.filter((name) => listed.includes(name)), values: listed.filter((name) => values.includes(RUNNER_OWN[name])) }, { names: [], values: [] }, "none of the server's secrets by name, nor their values under another name");
 });

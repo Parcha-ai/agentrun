@@ -18,7 +18,7 @@ mcp:
     # Its one write only ever opens a new issue (the draft); it never edits or closes one.
     pin: { issue_write: { method: create } }
 parameters:
-  repo: { type: string, required: true, pattern: "^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9._-]+$", description: "the GitHub repository whose releases you write notes for, as owner/name" }
+  repo: { type: string, required: true, pattern: "^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9._-]*[A-Za-z0-9_-]$", description: "the GitHub repository whose releases you write notes for, as owner/name, like Parcha-ai/agentrun" }
   groups: { type: string, required: false, description: "the section names under 'What you can do now', in order, comma separated (for example: Install, Harnesses, Learning); empty: the agent picks a few from the changes" }
   style: { type: string, required: false, description: "one short line on tone (for example: plain and short, second person); empty: the skill's default" }
   changes_dir: { type: string, required: false, pattern: "^(?!.*\\.\\.)[A-Za-z0-9_][A-Za-z0-9._/-]*$", description: "the folder where the repo keeps one change fragment per pull request (for example: changes); empty: the repo has none" }

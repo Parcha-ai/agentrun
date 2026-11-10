@@ -9,19 +9,23 @@ import { createServer } from "node:http";
 const made = (prefix) => `${prefix}-${randomBytes(16).toString("hex")}`;
 
 /** `cimd`: it says it takes client metadata documents. `clients`: pre-registered `{client_id: client_secret}`.
- *  `expiresIn`: seconds an access token lives; null, it says none. */
-export async function startFakeOAuth({ cimd = false, clients = {}, expiresIn = 3600 } = {}) {
+ *  `expiresIn`: seconds an access token lives; null, it says none. `reuseRevokes`: a spent refresh token sent again
+ *  revokes every token it gave (reuse detection, as a provider that rotates refresh tokens may do). */
+export async function startFakeOAuth({ cimd = false, clients = {}, expiresIn = 3600, reuseRevokes = false } = {}) {
   const log = [];
   const registered = new Map(Object.entries(clients).map(([id, secret]) => [id, { secret, redirect_uris: undefined }]));
   const codes = new Map();
   const access = new Set();
   const refresh = new Map();
+  const spent = new Set();
   const issued = [];
   let hanging = false;
   let failing = 0;
   let grantedUnanswered = false;
   /** The next `/token` request's hold (holdNext): granted at once, its answer sent when the test lets it go. */
   let holding;
+  /** Who waits on the next request to a path (`next`), each with its path. */
+  const nexts = [];
   const http = createServer(async (req, res) => {
     const url = new URL(req.url, issuer());
     const chunks = [];
@@ -29,6 +33,7 @@ export async function startFakeOAuth({ cimd = false, clients = {}, expiresIn = 3
     const text = Buffer.concat(chunks).toString("utf8");
     const form = (req.headers["content-type"] ?? "").includes("json") ? JSON.parse(text || "{}") : Object.fromEntries(new URLSearchParams(text));
     log.push({ path: url.pathname, query: Object.fromEntries(url.searchParams), form: Object.fromEntries(Object.entries(form).filter(([key]) => !/token|secret|code$|verifier/.test(key))) });
+    for (const waiter of nexts.filter((one) => one.path === url.pathname)) nexts.splice(nexts.indexOf(waiter), 1), waiter.heard(log.at(-1));
     const json = (status, body) => void res.writeHead(status, { "content-type": "application/json", "cache-control": "no-store" }).end(JSON.stringify(body));
     if (url.pathname === "/.well-known/oauth-authorization-server") {
       return json(200, {
@@ -98,6 +103,8 @@ export async function startFakeOAuth({ cimd = false, clients = {}, expiresIn = 3
       if (form.grant_type === "refresh_token") {
         const was = refresh.get(form.refresh_token);
         refresh.delete(form.refresh_token);
+        if (!was && reuseRevokes && spent.has(form.refresh_token)) refresh.clear(), access.clear();
+        spent.add(form.refresh_token);
         if (!was || was.client_id !== id) return answer(400, { error: "invalid_grant", error_description: "the refresh token is spent or revoked" });
         const set = grant();
         refresh.set(set.refresh_token, was);
@@ -134,6 +141,9 @@ export async function startFakeOAuth({ cimd = false, clients = {}, expiresIn = 3
       holding = { granted, sent: hold.sent };
       return { granted: hold.granted, answer };
     },
+    /** The next request to `path` (default `/token`) as logged, once it has reached this server: it is handled in the same
+     *  turn, so a grant it makes (a refresh token spent) is made by the time the wait answers. */
+    next: (path = "/token") => new Promise((heard) => nexts.push({ path, heard })),
     /** Every access token given so far stops working, as at its expiry; refresh tokens still do. */
     expire: () => access.clear(),
     close: () => new Promise((resolve) => (http.close(resolve), http.closeAllConnections())),

@@ -151,7 +151,48 @@ test("shared: value, values and view match the file class for a saved key", asyn
   for (const target of [file.keys, store.keys]) await target.save(TOOL_ROW.id, { values: { [FIELD]: "sk-same" } }, { state: "accepted", at: "2026-11-09T02:00:00.000Z" });
   assert.equal(file.keys.value(FIELD), store.keys.value(FIELD), "value matches");
   assert.deepEqual(file.keys.values(), store.keys.values(), "values match");
-  assert.deepEqual(store.keys.view(), file.keys.view(), "view matches byte for byte");
+  // Byte for byte but the time each field was saved, which each takes from its own clock: there in both, or in neither.
+  const timeless = (view) => JSON.parse(JSON.stringify(view, (name, value) => (name === "changed_at" ? (value === null ? null : "a time") : value)));
+  assert.deepEqual(timeless(store.keys.view()), timeless(file.keys.view()), "view matches byte for byte");
+});
+
+test("shared: each key row's secrets are SecretMeta, named <kind>:<FIELD>; saving one key moves no other key's changed_at", async (t) => {
+  const env = sealEnv();
+  const file = fileKeys(t, { env });
+  const clock = { now: Date.parse("2026-11-09T03:00:00.000Z") };
+  const store = await storeKeys(t, { env, clock });
+  const secretOf = (keys, field) => keys.view().keys.flatMap((k) => k.secrets).find((meta) => meta.name.endsWith(`:${field}`));
+  for (const keys of [file.keys, store.keys]) {
+    const row = keys.view().keys.find((k) => k.id === TOOL_ROW.id);
+    assert.deepEqual(row.secrets.map((meta) => meta.name), TOOL_ROW.fields.map((name) => `tool:${name}`), "named tool:<FIELD>, in fields' order");
+    assert.deepEqual(secretOf(keys, FIELD), { name: `tool:${FIELD}`, set: false, source: null, changed_at: null }, "unset: no source, no time");
+    const modelRow = keys.view().keys.find((k) => k.kind === "model");
+    assert.ok(modelRow.secrets.every((meta) => meta.name.startsWith("model:")), "a model key's are model:<FIELD>");
+  }
+  for (const keys of [file.keys, store.keys]) await keys.save(TOOL_ROW.id, { values: { [FIELD]: "sk-first" } });
+  const first = { file: secretOf(file.keys, FIELD), store: secretOf(store.keys, FIELD) };
+  assert.equal(first.store.changed_at, "2026-11-09T03:00:00.000Z", "the store's: its own row's time");
+  for (const meta of Object.values(first)) {
+    assert.equal(meta.set, true);
+    assert.equal(meta.source, "console", "saved here by the owner");
+    assert.match(meta.changed_at, /^\d{4}-\d{2}-\d{2}T/);
+  }
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  clock.now += 60_000;
+  for (const keys of [file.keys, store.keys]) await keys.save(MODEL_ROW.id, { values: { [MODEL_ROW.fields[0]]: "sk-second" } });
+  assert.deepEqual(secretOf(file.keys, FIELD), first.file, "the file: another key's save leaves this one's time");
+  assert.deepEqual(secretOf(store.keys, FIELD), first.store, "the store: another key's save leaves this one's time");
+  assert.equal(secretOf(store.keys, MODEL_ROW.fields[0]).changed_at, "2026-11-09T03:01:00.000Z", "and the saved one's is its own");
+  assert.ok(secretOf(file.keys, MODEL_ROW.fields[0]).changed_at > first.file.changed_at, "the file's saved one is later");
+  // After a restart, the store's time is read back from the row.
+  const again = toolKeysOverStore(store.store, env, quiet);
+  await again.load();
+  assert.deepEqual(secretOf(again, FIELD), first.store, "read back whole");
+  // A key the server is started with is env's, with no time here.
+  const started = toolKeysOverStore(store.store, sealEnv(KEY, { [FIELD]: "sk-env" }), quiet);
+  await started.load();
+  assert.deepEqual(secretOf(started, FIELD), { name: `tool:${FIELD}`, set: true, source: "env", changed_at: null });
+  assert.ok(!JSON.stringify([file.keys.view(), store.keys.view()]).includes("sk-first"), "never the value");
 });
 
 test("shared: an unknown-key refusal reads the same from both", async (t) => {

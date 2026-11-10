@@ -1,17 +1,18 @@
 // A run's tools by its computer's kind (serve/src/workspace/run-tools.ts runTools, computer-ports.ts): the run folder
 // is attached only when the kind has files and exec AND the provider mounts it (a sandbox always; a desktop when its
-// provider mounts); otherwise it stays the no-computer Workspace and the shell is "local". The kind's own tools come on
+// provider mounts); otherwise it stays the no-computer Workspace with no computer's shell: none in Mode 1 (the folder is
+// one of this server's own: no bash family), Archil's exec in Mode 2 ("local", bash only). The kind's own tools come on
 // top, their ports filled from the computer's capabilities: a desktop's screen and input from computerd's screen.shot
 // and input.actions, a phone's from its touch and apps calls, a browser's from its CDP connect. Screenshots go back as
 // images. Every computer here is a loopback fake: nothing leaves this process.
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { checkActions, KEYS, MAX_ACTIONS, readBackOf } from "@parcha/agentrun-computer";
-import { DESKTOP_ACTIONS, DESKTOP_KEYS, DESKTOP_MAX_ACTIONS } from "@parcha/agentrun-kernel/kernel";
+import { DESKTOP_ACTIONS, DESKTOP_KEYS, DESKTOP_MAX_ACTIONS, NO_SHELL } from "@parcha/agentrun-kernel/kernel";
 import { BROWSER_TOOLS, listedFor } from "@parcha/pi-browser";
 import { inputOf, localWorkspace, phoneOf, runTools, screenOf } from "../dist/workspace/index.js";
 import { fakeComputer } from "./workspace-fake-computer.mjs";
@@ -28,10 +29,13 @@ function scratch() {
 const call = (tools, name, args) => tools.find((tool) => tool.name === name).call(args, { callId: `c-${name}-${Math.random()}`, signal: new AbortController().signal });
 const names = (run) => run.registry.list().map((def) => def.name);
 
-const LOCAL = ["read", "write", "edit", "bash"];
+/** The file tools alone: no computer's shell in Mode 1. */
+const FILES = ["read", "write", "edit"];
+/** With Archil's exec (Mode 2, no computer's shell): bash only. */
+const LOCAL = [...FILES, "bash"];
 const COMPUTER = [...LOCAL, "bash_background", "bash_output", "bash_input", "bash_signal", "bash_list"];
-const DESKTOP = ["desktop_screen", "desktop_input"];
-const PHONE = ["phone_screen", "phone_tap", "phone_swipe", "phone_type", "phone_apps", "phone_open"];
+const DESKTOP = ["desktop_screen", "desktop_input", "computer_request_handoff"];
+const PHONE = ["phone_screen", "phone_tree", "phone_tap", "phone_swipe", "phone_type", "phone_key", "phone_apps", "phone_open", "computer_request_handoff"];
 const DESKTOP_GROUPS = ["exec", "files", "processes", "screen", "input.pointer", "input.keys"];
 const PHONE_GROUPS = ["screen", "input.touch", "apps"];
 const PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==", "base64");
@@ -49,15 +53,17 @@ function fakeDesktop(root) {
   return computer;
 }
 
-test("a desktop whose provider does not mount: the run folder stays the runner's (shell local, no processes), and the desktop's tools come on top", async () => {
+test("a desktop whose provider does not mount, in Mode 1: the run folder stays the runner's with no shell (no bash family, no processes), and the desktop's tools come on top", async () => {
   const root = scratch();
   const computer = fakeDesktop(root);
   const run = await runTools(localWorkspace(root), { kind: "desktop", computer, groups: DESKTOP_GROUPS }, { mode: 1, context: ctx });
-  assert.deepEqual(names(run), [...LOCAL, ...DESKTOP]);
+  assert.deepEqual(names(run), [...FILES, ...DESKTOP]);
   assert.equal(run.hands.processes, undefined, "no background processes on an unmounted desktop");
   const tools = run.hostTools(["bash", ...DESKTOP]);
-  assert.deepEqual(await call(tools, "bash", { command: "echo here" }), { text: "here\n", isError: false });
-  assert.ok(!computer.methods().includes("exec.run"), "bash ran in the run's folder on the runner, not on the desktop");
+  assert.ok(!tools.some((tool) => tool.name === "bash"), "bash is not bound, granted or not");
+  assert.equal((await run.registry.invoke("bash", { command: "touch ran" }, { hands: run.hands })).error, NO_SHELL, "a call of it anyway says how to get a shell");
+  assert.ok(!existsSync(join(root, "ran")), "and runs nothing");
+  assert.ok(!computer.methods().includes("exec.run") && !computer.methods().includes("process.start"), "nor on the desktop");
   const shot = await call(tools, "desktop_screen", {});
   assert.deepEqual(shot, { text: "A screenshot of the whole screen, 1280x800 pixels.", isError: false, images: [{ mimeType: "image/png", data: PNG.toString("base64") }] });
   assert.deepEqual(computer.calls.filter(([method]) => method.startsWith("screen.")), [["screen.shot", {}], ["screen.read", { id: "s1", offset: Math.floor(PNG.length / 2) }]]);
@@ -80,7 +86,7 @@ test("a desktop whose provider mounts: the run folder is attached (shell compute
   assert.ok(computer.methods().includes("readBack"), "attach read the mount back");
   // A desktop with no exec or files (a screen alone) attaches nothing, mount or not.
   const bare = await runTools(localWorkspace(scratch()), { kind: "desktop", computer: fakeDesktop(root), groups: ["screen", "input.pointer"], check: { readBackOf } }, { mode: 1, context: ctx });
-  assert.deepEqual(names(bare), [...LOCAL, ...DESKTOP]);
+  assert.deepEqual(names(bare), [...FILES, ...DESKTOP]);
 });
 
 test("a sandbox: today's computer list, attached; no kind tools", async () => {
@@ -93,7 +99,7 @@ test("a sandbox: today's computer list, attached; no kind tools", async () => {
 test("a phone: the runner's folder and shell, and the phone's tools on its touch and apps calls", async () => {
   const root = scratch();
   const phone = fakeDesktop(root);
-  const run = await runTools(localWorkspace(root), { kind: "phone", computer: phone, groups: PHONE_GROUPS }, { mode: 2, context: ctx });
+  const run = await runTools(localWorkspace(root), { kind: "phone", computer: phone, groups: [...PHONE_GROUPS, "apps.ui_tree", "input.keys"] }, { mode: 2, context: ctx });
   assert.deepEqual(names(run), [...LOCAL, ...PHONE]);
   const tools = run.hostTools(PHONE);
   assert.equal((await call(tools, "phone_screen", {})).images[0].data, PNG.toString("base64"));
@@ -111,6 +117,86 @@ test("a phone: the runner's folder and shell, and the phone's tools on its touch
   ]);
 });
 
+test("a phone that does not declare apps.ui_tree or input.keys (an iPhone today) is offered neither phone_tree nor phone_key, and a call of either is refused in words", async () => {
+  const root = scratch();
+  const iphone = fakeDesktop(root);
+  const run = await runTools(localWorkspace(root), { kind: "phone", computer: iphone, groups: PHONE_GROUPS }, { mode: 2, context: ctx });
+  assert.deepEqual(names(run), [...LOCAL, ...PHONE.filter((name) => name !== "phone_tree" && name !== "phone_key")]);
+  assert.deepEqual(await run.registry.invoke("phone_tree", {}, { hands: run.hands, callId: "t", signal: new AbortController().signal }), { text: "", error: "this phone does not offer its UI tree" });
+  assert.deepEqual(await run.registry.invoke("phone_key", { key: "back" }, { hands: run.hands, callId: "k", signal: new AbortController().signal }), { text: "", error: "this phone does not offer its keys" });
+  assert.ok(!iphone.methods().includes("apps.ui_tree") && !iphone.calls.some(([method]) => method === "input.actions"), "nothing reached the phone");
+  // One declared, the other not: only that one is offered.
+  const android = await runTools(localWorkspace(scratch()), { kind: "phone", computer: fakeDesktop(root), groups: [...PHONE_GROUPS, "apps.ui_tree"] }, { mode: 2, context: ctx });
+  assert.deepEqual(names(android).filter((name) => name === "phone_tree" || name === "phone_key"), ["phone_tree"]);
+});
+
+test("an Android list row (a clickable layout whose title sits on a child text) is named by its first inner text, marked so; the search bar by its inner text or label", async () => {
+  const root = scratch();
+  const phone = fakeDesktop(root);
+  const node = (role, extra) => ({ role, enabled: true, children: [], ...extra });
+  const text = (value, bounds) => node("android.widget.TextView", { text: value, bounds });
+  // Settings' top screen, as Android 15 gives it: each row a clickable LinearLayout, its title and summary child TextViews.
+  const row = (y, title, summary) => node("android.widget.LinearLayout", { bounds: [0, y, 720, 150], clickable: true, children: [
+    node("android.widget.ImageView", { bounds: [30, y + 45, 60, 60] }),
+    node("android.widget.RelativeLayout", { bounds: [120, y + 20, 560, 110], children: [text(title, [120, y + 20, 560, 50]), text(summary, [120, y + 75, 560, 40])] }),
+  ] });
+  phone.overrides["apps.ui_tree"] = () => ({
+    root: node("android.widget.FrameLayout", {
+      bounds: [0, 0, 720, 1600],
+      children: [
+        node("android.widget.LinearLayout", { id: "com.android.settings:id/search_action_bar", bounds: [20, 200, 680, 100], clickable: true, children: [node("android.widget.TextView", { label: "Search settings", bounds: [100, 220, 400, 60] })] }),
+        row(550, "Network & internet", "Mobile, Wi-Fi, hotspot"),
+        row(700, "Connected devices", "Bluetooth, pairing"),
+        row(850, "Apps", "Default apps, app management"),
+      ],
+    }),
+    nodes: 20,
+    truncated: false,
+  });
+  const run = await runTools(localWorkspace(root), { kind: "phone", computer: phone, groups: [...PHONE_GROUPS, "apps.ui_tree"] }, { mode: 2, context: ctx });
+  const answer = await call(run.hostTools(["phone_tree"]), "phone_tree", {});
+  assert.deepEqual(answer.text.split("\n"), [
+    "4 nodes you can tap or type into, of 20 on the screen. Coordinates are a phone_screen screenshot's pixels.",
+    '- LinearLayout "Search settings" (inner text) [com.android.settings:id/search_action_bar]: center (360, 250), bounds 20,200 680x100',
+    '- LinearLayout "Network & internet" (inner text): center (360, 625), bounds 0,550 720x150',
+    '- LinearLayout "Connected devices" (inner text): center (360, 775), bounds 0,700 720x150',
+    '- LinearLayout "Apps" (inner text): center (360, 925), bounds 0,850 720x150',
+  ]);
+});
+
+test("a phone's tree is its apps.ui_tree, flattened to the nodes a model can tap or type into; its keys are back and home as the phone's buttons, enter as a key", async () => {
+  const root = scratch();
+  const phone = fakeDesktop(root);
+  const node = (role, extra) => ({ role, enabled: true, children: [], ...extra });
+  phone.overrides["apps.ui_tree"] = () => ({
+    root: node("android.widget.FrameLayout", {
+      bounds: [0, 0, 720, 1280],
+      children: [
+        node("android.widget.EditText", { id: "com.example.mail:id/to", text: "", label: "To", bounds: [20, 150, 680, 80], clickable: true, focused: true }),
+        node("android.widget.LinearLayout", { bounds: [0, 1100, 720, 180], children: [node("android.widget.Button", { text: "Send", bounds: [500, 1150, 200, 80], clickable: true })] }),
+        node("android.widget.TextView", { text: "New message", bounds: [20, 60, 400, 60] }),
+        node("android.widget.Button", { text: "Disabled", bounds: [20, 1150, 200, 80], clickable: true, enabled: false }),
+      ],
+    }),
+    nodes: 6,
+    truncated: false,
+  });
+  const run = await runTools(localWorkspace(root), { kind: "phone", computer: phone, groups: [...PHONE_GROUPS, "apps.ui_tree", "input.keys"] }, { mode: 2, context: ctx });
+  const tools = run.hostTools(["phone_tree", "phone_key"]);
+  assert.deepEqual(await call(tools, "phone_tree", {}), { isError: false, text: [
+    "2 nodes you can tap or type into, of 6 on the screen. Coordinates are a phone_screen screenshot's pixels.",
+    '- EditText "To" [com.example.mail:id/to]: a field, focused; center (360, 190), bounds 20,150 680x80',
+    '- Button "Send": center (600, 1190), bounds 500,1150 200x80',
+  ].join("\n") });
+  for (const key of ["back", "home", "enter"]) await call(tools, "phone_key", { key });
+  assert.deepEqual(phone.calls.filter(([method]) => method === "input.actions" || method === "apps.ui_tree"), [
+    ["apps.ui_tree", {}],
+    ["input.actions", { actions: [{ type: "button", name: "back" }] }],
+    ["input.actions", { actions: [{ type: "button", name: "home" }] }],
+    ["input.actions", { actions: [{ type: "key", keys: ["enter"] }] }],
+  ]);
+});
+
 test("a browser: the browser's tools are pi-browser's BROWSER_TOOLS (the same objects), listed for the run's offers, run by the executors given over the CDP connect", async () => {
   const root = scratch();
   const sent = [];
@@ -123,9 +209,9 @@ test("a browser: the browser's tools are pi-browser's BROWSER_TOOLS (the same ob
     return { text: `${contract.name} ran` };
   }]));
   const run = await runTools(localWorkspace(root), { kind: "browser", connect }, { mode: 1, context: ctx, browser: { executors, offers } });
-  assert.deepEqual(names(run), [...LOCAL, ...listed.map((contract) => contract.name)]);
+  assert.deepEqual(names(run), [...FILES, ...listed.map((contract) => contract.name)]);
   assert.ok(!names(run).includes("browser_downloads"), "no downloads where the provider keeps none");
-  for (const def of run.registry.list().slice(LOCAL.length)) {
+  for (const def of run.registry.list().slice(FILES.length)) {
     const contract = BROWSER_TOOLS.find((one) => one.name === def.name);
     assert.equal(def.description, contract.description, def.name);
     assert.equal(def.parameters, contract.parameters, `${def.name}: pi-browser's own schema object`);

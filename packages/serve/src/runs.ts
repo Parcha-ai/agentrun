@@ -60,7 +60,6 @@ import { DECISION_KEYS, handover, handoverSignIn, mcpHandover, mcpSecretValues, 
 import { type HandedSignIn, pointerHash, type SignIns } from "./sign-ins.js";
 import { MIN_SECRET } from "./learn/secrets.js";
 import { cutStrings, keyRefusal, redacted, redactedAnswer, redactedLive, redactedOutput, runKeyOf } from "./key-refusal.js";
-import { GRAPH_CACHE_BYTES, PartCache, type PartKind, servedPart } from "./graph-served.js";
 import { CONTENT_FILTER_WORDS, contentFiltered, MODERATED } from "./content-filter.js";
 import { BOX_KEYS, VM_PROVIDER } from "./boxes.js";
 import { type Place, remotePlace, storedPlace } from "./place.js";
@@ -69,7 +68,7 @@ import { removeEgressDir, RUN_BOX_ALLOW_ENV } from "./box-egress.js";
 import { BehindReadError, checkpointRunDb, MonotonicReads, readRunDb } from "./run-db.js";
 import { holderLives, holderOfClaim, holderOfProcess, holderState, killHolder, LAUNCH_HOLDER, RUN_EPOCH_ENV, RUN_LAUNCH_ENV, type RunHolder, signal } from "./run-holder.js";
 import { firstDoorLine, untilOpened, verifyDoor } from "./door-line.js";
-import { BUDGET_PAUSED, type Approval, type ApprovalAnswer, actingOn, approvalOf, browserPending, budgetPending, cents, centsUp, continuationOf, costOf, costView, type Handed, handedMark, handedPointers as handedPointersOf, knownToolCostOf, MALFORMED, meaningful, micro, microUp, overByMiss, pauseOf, pausedAt, type Pending, pendingOf, raisedToGo, redactorOf, refusedValuesOf, rowShown as rowShownOf, servedReviewWith, servedRunErrorWith, shownOf, type SoFar, soFarOf, type State, type Status, statusOf as statusOfView, stopped, stoppedAt, SUGGESTED_RAISE_FACTOR, suggestedCap, shownArgs, toolCostOf, usersOf, waitingApproval, WITHHELD_SIGN_IN, withAsks, withdrawn, withOverCap, withPaused } from "./run-view.js";
+import { BUDGET_PAUSED, type Approval, type ApprovalAnswer, actingOn, approvalOf, browserPending, budgetPending, cents, centsUp, continuationOf, costOf, costView, type Handed, handedMark, handedPointers as handedPointersOf, knownToolCostOf, MALFORMED, meaningful, micro, microUp, overByMiss, pauseOf, pausedAt, type Pending, pendingOf, raisedToGo, redactorOf, refusedValuesOf, rowShown as rowShownOf, servedReviewWith, servedRunErrorWith, shownOf, HELD, outcomeSays, outcomeShows, type SoFar, soFarOf, type State, type Status, statusOf as statusOfView, stopped, stoppedAt, SUGGESTED_RAISE_FACTOR, suggestedCap, shownArgs, toolCostOf, usersOf, waitingApproval, WITHHELD_SIGN_IN, withAsks, withdrawn, withOverCap, withPaused } from "./run-view.js";
 // The cost reads, the served row transforms, the status and pending views and the redaction choke point kept their import
 // path here for the server routes and tests that read them from this module.
 export { costOf, costView, knownToolCostOf, soFarOf, type SoFar, toolCostOf, withOverCap, withPaused, stoppedAt, suggestedCap, SUGGESTED_RAISE_FACTOR, type State, type Status, WITHHELD_SIGN_IN };
@@ -632,33 +631,13 @@ function parkedCallSays(approval: Approval, run: Pick<Run, "meta">, waiting: App
   if (given.decision === "deny") return given.by === "message" ? "Not run: your message declined it" : "Not run: you declined it";
   return approval.resolved ? "Ran once you allowed it; its result went to the agent" : "Allowed: it runs now";
 }
-/** A parked call's own rows once its resume row says what came of it. */
-const HELD = "Held for your approval";
 /** The call a resume (resumeText, its text as the row has it) answers: its head names the call's tool and id. */
 const resumedBy = (text: string, byCall: ReadonlyMap<string, Approval>): Approval | undefined =>
   [...byCall.values()].find((approval) => text.startsWith(`${RESUME_PREFIX}This answers your ${approval.tool} call ${approval.call_id} `));
-/** A resume's row as the approval's outcome: what ran, or what was refused. The tool's name and fixed words, and the
- *  note a person typed with a Deny: its first line, redacted whole with the run's redactor (`redact`) and its links'
- *  query values elided (scrubUrls), as the row's text is (resumeShows), then cut. A declining message adds nothing: it
- *  shows as the person's own row. */
+/** A resume's row as the approval's outcome (run-view.ts outcomeSays, the store path's words too): what ran, or "You
+ *  declined <tool>[: <note>]". */
 function resumeSays(approval: Approval, given: { decision: string; by?: string; note?: string } | undefined, text: string, redact: (text: string) => string): string {
-  const note = given?.decision === "deny" && given.by !== "message" && given.note ? scrubUrls(redact(given.note)).split(/\r?\n/).map((line) => line.trim()).find(Boolean) : undefined;
-  const outcome = resumeOutcome(approval, given, text);
-  // An allowed call that ran: where its result went (the outcome its own rows said before this row carried it).
-  const went = given?.decision !== "deny" && !outcome.endsWith(", and failed") ? "; its result went to the agent" : "";
-  return `${outcome}${went}${note ? `: ${clipPoints(note, DENY_NOTE_CHARS)}` : ""}`;
-}
-/** `text` cut to `max` code points, an ellipsis last when cut: a pair of surrogates is never halved. */
-const clipPoints = (text: string, max: number): string => {
-  const points = Array.from(text);
-  return points.length > max ? `${points.slice(0, max - 1).join("")}…` : text;
-};
-/** At most this many code points of a Deny's note on its resume row's summary; its row's text has the whole of it. */
-const DENY_NOTE_CHARS = 200;
-/** What came of an approval, in fixed words: the head of its resume row's summary and of its text. */
-function resumeOutcome(approval: Approval, given: { decision: string; by?: string } | undefined, text: string): string {
-  if (given?.decision === "deny") return `AgentRun: ${approval.tool} was refused: ${given.by === "message" ? "your message declined it" : "you declined it"}`;
-  return `AgentRun: ${approval.tool} ran once you allowed it${text.includes(" They allowed it, and it ran and failed.") ? ", and failed" : ""}`;
+  return outcomeSays(approval.tool, given ?? { decision: "allow" }, text.includes(" They allowed it, and it ran and failed."), redact);
 }
 /** What a person reads when they open a resume's row: the outcome, then the call's result or the refusal's words, from the
  *  model's message (already redacted whole, as the row's text is), with its head left out. The head is rebuilt exactly as
@@ -666,27 +645,17 @@ function resumeOutcome(approval: Approval, given: { decision: string; by?: strin
  *  quote the gate's words can't move it; a row whose text doesn't start with it shows the outcome alone. The model's own
  *  message is unchanged. */
 function resumeShows(approval: Approval, given: { decision: string; by?: string; args_shown?: string } | undefined, text: string, redact: (text: string) => string): string {
-  const said = resumeOutcome(approval, given, text).replace(/^AgentRun: /, "");
+  const answer = given ?? { decision: "allow" };
+  const failed = text.includes(" They allowed it, and it ran and failed.");
   // The row's text is the message as the Timeline shows it: redacted whole (the run's redactor) and its links scrubbed
   // (scrubUrls), so the gate's head is compared after the same two steps.
   const written = resumeHead(approval, given?.args_shown ?? "(not shown)");
   const head = [scrubUrls(redact(written)), redact(written), scrubUrls(written), written].find((h) => text.startsWith(h));
-  if (head === undefined) return `${said}.`;
-  const rest = text.slice(head.length);
-  if (given?.decision === "deny") return `${said}.${rest.trim() ? `\n${rest.trim()}` : ""}`;
-  return `${said}. Its result:\n${rest.replace(/^ They allowed it, and it ran(?: and failed)?\. Its result:\n?/, "")}`;
+  if (head === undefined) return answer.decision === "deny" ? outcomeShows(approval.tool, answer, "", false) : `${approval.tool} ran once you allowed it${failed ? ", and failed" : ""}.`;
+  const rest = text.slice(head.length).replace(/^ They allowed it, and it ran(?: and failed)?\. Its result:\n?/, "");
+  return outcomeShows(approval.tool, answer, rest, failed);
 }
 // micro and microUp move to run-view.ts (the run's served view), imported above.
-/** For tests only: how long each launch path waits where it refreshes a run's MCP OAuth tokens (mcpFresh). */
-export const REFRESH_DELAY_ENV = "AGENTRUN_SERVE_TEST_REFRESH_DELAY_MS";
-/** The refresh step's test-only wait, in ms: none unless the server runs under a test runner (node --test's
- *  NODE_TEST_CONTEXT; NODE_ENV=test alone is none, as a production server can carry it), so a value set by mistake in a
- *  server holds no launch; within one, REFRESH_DELAY_ENV's value, at most a second. */
-export function refreshDelayMs(env: NodeJS.ProcessEnv = process.env): number {
-  if (!env.NODE_TEST_CONTEXT) return 0;
-  const ms = Number(env[REFRESH_DELAY_ENV]);
-  return Number.isFinite(ms) && ms > 0 ? Math.min(ms, 1_000) : 0;
-}
 /** How many tries a raised run's follow-up gets, and the waits between them, before the run fails with why. */
 const CONTINUE_TRIES = 3;
 const CONTINUE_RETRY_MS = [1_000, 3_000];
@@ -1008,13 +977,9 @@ export class Runs {
     return (this.#disk ??= localDisk(this.options.agents.dir, this.store));
   }
   #disk: DiskAdapter | undefined;
-  /** Each workflow revision's workflow, by revision id, as a graph read it: a revision never changes. */
-  private readonly workflows = new Map<string, unknown>();
   /** What decides the secrets each revision's runs are handed (needsOf), by revision id: read once, from the revision the
    *  run is pinned to, never from a request. The keys themselves are read at each launch (keysFor). */
   private readonly needs = new Map<string, RunNeeds>();
-  /** Every run's graph as served, part by part (servedGraph): one LRU by bytes across runs (graph-served.ts PartCache). */
-  private readonly graphCache = new PartCache(GRAPH_CACHE_BYTES);
   private readonly adopting = new Map<string, Promise<Run>>();
   /** The runs this process is starting, from the store's row until the run is held (start): its serve.json and its seed
    *  copy are written in between. A read of one waits for its start and never loads it from disk, where it would look
@@ -1630,26 +1595,6 @@ export class Runs {
     const out = redact(values);
     run.served = { ...run.served, [slot]: { keys, input, out } };
     return out;
-  }
-
-  /** A workflow run's graph as serve serves it: its nodes, each decision and each call (its input, output and error) with
-   *  no held secret, by its answer's rule (redactedOutput), and only then cut: a map item's label at 200 characters, a
-   *  call's error at 2000, and a text stored cut (a decision's state past 64 KB, an error logged cut) less its last 6
-   *  times the longest held value plus 16 characters, where a value the stored cut split would sit. The view comes whole
-   *  from graph-view.ts's lock-free read at each poll, so a key saved since the last poll is found in it too. Each part is
-   *  served once per content and held value set: a console polls the graph while the run goes. */
-  private servedGraph<T extends { nodes: unknown; decisions: unknown[]; effects: unknown[] }>(run: Run, view: T): T {
-    const values = this.refusedValues(run);
-    const keys = digestOf([...values].sort());
-    const once = (kind: PartKind, value: unknown): unknown => {
-      const at = `part:${keys}:${kind}:${digestOf(value)}`;
-      const kept = this.graphCache.get(at);
-      if (kept !== undefined) return kept;
-      const out = servedPart(kind, value, values);
-      this.graphCache.set(at, out, Buffer.byteLength(JSON.stringify(out) ?? ""));
-      return out;
-    };
-    return { ...view, nodes: once("nodes", view.nodes), decisions: view.decisions.map((value) => once("decision", value)), effects: view.effects.map((value) => once("effect", value)) };
   }
 
   /** The timeline's redaction of `run`'s error rows and of what a tool's result shows (its summary and preview), applied
@@ -2412,14 +2357,6 @@ export class Runs {
    *  refresh token. Never on a path that only reaches a live process, nor on a stop's: an authorization server that is
    *  slow to answer never holds an abort. */
   private mcpFresh(run: Run): Promise<void> | undefined {
-    // A test's seam (refreshDelayMs): every launch path waits this long here, as one whose authorization server is slow
-    // to answer does. Nothing outside a test runner.
-    const delay = refreshDelayMs();
-    if (delay > 0) return new Promise<void>((resolve) => setTimeout(resolve, delay)).then(() => this.mcpFreshNow(run));
-    return this.mcpFreshNow(run);
-  }
-
-  private mcpFreshNow(run: Run): Promise<void> | undefined {
     const source = this.options.mcpServers;
     if (!source?.refresh) return undefined;
     // The servers its pin names, or, before its first launch makes the pin (which may refuse the launch in words, there
@@ -4040,30 +3977,7 @@ export class Runs {
     return { run_id: run.id, paused, status: statusOf(run).status };
   }
 
-  /** A workflow run's graph as it stands (graph-view.ts), live while it runs. */
-  async graph(run: Run) {
-    if (run.kind !== "workflow") throw new ApiError("not_found", `the run ${run.id} is an agentic run; only a workflow run has a graph`);
-    // Its nodes, decisions and calls are read from its store and are what the run said: while this server can't read the
-    // browser sign-in it was handed (meta.unshown), the pointer they may repeat is not among the values cut, so none of it
-    // is served. Withheld in the same words as its answer, for a run still going too (it is stopped and ends failed).
-    if (run.meta.unshown) throw new ApiError("forbidden", WITHHELD_SIGN_IN);
-    // A revision never changes: read once, waiting out a busy store as a run's end does, never failing a poll on it.
-    let workflow = this.workflows.get(run.revision);
-    if (workflow === undefined) {
-      const revision = (await whenFree(() => this.store.readRevision(run.revision), this.busyDelays(), this.onBusy(run.id, "the agent store"))) as Extract<Revision, { kind: "workflow" }>;
-      this.workflows.set(run.revision, (workflow = revision.body.workflow));
-    }
-    // The run's status as this server holds it, with no read of the agent store, which the run's process may be writing.
-    const { status } = statusOf(run);
-    const ended = TERMINAL.has(status);
-    const { runGraph } = await import("./graph-view.js");
-    const given = {
-      run: { id: run.id, agent: run.agentId, revision: run.revision, status, paused: status === "paused", startedAt: run.meta.created_at, endedAt: ended ? (run.endedAt ?? run.updatedAt) : null },
-      ended, workflow, storeFile: this.storeFile(run), root: run.dir, input: run.meta.input ?? {}, modelCost: costOf(run.rows), llmRead: run.llmRead ?? 0,
-    };
-    // Every read of the run's database is lock-free (run-db.ts): a run's process holding it never makes a poll wait.
-    return this.servedGraph(run, await runGraph(given));
-  }
+
 
   /** How long a run's process gets after SIGTERM before SIGKILL: its drain and a second to exit. */
   private killAfterMs(): number {

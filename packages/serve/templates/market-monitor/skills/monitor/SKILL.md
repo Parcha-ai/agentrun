@@ -45,14 +45,18 @@ So:
   can be 20,000 characters on its own. You need links only to find a changelog or careers URL you don't know.
 - **Every `web_search` passes `n: 5`:** each result's snippet can be 3000 characters. Read the snippets; fetch a result
   only when its snippet can't date or source the event.
-- **Per company: at most 3 fetches and 1 search,** made together in one turn where you can (one request, not four).
+- **Per company: at most 3 fetches and 1 search** (plus the Pricing fetch's recovery, up to 2 more, when `/pricing` is not found: item 2 of the fetch plan in step 3), made together in one turn where you can (one request, not four).
   Stop a company as soon as its changes are settled; a company with a quiet changelog and unchanged prices is done.
 - **Topics:** at most 2 searches in all, `n: 5`.
 - **Never fetch a URL twice,** never a home page when a changelog, pricing or careers URL will do, and never a whole
   page "to be sure". Write down the few lines you need (a price, an entry, a date) and move on.
 - More than 4 companies: give each 2 fetches (changelog, pricing) and its search, and say in the footer which you
   checked lightly. If a request is refused for the cap, post what you have proven, with what you didn't read in
-  `unreachable`.
+  `unreachable` (reason `skipped`).
+- **`unreachable`** lists each page the plan needed and could not read, with why: `blocked` (a challenge or an
+  access-denied page, e.g. detail "bot-protection challenge (403)"), `not_found` (gone, and nothing found in its
+  place), `error` (a timeout or a server error) or `skipped` (left out to keep within the budget). A 404 you
+  recovered from (the page found elsewhere) is not unreachable, and neither is a company that publishes no pricing.
 
 ## Steps
 
@@ -72,10 +76,19 @@ So:
    1. **Changelog** (`max_chars: 3000`): the changelog, release notes or product blog (`/changelog`, `/releases`,
       `/blog`, `/news`). Entries are dated: keep those inside the window. Unknown URL: fetch the home page once at
       offset 0 with `max_chars: 1000` for its links, then read the changelog it links with this step's fetch. That
-      costs one fetch more, so this run skips the pricing baseline (fetch 3) for that company and says so in
-      `unreachable`; the discovered URL goes in a learned note, so next week starts from it.
+      costs one fetch more, so this run skips the pricing baseline (fetch 3) for that company, listing it in
+      `unreachable` as `skipped`; the discovered URL goes in a learned note, so next week starts from it.
    2. **Pricing** (`max_chars: 6000`): the pricing page's plan table. It carries no dates, so it needs a baseline: a
-      price the previous digest quoted, else fetch 3.
+      price the previous digest quoted, else fetch 3. The URL is the one a learned note names, else `/pricing`. A
+      not-found answer (404, "page not found") or a page with no plans means the guess is wrong, never that the
+      company blocks you. Find the pricing page in the home page's links: the ones you already have when the
+      changelog step fetched the home page this run, else one home fetch now (offset 0, `max_chars: 1000`). Read
+      the page it links, and put its URL in a learned note so next week starts from it. This recovery may take up to
+      2 fetches beyond the 3 (the home page and the found page); it then skips the pricing baseline (fetch 3) for
+      that company this run, listing the baseline's URL in `unreachable` as `skipped`. The 404 itself is not listed:
+      you recovered from it. No pricing link on the home page (some companies publish none): the company's digest
+      line says "no public pricing page", and nothing goes in `unreachable` for it. A challenge or an access-denied
+      page is a block: list it as `blocked`, with what blocked it.
    3. **Pricing baseline** (`max_chars: 6000`): the archive copy from before the window,
       `https://web.archive.org/web/<YYYYMMDD of from>/<pricing URL>`. Check the snapshot's own date in the URL it
       lands on, and use it only when it is on or before `from`. A plan, price, limit, free tier or billing unit that
@@ -106,7 +119,11 @@ So:
    restatement of the claim. Its date (`YYYY-MM-DD`), its link (the page that shows it, never a search result page),
    and a confidence: `high` when the company's own page or a filing says it, `medium` for one credible outlet, `low`
    when it is inferred or rests on a weak source. Keep at most 15 items, the most consequential first, grouped by
-   company. Nothing that passed step 4 and 5: `quiet` is true and the digest is the one quiet line.
+   company. Every watched company appears, so a reader can tell quiet from skipped. One with no item gets one line:
+   `*<Company>*: nothing new this week (checked: <the pages you read for it>)` only when none of its changes passed
+   steps 4 and 5; `*<Company>*: <n> changes left out by the 15-item limit` when it had changes that the limit cut;
+   `*<Company>*: not checked (<why>)` when its pages could not be read. Nothing that passed step 4 and 5 for any company: `quiet` is true and the
+   digest is the one quiet line, which names every company.
 
 7. **Post, once.**
    - The digest text, Slack mrkdwn:
@@ -117,7 +134,8 @@ So:
      • [<category>] <claim> (<date>, <confidence>) <<source_url>|source>
          _So what:_ <so_what>
      ...
-     _<n> sources unreachable: ...>_   (only when there were)
+     *<Company with no item>*: nothing new this week (checked: <pages>)
+     _Unreachable: <url> (<reason>: <detail>); ...>_   (only when there were, each with its reason)
      ```
 
      A quiet week: `*Market monitor:* <from> to <to>` and then `Nothing notable changed at <companies> this week.`
@@ -155,7 +173,7 @@ So:
   "digest": "*Market monitor:* 2026-11-02 to 2026-11-09\n*Acme*\n• [pricing] ...",
   "delivery": { "via": "slack", "to": "C0123ABCD", "status": "posted" },
   "dropped_repeats": ["Acme: Pulse dashboards launch (reported 2026-11-02)"],
-  "unreachable": []
+  "unreachable": [{ "url": "https://globex.io/pricing", "reason": "blocked", "detail": "bot-protection challenge (403)" }]
 }
 ```
 

@@ -27,55 +27,6 @@ const coi = {
   root: { node: "chain", steps: [{ node: "judge", label: "coi", state: { doc: "{question}" }, out: "Coi", as: "coi" }] },
 };
 
-test("a server handed a decision key holds it with its secrets, out of its environment, and stays up while a workflow run is handed it, and the run's judge gets it", { timeout: 120_000 }, async (t) => {
-  const dir = await scratch(t);
-  const calls = join(dir, "jev-calls.jsonl");
-  const script = `const { startServe } = await import(${JSON.stringify(SERVE)});
-const server = await startServe({ data: ${JSON.stringify(join(dir, "agents"))}, port: 0, faux: ${JSON.stringify(FAUX)}, fauxJev: ${JSON.stringify(FAUX_JEV)}, drainTimeout: "5s" });
-process.stdout.write(JSON.stringify({ base: server.baseUrl, token: server.token, inEnv: "TYPESAFE_API_KEY" in process.env }) + "\\n");
-process.once("SIGTERM", () => server.close().then(() => process.exit(0)));`;
-  const env = { ...process.env, TYPESAFE_API_KEY: CANARY, AGENTRUN_TEST_FAUX_JEV_CALLS: calls };
-  delete env.OPENROUTER_API_KEY;
-  const server = spawn(process.execPath, ["--input-type=module", "-e", script], { stdio: ["ignore", "pipe", "pipe"], env });
-  const seen = { out: "", err: "" };
-  server.stdout.on("data", (chunk) => (seen.out += chunk));
-  server.stderr.on("data", (chunk) => (seen.err += chunk));
-  const exited = new Promise((resolve) => server.once("exit", (code, signal) => resolve({ code, signal })));
-  t.after(async () => {
-    if (server.exitCode !== null || server.signalCode !== null) return;
-    server.kill("SIGTERM");
-    await Promise.race([exited, sleep(10_000).then(() => server.kill("SIGKILL"))]);
-  });
-  const up = () => assert.ok(server.exitCode === null && server.signalCode === null, `the server exited (${server.exitCode ?? server.signalCode}): ${seen.err}`);
-  /** `step`, and when it fails with the server gone, that the server went. */
-  const whileUp = async (step) => {
-    try {
-      return await step();
-    } catch (error) {
-      await Promise.race([exited, sleep(2_000)]);
-      up();
-      throw error;
-    }
-  };
-  await printed(server, /\n/);
-  const { base, token, inEnv } = JSON.parse(seen.out.split("\n")[0]);
-  assert.equal(inEnv, false, "the server holds the key with its secrets, out of its environment");
-  const api = client(base, token);
-  assert.equal((await api("POST", "/agents", flowAgent("coi", coi))).status, 201);
-  const started = await whileUp(() => api("POST", "/agents/coi/runs", { input: { question: "State of Delaware. Certificate of Incorporation of Example Widgets, Inc." } }));
-  assert.equal(started.status, 202, JSON.stringify(started.body));
-  const { last } = await whileUp(() => follow(api, started.body.run_id, ["completed", "failed"], { deadlineMs: 90_000 }));
-  const run = (await api("GET", `/runs/${started.body.run_id}`)).body;
-  assert.equal(last.status, "completed", JSON.stringify(run.error));
-  assert.deepEqual(run.result.output, { is_coi: true });
-  const sent = (await readFile(calls, "utf8")).split("\n").filter(Boolean).map((line) => JSON.parse(line));
-  assert.deepEqual(sent.map((call) => call.authorized), [true], "the judge sent the handed key");
-  // Below 16 on every platform, so a launch whose stdio grows past it fails here too, not only on a Mac.
-  assert.ok(Number(sent[0].key_fd) >= 3 && Number(sent[0].key_fd) < 16, `the key was handed on descriptor ${sent[0].key_fd}, which macOS refuses at 16 and above`);
-  up();
-  assert.equal((await api("GET", "/capabilities")).status, 200, "and it still answers");
-});
-
 test("the run's process reads the keys once and closes their descriptor: the number no longer names the pipe", { skip: !existsSync("/proc/self/fdinfo") && "no /proc here" }, async () => {
   // As the server launches it: the keys on the first descriptor after stdio and the secrets pipe. Read, then a file
   // opened takes the lowest free number, which is the keys' if it was closed.

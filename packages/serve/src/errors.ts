@@ -59,9 +59,11 @@ export const ERROR_STATUS = {
   github_not_connected: 409,
   github_already_connected: 409,
   github_no_public_url: 409,
-  github_no_seal_key: 409,
   github_wrong_origin: 409,
   github_failed: 502,
+  // A run of an agent given inline (POST /runs) under a version of its source already run here with another definition: a
+  // version's definition never changes here, so the source publishes a new version.
+  external_body_conflict: 409,
 } as const;
 
 export type ErrorCode = keyof typeof ERROR_STATUS;

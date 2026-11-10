@@ -1,7 +1,8 @@
 import { Fragment, type ReactNode, useEffect, useRef } from "react";
 import { Button } from "@/components/ui/button";
-import { HARNESS_ORDER, issuesFor, PIN_BROKEN, PIN_HOLDS, pinLine, providerHelp, providerLabel, resolution, SERVER_DENY, serverDenies, type ToolChoice, type ToolGate, withPermission, withProvider } from "@/lib/toolSettings";
+import { HARNESS_ORDER, issuesFor, PIN_BROKEN, PIN_HOLDS, pinLine, providerHelp, providerLabel, resolution, DENY_ONLY, SERVER_DENY, serverDenies, type ToolChoice, type ToolGate, withPermission, withProvider } from "@/lib/toolSettings";
 import { cn } from "@/lib/utils";
+import { Picker } from "@/components/ui/picker";
 import type { Agent } from "@/lib/agentForm";
 import { grantOf, type McpServer } from "@/lib/mcp";
 import type { Permission, ToolSetting, ToolSettings } from "@/lib/v2";
@@ -93,22 +94,21 @@ export function ToolTable({ label, rows, settings, fallbackOf, permissionFallbac
                     <td className="px-3 py-2.5 font-mono text-[13px]">{name}</td>
                     {permissions && <td className="px-3 py-2">
                       {gate ? <>
-                        <select aria-label={`${name} permission`} value={permission} disabled={busy || held} onChange={(e) => { const chosen = e.target.value as Permission; onEdit((current) => withPermission(current, name, chosen, gateFallback)); }}
-                          className={cn("border bg-background px-2 py-1.5 font-mono text-[12px] outline-none focus:border-border-strong disabled:opacity-60", permissionSet && "border-primary text-primary")}>
-                          {gate.permissions.map((p) => <option key={p} value={p} disabled={p === "ask" && gate.ask_needs === "password" && !unattended}>{p}{p === gateFallback ? " (default)" : ""}</option>)}
-                        </select>
+                        <Picker small label={`${name} permission`} value={permission} disabled={busy || held} onChange={(v) => { const chosen = v as Permission; onEdit((current) => withPermission(current, name, chosen, gateFallback)); }}
+                          className={cn("w-36", permissionSet && "border-primary text-primary")}
+                          options={gate.permissions.map((p) => ({ value: p, label: `${p}${p === gateFallback ? " (default)" : ""}`, ...(p === "ask" && gate.ask_needs === "password" && !unattended ? { disabled: true, title: "No one can approve a call here: it takes the owner's password sign-in." } : {}) }))} />
                         {permissionSet && !held && <span className="mt-1 block font-mono text-[11px] text-muted-foreground">default: {gateFallback}</span>}
                         {denied && <span className="mt-1 block max-w-[260px] text-[11px] text-warning-text">{SERVER_DENY}</span>}
+                        {permission === "deny" && <span className="mt-1 block max-w-[260px] text-[11px] text-muted-foreground">{DENY_ONLY}</span>}
                         {permission === "ask" && unattended && !denied && <span className="mt-1 block max-w-[220px] text-[11px] text-warning-text">Runs without asking: Never ask is on.</span>}
                         {permission === "ask" && gate.ask_needs === "password" && !unattended && <span className="mt-1 block max-w-[220px] text-[11px] text-warning-text">Each call is refused: no one can approve it here.</span>}
                       </> : none}
                     </td>}
                     {providers && <td className="px-3 py-2">
                       {t ? <>
-                        <select aria-label={`${name} provider`} value={provider} disabled={busy} onChange={(e) => pick(e.target.value as ToolSetting["provider"])}
-                          className={cn("border bg-background px-2 py-1.5 font-mono text-[12px] outline-none focus:border-border-strong disabled:opacity-60", set && "border-primary text-primary")}>
-                          {t.providers.map((p) => <option key={p} value={p}>{providerLabel(p, name)}{p === fallback ? " (default)" : ""}</option>)}
-                        </select>
+                        <Picker small label={`${name} provider`} value={provider} disabled={busy} onChange={(v) => pick(v as ToolSetting["provider"])}
+                          className={cn("w-56 max-w-full", set && "border-primary text-primary")}
+                          options={t.providers.map((p) => ({ value: p, label: `${providerLabel(p, name)}${p === fallback ? " (default)" : ""}` }))} />
                         {providerHelp(provider, name) && <span className="mt-1 block max-w-[300px] text-[11px] text-muted-foreground">{providerHelp(provider, name)}</span>}
                         {set && <span className="mt-1 block font-mono text-[11px] text-muted-foreground">default: {providerLabel(fallback, name)}</span>}
                       </> : none}
@@ -202,7 +202,7 @@ export function AgentToolSettings({ agent, harness, model, tools, choices, gates
   useEffect(() => {
     if (!focus) return;
     const label = `${focus} permission`;
-    const select = [...(section.current?.querySelectorAll("select") ?? [])].find((s) => s.getAttribute("aria-label") === label);
+    const select = [...(section.current?.querySelectorAll<HTMLElement>('button[aria-haspopup="listbox"]') ?? [])].find((s) => s.getAttribute("aria-label") === label);
     select?.scrollIntoView?.({ block: "center" });
     select?.focus();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps

@@ -62,6 +62,9 @@ export interface AgentRow {
   readonly currentRevision: string | null;
   readonly createdAt: number;
   readonly archivedAt: number | null;
+  /** The reference of the agent this one mirrors in another system ("<source>:<kind>:<id>"), or null for one made here. An
+   *  agent with a reference is read-only from here: it is written on the first run that names it and never edited. */
+  readonly externalRef: string | null;
 }
 
 /** A template's package, kept on the revision made from it. */
@@ -84,6 +87,8 @@ export interface NewRevision {
   /** The optional note the revision is committed with (the v2 note), or none. */
   readonly note?: string;
   readonly package?: TemplatePackage;
+  /** The version this revision maps in an externally owned agent, set only on an inline-agent run's revision. */
+  readonly externalVersion?: string;
 }
 
 export interface RevisionRow {
@@ -100,6 +105,8 @@ export interface RevisionRow {
   readonly note: string | null;
   readonly package: TemplatePackage | null;
   readonly createdAt: number;
+  /** The version this revision maps in the agent's owning system (one revision per version), or null for one committed here. */
+  readonly externalVersion: string | null;
 }
 
 /** How an ended run (state 'ended') ended apart from being done: 'escalated' (it finished its work and waits for a person,
@@ -108,10 +115,14 @@ export type RunOutcome = "completed" | "escalated";
 
 /** The harness an imported run came from. */
 export type ImportSource = "claude-code" | "codex" | "pi";
-/** Where an imported run came from: the harness that ran it, and its own session id. */
+/** Where an imported run came from: the harness that ran it, and its own session id. `file` is the server's own record of
+ *  the session file an import read whole (the sha-256 of its path, never the path, with its size and mtime), so a later
+ *  import does not read an unchanged file again; it is internal and never shown on an answer. The unique import index keys
+ *  on source and session alone, so a re-import of the same session with a different `file` is still the same run. */
 export interface ImportedFrom {
   readonly source: ImportSource;
   readonly session: string;
+  readonly file?: { readonly path_sha256: string; readonly size: number; readonly mtime_ms: number };
 }
 
 /** What a run was started under: `key`, the caller's name for it (a create's idempotency key, a trigger's firing key),
@@ -411,12 +422,24 @@ export class AgentArchived extends Error {
   }
 }
 
+/** An inline-agent run whose body differs from the one already stored for its external reference and version: refused,
+ *  nothing written (Runs.createInline). A version's body is immutable; a changed body needs a new version. */
+export class ExternalBodyConflict extends Error {
+  override name = "ExternalBodyConflict";
+  constructor(readonly ref: string, readonly version: string) {
+    super(`a different body is already stored for ${ref} version ${version}`);
+  }
+}
+
 export interface Agents {
   /** Creates the agent, or renames it (name, description) when it exists. */
   put(agent: { id: string; name: string; description?: string | null }): Promise<void>;
   /** The agent row and its first revision, current, in one transaction: both or neither. */
   create(agent: { id: string; name: string; description?: string | null }, firstRevision: NewRevision): Promise<void>;
   get(id: string): Promise<AgentRow | undefined>;
+  /** The agent an external reference ("<source>:<kind>:<id>") maps to (Runs.createInline), or undefined before its first
+   *  run. */
+  byExternal(ref: string): Promise<AgentRow | undefined>;
   list(options?: { archived?: boolean }): Promise<AgentRow[]>;
   /** Archives the agent, or unarchives it. Archived, every trigger of it that is on is turned off in the same transaction
    *  (`disabled` set to `why`, JSON; its scope rows dropped), and those are the answer: from its commit no firing starts a
@@ -483,7 +506,8 @@ export interface Triggers {
   /** A message_run firing's message queued for run `runId` as a command row (its body's origin names the trigger), with
    *  the firing marked sent and the trigger's streak reset, in one transaction; unless the run already holds `bound.max`
    *  untaken command rows from this trigger, read in that same transaction: then the firing is skipped with
-   *  `bound.reason` and nothing is queued. Undefined when the firing is gone or no longer due. */
+   *  `bound.reason` and nothing is queued. Undefined when the firing is gone or no longer due. A run that has ended takes no
+   *  message (RunFinal, as command()), and nothing is written. */
   message(firing: { triggerId: string; key: string }, runId: string, command: { kind: string; body: unknown }, bound: { max: number; reason: string }): Promise<{ sent: true; commandId: number } | { skipped: string } | undefined>;
   /** Every due firing waiting for its trigger's room (waits_on), oldest first, each with whether the room is there now
    *  (fewer of its trigger's started runs not ended than its max_active_runs): one read for all of them. */
@@ -504,6 +528,18 @@ export interface Runs {
    *  (StoreConstraint), and nothing is written. With `launch`, its launch row is written in the same transaction too (all
    *  or nothing). */
   create(run: { id: string; agentId: string; revisionId: string; origin?: RunOrigin }, launch?: RunLaunchInput): Promise<RunRow>;
+  /** A run whose agent is given inline and mapped to a source system by `agent.ref` and `revision.version`. In one
+   *  transaction: the agent (one per `ref`, written on its first run, its name and description brought up to the version
+   *  whose first use this is) and the revision (one per `version`, made current on its first use) are written or read, then
+   *  the run, its origin and its launch. Idempotent — a later run under the same (`ref`, `version`) reuses that revision and
+   *  changes nothing; a different body under an existing version is refused (ExternalBodyConflict), nothing written. The
+   *  revision's `note` is kept by its first use, as an edit's note is; it is not part of its body. */
+  createInline(input: {
+    agent: { id: string; name: string; description?: string | null; ref: string };
+    revision: { id: string; version: string; kind: string; body: unknown; skills?: unknown; note?: string };
+    run: { id: string; origin?: RunOrigin };
+    launch: RunLaunchInput;
+  }): Promise<RunRow>;
   get(id: string): Promise<RunRow | undefined>;
   /** The run's launch row (the runner reads it at its claim; the server for views). StoreLaunchMissing when the run has
    *  none (it was not started with one), never a default. */
@@ -587,17 +623,39 @@ export const MCP_REFRESH_CALL_MS = 2 * 4_000;
 export const STORE_WRITE_DEADLINE_MS = 10_000;
 /** A refresh lease's length by default: it covers the holder's whole custody of the refresh token, the refresh call
  *  (MCP_REFRESH_CALL_MS) and then the keep of its new set (STORE_WRITE_DEADLINE_MS, from the keep's call), with 2 s to
- *  spare. A lease shorter than both lapses while a slow commit is still landing a set whose token the provider already
- *  spent, and a waiter then takes over and refreshes with the spent one. Made from the two bounds so it cannot drift. */
+ *  spare (a Postgres commit sent at the deadline is given 1 s of it to answer). A lease shorter than both lapses while a
+ *  slow commit is still landing a set whose token the provider already spent, and a waiter then takes over and refreshes
+ *  with the spent one. Made from the two bounds so it cannot drift. */
 export const MCP_REFRESH_LEASE_MS = MCP_REFRESH_CALL_MS + STORE_WRITE_DEADLINE_MS + 2_000;
+
+/** A saved server's credential as a writer read it: its auth type, whether one is sealed, and when that was set (a token
+ *  refresh keeps the time; a new credential or a sign-in moves it). Null: no server by that name. */
+export type McpCredentialMark = { readonly auth: string; readonly sealed: boolean; readonly changedAt: number | null } | null;
+
+/** The fields of a server's write (Mcp.put). */
+export type McpServerWrite = { name: string; url: string; auth: string; protocol?: string | null; tools: unknown; prices?: unknown; serverInfo?: unknown; instructions?: string | null; sealed?: Uint8Array | null; listedAt?: number; updatedAt?: number; credentialChangedAt?: number | null; tokenLeftMs?: number | null };
 
 export interface Mcp {
   /** The server's write: the server's row, inserted or replaced by name (its first save's time kept). An owner's save
    *  clears any refresh lease and changes the credential, so a refresh in flight is dropped (keepRefreshed's `kept: false`)
    *  and never overwrites it. `tokenLeftMs`: the writer's measure of the credential's access token's remaining life (a
    *  duration, on its own clock); the store stamps the token's end on its clock from it (token_until), none without it. */
-  put(server: { name: string; url: string; auth: string; protocol?: string | null; tools: unknown; prices?: unknown; serverInfo?: unknown; instructions?: string | null; sealed?: Uint8Array | null; listedAt?: number; updatedAt?: number; credentialChangedAt?: number | null; tokenLeftMs?: number | null }): Promise<McpServerRow>;
+  put(server: McpServerWrite): Promise<McpServerRow>;
+  /** put(), only while the server's credential is still `expected` (its mark as the writer read it; null: no server by
+   *  that name), compared and written in one statement: no other write lands between. Undefined, writing nothing, when
+   *  it is not. */
+  putIfCredential(server: McpServerWrite, expected: McpCredentialMark): Promise<McpServerRow | undefined>;
+  /** An owner's rewrite of a row it read, its credential kept as it is (a tools refresh, a save that sends no new
+   *  credential): the listing, prices, url and times written by a compare-and-set on the CREDENTIAL, iff the row is still
+   *  saved and its sealed value is still `seen` (the one the owner read). The credential's columns (sealed, token_until,
+   *  credential_changed_at) and any refresh lease are left as they are, so a runner's refresh in flight still keeps its
+   *  set. undefined, writing nothing, when the credential changed meanwhile (a refresh kept a rotated set) or the row went:
+   *  the caller reads it again and re-applies its change onto the fresh row, a bounded few times. */
+  rewrite(server: { name: string; url: string; auth: string; protocol?: string | null; tools: unknown; prices?: unknown; serverInfo?: unknown; instructions?: string | null; listedAt?: number; updatedAt?: number }, seen: Uint8Array | null): Promise<McpServerRow | undefined>;
   remove(name: string): Promise<void>;
+  /** remove(), only while the server's credential is still `expected` (its mark as the remover read it), compared and
+   *  deleted in one statement. False, deleting nothing, when it is not (or the server is gone). */
+  removeIfCredential(name: string, expected: NonNullable<McpCredentialMark>): Promise<boolean>;
   /** The registry's rows, by name. */
   servers(): Promise<McpServerRow[]>;
   server(name: string): Promise<McpServerRow | undefined>;
@@ -969,8 +1027,9 @@ export class CommandTaken extends Error {
 /** An interactive transaction still open at its deadline: rolled back, nothing of it written, and the calls behind it go on. */
 export class StoreDeadline extends Error {
   readonly deadlineMs: number;
-  constructor(deadlineMs: number) {
-    super(`the store's transaction was still open after ${deadlineMs} ms, so it was rolled back and nothing of it was written`);
+  /** `message`: words of its own (a connection the store's database never gave, StoreConnect's); by default a transaction's. */
+  constructor(deadlineMs: number, message?: string) {
+    super(message ?? `the store's transaction was still open after ${deadlineMs} ms, so it was rolled back and nothing of it was written`);
     this.name = "StoreDeadline";
     this.deadlineMs = deadlineMs;
   }
@@ -1010,13 +1069,15 @@ export class StoreOwned extends Error {
 
 
 /** A data directory an earlier version wrote (its store, agent homes, run databases or settings files): this version
- *  neither reads nor moves it. `found`: what was found, relative to the directory. */
+ *  neither reads nor moves it, and its words give the two ways on: keep the directory with the earlier version, or start
+ *  this one on a new directory and add the agents again. `found`: what was found, relative to the directory. */
 export class StoreFromEarlierVersion extends Error {
   readonly found: readonly string[];
   constructor(dataDir: string, found: readonly string[]) {
     super(
-      `${dataDir} holds an earlier version's data (${found.join(", ")}), which this version does not read or move: ` +
-        "start with a new, empty directory, and add your MCP servers, keys and sign-ins there again.",
+      `${dataDir} holds an earlier version's data (${found.join(", ")}), which this version does not read or move. ` +
+        "Keep this directory with the earlier version, or start this version on a new, empty directory and add your " +
+        "agents, MCP servers, keys and sign-ins there again.",
     );
     this.name = "StoreFromEarlierVersion";
     this.found = found;
@@ -1056,11 +1117,20 @@ export class StoreLaunchMissing extends Error {
   }
 }
 
-/** A row the store's constraints refuse (a duplicate id or name, a revision of an unknown agent, a bad kind). */
+/** Which of a table's rules refused a row, as both databases report it by code (never by its message's words). */
+export type ConstraintRule = "check" | "unique" | "foreign_key" | "not_null";
+
+/** A row the store's constraints refuse (a duplicate id or name, a revision of an unknown agent, a bad kind). When the
+ *  database said which rule refused it, `rule`; for a duplicate, `unique`: the table and the columns whose values were
+ *  taken already (a primary key's or a UNIQUE's), so a caller tells "the name is taken" from any other refusal. */
 export class StoreConstraint extends Error {
-  constructor(message: string) {
+  readonly rule?: ConstraintRule;
+  readonly unique?: { readonly table: string; readonly columns: readonly string[] };
+  constructor(message: string, details: { rule?: ConstraintRule; unique?: { table: string; columns: readonly string[] } } = {}) {
     super(message);
     this.name = "StoreConstraint";
+    if (details.rule) this.rule = details.rule;
+    if (details.unique) this.unique = details.unique;
   }
 }
 

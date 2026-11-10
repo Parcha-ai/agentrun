@@ -8,14 +8,16 @@
 // The run counts an agent view shows (runs.count, runs.live) are E3's run reads, not this module's; agentView takes them.
 import { randomBytes } from "node:crypto";
 import { agentLink } from "./console-links.js";
+import { approvalsOf } from "./approvals.js";
 import { ApiError, invalid } from "./errors.js";
 import { harnessOfBody } from "./harness.js";
 import { storedHarness } from "./harness-table.js";
 import {
   AgentBodyInvalid, type AgenticBody, type AgentRow, bodyOf, canonical, isObject, type NewRevision, type RevisionBodyInput,
-  type RevisionPlace, type RevisionRow, type Store, StoreConstraint, type ToolSettings, type WorkflowBody,
+  type RevisionComputer, type RevisionPlace, type RevisionRow, type Store, StoreConstraint, type ToolSettings, type WorkflowBody,
 } from "./store/index.js";
 import { canonicalToolSettings, settingsIssues, type ToolSettingsMap } from "./tool-plane.js";
+import { computerOfPlace, type PlaceView, settingOfDefinition } from "./computer-setting.js";
 import { type DefinitionBody, type Json, skillIssues, skillNames } from "./validate.js";
 
 /** A UUIDv7: time-ordered, so a listing by created_at is stable, and unique per revision and per minted agent. */
@@ -54,6 +56,29 @@ function storeError(error: unknown): never {
   throw error;
 }
 
+/** Refuses a write to an externally owned agent: one that mirrors an agent in another system (its `externalRef` set) is
+ *  read-only here — its source is the truth, which writes a new version by running it. Edits, set-current and archive are
+ *  refused (403 forbidden); reads work as for any agent. */
+export function refuseExternal(agent: AgentRow): void {
+  if (agent.externalRef !== null) throw new ApiError("forbidden", `The agent ${agent.id} is managed by its source and is read-only here; change it there and run it again.`);
+}
+
+/** An externally owned agent's reference in its source, as POST /runs names it: its source system, the kind of thing it
+ *  is there, and its id there (with the version, the revision's own). */
+export type ExternalRef = { source: string; kind: string; id: string };
+
+/** The store's one key of an external reference, "<source>:<kind>:<id>": source and kind hold no colon (POST /runs checks
+ *  them), so the id, which may, is all that follows the second. */
+export const externalKey = ({ source, kind, id }: ExternalRef): string => `${source}:${kind}:${id}`;
+
+/** The agent's reference in its source and the version its current revision maps there, or null for an agent of this
+ *  server's own. */
+export function externalOf(agent: AgentRow, revision: RevisionRow | null): (ExternalRef & { version: string | null }) | null {
+  if (agent.externalRef === null) return null;
+  const [source = "", kind = "", ...id] = agent.externalRef.split(":");
+  return { source, kind, id: id.join(":"), version: revision?.externalVersion ?? null };
+}
+
 /** A definition's tool settings as a revision body keeps them, through the one copy: checked by tool-plane's settingsIssues
  *  (a refusal is an input error) and made canonical by canonicalToolSettings (sorted keys, empty tools dropped, a pin's
  *  arguments sorted). `{ toolSettings }` when any survive, `{}` when none. Whether an agent may set its own pin is the
@@ -75,7 +100,9 @@ function revisionInputOf(definition: Json, files: Record<string, string>): Revis
   // The default harness is never stored: naming pi and naming none are one revision.
   const stored = typeof definition.harness === "string" ? storedHarness(definition.harness) : undefined;
   const harness = stored ? { harness: stored } : {};
-  const place = isObject(definition.place) ? { place: definition.place as RevisionPlace } : {};
+  // The computer and its place are one setting (computer-setting.ts): naming either keeps both, and both given must agree.
+  const setting = settingOfDefinition(definition);
+  const place = setting ? { place: setting.place as RevisionPlace, computer: setting.computer as RevisionComputer } : {};
   // Tool settings go through the one copy (tool-plane.ts): settingsIssues checks them (providers, permissions, keys, and
   // an MCP tool's pin via pinIssues), then canonicalToolSettings makes the one form (sorted keys, empty tools dropped, a
   // pin's arguments sorted) so two revisions that say the same are one body. The store never reimplements it.
@@ -85,13 +112,16 @@ function revisionInputOf(definition: Json, files: Record<string, string>): Revis
     ...(typeof definition.max_cost_usd === "number" && definition.max_cost_usd > 0 ? { maxCostUsd: definition.max_cost_usd } : {}),
     ...(typeof definition.cap_mode === "string" ? { capMode: definition.cap_mode } : {}),
   };
-  if (isObject(definition.workflow)) return { kind: "workflow", workflow: definition.workflow, ...common, ...capped };
+  // A workflow keeps its approvals too ("never": it runs unattended), so its call nodes are checked with them (runnable.ts,
+  // permissionOf with the revision's approvals): a call node on a tool set to ask runs under never, as on main.
+  if (isObject(definition.workflow)) return { kind: "workflow", workflow: definition.workflow, ...(definition.approvals === "never" ? { approvals: "never" as const } : {}), ...common, ...capped };
   const learning = typeof definition.learning === "boolean" ? { learning: definition.learning } : {};
   return {
     kind: "agentic",
     instructions: definition.instructions as string,
     ...(typeof definition.model === "string" ? { model: definition.model } : {}),
     ...(typeof definition.thinking === "string" ? { thinking: definition.thinking } : {}),
+    ...(definition.approvals === "ask" || definition.approvals === "never" ? { approvals: definition.approvals } : {}),
     ...common,
     ...learning,
     ...capped,
@@ -162,7 +192,7 @@ export async function createAgent(
   if (given !== undefined && !ID_PATTERN.test(given)) throw invalid([{ field: "definition.id", reason: "invalid", message: `definition.id does not match ${ID_PATTERN.source}` }]);
   if (given !== undefined && (await store.agents.get(given))) throw new ApiError("agent_exists", `an agent ${given} exists here`);
   // Stamped on the revision now, never resolved at run time: an agent saved with no place keeps running on the runner.
-  const stamped = options.fresh && definition.place === undefined && !isObject(definition.workflow)
+  const stamped = options.fresh && definition.place === undefined && definition.computer === undefined && !isObject(definition.workflow)
     ? { place: options.fresh.place, ...(definition.tools === undefined ? { tools: [...options.fresh.tools] } : {}) }
     : {};
   const revision = makeRevision({ ...definition, ...stamped }, skills, note);
@@ -180,8 +210,9 @@ export async function createAgent(
 }
 
 /** NewRevision from a definition and its skill files, with its note kept (note is not part of the body or its dedup). A
- *  body the validator refuses is mapped to an input refusal here (never thrown raw). */
-function makeRevision(definition: Json, files: Record<string, string>, note: string | undefined): NewRevision & { note?: string } {
+ *  body the validator refuses is mapped to an input refusal here (never thrown raw). Nothing is written: POST /runs makes
+ *  an inline agent's revision with it, as POST /agents makes one. */
+export function makeRevision(definition: Json, files: Record<string, string>, note: string | undefined): NewRevision & { note?: string } {
   let revision: NewRevision;
   try {
     revision = newRevisionOf(definition, files);
@@ -203,6 +234,7 @@ export async function commitAgent(
   { ifCurrent, check, contract = false }: { ifCurrent?: string | null; check?: (revision: NewRevision) => Promise<void>; contract?: boolean } = {},
 ): Promise<AgentEntry> {
   const entry = (await getAgent(store, read.agent.id)) ?? read;
+  refuseExternal(entry.agent);
   if (ifCurrent !== undefined && (entry.revision?.id ?? null) !== ifCurrent) {
     throw new ApiError("precondition_failed", "the agent's current revision moved since the If-Match it was read at: read the agent again");
   }
@@ -223,8 +255,11 @@ export async function commitAgent(
   const carried = current
     ? {
         ...(definition.harness === undefined && currentBody.harness ? { harness: currentBody.harness } : {}),
-        ...(definition.place === undefined && currentBody.place ? { place: currentBody.place } : {}),
+        // The computer and its place go together: an edit naming neither keeps both (the computer, else the place).
+        ...(definition.place === undefined && definition.computer === undefined ? (currentBody.computer ? { computer: currentBody.computer } : currentBody.place ? { place: currentBody.place } : {}) : {}),
         ...(definition.learning === undefined && current.kind === "agentic" && !isObject(definition.workflow) && (currentBody as AgenticBody).learning !== undefined ? { learning: (currentBody as AgenticBody).learning } : {}),
+        // No approvals here: an edit that leaves them out asks (openapi.ts DefinitionInput.approvals, as main's agents.ts),
+        // so no edit makes an agent unattended by saying nothing. The console's edit sends back the approvals it read.
         ...(definition.max_cost_usd === undefined && currentBody.maxCostUsd !== undefined ? { max_cost_usd: currentBody.maxCostUsd } : {}),
         ...(definition.cap_mode === undefined && currentBody.capMode !== undefined ? { cap_mode: currentBody.capMode } : {}),
       }
@@ -242,6 +277,7 @@ export async function commitAgent(
 
 /** Makes `revisionId`, one of the agent's own, its current one (POST /agents/{id}/current). */
 export async function setCurrentRevision(store: AgentsStore, entry: AgentEntry, revisionId: string): Promise<AgentEntry> {
+  refuseExternal(entry.agent);
   await store.agents.setCurrent(entry.agent.id, revisionId).catch((error) => {
     if (error instanceof StoreConstraint) throw new ApiError("not_found", "that revision is not a revision of that agent");
     throw error;
@@ -251,7 +287,9 @@ export async function setCurrentRevision(store: AgentsStore, entry: AgentEntry, 
 
 /** Archives or unarchives an agent. */
 export async function setAgentArchived(store: AgentsStore, id: string, archived: boolean): Promise<void> {
-  if (!(await store.agents.get(id))) throw new ApiError("not_found", "there is no such agent");
+  const agent = await store.agents.get(id);
+  if (!agent) throw new ApiError("not_found", "there is no such agent");
+  refuseExternal(agent);
   await store.agents.archive(id, archived);
 }
 
@@ -287,8 +325,13 @@ export function definitionOf(agent: AgentRow, revision: RevisionRow, version: nu
     name: agent.name,
     ...(agent.description !== null && agent.description !== undefined ? { description: agent.description } : {}),
     ...kindBody,
+    // Its approvals, of either kind: "ask" where none is set, as main's definition read says it (agents.ts definitionOf).
+    approvals: approvalsOf((body as { approvals?: unknown }).approvals),
     harness: harnessOfBody(body),
     ...(body.place ? { place: body.place } : {}),
+    // A revision's computer as the API shows it: its own, else the one its place says (a revision saved before the
+    // setting keeps its place alone); none when it names neither (the host's default applies).
+    ...(body.computer ? { computer: body.computer } : body.place ? { computer: computerOfPlace(body.place as PlaceView) } : {}),
     skills: skillNames(Object.keys(body.skills ?? {})),
     tools: body.tools,
     ...(body.toolSettings ? { tool_settings: body.toolSettings } : {}),
@@ -304,8 +347,11 @@ export function agentView(
 ) {
   const { agent, revision } = entry;
   const body = (revision?.body ?? {}) as Body;
+  const external = externalOf(agent, revision);
   return {
     agent_id: agent.id,
+    // Only on an agent another system owns (POST /runs): read-only here.
+    ...(external ? { external } : {}),
     definition: revision ? definitionOf(agent, revision, entry.version) : null,
     kind: revision?.kind ?? null,
     revision: revision?.id ?? null,
@@ -316,7 +362,7 @@ export function agentView(
     runs: extra.runs ?? { count: 0, live: 0 },
     region: "local",
     home_etag: etagOf(entry),
-    archived_at: agent.archivedAt ?? null,
+    archived_at: agent.archivedAt == null ? null : new Date(agent.archivedAt).toISOString(),
     console_url: agentLink(origin, agent.id),
     ...(extra.learning ? { learning: extra.learning } : {}),
     created_at: new Date(agent.createdAt).toISOString(),

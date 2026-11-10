@@ -32,8 +32,20 @@ export function fakeInput({ refuse } = {}) {
   };
 }
 
-/** A phone: its screen, touch, typing and apps. */
-export function fakePhone({ width = 1080, height = 2400, apps = [{ id: "com.example.mail", name: "Mail" }, { id: "com.example.maps" }], foreground = "com.example.mail", refuse } = {}) {
+/** A phone screen's structure, flattened, as the phone port gives it: a field, a button, a label (neither), a switch. */
+export const PHONE_TREE = Object.freeze({
+  nodes: [
+    { role: "android.widget.EditText", id: "com.example.mail:id/to", text: "", label: "To", bounds: { x: 40, y: 300, w: 1000, h: 120 }, clickable: true, editable: true, focused: true },
+    { role: "android.widget.Button", id: "com.example.mail:id/send", text: "Send", bounds: { x: 820, y: 2200, w: 220, h: 120 }, clickable: true, editable: false },
+    { role: "android.widget.TextView", text: "New message", bounds: { x: 40, y: 120, w: 600, h: 80 }, clickable: false, editable: false },
+    { role: "android.widget.Switch", label: "Attach signature", bounds: { x: 900, y: 600, w: 140, h: 80 }, clickable: true, editable: false },
+  ],
+  total: 37,
+  truncated: false,
+});
+
+/** A phone: its screen, touch, typing, keys, apps and its screen's structure. */
+export function fakePhone({ width = 1080, height = 2400, apps = [{ id: "com.example.mail", name: "Mail" }, { id: "com.example.maps" }], foreground = "com.example.mail", tree = PHONE_TREE, refuse } = {}) {
   const calls = [];
   const record = (...call) => {
     calls.push(call);
@@ -48,6 +60,11 @@ export function fakePhone({ width = 1080, height = 2400, apps = [{ id: "com.exam
     async tap(at) { record("tap", at); },
     async swipe(spec) { record("swipe", spec); },
     async type(text) { record("type", text); },
+    async key(name) { record("key", name); },
+    async tree() {
+      record("tree");
+      return tree;
+    },
     apps: {
       async list() {
         record("apps.list");
@@ -73,6 +90,24 @@ export function fakeBrowser() {
         on: () => () => {},
         close: () => void calls.push(["close"]),
       };
+    },
+  };
+}
+
+/** A computer's hand-over to the person: ask records each request and answers `outcome` once `answer()` is called (at
+ *  once with `now: true`); an abort of the call's signal rejects it. */
+export function fakeHandoff({ outcome = "done", now = true } = {}) {
+  const calls = [];
+  let release;
+  const answered = new Promise((resolve) => (release = resolve));
+  if (now) release();
+  return {
+    calls,
+    answer: () => release(),
+    async ask(request, signal) {
+      calls.push(["ask", request]);
+      await Promise.race([answered, new Promise((_, reject) => signal?.addEventListener("abort", () => reject(signal.reason), { once: true }))]);
+      return { outcome };
     },
   };
 }

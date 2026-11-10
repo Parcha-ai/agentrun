@@ -78,10 +78,10 @@ test("the run's files list from the disk with their times, and a file is served 
   assert.equal(Buffer.concat(res.chunks).toString("utf8"), "# Report\n");
 });
 
-test("a revision's skills are laid on the disk and read back for the prompt", async () => {
+test("a revision's skills and a desktop's kind skill are laid on the disk at the claim and read back for the prompt", async () => {
   const { disk, work } = fresh();
-  await layOwnSkills(work, { "cite/SKILL.md": "---\nname: cite\ndescription: Cite.\n---\nCite sources.\n", "cite/ref.md": "Primary.\n" });
-  assert.deepEqual(keysOf(disk), [".agents/skills/cite/SKILL.md", ".agents/skills/cite/ref.md"]);
+  await layOwnSkills(work, { "cite/SKILL.md": "---\nname: cite\ndescription: Cite.\n---\nCite sources.\n", "cite/ref.md": "Primary.\n" }, { computer: "desktop" });
+  assert.deepEqual(keysOf(disk), [".agents/skills/cite/SKILL.md", ".agents/skills/cite/ref.md", ".agents/skills/desktop-computer/SKILL.md"]);
   assert.deepEqual(await skillsOf(["cite/SKILL.md", "cite/ref.md"], work), [{ name: "cite", files: { "SKILL.md": "---\nname: cite\ndescription: Cite.\n---\nCite sources.\n", "ref.md": "Primary.\n" } }]);
   assert.match(await promptOf("Answer.", ["cite/SKILL.md"], work), /<skill name="cite">/);
 });

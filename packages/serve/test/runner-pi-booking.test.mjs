@@ -1,10 +1,12 @@
 // A pi run's learned_workflow booking through the runner's adapter loop (the one-ledger ruling, now for pi too, once pi's
 // session exposes a model port): a pi run calls learned_workflow, its model node runs on the session's model proxy under
 // the learned_workflow side key, and the runner's booking records that request a side call labelled learned_workflow,
-// priced by the session as the run's own. A run whose pin names no learned workflow books nothing under that label. pi's
-// model goes through the session proxy to a loopback gateway; no sleeps, no port races.
+// priced by the session as the run's own. The workflow is the agent's, learned: active in its learning folder at the
+// commit the run's learning start pinned, read at the claim (runner/learning-seed.ts). A run with no learned workflow
+// books nothing under that label. pi's model goes through the session proxy to a loopback gateway; no sleeps, no port
+// races.
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -12,6 +14,7 @@ import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { createRegistry, Harness } from "@earendil-works/pi-durable";
 import { startFauxGateway } from "./fixtures/faux-gateway.mjs";
+import { landWorkflows, startAt } from "./learned-workflow-seed-support.mjs";
 
 const { openSqliteStore } = await import("../dist/store/sqlite/store.js");
 const { startRunner } = await import("../dist/runner/runner.js");
@@ -19,8 +22,6 @@ const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { adapterRunSpecFromLaunch } = await import("../dist/runner/adapter-run-spec.js");
 const { journalSessions } = await import("../dist/runner/sessions.js");
 const { LEARNED_WORKFLOW_TOOL } = await import("../dist/learned-workflow.js");
-const { LEARNING_PIN, LEARNED_WORKFLOWS_FILE } = await import("../dist/learning.js");
-const { runFolder } = await import("../dist/workspace/paths.js");
 
 const SEAL_KEY = Buffer.alloc(32, 7);
 const RUN = "run-1";
@@ -55,8 +56,9 @@ const until = async (done, what, ms = 40_000) => {
   }
 };
 
-/** A pi run with `tools`, its pin naming the `answer` workflow when `learned`, through the runner's adapter loop on pi's
- *  spec. Its session's booked requests (runner.request) and turns. */
+/** A pi run with `tools`, its agent's learning folder holding the active `answer` workflow when `learned` (its launch's
+ *  learning start pinning that commit), through the runner's adapter loop on pi's spec. Its session's booked requests
+ *  (runner.request) and turns. */
 async function piRun(t, { tools, learned }) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-pi-booking-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
@@ -72,16 +74,11 @@ async function piRun(t, { tools, learned }) {
     await server.close().catch(() => {});
     rmSync(dir, { recursive: true, force: true });
   });
-  await server.agents.create({ id: "agent-1", name: "Learns" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", tools } });
-  const launch = { input: { content: "Do the task." }, title: "t", place: { mode: "runner" }, model: { provider: "anthropic", modelId: "claude-sonnet-4-5" } };
+  await server.agents.create({ id: "agent-1", name: "Learns" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", tools, ...(learned ? { learning: true } : {}) } });
+  const seed = learned ? await landWorkflows(dir, "agent-1", [{ name: "answer", description: "Answers a question as a number", workflow: answerFlow }]) : undefined;
+  const launch = { input: { content: "Do the task." }, title: "t", place: { mode: "runner" }, model: { provider: "anthropic", modelId: "claude-sonnet-4-5" }, ...(learned ? { learning: startAt(seed) } : {}) };
   await server.runs.create({ id: RUN, agentId: "agent-1", revisionId: "rev-1" }, { body: launch });
   await server.flush?.();
-  if (learned) {
-    const root = runFolder(dir, "agent-1", RUN);
-    mkdirSync(root, { recursive: true });
-    writeFileSync(join(root, LEARNING_PIN), JSON.stringify({ seed: null, section: "", workflows: ["answer"] }));
-    writeFileSync(join(root, LEARNED_WORKFLOWS_FILE), JSON.stringify([{ name: "answer", description: "Answers a question as a number", workflow: JSON.stringify(answerFlow) }]));
-  }
   // The run's one model route: pi's model and the node's both go through the session proxy to the loopback gateway, priced
   // at the route's catalog cost.
   const price = (_model, usage) => ((usage.input ?? 0) * 3 + (usage.output ?? 0) * 15 + (usage.cacheRead ?? 0) * 0.3 + (usage.cacheWrite ?? 0) * 3.75) / 1e6;
@@ -102,7 +99,7 @@ async function piRun(t, { tools, learned }) {
 }
 
 test("a pi run's learned_workflow model node books on the run's one ledger, a side call labelled learned_workflow", async (t) => {
-  const { row, requests, turns } = await piRun(t, { tools: ["read", LEARNED_WORKFLOW_TOOL], learned: true });
+  const { row, requests, turns } = await piRun(t, { tools: ["read"], learned: true });
   assert.equal(row.state, "ended", `the run ended: ${JSON.stringify(row)}`);
   const node = requests.filter((request) => request.host === LEARNED_WORKFLOW_TOOL);
   assert.equal(node.length, 1, `the node's one request is the session's, labelled learned_workflow: ${JSON.stringify(requests)}`);
@@ -113,7 +110,7 @@ test("a pi run's learned_workflow model node books on the run's one ledger, a si
   assert.ok(own.length >= 1 && !own.some((request) => request.turn === node[0].turn), `the run's own requests carry no learned_workflow label: ${JSON.stringify(own)}`);
 });
 
-test("a pi run whose pin names no learned workflow books nothing under the learned_workflow label", async (t) => {
+test("a pi run with no learned workflow books nothing under the learned_workflow label", async (t) => {
   const { row, requests } = await piRun(t, { tools: ["read"], learned: false });
   assert.notEqual(row.state, "failed", `the run did not fail: ${JSON.stringify(row)}`);
   assert.deepEqual(requests.filter((request) => request.host === LEARNED_WORKFLOW_TOOL), [], "no learned workflow, nothing booked under its label");

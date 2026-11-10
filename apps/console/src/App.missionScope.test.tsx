@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 import { ANALYTICS } from "@/components/AgentAnalytics.sample";
+import { optionsOf, pick } from "@/test/picker";
 
 // Mission Control with an agent picked over its analytics: every figure below the picker follows it. "Runs per agent"
 // shows that agent's row alone and "Recent runs" that agent's runs alone, read from its own runs; with All agents both
@@ -54,17 +55,17 @@ const wait = async (ok: () => boolean, what: string, ms = 4000) => {
 };
 const section = (host: HTMLElement, title: string) => [...host.querySelectorAll("section")].find((s) => s.querySelector("h2")?.textContent === title) as HTMLElement | undefined;
 const rows = (s: HTMLElement | undefined) => [...(s?.querySelectorAll("li") ?? [])].map((li) => li.textContent ?? "");
-const pick = async (host: HTMLElement, value: string) => {
-  const select = host.querySelector('select[aria-label="Agent"]') as HTMLSelectElement;
-  await act(async () => { select.value = value; select.dispatchEvent(new Event("change", { bubbles: true })); });
+const pickAgent = async (host: HTMLElement, value: string) => {
+  const select = host.querySelector('button[aria-haspopup=listbox][aria-label="Agent"]') as HTMLButtonElement;
+  await pick(select, value);
 };
 
 describe("Mission Control's agent picker scopes every figure below it", () => {
   it("an agent picked: Runs per agent shows its row alone, Recent runs its runs alone (read from its own runs), and the picker still offers every agent", async () => {
     const asked = serve();
     const host = mount();
-    await wait(() => !!host.querySelector('select[aria-label="Agent"]') && rows(section(host, "Recent runs")).length === 3, "Mission Control with its picker and all three recent runs");
-    await pick(host, "notes");
+    await wait(() => !!host.querySelector('button[aria-haspopup=listbox][aria-label="Agent"]') && rows(section(host, "Recent runs")).length === 3, "Mission Control with its picker and all three recent runs");
+    await pickAgent(host, "notes");
     await wait(() => asked.some((a) => a.startsWith("GET /v2/stats?") && a.includes("agent=notes")), "the stats are read for the agent picked");
     await wait(() => rows(section(host, "Recent runs")).length === 2, "Recent runs shows the agent's runs alone");
     expect(asked).toContain("GET /v2/agents/notes/runs?limit=10");
@@ -74,17 +75,17 @@ describe("Mission Control's agent picker scopes every figure below it", () => {
     const perAgent = rows(section(host, "Runs per agent"));
     expect(perAgent).toHaveLength(1);
     expect(perAgent[0]).toContain("Notes hand");
-    const options = [...(host.querySelector('select[aria-label="Agent"]') as HTMLSelectElement).options].map((o) => o.textContent);
+    const options = (await optionsOf((host.querySelector('button[aria-haspopup=listbox][aria-label="Agent"]') as HTMLButtonElement))).map((o) => o.text);
     expect(options).toEqual(["All agents", "Calculator", "Notes hand"]);
   });
 
   it("All agents: Runs per agent and Recent runs list every agent, as before", async () => {
     const asked = serve();
     const host = mount();
-    await wait(() => !!host.querySelector('select[aria-label="Agent"]') && rows(section(host, "Recent runs")).length === 3, "Mission Control with its picker and all three recent runs");
-    await pick(host, "notes");
+    await wait(() => !!host.querySelector('button[aria-haspopup=listbox][aria-label="Agent"]') && rows(section(host, "Recent runs")).length === 3, "Mission Control with its picker and all three recent runs");
+    await pickAgent(host, "notes");
     await wait(() => asked.some((a) => a.startsWith("GET /v2/stats?") && a.includes("agent=notes")), "the stats are read for the agent picked");
-    await pick(host, "");
+    await pickAgent(host, "");
     await wait(() => rows(section(host, "Recent runs")).length === 3 && rows(section(host, "Runs per agent")).length === 2, "back to every agent");
     expect(rows(section(host, "Runs per agent")).map((r) => r.replace(/\d+$/, ""))).toEqual(["Calculator", "Notes hand"]);
     expect(rows(section(host, "Recent runs")).some((r) => r.includes("Calc run one"))).toBe(true);

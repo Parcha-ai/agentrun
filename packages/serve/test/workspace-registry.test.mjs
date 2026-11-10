@@ -1,6 +1,7 @@
 // A run's tools on the kernel's registry (serve/src/workspace/run-tools.ts runTools): the registry's definitions over
-// the run's hands and executors. With no computer the run sees read, write, edit and bash, and its hands have no
-// processes; a computer gives the five background tools too, on the attached Workspace's processes (hands.ts
+// the run's hands and executors. With no computer the run sees read, write and edit, and bash too only in Mode 2 (Archil's
+// exec; in Mode 1 the folder is one of this server's own, and a bash call answers how to get a shell), and its hands have
+// no processes; a computer gives the five background tools too, on the attached Workspace's processes (hands.ts
 // processesOf, the kernel's narrow port over computerd's calls). bash's bound is the registry's, by the hands' ceiling;
 // a timeout keeps what the command printed; the run's end ends background processes, then sweeps.
 import assert from "node:assert/strict";
@@ -10,7 +11,7 @@ import { join } from "node:path";
 import { after, test } from "node:test";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { readBackOf } from "@parcha/agentrun-computer";
-import { NEEDS_A_COMPUTER } from "@parcha/agentrun-kernel/kernel";
+import { NEEDS_A_COMPUTER, NO_SHELL } from "@parcha/agentrun-kernel/kernel";
 import { localWorkspace, processesOf, runTools } from "../dist/workspace/index.js";
 import { fakeComputer } from "./workspace-fake-computer.mjs";
 import { realProcesses } from "./workspace-fake-processes.mjs";
@@ -26,19 +27,27 @@ function scratch() {
 }
 const call = (tools, name, args, attempt) => tools.find((tool) => tool.name === name).call(args, { callId: `c-${name}-${Math.random()}`, signal: new AbortController().signal, ...(attempt ? { attempt } : {}) });
 
-test("no computer: the registry's runner list (read, write, edit, bash), no processes on the hands, a background call refused in words; the end sweeps", async () => {
+test("no computer in Mode 1: the file tools alone (no bash family), no processes on the hands, a bash or background call refused in words naming the setting; the end sweeps", async () => {
   const root = scratch();
   const run = await runTools(localWorkspace(root), undefined, { mode: 1, context: ctx });
-  assert.deepEqual(run.registry.list().map((def) => def.name), ["read", "write", "edit", "bash"]);
+  assert.deepEqual(run.registry.list().map((def) => def.name), ["read", "write", "edit"]);
   assert.equal(run.hands.processes, undefined);
   const tools = run.hostTools(["read", "write", "bash", "bash_background", "web_fetch"]);
-  assert.deepEqual(tools.map((tool) => [tool.name, tool.replay]), [["read", "safe"], ["write", "never"], ["bash", "never"]]);
+  assert.deepEqual(tools.map((tool) => [tool.name, tool.replay]), [["read", "safe"], ["write", "never"]]);
   assert.equal((await call(tools, "write", { path: "a.txt", content: "hi" })).text, "Successfully wrote to a.txt");
-  assert.deepEqual(await call(tools, "bash", { command: "cat a.txt" }), { text: "hi", isError: false });
+  const bash = await run.registry.invoke("bash", { command: "touch ran" }, { hands: run.hands });
+  assert.equal(bash.error, NO_SHELL, "bash is not available, in words that say how to get a shell");
+  assert.ok(!existsSync(join(root, "ran")), "and nothing ran");
   const refused = await run.registry.invoke("bash_background", { command: "sleep 9" }, { hands: run.hands });
   assert.equal(refused.error, NEEDS_A_COMPUTER, "the registry's own words for it");
   await run.end();
   assert.ok(!existsSync(join(root, ".agentrun", "tmp")), "the end swept TMPDIR");
+});
+
+test("no computer in Mode 2: bash on Archil's exec (never a process of this server's), the background tools still refused", async () => {
+  const run = await runTools(localWorkspace(scratch()), undefined, { mode: 2, context: ctx });
+  assert.deepEqual(run.registry.list().map((def) => def.name), ["read", "write", "edit", "bash"]);
+  assert.equal((await run.registry.invoke("bash_list", {}, { hands: run.hands })).error, NEEDS_A_COMPUTER);
 });
 
 // The 120 s default with no timeout given is the kernel registry's own (run-adapters/test/kernel-registry.test.mjs).

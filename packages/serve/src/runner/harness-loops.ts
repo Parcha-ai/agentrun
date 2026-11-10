@@ -11,8 +11,9 @@ import type { RunLaunch } from "../run-launch.js";
 import { resolveHarness } from "./adapters/index.js";
 import { adapterRunSpecFromLaunch, type AdapterSpecDeps, PI_WIRES } from "./adapter-run-spec.js";
 import { createAdapterLoop } from "./adapter-loop.js";
+import { createDispatchLoop } from "./dispatch.js";
 import { cliRunSpecFromLaunch } from "./cli-run-spec.js";
-import { learningLoopOf } from "./learning-dispatch.js";
+import { gradeModelFor, gradeRouteOf, learningLoopOf } from "./learning-dispatch.js";
 import type { LoopFactory } from "./loop-contract.js";
 import { createWorkflowLoop, isWorkflowRevision } from "./workflow-loop.js";
 import { workflowSpecOf } from "./workflow-spec.js";
@@ -40,7 +41,10 @@ export function resolveRunnerLoop(deps: AdapterSpecDeps): (harness: string, laun
         data: deps.data,
         // The grader speaks the route's wire, as pi does (learning-ask.ts: pi.ts policyFor and port-models.ts
         // sessionProvider), so its route is asked on pi's wires; a model on neither keeps the route's Messages translation.
-        routeOf: (grade) => deps.routeOf(grade.model, deps.env, "default", PI_WIRES),
+        // A grade model whose vendor this host reaches only through OpenRouter goes there as main's grade does
+        // (gradeRouteOf): OpenRouter's key its one credential, priced at OpenRouter's price.
+        // The grade's model, main's order (gradeModelFor): the grade model the server names, else the agent's own.
+        routeOf: (grade) => gradeRouteOf(gradeModelFor(grade), deps.env ?? process.env, (model) => deps.routeOf(model, deps.env, "default", PI_WIRES)),
         ...(deps.log ? { log: deps.log } : {}),
       });
     }
@@ -60,4 +64,14 @@ export function resolveRunnerLoop(deps: AdapterSpecDeps): (harness: string, laun
     }
     return undefined;
   };
+}
+
+/** The loop factory the runner holds for every run (its createLoop), built from the runner's deps over the one store: the
+ *  dispatch (dispatch.ts) reads each run's launch and asks the switch (resolveRunnerLoop) for its harness loop. The server
+ *  start and the test server pass this to startRunner. */
+export function dispatchRunner(deps: AdapterSpecDeps): LoopFactory {
+  return createDispatchLoop({
+    launchOf: (runId) => deps.store.runs.launch(runId),
+    resolve: resolveRunnerLoop(deps),
+  });
 }

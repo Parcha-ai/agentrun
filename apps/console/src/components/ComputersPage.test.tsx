@@ -6,7 +6,7 @@ import { SETTINGS_PAGES } from "./Settings";
 import { SIGN_IN_TO_CHANGE } from "@/lib/secrets";
 import { route } from "@/App";
 import { createClient } from "@/lib/client";
-import type { ComputerKey, ComputerKindView, ComputerProvider, Computers } from "@/lib/v2";
+import type { ComputerKindView, ComputerProvider, Computers, ComputerSecret } from "@/lib/v2";
 
 // Settings → Computers over GET /v2/computers, PUT /v2/computers/{provider}/keys and POST /v2/computers/{provider}/test:
 // a section per kind with the server's why when it isn't offered, each provider under every kind it serves with its keys
@@ -23,13 +23,14 @@ const E2B_WHY = "E2B needs E2B_API_KEY saved: save it in Settings → Computers 
 const PHONE_WHY = "no provider serves a phone computer";
 const CHANGED = "2026-11-09T01:00:00.000Z";
 const METERED = "This provider bills by the minute through your own vendor account, and those minutes aren't counted in a run's spending cap.";
-const secret = (key: string, set: boolean, source: ComputerKey["source"] = set ? "console" : null, required = true): ComputerKey => ({ name: key, required, set, source, changed_at: source === "console" ? CHANGED : null });
-const docker: ComputerProvider = { id: "docker", name: "Docker", metered: false, keys: [], ready: true };
-const e2b = (saved = false): ComputerProvider => ({ id: "e2b", name: "E2B", metered: true, keys: [secret("E2B_API_KEY", saved)], ready: saved, ...(saved ? {} : { why: E2B_WHY }) });
-const orgo: ComputerProvider = { id: "orgo", name: "Orgo", metered: true, keys: [secret("ORGO_API_KEY", true)], ready: true };
-const kernel: ComputerProvider = { id: "kernel", name: "Kernel", metered: true, keys: [secret("KERNEL_API_KEY", false), secret("KERNEL_REGION", false, null, false)], ready: false, why: "Kernel needs KERNEL_API_KEY saved" };
+/** A provider's secret as served: its full name "computer:<provider>:<KEY>". */
+const secret = (provider: string, key: string, set: boolean, source: ComputerSecret["source"] = set ? "console" : null): ComputerSecret => ({ name: `computer:${provider}:${key}`, set, source, changed_at: source === "console" ? CHANGED : null });
+const docker: ComputerProvider = { id: "docker", name: "Docker", metered: false, secrets: [], required: [], ready: true };
+const e2b = (saved = false): ComputerProvider => ({ id: "e2b", name: "E2B", metered: true, secrets: [secret("e2b", "E2B_API_KEY", saved)], required: ["computer:e2b:E2B_API_KEY"], ready: saved, ...(saved ? {} : { why: E2B_WHY }) });
+const orgo: ComputerProvider = { id: "orgo", name: "Orgo", metered: true, secrets: [secret("orgo", "ORGO_API_KEY", true)], required: ["computer:orgo:ORGO_API_KEY"], ready: true };
+const kernel: ComputerProvider = { id: "kernel", name: "Kernel", metered: true, secrets: [secret("kernel", "KERNEL_API_KEY", false), secret("kernel", "KERNEL_REGION", false)], required: ["computer:kernel:KERNEL_API_KEY"], ready: false, why: "Kernel needs KERNEL_API_KEY saved" };
 /** Daytona's key is in the server's environment: it wins, greyed, with nothing to paste over it. */
-const daytona: ComputerProvider = { id: "daytona", name: "Daytona", metered: true, keys: [secret("DAYTONA_API_KEY", true, "env")], ready: true };
+const daytona: ComputerProvider = { id: "daytona", name: "Daytona", metered: true, secrets: [secret("daytona", "DAYTONA_API_KEY", true, "env")], required: ["computer:daytona:DAYTONA_API_KEY"], ready: true };
 const kind = (k: ComputerKindView["kind"], providers: ComputerProvider[], extra: Partial<ComputerKindView> = {}): ComputerKindView => ({ kind: k, offered: true, groups: [], tools: [], providers, ...extra });
 const view = (saved = false): Computers => ({
   kinds: [
@@ -77,7 +78,7 @@ async function open(v2: ReturnType<typeof createClient>, writable = true) {
   };
   const submit = async (form: HTMLFormElement) => { await act(async () => { form.requestSubmit(); }); await settle(); };
   /** A key's SecretRow under a provider's row, by its KEY. */
-  const key = (within: Element, name: string) => within.querySelector(`li[data-secret="${name}"]`)!;
+  const key = (within: Element, name: string) => within.querySelector(`li[data-secret$=":${name}"]`)!;
   return { host, section, row, key, button, click, type, submit, settle };
 }
 
@@ -116,9 +117,9 @@ describe("Settings → Computers", () => {
     expect(row("Desktop", "Orgo").textContent).toContain("Ready");
     expect(row("Desktop", "Orgo").textContent).toContain("Serves: desktop");
     expect(row("Sandbox", "Docker").textContent).toContain("No key");
-    // Required or not, from each key's required.
+    // Required or not, from the provider's required full names.
     const k = row("Browser", "Kernel");
-    expect([...k.querySelectorAll("li[data-secret]")].map((li) => li.getAttribute("data-secret"))).toEqual(["KERNEL_API_KEY", "KERNEL_REGION"]);
+    expect([...k.querySelectorAll("li[data-secret]")].map((li) => li.getAttribute("data-secret"))).toEqual(["computer:kernel:KERNEL_API_KEY", "computer:kernel:KERNEL_REGION"]);
     expect([...k.querySelectorAll("li[data-secret] > span:first-child")].map((el) => el.firstChild?.textContent)).toEqual(["KERNEL_API_KEY", "KERNEL_REGION"]);
     expect(key(k, "KERNEL_API_KEY").textContent).not.toContain("Optional");
     expect(key(k, "KERNEL_REGION").textContent).toContain("Optional");

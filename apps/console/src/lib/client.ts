@@ -4,12 +4,12 @@ import type { AgentLearning, LearningChange, LearningDiff, LearningNote, NotePro
 import type { McpAuth, McpClientFeature, McpPreview, McpRefresh, McpServer } from "./mcp";
 import type { RunGraph } from "./runGraph";
 import { applyPage } from "./timeline";
-import type { ApiError, Firing, GitHubConnectStart, GitHubDisconnected, GitHubStatus, InputIssue, McpPrivateHosts, TemplateApplied, TemplateApply, TemplateView, RaiseAnswer, Run, RunBrowser, RunFiles, RunStatus, TimelinePage, TimelineRow, ToolKeys, ToolKeysFeature, ToolSettings, Trigger, TriggerCreate, TriggerInput, TriggerMade, TriggerSecret, Webhook, WebhookAttempt, WebhookSaved, WebhooksFeature, Archil, ArchilBody, ArchilTest, Computers, ComputerKeysBody, ComputerProvider, ComputerTest } from "./v2";
+import type { ApiError, Firing, GitHubConnectStart, GitHubDisconnected, GitHubStatus, InputIssue, McpPrivateHosts, TemplateApplied, TemplateApply, TemplateView, RaiseAnswer, Run, RunComputer, ComputerHoldAnswer, HandBackOutcome, RunFiles, RunStatus, TimelinePage, TimelineRow, SessionSecrets, ToolKeys, ToolKeysFeature, ToolSettings, Trigger, TriggerCreate, TriggerInput, TriggerMade, TriggerSecret, Webhook, WebhookAttempt, WebhookSaved, WebhooksFeature, Archil, ArchilBody, ArchilTest, Computers, ComputerKeysBody, ComputerProvider, ComputerTest } from "./v2";
 
 /** A request AgentRun Server refused: its HTTP status and its typed error (`code`, `message`, `retryable`). */
 /** A refusal's issue at one field, as the server names it (with its `fix`, when it says one). Its `reason` is any string, as
  *  ApiError's `code` is: the server also sends reasons its document does not list yet (an MCP server's `url` "redirect"). */
-export type FieldIssue = Omit<InputIssue, "reason"> & { reason: InputIssue["reason"] | (string & {}) };
+export type FieldIssue = InputIssue;
 
 export class ClientError extends Error {
   /** A 422's issues, by field, as the server names them. */
@@ -109,11 +109,8 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
   const noteAccept = { accept: "text/markdown, application/json" };
   return {
     capabilities: () => call<Capabilities>("GET", "/capabilities"),
-    /** The owner's session; its status too, since a server without accounts answers 404. */
-    session: () => callTagged<{ password_set: boolean; signed_in: boolean }>("GET", "/auth/session").then((r) => ({ status: r.status, body: r.body as unknown }), (e) => {
-      if (e instanceof ClientError && e.status === 404) return { status: 404, body: null as unknown };
-      throw e;
-    }),
+    /** The session, on a server with accounts or without (`accounts`), with whether it may write a secret. */
+    session: () => callTagged<SessionSecrets>("GET", "/auth/session").then((r) => ({ status: r.status, body: r.body as unknown })),
     signIn: (password: string) => call<{ signed_in: boolean }>("POST", "/auth/sign-in", { body: { password } }),
     /** Sets the owner's password. `importSessions`: the owner ticked setup's box, so the server imports this machine's
      *  sessions once the password is set; never sent otherwise. */
@@ -184,8 +181,14 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     getRun: (id: string) => call<Run>("GET", run(id)),
     /** What the run's learning changed in its agent's notes, file by file (each with its patch, or why it is withheld). */
     runLearningDiff: (id: string) => call<LearningDiff>("GET", `${run(id)}/learning/diff`),
-    /** The run's computer: off, none or live with its viewer (RunBrowser, GET /v2/runs/{id}/computer). */
-    runBrowser: (id: string) => call<RunBrowser>("GET", `${run(id)}/computer`),
+    /** The run's computer, every kind with a screen: off, none or live with its viewer, and who drives (GET /v2/runs/{id}/computer). */
+    runComputer: (id: string) => call<RunComputer>("GET", `${run(id)}/computer`),
+    /** The owner takes the run's desktop or phone (a browser is taken in its own viewer): `pending` until the agent's step
+     *  in flight ends, then the person's. The owner's password session only. */
+    takeOverComputer: (id: string) => call<ComputerHoldAnswer>("POST", `${run(id)}/computer/take-over`, { body: {} }),
+    /** Hands the run's computer back, every kind: answers the agent's ask (`outcome`, done when not given), else ends the
+     *  owner's take. The first answer wins. The owner's password session only. */
+    handBackComputer: (id: string, outcome?: HandBackOutcome) => call<ComputerHoldAnswer>("POST", `${run(id)}/computer/hand-back`, { body: outcome ? { outcome } : {} }),
     /** Hides a run from the runs list (or shows it again), its history kept. The answer is the run. */
     archiveRun: (id: string) => call<Run>("POST", `${run(id)}/archive`, { body: {} }),
     unarchiveRun: (id: string) => call<Run>("POST", `${run(id)}/unarchive`, { body: {} }),

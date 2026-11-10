@@ -4,9 +4,13 @@
 // (hands.ts) and the executors the registry takes from the host: pi's read, write and edit, and pi's bash as bash's own
 // run, all on one file environment over the Workspace (pi-env.ts).
 //
-// Where the run's shell is: in the computer ("computer": the folder at /workspace, every host tool), or, with none, the
-// run's folder itself ("local": bash runs there, asking first, and the background tools are refused in words). The
-// longest command is 600 s, or 295 s on Archil's serverless exec (Mode 2 with no computer); bash's words follow it.
+// Where the run's shell is (resolve-computer.ts shellPlaceOf, the one rule runShellOf reads off a setting too): in the
+// computer ("computer": the folder at /workspace, every host tool); with none, in Mode 2 the folder's own exec, Archil's
+// serverless one, a fresh container holding the run's folder alone ("local": bash only, asking first, and the background
+// tools refused in words); in Mode 1 nowhere ("none"): the folder is one of this server's own, and a command there would
+// run on the server with everything it can read (its data, its keys), so the run gets the file tools alone, confined to
+// the folder, and no bash family at all. The longest command is 600 s, or 295 s on Archil's serverless exec; bash's
+// words follow it.
 //
 // The shell's environment is fixed (hands.ts shellEnv): never a variable of this server's. TMPDIR is .agentrun/tmp in
 // the run's folder, and bash's full output goes to .agentrun/output/<id> there; the run's end sweeps both.
@@ -17,7 +21,7 @@
 // The computer's kind (the agent's computer setting) says what else the run gets. The run's folder is attached to the
 // computer only when the kind has files and exec AND its provider mounts the folder: a sandbox always, a desktop when
 // its provider mounts (the caller gives the mount check only then). Otherwise the folder stays the no-computer Workspace
-// and the shell is "local", and the computer adds only its kind's tools: a desktop's screen and input, a phone's
+// with no computer's shell (above), and the computer adds only its kind's tools: a desktop's screen and input, a phone's
 // screen, touch and apps (computer-ports.ts, over its computerd calls, as its groups offer them), a browser's tools over
 // its CDP connect (pi-browser's definitions, BROWSER_TOOLS, and the runs the caller gives).
 //
@@ -26,7 +30,7 @@
 // (end) ends its background processes through the computer (the kernel's endBackground), then sweeps.
 import type { Context } from "@earendil-works/chord";
 import type { HostTool } from "@parcha/agentrun-kernel";
-import { type CapabilityKind, type CdpSession, createRegistry, endBackground, type Executor, type Registry } from "@parcha/agentrun-kernel/kernel";
+import { type CapabilityKind, capabilityToolDefs, type CdpSession, createRegistry, endBackground, type Executor, type Registry } from "@parcha/agentrun-kernel/kernel";
 import type { ComputerClient, Group } from "@parcha/agentrun-computer";
 import type { AttachableComputer, MountCheck } from "./attach.js";
 import { inputOf, phoneOf, screenOf } from "./computer-ports.js";
@@ -34,6 +38,7 @@ import { answerText, type PiAnswer, piExecutor, type PiExecutor } from "./execut
 import { ARCHIL_MAX_EXEC_S, type Hands, handsOf, MAX_EXEC_S, shellEnv } from "./hands.js";
 import { COMPUTER_ROOT, realOf, workspaceRelative } from "./paths.js";
 import { bashTool, fileTools, OUTPUT_DIR, piEnv, readAnywhereInComputer } from "./pi-env.js";
+import { type ShellPlace, shellPlaceOf } from "./resolve-computer.js";
 import type { Workspace } from "./workspace.js";
 
 /**
@@ -53,8 +58,9 @@ export type RunComputer =
   | { readonly kind: "browser"; readonly connect: () => Promise<CdpSession> };
 
 /** A desktop's or a phone's ports as a person's hold on the computer gives them back: each call made while the person
- *  holds it waits for hand-back; a read then runs, an action then is refused (the take-over's own words). */
-export type RunHold = (ports: Pick<Hands, "screen" | "input" | "phone">) => Pick<Hands, "screen" | "input" | "phone">;
+ *  holds it waits for hand-back; a read then runs, an action then is refused (the take-over's own words). With them, the
+ *  agent's ask for the person (`handoff`, computer_request_handoff's port), through the same hold. */
+export type RunHold = (ports: Pick<Hands, "screen" | "input" | "phone">) => Pick<Hands, "screen" | "input" | "phone" | "handoff">;
 
 /** The computer the run's folder is attached to, with its check: a sandbox, or a desktop with files and exec whose
  *  provider mounts the folder; none for any other. */
@@ -64,20 +70,24 @@ function mountedIn(computer: RunComputer | undefined): { readonly computer: Atta
   return undefined;
 }
 
-/** The kind's ports, as the computer's groups offer them, and the kinds whose tools the run gets: a desktop's with a
- *  screen and input, a phone's with a screen and touch, a browser's always. */
-function portsOf(computer: RunComputer | undefined): { readonly ports: Pick<Hands, "screen" | "input" | "phone" | "browser">; readonly kinds: readonly CapabilityKind[] } {
+/** The kind's ports, as the computer's groups offer them, the kinds whose tools the run gets (a desktop's with a screen
+ *  and input, a phone's with a screen and touch, a browser's always), and the kind's tools its groups do not offer: a
+ *  phone's tree without apps.ui_tree, its keys without input.keys (an iPhone's today). */
+function portsOf(computer: RunComputer | undefined): { readonly ports: Pick<Hands, "screen" | "input" | "phone" | "browser">; readonly kinds: readonly CapabilityKind[]; readonly without: readonly string[] } {
   if (computer?.kind === "desktop") {
     const { client } = computer.computer;
     const screen = computer.groups.includes("screen");
     const input = computer.groups.includes("input.pointer") || computer.groups.includes("input.keys");
-    return screen && input ? { ports: { screen: screenOf(client), input: inputOf(client) }, kinds: ["desktop"] } : { ports: {}, kinds: [] };
+    return screen && input ? { ports: { screen: screenOf(client), input: inputOf(client) }, kinds: ["desktop"], without: [] } : { ports: {}, kinds: [], without: [] };
   }
   if (computer?.kind === "phone") {
-    return computer.groups.includes("screen") && computer.groups.includes("input.touch") ? { ports: { phone: phoneOf(computer.computer.client) }, kinds: ["phone"] } : { ports: {}, kinds: [] };
+    if (!computer.groups.includes("screen") || !computer.groups.includes("input.touch")) return { ports: {}, kinds: [], without: [] };
+    const tree = computer.groups.includes("apps.ui_tree");
+    const keys = computer.groups.includes("input.keys");
+    return { ports: { phone: phoneOf(computer.computer.client, { tree, keys }) }, kinds: ["phone"], without: [...(tree ? [] : ["phone_tree"]), ...(keys ? [] : ["phone_key"])] };
   }
-  if (computer?.kind === "browser") return { ports: { browser: { connect: computer.connect } }, kinds: ["browser"] };
-  return { ports: {}, kinds: [] };
+  if (computer?.kind === "browser") return { ports: { browser: { connect: computer.connect } }, kinds: ["browser"], without: [] };
+  return { ports: {}, kinds: [], without: [] };
 }
 
 /** The run's scratch in its own folder: bash's TMPDIR. */
@@ -88,17 +98,20 @@ export type RunHands = {
   /** The run's Workspace: attached to the computer when there is one. */
   readonly workspace: Workspace;
   readonly hands: Hands;
-  /** Where the run's shell is: the registry's ShellPlace. */
-  readonly shell: "computer" | "local";
+  /** Where the run's shell is: the registry's ShellPlace (shellPlaceOf). "none": no bash family at all. */
+  readonly shell: ShellPlace;
   /** The computer's kinds whose tools the run gets, past files and a shell. */
   readonly kinds: readonly CapabilityKind[];
+  /** The kinds' tools the computer does not offer (its groups lack them), not listed to the model. */
+  readonly without: readonly string[];
   readonly maxExecS: number;
   /** The name the model knows the run's folder by: /workspace in a computer, the folder's own path otherwise. */
   readonly cwd: string;
   /** Every absolute name of the run's folder a text may hold: cwd, its path here, the aliases given. */
   readonly names: readonly string[];
-  /** The registry's host executors: pi's read, write and edit, and pi's bash as bash's own run. */
-  readonly executors: { readonly read: PiExecutor; readonly write: PiExecutor; readonly edit: PiExecutor; readonly bash: PiExecutor };
+  /** The registry's host executors: pi's read, write and edit, and pi's bash as bash's own run where the run has a shell
+   *  (none where it is "none", so nothing can run a command on this server). */
+  readonly executors: { readonly read: PiExecutor; readonly write: PiExecutor; readonly edit: PiExecutor; readonly bash?: PiExecutor };
   /** The run's end, after its background processes are ended and before the computer is let go: bash's full outputs
    *  and its TMPDIR swept. */
   sweep(): Promise<void>;
@@ -115,6 +128,7 @@ export async function runHands(workspace: Workspace, computer: RunComputer | und
   const spec = options.mode === 1 ? await workspace.mountSpec() : undefined;
   const here = spec?.kind === "bind" ? spec.path : undefined;
   const mounted = mountedIn(computer);
+  const shell = shellPlaceOf(mounted !== undefined, options.mode);
   const attached = mounted === undefined ? workspace : await workspace.attach(mounted.computer, mounted.check);
   // The folder's name: /workspace in a computer (and on Archil's exec, which has no path of this machine), its own path here.
   const cwd = mounted === undefined && here !== undefined ? here : COMPUTER_ROOT;
@@ -128,18 +142,19 @@ export async function runHands(workspace: Workspace, computer: RunComputer | und
   const executor = (tool: typeof read) => piExecutor(tool, fileEnv, options.context);
   const own = portsOf(computer);
   const held = options.hold !== undefined && (computer?.kind === "desktop" || computer?.kind === "phone") && own.kinds.length > 0;
-  const { ports, kinds } = held ? { ...own, ports: options.hold!(own.ports) } : own;
+  const { ports, kinds, without } = held ? { ...own, ports: options.hold!(own.ports) } : own;
   return {
     workspace: attached,
     // The computer's processes, for the five background tools: the attached Workspace's own; none when the folder is not
     // attached. The kind's ports beside them.
     hands: { ...handsOf(attached, { maxExecS, env, ...(mounted === undefined ? {} : { processes: attached.process }) }), ...ports },
-    shell: mounted === undefined ? "local" : "computer",
+    shell,
     kinds,
+    without,
     maxExecS,
     cwd,
     names,
-    executors: { read: executor(read), write: executor(tools.write!), edit: executor(tools.edit!), bash: executor(tools.bash!) },
+    executors: { read: executor(read), write: executor(tools.write!), edit: executor(tools.edit!), ...(shell === "none" ? {} : { bash: executor(tools.bash!) }) },
     async sweep() {
       // Through the run's own Workspace, not the computer's: the sweep holds whether or not the computer still answers.
       for (const dir of [OUTPUT_DIR, TMP_DIR]) await workspace.remove(dir, { recursive: true, force: true });
@@ -178,10 +193,12 @@ export function bindTools(run: RunHands, registry: RunRegistry, names: readonly 
       description: def.description,
       inputSchema: def.parameters as Record<string, unknown>,
       replay: def.replaySafe ? "safe" : "never",
-      async call(args, { callId, signal }) {
+      async call(args, { callId, signal, model, output }) {
         let given: PiAnswer;
         try {
-          given = await registry.invoke(name, args, { hands: run.hands, signal });
+          // The calling model and the call's output stream, as the session gave them: pi's read sizes an image by the
+          // model, and a running tool's output reaches the run's live view.
+          given = await registry.invoke(name, args, { hands: run.hands, signal, ...(model !== undefined ? { model } : {}), ...(output ? { output } : {}) });
         } catch (error) {
           given = { text: "", isError: true, error: (error as Error)?.message ?? String(error) };
         }
@@ -203,6 +220,11 @@ export type RunTools = {
   /** The run's registry: the kernel's definitions, words and limits, over this run's hands and executors. */
   readonly registry: Registry;
   readonly hands: Hands;
+  /** The tools the claimed computer brings by its kind, as its groups offer them: a desktop's (desktop_screen,
+   *  desktop_input, computer_request_handoff) or a phone's, by the kernel registry's own list. None with no computer, for
+   *  a sandbox, or for a browser (its own binding lists its tools). An agent names its computer, never these tools
+   *  (definition.tools refuses them), so a run binds them beside what it was granted (withKindTools). */
+  readonly kindTools: readonly string[];
   /** The registry's tools `names` names, as the kernel's HostTool an adapter's session takes, each answer kept in
    *  `results` (bindTools). The gate is the adapter loop's, asked before a call reaches them. */
   hostTools(names: readonly string[], results?: ToolResults): HostTool[];
@@ -236,17 +258,26 @@ export async function runTools(workspace: Workspace, computer: RunComputer | und
   const offers = options.browser?.offers;
   const browserTools = run.kinds.includes("browser") ? BROWSER_TOOLS.filter((contract) => listedFor(contract, offers ?? { downloads: false, upload: false, handoff: false })) : BROWSER_TOOLS;
   const registry = createRegistry({
-    maxExecS: run.maxExecS, shell: run.shell, kinds: run.kinds, browserTools,
+    maxExecS: run.maxExecS, shell: run.shell, kinds: run.kinds, browserTools, without: run.without,
     executors: { ...run.executors, ...(options.browser ? { browser: options.browser.executors } : {}) },
   });
+  const brought = new Set(run.kinds.filter((kind) => kind !== "browser").flatMap((kind) => capabilityToolDefs(kind).map((def) => def.name)));
   return {
     workspace: run.workspace,
     registry,
     hands: run.hands,
+    kindTools: registry.list().map((def) => def.name).filter((name) => brought.has(name)),
     hostTools: (names, results) => bindTools(run, registry, names, results ? { results } : {}),
     async end() {
       await endBackground(run.hands);
       await run.sweep();
     },
   };
+}
+
+/** The names a run binds as host tools: what it was granted, then the tools its claimed computer brings by its kind
+ *  (RunTools.kindTools), each once. Each goes through the run's one gate under its own settings key (a desktop's under
+ *  `desktop`, a phone's under `phone`), so a deny or an ask on the kind holds them. */
+export function withKindTools(granted: readonly string[], tools: Pick<RunTools, "kindTools">): readonly string[] {
+  return [...new Set([...granted, ...tools.kindTools])];
 }

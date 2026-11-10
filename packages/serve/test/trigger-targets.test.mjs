@@ -63,6 +63,12 @@ const deps = (over = {}) => {
 };
 
 const from = { kind: "trigger", trigger_id: "t1", source: "schedule", owner: true };
+/** A message_run trigger t1 to run-1, holding firings `keys` due: what a trigger's message is queued under. */
+async function dueFirings(store, keys = ["f1"]) {
+  await store.triggers.create({ id: "t1", agentId: "a1", name: "poke", enabled: true, source: { kind: "schedule" }, target: { kind: "message_run", run_id: "run-1", input: { content: "hi" } }, nextAt: null, catchupWindowS: 3600 });
+  await store.triggers.record("t1", keys.map((key) => ({ key, by: "schedule", nominalAt: 0, status: "due" })));
+}
+const BOUND = { max: 1, reason: "A message from this trigger is already waiting." };
 
 // ---- targetIssues ---------------------------------------------------------------------------------------------------
 
@@ -135,21 +141,26 @@ test("start inserts a queued, capped run under the firing's key", async () => {
   assert.equal((await store.runOfOrigin("f1")).runId, run_id);
 });
 
-test("message to a working run writes a steer that answers no person", async () => {
+test("message to a working run writes a steer that answers no person, its firing marked sent in the same write; past the trigger's bound for the run a firing is skipped in words, nothing written", async () => {
   const store = await freshStore();
   await store.runs.create({ id: "run-1", agentId: "a1", revisionId: "r1" });
+  await dueFirings(store, ["f1", "f2"]);
   const t = triggerTargets(store, deps());
-  await t.message({ kind: "message_run", run_id: "run-1", input: { content: "from the schedule" } }, { content: "from the schedule" }, "f1", from);
+  const target = { kind: "message_run", run_id: "run-1", input: { content: "from the schedule" } };
+  assert.equal(await t.message(target, { content: "from the schedule" }, "f1", from, BOUND), undefined);
   const rows = await store.commands("run-1", 0);
-  assert.equal(rows[0].kind, "steer");
-  assert.equal(rows[0].body.answers, false);
+  assert.deepEqual(rows.map((row) => [row.kind, row.body.text, row.body.answers, row.body.origin]), [["steer", "from the schedule", false, from]]);
+  assert.deepEqual([(await store.triggers.firing("t1", "f1")).status, (await store.triggers.firing("t1", "f1")).runId], ["sent", "run-1"], "sent with its row, in one transaction");
+  assert.deepEqual(await t.message(target, { content: "from the schedule" }, "f2", from, BOUND), { skipped: BOUND.reason });
+  assert.equal((await store.commands("run-1", 0)).length, 1, "the second waits for nothing: skipped");
+  assert.equal((await store.triggers.firing("t1", "f2")).status, "skipped");
 });
 
 test("message to a run waiting on a person is skipped, nothing written", async () => {
   const store = await freshStore();
   await store.runs.create({ id: "run-1", agentId: "a1", revisionId: "r1" });
   const t = triggerTargets(store, deps({ momentOf: async () => moment({ waitsOnPerson: true }) }));
-  const answer = await t.message({ kind: "message_run", run_id: "run-1", input: { content: "hi" } }, { content: "hi" }, "f1", from);
+  const answer = await t.message({ kind: "message_run", run_id: "run-1", input: { content: "hi" } }, { content: "hi" }, "f1", from, BOUND);
   assert.deepEqual(answer, { skipped: "The run is waiting on a person." });
   assert.equal((await store.commands("run-1", 0)).length, 0);
 });
@@ -159,21 +170,15 @@ test("message to a run with no cap is refused with the cap words", async () => {
   await store.runs.create({ id: "run-1", agentId: "a1", revisionId: "r1" });
   const t = triggerTargets(store, deps({ momentOf: async () => moment({ maxCostUsd: undefined }) }));
   await assert.rejects(
-    () => t.message({ kind: "message_run", run_id: "run-1", input: { content: "hi" } }, { content: "hi" }, "f1", from),
+    () => t.message({ kind: "message_run", run_id: "run-1", input: { content: "hi" } }, { content: "hi" }, "f1", from, BOUND),
     (e) => e.code === "not_continuable" && /only messages a run with one/.test(e.message),
   );
 });
 
-test("statusOf reports the run view's status", async () => {
-  const store = await freshStore();
-  const t = triggerTargets(store, deps({ runStatus: async () => "input_required" }));
-  assert.equal(await t.statusOf("run-1"), "input_required");
-});
-
-test("runOf finds a run started under a key, with no lost setup", async () => {
+test("runOf finds a run started under a key: a run is inserted whole, so a found run started", async () => {
   const store = await freshStore();
   await store.runs.create({ id: "run-1", agentId: "a1", revisionId: "r1", origin: { key: "f1" } });
   const t = triggerTargets(store, deps());
-  assert.deepEqual(await t.runOf("f1"), { run_id: "run-1", setup_lost: false });
+  assert.deepEqual(await t.runOf("f1"), { run_id: "run-1" });
   assert.equal(await t.runOf("nope"), null);
 });

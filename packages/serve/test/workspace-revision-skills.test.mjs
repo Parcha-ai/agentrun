@@ -1,6 +1,7 @@
 // A revision's skills laid in a run's folder through its Workspace at a claim (workspace/revision-skills.ts
-// layOwnSkills): every missing skill file under .agents/skills/ at its path, never over what is there, a bad path refused
-// before anything is written, and never through a link.
+// layOwnSkills): every file under .agents/skills/ at its path, never over what is there (a learned skill, an earlier
+// claim's folder, the run's own edit), nothing removed, a bad path refused before anything is written, and never through
+// a link.
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -17,6 +18,21 @@ function scratch() {
   mkdirSync(join(dir, "outside"));
   return { work: join(dir, "work"), outside: join(dir, "outside") };
 }
+
+test("a revision's skills are laid under .agents/skills/, each file at its path, and nothing that was there goes", async () => {
+  const { work } = scratch();
+  mkdirSync(join(work, ".agents", "skills", "old"), { recursive: true });
+  writeFileSync(join(work, ".agents", "skills", "old", "SKILL.md"), "an earlier lay");
+  writeFileSync(join(work, "report.md"), "the run's own");
+  await layOwnSkills(localWorkspace(work), { "cite/SKILL.md": "# Cite\n", "cite/reference/sources.md": "Primary first.\n", "team/review/SKILL.md": "# Review\n" });
+  assert.deepEqual(readdirSync(join(work, ".agents", "skills")).sort(), ["cite", "old", "team"]);
+  assert.equal(readFileSync(join(work, ".agents", "skills", "cite", "reference", "sources.md"), "utf8"), "Primary first.\n");
+  assert.equal(readFileSync(join(work, ".agents", "skills", "team", "review", "SKILL.md"), "utf8"), "# Review\n");
+  assert.equal(readFileSync(join(work, ".agents", "skills", "old", "SKILL.md"), "utf8"), "an earlier lay", "a folder no revision skill names stays");
+  assert.equal(readFileSync(join(work, "report.md"), "utf8"), "the run's own", "nothing outside .agents/skills/ is touched");
+  await layOwnSkills(localWorkspace(work), {});
+  assert.deepEqual(readdirSync(join(work, ".agents", "skills")).sort(), ["cite", "old", "team"], "none given: nothing is removed");
+});
 
 test("a skill path that would leave .agents/skills/ is refused before anything is written", async () => {
   const { work } = scratch();
@@ -52,4 +68,3 @@ test("at a claim, a revision's own skills are laid where they are missing, never
   // A path leaving .agents/skills/ writes nothing.
   await assert.rejects(layOwnSkills(ws, { "../escape/SKILL.md": "x" }), (error) => error.code === "ESCAPE");
 });
-

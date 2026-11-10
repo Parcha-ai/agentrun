@@ -7,6 +7,7 @@
 // only (kernel.submission, kernel.start, kernel.end, kernel.retry, kernel.blob, runner.response, runner.submit,
 // runner.accepted, …): the reader skips every one of them, whatever its kind, and never reads it as a call or a message.
 import type { MessageOrigin } from "@parcha/pi-durable-agent/timeline";
+import { INTERRUPTED_TEXT } from "@parcha/agentrun-kernel/kernel";
 
 export const KINDS = {
   /** A tool call about to run: written before it runs (and before the flush that precedes a side effect). */
@@ -62,9 +63,21 @@ export const KINDS = {
    *  the loop applies, taking the row in that commit), or the ask's expiry. The first answer for an ask is its answer. */
   handover: "agent.handover",
   /** A run waiting on the person: ask_person ended its turn. Its data is the ask_person call's id; its commit carries the
-   *  run parked. A person's message after it answers it. Neither a call nor a message, so the reader passes over it. */
+   *  run parked. A person's message after it answers it. Neither a call nor a message, so the reader passes over it.
+   *  `inClaim: true` with `at` (ms): the run waits for the answer in its claim instead (adapter-loop waitInClaim), from
+   *  `at`, its commit carrying the row's ASK_PERSON_WAITING summary; `answered: true` clears that summary. */
   personAsked: "agentrun.person.asked",
 } as const;
+
+/** The run row's summary while it waits on the person's answer to its question (ask_person), parked or in its claim: the
+ *  view reads the question from the call, never from here, so the model's text is never copied into the row. The server
+ *  tells run.needs_input for a run held in its claim by this summary (server.ts readEnds). */
+export const ASK_PERSON_WAITING = "Waiting for your reply";
+/** The run row's summary while its agent's browser hand-over (browser_request_handoff) waits on the person, its claim
+ *  held: set by the ask's waiting entry's commit, cleared by its answer's (tools.ts, through AdapterRun.rowSummaryOn). */
+export const HANDOVER_WAITING = "Waiting for you in the browser";
+/** The summaries of a run held in its claim while it waits on its person: the server tells run.needs_input by them. */
+export const HELD_WAITS: ReadonlySet<string> = new Set([ASK_PERSON_WAITING, HANDOVER_WAITING]);
 
 /** How a browser hand-over ended: the person's two answers, or its expiry. */
 export type HandoverOutcome = "done" | "cancelled" | "expired";
@@ -124,6 +137,14 @@ export interface CallEndData {
   readonly output?: unknown;
 }
 
+/** What a call that already ended answers when it is asked for again (a parked call's resume, a CLI's re-issue of its id):
+ *  its recorded output; for one a crash cut with none, the kernel's words for an outcome not known (INTERRUPTED_TEXT);
+ *  else that `tool`'s call ended so. An error unless it ended done. */
+export function endedAnswer(tool: string, end: { status: CallStatus; output?: unknown }): { text: string; isError: boolean } {
+  const text = typeof end.output === "string" ? end.output : end.status === "interrupted" ? INTERRUPTED_TEXT : `The ${tool} call ended ${end.status}.`;
+  return { text, isError: end.status !== "done" };
+}
+
 export type MessageRole = "person" | "steer" | "model";
 
 export interface MessageData {
@@ -166,6 +187,9 @@ export interface AnswerData {
   /** The person's words with their answer (a decline's reason): the model reads it with the refusal, and the resume row
    *  shows it. Absent when they gave none. */
   readonly note?: string;
+  /** "message": a deny a person's message gave while the call waited (the message route's deny row), which its approval
+   *  row reads as "Declined by your message". Absent for an answer given directly. */
+  readonly by?: "message";
   /** The allow a stop overrode (main's ApprovalAnswer.superseded): the call was approved but had not finished when its
    *  run was stopped, so the stop withdrew it. Kept as it was given. */
   readonly superseded?: { readonly decision: "allow"; readonly answeredAt?: string };
