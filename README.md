@@ -237,10 +237,9 @@ can keep a secret it was handed. [SECURITY.md](SECURITY.md) says how to report a
 
 ## Deploy it
 
-**Render.** The button above deploys [`render.yaml`](render.yaml): one 2 GB instance with a 10 GB disk, with the token and
-seal key generated for you. Then set `OPENROUTER_API_KEY` (or another provider's key) in the
-service's Environment tab and open the service's URL. The first visit asks for the setup code the server prints in the
-Logs tab.
+**Render.** The button above deploys [`render.yaml`](render.yaml): one 2 GB instance with a 10 GB disk, with the token
+and seal key generated for you. Then set `OPENROUTER_API_KEY` (or another provider's key) in the service's Environment
+tab and open the service's URL. The first visit asks for the setup code the server prints in the Logs tab.
 
 **Docker Compose: a server and two runners.** On a Linux machine with Docker:
 
@@ -255,8 +254,6 @@ docker compose logs server     # the console's link and, the first time, the tok
 The port is published on this machine's loopback only; put a TLS proxy in front before you open it to anyone else.
 A server in a container has no Docker sandbox yet, so agents there get file tools and `web_fetch` but no shell; for a
 sandbox, run the server on the host, or use a Daytona or E2B computer with workspaces on Archil.
-A server running in a container has no Docker sandbox yet (agents there get file tools and `web_fetch`, no shell); for
-a sandbox, run the server on the host or use a Daytona or E2B computer with an Archil disk.
 
 **Runners on Postgres.** Set `AGENTRUN_STORE_URL` to a `postgres://` URL on the server and every runner (the compose
 file's `pg` profile runs one), start the server with `--no-runner`, and start each runner from the same image with
