@@ -6,8 +6,14 @@ Use Node 22.19+ or 24.2+ and npm 11.21.0. From the repository root:
 npm install --global npm@11.21.0 --ignore-scripts
 npm ci --ignore-scripts
 npm run check
+npm run build:daemon -w @parcha/agentrun-computer
 npm run verify:packages
 ```
+
+`npm run verify:packages` needs the computer daemon built first: `npm run build:daemon -w @parcha/agentrun-computer`
+(after the build, with Go on PATH, the version `packages/computer/daemon/go.mod` names or newer) writes
+`dist/computerd-linux-amd64` and `-arm64`, which `@parcha/agentrun-computer`'s archive must hold, and verification
+stops without them.
 
 `npm run build` builds the console (`apps/console`, outside the workspaces, with its own lockfile) before the packages, so the server's build carries it. It installs the console's dependencies when npm's record of them differs from its lockfile, and skips the console's build when `apps/console/dist` was built from the same sources (a hash of them, written beside the build).
 

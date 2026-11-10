@@ -51,6 +51,7 @@ npm ci --ignore-scripts
 npm run build
 npm test
 npm run check   # build, generated-file checks, typecheck, all tests, examples
+npm run build:daemon -w @parcha/agentrun-computer   # the Go computer daemon (Go on PATH): verify:packages needs it
 npm run verify:packages   # packs each package into a clean consumer (install needs network; CI packages shard)
 ```
 
