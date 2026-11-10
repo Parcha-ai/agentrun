@@ -18,6 +18,16 @@ import { agent, client, FAUX, follow, scratch, startRunnerBeside } from "./suppo
 const STATE = "server.state";
 const refusal = (data) => `another server holds the store at ${join(data, "store.sqlite")}`;
 
+/** Run `runId`'s row as the store holds it, read as a runner reads it (no owner lock): its claim's runner, null once let go. */
+async function rowOf(data, runId) {
+  const store = await openSqliteStore({ dataDir: data, role: "runner" });
+  try {
+    return await store.runs.get(runId);
+  } finally {
+    await store.close();
+  }
+}
+
 /** Until `check()` holds, for at most `ms`, read every 50 ms: a state the test waits on, named `what`. */
 async function until(check, what, ms = 60_000) {
   for (const end = Date.now() + ms; !(await check()); await new Promise((resolve) => setTimeout(resolve, 50))) {
@@ -70,10 +80,8 @@ test("a start on a data root whose server is stopping waits for that stop, says 
   const mark = existsSync(join(data, STATE)) ? JSON.parse(readFileSync(join(data, STATE), "utf8")) : undefined;
   const markedAt = Date.now();
   let stopped = false;
-  let goneAtStop;
   void closing.then(() => {
     stopped = true;
-    goneAtStop = runner.held().length === 0;
   });
   const said = [];
   const next = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "3s", notice: (line) => said.push(line) });
@@ -83,7 +91,8 @@ test("a start on a data root whose server is stopping waits for that stop, says 
   assert.equal(mark?.pid, process.pid, `the stopping server's mark: ${JSON.stringify(mark)}`);
   assert.ok(mark.until > markedAt, JSON.stringify(mark));
   assert.equal(stopped, true, "the start went on only once the stopping server was done");
-  assert.equal(goneAtStop, true, "and that server was done only once its runner let the run go");
+  // No runner claims the run between the stop and the next runner below: its row is as the stop left it.
+  assert.equal((await rowOf(data, runId)).runner, null, "and that server was done only once its runner let the run go");
   assert.equal(said.length, 1, JSON.stringify(said));
   assert.match(said[0], new RegExp(`^the server on this data root \\(pid ${process.pid}\\) is stopping; waiting for it, up to \\d+ s$`));
   assert.deepEqual(JSON.parse(readFileSync(join(data, STATE), "utf8")), { pid: process.pid, until: null }, "the new server's record: it runs");
@@ -102,7 +111,6 @@ test("a stop is over only once its runner let its runs go: nothing of the run ru
   const data = join(await scratch(t), "agents");
   const { close, runId, runner } = await midTurn(t, data);
   await close();
-  assert.deepEqual(runner.held(), [], "nothing of the run runs after the stop: the runner holds none of it");
   const store = await openSqliteStore({ dataDir: data, role: "runner" });
   try {
     const row = await store.runs.get(runId);
@@ -204,7 +212,7 @@ test("a notice that throws never stops a close: the listener, the runs' processe
   const outcome = await Promise.race([close().then(() => "closed", (error) => `rejected: ${error.message}`), bound]);
   clearTimeout(timer);
   assert.equal(outcome, "closed", "the close finished though a notice threw");
-  assert.deepEqual(runner.held(), [], "the runner let the run go");
+  assert.equal((await rowOf(data, runId)).runner, null, "the runner let the run go");
   await assert.rejects(fetch(`${first.baseUrl}/health`), "the listener is closed");
   const next = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "3s" });
   const nextRunner = await startRunnerBeside(data, { faux: FAUX });
@@ -226,13 +234,14 @@ test("a second close of a stopped server changes nothing: the next server's reco
   // later start waited out that record (its pid, this process, alive) before it was refused.
   const data = join(await scratch(t), "agents");
   const first = await startServe({ data, port: 0, faux: FAUX });
-  await first.close();
+  // The CLI's stop (stopBeside), which marks the record stopping as it begins.
+  await stopBeside(first, undefined, { data, drainMs: 0 });
   const next = await startServe({ data, port: 0, faux: FAUX });
   let nextClosed;
   const closeNext = () => (nextClosed ??= next.close());
   t.after(closeNext);
   const record = readFileSync(join(data, STATE), "utf8");
-  await first.close();
+  await stopBeside(first, undefined, { data, drainMs: 0 });
   assert.equal(readFileSync(join(data, STATE), "utf8"), record, "the next server's record is left as it was");
   const said = [];
   await assert.rejects(startServe({ data, port: 0, faux: FAUX, notice: (line) => said.push(line) }), (error) => error instanceof StoreOwned && error.message === refusal(data));

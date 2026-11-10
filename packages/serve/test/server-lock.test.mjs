@@ -96,6 +96,21 @@ test("two servers in one process on one root: the second start is refused (SQLit
   assert.equal((await client(next.baseUrl, next.token)("GET", "/agents")).status, 200);
 });
 
+test("a second start in one process, refused, leaves the first's lock whole: a server in another process is refused too", { timeout: 60_000 }, async (t) => {
+  const data = join(await scratch(t), "agents");
+  const first = await startServe({ data, port: 0, faux: FAUX });
+  t.after(() => first.close());
+  await assert.rejects(startServe({ data, port: 0, faux: FAUX }), StoreOwned, "the second start in this process is refused");
+  // POSIX locks are the process's: a refused start that opened and closed the lock's file would drop the first's lock.
+  const store = new URL("../dist/store/index.js", import.meta.url).href;
+  const other = spawn(process.execPath, ["--input-type=module", "-e", `const { openSqliteStore } = await import(${JSON.stringify(store)}); try { const s = await openSqliteStore({ dataDir: ${JSON.stringify(data)}, role: "server" }); console.log("took the store"); await s.close(); } catch (error) { console.log(error.name); }`], { stdio: ["ignore", "pipe", "pipe"] });
+  let said = "";
+  other.stdout.on("data", (chunk) => (said += chunk));
+  await new Promise((resolve) => other.once("close", resolve));
+  assert.equal(said.trim(), "StoreOwned", "a server in another process is refused while the first runs");
+  assert.equal(await answers(first), 200, "the first server still answers");
+});
+
 test("a start that fails after taking the lock releases it: the next start on the same root, in the same process, serves", { timeout: 60_000 }, async (t) => {
   const data = join(await scratch(t), "agents");
   const taken = createServer();

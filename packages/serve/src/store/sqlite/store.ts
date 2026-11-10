@@ -218,7 +218,7 @@ function earlierVersionIn(dataDir: string): string[] {
 }
 
 /** Whether `file` is this version's store, or one with nothing in it yet: an earlier one has tables and no store_meta. */
-function isThisVersionsStore(file: string): boolean {
+export function isThisVersionsStore(file: string): boolean {
   const db = new DatabaseSync(file, { readOnly: true });
   try {
     let tables: { name: string }[];
