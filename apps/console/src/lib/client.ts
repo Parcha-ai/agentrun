@@ -102,7 +102,7 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
   // A create's warnings come on its answer, and the agent's page that opens next reads the agent again (a read carries
   // none): they are kept here and put on a read of that same revision, until the next save or make-current of the agent,
   // after which they may be stale (the host can be set up since), so they go.
-  const created = new Map<string, { revision: string; warnings: SaveWarning[] }>();
+  const created = new Map<string, { revision: Agent["revision"]; warnings: SaveWarning[] }>();
   const note = (id: string, file: string) => `${agent(id)}/learning/files/${encodeURIComponent(file)}`;
   // A note is text (text/markdown) both ways round, with its version as the ETag; a refusal is still JSON.
   const asNote = (r: { body: string; etag: string | null }): NoteText => ({ note: r.body, etag: r.etag });

@@ -5,12 +5,13 @@ import { AgentPage } from "./AgentPage";
 import type { Agent } from "@/lib/agentForm";
 import type { AgentLearning } from "@/lib/learning";
 import type { Run, TimelinePage } from "@/lib/v2";
+import { servedAgent } from "@/test/agent";
 
 // The agent page's Learning tab: shown for an agentic agent on a server with learning, at its own address; a run row
 // says what the run read and kept.
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-const agent = (kind: Agent["kind"] = "agentic"): Agent => ({
+const agent = (kind: Agent["kind"] = "agentic"): Agent => servedAgent({
   agent_id: "refunds", kind, revision: "r1", revisions: 1, archived_at: null,
   definition: kind === "agentic" ? { version: 1, name: "Refunds", instructions: "Find it.", harness: "pi", skills: [], tools: ["read", "write"] } : { version: 1, name: "Flow", skills: [], tools: [], workflow: { version: 1, root: { kind: "agent", id: "a", task: "t" } } },
 });

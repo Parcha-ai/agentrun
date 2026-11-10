@@ -58,7 +58,7 @@ describe("AgentPage, the agent's tools", () => {
       statsOver: async () => { throw new Error("no stats here"); },
       agentLearning: async () => EMPTY,
       updateDefinition: async (_id: string, body: { definition: Agent["definition"] }) => {
-        const { tools: _served, ...saved } = { ...current, revision: "r2", revisions: current.revisions + 1, definition: body.definition };
+        const { tools: _served, ...saved } = { ...current, revision: "r2", revisions: (current.revisions ?? 0) + 1, definition: body.definition };
         current = { ...saved, tools: [WEB_FETCH, BASH] };
         return { agent: saved, etag: '"r2"' };
       },
@@ -86,7 +86,7 @@ describe("AgentPage, the agent's tools", () => {
       statsOver: async () => { throw new Error("no stats here"); },
       agentLearning: async () => EMPTY,
       updateDefinition: async (_id: string, body: { definition: Agent["definition"] }) => {
-        const { tools: _served, ...saved } = { ...current, revision: "r2", revisions: current.revisions + 1, definition: body.definition };
+        const { tools: _served, ...saved } = { ...current, revision: "r2", revisions: (current.revisions ?? 0) + 1, definition: body.definition };
         // What the server serves once the save is in: here its tools as Retry will read them.
         current = { ...saved, tools: [BASH] };
         return { agent: saved, etag: '"r2"' };
@@ -133,7 +133,7 @@ describe("AgentPage, the agent's tools", () => {
       statsOver: async () => { throw new Error("no stats here"); },
       agentLearning: async () => EMPTY,
       updateDefinition: async (_id: string, body: { definition: Agent["definition"] }) => {
-        const { tools: _served, ...saved } = { ...current, revision: `r${current.revisions + 1}`, revisions: current.revisions + 1, definition: body.definition };
+        const { tools: _served, ...saved } = { ...current, revision: `r${(current.revisions ?? 0) + 1}`, revisions: (current.revisions ?? 0) + 1, definition: body.definition };
         current = { ...saved, tools: [WEB_FETCH, BASH] };
         return { agent: saved, etag: `"${saved.revision}"` };
       },

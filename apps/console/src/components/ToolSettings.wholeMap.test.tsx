@@ -9,6 +9,7 @@ import type { Agent, AgentFields } from "@/lib/agentForm";
 import { toolChoices, toolGates } from "@/lib/toolSettings";
 import type { ToolSettings } from "@/lib/v2";
 import { pick } from "@/test/picker";
+import { servedAgent } from "@/test/agent";
 
 // PUT /v2/settings/tools replaces the whole map, and an agent's save sends its whole tool_settings. A save from the
 // console is a read-modify-write of the WHOLE map: it reads the map as it is now, changes only the key and the field the
@@ -88,11 +89,11 @@ describe("Settings → Tools saves the whole map, read then changed in one place
 });
 
 describe("the agent editor saves the agent's whole tool_settings, changed in one place", () => {
-  const agent: Agent = {
+  const agent: Agent = servedAgent({
     agent_id: "fetcher", kind: "agentic", revision: "r1", revisions: 1, archived_at: null,
     definition: { version: 1, name: "Fetcher", instructions: "Fetch it.", harness: "pi", skills: [], tools: ["read", "web_fetch", "web_search"],
       tool_settings: { web_search: { provider: "parallel", budget: 3 } as never, "mcp:linear/*": { permission: "deny" }, "monid.run": { permission: "allow", note: "ok" } as never } },
-  };
+  });
   it("a permission change keeps the provider, unknown fields, an MCP wildcard and a catalog tool's key", async () => {
     const saves: AgentFields[] = [];
     const host = document.body.appendChild(document.createElement("div"));

@@ -5,6 +5,7 @@ import { AgentEditor } from "./AgentEditor";
 import { type Agent, createBody, editBody, toolOffers } from "@/lib/agentForm";
 import { toolChoices, toolGates } from "@/lib/toolSettings";
 import { optionsOf, picker } from "@/test/picker";
+import { servedAgent } from "@/test/agent";
 
 // An agent's approvals (definition.approvals): "ask", the default, parks a call its tool gate says ask for the owner's
 // answer; "never" runs it unattended, every tool it has granted (deny and pins still apply). The editor's Tools step sets
@@ -16,7 +17,7 @@ afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
 const NEVER_LINE = "Never ask: every tool this agent has runs without waiting for you. A tool set to deny, and a template's pins, still hold.";
 const caps = { harnesses: [{ id: "pi", available: true }], thinking: ["low"], tools: toolOffers([{ name: "read", available: true }, { name: "bash", available: true }]) };
 const gates = toolGates([{ name: "bash", permission: "ask", default_permission: "ask", permissions: ["allow", "ask", "deny"] }]);
-const agentWith = (approvals?: "ask" | "never"): Agent => ({ agent_id: "a1", kind: "agentic", revision: "rv1", revisions: 1, archived_at: null,
+const agentWith = (approvals?: "ask" | "never"): Agent => servedAgent({ agent_id: "a1", kind: "agentic", revision: "rv1", revisions: 1, archived_at: null,
   definition: { version: 1, name: "Mine", instructions: "Do it.", harness: "pi", skills: [], tools: ["read", "bash"], ...(approvals ? { approvals } : {}) } });
 
 function mount(agent: Agent | null) {
@@ -104,7 +105,7 @@ describe("AgentEditor, the Tool settings words under Never ask", () => {
   const SEARCH = { name: "web_search", providers: ["auto", "native", "exa-keyless", "parallel", "off"], provider: "auto", default_provider: "auto", available: true, resolves: { pi: "exa-keyless" } };
   const searchCaps = { ...caps, tools: toolOffers([{ name: "read", available: true }, { name: "web_search", available: true }]) };
   const GATE = { permission: "ask" as const, permission_from: "default" as const, default_permission: "ask" as const, permissions: ["allow" as const, "ask" as const, "deny" as const] };
-  const searcher = (approvals: "ask" | "never"): Agent => ({ agent_id: "s1", kind: "agentic", revision: "rv1", revisions: 1, archived_at: null,
+  const searcher = (approvals: "ask" | "never"): Agent => servedAgent({ agent_id: "s1", kind: "agentic", revision: "rv1", revisions: 1, archived_at: null,
     definition: { version: 1, name: "Searcher", instructions: "Look.", harness: "pi", skills: [], tools: ["read", "web_search"], approvals },
     tools: [{ name: "read", ...GATE }, { name: "web_search", provider: "auto", provider_from: "server", default_provider: "auto", resolved: "exa-keyless", ...GATE }] });
   const mountSearcher = (approvals: "ask" | "never") => {

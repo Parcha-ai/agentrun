@@ -8,6 +8,7 @@ import { ToolsPage } from "./ToolsPage";
 import type { Agent } from "@/lib/agentForm";
 import { toolChoices, toolGates } from "@/lib/toolSettings";
 import type { PendingApproval, Run, ToolSettings } from "@/lib/v2";
+import { servedAgent } from "@/test/agent";
 
 // A first-time user's approval path: the card's Allow says it is for this call only; a call's arguments read as a list,
 // not as JSON; a tool's description in the agent editor stays two lines until asked for more; Settings → Tools puts each
@@ -54,7 +55,7 @@ describe("the call's arguments", () => {
 
 describe("a tool's description in the agent editor", () => {
   const LONG = "Read one public web page from a public host through the guarded direct fetch, or through Parallel's extract where Parallel is picked (falling back to the direct fetch, saying why, when Parallel answers no page), a part at a time.";
-  const agent: Agent = { agent_id: "a1", kind: "agentic", revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: "A", instructions: "x", harness: "pi", skills: [], tools: [] } };
+  const agent: Agent = servedAgent({ agent_id: "a1", kind: "agentic", revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: "A", instructions: "x", harness: "pi", skills: [], tools: [] } });
   const caps = { harnesses: [{ id: "pi", available: true }], tools: [{ name: "web_fetch", available: true, summary: LONG }], thinking: [] };
   it("is clamped to two lines (no display override), with more to show it whole", async () => {
     const host = mount(createElement(AgentEditor, { agent, caps, step: "tools", onSave: async () => null }));

@@ -13,7 +13,7 @@ afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
 describe("Playground, a sandbox agent's run", () => {
   it("offers no place field, and the request it shows names no place", () => {
     const base = agentFixture("invoice-checker");
-    const boxed = { ...base, agent_id: "boxed", definition: { ...base.definition, place: { mode: "sandbox", box: "docker" } } };
+    const boxed = { ...base, agent_id: "boxed", definition: { ...base.definition, place: { mode: "sandbox" as const, box: "docker" as const } } };
     const host = document.body.appendChild(document.createElement("div"));
     root = createRoot(host);
     act(() => root!.render(createElement(Playground, { agents: [base, boxed], efforts: [], origin: "http://serve.test", agentId: "boxed" })));

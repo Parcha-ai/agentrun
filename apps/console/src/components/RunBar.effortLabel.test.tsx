@@ -5,6 +5,7 @@ import { RunBar } from "./RunBar";
 import type { Agent } from "@/lib/agentForm";
 // The shared picker helper: importing it installs the ResizeObserver stub the picker's positioning needs (jsdom has none).
 import "@/test/picker";
+import { servedAgent } from "@/test/agent";
 
 // The run bar's visible "Effort" caption is the Picker's label: a click on it acts on the picker as a click on the picker
 // does (its list opens, focus moves into it), as a click on a select's label did.
@@ -12,10 +13,10 @@ import "@/test/picker";
 let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
 
-const agent: Agent = {
+const agent: Agent = servedAgent({
   agent_id: "thinker", kind: "agentic", revision: "rv1", revisions: 1, archived_at: null,
   definition: { version: 1, name: "Thinker", instructions: "Think.", harness: "pi", skills: [], tools: ["read"] },
-};
+});
 
 describe("RunBar, the Effort caption", () => {
   it("a click on the visible Effort caption opens the Effort picker", () => {

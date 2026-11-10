@@ -299,7 +299,7 @@ describe("AgentPage", () => {
 
   it("shows an archived agent as archived, with its runs, which are archived with it, and goes back to the archived agents", async () => {
     const agent = archivedAgents()[0];
-    const runs = runsOf("invoice-checker").slice(0, 2).map((r) => ({ ...r, agent_id: agent.agent_id, archived_at: agent.archived_at }));
+    const runs = runsOf("invoice-checker").slice(0, 2).map((r) => ({ ...r, agent_id: agent.agent_id, archived_at: agent.archived_at ?? null }));
     const page = await open(agent, { runs });
     expect([...page.host.querySelectorAll("header span")].some((s) => s.textContent === "Archived")).toBe(true);
     expect(page.asked).toEqual([`agent ${agent.agent_id}`, `runs ${agent.agent_id} archived`]);
@@ -494,7 +494,7 @@ describe("AgentPage", () => {
 describe("AgentPage, the model on a gateway server", () => {
   const gateway = { route_prefix: "agent-model" };
   const named = [{ id: "pi", default_model: "agent-model/gpt-6-luna" }, { id: "claude-agent", default_model: null }, { id: "codex", default_model: "agent-model/gpt-6-luna" }];
-  const on = (harness: string, model?: string): Agent => {
+  const on = (harness: Agent["definition"]["harness"], model?: string): Agent => {
     const a = agentFixture("invoice-checker");
     const { model: _m, ...definition } = a.definition;
     return { ...a, definition: { ...definition, harness, ...(model ? { model } : {}) } };
@@ -529,7 +529,7 @@ describe("AgentPage, the model on a gateway server", () => {
 // A harness the server can't run says why on the agent's page, where its Run would fail: the reason the server gives
 // (capabilities' harnesses[].reason), and a Run that does not send.
 describe("AgentPage, an agent whose harness the server can't run", () => {
-  const on = (harness: string): Agent => {
+  const on = (harness: Agent["definition"]["harness"]): Agent => {
     const a = agentFixture("invoice-checker");
     return { ...a, definition: { ...a.definition, harness } };
   };
@@ -566,11 +566,11 @@ describe("AgentPage, an agent whose harness the server can't run", () => {
 describe("AgentPage, where it runs", () => {
   it("says the box an agent runs in, the server, or the server's default place", async () => {
     const base = agentFixture("invoice-checker");
-    const boxed = { ...base, definition: { ...base.definition, place: { mode: "sandbox", box: "docker" } } };
+    const boxed = { ...base, definition: { ...base.definition, place: { mode: "sandbox" as const, box: "docker" as const } } };
     expect((await open(boxed)).fact("Runs")).toBe("In a docker box");
     act(() => root?.unmount()); document.body.innerHTML = "";
     act(() => root?.unmount()); document.body.innerHTML = "";
-    const runner = { ...base, definition: { ...base.definition, place: { mode: "runner" } } };
+    const runner = { ...base, definition: { ...base.definition, place: { mode: "runner" as const } } };
     expect((await open(runner)).fact("Runs")).toBe("On the server");
     act(() => root?.unmount()); document.body.innerHTML = "";
     expect((await open(base)).fact("Runs")).toBe("Where this server's default place is");
@@ -587,7 +587,7 @@ describe("AgentPage, where it runs", () => {
     const browser = { ...base, definition: { ...base.definition, tools: ["browser"] } };
     expect((await open(browser, { places: PLACES({ mode: "sandbox", box: "docker" }) })).fact("Runs")).toBe("On the server (server default)");
     act(() => root?.unmount()); document.body.innerHTML = "";
-    const runner = { ...base, definition: { ...base.definition, place: { mode: "runner" } } };
+    const runner = { ...base, definition: { ...base.definition, place: { mode: "runner" as const } } };
     expect((await open(runner, { places: PLACES({ mode: "sandbox", box: "docker" }) })).fact("Runs")).toBe("On the server");
   });
 });

@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { RunBar } from "./RunBar";
 import type { Agent } from "@/lib/agentForm";
 import { ClientError } from "@/lib/client";
+import { servedAgent } from "@/test/agent";
 
 // A run runs where its agent's definition says: the start names no place, for an agent in a box too, and a start the
 // server refuses for a box it lacks says so, and that the fix is where the agent runs, in its settings.
@@ -11,7 +12,7 @@ import { ClientError } from "@/lib/client";
 let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
 
-const agent = (place?: unknown): Agent => ({
+const agent = (place?: Agent["definition"]["place"]): Agent => servedAgent({
   agent_id: "boxed", kind: "agentic", revision: "rv1", revisions: 1, archived_at: null,
   definition: { version: 1, name: "Boxed", instructions: "Probe.", harness: "pi", skills: [], tools: ["read"], ...(place ? { place } : {}) },
 });

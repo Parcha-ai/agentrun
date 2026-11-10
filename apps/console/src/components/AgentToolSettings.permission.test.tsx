@@ -5,6 +5,7 @@ import { AgentEditor } from "./AgentEditor";
 import type { Agent, AgentFields } from "@/lib/agentForm";
 import { toolChoices, toolGates } from "@/lib/toolSettings";
 import { optionsOf, pick, valueOf } from "@/test/picker";
+import { servedAgent } from "@/test/agent";
 
 // An agent's own permission for each tool it grants, in the editor's Tools step: the server's permission its default,
 // one set here marked and saved in the definition's tool_settings beside any provider.
@@ -20,7 +21,7 @@ const RAW = [
   SEARCH,
 ];
 const caps = { harnesses: [{ id: "pi", available: true }], tools: RAW.map(({ name, available }) => ({ name, available })), thinking: [] };
-const agentWith = (toolSettings?: Agent["definition"]["tool_settings"], over: Partial<Agent> = {}): Agent => ({
+const agentWith = (toolSettings?: Agent["definition"]["tool_settings"], over: Partial<Agent> = {}): Agent => servedAgent({
   agent_id: "fetcher", kind: "agentic", revision: "r1", revisions: 1, archived_at: null,
   definition: { version: 1, name: "Fetcher", instructions: "Fetch it.", harness: "pi", skills: [], tools: ["read", "bash", "web_search"], ...(toolSettings ? { tool_settings: toolSettings } : {}) },
   ...over,

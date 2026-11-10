@@ -6,12 +6,13 @@ import type { Agent } from "@/lib/agentForm";
 import { ClientError } from "@/lib/client";
 import type { AgentLearning, LearningNote } from "@/lib/learning";
 import type { Run } from "@/lib/v2";
+import { servedAgent } from "@/test/agent";
 
 // The agent's Learning tab: its notes with where each came from, edit (its version named), retire after a confirm, a
 // note a person adds, what runs did not keep and why, the before and after, and the switch.
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-const agent = (learning?: boolean, extra: Partial<Agent["definition"]> = {}): Agent => ({
+const agent = (learning?: boolean, extra: Partial<Agent["definition"]> = {}): Agent => servedAgent({
   agent_id: "refunds", kind: "agentic", revision: "rv1", revisions: 1, archived_at: null,
   definition: { version: 1, name: "Refund policy finder", instructions: "Find it.", harness: "pi", skills: [], tools: ["read", "write"], ...(learning === undefined ? {} : { learning }), ...extra },
 });

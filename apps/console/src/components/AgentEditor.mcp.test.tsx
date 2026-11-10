@@ -11,14 +11,15 @@ import { createClient } from "@/lib/client";
 import type { McpServer } from "@/lib/mcp";
 import type { TimelineRow } from "@/lib/v2";
 import recorded from "@/fixtures/mcp.requests.json";
+import { servedAgent } from "@/test/agent";
 
 // The agent editor's Tools step on a server with saved MCP servers: a group per server lists its tools, ticking one
 // grants `mcp:<server>/<tool>`, and a grant whose server is gone, or no longer lists the tool, says so.
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 const CAPS = { harnesses: [{ id: "pi", available: true }, { id: "codex", available: true }], thinking: [], tools: toolOffers([{ name: "read", available: true }]), mcp: true, mcpHarnesses: ["pi", "claude-agent"] };
-const definition = (tools: string[]) => ({ id: "calc", version: 1, name: "Calc", instructions: "Answer.", harness: "pi", skills: [], tools });
-const agent = (tools: string[], harness = "pi"): Agent => ({ agent_id: "calc", kind: "agentic", revision: "r1", revisions: 1, archived_at: null, definition: { ...definition(tools), harness } } as Agent);
+const definition = (tools: string[]) => ({ id: "calc", version: 1, name: "Calc", instructions: "Answer.", harness: "pi" as const, skills: [], tools });
+const agent = (tools: string[], harness: Agent["definition"]["harness"] = "pi"): Agent => servedAgent({ agent_id: "calc", kind: "agentic", revision: "r1", revisions: 1, archived_at: null, definition: { ...definition(tools), harness } });
 const tool = (name: string, description: string) => ({ name, description, input_schema: { type: "object" } });
 const FAKE: McpServer = { name: "fake", url: "http://127.0.0.1:4100/mcp", auth: { type: "none" }, credential: null, tools: [{ ...tool("add", "Add two numbers."), title: "Add" }, tool("delete_thing", "Delete a thing by id.")], protocol: "2026-07-28", listed_at: "2026-11-04T10:00:00Z", updated_at: "2026-11-04T10:00:00Z" };
 

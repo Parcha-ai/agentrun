@@ -95,7 +95,7 @@ describe("the agent's default spend cap per run (definition.max_cost_usd)", () =
   it("an edit sets a new cap, and a cleared one is sent as an explicit 0, never left out", () => {
     expect(editBody(capped, { max_cost_usd: 4 }, "").definition.max_cost_usd).toBe(4);
     const cleared = editBody(capped, { max_cost_usd: 0 }, "");
-    expect([cleared.unchanged, cleared.definition.max_cost_usd, cleared.definition.some_future_field]).toEqual([false, 0, { kept: true }]);
+    expect([cleared.unchanged, cleared.definition.max_cost_usd, (cleared.definition as Record<string, unknown>).some_future_field]).toEqual([false, 0, { kept: true }]);
   });
   it("a new agent's first revision carries the cap typed, none when empty, and a starter never one", () => {
     const f = { name: "A", description: "", instructions: "Do it.", harness: "pi", tools: [] };

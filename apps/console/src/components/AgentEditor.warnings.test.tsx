@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { AgentEditor } from "./AgentEditor";
 import { AgentEditPage } from "./AgentsPage";
 import type { Agent, SaveWarning } from "@/lib/agentForm";
+import { servedAgent } from "@/test/agent";
 
 /** A fake client with no computers list unless it brings its own: the Computer step then shows where runs go. */
 const withoutComputers = (v2: object) => ({ computers: () => Promise.reject(new Error("fixture: no computers list")), ...v2 });
@@ -15,7 +16,7 @@ const withoutComputers = (v2: object) => ({ computers: () => Promise.reject(new 
 const caps = { harnesses: [{ id: "pi", available: true }], tools: [{ name: "read", available: true }], thinking: ["low"] };
 const MODEL: SaveWarning = { field: "definition.model", reason: "not_set_up_here", message: "No key for openai is set on this server: set OPENAI_API_KEY." };
 const PLACE: SaveWarning = { field: "definition.place", reason: "not_set_up_here", message: "The place shared-1 is not set up on this server." };
-const agentAt = (revision: string, warnings?: SaveWarning[]): Agent => ({
+const agentAt = (revision: string, warnings?: SaveWarning[]): Agent => servedAgent({
   agent_id: "calc", kind: "agentic", revision, revisions: revision === "r1" ? 1 : 2, archived_at: null,
   definition: { version: revision === "r1" ? 1 : 2, name: "Calc", instructions: "Answer.", harness: "pi", model: "openai/gpt-x", skills: [], tools: ["read"] }, ...(warnings ? { warnings } : {}),
 });

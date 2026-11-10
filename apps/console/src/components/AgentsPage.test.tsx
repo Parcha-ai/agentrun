@@ -5,6 +5,7 @@ import { AgentEditPage, AgentsPage } from "./AgentsPage";
 import { AgentPage } from "./AgentPage";
 import { ClientError } from "@/lib/client";
 import type { Agent } from "@/lib/agentForm";
+import { servedAgent } from "@/test/agent";
 
 /** A fake client with no computers list unless it brings its own: the Computer step then shows where runs go. */
 const withoutComputers = (v2: object) => ({ computers: () => Promise.reject(new Error("fixture: no computers list")), ...v2 });
@@ -13,7 +14,7 @@ const withoutComputers = (v2: object) => ({ computers: () => Promise.reject(new 
 // revision another tab saved is never hidden under an old form, and a failed reload never takes the editor away.
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-const agentAt = (revision: string, instructions: string, archived = false): Agent => ({
+const agentAt = (revision: string, instructions: string, archived = false): Agent => servedAgent({
   agent_id: "calc", kind: "agentic", revision, revisions: revision === "r1" ? 1 : 2, archived_at: archived ? "2026-10-30T05:00:00Z" : null,
   definition: { version: revision === "r1" ? 1 : 2, name: "Calc", instructions, harness: "pi", skills: [], tools: [] },
 });
@@ -83,7 +84,7 @@ describe("AgentEditPage, a new agent from a starter", () => {
    *  provider is `provider`, or none: what was sent, where the page went, and the page and host to look at after. */
   async function createFrom(choice: string, provider?: string) {
     const { DECISION_STARTER } = await import("@/lib/decisionStarter");
-    const made: Agent = { agent_id: "gambling-check", kind: "workflow", revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: "Gambling check", workflow: DECISION_STARTER, skills: [], tools: [] } };
+    const made: Agent = servedAgent({ agent_id: "gambling-check", kind: "workflow", revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: "Gambling check", workflow: DECISION_STARTER, skills: [], tools: [] } });
     let sent: { definition: Record<string, unknown> } | undefined;
     let went: string | undefined;
     const v2 = {

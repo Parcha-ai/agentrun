@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { AgentEditor } from "./AgentEditor";
 import { type Agent, toolOffers } from "@/lib/agentForm";
 import { placesOf } from "@/lib/place";
+import { servedAgent } from "@/test/agent";
 
 // Where an agent runs, in the editor's Computer step: the server's places, bash following the place in the form (a box
 // opens it, the runner turns it off and says so), the place in the save, and a refusal at a tool on that tool's field.
@@ -15,7 +16,7 @@ afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
 const places = placesOf({ places: { modes: ["runner", "sandbox"], boxes: [{ id: "bwrap", available: false, reason: "fixture: no bwrap" }, { id: "docker", available: true }] } });
 const tools = toolOffers([{ name: "read", available: true }, { name: "bash", available: true, sandbox_only: true }]);
 const caps = { harnesses: [{ id: "pi", available: true }], thinking: ["low"], tools, places };
-const agent = (place?: unknown, tools: string[] = ["read"]): Agent => ({
+const agent = (place?: Agent["definition"]["place"], tools: string[] = ["read"]): Agent => servedAgent({
   agent_id: "boxed", kind: "agentic", revision: "rv1", revisions: 1, archived_at: null,
   definition: { version: 1, name: "Boxed", instructions: "Probe.", harness: "pi", skills: [], tools, ...(place ? { place } : {}) },
 });

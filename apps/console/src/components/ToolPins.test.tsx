@@ -6,6 +6,7 @@ import { ToolsPage } from "./ToolsPage";
 import type { Agent } from "@/lib/agentForm";
 import { pinLine } from "@/lib/toolSettings";
 import type { ToolSettings } from "@/lib/v2";
+import { servedAgent } from "@/test/agent";
 
 // A tool's pin (tool_settings[tool].pin: {arg: value | [values]}) bounds its calls: one outside it is refused before it
 // runs or asks. A pin that doesn't read (pin_broken) fails closed: every call is refused. Settings → Tools says the
@@ -64,7 +65,7 @@ describe("pins in the agent editor", () => {
   const GITHUB = { name: "github", url: "https://mcp.example.test/mcp", auth: { type: "none" }, credential: null, protocol: "2025-06-18", server_info: null, listed_at: "2026-11-08T00:00:00Z", updated_at: "2026-11-08T00:00:00Z",
     tools: [{ name: "pull_request_review_write", input_schema: {}, permission: "ask", default_permission: "ask", permissions: ALL }] };
   const caps = { harnesses: [{ id: "pi", available: true }], tools: [], thinking: [], mcp: true, mcpHarnesses: ["pi"] };
-  const agentWith = (toolSettings: Record<string, unknown>): Agent => ({
+  const agentWith = (toolSettings: Record<string, unknown>): Agent => servedAgent({
     agent_id: "reviewer", kind: "agentic", revision: "r1", revisions: 1, archived_at: null,
     definition: { version: 1, name: "Reviewer", instructions: "Review it.", harness: "pi", skills: [], tools: [REVIEW], tool_settings: toolSettings as never },
   });

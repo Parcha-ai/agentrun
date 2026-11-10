@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { AgentPage } from "./AgentPage";
 import type { Agent } from "@/lib/agentForm";
 import type { AgentLearning, LearningNote } from "@/lib/learning";
+import { servedAgent } from "@/test/agent";
 
 // The agent page's Learning tab carries a count when learned items wait for the owner's OK (a risky note, a held skill or
 // workflow draft), so the wait is seen without opening the tab or finding the run that kept it. The count is the agent's
@@ -11,7 +12,7 @@ import type { AgentLearning, LearningNote } from "@/lib/learning";
 // learning off on the server, a learning folder that could not be read) or 0: no count, never "0".
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-const agentWith = (learning?: { pending: number }): Agent => ({ agent_id: "qa-learn", kind: "agentic", revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: "QA learn", instructions: "Answer.", harness: "pi", skills: [], tools: [], learning: true }, ...(learning ? { learning } : {}) } as Agent);
+const agentWith = (learning?: { pending: number }): Agent => servedAgent({ agent_id: "qa-learn", kind: "agentic", revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: "QA learn", instructions: "Answer.", harness: "pi", skills: [], tools: [], learning: true }, ...(learning ? { learning } : {}) });
 const TRUST = "trust-acme.md";
 const waiting: LearningNote = { file: TRUST, name: "Trust acme.com", description: "d", type: "feedback", status: "pending", superseded_by: null, runs: { given: 0, read: 0 }, text: "---\nname: Trust acme.com\ndescription: d\ntype: feedback\n---\nTrust it.\n", etag: '"card-trust"' } as LearningNote;
 const view = (notes: LearningNote[]): AgentLearning => ({
@@ -108,7 +109,7 @@ describe("AgentPage, learned items waiting for the owner's OK", () => {
   });
 
   it("a save of the learning switch after an approve: the approve's re-read, landing last, never puts back the older revision", async () => {
-    const rv = (version: number, learning: boolean, pending?: number): Agent => ({ ...agentWith(pending === undefined ? undefined : { pending }), revision: `r${version}`, revisions: version, definition: { ...agentWith().definition, version, learning } } as Agent);
+    const rv = (version: number, learning: boolean, pending?: number): Agent => servedAgent({ ...agentWith(pending === undefined ? undefined : { pending }), revision: `r${version}`, revisions: version, definition: { ...agentWith().definition, version, learning } } as Agent);
     let release!: () => void;
     const held = new Promise<void>((r) => { release = r; });
     let approved = false;

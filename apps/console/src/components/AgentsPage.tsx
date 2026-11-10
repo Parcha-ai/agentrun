@@ -53,7 +53,7 @@ export function AgentEditPage({ v2, caps, choices = [], gates = [], focusTool, a
     if (!agentId) return;
     try {
       const [{ agent: a, etag: t }, r] = await Promise.all([v2.getAgent(agentId), revisionsOf(agentId)]);
-      setAgent(a); setEtag(t); setRevisions(r); setFormRevision(a.revision); setVersion((n) => n + 1); setNotice(null); setLoadError(null);
+      setAgent(a); setEtag(t); setRevisions(r); setFormRevision(a.revision ?? null); setVersion((n) => n + 1); setNotice(null); setLoadError(null);
     } catch (e) {
       // A reload of an agent already on the page keeps the editor, its form and its Reload: the failure is said beside it.
       if (agent) setNotice(`The agent could not be reloaded: ${problemOf(e).message}`);
@@ -102,7 +102,7 @@ export function AgentEditPage({ v2, caps, choices = [], gates = [], focusTool, a
       const r = await revisionsOf(done.agent_id).catch(() => revisions);
       setAgent(now); setEtag(t); setRevisions(r);
       if (now.revision !== formRevision) {
-        setFormRevision(now.revision); setVersion((n) => n + 1);
+        setFormRevision(now.revision ?? null); setVersion((n) => n + 1);
         setNotice(what === "Make current" ? null : `${what} done. This agent changed since you opened it: the form now shows its current revision.`);
       } else setNotice(null);
     } catch (e) { setNotice(`${what} done. The page could not be refreshed: ${problemOf(e).message}. Reload to see the current state.`); }
@@ -127,7 +127,7 @@ export function AgentEditPage({ v2, caps, choices = [], gates = [], focusTool, a
           saved = await v2.updateDefinition(agent.agent_id, send, etag);
         } catch (e) { return problemOf(e); }
         // The revision is committed: a failed history refresh after it does not make the save look failed.
-        setAgent(saved.agent); setEtag(saved.etag); setFormRevision(saved.agent.revision);
+        setAgent(saved.agent); setEtag(saved.etag); setFormRevision(saved.agent.revision ?? null);
         // What its tools resolve to (`tools`) only GET /agents/{id} says: read for the revision just saved.
         v2.getAgent(saved.agent.agent_id).then((r) => setAgent((cur) => (cur && cur.revision === r.agent.revision ? { ...cur, tools: r.agent.tools } : cur))).catch(() => {});
         revisionsOf(saved.agent.agent_id).then(setRevisions).catch(() => setNotice("Saved. The history could not be refreshed; reload to see it."));

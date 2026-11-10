@@ -11,6 +11,7 @@ import { batchWorkflow, kybWorkflow } from "@/fixtures/dwf/workflows";
 import type { Agent } from "@/lib/agentForm";
 import type { RunGraph, Selection } from "@/lib/runGraph";
 import type { Run } from "@/lib/v2";
+import { servedAgent } from "@/test/agent";
 
 // The decision-workflow views over the C4 fixtures (src/fixtures/dwf): synthetic runs, invented companies.
 const meta: Meta = { title: "Workflow" };
@@ -77,14 +78,14 @@ const kybRev6 = (() => {
   (w.root.steps[2] as { unsure: { gte: number } }).unsure.gte = 0.6;
   return w;
 })();
-const workflowAgent = (name: string, workflow: unknown, revision = 6): Agent => ({
+const workflowAgent = (name: string, workflow: unknown, revision = 6): Agent => servedAgent({
   agent_id: `agt_${name.toLowerCase().replace(/\W+/g, "_")}`, kind: "workflow", revision: `rev_${revision}`, revisions: revision, archived_at: null,
-  definition: { version: revision, name, description: "Registry, certificate and cross-check, then a judged route.", workflow, skills: [], tools: ["pdf_pages"] },
+  definition: { version: revision, name, description: "Registry, certificate and cross-check, then a judged route.", workflow: workflow as Agent["definition"]["workflow"], skills: [], tools: ["pdf_pages"] },
 });
 const revisions = (n: number) => Array.from({ length: n }, (_, k) => ({ revision: `rev_${n - k}`, version: n - k, current: k === 0, note: k === 0 ? "Route threshold 0.6" : null, created_at: new Date(Date.UTC(2026, 9, 30 - k, 14)).toISOString() }));
 const editor = (agent: Agent, draft?: string) => (
   <Shell active="agents">
-    <AgentEditor agent={agent} revisions={revisions(agent.revisions)} caps={editorCaps} draft={draft} onSave={async () => null} />
+    <AgentEditor agent={agent} revisions={revisions(agent.revisions ?? 1)} caps={editorCaps} draft={draft} onSave={async () => null} />
   </Shell>
 );
 

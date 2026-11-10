@@ -3,7 +3,7 @@ import { Button } from "@/components/ui/button";
 import { HARNESS_ORDER, issuesFor, PIN_BROKEN, PIN_HOLDS, pinLine, providerHelp, providerLabel, resolution, DENY_ONLY, SERVER_DENY, serverDenies, type ToolChoice, type ToolGate, withPermission, withProvider } from "@/lib/toolSettings";
 import { cn } from "@/lib/utils";
 import { Picker } from "@/components/ui/picker";
-import type { Agent } from "@/lib/agentForm";
+import { type Agent, toolSettingsOf } from "@/lib/agentForm";
 import { grantOf, type McpServer } from "@/lib/mcp";
 import type { Permission, ToolSetting, ToolSettings } from "@/lib/v2";
 
@@ -207,7 +207,7 @@ export function AgentToolSettings({ agent, harness, model, tools, choices, gates
     select?.focus();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
   if (!rows.length) return null;
-  const saved = (agent?.definition.tool_settings ?? {}) as ToolSettings;
+  const saved = toolSettingsOf(agent?.definition) ?? {};
   // The agent's approvals in the form against the saved one: a change of it changes what a tool resolves to, once saved.
   const approvalsChanged = unattended !== ((agent?.definition.approvals ?? "ask") === "never");
   const { byTool, rest } = issuesFor(issues, "definition.tool_settings", rows.map((t) => t.name));

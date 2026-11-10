@@ -14,6 +14,7 @@ import "@/test/picker"; // jsdom has no ResizeObserver, which the picker's posit
 // as the server applies it. A built-in tool's row (capabilities') is as it was. The rows' control may be a native select
 // or the console's picker (a listbox button): these read either.
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+import { servedAgent } from "@/test/agent";
 let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
 
@@ -24,15 +25,15 @@ const CAPS = { harnesses: [{ id: "pi", available: true }], thinking: [], tools: 
 // As a saved server's read gives a tool: with its permission in force under the server's tool settings (`inForce`).
 const tool = (name: string, inForce?: "allow" | "ask" | "deny") => ({ name, description: `${name}.`, input_schema: { type: "object" }, ...(inForce ? { permission: inForce, default_permission: "ask" as const, permissions: ALL } : {}) });
 const github = (inForce?: "allow" | "ask" | "deny"): McpServer => ({ name: "github", url: "https://mcp.example.test/mcp", auth: { type: "bearer" }, credential: "sealed", tools: [tool("list_issues", inForce), tool("create_issue", inForce)], protocol: "2026-07-28" });
-const definition = (tools: string[], toolSettings?: Record<string, unknown>) => ({ id: "triage", version: 1, name: "Triage", instructions: "Triage.", harness: "pi", skills: [], tools, ...(toolSettings ? { tool_settings: toolSettings } : {}) });
+const definition = (tools: string[], toolSettings?: Record<string, unknown>): Agent["definition"] => ({ id: "triage", version: 1, name: "Triage", instructions: "Triage.", harness: "pi", skills: [], tools, ...(toolSettings ? { tool_settings: toolSettings as Agent["definition"]["tool_settings"] } : {}) });
 // The agent as GET /agents/{id} reads it: its saved tools, each with the permission in force.
 // An MCP tool's entry is as serve's agentTools gives it: `inForce` with the agent's own layer, its default the server's.
-const read = (tools: string[], toolSettings?: Record<string, unknown>, mcp: { inForce: "allow" | "ask" | "deny"; server: "allow" | "ask" | "deny" } = { inForce: "ask", server: "ask" }): Agent => ({
+const read = (tools: string[], toolSettings?: Record<string, unknown>, mcp: { inForce: "allow" | "ask" | "deny"; server: "allow" | "ask" | "deny" } = { inForce: "ask", server: "ask" }): Agent => servedAgent({
   agent_id: "triage", kind: "agentic", revision: "r1", revisions: 1, archived_at: null, definition: definition(tools, toolSettings),
   tools: tools.map((name) => (GATES.some((g) => g.name === name)
     ? { name, permission: "allow", permission_from: "default", default_permission: "allow", permissions: ALL }
     : { name, permission: mcp.inForce, permission_from: "agent", default_permission: mcp.server, permissions: ALL })),
-} as Agent);
+});
 
 async function open(server: McpServer, toolSettings?: Record<string, unknown>, saved: { tools: string[]; mcp: { inForce: "allow" | "ask" | "deny"; server: "allow" | "ask" | "deny" } } = { tools: ["read", "web_fetch"], mcp: { inForce: "ask", server: "ask" } }) {
   const puts: { definition: { tools: string[]; tool_settings?: Record<string, unknown> } }[] = [];

@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { AgentEditor } from "./AgentEditor";
 import { type Agent, toolOffers } from "@/lib/agentForm";
 import { placesOf } from "@/lib/place";
+import { servedAgent } from "@/test/agent";
 
 // The editor's Computer step: where the agent's runs execute and what they drive. It comes before Tools & skills (the
 // computer decides the tools), and a pick there is saved as definition.computer, the setting the server keeps place as
@@ -15,7 +16,7 @@ afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
 const places = placesOf({ places: { modes: ["runner", "sandbox"], boxes: [{ id: "docker", available: true }] } });
 const tools = toolOffers([{ name: "read", available: true }, { name: "bash", available: true, sandbox_only: true }]);
 const caps = { harnesses: [{ id: "pi", available: true }], thinking: ["low"], tools, places };
-const agent = (definition: Record<string, unknown> = {}): Agent => ({
+const agent = (definition: Record<string, unknown> = {}): Agent => servedAgent({
   agent_id: "computed", kind: "agentic", revision: "rv1", revisions: 1, archived_at: null,
   definition: { version: 1, name: "Computed", instructions: "Probe.", harness: "pi", skills: [], tools: ["read"], ...definition },
 });

@@ -3,12 +3,13 @@ import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
 import { AgentsPage } from "./AgentsPage";
 import type { Agent } from "@/lib/agentForm";
+import { servedAgent } from "@/test/agent";
 
 // An agent's card in the Agents list carries the same count as its page's Learning tab, from the list's own read
 // (GET /v2/agents, each agent's `learning.pending`), and takes you to that tab. Absent or 0: nothing.
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-const agent = (id: string, name: string, learning?: { pending: number }): Agent => ({ agent_id: id, kind: "agentic", revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name, instructions: "Answer.", harness: "pi", skills: [], tools: [], learning: true }, ...(learning ? { learning } : {}) } as Agent);
+const agent = (id: string, name: string, learning?: { pending: number }): Agent => servedAgent({ agent_id: id, kind: "agentic", revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name, instructions: "Answer.", harness: "pi", skills: [], tools: [], learning: true }, ...(learning ? { learning } : {}) });
 
 let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });

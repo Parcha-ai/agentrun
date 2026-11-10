@@ -11,6 +11,7 @@ import { ClientError } from "@/lib/client";
 import type { Effect } from "@/lib/runGraph";
 import { callNodeTools, toolBlockers, toolGates } from "@/lib/toolSettings";
 import { pick } from "@/test/picker";
+import { servedAgent } from "@/test/agent";
 
 // A workflow whose call node calls a tool set to deny, or to ask (a call node can't wait for an approval), is refused at
 // its start: 409 agent_not_runnable, `details.denied` and `details.asks` each the settings keys of those tools (arrays,
@@ -54,7 +55,7 @@ describe("the start blockers a 409 names", () => {
 
 });
 
-const workflowAgent = (toolSettings?: Agent["definition"]["tool_settings"]): Agent => ({
+const workflowAgent = (toolSettings?: Agent["definition"]["tool_settings"]): Agent => servedAgent({
   agent_id: "fetch-flow", kind: "workflow", revision: "rv1", revisions: 1, archived_at: null,
   definition: { version: 1, name: "Fetch flow", workflow: { v: 2, name: "f", root: { node: "call", label: "get", tool: "web_fetch", input: {} } }, skills: [], tools: ["web_fetch", "bash"], ...(toolSettings ? { tool_settings: toolSettings } : {}) },
 });

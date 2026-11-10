@@ -7,6 +7,7 @@ import type { Agent } from "@/lib/agentForm";
 import { toolChoices, toolGates } from "@/lib/toolSettings";
 import type { ToolSettings } from "@/lib/v2";
 import { pick } from "@/test/picker";
+import { servedAgent } from "@/test/agent";
 
 // What a tool resolves to depends on its permission too (deny: unavailable; ask: no search that can't wait). An answer
 // read for one permission says nothing of another: until the server answers for the new one, the row says so.
@@ -23,11 +24,11 @@ const SEARCH = { name: "web_search", available: true, providers: ["auto", "nativ
 
 describe("a permission change and what the tool resolves to", () => {
   it("the agent editor: the server's word for the old permission isn't shown for a new one; it resolves once saved", async () => {
-    const agent: Agent = {
+    const agent: Agent = servedAgent({
       agent_id: "searcher", kind: "agentic", revision: "r1", revisions: 1, archived_at: null,
       definition: { version: 1, name: "Searcher", instructions: "Look it up.", harness: "pi", skills: [], tools: ["web_search"] },
       tools: [{ name: "web_search", provider: "auto", provider_from: "default", default_provider: "auto", resolved: "exa-keyless", permission: "allow", permission_from: "default", default_permission: "allow", permissions: ["allow", "ask", "deny"] }],
-    };
+    });
     const caps = { harnesses: [{ id: "pi", available: true }], tools: [{ name: "web_search", available: true }], thinking: [] };
     const host = document.body.appendChild(document.createElement("div"));
     root = createRoot(host);

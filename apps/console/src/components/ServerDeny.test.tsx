@@ -7,6 +7,7 @@ import type { Agent } from "@/lib/agentForm";
 import { toolChoices, toolGates } from "@/lib/toolSettings";
 import type { AgentTool, ToolSettings } from "@/lib/v2";
 import { picker, valueOf } from "@/test/picker";
+import { servedAgent } from "@/test/agent";
 
 // A server's deny is absolute: a tool set to deny in the server's table is refused for every agent, whatever the agent's
 // own setting or Never ask. Settings → Tools says so at the row; the agent editor says the same at the tool, keeps its
@@ -55,7 +56,7 @@ describe("a server deny, in the agent editor", () => {
     { name: "bash", available: true, permission: "deny", default_permission: "allow", permissions: ALL },
   ];
   const caps = { harnesses: [{ id: "pi", available: true }], tools: RAW.map(({ name, available }) => ({ name, available, harnesses: ["pi"] })), thinking: [] };
-  const agentWith = (tools: string[], over: Partial<Agent> = {}, toolSettings?: ToolSettings): Agent => ({
+  const agentWith = (tools: string[], over: Partial<Agent> = {}, toolSettings?: ToolSettings): Agent => servedAgent({
     agent_id: "fixer", kind: "agentic", revision: "r1", revisions: 1, archived_at: null,
     definition: { version: 1, name: "Fixer", instructions: "Fix it.", harness: "pi", skills: [], tools, ...(toolSettings ? { tool_settings: toolSettings } : {}) },
     ...over,

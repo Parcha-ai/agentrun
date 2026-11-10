@@ -1,22 +1,31 @@
 import { type Place, type Places, placeOf } from "./place";
 import type { ClientError } from "./client";
 import type { NoteProblem } from "./learning";
-import type { AgentTool, Approvals, Computer, ToolSettings } from "./v2";
+import type { Agent as ServedAgent, AgentTool, Approvals, Computer, Definition as ServedDefinition, InputIssue, ToolSettings } from "./v2";
 import { decisionStarter, STARTER_PROVIDERS } from "./decisionStarter";
 import { workflowStarter } from "./workflowStarter";
 
 export type HarnessId = "pi" | "claude-agent" | "codex" | "opencode";
-/** `learning`: whether the agent's runs learn (an agentic revision's switch; absent is off). */
-/** `max_cost_usd`: the agent's default spend cap per run, in dollars, for a run (or a trigger) with no cap of its own; an
- *  agentic revision's only. Absent or 0 is none, and an edit clears it only with an explicit 0. */
-export type Definition = { version: number; approvals?: Approvals; name: string; description?: string; instructions?: string; workflow?: unknown; harness?: string; thinking?: string; model?: string; learning?: boolean; max_cost_usd?: number; skills: string[]; tools: string[]; tool_settings?: ToolSettings; [field: string]: unknown };
+/** An agent's definition, as served (`version`, its revision's number; `learning`, whether its runs learn; `max_cost_usd`,
+ *  its default spend cap per run: absent or 0 is none, and an edit clears it only with an explicit 0). */
+export type Definition = ServedDefinition;
 /** What a save's answer says this host lacks to run the revision (`reason` not_set_up_here, say): it saved, and a run of it
  *  is refused until the host has it. `field` names the definition's field (`definition.model`, `definition.tools[2]`). */
-export type SaveWarning = { field: string; reason: string; message: string };
-/** `warnings`: on a create's or an edit's answer only (never on a read of the agent); the console keeps a create's for
- *  the agent's page that opens after it (client.ts). */
-export type Agent = { agent_id: string; kind: "agentic" | "workflow"; revision: string; revisions: number; definition: Definition; archived_at: string | null; runs?: { count: number; live: number }; warnings?: SaveWarning[]; tools?: AgentTool[]; learning?: { pending: number } };
-export type AgentFields = Partial<Pick<Definition, "name" | "description" | "instructions" | "harness" | "thinking" | "model" | "tools" | "workflow" | "learning" | "tool_settings" | "max_cost_usd" | "approvals">> & { workflowText?: string; maxCostText?: string; place?: Place; computer?: Computer };
+export type SaveWarning = InputIssue;
+/** An agent as served: a list's, a write's answer (with `warnings`, which a read of the agent never has; the console keeps
+ *  a create's for the agent's page that opens after it, client.ts), or GET /v2/agents/{id}'s. */
+export type Agent = ServedAgent;
+/** The definition fields the editor's form holds, in the form's own terms: a harness or a thinking level as the option
+ *  picked (the server's own, from its capabilities, or a starter's name before it becomes a workflow), a workflow as
+ *  parsed, tool settings by tool name. editBody and createBody make the definition the server takes from them. */
+type FormDefinition = { name: string; description: string; instructions: string; harness: string; thinking: string; model: string; tools: string[]; workflow: unknown; learning: boolean; tool_settings: ToolSettings; max_cost_usd: number; approvals: Approvals };
+export type AgentFields = Partial<FormDefinition> & { workflowText?: string; maxCostText?: string; place?: Place; computer?: Computer };
+/** The form's fields as the definition the server takes: a harness and a thinking level are options the server offered
+ *  (its capabilities) and checks again on save (422 with the field), tool settings by tool name are its `tool_settings`.
+ *  The one place the form's terms meet the wire's. */
+const asDefinition = (d: Record<string, unknown>): Definition => d as Definition;
+/** A definition's tool settings by tool name, as the editor and the tool rows read them. */
+export const toolSettingsOf = (d: Pick<Definition, "tool_settings"> | undefined): ToolSettings | undefined => d?.tool_settings as ToolSettings | undefined;
 
 /** The body of a definition edit: the current definition with the edited fields; name and
  *  description stay as the agent was created. Every field the
@@ -25,22 +34,22 @@ export type AgentFields = Partial<Pick<Definition, "name" | "description" | "ins
 export function editBody(agent: Agent, fields: AgentFields, note: string): { definition: Definition; note?: string; unchanged: boolean } {
   // The agent store keeps an agent's id, name and description from its creation: an edit never sends a changed one.
   const { name: _name, description: _description, ...editable } = fields as AgentFields & { id?: string };
-  const edited: Definition = { ...agent.definition, ...editable };
+  const edited: Record<string, unknown> = { ...agent.definition, ...editable };
   // The computer is the setting; place is the server's view of it. A definition with a computer goes without its place,
   // which would still say the old computer after a change (the server writes place from computer).
-  const current: Definition = { ...agent.definition };
+  const current: Record<string, unknown> = { ...agent.definition };
   if (edited.computer !== undefined) { delete edited.place; delete current.place; }
   // A workflow revision takes no instructions, model or thinking beside its workflow (validate.ts refuses each).
   if (agent.kind === "workflow") { delete edited.thinking; delete edited.instructions; delete edited.model; }
   // An empty model is no model: the server's default. No tool settings of its own are none: the server's.
   if (edited.model === "") delete edited.model;
-  if (edited.tool_settings && !Object.keys(edited.tool_settings).length) delete edited.tool_settings;
+  if (edited.tool_settings && !Object.keys(edited.tool_settings as object).length) delete edited.tool_settings;
   for (const key of Object.keys(edited)) if (edited[key] === undefined) delete edited[key];
   // serve makes no revision for a definition equal to the current one (a note alone changes nothing): then the version
   // is the current one's. A changed definition is the next revision, number revisions + 1.
   const unchanged = same({ ...edited, version: 0 }, { ...current, version: 0 });
-  edited.version = unchanged ? agent.definition.version : agent.revisions + 1;
-  return { definition: edited, ...(note.trim() ? { note: note.trim() } : {}), unchanged };
+  edited.version = unchanged ? agent.definition.version : (agent.revisions ?? 0) + 1;
+  return { definition: asDefinition(edited), ...(note.trim() ? { note: note.trim() } : {}), unchanged };
 }
 
 /** Deep equality of two JSON values, whatever their keys' order. */
@@ -85,16 +94,16 @@ export const DEFAULT_INSTRUCTIONS = "You are a helpful agent. Do the task you're
  *  instructions, harness, thinking, model or tools: a workflow revision keeps none of those beside its workflow. */
 export function createBody(f: { name: string; description: string; instructions: string; harness: string; tools: string[]; approvals?: Approvals; thinking?: string; model?: string; learning?: boolean; decisionProvider?: string; tool_settings?: ToolSettings; computer?: Computer; max_cost_usd?: number }): { definition: Definition } {
   if (isStarter(f.harness)) {
-    return { definition: { version: 1, name: f.name, ...(f.description.trim() ? { description: f.description } : {}), workflow: STARTERS[f.harness]!(f.decisionProvider), skills: [], tools: [] } };
+    return { definition: asDefinition({ version: 1, name: f.name, ...(f.description.trim() ? { description: f.description } : {}), workflow: STARTERS[f.harness]!(f.decisionProvider), skills: [], tools: [] }) };
   }
   return {
-    definition: {
+    definition: asDefinition({
       version: 1, name: f.name, ...(f.description.trim() ? { description: f.description } : {}), instructions: f.instructions, harness: f.harness,
       ...(f.thinking ? { thinking: f.thinking } : {}), ...(f.model?.trim() ? { model: f.model.trim() } : {}), ...(f.computer ? { computer: f.computer } : {}), ...(f.learning ? { learning: true } : {}), ...(f.max_cost_usd !== undefined ? { max_cost_usd: f.max_cost_usd } : {}), skills: [], tools: f.tools,
       ...(f.tool_settings && Object.keys(f.tool_settings).length ? { tool_settings: f.tool_settings } : {}),
       // Approvals: sent only when it never asks (ask is the server's default).
       ...(f.approvals === "never" ? { approvals: "never" as const } : {}),
-    },
+    }),
   };
 }
 

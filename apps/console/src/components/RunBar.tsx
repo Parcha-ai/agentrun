@@ -29,7 +29,7 @@ export function RunBar({ agent, efforts, v2, go, blocked, limits, upload = sendU
   const [sending, setSending] = useState(false);
   // The files hold still while a start that names them is under way.
   const attachments = useAttachments({ upload, remove: v2.deleteUpload, limits, frozen: sending });
-  const built = startBody(agent.kind, { text, effort, fileIds: attachments.fileIds });
+  const built = startBody(agent.kind === "workflow" ? "workflow" : "agentic", { text, effort, fileIds: attachments.fileIds });
   const send = async (id: string, body: Parameters<Client["startRun"]>[1], key: string): Promise<Sent> => {
     try {
       const r = await v2.startRun(id, body, key);

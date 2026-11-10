@@ -5,6 +5,7 @@ import { AgentEditor } from "./AgentEditor";
 import { type Agent, type AgentFields, editBody } from "@/lib/agentForm";
 import { toolChoices } from "@/lib/toolSettings";
 import { optionsOf, pick, valueOf } from "@/test/picker";
+import { servedAgent } from "@/test/agent";
 
 // An agent's tool settings, in the editor's Tools step: a provider for each tool it grants that has a choice, the
 // server's pick its default; one set here is marked, with a reset, and saved in the definition's tool_settings.
@@ -18,7 +19,7 @@ const caps = { harnesses: [{ id: "pi", available: true }, { id: "claude-agent", 
 const SEARCH = { name: "web_search", providers: ["auto", "native", "exa-keyless", "parallel", "off"], provider: "exa-keyless", default_provider: "auto", available: true, resolves: { pi: "exa-keyless", "claude-agent": "exa-keyless", codex: "native" } };
 const FETCH = { name: "web_fetch", providers: ["kernel", "parallel"], provider: "kernel", default_provider: "kernel", resolves: { pi: "kernel", "claude-agent": "native", codex: "native" } };
 const choices = toolChoices([SEARCH, FETCH]);
-const agentWith = (toolSettings?: Agent["definition"]["tool_settings"], resolved = "exa-keyless"): Agent => ({
+const agentWith = (toolSettings?: Agent["definition"]["tool_settings"], resolved = "exa-keyless"): Agent => servedAgent({
   agent_id: "searcher", kind: "agentic", revision: "r1", revisions: 1, archived_at: null,
   definition: { version: 1, name: "Searcher", instructions: "Look it up.", harness: "pi", skills: [], tools: ["read", "web_search"], ...(toolSettings ? { tool_settings: toolSettings } : {}) },
   // GET /agents/{id}'s tools: what each grant resolves to for this agent.

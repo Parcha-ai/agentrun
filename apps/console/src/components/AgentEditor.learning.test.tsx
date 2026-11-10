@@ -4,6 +4,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it } from "vitest";
 import { AgentEditor, type EditorCaps } from "./AgentEditor";
 import { type Agent, type AgentFields, createBody, editBody } from "@/lib/agentForm";
+import { servedAgent } from "@/test/agent";
 
 // The editor's Settings step: "Learns from its runs", the definition's `learning` switch, on an agentic agent of a server
 // that has learning.
@@ -11,7 +12,7 @@ import { type Agent, type AgentFields, createBody, editBody } from "@/lib/agentF
 
 const tools = [{ name: "read", available: true }, { name: "write", available: true }];
 const caps = (learning?: "on" | "off"): EditorCaps => ({ harnesses: [{ id: "pi", available: true }], tools, thinking: ["low"], ...(learning ? { learning } : {}) });
-const agentOf = (definition: Partial<Agent["definition"]> = {}, kind: Agent["kind"] = "agentic"): Agent => ({
+const agentOf = (definition: Partial<Agent["definition"]> = {}, kind: Agent["kind"] = "agentic"): Agent => servedAgent({
   agent_id: "refunds", kind, revision: "r1", revisions: 1, archived_at: null,
   definition: { version: 1, name: "Refunds", instructions: "Find it.", harness: "pi", skills: [], tools: ["read", "write"], ...definition },
 });

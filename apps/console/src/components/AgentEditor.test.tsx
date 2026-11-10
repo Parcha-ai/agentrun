@@ -2,6 +2,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { AgentEditor } from "./AgentEditor";
+import { servedAgent } from "@/test/agent";
 
 const tools = [{ name: "read", available: true }, { name: "write", available: true }, { name: "web_fetch", available: true }];
 const caps = { harnesses: [{ id: "pi", available: true }, { id: "claude-agent", available: true }], tools, thinking: ["low"] };
@@ -23,18 +24,18 @@ describe("AgentEditor, a new agent's tools", () => {
   const webFetch = { name: "web_fetch", available: true, summary: "Read one public web page through Parallel's extract." };
   const withWebFetch = { ...caps, tools: [...tools.filter((t) => t.name !== "web_fetch"), webFetch] };
   it("an agent whose only tool is web_fetch reaches the web: no notice", () => {
-    const reader = { agent_id: "reader", kind: "agentic" as const, revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: "Reader", instructions: "Read it.", harness: "pi", skills: [], tools: ["web_fetch"] } };
+    const reader = servedAgent({ agent_id: "reader", kind: "agentic" as const, revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: "Reader", instructions: "Read it.", harness: "pi", skills: [], tools: ["web_fetch"] } });
     const html = renderToStaticMarkup(createElement(AgentEditor, { agent: reader, caps: withWebFetch, step: "tools" }));
     expect((html.match(/<input type="checkbox"[^>]*checked=""/g) ?? []).length).toBe(1);
     expect(html.match(/<input[^>]*value="web_fetch"[^>]*>/)?.[0]).toContain('checked=""');
     expect(html).not.toContain("can&#x27;t reach the web");
   });
   it("an agent with no web tool is told which to tick, or that its harness runs none here", () => {
-    const reader = { agent_id: "reader", kind: "agentic" as const, revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: "Reader", instructions: "Read it.", harness: "pi", skills: [], tools: ["read"] } };
+    const reader = servedAgent({ agent_id: "reader", kind: "agentic" as const, revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: "Reader", instructions: "Read it.", harness: "pi", skills: [], tools: ["read"] } });
     const both = withWebFetch;
     expect(renderToStaticMarkup(createElement(AgentEditor, { agent: reader, caps: both, step: "tools" }))).toContain("tick web_fetch in Tools.");
     const piOnly = { ...both, tools: both.tools.map((t) => ({ ...t, harnesses: t.name === "read" ? ["pi", "codex"] : ["pi"] })) };
-    const onCodex = { ...reader, definition: { ...reader.definition, harness: "codex" } };
+    const onCodex = { ...reader, definition: { ...reader.definition, harness: "codex" as const } };
     expect(renderToStaticMarkup(createElement(AgentEditor, { agent: onCodex, caps: piOnly, step: "tools" }))).toContain("codex runs no web tool on this server.");
   });
   it("the tools step shows web_fetch from the server's capabilities, with what it does", () => {
@@ -46,7 +47,7 @@ describe("AgentEditor, a new agent's tools", () => {
 
 // An agent given no web tool on purpose (a file-only agent) is not nagged on every step: the Tools step says it quietly.
 describe("AgentEditor, an agent with no web tool on purpose", () => {
-  const files = { agent_id: "files", kind: "agentic" as const, revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: "Files", instructions: "Tidy the files.", harness: "pi", skills: [], tools: ["read", "write"] } };
+  const files = servedAgent({ agent_id: "files", kind: "agentic" as const, revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: "Files", instructions: "Tidy the files.", harness: "pi", skills: [], tools: ["read", "write"] } });
   it("shows no page-level notice on a step other than Tools", () => {
     for (const step of ["context", "settings", "history"] as const) {
       expect(renderToStaticMarkup(createElement(AgentEditor, { agent: files, caps, step }))).not.toContain("can&#x27;t reach the web");
@@ -63,7 +64,7 @@ describe("AgentEditor, an agent with no web tool on purpose", () => {
 // On a phone (375 px) the name gets the row: the kind chip, revision count and Archive sit in their own row under it,
 // and the step rail shows step numbers, the labels kept for screen readers.
 describe("AgentEditor, on a narrow screen", () => {
-  const agent = { agent_id: "qa", kind: "agentic" as const, revision: "r1", revisions: 3, archived_at: null, definition: { version: 1, name: "QA pi", instructions: "Answer.", harness: "pi", skills: [], tools: ["read"] } };
+  const agent = servedAgent({ agent_id: "qa", kind: "agentic" as const, revision: "r1", revisions: 3, archived_at: null, definition: { version: 1, name: "QA pi", instructions: "Answer.", harness: "pi", skills: [], tools: ["read"] } });
   it("puts the badges in a row of their own, full width below the sm breakpoint", () => {
     const html = renderToStaticMarkup(createElement(AgentEditor, { agent, caps, step: "context", onArchive: () => {} }));
     const header = html.slice(html.indexOf("<header"), html.indexOf("</header>"));
@@ -127,7 +128,7 @@ describe("AgentEditor, tools a person chose by hand", () => {
   });
 
   it("an existing agent whose definition names no tools opens with none ticked, never the defaults", async () => {
-    const agent = { agent_id: "old", kind: "agentic", revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: "Old", instructions: "Answer.", harness: "pi", skills: [] } };
+    const agent = servedAgent({ agent_id: "old", kind: "agentic", revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: "Old", instructions: "Answer.", harness: "pi", skills: [] } });
     let saved: { tools?: string[] } | undefined;
     const { host, click, checked, done } = await setup({ agent, caps: both, step: "tools", onSave: async (fields: { tools?: string[] }) => { saved = fields; return null; } });
     expect(checked()).toEqual([]);
@@ -187,13 +188,13 @@ describe("AgentEditor, a new decision agent", () => {
     const fit = "grid-cols-[repeat(auto-fill,minmax(min(100%,9rem),1fr))]";
     const five = renderToStaticMarkup(createElement(AgentEditor, { agent: null, caps: { ...three, decisionProvider: "jev" }, step: "settings" }));
     expect([group(five).split(" ").includes(fit), cards(five)]).toEqual([true, 5]);
-    const agent = { agent_id: "old", kind: "agentic", revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: "Old", instructions: "Answer.", harness: "pi", skills: [], tools: [] } };
+    const agent = servedAgent({ agent_id: "old", kind: "agentic", revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: "Old", instructions: "Answer.", harness: "pi", skills: [], tools: [] } });
     const editing = renderToStaticMarkup(createElement(AgentEditor, { agent: agent as never, caps: three, step: "settings" }));
     expect([group(editing).split(" ").includes(fit), cards(editing)]).toEqual([true, 3]);
   });
 
   it("offers no Decision and no Workflow when editing an agent", () => {
-    const agent = { agent_id: "old", kind: "agentic", revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: "Old", instructions: "Answer.", harness: "pi", skills: [], tools: [] } };
+    const agent = servedAgent({ agent_id: "old", kind: "agentic", revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: "Old", instructions: "Answer.", harness: "pi", skills: [], tools: [] } });
     const html = renderToStaticMarkup(createElement(AgentEditor, { agent: agent as never, caps: { ...caps, decisionProvider: "jev" }, step: "settings" }));
     expect(html).not.toContain('value="decision"');
     expect(html).not.toContain('value="workflow"');

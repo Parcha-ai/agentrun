@@ -6,6 +6,7 @@ import { AgentEditor } from "./AgentEditor";
 import { AgentEditPage } from "./AgentsPage";
 import { type Agent, toolOffers } from "@/lib/agentForm";
 import { createClient } from "@/lib/client";
+import { servedAgent } from "@/test/agent";
 
 // The demo: a new agent created with its default tools saves, because capabilities mark the workflow's call-only tools
 // (pdf_pages, llm) and the editor never offers or ticks them. The server refuses either in an agent's tools.
@@ -60,7 +61,7 @@ describe("demo: a new agent with its default tools", () => {
 });
 
 describe("the Tools step and call-only tools", () => {
-  const agent = (tools: string[]): Agent => ({ agent_id: "calc", kind: "agentic", revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: "Calc", instructions: "Answer.", harness: "pi", skills: [], tools } });
+  const agent = (tools: string[]): Agent => servedAgent({ agent_id: "calc", kind: "agentic", revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: "Calc", instructions: "Answer.", harness: "pi", skills: [], tools } });
   it("offers no call-only tool to an agentic agent, new or existing", () => {
     for (const a of [null, agent(["read"])]) {
       const html = renderToStaticMarkup(createElement(AgentEditor, { agent: a, caps: CAPS, step: "tools" }));
@@ -69,7 +70,7 @@ describe("the Tools step and call-only tools", () => {
     }
   });
   it("a workflow agent still picks them: its call nodes need them listed in its revision's tools", () => {
-    const flow: Agent = { agent_id: "triage", kind: "workflow", revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: "Triage", harness: "pi", skills: [], tools: ["llm"], workflow: { v: 2, name: "triage", schemas: {}, root: { node: "chain", steps: [] } } } };
+    const flow: Agent = servedAgent({ agent_id: "triage", kind: "workflow", revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: "Triage", harness: "pi", skills: [], tools: ["llm"], workflow: { v: 2, name: "triage", schemas: {}, root: { node: "chain", steps: [] } } } });
     const html = renderToStaticMarkup(createElement(AgentEditor, { agent: flow, caps: CAPS, step: "tools" }));
     for (const name of CALL_ONLY) {
       const box = html.match(new RegExp(`<input[^>]*value="${name}"[^>]*>`))?.[0] ?? "";
