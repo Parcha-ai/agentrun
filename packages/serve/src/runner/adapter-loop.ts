@@ -332,11 +332,13 @@ interface CliRecord {
 }
 
 /** The record on `root` of the run's Harness: what the journal holds already read once, and every call a crash or a
- *  fault left with a start and no end ended interrupted (the CLI never runs it again: its own resume says so). */
-async function openCliRecord(harness: Harness, journal: Gate["journal"], context: Context): Promise<CliRecord> {
+ *  fault left with a start and no end ended interrupted (the CLI never runs it again: its own resume says so). Each entry
+ *  it writes carries when it was written (`at`, ms, from the loop's clock `now`), as pi's own entries carry their
+ *  message's timestamp: the Timeline dates its rows by them. */
+async function openCliRecord(harness: Harness, journal: Gate["journal"], context: Context, now: () => number): Promise<CliRecord> {
   const root = await harness.root(context);
   const append = async (kind: string, data: CallStartData | CallEndData | MessageData): Promise<void> => {
-    await harness.commit((tx) => tx.appendEntry(root.id, { kind, data: data as unknown as JsonValue }), context);
+    await harness.commit((tx) => tx.appendEntry(root.id, { kind, data: { ...data, at: now() } as unknown as JsonValue }), context);
   };
   // Each call started on the record: whether it has its end; and each end, by call id.
   const started = new Map<string, boolean>();
@@ -390,7 +392,7 @@ async function openCliRecord(harness: Harness, journal: Gate["journal"], context
     input: (input, origin) =>
       inTurn(async () => {
         if (personWritten) return;
-        await harness.commit((tx) => tx.appendEntry(root.id, { kind: KINDS.input, data: { origin } as unknown as JsonValue, model: [{ role: "user", content: input }] } as never), context);
+        await harness.commit((tx) => tx.appendEntry(root.id, { kind: KINDS.input, data: { origin } as unknown as JsonValue, model: [{ role: "user", content: input, timestamp: now() }] } as never), context);
         personWritten = true;
       }),
     async start(callId, tool, input, replaySafe) {
@@ -418,12 +420,12 @@ async function openCliRecord(harness: Harness, journal: Gate["journal"], context
         answer = undefined;
         await harness.commit(async (tx) => {
           if (await tx.submissionByRequest(root.id, requestId)) return;
-          const asked = await tx.appendEntry(root.id, { kind: KINDS.endOfRunTurn, data: { role: "person", text: prompt }, model: [{ role: "user", content: prompt }] as never });
+          const asked = await tx.appendEntry(root.id, { kind: KINDS.endOfRunTurn, data: { role: "person", text: prompt }, model: [{ role: "user", content: prompt, timestamp: now() }] as never });
           if (status !== "completed") {
             await tx.createSubmission({ type: "input", conversationId: root.id, requestId, status: "unanswered", entry: asked.id, reason: `the end-of-run turn ended ${status}` });
             return;
           }
-          const answered = await tx.appendEntry(root.id, { kind: KINDS.endOfRunTurn, data: { role: "model", text: said }, model: [{ role: "assistant", content: [{ type: "text", text: said }] }] as never });
+          const answered = await tx.appendEntry(root.id, { kind: KINDS.endOfRunTurn, data: { role: "model", text: said }, model: [{ role: "assistant", content: [{ type: "text", text: said }], timestamp: now() }] as never });
           await tx.createSubmission({ type: "input", conversationId: root.id, requestId, status: "done", entry: asked.id, answer: answered.id });
         }, context);
       }),
@@ -899,7 +901,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         await booking.bookCut();
         const gateOf = preIntentGate(spec, hooks);
         // A CLI's run: the loop keeps its visible record (record: "loop"), every call a crash or a fault left open ended.
-        const record = spec.record === "loop" ? await openCliRecord(harness, gate.journal, context) : undefined;
+        const record = spec.record === "loop" ? await openCliRecord(harness, gate.journal, context, now) : undefined;
         cliRecord = record;
         const tools: HostTool[] = [...spec.session.tools, ...(mcp?.tools ?? [])].map((tool) => ({
           ...tool,
@@ -1032,6 +1034,13 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           // again on the same budget; its next refusal (a raise short of the need) parks it anew through the cap's rule.
           await deps.delivered;
           raising.resuming = false;
+          // A person's stop or cancel that woke the parked run is its end, before any park again: given back parked on
+          // the same budget, its stop untaken, the run would be claimed again at every poll and never end (#2204). It
+          // ends as a stop does mid-turn: in the stop's words, its row taken, with what the end-of-run step keeps of a
+          // cut run.
+          if (stopReason?.kind === "command") {
+            return await writeEnd(harness, root, gate, { state: "stopped", summary: endedBy(stopReason.cancel) }, [stopReason.commandId], await cutRows(claim, spec, "stopped"));
+          }
           const paused = raising.budget;
           const resumes = raising.resumes;
           await takeRaises();
@@ -1073,7 +1082,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           }
           if (follow) {
             const theRoot = root;
-            await harness.commit((tx) => tx.appendEntry(theRoot.id, { kind: KINDS.message, data: { role: "person", text: follow.text, origin: { kind: "server", reason: "approval" } } as unknown as JsonValue }), context);
+            await harness.commit((tx) => tx.appendEntry(theRoot.id, { kind: KINDS.message, data: { role: "person", text: follow.text, origin: { kind: "server", reason: "approval" }, at: now() } as unknown as JsonValue }), context);
             await session!.send(follow.text, { id: `agentrun:approval:${follow.callIds[0]}` });
             followedUp = true;
           }

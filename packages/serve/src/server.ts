@@ -53,7 +53,7 @@ import { approve, archiveRun, cancel, message, pause as pauseRunOverStore, raise
 import { momentOverStore, summaryOverStore, timelineOverStore, type ViewDeps, viewOverStore, withheldOverStore } from "./store-view.js";
 import { HELD_WAITS } from "./runner/journal-kinds.js";
 import { servedTimelineRows } from "./run-timeline-served.js";
-import { servedRunLearning } from "./run-learning-served.js";
+import { servedRunDiff, servedRunLearning } from "./run-learning-served.js";
 import { runCutValues } from "./run-cut.js";
 import { readLaunchBody } from "./run-launch.js";
 import { listRunFiles as listRunFilesOverStore, readRunFile as readRunFileOverStore, runBrowserState, runGraphView, type RunReadsDeps, runTimelines } from "./run-reads-over-store.js";
@@ -2977,11 +2977,13 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // Cut by the run's one cut, and refused for a withheld run (run-learning-served.ts).
         return send(res, 200, await servedRunLearning({ serverSecrets, signIns }, store, run.id));
       }
-      case "getRunLearningDiff":
-        await needRun(id);
-        // TODO(learning-1): the run's learning diff over the store — learning-1's diff read on untangle/cutover-switch-learn, not the run's
-        // .learning/diffs files. Wire when its head lands.
-        return runReadsTodo();
+      case "getRunLearningDiff": {
+        const run = await needRun(id);
+        // The run's learning diff over the store (learning-routes.ts runDiffOverStore): its merge from its agent's learning
+        // folder, else its kept proposal's notes against its seed, else no file against the seed its launch names. Cut by the
+        // run's one cut, and refused for a withheld run, as its learning is (run-learning-served.ts).
+        return send(res, 200, await servedRunDiff({ serverSecrets, signIns }, store, data, run.id));
+      }
       case "getWebhook":
         return send(res, 200, webhooks.view());
       case "saveWebhook": {
