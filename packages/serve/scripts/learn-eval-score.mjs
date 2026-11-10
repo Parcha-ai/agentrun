@@ -54,3 +54,27 @@ export function tally(all, cases, mode) {
     off: all.filter((r) => !["grader", "checker", "empty"].includes(r.stage)).map((r) => r.stage),
   };
 }
+
+/** How grade models agree on the same proposals (rows of one mode and model, graded by several graders, each row's
+ *  `grader`): each note of each case and repeat by each grader's decision, `kept`, `held` (pending) or `dropped` (a
+ *  proposal that did not merge drops each of its notes). `agree`: `[notes every grader judged the same way, notes every
+ *  grader judged]`; `split`: each note they did not, with each grader's decision. A row no grade reached (NOT_JUDGED) is
+ *  no decision: its note is left out. */
+export function agreement(rows) {
+  const decisions = new Map();
+  const graders = new Set();
+  for (const row of rows) {
+    if (NOT_JUDGED.has(row.stage)) continue;
+    graders.add(row.grader);
+    const { served, held } = fateOf(row);
+    const decided = (file) => (held.some((n) => n.file === file) ? "held" : served.some((n) => n.file === file) ? "kept" : "dropped");
+    for (const note of row.notes ?? []) {
+      const key = `${row.case}\u0000${row.rep ?? 0}\u0000${note.file}`;
+      if (!decisions.has(key)) decisions.set(key, { case: row.case, file: note.file, by: {} });
+      decisions.get(key).by[row.grader] = decided(note.file);
+    }
+  }
+  const whole = [...decisions.values()].filter((d) => [...graders].every((g) => g in d.by));
+  const split = whole.filter((d) => new Set(Object.values(d.by)).size > 1);
+  return { agree: [whole.length - split.length, whole.length], split };
+}
