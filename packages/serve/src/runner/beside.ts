@@ -10,23 +10,11 @@ export async function runnerBeside(dataDir: string, { loops, env }: { loops?: nu
   const { startRunner } = await import("./runner.js");
   const { dispatchRunner } = await import("./harness-loops.js");
   const { routeOf } = await import("./model-route.js");
-  const { RunnerRefused, runEnv } = await import("./main.js");
+  const { openRunnerStore, runEnv } = await import("./main.js");
   const { computerDepsFrom } = await import("../workspace/index.js");
-  const { openSqliteStore, SchemaVersionUnknown } = await import("../store/index.js");
-  let store: Awaited<ReturnType<typeof openSqliteStore>>;
-  try {
-    store = await openSqliteStore({ dataDir, role: "runner" });
-  } catch (error) {
-    if (error instanceof SchemaVersionUnknown) {
-      throw new RunnerRefused(
-        error.found === null
-          ? `The store in ${dataDir} is not set up yet: start the server on this data directory first, then the runner.`
-          : `The store in ${dataDir} is at schema version ${error.found}, and this runner knows ${error.known}: run a runner of the same release as the server.`,
-        { cause: error },
-      );
-    }
-    throw error;
-  }
+  // The server's store, the runner's one way in (main.ts openRunnerStore, store/open.ts): Postgres when this process's
+  // AGENTRUN_STORE_URL secret names one, else SQLite in the data directory; a schema it does not know is RunnerRefused.
+  const { store } = await openRunnerStore(dataDir, process.env, (message) => void process.stderr.write(`agentrun-serve runner: ${message}\n`), undefined);
   // The server's seal key (seal-key.ts): the one handed over (read through secrets.js, which moves it out of the
   // environment as it loads), else the one the server keeps under the config home. A runner never starts without it: it
   // seals the live-viewer tokens, and there is no stand-in key.
