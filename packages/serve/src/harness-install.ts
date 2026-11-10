@@ -311,9 +311,14 @@ function runNpm(args: string[], env: NodeJS.ProcessEnv, timeoutMs: number, signa
 export const installMarkOf = (dir: string): string => join(dirname(dir), `.${basename(dir)}.installing.json`);
 type InstallMark = { readonly host: string; readonly pid: number; readonly startedAt: number } | { readonly failed: string; readonly at: number };
 
+/** The mark written whole, beside it then renamed over it: a claim reading it while it changes reads the last mark or the
+ *  new one, never part of one (which would read as no install). */
 async function writeMark(dir: string, mark: InstallMark): Promise<void> {
   await mkdir(dirname(dir), { recursive: true });
-  await writeFile(installMarkOf(dir), JSON.stringify(mark));
+  const at = installMarkOf(dir);
+  const next = `${at}.${process.pid}.next`;
+  await writeFile(next, JSON.stringify(mark));
+  await rename(next, at);
 }
 
 async function readMark(dir: string): Promise<InstallMark | undefined> {
@@ -341,8 +346,10 @@ const alive = (pid: number): boolean => {
  *  process can't be read from here, so its mark is trusted within that bound), it waits for that install, polling, never
  *  past that bound; `{ failed }` with the install's own words when the last install failed; "none" when nothing installs
  *  it (no mark, one past the bound, or one this host's installer that is gone left), so the caller says what is missing
- *  as before. `signal` aborted (the claim stopped or lost): it stops waiting and rejects. */
-export async function installSettled(entry: HarnessInstallEntry, dir: string, pins: HarnessPins, { signal, pollMs = 250, timeoutMs = INSTALL_TIMEOUT_MS, isAlive = alive, host = hostname() }: { signal?: AbortSignal; pollMs?: number; timeoutMs?: number; isAlive?: (pid: number) => boolean; host?: string } = {}): Promise<"installed" | "none" | { failed: string }> {
+ *  as before. `onWait`: told once, as it starts to wait. `signal` aborted (the run stopped, or its claim lost): it stops
+ *  waiting and rejects; the install goes on. */
+export async function installSettled(entry: HarnessInstallEntry, dir: string, pins: HarnessPins, { signal, onWait, pollMs = 250, timeoutMs = INSTALL_TIMEOUT_MS, isAlive = alive, host = hostname() }: { signal?: AbortSignal; onWait?: () => void; pollMs?: number; timeoutMs?: number; isAlive?: (pid: number) => boolean; host?: string } = {}): Promise<"installed" | "none" | { failed: string }> {
+  let waiting = false;
   for (;;) {
     if (entry.lacking(dir, pins) === undefined) return "installed";
     const mark = await readMark(dir);
@@ -350,6 +357,10 @@ export async function installSettled(entry: HarnessInstallEntry, dir: string, pi
     if ("failed" in mark) return { failed: mark.failed };
     if (Date.now() - mark.startedAt > timeoutMs || (mark.host === host && !isAlive(mark.pid))) return "none";
     signal?.throwIfAborted();
+    if (!waiting) {
+      waiting = true;
+      onWait?.();
+    }
     await new Promise<void>((resolve, reject) => {
       const timer = setTimeout(done, pollMs);
       function done() {

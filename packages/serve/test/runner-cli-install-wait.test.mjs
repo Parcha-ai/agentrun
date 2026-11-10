@@ -139,7 +139,7 @@ test("installSettled: a claim stopped while it waits stops waiting", async (t) =
 /** A claude-agent run claimed while the server's install of Claude Code runs (held at a gate; it lands by linking the
  *  pinned SDK and CLI as a first use installs them, or fails with `fails`). The gate opens once the claim is seen waiting
  *  for the install (its spec's installSettled entered) with the run still running. Returns the run's end. */
-async function claimedMidInstall(t, { fails } = {}) {
+async function claimedMidInstall(t, { fails, stop = false } = {}) {
   const fake = await fakeAnthropic({ reply: () => ({ text: "Hello from Claude." }) });
   t.after(() => fake.close());
   const dir = scratch(t, "runner-cli-install-wait");
@@ -151,7 +151,8 @@ async function claimedMidInstall(t, { fails } = {}) {
     if (fails) throw new HarnessNotInstalled(entry, into, pins.version, fails);
     await linkHarnesses(dir);
   });
-  const installing = install.ensure().catch((error) => error);
+  let landed = false;
+  const installing = install.ensure().then(() => void (landed = true), (error) => error);
   await until(() => existsSync(installMarkOf(target)), "the install's mark");
 
   const env = { [DATA_ENV]: dir, ANTHROPIC_API_KEY: `not-a-secret-${"anthropic"}`, ANTHROPIC_BASE_URL: fake.url };
@@ -201,20 +202,33 @@ async function claimedMidInstall(t, { fails } = {}) {
   }, "the claim waits for the install, or the run ends");
   assert.ok(first.waited, `the claim waits for the install, never ending the run while it runs: ${JSON.stringify(first.now)}`);
   assert.equal((await server.runs.get(RUN)).state, "running", "waiting for the install, the run is running, not failed");
-  // ... and only then does the install go on.
-  held.open();
+  // ... and only then does the install go on (or, `stop`, the person stops the run while it waits).
+  if (stop) await server.command(RUN, { kind: "stop" });
+  else held.open();
   const row = await until(async () => {
     const now = await server.runs.get(RUN);
     return ["ended", "failed", "stopped"].includes(now.state) && now.runner === null && now;
   }, "the run's end");
   const { entries } = await journalRecords(server.journal({ runId: RUN, runner: "reader", epoch: row.epoch, until: 0, from: row.state }), ctx);
-  return { row, messages: messagesOf(entries), install: await installing };
+  const stillInstalling = !landed && existsSync(installMarkOf(target));
+  if (stop) held.open();
+  return { row, entries, messages: messagesOf(entries), install: await installing, stillInstalling };
 }
 
+/** The run's phase rows' words (the host's own steps on its timeline). */
+const phasesOf = (entries) => entries.filter((entry) => typeof entry.data?.summary === "string" && /phase/.test(entry.kind)).map((entry) => entry.data.summary);
+
 test("a claude-agent run claimed while Claude Code's first-use install runs waits for it, then runs on it and ends with its answer", { timeout: 180_000 }, async (t) => {
-  const { row, messages } = await claimedMidInstall(t);
+  const { row, messages, entries } = await claimedMidInstall(t);
   assert.equal(row.state, "ended", `the run ended: ${JSON.stringify(row)}`);
   assert.deepEqual(messages.map((message) => [message.role, message.text]), [["person", "Say hello."], ["model", "Hello from Claude."]]);
+  assert.ok(phasesOf(entries).includes("Installing Claude Code (first use)…"), `the run said it waited for the install: ${JSON.stringify(phasesOf(entries))}`);
+});
+
+test("a person's stop of a claude-agent run waiting for Claude Code's first-use install ends it stopped at once; the install goes on", { timeout: 180_000 }, async (t) => {
+  const { row, stillInstalling } = await claimedMidInstall(t, { stop: true });
+  assert.equal(row.state, "stopped", `the run stopped: ${JSON.stringify(row)}`);
+  assert.ok(stillInstalling, "it ended while the install still ran: the stop ended the wait, never the install");
 });
 
 test("a claude-agent run claimed while Claude Code's first-use install runs, which then fails, fails in the install's own words", { timeout: 180_000 }, async (t) => {

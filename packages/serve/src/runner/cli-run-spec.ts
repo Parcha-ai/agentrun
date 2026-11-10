@@ -21,7 +21,7 @@ import { type CapModel, type CapRefused, checkRaise, followUpOf, parkOf } from "
 import type { HostTool, SessionSpec } from "@parcha/agentrun-kernel";
 import type { AdapterNeeds } from "../adapters.js";
 import { thinkingFor } from "../adapters.js";
-import { installDirOf, installSettled } from "../harness-install.js";
+import { installDirOf, installingWords, installSettled } from "../harness-install.js";
 import { HarnessUnavailable } from "../provider.js";
 import type { Approvals } from "../approvals.js";
 import { effortGuidance } from "../effort-guidance.js";
@@ -259,10 +259,13 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   const env = cliRunEnv(deps.env, deps.data, claimed);
   const chosen = await modelsOf(entry, env, modelAskOf(launch.model, body.model));
   // A harness that installs on first use, whose install is running now (the server started it at an agent's save, or a
-  // run's start): the claim waits for it, bounded by the install's own limit, and runs on it. An install that failed
-  // fails the run in its own words; with none running, the adapter says what is missing, as before.
+  // run's start): the claim waits for it, bounded by the install's own limit, saying so on the run's timeline, and runs on
+  // it. A stop of the run ends the wait at once (the install goes on). An install that failed fails the run in its own
+  // words; with none running, the adapter says what is missing, as before.
   if (entry.installs && entry.pins) {
-    const settled = await (deps.installSettled ?? installSettled)(entry.installs, installDirOf(deps.data, name), await entry.pins(), { ...(run.signal ? { signal: run.signal } : {}) });
+    const installs = entry.installs;
+    const waitOn = run.stopped ?? run.signal;
+    const settled = await (deps.installSettled ?? installSettled)(installs, installDirOf(deps.data, name), await entry.pins(), { ...(waitOn ? { signal: waitOn } : {}), onWait: () => run.phase?.(installingWords(installs.label)) });
     if (typeof settled === "object") throw new HarnessUnavailable(settled.failed, "install");
   }
   const built = await entry.adapter(env, { model: chosen.model, models: chosen.models, unpriced: chosen.unpriced, ...(native.length ? { skills: native } : {}) });
