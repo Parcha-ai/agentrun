@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
+import { PROVIDERS } from "@parcha/agentrun-computer";
 import { Agents } from "../dist/agents.js";
 import { BOX_IDS } from "../dist/boxes.js";
 import { agent, flowAgent, follow, scratch, serve } from "./support.mjs";
@@ -99,18 +100,22 @@ test("a place of the wrong shape is a 422 at definition.place with a plain messa
   assert.equal((await api("GET", "/agents/good")).body.revisions, 1);
 });
 
-test("a sandbox place saves with a warning naming its box, and a run of it is 409 agent_not_runnable naming the box: nothing starts", async (t) => {
+test("a sandbox place this server can't run saves with a warning that names the fix, and a run of it is 409 agent_not_runnable in the same words: nothing starts", async (t) => {
   const { api } = await serve(t);
-  for (const [id, body, box, input] of [
-    ["bwrapped", agent("bwrapped", { place: { mode: "sandbox", box: "bwrap" } }), "bwrap", { content: "hi" }],
-    ["sandboxed", agent("sandboxed", { place: { mode: "sandbox", box: "modal" } }), "modal", { content: "hi" }],
-    ["docked", agent("docked", { place: { mode: "sandbox", box: "docker" } }), "docker", { content: "hi" }],
+  // A place is its computer setting's view (computer-setting.ts), so it is checked as the run's claim resolves it
+  // (resolve-computer.ts computerReadiness): no such provider, Mode 1's Docker-only sandbox, or the Docker box's own
+  // reason (with the box it names, `box`), each naming what to do.
+  const SETTINGS = "for this agent's computer in Settings → Computers";
+  const SANDBOXES = PROVIDERS.filter((one) => one.kinds.includes("sandbox")).map((one) => one.label).join(", ");
+  for (const [id, body, words, box] of [
+    ["bwrapped", agent("bwrapped", { place: { mode: "sandbox", box: "bwrap" } }), `"bwrap" is no computer provider this server knows: pick one of ${SANDBOXES} ${SETTINGS}.`, undefined],
+    ["sandboxed", agent("sandboxed", { place: { mode: "sandbox", box: "e2b" } }), `Mode 1 runs a sandbox only on Docker: a E2B sandbox can't reach the run's folder on this machine. Pick Docker ${SETTINGS}, or another kind of computer.`, undefined],
+    ["docked", agent("docked", { place: { mode: "sandbox", box: "docker" } }), "This agent's computer is a Docker sandbox, and this server cannot run it: not enabled on this server: start AgentRun with AGENTRUN_BOXES=docker.", "docker"],
   ]) {
     const made = await api("POST", "/agents", body);
     assert.equal(made.status, 201, JSON.stringify(made.body));
-    assert.deepEqual(made.body.warnings.map((w) => [w.field, w.reason]), [["definition.place", "not_set_up_here"]]);
-    assert.equal(made.body.warnings[0].message, `This agent's place is sandbox on ${box}, and this server cannot run it there: ${box === "bwrap" ? "the bwrap box is not in this release yet: use the docker box" : `not enabled on this server: start AgentRun with AGENTRUN_BOXES=${box}`}.`);
-    const run = await api("POST", `/agents/${id}/runs`, { input });
+    assert.deepEqual(made.body.warnings.map((w) => [w.field, w.reason, w.message]), [["definition.computer", "not_set_up_here", words]]);
+    const run = await api("POST", `/agents/${id}/runs`, { input: { content: "hi" } });
     assert.equal(run.status, 409, JSON.stringify(run.body));
     assert.equal(run.body.error.code, "agent_not_runnable");
     assert.equal(run.body.error.details.box, box);
@@ -130,7 +135,7 @@ test("an edit that names no place keeps the agent's; one that names another plac
   };
   const kept = await edit({ instructions: "Answer briefly." });
   assert.deepEqual(kept.definition.place, { mode: "sandbox", box: "docker" }, "absent on an edit: unchanged");
-  assert.deepEqual(kept.warnings.map((w) => w.field), ["definition.place"], "and still warned of");
+  assert.deepEqual(kept.warnings.map((w) => w.field), ["definition.computer"], "and still warned of, as its computer setting");
   const moved = await edit({ instructions: "Answer briefly.", place: { mode: "runner" } });
   assert.deepEqual(moved.definition.place, { mode: "runner" });
   assert.deepEqual(moved.warnings, []);
