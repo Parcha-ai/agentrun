@@ -437,7 +437,7 @@ test('a TSX source file is archived and scanned like any other source', async t 
 
 test('the Python client is source: its .py files, pyproject.toml and py.typed are archived and scanned; its bytecode is left out', async t => {
   const f = await fixture(t);
-  const sources = ['python/pyproject.toml', 'python/README.md', 'python/agentrun/__init__.py', 'python/agentrun/py.typed', 'python/tests/test_rules.py'];
+  const sources = ['python/pyproject.toml', 'python/README.md', 'python/LICENSE', 'python/NOTICE', 'python/agentrun/__init__.py', 'python/agentrun/py.typed', 'python/tests/test_rules.py'];
   for (const path of sources) await f.write(path, `# ${path}\n`);
   await f.write('python/agentrun/__pycache__/_client.cpython-311.pyc', 'BYTECODE\n');
   await f.write('python/tests/__pycache__/helpers.cpython-311.pyc', 'BYTECODE\n');
