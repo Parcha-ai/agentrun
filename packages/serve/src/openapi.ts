@@ -1186,7 +1186,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       responses: {
         "200": json({ type: "object", additionalProperties: false, required: ["run_id", "max_cost_usd", "resumed", "status", "state"], properties: {
           run_id: { type: "string" }, max_cost_usd: { type: "number" }, resumed: { type: "boolean", description: "A run paused at its cap goes on: its follow-up turn is sent once its process has been let go." },
-          message_id: { type: "string", description: "That follow-up's id, when `resumed`." }, note: { type: "string", description: "Said when the run's live process keeps its old cap until its next process." },
+          message_id: { type: "string", description: "That follow-up's id, when `resumed`." }, note: { type: "string", description: "Said when the run is working: the raised cap holds from its next step, and a step already under way keeps the cap it was admitted at." },
           status: ref("schemas/RunStatus"), state: ref("schemas/RunState"),
         } }, "The run, its cap raised."),
         ...errors(401, 404, 409, 422, 429, 500),

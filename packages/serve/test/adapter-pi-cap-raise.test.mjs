@@ -385,8 +385,9 @@ test("a run refused at its cap, parked and raised, is held to the raised cap: it
   const w = await cappedRun(t, [{ say: "done" }], {}, { capUsd: 0.0001 });
   await w.settled("parked");
   assert.equal(w.sent.length, 0, "the refused request never reached the provider");
-  await w.raise(1);
-  await until(async () => (await rootEntries(w.server, "agentrun.raise")).length === 1, "the raise entry");
+  const raised = await w.raise(1);
+  // The raise row taken (its takenAt), read from the store's command rows: never the journal while a claim writes it.
+  await until(async () => (await commandOf(w.server, raised.id))?.takenAt != null, "the raise taken");
   const row = await w.settledIn(["ended", "parked", "failed"]);
   const budgets = await rootEntries(w.server, "agentrun.budget");
   assert.deepEqual(budgets.map((budget) => budget.pending.cap_usd), [0.0001], "parked once, at the launch's cap, never again after the raise");

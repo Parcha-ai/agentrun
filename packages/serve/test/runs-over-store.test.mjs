@@ -217,12 +217,12 @@ test("raiseCap of a run paused at its cap reports resumed", async () => {
   assert.equal(answer.resumed, true);
 });
 
-test("raiseCap of a live working run notes the cap holds from its next process", async () => {
+test("raiseCap of a live working run notes the raised cap holds from its next step, the step under way at the cap it was admitted at", async () => {
   const store = await freshStore();
   await queuedRun(store);
   const answer = await raiseCap(store, moment({ maxCostUsd: 2, live: true, paused: false }), 5);
   assert.equal(answer.resumed, false);
-  assert.match(answer.note, /keeps the \$2 cap it was opened with; the \$5 cap holds from its next process/);
+  assert.equal(answer.note, "The $5 cap holds from the run's next step; a step already under way keeps the $2 cap it was admitted at.");
 });
 
 test("raiseCap of a run with no cap is refused not_allowed, nothing written", async () => {

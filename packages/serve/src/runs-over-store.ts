@@ -188,7 +188,7 @@ async function raiseRows(store: RunsStore, runId: string): Promise<number[]> {
 /** Raises the cap of an agentic or workflow run that names one, to `cap`: above its own (by more than CAP_TOLERANCE), or the
  *  same as its newest raise (a retry, which changes nothing). A raise command row the run's runner reads: it resumes a run
  *  paused at its cap and sends its continuation, or (for a run working now) holds the raised cap from the run's next
- *  process, as the old path did. The answer reports whether the run resumed; the runner owns the resume itself. */
+ *  step. The answer reports whether the run resumed; the runner owns the resume itself. */
 export async function raiseCap(store: RunsStore, moment: RunMoment, cap: number): Promise<{ resumed: boolean; messageId?: string; note?: string }> {
   if (moment.importedSource !== undefined) throw importedRefusal(moment);
   if (moment.cancelled || moment.terminal) throw finished(moment);
@@ -210,10 +210,11 @@ export async function raiseCap(store: RunsStore, moment: RunMoment, cap: number)
     if (error instanceof RunFinal && (await store.runs.get(moment.id))?.state === "stopped") throw new ApiError("not_continuable", "This run was stopped: send it a message to go on, then raise its cap.");
     throw error;
   }
-  // A run paused at its cap is brought back by the raise (its runner claims it and sends its continuation); a run working
-  // now keeps the cap its process was opened with until its next one.
+  // A run paused at its cap is brought back by the raise (its runner claims it and sends its continuation).
   if (moment.paused) return { resumed: true };
-  return { resumed: false, ...(moment.live ? { note: `The run's process keeps the ${money(from)} cap it was opened with; the ${money(cap)} cap holds from its next process.` } : {}) };
+  // A run its runner holds takes the raise as its next command: its next step is admitted under the raised cap (the
+  // runner's loop holds the run to its newest raise), and a step already under way keeps the cap it was admitted at.
+  return { resumed: false, ...(moment.live ? { note: `The ${money(cap)} cap holds from the run's next step; a step already under way keeps the ${money(from)} cap it was admitted at.` } : {}) };
 }
 
 /** The refusal for a tool call already answered, in the old runs.ts words, by how it was answered; a withdrawal by a run
