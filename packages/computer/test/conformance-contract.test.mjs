@@ -123,7 +123,7 @@ test("helloDrift refuses a daemon that speaks another protocol version; one with
 	const expected = { version: "1.2.3", kind: "linux", groups: ["exec", "files", "processes"] };
 	const hello = { protocol: PROTOCOL_VERSION, version: "1.2.3", os: "linux", kind: "linux", arch: "amd64", groups: ["exec", "files", "processes"] };
 	assert.deepEqual(helloDrift(hello, expected), []);
-	assert.deepEqual(helloDrift({ ...hello, protocol: "9.0" }, expected), [`hello: the daemon speaks protocol "9.0", expected ${PROTOCOL_VERSION}`]);
+	assert.deepEqual(helloDrift({ ...hello, protocol: "9.0" }, expected), [`hello: the daemon speaks protocol 9.0, expected ${PROTOCOL_VERSION}`]);
 	const { protocol: _protocol, ...older } = hello;
 	assert.deepEqual(helloDrift(older, expected), [], "no protocol: no protocol words of its own");
 });
