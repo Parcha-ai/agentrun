@@ -2230,7 +2230,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         return send(res, 200, { signed_out: true }, { "set-cookie": ownerCookie(req, "", 0) });
       }
       case "/auth/session": {
-        // Before the owner's password is set: whether setup takes the printed code (a server at a public address), so
+        // Before the owner's password is set: whether setup takes the printed code (a server at a public address, or on a non-loopback listener), so
         // the page asks for it when opened with no link. Never the code itself.
         const set = me.hasPassword();
         // secrets_writable: whether this browser may save a secret (secret-writes.ts mayWriteSecrets, the dispatch check's
