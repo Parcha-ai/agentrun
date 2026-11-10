@@ -2211,6 +2211,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       }
       case "/auth/sign-in": {
         fromPage(req);
+        // The body first: the limit's place is taken only for the password's check, so a body sent slowly holds nothing
+        // of the limit (the request's own timeout bounds it, as on any route).
+        const { password } = await passwordIn(req, ["password"], false);
+        if (!me.hasPassword()) throw new ApiError("forbidden", "this server has no password yet: set it on the setup page");
         // Never refused for good (owner.ts SignInLimit): a try past the limit is told how long to wait, a minute at most.
         const allowed = me.signIns.allow(clientOf(req));
         if (!allowed.ok) {
@@ -2218,18 +2222,16 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
           throw new ApiError("rate_limited", `too many sign-ins ${allowed.by === "address" ? "from this address" : "on this server"}; try again in ${seconds} s`, { retry_after_ms: allowed.retryAfterMs }, { "retry-after": String(seconds) });
         }
         if (allowed.untracked) authFailed("/v2/auth/sign-in", "sign_in_table_full");
-        // The try holds its place in the server's count until it ends, whatever ends it: a wrong password is charged.
+        // The try holds its place in the server's count while the password is checked: a wrong one is charged.
         let wrong = false;
         try {
-          const { password } = await passwordIn(req, ["password"], false);
-          if (!me.hasPassword()) throw new ApiError("forbidden", "this server has no password yet: set it on the setup page");
-          if (!(await me.check(password))) {
-            wrong = true;
-            authFailed("/v2/auth/sign-in", "wrong_password");
-            throw new ApiError("unauthenticated", "that is not the password");
-          }
+          wrong = !(await me.check(password));
         } finally {
           allowed.done(wrong);
+        }
+        if (wrong) {
+          authFailed("/v2/auth/sign-in", "wrong_password");
+          throw new ApiError("unauthenticated", "that is not the password");
         }
         return send(res, 200, { signed_in: true }, { "set-cookie": ownerCookie(req, me.session(), SESSION_S) });
       }

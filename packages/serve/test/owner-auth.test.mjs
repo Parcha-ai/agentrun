@@ -193,6 +193,21 @@ test("behind a trusted proxy each visitor counts by the address it forwards for:
   assert.equal((await signIn(server, "not the password", from("2001:db8:1:3::1"))).status, 401, "the next /64 is another");
 });
 
+test("a sign-in body sent slowly holds nothing of the limit: eleven left unfinished, the owner's sign-in still goes through", async (t) => {
+  const server = await owned(t);
+  const { connect } = await import("node:net");
+  const open = [];
+  for (let i = 0; i < 11; i++) {
+    const socket = connect(server.port, "127.0.0.1"); // key-gate: loopback, the server under test
+    await new Promise((resolve) => socket.once("connect", resolve));
+    socket.write(`POST /v2/auth/sign-in HTTP/1.1\r\nhost: 127.0.0.1:${server.port}\r\norigin: ${page(server).origin}\r\ncontent-type: application/json\r\ncontent-length: 64\r\n\r\n{"password":"not`);
+    open.push(socket);
+  }
+  t.after(() => { for (const socket of open) socket.destroy(); });
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  assert.equal((await signIn(server, PASSWORD)).status, 200, "the unfinished bodies took none of this address's tries");
+});
+
 test("the trusted proxies must parse: a start with one that does not is refused, naming the option", async (t) => {
   await assert.rejects(serve(t, { accounts: true, openSetup: true, trustedProxies: ["not-an-address"] }), /trustedProxies: .*not-an-address/);
 });
