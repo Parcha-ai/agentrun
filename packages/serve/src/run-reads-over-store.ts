@@ -184,9 +184,11 @@ export function runTimelines(deps: TimelineDeps): { page(store: Store, runId: st
   const pollMs = deps.pollMs ?? 1_000;
 
   async function once(store: Store, runId: string, after: number, limit: number): Promise<TimelinePage> {
-    // The view first, then the rows: rows read after the status hold every commit up to it, so a page never reports a
-    // status (input_required on a parked call, a final one) ahead of the rows that came before it. Read together, a commit
-    // landing between the two reads could give a waiting status with its call's row still missing, and has_more false.
+    // The view first, then the rows, in that order and never at once (no Promise.all): both only move forward, so rows
+    // read after the status hold every commit up to it, and a page may show an older status with newer rows, never a
+    // status (input_required on a parked call, a final one) ahead of the rows that came before it. Read at once, a commit
+    // landing between the two reads gave a waiting status with its call's row still missing, and has_more false. (The
+    // two reads are separate store reads, not one snapshot: the order is what makes them agree.)
     const view = await deps.runView(store, runId);
     if (!view) throw new ApiError("not_found", `There is no run ${runId}.`);
     const rows = await deps.timelineRows(store, runId, deps.context);
