@@ -27,8 +27,9 @@ services:
       # No AGENTRUN_TRUSTED_PROXIES here: Render publishes no address for the proxy that reaches a service, and trusting
       # a whole private range would let any peer on the private network name its own address to the sign-in limit. Unset,
       # every visitor counts as the proxy, and the server-wide budget holds guessers to a minute's wait at most. To count
-      # visitors one by one, add it in the service's Environment with the address in the log's first
-      # `event=forwarded_untrusted peer=<address>` line (packages/serve/README.md, "Your password").
+      # visitors one by one, add it in the service's Environment with the address in the log's
+      # `event=forwarded_untrusted peer=<address>` line, which the owner's sign-in writes (a server from a release after
+      # 0.1.0-beta.32; packages/serve/README.md, "Your password").
       # The key saved model and tool keys, MCP server credentials and webhook trigger secrets are sealed under. Render
       # generates it once (base64 of 256 bits); a service that already has it keeps its own. Losing it loses them.
       # Every runner must be given this same value.

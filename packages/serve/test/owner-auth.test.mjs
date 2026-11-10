@@ -208,12 +208,15 @@ test("a sign-in body sent slowly holds nothing of the limit: eleven left unfinis
   assert.equal((await signIn(server, PASSWORD)).status, 200, "the unfinished bodies took none of this address's tries");
 });
 
-test("an X-Forwarded-For from an address not trusted as a proxy is logged once a start, with that address; from a trusted one, not at all; and render.yaml trusts none", async (t) => {
+test("the owner's sign-in with an X-Forwarded-For from an address not trusted as a proxy logs that address once a start; a wrong password logs nothing, nor a trusted peer; and render.yaml trusts none", async (t) => {
   const tried = async (options) => {
     const lines = [];
     const server = await owned(t, { ...options, log: (line) => lines.push(line) });
+    const said = () => lines.filter((line) => / event=forwarded_untrusted /.test(line));
     for (const client of [CLIENT, OTHER]) await signIn(server, "not the password", { ...page(server), "x-forwarded-for": client });
-    return lines.filter((line) => / event=forwarded_untrusted /.test(line));
+    assert.deepEqual(said(), [], "a guess, without the password, can't put its peer in the log");
+    for (const client of [CLIENT, OTHER]) assert.equal((await signIn(server, PASSWORD, { ...page(server), "x-forwarded-for": client })).status, 200);
+    return said();
   };
   const none = await tried({});
   assert.equal(none.length, 1, `once a start, with no proxy trusted: ${none.join("\n")}`);
