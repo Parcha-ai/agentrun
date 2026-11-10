@@ -1,0 +1,5 @@
+---
+packages: @parcha/agentrun-serve
+kind: fix
+---
+A learned skill's SKILL.md and a workflow draft's README.md are read by one front-matter reader for what they say of themselves (their keys, name, description and status): the checks, the learning folder's snapshot (and so the console), the learning routes and a run's seed agree. A front matter that does not read one way (not closed, a key indented under another, an indented first line, a key set twice) or a status other than active, pending or retired now reads as retired, never active, so no run is given it; before, the server read it as active while another reader could read it as held. A restore of one is refused in words until its front matter is written so it reads one way, and a run's skill or draft with such a front matter is refused at its end. A YAML explicit key (`? hooks`) is a key: a learned skill or draft that sets one is refused as one that sets `hooks:` is. Upgrading: nothing to do.

@@ -32,13 +32,20 @@ export function learnedPlace(path: string): LearnedPlace | undefined {
 /** Whether `name` is a good name for a folder of `kind`. */
 export const learnedName = (kind: LearnedPlace["kind"], name: string): boolean => (kind === "skill" ? SKILL_NAME : WORKFLOW_NAME).test(name);
 
-/** A SKILL.md's or a draft README's front matter: its lines, where it closes (the index of its closing `\n---\n`, in
- *  `lf`, the text with LF line ends) and each key's value, a folded or literal block value read as one line. A string
- *  is why there is none. */
+/** Where a SKILL.md's or a draft README's front matter closes in `lf` (its text with LF line ends): the index of the
+ *  `\n` before its closing `---` line, the last line or not; -1 when it has none. */
+const closeOf = (lf: string): number => {
+  const close = /\n---(?:\n|$)/.exec(lf.slice(3));
+  return close ? 3 + close.index : -1;
+};
+
+/** A SKILL.md's or a draft README's front matter, as the host edits it: its lines, where it closes (closeOf, in `lf`,
+ *  the text with LF line ends) and each key's value, a folded or literal block value read as one line. A string is why
+ *  there is none. What it says of itself (its keys, its status) is frontMatter's to read, never this. */
 function frontOf(text: string): { lf: string; end: number; value: (key: string) => string | undefined } | string {
   const lf = text.replace(/\r\n/g, "\n");
   if (!lf.startsWith("---\n")) return "it does not start with front matter";
-  const end = lf.indexOf("\n---\n", 3);
+  const end = closeOf(lf);
   if (end < 0) return "its front matter is not closed";
   const lines = lf.slice(4, end).split("\n");
   const value = (key: string): string | undefined => {
@@ -59,12 +66,83 @@ function frontOf(text: string): { lf: string; end: number; value: (key: string) 
   return { lf, end, value };
 }
 
-/** The keys a SKILL.md's or a draft README's front matter sets, in order (each line at its left edge that names one);
- *  undefined for a text with no front matter. */
+/** Why a front matter does not read one way, by frontMatter: the words a refusal says. */
+export const UNCLEAR_FRONT = "its front matter does not read one way: each line a `key: value` at its left edge, a comment, or a line of the value above it";
+
+/** A SKILL.md's or a draft README's front matter, read one way, as the one reader of what it says of itself (its keys,
+ *  its name, its description, its status): each key to its value in order, or undefined when it does not read one way,
+ *  since another reader (a harness's YAML) could then read a key, a status among them, this one does not. It reads one
+ *  way when it starts the text (`---`), closes on a `---` line (the last line or not), and each line between is blank,
+ *  a comment at its left edge, `key: value` at its left edge (a key set once), a YAML explicit key (`? key`, its value on
+ *  a `: value` line after it), or a line of the value above it: any indented line under a `key:` with nothing after it
+ *  (its nested value, a mapping or a list among them), an indented line of a `>` or `|` block, or of a plain value that
+ *  wraps (one that reads as no key of its own). A value is unquoted; a nested, block or wrapped value's lines are joined
+ *  by one space. Anything else (an indented first line, an indented `key:` under a value, a list at the left edge, a
+ *  key set twice) reads no way. */
+export function frontMatter(text: string): ReadonlyMap<string, string> | undefined {
+  const lf = text.replace(/\r\n/g, "\n");
+  if (!lf.startsWith("---\n")) return undefined;
+  const end = closeOf(lf);
+  if (end < 0) return undefined;
+  const front = new Map<string, string>();
+  const unquoted = (value: string) => value.trim().replace(/^(["'])(.*)\1$/, "$2");
+  const add = (key: string, more: string) => front.set(key, `${front.get(key)} ${more.trim()}`.trim());
+  // The key whose `>`/`|` block, or nested value (a `key:` with nothing after it), the next indented lines are; the key
+  // whose plain value they wrap; an explicit key that waits for its `: value` line.
+  let block: string | undefined;
+  let plain: string | undefined;
+  let explicit: string | undefined;
+  for (const line of lf.slice(4, end).split("\n")) {
+    const indented = /^\s+\S/.test(line);
+    if (block !== undefined && (indented || line.trim() === "")) {
+      if (line.trim()) add(block, line);
+      continue;
+    }
+    block = undefined;
+    if (explicit !== undefined) {
+      const value = /^:(?:\s+(.*))?$/.exec(line);
+      const key = explicit;
+      explicit = undefined;
+      if (value) {
+        front.set(key, unquoted(value[1] ?? ""));
+        continue;
+      }
+    }
+    if (line.trim() === "" || line.startsWith("#")) continue;
+    if (indented) {
+      // A wrapped plain value's line, never one that reads as a key, a list item or a comment of its own.
+      if (plain === undefined || /^\s+(?:#|-\s|\?\s|[^\s]*:(?:\s|$))/.test(line) || /:\s/.test(line)) return undefined;
+      add(plain, line);
+      continue;
+    }
+    plain = undefined;
+    const asked = /^\?\s+(.+)$/.exec(line);
+    if (asked) {
+      const key = unquoted(asked[1]!);
+      if (!key || front.has(key)) return undefined;
+      front.set(key, "");
+      explicit = key;
+      continue;
+    }
+    const pair = /^([A-Za-z_][\w-]*):(?:\s+(.*))?$/.exec(line);
+    if (!pair || front.has(pair[1]!)) return undefined;
+    const value = (pair[2] ?? "").trim();
+    if (!value || /^[>|][-+]?$/.test(value)) {
+      block = pair[1]!;
+      front.set(block, "");
+    } else {
+      front.set(pair[1]!, unquoted(value));
+      if (!/^["']/.test(value)) plain = pair[1]!;
+    }
+  }
+  return front;
+}
+
+/** The keys a SKILL.md's or a draft README's front matter sets, in order (frontMatter's, a YAML explicit key `? key`
+ *  among them); undefined for a text whose front matter does not read one way. */
 export function frontKeys(text: string): string[] | undefined {
-  const front = frontOf(text);
-  if (typeof front === "string") return undefined;
-  return front.lf.slice(4, front.end).split("\n").flatMap((line) => /^([^\s#:][^:]*):/.exec(line)?.[1] ?? []).map((key) => key.trim());
+  const front = frontMatter(text);
+  return front ? [...front.keys()] : undefined;
 }
 
 /** The front matter keys a learned skill or draft README may hold: what a skill is (its name and when to use it). Claude
@@ -88,35 +166,31 @@ export function servedSkill(text: string): string {
 /** Why a `SKILL.md` for the skill `name`, or a draft's `README.md` for the workflow `name`, is out of shape; empty when
  *  it is not. Its front matter names the folder's name and a description. */
 export function skillProblems(text: string, name: string): string[] {
-  const front = frontOf(text);
-  if (typeof front === "string") return [front];
+  const opened = frontOf(text);
+  if (typeof opened === "string") return [opened];
+  const front = frontMatter(text);
+  if (!front) return [UNCLEAR_FRONT];
   const out: string[] = [];
-  if (front.value("name") !== name) out.push(`name is not the folder's name, ${name}`);
-  if (!front.value("description")) out.push("description is missing or empty");
+  if (front.get("name") !== name) out.push(`name is not the folder's name, ${name}`);
+  if (!front.get("description")) out.push("description is missing or empty");
   return out;
 }
 
-/** A SKILL.md's or a draft README's front matter as a reader shows it: its name, description and status, each absent
- *  when it is not there; undefined for a text with no front matter. */
+/** A SKILL.md's or a draft README's front matter as a reader shows it (frontMatter): its name, description and status,
+ *  each absent when it is not there; undefined for a text whose front matter does not read one way. */
 export function learnedFront(text: string): { name?: string; description?: string; status?: string } | undefined {
-  const front = frontOf(text);
-  if (typeof front === "string") return undefined;
-  const [name, description, status] = ["name", "description", "status"].map((key) => front.value(key));
+  const front = frontMatter(text);
+  if (!front) return undefined;
+  const [name, description, status] = ["name", "description", "status"].map((key) => front.get(key));
   return { ...(name === undefined ? {} : { name }), ...(description === undefined ? {} : { description }), ...(status === undefined ? {} : { status }) };
 }
 
-/** Whether a SKILL.md or a draft's README.md sets `status`, which only the host does (`held`). */
-export const setsStatus = (text: string): boolean => {
-  const front = frontOf(text);
-  return typeof front !== "string" && front.value("status") !== undefined;
-};
+/** Whether a SKILL.md or a draft's README.md sets `status`, which only the host does (`held`) (frontMatter). */
+export const setsStatus = (text: string): boolean => frontMatter(text)?.has("status") ?? false;
 
 /** A skill or a draft the grader held for its owner's OK: its SKILL.md, or its draft's README.md, says `status:
- *  pending`. No run is given a held skill or workflow until a person approves it. */
-export const isHeld = (text: string): boolean => {
-  const front = frontOf(text);
-  return typeof front !== "string" && front.value("status") === "pending";
-};
+ *  pending` (learnedStatus). No run is given a held skill or workflow until a person approves it. */
+export const isHeld = (text: string): boolean => learnedStatus(text) === "pending";
 
 /** `text`, a SKILL.md or a draft's README.md, as the host merges one the grader held for its owner's OK: `status:
  *  pending` last in its front matter, with LF line ends. Throws on a text with no front matter, which the checker never
@@ -136,12 +210,16 @@ export function released(text: string): string {
   return `---\n${kept.join("\n")}${front.lf.slice(front.end)}`;
 }
 
-/** What a SKILL.md or a draft's README.md says of itself: `pending` while it waits for its owner's OK, `retired` once a
- *  person retired it, else `active`. A run is given only an active one. */
+/** What a SKILL.md or a draft's README.md says of itself, the one reader of it (frontMatter), the server's and, through
+ *  the folder's snapshot, the console's: `pending` while it waits for its owner's OK, `retired` once a person retired
+ *  it, `active` when it sets no status or `active`. A front matter that does not read one way, or a status that is none
+ *  of these, is `retired`: never active, since another reader could read it as held or retired; no run is given it, and
+ *  a restore refuses it until it reads one way. A run is given only an active one. */
 export function learnedStatus(text: string): "active" | "pending" | "retired" {
-  const front = frontOf(text);
-  const status = typeof front === "string" ? undefined : front.value("status");
-  return status === "pending" ? "pending" : status === "retired" ? "retired" : "active";
+  const front = frontMatter(text);
+  if (!front) return "retired";
+  const status = front.get("status") ?? "active";
+  return status === "active" || status === "pending" ? status : "retired";
 }
 
 /** `text`, a SKILL.md or a draft's README.md, as a person's retire leaves it: `status: retired` last in its front matter

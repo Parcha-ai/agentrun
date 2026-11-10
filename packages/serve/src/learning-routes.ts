@@ -17,7 +17,7 @@
 // written) is cut of it, a file's name holding one reads "[redacted]" whole, and a diff's file holding one is withheld.
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { join } from "node:path";
-import { approve, buildIndex, CAPS, checkNote, draftProblems, frontKeys, INDEX_FILE, INDEX_LINES, isHeld, LEARNED_KEYS, type LearnedNote, learnedName, learnedPlace, learnedStatus, NOTE_FILE, NOTE_STATUSES, parseNoteFile, type Problem, printable, released, retire, retiredLearned, skillProblems, SKILLS_DIR, supersede, unstorable, WORKFLOWS_DIR } from "./learn/index.js";
+import { approve, buildIndex, CAPS, checkNote, draftProblems, frontKeys, frontMatter, INDEX_FILE, INDEX_LINES, isHeld, LEARNED_KEYS, type LearnedNote, learnedName, learnedPlace, learnedStatus, NOTE_FILE, NOTE_STATUSES, parseNoteFile, type Problem, printable, released, retire, retiredLearned, skillProblems, SKILLS_DIR, supersede, UNCLEAR_FRONT, unstorable, WORKFLOWS_DIR } from "./learn/index.js";
 import { beforeRetire, blobOid, type FolderChange, FolderBusy, FolderRefused, FolderTooLarge, FolderUnreadable, heldOnMain, isBodyMismatch, type PersonKind, readLearning, PATCH_CAP, readRunDiff, readSnapshot, type SnapChange, type SnapHistory, type SnapLearned, type SnapNote, type Snapshot, snapshotNotes, writeLearning } from "./learn/folder.js";
 import { ApiError, invalid } from "./errors.js";
 import { readJson } from "./files.js";
@@ -408,6 +408,8 @@ export async function writeNote(data: string, agentId: string, raw: string, inpu
             const status = learnedStatus(current!.text);
             const kind = learned.kind === "skill" ? "skill" : "workflow";
             if (status !== "retired") throw new ApiError("bad_request", `The ${kind} is not retired: it is ${status}.`);
+            // Read as retired since its front matter reads no way (learnedStatus): refused until it is written so it does.
+            if (!frontMatter(current!.text)) throw refused([printable({ rule: kind, path: file, detail: UNCLEAR_FRONT }, input.refuse)]);
             text = released(current!.text);
             const problems = skillProblems(text, learned.name).map((detail) => printable({ rule: kind, path: file, detail }, input.refuse));
             const extra = (frontKeys(text) ?? []).filter((key) => !LEARNED_KEYS.includes(key) && key !== "status");
