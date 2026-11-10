@@ -86,9 +86,6 @@ export interface ClaimMcp {
    *  sent; or parked, answered the gate's waiting words marked parked, nothing sent), then its host tool from `wrapped`,
    *  as the loop wrapped it. */
   session(wrapped: ReadonlyMap<string, HostTool>, gate: (call: McpGateCall) => Promise<McpGateAnswer>): SessionMcp;
-  /** The credential values the gateway's calls in flight hold, for a redaction: each call's for as long as it is out,
-   *  with any token refreshed while it was; none when idle. */
-  redactions(): string[];
   /** The claim step's credentials opened again on the same pin (an expired OAuth token refreshed), then the claim
    *  confirmed: before a resumed loop's next model request. */
   fresh(): Promise<void>;
@@ -185,7 +182,6 @@ export async function mcpForClaim(options: McpForClaimOptions): Promise<ClaimMcp
         return said(result.text, result.isError === true);
       },
     }),
-    redactions: () => gateway.heldValues(),
     fresh: () => step.fresh(),
     release: () => held.abort(),
   };

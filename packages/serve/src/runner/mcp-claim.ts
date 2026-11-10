@@ -86,8 +86,6 @@ export interface McpClaimStep {
   /** Each pinned server's URL now, with its headers or why they can't be used: the run's gateway's `credentials`, which
    *  it reads at every request, so a refresh or a removal here reaches a gateway already built. */
   readonly credentials: McpCredentials;
-  /** Every credential value held, for the redaction set. */
-  readonly secrets: ReadonlySet<string>;
   /** Refresh what has expired, and open the credentials again; then confirm the claim. Before a resumed loop's next
    *  model request. */
   fresh(): Promise<void>;
@@ -113,7 +111,6 @@ export async function mcpClaim(options: McpClaimOptions): Promise<McpClaimStep> 
   const holder = `${claim.runId}@${claim.epoch}:${randomUUID()}`;
   const pin = await pinOf(options);
   const credentials: McpCredentials = Object.create(null);
-  const secrets = new Set<string>();
   // Refreshes started behind a token still valid: stopped at release.
   const behind = new AbortController();
   let released = false;
@@ -126,7 +123,6 @@ export async function mcpClaim(options: McpClaimOptions): Promise<McpClaimStep> 
     behind.abort();
     github.release();
     for (const name of Object.keys(credentials)) delete credentials[name];
-    secrets.clear();
   };
   signal.addEventListener("abort", release, { once: true });
 
@@ -195,7 +191,6 @@ export async function mcpClaim(options: McpClaimOptions): Promise<McpClaimStep> 
       if (released) return;
       // Headers go only to the URL the run was pinned to: a server moved since is refused per call by the gateway.
       credentials[name] = { url: row.url, ...(extra.unopened ? { unopened: extra.unopened } : extra.headers && row.url === pinnedUrl ? { headers: extra.headers } : {}) };
-      for (const value of Object.values(extra.headers ?? {})) secrets.add(value);
     };
     // A GitHub App's server keeps no credential: its token is minted for this run (awaited, so the claim is confirmed
     // after it), kept fresh mid-run, and never stored.
@@ -301,7 +296,7 @@ export async function mcpClaim(options: McpClaimOptions): Promise<McpClaimStep> 
   };
 
   await fresh();
-  return { pin, credentials, secrets, fresh, release };
+  return { pin, credentials, fresh, release };
 }
 
 /** The run's pin: read, and checked against the meta tools known now; or made at its first claim and written once. */

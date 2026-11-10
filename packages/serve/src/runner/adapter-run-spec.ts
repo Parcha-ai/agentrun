@@ -553,7 +553,7 @@ export async function learnedWorkflowHostTool(opts: {
  *  hostToolOf): web_fetch, web_search and monid, each by its catalog name under the adapter loop's one gate (`spec.gate`;
  *  `gated` is undefined here, as for the hands). Their paid requests are booked by the adapter loop on the run's one ledger
  *  (bookedIn), as main books them, so they run. The browser (through host.liveViewers), MCP (the MCP claim step's
- *  mcpForClaim(claim, store, sealKey, pin) -> { sessionMcp, redactions, release }), the learned workflow and decisions are
+ *  mcpForClaim(claim, store, sealKey, pin) -> { sessionMcp, release }), the learned workflow and decisions are
  *  each a named todo, added as their seams land. */
 /** The run's live-viewer writers over the store (browser-live.ts): a session's hand-over written sealed, and gone. Its
  *  viewer token, minted in the run, is held by `cut`, the run's one redactor, as it is handed over, before it is written. */
