@@ -11,11 +11,11 @@ import { claimFence, storeNow, type StoreNow } from "../fence.js";
 import { RunStorage } from "../journal/storage.js";
 import { COMMANDS_ONE_ANSWER, DDL, SCHEMA_VERSION } from "../schema.js";
 import {
-  AgentArchived, CommandTaken, Fenced, RunFinal, SchemaVersionUnknown, STORE_WRITE_DEADLINE_MS, StoreConstraint, StoreFromEarlierVersion, TriggerFull, type AgentRow, type Agents,
+  AgentArchived, CommandTaken, ExternalBodyConflict, Fenced, RunFinal, SchemaVersionUnknown, STORE_WRITE_DEADLINE_MS, StoreConstraint, StoreFromEarlierVersion, TriggerFull, type AgentRow, type Agents,
   type AlsoRow, type Claim, type Command, type FiringChange, type FiringRow, type FiringStatus, type ImportRunInput, type Journal, type NewRevision, type RevisionRow, type RunPatch, type RunRow, type Runs,
   type JournalReads, type UpdatedRun,
   type ReleasedState, type RunState, type Store, type StoreRole, type TemplatePackage, type Templates, type TriggerDef, type TriggerPatch, type TriggerRow, type Triggers, type TriggerScope,
-  FINAL_STATES, MCP_REFRESH_CALL_MS, MCP_REFRESH_LEASE_MS, type Learning, type LearningProposal, type Live, type LiveRow, type LiveViewerRow, type LiveViewers, type Mcp, type McpPinRow, type McpServerRow,
+  FINAL_STATES, MCP_REFRESH_CALL_MS, MCP_REFRESH_LEASE_MS, type Learning, type LearningProposal, type Live, type LiveRow, type LiveViewerRow, type LiveViewers, type Mcp, type McpCredentialMark, type McpPinRow, type McpServerRow, type McpServerWrite,
   type McpOauth, type McpOauthPendingRow, type SealedKeyRow, type SealedKeys, type SealedSecretRow, type SealedSecrets, type Settings, type SettingRow, type TriggerSettingRow, type TriggerSettings,
   SignInHandedTo, SignInMissing, SIGN_IN_TOMBSTONES_KEPT, type SignIns, type SignInRow, type SignInTombstoneRow, type ViewerKind,
   type ComputerLedger, type ComputerLedgerRow,
@@ -24,6 +24,7 @@ import type { Dialect } from "../dialect.js";
 import { Connection, type SqliteExecutor, type SqliteValue, type Statement, type StoreConnection, type Tx } from "./connection.js";
 import { applyRunPatch, refuseLeftovers, RUN_COLUMNS, runOf, SIGN_IN_HANDED_LOCK, type RunRecord } from "./run-patch.js";
 import { readLaunch, writeLaunch } from "./run-launch.js";
+import { canonical } from "../agent-body.js";
 import { aadOf, sealedAt } from "../seal.js";
 
 /** A claim's length when the caller names none. */
@@ -46,8 +47,8 @@ export type SqliteStoreOptions = (
   busyTimeoutMs?: number;
 };
 
-type AgentRecord = { id: string; name: string; description: string | null; current_revision: string | null; created_at: number; archived_at: number | null };
-type RevisionRecord = { id: string; agent_id: string; parent_id: string | null; kind: string; body: string; skills: string | null; note: string | null; package: string | null; created_at: number };
+type AgentRecord = { id: string; name: string; description: string | null; current_revision: string | null; created_at: number; archived_at: number | null; external_ref: string | null };
+type RevisionRecord = { id: string; agent_id: string; parent_id: string | null; kind: string; body: string; skills: string | null; note: string | null; package: string | null; created_at: number; external_version: string | null };
 type CommandRecord = { id: number; run_id: string; kind: string; body: string; created_at: number; taken_at: number | null; refused: string | null; tries: number };
 type TriggerRecord = {
   id: string; agent_id: string; name: string; enabled: number; source: string; target: string; next_at: number | null; last_run_id: string | null;
@@ -84,8 +85,8 @@ function triggerSet(patch: TriggerPatch, at: number): { set: string; params: Sql
   return { set: pairs.map(([column]) => `${column} = ?`).join(", "), params: pairs.map(([, value]) => value) };
 }
 
-const AGENT_COLUMNS = "id, name, description, current_revision, created_at, archived_at";
-const REVISION_COLUMNS = "id, agent_id, parent_id, kind, body, skills, note, package, created_at";
+const AGENT_COLUMNS = "id, name, description, current_revision, created_at, archived_at, external_ref";
+const REVISION_COLUMNS = "id, agent_id, parent_id, kind, body, skills, note, package, created_at, external_version";
 const COMMAND_COLUMNS = "id, run_id, kind, body, created_at, taken_at, refused, tries";
 const TRIGGER_COLUMNS = "id, agent_id, name, enabled, source, target, next_at, last_run_id, catchup_window_s, failures_in_a_row, disabled, max_active_runs, created_at, updated_at";
 const FINAL = FINAL_STATES.map((state) => `'${state}'`).join(", ");
@@ -120,10 +121,10 @@ async function underClaim(tx: Tx, claim: Claim, now: () => number): Promise<numb
   return at;
 }
 
-const agentOf = (r: AgentRecord): AgentRow => ({ id: r.id, name: r.name, description: r.description, currentRevision: r.current_revision, createdAt: r.created_at, archivedAt: r.archived_at });
+const agentOf = (r: AgentRecord): AgentRow => ({ id: r.id, name: r.name, description: r.description, currentRevision: r.current_revision, createdAt: r.created_at, archivedAt: r.archived_at, externalRef: r.external_ref });
 const revisionOf = (r: RevisionRecord): RevisionRow => ({
   id: r.id, agentId: r.agent_id, parent: r.parent_id, kind: r.kind, body: JSON.parse(r.body), skills: r.skills === null ? null : JSON.parse(r.skills),
-  note: r.note, package: r.package === null ? null : (JSON.parse(r.package) as TemplatePackage), createdAt: r.created_at,
+  note: r.note, package: r.package === null ? null : (JSON.parse(r.package) as TemplatePackage), createdAt: r.created_at, externalVersion: r.external_version,
 });
 const commandOf = (r: CommandRecord): Command => ({ id: r.id, runId: r.run_id, kind: r.kind, body: JSON.parse(r.body), createdAt: r.created_at, takenAt: r.taken_at, refused: r.refused, tries: r.tries });
 const triggerOf = (r: TriggerRecord): TriggerRow => ({
@@ -425,6 +426,10 @@ class SqliteStore implements Store {
       },
       get: async (id) => {
         const row = await db.get<AgentRecord>(`SELECT ${AGENT_COLUMNS} FROM agents WHERE id = ?`, id);
+        return row && agentOf(row);
+      },
+      byExternal: async (ref) => {
+        const row = await db.get<AgentRecord>(`SELECT ${AGENT_COLUMNS} FROM agents WHERE external_ref = ?`, ref);
         return row && agentOf(row);
       },
       list: async ({ archived = false } = {}) =>
@@ -740,6 +745,37 @@ class SqliteStore implements Store {
         const [result] = await db.write([{ sql: insert, params: [id, agentId, revisionId, now()] }]);
         return runOf(result!.rows[0] as RunRecord);
       },
+      createInline: async ({ agent, revision, run, launch }) => {
+        const insert = `INSERT INTO runs (id, agent_id, revision_id, state, epoch, started_at) VALUES (?, ?, ?, 'queued', 0, ?) RETURNING ${RUN_COLUMNS}`;
+        return db.transaction(async (tx) => {
+          const at = now();
+          // Hold the external reference, so two first uses of the same expert serialize (SQLite's one writer already does).
+          await d.lockKey(tx, `external:${agent.ref}`);
+          // The agent, one per external reference: written on its first run, read on every later one.
+          await tx.run(`${d.insertOrIgnore} INTO agents (id, name, description, created_at, external_ref) VALUES (?, ?, ?, ?, ?)${d.onConflictIgnore}`,
+            agent.id, agent.name, agent.description ?? null, at, agent.ref);
+          const mapped = (await tx.get<{ id: string; current_revision: string | null }>("SELECT id, current_revision FROM agents WHERE external_ref = ?", agent.ref))!;
+          // The revision, one per version: a version already stored keeps its body (a different body is refused); a new
+          // version is written, made current, and brings the agent's name and description up to it (the source is the truth).
+          const existing = await tx.get<{ id: string; body: string }>("SELECT id, body FROM revisions WHERE agent_id = ? AND external_version = ?", mapped.id, revision.version);
+          let revisionId: string;
+          if (existing) {
+            if (canonical(JSON.parse(existing.body)) !== canonical(revision.body)) throw new ExternalBodyConflict(agent.ref, revision.version);
+            revisionId = existing.id;
+          } else {
+            revisionId = revision.id;
+            await tx.run("INSERT INTO revisions (id, agent_id, parent_id, kind, body, skills, note, package, external_version, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+              revisionId, mapped.id, mapped.current_revision, revision.kind, json(revision.body),
+              revision.skills === undefined || revision.skills === null ? null : json(revision.skills), revision.note ?? null, null, revision.version, at);
+            await tx.run("UPDATE agents SET current_revision = ?, name = ?, description = ? WHERE id = ?", revisionId, agent.name, agent.description ?? null, mapped.id);
+          }
+          // The run, its origin and its launch, in the same transaction as the agent and the revision.
+          const row = await tx.get<RunRecord>(insert, run.id, mapped.id, revisionId, at);
+          if (run.origin) await tx.run("INSERT INTO run_origins (key, run_id, fingerprint, created_at) VALUES (?, ?, ?, ?)", run.origin.key, run.id, run.origin.fingerprint ?? null, at);
+          await writeLaunch(tx, run.id, launch, at);
+          return runOf(row!);
+        });
+      },
       get: async (id) => {
         const row = await db.get<RunRecord>(`SELECT ${RUN_COLUMNS} FROM runs WHERE id = ?`, id);
         return row && runOf(row);
@@ -815,36 +851,79 @@ class SqliteStore implements Store {
       },
     };
 
+    /** A server's write (Mcp.put), or with `expected` (Mcp.putIfCredential) only while the row's credential is still that:
+     *  the statement's own WHERE compares it, so the comparison and the write are one statement. */
+    const putServer = async (
+      { name, url, auth, protocol = null, tools, prices = null, serverInfo = null, instructions = null, sealed = null, listedAt, updatedAt, credentialChangedAt, tokenLeftMs = null }: McpServerWrite,
+      expected: McpCredentialMark | undefined,
+    ): Promise<McpServerRow | undefined> => {
+      const at = now();
+      // The access token's end on the deadlines' clock (the database's on Postgres): the writer's measure of its life (a
+      // duration, clock-free) laid on that clock's now (token_until), in the statement that writes it.
+      const left = sealed !== null && typeof tokenLeftMs === "number" && Number.isFinite(tokenLeftMs) ? tokenLeftMs : null;
+      const stamp = clock();
+      // updated_at defaults to now (a save or a sign-in); a refresh passes the kept one so it is not read as an edit.
+      // listed_at is the tools' listing time, now unless given.
+      const updated = updatedAt ?? at;
+      const listed = listedAt ?? at;
+      // The credential's own time: now for a put that writes one, unless the caller says it kept the sealed one (its
+      // time given back); null with none. A token refresh (keepRefreshed) never moves it.
+      const credentialAt = sealed === null ? null : credentialChangedAt === undefined ? at : credentialChangedAt;
+      const values = [url, auth, protocol, json(tools), json(prices), serverInfo === null ? null : json(serverInfo), instructions, sealed] as const;
+      // Expected present: an UPDATE of that row while its credential is still the one expected (gone, or changed: no row).
+      // Expected absent: an insert only (a row there: no row). Else the upsert. Either way RETURNING answers what it wrote.
+      const statement = expected !== undefined && expected !== null
+        ? {
+          sql: `UPDATE mcp_servers SET url = ?, auth = ?, protocol = ?, tools = ?, prices = ?, server_info = ?, instructions = ?, sealed = ?, refresh_holder = NULL, refresh_until = NULL,
+              updated_at = ?, listed_at = ?, credential_changed_at = ?, token_until = ${stamp.sql} + ${d.bigintParam}
+            WHERE name = ? AND auth = ? AND sealed IS ${expected.sealed ? "NOT NULL" : "NULL"} AND ${expected.changedAt === null ? "credential_changed_at IS NULL" : "credential_changed_at = ?"}
+            RETURNING ${mcpServerColumnsAt(stamp)}`,
+          params: [...values, updated, listed, credentialAt, ...stamp.params, left, name, expected.auth, ...(expected.changedAt === null ? [] : [expected.changedAt]), ...stamp.params],
+        }
+        : {
+          sql: `INSERT INTO mcp_servers (name, url, auth, protocol, tools, prices, server_info, instructions, sealed, created_at, updated_at, listed_at, credential_changed_at, token_until) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ${stamp.sql} + ${d.bigintParam})
+            ON CONFLICT (name) DO UPDATE SET url = excluded.url, auth = excluded.auth, protocol = excluded.protocol, tools = excluded.tools,
+              prices = excluded.prices, server_info = excluded.server_info, instructions = excluded.instructions, sealed = excluded.sealed, refresh_holder = NULL, refresh_until = NULL, updated_at = excluded.updated_at, listed_at = excluded.listed_at, credential_changed_at = excluded.credential_changed_at, token_until = excluded.token_until
+              ${expected === null ? "WHERE 1 = 0" : ""}
+            RETURNING ${mcpServerColumnsAt(stamp)}`,
+          params: [name, ...values, at, updated, listed, credentialAt, ...stamp.params, left, ...stamp.params],
+        };
+      const [result] = await db.write([statement]);
+      const written = result!.rows[0] as McpServerRecord | undefined;
+      return written && mcpServerOf(written);
+    };
+
     const server = async (executor: Pick<SqliteExecutor, "get">, name: string) => {
       const at = clock();
       const row = await executor.get<McpServerRecord>(`SELECT ${mcpServerColumnsAt(at)} FROM mcp_servers WHERE name = ?`, ...at.params, name);
       return row && mcpServerOf(row);
     };
     this.mcp = {
-      put: async ({ name, url, auth, protocol = null, tools, prices = null, serverInfo = null, instructions = null, sealed = null, listedAt, updatedAt, credentialChangedAt, tokenLeftMs = null }) => {
+      put: async (row) => (await putServer(row, undefined))!,
+      putIfCredential: (row, expected) => putServer(row, expected),
+      // One statement compares the credential and writes, as keepRefreshed: no read between, so a refresh's keep never lands
+      // in a gap and is then written over. The credential's columns and the refresh lease are not in its SET.
+      rewrite: async ({ name, url, auth, protocol = null, tools, prices = null, serverInfo = null, instructions = null, listedAt, updatedAt }, seen) => {
         const at = now();
-        // The access token's end on the deadlines' clock (the database's on Postgres): the writer's measure of its life (a
-        // duration, clock-free) laid on that clock's now (token_until), in the statement that writes it.
-        const left = sealed !== null && typeof tokenLeftMs === "number" && Number.isFinite(tokenLeftMs) ? tokenLeftMs : null;
         const stamp = clock();
-        // updated_at defaults to now (a save or a sign-in); a refresh passes the kept one so it is not read as an edit.
-        // listed_at is the tools' listing time, now unless given.
-        const updated = updatedAt ?? at;
-        const listed = listedAt ?? at;
-        // The credential's own time: now for a put that writes one, unless the caller says it kept the sealed one (its
-        // time given back); null with none. A token refresh (keepRefreshed) never moves it.
-        const credentialAt = sealed === null ? null : credentialChangedAt === undefined ? at : credentialChangedAt;
         const [result] = await db.write([{
-          sql: `INSERT INTO mcp_servers (name, url, auth, protocol, tools, prices, server_info, instructions, sealed, created_at, updated_at, listed_at, credential_changed_at, token_until) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ${stamp.sql} + ${d.bigintParam})
-            ON CONFLICT (name) DO UPDATE SET url = excluded.url, auth = excluded.auth, protocol = excluded.protocol, tools = excluded.tools,
-              prices = excluded.prices, server_info = excluded.server_info, instructions = excluded.instructions, sealed = excluded.sealed, refresh_holder = NULL, refresh_until = NULL, updated_at = excluded.updated_at, listed_at = excluded.listed_at, credential_changed_at = excluded.credential_changed_at, token_until = excluded.token_until
+          sql: `UPDATE mcp_servers SET url = ?, auth = ?, protocol = ?, tools = ?, prices = ?, server_info = ?, instructions = ?, updated_at = ?, listed_at = ?
+            WHERE name = ? AND ${d.nullSafeEquals("sealed")}
             RETURNING ${mcpServerColumnsAt(stamp)}`,
-          params: [name, url, auth, protocol, json(tools), json(prices), serverInfo === null ? null : json(serverInfo), instructions, sealed, at, updated, listed, credentialAt, ...stamp.params, left, ...stamp.params],
+          params: [url, auth, protocol, json(tools), json(prices), serverInfo === null ? null : json(serverInfo), instructions, updatedAt ?? at, listedAt ?? at, name, seen, ...stamp.params],
         }]);
-        return mcpServerOf(result!.rows[0] as McpServerRecord);
+        const row = result!.rows[0] as McpServerRecord | undefined;
+        return row && mcpServerOf(row);
       },
       remove: async (name) => {
         await db.write([{ sql: "DELETE FROM mcp_servers WHERE name = ?", params: [name] }]);
+      },
+      removeIfCredential: async (name, expected) => {
+        const [result] = await db.write([{
+          sql: `DELETE FROM mcp_servers WHERE name = ? AND auth = ? AND sealed IS ${expected.sealed ? "NOT NULL" : "NULL"} AND ${expected.changedAt === null ? "credential_changed_at IS NULL" : "credential_changed_at = ?"} RETURNING name`,
+          params: [name, expected.auth, ...(expected.changedAt === null ? [] : [expected.changedAt])],
+        }]);
+        return result!.rows.length === 1;
       },
       servers: async () => {
         const at = clock();
@@ -1224,7 +1303,7 @@ class SqliteStore implements Store {
       const fence = claimFence(claim, now);
       await tx.step(fenced(claim, `UPDATE runs SET claimed_until = ${now.sql} + ? WHERE ${fence.where} AND runner = ?`, [...now.params, leaseMs, ...fence.params, claim.runner]));
       return Number((await tx.get<{ claimed_until: number }>("SELECT claimed_until FROM runs WHERE id = ?", claim.runId))!.claimed_until);
-    });
+    }, { lease: true });
     return { ...claim, until };
   }
 
@@ -1244,7 +1323,8 @@ class SqliteStore implements Store {
         out.push(renewed.length > 0 ? { ...claim, until: Number(renewed[0]!.claimed_until) } : new Fenced(claim.runId, claim.epoch));
       }
       return out;
-    });
+      // On the lease connection (TransactionOptions.lease): a runner whose loops hold every pool client still renews.
+    }, { lease: true });
   }
 
   async release(claim: Claim, { state, wakeAt = null, backoffUntil = null }: { state?: ReleasedState; wakeAt?: number | null; backoffUntil?: number | null } = {}): Promise<void> {

@@ -91,10 +91,21 @@ export type TimelinePage = components["TimelinePage"];
 
 export type RunFile = components["RunFile"];
 export type RunFiles = components["RunFileList"];
-/** GET /v2/runs/{id}/computer (owner session only, no-store): `off`, the run has no computer here (`why`); `none`, it has
- *  one (`kind`) with no session up (yet, or any more); `live`, a session is open, watched through `viewer`, a same-origin
- *  path whose token is in its fragment (never sent to a server). `hold`: who drives now. */
-export type RunBrowser = Answer<"getRunComputer">;
+/** GET /v2/runs/{id}/computer, every kind with a screen (owner session only, no-store): `off`, the run has no screen here
+ *  (`why`); `none`, it has one (`kind`) with no session up (yet, or any more); `live`, a session is open, watched through
+ *  `viewer`, a same-origin path whose token is in its fragment (never sent to a server). `hold`: who drives now. */
+export type RunComputer = Answer<"getRunComputer">;
+/** Who drives the run's computer: the agent; `pending`, the owner's take waits for the agent's step in flight; the person. */
+export type ComputerHold = RunComputer["hold"];
+/** POST /v2/runs/{id}/computer/take-over's and …/hand-back's answer: who drives now, and an ask's outcome. */
+export type ComputerHoldAnswer = Answer<"handBackRunComputer">;
+/** A hand-back's answer to the agent's ask: done or cancelled. */
+export type HandBackOutcome = NonNullable<Body<"handBackRunComputer">["outcome"]>;
+/** The agent's ask for the person at its computer: kind "browser" (its browser) or "computer" (a desktop or phone).
+ *  POST …/computer/hand-back answers either. */
+export type ComputerAsk = Extract<NonNullable<Run["pending"]>, { kind: "browser" | "computer" }>;
+/** The run read's computer: its agent's computer setting (any kind, a sandbox too), its provider and where it stands. */
+export type RunMachine = NonNullable<Run["computer"]>;
 
 /** Tool keys (GET /v2/settings/tool-keys, a serve extension). The server never sends a value. */
 /** A secret as every read says it (SecretMeta): its "<plane>:<id>" name, set or not, where from, and its own last change. */

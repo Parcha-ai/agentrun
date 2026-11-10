@@ -9,8 +9,9 @@ import type { CapabilityKind } from "./hands.js";
 import { PHONE_TOOL_DEFS } from "./phone.js";
 import { BACKGROUND_INPUT_BYTES, BACKGROUND_LIST_MAX, BACKGROUND_LOG_BYTES, BACKGROUND_MAX, BACKGROUND_PAGE_BYTES, BACKGROUND_SIGNALS, BASH_DEFAULT_TIMEOUT_S } from "./limits.js";
 
-/** Where the run's shell is: on a computer (bash and the background tools run there), on this machine in the run's
- *  folder (bash only, asked first), or nowhere (no shell tool at all). */
+/** Where the run's shell is: on a computer (bash and the background tools run there), the run's folder's own exec with no
+ *  computer (bash only, asked first: a host gives it only where that exec is not its own machine, as serve's Archil
+ *  serverless exec), or nowhere (no shell tool at all, and a bash call is refused in words). */
 export type ShellPlace = "computer" | "local" | "none";
 
 /** A tool the model sees. */

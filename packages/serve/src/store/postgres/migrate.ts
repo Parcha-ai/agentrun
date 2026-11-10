@@ -7,6 +7,14 @@ import { createHash } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
 import type pg from "pg";
 import { SchemaVersionUnknown } from "../store.js";
+import { SCHEMA_NAME } from "./connection.js";
+
+/** `schema` as SQL takes it here, unquoted: refused (TypeError) unless it is a store schema name (SCHEMA_NAME), before any
+ *  statement is sent. Every entry point checks it too; this is the last line, for a caller that comes here directly. */
+function schemaName(schema: string): string {
+  if (typeof schema !== "string" || !SCHEMA_NAME.test(schema)) throw new TypeError(`not a store schema name: ${JSON.stringify(schema)}`);
+  return schema;
+}
 
 export interface Migration {
   readonly version: number;
@@ -46,6 +54,7 @@ const isMissing = (error: unknown): boolean => {
 
 /** The schema's version: the highest migration applied, or null when none is (no schema, or not set up yet). */
 export async function versionOf(client: Pick<pg.ClientBase, "query">, schema: string): Promise<number | null> {
+  schemaName(schema);
   try {
     const result = await client.query(`SELECT max(version) AS version FROM ${schema}.schema_migrations`);
     const version = result.rows[0]?.version;
@@ -59,7 +68,7 @@ export async function versionOf(client: Pick<pg.ClientBase, "query">, schema: st
 /** Removes the store in `schema` and everything in it, on its own connection: for a scratch store's cleanup (the conformance
  *  harness's world, the tests'), never a server's path. */
 export async function dropPostgresSchema(url: string, schema: string): Promise<void> {
-  if (!/^[a-z_][a-z0-9_]{0,62}$/.test(schema)) throw new TypeError(`not a store schema name: ${JSON.stringify(schema)}`);
+  schemaName(schema);
   const { default: postgres } = await import("pg");
   const client = new postgres.Client({ connectionString: url });
   client.on("error", () => undefined);
@@ -75,6 +84,7 @@ export async function dropPostgresSchema(url: string, schema: string): Promise<v
  *  schema at a version this build does not know is refused (SchemaVersionUnknown), and so is an applied file whose text
  *  changed since. Answers the version it leaves. */
 export async function migrate(client: pg.ClientBase, schema: string, at: number, migrations: readonly Migration[] = migrationsIn()): Promise<number> {
+  schemaName(schema);
   const known = migrations.at(-1)!.version;
   await client.query("BEGIN");
   try {

@@ -67,8 +67,11 @@ published port, or a proxy's URL), and the link printed uses it; with none, Rend
 end, and per refused credential; AGENTRUN_LOG=quiet leaves out the request lines.
 
 The page is for one person, who signs in with a password (AGENTRUN_ACCOUNTS=0 turns this off; the token works for
-scripts and the CLI either way). With no AGENTRUN_PUBLIC_URL the first visit to the page sets the password; with it, the
-setup link this server prints carries a code. Forgot the password: \`agentrun-serve reset-password --data DIR\` where the
+scripts and the CLI either way). With no AGENTRUN_PUBLIC_URL, listening on loopback, the first visit to the page sets the
+password; with it, or on any other address, the setup link this server prints carries a code. Sign-in tries are limited
+per address (an IPv6 one by its /64) and wrong passwords per server; past the limit a try waits, a minute at most.
+Behind a proxy, set AGENTRUN_TRUSTED_PROXIES to its addresses or ranges (comma-separated; or loopback, linklocal,
+uniquelocal) so each visitor counts by the address its X-Forwarded-For names; unset, that header is never read. Forgot the password: \`agentrun-serve reset-password --data DIR\` where the
 data directory is (inside the container) clears it and signs every browser out, and the next visit sets a new one.
 
 \`agentrun-serve import\` reads the Claude Code, Codex and pi sessions in your own home (~/.claude/projects,
@@ -293,6 +296,7 @@ const onBoxImage = (state: ImageState) => {
 Object.assign(process.env, startedWith({ ...(values.port !== undefined ? { port: values.port } : {}), open: values.open === true }));
 let serve: Serve;
 let serveOptions: ServeOptions;
+const trustedProxies = (process.env.AGENTRUN_TRUSTED_PROXIES ?? "").split(",").map((entry) => entry.trim()).filter(Boolean);
 try {
   serve = await startServe(serveOptions = {
     onBoxImage,
@@ -302,6 +306,8 @@ try {
     // The public address is the server's with accounts on or off: the Host names it serves, the webhook URLs it gives.
     ...(publicUrl ? { publicUrl } : {}),
     ...(accounts ? { accounts, openSetup: !publicUrl, countSessions: true } : {}),
+    // The proxies whose X-Forwarded-For the sign-in limit reads (comma-separated); none unless set.
+    ...(trustedProxies.length ? { trustedProxies } : {}),
   });
 } catch (error) {
   console.error(`agentrun-serve: ${(error as Error).message}`);
@@ -328,8 +334,9 @@ if (!values["no-runner"]) {
 // A token from the environment is the operator's already, and the stored one is printed by the start that made it only.
 const source = given ? "env" : serve.tokenMade ? "made" : "file";
 for (const line of banner({ url: serve.url, baseUrl: serve.baseUrl, data, token: serve.token, source, accounts, boxes: serve.boxesLine, ...(values.listen ? { listen: values.listen } : {}), ...(publicUrl ? { publicUrl } : {}) })) console.log(line);
-// With a public address the setup link and its code are printed as the code is made (owner.ts).
-if (serve.setupUrl && !publicUrl) console.log(`Set your password: ${serve.setupUrl} (the first visit sets it)`);
+// Open setup (no public address, a loopback listener): the link that sets the password. Any other start printed the
+// setup link with its code as the code was made (owner.ts).
+if (serve.setupUrl && serve.setupOpen) console.log(`Set your password: ${serve.setupUrl} (the first visit sets it)`);
 bannered = true;
 for (const line of early.splice(0)) console.log(line);
 // The console's page, once the server listens: never its sign-in link, whose token would sit in the opener's arguments

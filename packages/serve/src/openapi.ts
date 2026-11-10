@@ -26,7 +26,7 @@ import { ATTEMPTS_KEPT, MESSAGE_TYPES, WEBHOOK_EVENTS } from "./webhooks.js";
 import { DEFAULT_SCHEME, SCHEME_NAMES, SIGNATURE_SCHEMES } from "./trigger-signatures.js";
 import { HOOK_BODY_MS } from "./push-handler.js";
 import { CATCHUP_WINDOW_S, DUE_KEPT, MAX_ACTIVE_RUNS, SEEN_KEPT, FAILURES_TO_PAUSE, FIRING_STATUSES, PAYLOAD_KEPT_BYTES, HISTORY_KEPT, MAX_EVERY_S, SOURCE_KINDS, TARGET_KINDS } from "./triggers.js";
-import { DEFINITION_FIELDS, MODEL_REF, NOT_KEPT } from "./validate.js";
+import { DEFINITION_FIELDS, EXTERNAL_NAME, MODEL_REF, NOT_KEPT } from "./validate.js";
 import { GRADER_TYPES, MODEL_TIERS, PARAMETER_TYPES } from "./templates.js";
 import { NOT_SET_UP } from "./runnable.js";
 import { APPROVAL_ROW, ARGS_PREVIEW_BYTES, MAX_PIN_ARGS, MAX_PIN_CHOICES, PERMISSIONS } from "./tool-gate.js";
@@ -1045,6 +1045,17 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       ],
       responses: { "200": json(ref("schemas/RunList"), "One page of runs, newest first."), ...errors(400, 401, 429, 500) },
     },
+    post: {
+      operationId: "createInlineRun", tags: ["runs"], summary: "Start a run of an agent another system owns, given inline",
+      description: "Starts a run as POST /agents/{agent_id}/runs does, with that route's run fields, checks and answer, of an agent given inline: `definition` (with `skills` and `note`) as POST /agents takes one and checked as it checks one, in its words, and `external`, the agent's reference in the system that owns it. The agent here is one per `external` source, kind and id, made by its first run; its revision is one per `external.version`, made by that version's first run and made current then, which also brings the agent's name and description up to it. A later run of a version reuses its revision and changes nothing. A version's definition never changes here: another definition under a version already run is `409 external_body_conflict`, nothing written, and the source publishes a new version. Two first runs at once make one agent and one revision. The agent is read-only here (its edits, current revision and archive are `403 forbidden`); it is read, run, learns and is triggered as any agent. `revision` is not taken: the run runs its version's. The run reads, on every read route, as a run of an agent made with POST /agents.",
+      parameters: [ref("parameters/IdempotencyKey")],
+      requestBody: { required: true, content: { "application/json": { schema: ref("schemas/RunCreateInline") } } },
+      responses: {
+        "202": { description: "The run, accepted, as POST /agents/{agent_id}/runs answers it. Follow it on its timeline.", headers: { Location: ref("headers/Location"), "Idempotent-Replayed": ref("headers/IdempotentReplayed") }, content: { "application/json": { schema: ref("schemas/Run") } } },
+        ...errors(400, 401, 409, 422, 429, 500),
+      },
+      "x-agentrun-serve": "inlineagent/1",
+    },
   },
   "/agents/{agent_id}/revisions": {
     get: {
@@ -1301,7 +1312,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
             accounts: { type: "boolean", description: "Whether this server has accounts (a password owner). false: the console shows no setup or sign-in screen." },
             password_set: { type: "boolean", description: "With accounts: whether the owner's password is set." },
             signed_in: { type: "boolean", description: "With accounts: whether this browser holds the owner's password session." },
-            setup_code: { type: "boolean", description: "With accounts, before the password is set: whether setup takes the code the server printed (a server at a public address). Never the code." },
+            setup_code: { type: "boolean", description: "With accounts, before the password is set: whether setup takes the code the server printed (a server at a public address, or listening on any address but loopback). Never the code." },
             secrets_writable: { type: "boolean", description: "Whether this caller may save, replace or remove a secret here (the same rule the server applies to the write itself)." },
             secrets_reason: { enum: ["sign_in", "no_accounts", "token"], description: "Present only when secrets_writable is false: sign_in, this is not the owner's session (accounts on: sign in with the password; accounts off on a loopback-bound server: open the console from the launch link); no_accounts, accounts are off and this server is reachable off loopback, where no one saves a secret until accounts are on; token, the caller is the API token, which never saves one, on any server." },
           },
@@ -1337,16 +1348,17 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
     },
     put: {
       operationId: "saveMcpServer", tags: ["local"], summary: "Preview a remote MCP server, then save it with the tools listed and its credential sealed",
-      description: `Each credential header's value is sealed under the server's seal key and bound to the server's name and the header, and kept in the data directory as ciphertext alone. 409 no_sealing_key when the server was handed no seal key and \`auth.type\` is not none (nothing is contacted). A body with no credential keeps the sealed one while the type and the URL's origin stay the same; else it is 422. A body with no \`prices\` keeps the saved ones for the tools still listed at the same URL, so a save from any client never leaves a paid tool unmetered; \`prices: {}\` clears them. 422 too for a bad name, URL or auth, or a price that is not a finite number 0 or more or names a tool the server does not list. ${MCP_CONNECTS} Nothing is saved unless the listing succeeds.`,
+      description: `Each credential header's value is sealed under the server's seal key and bound to the server's name and the header, and kept in the data directory as ciphertext alone. 409 no_sealing_key when the server was handed no seal key and \`auth.type\` is not none (nothing is contacted). 403 forbidden to the API token for a save that sends a credential's value, or that would drop or change the credential the server holds (another \`auth.type\`, or none): the owner's signed-in session alone. 412 precondition_failed when a save that sends a new credential, or none, finds the server's credential changed while it listed its tools (another save, a sign-in or a removal landed): nothing is written over it. A body with no credential keeps the sealed one while the type and the URL's origin stay the same; else it is 422. A body with no \`prices\` keeps the saved ones for the tools still listed at the same URL, so a save from any client never leaves a paid tool unmetered; \`prices: {}\` clears them. 422 too for a bad name, URL or auth, or a price that is not a finite number 0 or more or names a tool the server does not list. ${MCP_CONNECTS} Nothing is saved unless the listing succeeds.`,
       parameters: [MCP_NAME],
       requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, required: ["url"], properties: { url: MCP_URL, auth: MCP_AUTH, prices: MCP_PRICES } } } } },
-      responses: { "200": json(MCP_SERVER_VIEW, "The server, as saved."), ...errors(400, 401, 409, 415, 422, 429, 500), ...MCP_FAILED },
+      responses: { "200": json(MCP_SERVER_VIEW, "The server, as saved."), ...errors(400, 401, 403, 409, 412, 415, 422, 429, 500), ...MCP_FAILED },
       "x-agentrun-serve": "mcpservers/1",
     },
     delete: {
       operationId: "deleteMcpServer", tags: ["local"], summary: "Forget a saved MCP server and its credential",
+      description: "403 forbidden to the API token when the server holds a credential: removing it drops a secret, the owner's signed-in session's alone. A server saved with none is the token's to remove. 412 precondition_failed when the server's credential changed between that check and the removal (a save or a sign-in landed): nothing is removed.",
       parameters: [MCP_NAME],
-      responses: { "204": { description: "Forgotten." }, ...errors(401, 404, 409, 429, 500) },
+      responses: { "204": { description: "Forgotten." }, ...errors(401, 403, 404, 409, 412, 429, 500) },
       "x-agentrun-serve": "mcpservers/1",
     },
   },
@@ -1818,6 +1830,14 @@ const CAP_MODE: Json = {
   description: "How the run's cap (`max_cost_usd`) prices each model request's input. `expected` (the default): the input the previous request of its conversation reported read from or written to the cache, at the cache-read price, when that request ended less than 4 minutes before; the rest of its input (the previous request's input after the cache, and what the conversation grew by since, a token a byte) at the input price, the cache write's when dearer. With no such request, all of it at that price. Output is limited to what the cap leaves, so output never passes it; a cache miss can, by at most the request's bound (its input uncached less its input expected), served as the run's `cost.overshoot_bound_usd` while it is in flight; its real cost is booked, and the timeline says so. `strict`: every input token at the input or cache-write price, the worst case: no request passes the cap, and a run pauses sooner. Only with a cap.",
   "x-agentrun-serve": "capmode/1",
 };
+/** inlineagent/1: an agent's reference in the system that owns it, as POST /runs names it. */
+const EXTERNAL_REF = closed({
+  source: { type: "string", pattern: EXTERNAL_NAME.source, description: "The system that owns the agent, such as `grep`. No colon." },
+  kind: { type: "string", pattern: EXTERNAL_NAME.source, description: "What the agent is there, such as `expert`. No colon." },
+  id: { type: "string", minLength: 1, maxLength: 255, description: "The agent's id there." },
+  version: { oneOf: [{ type: "string", minLength: 1, maxLength: 128 }, { type: "integer", minimum: 0 }], description: "The version there of the definition sent: one revision here per version, kept as text (7 and \"7\" are one version). A version's definition never changes: another under a version already run is 409 external_body_conflict." },
+}, "The agent's reference in the system that owns it: one agent here per source, kind and id; one revision per version.") as Json & { properties: Record<string, Json> };
+
 /** costsofar/1: a cost no one fully knows, said as what is known and how much is not, with no ceiling claimed. */
 const SO_FAR = {
   so_far_usd: { type: "number", minimum: 0, description: "Set only while `usd` is null: the sum of the charges whose cost is known (model requests, a workflow's decisions, paid tool calls). Never the cost: the charges counted in `unpriced` are not in it, and nothing bounds them.", "x-agentrun-serve": "costsofar/1" },
@@ -1956,6 +1976,17 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
     note: { type: "string", maxLength: 2000, description: "What the revision changes, kept with it (GET /agents/{agent_id}/revisions).", "x-agentrun-serve": "definitionbody/1" },
   },
   Agent: {
+    external: {
+      ...closed({
+        source: EXTERNAL_REF.properties.source,
+        kind: EXTERNAL_REF.properties.kind,
+        id: EXTERNAL_REF.properties.id,
+        version: { type: "string", description: "The version in its source of the agent's current revision: the version whose first run made it, as text." },
+      }),
+      readOnly: true,
+      description: "Set only on an agent another system owns, made by its first run of POST /runs: its reference there. Read-only: the agent's edits, current revision and archive here are 403 forbidden, as its source is the truth. Absent on an agent of this server's own.",
+      "x-agentrun-serve": "inlineagent/1",
+    },
     console_url: CONSOLE_URL("agent"),
     tools: AGENT_TOOLS,
     kind: { enum: ["agentic", "workflow", null], description: "The current revision's kind; null before the agent has one.", "x-agentrun-serve": "serve/1" },
@@ -2193,6 +2224,17 @@ export const REQUEST_EXAMPLES: Record<string, Record<string, { summary: string; 
   createRun: {
     agentic: { summary: "An agentic agent's run, capped at $1", value: { input: { content: "Research https://stripe.com and write the brief." }, max_cost_usd: 1 } },
   },
+  createInlineRun: {
+    agentic: {
+      summary: "A run, capped at $1, of version 3 of an agent another system owns, given inline",
+      value: {
+        external: { source: "grep", kind: "expert", id: "due-diligence", version: 3 },
+        definition: { name: "Due diligence", instructions: "Research the company you are given on the web and write a short brief: what it does, who runs it, red flags, and the sources you read.", tools: ["web_search", "web_fetch"] },
+        input: { content: "Research https://stripe.com and write the brief." },
+        max_cost_usd: 1,
+      },
+    },
+  },
   createTrigger: {
     schedule: {
       summary: "A capped run of an agent every Monday at 09:00 UTC",
@@ -2273,6 +2315,24 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
       fields.push([name, ...down, field].join("."));
     }
   }
+  // inlineagent/1: POST /runs' body, the run fields of POST /agents/{agent_id}/runs (RunCreate, as extended above) but a
+  // pinned revision, with the agent given inline as POST /agents takes one and its reference in the system that owns it.
+  const runCreate = schemas.RunCreate as Json & { properties: Record<string, Json> };
+  const agentCreate = schemas.AgentCreate as Json & { properties: Record<string, Json> };
+  const { revision: _pinned, ...runFields } = runCreate.properties;
+  schemas.ExternalRef = { ...EXTERNAL_REF, "x-agentrun-serve": "inlineagent/1" };
+  schemas.RunCreateInline = {
+    type: "object", additionalProperties: false, required: ["external", "definition", "input"],
+    description: "A run of an agent another system owns, given inline (POST /runs): POST /agents/{agent_id}/runs' run fields, with the agent as POST /agents takes it and its reference in its source.",
+    properties: {
+      external: ref("schemas/ExternalRef"),
+      definition: { ...agentCreate.properties.definition, description: "The agent's definition as POST /agents takes one, checked as it checks one (its 422s name `definition.<field>`), but its `id` (this server's, one per external reference) and its `version` (`external.version`), which it does not take." },
+      ...(agentCreate.properties.skills ? { skills: agentCreate.properties.skills } : {}),
+      ...(agentCreate.properties.note ? { note: { ...agentCreate.properties.note, description: "What the version changes, kept with its revision by the version's first run (GET /agents/{agent_id}/revisions); not part of its definition." } } : {}),
+      ...runFields,
+    },
+    "x-agentrun-serve": "inlineagent/1",
+  };
   // This server's own run fields it always sends, on a run and in a list (runs.ts view and summary): required with the
   // contract's, so a client may read them as there.
   for (const name of ["Run", "RunSummary"]) {
@@ -2484,6 +2544,7 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
   const details = ((schemas.ErrorBody as Json).properties as Record<string, Json>).details!;
   details["x-agentrun-serve-details"] = {
     agent_not_runnable: NOT_RUNNABLE_DETAILS, system_file_forbidden: FORBIDDEN_DETAILS,
+    external_body_conflict: closed({ external: closed({ source: { type: "string" }, kind: { type: "string" }, id: { type: "string" }, version: { type: "string", description: "The version already run with another definition, as text." } }, "The reference and version POST /runs named.") }),
     auth_required: closed({ auth: { enum: ["bearer", "oauth"], description: "What the MCP server asks for: `oauth` when it names protected-resource metadata, else `bearer`." }, status: { enum: [401, 403] } }),
     upstream_failed: { type: "object", additionalProperties: false, properties: { status: { type: "integer", description: "The MCP server's HTTP status, when it answered one." } } },
     sign_in_held: { type: "object", additionalProperties: false, minProperties: 1, maxProperties: 1, properties: { held_by: { type: "string", description: "The run that holds the sign-in's save lease." }, handed_to: { type: "string", description: "A run still going that was handed the sign-in (signins/1)." } } },

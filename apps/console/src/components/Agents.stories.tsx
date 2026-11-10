@@ -35,7 +35,7 @@ const agentPage = (slug: string, { runs = true, tab }: { runs?: boolean; tab?: "
     getRun: async (id: string) => recordedRun(id).run,
   };
   const efforts = recorded<{ features: { efforts: string[] } }>("capabilities").body.features.efforts;
-  return page(<AgentPage v2={v2 as never} agentId={slug} defaultModel={editorCaps.defaultModel} efforts={efforts} go={noop} tab={tab} />);
+  return page(<AgentPage v2={v2 as never} agentId={slug} efforts={efforts} go={noop} tab={tab} />);
 };
 
 export const List: Story = { render: () => page(<AgentsList agents={agentsList()} actions={{ onOpen: noop, onEdit: noop, onNew: noop, onRuns: noop, onArchive: noop }} />) };
