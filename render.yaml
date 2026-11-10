@@ -22,6 +22,11 @@ services:
         value: "7340"
       - key: AGENTRUN_TOKEN
         generateValue: true
+      # Render's proxy is the only way in from the internet: trusting the private ranges reads each visitor's address
+      # from the X-Forwarded-For it sets, so the sign-in limit counts visitors one by one, not all as the proxy. A proxy
+      # address outside them is not trusted, and every visitor then counts as it, as before.
+      - key: AGENTRUN_TRUSTED_PROXIES
+        value: uniquelocal
       # The key saved model and tool keys, MCP server credentials and webhook trigger secrets are sealed under. Render
       # generates it once (base64 of 256 bits); a service that already has it keeps its own. Losing it loses them.
       # Every runner must be given this same value.

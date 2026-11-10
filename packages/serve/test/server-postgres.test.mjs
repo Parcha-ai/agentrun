@@ -30,6 +30,32 @@ function cli(t, args, env) {
   return child;
 }
 
+test("a server on Postgres whose store stops reading (its schema dropped under it) answers /v2/health 503 does_not_open, within the health bound", { ...postgresOnly("a deployment's Postgres store"), timeout: 120_000 }, async (t) => {
+  const schema = await freshSchema();
+  t.after(() => dropSchema(schema));
+  const root = await scratch(t);
+  const env = {
+    PATH: `${dirname(process.execPath)}:/usr/bin:/bin`,
+    HOME: root,
+    XDG_CONFIG_HOME: join(root, "config"),
+    TMPDIR: process.env.TMPDIR ?? root,
+    AGENTRUN_ACCOUNTS: "0",
+    AGENTRUN_TOKEN: TOKEN,
+    AGENTRUN_SEAL_KEY: SEAL,
+    AGENTRUN_STORE_URL: PG_URL,
+    AGENTRUN_STORE_SCHEMA: schema,
+  };
+  const server = cli(t, ["--data", join(root, "agents"), "--port", "0", "--faux", FAUX, "--no-runner"], env);
+  const out = await printed(server, /^Open /m);
+  const port = Number(/^agentrun-serve on http:\/\/127\.0\.0\.1:(\d+)\/v2 /m.exec(out)[1]);
+  assert.equal((await fetch(`http://127.0.0.1:${port}/v2/health`)).status, 200, "healthy on its store");
+  await dropSchema(schema);
+  const startedAt = Date.now();
+  const broken = await fetch(`http://127.0.0.1:${port}/v2/health`);
+  assert.deepEqual({ status: broken.status, body: await broken.json() }, { status: 503, body: { status: "failing", checks: { store: "does_not_open", disk: "ok" } } });
+  assert.ok(Date.now() - startedAt < 5_000, `answered within the health bound, not ${Date.now() - startedAt} ms`);
+});
+
 test("a server started on AGENTRUN_STORE_URL opens that Postgres store under its owner lock, and a runner started apart on it runs what the server's API started, which the server reads completed", { ...postgresOnly("a deployment's Postgres store"), timeout: 180_000 }, async (t) => {
   const schema = await freshSchema();
   t.after(() => dropSchema(schema));
@@ -54,6 +80,9 @@ test("a server started on AGENTRUN_STORE_URL opens that Postgres store under its
   const second = await openPostgresStore({ url: PG_URL, schema, role: "server" }).then(async (store) => (await store.close(), null), (error) => error);
   assert.ok(second instanceof StoreOwned, `the server holds the schema's owner lock: ${second ?? "a second server opened it"}`);
   assert.equal(existsSync(join(data, "store.sqlite")), false, "no SQLite store in the data directory");
+  // Health reads that store (a compose's runners wait for it: depends_on service_healthy), never a file in the data dir.
+  const health = await fetch(`http://127.0.0.1:${port}/v2/health`);
+  assert.deepEqual({ status: health.status, body: await health.json() }, { status: 200, body: { status: "ok", checks: { store: "ok", disk: "ok" } } });
   const api = client(`http://127.0.0.1:${port}/v2`, TOKEN);
   // On the runner: the store is what is tested here, not a box (this machine's docker may be set up or not).
   assert.equal((await api("POST", "/agents", agent("plain", { place: { mode: "runner" } }))).status, 201);

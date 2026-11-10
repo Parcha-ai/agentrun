@@ -130,7 +130,7 @@ const REFUSED = new Map([
   ["wrong_token", "the API token is not this server's"],
   ["no_credential", "it carried no API token"],
   ["wrong_password", "the password is wrong"],
-  ["sign_in_table_full", "too many sign-ins at once"],
+  ["sign_in_table_full", "a sign-in from more addresses than the limit counts one by one"],
 ]);
 
 /** The fields of one of the server's log lines (print.ts: `key=value` or `key="value"`); a repeated key keeps its first

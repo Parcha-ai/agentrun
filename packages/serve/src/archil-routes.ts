@@ -12,7 +12,7 @@
 import { ARCHIL_API_KEY_ROW, type ArchilSettings, clearArchilSettings, loadArchilSettings, saveArchilSettings } from "./archil-settings.js";
 import { ApiError, type InputIssue, invalid } from "./errors.js";
 import { type KeyEnv, type KeyMeta, keyMetaOf } from "./key-meta.js";
-import { registerSecretWrite, secretName } from "./secret-writes.js";
+import { registerNotSecretWrite, registerSecretWrite, secretName } from "./secret-writes.js";
 import { putSealedKey, removeSealedKey } from "./server-keys.js";
 import type { Store } from "./store/index.js";
 import { unknownFields } from "./validate.js";
@@ -32,6 +32,8 @@ export const ARCHIL_KEY_NAMES: readonly string[] = KEYS.map((key) => key.name);
 // region and S3 URL too, which say where every run's files go, so a token never re-points them. The server's one dispatch
 // check keeps it to the owner's session. Turning Archil off keeps the key, so it is not registered.
 registerSecretWrite("putWorkspaceArchil", () => true);
+registerNotSecretWrite("deleteWorkspaceArchil", "Turning Archil off keeps its key: no secret is dropped or replaced.");
+registerNotSecretWrite("testWorkspaceArchil", "A connection test reads the saved key and writes none.");
 
 /** The account key as its one SecretMeta: named "workspace:archil", set by ARCHIL_API_KEY or its sealed row. */
 const SECRET = { secret: secretName("workspace", "archil"), env: ARCHIL_API_KEY_ENV, row: ARCHIL_API_KEY_ROW };

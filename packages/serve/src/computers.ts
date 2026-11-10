@@ -11,7 +11,7 @@ import { COMPUTER_KINDS, type ComputerKind, type ComputerSetting } from "./compu
 import { inArchilMode } from "./archil-settings.js";
 import { ApiError, invalid } from "./errors.js";
 import { type KeyEnv, type KeyMeta, keyMetaOf, envValue } from "./key-meta.js";
-import { registerSecretWrite, secretName } from "./secret-writes.js";
+import { registerNotSecretWrite, registerSecretWrite, secretName } from "./secret-writes.js";
 import { getSealedKey, putSealedKey, removeSealedKey, sealedKeyNames } from "./server-keys.js";
 import type { Store } from "./store/index.js";
 
@@ -19,6 +19,7 @@ import type { Store } from "./store/index.js";
 // body or none), as saveToolKey's is: the server's one dispatch check keeps it to the owner's session before any provider
 // is looked up, so a token learns nothing of which providers exist. The view and the connection test write none.
 registerSecretWrite("saveComputerKeys", () => true);
+registerNotSecretWrite("testComputer", "A connection test reads the saved keys and writes none.");
 
 /** A setting kind as the kind registry's SETTING_KINDS gives it. */
 export interface SettingKindSpec {
