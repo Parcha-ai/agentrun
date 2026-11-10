@@ -33,7 +33,7 @@ void openStore;
 async function recover(){const driver=await openRecovery(memoryStore(),workflow,{key:'floor'});const deps=withRecovery(driver,{});await driver.close();return deps;}
 void recover;\n`);
   await exec('npm', ['install', '--prefix', compiler, '--ignore-scripts', '--no-audit', '--no-fund', '--save-exact', 'typescript@5.4.5'], { cwd: root, timeout: 120_000, maxBuffer: 1024 * 1024 });
-  const result = await exec(process.execPath, [join(compiler, 'node_modules/typescript/bin/tsc'), '--noEmit', '--strict', '--target', 'ES2022', '--module', 'NodeNext', '--moduleResolution', 'NodeNext', fixture], { cwd: root, timeout: 60_000, maxBuffer: 4 * 1024 * 1024 });
+  const result = await exec(process.execPath, [join(compiler, 'node_modules/typescript/bin/tsc'), '--noEmit', '--strict', '--target', 'ES2022', '--module', 'NodeNext', '--moduleResolution', 'NodeNext', '--types', 'node', fixture], { cwd: root, timeout: 60_000, maxBuffer: 4 * 1024 * 1024 });
   process.stdout.write(result.stdout);
   await writeFile(join(root, '.release/typescript-floor.json'), JSON.stringify({ status: 'passed', typescript: '5.4.5', node: process.version }, null, 2) + '\n');
   console.log('All package declarations and inferred boundary contracts compile with TypeScript 5.4.5.');

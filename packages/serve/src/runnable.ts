@@ -104,10 +104,10 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
   const shellOnRunner = (tool: string, field: string, named: boolean): Blocker => {
     const where = named ? "this agent's place is the runner" : "this agent names no place, so it runs on the runner";
     const box = boxAvailability(boxes).find((b) => RUN_BOXES.includes(b.id) && b.available);
-    if (box) return { field, reason: "not_an_option", message: `${tool} runs only in a box, and ${where}, which has no shell: give it a sandbox place.`, fix: placeFix({ mode: "sandbox", box: box.id }), host: false, tool };
+    if (box) return { field, reason: "not_an_option", message: `${tool} runs only in a box, and ${where}, which has no shell: give it a sandbox computer (a sandbox place).`, fix: placeFix({ mode: "sandbox", box: box.id }), host: false, tool };
     const fresh = newAgentPlace(boxes);
     const why = "reason" in fresh ? fresh.reason : "no box runs execute in is available here";
-    return { field, reason: "not_an_option", message: `${tool} runs only in a box, and ${where}, which has no shell, and ${why}. Do that, or keep this agent on the runner: name "place": {"mode": "runner"} and remove "${tool}" from definition.tools.`, fix: `Remove "${tool}" from definition.tools.`, host: false, tool };
+    return { field, reason: "not_an_option", message: `${tool} runs only in a box, and ${where}, which has no shell (a shell needs a sandbox computer), and ${why}. Do that, or keep this agent on the runner: name "place": {"mode": "runner"} and remove "${tool}" from definition.tools.`, fix: `Remove "${tool}" from definition.tools.`, host: false, tool };
   };
   // A harness's own MCP client may drop or retype a shape of a tool's schema (its facts' schemaProblems, measured on its
   // pinned build): that would offer the model another tool than the one granted, so its grant is refused here, at the
