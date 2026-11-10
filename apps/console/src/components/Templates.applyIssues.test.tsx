@@ -4,6 +4,9 @@ import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { TemplatesPage } from "./Templates";
 import { ClientError } from "@/lib/client";
 import type { TemplateView } from "@/lib/v2";
+import { paramIssueWords, paramValid } from "@/lib/templatePackages";
+
+type Parameter = TemplateView["parameters"][string];
 import { picker, pick } from "@/test/picker";
 
 // A template's Apply form names a field by the label it shows, never its raw path ("parameters.risk_appetite"), and an
@@ -78,6 +81,18 @@ describe("a template's Apply form, a refused parameter", () => {
     expect(t.at("parameters.depth")).toContain("depth takes a whole number.");
     await t.type("parameters.depth", "3");
     expect(t.at("parameters.depth")).not.toContain("whole number");
+  });
+
+  it("an integer's issue goes by the number Apply sends: 3.0 and 1e2 are whole, 2^53 is not a safe one", () => {
+    const depth = KYB.parameters.depth;
+    expect(["3", "3.0", "1e2", " 4 "].map((text) => paramValid(depth, text))).toEqual([true, true, true, true]);
+    expect(["2.5", "abc", "9007199254740992", " "].map((text) => paramValid(depth, text))).toEqual([false, false, false, false]);
+  });
+
+  it("a boolean held to its enum names the value it takes, and an unticked box stays refused", () => {
+    const agreed = { type: "boolean", required: true, description: "Agree to the terms", enum: [true] } as Parameter;
+    expect(paramIssueWords({ field: "parameters.agreed", reason: "not_an_option", message: "parameters.agreed is not an option" }, "agreed", agreed)).toBe("agreed takes one of: true.");
+    expect([paramValid(agreed, "false"), paramValid(agreed, "true")]).toEqual([false, true]);
   });
 
   it("places an issue by its served field, whatever its words name", async () => {
