@@ -8,7 +8,7 @@ import type { TimelineEvent } from "@parcha/pi-durable-agent/timeline";
 import { LEARNED_DIR, type NoteRuns, LEARNING_LABEL, LEARNING_REASONS } from "./learning.js";
 import type { Status } from "./run-view.js";
 import { said } from "./learning-words.js";
-import { ended, lineNotesOf, type NoteFiles, notesOf } from "./usage.js";
+import type { NoteFiles } from "./usage.js";
 
 /** A run's end-of-run turn: the job's outcome, the newest store entry before the turn and, once the run ended, the newest
  *  after it (its rows are those between), its deadline, and how it ended. */

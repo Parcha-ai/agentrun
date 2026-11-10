@@ -11,8 +11,3 @@ export function servedOnly<T extends TimelineEvent>(row: T): T {
   return Object.assign(row, { [SERVED_ONLY]: true });
 }
 
-/** The ids of `rows` tagged as only the served view's, added to `into`. */
-export function servedOnlyIds(rows: readonly TimelineEvent[], into: Set<string> = new Set()): Set<string> {
-  for (const row of rows) if ((row as { [SERVED_ONLY]?: boolean })[SERVED_ONLY]) into.add(row.id);
-  return into;
-}

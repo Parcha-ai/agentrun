@@ -16,7 +16,6 @@
 // main now. A text that leaves holding one of the host's secrets as they are now (a value made secret after it was
 // written) is cut of it, a file's name holding one reads "[redacted]" whole, and a diff's file holding one is withheld.
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { join } from "node:path";
 import { approve, buildIndex, CAPS, checkNote, draftProblems, frontKeys, INDEX_FILE, INDEX_LINES, isHeld, LEARNED_KEYS, type LearnedNote, learnedName, learnedPlace, learnedStatus, NOTE_FILE, NOTE_STATUSES, parseNoteFile, type Problem, printable, released, retire, retiredLearned, skillProblems, SKILLS_DIR, supersede, unstorable, WORKFLOWS_DIR } from "./learn/index.js";
 import { beforeRetire, blobOid, type FolderChange, FolderBusy, FolderRefused, FolderTooLarge, FolderUnreadable, heldOnMain, isBodyMismatch, type PersonKind, readLearning, readSnapshot, type SnapChange, type SnapHistory, type SnapLearned, type SnapNote, type Snapshot, snapshotNotes, writeLearning } from "./learn/folder.js";
 import { ApiError, invalid } from "./errors.js";

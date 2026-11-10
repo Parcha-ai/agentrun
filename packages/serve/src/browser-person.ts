@@ -22,8 +22,6 @@ import { closeSync, constants, existsSync, fstatSync, linkSync, lstatSync, mkdir
 import { join } from "node:path";
 import { HOST_PHASE } from "@parcha/pi-durable-agent/timeline";
 
-/** pi-browser's tool for the agent's ask. */
-export const HANDOFF_TOOL = "browser_request_handoff";
 /** The ask's directory in the run's directory (never in work/). */
 export const BROWSER_ASK_DIR = "browser-ask";
 /** How long a person's time lasts at most before it expires: an unanswered ask, and a take-over with no input. Its worth of session time is held up front. */
