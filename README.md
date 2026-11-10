@@ -1,8 +1,8 @@
 # AgentRun
 
-**AgentRun is an open-source platform that gives your agents superpowers: they learn from repeated work so later runs
-use fewer tokens, they use whatever computer the job needs and never lose their progress, and you manage all your
-agents in one place.**
+**AgentRun is an open-source platform that supercharges your agents. It adds self-improvement, durable execution and a
+control plane on top of your favorite agent harness. Your agents become smarter, more fault tolerant and use fewer
+tokens with every run.**
 
 Bring your agent on the harness it runs best on: Claude Code, Codex, OpenCode or pi. AgentRun does everything around
 it. It keeps every run in one store, so a crash doesn't lose it. It gives the agent a computer to work on, holds it to

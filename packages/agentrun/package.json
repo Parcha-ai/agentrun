@@ -1,7 +1,7 @@
 {
   "name": "@parcha/agentrun",
   "version": "0.4.0",
-  "description": "AgentRun, the open-source platform that gives your agents superpowers, on this machine with one command: npx @parcha/agentrun",
+  "description": "AgentRun, the open-source platform that supercharges your agents (self-improvement, durable execution and a control plane on top of your favorite agent harness), on this machine with one command: npx @parcha/agentrun",
   "type": "module",
   "license": "Apache-2.0",
   "bin": {
