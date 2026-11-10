@@ -11,6 +11,8 @@ import { mkdirSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { dockerPathsForRuns } from "../box-paths.js";
 import { hostAddressesOnce } from "../docker-host-addresses.js";
+import { HARNESS_TABLE_ENV } from "../harness-table.js";
+import { FAUX_PREFIX } from "../model.js";
 import { SECRET_NAMES, secret } from "../secrets.js";
 import { migrationsIn, openStore, SchemaVersionUnknown, type Store, storePlace, storeTarget } from "../store/index.js";
 import { SCHEMA_VERSION } from "../store/schema.js";
@@ -101,6 +103,17 @@ export function runEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv 
     if (value !== undefined) Object.defineProperty(out, name, { value, enumerable: false, writable: false, configurable: false });
   }
   return out;
+}
+
+/** The beside-runner's environment (the CLI start's server-and-runner): runEnv of `env` with every test switch this
+ *  process inherited taken out (AGENTRUN_SERVE_FAUX*, the harness table: a leftover in a shell would otherwise reach a
+ *  run without --faux, as the server's own withoutFaux keeps it from the server), then `switches`, the ones this start
+ *  enabled (server.ts fauxEnvOf). Deleted from runEnv's result, never spread: its secrets are non-enumerable and a spread
+ *  drops them. */
+export function besideRunEnv(env: NodeJS.ProcessEnv, switches: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const out = runEnv(env);
+  for (const name of Object.keys(out)) if (name.startsWith(FAUX_PREFIX) || name === HARNESS_TABLE_ENV) delete out[name];
+  return Object.assign(out, switches);
 }
 
 /** The runner's loop for every run: the dispatch over the store (createDispatchLoop), each run's harness loop picked by
