@@ -67,6 +67,12 @@ export async function openPostgresStore(options: PostgresStoreOptions): Promise<
     ...(options.ownerWaitMs === undefined ? {} : { ownerWaitMs: options.ownerWaitMs }),
     ...(options.warn ? { onOwnerWait: options.warn } : {}),
     ...(options.onOwnerLost ? { onOwnerLost: options.onOwnerLost } : {}),
+    // Taken back after a loss: the schema must still be the version this build migrated it to (a newer server may have
+    // taken the schema and migrated it meanwhile).
+    ownerCheck: async (client) => {
+      const found = await versionOf(client, schema);
+      return found === known ? undefined : `the schema is at version ${found ?? "none"} now, and this build knows ${known}`;
+    },
   });
   try {
     const found = await connection.withClient((client) => (role === "server" ? migrate(client, schema, now(), migrations) : versionOf(client, schema)));

@@ -96,6 +96,44 @@ test("a server whose owner lock's connection is killed refuses every call until 
   await assert.rejects(openPostgresStore({ url: PG_URL, schema, ownerWaitMs: 0 }), StoreOwned, "and it is the schema's one server");
 });
 
+test("a server that takes its lost owner lock back on a schema a newer build migrated meanwhile gives it up for good: told (onOwnerLost), naming both versions, never serving the schema", ONLY, async (t) => {
+  const schema = await schemaFor(t);
+  const lost = [];
+  const server = await openPostgresStore({ url: PG_URL, schema, onOwnerLost: (error) => lost.push(error) });
+  t.after(() => server.close());
+  const known = migrationsIn().at(-1).version;
+  // A newer server took the schema while the lock was not held, migrated it and let it go: its version is past this build's.
+  await killOwner(schema);
+  await sql(schema, "INSERT INTO schema_migrations (version, name, sha256, applied_at) VALUES ($1, 'newer', 'x', 0)", known + 1);
+  for (const deadline = Date.now() + 10_000; lost.length === 0 && Date.now() < deadline; ) await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.equal(lost.length, 1, "told once");
+  assert.match(lost[0].message, new RegExp(`the schema is at version ${known + 1} now, and this build knows ${known}`));
+  await assert.rejects(server.agents.get("agent-1"), (error) => error === lost[0], "every call refused");
+  // The lock let go: a server of this build opening the schema now is refused by its version, never by the owner lock.
+  await assert.rejects(openPostgresStore({ url: PG_URL, schema, ownerWaitMs: 0 }), (error) => !(error instanceof StoreOwned), "not StoreOwned: the lock was given up");
+});
+
+test("a server whose lost owner lock can't be taken back (the database never answers) gives it up at the end of its wait: told (onOwnerLost), never refusing calls for ever", ONLY, async (t) => {
+  const schema = await schemaFor(t);
+  // Set up directly, then reached only through a host that forwards until it is told to stop.
+  await (await openPostgresStore({ url: PG_URL, schema })).close();
+  const forward = { on: true };
+  const host = await silentHost(t, forward);
+  const through = new URL(PG_URL);
+  through.host = `127.0.0.1:${host.port}`;
+  const lost = [];
+  const server = await openPostgresStore({ url: through.href, schema, ownerWaitMs: 2_000, connectTimeoutMs: 500, onOwnerLost: (error) => lost.push(error) });
+  t.after(() => server.close());
+  // Every connection cut, the owner lock's with them, and every new one hangs: the take-back never gets an answer.
+  forward.on = false;
+  host.cut();
+  const startedAt = Date.now();
+  for (const deadline = Date.now() + 15_000; lost.length === 0 && Date.now() < deadline; ) await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.equal(lost.length, 1, "told once the wait ran out");
+  assert.match(lost[0].message, /could not be taken back within 2 s/);
+  assert.ok(Date.now() - startedAt < 10_000, `within its wait and the connect bound, not ${Date.now() - startedAt} ms`);
+});
+
 test("a second server waits for the owner lock while the first holds it, and takes the schema once the first stops", ONLY, async (t) => {
   const schema = await schemaFor(t);
   const first = await openPostgresStore({ url: PG_URL, schema });
