@@ -256,9 +256,7 @@ docker compose logs server     # the console's link, the first visit's setup cod
 ```
 
 The port is published on this machine's loopback only; put a TLS proxy in front before you open it to anyone else.
-A server in a container runs each run's Docker sandbox beside it, the run's folder mounted from its data volume, on
-Docker Engine 26 or later; the server reads the Docker host's own addresses once through the socket so a sandbox's
-allow-list never reaches the host (`AGENTRUN_DOCKER_HOST_ADDRESSES` adds ones no interface shows).
+This compose file has no Docker socket, so its agents get file tools and `web_fetch` but no shell. For a Docker sandbox, use the single-server `compose.yaml` at the repository's root (Docker Engine 26 or later), run the server on the host, or use a Daytona or E2B computer with an Archil disk.
 
 **Runners on Postgres.** Set `AGENTRUN_STORE_URL` to a `postgres://` URL on the server and every runner (the compose
 file's `pg` profile runs one), start the server with `--no-runner`, and start each runner from the same image with
