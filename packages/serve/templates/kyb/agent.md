@@ -11,7 +11,7 @@ model: { tier: balanced }
 effort: medium
 tools: [read, web_search, web_fetch, ask_person]
 parameters:
-  risk_appetite: { type: string, required: true, pattern: "^(low|medium|high)$", description: "low, medium or high: how much risk you accept, which sets how each red flag is graded and which verdict it leads to. Use medium (the default) unless your policy says otherwise; low is for regulated onboarding, high for low-exposure vendors." }
+  risk_appetite: { type: string, required: true, enum: [low, medium, high], description: "low, medium or high: how much risk you accept, which sets how each red flag is graded and which verdict it leads to. Use medium (the default) unless your policy says otherwise; low is for regulated onboarding, high for low-exposure vendors." }
   jurisdictions_of_interest: { type: string, required: false, pattern: "^$|^[A-Za-z]{2}(\\s*,\\s*[A-Za-z]{2})*$", description: "Optional. Countries that matter to you, as ISO 3166-1 alpha-2 codes separated by commas (e.g. US,GB,AE). Every tie the company has to one (incorporation, address, owner, officer, operations) is reported. Empty: none." }
   opensanctions: { type: boolean, required: false, default: false, description: "Optional. Also look each name up in OpenSanctions (opensanctions.org), one index of every sanctions list, beside the list owners' own sites. Licence: OpenSanctions data is CC BY-NC 4.0, free for non-commercial use only; commercial use needs a paid licence from OpenSanctions. Turn it on only if your use is non-commercial or you hold that licence. Off (the default): the list owners' own sites only." }
 budget: { per_run_usd: 5.00 }

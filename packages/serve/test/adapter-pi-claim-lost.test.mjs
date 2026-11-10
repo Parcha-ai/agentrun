@@ -6,13 +6,18 @@
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
 import { closeOpenSessions, piAdapterSpec } from "./conformance-pi-adapter.mjs";
-import { nextOrder, observed, queue, recorder, stores, until } from "./runner-support.mjs";
+import { fakeClock, nextOrder, observed, queue, recorder, STEADY_LEASE, stores, until } from "./runner-support.mjs";
 
 const { startRunner } = await import("../dist/runner/runner.js");
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { suiteTools } = await import("../dist/runner/conformance/harness.js");
 
-const TIMING = { leaseMs: 600, renewEveryMs: 100, stopMarginMs: 200, pollMs: 20, commandPollMs: 20 };
+// A lease no stall of a loaded machine runs out: the claim is lost only where a case loses it, at the claim deadline the
+// test moves (fakeClock, the runner's own clock for its deadline) or by the store's clock jumping past it. The renew
+// tick is short, so a renew answered Fenced comes within one; only the lease is long.
+const TIMING = { ...STEADY_LEASE, renewEveryMs: 100, pollMs: 20, commandPollMs: 20 };
+/** The claim deadline, from the claim: its lease less the stop margin (RunnerOptions.stopMarginMs). */
+const DEADLINE_MS = TIMING.leaseMs - TIMING.stopMarginMs;
 const WAIT_MS = 10_000;
 const quiet = { beforeIntent: async () => {}, beforeResult: async () => {} };
 after(closeOpenSessions);
@@ -43,6 +48,17 @@ async function midTurn(t, timing = {}) {
     return { ...given, adapter };
   };
   const inner = createAdapterLoop(spec);
+  // `hold()`: the loop's journal commits wait from here until the returned release, so a case orders the store's answer
+  // to the runner (a renew answered Fenced) before pi's next commit meets the fence itself.
+  const held = { gate: undefined };
+  const hold = () => {
+    let release;
+    held.gate = new Promise((resolve) => (release = resolve));
+    return () => {
+      held.gate = undefined;
+      release();
+    };
+  };
   // The loop's stop as the runner tells it, in the order things happened, with the stop's own promise: it returns once
   // the loop's run has finished (its session closed, no write in flight), so a test waits on that, never on the clock.
   const createLoop = (deps) => {
@@ -59,13 +75,34 @@ async function midTurn(t, timing = {}) {
       },
     };
   };
-  const runner = startRunner({ store: observed(opened.runners[0], record), createLoop, name: "runner-a", ...TIMING, ...timing });
+  const runner = startRunner({ store: observed(opened.runners[0], record), createLoop: commitsHeldBy(held, createLoop), name: "runner-a", ...TIMING, ...timing });
   t.after(async () => {
     letSlowGo();
     await runner.close();
   });
   await slowStarted;
-  return { ...opened, record, runner, calls, stops, letSlowGo };
+  return { ...opened, record, runner, calls, stops, letSlowGo, hold };
+}
+
+/** `createLoop` with its journal's commits held while `held.gate` is set (midTurn's hold), then sent on as they were. */
+function commitsHeldBy(held, createLoop) {
+  return (deps) =>
+    createLoop({
+      ...deps,
+      journal: (claim) => {
+        const journal = deps.journal(claim);
+        return new Proxy(journal, {
+          get(target, key) {
+            const value = Reflect.get(target, key, target);
+            if (key !== "commit" || typeof value !== "function") return typeof value === "function" ? value.bind(target) : value;
+            return async (...args) => {
+              if (held.gate) await held.gate;
+              return value.apply(target, args);
+            };
+          },
+        });
+      },
+    });
 }
 
 /** The runner's own events, in order: its stop of the loop for the lost claim, then that stop's return (the loop's run
@@ -86,12 +123,20 @@ function endedThroughTheAdapter({ calls, stops, record }) {
 }
 
 test("pi through the adapter: a claim lost at the renew deadline mid-turn ends the session with interrupt then close, writes nothing after, and the run is claimed again", async (t) => {
-  const world = await midTurn(t);
+  const clock = fakeClock();
+  const world = await midTurn(t, { clock });
+  // Every renew fails from here (the store busy): no answer of the store's loses the claim. The loss is the runner's own,
+  // at its deadline on the clock the test moves; pi's own timers run as they always do.
   world.record.blockRenew.add("runner-a");
+  clock.advance(DEADLINE_MS - 1);
+  assert.deepEqual(world.stops, [], "not stopped before its deadline");
+  clock.advance(1);
   await stoppedForTheLoss(world, "the runner stops the loop at its renew deadline");
   endedThroughTheAdapter(world);
-  // Reclaimable: with renews working again the run is claimed at a new epoch and ends there.
+  // Reclaimable: with renews working again, and the store's clock past the lost claim's until, the run is claimed at a
+  // new epoch and ends there.
   world.record.blockRenew.delete("runner-a");
+  world.clock.skewMs = TIMING.leaseMs * 2;
   world.letSlowGo();
   const row = await until(async () => {
     const now = await world.server.runs.get("run-1");
@@ -103,9 +148,15 @@ test("pi through the adapter: a claim lost at the renew deadline mid-turn ends t
 test("pi through the adapter: a claim fenced mid-turn (another runner took it) ends the session with interrupt then close, and writes nothing after", async (t) => {
   // The runner claims at its start and polls no more: the jumped clock must not let it claim the run again itself.
   const world = await midTurn(t, { pollMs: 60_000 });
+  // pi's commits wait until the runner has had the store's answer, so the loss is the runner's (the next renew answered
+  // Fenced, within one short renew tick), never pi's own commit meeting the fence first; the lease is long, so no
+  // deadline is reached on the way.
+  const letCommitsGo = world.hold();
   world.clock.skewMs = TIMING.leaseMs * 2;
   const taken = await world.server.claim("run-1", "runner-z", { leaseMs: 60_000 });
   assert.equal(taken?.epoch, 2, "the other runner's claim: the run was claimable");
+  await until(() => world.stops.find((each) => each.kind === "claim-lost"), "the runner stops the loop on the Fenced renew", WAIT_MS);
+  letCommitsGo();
   await stoppedForTheLoss(world, "the runner stops the loop for the fenced claim");
   endedThroughTheAdapter(world);
 });
