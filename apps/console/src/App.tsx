@@ -34,6 +34,7 @@ import { trackHistory } from "@/lib/back";
 import { allPages, type Capabilities, ClientError, createClient, type ImportOffer, type ImportState, problemOf, type RunsFilter } from "@/lib/client";
 import { createConnection } from "@/lib/connection";
 import { appendRuns, keeper, keepersByRun, sendOnce, uuid } from "@/lib/idempotency";
+import { waitingOf } from "@/lib/learning";
 import { asksPerson, hasOwnRun, mergeNeeds, type Needs, pollSettled, rerunBody } from "@/lib/needs";
 import { placesOf, preparingBox } from "@/lib/place";
 import { type Problem, problem } from "@/lib/problem";
@@ -267,6 +268,8 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
   // gone, and shows as its id.
   const [namesRead, setNamesRead] = useState(false);
   const namesAsked = useRef(0);
+  // The active agents whose learned items wait for their owner's OK, with how many (Needs you).
+  const [learningWaits, setLearningWaits] = useState<{ agent_id: string; name: string; pending: number }[]>([]);
   // The `refreshed` the names were last read for.
   const namesAfter = useRef(-1);
   const [error, setError] = useState<Problem | null>(null);
@@ -309,11 +312,11 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
   const readCaps = () => { const n = ++capsAsked.current; return v2.capabilities().then((x) => { if (n === capsAsked.current) setCaps(x); return true; }, () => false); };
   useEffect(() => { readCaps(); }, [v2]); // eslint-disable-line react-hooks/exhaustive-deps
   // The agents' names, every page of the active ones and of the archived: read at the start, and again each time a runs
-  // view opens (the list, one agent's runs, a run's page), so an agent made since, here or elsewhere, is named at once, and
-  // again when an import at setup ends while this page watches (`refreshed`).
+  // view or Mission Control opens (the list, one agent's runs, a run's page), so an agent made since, here or elsewhere,
+  // is named at once, and again when an import at setup ends while this page watches (`refreshed`).
   // Only the newest read lands.
   useEffect(() => {
-    if (namesAsked.current && where.section !== "runs" && namesAfter.current === refreshed) return;
+    if (namesAsked.current && where.section !== "runs" && where.section !== "mission" && namesAfter.current === refreshed) return;
     namesAfter.current = refreshed;
     const n = ++namesAsked.current;
     setNamesRead(false);
@@ -349,7 +352,7 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
   const keyCardSavesModel = caps?.models?.ready === false && caps.models.needs !== "model" && !caps.models.default && caps.models.source !== "gateway"
     && !!caps.features?.tool_keys?.routes && caps.features.tool_keys.at_rest === "sealed";
   // The server lists its tools as objects (name, available, missing).
-  const editorCaps: EditorCaps = { harnesses: c?.harnesses ?? [], tools: toolOffers(c?.tools), thinking: c?.features?.thinking ?? [], defaultModel: c?.models?.default };
+  const editorCaps: EditorCaps = { harnesses: c?.harnesses ?? [], tools: toolOffers(c?.tools), thinking: c?.features?.thinking ?? [] };
   // The capabilities with a choice of provider (providers/1): Settings → Tools, and an agent's tool settings.
   const choices = toolChoices(c?.tools);
   // Each tool's permission (approvals/1): Settings → Tools, and an agent's tool settings. None from an older server.
@@ -415,9 +418,14 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
     let live = true;
     // Up to 100 runs of each status, newest first; each read lands apart, and one that fails keeps its section's last answer.
     const upTo = (status: RunStatus) => allPages((cursor) => v2.listRuns(50, cursor, { status }), (p) => p.runs, 2);
-    const read = () => Promise.allSettled([upTo("input_required"), upTo("failed"), upTo("working")])
-      .then((reads) => {
+    // With them, every active agent, for which wait for their owner's OK on what they learned (`learning.pending`): a
+    // run that ends leaving learned items shows in Needs you at the next read. A failed read keeps the last answer.
+    const waiting = () => allPages((cursor) => v2.listAgents({ archived: false, cursor }), (p) => p.agents)
+      .then((agents) => { if (live) setLearningWaits(agents.filter((a) => waitingOf(a) > 0).map((a) => ({ agent_id: a.agent_id, name: a.definition.name ?? a.agent_id, pending: waitingOf(a) }))); }, () => {});
+    const read = () => Promise.allSettled([upTo("input_required"), upTo("failed"), upTo("working"), waiting()])
+      .then(([asking, failed, working]) => {
         if (!live) return;
+        const reads = [asking, failed, working];
         const day = Date.now() - 86_400_000;
         setNeedsProblem(mergeNeeds(null, reads).problem);
         if (reads[0]?.status === "fulfilled") setAskingRead(true);
@@ -546,7 +554,7 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
               <MissionControl view={mission} error={missionError} onRetry={() => setMissionTry((n) => n + 1)}
                 scope={{ range: statsRange, onRange: setStatsRange, agent: statsAgent, onAgent: setStatsAgent, refreshing: missionReading && mission !== null }}
                 asking={needs && askingRead ? needs.asking.length : null}
-                needsYou={needs && <NeedsYouStrip asking={needs.asking} failed={needs.failed} live={needs.live} problem={needsProblem} agentName={agentName} onAnswer={answer} onApprove={approve} onRunAgain={runAgain} onStop={stop} />}
+                needsYou={needs && <NeedsYouStrip asking={needs.asking} failed={needs.failed} live={needs.live} learning={learningWaits} problem={needsProblem} agentName={agentName} onAnswer={answer} onApprove={approve} onRunAgain={runAgain} onStop={stop} />}
                 startHere={ownRun === false ? <StartHere harnesses={editorCaps.harnesses} tools={editorCaps.tools} onTry={tryIt} imported={importedRuns}
                   keyCard={keyCardSavesModel} /> : undefined} />
             </div>
@@ -560,9 +568,9 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
             live={(id) => <LiveRun key={id} v2={v2} runId={id} caps={caps} agentName={agentName} />} />
         : where.section === "agents"
         ? where.agent === undefined ? <AgentsPage key={refreshed} v2={v2} archived={!!where.archived} go={go} />
-          : where.agent !== null && !where.edit ? <AgentPage key={where.agent} v2={v2} agentId={where.agent} tab={where.tab} notes={where.notes} learning={learningCap} defaultModel={editorCaps.defaultModel} modelSource={c?.models?.source} routePrefix={c?.models?.route_prefix} harnesses={editorCaps.harnesses} efforts={efforts} limits={caps?.limits} places={placesOf(caps)} go={go} />
+          : where.agent !== null && !where.edit ? <AgentPage key={where.agent} v2={v2} agentId={where.agent} tab={where.tab} notes={where.notes} learning={learningCap} routePrefix={c?.models?.route_prefix} harnesses={editorCaps.harnesses} efforts={efforts} limits={caps?.limits} places={placesOf(caps)} go={go} />
           // A new decision agent's judge names the server's decision provider (agentForm's decisionProvider).
-          : <AgentEditPage key={`${where.agent ?? "new"}:${where.tool ?? ""}`} v2={v2} choices={choices} gates={gates} focusTool={where.tool} caps={{ ...editorCaps, modelSource: c?.models?.source, routePrefix: c?.models?.route_prefix, decisionProvider: decisionProvider((caps as unknown as { workflows?: Parameters<typeof decisionProvider>[0] } | null)?.workflows), places: placesOf(caps), mcp: !!caps?.features?.mcp_client, mcpHarnesses: caps?.features?.mcp_client?.harnesses }} agentId={where.agent} go={go} />
+          : <AgentEditPage key={`${where.agent ?? "new"}:${where.tool ?? ""}`} v2={v2} choices={choices} gates={gates} focusTool={where.tool} caps={{ ...editorCaps, routePrefix: c?.models?.route_prefix, decisionProvider: decisionProvider((caps as unknown as { workflows?: Parameters<typeof decisionProvider>[0] } | null)?.workflows), places: placesOf(caps), mcp: !!caps?.features?.mcp_client, mcpHarnesses: caps?.features?.mcp_client?.harnesses }} agentId={where.agent} go={go} />
         : where.run ? <LiveRun key={where.run} v2={v2} runId={where.run} caps={caps} agentName={agentName} />
         : <RunsList runs={runs} agentName={agentName} error={error} onRetry={() => setRunsTry((n) => n + 1)} onOpen={(id) => go(`#/runs/${encodeURIComponent(id)}`)} loadingMore={more}
             filter={runsFilter} onFilter={(f) => go(runsHash({ runsOf: where.runsOf, ...f }))}

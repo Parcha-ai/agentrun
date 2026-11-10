@@ -1,4 +1,5 @@
 import { ArrowLeft, Check, LayoutTemplate } from "lucide-react";
+import { Picker } from "@/components/ui/picker";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { ProblemCard } from "@/components/Problem";
 import { SecretOnce } from "@/components/Schedules";
@@ -173,10 +174,8 @@ function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView
                 {/* The parameter's own words; its pattern is the server's to check, never printed. */}
                 <span className="mb-1.5 block text-[12px] text-muted-foreground">{p.description}</span>
                 {choicesOf(p)
-                  ? <select className={input} value={values[key] ?? ""} required={p.required} onChange={(e) => setValues((v) => ({ ...v, [key]: e.target.value }))}>
-                      <option value="">{p.required ? "Choose one" : p.default !== undefined ? `${String(p.default)} (default)` : "None chosen"}</option>
-                      {choicesOf(p)!.map((c) => <option key={c} value={c}>{c}</option>)}
-                    </select>
+                  ? <Picker label={key} className="w-full" value={values[key] ?? ""} onChange={(v) => setValues((was) => ({ ...was, [key]: v }))}
+                      options={[{ value: "", label: p.required ? "Choose one" : p.default !== undefined ? `${String(p.default)} (default)` : "None chosen" }, ...choicesOf(p)!.map((c) => ({ value: c, label: c }))]} />
                   : p.type === "boolean"
                   ? <input type="checkbox" checked={values[key] === "true"} onChange={(e) => setValues((v) => ({ ...v, [key]: e.target.checked ? "true" : "false" }))} />
                   : <input className={input} type={p.type === "string" ? "text" : "number"} step={p.type === "integer" ? 1 : "any"} value={values[key] ?? ""} required={p.required} placeholder={p.default === undefined ? undefined : String(p.default)}
