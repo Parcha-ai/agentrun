@@ -258,8 +258,10 @@ async function turns(n) {
 }
 
 /** The ONE timer of `ms` the next setTimeout(…, ms) arms, held for the case to fire (`fire()`), never by the clock; every
- *  other timer in the process stays real all along. setTimeout is patched only until that timer is armed (`armed`
- *  resolves then), and clearTimeout only to know that timer (and restored by `restore()`). `ms` is a value no other timer
+ *  other timer in the process stays real all along. Every other call goes straight to the real setTimeout and
+ *  clearTimeout (the same arguments, the same return). setTimeout is patched only until that timer is armed (`armed`
+ *  resolves then), clearTimeout only to know that one timer; `restore()` puts both back (idempotent: a case calls it in a
+ *  finally and in t.after, so a failing case leaks no patch into the file's other tests). `ms` is a value no other timer
  *  in the case uses. */
 function holdTimerOf(ms) {
   const realSetTimeout = globalThis.setTimeout;
@@ -275,8 +277,11 @@ function holdTimerOf(ms) {
     return held;
   };
   globalThis.clearTimeout = function (id) {
-    if (id !== undefined && id === held) held.cleared = true;
-    else realClearTimeout(id);
+    if (held !== undefined && id === held) {
+      held.cleared = true;
+      return undefined;
+    }
+    return realClearTimeout(id);
   };
   return {
     armed,
@@ -286,7 +291,7 @@ function holdTimerOf(ms) {
       held.callback(...held.args);
     },
     restore: () => {
-      if (globalThis.setTimeout !== realSetTimeout && !held) globalThis.setTimeout = realSetTimeout;
+      globalThis.setTimeout = realSetTimeout;
       globalThis.clearTimeout = realClearTimeout;
     },
   };
@@ -324,10 +329,12 @@ test("a run held when the runner closes keeps its mount credential through the d
   assert.deepEqual(calls(), minting);
 
   const bound = holdTimerOf(DRAIN_MS);
+  t.after(() => bound.restore());
   try {
     const closing = runner.close();
-    // The drain: close() stops claiming, arms its bound (held here), and lets the held run go on; the token stays.
-    await within(bound.armed, "close() never armed its drain bound");
+    // The drain: close() stops claiming, arms its bound (held here), and lets the held run go on; the token stays. A
+    // close() whose bound is no longer a setTimeout of drainMs fails here by name, never passes on with no drain held.
+    await within(bound.armed, "the drain's bound was never armed");
     await turns(100);
     assert.deepEqual(deletes(), [], "no DELETE for the run's token while it drains");
     assert.deepEqual(calls(), minting, "nothing reaches the control plane while it drains");
