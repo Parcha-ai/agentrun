@@ -79,17 +79,19 @@ import {
 	type ComputerRef,
 	type ComputerSpec,
 	type CreatedComputer,
-	checkLifetime,
+	checkTenure,
 	type NetworkPolicy,
 	type NetworkSpec,
 	type Refusal,
+	type ReleaseHow,
+	runLifetimeMs,
 } from "./provider.js";
 import { type ComputerError, type ComputerErrorCode, failFor, ok, type Result } from "./result.js";
 import { daemonWatch, type ScreenWatch, type ScreenWatchHandlers, type WatchOptions } from "./screen-watch.js";
+import { listTested } from "./test-connection.js";
 
 /** This module's fail: a vendor failure names Orgo (CP-1's one vendor code). */
 const fail = failFor("orgo");
-import { listTested } from "./test-connection.js";
 
 // The images and each desktop's groups are its descriptor's (descriptors/orgo.ts), declared there once.
 export { MACOS_GROUPS, ORGO_MACOS_IMAGE, ORGO_WINDOWS_IMAGE, WINDOWS_GROUPS };
@@ -473,10 +475,10 @@ export class OrgoDesktopProvider implements ComputerProvider {
 		const refusals: Refusal[] = [];
 		const refuse = (field: string, message: string) => refusals.push({ field, message });
 		const given = (typeof spec === "object" && spec !== null ? spec : {}) as unknown as Record<string, unknown>;
-		const { image, lifetimeMs, network, cpus, memoryMb, labels, mount } = given;
+		const { image, network, cpus, memoryMb, labels, mount } = given;
 		const profile = this.#profile;
 		if (image !== profile.image) refuse("image", `this Orgo provider makes ${profile.os} desktops: its image is ${JSON.stringify(profile.image)}`);
-		refusals.push(...checkLifetime(lifetimeMs, this.capabilities()));
+		refusals.push(...checkTenure(given, this.capabilities(), "Orgo"));
 		if (network !== "open") refuse("network", NETWORK);
 		if (memoryMb !== undefined && !profile.ram.some((gb) => gb * 1024 === memoryMb)) refuse("memoryMb", `memoryMb is one of Orgo's ${profile.os} sizes: ${profile.ram.map((gb) => gb * 1024).join(", ")}`);
 		if (cpus !== undefined && !(profile.cpus && CPUS.includes(cpus as number))) refuse("cpus", profile.cpus ? "cpus is one of Orgo's sizes: 0.5, 1, 2, 4 or 6" : `an Orgo ${profile.os} computer's cpus are its host's: leave cpus unset`);
@@ -503,7 +505,7 @@ export class OrgoDesktopProvider implements ComputerProvider {
 		const profile = this.#profile;
 		const labels = { ...spec.labels };
 		const now = Date.now();
-		const deadline = new Date(now + spec.lifetimeMs).toISOString();
+		const deadline = new Date(now + runLifetimeMs(spec)).toISOString();
 		const maxDeadline = new Date(now + this.#maxLifetimeMs).toISOString();
 		const name = orgoName(labels, randomBytes(6).toString("hex"), new Date(deadline));
 		if (name.length > NAME_MAX || nameParts(name) === undefined) return fail("invalid", `the name ${name} is not one Orgo holds: at most ${NAME_MAX} of letters, digits and dashes`);
@@ -516,7 +518,7 @@ export class OrgoDesktopProvider implements ComputerProvider {
 			ram,
 			...(cpu === undefined ? {} : { cpu }),
 			// Orgo's end, the vendor's backstop where it has one: whole hours, deleting the computer. The janitor ends it on time.
-			...(profile.ends ? { ends_in_hours: Math.max(1, Math.ceil(spec.lifetimeMs / HOUR)) } : {}),
+			...(profile.ends ? { ends_in_hours: Math.max(1, Math.ceil(runLifetimeMs(spec) / HOUR)) } : {}),
 		};
 		const made = await this.#rest.request<OrgoComputer>("POST", "/computers", { body, timeoutMs: this.#timeouts.createMs, ...(signal ? { signal } : {}) });
 		if (!made.ok) {
@@ -806,7 +808,7 @@ export class OrgoDesktopProvider implements ComputerProvider {
 	}
 
 	/** delete: idempotent, a computer Orgo no longer has is done; it waits until Orgo no longer has it. No stop. */
-	async release(ref: ComputerRef, how: "stop" | "delete", { signal }: CallContext = {}): Promise<Result<void>> {
+	async release(ref: ComputerRef, how: ReleaseHow, { signal }: CallContext = {}): Promise<Result<void>> {
 		const problem = refProblem(ref);
 		if (problem) return fail("invalid", problem);
 		if (how !== "stop" && how !== "delete") return fail("invalid", `release is "stop" or "delete", not ${String(how)}`);
