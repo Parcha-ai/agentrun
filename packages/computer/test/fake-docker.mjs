@@ -184,10 +184,12 @@ export function egressVolume({ computer, deadline = new Date(Date.now() + 600_00
  * `pull` is "ok" or "fails" (the registry refuses it); "pull" can be held too. `volume` is the provider's volume option;
  * `volumeRoots` maps a volume's name to the directory its files are in, so a `volume-subpath` that is not there fails as
  * Docker's does. docker info reports `ServerVersion` 29.0.0 unless `info` says otherwise. `lateRun` ("egress" or
- * "computer") makes that kind's `docker run` a CLI that never answers, whose container the daemon still makes 200 ms
- * after the CLI is killed (by the caller's abort), as a real daemon does with a create already under way.
+ * "computer") makes that kind's `docker run` a CLI that never answers, whose container the daemon still makes after
+ * the CLI is killed (by the caller's abort), once the cleanup that follows goes quiet, as a real daemon does with a
+ * create already under way; `late()`
+ * reads its marks. `sticky` lists name endings of containers `docker rm` never removes.
  */
-export function fakeDocker({ running = true, gone = false, containers = [], patch = {}, hello = {}, arch = "x86_64", info = {}, vanish = [], noDaemon = false, user, hold = [], desktop, display = "up", binds = {}, daemonMode = 0o755, daemonCache, volumes = [], egress = "ready", proxyPatch = {}, proxyLocal, egressOptions, endpoint = "unix:///var/run/docker.sock", images, pull = "ok", volume, volumeRoots = {}, lateRun = null } = {}) {
+export function fakeDocker({ running = true, gone = false, containers = [], patch = {}, hello = {}, arch = "x86_64", info = {}, vanish = [], noDaemon = false, user, hold = [], desktop, display = "up", binds = {}, daemonMode = 0o755, daemonCache, volumes = [], egress = "ready", proxyPatch = {}, proxyLocal, egressOptions, endpoint = "unix:///var/run/docker.sock", images, pull = "ok", volume, volumeRoots = {}, lateRun = null, sticky = [] } = {}) {
 	const dir = mkdtempSync(join(tmpdir(), "computer-fake-docker-"));
 	dirs.push(dir);
 	const log = join(dir, "calls.jsonl");
@@ -204,7 +206,7 @@ export function fakeDocker({ running = true, gone = false, containers = [], patc
 	writeFileSync(daemonPath, DAEMON_BYTES);
 	chmodSync(daemonPath, daemonMode);
 	const program = join(dir, "docker");
-	const config = JSON.stringify({ dir, log, state, volumeState, imageState, volumeRoots, lateRun, pull, running, gone, patch, binds, egress, proxyPatch, proxyLocal: proxyLocal ?? null, endpoint, hello: { ...HELLO, ...hello },
+	const config = JSON.stringify({ dir, log, state, volumeState, imageState, volumeRoots, lateRun, sticky, pull, running, gone, patch, binds, egress, proxyPatch, proxyLocal: proxyLocal ?? null, endpoint, hello: { ...HELLO, ...hello },
 		info: { Architecture: arch, SecurityOptions: ["name=seccomp,profile=builtin", "name=cgroupns"], MemoryLimit: true, SwapLimit: true, PidsLimit: true, CPUCfsQuota: true, CPUCfsPeriod: true, ServerVersion: "29.0.0", ...info },
 		vanish, noDaemon, hold, display, desktopHello: { ...HELLO, ...hello, kind: "desktop", groups: [...HELLO.groups, "screen", "input.pointer", "input.keys"] } });
 	writeFileSync(
@@ -233,11 +235,14 @@ const commit = (made, kind) => {
 		process.stdout.write(made.Id + "\\n");
 		return;
 	}
-	const daemon = "const fs = require('node:fs'); const parent = " + process.pid + "; const state = " + JSON.stringify(config.state) + "; const log = " + JSON.stringify(config.log) + "; const made = " + JSON.stringify(made) + ";" +
+	// The daemon process writes late-started first (its create is under way, before the CLI can be cut off), and
+	// late-committed once it made the container.
+	const daemon = "const fs = require('node:fs'); const parent = " + process.pid + "; const state = " + JSON.stringify(config.state) + "; const log = " + JSON.stringify(config.log) + "; const made = " + JSON.stringify(made) + "; const dir = " + JSON.stringify(config.dir) + ";" +
+		"fs.writeFileSync(dir + '/late-started', '');" +
 		"const alive = () => { try { process.kill(parent, 0); return true; } catch { return false; } };" +
 		"let size = -1; let since = Date.now();" +
 		"const wait = setInterval(() => { if (alive()) return; const now = fs.statSync(log).size; if (now !== size) { size = now; since = Date.now(); return; } if (Date.now() - since < 150) return;" +
-		" clearInterval(wait); const all = JSON.parse(fs.readFileSync(state, 'utf8')); all.push(made); fs.writeFileSync(state, JSON.stringify(all)); }, 20);";
+		" clearInterval(wait); const all = JSON.parse(fs.readFileSync(state, 'utf8')); all.push(made); fs.writeFileSync(state, JSON.stringify(all)); fs.writeFileSync(dir + '/late-committed', made.Name); }, 20);";
 	require("node:child_process").spawn(process.execPath, ["-e", daemon], { detached: true, stdio: "ignore" }).unref();
 	setInterval(() => {}, 1000);
 };
@@ -355,7 +360,8 @@ switch (args[0]) {
 		if (config.gone) noSuch(args.at(-1));
 		const all = load();
 		const found = find(all, args.at(-1));
-		if (args[0] === "rm") save(all.filter((c) => c !== found));
+		// config.sticky: name endings of containers rm never removes, ones Docker keeps (a daemon stuck in its removal).
+		if (args[0] === "rm" && !(found && config.sticky.some((ending) => found.Name.endsWith(ending)))) save(all.filter((c) => c !== found));
 		else if (found) { found.State.Running = false; save(all); }
 		process.stdout.write(args.at(-1) + "\\n");
 		break;
@@ -464,7 +470,9 @@ switch (args[0]) {
 	mkdirSync(hostRoot);
 	const options = { daemonPath, daemonCache: cache, docker: program, ...(user === undefined ? {} : { user }), ...(desktop === undefined ? {} : { desktop }), egress: { hostRoot, ...egressOptions }, ...(volume === undefined ? {} : { volume }) };
 	// `options` makes a fresh provider over the same Docker: another process's.
-	return { provider: new DockerProvider(options), options, calls, names, volumeNames, alter, daemonPath, bound, cache, program, proceed, started };
+	/** lateRun's marks: whether the daemon's late create has begun, and the container it made (its name), if it did. */
+	const late = () => ({ started: existsSync(join(dir, "late-started")), committed: existsSync(join(dir, "late-committed")) ? readFileSync(join(dir, "late-committed"), "utf8").replace(/^\//, "") : undefined });
+	return { provider: new DockerProvider(options), options, calls, names, volumeNames, alter, daemonPath, bound, cache, program, proceed, started, late };
 }
 
 /** The docker calls that delete computer `name` with nothing else of its own: rm it, then look for its egress proxy and
