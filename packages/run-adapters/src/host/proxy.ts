@@ -21,10 +21,13 @@ import { CONTENT_FILTERED, type McpClient, type NoteRequest, type SessionMcp } f
 import { type Ended, isConnectCode, isGatewayTimeout, rejectionCode } from "../booking.js";
 import { SPEND_CAP_REACHED } from "../kernel/cap/words.js";
 
-/** Whether a request's admission refused it for the run's spend cap: the cap's own error (its `code`), or a refusal the
- *  runner made of the cap's verdict, whose words begin with the cap's code (every cap refusal does: kernel cap words). */
-const capRefusal = (error: unknown): boolean =>
-  (error as { code?: unknown } | undefined)?.code === SPEND_CAP_REACHED || String((error as Error | undefined)?.message ?? "").startsWith(SPEND_CAP_REACHED);
+/** Whether a request's admission refused it for the run's spend cap, read from the error's fields alone: the cap's own
+ *  error (CapRefused, its `code`), or the runner's stop for the cap's verdict (HarnessRunError, its `refusal`: the
+ *  verdict's Refusal.code). Never from its words. */
+const capRefusal = (error: unknown): boolean => {
+  const fields = error as { code?: unknown; refusal?: unknown } | undefined;
+  return fields?.code === SPEND_CAP_REACHED || fields?.refusal === SPEND_CAP_REACHED;
+};
 
 /** A route a policy admits: its method, its exact path, and the request headers forwarded with it. */
 export interface ProxyRoute {
