@@ -119,7 +119,7 @@ test("a learned skill counts the bytes the run is given: its SKILL.md as served,
   const { servedSkill } = await import("../dist/learn/skills.js");
   const text = skill("name: weekly-summary\ndescription: yes\n");
   const reference = "A table.\n";
-  const seed = await seedFrom("c".repeat(40), async () => ({ ok: true, files: [{ path: "skills/weekly-summary/SKILL.md", text }, { path: "skills/weekly-summary/reference.md", text: reference }], refused: [] }));
+  const seed = await seedFrom("c".repeat(40), async () => ({ ok: true, files: [{ path: "skills/weekly-summary/SKILL.md", text }, { path: "skills/weekly-summary/reference.md", text: reference }], refused: [], held: [] }));
   const served = servedSkill(text);
   assert.ok(served.includes('description: "yes"'), served);
   assert.ok(Buffer.byteLength(served) > Buffer.byteLength(text), "served, it is larger than its blob");
