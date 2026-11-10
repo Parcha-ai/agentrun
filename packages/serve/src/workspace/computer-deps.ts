@@ -21,7 +21,7 @@ import type { FauxComputers } from "../faux-computers.js";
 import { envValue, type KeyEnv, keyReader } from "../key-meta.js";
 import { readLaunchBody } from "../run-launch.js";
 import type { Store } from "../store/index.js";
-import { type ClaimComputer, type ClaimLaunch, computerForClaim, type ComputerForClaimDeps, type OpenComputerView } from "./computer-for-claim.js";
+import { type ClaimComputer, type ClaimLaunch, computerForClaim, type ComputerForClaimDeps, type ComputerRun, type OpenComputerView } from "./computer-for-claim.js";
 import { storeLedger } from "./computer-ledger.js";
 import { computerProviderFactories, computerProviderMakers, type ProviderLoad } from "./computer-providers.js";
 import type { ComputerSettingKind, KindRegistry, ProviderEntry } from "./resolve-computer.js";
@@ -64,7 +64,8 @@ export interface ComputerDepsOptions {
  *  entry's defaultImage for the kind, the computer package's PROVIDERS[].defaultImage; a kind with none refused in
  *  words, a Docker desktop's saying it needs an image with an X server, which the recipe lacks), the leak bound for its lifetime (its clean end is the run's release), and its network. box_allow is a
  *  sandbox's egress list: a sandbox with none, or "none", has no network; a browser, desktop or phone with none has its
- *  provider's own ("open"); an explicit list or "none" applies to any kind. No key and no environment. */
+ *  provider's own ("open"); an explicit list or "none" applies to any kind, narrowed to "none" for a provider that makes
+ *  no other (networkOf). No key and no environment. */
 export function computerSpecOf(env: KeyEnv): ComputerForClaimDeps["spec"] {
   const named = envValue(env, DOCKER_IMAGE_ENV);
   const imageOf = (entry: ProviderEntry, kind: ComputerKindOf): string => {
@@ -78,9 +79,20 @@ export function computerSpecOf(env: KeyEnv): ComputerForClaimDeps["spec"] {
   };
   return (entry, kind, run) => ({
     image: imageOf(entry, kind),
-    lifetimeMs: COMPUTER_LIFETIME_MS,
-    network: run.boxAllow === undefined ? (kind === "sandbox" ? "none" : "open") : run.boxAllow === "none" ? "none" : { allow: [...run.boxAllow] },
+    // The leak bound, within the longest the provider makes (E2B's is an hour): a longer one it refuses at create.
+    lifetimeMs: Math.min(COMPUTER_LIFETIME_MS, run.maxLifetimeMs ?? COMPUTER_LIFETIME_MS),
+    network: networkOf(kind, run),
   });
+}
+
+/** The network a computer of `kind` asks for: as the run allows (box_allow), narrowed to "none" when its provider makes
+ *  "none" but not what the run allows. A remote computer (Daytona's or E2B's, each one whose capabilities' network is
+ *  ["none"]) runs its programs in a network of their own, so an open or listed network is one it refuses at create;
+ *  "none" reaches less than the run allows, never more. Nothing is ever widened. */
+function networkOf(kind: ComputerKindOf, run: ComputerRun): ComputerSpec["network"] {
+  const allowed: ComputerSpec["network"] = run.boxAllow === undefined ? (kind === "sandbox" ? "none" : "open") : run.boxAllow === "none" ? "none" : { allow: [...run.boxAllow] };
+  const form = allowed === "none" || allowed === "open" ? allowed : "allow";
+  return run.networks && !run.networks.includes(form) && run.networks.includes("none") ? "none" : allowed;
 }
 
 /** The run's timeline phase while its claim waits on its computer's image (computerForClaim's onImageWait): main's box
