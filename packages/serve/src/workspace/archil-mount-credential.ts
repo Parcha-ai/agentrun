@@ -150,14 +150,22 @@ export function removeRunMountTokens(options: ArchilMountCredentialOptions, run:
   return removeRunTokens(options, run, (claimed) => claimed <= epoch, context);
 }
 
+/** Each of the run's users `which` takes is tried, whatever an earlier one's remove did: one that fails (a network blip)
+ *  leaves none after it standing. Their identifiers removed, or, when any failed, one error naming each that did. */
 async function removeRunTokens(options: ArchilMountCredentialOptions, run: string, which: (epoch: number) => boolean, context: { readonly signal?: AbortSignal }): Promise<string[]> {
   const removed: string[] = [];
+  const failed: string[] = [];
   for (const user of await listTokenUsers(options, context)) {
     const claim = claimOfNickname(user.nickname);
     if (claim === undefined || claim.run !== run || !which(claim.epoch)) continue;
-    await removeMountToken(options, user.identifier, context);
-    removed.push(user.identifier);
+    try {
+      await removeMountToken(options, user.identifier, context);
+      removed.push(user.identifier);
+    } catch (error) {
+      failed.push(`${user.identifier} (${(error as Error)?.message ?? String(error)})`);
+    }
   }
+  if (failed.length > 0) throw new ArchilMountCredentialError(`run ${run}'s token users ${failed.join(", ")} were not removed; ${removed.length} others were`);
   return removed;
 }
 
