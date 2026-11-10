@@ -59,8 +59,9 @@ test("a server started on AGENTRUN_STORE_URL opens that Postgres store under its
   assert.equal((await api("POST", "/agents", agent("plain", { place: { mode: "runner" } }))).status, 201);
   const run = await api("POST", "/agents/plain/runs", { input: { content: "Say hello." } });
   assert.equal(run.status, 202, JSON.stringify(run.body));
-  // The runner apart: the faux model by the variable a run's process reads it from (server.ts fauxEnvOf).
-  const runner = cli(t, ["runner", "--data", data], { ...env, AGENTRUN_RUNNER_NAME: "runner-apart", AGENTRUN_SERVE_FAUX: FAUX });
+  // The runner apart: the faux model by its own --faux option, as a --faux server takes it (a faux name in a runner's
+  // environment enables nothing, runner/main.ts runEnv).
+  const runner = cli(t, ["runner", "--data", data, "--faux", FAUX], { ...env, AGENTRUN_RUNNER_NAME: "runner-apart" });
   const err = [];
   createInterface({ input: runner.stderr }).on("line", (line) => err.push(line));
   const ready = await new Promise((resolve, reject) => {
