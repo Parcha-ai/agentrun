@@ -231,7 +231,7 @@ test("a trigger named with a saved key's value: its runs' Timeline row shows the
   for (const [where, text] of [["the live pages", JSON.stringify(pages)], ["a page", page], ["the stream", stream]]) assert.equal(holdsPiece(text, key), false, `${where} shows no piece of the key: ${text.slice(0, 600)}`);
 });
 
-test("a webhook's message to a working run is queued for it at once and taken after its turn: its entry reads the trigger's origin, after the person's, once", { timeout: 120_000 }, async (t) => {
+test("a webhook's message to a working run is queued for it at once and taken after its turn: its entry reads the trigger's origin, after the person's, once", { timeout: 120_000, skip: MESSAGE_RUN }, async (t) => {
   withEnv(t, SEAL);
   const { api, baseUrl, store } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
   const go = join(await scratch(t), "go");

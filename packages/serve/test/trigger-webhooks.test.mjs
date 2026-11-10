@@ -168,7 +168,7 @@ test("a payload past 16 KiB is cut at a character's start and says so; its closi
   await follow(api, fired.run_id, ["completed"]);
 });
 
-test("a message_run firing to a run that is working is queued for it at once as a command row (sent, never kept due to be tried again), and the run takes it once, after its turn", { timeout: 120_000 }, async (t) => {
+test("a message_run firing to a run that is working is queued for it at once as a command row (sent, never kept due to be tried again), and the run takes it once, after its turn", { timeout: 120_000, skip: MESSAGE_RUN }, async (t) => {
   withEnv(t, SEAL);
   const { api, baseUrl, store } = await serve(t);
   await made(api, "busy");

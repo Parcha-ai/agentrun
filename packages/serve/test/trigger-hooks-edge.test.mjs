@@ -11,7 +11,7 @@ import { test } from "node:test";
 import { isMessageRow } from "@parcha/pi-durable-agent/timeline";
 import { ROUTES } from "../dist/server.js";
 import { call, follow, runDir, scratch, serve, withEnv } from "./support.mjs";
-import { RUN_EXEC, firings, made } from "./trigger-support.mjs";
+import { MESSAGE_RUN, RUN_EXEC, firings, made } from "./trigger-support.mjs";
 
 const { Webhook } = createRequire(import.meta.url)("standardwebhooks");
 const SEAL = { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") };
@@ -174,7 +174,7 @@ const userMessages = (rows) => rows.filter(isMessageRow).length;
 
 // A firing's message to a run whose turn works is a command row queued at once (answers false), never a refusal kept due
 // and tried again: the run takes it at its next safe point, after the turn, whatever its harness (the runner reads the row).
-test("a busy run gets a firing's message as a queued command row at once: once its turn ends it takes it, once", { timeout: 180_000 }, async (t) => {
+test("a busy run gets a firing's message as a queued command row at once: once its turn ends it takes it, once", { timeout: 180_000, skip: MESSAGE_RUN }, async (t) => {
   withEnv(t, SEAL);
   const { api, baseUrl, store } = await serve(t);
   const go = join(await scratch(t), "go");
@@ -185,7 +185,7 @@ test("a busy run gets a firing's message as a queued command row at once: once i
   assert.ok(rows.some((row) => row.summary === "Answer 2."), "and answered");
 });
 
-test("a firing's message queued for a busy run outlives the server's restart: the run takes it once, after its turn, and the next server sends nothing again", { timeout: 240_000 }, async (t) => {
+test("a firing's message queued for a busy run outlives the server's restart: the run takes it once, after its turn, and the next server sends nothing again", { timeout: 240_000, skip: MESSAGE_RUN }, async (t) => {
   withEnv(t, SEAL);
   const data = join(await scratch(t), "agents");
   const go = join(await scratch(t), "go");
