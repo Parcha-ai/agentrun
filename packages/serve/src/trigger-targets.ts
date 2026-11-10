@@ -37,9 +37,9 @@ export interface TriggerTargetDeps {
 export type TriggerTargets = {
   targetIssues(target: Target): Promise<InputIssue[]>;
   start(target: Extract<Target, { kind: "start_run" }>, input: Json, origin: RunTrigger, from: MessageOrigin, title?: string): Promise<{ run_id: string }>;
-  message(target: Extract<Target, { kind: "message_run" }>, input: Json, key: string, from: MessageOrigin): Promise<void | { skipped: string }>;
+  message(target: Extract<Target, { kind: "message_run" }>, input: Json, key: string, from: MessageOrigin, bound: { max: number; reason: string }): Promise<void | { skipped: string }>;
   statusOf(runId: string): Promise<string | null>;
-  runOf(key: string): Promise<{ run_id: string; setup_lost: boolean } | null>;
+  runOf(key: string): Promise<{ run_id: string } | null>;
 };
 
 /** The trigger target policy over `store`, with its reads and the run-start leaves injected. */
@@ -78,7 +78,7 @@ export function triggerTargets(store: Store & RunsStore, deps: TriggerTargetDeps
       );
       return { run_id: run.id };
     },
-    async message(target, input, key, from) {
+    async message(target, input, key, from, bound) {
       const run = await deps.momentOf(target.run_id);
       if (!run) throw new ApiError("not_found", `There is no run ${target.run_id}.`);
       if (run.kind === "workflow") throw unsupported("messages.steer_workflow_runs", "A workflow run takes no messages here.");
@@ -88,9 +88,20 @@ export function triggerTargets(store: Store & RunsStore, deps: TriggerTargetDeps
       if (run.waitsOnPerson) return { skipped: WAITS_ON_A_PERSON };
       try {
         // The firing's key is the message's id; the message answers no person (answers false), its origin the trigger's.
-        // How many of a trigger's messages a busy run keeps, and which are skipped, is the store's trigger side
-        // (store.triggers.message's bound); this writes the command through the run write half.
-        await message(store, run, String((input as { content?: unknown }).content), { answers: false, origin: from, requestId: key });
+        // Its command row is written with its firing marked sent, in one transaction, within the trigger's bound per run
+        // (store.triggers.message): a server that goes down after it never sends it again, and past the bound the firing
+        // is skipped in words. A firing no longer due there (already sent) writes nothing.
+        const triggerId = (from as { trigger_id: string }).trigger_id;
+        const queued = await message(store, run, String((input as { content?: unknown }).content), {
+          answers: false,
+          origin: from,
+          requestId: key,
+          queue: async (command) => {
+            const done = await store.triggers.message({ triggerId, key }, run.id, command, bound);
+            return done && "skipped" in done ? { skipped: done.skipped } : undefined;
+          },
+        });
+        if (queued.skipped !== undefined) return { skipped: queued.skipped };
       } catch (error) {
         if (error instanceof ApiError && error.message === WAITS_ON_A_PERSON) return { skipped: WAITS_ON_A_PERSON };
         throw error;
@@ -104,7 +115,7 @@ export function triggerTargets(store: Store & RunsStore, deps: TriggerTargetDeps
       if (!found) return null;
       // A run is inserted whole (its row and launch in one transaction), so there is no half-set-up run a server left
       // behind: a found run started.
-      return { run_id: found.runId, setup_lost: false };
+      return { run_id: found.runId };
     },
   };
 }
