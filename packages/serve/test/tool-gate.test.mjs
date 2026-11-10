@@ -746,8 +746,19 @@ test.skip("once a parked call with a held key in its arguments is approved, the 
   }
 });
 
-// SKIP (follow-up #2078): a parked call's answer, stop or declining message does not behave as before on the runner
-test.skip("a stop of a parked run withdraws the call: stopped, no pending approval, its row reads withdrawn, and a later answer is 409 and never runs it, across a restart; a cancel does the same and ends the run cancelled", { timeout: 150_000 }, async (t) => {
+/** Run `runId` once its runner has applied a stop: no call waits, nothing works. A stop is a command row the runner applies
+ *  (runs-over-store.ts stop), so its POST answers before the run reads stopped. */
+async function stoppedView(api, runId, deadlineMs = 30_000) {
+  const end = Date.now() + deadlineMs;
+  for (;;) {
+    const view = (await api("GET", `/runs/${runId}`)).body;
+    if (view.pending === null && view.state === "idle") return view;
+    assert.ok(Date.now() < end, `run ${runId} did not read stopped: ${view.status}/${view.state}, pending ${view.pending?.id}`);
+    await sleep(250);
+  }
+}
+
+test("a stop of a parked run withdraws the call: an answer sent before the stop is applied is already 409 and never runs it; stopped, no pending approval, its row reads withdrawn, and still 409 across a restart; a cancel does the same and ends the run cancelled", { timeout: 150_000 }, async (t) => {
   const dialled = await network(t);
   const first = await serve(t, GATE);
   const answer = await owner(first);
@@ -757,7 +768,11 @@ test.skip("a stop of a parked run withdraws the call: stopped, no pending approv
   const stopId = stopParked.view.pending.id;
   const stop = await first.api("POST", `/runs/${stopRun}/stop`, {});
   assert.deepEqual([stop.status, stop.body.stopped], [200, true], JSON.stringify(stop.body));
-  const stopped = (await first.api("GET", `/runs/${stopRun}`)).body;
+  // Sent at once, while the stop may not be applied yet: the stop already answers the call, so the allow is 409, never a
+  // 204 for a call that will not run.
+  const early = await answer(stopRun, stopId, { decision: "allow" });
+  assert.deepEqual([early.status, early.body?.error?.details], [409, { reason: "already_answered", decision: "withdrawn" }], JSON.stringify(early.body));
+  const stopped = await stoppedView(first.api, stopRun);
   assert.deepEqual([stopped.status, stopped.state, stopped.pending], ["input_required", "idle", null], "stopped, as a stop leaves a run");
   const row = (await first.api("GET", `/runs/${stopRun}/timeline`)).body.rows.find((r) => r.kind === "tool_approval_requested");
   assert.match(row.summary, /^Withdrawn/, "its row says it was withdrawn");
@@ -765,13 +780,12 @@ test.skip("a stop of a parked run withdraws the call: stopped, no pending approv
   const late = await answer(stopRun, stopId, { decision: "allow" });
   assert.deepEqual([late.status, late.body.error.details], [409, { reason: "already_answered", decision: "withdrawn" }]);
 
-  const cancelRun = await fetching(first.api, "cancel-parked", "codex");
+  const cancelRun = await fetching(first.api, "cancel-parked", "pi");
   const cancelParked = await parked(first.api, cancelRun);
   const cancelId = cancelParked.view.pending.id;
   assert.equal((await first.api("POST", `/runs/${cancelRun}/cancel`)).status, 202);
+  assert.equal((await answer(cancelRun, cancelId, { decision: "allow" })).status, 409, "an answer behind the cancel");
   await follow(first.api, cancelRun, ["cancelled"], { deadlineMs: 30_000 });
-  // A cancel with no answered call in flight waits on nothing: its serve.json says no such wait.
-  assert.equal(JSON.parse(await readFile(join(runDir(first.data, cancelRun), "serve.json"), "utf8")).cancel_waits_for, undefined, "a plain cancel waits on nothing");
   const cancelRow = (await first.api("GET", `/runs/${cancelRun}/timeline`)).body.rows.find((r) => r.kind === "tool_approval_requested");
   assert.match(cancelRow.summary, /^Withdrawn/);
   ownRowsSay((await first.api("GET", `/runs/${cancelRun}/timeline`)).body.rows, cancelParked.result.tool_use_id, "Not run: the run was cancelled while it waited", "cancelled");

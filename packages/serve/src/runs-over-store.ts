@@ -232,6 +232,15 @@ async function sentAnswer(store: RunsStore, runId: string, id: string): Promise<
   return row && { decision: row.kind === "approve" ? "allow" : "deny" };
 }
 
+/** How a stop or cancel already written to run `runId`, its runner not having taken it yet, answers every call still
+ *  waiting: the runner reads commands in the order they were written, so it applies the stop first and withdraws (or, on a
+ *  cancel, cancels) the call, and refuses every answer written after it. An answer written then is told so at once, the
+ *  same 409 the call's withdrawal will give, never 204 for a call that will not run. */
+async function pendingEnd(store: RunsStore, runId: string): Promise<{ decision: "withdrawn" | "canceled" } | undefined> {
+  const row = (await store.commands(runId, 0)).find((command) => (command.kind === "stop" || command.kind === "cancel") && command.takenAt === null && command.refused === null);
+  return row && { decision: row.kind === "cancel" ? "canceled" : "withdrawn" };
+}
+
 /** A person's answer to the tool call `id` that waits for approval (tool-gate.ts): an approve or deny command row the run's
  *  runner reads and acts on. The first answer wins from the moment it is written, before the runner takes it — the same one
  *  again changes nothing, another is 409 already-answered — and a run with no such waiting call is 404. Two answers at once
@@ -244,6 +253,8 @@ export async function approve(store: RunsStore, moment: RunMoment, id: string, d
   const given = moment.answeredApprovals?.[id] ?? (await sentAnswer(store, moment.id, id));
   if (given) return settle(given);
   if (!(moment.approvalIds?.has(id) ?? false)) throw new ApiError("not_found", `The run ${moment.id} has no tool call ${id} waiting for approval.`);
+  const ending = await pendingEnd(store, moment.id);
+  if (ending) throw alreadyAnswered(id, ending.decision);
   const body: Record<string, unknown> = { approval: id, ...(note !== undefined ? { note } : {}) };
   try {
     await sendCommand(store, moment.id, { kind: decision === "allow" ? "approve" : "deny", body });
