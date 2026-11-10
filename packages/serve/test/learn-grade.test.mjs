@@ -126,23 +126,29 @@ test("an answer the host cannot read is asked once more with the same prompt: a 
   }
 });
 
-test("the grader runs on the model the server names for it, --grade-model (AGENTRUN_SERVE_GRADE_MODEL) before its strong tier (AGENT_MODEL_STRONG), whatever the agent's own model; with neither, on the agent's own", { timeout: 180_000 }, async (t) => {
+test("the grade model the server names, --grade-model (AGENTRUN_SERVE_GRADE_MODEL) before its strong tier (AGENT_MODEL_STRONG), is the one each learning run is told to grade on, whatever the agent's own model; with neither, none (the agent's own)", { timeout: 180_000 }, async (t) => {
   const calls = join(await scratch(t), "calls.jsonl");
   withEnv(t, { AGENTRUN_TEST_FAUX_CALLS: calls }, ["AGENTRUN_TEST_FAUX_GRADE_HOLD", "TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AGENT_MODEL_STRONG", "AGENTRUN_SERVE_GRADE_MODEL"]);
   const named = [];
+  // The model the server names travels on the run's launch (its learning start's gradeModel) onto its learning run's launch,
+  // whose `model` the runner grades on (learning-dispatch.ts gradeModelFor, then gradeRouteOf: runner-learning-grade-own
+  // proves the route is asked for it). A faux host grades on its faux model whatever is named.
   const graded = async (options, env = {}) => {
     Object.assign(process.env, env);
-    const { api, close } = await serve(t, { learning: "on", faux: LEARN, ...options });
+    const server = await serve(t, { learning: "on", faux: LEARN, ...options });
     // Capabilities say which model grades here: the name, or null for each run's agent's own.
-    named.push((await api("GET", "/capabilities")).body.learning?.grade_model);
-    await made(api, learner("model", { plan: PLAN }));
-    const { view, rows } = await ended(api, await started(api, "model"));
+    named.push((await server.api("GET", "/capabilities")).body.learning?.grade_model);
+    await made(server.api, learner("model", { plan: PLAN }));
+    const runId = await started(server.api, "model");
+    const { view, rows } = await ended(server.api, runId);
     settled(view, rows, "merged");
+    const { learningRunId } = await keptProposal(server, runId);
+    const model = (await server.store.runs.launch(learningRunId)).body.model;
     for (const name of Object.keys(env)) delete process.env[name];
-    await close();
-    return callsIn(calls).at(-1).model;
+    await server.close();
+    return model;
   };
-  assert.equal(await graded({}), "faux-1", "neither: the agent's own model");
+  assert.equal(await graded({}), undefined, "neither: none named, the agent's own grades it");
   assert.equal(await graded({}, { AGENT_MODEL_STRONG: "faux-strong" }), "faux-strong", "the strong tier");
   assert.equal(await graded({}, { AGENT_MODEL_STRONG: "faux-strong", AGENTRUN_SERVE_GRADE_MODEL: "faux-grader" }), "faux-grader", "the grade model's variable, before the strong tier");
   assert.equal(await graded({ gradeModel: "faux-named" }, { AGENTRUN_SERVE_GRADE_MODEL: "faux-grader" }), "faux-named", "the option, before the variable");
