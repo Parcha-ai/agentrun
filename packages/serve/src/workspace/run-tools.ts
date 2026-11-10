@@ -30,7 +30,7 @@
 // (end) ends its background processes through the computer (the kernel's endBackground), then sweeps.
 import type { Context } from "@earendil-works/chord";
 import type { HostTool } from "@parcha/agentrun-kernel";
-import { type CapabilityKind, type CdpSession, createRegistry, endBackground, type Executor, type Registry } from "@parcha/agentrun-kernel/kernel";
+import { type CapabilityKind, capabilityToolDefs, type CdpSession, createRegistry, endBackground, type Executor, type Registry } from "@parcha/agentrun-kernel/kernel";
 import type { ComputerClient, Group } from "@parcha/agentrun-computer";
 import type { Park, RunGate } from "../tool-gate.js";
 import type { AttachableComputer, MountCheck } from "./attach.js";
@@ -227,6 +227,11 @@ export type RunTools = {
   /** The run's registry: the kernel's definitions, words and limits, over this run's hands and executors. */
   readonly registry: Registry;
   readonly hands: Hands;
+  /** The tools the claimed computer brings by its kind, as its groups offer them: a desktop's (desktop_screen,
+   *  desktop_input, computer_request_handoff) or a phone's, by the kernel registry's own list. None with no computer, for
+   *  a sandbox, or for a browser (its own binding lists its tools). An agent names its computer, never these tools
+   *  (definition.tools refuses them), so a run binds them beside what it was granted (withKindTools). */
+  readonly kindTools: readonly string[];
   /** The registry's tools `names` names, as the kernel's HostTool an adapter's session takes, each call through the
    *  run's gate (`gated`; none for the gate's own run of an approved call), each answer kept in `results` (bindTools). */
   hostTools(names: readonly string[], gated?: { readonly gate: RunGate; readonly park: Park }, results?: ToolResults): HostTool[];
@@ -263,14 +268,23 @@ export async function runTools(workspace: Workspace, computer: RunComputer | und
     maxExecS: run.maxExecS, shell: run.shell, kinds: run.kinds, browserTools, without: run.without,
     executors: { ...run.executors, ...(options.browser ? { browser: options.browser.executors } : {}) },
   });
+  const brought = new Set(run.kinds.filter((kind) => kind !== "browser").flatMap((kind) => capabilityToolDefs(kind).map((def) => def.name)));
   return {
     workspace: run.workspace,
     registry,
     hands: run.hands,
+    kindTools: registry.list().map((def) => def.name).filter((name) => brought.has(name)),
     hostTools: (names, gated, results) => bindTools(run, registry, names, { ...(gated ? { gated } : {}), ...(results ? { results } : {}) }),
     async end() {
       await endBackground(run.hands);
       await run.sweep();
     },
   };
+}
+
+/** The names a run binds as host tools: what it was granted, then the tools its claimed computer brings by its kind
+ *  (RunTools.kindTools), each once. Each goes through the run's one gate under its own settings key (a desktop's under
+ *  `desktop`, a phone's under `phone`), so a deny or an ask on the kind holds them. */
+export function withKindTools(granted: readonly string[], tools: Pick<RunTools, "kindTools">): readonly string[] {
+  return [...new Set([...granted, ...tools.kindTools])];
 }

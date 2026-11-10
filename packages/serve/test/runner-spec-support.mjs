@@ -36,10 +36,12 @@ const stubRoute = async () => ({ model: "faux-1", provider: { api: "anthropic-me
  *            nodes take the session's proxied models from it
  *   before   called with the server's store once the run is made, before the runner claims it (a test arranges the run there),
  *            then the seal key and the run's data dir (where a test lands what the claim reads, e.g. a learning seed)
+ *   computer the claim-time computer, as the runner composes it: given { store, sealKey }, it returns { computerForClaim,
+ *            computerDeps } (computerDepsFrom's); none by default (a runner place makes no computer)
  */
 export async function specFor(t, options = {}) {
-  strictOptions("specFor", options, ["body", "skills", "launch", "settings", "routeOf", "uploads", "env", "keys", "ledger", "before"]);
-  const { body = {}, skills, launch = {}, settings, routeOf = stubRoute, uploads = [], env = {}, keys = {}, ledger, before } = options;
+  strictOptions("specFor", options, ["body", "skills", "launch", "settings", "routeOf", "uploads", "env", "keys", "ledger", "before", "computer"]);
+  const { body = {}, skills, launch = {}, settings, routeOf = stubRoute, uploads = [], env = {}, keys = {}, ledger, before, computer } = options;
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-spec-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -80,8 +82,9 @@ export async function specFor(t, options = {}) {
   await harness.commit((tx) => tx.createRootConversation(), ctx);
   const run = { harness, registry, setModels: (given) => (models = given), ...(ledger ? { ledger } : {}) };
   // The one shared claim-time computer (none for a runner place); a test gives its own, as the runner would.
-  const computerForClaim = async () => ({ release: async () => {} });
-  const deps = { env, data: dir, journal: (c) => store.journal(c), store, sealKey: SEAL_KEY, routeOf, computerForClaim };
+  const composed = computer?.({ store, sealKey: SEAL_KEY });
+  const computerForClaim = composed?.computerForClaim ?? (async () => ({ release: async () => {} }));
+  const deps = { env, data: dir, journal: (c) => store.journal(c), store, sealKey: SEAL_KEY, routeOf, computerForClaim, ...(composed ? { computerDeps: composed.computerDeps } : {}) };
   const launchBody = { input: { content: "Do the thing." }, title: "t", place: { mode: "runner" }, model: { provider: "anthropic", modelId: "claude-sonnet-5.5" }, ...(fileIds.length ? { files: fileIds } : {}), ...launch };
   const spec = await adapterRunSpecFromLaunch(launchBody, run, deps, claim);
   return { spec, store, server, claim, dir, run, workFolder };

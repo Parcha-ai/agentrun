@@ -39,7 +39,7 @@ import { isObject } from "../validate.js";
 import { runFolder, scratchFolder } from "../workspace/paths.js";
 import { openRunWorkspace } from "../workspace/run-workspace.js";
 import { layOwnSkills } from "../workspace/revision-skills.js";
-import { runTools, type ToolResults } from "../workspace/run-tools.js";
+import { runTools, type ToolResults, withKindTools } from "../workspace/run-tools.js";
 import { archilClaim, MOUNT_TTL_MS } from "../workspace/archil-claim.js";
 import { loadArchilSettings } from "../archil-settings.js";
 import type { Workspace } from "../workspace/workspace.js";
@@ -293,7 +293,7 @@ export async function cliRunSpecFromLaunch(launch: RunLaunch, run: AdapterRun, d
     label: runRow.agentId,
     system: [environmentLine(), instructions, guidance].filter((line): line is string => Boolean(line)),
     // The learned workflow's call nodes run on the claim's keys: its answers pass the runner's one redactor, as pi's do.
-    tools: [...tools.hostTools(granted, undefined, results), ...(learnedTool ? [answersCut(learnedTool, run.redact ? heldRedactor(run.redact) : cut)] : [])],
+    tools: [...tools.hostTools(withKindTools(granted, tools), undefined, results), ...(learnedTool ? [answersCut(learnedTool, run.redact ? heldRedactor(run.redact) : cut)] : [])],
     context: "fresh",
     ...(launch.effort ? { thinking: thinkingFor(facts, launch.effort) } : {}),
   };

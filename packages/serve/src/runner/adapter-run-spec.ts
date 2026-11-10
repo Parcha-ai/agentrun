@@ -41,7 +41,7 @@ import { promptOf, readsFiles } from "../skills.js";
 import { openRunWorkspace } from "../workspace/run-workspace.js";
 import { layOwnSkills } from "../workspace/revision-skills.js";
 import { COMPUTER_ROOT, runFolder } from "../workspace/paths.js";
-import { runTools, type ToolResults } from "../workspace/run-tools.js";
+import { runTools, type ToolResults, withKindTools } from "../workspace/run-tools.js";
 import { INPUTS_DIR, UPLOADS_DIR, Uploads } from "../uploads.js";
 import { handedSignInReadsBack, signInReads } from "../sign-ins-store.js";
 import { UNREADABLE_SIGN_IN } from "../runs.js";
@@ -415,7 +415,7 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
   // The run's tools. The hands (read/write/edit/bash and the background tools) are the kernel registry's over the run's
   // Workspace and computer (runTools.hostTools); the gate is the adapter loop's own (spec.gate), so they run as asked.
   const results: ToolResults = new Map();
-  const handTools = tools.hostTools(granted, undefined, results);
+  const handTools = tools.hostTools(withKindTools(granted, tools), undefined, results);
   // The non-hand tools run on the claim's keys (host.env), so a vendor's error may echo one: each answer, and a throw's
   // words, pass the run's one redactor before the harness, the model or the record has them.
   const nonHandTools = (await bindNonHandTools(host, granted, run, context, results, root, launch.plane, seedLaid?.workflows ?? [], native)).map((tool) => answersCut(tool, cut));
