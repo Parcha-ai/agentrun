@@ -234,8 +234,8 @@ export async function cliRunSpecFromLaunch(launch: RunLaunch, run: AdapterRun, d
   // looked up there (the data's harnesses directory), never under the runner's HOME.
   // The run's keys for this claim (claim-secrets.ts: scoped to its tools and its model, the environment's first, then the
   // store's), held by the runner's one redactor and this spec's log cut before anything can echo one. Its model's key goes
-  // to the model choice and the adapter's provider (withModelKeys, never enumerable), so a key saved in Settings → Model
-  // keys runs the next run with no restart, as one set where AgentRun starts does.
+  // to the model choice and the adapter's provider (withModelKeys, never enumerable), so a key saved in
+  // Settings → Model keys runs the next run with no restart, as one set where AgentRun starts does.
   const claimed = await claimSecrets({ store: deps.store, sealKey: deps.sealKey, env: deps.env }, revisionRow as unknown as Parameters<typeof claimSecrets>[1], launch);
   for (const redact of [...(run.redact ? [heldRedactor(run.redact)] : []), cut]) holdClaimed(redact, claimed);
   const env = cliRunEnv(deps.env, deps.data, claimed);

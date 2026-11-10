@@ -229,8 +229,8 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string 
     // Held by the runner's one redactor before anything can echo one (holding: run.redact), as the decision keys were.
     const claimedEnv = await holding(claimSecrets({ store: deps.store, sealKey: deps.sealKey, ...(deps.env ? { env: deps.env } : {}) }, claimed.revision, { plane: claimed.plane }));
     // The run's models resolve the one way the runner resolves any (routeProviderOf over routeOf), unless a test gives its
-    // own: each tier's key from the runner's environment, else the one the claim opened (a key saved in Settings → Model
-    // keys runs the next run with no restart).
+    // own: each tier's key from the runner's environment, else the one the claim opened (a key saved in
+    // Settings → Model keys runs the next run with no restart).
     const providerOf = deps.providerOf ?? routeProviderOf(withModelKeys(deps.env ?? process.env, claimedEnv));
 
     // Each tier's provider and cap model, resolved once; the proxies start here (before the Harness opens, since the models
