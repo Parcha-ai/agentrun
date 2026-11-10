@@ -10,8 +10,9 @@
 // When a run of such an agent is made the server makes the folder if it is absent (the script's init: one host commit
 // on main, holding an empty `MEMORY.md`), and reads main's commit through the script, never the working tree. It copies that commit's
 // index and active notes into the run's `work/.learning/` and pins the commit in the run's directory (`learning.json`),
-// with what the run reads under `# Learned` (learnedOf): each active note whole while they fit the server's learning
-// budget, else the index and the notes changed last, whole, while they fit; every text cut of the server's secrets, the
+// with what the run reads under `# Learned` (learnedParts): each active note whole while they fit the server's learning
+// budget, else what its note selector picks (byRelevance: the notes that bear on the run's input whole, a line for each
+// of the rest); every text cut of the server's secrets, the
 // copy's too. The run's process reads that pin (withLearned, for app.ts) and never runs git, so it may run anywhere its
 // directory is. When the run ends the server asks it one more turn, which answers with the notes
 // it would keep (learning-run.ts). As the run settles, before anything can open it again, that answer is kept in the
@@ -56,7 +57,7 @@ export function learningOf(env: NodeJS.ProcessEnv, given?: string): LearningMode
   return value as LearningMode;
 }
 
-/** How much of what a run learned its instructions hold under `# Learned` by default, in UTF-8 bytes (learnedOf): its
+/** How much of what a run learned its instructions hold under `# Learned` by default, in UTF-8 bytes (learnedParts): its
  *  notes whole while they fit, else the index and the notes changed last, whole, while they fit. */
 export const LEARNING_BUDGET = 8000;
 export const LEARNING_BUDGET_ENV = "AGENTRUN_SERVE_LEARNING_BUDGET";
@@ -226,7 +227,7 @@ export const LEARNED_DIR = ".learning";
 export const LEARNING_TURN = "learning-turn.json";
 export type Turn = { answer: string; asked: string[]; triggered?: Triggered[] };
 /** What a run's pin holds: the commit of main it was seeded from (null: the folder had no main yet, so the run learns
- *  from an empty seed), and what it reads under `# Learned` (learnedOf), when it learned anything.
+ *  from an empty seed), and what it reads under `# Learned` (learnedParts), when it learned anything.
  *  `skills`: the files of the learned skills laid in its work, by their paths under `.agents/skills/`, as a revision
  *  names its own; `skills_left_out`: the learned skills it does not get, over their budget or holding a secret.
  *  `workflows`: the names of the learned workflows the run may run (its `learned_workflow` tool), each written whole in
@@ -462,7 +463,7 @@ const utf8 = new TextDecoder("utf-8", { fatal: true });
 /** What commit `sha` holds for a run, read with plumbing: its index and its active notes, the `.md` files at its top.
  *  Only a regular file (mode 100644) under FILE_CAP, in UTF-8, is read, and only a note in shape (learn/notes.ts
  *  parseNoteFile); anything else is named in `skipped`. Only an active note is a run's: a pending, superseded or retired
- *  one is not, and nothing serves it (learnedOf, layLearned). A read git fails (an
+ *  one is not, and nothing serves it (learnedParts, layLearned). A read git fails (an
  *  object missing, a timeout) throws. */
 export async function readSeed(cwd: string, repo: string, sha: string): Promise<Seed> {
   const seed: Seed = { sha, notes: {}, files: [], skipped: [] };
@@ -712,7 +713,7 @@ export async function layLearned(work: Workspace, seed: Seed, shown: Shown): Pro
   for (const [file, text] of files) await work.write(`${LEARNED_DIR}/${file}`, text);
 }
 
-/** How a run reads what it learned (learnedOf): the server's learning budget, in bytes; whether its agent has the read
+/** How a run reads what it learned (learnedParts): the server's learning budget, in bytes; whether its agent has the read
  *  tool; the host's secrets, which every text is cut of; and which of its notes it is given (`select`, byRelevance when
  *  none) for the run it starts (`run`: what the selector may read of it, its input). */
 export type LearnedOptions = { budget: number; read: boolean; shown: Shown; select?: NoteSelector; run?: RunInput };
@@ -734,7 +735,7 @@ export type NoteCandidates = {
  *  whether it reads the index first. Without the index, the notes are all it is given; or, with `lines`, the notes it
  *  reads as one rule line each after them, in their place (`index` is then false). */
 export type NoteSelection = { readonly whole: readonly LearnedNote[]; readonly index: boolean; readonly lines?: readonly LearnedNote[] };
-/** The port that chooses which of an agent's notes a run gets (learnedOf; byRelevance when none is named). It chooses only: the seed, the pin, the cut of
+/** The port that chooses which of an agent's notes a run gets (learnedParts; byRelevance when none is named). It chooses only: the seed, the pin, the cut of
  *  the host's secrets and the section's words stay learnedParts'. A selector keeps the budget: its whole notes, and the
  *  index when it serves it, fit `budget`, past which only the index may go (as loadedIndex bounds it). */
 export type NoteSelector = (candidates: NoteCandidates, run: RunInput) => NoteSelection;
@@ -795,27 +796,14 @@ const ruleLine = (note: LearnedNote, shown: Shown): string => `- ${shown.text(on
 /** A note as a run reads it whole: its name and file, its description, then its body, each cut of the host's secrets. */
 const wholeNote = (note: LearnedNote, shown: Shown): string => [`## ${shown.text(oneLine(note.name))} (${shown.name(note.file)})`, shown.text(oneLine(note.description)), shown.text(note.body.trim())].filter(Boolean).join("\n\n");
 
-/** What a run of `seed` reads under `# Learned`, the same for every harness, or undefined when it learned nothing. Only
- *  active notes are served: a pending, superseded or retired one is never there, whole or in the index, nor counted
- *  toward the budget (readSeed reads active notes alone, and servedIndex drops their lines). Its active notes, newest
- *  first (`seed.recent`, else by name): each whole while all fit `budget`, the UTF-8 bytes of
- *  what follows the first paragraph. Past it, or when the index names a note main does not hold whole: the index as a
- *  run loads it (learn/notes.ts loadedIndex, the first 200 lines and no more than 25 KB, past the budget when it is
- *  larger), then the newest notes that fit what is left, each whole, and the rest named only in the index; an agent
- *  with the read tool is told they are in `.learning/`, one without is not. Every text is cut of the host's secrets. */
-export function learnedOf(seed: Seed, options: LearnedOptions): string | undefined {
-  return learnedParts(seed, options).section;
-}
-
-/** The notes a run's # Learned section names (learnedOf): each given whole, and each an index line names by its file;
- *  every active note when all are given whole. A run "was given" these; of them, it "read" those whose file it opened
+/** What a run of `seed` reads under `# Learned` (`section`, the same for every harness, undefined when it learned
+ *  nothing) and the notes that names (`given`), from one choice of the selector, so the section and the given notes never
+ *  come from two choices. Only active notes are served: a pending, superseded or retired one is never there, whole or in
+ *  the index, nor counted toward the budget (readSeed reads active notes alone, and servedIndex drops their lines). Its
+ *  active notes, newest first (`seed.recent`, else by name), each whole while all fit `budget`; past it, the selector's
+ *  choice (byRelevance by default). An agent with the read tool is told the rest are in `.learning/`, one without is not.
+ *  Every text is cut of the host's secrets. A run "was given" `given`; of them, it "read" those whose file it opened
  *  (store-reads/learning.ts notesReadOf). Whether it applied one given whole is not measured. */
-export function givenOf(seed: Seed, options: LearnedOptions): NoteUsed[] {
-  return learnedParts(seed, options).given.map(({ file, name }) => ({ file, name }));
-}
-
-/** What a run of `seed` reads under `# Learned` (learnedOf) and the notes that names (givenOf), from one choice of the
- *  selector, so the section and the given notes never come from two choices. */
 export function learnedParts(seed: Seed, options: LearnedOptions): { section: string | undefined; given: LearnedNote[] } {
   const { budget, read, shown, select = byRelevance, run = {} } = options;
   const active = new Map(activeOf(seed).map((note) => [note.file, note]));
@@ -963,7 +951,7 @@ export function chooseWorkflows(seed: Seed, shown: Shown): { flows: LearnedWorkf
 
 /** Writes `seed` into the run just made in `runDir`, its files through the run's Workspace (`work`): the index and each
  *  active note into `.learning/`, made fresh (whatever was there goes), then the pin, with what the run reads under
- *  `# Learned` (learnedOf) and the learned skills it gets beside the revision's `own` skill files (chooseSkills), then
+ *  `# Learned` (learnedParts) and the learned skills it gets beside the revision's `own` skill files (chooseSkills), then
  *  those skills, last, into `.agents/skills/`. A write that fails leaves no `.learning/`, no learned skill and no pin,
  *  and throws. */
 export async function pinSeed(runDir: string, work: Workspace, seed: Seed, options: LearnedOptions & { own?: readonly string[] }): Promise<Pin> {

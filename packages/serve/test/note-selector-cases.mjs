@@ -1,4 +1,4 @@
-// The seeds and options the note selector's golden test (note-selector.test.mjs) runs learnedOf and givenOf over: an
+// The seeds and options the note selector's golden test (note-selector.test.mjs) runs learnedParts over: an
 // agent with nothing, notes that all fit, notes past the budget, an index naming a note main does not hold whole, an index
 // naming only some notes, a budget of 0, each with and without the read tool, and a note holding a value the host keeps secret.
 import { note } from "./fixtures/faux-learn.mjs";

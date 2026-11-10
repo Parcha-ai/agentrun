@@ -342,8 +342,8 @@ export type ServeOptions = {
    *  its agent's definition says, and its `learning` is null. */
   learning?: LearningMode;
   /** How much of what a run learned its instructions hold under `# Learned`, in UTF-8 bytes (`--learning-budget`;
-   *  default AGENTRUN_SERVE_LEARNING_BUDGET, else 8000): every note whole while they fit, else the index and the notes
-   *  changed last, whole, while they fit (learning.ts learnedOf). */
+   *  default AGENTRUN_SERVE_LEARNING_BUDGET, else 8000): every note whole while they fit, else the notes that bear on
+   *  the run's input whole and a line for each of the rest (learning.ts learnedParts, its note selector). */
   learningBudget?: number;
   /** A test's seam: the triggers' clock and timer (triggers.ts), in place of Date.now and setTimeout. */
   triggerClock?: TriggerClock;

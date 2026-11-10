@@ -73,10 +73,9 @@ export function queryOf(input: unknown): Map<string, number> {
 export type Scored = { readonly name: string; readonly description: string; readonly body: string };
 
 /** BM25 (k1 1.2, b 0.75) of each of `docs` against `query`, over the docs as their own corpus, each query word's part
- *  times its weight (queryOf; a list weighs each word once): 0 for a doc that holds none of the query's words. */
-export function bm25(docs: readonly Scored[], query: ReadonlyMap<string, number> | readonly string[]): number[] {
-  const weights = Array.isArray(query) ? new Map(query.map((word) => [word, 1])) : new Map(query as ReadonlyMap<string, number>);
-  const terms = [...weights.keys()];
+ *  times its weight (queryOf): 0 for a doc that holds none of the query's words. */
+export function bm25(docs: readonly Scored[], query: ReadonlyMap<string, number>): number[] {
+  const terms = [...query.keys()];
   if (!terms.length || !docs.length) return docs.map(() => 0);
   const bags = docs.map(({ name, description, body }) => wordsOf(`${name} ${description} ${name} ${description} ${body}`));
   const avg = bags.reduce((sum, bag) => sum + bag.length, 0) / bags.length || 1;
@@ -87,6 +86,6 @@ export function bm25(docs: readonly Scored[], query: ReadonlyMap<string, number>
   }));
   return counts.map((count, i) => terms.reduce((score, term) => {
     const tf = count.get(term) ?? 0;
-    return tf ? score + weights.get(term)! * idf.get(term)! * ((tf * 2.2) / (tf + 1.2 * (0.25 + (0.75 * bags[i]!.length) / avg))) : score;
+    return tf ? score + query.get(term)! * idf.get(term)! * ((tf * 2.2) / (tf + 1.2 * (0.25 + (0.75 * bags[i]!.length) / avg))) : score;
   }, 0));
 }
