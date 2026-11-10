@@ -276,6 +276,15 @@ test("a cloud phone under the server's default box_allow, or none, runs on the v
   assert.deepEqual(provider.check({ ...spec(entryOf("phone-harness"), "phone", { networks, maxLifetimeMs }), network: { allow: [...DEFAULT_BOX_ALLOW] } }).map((one) => one.field), ["network"], "the list the spec asked before is refused");
 });
 
+test("the spec starts from the image the setting's configuration names, else the kind's default; one named skips a kind with no default", () => {
+  const spec = computerSpecOf({});
+  assert.equal(spec(entryOf("orgo"), "desktop", {}, "windows").image, "windows");
+  assert.equal(spec(entryOf("orgo"), "desktop", {}).image, entryOf("orgo").defaultImage.desktop);
+  const bare = { ...entryOf("orgo"), defaultImage: undefined };
+  assert.throws(() => spec(bare, "desktop", {}), /has no image for a desktop computer here/);
+  assert.equal(spec(bare, "desktop", {}, "windows").image, "windows");
+});
+
 // The computer's spec by kind (computerSpecOf): box_allow is a sandbox's egress list, so a sandbox with none (or "none")
 // has no network; a browser, a desktop or a phone with none has its provider's own network ("open": a browser or a
 // vendor desktop with no network is a broken kind); an explicit list applies to any kind. Each provider's image for a

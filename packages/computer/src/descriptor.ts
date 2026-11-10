@@ -42,7 +42,11 @@ export interface ProviderDescriptor<Module extends ProviderModule = ProviderModu
 	readonly metered: boolean;
 	/** The mount kinds its computers take, as its providers' capabilities().mount declare them; [] for none. */
 	readonly mounts: readonly MountKind[];
-	/** The machine kind and groups of each configuration it offers, as each built provider's capabilities() declare them. */
+	/**
+	 * The machine kind and groups of each configuration it offers, as each built provider's capabilities() declare them;
+	 * where it offers more than one image of a kind, each one's image (the name a setting selects it by) and the create()
+	 * options that build it (KindCapabilities).
+	 */
 	readonly capabilities: readonly KindCapabilities[];
 	/**
 	 * The image a computer of each setting kind starts from when its setting names none. A kind with no entry has no
@@ -84,6 +88,15 @@ export function descriptorProblems(value: unknown): string[] {
 	if (!Array.isArray(d.mounts) || d.mounts.some((kind) => kind !== "bind" && kind !== "archil")) problems.push("mounts is not a list of mount kinds (bind, archil)");
 	if (!Array.isArray(d.capabilities) || d.capabilities.length === 0) problems.push("capabilities is not a list of one configuration or more");
 	else if (d.capabilities.some((one) => typeof one?.kind !== "string" || !Array.isArray(one.groups))) problems.push("each configuration is a machine kind and its groups");
+	else {
+		const images = new Set<string>();
+		for (const one of d.capabilities) {
+			if (one.image !== undefined && (typeof one.image !== "string" || one.image.trim() === "" || one.image !== one.image.trim())) problems.push(`a configuration's image ${JSON.stringify(one.image)} is not a name`);
+			else if (one.image !== undefined && images.has(`${one.kind} ${one.image}`)) problems.push(`two ${one.kind} configurations have the image ${one.image}`);
+			else if (one.image !== undefined) images.add(`${one.kind} ${one.image}`);
+			if (one.options !== undefined && (typeof one.options !== "object" || one.options === null || Array.isArray(one.options))) problems.push("a configuration's options are an object, as create() takes them");
+		}
+	}
 	const named = (list: unknown, what: string) => {
 		if (list === undefined) return;
 		if (!Array.isArray(list)) return void problems.push(`${what} is not a list`);

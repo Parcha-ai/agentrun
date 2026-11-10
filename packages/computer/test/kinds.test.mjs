@@ -8,11 +8,13 @@ import test from "node:test";
 import { DaytonaProvider } from "../dist/daytona.js";
 import { ModalProvider } from "../dist/modal.js";
 import {
+	configurationOf,
 	DESCRIPTORS,
 	defineProvider,
 	descriptorProblems,
 	entryOf,
 	GROUPS,
+	imagesOf,
 	KIND_SHAPES,
 	kindOf,
 	kindRefusals,
@@ -172,10 +174,27 @@ test("a descriptor is checked when it is defined: its id, keys, settings and con
 		[{ mounts: ["nfs"] }, /mounts is not a list of mount kinds/],
 		[{ load: "./acme.js" }, /load is not a function/],
 		[{ ledger: {} }, /ledger names the option it fills/],
+		[{ capabilities: [{ kind: "desktop", groups: [], image: " windows" }] }, /a configuration's image " windows" is not a name/],
+		[{ capabilities: [{ kind: "desktop", groups: [], image: "windows" }, { kind: "desktop", groups: ["exec"], image: "windows" }] }, /two desktop configurations have the image windows/],
+		[{ capabilities: [{ kind: "desktop", groups: [], image: "windows", options: "os=windows" }] }, /a configuration's options are an object/],
 	]) {
 		assert.throws(() => defineProvider({ ...good, ...change }), (error) => words.test(error.message), JSON.stringify(change));
 	}
 	assert.deepEqual(descriptorProblems(null), ["it is not an object"]);
+});
+
+test("a kind's images, and the configuration a setting selects: by its image; none named, the default's, else one with no image, else the first", () => {
+	const linux = { kind: "desktop", groups: [], image: "linux", options: {} };
+	const windows = { kind: "desktop", groups: [], image: "windows", options: { os: "windows" } };
+	const plain = { kind: "desktop", groups: [] };
+	assert.deepEqual(imagesOf([windows, linux], "linux"), ["linux", "windows"], "the default first");
+	assert.deepEqual(imagesOf([windows, linux], undefined), ["windows", "linux"]);
+	assert.deepEqual(imagesOf([plain], "e2b-desktop"), [], "no configuration names an image");
+	assert.equal(configurationOf([linux, windows], "windows", "linux"), windows);
+	assert.equal(configurationOf([linux, windows], "beos", "linux"), undefined);
+	assert.equal(configurationOf([windows, linux], undefined, "linux"), linux, "the default's");
+	assert.equal(configurationOf([windows, plain], undefined, "linux"), plain, "else one with no image");
+	assert.equal(configurationOf([windows], undefined, undefined), windows, "else the first");
 });
 
 /** Each provider built as the registry offers it, from the unit tests' fakes. */

@@ -6,6 +6,7 @@
 // their names only: a provider declares them, Settings takes only those, and the store keeps each sealed under the
 // server's seal key (server-keys.ts); a provider is handed its keys only at the claim, or for its test, both through
 // computer-keys.ts (providerOptions, testConnection), which maps a key's name onto the option it fills.
+import { imagesOf } from "@parcha/agentrun-computer";
 import { KEY_TABLE, type KeyTable, type OptionsAnswer, type ProviderFactories, type ProviderSettings, providerOptions, testConnection } from "./computer-keys.js";
 import { COMPUTER_KINDS, type ComputerKind, type ComputerSetting } from "./computer-setting.js";
 import { inArchilMode } from "./archil-settings.js";
@@ -28,8 +29,9 @@ export interface SettingKindSpec {
   readonly optional: readonly string[];
 }
 
-/** A provider configuration's machine kind and groups, as the kind registry gives them. */
-export type KindCapabilities = { readonly kind: string; readonly groups: readonly string[] };
+/** A provider configuration's machine kind and groups, as the kind registry gives them, and the image a setting selects
+ *  it by, where it names one. */
+export type KindCapabilities = { readonly kind: string; readonly groups: readonly string[]; readonly image?: string };
 
 /** A provider as the kind registry's PROVIDERS gives it. */
 export interface ProviderEntry {
@@ -41,6 +43,8 @@ export interface ProviderEntry {
   readonly mounts: readonly string[];
   readonly metered: boolean;
   readonly capabilities: readonly KindCapabilities[];
+  /** The image a computer of each kind starts from when its setting names none. */
+  readonly defaultImage?: Partial<Record<ComputerKind, string>>;
 }
 
 /** The kind registry, by its own names: the computer package's module (SETTING_KINDS, PROVIDERS, servingRefusals). */
@@ -77,7 +81,7 @@ export interface ComputerRoutesOptions {
 /** A provider as Settings shows it: `metered` straight from the kind registry (its computers are billed by the vendor);
  *  its keys as SecretMeta under `secrets`, each named "computer:<provider>:<KEY>", and `required`, the names of the ones
  *  it needs. */
-export type ProviderView = { id: string; name: string; metered: boolean; secrets: KeyMeta[]; required: string[]; ready: boolean; why?: string };
+export type ProviderView = { id: string; name: string; metered: boolean; secrets: KeyMeta[]; required: string[]; ready: boolean; why?: string; images?: string[] };
 export type KindView = { kind: ComputerKind; offered: boolean; why?: string; groups: string[]; tools: string[]; providers: ProviderView[] };
 export type TestView = { ok: true; detail: string } | { ok: false; why: string };
 
@@ -136,7 +140,9 @@ export function createComputerRoutes(options: ComputerRoutesOptions) {
         const providers = serving.map((provider): ProviderView => {
           const missing = missingKeys(provider, saved);
           const why = modeRefusal(kind, provider, mode) ?? (missing.length ? keysWhy(provider, missing) : undefined);
-          return { id: provider.id, name: provider.label, metered: provider.metered, secrets: provider.keys.map((key) => metas.get(secretName("computer", provider.id, key.name))!), required: provider.keys.filter((key) => key.required).map((key) => secretName("computer", provider.id, key.name)), ready: why === undefined, ...(why ? { why } : {}) };
+          // The images an agent's computer.image may name for this kind: those of its configurations that serve it.
+          const images = imagesOf(provider.capabilities.filter((one) => kinds.servingRefusals(one, kind).length === 0), provider.defaultImage?.[kind]);
+          return { id: provider.id, name: provider.label, metered: provider.metered, secrets: provider.keys.map((key) => metas.get(secretName("computer", provider.id, key.name))!), required: provider.keys.filter((key) => key.required).map((key) => secretName("computer", provider.id, key.name)), ready: why === undefined, ...(why ? { why } : {}), ...(images.length > 0 ? { images } : {}) };
         });
         const offered = kind === "none" || serving.some((provider) => modeRefusal(kind, provider, mode) === undefined);
         const why = offered ? undefined : serving.length ? `no provider of a ${kind} computer can reach this server's run folders` : `no provider serves a ${kind} computer`;

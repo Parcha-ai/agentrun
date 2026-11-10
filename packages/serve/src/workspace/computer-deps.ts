@@ -121,8 +121,9 @@ export function computerSpecOf(env: KeyEnv): ComputerForClaimDeps["spec"] {
     if (entry.prepareImage && kind === "desktop") throw refused(`A ${entry.label} desktop needs an image with an X server; set one for desktops.`);
     throw refused(`${entry.label} has no image for a ${kind} computer here: pick another provider for this agent's computer in Settings → Computers.`);
   };
-  return (entry, kind, run) => ({
-    image: imageOf(entry, kind),
+  return (entry, kind, run, image) => ({
+    // The setting's configuration's image (Orgo's `windows`), else the kind's.
+    image: image ?? imageOf(entry, kind),
     // The leak bound, within the longest the provider makes (E2B's is an hour): a longer one it refuses at create.
     lifetimeMs: Math.min(COMPUTER_LIFETIME_MS, run.maxLifetimeMs ?? COMPUTER_LIFETIME_MS),
     network: networkOf(kind, run),

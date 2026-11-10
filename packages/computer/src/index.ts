@@ -147,7 +147,9 @@ export {
 export type { PhoneLedger, PhoneLedgerEntry } from "./phone-harness.js";
 export {
 	type ComputerSettingKind,
+	configurationOf,
 	entryOf,
+	imagesOf,
 	type KindCapabilities,
 	kindOf,
 	type ProviderEntry,

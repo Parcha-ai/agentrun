@@ -24,7 +24,7 @@ export function computerProviderMakers({ load = providerFor as unknown as Provid
   return Object.fromEntries(
     entries.map(({ id, ledger }) => [
       id,
-      (options: Record<string, string>, extras: ProviderExtras) =>
+      (options: Readonly<Record<string, unknown>>, extras: ProviderExtras) =>
         load(id, { ...options, ...(ledger === undefined ? {} : { [ledger.option]: extras.ledger }) }, extras.boxAllow === undefined ? {} : { boxAllow: extras.boxAllow }),
     ]),
   ) as ProviderMakers;

@@ -50,7 +50,7 @@ export interface ComputerRun {
 /** A provider module's create(), by provider id: its options from the saved keys, and the store's ledger for a provider
  *  that keeps one (the phone's `ledger` option); for a claim, what its run's computer may reach (`boxAllow`, the
  *  launch's box_allow), which no provider option carries. The computer package's providers, or a test's stand-in. */
-export type ProviderMakers = Readonly<Partial<Record<string, (options: Record<string, string>, extras: ProviderExtras) => ComputerProvider | Promise<ComputerProvider>>>>;
+export type ProviderMakers = Readonly<Partial<Record<string, (options: Readonly<Record<string, unknown>>, extras: ProviderExtras) => ComputerProvider | Promise<ComputerProvider>>>>;
 /** What a provider is made with beside its options: the store's ledger, and the claim's box_allow when a claim makes it. */
 export type ProviderExtras = { readonly ledger: ProviderLedger; readonly boxAllow?: readonly string[] | "none" };
 
@@ -80,8 +80,9 @@ export interface ComputerForClaimDeps {
   /** The server's seal key: absent, no key is opened, so a provider that needs one is refused in words. */
   readonly sealKey: Buffer | undefined;
   readonly providers: ProviderMakers;
-  /** What a computer of `kind` is made with, besides its labels and its mount: image, lifetime, network (from `run`). */
-  readonly spec: (entry: ProviderEntry, kind: Exclude<ComputerSettingKind, "none">, run: ComputerRun) => Omit<ComputerSpec, "labels" | "mount">;
+  /** What a computer of `kind` is made with, besides its labels and its mount: image, lifetime, network (from `run`).
+   *  `image`: the one the setting's configuration names, over the kind's default. */
+  readonly spec: (entry: ProviderEntry, kind: Exclude<ComputerSettingKind, "none">, run: ComputerRun, image?: string) => Omit<ComputerSpec, "labels" | "mount">;
   /** A provider key's value by its name, as the server reads it (key-meta.ts keyReader: the environment's, else the
    *  saved one). Absent: the saved one alone, opened with `sealKey`. */
   readonly keyOf?: (name: string) => Promise<string | undefined>;
@@ -223,9 +224,9 @@ export async function computerForClaim(launch: ClaimLaunch, store: Pick<Store, "
   const side: ClaimSide = {
     keysOf: providerKeys(deps.kinds, deps.keyOf ?? (async (name) => (deps.sealKey ? await getSealedKey(store, deps.sealKey, name) : undefined))),
     answers: deps.answers ?? (async () => false),
-    async launch(entry, { kind, keys, mount, signal }) {
+    async launch(entry, { kind, keys, configuration, mount, signal }) {
       if (deps.launch) {
-        const own = await deps.launch(entry, { kind, keys, ...(mount ? { mount } : {}), ...(signal ? { signal } : {}) });
+        const own = await deps.launch(entry, { kind, keys, ...(configuration ? { configuration } : {}), ...(mount ? { mount } : {}), ...(signal ? { signal } : {}) });
         const ownWatch = (own as unknown as { watch?: (signal: AbortSignal) => unknown }).watch;
         made = { id: own.id, ...(ownWatch ? { watch: ownWatch } : {}) };
         madeBy = entry;
@@ -235,7 +236,9 @@ export async function computerForClaim(launch: ClaimLaunch, store: Pick<Store, "
       if (!make) throw new Error(`this server has no ${entry.label} provider to start one with`);
       const options = providerOptions(entry.id, keys, deps.settings ?? {}, table);
       if (!options.ok) throw new Error(options.error.message);
-      const provider = await make(options.options, { ledger: storeLedger(store.computerLedger, entry.id), ...(launch.boxAllow === undefined ? {} : { boxAllow: launch.boxAllow }) });
+      // The configuration the setting selected is built by its own create() options (Orgo's Windows: { os: "windows" }),
+      // beside the keys'.
+      const provider = await make({ ...options.options, ...(configuration?.options ?? {}) }, { ledger: storeLedger(store.computerLedger, entry.id), ...(launch.boxAllow === undefined ? {} : { boxAllow: launch.boxAllow }) });
       // What this provider makes, as it declares it: the spec asks for one of its networks, within its lifetime
       // (computer-deps.ts computerSpecOf).
       const { network: networks, maxLifetimeMs } = provider.capabilities();
@@ -246,8 +249,9 @@ export async function computerForClaim(launch: ClaimLaunch, store: Pick<Store, "
       };
       // A provider that declares it prepares its own image (its prepareImage(): its recipe built when the engine lacks it,
       // an image by name pulled) does so first, and the computer starts from the tag it answers: the recipe's tag is in no
-      // registry, so a run of it unbuilt would be refused. The spec comes first, so a setting it refuses builds nothing.
-      const asked = deps.spec(entry, kind as Exclude<ComputerSettingKind, "none">, run);
+      // registry, so a run of it unbuilt would be refused. The spec comes first, so a setting it refuses builds nothing. A
+      // configuration that names its image starts from it, else the kind's default.
+      const asked = deps.spec(entry, kind as Exclude<ComputerSettingKind, "none">, run, configuration?.image);
       const ready = await readyImage(entry, provider, signal, deps.onImageWait);
       const spec: ComputerSpec = { ...asked, ...(ready ? { image: ready } : {}), labels: runLabels(launch.runId, launch.epoch), ...(mount ? { mount } : {}) };
       const launched = await providerLaunch(provider, launch, spec, signal);

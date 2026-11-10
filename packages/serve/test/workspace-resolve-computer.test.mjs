@@ -16,7 +16,7 @@ import { capabilityToolDefs } from "@parcha/agentrun-kernel/kernel";
 import { localWorkspace, resolveComputer, runShellOf, runTools } from "../dist/workspace/index.js";
 import { runHands } from "../dist/workspace/run-tools.js";
 import { fakeComputer } from "./workspace-fake-computer.mjs";
-import { ARCHIL_KINDS, KINDS } from "./workspace-kinds-fixture.mjs";
+import { ARCHIL_KINDS, KINDS, PROVIDERS } from "./workspace-kinds-fixture.mjs";
 
 /** A kind's own tools, as the kernel registry lists them (the hand-over the desktop and phone share among them). */
 const kindTools = (kind) => capabilityToolDefs(kind).map((def) => def.name);
@@ -184,4 +184,36 @@ test("runShellOf, read off the setting, is the shell runHands gives the run over
     assert.ok("refused" in (await resolve(setting, mode)), `${setting.kind} in Mode ${mode} is refused`);
     assert.equal(runShellOf(setting, mode, KIND_REGISTRY), "none", `a refused setting runs nothing: ${setting.kind} ${setting.provider ?? ""} in Mode ${mode}`);
   }
+});
+
+/** A provider no serve file names, with two desktop images: Linux (the default, computerd's groups) and Windows, built by
+ *  create()'s os option. */
+const LINUX_GROUPS = PROVIDERS.find((one) => one.id === "e2b").capabilities.find((one) => one.kind === "desktop").groups;
+const ACME = { id: "acme-desk", label: "Acme Desk", kinds: ["desktop"], keys: [], mounts: [], metered: true, defaultImage: { desktop: "linux" }, capabilities: [
+  { kind: "desktop", groups: LINUX_GROUPS, image: "linux", options: {} },
+  { kind: "desktop", groups: ["exec", "files", "screen", "input.pointer", "input.keys"], image: "windows", options: { os: "windows" } },
+] };
+const IMAGED = { ...KINDS, PROVIDERS: [...KINDS.PROVIDERS, ACME] };
+
+test("a setting's image selects the provider's configuration of that image, whose options go to the launch; none named, the kind's default", async () => {
+  const root = scratch();
+  for (const [image, expected] of [["windows", ACME.capabilities[1]], [undefined, ACME.capabilities[0]], ["linux", ACME.capabilities[0]]]) {
+    const side = claim(root);
+    const resolved = await resolveComputer({ kind: "desktop", provider: "acme-desk", ...(image ? { image } : {}) }, 1, IMAGED, side);
+    assert.equal(resolved.kind, "desktop", JSON.stringify(resolved));
+    await resolved.start({ workspace: localWorkspace(root), check: { readBackOf } });
+    assert.deepEqual(side.launched[0], ["acme-desk", { kind: "desktop", keys: {}, configuration: expected }], String(image));
+  }
+  // A provider whose configurations name no image is launched as before: no configuration is chosen for it.
+  const e2b = claim(root);
+  await (await resolveComputer({ kind: "desktop", provider: "e2b" }, 1, IMAGED, e2b)).start({ workspace: localWorkspace(root), check: { readBackOf } });
+  assert.equal("configuration" in e2b.launched[0][1], false);
+});
+
+test("an image the provider does not offer for the kind is refused before anything starts, in words naming the ones it offers", async () => {
+  const side = claim(scratch());
+  assert.deepEqual(await resolveComputer({ kind: "desktop", provider: "acme-desk", image: "beos" }, 1, IMAGED, side), { refused: 'Acme Desk has no desktop image "beos". It offers the desktop images linux, windows: pick one for this agent\'s computer in Settings → Computers.' });
+  assert.deepEqual(await resolveComputer({ kind: "desktop", provider: "e2b", image: "windows" }, 1, IMAGED, side), { refused: 'E2B has no desktop image "windows". It offers no desktop image to choose: remove the image for this agent\'s computer in Settings → Computers.' });
+  assert.deepEqual(side.launched, [], "nothing was launched");
+  assert.equal(runShellOf({ kind: "desktop", provider: "acme-desk", image: "beos" }, 2, IMAGED), "none", "a refused setting runs nothing");
 });

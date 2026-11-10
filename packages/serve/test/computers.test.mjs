@@ -62,6 +62,17 @@ test("Mode 1 (run folders on this machine): a sandbox is Docker's alone; a deskt
   assert.equal(kindOf(view, "sandbox").offered, true);
 });
 
+test("a provider that offers images by name lists them for the kind, its default first; one that offers none lists none", async (t) => {
+  const acme = { id: "acme-desk", label: "Acme Desk", kinds: ["desktop"], keys: [], mounts: [], metered: true, defaultImage: { desktop: "linux" }, capabilities: [
+    { kind: "desktop", groups: ["screen", "input.pointer", "input.keys"], image: "windows", options: { os: "windows" } },
+    { kind: "desktop", groups: ["screen", "input.pointer", "input.keys"], image: "linux", options: {} },
+  ] };
+  const { routes } = await setup(t, { kinds: { ...KINDS, PROVIDERS: [...KINDS.PROVIDERS, acme] } });
+  const view = await routes.view();
+  assert.deepEqual(providerOf(view, "desktop", "acme-desk").images, ["linux", "windows"]);
+  assert.equal("images" in providerOf(view, "desktop", "e2b"), false);
+});
+
 test("Mode 2 today: Docker's sandbox can't mount the owner's disk; Daytona, Modal and E2B mount it from Archil, so the sandbox is offered, each waiting on its own key; a desktop, phone or browser is", async (t) => {
   const { routes } = await setup(t, { mode: "disk" });
   const view = await routes.view();

@@ -18,6 +18,7 @@
 // plane shows bash unavailable by it), and the claim's runTools takes the same rule over the computer it started.
 import type { CdpSession, ShellPlace } from "@parcha/agentrun-kernel/kernel";
 import type { ComputerClient, ComputerSettingKind, Group, KindCapabilities, MountKind, MountReadBack, MountSpec, ProviderEntry, Result } from "@parcha/agentrun-computer";
+import { configurationOf, imagesOf } from "@parcha/agentrun-computer";
 import type { MountCheck } from "./attach.js";
 import type { RunComputer } from "./run-tools.js";
 import type { Workspace } from "./workspace.js";
@@ -26,8 +27,8 @@ import type { Workspace } from "./workspace.js";
  *  provider of the kind registry: the computer module's own types. Where a run's shell is: the kernel registry's. */
 export type { ComputerSettingKind, KindCapabilities, ProviderEntry, ShellPlace };
 
-/** An agent's computer setting. */
-export type ComputerSetting = { readonly kind: string; readonly provider?: string | null };
+/** An agent's computer setting. `image`: the one of the provider's configurations it selects; absent, the default. */
+export type ComputerSetting = { readonly kind: string; readonly provider?: string | null; readonly image?: string };
 
 /** The computer module's kind registry (src/kinds.ts), by its own names: the setting kinds, why a machine does not serve
  *  one (servingRefusals, whose words a refusal here carries), and the providers. */
@@ -54,7 +55,9 @@ export type ClaimSide = {
   keysOf(provider: string): Promise<Readonly<Record<string, string>>>;
   /** Whether a provider that binds a folder of this machine (Docker) answers here now: the Mode 1 default asks it. */
   answers(provider: string): Promise<boolean>;
-  launch(entry: ProviderEntry, spec: { readonly kind: ComputerSettingKind; readonly keys: Readonly<Record<string, string>>; readonly mount?: MountSpec; readonly signal?: AbortSignal }): Promise<LaunchedComputer>;
+  /** `configuration`: the provider's configuration the setting selected; its options go to the provider with the keys,
+   *  and its image, when it names one, is the computer's. */
+  launch(entry: ProviderEntry, spec: { readonly kind: ComputerSettingKind; readonly keys: Readonly<Record<string, string>>; readonly configuration?: KindCapabilities; readonly mount?: MountSpec; readonly signal?: AbortSignal }): Promise<LaunchedComputer>;
 };
 
 /** A narrow port of the kernel's hands a computer fills: files, exec and processes where the folder is mounted; a
@@ -142,6 +145,14 @@ function mountsFolder(kind: ComputerSettingKind, entry: ProviderEntry, serving: 
 /** The configurations of `entry` that serve `kind`. */
 const servingOf = (registry: Pick<KindRegistry, "servingRefusals">, entry: ProviderEntry, kind: ComputerSettingKind): KindCapabilities[] => entry.capabilities.filter((one) => registry.servingRefusals(one, kind).length === 0);
 
+/** The configurations of `serving` the setting selects: all of them where it names no image and none has one (as
+ *  before images); else the one its image selects (configurationOf), or [] when its image names none. */
+const selectedOf = (serving: readonly KindCapabilities[], setting: ComputerSetting, entry: ProviderEntry, kind: ComputerSettingKind): readonly KindCapabilities[] => {
+  if (setting.image === undefined && serving.every((one) => one.image === undefined)) return serving;
+  const one = configurationOf(serving, setting.image, entry.defaultImage?.[kind]);
+  return one ? [one] : [];
+};
+
 /**
  * Where a run of an agent with computer `setting` has its shell in `mode` (shellPlaceOf), read off the setting and the
  * kind registry before anything starts: what the claim's runTools gives the run once its computer is started. "computer"
@@ -157,7 +168,7 @@ export function runShellOf(setting: ComputerSetting, mode: 1 | 2, registry: Pick
   if (!registry.PROVIDERS.some((one) => one.kinds.includes(kind))) return "none";
   const entry = registry.PROVIDERS.find((one) => one.id === setting.provider);
   if (!entry) return "none";
-  const serving = servingOf(registry, entry, kind);
+  const serving = selectedOf(servingOf(registry, entry, kind), setting, entry, kind);
   if (serving.length === 0) return "none";
   const mounts = mountsFolder(kind, entry, serving, mode);
   if (kind === "sandbox" && !mounts) return "none";
@@ -198,9 +209,19 @@ export async function resolveComputer(given: ComputerSetting | undefined, mode: 
     const why = entry.capabilities.map((one) => registry.servingRefusals(one, kind)).sort((a, b) => a.length - b.length)[0] ?? [];
     return { refused: `${entry.label} gives no ${kind} computer${why.length > 0 ? `: ${why.join("; ")}` : ""}. Pick ${pick}` };
   }
+  // The configuration the setting's image selects: one the provider does not offer for the kind is refused, naming those
+  // it does.
+  const selected = selectedOf(serving, setting, entry, kind);
+  if (selected.length === 0) {
+    const images = imagesOf(serving, entry.defaultImage?.[kind]);
+    const offers = images.length === 0 ? `offers no ${kind} image to choose: remove the image` : `offers the ${kind} image${images.length === 1 ? "" : "s"} ${images.join(", ")}: pick one`;
+    return { refused: `${entry.label} has no ${kind} image ${JSON.stringify(setting.image)}. It ${offers} for this agent's computer in ${SETTINGS}.` };
+  }
+  // A provider that offers images by name launches the one selected; one that offers none, as before.
+  const configuration = serving.some((one) => one.image !== undefined) ? selected[0] : undefined;
 
   // The run's folder: mounted where the kind has files and exec and the provider mounts the mode's folder.
-  const mounts = mountsFolder(kind, entry, serving, mode);
+  const mounts = mountsFolder(kind, entry, selected, mode);
   if (kind === "sandbox" && !mounts) {
     if (mode === 1) return { refused: `Mode 1 runs a sandbox only on Docker: a ${entry.label} sandbox can't reach the run's folder on this machine. Pick Docker for this agent's computer in ${SETTINGS}, or another kind of computer.` };
     if (entry.mounts.includes("bind")) return { refused: `Mode 2 keeps workspaces on Archil; a local Docker computer can't mount them. Pick a remote sandbox for this agent's computer in ${SETTINGS}, or no computer.` };
@@ -229,7 +250,7 @@ export async function resolveComputer(given: ComputerSetting | undefined, mode: 
       const mount = mounts ? await workspace.mountSpec() : undefined;
       let launched: LaunchedComputer;
       try {
-        launched = await side.launch(entry, { kind, keys, ...(mount ? { mount } : {}), ...(signal ? { signal } : {}) });
+        launched = await side.launch(entry, { kind, keys, ...(configuration ? { configuration } : {}), ...(mount ? { mount } : {}), ...(signal ? { signal } : {}) });
       } catch (error) {
         throw unavailable(`${entry.label} could not start a ${kind} computer: ${error instanceof Error ? error.message : String(error)}`);
       }

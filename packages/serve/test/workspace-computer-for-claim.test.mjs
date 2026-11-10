@@ -225,3 +225,30 @@ test("Mode 1 refuses a sandbox that is not Docker's; Mode 2 refuses Docker's", a
   assert.match(await refusal({ kind: "sandbox", provider: "daytona" }, { keys: { DAYTONA_API_KEY: "dk" } }), /Mode 1 runs a sandbox only on Docker/);
   assert.match(await refusal({ kind: "sandbox", provider: "docker" }, { mode: 2 }), /Mode 2 keeps workspaces on Archil/);
 });
+
+test("a desktop whose setting names an image is made with that configuration's options beside its keys, and starts from that image", async () => {
+  const root = scratch();
+  const store = memoryStore();
+  const sealKey = randomBytes(32);
+  await putSealedKey(store, sealKey, "ACME_TOKEN", "at-test");
+  // A provider no serve file names: its keys and its configurations are its descriptor's, in its registry entry.
+  const acme = { id: "acme-desk", label: "Acme Desk", kinds: ["desktop"], keys: [{ name: "ACME_TOKEN", option: "token", required: true }], mounts: [], metered: true, defaultImage: { desktop: "linux" }, capabilities: [
+    { kind: "desktop", groups: ["screen", "input.pointer", "input.keys"], image: "linux", options: {} },
+    { kind: "desktop", groups: ["screen", "input.pointer", "input.keys"], image: "windows", options: { os: "windows" } },
+  ] };
+  const kinds = { ...KINDS, PROVIDERS: [...KINDS.PROVIDERS, acme] };
+  const keyTable = { keys: { "acme-desk": acme.keys }, labels: { "acme-desk": "Acme Desk" }, settings: {} };
+  for (const [image, options, started] of [["windows", { token: "at-test", os: "windows" }, "windows"], [undefined, { token: "at-test" }, "linux"]]) {
+    const record = { created: [], released: [], options: [] };
+    const specs = [];
+    const providers = { "acme-desk": (given) => (record.options.push(given), fakeProvider(root, record, ["screen", "input.pointer", "input.keys"])) };
+    const spec = (entry, kind, run, named) => (specs.push(named), { ...SPEC(), ...(named ? { image: named } : {}) });
+    const setting = { kind: "desktop", provider: "acme-desk", ...(image ? { image } : {}) };
+    const answer = await computerForClaim({ runId: "run-1", epoch: 3, computer: setting }, store, { mode: 1, kinds, keyTable, sealKey, providers, spec, workspace: localWorkspace(root), check: { readBackOf, epoch: 3 }, revokeMount: async () => {} });
+    assert.equal(answer.computer.kind, "desktop", String(image));
+    assert.deepEqual(record.options, [options], "the configuration's options beside the keys'");
+    assert.deepEqual(specs, [started], "the spec is asked for the configuration's image");
+    assert.equal(record.created[0].image, started);
+    await answer.release();
+  }
+});

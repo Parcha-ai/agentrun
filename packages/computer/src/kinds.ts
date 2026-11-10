@@ -41,8 +41,16 @@ export const SETTING_KINDS: Readonly<Record<ComputerSettingKind, SettingKindSpec
 /** Every setting kind, in the table's order. */
 export const SETTING_KIND_NAMES = Object.keys(SETTING_KINDS) as ComputerSettingKind[];
 
-/** The capabilities serves() and kindOf() read. */
-export type KindCapabilities = Pick<ComputerCapabilities, "kind" | "groups">;
+/**
+ * The capabilities serves() and kindOf() read: one configuration a provider offers. In a descriptor, `image` is the
+ * name an agent's setting selects it by (Orgo's `windows`), the image its computer starts from, and `options` are what
+ * create() takes to build it ({ os: "windows" }), beside the keys. A configuration with no image is the one a setting
+ * that names none gets, as is the one whose image is the kind's defaultImage.
+ */
+export type KindCapabilities = Pick<ComputerCapabilities, "kind" | "groups"> & {
+	readonly image?: string;
+	readonly options?: Readonly<Record<string, unknown>>;
+};
 
 /** Why capabilities do not serve a setting kind, in words; none when they do. */
 export function servingRefusals(capabilities: KindCapabilities, kind: ComputerSettingKind): string[] {
@@ -65,6 +73,21 @@ export function serves(capabilities: KindCapabilities, kind: ComputerSettingKind
 /** The setting kind these capabilities serve, or undefined when they serve none. Machine kinds are apart, so at most one. */
 export function kindOf(capabilities: KindCapabilities): ComputerSettingKind | undefined {
 	return SETTING_KIND_NAMES.find((kind) => serves(capabilities, kind));
+}
+
+/** The images a kind's configurations offer by name (`serving`: those that serve it), the kind's default first when it is one. */
+export function imagesOf(serving: readonly Pick<KindCapabilities, "image">[], defaultImage: string | undefined): string[] {
+	const names = [...new Set(serving.flatMap((one) => (one.image === undefined ? [] : [one.image])))];
+	return defaultImage !== undefined && names.includes(defaultImage) ? [defaultImage, ...names.filter((name) => name !== defaultImage)] : names;
+}
+
+/**
+ * The configuration a setting selects among a kind's (`serving`): the one its image names; with none named, the one
+ * whose image is the kind's default, else one with no image, else the first. Undefined when the image names none.
+ */
+export function configurationOf<Configuration extends Pick<KindCapabilities, "image">>(serving: readonly Configuration[], image: string | undefined, defaultImage: string | undefined): Configuration | undefined {
+	if (image !== undefined) return serving.find((one) => one.image === image);
+	return serving.find((one) => defaultImage !== undefined && one.image === defaultImage) ?? serving.find((one) => one.image === undefined) ?? serving[0];
 }
 
 /** One key a provider takes in Settings: its serve-side name (Settings accepts only these), the option it fills, and whether it is needed. */
