@@ -456,8 +456,8 @@ test("on compose, the default allow-list's Docker computer is made with every mo
       const made = fakeDocker({ daemonCache: options.daemonCache, volume: options.volume, volumeRoots: { [VOLUME]: root }, egressOptions: { ...(options.egress ?? {}), hostRoot } });
       calls = made.calls;
       // The computer's image is the one the owner named (AGENTRUN_DOCKER_IMAGE), on the fake's host: its readiness (the
-      // provider's image(), which builds a recipe) is not this test's, so the claim is shown none and takes the name.
-      return new Proxy(made.provider, { get: (target, key) => (key === "image" ? undefined : typeof target[key] === "function" ? target[key].bind(target) : target[key]) });
+      // provider's prepareImage(), which builds a recipe) is not this test's, so the claim is shown none and takes the name.
+      return new Proxy(made.provider, { get: (target, key) => (key === "image" || key === "prepareImage" ? undefined : typeof target[key] === "function" ? target[key].bind(target) : target[key]) });
     };
     const sealKey = randomBytes(32);
     const store = await savedKeysStore(sealKey);

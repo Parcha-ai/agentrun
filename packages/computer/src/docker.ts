@@ -351,6 +351,11 @@ export class DockerProvider implements ComputerProvider {
 		return ensureImage(this.#image, { ...options, docker: this.#docker });
 	}
 
+	/** The provider contract's prepareImage (its descriptor declares it): image(), its recipe built or its image pulled. */
+	prepareImage(context: CallContext & Pick<EnsureImageOptions, "onWait"> = {}): Promise<Result<string>> {
+		return this.image(context);
+	}
+
 	/** The spec's refusals, and the host's once create, attach or host() has read it: its problems, a bind or an
 	 *  allowlist on a host that remaps user ids, and an allowlist on a Docker host this provider does not run on. */
 	check(spec: ComputerSpec): Refusal[] {

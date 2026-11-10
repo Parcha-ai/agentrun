@@ -5,20 +5,28 @@
 // provider makes: put at create and attach, get by id, list filtered by labels, remove at release.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { phoneLedger, storeLedger } from "../dist/workspace/index.js";
+import { PROVIDERS } from "@parcha/agentrun-computer";
+import { computerProviderMakers, storeLedger } from "../dist/workspace/index.js";
 import { storeOn } from "./store-helpers.mjs";
 
 const A = { id: "sess-a", labels: { "agentrun.run": "run-1", "agentrun.epoch": "2" }, image: "android-14", deadline: "2026-11-08T21:30:00.000Z" };
 const B = { id: "sess-b", labels: { "agentrun.run": "run-2" }, image: "android-14", deadline: "2026-11-08T21:45:00Z" };
 
-test("phoneLedger is the phone provider's ledger over the store, its rows under phone-harness", async (t) => {
-  const { store } = await storeOn(t);
-  const ledger = phoneLedger(store.computerLedger);
-  await ledger.put(A);
-  assert.deepEqual(await ledger.get("sess-a"), A);
-  assert.deepEqual(await storeLedger(store.computerLedger, "phone-harness").list(), [A], "the phone provider's rows");
-  await ledger.remove("sess-a");
-  assert.deepEqual(await ledger.list(), []);
+test("the store's ledger goes to every provider whose descriptor declares one, as the option it names, and to no other", async () => {
+  const made = [];
+  const load = async (id, options) => (made.push([id, options]), {});
+  const ledger = { list: async () => [] };
+  const makers = computerProviderMakers({ load, entries: [{ id: "acme-phones", ledger: { option: "sessions" } }, { id: "acme-boxes" }] });
+  await makers["acme-phones"]({ apiKey: "k" }, { ledger });
+  await makers["acme-boxes"]({ apiKey: "k" }, { ledger });
+  assert.deepEqual(made, [["acme-phones", { apiKey: "k", sessions: ledger }], ["acme-boxes", { apiKey: "k" }]]);
+  // The package's own providers: exactly those whose descriptors declare a ledger get one.
+  const declared = PROVIDERS.filter((entry) => entry.ledger).map((entry) => entry.id);
+  assert.ok(declared.length > 0, "a built-in provider declares a ledger");
+  made.length = 0;
+  const builtins = computerProviderMakers({ load });
+  for (const entry of PROVIDERS) await builtins[entry.id]({}, { ledger });
+  assert.deepEqual(made.filter(([, options]) => Object.values(options).includes(ledger)).map(([id]) => id), declared);
 });
 
 test("the ledger keeps a provider's whole session entry by its id, read back as put, its rows only", async (t) => {

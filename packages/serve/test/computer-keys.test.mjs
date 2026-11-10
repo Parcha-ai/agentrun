@@ -4,20 +4,28 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { PROVIDERS } from "@parcha/agentrun-computer";
-import { PROVIDER_KEYS, providerOptions, testConnection } from "../dist/computer-keys.js";
-
-// The kind registry's key names per provider (the computer package's PROVIDERS): the map must take exactly these, no
-// more and no fewer, with the same required flags.
-const REGISTRY_KEYS = Object.fromEntries(PROVIDERS.map((one) => [one.id, one.keys.map((key) => [key.name, key.required])]));
+import { KEY_TABLE, keyTableOf, providerOptions, testConnection } from "../dist/computer-keys.js";
 
 const KEY = "fake-test-key-0001";
 const SECRET = "fake-test-key-secret-0002";
 
-test("computer keys: every provider takes exactly the registry's key names, with the same required flags", () => {
-  assert.deepEqual(Object.keys(PROVIDER_KEYS).sort(), Object.keys(REGISTRY_KEYS).sort());
-  for (const [id, keys] of Object.entries(REGISTRY_KEYS)) {
-    assert.deepEqual(PROVIDER_KEYS[id].map((key) => [key.name, key.required]), keys, id);
+test("computer keys: the table is the descriptors': every provider's keys with the option each fills, its label and its settings, none written in serve", () => {
+  assert.deepEqual(Object.keys(KEY_TABLE.keys).sort(), PROVIDERS.map((one) => one.id).sort());
+  for (const entry of PROVIDERS) {
+    assert.deepEqual(KEY_TABLE.keys[entry.id], entry.keys.map(({ name, option, required }) => ({ name, option, required })), entry.id);
+    assert.equal(KEY_TABLE.labels[entry.id], entry.label, entry.id);
+    assert.deepEqual(KEY_TABLE.settings[entry.id], (entry.settings ?? []).map(({ name, option, default: fallback }) => ({ name, option, ...(fallback === undefined ? {} : { default: fallback }) })), entry.id);
   }
+});
+
+test("computer keys: a provider no serve file names is mapped from its descriptor alone: its keys to its options, its setting to its default or the server's", () => {
+  const table = keyTableOf([
+    { id: "acme-cloud", label: "Acme Cloud", keys: [{ name: "ACME_TOKEN", option: "token", required: true }, { name: "ACME_REGION", option: "region", required: false }], settings: [{ name: "acmePool", option: "pool", default: "shared" }] },
+  ]);
+  assert.deepEqual(providerOptions("acme-cloud", { ACME_TOKEN: KEY }, {}, table), { ok: true, options: { token: KEY, pool: "shared" } });
+  assert.deepEqual(providerOptions("acme-cloud", { ACME_TOKEN: KEY, ACME_REGION: "eu" }, { acmePool: " gold " }, table), { ok: true, options: { token: KEY, region: "eu", pool: "gold" } });
+  const missing = providerOptions("acme-cloud", {}, {}, table);
+  assert.match(missing.error.message, /^Acme Cloud needs ACME_TOKEN saved/);
 });
 
 test("computer keys: the saved keys become each provider's create() options; a name it does not declare is never passed on", () => {
@@ -39,7 +47,7 @@ test("computer keys: the saved keys become each provider's create() options; a n
   assert.deepEqual(providerOptions("daytona", { DAYTONA_API_KEY: KEY, DAYTONA_TARGET: "" }), { ok: true, options: { apiKey: KEY } }, "an empty optional key is left out");
 });
 
-test("computer keys: a required key not saved, or an unknown provider, is refused in words that name what to save", () => {
+test("computer keys: a required key not saved is refused in words that name what to save; a provider the table does not list takes no keys, and is not refused here", () => {
   const modal = providerOptions("modal", { MODAL_TOKEN_ID: KEY });
   assert.equal(modal.ok, false);
   assert.equal(modal.error.code, "missing_key");
@@ -47,9 +55,8 @@ test("computer keys: a required key not saved, or an unknown provider, is refuse
   const bb = providerOptions("browserbase", {});
   assert.match(bb.error.message, /^Browserbase needs BROWSERBASE_API_KEY and BROWSERBASE_PROJECT_ID saved: save them in Settings → Computers/);
   assert.equal(providerOptions("daytona", { DAYTONA_API_KEY: "  " }).ok, false, "a blank key is no key");
-  const unknown = providerOptions("vmware", { KEY });
-  assert.deepEqual([unknown.ok, unknown.error.code], [false, "unsupported"]);
-  assert.match(unknown.error.message, /vmware is not a computer provider/);
+  // No serve edit per vendor: whether a provider the table does not list can be made is its maker's to say.
+  assert.deepEqual(providerOptions("vmware", { KEY }), { ok: true, options: {} });
 });
 
 /** A fake provider module: create(options) records what it was given and answers testConnection with `answer`. */
@@ -88,7 +95,8 @@ test("computer keys: each coded error comes back in plain words naming the provi
     invalid: /^E2B's settings are not valid\. \(/,
     unsupported: /^E2B can't be tested here\. \(/,
     vendor: /^E2B answered with an error\. \(/,
-    e2b: /^E2B answered with an error\. \(/,
+    // A code no longer made (the per-vendor codes before the one vendor code) is a failed test, in general words.
+    e2b: /^The test of E2B failed\. \(/,
     gone: /^The test of E2B failed\. \(/,
   };
   for (const [code, pattern] of Object.entries(words)) {

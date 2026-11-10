@@ -262,4 +262,11 @@ export interface ComputerProvider {
 	 * key. Optional.
 	 */
 	testConnection?(context?: CallContext): Promise<Result<{ detail: string }>>;
+	/**
+	 * The image its computers start from, made ready on its engine before the first create: built from its recipe, or
+	 * pulled by name, when the engine lacks it; ok with the tag to put in spec.image. `onWait` is told once, before a build
+	 * or a pull it waits on, never when the image is there. A provider whose descriptor declares prepareImage has it;
+	 * optional for every other.
+	 */
+	prepareImage?(context?: CallContext & { onWait?: (making: "build" | "pull", tag: string) => void }): Promise<Result<string>>;
 }

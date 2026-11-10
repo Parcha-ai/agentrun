@@ -393,6 +393,18 @@ test("DockerProvider.image(): the default recipe, or the source it was given, th
 	assert.throws(() => new DockerProvider({ daemonPath: fake.docker, image: { recipe: "no base" } }), /^Error: the provider's image: a recipe is the text of a Dockerfile with a FROM line/);
 });
 
+test("prepareImage(), the contract member Docker's descriptor declares, is image(): its onWait told of the build", async () => {
+	assert.equal(index.descriptorOf("docker").prepareImage, true);
+	const fake = fakeImageDocker();
+	const provider = new DockerProvider({ daemonPath: fake.docker, docker: fake.docker, image: { recipe: RECIPE } });
+	const waits = [];
+	assert.deepEqual(await provider.prepareImage({ onWait: (making, tag) => waits.push([making, tag]) }), { ok: true, value: TAG });
+	assert.deepEqual(waits, [["build", TAG]]);
+	assert.deepEqual(await provider.prepareImage(), { ok: true, value: TAG }, "built once; found the next time");
+	assert.deepEqual(fake.calls(), [[...INSPECT, TAG], BUILD(TAG, HASH), [...INSPECT, TAG]]);
+	assert.equal(failure(await provider.prepareImage({ signal: AbortSignal.abort() })).code, "aborted");
+});
+
 test("create() takes the image only as an option, and the conformance module reads no image name: a COMPUTER_DOCKER_IMAGE in env is ignored", async () => {
 	assert.equal("image" in DOCKER_ENV, false, "the conformance module's names hold no image setting");
 	const fake = fakeImageDocker();

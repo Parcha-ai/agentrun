@@ -139,17 +139,15 @@ function phonePlatform(machine: string | undefined, entry: ProviderEntry | undef
 }
 
 /** The provider's watch of a computer's screen (ComputerProvider.watch), where it has one. */
-/** A provider that makes its computers' image ready itself (Docker's image(): its recipe built when Docker lacks it, or
- *  its image by name pulled), answering the tag to start from. */
-type ImageMaker = { image(context: { readonly signal?: AbortSignal; readonly onWait?: ImageWait }): Promise<Result<string>> };
 /** Told once, before the claim waits on its computer's image being built or pulled; never when the host has it. */
 export type ImageWait = (making: "build" | "pull", tag: string) => void;
-/** The image `provider` made ready, when it makes its own; undefined for one that does not. A failure is the provider's
+/** The image `provider` made ready, when its descriptor declares it prepares its image (`entry.prepareImage`) and it has
+ *  the contract's prepareImage(): its recipe built when the engine lacks it, or its image by name pulled, answering the
+ *  tag to start from; undefined for any other provider, which starts from its spec's image. A failure is the provider's
  *  words. `onWait`: told once if the claim waits on a build or a pull. */
-async function readyImage(provider: ComputerProvider, signal: AbortSignal | undefined, onWait: ImageWait | undefined): Promise<string | undefined> {
-  const maker = provider as Partial<ImageMaker>;
-  if (typeof maker.image !== "function") return undefined;
-  const ready = await maker.image({ ...(signal ? { signal } : {}), ...(onWait ? { onWait } : {}) });
+async function readyImage(entry: ProviderEntry, provider: ComputerProvider, signal: AbortSignal | undefined, onWait: ImageWait | undefined): Promise<string | undefined> {
+  if (!entry.prepareImage || provider.prepareImage === undefined) return undefined;
+  const ready = await provider.prepareImage({ ...(signal ? { signal } : {}), ...(onWait ? { onWait } : {}) });
   if (!ready.ok) throw new Error(ready.error.message);
   return ready.value;
 }
@@ -246,11 +244,12 @@ export async function computerForClaim(launch: ClaimLaunch, store: Pick<Store, "
         ...(networks ? { networks } : {}),
         ...(typeof maxLifetimeMs === "number" ? { maxLifetimeMs } : {}),
       };
-      // A provider that makes its own image ready (Docker's image(): its recipe built when Docker lacks it, an image by name
-      // pulled) does so first, and the computer starts from the tag it answers: the recipe's tag is in no registry, so a
-      // run of it unbuilt would be refused.
-      const ready = await readyImage(provider, signal, deps.onImageWait);
-      const spec: ComputerSpec = { ...deps.spec(entry, kind as Exclude<ComputerSettingKind, "none">, run), ...(ready ? { image: ready } : {}), labels: runLabels(launch.runId, launch.epoch), ...(mount ? { mount } : {}) };
+      // A provider that declares it prepares its own image (its prepareImage(): its recipe built when the engine lacks it,
+      // an image by name pulled) does so first, and the computer starts from the tag it answers: the recipe's tag is in no
+      // registry, so a run of it unbuilt would be refused. The spec comes first, so a setting it refuses builds nothing.
+      const asked = deps.spec(entry, kind as Exclude<ComputerSettingKind, "none">, run);
+      const ready = await readyImage(entry, provider, signal, deps.onImageWait);
+      const spec: ComputerSpec = { ...asked, ...(ready ? { image: ready } : {}), labels: runLabels(launch.runId, launch.epoch), ...(mount ? { mount } : {}) };
       const launched = await providerLaunch(provider, launch, spec, signal);
       made = { id: launched.id, machine: launched.machine, ...(launched.watch ? { watch: launched.watch } : {}) };
       madeBy = entry;
