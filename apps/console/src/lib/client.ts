@@ -51,9 +51,9 @@ const runsQuery = (limit: number, cursor: string | null | undefined, { status, a
   return `?${q}`;
 };
 
-/** `limits`: this server's own (the largest upload, the most files a run names); absent on an older server. */
+/** `limits`: this server's own (the largest upload, the most files a run names). */
 /** `models.ready`: whether an agent that names no model runs here; when not, `needs` says what would make it: a model
- *  provider's key, or another default model. Absent on an older server. */
+ *  provider's key, or another default model. */
 export type Capabilities = CapabilitiesView;
 export type Client = ReturnType<typeof createClient>;
 
@@ -116,7 +116,7 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
       call<{ signed_in: boolean; importing?: boolean }>("POST", "/setup", { body: { password, ...(code ? { code } : {}), ...(importSessions ? { import: true } : {}) } }),
     /** `GET /v2/setup/import` (a serve extension, on a server on this machine only): before the owner is set, how many
      *  sessions setup's box would import; after, to the signed-in owner, how the import asked for at setup stands. Null
-     *  where the server offers none (`{ offer: false }`, or a 404 from an older server) or refuses the read. */
+     *  where the server offers none (`{ offer: false }`, or a 404 where it serves no import) or refuses the read. */
     setupImport: () => call<SetupImport | NoOffer>("GET", "/setup/import").then((r) => ((r as Partial<NoOffer> | null)?.offer === false ? null : (r as SetupImport)), (e) => {
       if (e instanceof ClientError && (e.status === 404 || e.status === 403)) return null;
       throw e;

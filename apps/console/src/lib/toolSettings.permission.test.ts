@@ -13,7 +13,7 @@ const CAPS_TOOLS = [
 ];
 
 describe("tool permissions", () => {
-  it("reads each tool's permission, the owner's default and those offered, in the server's order; none from an older server", () => {
+  it("reads each tool's permission, the owner's default and those offered, in the server's order", () => {
     expect(toolGates(CAPS_TOOLS)).toEqual([
       { name: "read", permission: "allow", default_permission: "allow", permissions: ["allow", "ask", "deny"] },
       { name: "ask_person", permission: "allow", default_permission: "allow", permissions: ["allow", "deny"] },

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { approval, bodyOf, change, changeWords, dropKind, dropWords, fileFor, impactWords, isPending, learnedBy, learningHash, learningLabel, learningSteps, type LearningDiff, lookedBack, money, noteChanges, noteParts, noteText, originOf, pendingBy, provenance, type RunLearning, shownImpact, took, typeLabel, underWay, givenBy, readBy, waitsForOk, waitWords } from "./learning";
+import { approval, bodyOf, change, changeWords, dropKind, dropWords, fileFor, impactWords, isPending, learnedBy, learningHash, learningLabel, learningSteps, type LearningDiff, lookedBack, money, noteChanges, noteParts, noteText, pendingBy, provenance, type RunLearning, shownImpact, took, typeLabel, underWay, givenBy, readBy, waitsForOk, waitWords } from "./learning";
 import { recorded } from "@/fixtures";
 import type { LastChange } from "./learning";
 import type { TimelineRow } from "./v2";
@@ -36,13 +36,13 @@ describe("a note's parts", () => {
   });
 });
 
-describe("a run's learning, read tolerantly", () => {
-  it("what it read and kept come from a newer server; an older one's short form shows nothing", () => {
+describe("a run's learning", () => {
+  it("what it was given, read and kept, as served; none named is none", () => {
     expect(readBy(runLearning({ state: "merged", reason: null }))).toEqual([]);
     expect(learnedBy(runLearning({ state: "merged", reason: null }))).toEqual([]);
     expect(readBy(null)).toEqual([]);
     expect(readBy(undefined)).toEqual([]);
-    const l = runLearning({ state: "merged" as const, reason: null, given: [{ file: "a.md", name: "A" }], read: [{ file: "a.md", name: "A" }, { file: 3 } as never], learned: [{ file: "b.md", name: "B", supersedes: ["a.md"] }] });
+    const l = runLearning({ state: "merged" as const, reason: null, given: [{ file: "a.md", name: "A" }], read: [{ file: "a.md", name: "A" }], learned: [{ file: "b.md", name: "B", supersedes: ["a.md"] }] });
     expect(readBy(l)).toEqual([{ file: "a.md", name: "A" }]);
     expect(givenBy(l)).toEqual([{ file: "a.md", name: "A" }]);
     expect(givenBy(runLearning({ state: "merged", reason: null }))).toEqual([]);
@@ -121,7 +121,6 @@ describe("plain words for the machine's", () => {
     const row = { id: "1", seq: 1, summary: "", text: null, timestamp: "2026-11-03T16:00:00Z", tool_name: null, created_at: "2026-10-28T19:33:16.118Z", agent_label: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null };
     expect(learningLabel({ ...row, kind: "learning", agent_label: "learning", summary: "Learned: Try it first" })).toMatchObject({ kind: "learning", agent_label: null, summary: "Learned: Try it first" });
     expect(learningLabel({ ...row, kind: "user_message", agent_label: "learning", summary: "Looking back on this run." })).toMatchObject({ kind: "learning", agent_label: null, summary: "Looking back on this run." });
-    expect(learningLabel({ ...row, kind: "user_message", agent_label: "learning", summary: "Learning: The task is done." })).toMatchObject({ kind: "learning", summary: "The task is done." });
     const other = { ...row, kind: "tool_use" as const, agent_label: "learning", summary: "Wrote .learning/a.md" };
     expect(learningLabel(other)).toBe(other);
   });
@@ -129,7 +128,7 @@ describe("plain words for the machine's", () => {
 
 describe("notes that wait for the owner's OK", () => {
   it("a run's waiting notes come from its `pending`", () => {
-    expect(pendingBy(runLearning({ state: "merged", reason: null, pending: [{ file: "trust-acme.md", name: "Trust acme.com" }, { nope: 1 } as never] }))).toEqual([{ file: "trust-acme.md", name: "Trust acme.com" }]);
+    expect(pendingBy(runLearning({ state: "merged", reason: null, pending: [{ file: "trust-acme.md", name: "Trust acme.com" }] }))).toEqual([{ file: "trust-acme.md", name: "Trust acme.com" }]);
     expect(waitsForOk(runLearning({ state: "merged", reason: null, pending: [{ file: "trust-acme.md", name: "Trust acme.com" }] }))).toBe(true);
     expect(waitsForOk(runLearning({ state: "merged", reason: null }))).toBe(false);
     expect(waitsForOk(null)).toBe(false);
@@ -148,14 +147,6 @@ describe("notes that wait for the owner's OK", () => {
   });
   it("a note waits when its status says so", () => {
     expect([isPending({ status: "pending" }), isPending({ status: "active" })]).toEqual([true, false]);
-  });
-  it("who a note is from: the server's origin, else its front matter's, never a line in its body", () => {
-    const text = (front: string, body = "") => `---\nname: N\ndescription: D\ntype: feedback\n${front}---\n${body}`;
-    expect(originOf({ origin: "you", text: text("") })).toBe("you");
-    expect(originOf({ text: text("origin: you\n") })).toBe("you");
-    expect(originOf({ text: text('origin: "run"\n') })).toBe("run");
-    expect(originOf({ text: text("", "origin: you\n") })).toBeUndefined();
-    expect(originOf({ text: "no front matter" })).toBeUndefined();
   });
 });
 

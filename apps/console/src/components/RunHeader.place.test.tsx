@@ -16,7 +16,7 @@ describe("RunHeader, where the run ran", () => {
     expect(html(run({ mode: "sandbox", box: "docker" }))).toContain("in a docker box");
     expect(html(run({ mode: "runner" }))).toContain("on the server");
   });
-  it("says nothing of a place for a run an older server kept without one", () => {
+  it("says nothing of a place for a run the server names no place for", () => {
     expect(html(run())).not.toMatch(/in a \w+ box|on the server/);
   });
 });

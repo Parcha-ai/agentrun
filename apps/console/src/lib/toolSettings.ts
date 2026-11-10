@@ -71,7 +71,7 @@ export const serverDenies = (name: string, gates: readonly ToolGate[], read?: re
 const PERMISSIONS: readonly string[] = ["allow", "ask", "deny"];
 const isPermission = (v: unknown): v is Permission => typeof v === "string" && PERMISSIONS.includes(v);
 
-/** Each tool's permission, in the server's order: `capabilities.tools` entries that carry one. None from an older server. */
+/** Each tool's permission, in the server's order: `capabilities.tools` entries that carry one. */
 export function toolGates(raw: unknown): ToolGate[] {
   return (Array.isArray(raw) ? raw : []).flatMap((t): ToolGate[] => {
     const e = t as { name?: unknown; permission?: unknown; default_permission?: unknown; permissions?: unknown; ask_needs?: unknown } | null;

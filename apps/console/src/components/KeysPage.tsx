@@ -73,7 +73,7 @@ export function KeysPage({ v2, atRest, onChange, writable, whyNot = "sign_in" }:
     ? <ReadError error={loadError} onRetry={load} />
     : <div className="p-5 md:p-8"><ListSkeleton label="Loading the tool keys" rows={3} /></div>;
   const reenter = view.reenter;
-  // The model providers' keys first, then the tools': headed only when there are both (an older server has no model keys).
+  // The model providers' keys first, then the tools': headed only when there are both.
   const groups = KEY_GROUPS.map((g) => ({ ...g, keys: view.keys.filter((k) => (k.kind === "model") === (g.kind === "model")) })).filter((g) => g.keys.length);
   const row = (k: ToolKey) => (
     <KeyRow key={k.id} tool={k} cantStore={cantStore} writable={writable} again={!!reenter && k.fields.some((f) => f.stored_unreadable || reenter.fields.includes(f.name))}

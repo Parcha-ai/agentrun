@@ -26,7 +26,7 @@ export type LearnedRef = NonNullable<NonNullable<RunSummary["learning"]>["learne
 export type RunLearning = (NonNullable<RunSummary["learning"]> & Partial<Pick<NonNullable<Run["learning"]>, "at">>) | null;
 /** A skill or a workflow a run kept: its file (a SKILL.md, a workflow.json), its name, and whether it waits. */
 export type LearnedFileRef = NonNullable<NonNullable<RunSummary["learning"]>["skills"]>[number];
-/** A skill or a workflow the agent learned, as GET .../learning lists it (a newer server's): its name, its file (a
+/** A skill or a workflow the agent learned, as GET .../learning lists it: its name, its file (a
  *  workflow's README, `readme`, is the file an approval or a retire names), what it is for, whether it waits for the
  *  owner's OK or a person retired it (no later run is given it), the run that kept it, its size, and the version an
  *  approval or a retire names (`etag`). */
@@ -43,16 +43,16 @@ export const changeWords = (kind: LastChange["kind"], by: LastChange["by"]) => `
  *  workflow's README.md (never its workflow.json). */
 export const statusFile = (item: Pick<LearnedItem, "file" | "readme">) => item.readme ?? item.file;
 
-/** `etag`: the note's version, the same value as the file read's ETag, so an edit or a retire is made on the version a
- *  card showed without reading it again (absent from an older server's). */
-/** `runs`: how many runs it was given to, and read in, as the server counts them. */
+/** `etag`: the note's version, the same value as the file read's ETag, so an edit, an approval or a retire is made on
+ *  the version a card showed without reading it again. `runs`: how many runs it was given to, and read in, as the server
+ *  counts them. `origin`: who wrote it. */
 export type LearningNote = AgentLearningView["notes"]["items"][number];
 /** One change to what the agent learned, newest first: a run's (`by.run`; `reason`, why it was kept) or a person's. */
 export type LearningChange = AgentLearningView["log"]["items"][number];
 export type LearningCounts = AgentLearningView["counts"];
 /** One side of the before and after: how many runs, the median time to the answer, the median cost of the run's own work
- *  (null when no run's cost is known), and from a newer server how many runs that cost is of (`cost_runs`) and the median
- *  cost of learning itself (`median_learning_usd`). */
+ *  (null when no run's cost is known), how many runs that cost is of (`cost_runs`), and the median cost of learning itself
+ *  (`median_learning_usd`, null when unknown). */
 export type ImpactSide = NonNullable<Impact>["before"];
 /** The agent's runs before its first kept note against its runs that started from one; null until each side has two. */
 export type Impact = AgentLearningView["impact"];
@@ -61,17 +61,6 @@ export type AgentLearning = AgentLearningView;
 /** A note as GET .../learning/files/{file} answers it, and as a write answers it: its whole text and its version, as
  *  getAgent gives an agent and its ETag. */
 export type NoteText = { note: string; etag: string | null };
-/** The version of a note a person saw, which an edit or a retire of it is made on: the card's own `etag`, which every
- *  note the server lists carries, with no read. Only for a note with none (an older server's) is it read now, and is
- *  that version only if its text is still the text the card showed: `changed` when it is not (someone, or a run,
- *  changed it since), `unknown` when the server named no version. The one place this is decided. */
-export type Seen = { kind: "same"; etag: string; text: string } | { kind: "changed"; now: NoteText } | { kind: "unknown" };
-export async function seenVersion(note: Pick<LearningNote, "text"> & Partial<Pick<LearningNote, "etag">>, read: () => Promise<NoteText>): Promise<Seen> {
-  if (typeof note.etag === "string" && note.etag) return { kind: "same", etag: note.etag, text: note.text };
-  const now = await read();
-  if (now.note !== note.text) return { kind: "changed", now };
-  return now.etag ? { kind: "same", etag: now.etag, text: now.note } : { kind: "unknown" };
-}
 /** Said when the server named no version of a note: a write never goes without one (no empty If-Match). */
 export const NO_VERSION = "Can't tell which version this is: reload.";
 /** Said when the note changed since a card showed it. */
@@ -103,21 +92,16 @@ const UNDER_WAY: readonly string[] = ["seeded", "reflecting", "proposed"];
 /** Whether a run's learning is still going (it may still keep a note). */
 export const underWay = (l: RunLearning | undefined) => !!l && UNDER_WAY.includes(l.state);
 
-/** The notes in a list the server sent, each a file and a name; anything else in it is skipped. */
-const refs = <T extends NoteRef>(raw: unknown): T[] => (Array.isArray(raw) ? raw.filter((x): x is T => !!x && typeof x === "object" && typeof (x as NoteRef).file === "string" && typeof (x as NoteRef).name === "string") : []);
 /** The notes a run started with, the notes it opened, and the notes it kept: empty when the server names none. */
-export const givenBy = (l: RunLearning | undefined): NoteRef[] => refs(l?.given);
-export const readBy = (l: RunLearning | undefined): NoteRef[] => refs(l?.read);
-export const learnedBy = (l: RunLearning | undefined): LearnedRef[] => (l?.state === "merged" ? refs<LearnedRef>(l.learned) : []);
+export const givenBy = (l: RunLearning | undefined): NoteRef[] => l?.given ?? [];
+export const readBy = (l: RunLearning | undefined): NoteRef[] => l?.read ?? [];
+export const learnedBy = (l: RunLearning | undefined): LearnedRef[] => (l?.state === "merged" ? l.learned ?? [] : []);
 /** The notes a run kept that wait for the owner's OK; a run waiting with none named says so by its state alone. */
-export const pendingBy = (l: RunLearning | undefined): NoteRef[] => refs(l?.pending);
-/** The skills and the workflows a run kept, each in a list the server sent: empty from a server that does not say. */
-const fileRefs = (raw: unknown): LearnedFileRef[] => refs<LearnedFileRef>(raw);
-export const skillsBy = (l: RunLearning | undefined): LearnedFileRef[] => (l?.state === "merged" ? fileRefs(l.skills) : []);
-export const workflowsBy = (l: RunLearning | undefined): LearnedFileRef[] => (l?.state === "merged" ? fileRefs(l.workflows) : []);
+export const pendingBy = (l: RunLearning | undefined): NoteRef[] => l?.pending ?? [];
+/** The skills and the workflows a run kept: empty when the server names none. */
+export const skillsBy = (l: RunLearning | undefined): LearnedFileRef[] => (l?.state === "merged" ? l.skills ?? [] : []);
+export const workflowsBy = (l: RunLearning | undefined): LearnedFileRef[] => (l?.state === "merged" ? l.workflows ?? [] : []);
 export const waitsForOk = (l: RunLearning | undefined) => pendingBy(l).length > 0;
-/** The skills and workflows an agent learned, as a list the server sent: whole items only, none from an older server. */
-export const learnedItems = (raw: unknown): LearnedItem[] => (Array.isArray(raw) ? raw.filter((x): x is LearnedItem => !!x && typeof x === "object" && typeof (x as LearnedItem).name === "string" && typeof (x as LearnedItem).file === "string" && typeof (x as LearnedItem).etag === "string") : []);
 /** "1 skill", "2 workflows". */
 export const counted = (n: number, one: "skill" | "workflow") => `${n} ${one}${n === 1 ? "" : "s"}`;
 
@@ -129,16 +113,6 @@ export const isPending = (n: Pick<LearningNote, "status">) => n.status === "pend
 export const waitingOf = (agent: { learning?: { pending: number } } | null | undefined): number => agent?.learning?.pending ?? 0;
 /** The count's words, for its label: "2 learned items wait for your OK", "1 learned item waits for your OK". */
 export const waitingWords = (n: number) => `${n} learned ${n === 1 ? "item waits" : "items wait"} for your OK`;
-/** Who a note is from: the server's `origin` when it sends one, else its front matter's `origin:` line. A note from the
- *  person themselves reads "From you". */
-export function originOf(n: Pick<LearningNote, "text"> & Partial<Pick<LearningNote, "origin">>): "you" | "run" | undefined {
-  if (n.origin === "you" || n.origin === "run") return n.origin;
-  for (const line of noteParts(n.text).rest) {
-    const m = /^origin:\s*["']?(you|run)["']?\s*$/.exec(line);
-    if (m) return m[1] as "you" | "run";
-  }
-  return undefined;
-}
 /** Whether this caller approves a waiting note from the console, by the server's capabilities: `yes` when
  *  `learning.approve` is true (the owner's password session); `password` when the server says approving needs the
  *  owner's password sign-in (`learning.approve_needs`); `later` from a server that says neither (it holds notes for the
@@ -178,8 +152,8 @@ const KIND: Record<string, DropKind> = {
 };
 export const dropKind = (reason: string | null): DropKind => KIND[reason ?? ""] ?? "stopped";
 
-/** Why a run kept nothing, in plain words: the server's own sentence when it sends one in a list (a newer server's),
- *  else the console's for the reason. A reason the console does not know reads as a stop, never as a code. */
+/** Why a run kept nothing, in plain words: the server's own sentence when it sends one, else the console's for the
+ *  reason. A reason the console does not know reads as a stop, never as a code. */
 const WORDS: Record<string, string> = {
   empty: "Nothing new to remember from this run.",
   unparsed: "Not kept: its notes weren't in the expected format.",
@@ -282,12 +256,11 @@ export const learningHash = (agentId: string, files: readonly string[] = []) => 
 
 /** A timeline row as the console labels a run's learning: the row that says how it ended, and the message that starts
  *  the look back ("Looking back on this run.", the server's own words; it is not the person's), each read "Learning",
- *  without the chip that would say it again. An older server's look-back row, which carried the prompt, loses its
- *  "Learning: " prefix. Every other row is as it was. learningSteps calls it on each row it leaves as a row, and on each
+ *  without the chip that would say it again. Every other row is as it was. learningSteps calls it on each row it leaves as a row, and on each
  *  line of the look-back it folds. */
 export function learningLabel(row: TimelineRow): TimelineRow {
   if (row.kind === LEARNING) return { ...row, agent_label: null };
-  if (row.kind === "user_message" && row.agent_label === LEARNING) return { ...row, kind: LEARNING, agent_label: null, summary: (row.summary ?? "").replace(/^Learning:\s*/, "") };
+  if (row.kind === "user_message" && row.agent_label === LEARNING) return { ...row, kind: LEARNING, agent_label: null };
   return row;
 }
 /** The label the server puts on every row of a run's learning, and the kind of the row that says how it ended. */
