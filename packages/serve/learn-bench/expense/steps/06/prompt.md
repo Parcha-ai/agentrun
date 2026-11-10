@@ -1,9 +1,7 @@
 ---
-description: "Step 06 (change): changes the row order from now on."
-max_cost_usd: 0.5
+description: 'Repeat. The transactions of week 6 alone; the format is not restated.'
+max_cost_usd: 0.10
 ---
-From now on, put the Software row first, then the other rows by Total from highest to lowest.
-
 This week's transactions (date | merchant | amount):
 2026-11-03 | Best Buy | $427.98
 2026-11-04 | Blue Bottle Coffee | $31.34

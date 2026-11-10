@@ -1,6 +1,6 @@
 ---
-description: "Step 01 (teach): teaches the job and its format."
-max_cost_usd: 0.5
+description: 'Teach. The format (table, Flagged:, Grand total:) and "every week", with the data of week 1.'
+max_cost_usd: 0.10
 ---
 Every week I paste my card transactions. Categorise each as Travel, Software, Meals or Office. Answer exactly like this, every time: a markdown table with the columns Category | Count | Total, one row per category that has spend, sorted by Total from highest to lowest, totals with 2 decimals; then a line `Flagged: ` and the merchants of every transaction over $500 (comma-separated, in the order they appear), or `Flagged: none`; then a last line `Grand total: $` and the sum with 2 decimals. Nothing else.
 

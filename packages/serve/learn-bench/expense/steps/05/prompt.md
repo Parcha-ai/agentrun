@@ -1,6 +1,6 @@
 ---
-description: "Step 05 (repeat): sends the week's data alone."
-max_cost_usd: 0.5
+description: 'Repeat. The transactions of week 5 alone; the format is not restated.'
+max_cost_usd: 0.10
 ---
 This week's transactions (date | merchant | amount):
 2026-11-03 | Staples | $1129.88

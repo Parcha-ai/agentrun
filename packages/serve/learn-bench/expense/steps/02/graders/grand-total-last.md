@@ -1,5 +1,5 @@
 ---
 type: regex
-pattern: 'Grand total: \$[\d,]+\.\d{2}\s*$'
+pattern: '\nGrand total: \$2,?692\.49\s*$'
 ---
-The answer ends with the Grand total: line, nothing after it.
+The last line is `Grand total: $2,692.49`, the sum of the week's transactions, and nothing follows it.

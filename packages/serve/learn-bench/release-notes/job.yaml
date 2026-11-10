@@ -1,0 +1,18 @@
+# Learning bench job: release notes for one repo's successive tags (acme/lantern, a Slack bot), each step's PRs pasted
+# with no GitHub access, as the template's evals/learned-style pastes them. 01 teaches the owner's wording ("agent",
+# not "bot"), learned from feedback on a past draft; 05 changes it ("assistant", never "agent" or "bot"), and 06-08's
+# graders check the new word, so a learned note that was never superseded fails them.
+template: release-notes
+parameters: { repo: acme/lantern, groups: "Slack, Admin, Status" }
+grants: []
+fakes: {}
+harnesses: [pi, claude-agent]
+steps:
+  - { id: "01", kind: teach }   # v1.6.0
+  - { id: "02", kind: repeat }  # v1.7.0
+  - { id: "03", kind: repeat }  # v1.8.0
+  - { id: "04", kind: repeat }  # v1.9.0
+  - { id: "05", kind: change }  # v1.10.0
+  - { id: "06", kind: repeat }  # v1.11.0
+  - { id: "07", kind: repeat }  # v1.12.0
+  - { id: "08", kind: repeat }  # v1.13.0

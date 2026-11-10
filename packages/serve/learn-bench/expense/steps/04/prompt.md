@@ -1,9 +1,7 @@
 ---
-description: "Step 04 (teach): asks to keep the job as a workflow."
-max_cost_usd: 0.5
+description: 'Repeat. The transactions of week 4 alone; the format is not restated.'
+max_cost_usd: 0.10
 ---
-Keep this as a workflow, so you can run it as one step next time.
-
 This week's transactions (date | merchant | amount):
 2026-11-03 | Amazon Basics | $254.52
 2026-11-04 | Marriott | $270.84
