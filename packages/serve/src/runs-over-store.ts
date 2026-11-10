@@ -128,13 +128,15 @@ export type MessageMode = "steer" | "answer" | "follow_up";
  *  call waiting for approval is a deny with the person's words as the reason (as runs.ts declineBy did); every other message
  *  is a steer, which the runner places into the turn in flight, answers a question with, or runs as a follow-up turn, by the
  *  run's state. `answers: false` is a trigger's message, which never answers a person: refused while the run waits on one,
- *  and never a deny of an approval. The mode is the label the v2 answer reports, from the run's moment. */
+ *  and never a deny of an approval. The mode is the label the v2 answer reports, from the run's moment. `queue`: the steer's
+ *  write when it is not this run's own (a trigger's: its firing marked with it, within its bound, store.triggers.message),
+ *  which may skip it, in words. */
 export async function message(
   store: RunsStore,
   moment: RunMoment,
   content: string,
-  { requestId, answers = true, origin }: { requestId?: string; answers?: boolean; origin?: unknown } = {},
-): Promise<{ mode: MessageMode; messageId: string }> {
+  { requestId, answers = true, origin, queue }: { requestId?: string; answers?: boolean; origin?: unknown; queue?: (command: SteerCommand) => Promise<{ skipped: string } | void> } = {},
+): Promise<{ mode: MessageMode; messageId: string; skipped?: string }> {
   if (moment.importedSource !== undefined) throw importedRefusal(moment);
   // A cancelled run takes no message, whether or not its end is written yet.
   if (moment.cancelled) throw finished(moment);
@@ -167,9 +169,16 @@ export async function message(
   if (mode === "answer" && !answers) throw waitingRefusal();
   const messageId = requestId ?? newMessageId();
   const body: Record<string, unknown> = { text: content, ...(answers ? {} : { answers: false }), ...(origin !== undefined ? { origin } : {}) };
+  if (queue) {
+    const queued = await queue({ kind: "steer", body });
+    return { mode, messageId, ...(queued ? { skipped: queued.skipped } : {}) };
+  }
   await sendCommand(store, moment.id, { kind: "steer", body });
   return { mode, messageId };
 }
+
+/** A steer command row, as message() writes it. */
+export type SteerCommand = { kind: "steer"; body: Record<string, unknown> };
 
 /** The raise command rows this run already has, newest last, with the cap each names. */
 async function raiseRows(store: RunsStore, runId: string): Promise<number[]> {
@@ -312,6 +321,8 @@ export interface StartDeps {
  *  it must have a cap (a trigger's), and who its first message is from when the person did not write it. */
 export interface StartOptions {
   readonly trigger?: RunTrigger;
+  /** The run's title when its starter names one (a trigger's: "<Source> <name>"), else it is made from its input. */
+  readonly title?: string;
   readonly origin?: RunOrigin;
   readonly capped?: boolean;
   readonly from?: MessageOrigin;
@@ -343,7 +354,7 @@ async function learningStartFor(deps: StartDeps, entry: AgentEntry, revision: Re
  *  launch body in one transaction (store.runs.create), which a runner reads at its claim. No process, no door, no setup
  *  file: where the run runs is the runner's. Under `origin`, a key that already started a run gets that run (the store's
  *  one-run-per-key), so a retry never starts a second. */
-export async function startRun(store: Pick<Store, "runs" | "runOfOrigin">, deps: StartDeps, entry: AgentEntry, body: Json, { trigger, origin, capped = false, from }: StartOptions = {}): Promise<RunRow> {
+export async function startRun(store: Pick<Store, "runs" | "runOfOrigin">, deps: StartDeps, entry: AgentEntry, body: Json, { trigger, origin, capped = false, from, title: given }: StartOptions = {}): Promise<RunRow> {
   const issues = deps.runBodyIssues(body);
   if (issues.length) {
     // Told from the revision the run would start on (a pinned one, else the current), once it reads as one: a pin that is
@@ -374,7 +385,8 @@ export async function startRun(store: Pick<Store, "runs" | "runOfOrigin">, deps:
   // The title shows on the run's page, the runs list and Mission Control: built from its input as shown, each held value
   // redacted before a long one is cut (a cut key could no longer be found).
   const shown = redactedOutput(input, deps.serverSecrets());
-  const title = revision.kind === "workflow" ? deps.workflowTitle(entry.agent.name || entry.agent.id, isObject(shown) ? shown : {}) : typeof input.content === "string" ? input.content : (Object.values(input).find((v): v is string => typeof v === "string") ?? JSON.stringify(input));
+  // A starter's title (a trigger's "<Source> <name>") is shown words too: cut as the input is, then as every title is below.
+  const title = given !== undefined ? String(redactedOutput(given, deps.serverSecrets())) : revision.kind === "workflow" ? deps.workflowTitle(entry.agent.name || entry.agent.id, isObject(shown) ? shown : {}) : typeof input.content === "string" ? input.content : (Object.values(input).find((v): v is string => typeof v === "string") ?? JSON.stringify(input));
   // Its tools' providers, resolved before the run exists (tool-plane.ts) and kept in its launch body, so a claim reads them
   // back, never the settings of that moment. (The old start wrote them to serve.json; now they ride the launch row.)
   const tooling = await toolingOf(revision);
