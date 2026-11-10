@@ -123,14 +123,22 @@ test("revisions: newest first, each with its number, the current one marked; one
 
 // Two minted in one millisecond keep their order (the cause of revisions numbered out of order on a fast machine: two
 // edits in one millisecond tie on created_at, and the listing's tie-break is the id). The clock is the test's own.
-test("ids minted in one millisecond, or after the clock steps back, each sort after the one before", () => {
+test("ids minted in one millisecond, or after the clock steps back, each sort after the one before; a later millisecond starts the count again", () => {
+  // Past every time this process has minted in (the minting state is the module's), so each step below is the test's.
+  const base = Date.now() + 3_600_000;
+  const timeOf = (id) => parseInt(id.slice(0, 8) + id.slice(9, 13), 16);
+  const countOf = (id) => parseInt(id.slice(15, 18), 16);
   const ids = [];
-  for (let i = 0; i < 5000; i += 1) ids.push(uuidv7(1_700_000_000_000));
-  ids.push(uuidv7(1_699_999_999_000));
-  ids.push(uuidv7(1_700_000_000_005));
+  for (let i = 0; i < 5000; i += 1) ids.push(uuidv7(base)); // past 4096 in one millisecond: the count spills into the next
+  const stepped = uuidv7(base - 1000);
+  const later = uuidv7(base + 5);
+  ids.push(stepped, later);
   for (let i = 1; i < ids.length; i += 1) assert.ok(ids[i - 1] < ids[i], `${ids[i - 1]} sorts before ${ids[i]}`);
   assert.equal(new Set(ids).size, ids.length);
   assert.ok(ids.every((id) => /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(id)), "each is a UUIDv7");
+  assert.deepEqual([timeOf(ids[0]), countOf(ids[0]), countOf(ids[1])], [base, 0, 1], "the first in a millisecond counts 0, the next 1");
+  assert.equal(timeOf(stepped), base + 1, "a clock that stepped back keeps the last millisecond");
+  assert.deepEqual([timeOf(later), countOf(later)], [base + 5, 0], "a later millisecond is its own, and its count starts at 0");
 });
 
 test("tool settings survive a round trip, sorted, and equal settings are one revision; a change is a new revision", async (t) => {
