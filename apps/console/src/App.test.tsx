@@ -125,8 +125,8 @@ describe("App, Settings", () => {
   const keys = { keys: [servedKey({ id: "monid", kind: "tool", label: "Monid", fields: [{ name: "MONID_API_KEY", set: false, source: null, changed_at: null }], unlocks: ["monid.run"], harnesses: ["pi"], check: null })], reenter: null };
   // capabilities.tools with a choice of provider (web_search, web_fetch), as a server with tool settings lists them.
   const choiceTools = [
-    { name: "web_search", summary: "Search the web", nodes: true, calls: true, available: true, harnesses: ["pi"], providers: ["auto", "native", "exa-keyless", "parallel"], provider: "auto", default_provider: "auto", resolves: { pi: "exa-keyless", "claude-agent": "native", codex: "native" } },
-    { name: "web_fetch", summary: "Fetch a page", nodes: true, calls: true, available: true, harnesses: ["pi"], providers: ["kernel", "parallel"], provider: "kernel", default_provider: "kernel", resolves: { pi: "kernel", "claude-agent": "native", codex: "native" } },
+    { name: "web_search", summary: "Search the web", nodes: true, calls: true, available: true, harnesses: ["pi"], providers: ["auto", "native", "exa-keyless", "parallel"], provider: "auto", default_provider: "auto", resolves: { pi: "exa-keyless", "claude-agent": "native", codex: "native" }, permission: "allow", default_permission: "allow", permissions: ["allow", "ask", "deny"] },
+    { name: "web_fetch", summary: "Fetch a page", nodes: true, calls: true, available: true, harnesses: ["pi"], providers: ["kernel", "parallel"], provider: "kernel", default_provider: "kernel", resolves: { pi: "kernel", "claude-agent": "native", codex: "native" }, permission: "allow", default_permission: "allow", permissions: ["allow", "ask", "deny"] },
   ];
   // `session`: GET /v2/auth/session's answer (the owner's password session unless a test says otherwise).
   async function open(features: Record<string, unknown>, hash: string, tools: unknown[] = [], session: Record<string, unknown> = { password_set: true, signed_in: true, secrets_writable: true }) {
@@ -178,7 +178,7 @@ describe("App, Settings", () => {
     root = createRoot(host);
     act(() => root!.render(createElement(App)));
     const wait = async (ok: () => boolean) => { const end = Date.now() + 3000; while (!ok() && Date.now() < end) await act(async () => { await new Promise((r) => setTimeout(r, 20)); }); };
-    const select = () => host.querySelector<HTMLButtonElement>('tr[data-tool="web_search"] button[aria-haspopup=listbox]');
+    const select = () => host.querySelector<HTMLButtonElement>('tr[data-tool="web_search"] button[aria-haspopup=listbox][aria-label="web_search provider"]');
     await wait(() => !!select());
     const choose = async (p: string) => { await pick(select()!, p); };
     await choose("native");
@@ -555,14 +555,14 @@ describe("App, the playground when its agents can't be read", () => {
 // card) shows a bar while capabilities say no model is ready, and it goes by itself once they say ready.
 describe("App, the no-model bar", () => {
   const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
-  // `keys`: how the server keeps tool keys (features.tool_keys): sealed, routes with no seal key, or no key routes at all.
-  const serve = (models: () => Record<string, unknown>, keys: "sealed" | "unavailable" | false = "sealed", stats?: unknown) => {
+  // `keys`: whether the server keeps tool keys (features.tool_keys, always sealed), or has no key routes at all.
+  const serve = (models: () => Record<string, unknown>, keys = true, stats?: unknown) => {
     const asked: string[] = [];
     vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
       const path = new URL(url, "http://serve.test").pathname;
       asked.push(`${init?.method ?? "GET"} ${path}`);
       if (path === "/v2/auth/session") return json(200, { password_set: true, signed_in: true, secrets_writable: true });
-      if (path === "/v2/capabilities") return json(200, { harnesses: [], features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false }, ...(keys ? { tool_keys: { routes: true, at_rest: keys } } : {}) }, models: models() });
+      if (path === "/v2/capabilities") return json(200, { harnesses: [], features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false }, ...(keys ? { tool_keys: { routes: true, at_rest: "sealed" } } : {}) }, models: models() });
       if (path === "/v2/settings/tool-keys") return json(200, { keys: [], reenter: null });
       if (path === "/v2/stats") return stats ? json(200, stats) : json(404, { error: { code: "not_found", message: "no route GET /v2/stats", retryable: false } });
       if (path === "/v2/runs" || path === "/v2/agents") return json(200, { runs: [], agents: [], next_cursor: null });
@@ -632,14 +632,6 @@ describe("App, the no-model bar", () => {
     expect(bar(host)?.querySelector("a")).toBeNull();
   });
 
-  it("says to set a key and restart, with no Settings link, where the server has key routes but no seal key to keep one", async () => {
-    serve(() => ({ source: "providers", default: null, ready: false, needs: "key" }), "unavailable");
-    const host = await mount("#/runs");
-    await until(() => !!bar(host));
-    expect(bar(host)?.textContent).toBe("No model yet. Set OPENROUTER_API_KEY (one key gives every harness its model), or ANTHROPIC_API_KEY or OPENAI_API_KEY, and restart.");
-    expect(bar(host)?.querySelector("a")).toBeNull();
-  });
-
   // Settings → Model keys holds only some providers' keys, so for a named default the bar names no Settings path at all.
   for (const model of ["anthropic/claude-sonnet-5-5", "deepseek/deepseek-v4-pro"])
     it(`names the server's default model ${model} and says to set its provider's key and restart, with no Settings link or OpenRouter promise, where the server keeps keys`, async () => {
@@ -650,14 +642,6 @@ describe("App, the no-model bar", () => {
       expect(bar(host)?.querySelector("a")).toBeNull();
     });
 
-  it("names the server's default model and says to set its provider's key and restart where the server can't keep a key", async () => {
-    serve(() => ({ source: "providers", default: "anthropic/claude-sonnet-5-5", ready: false, needs: "key" }), "unavailable");
-    const host = await mount("#/runs");
-    await until(() => !!bar(host));
-    expect(bar(host)?.textContent).toBe("No model yet. This server's default model is anthropic/claude-sonnet-5-5: set its provider's key where AgentRun starts, and restart.");
-    expect(bar(host)?.querySelector("a")).toBeNull();
-  });
-
   it("says to name the gateway's model in AGENT_MODEL, or add a model key in Settings, with no OpenRouter promise, where the server sends its models to a gateway", async () => {
     serve(() => ({ source: "gateway", default: null, ready: false, needs: "key" }));
     const host = await mount("#/runs");
@@ -665,14 +649,6 @@ describe("App, the no-model bar", () => {
     expect(bar(host)?.textContent).toBe("No model yet. This server sends its models to a gateway: name the gateway's model in AGENT_MODEL where AgentRun starts, and restart, or add a model key in Settings → Model keys.");
     expect(bar(host)?.querySelector("a")?.textContent).toBe("add a model key in Settings → Model keys");
     expect(bar(host)?.querySelector("a")?.getAttribute("href")).toBe("#/settings/keys");
-  });
-
-  it("says only to name the gateway's model in AGENT_MODEL, with no Settings link, on a gateway server that can't keep a key", async () => {
-    serve(() => ({ source: "gateway", default: null, ready: false, needs: "key" }), "unavailable");
-    const host = await mount("#/runs");
-    await until(() => !!bar(host));
-    expect(bar(host)?.textContent).toBe("No model yet. This server sends its models to a gateway: name the gateway's model in AGENT_MODEL where AgentRun starts, and restart.");
-    expect(bar(host)?.querySelector("a")).toBeNull();
   });
 
   it("names AGENT_MODEL when it is the problem, has no Settings link where the server keeps no keys, and is not on the first screen, which has the key card", async () => {
@@ -723,7 +699,7 @@ describe("App, the no-model bar", () => {
     const step = (host: HTMLElement) => host.querySelector('section[aria-label="Start here"]');
     // Nothing of the owner's has run yet, so the first screen shows the start-here panel.
     const fresh = { agents: 0, runs: { total: 0, active: 0, needs_input: 0, failed: 0, status_unknown: 0, needs_review: 0 }, per_agent: [], cost: { usd: null, basis: null, unknown_runs: 0 }, archived: { agents: 0, runs: 0 }, analytics: { ...ANALYTICS, by_source: [] } };
-    serve(() => ({ source: "providers", default: null, ready: false, needs: "key" }), "sealed", fresh);
+    serve(() => ({ source: "providers", default: null, ready: false, needs: "key" }), true, fresh);
     const keys = await mount("");
     await until(() => !!step(keys)?.textContent?.includes("Add a model key"));
     expect(keys.querySelector('section[aria-label="Model key"]')).not.toBeNull();
@@ -738,30 +714,22 @@ describe("App, the no-model bar", () => {
     expect(step(none)?.textContent).toContain("Then reload this page");
     expect(step(none)?.textContent).not.toContain("card above");
     act(() => root!.unmount()); root = undefined;
-    // Key routes but no seal key: the server refuses every save (no_sealing_key), so the card can't take one.
-    serve(() => ({ source: "providers", default: null, ready: false, needs: "key" }), "unavailable", fresh);
-    const unsealed = await mount("");
-    await until(() => !!step(unsealed)?.textContent?.includes("Add a model key"));
-    expect(step(unsealed)?.textContent).toContain("AGENT_MODEL");
-    expect(step(unsealed)?.textContent).toContain("Then reload this page");
-    expect(step(unsealed)?.textContent).not.toContain("card above");
-    act(() => root!.unmount()); root = undefined;
     // A gateway with no AGENT_MODEL: a provider's key saved in the card names no gateway model, so the env text stays.
-    serve(() => ({ source: "gateway", default: null, ready: false, needs: "key" }), "sealed", fresh);
+    serve(() => ({ source: "gateway", default: null, ready: false, needs: "key" }), true, fresh);
     const gateway = await mount("");
     await until(() => !!step(gateway)?.textContent?.includes("Add a model key"));
     expect(step(gateway)?.textContent).toContain("AGENT_MODEL_BASE_URL");
     expect(step(gateway)?.textContent).not.toContain("card above");
     act(() => root!.unmount()); root = undefined;
     // AGENT_MODEL names a default whose provider's key the card may not offer: the step keeps the env text.
-    serve(() => ({ source: "providers", default: "deepseek/deepseek-v4-pro", ready: false, needs: "key" }), "sealed", fresh);
+    serve(() => ({ source: "providers", default: "deepseek/deepseek-v4-pro", ready: false, needs: "key" }), true, fresh);
     const named = await mount("");
     await until(() => !!step(named)?.textContent?.includes("Add a model key"));
     expect(step(named)?.textContent).toContain("AGENT_MODEL");
     expect(step(named)?.textContent).not.toContain("card above");
     act(() => root!.unmount()); root = undefined;
     // AGENT_MODEL is the problem, which the card says no key fixes: the step keeps the env text.
-    serve(() => ({ source: "providers", default: "acme/unknown", ready: false, needs: "model" }), "sealed", fresh);
+    serve(() => ({ source: "providers", default: "acme/unknown", ready: false, needs: "model" }), true, fresh);
     const model = await mount("");
     await until(() => !!step(model)?.textContent?.includes("Add a model key"));
     expect(step(model)?.textContent).toContain("AGENT_MODEL");

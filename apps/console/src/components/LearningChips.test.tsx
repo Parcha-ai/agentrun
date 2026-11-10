@@ -21,7 +21,7 @@ describe("LearningChips", () => {
       expect(renderToStaticMarkup(createElement(LearningChips, { run: run(l) }))).toBe("");
     }
   });
-  it("an older server's short form, kept but naming no note, shows none: never a guess", () => {
+  it("a kept run that names no note shows none: never a guess", () => {
     expect(renderToStaticMarkup(createElement(LearningChips, { run: run({ detail: null, at: "2026-11-03T16:52:09Z", state: "merged", reason: null }) }))).toBe("");
   });
   it("says how many notes it read and kept, names them on hover, and says what a kept note replaces", () => {
