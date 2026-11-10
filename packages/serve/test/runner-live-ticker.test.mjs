@@ -47,7 +47,9 @@ test("a run on the runner process writes its live row while its tool runs: the t
     return {
       ...inner,
       start: async (claim) => {
-        deps.live?.(() => held("first-chunk\n"));
+        // Past the chunk, more than the tail the live view holds back while output streams (as long as the widest form of
+        // the longest secret the runner's environment holds): the chunk shows whatever the environment holds.
+        deps.live?.(() => held(`first-chunk\n${"y".repeat(3_000)}`));
         await released;
         return inner.start(claim);
       },
@@ -65,7 +67,7 @@ test("a run on the runner process writes its live row while its tool runs: the t
   } finally {
     release();
   }
-  assert.deepEqual(seen.tools[0], { callId: "call-1", name: "bash", output: "first-chunk\n" });
+  assert.deepEqual([seen.tools[0].callId, seen.tools[0].name, seen.tools[0].output.startsWith("first-chunk\nyyy")], ["call-1", "bash", true]);
   await until(async () => (await server.runs.get("run-1")).state === "ended" && (await server.runs.get("run-1")).runner === null, "the run ends and is released");
   assert.equal(await liveRow(server), undefined, "its live row goes when its loop ends");
   await runner.close();

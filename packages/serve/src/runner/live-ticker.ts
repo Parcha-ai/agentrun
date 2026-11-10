@@ -5,6 +5,7 @@
 // goes when its loop ends (store.live.drop), right after its end commit.
 import type { Claim, HeldState, Loop, LoopFactory } from "./loop-contract.js";
 import type { Live } from "../store/store.js";
+import { redactedAnswer, redactedLive, redactedOutput } from "../key-refusal.js";
 
 export interface LiveTickerOptions {
   /** How often the changed held states are written. Default 250 ms. */
@@ -20,23 +21,29 @@ export interface LiveTicker {
   stop(): void;
 }
 
-/** `value` with every string in it, keys included, cut by `cut`, its shape kept. */
-function cutAll(value: unknown, cut: (text: string) => string): unknown {
-  if (typeof value === "string") return cut(value);
-  if (Array.isArray(value)) return value.map((item) => cutAll(item, cut));
-  if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([key, item]) => [cut(key), cutAll(item, cut)]));
-  return value;
+/** A run's held state as the live view keeps it, under `values`, every secret value the run's one redactor holds. A
+ *  running tool's id and name are cut whole (redactedAnswer). Its args by a workflow output's rule (redactedOutput): every
+ *  string, property names included; a number whose digits hold a held value or that equals one, withheld; an object two of
+ *  whose names come out the same once cut, withheld whole, never one value dropped over the other. What is still
+ *  streaming (the tool's output, the partial answer) by redactedLive: a tail as long as a held value's widest form is held
+ *  back, so a secret half streamed at a tick shows none of itself; the settled record replaces it whole once it ends. */
+function cutHeld(state: HeldState, values: readonly string[]): HeldState {
+  if (values.length === 0) return state;
+  const tools = state.tools.map((tool) => ({
+    callId: redactedAnswer(tool.callId, values),
+    name: redactedAnswer(tool.name, values),
+    ...(tool.args !== undefined ? { args: redactedOutput(tool.args, values) } : {}),
+    ...(tool.output !== undefined ? { output: redactedLive(tool.output, values) } : {}),
+  }));
+  return { tools, ...(state.partial ? { partial: { text: redactedLive(state.partial.text, values) } } : {}) };
 }
-/** A run's held state as the live view keeps it: every value (a running tool's name, its args, its streamed output, the
- *  partial answer) cut by the run's one redactor. */
-const cutHeld = (state: HeldState, cut: (text: string) => string): HeldState => cutAll(state, cut) as HeldState;
 
 /** Wraps `createLoop` so its loops' held states reach run_live, batched per tick, cut by each loop's redactor. */
 export function withLiveTicker(store: { readonly live: Live }, createLoop: LoopFactory, options: LiveTickerOptions = {}): LiveTicker {
   const tickMs = options.tickMs ?? 250;
   /** The newest held-state reader of each run since the last tick, with the claim it was reported under. */
-  // Each with its loop's redactor (LoopDeps.redact, the runner's one): every value is cut by it before it is written.
-  const changed = new Map<string, { claim: Claim; read: () => HeldState | undefined; cut: (text: string) => string }>();
+  // Each with its loop's redactor's values (LoopDeps.redact, the runner's one), read at each tick: a claim can hold more.
+  const changed = new Map<string, { claim: Claim; read: () => HeldState | undefined; values: () => readonly string[] }>();
   /** The ticker's writes, one after another: a run's drop never lands before a put already on its way. */
   let writing: Promise<unknown> = Promise.resolve();
   let closed = false;
@@ -55,7 +62,7 @@ export function withLiveTicker(store: { readonly live: Live }, createLoop: LoopF
   const tick = (): Promise<unknown> => {
     writing = writing.then(async () => {
       if (stopped) return;
-      const rows = [...changed.values()].map(({ claim, read, cut }) => ({ claim, state: cutHeld(stateOf(read), cut) }));
+      const rows = [...changed.values()].map(({ claim, read, values }) => ({ claim, state: cutHeld(stateOf(read), values()) }));
       changed.clear();
       if (rows.length > 0) await store.live.put(rows).catch(() => undefined);
     });
@@ -77,13 +84,14 @@ export function withLiveTicker(store: { readonly live: Live }, createLoop: LoopF
       deps.signal.addEventListener("abort", onAbort, { once: true });
       // The run's one redactor: a running tool's args and output and a partial answer can quote a secret the runner holds
       // (a key its claim opened), and the live view is read by people and consoles. A loop given none (never one the runner
-      // makes) has no live view: its held state is never written uncut.
-      const cut = deps.redact;
+      // makes) has no live view: its held state is never written uncut. Nor has a loop whose redactor does not know its
+      // values (a bare function): a value still streaming, a number or an object's names cannot be cut by text alone.
+      const values = deps.redact?.heldValues;
       const loop: Loop = createLoop({
         ...deps,
         live: (read) => {
-          if (!claim || closed || deps.signal.aborted || cut === undefined) return;
-          changed.set(claim.runId, { claim, read, cut });
+          if (!claim || closed || deps.signal.aborted || values === undefined) return;
+          changed.set(claim.runId, { claim, read, values });
         },
       });
       return {

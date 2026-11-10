@@ -8,6 +8,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
+import { inspect } from "node:util";
 import { until } from "./runner-support.mjs";
 import { closeOpenSessions, scriptedOrigin } from "./conformance-pi-adapter.mjs";
 import { streamingSandbox } from "./fixtures/streaming-sandbox.mjs";
@@ -24,8 +25,10 @@ const { withLiveTicker } = await import("../dist/runner/live-ticker.js");
 
 /** A value the runner holds as a secret (long enough to be one), never in the clear in a test's own source. */
 const SECRET = `held-live-${"k".repeat(12)}-${"7".repeat(12)}`;
+/** A held value of digits alone (a gateway's key can be), which a tool's args can quote as a JSON number. */
+const DIGITS = `4${"8".repeat(11)}`;
 
-test("a run's live view holds its running tool's name, args and output and its partial answer cut of a held secret: the row the store keeps and the live stream serves", async (t) => {
+test("a run's live view holds its running tool's name, args and output and its partial answer cut of a held secret: the row the store keeps and the live stream serves, a secret paused mid-stream showing none of itself", async (t) => {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-live-redact-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -40,32 +43,59 @@ test("a run's live view holds its running tool's name, args and output and its p
   });
   await server.agents.create({ id: "agent-1", name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer." } });
   await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" });
-  // The loop reports a running bash whose command and output echo the secret, and an answer streaming it, until released.
+  // The loop reports a running bash whose args quote the secrets (as text, as a number, as two property names) and whose
+  // output and answer stream the secret: first paused halfway through it, then past it. Each report is read at a tick.
   let given;
+  let givenDeps;
+  let report = () => {};
   const createLoop = (deps) => ({
     start: async () => {
       given = deps.redact;
-      deps.live?.(() => ({
-        tools: [{ callId: "call-1", name: "bash", args: { command: `echo ${SECRET}`, env: { TOKEN: SECRET } }, output: `token ${SECRET}\n` }],
-        partial: { text: `the key is ${SECRET}` },
-      }));
+      givenDeps = deps;
+      report = (state) => deps.live?.(() => state);
       await new Promise((resolve) => (release = resolve));
       return { state: "interrupted" };
     },
     command: async () => ({ refused: "this loop takes no commands" }),
     stop: async () => release(),
   });
-  runner = startRunner({ store, createLoop, redact: secretRedactor([SECRET]), live: { tickMs: 20 }, name: "runner-a", leaseMs: 60_000, renewEveryMs: 1_000, stopMarginMs: 5_000, pollMs: 20, commandPollMs: 30 });
-
-  // Through the store: the run's live row.
-  let row;
-  await until(async () => (row = (await server.live.read(["run-1"]))[0])?.state?.tools?.length === 1, "the run's live row while it runs", 15_000);
+  runner = startRunner({ store, createLoop, redact: secretRedactor([SECRET, DIGITS]), live: { tickMs: 20 }, name: "runner-a", leaseMs: 60_000, renewEveryMs: 1_000, stopMarginMs: 5_000, pollMs: 20, commandPollMs: 30 });
+  await until(() => given, "the run's loop started");
   // Every loop the runner makes is handed its one redactor (a production runner, the runner beside the server and the
-  // conformance harness all build their loops through startRunner).
-  assert.equal(typeof given, "function", "the runner hands its loop the run's redactor");
-  const stored = JSON.stringify(row.state);
-  assert.equal(stored.includes(SECRET), false, `the live row holds the secret whole: ${stored}`);
-  assert.ok(stored.includes("echo ") && stored.includes("token ") && stored.includes("the key is "), `the rest of each value is kept: ${stored}`);
+  // conformance harness all build their loops through startRunner), and it knows its values.
+  assert.ok([SECRET, DIGITS].every((value) => given.heldValues?.().includes(value)), "the runner hands its loop the run's redactor, its values known");
+  // Its values are only a function's answer, that function not enumerable: the redactor and the deps holding it, logged or
+  // serialized, show none of them.
+  for (const [what, value] of [["the redactor", given], ["the loop's deps", givenDeps]]) {
+    const shown = [JSON.stringify(value) ?? "", inspect(value, { showHidden: true, depth: Infinity, getters: true })].join("\n");
+    assert.ok(![SECRET, DIGITS].some((held) => shown.includes(held)), `${what}, serialized or inspected, shows a held value`);
+  }
+  const args = { command: `echo ${SECRET}`, env: { TOKEN: SECRET }, count: Number(DIGITS), keyed: { [SECRET]: 1, [DIGITS]: 2 } };
+  const head = "x".repeat(300);
+  const rowWith = async (mark) => {
+    let row;
+    await until(async () => JSON.stringify((row = (await server.live.read(["run-1"]))[0]?.state) ?? {}).includes(mark), `the run's live row with ${mark}`, 15_000);
+    return row;
+  };
+
+  // Paused halfway through the secret at a tick: the row shows none of its head, the text before it kept.
+  const half = SECRET.slice(0, 20);
+  report({ tools: [{ callId: "call-1", name: "bash", args, output: `${head}token ${half}` }], partial: { text: `${head}the key is ${half}` } });
+  const paused = await rowWith("xxxx");
+  const pausedText = JSON.stringify(paused);
+  assert.equal(pausedText.includes(SECRET.slice(0, 8)), false, `the half-streamed secret's head is in the live row: ${pausedText}`);
+  assert.ok(paused.tools[0].output.startsWith("xxxx") && paused.partial.text.startsWith("xxxx"), `the text before it is kept: ${pausedText}`);
+  // The args: text cut in place; a number that is a held value withheld; an object whose two names both cut the same withheld
+  // whole, never one value kept over the other.
+  assert.deepEqual(paused.tools[0].args, { command: "echo [redacted]", env: { TOKEN: "[redacted]" }, count: "[redacted]", keyed: "[redacted]" });
+
+  // Streamed past it: the secret shows cut, what follows it kept up to the held-back tail.
+  const tail = "y".repeat(300);
+  report({ tools: [{ callId: "call-1", name: "bash", args, output: `${head}token ${SECRET}\n${tail}` }], partial: { text: `${head}the key is ${SECRET} ${tail}` } });
+  const past = await rowWith("[redacted]\\n");
+  const pastText = JSON.stringify(past);
+  assert.equal(pastText.includes(SECRET.slice(0, 8)) || pastText.includes(DIGITS), false, `the live row holds a secret: ${pastText}`);
+  assert.ok(past.tools[0].output.includes("token [redacted]\nyyy") && past.partial.text.includes("the key is [redacted] yyy"), `the secret cut, the rest kept: ${pastText}`);
 });
 
 // A run with no mounting computer has no shell (#2088): this run's claim is handed a sandbox bound to its folder
@@ -92,7 +122,9 @@ test("a real pi run's running bash streaming a held secret: its live row (and so
   await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { content: "Go." }, title: "t", place: { mode: "runner" }, harness: "pi", model: { provider: "anthropic", modelId: "claude-sonnet-4-5" } } });
   const folder = runFolder(dir, "agent-1", "run-1");
   mkdirSync(folder, { recursive: true });
-  const command = `echo "token ${SECRET}"; while [ ! -e release ]; do sleep 0.05; done`;
+  // Past the secret it prints more than the tail the live view holds back (as long as the widest form of the longest value
+  // the runner holds, its environment's among them), so the head, the secret cut in it, shows while the bash still runs.
+  const command = `echo "token ${SECRET}"; head -c 20000 /dev/zero | tr '\\0' y; while [ ! -e release ]; do sleep 0.05; done`;
   const requests = [];
   const route = {
     model: "faux-1", provider: { api: "anthropic-messages", origin: "https://route.invalid", credential: () => `not-a-secret-${"r"}` },
@@ -113,8 +145,8 @@ test("a real pi run's running bash streaming a held secret: its live row (and so
     writeFileSync(join(folder, "release"), "");
   }
   const held = JSON.stringify(row);
-  assert.equal(held.includes(SECRET), false, `the live row holds the secret whole: ${held}`);
-  assert.ok(held.includes("token "), `the rest of the output is kept: ${held}`);
+  assert.equal(held.includes(SECRET.slice(0, 8)), false, `the live row holds the secret: ${held.slice(0, 400)}`);
+  assert.ok(held.includes("token [redacted]"), `the secret cut, the rest of the output kept: ${held.slice(0, 400)}`);
 });
 
 test("a loop given no redactor has no live view: its held state is never written, so never written uncut", async (t) => {
