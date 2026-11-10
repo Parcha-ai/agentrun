@@ -533,7 +533,7 @@ test("setup's import cuts the secrets this server made and keeps, pasted into a 
   let firstOpen = true;
   t.after(() => firstOpen && first.close());
   const api = client(first.baseUrl, first.token);
-  const set = await api("PUT", "/settings/webhook", { url: "http://127.0.0.1:9/hook" });
+  const set = await api("PUT", "/settings/webhook", { url: "https://hooks.example/hook" });
   assert.equal(set.status, 201, JSON.stringify(set.body));
   await first.close();
   firstOpen = false;

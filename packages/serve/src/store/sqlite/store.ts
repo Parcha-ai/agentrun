@@ -309,10 +309,10 @@ function fenced(claim: Claim, sql: string, params: readonly SqliteValue[]): Stat
 }
 
 /** A channel post's columns, as channelPostOf reads them. */
-const CHANNEL_POST_COLUMNS = "id, channel, run_id, moment, body, attempts, next_at, state, reason, created_at";
-type ChannelPostRecord = { id: string; channel: string; run_id: string | null; moment: string; body: string; attempts: number; next_at: number; state: ChannelPostRow["state"]; reason: string | null; created_at: number };
+const CHANNEL_POST_COLUMNS = "id, channel, run_id, moment, body, attempts, next_at, state, reason, claimed_until, created_at";
+type ChannelPostRecord = { id: string; channel: string; run_id: string | null; moment: string; body: string; attempts: number; next_at: number; state: ChannelPostRow["state"]; reason: string | null; claimed_until: number | null; created_at: number };
 const channelPostOf = (row: ChannelPostRecord): ChannelPostRow => ({
-  id: row.id, channel: row.channel, runId: row.run_id, moment: row.moment, body: row.body, attempts: Number(row.attempts), nextAt: Number(row.next_at), state: row.state, reason: row.reason, createdAt: Number(row.created_at),
+  id: row.id, channel: row.channel, runId: row.run_id, moment: row.moment, body: row.body, attempts: Number(row.attempts), nextAt: Number(row.next_at), state: row.state, reason: row.reason, claimedUntil: row.claimed_until === null ? null : Number(row.claimed_until), createdAt: Number(row.created_at),
 });
 type ChannelAttemptRecord = { post_id: string; moment: string; at: number; status_code: number | null; latency_ms: number; error: string | null; retry_at: number | null; redelivery: number };
 const channelAttemptOf = (row: ChannelAttemptRecord): ChannelAttemptRow => ({
@@ -1152,12 +1152,19 @@ class SqliteStore implements Store {
       },
       queued: async (channel) =>
         (await db.all<ChannelPostRecord>(`SELECT ${CHANNEL_POST_COLUMNS} FROM channel_posts WHERE channel = ? AND state IN ('queued', 'sending') ORDER BY created_at, id`, channel)).map(channelPostOf),
+      claim: async (id, at, leaseMs) =>
+        (await db.transaction((tx) => tx.runCounted(
+          "UPDATE channel_posts SET state = 'sending', claimed_until = ? WHERE id = ? AND ((state = 'queued' AND next_at <= ?) OR (state = 'sending' AND claimed_until < ?))",
+          at + leaseMs, id, at, at,
+        ))) > 0,
+      release: async (channel) =>
+        db.transaction((tx) => tx.runCounted("UPDATE channel_posts SET state = 'queued', claimed_until = NULL WHERE channel = ? AND state = 'sending'", channel)),
       settle: async (id, to, attempt, { kept = 50, sending = [] } = {}) => {
         await db.transaction(async (tx) => {
           const post = await tx.get<{ channel: string }>("SELECT channel FROM channel_posts WHERE id = ?", id);
           if (!post) return;
           await tx.run(
-            "UPDATE channel_posts SET state = ?, attempts = COALESCE(?, attempts), next_at = COALESCE(?, next_at), reason = ? WHERE id = ?",
+            "UPDATE channel_posts SET state = ?, attempts = COALESCE(?, attempts), next_at = COALESCE(?, next_at), reason = ?, claimed_until = NULL WHERE id = ?",
             to.state, to.attempts ?? null, to.nextAt ?? null, to.reason ?? null, id,
           );
           if (!attempt) return;

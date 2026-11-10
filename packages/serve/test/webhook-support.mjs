@@ -20,6 +20,8 @@ import { client, FAUX, printed, startInProcessRunner } from "./support.mjs";
 export const { Webhook } = createRequire(import.meta.url)("standardwebhooks");
 const CLI = new URL("../dist/cli.js", import.meta.url).pathname;
 const CHANNEL = "webhook-out";
+/** These tests' receivers are on 127.0.0.1: the operator's switch that lets the webhook send to this machine. */
+export const PRIVATE_OK = { webhookPrivateTargets: true };
 const STATUS = { queued: "pending", sending: "pending", sent: "delivered", dropped: "failed" };
 
 /** How long an awaited event may be missing before its test fails, naming it: a fence against a test that would hang to
@@ -188,7 +190,7 @@ export function refusing(t, dir, when) {
 /** A server on `data` in a process of its own, started by `script` (the CLI's banner, or a fixture's address line), killed
  *  as a crash does at the test's end at the latest. */
 export async function processOn(t, data, args = [CLI, "--data", data, "--port", "0", "--faux", FAUX]) {
-  const child = spawn(process.execPath, args, { stdio: ["ignore", "pipe", "pipe"] });
+  const child = spawn(process.execPath, args, { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, AGENTRUN_WEBHOOK_PRIVATE_TARGETS: "1" } });
   t.after(() => child.kill("SIGKILL"));
   // Everything it prints, from its start: its log lines are on stdout (the CLI's log), its errors on stderr.
   child.printed = "";
@@ -213,7 +215,7 @@ export function rejections(t) {
  *  one), so a run it starts runs: `close()` stops the runner, letting go of its claims, then the server. `runner: false`:
  *  the server alone, for a test that writes its runs into the store itself. */
 export async function startWithRunner(t, { runner = true, ...options }) {
-  const server = await startServe({ port: 0, faux: FAUX, drainTimeout: "5s", ...options });
+  const server = await startServe({ port: 0, faux: FAUX, drainTimeout: "5s", ...PRIVATE_OK, ...options });
   const stopRunner = runner ? await startInProcessRunner(options.data, { faux: FAUX }) : async () => {};
   // Closed once: by the test, or at its end at the latest, so a case that fails part way leaves no server up.
   let closed;
@@ -305,7 +307,7 @@ export async function askerStore(t, data) {
 /** The outbound webhook on a store of its own (a fresh SQLite file in a scratch directory), as a server holds it: `open()`
  *  is a server's start (a new Webhooks on the same store, loaded), so two opens are a restart. `runs(...ids)` puts the runs
  *  a notice names in the store (a told row names its run); `setAt(iso)` moves when the webhook was set. */
-export async function webhookOn(t, dir, { retryMs = [] } = {}) {
+export async function webhookOn(t, dir, { retryMs = [], lookup, privateTargets = true } = {}) {
   const { Webhooks } = await import("../dist/webhooks.js");
   const store = await openSqliteStore({ file: join(dir, "store.sqlite") });
   t.after(() => store.close());
@@ -315,7 +317,7 @@ export async function webhookOn(t, dir, { retryMs = [] } = {}) {
   return {
     store,
     open: async (say = () => undefined) => {
-      const webhooks = new Webhooks(store, key, say, retryMs);
+      const webhooks = new Webhooks(store, key, say, { retryMs, privateTargets, ...(lookup ? { lookup } : {}) });
       t.after(() => webhooks.close());
       await webhooks.load();
       return webhooks;
@@ -358,3 +360,4 @@ export function leftAs(dir, { told, cleared = false } = {}) {
     db.close();
   }
 }
+export { shownUrl } from "../dist/webhooks.js";

@@ -12,6 +12,7 @@ import { client, FAUX, follow, scratch, secretWritePath, serve, startRun } from 
 import {
   arriving, askerStore, endedInStore, meetsDocument, endNotice, endParked, hadWebhook, killed, logged, noticed, noticeId, nothingPending, ofType, onDisk, outboxOf, parkedOnQuestion,
   leftAs, processOn, receiver, refusing, rejections, saidBy, settled, startWithRunner, turn, waitNotice, Webhook, webhookOn,
+  PRIVATE_OK, shownUrl,
 } from "./webhook-support.mjs";
 
 /** How many cases run at once: each starts a server, a runner and its runs, so all of them at once would load a small
@@ -41,7 +42,7 @@ test("a 410 while the store refuses the webhook's setting leaves the server up a
   let answer = 410;
   const hook = await receiver(t, () => answer);
   const log = logged();
-  const { api, data } = await serve(t, { webhookRetryMs: [100, 100], log: log.push });
+  const { api, data } = await serve(t, { ...PRIVATE_OK, webhookRetryMs: [100, 100], log: log.push });
   const set = (await api("PUT", "/settings/webhook", { url: hook.url })).body;
   // The store refuses the webhook's setting: its write fails, as on a full disk.
   const release = refusing(t, data, "setting");
@@ -61,7 +62,7 @@ test("a 410 while the store refuses the webhook's setting leaves the server up a
   const again = (await api("PUT", "/settings/webhook", { url: hook.url })).body;
   assert.equal(again.disabled, null, "a PUT sets it on again");
   const written = settingOf(data);
-  assert.deepEqual([written.url, written.updated_at, written.disabled], [set.url, again.updated_at, undefined], "and writes it");
+  assert.deepEqual([written.url, written.updated_at, written.disabled], [hook.url, again.updated_at, undefined], "and writes it");
   const third = await startRun(api, "back", "hi");
   await follow(api, third.run_id, ["completed"]);
   await hook.when(2);
@@ -99,7 +100,7 @@ describe("the outbound webhook: the outbox, its tries and its durability", { con
   test("a run whose end cannot be read holds back no other run's notice: the next run's run.ended is told, the unreadable one is said once, and told once it reads", async (t) => {
     const hook = await receiver(t);
     const log = logged();
-    const server = await serve(t, { runner: false, log: log.push });
+    const server = await serve(t, { ...PRIVATE_OK, runner: false, log: log.push });
     const { data } = server;
     assert.equal((await server.api("PUT", "/settings/webhook", { url: hook.url })).status, 201);
     const writer = await askerStore(t, data);
@@ -130,7 +131,7 @@ describe("the outbound webhook: the outbox, its tries and its durability", { con
 
   test("a receiver that is down gets each try, then the message is logged as failed; one that fails then answers gets it on a try again, under the same webhook-id; a redirect is not followed", async (t) => {
     const log = logged();
-    const { api } = await serve(t, { webhookRetryMs: [100, 100], log: log.push });
+    const { api } = await serve(t, { ...PRIVATE_OK, webhookRetryMs: [100, 100], log: log.push });
     const gone = await receiver(t, () => 200, true);
     assert.equal((await api("PUT", "/settings/webhook", { url: gone.url })).status, 201);
     const down = await startRun(api, "down", "hi");
@@ -167,12 +168,13 @@ describe("the outbound webhook: the outbox, its tries and its durability", { con
     let answer = 410;
     const hook = await receiver(t, () => answer);
     const log = logged();
-    const { api, data } = await serve(t, { webhookRetryMs: [100, 100], log: log.push });
+    const { api, data } = await serve(t, { ...PRIVATE_OK, webhookRetryMs: [100, 100], log: log.push });
     assert.equal((await api("PUT", "/settings/webhook", { url: hook.url })).status, 201);
     const first = await startRun(api, "gone", "hi");
     await follow(api, first.run_id, ["completed"]);
     // Said as it turns off, in the step that turns it off: the setting reads off from then on.
-    await log.when("condition=webhook_disabled");
+    const said = await log.when("condition=webhook_disabled");
+    assert.ok(!said.includes(new URL(hook.url).pathname), `the log shows no whole URL: ${said}`);
     const off = (await api("GET", "/settings/webhook")).body.disabled;
     assert.equal(off.reason, "the receiver answered 410 Gone");
     // Its pending messages are dropped, and written, just after it is said.
@@ -198,7 +200,7 @@ describe("the outbound webhook: the outbox, its tries and its durability", { con
     // waits: the wait stays far inside the server's fetch timeout. The redelivery is answered only when released.
     const redelivery = ATTEMPTS_KEPT + 1;
     const hook = await receiver(t, (n) => (n === redelivery ? held.then(() => 200) : 200));
-    const { api, data } = await serve(t);
+    const { api, data } = await serve(t, PRIVATE_OK);
     assert.equal((await api("PUT", "/settings/webhook", { url: hook.url })).status, 201);
     assert.equal((await api("POST", "/settings/webhook/test")).body.status_code, 200);
     const id = hook.got[0].headers["webhook-id"];
@@ -225,7 +227,7 @@ describe("the outbound webhook: the outbox, its tries and its durability", { con
     const old = await receiver(t, () => held.then(() => 410));
     t.after(() => release());
     const fresh = await receiver(t);
-    const { api } = await serve(t, { webhookRetryMs: [100, 100] });
+    const { api } = await serve(t, { ...PRIVATE_OK, webhookRetryMs: [100, 100] });
     assert.equal((await api("PUT", "/settings/webhook", { url: old.url })).status, 201);
     const run = await startRun(api, "moved", "hi");
     await follow(api, run.run_id, ["completed"]);
@@ -235,13 +237,13 @@ describe("the outbound webhook: the outbox, its tries and its durability", { con
     await fresh.when(1);
     assert.equal(fresh.got[0].headers["webhook-id"], old.got[0].headers["webhook-id"]);
     const view = (await api("GET", "/settings/webhook")).body;
-    assert.deepEqual([view.url, view.disabled], [fresh.url, null], "the new setting stands, on");
+    assert.deepEqual([view.url, view.disabled], [shownUrl(fresh.url), null], "the new setting stands, on");
   });
 
   test("redeliveries that fail leave the message's own schedule as it was: it is still tried on every wait", async (t) => {
     const hook = await receiver(t, () => 500);
     const log = logged();
-    const { api } = await serve(t, { webhookRetryMs: [1_500, 100, 100], log: log.push });
+    const { api } = await serve(t, { ...PRIVATE_OK, webhookRetryMs: [1_500, 100, 100], log: log.push });
     assert.equal((await api("PUT", "/settings/webhook", { url: hook.url })).status, 201);
     const run = await startRun(api, "redone", "hi");
     await follow(api, run.run_id, ["completed"]);
@@ -353,7 +355,7 @@ describe("the outbound webhook: the outbox, its tries and its durability", { con
   test("a notice the store refuses is told again once it takes the write: none is lost, and it is sent once", async (t) => {
     const hook = await receiver(t);
     const log = logged();
-    const { api, data } = await serve(t, { log: log.push });
+    const { api, data } = await serve(t, { ...PRIVATE_OK, log: log.push });
     assert.equal((await api("PUT", "/settings/webhook", { url: hook.url })).status, 201);
     // The store refuses the webhook's messages, as on a full disk; the run's own rows are written as ever.
     const release = refusing(t, data, "outbox");
@@ -377,7 +379,7 @@ describe("the outbound webhook: the outbox, its tries and its durability", { con
     const hook = await receiver(t, (n) => (n === 1 ? held.then(() => 500) : 200));
     t.after(() => release());
     const log = logged();
-    const { api, data } = await serve(t, { webhookRetryMs: [], log: log.push });
+    const { api, data } = await serve(t, { ...PRIVATE_OK, webhookRetryMs: [], log: log.push });
     assert.equal((await api("PUT", "/settings/webhook", { url: hook.url })).status, 201);
     const run = await startRun(api, "both", "hi");
     await follow(api, run.run_id, ["completed"]);

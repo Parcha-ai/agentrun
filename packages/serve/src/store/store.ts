@@ -309,6 +309,8 @@ export interface ChannelPostRow {
   readonly nextAt: number;
   readonly state: "queued" | "sending" | "sent" | "dropped";
   readonly reason: string | null;
+  /** Until when a sender's claim holds the post (state sending); null when none does. */
+  readonly claimedUntil: number | null;
   readonly createdAt: number;
 }
 /** One try of a channel's post (store schema `channel_attempts`): its HTTP status, or null when none came back. */
@@ -342,6 +344,13 @@ export interface Channels {
   get(id: string): Promise<ChannelPostRow | undefined>;
   /** `channel`'s posts still to send (queued or sending), oldest first. */
   queued(channel: string): Promise<ChannelPostRow[]>;
+  /** The post `id` claimed for a try until `now + leaseMs` (state sending), by compare-and-set: it is queued and due
+   *  (`next_at` at or before `now`), or a claim on it ran out. True for the one caller that took it; false for any other
+   *  at the same time, and for a post sent, dropped or held. */
+  claim(id: string, now: number, leaseMs: number): Promise<boolean>;
+  /** Every claim on `channel`'s posts let go (sending back to queued): a server's start, when it is the store's one server
+   *  and no try of an earlier one is still out. Answers how many. */
+  release(channel: string): Promise<number>;
   /** The post's new state, with `attempt` added to its channel's tries in the same transaction; the channel keeps its
    *  newest `kept` tries (50 by default), and of its sent or dropped posts only those a kept try names or `sending` lists
    *  (a try of it still in flight, which a redelivery may send again). */

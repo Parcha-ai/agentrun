@@ -354,6 +354,9 @@ export type ServeOptions = {
   templates?: string;
   /** The waits before each try again of a webhook delivery (default 5 s, 5 min, 30 min, 2 h, 5 h and 10 h: webhooks.ts RETRY_MS). */
   webhookRetryMs?: readonly number[];
+  /** Whether the outbound webhook may send to a private network or this machine: off by default, so no caller of the API
+   *  can make the server POST inside its own network. The operator's AGENTRUN_WEBHOOK_PRIVATE_TARGETS=1 turns it on. */
+  webhookPrivateTargets?: boolean;
   /** The box runs' harnesses run in (4a's Box: its reap; on a shared server its run cgroups): the boxes runs leave are
    *  swept at start and let go at archive. The quarantine of boxes a reap could not empty is kept in the data directory. */
   box?: BoxHost;
@@ -1123,7 +1126,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // (under faux, the vendor's fake alone), under this server's seal key. The store holds whether a sign-in is still held
   // (a live run's sign_in_handed) and who was handed it, so this takes no `holds`/`handedTo` callback — one store, one lock.
   const signIns = signInsOverStore(store, sealKey, vendorsOver(() => env, checkFetch));
-  const webhooks = new Webhooks(store, checked.sealKey, (fields) => (log ? log(logLine("webhook", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("webhook", fields)}\n`)), options.webhookRetryMs);
+  const webhooks = new Webhooks(store, checked.sealKey, (fields) => (log ? log(logLine("webhook", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("webhook", fields)}\n`)), {
+    ...(options.webhookRetryMs ? { retryMs: options.webhookRetryMs } : {}),
+    privateTargets: options.webhookPrivateTargets ?? process.env.AGENTRUN_WEBHOOK_PRIVATE_TARGETS === "1",
+  });
   // The outbound webhook's secret, as it stands (set by a PUT, gone with a DELETE), and each it held before.
   stops.push(() => webhooks.close());
   await webhooks.load();
@@ -3200,10 +3206,41 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     if (!marker) return (readWaits.set(row.id, seen), true);
     const card = (view.pending as { kind?: unknown } | null | undefined)?.kind;
     const kind = view.state !== "waiting" ? "stopped" : typeof card === "string" && waitKinds.has(card) ? card : "question";
-    const notice = { run_id: row.id, agent_id: row.agentId, status: "input_required", title: typeof view.title === "string" ? view.title : "", pending: { kind } } as RunNotice;
-    if ((await webhooks.emit("run.needs_input", notice, marker)) === "unsaved") return false;
+    const wait = { kind } as NonNullable<RunNotice["pending"]>;
+    const notice: RunNotice = { run_id: row.id, agent_id: row.agentId, status: "input_required", title: typeof view.title === "string" ? view.title : "", pending: wait };
+    if (!(await toldAll(row.id, waitSubscribers.map((tell) => () => tell(notice, wait, marker))))) return false;
     readWaits.set(row.id, seen);
     return true;
+  };
+  /** Who hears of each run's end and each wait the follower reads (runNotices): the outbound webhook first. Each is called
+   *  once a run reads final (onEnded) or is let go waiting on a person (onWaits), and again on a later read while any of
+   *  them threw (said once, run_notice_unread): so at least once, and the same moment always comes with the same `marker`
+   *  (an end's time, a wait's last row), on which each dedupes in a ledger of its own. An end from while no server was up
+   *  reaches the webhook alone, through its own catch-up (webhooks.ts catchUp). */
+  const endedSubscribers: Array<(run: RunNotice, marker: string) => unknown> = [];
+  const waitSubscribers: Array<(run: RunNotice, wait: NonNullable<RunNotice["pending"]>, marker: string) => unknown> = [];
+  const runNotices = {
+    onEnded: (tell: (run: RunNotice, marker: string) => unknown) => void endedSubscribers.push(tell),
+    onWaits: (tell: (run: RunNotice, wait: NonNullable<RunNotice["pending"]>, marker: string) => unknown) => void waitSubscribers.push(tell),
+  };
+  runNotices.onEnded(async (run, marker) => {
+    if ((await webhooks.emit("run.ended", run, marker)) === "unsaved") throw new Error("its run.ended is not saved yet");
+  });
+  runNotices.onWaits(async (run, _wait, marker) => {
+    if ((await webhooks.emit("run.needs_input", run, marker)) === "unsaved") throw new Error("its run.needs_input is not saved yet");
+  });
+  /** Every call of `calls` made: false when one threw (said once for the run), so the run is told again. */
+  const toldAll = async (id: string, calls: ReadonlyArray<() => unknown>): Promise<boolean> => {
+    let done = true;
+    for (const call of calls) {
+      try {
+        await call();
+      } catch (error) {
+        sayUnread(id, (error as Error).message);
+        done = false;
+      }
+    }
+    return done;
   };
   /** Why a run's notice is not done yet, said once for the run (until it is done): one that stays undone shows. */
   const unreadSaid = new Set<string>();
@@ -3218,7 +3255,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     if (now === undefined) return false;
     readWaits.delete(id);
     if (!now?.endedAt || toldEnds.get(id) === now.endedAt) return (unreadSaid.delete(id), true);
-    if ((await webhooks.emit("run.ended", now.notice, now.endedAt)) === "unsaved") return (sayUnread(id, "its run.ended is not saved yet"), false);
+    if (!(await toldAll(id, endedSubscribers.map((tell) => () => tell(now.notice, now.endedAt!))))) return false;
     toldEnds.set(id, now.endedAt);
     unreadSaid.delete(id);
     return true;

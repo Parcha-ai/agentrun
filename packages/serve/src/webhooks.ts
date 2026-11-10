@@ -13,8 +13,11 @@
 // server sees it; a start queues each end the store holds that the ledger does not (catchUp). A write the store refuses
 // is told to the caller (`unsaved`), which tells it again.
 import { createHash, randomBytes } from "node:crypto";
+import dns from "node:dns/promises";
 import { readFileSync } from "node:fs";
+import net from "node:net";
 import { join } from "node:path";
+import { Agent, fetch as undiciFetch } from "undici";
 import { unseal } from "@parcha/pi-durable-agent";
 import { ApiError, invalid } from "./errors.js";
 import { SERVER_SCOPE, sealedSettingsOverStore, type SealedSettingsOverStore } from "./sealed-settings-store.js";
@@ -53,6 +56,27 @@ const MAX_URL = 2048;
 const SECRET_FIELD = "secret";
 /** Where its secret is kept in trigger_settings (adapter WEBHOOK_CHANNEL): the server's one scope, one minted field. */
 export const WEBHOOK_SECRET_SPEC = { scope: "server" as const, fields: { [SECRET_FIELD]: { mint: true as const } } };
+/** How long a try's claim on its message holds (Store.channels.claim): past the try's own TIMEOUT_MS. */
+const CLAIM_MS = 60_000;
+/** Names that are this machine or its own network, whatever they resolve to. */
+const LOCAL_NAME = /^(localhost|.*\.localhost|.*\.local|.*\.internal)$/i;
+/** The words a URL on a private network or this machine is refused in. */
+const PRIVATE_WORDS = "url is on a private network or this machine, which this server does not send to";
+
+/** The webhook's URL as the server shows it (GET, its log): its origin and the last four characters of its path, never
+ *  the whole URL, which can be a credential itself (a chat service's incoming-hook URL). */
+export function shownUrl(url: string): string {
+  const parsed = URL.parse(url);
+  if (!parsed) return "";
+  const rest = `${parsed.pathname}${parsed.search}`.replace(/^\/$/, "");
+  return rest.length > 4 ? `${parsed.origin}/…${rest.slice(-4)}` : `${parsed.origin}${rest}`;
+}
+
+/** What the webhook takes beside its store: `retryMs`, the waits between tries; `privateTargets`, whether it may send to a
+ *  private network or this machine (the operator's AGENTRUN_WEBHOOK_PRIVATE_TARGETS, never the API's); `lookup`, every
+ *  address a name resolves to (the system resolver by default). */
+export type WebhooksOptions = { retryMs?: readonly number[]; privateTargets?: boolean; lookup?: (host: string) => Promise<string[]> };
+
 /** A told row's marker, by what it marks: an end (its time) or a wait (its last row). */
 const ENDED = "ended:";
 const WAIT = "wait:";
@@ -120,14 +144,21 @@ export class Webhooks {
   private readonly stop = new AbortController();
   private closed = false;
 
-  /** `key` is the server's seal key; `say` takes a log line's fields; `retryMs` the waits between tries. */
+  private readonly retryMs: readonly number[];
+  private readonly privateTargets: boolean;
+  private readonly lookup: (host: string) => Promise<string[]>;
+
+  /** `key` is the server's seal key; `say` takes a log line's fields. */
   constructor(
     private readonly store: WebhooksStore,
     key: Buffer,
     private readonly say: (fields: Record<string, string | number>) => void,
-    private readonly retryMs: readonly number[] = RETRY_MS,
+    options: WebhooksOptions = {},
   ) {
     this.secrets = sealedSettingsOverStore(store, WEBHOOK_CHANNEL, WEBHOOK_SECRET_SPEC, key, say);
+    this.retryMs = options.retryMs ?? RETRY_MS;
+    this.privateTargets = options.privateTargets ?? false;
+    this.lookup = options.lookup ?? (async (host) => (await dns.lookup(host, { all: true })).map((a) => a.address));
   }
 
   /** Reads the webhook, its secret and its ledger once, and goes on with the messages an earlier server left queued, each
@@ -142,6 +173,8 @@ export class Webhooks {
       else if (row.marker.startsWith(WAIT)) noticed.wait = row.marker.slice(WAIT.length);
       this.notices.set(row.runId, noticed);
     }
+    // The store's one server (its lock): a claim an earlier server held is that server's try, cut by its stop.
+    await this.store.channels.release(WEBHOOK_CHANNEL);
     for (const post of await this.store.channels.queued(WEBHOOK_CHANNEL)) {
       if (post.moment === "webhook.test") await this.store.channels.settle(post.id, { state: "dropped", reason: "a test send is tried once" });
       else this.schedule(post.id, Math.max(0, post.nextAt - Date.now()));
@@ -164,22 +197,28 @@ export class Webhooks {
   view() {
     const config = this.config;
     if (!config) return { configured: false as const, secret: webhookSecretMeta(false, null) };
-    return { configured: true as const, url: config.url, signing: this.signing(), secret: webhookSecretMeta(true, config.secret_at), disabled: config.disabled ?? null, updated_at: config.updated_at };
+    return { configured: true as const, url: shownUrl(config.url), signing: this.signing(), secret: webhookSecretMeta(true, config.secret_at), disabled: config.disabled ?? null, updated_at: config.updated_at };
   }
 
-  /** PUT: the URL, and the webhook on again. The first makes the secret and answers it, once; a later one keeps it. */
+  /** PUT: the URL, and the webhook on again. The first makes the secret and answers it, once, and so does one that changes
+   *  the URL: a new receiver gets a new secret, so no one who may set the URL can have messages signed for another
+   *  receiver. One that keeps the URL keeps the secret. A URL on a private network or this machine is refused (unless the
+   *  operator allows it), by name or by any address its name resolves to; each try checks again (tryOnce). */
   async save(body: Record<string, unknown>): Promise<{ created: boolean; view: ReturnType<Webhooks["view"]>; secret?: string }> {
     const issues = unknownFields(body, ["url"]);
     const url = typeof body.url === "string" && body.url.length <= MAX_URL ? URL.parse(body.url) : null;
     if (body.url === undefined) issues.push({ field: "url", reason: "missing", message: "url is the http or https address to POST each message to" });
     else if (!url || !["http:", "https:"].includes(url.protocol)) issues.push({ field: "url", reason: "invalid", message: `url is an http or https address of at most ${MAX_URL} characters` });
     else if (url.username || url.password) issues.push({ field: "url", reason: "invalid", message: "url holds no user or password: the receiver checks the signature" });
+    else if ((await this.privateAt(url)) !== undefined) issues.push({ field: "url", reason: "invalid", message: PRIVATE_WORDS });
     if (issues.length) throw invalid(issues);
     const was = this.config;
     const now = new Date().toISOString();
+    const rotates = !was || was.url !== url!.href;
     // The secret is written (sealed) before the setting that names it: a stop between the two leaves no webhook without one.
-    const secret = was ? undefined : await this.secrets.mint(SERVER_SCOPE, SECRET_FIELD);
-    await this.write({ url: url!.href, secret_at: was?.secret_at ?? now, updated_at: now });
+    // The one it replaces is kept retired, so a run that echoes it is still cut.
+    const secret = rotates ? await this.secrets.mint(SERVER_SCOPE, SECRET_FIELD) : undefined;
+    await this.write({ url: url!.href, secret_at: rotates ? now : was!.secret_at, updated_at: now });
     return { created: !was, view: this.view(), ...(secret ? { secret } : {}) };
   }
 
@@ -311,6 +350,36 @@ export class Webhooks {
     await Promise.allSettled([...this.trying]);
   }
 
+  /** Why `url` may not be sent to (a private address, by name or by what the name resolves to now), or undefined. A name
+   *  that does not resolve passes here: the try resolves it again, and refuses then. */
+  private async privateAt(url: URL): Promise<string | undefined> {
+    if (this.privateTargets) return undefined;
+    const host = url.hostname.replace(/^\[|\]$/g, "");
+    if (LOCAL_NAME.test(host)) return host;
+    const { isPrivateAddress } = await import("@parcha/pi-browser");
+    if (net.isIP(host)) return isPrivateAddress(host) ? host : undefined;
+    const addresses = await this.lookup(host).catch(() => [] as string[]);
+    return addresses.find(isPrivateAddress);
+  }
+
+  /** The address a try dials for `url`, checked: every address its name resolves to now is public (unless the operator
+   *  allows private ones), and the connection goes to the one checked, so a name that resolves again between the check
+   *  and the connect cannot reach another. A refusal in words. */
+  private async dialled(url: URL): Promise<{ dispatcher?: Agent } | { refused: string }> {
+    if (this.privateTargets) return {};
+    const host = url.hostname.replace(/^\[|\]$/g, "");
+    if (LOCAL_NAME.test(host)) return { refused: `refused: ${host} is not a public host` };
+    const { isPrivateAddress, pinnedLookup } = await import("@parcha/pi-browser");
+    let addresses: string[];
+    try {
+      addresses = net.isIP(host) ? [host] : await this.lookup(host);
+    } catch (error) {
+      return { refused: `not reached: ${(error as { code?: string }).code ?? "its name does not resolve"}` };
+    }
+    if (!addresses.length || addresses.some(isPrivateAddress)) return { refused: `refused: ${host} is not a public host` };
+    return { dispatcher: new Agent({ connect: { lookup: pinnedLookup(addresses[0]!) } }) };
+  }
+
   private signing(): Signing {
     return this.secrets.get(SERVER_SCOPE, SECRET_FIELD) !== undefined ? "sealed" : "unreadable";
   }
@@ -384,7 +453,9 @@ export class Webhooks {
     const now = Date.now();
     const post = await this.store.channels.get(id);
     const attempt: Attempt = { webhook_id: id, type: (post?.moment ?? "webhook.test") as MessageType, at: iso(now), status_code: null, latency_ms: 0, error: null, retry_at: null, redelivery: how.redelivery };
-    if (this.closed || !post || (post.state !== "queued" && !how.redelivery)) return attempt;
+    if (this.closed || !post) return attempt;
+    // A message's own try claims it first (compare-and-set): a try already out, or one that settled it, holds it.
+    if (!how.redelivery && !(await this.store.channels.claim(id, now, CLAIM_MS))) return attempt;
     const config = this.config;
     const secret = this.secrets.get(SERVER_SCOPE, SECRET_FIELD);
     let failure: string | undefined;
@@ -394,17 +465,25 @@ export class Webhooks {
     else {
       const timestamp = String(Math.floor(now / 1000));
       const started = performance.now();
-      try {
-        const res = await fetch(config.url, {
-          method: "POST", redirect: "manual", signal: AbortSignal.any([AbortSignal.timeout(TIMEOUT_MS), this.stop.signal]),
-          headers: { "content-type": "application/json", "user-agent": "agentrun-serve-webhook/1", "webhook-id": id, "webhook-timestamp": timestamp, "webhook-signature": signatureOf(secret, id, timestamp, post.body) },
-          body: post.body,
-        });
-        await res.body?.cancel().catch(() => undefined);
-        attempt.status_code = res.status;
-        if (res.status < 200 || res.status > 299) failure = res.status >= 300 && res.status < 400 ? `answered ${res.status}: a redirect is not followed` : `answered ${res.status}`;
-      } catch (error) {
-        failure = (error as Error).name === "TimeoutError" ? `no answer in ${TIMEOUT_MS / 1000} s` : `not reached: ${(error as { cause?: { code?: string } }).cause?.code ?? (error as Error).message}`;
+      const target = new URL(config.url);
+      const dial = await this.dialled(target);
+      if ("refused" in dial) failure = dial.refused;
+      else {
+        try {
+          const res = await undiciFetch(target, {
+            method: "POST", redirect: "manual", signal: AbortSignal.any([AbortSignal.timeout(TIMEOUT_MS), this.stop.signal]),
+            headers: { "content-type": "application/json", "user-agent": "agentrun-serve-webhook/1", "webhook-id": id, "webhook-timestamp": timestamp, "webhook-signature": signatureOf(secret, id, timestamp, post.body) },
+            body: post.body,
+            ...(dial.dispatcher ? { dispatcher: dial.dispatcher } : {}),
+          });
+          await res.body?.cancel().catch(() => undefined);
+          attempt.status_code = res.status;
+          if (res.status < 200 || res.status > 299) failure = res.status >= 300 && res.status < 400 ? `answered ${res.status}: a redirect is not followed` : `answered ${res.status}`;
+        } catch (error) {
+          failure = (error as Error).name === "TimeoutError" ? `no answer in ${TIMEOUT_MS / 1000} s` : `not reached: ${(error as { cause?: { code?: string } }).cause?.code ?? (error as Error).message}`;
+        } finally {
+          await dial.dispatcher?.close().catch(() => undefined);
+        }
       }
       attempt.latency_ms = Math.round(performance.now() - started);
     }
@@ -423,7 +502,7 @@ export class Webhooks {
     let delay: number | undefined;
     if (!failure) to = { state: "sent", attempts, reason: null };
     // A redelivery that failed leaves the message as it is, and so does a try that ends after one sent it.
-    else if (!how.redelivery && standingPost.state === "queued") {
+    else if (!how.redelivery && standingPost.state === "sending") {
       if (wait !== undefined) {
         // Jitter, so messages that failed together do not all come back together.
         delay = Math.round(wait * (0.8 + 0.4 * Math.random()));
@@ -441,7 +520,8 @@ export class Webhooks {
       // Not written: the message stays as the store held it, and a queued one is tried again after the next wait (its
       // receiver may get it twice, under the same webhook-id).
       this.say({ condition: "attempt_unsaved", webhook_id: id, error: (error as Error).message });
-      if (standingPost.state === "queued" && !how.redelivery) this.schedule(id, delay ?? this.retryMs[0] ?? RETRY_MS[0]!);
+      // Its claim runs out first, so the next try can take it.
+      if (standingPost.state === "sending" && !how.redelivery) this.schedule(id, Math.max(delay ?? 0, CLAIM_MS));
       return attempt;
     }
     if (delay !== undefined) this.schedule(id, delay);
@@ -456,7 +536,7 @@ export class Webhooks {
         this.config = off;
         this.say({ condition: "webhook_unwritable", error: (error as Error).message });
       }
-      this.say({ condition: "webhook_disabled", url: standing!.url, reason: off.disabled.reason });
+      this.say({ condition: "webhook_disabled", url: shownUrl(standing!.url), reason: off.disabled.reason });
       await this.drop("the webhook is off: its receiver answered 410");
     }
     return attempt;

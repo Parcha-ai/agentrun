@@ -81,3 +81,24 @@ test("a sent post with a try in flight (sending) stays, though no kept try names
   await store.channels.settle("msg_next", { state: "sent", attempts: 1 }, tried("msg_next", 3, { statusCode: 200, error: null }), { kept: 1 });
   assert.equal(await store.channels.get("msg_held"), undefined, "then it goes");
 });
+
+test("two senders claiming the same due post at once, on two connections: exactly one takes it; a claim that ran out is taken again; a start's release lets every claim go", async (t) => {
+  const { store, file, clock } = await storeOn(t);
+  await agentWithRevision(store);
+  const other = (await storeOn(t, { file, clock, role: "runner" })).store;
+  for (const id of ["msg_1", "msg_2", "msg_3"]) await store.channels.post(post(id));
+  await store.channels.post(post("msg_later", { nextAt: 9_000 }));
+  for (const id of ["msg_1", "msg_2", "msg_3"]) {
+    const won = await Promise.all([store.channels.claim(id, 2_000, 60_000), other.channels.claim(id, 2_000, 60_000)]);
+    assert.deepEqual(won.filter(Boolean).length, 1, `${id}: one claim of two (${won})`);
+    assert.deepEqual(await store.channels.get(id).then((p) => [p.state, p.claimedUntil]), ["sending", 62_000]);
+  }
+  assert.equal(await store.channels.claim("msg_1", 30_000, 60_000), false, "held: its claim runs to 62 000");
+  assert.equal(await other.channels.claim("msg_1", 62_001, 60_000), true, "a claim that ran out is taken again");
+  assert.equal(await store.channels.claim("msg_later", 2_000, 60_000), false, "not due yet");
+  await store.channels.settle("msg_2", { state: "sent", attempts: 1 }, tried("msg_2", 3, { statusCode: 200, error: null }));
+  assert.equal(await store.channels.claim("msg_2", 200_000, 60_000), false, "a sent post is never claimed");
+  assert.equal((await store.channels.get("msg_2")).claimedUntil, null, "a settle ends the claim");
+  assert.equal(await store.channels.release(CHANNEL), 2, "msg_1 and msg_3 let go");
+  assert.deepEqual((await store.channels.queued(CHANNEL)).map((p) => [p.id, p.state, p.claimedUntil]), [["msg_1", "queued", null], ["msg_3", "queued", null], ["msg_later", "queued", null]]);
+});

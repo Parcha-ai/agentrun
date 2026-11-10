@@ -45,12 +45,12 @@ async function until(check, what) {
 test("down across three times with a one-hour window: the latest fires once, to catch up, and the two before it are one missed row", { timeout: 120_000 }, async (t) => {
   const dir = await scratch(t);
   const data = join(dir, "agents");
-  const first = await serve(t, { data, triggerClock: fakeClock("2026-06-01T00:00:00Z") });
+  const first = await serve(t, { webhookPrivateTargets: true, data, triggerClock: fakeClock("2026-06-01T00:00:00Z") });
   await made(first.api, "caught");
   const { body } = await first.api("POST", "/triggers", schedule("caught", { every_s: 600, start_at: "2026-06-01T00:10:00Z" }));
   assert.equal(body.catchup_window_s, 3600, "an hour, by default");
   await first.close();
-  const second = await serve(t, { data, triggerClock: fakeClock("2026-06-01T00:38:20Z") });
+  const second = await serve(t, { webhookPrivateTargets: true, data, triggerClock: fakeClock("2026-06-01T00:38:20Z") });
   const [caught, missed] = await firings(second.api, body.id, 2);
   assert.deepEqual([missed.status, missed.nominal_at, missed.count, missed.run_id], ["missed", "2026-06-01T00:10:00Z", 2, null], "00:10 and 00:20");
   assert.deepEqual([caught.status, caught.nominal_at, caught.key], ["started", "2026-06-01T00:30:00Z", keyOf("schedule", body.id, "2026-06-01T00:30:00Z")]);
@@ -68,7 +68,7 @@ test("five failed firings in a row turn the trigger off; each sends one signed t
   const dir = await scratch(t);
   const data = join(dir, "agents");
   const clock = fakeClock("2026-06-01T00:00:00Z");
-  const first = await serve(t, { data, triggerClock: clock });
+  const first = await serve(t, { webhookPrivateTargets: true, data, triggerClock: clock });
   const { api } = first;
   const { signing_secret: secret } = (await api("PUT", "/settings/webhook", { url: hook.url })).body;
   await made(api, "flaky");
@@ -115,7 +115,7 @@ test("five failed firings in a row turn the trigger off; each sends one signed t
   assert.deepEqual(failures().map((m) => JSON.parse(m.body).data.firing_key).sort(), [...failedKeys].sort(), "one for each failed firing");
 
   await first.close();
-  const second = await serve(t, { data, triggerClock: clock });
+  const second = await serve(t, { webhookPrivateTargets: true, data, triggerClock: clock });
   assert.equal((await second.api("GET", `/triggers/${id}`)).body.disabled.reason, "auto_paused");
   await sleep(1_500);
   assert.equal(failures().length, 7, "a restart sends none again");
@@ -124,7 +124,7 @@ test("five failed firings in a row turn the trigger off; each sends one signed t
 });
 
 test("catchup_window_s is checked and taken by PATCH; overlap is no field: one given is refused", { timeout: 60_000 }, async (t) => {
-  const { api, baseUrl } = await serve(t, { triggerClock: fakeClock("2026-06-01T00:00:00Z") });
+  const { api, baseUrl } = await serve(t, { webhookPrivateTargets: true, triggerClock: fakeClock("2026-06-01T00:00:00Z") });
   await made(api, "settings");
   for (const [field, value, reason] of [["catchup_window_s", -1, "invalid"], ["catchup_window_s", 1.5, "invalid"], ["catchup_window_s", 366 * 86_400 + 1, "invalid"], ["overlap", "queue", "not_allowed"]]) {
     const answer = await api("POST", "/triggers", { ...schedule("settings", { every_s: 600 }), [field]: value });

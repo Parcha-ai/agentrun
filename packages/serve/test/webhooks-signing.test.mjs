@@ -15,6 +15,7 @@ import { client, follow, scratch, secretWritePath, serve, startRun } from "./sup
 import {
   askerStore, endedInStore, endNotice, filesIn, nothingPending, hadWebhook, meetsDocument, noticed, noticeId, ofType, onDisk, outboxOf, parkedOnQuestion, receiver, reclaimed,
   settled, startWithRunner, verifies, waitNotice, Webhook, webhookOn,
+  PRIVATE_OK, shownUrl,
 } from "./webhook-support.mjs";
 
 /** How many cases run at once: each starts a server, a runner and its runs, so all of them at once would load a small
@@ -69,13 +70,13 @@ describe("the outbound webhook: signature, idempotency and custody", { concurren
   test("demo: a run that ends POSTs a Standard Webhooks message the spec's library verifies; a wrong secret does not; the secret is in no GET, and in the store only sealed", async (t) => {
     const hook = await receiver(t);
     const lines = [];
-    const { api, data, url } = await serve(t, { log: (line) => lines.push(line) });
+    const { api, data, url } = await serve(t, { ...PRIVATE_OK, log: (line) => lines.push(line) });
     assert.deepEqual((await api("GET", "/settings/webhook")).body, { configured: false, secret: { name: "webhook:outbound", set: false, source: null, changed_at: null } });
     const set = await api("PUT", "/settings/webhook", { url: hook.url });
     assert.equal(set.status, 201, JSON.stringify(set.body));
     const { signing_secret: secret } = set.body;
     assert.match(secret, /^whsec_[A-Za-z0-9+/]{43}=$/, "whsec_ and 32 bytes in base64");
-    assert.deepEqual({ ...set.body, signing_secret: undefined, secret: undefined, updated_at: undefined }, { configured: true, url: hook.url, signing: "sealed", disabled: null, signing_secret: undefined, secret: undefined, updated_at: undefined });
+    assert.deepEqual({ ...set.body, signing_secret: undefined, secret: undefined, updated_at: undefined }, { configured: true, url: shownUrl(hook.url), signing: "sealed", disabled: null, signing_secret: undefined, secret: undefined, updated_at: undefined });
     assert.deepEqual([set.body.secret.name, set.body.secret.set, set.body.secret.source], ["webhook:outbound", true, "console"], "its secret's metadata, never its value");
     await meetsDocument(api, "/settings/webhook", "put", "201", set.body);
     const library = new Webhook(secret);
@@ -109,7 +110,7 @@ describe("the outbound webhook: signature, idempotency and custody", { concurren
     await meetsDocument(api, "/settings/webhook/deliveries", "get", "200", log);
     // The secret: in no answer but the first PUT's, in no file of the data directory and in no log line.
     const view = await api("GET", "/settings/webhook");
-    assert.deepEqual({ ...view.body, updated_at: undefined }, { configured: true, url: hook.url, signing: "sealed", secret: set.body.secret, disabled: null, updated_at: undefined });
+    assert.deepEqual({ ...view.body, updated_at: undefined }, { configured: true, url: shownUrl(hook.url), signing: "sealed", secret: set.body.secret, disabled: null, updated_at: undefined });
     await meetsDocument(api, "/settings/webhook", "get", "200", view.body);
     const key = Buffer.from(secret.slice(6), "base64");
     const forms = [secret, secret.slice(6), key, key.toString("hex"), key.toString("base64url")];
@@ -120,7 +121,7 @@ describe("the outbound webhook: signature, idempotency and custody", { concurren
 
   test("demo: a run that asks its person POSTs run.needs_input while it waits, then run.ended once answered; the deliveries log has each, newest first", async (t) => {
     const hook = await receiver(t);
-    const { api, data, url } = await serve(t);
+    const { api, data, url } = await serve(t, PRIVATE_OK);
     const { signing_secret: secret } = (await api("PUT", "/settings/webhook", { url: hook.url })).body;
     const library = new Webhook(secret);
     // A run that asks: run.needs_input while it waits for its person (a question), then run.ended once answered.
@@ -148,7 +149,7 @@ describe("the outbound webhook: signature, idempotency and custody", { concurren
   test("a run parked on its question gives one run.needs_input, under its wait's webhook-id; read again under a new claim, the same wait is not told again", async (t) => {
     const hook = await receiver(t);
     // The server alone: the test is the runner, writing the parked run's rows into the store as a runner does.
-    const server = await serve(t, { runner: false });
+    const server = await serve(t, { ...PRIVATE_OK, runner: false });
     const { data } = server;
     assert.equal((await server.api("PUT", "/settings/webhook", { url: hook.url })).status, 201);
     const writer = await askerStore(t, data);
@@ -172,7 +173,7 @@ describe("the outbound webhook: signature, idempotency and custody", { concurren
 
   test("a run parked on its question, its wait told, is not told again by the next server", async (t) => {
     const hook = await receiver(t);
-    const first = await serve(t, { runner: false });
+    const first = await serve(t, { ...PRIVATE_OK, runner: false });
     const { data } = first;
     assert.equal((await first.api("PUT", "/settings/webhook", { url: hook.url })).status, 201);
     const writer = await askerStore(t, data);
@@ -182,7 +183,7 @@ describe("the outbound webhook: signature, idempotency and custody", { concurren
     await settled(data);
     // The next server reads the same parked run, its wait already told; two runs parked after it show its reads have passed.
     await first.close();
-    await serve(t, { data, runner: false });
+    await serve(t, { ...PRIVATE_OK, data, runner: false });
     await parkedOnQuestion(writer, "asker", "run-after-1", "And the region?");
     await hook.when(() => waitsOf("run-after-1").length === 1, "the run.needs_input of run run-after-1", data);
     await parkedOnQuestion(writer, "asker", "run-after-2", "And the currency?");
@@ -192,7 +193,7 @@ describe("the outbound webhook: signature, idempotency and custody", { concurren
 
   test("sixty runs that each start and end between two of the server's reads are each told run.ended, once: none is missed for being older than the newest", async (t) => {
     const hook = await receiver(t);
-    const server = await serve(t, { runner: false });
+    const server = await serve(t, { ...PRIVATE_OK, runner: false });
     const { data } = server;
     assert.equal((await server.api("PUT", "/settings/webhook", { url: hook.url })).status, 201);
     const writer = await askerStore(t, data);
@@ -210,7 +211,7 @@ describe("the outbound webhook: signature, idempotency and custody", { concurren
   test("a webhook a 410 turned off refuses a test send and a redelivery, 409 webhook_off, and sends nothing until a PUT", async (t) => {
     let answer = 410;
     const hook = await receiver(t, () => answer);
-    const { api } = await serve(t);
+    const { api } = await serve(t, PRIVATE_OK);
     assert.equal((await api("PUT", "/settings/webhook", { url: hook.url })).status, 201);
     assert.equal((await api("POST", "/settings/webhook/test")).body.status_code, 410);
     assert.equal((await api("GET", "/settings/webhook")).body.disabled.reason, "the receiver answered 410 Gone");
@@ -229,7 +230,7 @@ describe("the outbound webhook: signature, idempotency and custody", { concurren
 
   test("redeliver sends a message of the log again, once, under the same webhook-id and body, signed anew", async (t) => {
     const hook = await receiver(t);
-    const { api } = await serve(t);
+    const { api } = await serve(t, PRIVATE_OK);
     const { body: set } = await api("PUT", "/settings/webhook", { url: hook.url });
     const run = await startRun(api, "again", "hi");
     await follow(api, run.run_id, ["completed"]);
@@ -249,11 +250,11 @@ describe("the outbound webhook: signature, idempotency and custody", { concurren
 
   test("settings: an http or https URL with no user or password, and nothing else; handed no seal key, the server seals under the one it made; DELETE removes it", async (t) => {
     // A server never runs without a seal key (seal-key.ts): handed none, it makes one, so a webhook's secret is sealed.
-    const bare = await serve(t);
+    const bare = await serve(t, PRIVATE_OK);
     assert.deepEqual((await bare.api("GET", "/capabilities")).body.features.webhooks, { routes: true, events: ["run.needs_input", "run.ended", "trigger.failed"], signing: "standard-webhooks/v1", at_rest: "sealed" });
 
     const hook = await receiver(t);
-    const { api, data } = await serve(t);
+    const { api, data } = await serve(t, PRIVATE_OK);
     assert.deepEqual((await api("GET", "/capabilities")).body.features.webhooks, { routes: true, events: ["run.needs_input", "run.ended", "trigger.failed"], signing: "standard-webhooks/v1", at_rest: "sealed" });
     const withUser = Object.assign(new URL("https://example.com/hook"), { username: "user", password: "pass" }).href;
     for (const [body, field] of [
@@ -277,9 +278,60 @@ describe("the outbound webhook: signature, idempotency and custody", { concurren
     assert.equal(hook.got.length, 1, "no webhook, no message");
   });
 
+  test("a webhook URL on a private network or this machine is refused, by address or by name; one whose name resolves public at its PUT and private at its try is refused at the try, and nothing is sent", async (t) => {
+    // The server as an operator runs it: no switch to send inside its own network.
+    const { api } = await serve(t);
+    for (const url of [
+      "http://127.0.0.1:9/hook", // key-gate: denylist
+      "http://169.254.169.254/latest/meta-data", // key-gate: denylist
+      "http://10.0.0.5/hook", // key-gate: denylist
+      "http://[::1]/hook", // key-gate: denylist
+      "http://localhost:8080/hook",
+      "http://metadata.google.internal/computeMetadata",
+    ]) {
+      const refused = await api("PUT", "/settings/webhook", { url });
+      assert.equal(refused.status, 422, `${url}: ${JSON.stringify(refused.body)}`);
+      assert.deepEqual(refused.body.error.fields.map((f) => f.field), ["url"], url);
+      assert.match(refused.body.error.fields[0].message, /private network or this machine/);
+    }
+    assert.deepEqual((await api("GET", "/settings/webhook")).body.configured, false, "nothing set");
+    // A name that resolves to a public address when it is set, then to this machine when a message is tried (a DNS
+    // rebind): the try checks what it dials, and dials nothing.
+    const hook = await receiver(t);
+    const dir = await scratch(t);
+    const answers = [["192.0.2.10"], [new URL(hook.url).hostname]];
+    const on = await webhookOn(t, dir, { privateTargets: false, lookup: async () => answers.shift() ?? [] });
+    const webhooks = await on.open();
+    await webhooks.save({ url: `http://rebinds.example:${new URL(hook.url).port}/hook` });
+    const tried = await webhooks.test();
+    assert.deepEqual([tried.status_code, tried.error], [null, "refused: rebinds.example is not a public host"]);
+    assert.equal(hook.got.length, 0, "nothing reached this machine");
+  });
+
+  test("a PUT that changes the URL makes a new secret, shown once, and keeps the old one retired; a PUT that keeps the URL keeps the secret; GET shows the URL's origin and a short tail, never the whole of it", async (t) => {
+    const first = await receiver(t);
+    const second = await receiver(t);
+    const { api } = await serve(t, PRIVATE_OK);
+    const set = (await api("PUT", "/settings/webhook", { url: first.url })).body;
+    const again = await api("PUT", "/settings/webhook", { url: first.url });
+    assert.deepEqual([again.status, again.body.signing_secret, again.body.secret.changed_at], [200, undefined, set.secret.changed_at], "the same URL: the same secret");
+    const moved = await api("PUT", "/settings/webhook", { url: second.url });
+    assert.equal(moved.status, 200);
+    assert.match(moved.body.signing_secret, /^whsec_/, "a new receiver, a new secret, shown this once");
+    assert.notEqual(moved.body.signing_secret, set.signing_secret);
+    assert.notEqual(moved.body.secret.changed_at, set.secret.changed_at);
+    const view = (await api("GET", "/settings/webhook")).body;
+    assert.equal(view.url, shownUrl(second.url));
+    assert.ok(!JSON.stringify(view).includes(new URL(second.url).pathname), "the URL's path is not shown whole");
+    assert.equal((await api("POST", "/settings/webhook/test")).body.status_code, 200);
+    const [sent] = second.got;
+    new Webhook(moved.body.signing_secret).verify(sent.body, sent.headers);
+    assert.throws(() => new Webhook(set.signing_secret).verify(sent.body, sent.headers), /verif|signature/i, "the old secret signs nothing for the new receiver");
+  });
+
   test("a run stopped, then asked a question on its next turn, gives two needs_input notices: different webhook-ids, `stopped` then `question`", { skip: "stop->message resume (switch line, not ask_person): POST /runs/{id}/messages to a stopped agentic run 409s not_continuable because over the store the stopped run reads terminal in statusOf (stopped()/outcome), not input_required/idle; E2v/E2c to carry the stop marker into the store view" }, async (t) => {
     const hook = await receiver(t);
-    const { api } = await serve(t);
+    const { api } = await serve(t, PRIVATE_OK);
     assert.equal((await api("PUT", "/settings/webhook", { url: hook.url })).status, 201);
     const run = await startRun(api, "ask-later", "Take your time.", { tools: ["ask_person"] });
     await follow(api, run.run_id, ["working"]);
@@ -326,7 +378,7 @@ describe("the outbound webhook: signature, idempotency and custody", { concurren
       readBack();
       return 200;
     });
-    ({ api } = await serve(t));
+    ({ api } = await serve(t, PRIVATE_OK));
     assert.equal((await api("PUT", "/settings/webhook", { url: hook.url })).status, 201);
     const run = await startRun(api, "read-back", "Answer.");
     await follow(api, run.run_id, ["completed"]);
