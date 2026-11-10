@@ -27,6 +27,9 @@ function optionalForDocker() {
 		if (need.startsWith("user:")) return (caps.user ?? []).includes(need.slice("user:".length));
 		if (need === "release:stop") return caps.release.includes("stop");
 		if (need === "vendor-agent") return Array.isArray(caps.vendorAgentPorts);
+		// Docker takes no key: its conformance module's ENV names none, so the CLI plants nothing and the runner reads the
+		// need as undeclared (health.no-key-in-errors).
+		if (need === "secrets") return false;
 		throw new Error(`a need this count does not read: ${need}`);
 	};
 	return conformanceCases.filter((c) => c.level === "core" && !c.needs.every(declared)).length;

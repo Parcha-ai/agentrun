@@ -124,5 +124,6 @@ and `MOUNT`; the suite reads `PROVIDERS` either way. After that, the contract ty
    ```
 
    For the no-key case, the suite builds the provider again from its conformance module with a planted value in each
-   `ENV` name that holds a key, token or secret. It then asks every refusal path, and none of the planted value may come
-   back.
+   `ENV` name that holds a key, token or secret. It then asks every refusal path, about the case's own computer so each
+   reaches the vendor, and none of the planted value may come back. A release refused for its key must leave that
+   computer where it was.

@@ -38,7 +38,8 @@
       },
       "required": [
         "path"
-      ]
+      ],
+      "additionalProperties": false
     },
     "AppsLaunchParams": {
       "description": "apps.launch and apps.terminate.",
@@ -52,7 +53,8 @@
       },
       "required": [
         "id"
-      ]
+      ],
+      "additionalProperties": false
     },
     "AppsListResult": {
       "title": "AppsListResult",
@@ -614,7 +616,7 @@
           "type": "object",
           "properties": {
             "params": {
-              "$ref": "#/definitions/Empty",
+              "$ref": "#/definitions/StrictEmpty",
               "title": "params"
             },
             "result": {
@@ -687,7 +689,7 @@
           "type": "object",
           "properties": {
             "params": {
-              "$ref": "#/definitions/Empty",
+              "$ref": "#/definitions/StrictEmpty",
               "title": "params"
             },
             "result": {
@@ -723,7 +725,7 @@
           "type": "object",
           "properties": {
             "params": {
-              "$ref": "#/definitions/Empty",
+              "$ref": "#/definitions/StrictEmpty",
               "title": "params"
             },
             "result": {
@@ -788,7 +790,8 @@
       },
       "required": [
         "at"
-      ]
+      ],
+      "additionalProperties": false
     },
     "DeadlineExtendResult": {
       "title": "DeadlineExtendResult",
@@ -827,7 +830,7 @@
         },
         "env": {
           "description": "Added over a minimal default (PATH, HOME, USER, LOGNAME); nothing else of the daemon's environment is passed.",
-          "$ref": "#/definitions/Record<string,string>",
+          "$ref": "#/definitions/StringMap",
           "title": "env"
         },
         "user": {
@@ -848,7 +851,8 @@
       "required": [
         "argv",
         "timeoutMs"
-      ]
+      ],
+      "additionalProperties": false
     },
     "ExecRunResult": {
       "title": "ExecRunResult",
@@ -1019,7 +1023,8 @@
       },
       "required": [
         "path"
-      ]
+      ],
+      "additionalProperties": false
     },
     "FilesListResult": {
       "title": "FilesListResult",
@@ -1065,7 +1070,8 @@
       },
       "required": [
         "path"
-      ]
+      ],
+      "additionalProperties": false
     },
     "FilesMoveParams": {
       "title": "FilesMoveParams",
@@ -1088,7 +1094,8 @@
       "required": [
         "from",
         "to"
-      ]
+      ],
+      "additionalProperties": false
     },
     "FilesReadParams": {
       "description": "Paths are absolute; the daemon cleans them. A relative path is `invalid`.",
@@ -1111,7 +1118,8 @@
       },
       "required": [
         "path"
-      ]
+      ],
+      "additionalProperties": false
     },
     "FilesReadResult": {
       "title": "FilesReadResult",
@@ -1154,7 +1162,8 @@
       },
       "required": [
         "path"
-      ]
+      ],
+      "additionalProperties": false
     },
     "FilesStatParams": {
       "title": "FilesStatParams",
@@ -1172,7 +1181,8 @@
       },
       "required": [
         "path"
-      ]
+      ],
+      "additionalProperties": false
     },
     "FilesWriteParams": {
       "title": "FilesWriteParams",
@@ -1210,7 +1220,8 @@
       "required": [
         "data",
         "path"
-      ]
+      ],
+      "additionalProperties": false
     },
     "FilesWriteResult": {
       "title": "FilesWriteResult",
@@ -1340,7 +1351,8 @@
           "required": [
             "at",
             "type"
-          ]
+          ],
+          "additionalProperties": false
         },
         {
           "type": "object",
@@ -1365,7 +1377,8 @@
           },
           "required": [
             "type"
-          ]
+          ],
+          "additionalProperties": false
         },
         {
           "type": "object",
@@ -1420,7 +1433,8 @@
           },
           "required": [
             "type"
-          ]
+          ],
+          "additionalProperties": false
         },
         {
           "type": "object",
@@ -1470,7 +1484,8 @@
           "required": [
             "path",
             "type"
-          ]
+          ],
+          "additionalProperties": false
         },
         {
           "type": "object",
@@ -1524,7 +1539,8 @@
           "required": [
             "type",
             "unit"
-          ]
+          ],
+          "additionalProperties": false
         },
         {
           "type": "object",
@@ -1549,7 +1565,8 @@
           "required": [
             "keys",
             "type"
-          ]
+          ],
+          "additionalProperties": false
         },
         {
           "type": "object",
@@ -1575,7 +1592,8 @@
             "keys",
             "ms",
             "type"
-          ]
+          ],
+          "additionalProperties": false
         },
         {
           "type": "object",
@@ -1593,7 +1611,8 @@
           "required": [
             "text",
             "type"
-          ]
+          ],
+          "additionalProperties": false
         },
         {
           "type": "object",
@@ -1632,7 +1651,8 @@
           "required": [
             "at",
             "type"
-          ]
+          ],
+          "additionalProperties": false
         },
         {
           "type": "object",
@@ -1667,7 +1687,8 @@
           "required": [
             "at",
             "type"
-          ]
+          ],
+          "additionalProperties": false
         },
         {
           "type": "object",
@@ -1705,7 +1726,8 @@
           "required": [
             "path",
             "type"
-          ]
+          ],
+          "additionalProperties": false
         },
         {
           "type": "object",
@@ -1745,7 +1767,8 @@
             "at",
             "scale",
             "type"
-          ]
+          ],
+          "additionalProperties": false
         },
         {
           "type": "object",
@@ -1768,7 +1791,8 @@
           "required": [
             "name",
             "type"
-          ]
+          ],
+          "additionalProperties": false
         },
         {
           "type": "object",
@@ -1786,7 +1810,8 @@
           "required": [
             "ms",
             "type"
-          ]
+          ],
+          "additionalProperties": false
         }
       ]
     },
@@ -1804,7 +1829,8 @@
       },
       "required": [
         "actions"
-      ]
+      ],
+      "additionalProperties": false
     },
     "InputActionsResult": {
       "title": "InputActionsResult",
@@ -1980,7 +2006,8 @@
           "type": "number",
           "title": "from"
         }
-      }
+      },
+      "additionalProperties": false
     },
     "ProcessListResult": {
       "title": "ProcessListResult",
@@ -2044,7 +2071,8 @@
         "id",
         "offset",
         "stream"
-      ]
+      ],
+      "additionalProperties": false
     },
     "ProcessReadResult": {
       "title": "ProcessReadResult",
@@ -2114,7 +2142,8 @@
         "cols",
         "id",
         "rows"
-      ]
+      ],
+      "additionalProperties": false
     },
     "ProcessSignal": {
       "title": "ProcessSignal",
@@ -2143,7 +2172,8 @@
       "required": [
         "id",
         "signal"
-      ]
+      ],
+      "additionalProperties": false
     },
     "ProcessSignalResult": {
       "title": "ProcessSignalResult",
@@ -2174,7 +2204,7 @@
         },
         "env": {
           "description": "Added over the same minimal default as exec.run's.",
-          "$ref": "#/definitions/Record<string,string>",
+          "$ref": "#/definitions/StringMap",
           "title": "env"
         },
         "user": {
@@ -2210,7 +2240,8 @@
       },
       "required": [
         "argv"
-      ]
+      ],
+      "additionalProperties": false
     },
     "ProcessStartResult": {
       "title": "ProcessStartResult",
@@ -2259,7 +2290,8 @@
       "required": [
         "id",
         "timeoutMs"
-      ]
+      ],
+      "additionalProperties": false
     },
     "ProcessWriteParams": {
       "title": "ProcessWriteParams",
@@ -2282,7 +2314,8 @@
       },
       "required": [
         "id"
-      ]
+      ],
+      "additionalProperties": false
     },
     "PtySize": {
       "description": "A terminal's size in characters.",
@@ -2301,11 +2334,8 @@
       "required": [
         "cols",
         "rows"
-      ]
-    },
-    "Record<string,string>": {
-      "title": "Record<string,string>",
-      "type": "object"
+      ],
+      "additionalProperties": false
     },
     "ScreenReadParams": {
       "description": "One shot is held; it is dropped at eof or at the next shot.",
@@ -2324,7 +2354,8 @@
       "required": [
         "id",
         "offset"
-      ]
+      ],
+      "additionalProperties": false
     },
     "ScreenReadResult": {
       "title": "ScreenReadResult",
@@ -2374,7 +2405,8 @@
           "maxItems": 4,
           "title": "region"
         }
-      }
+      },
+      "additionalProperties": false
     },
     "ScreenShotResult": {
       "title": "ScreenShotResult",
@@ -2468,7 +2500,8 @@
       },
       "required": [
         "after"
-      ]
+      ],
+      "additionalProperties": false
     },
     "ScreenWatchResult": {
       "description": "changed false: no change within waitMs, and no frame. A frame carries its bytes as screen.shot carries its PNG: the\nfirst MAX_CHUNK_BYTES in data, the rest through screen.read by id.",
@@ -2552,6 +2585,18 @@
         "width"
       ]
     },
+    "StrictEmpty": {
+      "title": "StrictEmpty",
+      "type": "object",
+      "additionalProperties": false
+    },
+    "StringMap": {
+      "title": "StringMap",
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
     "TarPullBeginParams": {
       "title": "TarPullBeginParams",
       "type": "object",
@@ -2564,7 +2609,8 @@
       },
       "required": [
         "path"
-      ]
+      ],
+      "additionalProperties": false
     },
     "TarPullBeginResult": {
       "title": "TarPullBeginResult",
@@ -2591,7 +2637,8 @@
       },
       "required": [
         "id"
-      ]
+      ],
+      "additionalProperties": false
     },
     "TarPullReadParams": {
       "title": "TarPullReadParams",
@@ -2609,7 +2656,8 @@
       },
       "required": [
         "id"
-      ]
+      ],
+      "additionalProperties": false
     },
     "TarPullReadResult": {
       "title": "TarPullReadResult",
@@ -2642,7 +2690,8 @@
       },
       "required": [
         "path"
-      ]
+      ],
+      "additionalProperties": false
     },
     "TarPushBeginResult": {
       "title": "TarPushBeginResult",
@@ -2668,7 +2717,8 @@
       },
       "required": [
         "id"
-      ]
+      ],
+      "additionalProperties": false
     },
     "TarPushEndResult": {
       "title": "TarPushEndResult",
@@ -2701,7 +2751,8 @@
       "required": [
         "data",
         "id"
-      ]
+      ],
+      "additionalProperties": false
     },
     "UiNode": {
       "title": "UiNode",

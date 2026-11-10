@@ -14,12 +14,14 @@ const statuses = (report) => Object.fromEntries(report.results.map((r) => [r.id,
 const reasonOf = (report, id) => report.results.find((r) => r.id === id)?.reason ?? "";
 
 /** The least of a case's context these two cases use: a failed assertion throws, a skip throws its reason. */
-function context({ hello, capabilities, declared, planted }) {
+function context({ hello, capabilities, declared, planted, kept = true }) {
 	class Skip extends Error {}
 	const t = {
 		hello,
 		declared,
-		provider: { capabilities: () => capabilities },
+		ref: CASE_REF,
+		// The case's own provider, with the real key: its computer is still there, or (kept false) a planted release let it go.
+		provider: { capabilities: () => capabilities, attach: async ({ id }) => (kept && id === CASE_REF.id ? { ok: true, value: { ref: CASE_REF } } : { ok: false, error: { code: "not_found", message: `no computer ${id}` } }) },
 		signal: new AbortController().signal,
 		runLabels: { "agentrun.conformance": "contract-test" },
 		spec: (extra = {}) => ({ image: "android", lifetimeMs: 60_000, network: "none", labels: { "agentrun.conformance": "contract-test" }, ...extra }),
@@ -41,6 +43,8 @@ function context({ hello, capabilities, declared, planted }) {
 	return { t, Skip };
 }
 
+/** The case's computer: a real one of the provider's, so each path that takes a ref reaches the vendor. */
+const CASE_REF = { id: "phone-0123abcd", name: "computer-0123456789ab" };
 const ANDROID = { kind: "android", os: "android", daemon: "none", groups: ["screen", "input.touch", "input.keys", "apps", "apps.ui_tree"], network: ["open"] };
 const HELLO = { protocol: PROTOCOL_VERSION, version: "1", os: "android", kind: "android", arch: "amd64", groups: ANDROID.groups };
 
@@ -63,7 +67,7 @@ test("health.declared: hello carries this protocol's version, and capabilities()
 });
 
 /** A provider whose every call answers in words, built from what each call should say. */
-function wordy(say) {
+function wordy(say, refs = []) {
 	const no = (call) => ({ ok: false, error: { code: "denied", message: say(call) } });
 	return {
 		id: "wordy",
@@ -72,10 +76,10 @@ function wordy(say) {
 		check: () => [],
 		testConnection: async () => ({ ok: false, error: { code: "unauthorized", message: say("testConnection") } }),
 		list: async () => no("list"),
-		attach: async () => no("attach"),
-		network: async () => no("network"),
-		connect: async () => no("connect"),
-		release: async () => no("release"),
+		attach: async (target) => (refs.push(["attach", target.id ?? "labels"]), no("attach")),
+		network: async (ref) => (refs.push(["network", ref.id]), no("network")),
+		connect: async (ref) => (refs.push(["connect", ref.id]), no("connect")),
+		release: async (ref) => (refs.push(["release", ref.id]), no("release")),
 		create: async () => no("create"),
 	};
 }
@@ -86,9 +90,16 @@ test("health.no-key-in-errors: every refusal path is asked, and a planted key in
 	assert.deepEqual(noKey.needs, ["secrets"], "a provider that takes no secret skips it as undeclared");
 	const secret = "agentrun-planted-0123456789abcdef01234567";
 	const asked = [];
-	const clean = context({ hello: HELLO, capabilities: ANDROID, planted: { provider: wordy((call) => (asked.push(call), `${call}: the vendor refused the key`)), secrets: [secret] } });
+	const refs = [];
+	const clean = context({ hello: HELLO, capabilities: ANDROID, planted: { provider: wordy((call) => (asked.push(call), `${call}: the vendor refused the key`), refs), secrets: [secret] } });
 	await noKey.run(clean.t);
 	assert.deepEqual(asked, ["testConnection", "list", "attach", "attach", "network", "connect", "release", "create"], "every refusal path was asked");
+	// Each path that takes a ref is asked about the case's own computer, which the provider's shape checks pass, so the
+	// planted secret reaches the vendor (review: a made-up ref was refused before it, as E2B's name check does).
+	assert.deepEqual(refs, [["attach", CASE_REF.id], ["attach", "labels"], ["network", CASE_REF.id], ["connect", CASE_REF.id], ["release", CASE_REF.id]]);
+	// A release with the planted secret that let the computer go fails the case.
+	const gone = context({ hello: HELLO, capabilities: ANDROID, kept: false, planted: { provider: wordy(() => "refused"), secrets: [secret] } });
+	await assert.rejects(noKey.run(gone.t), /the computer is still there after a release with a planted secret: not_found/);
 
 	for (const [leak, words] of [
 		[(call) => `${call}: the key ${secret} was refused`, "whole"],
@@ -136,4 +147,26 @@ test("spec/computer matches protocol.ts, and computerd's protocol version is the
 	assert.equal(constants.protocolVersion, PROTOCOL_VERSION);
 	const go = readFileSync(new URL("../daemon/internal/methods/methods.go", import.meta.url), "utf8");
 	assert.equal(/const ProtocolVersion = "([^"]+)"/.exec(go)?.[1], PROTOCOL_VERSION, "computerd's ProtocolVersion is PROTOCOL_VERSION");
+});
+
+test("the published schema refuses the params computerd refuses: a map's non-string value and an unknown field; hello and ping take any params, and results stay open", async () => {
+	const { default: Ajv } = await import("ajv");
+	const schema = JSON.parse(readFileSync(new URL("../../../spec/computer/schema/methods.schema.json", import.meta.url), "utf8"));
+	const ajv = new Ajv({ strict: false, allErrors: true });
+	ajv.addSchema(schema);
+	const shape = (method, side) => ajv.compile({ $ref: `${schema.$id}#/definitions/DaemonMethods/properties/${method}/properties/${side}` });
+	const valid = (method, side, value) => shape(method, side)(value);
+
+	assert.equal(valid("exec.run", "params", { argv: ["true"], timeoutMs: 1000, env: { FOO: "bar" } }), true, "a well-formed exec.run");
+	assert.equal(valid("exec.run", "params", { argv: ["true"], timeoutMs: 1000, env: { FOO: 123 } }), false, "env holds strings only");
+	assert.equal(valid("exec.run", "params", { argv: ["true"], timeoutMs: 1000, shell: true }), false, "an unknown field");
+	assert.equal(valid("files.read", "params", { path: "/workspace/notes.txt", extra: 1 }), false, "an unknown field");
+	assert.equal(valid("apps.list", "params", {}), true, "no params");
+	assert.equal(valid("apps.list", "params", { all: true }), false, "a method that takes no params refuses one");
+	assert.equal(valid("input.actions", "params", { actions: [{ type: "move", at: [1, 2], speed: 3 }] }), false, "an action's unknown field");
+	// The exceptions: hello and ping read no params, so a newer client's hello is never refused.
+	assert.equal(valid("hello", "params", { client: "test", newer: true }), true);
+	assert.equal(valid("ping", "params", { anything: 1 }), true);
+	// A result may carry a field a later minor version adds.
+	assert.equal(valid("hello", "result", { protocol: PROTOCOL_VERSION, version: "1", os: "linux", kind: "linux", arch: "amd64", groups: ["exec"], later: 1 }), true);
 });

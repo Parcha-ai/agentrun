@@ -62,9 +62,71 @@ for (const [name, value] of Object.entries(portable(generated).definitions ?? {}
   else if (!selfRef(named, value) && JSON.stringify(seen) !== JSON.stringify(value)) throw new Error(`two different schema definitions are both named ${named}`);
 }
 for (const [named, value] of merged) if (selfRef(named, value)) throw new Error(`${named} is only a reference to itself`);
+// A map type (Record<string, V>) comes out as an object that takes anything: it is named StringMap and its values held to
+// V, so { env: { FOO: 123 } } is refused by the schema as the daemon refuses it. A map of anything else is an error here,
+// never an open object in the published schema.
+const MAPS = { 'Record<string,string>': ['StringMap', { type: 'string' }] };
+for (const [name, value] of [...merged]) {
+  if (!name.startsWith('Record<')) continue;
+  const map = MAPS[name];
+  if (!map) throw new Error(`${name}: a map type the generator has no value schema for; add it to MAPS`);
+  merged.delete(name);
+  merged.set(map[0], { ...value, title: map[0], additionalProperties: map[1] });
+}
+const renamed = (value) => JSON.parse(JSON.stringify(value), (_key, item) =>
+  typeof item === 'string' && item.startsWith('#/definitions/Record<') ? `#/definitions/${MAPS[item.slice('#/definitions/'.length)][0]}` : item);
+for (const [name, value] of [...merged]) merged.set(name, renamed(value));
+
+const methodTable = merged.get('DaemonMethods');
+if (!methodTable?.properties?.hello || !methodTable.properties['exec.run']) throw new Error('DaemonMethods did not produce the method table');
+// The definitions a schema reaches through its references.
+const reach = (value, into = new Set()) => {
+  if (Array.isArray(value)) value.forEach((item) => reach(item, into));
+  else if (value && typeof value === 'object') {
+    for (const [key, item] of Object.entries(value)) {
+      if (key === '$ref' && typeof item === 'string' && item.startsWith('#/definitions/')) {
+        const named = item.slice('#/definitions/'.length);
+        if (!into.has(named)) {
+          into.add(named);
+          reach(merged.get(named), into);
+        }
+      } else reach(item, into);
+    }
+  }
+  return into;
+};
+// Params are strict, as the daemon decodes them (an unknown field is invalid), except hello's and ping's, which read
+// none (wire.md). Results stay open, so a later minor version may add a field. A definition reached from both a strict
+// params and a result (Empty) is given a strict twin, Strict<name>, which the params refer to instead.
+const LENIENT = new Set(['hello', 'ping']);
+const strictNames = new Set();
+const resultNames = new Set();
+const paramsOf = Object.entries(methodTable.properties).filter(([method]) => !LENIENT.has(method)).map(([, entry]) => entry.properties);
+for (const params of paramsOf) reach(params.params, strictNames);
+for (const entry of Object.values(methodTable.properties)) reach(entry.properties.result, resultNames);
+const holdsObject = (value) => Array.isArray(value) ? value.some(holdsObject) : !!value && typeof value === 'object' && (value.type === 'object' || Object.values(value).some(holdsObject));
+const shared = [...strictNames].filter((name) => resultNames.has(name) && holdsObject(merged.get(name)));
+for (const name of shared) {
+  if (reach(merged.get(name)).size > 0) throw new Error(`${name}: reached from both a method's params and a result, and it refers to other definitions; give its params a type of their own`);
+  strictNames.delete(name);
+  strictNames.add(`Strict${name}`);
+  merged.set(`Strict${name}`, { ...merged.get(name), title: `Strict${name}` });
+}
+const twin = (value) => JSON.parse(JSON.stringify(value), (_key, item) =>
+  typeof item === 'string' && shared.some((name) => item === `#/definitions/${name}`) ? `#/definitions/Strict${item.slice('#/definitions/'.length)}` : item);
+for (const params of paramsOf) params.params = twin(params.params);
+for (const name of strictNames) merged.set(name, twin(merged.get(name)));
+const closed = (value) => {
+  if (Array.isArray(value)) return value.map(closed);
+  if (!value || typeof value !== 'object') return value;
+  const out = Object.fromEntries(Object.entries(value).map(([key, item]) => [key, key === 'additionalProperties' ? item : closed(item)]));
+  if (out.type === 'object' && out.additionalProperties === undefined) out.additionalProperties = false;
+  return out;
+};
+for (const name of strictNames) merged.set(name, closed(merged.get(name)));
+
 const definitions = Object.fromEntries([...merged].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
 const methods = definitions.DaemonMethods;
-if (!methods?.properties?.hello || !methods.properties['exec.run']) throw new Error('DaemonMethods did not produce the method table');
 const schema = {
   $schema: 'http://json-schema.org/draft-07/schema#',
   $id: `https://agentrun.ai/spec/computer/${version}/methods.schema.json`,

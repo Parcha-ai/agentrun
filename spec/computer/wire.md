@@ -45,7 +45,14 @@ A method a computer does not have is an error of kind `unsupported`, in words; t
 ## Requests, replies and order
 
 - Requests run at once. Replies may come in any order: a caller matches each by its `id`.
-- A request's params are strict: an unknown field is an error of kind `invalid`.
+- A caller sends only the params the schema gives: each method's params object is closed
+  (`additionalProperties: false`), and a map such as `exec.run`'s `env` holds strings only.
+- `computerd` refuses anything else: an unknown field, or a value of the wrong type, is an error of kind `invalid`. A
+  provider that answers the methods in its own process (daemon `none`: a phone, a browser) may ignore an unknown field
+  instead, so a caller never relies on that refusal.
+- `hello` and `ping` are the exceptions, in the schema and in `computerd`: they take any params and read none. A client
+  learns what a computer speaks from `hello`, so a newer client's `hello` is never refused for a field this computer
+  doesn't know.
 - Bytes travel as base64: `exec.run`'s `stdout` and `stderr`, a file's data, a screen's image.
 - Large reads come in chunks of at most `maxChunkBytes`. `files.read` reads a file by offset and length. `screen.shot`
   and `screen.watch` carry an image's first chunk and an `id`, and `screen.read` reads the rest by that id and offset.
@@ -66,7 +73,7 @@ A caller cancels a request with the notification `$/cancelRequest` and params `{
 An error reply is JSON-RPC's, with the protocol's kind in `data`:
 
 ```json
-{"jsonrpc":"2.0","id":7,"error":{"code":-32000,"message":"no such file: /home/agent/notes.txt","data":{"kind":"not_found"}}}
+{"jsonrpc":"2.0","id":7,"error":{"code":-32000,"message":"no such file: /workspace/notes.txt","data":{"kind":"not_found"}}}
 ```
 
 - `message` is words a person can act on. It never holds a key, a token or a secret.

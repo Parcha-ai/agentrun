@@ -106,7 +106,9 @@ export const healthCases: Case[] = [
 			t.assert(secrets.length > 0 && secrets.every((secret) => typeof secret === "string" && secret.length >= 16), "the planted secrets are named, each 16 characters or more");
 			const networks = provider.capabilities().network;
 			const network = networks.includes("none") ? "none" : "open";
-			const ref = { id: "agentrun-conformance-no-such-computer", name: "agentrun-conformance-no-such-computer" };
+			// The case's own computer, a real one of the provider's: each path that takes a ref passes the provider's own
+			// checks of its shape and reaches the vendor with the planted secret, where a made-up ref could be refused first.
+			const ref = t.ref;
 			const paths: Array<[string, () => Promise<unknown>]> = [
 				["testConnection", async () => provider.testConnection?.({ signal: t.signal }) ?? "no testConnection"],
 				["list", () => provider.list(t.runLabels, { signal: t.signal })],
@@ -128,8 +130,14 @@ export const healthCases: Case[] = [
 				for (const secret of secrets) {
 					for (const piece of [secret, secret.slice(-12)]) t.assert(!words.includes(piece), `${name}: what the provider answered holds none of a planted secret`);
 				}
+				// A connection made anyway (a vendor whose connect reads no key) is closed, never left open.
+				const opened = (answer as { ok?: unknown; value?: { close?: () => Promise<unknown> } } | undefined);
+				if (name === "connect" && opened?.ok === true) await opened.value?.close?.().catch(() => undefined);
 				if (name === "create") t.assert((answer as { ok?: unknown } | undefined)?.ok !== true, "create with a planted secret made no computer");
 			}
+			// A release the vendor refused for its key let nothing go: the computer is still the provider's.
+			const still = await t.provider.attach({ id: ref.id }, { signal: t.signal });
+			t.assert(still.ok, `the computer is still there after a release with a planted secret${still.ok ? "" : `: ${still.error.code}: ${still.error.message}`}`);
 		},
 	},
 ];
