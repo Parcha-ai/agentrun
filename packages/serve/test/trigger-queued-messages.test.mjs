@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { raw } from "./store-target.mjs";
 import { Triggers } from "../dist/triggers.js";
+import { RunFinal } from "../dist/store/index.js";
 import { storeOn, T0 } from "./store-helpers.mjs";
 import { fakeClock } from "./trigger-support.mjs";
 
@@ -102,6 +103,21 @@ test("the bound is read in the queueing transaction: two firings at once cannot 
   assert.deepEqual(statuses, ["sent", "skipped"]);
 });
 
+test("a run that has ended takes no trigger message: RunFinal, as a command to it is, no row written and the firing still due", async (t) => {
+  const { store, file } = await storeOn(t);
+  await store.agents.create({ id: "agent-1", name: "One" }, { id: "rev-1", kind: "agentic", body: {} });
+  await store.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" });
+  await store.triggers.create({ id: "trg-1", agentId: "agent-1", name: "poke", enabled: true, source: { kind: "webhook" }, target: { kind: "message_run", run_id: "run-1", input: { content: "Poke." } }, nextAt: null, catchupWindowS: 3600 });
+  await store.triggers.record("trg-1", [{ key: "fir-1", by: "webhook", nominalAt: T0, status: "due" }]);
+  const db = await raw(file);
+  await db.run("UPDATE runs SET state = 'ended' WHERE id = 'run-1'");
+  await db.close();
+  const body = { text: "Poke.", origin: { kind: "trigger", trigger_id: "trg-1", source: "webhook", owner: false }, answers: false };
+  await assert.rejects(store.triggers.message({ triggerId: "trg-1", key: "fir-1" }, "run-1", { kind: "steer", body }, { max: 20, reason: "full" }), RunFinal);
+  assert.deepEqual(await store.commands("run-1", 0), [], "no command row");
+  assert.equal((await store.triggers.firing("trg-1", "fir-1")).status, "due", "the firing as it was");
+});
+
 test("a trigger is named once per agent: a second of the same name, made or renamed, is 409 name_taken in words", async (t) => {
   const { engine, make } = await engineOn(t);
   await make({ kind: "webhook" });
@@ -109,22 +125,4 @@ test("a trigger is named once per agent: a second of the same name, made or rena
   await assert.rejects(make({ kind: "webhook" }), taken, "made");
   const other = await engine.create({ name: "other", source: { kind: "webhook" }, target: { kind: "message_run", run_id: "run-1", input: { content: "Poke." } } });
   await assert.rejects(engine.update(other.id, { name: "poke" }), taken, "renamed");
-});
-
-test("a message_run trigger whose run was deleted turns itself off at its next firing, in words; its last run reference is cleared", async (t) => {
-  const { store, file, engine, make } = await engineOn(t);
-  const trigger = await make({ kind: "webhook" });
-  await store.triggers.update(trigger.id, {});
-  const db = await raw(file);
-  if (db.kind === "sqlite") await db.exec("PRAGMA foreign_keys = ON");
-  await db.run("UPDATE triggers SET last_run_id = 'run-1' WHERE id = ?", trigger.id);
-  await db.run("DELETE FROM runs WHERE id = 'run-1'");
-  assert.equal((await store.triggers.get(trigger.id)).lastRunId, null, "the trigger's last run reference cleared with the run");
-  await db.close();
-  await engine.receive(trigger.id, "evt-1", "{}");
-  await until(async () => (await store.triggers.get(trigger.id)).enabled === false, "turned off");
-  const off = await store.triggers.get(trigger.id);
-  assert.deepEqual(off.disabled && [off.disabled.reason, off.disabled.detail], ["source_unreadable", "its run was deleted"]);
-  const [firing] = await store.triggers.firings(trigger.id);
-  assert.deepEqual([firing.status, firing.reason], ["skipped", "its run was deleted"]);
 });

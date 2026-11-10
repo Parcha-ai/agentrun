@@ -10,6 +10,7 @@ import { type Agent, type AgentFields, editBody } from "@/lib/agentForm";
 import { ClientError } from "@/lib/client";
 import type { Effect } from "@/lib/runGraph";
 import { callNodeTools, toolBlockers, toolGates } from "@/lib/toolSettings";
+import { pick } from "@/test/picker";
 
 // A workflow whose call node calls a tool set to deny, or to ask (a call node can't wait for an approval), is refused at
 // its start: 409 agent_not_runnable, `details.denied` and `details.asks` each the settings keys of those tools (arrays,
@@ -135,8 +136,8 @@ describe("a workflow agent's tool permissions in its editor", () => {
     const scope = page.scope()!;
     // bash is granted but no call node calls it; a call node runs only the server's built-in call tools.
     expect([...scope.querySelectorAll("tr[data-tool]")].map((r) => r.getAttribute("data-tool"))).toEqual(["web_fetch"]);
-    expect(scope.querySelector("select[aria-label='web_fetch permission']")).toBeTruthy();
-    expect(scope.querySelector("select[aria-label$=' provider']")).toBeNull();
+    expect(scope.querySelector("button[aria-haspopup=listbox][aria-label='web_fetch permission']")).toBeTruthy();
+    expect(scope.querySelector("button[aria-haspopup=listbox][aria-label$=' provider']")).toBeNull();
     expect([...scope.querySelectorAll("thead th")].map((th) => th.textContent)).toEqual(["Tool", "Permission", "Reset"]);
   });
 
@@ -149,7 +150,7 @@ describe("a workflow agent's tool permissions in its editor", () => {
 
   it("the address's tool is the one focused, at its own row", async () => {
     const page = await open(workflowAgent(), "web_fetch");
-    expect(document.activeElement).toBe(page.scope()!.querySelector("select[aria-label='web_fetch permission']"));
+    expect(document.activeElement).toBe(page.scope()!.querySelector("button[aria-haspopup=listbox][aria-label='web_fetch permission']"));
   });
 
   it("an address naming a tool with no row here opens the Tools step, focuses nothing, and doesn't fail", async () => {
@@ -162,8 +163,8 @@ describe("a workflow agent's tool permissions in its editor", () => {
   it("a permission set here is saved in tool_settings, and the workflow is kept whole", async () => {
     const agent = workflowAgent({ bash: { permission: "deny" } });
     const page = await open(agent, "web_fetch");
-    const s = page.scope()!.querySelector<HTMLSelectElement>("select[aria-label='web_fetch permission']")!;
-    await act(async () => { Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!.call(s, "allow"); s.dispatchEvent(new Event("change", { bubbles: true })); });
+    const s = page.scope()!.querySelector<HTMLButtonElement>("button[aria-haspopup=listbox][aria-label='web_fetch permission']")!;
+    await pick(s, "allow");
     await settle();
     await act(async () => { [...page.host.querySelectorAll("button")].find((b) => /^Save revision$/.test(b.textContent?.trim() ?? ""))!.click(); });
     await settle();

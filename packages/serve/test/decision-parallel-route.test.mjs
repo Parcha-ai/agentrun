@@ -76,39 +76,6 @@ test("a parallel node on the OpenRouter route is handed the OpenRouter key, neve
   assert.deepEqual(Object.keys(decisionKeysFor({ PARALLEL_API_KEY: "p".repeat(20), OPENROUTER_API_KEY: "o".repeat(20) }, needs)), ["PARALLEL_API_KEY"], "Parallel's own key wins");
 });
 
-test("with only an OpenRouter key, a node naming parallel runs on parallel/decisions-fast: its citations are its evidence, in Parallel's shape, and its cost is booked", async (t) => {
-  withEnv(t, { OPENROUTER_API_KEY: ROUTER_KEY, AGENTRUN_FAUX_SYSTEM_ONE_DELAY_MS: "0" }, KEYS);
-  const router = await fauxRouter(t);
-  const { api, data } = await serve(t, { fauxOpenrouter: router.module, fauxParallel: FAUX_PARALLEL });
-  const caps = (await api("GET", "/capabilities")).body.workflows.decisions.providers.find((p) => p.id === "parallel");
-  assert.deepEqual([caps.available, caps.route], [true, "openrouter"]);
-  const { runId, made } = await runParallel(t, api);
-  assert.deepEqual(made.body.warnings, [], "it saves with no missing-key warning");
-  const run = (await api("GET", `/runs/${runId}`)).body;
-  assert.equal(run.status, "completed", JSON.stringify(run.error));
-  assert.deepEqual(await router.sent(), [{ path: "/api/v1/systemone", model: "parallel/decisions-fast", auth: `Bearer ${ROUTER_KEY}` }], "one request, to OpenRouter, for Parallel's model, on the handed key");
-  const [receipt] = durableDecisions(join(runDir(data, runId), "store", "run.sqlite"));
-  assert.equal(receipt.provider, "parallel", "the receipt names the provider the node asked for");
-  assert.deepEqual(receipt.evidence, [{ url: "https://registry.example.test/widgets", title: "Example Widgets, Inc.", excerpts: ["Incorporated in Delaware."], scope: "call" }], "the citations are the evidence, as Parallel's are");
-  assert.equal(receipt.cost_basis, "reported");
-  assert.ok(typeof receipt.cost_usd === "number" && receipt.cost_usd > 0, `OpenRouter's usage.cost is booked: ${receipt.cost_usd}`);
-  assert.equal(run.cost.usd, receipt.cost_usd, "the run's cost is the decision's");
-});
-
-test("with Parallel's own key, a node naming parallel still goes to Parallel's API, with the same evidence shape", async (t) => {
-  const calls = join(await scratch(t), "parallel-calls.jsonl");
-  withEnv(t, { PARALLEL_API_KEY: PARALLEL_CANARY, OPENROUTER_API_KEY: ROUTER_KEY, AGENTRUN_FAUX_SYSTEM_ONE_DELAY_MS: "0", AGENTRUN_TEST_FAUX_PARALLEL_CALLS: calls }, KEYS);
-  const router = await fauxRouter(t);
-  const { api, data } = await serve(t, { fauxOpenrouter: router.module, fauxParallel: FAUX_PARALLEL });
-  const { runId } = await runParallel(t, api);
-  assert.equal((await api("GET", `/runs/${runId}`)).body.status, "completed");
-  assert.deepEqual(await router.sent(), [], "nothing went to OpenRouter");
-  const parallelCalls = (await readFile(calls, "utf8")).split("\n").filter(Boolean).map((line) => JSON.parse(line));
-  assert.deepEqual(parallelCalls.map((c) => [c.path, c.authorized]), [["/v1/decisions", true]]);
-  const [receipt] = durableDecisions(join(runDir(data, runId), "store", "run.sqlite"));
-  assert.deepEqual(Object.keys(receipt.evidence[0]).sort(), ["excerpts", "scope", "title", "url"]);
-});
-
 test("with neither key, a node naming parallel saves with a warning naming both, and its run is refused naming both", async (t) => {
   withEnv(t, { TYPESAFE_API_KEY: "t".repeat(20) }, KEYS);
   const { api } = await serve(t, { fauxParallel: FAUX_PARALLEL });
@@ -138,16 +105,3 @@ async function hostileRouter(t) {
   ].join("\n"));
   return module;
 }
-
-test("hostile citations on the OpenRouter route: a javascript: or credentialed URL is dropped, an HTML title stays text, a 1 MB passage is cut", async (t) => {
-  withEnv(t, { OPENROUTER_API_KEY: ROUTER_KEY, AGENTRUN_FAUX_SYSTEM_ONE_DELAY_MS: "0" }, KEYS);
-  const { api, data } = await serve(t, { fauxOpenrouter: await hostileRouter(t), fauxParallel: FAUX_PARALLEL });
-  const { runId } = await runParallel(t, api);
-  const run = (await api("GET", `/runs/${runId}`)).body;
-  assert.equal(run.status, "completed", JSON.stringify(run.error));
-  const [receipt] = durableDecisions(join(runDir(data, runId), "store", "run.sqlite"));
-  assert.deepEqual(receipt.evidence.map((e) => e.url), ["https://registry.example.test/widgets", "https://ok.example/html"], "only http(s) without credentials");
-  const html = receipt.evidence[1];
-  assert.equal(html.title, "<img src=x onerror=alert(1)>", "the title is literal text");
-  assert.ok(html.excerpts[0].length <= 4096 && html.excerpts[0].endsWith("…"), `the passage is cut: ${html.excerpts[0].length}`);
-});

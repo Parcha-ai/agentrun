@@ -30,11 +30,11 @@ export { ARCHIL_MAX_EXEC_S, type Hands, handsOf, MAX_EXEC_S, processesOf, shellE
 export { type RunBrowser, type RunComputer, type RunHold, runTools, type RunTools } from "./run-tools.js";
 export { inputOf, phoneOf, screenOf } from "./computer-ports.js";
 export {
-  type ClaimSide, type ComputerSetting, type ComputerSettingKind, type KindCapabilities, type KindRegistry, type LaunchedComputer, type Port,
-  type ProviderEntry, resolveComputer, type ResolvedComputer, type StartedComputer,
+  type ClaimSide, computerReadiness, type ComputerSetting, type ComputerSettingKind, type KindCapabilities, type KindRegistry, type LaunchedComputer, type Port,
+  type ProviderEntry, resolveComputer, type ResolvedComputer, runShellOf, type ShellPlace, shellPlaceOf, type StartedComputer,
 } from "./resolve-computer.js";
 export { computerProviderFactories, computerProviderMakers, type ProviderLoad } from "./computer-providers.js";
-export { claimComputer, type ComputerDeps, computerDepsFrom, type ComputerDepsOptions, computerSpecOf } from "./computer-deps.js";
+export { claimComputer, claimKinds, type ComputerDeps, computerDepsFrom, type ComputerDepsOptions, computerSpecOf } from "./computer-deps.js";
 export { type ClaimComputer, type ClaimLaunch, computerForClaim, type ComputerForClaimDeps, type ComputerRun, type ImageWait, type OpenComputerView, type ProviderMakers, sweepComputers, type ViewEnd } from "./computer-for-claim.js";
 export { layOwnSkills, RUN_SKILLS_DIR } from "./revision-skills.js";
 export { KIND_SKILLS, type KindSkill, kindSkillOf, type SkillKind } from "./kind-skills.js";

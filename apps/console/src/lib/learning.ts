@@ -138,6 +138,12 @@ export const counted = (n: number, one: "skill" | "workflow") => `${n} ${one}${n
 
 /** Whether a note waits for the owner's OK before any run reads it. */
 export const isPending = (n: Pick<LearningNote, "status">) => n.status === "pending";
+/** How many of an agent's learned items wait for its owner's OK: its `learning.pending` (GET /v2/agents and
+ *  /v2/agents/{id}), counted on the server over its notes, skills and workflow drafts. 0 when the server leaves it out (an
+ *  agent that doesn't learn, learning off, a learning folder it could not read), which shows nothing. */
+export const waitingOf = (agent: { learning?: { pending: number } } | null | undefined): number => agent?.learning?.pending ?? 0;
+/** The count's words, for its label: "2 learned items wait for your OK", "1 learned item waits for your OK". */
+export const waitingWords = (n: number) => `${n} learned ${n === 1 ? "item waits" : "items wait"} for your OK`;
 /** Who a note is from: the server's `origin` when it sends one, else its front matter's `origin:` line. A note from the
  *  person themselves reads "From you". */
 export function originOf(n: Pick<LearningNote, "origin" | "text">): "you" | "run" | undefined {
@@ -288,22 +294,6 @@ export const learningHash = (agentId: string, files: readonly string[] = []) => 
   const q = new URLSearchParams(named.map((f) => ["note", f]));
   return `#/agents/${encodeURIComponent(agentId)}/learning${named.length ? `?${q}` : ""}`;
 };
-
-/** A run's title cut to about `max` characters for a line that names it, its start and its end kept (a run's title is
- *  its first message, whose end often says what it was about): "Find this shop's…brooklinen.com". */
-export function shortTitle(title: string, max = 40): string {
-  const t = title.replace(/\s+/g, " ").trim();
-  if (t.length <= max) return t;
-  const tail = Math.floor((max - 1) * 0.45);
-  // Each side cut at a word's edge: the head back to its last space, the tail on past a cut word's rest.
-  let head = t.slice(0, max - 1 - tail);
-  const space = head.lastIndexOf(" ");
-  if (space > head.length / 2) head = head.slice(0, space);
-  let end = t.slice(t.length - tail);
-  const edge = /\W/.exec(end);
-  if (/\w/.test(t[t.length - tail - 1] ?? "") && edge && edge.index < end.length / 2) end = end.slice(edge.index + 1);
-  return `${head.trimEnd()}…${end.trimStart()}`;
-}
 
 /** A timeline row as the console labels a run's learning: the row that says how it ended, and the message that starts
  *  the look back ("Looking back on this run.", the server's own words; it is not the person's), each read "Learning",
