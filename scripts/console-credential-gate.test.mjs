@@ -94,6 +94,9 @@ test('the plugin refuses a credential in a chunk, a string or byte text asset, a
     { type: 'asset', fileName: 'index.html', source: `<meta content="${key}">` },
     { type: 'asset', fileName: 'assets/index.css', source: `/* ${key} */` },
     { type: 'asset', fileName: NOTICES_FILE, source: `Copyright\n${'AK' + 'IA' + 'S'.repeat(16)}\n` },
+    // Text under any extension is read, not only the usual web ones: a key imported with ?url lands as its own asset.
+    { type: 'asset', fileName: 'assets/server-Ab12.pem', source: '-----BEGIN ' + 'RSA PRIVATE KEY-----\nMIIE\n' },
+    { type: 'asset', fileName: 'assets/settings-Ab12.yaml', source: new TextEncoder().encode(`token: ${key}\n`) },
   ]) {
     const error = run({ [item.fileName]: item });
     assert.ok(error, item.fileName);

@@ -1,10 +1,11 @@
 // The console's build fails when its browser bundle would carry a credential. Everything in dist is public: AgentRun
-// Server serves it to anyone who loads the console, and the server's npm archive ships it. So at the end of `vite build`,
-// after every other plugin has written its output (THIRD-PARTY-NOTICES.txt among them), this plugin reads each emitted
-// chunk and text asset and refuses one that holds credential-shaped text: a private key, a GitHub, OpenAI, Anthropic,
-// Slack or AWS key, a signed token (JWT), or a URL with a user and password in it. It also refuses a bundle that took in
-// one of the console's non-production sources (a test, fixture, sample, mock or story under src/). The error names the
-// asset, or "[redacted asset name]" when the name itself looks like a credential, and never the text it matched.
+// Server serves it to anyone who loads the console, and the server's npm archive ships it. So at the end of `vite
+// build`, after every other plugin has written its output (THIRD-PARTY-NOTICES.txt among them), this plugin reads each
+// emitted chunk and every asset but a binary one, and refuses one that holds credential-shaped text: a private key, a
+// GitHub, OpenAI, Anthropic, Slack or AWS key, a signed token (JWT), or a URL with a user and password in it. It also
+// refuses a bundle that took in one of the console's non-production sources (a test, fixture, sample, mock or story
+// under src/). The error names the asset, or "[redacted asset name]" when the name itself looks like a credential, and
+// never the text it matched.
 import { join } from "node:path/posix";
 
 /** Each kind of credential the bundle must not hold, with the shape that finds it. */
@@ -18,8 +19,9 @@ export const CREDENTIAL_PATTERNS = [
   ["URL with a password", /\b[a-z][a-z0-9+.-]*:\/\/[^\s"'`<>/:@]+:[^\s"'`<>/@]+@/i],
 ];
 
-/** The emitted files read as text. Fonts and images are binary and are not read. */
-const TEXT_ASSET = /\.(?:html|css|js|mjs|json|txt|svg|map|webmanifest|xml)$/i;
+/** The emitted files not read: fonts, images, audio, video, archives and WebAssembly. Every other asset is read as
+ *  text, whatever its extension: a .pem, .key, .yaml or .env imported with ?url is an asset like any other. */
+const BINARY_ASSET = /\.(?:woff2?|ttf|otf|eot|png|jpe?g|gif|webp|avif|ico|bmp|mp3|mp4|webm|ogg|wav|flac|m4a|mov|pdf|zip|gz|br|wasm)$/i;
 /** A test, fixture, sample, mock or story: a file or directory named so, or a file with it as its last-but-one part. */
 const NONPRODUCTION_PART = /(?:^|\/)(?:__)?(?:fixtures?|samples?|mocks?|stories|story|tests?|specs?)(?:__)?(?:\/|\.|$)/i;
 const NONPRODUCTION_SUFFIX = /\.(?:fixtures?|samples?|mocks?|stories|story|tests?|spec)\.[^/]+$/i;
@@ -78,7 +80,7 @@ export function credentialGate() {
           }
         }
         if (item.type === "chunk") assertNoCredential(item.code, item.fileName);
-        else if (TEXT_ASSET.test(item.fileName)) assertNoCredential(textOf(item.source), item.fileName);
+        else if (!BINARY_ASSET.test(item.fileName)) assertNoCredential(textOf(item.source), item.fileName);
       }
     },
   };
