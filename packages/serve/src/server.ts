@@ -1114,7 +1114,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const archil = createArchilRoutes({ store, sealKey, env: process.env });
   // Where a run's shell is, read before anything starts by the claim's own rule (runShellOf) on the registry the claim
   // reads (workspace/computer-deps.ts: the computer package's, under --faux too) and this server's folder mode now.
-  const claimKinds = { SETTING_KINDS, PROVIDERS: COMPUTER_PROVIDERS, servingRefusals } as unknown as Parameters<typeof runShellOf>[2];
+  const shellKinds = claimKinds({});
   const folderMode = folderModeOf(store);
   const modeNow = async (): Promise<1 | 2> => ((await folderMode()) === "disk" ? 2 : 1);
   /** Where a run of `revision` has its shell: its computer setting as the claim reads it (computer-for-claim.ts
@@ -1122,7 +1122,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const shellOfRevision = async (revision: Revision): Promise<ShellPlace> => {
     const body = revision.body as { computer?: ComputerSetting; place?: Place; tools?: readonly unknown[] };
     const setting = body.computer ?? computerOfPlace(resolvePlace(body.place, fallbackPlace(revision.kind, revision.kind === "agentic" ? (body.tools ?? []) : [])));
-    return runShellOf(setting, await modeNow(), claimKinds);
+    return runShellOf(setting, await modeNow(), shellKinds);
   };
   /** A tool capabilities show available after all: as it was, with no reason. */
   const withoutReason = <T extends { reason?: string }>({ reason, ...tool }: T): Omit<T, "reason"> & { available: true } => ({ ...tool, available: true }) as Omit<T, "reason"> & { available: true };
@@ -2379,7 +2379,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       // bash where no box can run it: in Mode 2 a run with no computer has bash on Archil's exec (runShellOf: "local"),
       // read now, since turning Archil on or off changes it; the background tools still need a box.
       const noBox = noBoxReason(boxOffers);
-      const archilBash = noBox !== undefined && runShellOf({ kind: "none" }, await modeNow(), claimKinds) === "local";
+      const archilBash = noBox !== undefined && runShellOf({ kind: "none" }, await modeNow(), shellKinds) === "local";
       const tools = archilBash ? answer.tools.map((tool) => (tool.name === "bash" && tool.reason === noBox ? withoutReason(tool) : tool)) : answer.tools;
       return send(res, 200, { ...answer, tools, features: { ...answer.features, computers: await computerCapabilities(computersOf()) } });
     }
