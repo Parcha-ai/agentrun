@@ -14,7 +14,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import * as timeline from "@parcha/pi-durable-agent/timeline";
 import { follow, runDir, scratch, serve, withEnv } from "./support.mjs";
-import { MESSAGE_RUN, RUN_EXEC, fakeClock, firings, made, schedule } from "./trigger-support.mjs";
+import { MESSAGE_RUN, fakeClock, firings, made, schedule } from "./trigger-support.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const { Webhook } = createRequire(import.meta.url)("standardwebhooks");

@@ -3,6 +3,7 @@
 // before this field existed and one that names pi are the same revision. Which harnesses this server runs is said in
 // capabilities, and a revision naming one it does not run saves with a warning and is refused at run time.
 
+
 export const HARNESSES = ["pi", "claude-agent", "codex", "opencode"] as const;
 export type HarnessId = (typeof HARNESSES)[number];
 export const DEFAULT_HARNESS: HarnessId = "pi";
@@ -10,9 +11,10 @@ export const DEFAULT_HARNESS: HarnessId = "pi";
 /** One harness as capabilities lists it: whether this server runs it, and when not, why; and whether it takes a message
  *  mid-turn (`steer`), or queues it for the turn's end. */
 /** `default_model`: the model this server runs for the harness when a definition names none (`provider/model-id`), or
- *  null when it runs none there; harnessOffers sets it. `keys`, on one unavailable only for want of a model key: the keys
- *  any one of which, saved, lets it run here, so a key's row names it before it is saved (tool-keys.ts' rowUnlocks).
- *  The server's own: capabilities never serve it. */
+ *  null when it runs none there; harnessOffers sets it. `keys`: the model keys any one of which runs it here, on one
+ *  unavailable only for want of a model key (any one, saved, lets it run) and on an available one alike (which of the
+ *  keys it runs on), so a key's row names it before and after any key is saved (tool-keys.ts' rowUnlocks). The
+ *  server's own: capabilities never serve it. */
 /** `installs`: `on_first_use` on claude-agent or codex while its CLI is not installed in this server's data: its first run
  *  (or the first agent made on it) installs it (harness-install.ts). */
 export type HarnessOffer = { id: HarnessId; available: boolean; steer: boolean; reason?: string; default_model?: string | null; keys?: readonly string[]; installs?: "on_first_use" };
@@ -22,6 +24,16 @@ export type HarnessCapability = HarnessOffer & { default_model: string | null; r
 
 
 const offered = new WeakMap<object, Promise<HarnessCapability[]>>();
+
+/** `env` with every model key taken out (each provider's, model.ts PROVIDER_KEYS, and the gateway's), its other
+ *  properties kept as they are: what a harness would ask for with no model key. */
+async function withoutModelKeys(env: NodeJS.ProcessEnv): Promise<NodeJS.ProcessEnv> {
+  // model.ts imports this module: read late, as the other modules here are.
+  const { GATEWAY_KEY_ENV, PROVIDER_KEYS } = await import("./model.js");
+  const descriptors = Object.getOwnPropertyDescriptors(env);
+  for (const name of [...Object.values(PROVIDER_KEYS).flat(), GATEWAY_KEY_ENV]) delete descriptors[name];
+  return Object.defineProperties({}, descriptors) as NodeJS.ProcessEnv;
+}
 
 /** What this server offers of each harness, checked once per environment: each one's entry in the harness table says
  *  why it does not run here (harness-table.ts: an adapter's package, pins and endpoint, on a model of its wire's vendor),
@@ -41,7 +53,11 @@ export function harnessOffers(env: NodeJS.ProcessEnv): Promise<HarnessCapability
         // Claude Code not installed yet says so (its install probes the offers again).
         const firstUse = entry.installs && !(await harnessInstalled(entry, env)) ? { installs: "on_first_use" as const } : {};
         const refused = await entry.refusal(env, undefined, { atStart: true });
-        return refused === undefined ? { id, available: true, steer: entry.steer, ...firstUse } : { id, available: false, steer: entry.steer, ...refused, ...firstUse };
+        if (refused !== undefined) return { id, available: false, steer: entry.steer, ...refused, ...firstUse };
+        // Available: which model keys run it here is what it would ask for with none of them (a key's row names it only
+        // when that key is one), so a row reads the same before and after another provider's key is saved.
+        const keyless = await entry.refusal(await withoutModelKeys(env), undefined, { atStart: true });
+        return { id, available: true, steer: entry.steer, ...(keyless?.keys?.length ? { keys: keyless.keys } : {}), ...firstUse };
       }));
       // A harness that runs here but whose one run is more than this host's memory for runs never starts: said here, so
       // a save warns and a run is refused at once with why (runnable.ts), never a 429 to try again. One that lacks only a

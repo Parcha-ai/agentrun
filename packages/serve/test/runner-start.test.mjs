@@ -395,6 +395,19 @@ function runnerOwnIn(env) {
   };
 }
 
+// The CLI start's beside-runner (cli.ts): a test switch left in the shell that started it never reaches its runs, as the
+// server's own environment drops one; only the switches this start enabled (--faux and its modules) do. On compose a
+// leftover AGENTRUN_SERVE_FAUX would otherwise make the runner skip the named data volume (box-paths.ts dockerPathsForRuns).
+test("the beside-runner's environment has no test switch this process inherited, only the ones its start enabled, and runEnv's strip still holds", () => {
+  const inherited = { PATH: "/usr/bin:/bin", LANG: "C.UTF-8", AGENTRUN_SERVE_FAUX: "/tmp/left-over-model.mjs", AGENTRUN_SERVE_FAUX_BOX: "/tmp/left-over-box.mjs", AGENTRUN_HARNESS_TABLE: "/tmp/left-over-table.mjs", ...RUNNER_OWN };
+  const none = main.besideRunEnv(inherited, {});
+  assert.deepEqual(Object.keys(none).filter((name) => name.startsWith("AGENTRUN_SERVE_FAUX") || name === "AGENTRUN_HARNESS_TABLE"), [], "no inherited switch");
+  assert.equal(none.LANG, "C.UTF-8", "the rest passes through");
+  assert.deepEqual(runnerOwnIn(none), { names: [], values: [] }, "none of the runner's own names");
+  const enabled = main.besideRunEnv(inherited, { AGENTRUN_SERVE_FAUX: "/opt/test/faux-model.mjs" });
+  assert.deepEqual([enabled.AGENTRUN_SERVE_FAUX, enabled.AGENTRUN_SERVE_FAUX_BOX], ["/opt/test/faux-model.mjs", undefined], "only the switch this start enabled");
+});
+
 test("the run environment the runner hands its loops holds none of the runner's own secrets: no store URL or other AGENTRUN_STORE_ name, seal key, token or API key, by name or value, listed or not", () => {
   const env = main.runEnv({ PATH: "/usr/bin:/bin", LANG: "C.UTF-8", AGENTRUN_RUNNER_NAME: "runner-env", ...RUNNER_OWN });
   assert.equal(env.LANG, "C.UTF-8", "a name the runner does not keep to itself passes through");
