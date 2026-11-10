@@ -633,6 +633,13 @@ export interface Mcp {
    *  and never overwrites it. `tokenLeftMs`: the writer's measure of the credential's access token's remaining life (a
    *  duration, on its own clock); the store stamps the token's end on its clock from it (token_until), none without it. */
   put(server: { name: string; url: string; auth: string; protocol?: string | null; tools: unknown; prices?: unknown; serverInfo?: unknown; instructions?: string | null; sealed?: Uint8Array | null; listedAt?: number; updatedAt?: number; credentialChangedAt?: number | null; tokenLeftMs?: number | null }): Promise<McpServerRow>;
+  /** An owner's rewrite of a row it read, its credential kept as it is (a tools refresh, a save that sends no new
+   *  credential): the listing, prices, url and times written by a compare-and-set on the CREDENTIAL, iff the row is still
+   *  saved and its sealed value is still `seen` (the one the owner read). The credential's columns (sealed, token_until,
+   *  credential_changed_at) and any refresh lease are left as they are, so a runner's refresh in flight still keeps its
+   *  set. undefined, writing nothing, when the credential changed meanwhile (a refresh kept a rotated set) or the row went:
+   *  the caller reads it again and re-applies its change onto the fresh row, a bounded few times. */
+  rewrite(server: { name: string; url: string; auth: string; protocol?: string | null; tools: unknown; prices?: unknown; serverInfo?: unknown; instructions?: string | null; listedAt?: number; updatedAt?: number }, seen: Uint8Array | null): Promise<McpServerRow | undefined>;
   remove(name: string): Promise<void>;
   /** The registry's rows, by name. */
   servers(): Promise<McpServerRow[]>;

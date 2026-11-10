@@ -179,8 +179,9 @@ export type ServeOptions = {
   data: string;
   /** The owner, signed in with a password (owner.ts): the page asks for it, and the token stays for scripts and the CLI. */
   accounts?: boolean;
-  /** With accounts: the first visit sets the password with no setup code (a server with no public address). Off, setup
-   *  takes the code this server prints, or the token. */
+  /** With accounts: the first visit sets the password with no setup code (a server with no public address). Honored only
+   *  on a loopback listener: on any other address anyone who reaches the port could set the password first, so setup
+   *  takes the code this server prints, or the token, as it does off. */
   openSetup?: boolean;
   /** With accounts: the address people open (AGENTRUN_PUBLIC_URL), which the printed setup link uses. */
   publicUrl?: string;
@@ -372,9 +373,10 @@ export function fauxEnvOf(options: ServeOptions): NodeJS.ProcessEnv {
 }
 
 /** `tokenFile` is null when `options.token` gave the token; `tokenMade` says this start made the token in it. */
-/** `setupUrl`: with accounts and no password yet, the page that sets it (with its code when setup needs one). */
+/** `setupUrl`: with accounts and no password yet, the page that sets it (with its code when setup needs one);
+ *  `setupOpen`: whether that setup takes no code (open setup on a loopback listener). */
 /** `boxesLine`: what the start's banner says of the boxes, in words (place.ts boxesLine). */
-export type Serve = { url: string; baseUrl: string; port: number; token: string; tokenFile: string | null; tokenMade: boolean; setupUrl?: string; boxesLine: string; close(): Promise<void>;
+export type Serve = { url: string; baseUrl: string; port: number; token: string; tokenFile: string | null; tokenMade: boolean; setupUrl?: string; setupOpen?: boolean; boxesLine: string; close(): Promise<void>;
   /** What a stop waits on: the runs whose processes still finish their turn, and the longest it waits on them. */
   stopping(): { runs: number; boundMs: number } };
 
@@ -1262,7 +1264,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         await rename(`${keptFile}.partial`, keptFile);
       }));
   const host = options.host ?? "127.0.0.1";
-  const owner = options.accounts ? new Owner(data, options.openSetup === true, (line) => void process.stdout.write(`${line}\n`), options.signInAddresses) : undefined;
+  // Open setup (no code) only where no one else reaches the port: a loopback listener. Bound to any other address
+  // (0.0.0.0 in the image, a LAN address), the first visit takes the printed code even with no public address.
+  const openSetup = options.openSetup === true && isLoopback(host);
+  const owner = options.accounts ? new Owner(data, openSetup, (line) => void process.stdout.write(`${line}\n`), options.signInAddresses) : undefined;
   /** Whether `req` may be shown a secret this server mints (trigger-secrets-shown.ts): the caller that may write one. */
   const mayHoldSecrets = (req: IncomingMessage) => writesSecretsAllowed(req, { accounts: owner !== undefined, loopbackBound: isLoopback(host) });
   /** A trigger's view with its minted secret's metadata, never the secret (trigger-secrets-shown.ts). */
@@ -1336,7 +1341,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // Setup's import of this machine's sessions: offered by a server on this machine only (no public address, listening
   // on loopback), counted once (a listing, no transcript kept), run once, each on a worker thread (import-worker.ts) so
   // a busy store's wait and the sessions' parsing never hold up a request.
-  const offersImport = options.openSetup === true && options.publicUrl === undefined && isLoopback(host);
+  const offersImport = openSetup && options.publicUrl === undefined;
   let closing = false;
   const workers = new Map<Worker, { task: ImportTask["task"]; exit: Promise<unknown> }>();
   // Once the server closes, no worker starts: a setup still being answered then leaves its yes for the next start.
@@ -3261,7 +3266,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     token,
     tokenFile,
     tokenMade: stored?.made ?? false,
-    ...(setupUrl ? { setupUrl } : {}),
+    ...(setupUrl ? { setupUrl, setupOpen: openSetup } : {}),
     boxesLine: boxesLine(boxOffers, enabledBoxes(env), boxAllow, boxesByDefault(env)),
     // Once: a second call, at any time, is the first one's promise, so a close repeated after the next server started
     // never writes this data root's record again (the next server's, by then).
