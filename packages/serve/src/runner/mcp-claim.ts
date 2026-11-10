@@ -350,7 +350,6 @@ async function pinOf({ store, claim, grants, githubMcpOrigin = GITHUB_MCP_ORIGIN
         // The registry keeps each tool as its server listed it (input_schema); the pin holds the harnesses' shape.
         return row && { url: row.url, tools: ((row.tools ?? []) as McpTool[]).map(boundTool), ...(row.prices ? { prices: row.prices as Record<string, number> } : {}) };
       },
-      headers: () => undefined,
     });
   } catch (error) {
     throw new McpClaimRefused((error as Error).message);
