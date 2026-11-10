@@ -10,7 +10,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
-import { enabledBoxes, placeOffers } from "../dist/place-offers.js";
+import { enabledBoxes, placeOffers, remoteNoList, withNetworks } from "../dist/place-offers.js";
 import { client, follow, jsonLines, printed, scratch, serve, withEnv } from "./support.mjs";
 
 const PROBE = new URL("./fixtures/faux-probe.mjs", import.meta.url).pathname;
@@ -182,6 +182,33 @@ for (const value of ["", "none", " none "]) {
   });
 }
 
+test("daytona and modal are offered by their computer provider's required keys, read through keyOf (the environment, else a key saved in Settings → Computers); neither vendor is asked anything", async () => {
+  const saved = { DAYTONA_API_KEY: "saved-daytona-key", MODAL_TOKEN_ID: "saved-modal-id" };
+  const asked = [];
+  const keyOf = async (name) => (asked.push(name), saved[name]);
+  const offers = await placeOffers({ AGENTRUN_BOXES: "daytona,modal" }, { keyOf });
+  assert.deepEqual(offers.find((offer) => offer.id === "daytona"), { id: "daytona", available: true, reason: "configured; not probed at start" });
+  assert.deepEqual(offers.find((offer) => offer.id === "modal"), { id: "modal", available: false, reason: "needs MODAL_TOKEN_SECRET" }, "a token pair with one half missing is not offered");
+  assert.deepEqual(asked.sort(), ["DAYTONA_API_KEY", "MODAL_TOKEN_ID", "MODAL_TOKEN_SECRET"], "only each provider's required keys are read");
+  // With no keyOf, the environment alone; no key's value is in an offer.
+  const fromEnv = await placeOffers({ AGENTRUN_BOXES: "modal", MODAL_TOKEN_ID: "env-id", MODAL_TOKEN_SECRET: "env-secret" });
+  assert.deepEqual(fromEnv.find((offer) => offer.id === "modal"), { id: "modal", available: true, reason: "configured; not probed at start" });
+  assert.ok(!JSON.stringify([...offers, ...fromEnv]).includes("saved-") && !JSON.stringify(fromEnv).includes("env-"), "no key's value in an offer");
+});
+
+test("what each available box reaches: docker through its egress proxy (or none, or unavailable as refused); daytona and modal never get the host list", () => {
+  const offers = [{ id: "bwrap", available: false, reason: "not yet" }, { id: "docker", available: true }, { id: "modal", available: true }, { id: "daytona", available: true }];
+  const by = (list) => Object.fromEntries(list.map((offer) => [offer.id, offer]));
+  const listed = by(withNetworks(offers, ["pypi.org"], { hostAddresses: ["docker-host-address"] }));
+  assert.deepEqual(listed.bwrap, { id: "bwrap", available: false, reason: "not yet" });
+  assert.deepEqual(listed.docker, { id: "docker", available: true, network: "allowlist", host_addresses: ["docker-host-address"] });
+  assert.deepEqual(listed.daytona, { id: "daytona", available: true, network: "none", network_reason: remoteNoList("daytona") });
+  assert.deepEqual(listed.modal, { id: "modal", available: true, network: "none", network_reason: remoteNoList("modal") });
+  const none = by(withNetworks(offers, "none"));
+  assert.deepEqual([none.docker.network, none.docker.network_reason, none.daytona.network, none.daytona.network_reason, none.modal.network_reason], ["none", "AGENTRUN_BOX_ALLOW is none", "none", undefined, undefined]);
+  assert.deepEqual(by(withNetworks(offers, ["pypi.org"], { refused: "Docker is another machine's" })).docker, { id: "docker", available: false, state: "unavailable", reason: "Docker is another machine's" });
+});
+
 test("none stands alone: AGENTRUN_BOXES that names none and a box refuses the start, naming why", () => {
   assert.throws(() => enabledBoxes({ AGENTRUN_BOXES: "none,docker" }), /AGENTRUN_BOXES=none sets up no box, so it names no other: list the boxes to set up, or none alone/);
   assert.deepEqual([...enabledBoxes({})], ["docker"], "not set: docker");
@@ -213,4 +240,6 @@ test("fresh-HOME start of the built CLI with AGENTRUN_BOXES not set, a fake dock
   assert.deepEqual(made.body.definition.place, DOCKER);
   assert.ok(made.body.definition.tools.includes("bash"), JSON.stringify(made.body.definition.tools));
   assert.ok(docker.calls().some((args) => args[0] === "version"), "the CLI's start probed docker");
+  // The start builds and pulls nothing: a Docker computer makes its image ready on its first run.
+  assert.deepEqual(docker.calls().filter((args) => ["build", "pull", "image", "buildx"].includes(args[0])), [], "no image asked for at the start");
 });
