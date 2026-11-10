@@ -2307,8 +2307,9 @@ left out: 2 sessions still being written: they come in next time
    state, cost and a summary in the store (an agentic run's answer; a workflow run's `workflowCarry`, its completed
    nodes, then where it failed or escalated). Its last
    page says `final`. v2's `cancelled` is the store's `stopped`; a workflow that escalated ends `completed`, its work
-   done and waiting for a person's review: `error` is null and `review` is `{kind, node, reason, at}` (the escalation's
-   kind, the escalate node's label, its summary, and the run's end), in the run and in the lists. Every other run's
+   done and waiting for a person's review: `error` is null and `review` is `{kind, node, reason, at}`, in the run and in the
+   lists. In this release `kind` and `node` are always null: the store keeps only the escalation's summary (`reason`)
+   and the run's end (`at`). Every other run's
    `review` is null. `GET /v2/stats` counts it in `needs_review`, never in `failed`.
 4. When the server starts, it reads every run the store says is running. A run process an earlier server started and
    that still serves the run is supervised again, by the holder its row names (its pid, its start, its door); a run

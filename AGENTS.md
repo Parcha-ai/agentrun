@@ -38,7 +38,7 @@ rest, never published; removing the flag lifts a hold. Release order: `scripts/r
 
 ## Setup and checks
 
-Use Node 22.19+ or 24.2+ (`.nvmrc` pins 22.23.2, the release toolchain) and npm 11 (CI pins 11.21.0).
+Use Node 24.11 or newer (the packages' `engines`; `.nvmrc` pins 24.21.0) and npm 11 (CI pins 11.21.0).
 `scripts/check-node.mjs` refuses Node 23 and 24.0-24.1, which have no `import.meta.main`. A script in `scripts/`
 decides it is the command with `isMain(import.meta)` (`scripts/is-main.mjs`), which refuses the command on such a Node
 instead of exiting 0 having done nothing.

@@ -39,7 +39,8 @@ but get no shell.
 
 - **Runs that survive.** Every agent, revision, run and step lives in one store. Stop the server mid-run and start it
   again, and the run carries on. With several runners, another runner picks up a dead runner's runs once their
-  30-second lease runs out, and each step still runs once.
+  30-second lease runs out. A finished step is never run again; a write a crash cut off mid-call is marked interrupted
+  rather than retried, so you can check it.
 - **A computer for each agent.** Pick a kind: a sandbox, a Linux desktop, an Android phone or a browser. The agent gets
   the tools for that kind and nothing else.
 - **Agents that learn.** At the end of a run the agent proposes notes, a skill or a workflow. AgentRun checks them,
