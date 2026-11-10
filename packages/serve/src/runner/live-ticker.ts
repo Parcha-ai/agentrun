@@ -58,9 +58,11 @@ export function withLiveTicker(store: { readonly live: Live }, createLoop: LoopF
       // The claim's signal aborts when its claim is lost (or the runner shuts down past its drain): from then the loop's
       // held state is neither taken nor written, though the loop still reports while it stops. The store fences a write
       // by its run's epoch and live lease, but a claim lost for its renews is lost before its lease runs out.
-      deps.signal.addEventListener("abort", () => {
+      // Removed when the loop ends (its start settles), so a runner that holds many loops over its life gains none.
+      const onAbort = () => {
         if (claim && changed.get(claim.runId)?.claim === claim) changed.delete(claim.runId);
-      }, { once: true });
+      };
+      deps.signal.addEventListener("abort", onAbort, { once: true });
       const loop: Loop = createLoop({
         ...deps,
         live: (read) => {
@@ -74,6 +76,7 @@ export function withLiveTicker(store: { readonly live: Live }, createLoop: LoopF
           try {
             return await loop.start(given);
           } finally {
+            deps.signal.removeEventListener("abort", onAbort);
             // The run's row goes once its loop ends, before start() resolves (so before the runner releases the run):
             // after any put already on its way, and a state reported before the end is not written after it.
             changed.delete(given.runId);
