@@ -110,6 +110,21 @@ test("create: preflight, mount (the token on its stdin alone), serve, each as ro
 	assert.ok(exec.every((r) => r.body.suppressInputEcho === true), "no command echoes its input");
 });
 
+test("a GPU computer with an Archil mount: check takes it, and one create sends the GPU (region earth, deleted at stop) beside the mount, the token on its stdin alone; attach reads both back", async () => {
+	const { fake, provider } = setup();
+	const gpu = { type: "RTX-4090", count: 1 };
+	assert.deepEqual(provider.check({ ...SPEC, gpu }), []);
+	const made = await provider.create({ ...SPEC, gpu });
+	assert.equal(made.ok, true, made.ok ? "" : made.error.message);
+	const posted = fake.requests.find((request) => request.method === "POST" && /\/sandbox$/.test(request.path));
+	assert.deepEqual([posted.body.gpu, posted.body.gpuType, posted.body.target, posted.body.autoDeleteInterval], [1, ["RTX-4090"], "earth", 0]);
+	assert.deepEqual(fake.inside(made.value.id).order.filter((step) => step !== "stdio"), ["preflight", "mount", "serve", "init"]);
+	tokenOnlyOnStdin(fake);
+	const attached = await provider.attach({ id: made.value.id });
+	assert.equal(attached.ok, true, attached.ok ? "" : attached.error.message);
+	assert.deepEqual([attached.value.spec.gpu, attached.value.spec.mount], [gpu, readBackOf(MOUNT, 3)]);
+});
+
 test("attach and list read the mount back under the epoch label, exclusive; network() reads none from the daemon (lo alone), and refuses any policy but none", async () => {
 	const { provider, fake } = setup();
 	const made = await provider.create(SPEC);
