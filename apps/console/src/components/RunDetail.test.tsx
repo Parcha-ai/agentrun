@@ -163,3 +163,17 @@ describe("RunDetail's Report tab before an answer", () => {
     }
   });
 });
+
+// A run opened on its Graph tab whose graph is not there (its read was refused): the default tab is open and the tab
+// row has a Tab stop, never a blank view no key leaves.
+describe("RunDetail, opened on a Graph tab that is not there", () => {
+  it("opens the run's default tab, selected and reachable", () => {
+    const f = runFixture("run.completed.idle.1");
+    const html = renderToStaticMarkup(createElement(RunDetail, { run: f.run, agentName: "invoice-checker", messages: messageFeatures, harnessSteers: true, rows: f.page.rows, files: [], actions: {}, onMessage: () => {}, tab: "graph" }));
+    const tabs = html.match(/<button[^>]*role="tab"[^>]*>[^<]*/g) ?? [];
+    expect(tabs.some((t) => t.endsWith("Graph"))).toBe(false);
+    const open = tabs.filter((t) => t.includes('aria-selected="true"'));
+    expect(open.length).toBe(1);
+    expect(open[0]).toContain('tabindex="0"');
+  });
+});

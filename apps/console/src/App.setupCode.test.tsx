@@ -28,7 +28,8 @@ async function open(setupCode: boolean, link = "/", refusal = "that is not the s
   act(() => root!.render(createElement(App)));
   const end = Date.now() + 3000;
   while (!host.querySelector("form") && Date.now() < end) await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
-  const field = () => [...host.querySelectorAll("label")].find((l) => l.querySelector("span")?.textContent === "Setup code");
+  // The Setup code field: its label, its input and its hint, found by the label that names the input.
+  const field = () => [...host.querySelectorAll("label")].find((l) => l.textContent === "Setup code" && l.control?.tagName === "INPUT")?.parentElement?.parentElement ?? undefined;
   return { host, sent, field };
 }
 const type = async (el: HTMLInputElement, value: string) => {
@@ -111,8 +112,8 @@ describe("App, a first visit at a public address opened with no setup link", () 
     const end = Date.now() + 3000;
     while (!host.querySelector("form") && Date.now() < end) await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
     for (let i = 0; i < 5; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
-    const field = [...host.querySelectorAll("label")].find((l) => l.querySelector("span")?.textContent === "Setup code");
-    expect((field?.querySelector("input") as HTMLInputElement | null)?.value).toBe("Early-Code_123");
+    const label = [...host.querySelectorAll("label")].find((l) => l.textContent === "Setup code");
+    expect((label?.control as HTMLInputElement | null)?.value).toBe("Early-Code_123");
     expect(location.hash).not.toContain("Early-Code_123");
   });
 });

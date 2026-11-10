@@ -80,4 +80,23 @@ describe("Playground's Agent and Revision pickers", () => {
     expect(picked).toEqual([]);
     expect(t.field("Agent")?.textContent).toContain(base.definition.name);
   });
+
+  it("with no agents, shows the way to create one in place of the picker and the form", () => {
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    act(() => root!.render(createElement(Playground, { agents: [], revisions: [], efforts: [], origin: "http://serve.test" })));
+    // No picker over an empty list, and no form that cannot send.
+    expect(host.querySelector('button[aria-haspopup="listbox"]')).toBeNull();
+    expect(host.querySelector("textarea")).toBeNull();
+    expect([...host.querySelectorAll("button")].some((b) => /send request/i.test(b.textContent ?? ""))).toBe(false);
+    const request = host.querySelector('section[aria-label="Request"]')!;
+    expect(request.querySelector("h2")?.textContent).toBe("Start a run");
+    expect(request.querySelector('a[href="#/agents/new"]')?.textContent).toBe("Create an agent");
+    expect(request.querySelector('a[href="#/templates"]')?.textContent).toBe("Browse templates");
+    // The request's fields are still named, read-only.
+    expect([...request.querySelectorAll("dt")].map((d) => d.textContent)).toEqual(["input.content", "file_ids", "revision", "effort", "max_cost_usd"]);
+    // The sample names the placeholder, never a path with an empty segment.
+    expect(host.textContent).toContain("/v2/agents/{agent_id}/runs");
+    expect(host.textContent).not.toContain("/agents//runs");
+  });
 });

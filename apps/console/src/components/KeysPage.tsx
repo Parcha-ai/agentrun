@@ -1,10 +1,12 @@
-import { KeyRound, TriangleAlert } from "lucide-react";
 import { type FormEvent, useEffect, useRef, useState } from "react";
 import { RunError } from "@/components/RunError";
+import { ProviderIcon } from "@/components/ProviderIcon";
 import { SecretRow } from "@/components/SecretRow";
 import { ListSkeleton } from "@/components/Skeleton";
 import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
+import { Banner } from "@/components/ui/banner";
+import { Input } from "@/components/ui/field";
 import { type Client, ClientError } from "@/lib/client";
 import { when } from "@/lib/format";
 import { secretLabel, type SecretsWhyNot, WHY_NOT_WORDS } from "@/lib/secrets";
@@ -97,31 +99,27 @@ export function KeysPage({ v2, atRest, onChange, writable, whyNot = "sign_in" }:
     <div className="h-full overflow-auto">
       <div className="mx-auto max-w-[1100px] space-y-6 px-6 py-8">
         <div>
-          <p className="caps text-[11px] text-muted-foreground">Settings</p>
+          <p className="caps text-label text-muted-foreground">Settings</p>
           <h1 className="mt-1 text-2xl font-semibold">Keys</h1>
-          <p className="mt-2 text-[14px] text-muted-foreground">A model provider's key, which every agent runs on, and a tool's key, for every agent that uses the tool, kept on this server. A saved key is never shown again.</p>
+          <p className="mt-2 text-lead text-muted-foreground">A model provider's key, which every agent runs on, and a tool's key, for every agent that uses the tool, kept on this server. A saved key is never shown again.</p>
         </div>
-        {!writable && <p className="border bg-card p-4 text-[13px]" role="status">{WHY_NOT_WORDS[whyNot]}</p>}
+        {!writable && <p className="border bg-card p-4 text-body" role="status">{WHY_NOT_WORDS[whyNot]}</p>}
         {loadError && <ReadError inline error={loadError} onRetry={load} />}
         {reenter && (
-          <section className="flex gap-3 border border-warning/50 bg-warning/5 p-4" role="alert" aria-label="Keys to enter again">
-            <TriangleAlert className="mt-0.5 size-4 shrink-0 text-warning-text" aria-hidden />
-            <div className="min-w-0 text-[13px]">
-              <p className="caps text-[12px] font-semibold text-warning-text">Enter these keys again</p>
-              <p className="mt-2">{REASON[reenter.reason]}</p>
-              <p className="mt-2 font-mono">{reenter.fields.length ? reenter.fields.join(", ") : "Which keys it held is not known: enter again each key you had saved."}</p>
-            </div>
-          </section>
+          <Banner tone="warning" role="alert" aria-label="Keys to enter again" title="Enter these keys again">
+            <p>{REASON[reenter.reason]}</p>
+            <p className="mt-2 font-mono">{reenter.fields.length ? reenter.fields.join(", ") : "Which keys it held is not known: enter again each key you had saved."}</p>
+          </Banner>
         )}
         {cantStore && (
-          <p className="border bg-card p-4 font-mono text-[13px]" role="status">
+          <p className="border bg-card p-4 font-mono text-body" role="status">
             This server can't store keys: it was started without a seal key. Set each key where the server starts ({view.keys.flatMap((k) => k.fields.map((f) => f.name)).join(", ")}).
           </p>
         )}
         {groups.map((g) => (
           <section key={g.label} aria-label={g.label}>
-            {groups.length > 1 && <h2 className="caps mb-2 text-[12px] font-semibold text-muted-foreground">{g.label}</h2>}
-            {g.kind === "model" && <p className="mb-2 text-[13px] text-muted-foreground">{KEY_ADVICE}</p>}
+            {groups.length > 1 && <h2 className="caps mb-2 text-small font-semibold text-muted-foreground">{g.label}</h2>}
+            {g.kind === "model" && <p className="mb-2 text-body text-muted-foreground">{KEY_ADVICE}</p>}
             <ul className="border">{g.keys.map(row)}</ul>
           </section>
         ))}
@@ -132,10 +130,9 @@ export function KeysPage({ v2, atRest, onChange, writable, whyNot = "sign_in" }:
 
 function ReadError({ error, onRetry, inline = false }: { error: ApiError; onRetry: () => void; inline?: boolean }) {
   return (
-    <div className={inline ? "border p-4" : "m-8 border p-4"} role="alert">
-      <p className="font-mono text-[13px] text-destructive-text">The tool keys could not be read: {error.code}: {error.message}</p>
-      <button type="button" onClick={onRetry} className="caps mt-3 border px-3 py-2 text-[12px] hover:bg-accent">Try again</button>
-    </div>
+    <Banner tone="error" className={inline ? undefined : "m-8"} actions={<Button type="button" size="xs" onClick={onRetry}>Try again</Button>}>
+      <p className="font-mono">The tool keys could not be read: {error.code}: {error.message}</p>
+    </Banner>
   );
 }
 
@@ -162,34 +159,34 @@ function KeyRow({ tool: k, cantStore, writable, again, open, problem, onOpen, on
   return (
     <li className="border-b p-4 last:border-b-0">
       <div className="flex flex-wrap items-start gap-3">
-        <KeyRound className="mt-1 size-4 shrink-0 text-muted-foreground" aria-hidden />
+        <ProviderIcon id={k.id} className="mt-1" />
         <div className="min-w-0 flex-1">
           <p className="flex flex-wrap items-center gap-2">
-            <span className="font-mono text-[15px] font-semibold">{k.label}</span>
+            <span className="font-mono text-prose font-semibold">{k.label}</span>
             <Chip tone={setCount === k.secrets.length ? "success" : "plain"}>{setCount === k.secrets.length ? "set" : setCount ? `${setCount} of ${k.secrets.length} set` : "not set"}</Chip>
             {again && <Chip tone="warning">enter again</Chip>}
           </p>
-          <p className="mt-1.5 font-mono text-[12px] text-muted-foreground">
+          <p className="mt-1.5 font-mono text-small text-muted-foreground">
             {k.kind === "model" ? "Model provider" : `Unlocks ${k.unlocks.join(", ")}`}
             {/* A key no harness reads (one only a decision provider uses) names no harnesses, not an empty list. */}
             {k.harnesses.length > 0 && ` · Harnesses ${k.harnesses.length === 1 ? `${k.harnesses[0]} only` : k.harnesses.join(", ")}`}
           </p>
-          {checkLine(k.label, k.check) && <p className={`mt-1.5 text-[12px] ${k.check?.state === "accepted" ? "text-success-text" : "text-muted-foreground"}`}>{checkLine(k.label, k.check)}</p>}
+          {checkLine(k.label, k.check) && <p className={`mt-1.5 text-small ${k.check?.state === "accepted" ? "text-success-text" : "text-muted-foreground"}`}>{checkLine(k.label, k.check)}</p>}
           {/* Paste and Replace open the key's form (a key's fields go together); Remove asks to remove what is saved here.
               None while a form or a confirm is open. */}
           <ul className="mt-3 space-y-1.5">
             {k.secrets.map((s) => (
-              <SecretRow key={s.name} field={s} writable={writable && open === null} disabled={cantStore} note={fieldOf(s)?.stored_unreadable ? UNREADABLE : undefined}
+              <SecretRow key={s.name} field={s} stateSaid={k.secrets.length === 1} writable={writable && open === null} disabled={cantStore} note={fieldOf(s)?.stored_unreadable ? UNREADABLE : undefined}
                 onPaste={() => onOpen("edit")} onRemove={s.source === "console" ? () => onOpen("remove") : undefined} />
             ))}
           </ul>
-          {!own.length && <p className="mt-3 text-[12px] text-muted-foreground">Set when the server starts, and that one wins: change it where the server is started.</p>}
+          {!own.length && <p className="mt-3 text-small text-muted-foreground">Set when the server starts, and that one wins: change it where the server is started.</p>}
         </div>
       </div>
       {open === "edit" && <KeyForm tool={k} fields={own} cantStore={cantStore} onSave={onSave} onCancel={() => onOpen(null)} />}
       {open === "remove" && (
         <div className="mt-4 flex flex-wrap items-center gap-3 border bg-card p-3">
-          <p className="min-w-0 flex-1 text-[13px]">Remove the {k.label} key saved here?{k.secrets.some((s) => s.source === "env") ? " The one set in the environment stays." : ""}</p>
+          <p className="min-w-0 flex-1 text-body">Remove the {k.label} key saved here?{k.secrets.some((s) => s.source === "env") ? " The one set in the environment stays." : ""}</p>
           <Button size="sm" variant="destructive" onClick={() => void onRemove()}>Remove</Button>
           <Button size="sm" onClick={() => onOpen(null)}>Keep</Button>
         </div>
@@ -233,14 +230,13 @@ export function KeyForm({ tool: k, fields, cantStore, onSave, onCancel }: { tool
     <form ref={form} autoComplete="off" onSubmit={(e) => void submit(e)} onInput={() => setTyped(!!typedIn())} className="mt-4 space-y-4 border bg-card p-4" aria-label={`${k.label} key`}>
       {fields.map((f) => (
         <label key={f.name} className="block">
-          <span className="caps mb-2 block text-[12px] font-semibold">{f.name}</span>
-          {f.set && <span className="-mt-1 mb-2 block text-[12px] text-muted-foreground">Saved already. A new value replaces it; leave it empty to keep it.</span>}
-          <input type="password" name={f.name} autoComplete="new-password" spellCheck={false} autoCapitalize="off" autoCorrect="off" data-1p-ignore data-lpignore="true"
-            className="w-full border bg-background px-3 py-2.5 font-mono text-[13px] outline-none focus:border-border-strong" />
-          {invalid?.fields[f.name] && <span className="mt-2 block font-mono text-[12px] text-destructive-text" role="alert">{invalid.fields[f.name]}</span>}
+          <span className="caps mb-2 block text-small font-semibold">{f.name}</span>
+          {f.set && <span className="-mt-1 mb-2 block text-small text-muted-foreground">Saved already. A new value replaces it; leave it empty to keep it.</span>}
+          <Input type="password" name={f.name} autoComplete="new-password" spellCheck={false} autoCapitalize="off" autoCorrect="off" data-1p-ignore data-lpignore="true" />
+          {invalid?.fields[f.name] && <span className="mt-2 block font-mono text-small text-destructive-text" role="alert">{invalid.fields[f.name]}</span>}
         </label>
       ))}
-      {invalid?.message && <p className="font-mono text-[12px] text-destructive-text" role="alert">{invalid.message}</p>}
+      {invalid?.message && <p className="font-mono text-small text-destructive-text" role="alert">{invalid.message}</p>}
       <div className="flex gap-2">
         <Button type="submit" size="sm" variant="solid" disabled={!typed || busy || cantStore}>{busy ? "Saving" : "Save"}</Button>
         <Button type="button" size="sm" onClick={() => { clear(); onCancel(); }}>Cancel</Button>

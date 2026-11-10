@@ -44,23 +44,23 @@ export function ModelKeyCard({ v2, needs, model, atRest, onSaved, writable, whyN
       <div className="mx-auto flex max-w-[1600px] gap-3">
         <KeyRound className="mt-1 size-4 shrink-0 text-warning-text" aria-hidden />
         <div className="min-w-0 flex-1 space-y-3">
-          <h2 className="text-[15px] font-semibold">{needs === "model" ? "This server's default model doesn't run" : "Add a model key to run agents"}</h2>
+          <h2 className="text-prose font-semibold">{needs === "model" ? "This server's default model doesn't run" : "Add a model key to run agents"}</h2>
           {needs === "model"
-            ? <p className="text-[13px] text-muted-foreground">The server's AGENT_MODEL names a model it doesn't know, so an agent that names no model can't run. Set AGENT_MODEL to a provider/model-id where the server starts, or name a model in each agent.</p>
+            ? <p className="text-body text-muted-foreground">The server's AGENT_MODEL names a model it doesn't know, so an agent that names no model can't run. Set AGENT_MODEL to a provider/model-id where the server starts, or name a model in each agent.</p>
             : required
-            ? <p className="text-[13px] text-muted-foreground">This server's default model is <span className="font-mono">{model}</span>, and no {required.label} key is set, so an agent that names no model can't run. Save the {required.label} key: such an agent then runs on that model.</p>
-            : <><p className="text-[13px] text-muted-foreground">No model provider's key is set on this server, so an agent that names no model can't run. Save one: such an agent then runs on that provider's everyday model.</p>
-              <p className="text-[13px] text-muted-foreground">{KEY_ADVICE}</p></>}
+            ? <p className="text-body text-muted-foreground">This server's default model is <span className="font-mono">{model}</span>, and no {required.label} key is set, so an agent that names no model can't run. Save the {required.label} key: such an agent then runs on that model.</p>
+            : <><p className="text-body text-muted-foreground">No model provider's key is set on this server, so an agent that names no model can't run. Save one: such an agent then runs on that provider's everyday model.</p>
+              <p className="text-body text-muted-foreground">{KEY_ADVICE}</p></>}
           {needs !== "model" && loadError && (
             <div role="alert">
-              <p className="font-mono text-[13px] text-destructive-text">The keys could not be read: {loadError.code}: {loadError.message}</p>
-              <button type="button" onClick={load} className="caps mt-2 border px-3 py-2 text-[12px] hover:bg-accent">Try again</button>
+              <p className="font-mono text-body text-destructive-text">The keys could not be read: {loadError.code}: {loadError.message}</p>
+              <Button type="button" onClick={load} size="sm" className="mt-2">Try again</Button>
             </div>
           )}
           {needs !== "model" && rows && cantStore && (
-            <p className="font-mono text-[13px]" role="status">This server can't store keys: it was started without a seal key. Set one where the server starts ({rows.flatMap((k) => k.fields.map((f) => f.name)).join(", ")}).</p>
+            <p className="font-mono text-body" role="status">This server can't store keys: it was started without a seal key. Set one where the server starts ({rows.flatMap((k) => k.fields.map((f) => f.name)).join(", ")}).</p>
           )}
-          {needs !== "model" && rows && !cantStore && !writable && <p className="text-[13px]" role="status">{WHY_NOT_WORDS[whyNot]}</p>}
+          {needs !== "model" && rows && !cantStore && !writable && <p className="text-body" role="status">{WHY_NOT_WORDS[whyNot]}</p>}
           {needs !== "model" && rows && !cantStore && writable && (
             <div className="flex flex-wrap gap-2" role="group" aria-label="Provider">
               {offered!.map((k) => (
@@ -83,9 +83,9 @@ export function ModelKeyCard({ v2, needs, model, atRest, onSaved, writable, whyN
                   onSaved?.();
                   return null;
                 }} />
-            : <p className="text-[13px] text-muted-foreground">The server sets the {picked.label} key when it starts: change it there.</p>)}
+            : <p className="text-body text-muted-foreground">The server sets the {picked.label} key when it starts: change it there.</p>)}
           {problem && <div className="border"><RunError error={problem} title="The key was not saved" /></div>}
-          <p className="text-[12px] text-muted-foreground">Every key is in <a className="underline underline-offset-2 hover:text-foreground" href="#/settings/keys">Settings</a>.</p>
+          <p className="text-small text-muted-foreground">Every key is in <a className="underline underline-offset-2 hover:text-foreground" href="#/settings/keys">Settings</a>.</p>
         </div>
       </div>
     </section>
