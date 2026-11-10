@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import { chmod, mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
-import { BOX_IDS, boxRegistry, VM_PROVIDER } from "../dist/boxes.js";
+import { BOX_IDS, boxRegistry, VM_PROVIDER } from "../dist/place-offers.js";
 import { boxesLine } from "../dist/place.js";
 import { hostOwnedRefusal } from "../dist/home-path.js";
 import { banner } from "../dist/print.js";

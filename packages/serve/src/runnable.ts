@@ -10,7 +10,7 @@ import { DEFAULT_HARNESS, HARNESSES, type HarnessCapability, harnessOffers } fro
 import { builtinHarness, harnessOf, onAdapter } from "./harness-table.js";
 import { chooseModel } from "./model.js";
 import { llmTiers, MODEL_NODES, type ModelRef, nodeTiers, type Tier, unpricedModels, workflowNodes } from "./model.js";
-import type { BoxOffer } from "./boxes.js";
+import type { BoxOffer } from "./place-offers.js";
 import { boxAvailability, newAgentPlace, placeFix, RUN_BOXES } from "./place.js";
 import { allows, BOUND_TOOLS, CALL_TOOLS, grantedTools, missingEnv, NODE_TOOLS, toolOf, workflowTools } from "./tools.js";
 import { DENIED, isUnavailable, NO_PARALLEL_KEY, type Pickable, planeFor, type ToolSettingsMap, whyUnavailable } from "./tool-plane.js";

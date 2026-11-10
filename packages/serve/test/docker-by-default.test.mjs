@@ -11,7 +11,7 @@ import { readFileSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
-import { boxRegistry, enabledBoxes, VM_PROVIDER } from "../dist/boxes.js";
+import { boxRegistry, enabledBoxes, VM_PROVIDER } from "../dist/place-offers.js";
 import { client, follow, jsonLines, printed, scratch, serve, withEnv } from "./support.mjs";
 
 const PROBE = new URL("./fixtures/faux-probe.mjs", import.meta.url).pathname;

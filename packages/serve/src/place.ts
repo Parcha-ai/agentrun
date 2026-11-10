@@ -12,7 +12,7 @@
 // (newAgentPlace). A revision that names no place resolves the same way at each run (defaultPlaceOf): this server's
 // default_place, so where docker is there now it runs in the Docker box, and the runner where it is not. A workflow, and a
 // revision with a tool the box refuses, run on the runner.
-import { BOX_IDS, BOXES_ENV, type BoxId, type BoxOffer, VM_PROVIDER } from "./boxes.js";
+import { BOX_IDS, BOXES_ENV, type BoxId, type BoxOffer, VM_PROVIDER } from "./place-offers.js";
 import { type InputIssue, sentence } from "./errors.js";
 
 export const PLACE_MODES = ["runner", "sandbox"] as const;

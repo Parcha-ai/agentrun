@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { PROVIDERS } from "@parcha/agentrun-computer";
-import { VM_PROVIDER } from "../dist/boxes.js";
+import { VM_PROVIDER } from "../dist/place-offers.js";
 import { BOX_RELAY_FILE, startBoxRelay } from "../dist/box-relay.js";
 import * as relayVm from "../dist/box-relay-vm.js";
 import { ModalClient as FakeClient, vm } from "./fixtures/fake-vm.mjs";

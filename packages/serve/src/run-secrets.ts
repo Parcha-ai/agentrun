@@ -3,7 +3,7 @@
 // The runner's claim reads them (runner/claim-secrets.ts).
 import type { Revision } from "@parcha/pi-durable-agent";
 import { harnessModelKeys } from "./adapters.js";
-import { BOX_KEYS } from "./boxes.js";
+import { BOX_KEYS } from "./place-offers.js";
 import { providersNamed } from "./decisions.js";
 import { harnessOfBody } from "./harness.js";
 import { harnessOf } from "./harness-table.js";

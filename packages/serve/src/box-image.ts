@@ -28,7 +28,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Context } from "@earendil-works/chord";
 import { startTimeOf, writerGone } from "./box/sweep.js";
-import { BOX_KEYS, type BoxOffer } from "./boxes.js";
+import { BOX_KEYS, type BoxOffer } from "./place-offers.js";
 
 /** The setting that names another image for Docker boxes than this server's own. */
 export const DOCKER_IMAGE_ENV = "AGENTRUN_DOCKER_IMAGE";

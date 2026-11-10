@@ -10,7 +10,7 @@ import { chmod, mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { pathToFileURL } from "node:url";
-import { BOX_IDS, BOX_KEYS, boxesLog, boxRegistry, VM_PROVIDER } from "../dist/boxes.js";
+import { BOX_IDS, BOX_KEYS, boxesLog, boxRegistry, VM_PROVIDER } from "../dist/place-offers.js";
 import { SERVER_LOCK } from "../dist/server-lock.js";
 import { startServe } from "../dist/index.js";
 import { FAUX, scratch, withEnv } from "./support.mjs";
@@ -198,7 +198,7 @@ test("the VM provider with its SDK: the client gets the token as arguments, not 
   return specifier === ${JSON.stringify(VM)} ? { url: ${JSON.stringify(pathToFileURL(join(dir, "sdk.mjs")).href)}, shortCircuit: true } : next(specifier, context);
 }\n`);
   await writeFile(join(dir, "register.mjs"), `import { register } from "node:module";\nregister(${JSON.stringify(pathToFileURL(join(dir, "hooks.mjs")).href)});\n`);
-  const script = `const { boxRegistry } = await import(${JSON.stringify(new URL("../dist/boxes.js", import.meta.url).href)});
+  const script = `const { boxRegistry } = await import(${JSON.stringify(new URL("../dist/place-offers.js", import.meta.url).href)});
 const registry = await boxRegistry({ AGENTRUN_BOXES: ${JSON.stringify(VM)}, AGENTRUN_BOX_APP: "boxes-test", ...${JSON.stringify(values)} });
 process.stdout.write(JSON.stringify({ offers: registry.offers(), provider: registry.provider(${JSON.stringify(VM)})?.name, clients: globalThis.clients }));`;
   const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !BOX_KEYS.includes(name)));
