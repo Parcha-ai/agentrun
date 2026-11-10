@@ -1,4 +1,4 @@
-import { BROWSER_OPENERS, BROWSER_STEPS, callFailed, endsTurn, failedWith, inputPreview, labelOf, outcomeOf, savedPaths, type LabelFn, type ToolResultView } from "./labels.js";
+import { BROWSER_OPENERS, BROWSER_STEPS, callFailed, endsTurn, failedWith, inputPreview, labelOf, outcomeOf, refusedLabel, savedPaths, type LabelFn, type ToolResultView } from "./labels.js";
 import { cut, firstLine, firstSentence, json, obj, scrubUrls, str, utf8Bytes, type Obj } from "./util.js";
 import { BESIDE_SUFFIX, NOTE_SUFFIX, originMatcher, TRIGGER_LABELS, type TriggerSource } from "./origin.js";
 
@@ -82,6 +82,10 @@ export const REQUEST_COST = "agentrun.request_cost";
 /** A request the host refused before it left (the run was cancelled): pi answers it with an error entry, which is not a
  *  request and not a failure to show, so the timeline skips the error entry that answers each refusal. */
 export const REQUEST_REFUSED = "agentrun.request_refused";
+/** The key a host sets in a tool result's `details` (which only a reader of the result sees, never the model) when the
+ *  call was refused before it ran (a gate's deny, a person's): `{ [CALL_REFUSED]: true }`. Its rows read as refused, the
+ *  call in plain words ("Refused: write deny.md"), never as a call that ran and failed ("Wrote deny.md failed"). */
+export const CALL_REFUSED = "agentrun.refused";
 
 /** Whether pi's error for a request is the model proxy's own refusal of it for the run's spend cap, before it was sent:
  *  the proxy's JSON body after the HTTP status pi-ai puts first, read by its fields (`type` "agentrun_proxy", `code`
@@ -607,6 +611,11 @@ function createProjector(options: TimelineOptions) {
   const shownOf = (view: ToolResultView): ToolResultView =>
     options.redact ? { ...view, text: view.text ? options.redact(view.text) : view.text, details: redactValue(view.details) } : view;
   const failure = (text: string) => scrubUrls(firstLine(str(json(text)?.message) ?? diagnosticOf(text) ?? text)) || "no detail";
+  /** Whether a result is a call's refusal before it ran: an error its host marked so in its details (CALL_REFUSED),
+   *  read by that field, never by its words. */
+  const refused = (view: { isError: boolean; details?: unknown }) => view.isError && obj(view.details)?.[CALL_REFUSED] === true;
+  /** A call's name on its rows: a refused one's in plain words (refusedLabel), else its label. */
+  const nameFor = (tool: string, args: Obj, view: ToolResultView, shown: ToolResultView) => (refused(view) ? refusedLabel(tool, args) : label(tool, args, shown));
   /** The `tool_use` row of a call; `fields` is what differs between a stored call and a nested one. */
   const useRow = (conv: number, rowId: string, callId: string, name: string, args: Obj, fields: Partial<TimelineEvent>) =>
     make("tool_use", conv, rowId, { summary: label(name, args), tool_name: name, tool_use_id: callId, tool_input_preview: inputPreview(args, caps.preview), ...fields });
@@ -619,8 +628,10 @@ function createProjector(options: TimelineOptions) {
    *  the output as it came (`view`), as its status is; only the words the summary shows of that are redacted. */
   const resultRow = (conv: number, rowId: string, tool: { name: string; callId: string | null; round?: number }, named: string, view: { text: string; isError: boolean; details?: unknown }, shown: { text: string }, parent?: string) => {
     const outcome = outcomeOf(tool.name, view);
+    // A call refused before it ran is named refused already (refusedLabel): its row says why, never that it failed.
+    const failedSummary = refused(view) ? `${named}: ${failure(shown.text)}` : `${named} failed: ${failure(shown.text)}`;
     return make("tool_result", conv, rowId, {
-      summary: !view.isError && pageChanged(tool.name, view) ? PAGE_CHANGED_ROW : view.isError ? `${named} failed: ${failure(shown.text)}` : outcome ? `${named}: ${saidOf(outcome.text)}` : `${named}: ok`, tool_name: tool.name, tool_use_id: tool.callId,
+      summary: !view.isError && pageChanged(tool.name, view) ? PAGE_CHANGED_ROW : view.isError ? failedSummary : outcome ? `${named}: ${saidOf(outcome.text)}` : `${named}: ok`, tool_name: tool.name, tool_use_id: tool.callId,
       tool_status: failedWith(view, outcome) ? "failed" : "success", tool_result_preview: shown.text ? cut(scrubUrls(shown.text), caps.preview) : null,
       tool_result_size_bytes: utf8Bytes(view.text), round: tool.round, parent_tool_use_id: parent,
     });
@@ -767,7 +778,7 @@ function createProjector(options: TimelineOptions) {
           // Its result came first: it is this call's, so it reads with the call's label and sits right after it.
           if (before) {
             early.delete(`${conv}:${id}`);
-            const named = label(name, args, before.shown);
+            const named = nameFor(name, args, before.view, before.shown);
             use.summary = clean(named, caps.summary);
             const fresh = resultRow(conv, before.row.id, { name, callId: id, round }, named, before.view, before.shown);
             Object.assign(before.row, { summary: fresh.summary, tool_name: fresh.tool_name, tool_status: fresh.tool_status, seq: (use.seq ?? 0) + 0.5, ...(round === undefined ? {} : { round }) });
@@ -790,7 +801,7 @@ function createProjector(options: TimelineOptions) {
       if (abortedCall(entry)) cutTurns.add(conv);
       else cutTurns.delete(conv);
       const args = call?.args ?? {};
-      const named = label(name, args, shown);
+      const named = nameFor(name, args, view, shown);
       if (call) {
         call.done = true;
         call.use.summary = clean(named, caps.summary);
@@ -905,7 +916,7 @@ function createProjector(options: TimelineOptions) {
     const failed = result.isError === true;
     const view: ToolResultView = { text, details: result.details, isError: failed };
     const shown = shownOf(view);
-    const named = label(call.name, call.args, shown);
+    const named = nameFor(call.name, call.args, view, shown);
     call.done = true;
     call.use.summary = clean(named, caps.summary);
     const row = resultRow(conv, `${conv}:n:${id}:result`, { name: call.name, callId: id, round: call.round }, named, view, shown, parent);
