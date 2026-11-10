@@ -435,7 +435,7 @@ test("on a named data volume the Docker provider's host addresses are the read's
   const compose = async () => ({ paths: { at: "/data", volume: "agentrun_agentrun-data" } });
   // `runAllow`: the claim's own launch's box_allow (the server's default list unless given); `envAllow`: this process's
   // AGENTRUN_BOX_ALLOW now, which may differ after a restart.
-  const claimWith = async ({ dockerPaths, read, named, envAllow, runAllow = [...DEFAULT_BOX_ALLOW] }) => {
+  const claimWith = async ({ dockerPaths, read, named, envAllow, runAllow = [...DEFAULT_BOX_ALLOW], unstamped = false }) => {
     const root = scratch();
     const sealKey = randomBytes(32);
     const store = await savedKeysStore(sealKey);
@@ -444,7 +444,8 @@ test("on a named data volume the Docker provider's host addresses are the read's
     const load = async (id, options) => (record.loaded.push([id, options]), fakeSandbox(root, record));
     const env = { ...ENV, ...(named ? { AGENTRUN_DOCKER_HOST_ADDRESSES: named } : {}), ...(envAllow ? { AGENTRUN_BOX_ALLOW: envAllow } : {}) };
     const { computerForClaim, computerDeps } = computerDepsFrom({ env, store, sealKey, kinds: KINDS, load, dockerPaths, hostAddresses: async () => (reads++, read) });
-    const answer = await computerForClaim({ runId: "run-1", epoch: 1, computer: { kind: "sandbox", provider: "docker" }, boxAllow: runAllow }, store, { ...computerDeps, mode: 1, workspace: localWorkspace(root), sealKey });
+    const launch = { runId: "run-1", epoch: 1, computer: { kind: "sandbox", provider: "docker" }, ...(unstamped ? {} : { boxAllow: runAllow }) };
+    const answer = await computerForClaim(launch, store, { ...computerDeps, mode: 1, workspace: localWorkspace(root), sealKey });
     await answer.release();
     return { egress: record.loaded[0][1].egress, reads };
   };
@@ -458,6 +459,10 @@ test("on a named data volume the Docker provider's host addresses are the read's
   assert.deepEqual(await claimWith({ dockerPaths: compose, read: { addresses: ["203.0.113.7"] }, envAllow: "none" }), { egress: { hostAddresses: ["203.0.113.7"] }, reads: 1 }, "a run's list under a process's none");
   assert.deepEqual(await claimWith({ dockerPaths: compose, read: { addresses: ["203.0.113.7"] }, runAllow: "none" }), { egress: undefined, reads: 0 }, "a run's none under a process's list");
   assert.deepEqual(await claimWith({ dockerPaths: compose, read: { addresses: ["203.0.113.7"] }, named: "198.51.100.9", runAllow: "none" }), { egress: { hostAddresses: ["198.51.100.9"] }, reads: 0 });
+  // A launch row from before every launch was stamped names no box_allow: its computer gets this server's setting now,
+  // so the provider's options read the host's addresses under a list, and nothing under none.
+  assert.deepEqual(await claimWith({ dockerPaths: compose, read: { addresses: ["203.0.113.7"] }, unstamped: true }), { egress: { hostAddresses: ["203.0.113.7"] }, reads: 1 }, "an unstamped launch under the server's list");
+  assert.deepEqual(await claimWith({ dockerPaths: compose, read: { addresses: ["203.0.113.7"] }, envAllow: "none", unstamped: true }), { egress: undefined, reads: 0 }, "an unstamped launch under the server's none");
 });
 
 // The whole of compose's path through the computer package's own Docker provider, over its fake docker (no daemon): a

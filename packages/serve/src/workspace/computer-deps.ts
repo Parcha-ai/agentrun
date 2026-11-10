@@ -199,7 +199,10 @@ export function computerDepsFrom(options: ComputerDepsOptions): { computerForCla
   const dockerOptions = async (boxAllow: readonly string[] | "none" | undefined): Promise<Record<string, unknown>> => {
     const where = options.dockerPaths ? await (paths ??= options.dockerPaths()) : ({ here: true } as const);
     const volume = dockerVolumeOf(where);
-    const read = volume && Array.isArray(boxAllow) && options.hostAddresses ? await options.hostAddresses() : undefined;
+    // A launch that names no box_allow (a row from before every launch was stamped) allows what this server allows now,
+    // as its computer's network does (networkOf), so the provider's options follow the same setting.
+    const allow = boxAllow ?? boxAllowOf(env as NodeJS.ProcessEnv);
+    const read = volume && Array.isArray(allow) && options.hostAddresses ? await options.hostAddresses() : undefined;
     const addresses = read ? unionOf(read, namedAddresses).addresses : (namedAddresses ?? []);
     return { image: dockerImage, ...(volume ?? {}), ...(addresses.length > 0 ? { egress: { hostAddresses: addresses } } : {}) };
   };
