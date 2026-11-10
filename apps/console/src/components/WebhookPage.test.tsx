@@ -11,7 +11,8 @@ import type { Webhook, WebhookAttempt } from "@/lib/v2";
 
 /** An obvious fake: not a secret anywhere. */
 const SECRET = "whsec_bm90LWEtcmVhbC1zZWNyZXQtMDEyMzQ1Njc4OWFi";
-const SET: Extract<Webhook, { configured: true }> = { configured: true, url: "https://hooks.example.test/agentrun", signing: "sealed", disabled: null, updated_at: "2026-11-03T12:00:00.000Z" };
+const SET: Extract<Webhook, { configured: true }> = { configured: true, url: "https://hooks.example.test/agentrun", signing: "sealed", secret: { name: "webhook:outbound", set: true, source: "console", changed_at: "2026-11-03T12:00:00.000Z" }, disabled: null, updated_at: "2026-11-03T12:00:00.000Z" };
+const NONE: Webhook = { configured: false, secret: { name: "webhook:outbound", set: false, source: null, changed_at: null } };
 const attempt = (extra: Partial<WebhookAttempt>): WebhookAttempt => ({ webhook_id: "msg_0123456789abcdef0123456789abcdef", type: "run.ended", at: "2026-11-03T12:01:00.000Z", status_code: 200, latency_ms: 42, error: null, retry_at: null, redelivery: false, ...extra });
 
 type Call = { method: string; path: string; body: unknown };
@@ -29,9 +30,9 @@ function server(state: { webhook: Webhook; attempts: WebhookAttempt[]; readsFail
     if (path === "/v2/settings/webhook" && call.method === "PUT") {
       const created = !state.webhook.configured;
       state.webhook = { ...SET, url: (call.body as { url: string }).url };
-      return json(created ? 201 : 200, { ...state.webhook, ...(created ? { secret: SECRET } : {}) });
+      return json(created ? 201 : 200, { ...state.webhook, ...(created ? { signing_secret: SECRET } : {}) });
     }
-    if (path === "/v2/settings/webhook" && call.method === "DELETE") { state.webhook = { configured: false }; return new Response(null, { status: 204 }); }
+    if (path === "/v2/settings/webhook" && call.method === "DELETE") { state.webhook = NONE; return new Response(null, { status: 204 }); }
     if (path === "/v2/settings/webhook/deliveries") return json(200, { attempts: state.attempts });
     if (path === "/v2/settings/webhook/test" || path.endsWith("/redeliver")) {
       const answer = sent();
@@ -64,7 +65,7 @@ async function open(v2: ReturnType<typeof createClient>, atRest: "sealed" | "una
 
 describe("WebhookPage", () => {
   it("sets a webhook, shows its secret this once, and not after the page is read again", async () => {
-    const { v2, calls } = server({ webhook: { configured: false }, attempts: [] });
+    const { v2, calls } = server({ webhook: NONE, attempts: [] });
     const page = await open(v2);
     expect(page.host.textContent).toContain("No webhook is set");
     await page.type("https://hooks.example.test/agentrun");
@@ -122,7 +123,7 @@ describe("WebhookPage", () => {
   });
 
   it("shows a save's answer at once, and a read after it that fails, beside what is shown", async () => {
-    const state = { webhook: { configured: false } as Webhook, attempts: [] as WebhookAttempt[], readsFail: false };
+    const state = { webhook: NONE, attempts: [] as WebhookAttempt[], readsFail: false };
     const { v2 } = server(state);
     const page = await open(v2);
     state.readsFail = true;
@@ -140,7 +141,7 @@ describe("WebhookPage", () => {
   });
 
   it("drops a secret shown this once when its webhook is removed: it no longer signs anything", async () => {
-    const { v2 } = server({ webhook: { configured: false }, attempts: [] });
+    const { v2 } = server({ webhook: NONE, attempts: [] });
     const page = await open(v2);
     await page.type("https://hooks.example.test/agentrun");
     await page.click(/^Save$/);
@@ -159,7 +160,7 @@ describe("WebhookPage", () => {
     expect(calls.some((c) => c.method === "DELETE")).toBe(true);
     expect(page.host.textContent).toContain("No webhook is set");
     act(() => root!.unmount()); root = undefined;
-    const none = await open(server({ webhook: { configured: false }, attempts: [] }).v2, "unavailable");
+    const none = await open(server({ webhook: NONE, attempts: [] }).v2, "unavailable");
     expect(none.host.textContent).toContain("can't keep a webhook secret");
     expect(none.button(/^Save$/)?.disabled).toBe(true);
   });

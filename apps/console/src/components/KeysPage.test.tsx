@@ -3,7 +3,10 @@ import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
 import { KeysPage } from "./KeysPage";
 import { createClient } from "@/lib/client";
-import type { ToolKey, ToolKeyField, ToolKeys } from "@/lib/v2";
+import type { ToolKey, ToolKeys } from "@/lib/v2";
+import { type KeyIn, servedKey } from "@/test/keys";
+
+type ToolKeyField = KeyIn["fields"][number];
 
 // Settings → Tool keys over GET, PUT and DELETE /v2/settings/tool-keys: each field says whether it is set and where
 // from, a save sends only what was typed, a key the server holds is read-only, a saved key that no longer opens is
@@ -14,15 +17,15 @@ import type { ToolKey, ToolKeyField, ToolKeys } from "@/lib/v2";
 const FAKE = "not-a-real-key-0123456789";
 const OTHER = "also-not-a-real-key-9876";
 
-const field = (name: string, source: ToolKeyField["source"], extra: Partial<ToolKeyField> = {}): ToolKeyField => ({ name, set: source !== null, source, ...extra });
+const field = (name: string, source: ToolKeyField["source"], extra: Partial<ToolKeyField> = {}): ToolKeyField => ({ name, set: source !== null, source, changed_at: source === "console" ? "2026-11-09T09:00:00Z" : null, ...extra });
 function view(fields: Record<string, ToolKeyField>, reenter: ToolKeys["reenter"] = null): ToolKeys {
   const f = (name: string) => fields[name] ?? field(name, null);
   return {
-    keys: [
+    keys: ([
       { id: "parallel", kind: "tool", label: "Parallel", fields: [f("PARALLEL_API_KEY")], unlocks: ["web_fetch", "web_search"], harnesses: ["pi", "claude-agent", "codex"], check: null },
       { id: "monid", kind: "tool", label: "Monid", fields: [f("MONID_API_KEY")], unlocks: ["monid.discover", "monid.inspect", "monid.run"], harnesses: ["pi", "claude-agent", "codex"], check: null },
       { id: "browserbase", kind: "tool", label: "Browserbase", fields: [f("BROWSERBASE_API_KEY"), f("BROWSERBASE_PROJECT_ID")], unlocks: ["browser"], harnesses: ["pi"], check: null },
-    ],
+    ] as KeyIn[]).map(servedKey),
     reenter,
   };
 }
@@ -50,7 +53,8 @@ afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
 async function open(v2: ReturnType<typeof createClient>, atRest: "sealed" | "unavailable" = "sealed", onChange?: () => void) {
   const host = document.body.appendChild(document.createElement("div"));
   root = createRoot(host);
-  act(() => root!.render(createElement(KeysPage, { v2, atRest, onChange })));
+  // The owner's password session: secrets can be pasted (session.secrets_writable).
+  act(() => root!.render(createElement(KeysPage, { v2, atRest, onChange, writable: true })));
   const settle = async () => { for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
   await settle();
   const row = (label: string) => [...host.querySelectorAll("li")].find((li) => li.querySelector("span.font-mono")?.textContent === label)!;
@@ -67,15 +71,15 @@ async function open(v2: ReturnType<typeof createClient>, atRest: "sealed" | "una
 
 describe("KeysPage", () => {
   it("shows each field set or not set, and where it comes from", async () => {
-    const { v2 } = server([view({ PARALLEL_API_KEY: field("PARALLEL_API_KEY", "stored"), BROWSERBASE_API_KEY: field("BROWSERBASE_API_KEY", "server") })]);
+    const { v2 } = server([view({ PARALLEL_API_KEY: field("PARALLEL_API_KEY", "console"), BROWSERBASE_API_KEY: field("BROWSERBASE_API_KEY", "env") })]);
     const page = await open(v2);
-    expect(page.row("Parallel").textContent).toContain("PARALLEL_API_KEYset · saved here");
+    expect(page.row("Parallel").textContent).toContain("PARALLEL_API_KEYSetPasted here");
     expect(page.row("Parallel").textContent).toContain("Unlocks web_fetch, web_search");
-    expect(page.button(page.row("Parallel"), /^Change$/)).toBeTruthy();
-    expect(page.row("Monid").textContent).toContain("MONID_API_KEYnot set");
-    expect(page.button(page.row("Monid"), /^Add key$/)).toBeTruthy();
-    expect(page.row("Browserbase").textContent).toContain("BROWSERBASE_API_KEYset · from the server");
-    expect(page.row("Browserbase").textContent).toContain("BROWSERBASE_PROJECT_IDnot set");
+    expect(page.button(page.row("Parallel"), /^Replace$/)).toBeTruthy();
+    expect(page.row("Monid").textContent).toContain("MONID_API_KEYMissing");
+    expect(page.button(page.row("Monid"), /^Paste$/)).toBeTruthy();
+    expect(page.row("Browserbase").textContent).toContain("BROWSERBASE_API_KEYSetSet in the environment");
+    expect(page.row("Browserbase").textContent).toContain("BROWSERBASE_PROJECT_IDMissing");
     expect(page.row("Browserbase").textContent).toContain("1 of 2 set");
     expect(page.row("Browserbase").textContent).toContain("pi only");
   });
@@ -84,7 +88,7 @@ describe("KeysPage", () => {
   // Harnesses", a label with nothing after it. Its row says what it unlocks and nothing about harnesses.
   it("says nothing about harnesses on a row whose key no harness reads", async () => {
     const plain = view({});
-    const jev: ToolKey = { id: "typesafe", kind: "tool", label: "TypeSafe (Jev)", fields: [field("TYPESAFE_API_KEY", null)], unlocks: ["decisions.jev"], harnesses: [], check: null };
+    const jev: ToolKey = servedKey({ id: "typesafe", kind: "tool", label: "TypeSafe (Jev)", fields: [field("TYPESAFE_API_KEY", null)], unlocks: ["decisions.jev"], harnesses: [], check: null });
     const { v2 } = server([{ ...plain, keys: [...plain.keys, jev] }]);
     const page = await open(v2);
     expect(page.row("TypeSafe (Jev)").textContent).toContain("Unlocks decisions.jev");
@@ -94,10 +98,10 @@ describe("KeysPage", () => {
   });
 
   it("Add key sends a PUT with only the values typed, then reads the keys again and says it changed", async () => {
-    const { v2, calls } = server([view({}), view({ BROWSERBASE_API_KEY: field("BROWSERBASE_API_KEY", "stored") })]);
+    const { v2, calls } = server([view({}), view({ BROWSERBASE_API_KEY: field("BROWSERBASE_API_KEY", "console") })]);
     let changed = 0;
     const page = await open(v2, "sealed", () => changed++);
-    await page.click(page.row("Browserbase"), /^Add key$/);
+    await page.click(page.row("Browserbase"), /^Paste$/);
     expect(page.input("BROWSERBASE_API_KEY").type).toBe("password");
     expect(page.input("BROWSERBASE_API_KEY").getAttribute("autocomplete")).toBe("new-password");
     await page.type("BROWSERBASE_API_KEY", FAKE);
@@ -105,29 +109,29 @@ describe("KeysPage", () => {
     const writes = calls.filter((c) => c.method !== "GET");
     expect(writes).toEqual([{ method: "PUT", path: "/v2/settings/tool-keys/browserbase", type: "application/json", body: { values: { BROWSERBASE_API_KEY: FAKE } } }]);
     expect(calls.filter((c) => c.method === "GET" && c.path === "/v2/settings/tool-keys")).toHaveLength(2);
-    expect(page.row("Browserbase").textContent).toContain("BROWSERBASE_API_KEYset · saved here");
+    expect(page.row("Browserbase").textContent).toContain("BROWSERBASE_API_KEYSetPasted here");
     expect(page.input("BROWSERBASE_API_KEY")).toBeNull();
     expect(changed).toBe(1);
   });
 
   it("a write that ends after another row's form opened leaves that form and what was typed in it", async () => {
     let answer!: (r: Response) => void;
-    const { v2, calls } = server([view({}), view({ MONID_API_KEY: field("MONID_API_KEY", "stored") })], () => new Promise<Response>((r) => { answer = r; }));
+    const { v2, calls } = server([view({}), view({ MONID_API_KEY: field("MONID_API_KEY", "console") })], () => new Promise<Response>((r) => { answer = r; }));
     const page = await open(v2);
-    await page.click(page.row("Monid"), /^Add key$/);
+    await page.click(page.row("Monid"), /^Paste$/);
     await page.type("MONID_API_KEY", FAKE);
     await page.click(page.row("Monid"), /^Save$/);
     expect(calls.filter((c) => c.method === "PUT")).toHaveLength(1);
-    await page.click(page.row("Parallel"), /^Add key$/);
+    await page.click(page.row("Parallel"), /^Paste$/);
     await page.type("PARALLEL_API_KEY", OTHER);
     await act(async () => { answer(new Response(null, { status: 204 })); });
     await page.settle();
-    expect(page.row("Monid").textContent).toContain("MONID_API_KEYset · saved here");
+    expect(page.row("Monid").textContent).toContain("MONID_API_KEYSetPasted here");
     expect(page.input("PARALLEL_API_KEY").value).toBe(OTHER);
   });
 
   it("a key the server is started with has no edit controls, and says why", async () => {
-    const { v2 } = server([view({ PARALLEL_API_KEY: field("PARALLEL_API_KEY", "server") })]);
+    const { v2 } = server([view({ PARALLEL_API_KEY: field("PARALLEL_API_KEY", "env") })]);
     const page = await open(v2);
     expect(page.buttons(page.row("Parallel"))).toEqual([]);
     expect(page.row("Parallel").textContent).toContain("Set when the server starts");
@@ -135,9 +139,9 @@ describe("KeysPage", () => {
   });
 
   it("a key part-held by the server offers inputs only for the fields the page may set", async () => {
-    const { v2 } = server([view({ BROWSERBASE_API_KEY: field("BROWSERBASE_API_KEY", "server") })]);
+    const { v2 } = server([view({ BROWSERBASE_API_KEY: field("BROWSERBASE_API_KEY", "env") })]);
     const page = await open(v2);
-    await page.click(page.row("Browserbase"), /^Add key$/);
+    await page.click(page.row("Browserbase"), /^Paste$/);
     expect(page.input("BROWSERBASE_API_KEY")).toBeNull();
     expect(page.input("BROWSERBASE_PROJECT_ID")).toBeTruthy();
   });
@@ -168,25 +172,25 @@ describe("KeysPage", () => {
     const page = await open(v2, "unavailable");
     expect(page.host.textContent).toContain("This server can't store keys");
     expect(page.host.textContent).toContain("where the server starts");
-    for (const label of ["Parallel", "Monid", "Browserbase"]) expect(page.button(page.row(label), /^Add key$/)!.disabled).toBe(true);
+    for (const label of ["Parallel", "Monid", "Browserbase"]) expect(page.button(page.row(label), /^Paste$/)!.disabled).toBe(true);
   });
 
   it("a 409 no_sealing_key closes the form, says the server can't store keys and disables saving", async () => {
     const { v2 } = server([view({})], () => json(409, { error: { code: "no_sealing_key", message: "This server was handed no seal key", retryable: false } }));
     const page = await open(v2);
     expect(page.host.textContent).not.toContain("can't store keys");
-    await page.click(page.row("Monid"), /^Add key$/);
+    await page.click(page.row("Monid"), /^Paste$/);
     await page.type("MONID_API_KEY", FAKE);
     await page.click(page.row("Monid"), /^Save$/);
     expect(page.host.textContent).toContain("This server can't store keys");
     expect(page.input("MONID_API_KEY")).toBeNull();
-    expect(page.button(page.row("Monid"), /^Add key$/)!.disabled).toBe(true);
+    expect(page.button(page.row("Monid"), /^Paste$/)!.disabled).toBe(true);
   });
 
   it("a 422 shows its message at the field, and the form stays open", async () => {
     const { v2 } = server([view({})], () => json(422, { error: { code: "input_invalid", message: "MONID_API_KEY is at most 1024 bytes", retryable: false, fields: [{ field: "values.MONID_API_KEY", reason: "too_long", message: "MONID_API_KEY is at most 1024 bytes" }] } }));
     const page = await open(v2);
-    await page.click(page.row("Monid"), /^Add key$/);
+    await page.click(page.row("Monid"), /^Paste$/);
     await page.type("MONID_API_KEY", FAKE);
     await page.click(page.row("Monid"), /^Save$/);
     const label = page.input("MONID_API_KEY").closest("label")!;
@@ -194,19 +198,19 @@ describe("KeysPage", () => {
   });
 
   it("another refusal shows the server's error card on the row, and a key the server now holds is read again", async () => {
-    const { v2, calls } = server([view({}), view({ MONID_API_KEY: field("MONID_API_KEY", "server") })], () => json(409, { error: { code: "key_set_by_server", message: "This server is started with MONID_API_KEY: change it where the server is started.", retryable: false, details: { fields: ["MONID_API_KEY"] } } }));
+    const { v2, calls } = server([view({}), view({ MONID_API_KEY: field("MONID_API_KEY", "env") })], () => json(409, { error: { code: "key_set_by_server", message: "This server is started with MONID_API_KEY: change it where the server is started.", retryable: false, details: { fields: ["MONID_API_KEY"] } } }));
     const page = await open(v2);
-    await page.click(page.row("Monid"), /^Add key$/);
+    await page.click(page.row("Monid"), /^Paste$/);
     await page.type("MONID_API_KEY", FAKE);
     await page.click(page.row("Monid"), /^Save$/);
     expect(page.row("Monid").textContent).toContain("The key was not saved");
     expect(page.row("Monid").textContent).toContain("key_set_by_server");
     expect(calls.filter((c) => c.method === "GET")).toHaveLength(2);
-    expect(page.row("Monid").textContent).toContain("set · from the server");
+    expect(page.row("Monid").textContent).toContain("Set in the environment");
   });
 
   it("Remove asks first, then sends a DELETE, reads the keys again and says it changed", async () => {
-    const { v2, calls } = server([view({ PARALLEL_API_KEY: field("PARALLEL_API_KEY", "stored") }), view({})]);
+    const { v2, calls } = server([view({ PARALLEL_API_KEY: field("PARALLEL_API_KEY", "console") }), view({})]);
     let changed = 0;
     const page = await open(v2, "sealed", () => changed++);
     await page.click(page.row("Parallel"), /^Remove$/);
@@ -215,22 +219,22 @@ describe("KeysPage", () => {
     // Bodiless, and still JSON: the cookie counts on a write only with that type.
     expect(calls.filter((c) => c.method === "DELETE")).toEqual([{ method: "DELETE", path: "/v2/settings/tool-keys/parallel", type: "application/json", body: undefined }]);
     expect(page.row("Parallel").textContent).not.toContain("The key was not removed");
-    expect(page.row("Parallel").textContent).toContain("PARALLEL_API_KEYnot set");
+    expect(page.row("Parallel").textContent).toContain("PARALLEL_API_KEYMissing");
     expect(changed).toBe(1);
   });
 
   it("no typed value is ever in the DOM: not while typing, not after a save, not after a cancel", async () => {
-    const { v2, calls } = server([view({}), view({ MONID_API_KEY: field("MONID_API_KEY", "stored") })]);
+    const { v2, calls } = server([view({}), view({ MONID_API_KEY: field("MONID_API_KEY", "console") })]);
     const page = await open(v2);
-    await page.click(page.row("Parallel"), /^Add key$/);
+    await page.click(page.row("Parallel"), /^Paste$/);
     await page.type("PARALLEL_API_KEY", OTHER);
     expect(page.host.innerHTML).not.toContain(OTHER);
     await page.click(page.row("Parallel"), /^Cancel$/);
-    await page.click(page.row("Parallel"), /^Add key$/);
+    await page.click(page.row("Parallel"), /^Paste$/);
     expect(page.input("PARALLEL_API_KEY").value).toBe("");
     await page.click(page.row("Parallel"), /^Cancel$/);
 
-    await page.click(page.row("Monid"), /^Add key$/);
+    await page.click(page.row("Monid"), /^Paste$/);
     await page.type("MONID_API_KEY", FAKE);
     expect(page.input("MONID_API_KEY").getAttribute("value")).toBeNull();
     expect(page.host.innerHTML).not.toContain(FAKE);
@@ -238,20 +242,20 @@ describe("KeysPage", () => {
     expect(calls.some((c) => c.method === "PUT")).toBe(true);
     expect(page.host.innerHTML).not.toContain(FAKE);
     expect([...page.host.querySelectorAll("input")].map((i) => i.value)).not.toContain(FAKE);
-    await page.click(page.row("Monid"), /^Change$/);
+    await page.click(page.row("Monid"), /^Replace$/);
     expect(page.input("MONID_API_KEY").value).toBe("");
   });
 
   it("lists a model provider's key under Model keys, before the tools' keys, and saves it through its own route; with none, no headings", async () => {
     const plain = view({});
-    const anthropic: ToolKey = { id: "anthropic", kind: "model", label: "Anthropic", fields: [field("ANTHROPIC_API_KEY", null)], unlocks: [], harnesses: ["pi", "claude-agent"], check: null };
+    const anthropic: ToolKey = servedKey({ id: "anthropic", kind: "model", label: "Anthropic", fields: [field("ANTHROPIC_API_KEY", null)], unlocks: [], harnesses: ["pi", "claude-agent"], check: null });
     const { v2, calls } = server([{ ...plain, keys: [...plain.keys.map((k) => ({ ...k, kind: "tool" as const })), anthropic] }]);
     const page = await open(v2);
     expect([...page.host.querySelectorAll("h2")].map((h) => h.textContent)).toEqual(["Model keys", "Tool keys"]);
     const labels = (section: string) => [...page.host.querySelectorAll(`section[aria-label="${section}"] > ul > li`)].map((li) => li.querySelector("span.font-mono")?.textContent);
     expect([labels("Model keys"), labels("Tool keys")]).toEqual([["Anthropic"], ["Parallel", "Monid", "Browserbase"]]);
     expect(page.row("Anthropic").textContent).toContain("Model provider · Harnesses pi, claude-agent");
-    await page.click(page.row("Anthropic"), /^Add key$/);
+    await page.click(page.row("Anthropic"), /^Paste$/);
     await page.type("ANTHROPIC_API_KEY", FAKE);
     await page.click(page.row("Anthropic"), /^Save$/);
     expect(calls.filter((c) => c.method !== "GET")).toEqual([{ method: "PUT", path: "/v2/settings/tool-keys/anthropic", type: "application/json", body: { values: { ANTHROPIC_API_KEY: FAKE } } }]);

@@ -88,3 +88,30 @@ export async function mintInstallationToken(api: string, appId: string, pem: str
     return { ok: false, reason: "github_failed", message: `GitHub did not give this run a token: ${(error as Error).message}.` };
   }
 }
+
+/** The GitHub App's settings (trigger_settings, adapter "github", scope "server"): its id, slug, client id and settings
+ *  page, which are no secret, and its installations (public: sealed, never redacted); its private key and webhook secret,
+ *  sealed and redacted. The server writes them (github-connection.ts); the runner reads the id and key per claim
+ *  (runner/github-app.ts). */
+export const GITHUB_FIELDS = { appId: "app_id", slug: "slug", clientId: "client_id", settingsUrl: "settings_url", privateKey: "private_key", webhookSecret: "webhook_secret", installations: "installations" } as const;
+export const GITHUB_SCOPE = "server";
+
+const unescapeAttr = (value: string) => value.replace(/&quot;/g, '"').replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+const REPO_URL = /https:\/\/github\.com\/([A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38})\/([A-Za-z0-9._-]{1,100})/;
+
+/** The repository a run is about, from its first message: the GitHub event it was started for (the server's own payload
+ *  tag, the first one, with its installation and repository), else the first https://github.com/<owner>/<repo> its owner's
+ *  words name, before any payload (a sender's text is never read for it). Undefined when it names none. */
+export function githubTargetOf(content: unknown): { installation?: number; repo: string } | undefined {
+  if (typeof content !== "string") return undefined;
+  const at = content.indexOf("<trigger-payload ");
+  if (at >= 0) {
+    const tag = content.slice(at, content.indexOf(">", at) + 1);
+    const attrs = Object.fromEntries([...tag.matchAll(/ ([a-z][a-z0-9_-]*)="([^"]*)"/g)].map((m) => [m[1]!, unescapeAttr(m[2]!)]));
+    if (attrs.source === "github" && typeof attrs.repo === "string" && /^[^/\s]+\/[^/\s]+$/.test(attrs.repo)) return { repo: attrs.repo, ...(/^\d{1,15}$/.test(attrs.installation ?? "") ? { installation: Number(attrs.installation) } : {}) };
+  }
+  const own = at >= 0 ? content.slice(0, at) : content;
+  const url = REPO_URL.exec(own);
+  // The repository's name ends where the sentence does: trailing punctuation, then a .git, are not part of it.
+  return url ? { repo: `${url[1]}/${url[2]!.replace(/[.,;:)!?]+$/, "").replace(/\.git$/, "")}` } : undefined;
+}

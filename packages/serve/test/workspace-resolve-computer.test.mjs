@@ -11,9 +11,13 @@ import { join } from "node:path";
 import { after, test } from "node:test";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { readBackOf } from "@parcha/agentrun-computer";
+import { capabilityToolDefs } from "@parcha/agentrun-kernel/kernel";
 import { localWorkspace, resolveComputer, runTools } from "../dist/workspace/index.js";
 import { fakeComputer } from "./workspace-fake-computer.mjs";
 import { ARCHIL_KINDS, KINDS } from "./workspace-kinds-fixture.mjs";
+
+/** A kind's own tools, as the kernel registry lists them (the hand-over the desktop and phone share among them). */
+const kindTools = (kind) => capabilityToolDefs(kind).map((def) => def.name);
 
 const dirs = [];
 after(() => { for (const dir of dirs) rmSync(dir, { recursive: true, force: true }); });
@@ -41,8 +45,8 @@ function claim(root, saved = SAVED) {
     },
   };
 }
-/** Resolved against the registry once the remote sandboxes mount from Archil (KINDS is today's table, where they mount
- *  nothing). */
+/** Resolved against the registry with the remote sandboxes mounting from Archil (ARCHIL_KINDS; since module D6 the
+ *  module's own table, KINDS, says the same). */
 const resolve = (setting, mode, root = scratch(), saved, kinds = ARCHIL_KINDS) => resolveComputer(setting, mode, kinds, claim(root, saved));
 const KIND_REGISTRY = ARCHIL_KINDS;
 const shape = (resolved) => ("refused" in resolved ? resolved : { kind: resolved.kind, provider: resolved.provider, mounts: resolved.mounts, ports: resolved.ports });
@@ -84,11 +88,9 @@ test("Mode 2: Docker's sandbox is refused; a remote sandbox mounts from Archil; 
   assert.deepEqual(shape(await resolve({ kind: "desktop", provider: "orgo" }, 2)), { kind: "desktop", provider: "orgo", mounts: false, ports: ["screen", "input"] });
 });
 
-test("today's table, where no remote sandbox mounts yet: Mode 2 refuses each sandbox in words, and an E2B desktop runs unmounted", async () => {
-  assert.deepEqual(await resolve({ kind: "sandbox", provider: "daytona" }, 2, scratch(), SAVED, KINDS), {
-    refused: "A Daytona sandbox can't mount the run's folder from Archil: pick another sandbox for this agent's computer in Settings → Computers.",
-  });
-  assert.equal((await resolve({ kind: "desktop", provider: "e2b" }, 2, scratch(), SAVED, KINDS)).mounts, false);
+test("the module's own table takes archil mounts on Daytona, Modal and E2B (module D6): Mode 2 mounts a Daytona sandbox and an E2B desktop", async () => {
+  assert.deepEqual(shape(await resolve({ kind: "sandbox", provider: "daytona" }, 2, scratch(), SAVED, KINDS)), { kind: "sandbox", provider: "daytona", mounts: true, ports: ["files", "exec", "processes"] });
+  assert.equal((await resolve({ kind: "desktop", provider: "e2b" }, 2, scratch(), SAVED, KINDS)).mounts, true);
 });
 
 test("a setting the registry does not give is refused in words that name the setting, the registry's own reasons in them", async () => {
@@ -114,7 +116,7 @@ test("start: a mounted desktop launches with the run's folder as its mount and o
   const started = await resolved.start({ workspace: localWorkspace(root), check: { readBackOf } });
   assert.deepEqual(side.launched, [["docker", { kind: "desktop", keys: {}, mount: { kind: "bind", path: root } }]]);
   const run = await runTools(localWorkspace(root), started.computer, { mode: 1, context: ctx });
-  assert.deepEqual(run.registry.list().map((def) => def.name), ["read", "write", "edit", "bash", "bash_background", "bash_output", "bash_input", "bash_signal", "bash_list", "desktop_screen", "desktop_input"]);
+  assert.deepEqual(run.registry.list().map((def) => def.name), ["read", "write", "edit", "bash", "bash_background", "bash_output", "bash_input", "bash_signal", "bash_list", ...kindTools("desktop")]);
   await started.release();
   assert.deepEqual(side.launched.at(-1), ["released", "fake-1"]);
   // A remote sandbox gets its declared keys and nothing else saved beside them.
@@ -126,8 +128,8 @@ test("start: a mounted desktop launches with the run's folder as its mount and o
 test("start: an unmounted desktop, a phone and a browser launch with no mount; their runs keep the runner's folder", async () => {
   const root = scratch();
   for (const [setting, mode, tools] of [
-    [{ kind: "desktop", provider: "e2b" }, 1, ["desktop_screen", "desktop_input"]],
-    [{ kind: "phone", provider: "phone-harness" }, 2, ["phone_screen", "phone_tap", "phone_swipe", "phone_type", "phone_apps", "phone_open"]],
+    [{ kind: "desktop", provider: "e2b" }, 1, kindTools("desktop")],
+    [{ kind: "phone", provider: "phone-harness" }, 2, kindTools("phone")],
   ]) {
     const side = claim(root);
     const started = await (await resolveComputer(setting, mode, KIND_REGISTRY, side)).start({ workspace: localWorkspace(root), check: { readBackOf } });

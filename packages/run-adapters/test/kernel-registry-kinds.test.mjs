@@ -5,15 +5,16 @@
 // is refused in words that name the setting; a def with no executor is refused when the registry is built.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { capabilityToolDefs, createRegistry, hostToolDefs, NEEDS_A_COMPUTER } from "@parcha/agentrun-kernel/kernel";
+import { capabilityToolDefs, createRegistry, hostToolDefs, NEEDS_A_COMPUTER, PHONE_TREE_MAX_CHARS, PHONE_TREE_MAX_NODES } from "@parcha/agentrun-kernel/kernel";
 import { fakeBrowser, fakeInput, fakePhone, fakeScreen, PNG, refusal } from "./registry-ports.mjs";
 import { localHands } from "./registry-support.mjs";
 
 const answer = (text) => async () => ({ text });
 const injected = { read: answer("read"), write: answer("write"), edit: answer("edit"), bash: answer("bash") };
 const LOCAL = ["read", "write", "edit", "bash"];
-const DESKTOP = ["desktop_screen", "desktop_input"];
-const PHONE = ["phone_screen", "phone_tap", "phone_swipe", "phone_type", "phone_apps", "phone_open"];
+const HANDOFF = "computer_request_handoff";
+const DESKTOP = ["desktop_screen", "desktop_input", HANDOFF];
+const PHONE = ["phone_screen", "phone_tree", "phone_tap", "phone_swipe", "phone_type", "phone_key", "phone_apps", "phone_open", HANDOFF];
 /** A browser's contracts as a host passes them (pi-browser's ToolContract shape); the registry keeps their words as given. */
 const CONTRACTS = Object.freeze([
   { name: "snapshot", label: "Browser: snapshot", description: "The page's tree.", parameters: { type: "object", properties: {} }, effect: "read", replay: "safe" },
@@ -31,7 +32,8 @@ const words = (tool, kind) => `${tool} needs a ${kind} computer: set this agent'
 
 test("a kind's tools follow the host tools, in a fixed order whatever order the kinds are given in", () => {
   const registry = createRegistry({ maxExecS: 600, shell: "local", kinds: ["browser", "phone", "desktop"], executors: { ...injected, browser: browserExecutors() }, browserTools: CONTRACTS });
-  assert.deepEqual(registry.list().map((def) => def.name), [...LOCAL, ...DESKTOP, ...PHONE, ...BROWSER]);
+  // The hand-over both kinds have is listed once, with the desktop's.
+  assert.deepEqual(registry.list().map((def) => def.name), [...LOCAL, ...DESKTOP, ...PHONE.filter((name) => name !== HANDOFF), ...BROWSER]);
   // No kinds: today's rows, unchanged.
   assert.deepEqual(createRegistry({ maxExecS: 600, shell: "local", executors: injected }).list(), hostToolDefs({ maxExecS: 600, shell: "local" }));
 });
@@ -41,10 +43,11 @@ test("each kind's definitions: its own gate names and settings key; a read is re
   assert.deepEqual(desktop.map((def) => [def.name, def.gateName, def.settingsKey, def.replaySafe, def.source]), [
     ["desktop_screen", "host:desktop/desktop_screen", "desktop", true, "host"],
     ["desktop_input", "host:desktop/desktop_input", "desktop", false, "host"],
+    [HANDOFF, `host:desktop/${HANDOFF}`, "desktop", false, "host"],
   ]);
   const phone = capabilityToolDefs("phone");
   assert.deepEqual(phone.map((def) => [def.name, def.settingsKey, def.replaySafe]), [
-    ["phone_screen", "phone", true], ["phone_tap", "phone", false], ["phone_swipe", "phone", false], ["phone_type", "phone", false], ["phone_apps", "phone", true], ["phone_open", "phone", false],
+    ["phone_screen", "phone", true], ["phone_tree", "phone", true], ["phone_tap", "phone", false], ["phone_swipe", "phone", false], ["phone_type", "phone", false], ["phone_key", "phone", false], ["phone_apps", "phone", true], ["phone_open", "phone", false], [HANDOFF, "phone", false],
   ]);
   for (const def of [...desktop, ...phone]) {
     assert.equal(def.parameters.type, "object", def.name);
@@ -132,6 +135,52 @@ test("the phone's tools: a shot as an image, a tap, a swipe, typing, its apps an
   assert.equal((await registry.invoke("phone_tap", { x: "1", y: 2 }, { hands })).error, "x and y are whole numbers from 0, in the screenshot's pixels");
   const refusing = handsWith({ phone: fakePhone({ refuse: refusal("not_found", "no app com.nope") }) });
   assert.equal((await registry.invoke("phone_open", { id: "com.nope" }, { hands: refusing })).error, "no app com.nope");
+});
+
+test("phone_tree lists the nodes a model can tap or type into, each with its center and bounds; phone_key presses back, home or enter", async () => {
+  const phone = fakePhone();
+  const registry = createRegistry({ maxExecS: 600, shell: "none", kinds: ["phone"], executors: injected });
+  const hands = handsWith({ phone });
+  assert.equal((await registry.invoke("phone_tree", {}, { hands })).text, [
+    "3 nodes you can tap or type into, of 37 on the screen. Coordinates are a phone_screen screenshot's pixels.",
+    '- EditText "To" [com.example.mail:id/to]: a field, focused; center (540, 360), bounds 40,300 1000x120',
+    '- Button "Send" [com.example.mail:id/send]: center (930, 2260), bounds 820,2200 220x120',
+    '- Switch "Attach signature": center (970, 640), bounds 900,600 140x80',
+  ].join("\n"));
+  const truncated = handsWith({ phone: fakePhone({ tree: { nodes: [], total: 5000, truncated: true } }) });
+  assert.equal((await registry.invoke("phone_tree", {}, { hands: truncated })).text, "0 nodes you can tap or type into, of 5000 on the screen. Coordinates are a phone_screen screenshot's pixels. The phone gave only part of the screen's structure: take a phone_screen screenshot for the rest.");
+  for (const key of ["back", "home", "enter"]) assert.equal((await registry.invoke("phone_key", { key }, { hands })).text, `Pressed ${key}.`);
+  assert.equal((await registry.invoke("phone_key", { key: "volume_up" }, { hands })).error, "key is back, home or enter");
+  assert.deepEqual(phone.calls, [["tree"], ["key", "back"], ["key", "home"], ["key", "enter"]]);
+  const def = capabilityToolDefs("phone").find((d) => d.name === "phone_key");
+  assert.deepEqual(def.parameters.properties.key.enum, ["back", "home", "enter"]);
+});
+
+test("a tool the run's computer does not offer (without) is not listed; called anyway, a phone with no tree or keys says so in words", async () => {
+  const registry = createRegistry({ maxExecS: 600, shell: "local", kinds: ["phone"], without: ["phone_tree", "phone_key"], executors: injected });
+  assert.deepEqual(registry.list().map((def) => def.name), [...LOCAL, ...PHONE.filter((name) => name !== "phone_tree" && name !== "phone_key")]);
+  const { tree, key, ...rest } = fakePhone();
+  const hands = handsWith({ phone: rest });
+  assert.equal((await registry.invoke("phone_tree", {}, { hands })).error, "this phone does not offer its UI tree");
+  assert.equal((await registry.invoke("phone_key", { key: "back" }, { hands })).error, "this phone does not offer its keys");
+});
+
+test("phone_tree's answer is bounded: past PHONE_TREE_MAX_NODES nodes, or PHONE_TREE_MAX_CHARS characters, one line says how many more were not shown", async () => {
+  const registry = createRegistry({ maxExecS: 600, shell: "none", kinds: ["phone"], executors: injected });
+  const button = (i, text = `Row ${i}`) => ({ role: "android.widget.Button", text, bounds: { x: 0, y: i * 10, w: 100, h: 10 }, clickable: true, editable: false });
+  // Many nodes: the first PHONE_TREE_MAX_NODES are listed, then one line for the rest.
+  const many = Array.from({ length: PHONE_TREE_MAX_NODES + 250 }, (_, i) => button(i));
+  const listed = (await registry.invoke("phone_tree", {}, { hands: handsWith({ phone: fakePhone({ tree: { nodes: many, total: 5000, truncated: false } }) }) })).text.split("\n");
+  assert.equal(listed[0], `${many.length} nodes you can tap or type into, of 5000 on the screen. Coordinates are a phone_screen screenshot's pixels.`);
+  assert.equal(listed.length, 1 + PHONE_TREE_MAX_NODES + 1);
+  assert.equal(listed.at(-1), "250 more nodes not shown.");
+  // Long texts: the answer stops within PHONE_TREE_MAX_CHARS, each node's text clipped, the rest counted.
+  const long = Array.from({ length: 100 }, (_, i) => button(i, "x".repeat(5000)));
+  const text = (await registry.invoke("phone_tree", {}, { hands: handsWith({ phone: fakePhone({ tree: { nodes: long, total: 100, truncated: false } }) }) })).text;
+  assert.ok(text.length <= PHONE_TREE_MAX_CHARS, `${text.length} characters`);
+  const shown = text.split("\n").filter((line) => line.startsWith("- ")).length;
+  assert.ok(shown > 0 && shown < 100, `${shown} shown`);
+  assert.equal(text.split("\n").at(-1), `${100 - shown} more nodes not shown.`);
 });
 
 test("the browser kind's tools run on the host's executors, which reach the browser through the hands' CDP connect", async () => {

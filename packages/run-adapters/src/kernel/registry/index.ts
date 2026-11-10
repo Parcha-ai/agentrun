@@ -12,10 +12,12 @@ export { defaultPermissionOf, SHELL_FAMILY, SHELL_WATCHERS, shellPermission, she
 export type { Permission } from "./gate.js";
 export { answerOf, exitCodeOf, needsKindWords } from "./hands.js";
 export type {
-  Browser, CapabilityKind, CdpSession, ExecResult, Executor, Hands, HostExecutors, Input, InputAction, Phone, PhonePoint, ProcessInfo, Processes, Screen,
+  Browser, CapabilityKind, CdpSession, ExecResult, Executor, Hands, HostExecutors, Input, InputAction, Phone, PhoneKey, PhoneNode, PhonePoint, ProcessInfo, Processes, Screen,
   ScreenPoint, Shot, ToolAnswer, ToolCall,
 } from "./hands.js";
-export { PHONE_EXECUTORS, PHONE_SWIPE_MAX_MS, PHONE_SWIPE_MS, PHONE_TOOL_DEFS } from "./phone.js";
+export { PHONE_EXECUTORS, PHONE_KEYS, PHONE_SWIPE_MAX_MS, PHONE_SWIPE_MS, PHONE_TOOL_DEFS, PHONE_TREE_MAX_CHARS, PHONE_TREE_MAX_NODES } from "./phone.js";
+export { HANDOFF_DEFAULT_S, HANDOFF_MAX_S, HANDOFF_MIN_S, HANDOFF_TOOL } from "./handoff.js";
+export type { Handoff } from "./hands.js";
 export {
   BACKGROUND_DIR,
   BACKGROUND_INPUT_BYTES,

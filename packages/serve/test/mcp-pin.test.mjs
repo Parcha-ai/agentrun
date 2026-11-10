@@ -10,13 +10,12 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { AGENT_LAYER_PINS } from "../dist/tool-plane.js";
-import { agent, call, cookieOf, follow, scratch, serve, withEnv } from "./support.mjs";
+import { agent, call, clientOwnerSession, follow, scratch, serve, withEnv } from "./support.mjs";
 
 /** An agent's own pin is kept from the store cutover on (tool-plane.ts AGENT_LAYER_PINS): its tests run from then. */
 const AGENT_PINS = AGENT_LAYER_PINS ? {} : { skip: "an agent's own pin waits for the store cutover (AGENT_LAYER_PINS)" };
 
 const FAUX_MCP = new URL("./fixtures/faux-mcp.mjs", import.meta.url).pathname;
-const PHRASE = "the owner signs in with this phrase";
 const json = { "content-type": "application/json" };
 const SEND = "mcp:fake/send_message";
 
@@ -31,10 +30,8 @@ async function setup(t) {
     run: ({ channel_id }) => ({ content: [{ type: "text", text: `posted to ${channel_id}` }] }),
   };
   assert.equal((await server.api("PUT", "/settings/mcp-servers/fake", { url: fake.url, auth: { type: "none" } })).status, 200);
-  const origin = `http://127.0.0.1:${server.port}`;
-  const signedIn = await call(server.port, { method: "POST", path: "/v2/setup", headers: { ...json, origin }, body: { password: PHRASE } });
-  assert.equal(signedIn.status, 201, signedIn.text);
-  const cookie = cookieOf(signedIn);
+  // The owner's session the test client holds (its one owner on this server), as the console sends an answer.
+  const { cookie, origin } = await clientOwnerSession(server);
   const answer = async (runId, approvalId, body) => (await call(server.port, { method: "POST", path: `/v2/runs/${runId}/approvals/${approvalId}`, headers: { ...json, cookie, origin }, body })).status;
   const sends = () => fake.log.filter((entry) => entry.method === "tools/call" && entry.tool === "send_message");
   const make = async (id, setting) => { const made = await server.api("POST", "/agents", agent(id, { tools: [SEND], tool_settings: { [SEND]: setting } })); assert.equal(made.status, 201, JSON.stringify(made.body)); };

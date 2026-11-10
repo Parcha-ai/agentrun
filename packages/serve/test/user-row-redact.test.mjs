@@ -5,7 +5,9 @@ import { randomBytes } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
-import { agent, flowAgent, follow, runDir, scratch, serve, withEnv } from "./support.mjs";
+import { readLaunchBody } from "../dist/run-launch.js";
+import { openSqliteStore } from "../dist/store/sqlite/store.js";
+import { agent, flowAgent, follow, scratch, serve, withEnv } from "./support.mjs";
 
 /** A held key, made at runtime: distinct per run, and no credential-shaped literal for the source export. */
 const KEY = ["not-a-secret", "pasted-key", randomBytes(6).toString("hex")].join("-");
@@ -76,5 +78,11 @@ test("a workflow run whose input holds a held key, cut or whole, and an all-digi
     assert.ok(title.startsWith("wf: "), `${where}: ${title}`);
     assert.ok(!holdsRun(title, KEY) && !title.includes(DIGITS), `${where}'s title: ${title}`);
   }
-  assert.deepEqual(JSON.parse(await readFile(join(runDir(data, runId), "serve.json"), "utf8")).input, input, "the run keeps its input as given");
+  // The run keeps its input as given: its launch, as the store holds it, never the cut title's words.
+  const store = await openSqliteStore({ dataDir: data, role: "runner" });
+  try {
+    assert.deepEqual(readLaunchBody((await store.runs.launch(runId)).body).input, input, "the run keeps its input as given");
+  } finally {
+    await store.close();
+  }
 });
