@@ -388,13 +388,13 @@ test("a run's own credentials cannot approve: each secret the runner holds for i
   assert.match(git(repo, ["show", "main:paperdepot24-first.md"]), /status: pending/, "nothing approved it");
 });
 
-test("with accounts off nothing approves, a page cookie the token mints included, and capabilities say so", { timeout: 150_000 }, async (t) => {
+test("with accounts off nothing approves, the launch link's console session included, and capabilities say so", { timeout: 150_000 }, async (t) => {
   const server = await learnedPending(t);
   const { api, port, repo } = server;
   const unavailable = { grade_model: null, pending: true, approve: false, approve_needs: "password" };
   assert.deepEqual((await api("GET", "/capabilities")).body.learning, unavailable);
-  // The link with the token sets the accounts-off page cookie: a token holder can mint it, so it approves nothing.
-  const link = await call(port, { path: `/?token=${encodeURIComponent(server.token)}` });
+  // The launch link sets the accounts-off console session: no password session, so it approves nothing.
+  const link = await call(port, { path: `/?launch=${server.launchCode}` });
   const cookie = cookieOf(link);
   assert.ok(cookie, "the link sets the page's cookie");
   assert.deepEqual(JSON.parse((await call(port, { path: "/v2/capabilities", headers: { cookie } })).text).learning, unavailable, "the page reads why it can't");

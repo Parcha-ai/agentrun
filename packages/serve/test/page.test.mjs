@@ -40,18 +40,18 @@ async function served(t) {
   } finally {
     store.close();
   }
-  const opened = await call(server.port, { path: `/?token=${server.token}` });
+  const opened = await call(server.port, { path: `/?launch=${server.launchCode}` });
   const cookie = opened.headers["set-cookie"]?.[0]?.split(";")[0];
   return { ...server, opened, cookie, origin: `http://127.0.0.1:${server.port}` };
 }
 
 // SKIP (follow-up #2078): the store answers 'database is locked' on the runner
-test.skip("without the cookie / is still the console, which asks for the printed link itself; a wrong token is a 401 that sets nothing; the console's files are public, the store's data and /v2 are not", async (t) => {
-  const { port, token } = await served(t);
+test.skip("without the cookie / is still the console, which asks for the printed link itself; a wrong code is a 401 that sets nothing; the console's files are public, the store's data and /v2 are not", async (t) => {
+  const { port, token, launchCode } = await served(t);
   const open = await call(port, { path: "/" });
   assert.deepEqual([open.status, open.text], [200, CONSOLE_INDEX], "the console reads /v2 and shows its own screen for a browser the server does not know");
   assert.equal(open.headers["set-cookie"], undefined);
-  for (const path of ["/?token=wrong", `/?token=${token}x`]) {
+  for (const path of ["/?launch=wrong", `/?launch=${launchCode}x`, `/?launch=${token}`]) {
     const res = await call(port, { path });
     assert.deepEqual([res.status, res.text], [401, CONSOLE_INDEX], path);
     assert.equal(res.headers["set-cookie"], undefined, path);
@@ -68,7 +68,7 @@ test.skip("without the cookie / is still the console, which asks for the printed
 
 // SKIP (follow-up #2078): the store answers 'database is locked' on the runner
 test.skip("the printed link sets an HttpOnly, SameSite=Strict cookie that is not the token, once, and redirects to the same path without it", async (t) => {
-  const { port, token, opened, cookie } = await served(t);
+  const { port, token, launchCode, opened, cookie } = await served(t);
   assert.equal(opened.status, 303);
   assert.equal(opened.headers.location, "/");
   const [set, ...more] = opened.headers["set-cookie"];
@@ -76,11 +76,11 @@ test.skip("the printed link sets an HttpOnly, SameSite=Strict cookie that is not
   assert.deepEqual(set.split("; ").slice(1).sort(), ["HttpOnly", "Path=/", "SameSite=Strict"]);
   assert.match(cookie, /^agentrun-\d+=[A-Za-z0-9_-]{43}$/);
   assert.ok(!set.includes(token), "the cookie is not the API key");
-  const kept = await call(port, { path: `/?theme=dark&token=${token}#ignored` });
+  const kept = await call(port, { path: `/?theme=dark&launch=${launchCode}#ignored` });
   assert.equal(kept.headers.location, "/?theme=dark", "other parameters stay");
-  const https = await call(port, { path: `/?token=${token}`, headers: { "x-forwarded-proto": "https" } });
+  const https = await call(port, { path: `/?launch=${launchCode}`, headers: { "x-forwarded-proto": "https" } });
   assert.ok(https.headers["set-cookie"][0].split("; ").includes("Secure"), "Secure when the request came over https");
-  assert.equal(https.headers["set-cookie"][0].split(";")[0], cookie, "the same cookie for the same token");
+  assert.notEqual(https.headers["set-cookie"][0].split(";")[0], cookie, "each opening is a session of its own, made at random");
 });
 
 // Connect GitHub posts the App's manifest in a form to github.com (the console's githubFormAction takes https on github.com
@@ -151,21 +151,22 @@ test.skip("the cookie stands in for the Bearer header: every GET, and a write on
   assert.equal(both.status, 401, "a Bearer header that is sent is the one checked");
 });
 
-test("the bin prints the page's link once, with the token, beside the base URL and the key", { timeout: 20_000 }, async (t) => {
+test("the bin prints the page's link once, with its launch code and never the token, beside the base URL and the key", { timeout: 20_000 }, async (t) => {
   const data = join(await scratch(t), "agents");
   const child = spawn(process.execPath, [new URL("../dist/cli.js", import.meta.url).pathname, "--data", data, "--port", "0"], { stdio: ["ignore", "pipe", "inherit"], env: { ...process.env, AGENTRUN_ACCOUNTS: "0" } });
   t.after(() => child.kill("SIGTERM"));
   let out = "";
   for await (const chunk of child.stdout) {
     out += chunk;
-    if (/\?token=.*\n/.test(out)) break;
+    if (/\?launch=.*\n/.test(out)) break;
   }
   const lines = out.trim().split("\n");
   const prefix = "AGENTRUN_API_KEY=";
   const key = lines.find((line) => line.startsWith(prefix)).slice(prefix.length);
-  const links = lines.filter((line) => line.includes("?token="));
+  const links = lines.filter((line) => line.startsWith("Open "));
   assert.equal(links.length, 1);
-  assert.match(links[0], new RegExp(`^Open http://127\\.0\\.0\\.1:\\d+/\\?token=${key}$`));
+  assert.match(links[0], /^Open http:\/\/127\.0\.0\.1:\d+\/\?launch=[A-Za-z0-9_-]{32}$/);
+  assert.ok(!links[0].includes(key), "the link never holds the token");
 });
 
 test("with AGENTRUN_PUBLIC_URL, the bin prints the link and base URL a person opens (a container's published port), not the one it listens on", { timeout: 20_000 }, async (t) => {
@@ -175,10 +176,11 @@ test("with AGENTRUN_PUBLIC_URL, the bin prints the link and base URL a person op
   let out = "";
   for await (const chunk of child.stdout) {
     out += chunk;
-    if (/\?token=.*\n/.test(out)) break;
+    if (/\?launch=.*\n/.test(out)) break;
   }
   const key = /^AGENTRUN_API_KEY=(.+)$/m.exec(out)?.[1];
-  assert.match(out, new RegExp(`^Open http://127\\.0\\.0\\.1:8123/\\?token=${key}$`, "m"), out);
+  assert.match(out, /^Open http:\/\/127\.0\.0\.1:8123\/\?launch=[A-Za-z0-9_-]{32}$/m, out);
+  assert.ok(!/^Open .*\?token=/m.test(out) && key, out);
   assert.match(out, /^AGENTRUN_BASE_URL=http:\/\/127\.0\.0\.1:8123\/v2$/m, out);
 });
 
@@ -202,10 +204,10 @@ test("with AGENTRUN_TOKEN and --listen 0.0.0.0, the bin requires that token, pri
   let out = "";
   for await (const chunk of child.stdout) {
     out += chunk;
-    if (/\?token=.*\n/.test(out)) break;
+    if (/\?launch=.*\n/.test(out)) break;
   }
   assert.equal(out.includes(token), false, "the token from the environment is never printed");
-  const [, port] = /^Open http:\/\/127\.0\.0\.1:(\d+)\/\?token=\$AGENTRUN_TOKEN$/m.exec(out) ?? [];
+  const [, port] = /^Open http:\/\/127\.0\.0\.1:(\d+)\/\?launch=[A-Za-z0-9_-]{32}$/m.exec(out) ?? [];
   assert.ok(port, out);
   assert.match(out, /listening on 0\.0\.0\.0/);
   assert.equal((await call(Number(port), { path: "/v2/agents", headers: { host: "agents.example.com", authorization: `Bearer ${token}` } })).status, 200);
