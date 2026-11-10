@@ -102,3 +102,22 @@ test("two senders claiming the same due post at once, on two connections: exactl
   assert.equal(await store.channels.release(CHANNEL), 2, "msg_1 and msg_3 let go");
   assert.deepEqual((await store.channels.queued(CHANNEL)).map((p) => [p.id, p.state, p.claimedUntil]), [["msg_1", "queued", null], ["msg_3", "queued", null], ["msg_later", "queued", null]]);
 });
+
+test("two posts to one channel at once, on two connections, then settles that trim the channel to its newest try: neither unread post is lost, whatever order they committed in (a trim drops only settled posts)", async (t) => {
+  const { store, file, clock } = await storeOn(t);
+  await agentWithRevision(store);
+  const other = (await storeOn(t, { file, clock, role: "runner" })).store;
+  await store.channels.post(post("msg_old"));
+  await store.channels.settle("msg_old", { state: "sent", attempts: 1 }, tried("msg_old", 1, { statusCode: 200, error: null }), { kept: 1 });
+  const added = await Promise.all([store.channels.post(post("msg_a")), other.channels.post(post("msg_b"))]);
+  assert.deepEqual(added, [true, true]);
+  // Tries of other posts, each trimming the channel to one: every settled post no kept try names goes, never a queued one.
+  for (const [i, id] of ["msg_c", "msg_d"].entries()) {
+    await store.channels.post(post(id));
+    await (i ? other : store).channels.settle(id, { state: "sent", attempts: 1 }, tried(id, 10 + i, { statusCode: 200, error: null }), { kept: 1 });
+  }
+  assert.deepEqual((await store.channels.queued(CHANNEL)).map((p) => p.id).sort(), ["msg_a", "msg_b"], "both unread posts kept");
+  assert.equal(await store.channels.get("msg_old"), undefined, "a settled post past the kept tries goes");
+  assert.equal(await store.channels.get("msg_c"), undefined);
+  assert.deepEqual((await store.channels.attempts(CHANNEL, 10)).map((a) => a.postId), ["msg_d"], "the channel keeps its newest try");
+});
