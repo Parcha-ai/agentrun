@@ -7,6 +7,10 @@
 // viewer is gone PERSON_AWAY_MS, or PERSON_HOLD_MS pass with no input. The hold is dropped when it ends; the time is booked
 // as session time always is. The run stays working; the timeline says "You took over the browser" and how it came back.
 //
+// On the runner (the run's journal given: `answered`), an ask's only record is its waiting entry in the run's journal: no
+// file is written for it, so nothing the run's agent or its file list reaches holds one, and a file planted where the
+// per-run process kept them changes nothing. Its answers are the journal's too.
+//
 // The agent asks: pi-browser holds the session for a person and calls `request`, which holds the person's time the same
 // way (refused, the tool's result says why), writes the ask's pending record in the run's directory, outside work/
 // (BROWSER_ASK_DIR/<id>.json, its id a digest of the session's tag and the model's request id, 0600 in 0700: the session's tag, the instruction, the done-when condition, when it was asked
@@ -119,6 +123,12 @@ const pendingOf = (value: unknown, id: string): PendingAsk | undefined => {
   const v = value as Partial<PendingAsk> | undefined;
   const ok = v?.id === id && typeof v.tag === "string" && TAG.test(v.tag) && typeof v.instruction === "string" && typeof v.completion_condition === "string" && Number.isFinite(Date.parse(String(v.asked_at))) && Number.isFinite(Date.parse(String(v.expires_at)));
   return ok ? { id, tag: v.tag!, instruction: v.instruction!, completion_condition: v.completion_condition!, asked_at: v.asked_at!, expires_at: v.expires_at! } : undefined;
+};
+/** Ask `id` as its waiting hand-over entry holds it (waitingEntry's shape: its session's tag as `session`), or undefined:
+ *  what the runner's journal keeps as the ask's one record. */
+export const pendingOfWaiting = (data: unknown, id: string): PendingAsk | undefined => {
+  const d = data as Record<string, unknown> | undefined;
+  return d?.state === "waiting" ? pendingOf({ id: d.id, tag: d.session, instruction: d.instruction, completion_condition: d.completion_condition, asked_at: d.asked_at, expires_at: d.expires_at }, id) : undefined;
 };
 const answerOf = (value: unknown): Answer | undefined => {
   const v = value as Partial<Answer> | undefined;
@@ -283,12 +293,15 @@ export function personHands(options: {
    *  exactly one answered entry whoever writes it (a person's hand-back row the runner applies, this process's give or
    *  expiry). Without it, the answer is written through `note` after a read. */
   answer?(id: string, data: Record<string, string>): Promise<Answer>;
+  /** On the runner's path: ask `id` as the run's journal has it (its waiting hand-over entry), or undefined. The ask's
+   *  only record there: no record file is written or read. */
+  asked?(id: string): Promise<PendingAsk | undefined>;
   /** For tests: called between an ask's record and its row. */
   afterRecord?: () => void;
 }) {
   const holdMs = options.holdMs ?? PERSON_HOLD_MS;
   const timers = options.timers ?? { set: (run: () => void, ms: number) => setTimeout(run, ms).unref(), clear: (handle: unknown) => clearTimeout(handle as NodeJS.Timeout) };
-  const open = new Map<string, { tag: string; expiresAt: number; drop(): void }>();
+  const open = new Map<string, { tag: string; expiresAt: number; askedAt: number; drop(): void }>();
   const settled = new Map<string, AskOutcome>();
   /** Asks the run's cap ended (a refused re-hold), and its words. */
   const capped = new Map<string, string>();
@@ -315,6 +328,14 @@ export function personHands(options: {
   const readJournal = async (id: string): Promise<Answer | undefined> => {
     await writing.get(id);
     return journalRead(id);
+  };
+  /** Each ask as the journal's waiting entry has it (options.asked), once read: the runner's path reads asks nowhere else. */
+  const fromJournalAsk = new Map<string, PendingAsk>();
+  /** Ask `id`'s waiting entry read into fromJournalAsk, for adopt (which reads synchronously) to take up. */
+  const loadAsk = async (id: string): Promise<void> => {
+    if (!journal || !options.asked || open.has(id) || fromJournalAsk.has(id)) return;
+    const found = await options.asked(id).catch(() => undefined);
+    if (found?.id === id && TAG.test(found.tag)) fromJournalAsk.set(id, found);
   };
   /** Ask `id` answered `outcome` at `at` in the journal, unless it has an answer there (the first is its answer). A write
    *  the journal refused leaves the answer this process gave, so the agent's wait still ends. */
@@ -474,15 +495,17 @@ export function personHands(options: {
 
   /** Ask `id` ended at the run's cap (`words`): expired, written as its answer (the first, as any is), its wait told why. */
   const capAsk = (id: string, words: string): void => {
-    const dir = askDir(options.root);
-    if (!dir || settled.has(id)) return;
-    capped.set(id, words);
     if (journal) {
+      if (settled.has(id)) return;
+      capped.set(id, words);
       // The runner's path: the end is the journal's answer, now, unless the ask has one there already.
-      const tag = open.get(id)?.tag ?? pendingOf(readOwn(dir, `${id}.json`), id)?.tag;
+      const tag = open.get(id)?.tag ?? fromJournalAsk.get(id)?.tag;
       if (tag) void answerInJournal(id, tag, "expired", new Date(now()).toISOString(), words).then(() => settle(id), () => undefined);
       return;
     }
+    const dir = askDir(options.root);
+    if (!dir || settled.has(id)) return;
+    capped.set(id, words);
     answerOnce(dir, id, "expired", words, now());
     settle(id);
   };
@@ -491,17 +514,19 @@ export function personHands(options: {
    *  browser back. Its hold goes with it (settle), and another session's ask is never touched. True when an ask was
    *  settled here, whose row (settle's) says the hand-back. */
   const givenDone = (tag: string): boolean => {
-    const dir = askDir(options.root);
-    // On the runner's path an ask's answer is the journal's (an answer file is never read there).
-    const unanswered = (ask: PendingAsk, answer: Answer | undefined) => (journal ? !fromJournal.has(ask.id) : !answer);
-    const waiting = dir ? asksIn(options.root).find(({ ask, answer }) => unanswered(ask, answer) && ask.tag === tag && Date.parse(ask.expires_at) > Date.now())?.ask : undefined;
-    if (!dir || !waiting || settled.has(waiting.id)) return false;
     if (journal) {
-      // Written as the journal's answer, now, unless the ask has one there already (a person's answer that came first
-      // writes its own row, settle's, as this one would).
-      void answerInJournal(waiting.id, tag, "done", new Date(now()).toISOString()).then(() => settle(waiting.id), () => undefined);
+      // The runner's path: the newest ask open in this process on the session (made here, or taken up from the journal by
+      // the agent's wait, which polls it), unanswered and unexpired; answered done in the journal, now, unless it has an
+      // answer there already (a person's answer that came first writes its own row, settle's, as this one would).
+      const newest = [...open.entries()].filter(([id, ask]) => ask.tag === tag && !settled.has(id) && !fromJournal.has(id) && ask.expiresAt > Date.now()).sort((a, b) => b[1].askedAt - a[1].askedAt)[0];
+      if (!newest) return false;
+      const [id] = newest;
+      void answerInJournal(id, tag, "done", new Date(now()).toISOString()).then(() => settle(id), () => undefined);
       return true;
     }
+    const dir = askDir(options.root);
+    const waiting = dir ? asksIn(options.root).find(({ ask, answer }) => !answer && ask.tag === tag && Date.parse(ask.expires_at) > Date.now())?.ask : undefined;
+    if (!dir || !waiting || settled.has(waiting.id)) return false;
     answerOnce(dir, waiting.id, "done", undefined, now());
     return settle(waiting.id) !== undefined;
   };
@@ -512,10 +537,11 @@ export function personHands(options: {
   const adopt = (id: string): { tag: string; expiresAt: number; drop(): void } | undefined => {
     const known = open.get(id);
     if (known) return known;
-    const dir = askDir(options.root);
-    const kept = dir ? pendingOf(readOwn(dir, `${id}.json`), id) : undefined;
+    // The runner's path: the journal's waiting entry, as loadAsk read it; else the record file in the run's directory.
+    const dir = journal ? undefined : askDir(options.root);
+    const kept = journal ? fromJournalAsk.get(id) : dir ? pendingOf(readOwn(dir, `${id}.json`), id) : undefined;
     if (!kept) return undefined;
-    const ask = { tag: kept.tag, expiresAt: Date.parse(kept.expires_at), drop() {} };
+    const ask = { tag: kept.tag, expiresAt: Date.parse(kept.expires_at), askedAt: Date.parse(kept.asked_at), drop() {} };
     open.set(id, ask);
     watch();
     // Its time was held by the process that asked, which is gone: held again here, under the cap, as an ask's is. With no
@@ -540,9 +566,11 @@ export function personHands(options: {
    *  the row): the row is committed now, so the run shows the ask and its notice goes out. The nth ask on a session is in
    *  once the session has n waiting rows, as askShown reads it. An ask answered or expired needs none. */
   const reshow = async (id: string): Promise<void> => {
+    // The runner's path: an ask's record is its waiting entry, so one taken up from the journal has its row by being there.
+    if (journal) return;
     const dir = askDir(options.root);
     const kept = dir && options.waiting ? pendingOf(readOwn(dir, `${id}.json`), id) : undefined;
-    if (!dir || !kept || settled.has(id) || (journal ? await readJournal(id) : answerOf(readOwn(dir, `${id}.answer.json`))) || Date.parse(kept.expires_at) <= Date.now()) return;
+    if (!dir || !kept || settled.has(id) || answerOf(readOwn(dir, `${id}.answer.json`)) || Date.parse(kept.expires_at) <= Date.now()) return;
     const nth = asksIn(options.root).map(({ ask: each }) => each).filter((each) => each.tag === kept.tag).reverse().findIndex((each) => each.id === id) + 1;
     if (nth > 0 && (await options.waiting!(kept.tag)) < nth) await note("agent.handover", waitingEntry(kept));
   };
@@ -553,11 +581,11 @@ export function personHands(options: {
     const known = settled.get(id);
     if (known) return known;
     const ask = adopt(id);
-    const dir = askDir(options.root);
-    if (!ask || !dir) return undefined;
+    const dir = journal ? undefined : askDir(options.root);
+    if (!ask || (!journal && !dir)) return undefined;
     // On the runner's path the answer is the journal's, as last read (refresh writes a lapsed ask's expiry there first).
-    const written = journal ? fromJournal.get(id) : answerOf(readOwn(dir, `${id}.answer.json`));
-    const answered = written?.outcome ?? (!journal && Date.now() >= ask.expiresAt ? answerOnce(dir, id, "expired", undefined, now()) : undefined);
+    const written = journal ? fromJournal.get(id) : answerOf(readOwn(dir!, `${id}.answer.json`));
+    const answered = written?.outcome ?? (!journal && Date.now() >= ask.expiresAt ? answerOnce(dir!, id, "expired", undefined, now()) : undefined);
     if (!answered) return undefined;
     // The cap's words, kept with the answer: a process that takes the ask up after a restart tells them too.
     if (written?.reason !== undefined && !capped.has(id)) capped.set(id, written.reason);
@@ -576,6 +604,7 @@ export function personHands(options: {
    *  its expiry written there at the expiry's time (the first answer stands, whoever's it is). */
   const refresh = async (id: string): Promise<void> => {
     if (!journal || settled.has(id) || (await readJournal(id))) return;
+    await loadAsk(id);
     const ask = adopt(id);
     if (ask && Date.now() >= ask.expiresAt) await answerInJournal(id, ask.tag, "expired", new Date(ask.expiresAt).toISOString());
   };
@@ -630,8 +659,10 @@ export function personHands(options: {
         if (!TAG.test(ask.sessionTag)) return { refused: "the session's tag is not one this server takes" };
         const id = askIdOf(ask.sessionTag, ask.requestId);
         if (settled.has(id) || open.has(id)) return { interactionId: id };
-        const dir = askDir(options.root, true);
-        if (!dir) return { refused: "the run's directory for a hand-over is not this server's alone" };
+        // The runner's path writes no record file: the waiting entry committed below is the ask's record.
+        const dir = journal ? undefined : askDir(options.root, true);
+        if (!journal && !dir) return { refused: "the run's directory for a hand-over is not this server's alone" };
+        await loadAsk(id);
         // An ask an earlier process of this run made: waited on again, its time no longer held (that process is gone), and
         // its row committed if that process ended before it could.
         if (adopt(id)) {
@@ -647,13 +678,15 @@ export function personHands(options: {
         // Redacted whole, then cut to their bound: a held value the cut would split never leaves its head in the record.
         const shown = (text: string) => (options.redact ? options.redact(text) : text).slice(0, MAX_TEXT);
         const record: PendingAsk = { id, tag: ask.sessionTag, instruction: shown(ask.instruction), completion_condition: shown(ask.completionCondition), asked_at: new Date(at).toISOString(), expires_at: new Date(at + holdMs).toISOString() };
-        try {
-          writeOwn(dir, `${id}.json`, record, false);
-        } catch (error) {
-          hold.drop();
-          throw error;
+        if (dir) {
+          try {
+            writeOwn(dir, `${id}.json`, record, false);
+          } catch (error) {
+            hold.drop();
+            throw error;
+          }
         }
-        open.set(id, { tag: ask.sessionTag, expiresAt: at + holdMs, drop: () => hold.drop() });
+        open.set(id, { tag: ask.sessionTag, expiresAt: at + holdMs, askedAt: at, drop: () => hold.drop() });
         watch();
         options.afterRecord?.();
         // The record is in place before the row: the row's commit is what makes the server read the run's status again.
@@ -665,10 +698,12 @@ export function personHands(options: {
           if (open.get(id)?.drop) open.get(id)!.drop();
           open.delete(id);
           if (!open.size && poll) (clearInterval(poll), (poll = undefined));
-          try {
-            unlinkSync(join(dir, `${id}.json`));
-          } catch {
-            // gone already
+          if (dir) {
+            try {
+              unlinkSync(join(dir, `${id}.json`));
+            } catch {
+              // gone already
+            }
           }
           return { refused: "the hand-over could not be shown to the person (its request was not written to the run's timeline): nothing is held for it, and it can be asked again" };
         }

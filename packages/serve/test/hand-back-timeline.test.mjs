@@ -6,11 +6,10 @@
 // browser_hand_back row (runner/hand-back.ts). The timeline over those entries must give main's rows: one row for the
 // hand-back, never "You signed in", which stays a real sign-in's.
 import assert from "node:assert/strict";
-import { readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { timelineOf } from "@parcha/pi-durable-agent/timeline";
-import { personHands } from "../dist/browser-person.js";
+import { pendingOfWaiting, personHands } from "../dist/browser-person.js";
 import { handBackOf } from "../dist/runner/hand-back.js";
 import { scratch } from "./support.mjs";
 
@@ -31,6 +30,8 @@ function runnerPath(root) {
       const first = entries.find((entry) => entry.kind === "agent.handover" && entry.data.id === ask && entry.data.state !== "waiting");
       return first && { outcome: first.data.state, at: first.data.at };
     },
+    // The ask is its waiting entry in the journal: no record file on this path.
+    asked: async (ask) => entries.map((entry) => (entry.kind === "agent.handover" ? pendingOfWaiting(entry.data, ask) : undefined)).find(Boolean),
   });
   /** The runner's loop applying a person's browser_hand_back row, sent now: the entry it commits. */
   const handBack = (ask, outcome) => {
@@ -60,9 +61,8 @@ test("an expiry on the runner's path shows main's rows for it", async (t) => {
   const before = run.hands();
   const { interactionId } = await before.handoff.request(ASK);
   before.close();
-  // Past its expiry when the run's next process reads it, as main's capture did.
-  const file = join(root, "browser-ask", `${interactionId}.json`);
-  writeFileSync(file, JSON.stringify({ ...JSON.parse(readFileSync(file, "utf8")), expires_at: new Date(Date.now() - 1000).toISOString() }), { mode: 0o600 });
+  // Past its expiry when the run's next process reads it, as main's capture did: its waiting entry, the ask's one record.
+  run.entries.find((entry) => entry.kind === "agent.handover" && entry.data.id === interactionId && entry.data.state === "waiting").data.expires_at = new Date(Date.now() - 1000).toISOString();
   const after = run.hands();
   t.after(() => after.close());
   assert.equal(await after.handoff.outcome(interactionId), "expired");

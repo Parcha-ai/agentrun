@@ -275,12 +275,17 @@ test("the agent asks: input_required with pending.kind browser, a waiting row an
   assert.deepEqual(needs?.data.pending, { kind: "browser" }, "run.needs_input says the run waits on the browser");
 
   // The ask's id (a digest of the session's tag and the model's request id, which pi-browser's durable store keeps to
-  // resume its wait) is named by no run read the API serves. The id is the real one: the store at rest holds it. (Its
-  // record file in the run's workspace, which the run's file list serves: ASK_RECORD_IN_WORKSPACE below.)
+  // resume its wait) is named by no run read the API serves, its file list among them. The id is the real one: the store at
+  // rest holds it. Its one record is its waiting entry in the run's journal: no file of it in the run's folder or its work/,
+  // which the agent's own file tools and the run's file list reach.
   const id = askIdOf(w.handed.tag, ASK.request_id);
   assert.ok(filesUnder(w.server.data).some(([, bytes]) => bytes.includes(id)), "the ask's id, as its session and request id make it, is the run's");
-  for (const path of [`/runs/${w.runId}`, `/runs/${w.runId}/timeline`, "/runs"]) assert.ok(!JSON.stringify((await w.server.api("GET", path)).body).includes(id), path);
-  assert.ok((await w.server.api("GET", `/runs/${w.runId}/files/..%2Fbrowser-ask/${id}.json`)).status >= 400, "nothing outside the workspace through the files route");
+  for (const path of [`/runs/${w.runId}`, `/runs/${w.runId}/timeline`, "/runs", `/runs/${w.runId}/files`]) assert.ok(!JSON.stringify((await w.server.api("GET", path)).body).includes(id), path);
+  assert.ok(!JSON.stringify((await w.server.api("GET", `/runs/${w.runId}/files`)).body).includes("browser-ask"), "no ask in the run's file list");
+  for (const path of [`/runs/${w.runId}/files/..%2Fbrowser-ask/${id}.json`, `/runs/${w.runId}/files/browser-ask/${id}.json`]) assert.ok((await w.server.api("GET", path)).status >= 400, path);
+  const folder = runFolder(w.server.data, w.runId);
+  assert.ok(existsSync(folder), "the run's folder is where the test looks");
+  for (const dir of [folder, join(folder, "work")]) assert.equal(existsSync(join(dir, "browser-ask")), false, `no ask file under ${dir}`);
 
   // Meanwhile the owner takes over (the ask already holds their time) and drives.
   const { ws } = await w.viewer();
@@ -350,8 +355,6 @@ test("an ask whose words echo a value the server holds as a key shows it cut, ne
   assert.ok(!got.some((body) => body.includes(held)), "no message holds the held value");
 });
 
-// ASK_RECORD_IN_WORKSPACE: the agent's hand-over ask's record on the runner path.
-test.todo("the agent's hand-over ask's record is in no file the run's agent or its file list reaches: on the runner the ToolHost's root is the run's workspace (adapter-run-spec where: { root, work: root }), so browser-person writes it to work/browser-ask/<id>.json, which GET /runs/{id}/files lists and serves and the agent's own file tools can read, change or plant. The answers are the journal's alone there (no answer file is read), so a hand-back cannot be forged through it; the pending asks are still read from those files (asksIn for the viewer's give, adopt and reshow after a restart). Follow-up (tl-browser, a PR against main after the cutover): pending asks from the journal's waiting entries, with no record file, on the runner path.");
 
 test("cap: the agent's ask holds the person's 15 minutes first; with no room no ask is made and the tool's result says why", { timeout: 180_000 }, async (t) => {
   // Paused at its cap, the run's process is let go, its browser's session and its viewer's hand-over with it: the test

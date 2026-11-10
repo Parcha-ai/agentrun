@@ -221,6 +221,68 @@ async function lastEvidence(work: Workspace): Promise<number> {
   }
 }
 
+/** browser_upload's files (pi-browser's WorkspaceFiles) through the run's Workspace: a relative path inside it, no `..`, a
+ *  regular file of at most `maxBytes`, read whole. The Workspace keeps every read inside the run's folder (a link out is
+ *  ESCAPE). */
+export function workspaceFilesIn(work: Workspace, maxBytes: number): { resolve(rel: string): Promise<{ bytes: Uint8Array; name: string; mime: string } | { refused: string }> } {
+  return {
+    async resolve(rel) {
+      if (typeof rel !== "string" || !rel.trim() || rel.includes("\0")) return { refused: "path must name a file in the workspace" };
+      if (rel.startsWith("/") || /^[A-Za-z]:[\\/]/.test(rel) || rel.startsWith("\\")) return { refused: `${rel} is absolute; give a path relative to the workspace` };
+      if (rel.split(/[\\/]/).includes("..")) return { refused: `${rel} contains '..'; give a path inside the workspace` };
+      try {
+        const info = await work.stat(rel);
+        if (!info) return { refused: `no file at ${rel} in the workspace` };
+        if (info.kind !== "file") return { refused: `${rel} is not a regular file` };
+        if (info.size > maxBytes) return { refused: `${rel} is ${info.size} bytes, over the ${maxBytes}-byte limit` };
+        const bytes = await work.read(rel);
+        if (bytes.byteLength > maxBytes) return { refused: `${rel} is ${bytes.byteLength} bytes, over the ${maxBytes}-byte limit` };
+        const name = rel.split(/[\\/]/).pop()!;
+        return { bytes, name, mime: UPLOAD_MIME[(/\.[^.]+$/.exec(name)?.[0] ?? "").toLowerCase()] ?? "application/octet-stream" };
+      } catch (error) {
+        if (isWorkspaceError(error, "ESCAPE")) return { refused: `${rel} resolves outside the workspace` };
+        if (isWorkspaceError(error, "NOT_FOUND")) return { refused: `no file at ${rel} in the workspace` };
+        return { refused: `${rel} cannot be opened` };
+      }
+    },
+  };
+}
+/** browser_upload's types by extension, as pi-browser's own workspaceFiles names them. */
+const UPLOAD_MIME: Readonly<Record<string, string>> = {
+  ".csv": "text/csv", ".doc": "application/msword", ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  ".gif": "image/gif", ".htm": "text/html", ".html": "text/html", ".jpeg": "image/jpeg", ".jpg": "image/jpeg", ".json": "application/json",
+  ".md": "text/markdown", ".pdf": "application/pdf", ".png": "image/png", ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  ".svg": "image/svg+xml", ".txt": "text/plain", ".webp": "image/webp", ".xls": "application/vnd.ms-excel",
+  ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", ".xml": "application/xml", ".zip": "application/zip",
+};
+
+/** pi-browser's browser_downloads (`fetch`, which copies a session's downloads into the folder on this machine its call
+ *  names, `call.workspace`), then each file its manifest lists, and the manifest last, filed into the run's Workspace
+ *  `work` where it lacks them or holds other bytes: the run's own read finds them there. A Workspace that already holds
+ *  that manifest (the run's local folder in Mode 1, the same folder) is left as it is. */
+export function downloadsInto<A, P, C extends { workspace?: string }, O extends { isError?: boolean }>(fetch: (args: A, port: P, call: C) => Promise<O>, work: Workspace, manifestPath: string): (args: A, port: P, call: C) => Promise<O> {
+  return async (args, port, call) => {
+    const out = await fetch(args, port, call);
+    if (out.isError || !call.workspace) return out;
+    const { readFile } = await import("node:fs/promises");
+    const local = await readFile(join(call.workspace, manifestPath)).catch(() => undefined);
+    if (!local) return out;
+    const filed = await work.read(manifestPath).catch(() => undefined);
+    if (filed && Buffer.from(filed).equals(local)) return out;
+    const rows = (JSON.parse(local.toString("utf8")) as { files?: Array<{ path?: unknown; sizeBytes?: unknown }> }).files ?? [];
+    for (const row of rows) {
+      if (typeof row.path !== "string" || !/^downloads\/[^/]+$/.test(row.path)) continue;
+      const bytes = await readFile(join(call.workspace, row.path)).catch(() => undefined);
+      if (!bytes) continue;
+      const there = await work.stat(row.path).catch(() => undefined);
+      if (there?.kind === "file" && there.size === bytes.byteLength && Buffer.from(await work.read(row.path)).equals(bytes)) continue;
+      await work.write(row.path, bytes);
+    }
+    await work.write(manifestPath, local);
+    return out;
+  };
+}
+
 /** Where the browser files what it reads: the run's `evidence/`, through its Workspace, so the run's files show it and
  *  the agent can read it back. A text body follows one line of the read's facts; a capture's bytes go beside its facts.
  *  Each read takes the next number after the highest the folder holds when the sink first files, so a later process's
@@ -336,7 +398,7 @@ const browserTool: ToolEntry = {
   // Its downloads and uploads go through work/ by path (pi-browser), which a box's command could turn through a link.
   runnerOnly: true,
   bind: async (host) => {
-    const [{ BACKGROUND_CONTEXT: context }, { createBrowserExtension }, { DEFAULT_BROWSER_POLICY, BrowserFailureError, browserFailure, workspaceFiles }, { createDrivingGates, createLiveView, liveViewProvider }, live, person] = await Promise.all([
+    const [{ BACKGROUND_CONTEXT: context }, { createBrowserExtension }, { DEFAULT_BROWSER_POLICY, BrowserFailureError, browserFailure, workspaceFiles, pageTools, DOWNLOADS_MANIFEST, MAX_UPLOAD_BYTES }, { createDrivingGates, createLiveView, liveViewProvider }, live, person] = await Promise.all([
       import("@earendil-works/chord/context"),
       import("@parcha/pi-browser/durable"),
       import("@parcha/pi-browser"),
@@ -416,6 +478,18 @@ const browserTool: ToolEntry = {
             cursor = page.next;
           }
         }, context)) ?? undefined,
+        // An ask as the journal holds it: its waiting hand-over entry, the one record of it on the runner (no file in work/).
+        asked: async (id: string) => (await opened?.commit(async (tx) => {
+          for (let cursor: Parameters<Tx["scanEntries"]>[2] | undefined; ; ) {
+            const page = await tx.scanEntries({ conversationId: ROOT_CONVERSATION_ID, order: "ascending" }, 200, cursor);
+            for (const entry of page.items) {
+              const found = entry.kind === "agent.handover" ? person.pendingOfWaiting(entry.data, id) : undefined;
+              if (found) return found;
+            }
+            if (page.next === undefined) return undefined;
+            cursor = page.next;
+          }
+        }, context)) ?? undefined,
         // The answer written only when the ask has none, read and written in one commit: exactly one answered entry.
         answer: async (id: string, data: Record<string, string>) => {
           if (!opened) throw new Error("the run's journal is not open");
@@ -454,7 +528,14 @@ const browserTool: ToolEntry = {
     // browser_downloads is listed only with a workspace to copy into, and only a provider that keeps a session's downloads
     // (Browserbase's; Kernel's keeps none) has any: without one, uploads still read the run's work/, through `files`.
     const downloads = typeof (parts.provider as { downloads?: unknown } | undefined)?.downloads === "object";
-    const files = downloads ? { workspace: () => host.where.work } : { files: workspaceFiles(host.where.work) };
+    // What the browser files goes where the run's own read finds it: the run's Workspace (on the runner in Mode 2, its
+    // folder on the run's disk, never this machine's folder at the same path). Evidence and uploads go through it; pi-browser
+    // copies a session's downloads into a folder on this machine (the run's local folder), and each browser_downloads call
+    // then files them, and their manifest, into the run's Workspace too (downloadsInto).
+    const runFiles = host.workspace;
+    const uploads = runFiles ? workspaceFilesIn(runFiles, MAX_UPLOAD_BYTES) : workspaceFiles(host.where.work);
+    const files = downloads ? { workspace: () => host.where.work, files: uploads } : { files: uploads };
+    const downloadsTool = downloads && runFiles ? { tools: { browser_downloads: downloadsInto(pageTools().browser_downloads as never, runFiles, DOWNLOADS_MANIFEST) } } : {};
     // A session that saved to the sign-in, let go: its time, for the sign-in's verified_at when the run's lease ends.
     // On the runner, the store's verified_at under the run's claim (runSignInSaved), never a mark in the run's directory.
     const verify = kept?.save && host.claim && host.store ? runSignInSaved(host.store, host.sealKey, host.claim, kept as RunSignIn) : undefined;
@@ -477,7 +558,7 @@ const browserTool: ToolEntry = {
     // vendor's refusal can quote it, as pi-browser's one-saver rule names Kernel's profile.
     // A run handed its agent's sign-in tells the model its browser keeps it (`run`'s description): one with none claims
     // cookies across pages only.
-    const browser = createBrowserExtension({ provider, driver: parts.driver as never, evidence: evidenceIn(localWorkspace(host.where.work)) as never, ...files, gates, handoff: hands.handoff, onSession: onSessions as never, signIns: kept !== undefined, beforeCreate: spend.opening, redact: { values: () => [...runnerSecrets(host.env), ...(kept ? [kept.ref] : [])] }, prices: { sessionUsdPerHour: price.usdPerHour, sessionMinimumS: price.minimumS }, onCharge: spend.onCharge });
+    const browser = createBrowserExtension({ provider, driver: parts.driver as never, evidence: evidenceIn(host.workspace ?? localWorkspace(host.where.work)) as never, ...files, ...(downloadsTool as object), gates, handoff: hands.handoff, onSession: onSessions as never, signIns: kept !== undefined, beforeCreate: spend.opening, redact: { values: () => [...runnerSecrets(host.env), ...(kept ? [kept.ref] : [])] }, prices: { sessionUsdPerHour: price.usdPerHour, sessionMinimumS: price.minimumS }, onCharge: spend.onCharge });
     // On the runner, every answer the browser's tools give passes the run's one redactor inside the call, so what pi stores
     // (its result record) and what the model reads hold no value the runner or the claim holds.
     const tools = (browser.tools as unknown as ToolRegistration[]).map(spend.capped).map((tool) => (host.redact ? answersCutInside(tool, host.redact) : tool));
