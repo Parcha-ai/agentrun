@@ -20,7 +20,7 @@ import { LEARNED_WORKFLOW_TOOL, learnedWorkflowDescription, learnedWorkflowTool 
 import { MODEL_KEYS } from "../dist/model.js";
 import { localWorkspace } from "../dist/workspace/index.js";
 import { startFauxGateway } from "./fixtures/faux-gateway.mjs";
-import { entriesOf, git, resnap, CLI_TOOLS_TODO, WORKFLOWS_TODO } from "./learn-support.mjs";
+import { entriesOf, git, resnap, CLI_TOOLS_TODO } from "./learn-support.mjs";
 import { agent, answerFlow, follow, runDir, scratch, serve, withEnv } from "./support.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
 
@@ -79,7 +79,7 @@ const labelled = async (data, runId) => (await entriesOf({ data }, runId, ["runn
 /** The second meter's marks: side requests labelled learned_workflow on the root (capModels, markRequests). */
 const sideMarks = async (data, runId) => (await entriesOf({ data }, runId, ["agentrun.request_started", "agentrun.request_cost"])).filter((entry) => entry.request === LEARNED_WORKFLOW_TOOL);
 
-test("R1 (guard) on pi a learned node's request is one of the run's own: marked and costed through the run's models, in its cost", { timeout: 120_000, skip: WORKFLOWS_TODO }, async (t) => {
+test("R1 (guard) on pi a learned node's request is one of the run's own: marked and costed through the run's models, in its cost", { timeout: 120_000 }, async (t) => {
   const { api, data } = await serve(t, { learning: "on" });
   const { runId, rows, view } = await ran(api, data, "pi-route", "pi");
   assert.equal(view.status, "completed", JSON.stringify(view));
@@ -235,7 +235,7 @@ test("R7 (guard) a call the harness's answer asks for beside learned_workflow st
   assert.equal(requestOf("write"), requestOf(LEARNED_WORKFLOW_TOOL), "both calls on the harness's one answer");
 });
 
-test("R8 (guard) learned_workflow's description and input schema are as #1727 left them, on pi and as the harness is given it on claude-agent and codex; a pathless output is refused in #1727's words", { timeout: 120_000, skip: WORKFLOWS_TODO }, async (t) => {
+test("R8 (guard) learned_workflow's description and input schema are as #1727 left them, on pi and as the harness is given it on claude-agent and codex; a pathless output is refused in #1727's words", { timeout: 120_000 }, async (t) => {
   const flows = [{ name: "answer", description: DESCRIPTION, workflow: JSON.stringify(answerFlow()) }];
   assert.equal(learnedWorkflowDescription(flows), SAID);
   const tool = learnedWorkflowTool({ workflows: flows, granted: [], env: {}, work: "/tmp", models: {}, modelOf: () => undefined });

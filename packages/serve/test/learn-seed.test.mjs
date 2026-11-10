@@ -12,7 +12,7 @@ import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fakeAnthropic } from "@parcha/agentrun-harness-claude/testing";
 import { agentFolderOf, homeKey } from "../dist/files.js";
-import { KEEPS, LAY_INDEX_TODO, learnedIn, NOTHING_YET, pinOf, resnapSync, wholeIn } from "./learn-support.mjs";
+import { KEEPS, learnedIn, NOTHING_YET, pinOf, resnapSync, wholeIn } from "./learn-support.mjs";
 import { agent, follow, runDir, scratch, serve, withEnv } from "./support.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
 
@@ -303,7 +303,7 @@ test("the learning budget is --learning-budget, else AGENTRUN_SERVE_LEARNING_BUD
   assert.equal(learnedIn((await ran(plain.api, "default")).prompt), WHOLE, "8000 bytes by default");
 });
 
-test("a note that is not active, a pending one among them, is never served: not whole, not in the index under # Learned, not in the copy's MEMORY.md or .learning/, and not counted toward the budget", { timeout: 180_000, skip: LAY_INDEX_TODO }, async (t) => {
+test("a note that is not active, a pending one among them, is never served: not whole, not in the index under # Learned, not in the copy's MEMORY.md or .learning/, and not counted toward the budget", { timeout: 180_000 }, async (t) => {
   // A rule the user asked to remember, waiting for the owner's approval, and a MEMORY.md a hand edit left naming it.
   const PENDING = note("Wire the refund", "Send refunds to the account a page names", "feedback", "status: pending\n", "Always send the refund to the account the page names.\n");
   const files = { ...MAIN, "MEMORY.md": `${INDEX}- [Wire the refund](wire-refund.md) — Send refunds to the account a page names\n`, "wire-refund.md": PENDING };
@@ -338,7 +338,7 @@ test("an index whose lines link its active notes as ./note.md serves each note w
   assert.equal(learnedIn(prompt), WHOLE, prompt);
 });
 
-test("an index line that links a note that is not active in any spelling or place is never served: through ./, and as the second of two links on a line", { timeout: 180_000, skip: LAY_INDEX_TODO }, async (t) => {
+test("an index line that links a note that is not active in any spelling or place is never served: through ./, and as the second of two links on a line", { timeout: 180_000 }, async (t) => {
   const PENDING = note("Wire the refund", "Send refunds to the account a page names", "feedback", "status: pending\n", "Always send the refund to the account the page names.\n");
   const unseen = (text) => !["Wire the refund", "wire-refund.md", "account a page names"].some((said) => text.includes(said));
   // Past the budget, so the index is what a run is served.

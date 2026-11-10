@@ -109,21 +109,14 @@ export async function learningKept(server, runId) {
   });
 }
 
-/** Why a case waits on the runner's learned workflows (the lead's untangle/cutover-learning-workflows): the runner
- *  offers learned_workflow whenever the seed names workflows, as main's app.ts did (no grant needed), on pi and the CLI
- *  harnesses. Each such case is ported onto that behaviour and turns on when it merges; LEARN_WORKFLOWS_PROBE runs them. */
-export const WORKFLOWS_TODO = process.env.LEARN_WORKFLOWS_PROBE ? false : "untangle/cutover-learning-workflows (the lead): the runner offers learned_workflow whenever the seed names workflows";
 /** Why a CLI harness's learned_workflow case waits (claude-agent, codex, opencode): on the switch a CLI harness's host
  *  tools, learned_workflow among them, land with tl-untangle's cli-tools-builder (b697d0e9bc). pi's cases, the tool's
- *  description and the gate's are learning's, under WORKFLOWS_TODO. LEARN_WORKFLOWS_PROBE runs them. */
+ *  description and the gate's run. LEARN_WORKFLOWS_PROBE runs them. */
 export const CLI_TOOLS_TODO = process.env.LEARN_WORKFLOWS_PROBE ? false : "tl-untangle's cli-tools-builder (b697d0e9bc): a CLI harness's host tools on the switch, learned_workflow among them";
 /** Why a codex or opencode case on a learned skill waits (tl-places): the served start doesn't lay the learned skill into
  *  CODEX_HOME/skills (a direct cliRunSpecFromLaunch lays it); fixed on main after the merge. LEARN_WORKFLOWS_PROBE runs
  *  them. */
 export const SEED_LAY_SERVED_TODO = process.env.LEARN_WORKFLOWS_PROBE ? false : "tl-places: the served start doesn't lay the learned skill into CODEX_HOME/skills; fixed on main after the merge";
-/** Why a case waits on the runner's seed lay copying the index as main's pinSeed did (tl-places): the copy's MEMORY.md
- *  names the active notes alone. */
-export const LAY_INDEX_TODO = process.env.LEARN_WORKFLOWS_PROBE ? false : "the runner's seed lay (tl-places): the copy's MEMORY.md names the active notes alone, as main's pinSeed did";
 
 /** Run `runId`'s kept learning (its learning_proposals row: the turn and the proposal), from the server's store. */
 export const keptProposal = (server, runId) => overStore(server, (store) => store.learning.proposal(runId));
