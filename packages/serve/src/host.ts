@@ -1,11 +1,11 @@
 // What one host can hold, and whether it can work now. Runs are admitted by memory: each run is a process of its own,
 // and each reserves what a run of its harness takes (its entry's runMib, harness-table.ts) out of the memory the host has less the
-// server's own (SERVER_MIB). Health reads the agent store and the free disk under the data directory. A start here opens
+// server's own (SERVER_MIB). Health reads the server's store and the free disk under the data directory. A start here opens
 // a browser only where there is one to open.
 import { statfs } from "node:fs/promises";
 import { totalmem } from "node:os";
-import { openStoreReader } from "@parcha/pi-durable-agent";
 import { REQUEST_BUSY_MS, whenFree } from "./agents.js";
+import type { Store } from "./store/index.js";
 import { DEFAULT_HARNESS, HARNESSES } from "./harness.js";
 import { builtinHarness } from "./harness-table.js";
 
@@ -72,25 +72,31 @@ export function maxRunsOf(env: NodeJS.ProcessEnv, given?: number): number {
 
 export type Health = { status: "ok" | "failing"; checks: { store: "ok" | "does_not_open"; disk: "ok" | "below_floor" | "cannot_check" } };
 
-/** Whether the store in `data` opens for a read, and its disk has `minFreeBytes` free; a disk it cannot measure fails.
- *  Says no path and no number. `fsStat` is node's statfs unless a test gives another. */
-export async function healthOf(data: string, minFreeBytes: number, fsStat: typeof statfs = statfs): Promise<Health> {
-  let store: Health["checks"]["store"] = "ok";
+/** How long health waits for the store's one read before it reads as failing (ms). */
+export const HEALTH_STORE_MS = 2_000;
+
+/** Whether the server's store (`store`, the one it opened: SQLite in the data directory, or Postgres when
+ *  AGENTRUN_STORE_URL names one) answers one read within HEALTH_STORE_MS, and the data directory's disk has
+ *  `minFreeBytes` free; a disk it cannot measure fails. Says no path and no number. `fsStat` is node's statfs unless a
+ *  test gives another. */
+export async function healthOf(store: Pick<Store, "agents">, data: string, minFreeBytes: number, fsStat: typeof statfs = statfs): Promise<Health> {
+  let answered: Health["checks"]["store"] = "ok";
+  let timer: NodeJS.Timeout | undefined;
   try {
-    await whenFree(() => {
-      const reader = openStoreReader(data, { busyTimeoutMs: 0 });
-      try {
-        reader.listAgents();
-      } finally {
-        reader.close();
-      }
-    }, REQUEST_BUSY_MS);
+    // One indexed read of an id no agent has: the store's own connection, never a second open of a file.
+    const read = whenFree(() => store.agents.get("health-check"), REQUEST_BUSY_MS);
+    read.catch(() => undefined);
+    await Promise.race([read, new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error("the store did not answer")), HEALTH_STORE_MS);
+    })]);
   } catch {
-    store = "does_not_open";
+    answered = "does_not_open";
+  } finally {
+    clearTimeout(timer);
   }
   const free = await fsStat(data).then((fs) => fs.bavail * fs.bsize, () => undefined);
   const disk = free === undefined ? "cannot_check" : free >= minFreeBytes ? "ok" : "below_floor";
-  return { status: store === "ok" && disk === "ok" ? "ok" : "failing", checks: { store, disk } };
+  return { status: answered === "ok" && disk === "ok" ? "ok" : "failing", checks: { store: answered, disk } };
 }
 
 /** Whether `--open` opens a browser here: not in CI, and on Linux or FreeBSD only with a display. */

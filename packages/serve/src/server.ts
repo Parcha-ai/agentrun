@@ -2353,7 +2353,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       return void res.writeHead(302, { location, "cache-control": "no-store", ...(bound ? { "set-cookie": stateCookie(req.socket.localPort, bound, overHttps(req), 0, INSTALLED_PATH) } : {}) }).end();
     }
     if (found.name === "getHealth") {
-      const health = await healthOf(data, minFreeBytes);
+      // The store this server opened (SQLite or Postgres), never a second open of the data directory's file.
+      const health = await healthOf(store, data, minFreeBytes);
       return send(res, health.status === "ok" ? 200 : 503, health);
     }
     // Approving a note the grader held for its owner's OK (a risky rule a run's user asked for) takes the owner's

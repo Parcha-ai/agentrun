@@ -288,29 +288,33 @@ test("GET /v2/health, with no credential: 200 when the store reads and the disk 
   assert.ok(!JSON.stringify(body).includes(data), "no path");
 });
 
-test("health is 503 with the reason when the free disk is under its floor, or the store does not open", { skip: process.getuid?.() === 0 && "root reads a file of mode 000" }, async (t) => {
+test("health is 503 with the reason when the free disk is under its floor", async (t) => {
   const { baseUrl } = await serve(t, { minFreeBytes: Number.MAX_SAFE_INTEGER });
   const low = await fetch(`${baseUrl}/health`);
   assert.equal(low.status, 503);
   assert.deepEqual(await low.json(), { status: "failing", checks: { store: "ok", disk: "below_floor" } });
-  const other = await serve(t);
-  const file = join(other.data, "store.sqlite");
-  await chmod(file, 0o000);
-  try {
-    const broken = await fetch(`${other.baseUrl}/health`);
-    assert.equal(broken.status, 503);
-    assert.deepEqual(await broken.json(), { status: "failing", checks: { store: "does_not_open", disk: "ok" } });
-  } finally {
-    await chmod(file, 0o600);
-  }
+});
+
+test("health reads the server's own store: a store whose read fails, or never answers within HEALTH_STORE_MS, is does_not_open; one that answers is ok", async (t) => {
+  const { healthOf, HEALTH_STORE_MS } = await import("../dist/host.js");
+  const { data } = await serve(t);
+  const answers = { agents: { get: async () => undefined } };
+  const fails = { agents: { get: async () => { throw new Error("relation \"agents\" does not exist"); } } };
+  const silent = { agents: { get: () => new Promise(() => {}) } };
+  assert.deepEqual(await healthOf(answers, data, 64 * MiB), { status: "ok", checks: { store: "ok", disk: "ok" } });
+  assert.deepEqual(await healthOf(fails, data, 64 * MiB), { status: "failing", checks: { store: "does_not_open", disk: "ok" } });
+  const startedAt = Date.now();
+  assert.deepEqual(await healthOf(silent, data, 64 * MiB), { status: "failing", checks: { store: "does_not_open", disk: "ok" } });
+  assert.ok(Date.now() - startedAt < HEALTH_STORE_MS + 1_000, "bounded by HEALTH_STORE_MS");
 });
 
 test("a disk health cannot measure fails its check (503 cannot_check), never reads as room", async (t) => {
   const { healthOf } = await import("../dist/host.js");
   const { data } = await serve(t);
+  const answers = { agents: { get: async () => undefined } };
   const failing = async () => { throw Object.assign(new Error("statfs failed"), { code: "EIO" }); };
-  assert.deepEqual(await healthOf(data, 64 * MiB, failing), { status: "failing", checks: { store: "ok", disk: "cannot_check" } });
-  assert.deepEqual(await healthOf(data, 64 * MiB), { status: "ok", checks: { store: "ok", disk: "ok" } });
+  assert.deepEqual(await healthOf(answers, data, 64 * MiB, failing), { status: "failing", checks: { store: "ok", disk: "cannot_check" } });
+  assert.deepEqual(await healthOf(answers, data, 64 * MiB), { status: "ok", checks: { store: "ok", disk: "ok" } });
 });
 
 test("compose and render.yaml check /v2/health", async () => {
