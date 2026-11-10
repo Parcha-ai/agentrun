@@ -65,13 +65,16 @@ export function unlockedBy(candidates: readonly string[], tools: readonly { name
 
 /** What a row unlocks here: a `tool` row's, its tools and providers as capabilities bind them (unlockedBy); any other
  *  kind's (a model's), no tool, on those that run on it (its `harnesses`, when it names them) that this server runs
- *  (`offers`, harness.ts' harnessOffers) or would once its key is set: one unavailable only for want of a model key
- *  among whose `keys` is the row's (its first field). So OpenRouter's row names all three before any key is saved; a
- *  harness not installed, off its pins or too big for this host is left out. */
+ *  (`offers`, harness.ts' harnessOffers) on the row's key: one whose `keys` (the model keys that run it here, available
+ *  now or once one is saved) include the row's (its first field). So OpenRouter's row names all three before any key
+ *  is saved, and no row changes when another provider's key is saved; a harness not installed, off its pins or too big
+ *  for this host is left out. */
 export function rowUnlocks(row: { kind: string; unlocks: readonly string[]; harnesses?: readonly string[]; fields?: readonly string[] }, tools: Parameters<typeof unlockedBy>[1], providers: Parameters<typeof unlockedBy>[2], offers: readonly { id: string; available: boolean; keys?: readonly string[] }[]) {
   if (row.kind === "tool") return unlockedBy(row.unlocks, tools, providers);
   const key = row.fields?.[0];
-  const runs = (harness: string) => offers.some((offer) => offer.id === harness && (offer.available || (key !== undefined && offer.keys?.includes(key) === true)));
+  // Where an offer knows which model keys run it (its `keys`), the row's key must be one of them, available now or not;
+  // else (no key runs it: pi on any, or one unavailable for another reason) whether it runs here now.
+  const runs = (harness: string) => offers.some((offer) => offer.id === harness && (offer.keys ? key !== undefined && offer.keys.includes(key) : offer.available));
   return { unlocks: [] as string[], harnesses: HARNESSES.filter((harness) => (row.harnesses ?? HARNESSES).includes(harness) && runs(harness)) };
 }
 
