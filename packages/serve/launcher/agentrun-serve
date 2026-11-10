@@ -7,17 +7,15 @@
 #
 # Each secret named below that is set goes into one pipe as NAME=VALUE and a NUL, AGENTRUN_SECRETS_LEN bytes in all,
 # on fd AGENTRUN_SECRETS_FD; the server reads exactly that many bytes first thing and closes the pipe. First, each
-# secret moves out of the environment into this shell's own memory, so no process it starts (the seal key's, mktemp,
-# mkfifo, rm, env) inherits one; only this launcher's own initial environment, gone at the exec, ever held them. The
+# secret moves out of the environment into this shell's own memory, so no process it starts (mktemp, mkfifo, rm, env)
+# inherits one; only this launcher's own initial environment, gone at the exec, ever held them. The
 # pipe is a FIFO whose name is gone before any secret is written, and only this shell writes it, with its builtin
 # printf; `env -u` drops every name from what COMMAND inherits too. The condition: this runs before any run's process
 # exists. A process of the same user started earlier could open the FIFO while it is named.
 #
-# AGENTRUN_SEAL_KEY, the key the server keeps tool keys and MCP server credentials under (src/tool-keys.ts,
-# src/mcp-servers.ts), is one of them. Not set, it is the
-# one in agentrun/seal.key under XDG_CONFIG_HOME (or ~/.config), made here the first time: 32 random bytes in base64,
-# 0600 in a 0700 directory, written by this shell's printf, never on a command line. It is outside the data directory
-# on purpose: a copy of that holds the tool keys as ciphertext alone.
+# AGENTRUN_SEAL_KEY, the key the server keeps every secret under (src/seal-key.ts), is one of them. Not set, the
+# server keeps its own in seal/seal.key in its data directory, beside the store, made at its first start: this launcher
+# neither makes nor reads one.
 #
 # AGENTRUN_STORE_URL, the store's connection, is one too: its URL may hold the database's password. The server and the
 # runner each read it from what they were handed (secrets.ts secret), and no run is handed it.
@@ -50,32 +48,7 @@ locale=${LC_ALL-}
 locale_set=${LC_ALL+x}
 LC_ALL=C
 
-# Every other process this launcher starts, it starts here, before it writes a secret. First the seal key's, when it is
-# not given.
-config=${XDG_CONFIG_HOME:-${HOME:+$HOME/.config}}
-if [ -z "${agentrun_secret_AGENTRUN_SEAL_KEY+x}" ] && [ -n "$config" ]; then
-  keys=$config/agentrun
-  # Its own directory, when the person made it with a plain mkdir (0755) and no key is there yet: tightened to 0700
-  # before a key is written in it, only when it is this user's. An existing key's directory is never changed, nor a
-  # symlink's target, which may be shared (the key check below refuses a linked directory anyway).
-  if [ ! -e "$keys/seal.key" ] && [ ! -L "$keys" ] && [ -d "$keys" ] && [ -O "$keys" ]; then
-    case $(ls -ld "$keys" 2>/dev/null) in d???------*) ;; *) chmod 700 "$keys" 2>/dev/null || : ;; esac
-  fi
-  # Made whole beside its name, then linked to it, which fails if another start made it first: each start reads one.
-  if [ ! -e "$keys/seal.key" ] && (umask 077 && mkdir -p "$keys") && made=$(head -c 32 /dev/urandom | base64) && [ ${#made} -eq 44 ]; then
-    (umask 077 && printf '%s\n' "$made" >"$keys/seal.key.$$" && { ln "$keys/seal.key.$$" "$keys/seal.key" 2>/dev/null || :; }) || :
-    rm -f "$keys/seal.key.$$"
-  fi
-  made=
-  # Only a key no other user can read, in a directory no other user can: one they can is refused, never changed.
-  case $(ls -ld "$keys" 2>/dev/null):$(ls -l "$keys/seal.key" 2>/dev/null) in
-    d???------*:-??-------*) IFS= read -r agentrun_secret_AGENTRUN_SEAL_KEY <"$keys/seal.key" || : ;;
-  esac
-  if [ -z "${agentrun_secret_AGENTRUN_SEAL_KEY:-}" ]; then
-    unset agentrun_secret_AGENTRUN_SEAL_KEY
-    echo "agentrun-serve: no seal key in $keys/seal.key (none, or another user can read it or its directory), so the server keeps no tool key and no MCP server credential: make the file 0600 and its directory 0700 (chmod 700 $keys; chmod 600 $keys/seal.key), or remove it to have a new one made at the next start" >&2
-  fi
-fi
+# Every other process this launcher starts, it starts here, before it writes a secret.
 dir=$(mktemp -d "${TMPDIR:-/tmp}/agentrun-serve.XXXXXX")
 mkfifo -m 600 "$dir/secrets"
 exec 3<>"$dir/secrets"

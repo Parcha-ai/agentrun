@@ -228,8 +228,9 @@ export async function adapterRunGate(store: Pick<Store, "settings">, claim: Pick
   return Object.assign(decide, { askedAs: (tool: string) => gate.askedAs(tool), permissions });
 }
 
-/** The server's tool settings from the store now; a read that throws is unread (no value of it said). */
-async function storeSettings(store: Pick<Store, "settings">): Promise<Awaited<ReturnType<typeof loadToolSettings>>> {
+/** The server's tool settings from the store now; a read that throws is unread (no value of it said). A workflow's call
+ *  and model nodes read theirs through it too (workflow-spec.ts callPolicyOf), so both gates fail closed alike. */
+export async function storeSettings(store: Pick<Store, "settings">): Promise<Awaited<ReturnType<typeof loadToolSettings>>> {
   try {
     return await loadToolSettings(store);
   } catch {

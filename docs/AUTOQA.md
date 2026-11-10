@@ -39,7 +39,7 @@ there and never print it.
 | Env | Why |
 | --- | --- |
 | `TMPDIR`, `--data` | Use a fresh data dir and a temp dir of its own per run, so no earlier run's state is read. |
-| `XDG_CONFIG_HOME` | The launcher writes `agentrun/seal.key` there. Point it at a QA dir so your own config directory is never touched. |
+| `XDG_CONFIG_HOME` | Point it at a QA dir so your own config directory is never touched. The seal key is `AGENTRUN_SEAL_KEY`, else `<data>/seal/seal.key`, made at the server's first start; nothing is kept under the config home. |
 | `AGENT_MODEL_BASE_URL`, `AGENT_MODEL_API_KEY`, `AGENT_MODEL` | Gateway for the pi and codex harnesses (OpenAI Responses). Point them at your gateway (its `/v1` base URL) and set `AGENT_MODEL` to a small, cheap model for smokes. |
 | `ANTHROPIC_BASE_URL`, `ANTHROPIC_API_KEY` | The claude-agent harness only, on Anthropic Messages. Your gateway may serve `/v1/messages` too. |
 | `AGENTRUN_MAX_RUNS` | Cap concurrent runs (3 is plenty for QA). |
@@ -117,7 +117,8 @@ Each row: entry point, then what makes it pass.
     Playground (`#/playground`: send a run, then "Open this run" to follow it live), Runs plus a state filter
     (`#/runs?status=cancelled`), run detail tabs Report/Timeline/Files and the file viewer, and a workflow run's
     Graph. Capture console errors and HTTP ≥ 400 per page. The page CSP is
-    `default-src 'self'`, so any violation is a finding.
+    `default-src 'self'` (plus the Keys page's provider icons from Google's favicon service), so any violation is a
+    finding.
 
 ## Subsystems
 

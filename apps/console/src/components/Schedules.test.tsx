@@ -148,12 +148,36 @@ describe("the schedules list", () => {
   });
   it("says there are none yet, with the way to make one", async () => {
     const t = await open(server({ triggers: [] }).v2, {});
-    expect(t.text()).toContain("No triggers yet.");
+    expect(t.text()).toContain("No triggers yet");
     expect(t.button(/^New schedule$/)).toBeTruthy();
+    // The three things that can start a run, each with its own way in.
+    const panel = t.host.querySelector('section[aria-labelledby="first-trigger"]')!;
+    expect(panel.querySelector("h2")?.textContent).toBe("Start runs without being here");
+    expect([...panel.querySelectorAll("li button")].map((b) => b.textContent)).toEqual(["New schedule", "New webhook", "New GitHub trigger"]);
+    // Each is on the page once: the header's three show when there is a trigger.
+    for (const name of ["New schedule", "New webhook", "New GitHub trigger"]) expect([...t.host.querySelectorAll("button")].filter((b) => b.textContent?.trim() === name).length, name).toBe(1);
   });
 });
 
 describe("a new schedule", () => {
+  it("every field's label names its one control, so a click on the label goes to it", async () => {
+    const t = await open(server().v2, { trigger: null });
+    const named = Object.fromEntries([...t.host.querySelectorAll("label")].filter((l) => l.control).map((l) => [l.textContent, (l.control as HTMLInputElement).name || l.control!.getAttribute("aria-label")]));
+    // The agent's control is the picker's field (a button; its value goes in a hidden input named "agent").
+    expect(named).toMatchObject({ Name: "name", "Cron line": "cron", "Time zone": "timezone", Agent: "Agent", "Each run is asked": "content" });
+  });
+  it("the Every form's amount and unit are two controls with two ids; the label names the amount", async () => {
+    const t = await open(server().v2, { trigger: null });
+    await t.choose("every");
+    const ids = [...t.host.querySelectorAll("[id]")].map((e) => e.id);
+    expect(ids.filter((id, i) => ids.indexOf(id) !== i)).toEqual([]);
+    // "Every" is also the kind's own choice above; the field's label is the one whose control is the amount.
+    const every = [...t.host.querySelectorAll("label")].find((l) => l.textContent === "Every" && (l.control as HTMLInputElement | null)?.name === "every")!;
+    expect(every).toBeTruthy();
+    const unit = t.host.querySelector('button[aria-label="Unit"]')!;
+    expect(unit.id).toBe("schedule-every-unit");
+    expect(unit.id).not.toBe(every.control!.id);
+  });
   it("sends the cron line in its zone, the agent, the input and the cap, then opens the schedule", async () => {
     const { v2, calls } = server();
     const t = await open(v2, { trigger: null });
