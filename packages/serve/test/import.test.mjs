@@ -636,7 +636,7 @@ test("an import whose seal key does not open this server's webhook secret (a gen
     for (const args of [["--dry-run"], []]) {
       const lines = said(seal, ...args);
       assert.equal(lines.length, 1, `${seal ? "another key" : "a generated key"} ${args}: ${lines.join("\n")}`);
-      assert.equal(lines[0].replace(/at=\S+ /, ""), `agentrun-serve import: event=webhook_secret condition=unreadable name=AGENTRUN_SEAL_KEY file=${join(data, "webhook.json")} effect="this server's webhook secret cannot be read, so the import does not cut it"`);
+      assert.equal(lines[0].replace(/at=\S+ /, ""), `agentrun-serve import: event=webhook_secret condition=unreadable name=AGENTRUN_SEAL_KEY data=${data} effect="this server's webhook secret cannot be read under this seal key, so it is not cut"`);
     }
   for (const args of [["--dry-run"], []]) assert.deepEqual(said(key, ...args), [], "with the key it opens, nothing is said");
   const reader = await openData(data, "runner");
@@ -663,14 +663,14 @@ test("what an import says on stderr goes through the cut its other lines do: a d
   mkdirSync(site, { recursive: true });
   claudeSession(at, site, 1);
   const { AGENTRUN_SEAL_KEY: _, ...inherited } = process.env;
-  // No seal key: the webhook's secret does not open, and the line naming its file is said.
+  // No seal key: the webhook's secret does not open, and the line naming the data directory is said.
   for (const args of [["--dry-run"], []]) {
     const ran = spawnSync(process.execPath, [CLI, "import", "--data", data, "--all", ...args], { env: { ...inherited, HOME: at, OPENAI_API_KEY: value }, encoding: "utf8" });
     assert.equal(ran.status, 0, ran.stderr);
     assert.ok(![ran.stdout, ran.stderr].some((text) => text.includes(value)), `${args}: the key is printed`);
     const lines = ran.stderr.split("\n").filter((line) => line.includes("event=webhook_secret"));
     assert.equal(lines.length, 1, `${args}: ${ran.stderr}`);
-    assert.ok(lines[0].includes(`file=${join(root, "agents-[redacted]", "webhook.json")}`), lines[0]);
+    assert.ok(lines[0].includes(`data=${join(root, "agents-[redacted]")}`), lines[0]);
   }
 });
 

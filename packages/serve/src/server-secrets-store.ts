@@ -51,7 +51,10 @@ export async function openServerSecretsOverStore(
   if (!key) throw new Error(`the server starts with its seal key (${SEAL_KEY_ENV}), made at the first start when none is handed over`);
   // The outbound webhook's secret, and each it held before, kept in the store (webhooks.ts); and one an earlier version
   // kept in its file, for an import of that version's data.
-  const webhookSettings = sealedSettingsOverStore(store, WEBHOOK_CHANNEL, WEBHOOK_SECRET_SPEC, key, say);
+  // Its secret not opening under this seal key is said in the webhook's own words, naming the data directory.
+  const webhookSettings = sealedSettingsOverStore(store, WEBHOOK_CHANNEL, WEBHOOK_SECRET_SPEC, key, (fields) =>
+    fields.condition === "trigger_setting_unopened" ? say({ condition: "unreadable", name: SEAL_KEY_ENV, data, effect: "this server's webhook secret cannot be read under this seal key, so it is not cut" }) : say(fields),
+  );
   await webhookSettings.load();
   const earlier = webhookSecretIn(data, env);
   secrets.add("webhook", () => [...webhookSettings.values(), ...(earlier && "secret" in earlier ? [earlier.secret] : [])]);
