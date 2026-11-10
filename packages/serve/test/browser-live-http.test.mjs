@@ -4,7 +4,7 @@
 // page from its own copy under LIVE_CSP, and pipes the viewer's WebSocket to the run's loopback port only from its own
 // origin with the owner's session; once the runner drops it, none, and the old link opens nothing. The token is in the
 // owner's browser answer alone: no other API answer, no file under the data directory (the store's journal and command
-// rows among its tables), no plaintext browser_viewers column.
+// rows among its tables), no plaintext computer_viewers column.
 //
 // The runner does not bind the browser tool yet (E2r3), so the run's viewer is a stand-in here: a loopback viewer (port 0)
 // shaped as pi-browser's own (its page at /v/<id>, its WebSocket at /v/<id>/ws), put into the store with putLiveViewer
@@ -103,6 +103,7 @@ async function watched(t) {
   return { server, origin, cookie, runId, store, claim, key, id, token, tag, viewer };
 }
 
+const computerOf = (w, headers) => call(w.server.port, { path: `/v2/runs/${w.runId}/computer`, headers });
 const browserOf = (w, headers, runId = w.runId) => call(w.server.port, { path: `/v2/runs/${runId}/browser`, headers });
 const liveWs = (w, path, { origin = w.origin, cookie = w.cookie, headers = {} } = {}) => connect(`ws://127.0.0.1:${w.server.port}${path}`, { origin: origin ?? undefined, headers: { ...(cookie ? { cookie } : {}), ...headers } });
 
@@ -117,6 +118,19 @@ test("a runner-path run's viewer, from the store: the owner's GET is live with i
   assert.equal(answer.status, 200, answer.text);
   assert.deepEqual(answer.json, { state: "live", viewer: link });
   assert.equal(answer.headers["cache-control"], "no-store");
+
+  // The same viewer for the computer family (the console's GET /computer, RunBrowser.tsx opens only its link): kind
+  // browser, its link under /computer/live, whose page opens it (its WebSocket below). A token never reads it there either.
+  assert.equal((await computerOf(w, { authorization: `Bearer ${w.server.token}` })).status, 403, "a token never opens the computer");
+  const computer = await computerOf(w, { cookie: w.cookie });
+  assert.equal(computer.status, 200, computer.text);
+  assert.equal(computer.json.state, "live", computer.text);
+  assert.equal(computer.json.kind, "browser");
+  assert.equal(computer.json.viewer, `/v2/runs/${w.runId}/computer/live/v/${w.id}#t=${w.token}`);
+  assert.equal(computer.headers["cache-control"], "no-store");
+  const computerPage = await call(w.server.port, { path: `/v2/runs/${w.runId}/computer/live/v/${w.id}`, headers: { cookie: w.cookie } });
+  assert.equal(computerPage.status, 200, `its page under /computer/live: ${computerPage.text}`);
+  assert.equal(computerPage.text, viewerAssets.html);
 
   // The page: this server's own copy, under the route's CSP, never the run's port's.
   const pagePath = `/v2/runs/${w.runId}/browser/live/v/${w.id}`;
@@ -155,24 +169,34 @@ test("a runner-path run's viewer, from the store: the owner's GET is live with i
   assert.equal(headers.origin, `http://127.0.0.1:${w.viewer.port}`, "the run's viewer sees its own origin");
   assert.equal(headers.cookie, undefined, "nothing of the owner's reaches the run");
   open.ws.destroy();
+  // The computer family's link opens the same viewer's socket: piped to the same path on the run's port.
+  const viaComputer = await liveWs(w, `/v2/runs/${w.runId}/computer/live/v/${w.id}/ws`);
+  assert.equal(viaComputer.status, 101, "its WebSocket under /computer/live");
+  assert.equal(w.viewer.upgrades.length, 2);
+  assert.equal(w.viewer.upgrades[1].url, `/v/${w.id}/ws`);
+  viaComputer.ws.destroy();
 
   // The runner drops it (the session released): none, and the old link opens nothing.
   await dropLiveViewer(w.store, w.claim, w.tag);
   assert.deepEqual((await browserOf(w, { cookie: w.cookie })).json, { state: "none" });
   assert.equal((await liveWs(w, wsPath)).status, 404, "the old link's upgrade");
   assert.equal((await call(w.server.port, { path: pagePath, headers: { cookie: w.cookie } })).status, 404, "and its page");
-  assert.equal(w.viewer.upgrades.length, 1, "no new socket reached the run's port");
+  assert.deepEqual((await computerOf(w, { cookie: w.cookie })).json.state, "none", "GET /computer too");
+  assert.equal((await liveWs(w, `/v2/runs/${w.runId}/computer/live/v/${w.id}/ws`)).status, 404, "and the computer family's old link");
+  assert.equal(w.viewer.upgrades.length, 2, "no new socket reached the run's port");
 });
 
-test("a runner-path run's viewer token is in the owner's browser answer alone: in no other API answer, no file under the data directory, no journal or command row, no plaintext browser_viewers column", { timeout: 120_000 }, async (t) => {
+test("a runner-path run's viewer token is in the owner's browser answer alone: in no other API answer (its timeline among them), no file under the data directory, no journal or command row, no plaintext computer_viewers column", { timeout: 120_000 }, async (t) => {
   const w = await watched(t);
   const answer = await browserOf(w, { cookie: w.cookie });
   assert.ok(answer.text.includes(w.token), "the owner's browser answer holds it");
   assert.equal((await w.server.api("POST", `/runs/${w.runId}/messages`, { content: "Go on." })).status < 500, true, "a command row for the run");
-  for (const path of [`/runs/${w.runId}`, "/runs", "/agents/watch/runs", `/runs/${w.runId}/files`, "/agents/watch/home/files", "/capabilities", "/stats", `/runs/${w.runId}/browser`]) {
+  for (const path of [`/runs/${w.runId}`, `/runs/${w.runId}/timeline`, "/runs", "/agents/watch/runs", `/runs/${w.runId}/files`, "/agents/watch/home/files", "/capabilities", "/stats", `/runs/${w.runId}/browser`]) {
     const res = await w.server.api("GET", path);
     const text = JSON.stringify(res.body);
     assert.ok(!text.includes(w.token) && !text.includes(w.id), `${path} (${res.status}) holds no token and no viewer id`);
+    // An answer, not a refusal: a 4xx or 5xx would hold no token trivially. (/runs/{id}/browser is the token's caller, refused.)
+    if (path !== `/runs/${w.runId}/browser`) assert.ok(res.status < 400, `${path} answered (${res.status}): ${text.slice(0, 200)}`);
   }
   assert.equal((await w.server.api("POST", `/runs/${w.runId}/archive`)).status, 200);
   assert.ok(!JSON.stringify((await w.server.api("GET", `/runs/${w.runId}`)).body).includes(w.token), "archived, the same");
@@ -180,16 +204,14 @@ test("a runner-path run's viewer token is in the owner's browser answer alone: i
   const db = new DatabaseSync(join(w.server.data, STORE_FILE), { readOnly: true, timeout: 5_000 });
   let rows;
   try {
-    rows = db.prepare("SELECT * FROM browser_viewers").all();
+    rows = db.prepare("SELECT * FROM computer_viewers").all();
   } finally {
     db.close();
   }
   assert.equal(rows.length, 1);
-  assert.ok(rows.every((row) => Object.values(row).every((value) => !(value instanceof Uint8Array ? Buffer.from(value).includes(w.token) : String(value).includes(w.token)))), "no browser_viewers column holds it in plaintext");
+  assert.ok(rows.every((row) => Object.values(row).every((value) => !(value instanceof Uint8Array ? Buffer.from(value).includes(w.token) : String(value).includes(w.token)))), "no computer_viewers column holds it in plaintext");
   assert.ok(!JSON.stringify(await w.store.commands(w.runId, 0)).includes(w.token), "no command row");
   assert.deepEqual(filesUnder(w.server.data).filter(([, bytes]) => bytes.includes(w.token)).map(([path]) => path), [], "no file under the data directory (the store's journal and command tables among them)");
 });
-
-test.todo("a runner-path run's timeline (GET /runs/{id}/timeline) holds no viewer token and no viewer id: waits on E2c's timeline over the store (server.ts timeline() is runReadsTodo, its rejection unawaited at the getRunTimeline route)");
 
 test.todo("the runner's own browser tool opens a session on a runner-path run and hands its viewer over by itself (a real frame through the proxy), and its release takes it back: waits on E2r3: the runner binds the browser tool");
