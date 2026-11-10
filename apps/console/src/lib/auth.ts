@@ -19,7 +19,7 @@ export function authMode(r: { status: number; body: unknown }, probe?: number): 
 }
 
 /** Whether the server's first visit takes the setup code it printed (`GET /v2/auth/session` `setup_code`, served only
- *  before a password is set): a server at a public address. */
+ *  before a password is set): a server at a public address, or listening on any address but loopback. */
 export const setupTakesCode = (r: { status: number; body: unknown }): boolean => r.status === 200 && (r.body as { setup_code?: unknown } | null)?.setup_code === true;
 
 /** A refused sign-in or setup, in plain words; otherwise the server's own message. */

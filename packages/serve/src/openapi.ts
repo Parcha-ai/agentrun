@@ -1301,7 +1301,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
             accounts: { type: "boolean", description: "Whether this server has accounts (a password owner). false: the console shows no setup or sign-in screen." },
             password_set: { type: "boolean", description: "With accounts: whether the owner's password is set." },
             signed_in: { type: "boolean", description: "With accounts: whether this browser holds the owner's password session." },
-            setup_code: { type: "boolean", description: "With accounts, before the password is set: whether setup takes the code the server printed (a server at a public address). Never the code." },
+            setup_code: { type: "boolean", description: "With accounts, before the password is set: whether setup takes the code the server printed (a server at a public address, or listening on any address but loopback). Never the code." },
             secrets_writable: { type: "boolean", description: "Whether this caller may save, replace or remove a secret here (the same rule the server applies to the write itself)." },
             secrets_reason: { enum: ["sign_in", "no_accounts", "token"], description: "Present only when secrets_writable is false: sign_in, this is not the owner's session (accounts on: sign in with the password; accounts off on a loopback-bound server: open the console from the launch link); no_accounts, accounts are off and this server is reachable off loopback, where no one saves a secret until accounts are on; token, the caller is the API token, which never saves one, on any server." },
           },
