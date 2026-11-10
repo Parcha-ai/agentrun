@@ -463,7 +463,8 @@ export const REFILE_FAILED = "It is a standing rule for every reply, which belon
 /** A skill's SKILL.md (`file`, `text`) re-filed as the note it should have been (a standing rule for every reply is a
  *  note, which every run reads, not a skill, which a run loads on demand): `<name>.md`, named after the skill, its
  *  description the skill's, of type feedback, its body the skill's body. Undefined when it would be no note (its name
- *  not a note's file name, no description, or out of a note's shape or caps: checkNote). */
+ *  not a note's file name, no description, out of a note's shape (checkNote), or over a run's note cap, CAPS.runNote:
+ *  the host adds its origin and pending lines at the merge, as it does to a run's own note). */
 export function skillAsNote(file: string, text: string): NoteText | undefined {
   const place = learnedPlace(file);
   if (place?.kind !== "skill") return undefined;
@@ -478,6 +479,7 @@ export function skillAsNote(file: string, text: string): NoteText | undefined {
   const title = place.name.replace(/-/g, " ").replace(/^./, (first) => first.toUpperCase());
   const quoted = (value: string) => (/^[^\s\-?:,[\]{}#&*!|>'"%@`][^\n]*$/.test(value) && !/: |\s#|:$/.test(value) ? value : JSON.stringify(value));
   const note = `---\nname: ${quoted(title)}\ndescription: ${quoted(description)}\ntype: feedback\n---\n${body}`;
+  if (Buffer.byteLength(note, "utf8") > CAPS.runNote) return undefined;
   if (!NOTE_FILE.test(noteFile) || Array.isArray(parseNoteFile(noteFile, note)) || checkNote(noteFile, Buffer.from(note, "utf8")).problems.length) return undefined;
   return { file: noteFile, text: note };
 }
@@ -503,18 +505,19 @@ export function parseVerdict(text: unknown, proposed: readonly NoteText[] | read
     const said = item.decision === undefined ? (typeof item.keep === "boolean" ? (item.keep ? "keep" : "drop") : undefined) : item.decision;
     if (said !== "keep" && said !== "pending" && said !== "drop" && said !== "note") return UNREADABLE;
     if (said === "note" && learnedPlace(item.file)?.kind !== "skill") return UNREADABLE;
+    const question = item.question ?? undefined;
+    if (question !== undefined && typeof question !== "string") return UNREADABLE;
+    const asked = question === undefined ? "" : oneLine(question, REASON_MAX);
     // The note it is kept as, from the skill's own text; a skill that would be no note is dropped, saying where it goes.
+    // The grader's own question stays on it: a Planted one still keeps nothing of the run (below).
     const refiled = said === "note" && texts.has(item.file) ? skillAsNote(item.file, texts.get(item.file)!) : undefined;
     if (said === "note" && !refiled) {
-      items.push({ file: item.file, keep: false, question: "Note, not skill", why: REFILE_FAILED });
+      items.push({ file: item.file, keep: false, question: asked.trim() ? asked : "Note, not skill", why: REFILE_FAILED });
       continue;
     }
     const decided = said === "note" ? "keep" : said;
     const origin = item.origin ?? "run";
     if (origin !== "you" && origin !== "run") return UNREADABLE;
-    const question = item.question ?? undefined;
-    if (question !== undefined && typeof question !== "string") return UNREADABLE;
-    const asked = question === undefined ? "" : oneLine(question, REASON_MAX);
     // A risky note waits for the owner's OK whoever's idea it was, the run's own included, and one the grader names
     // Risky waits even when it called it a keep: nothing risky is served before a person approves it.
     // So does one the run's own turn marked `risky: true` (reflectPrompt): the hold is the run's or the grader's,
