@@ -63,10 +63,10 @@ function fakeProvider(root, record, groups, machine = "linux") {
       const read = await computer.readBack();
       return { ok: true, value: { id: "c1", name: "c1", spec: { image: "i", user: "1000:1000", network: "none", ...(read.ok ? { mount: read.value } : {}) } } };
     },
-    // The provider's watch of the screen: what feeds the run's proxied live view.
-    watch(ref, { signal }) {
-      record.watched = [...(record.watched ?? []), [ref.id, signal instanceof AbortSignal]];
-      return { frames: [] };
+    // The provider's watch of the screen (provider.watch(ref, handlers, options)): what feeds the run's proxied live view.
+    async watch(ref, handlers, options) {
+      record.watched = [...(record.watched ?? []), [ref.id, typeof handlers.frame, options.signal instanceof AbortSignal]];
+      return { ok: true, value: { input: async () => ({ ok: true, value: { done: 0 } }), close: async () => {} } };
     },
     async release(ref, how) {
       record.released.push([ref.id, how]);
@@ -85,7 +85,8 @@ function views(refusal) {
   const holds = [];
   const open = async (args) => {
     holds.push(args.hold);
-    opened.push({ kind: args.kind, input: args.input, tag: args.tag, claim: args.claim, sealKey: Buffer.isBuffer(args.sealKey), hold: typeof args.hold?.take, watched: args.watch(new AbortController().signal) !== undefined });
+    const watched = await args.watch({ frame() {}, ended() {} }, { signal: new AbortController().signal });
+    opened.push({ kind: args.kind, input: args.input, tag: args.tag, claim: args.claim, sealKey: Buffer.isBuffer(args.sealKey), hold: typeof args.hold?.take, watched: watched.ok });
     if (refusal) return { ok: false, refused: refusal, message: `the store refused the viewer (${refusal})` };
     return { ok: true, view: { close: (why) => void closed.push(why) } };
   };
@@ -136,6 +137,7 @@ test("a desktop opens one proxied live view under the claim with its hold, and o
   assert.equal(record.created[0].mount, undefined, "E2B mounts nothing in Mode 1");
   assert.deepEqual(record.options[0].slice(0, 2), ["e2b", { apiKey: "ek-test" }], "made with its key, by the option it fills");
   assert.deepEqual(view.opened, [{ kind: "desktop", input: "desktop", tag: "c1", claim: { runId: "run-1", epoch: 3 }, sealKey: true, hold: "function", watched: true }], "one view, tagged with the computer's ref id, fed by the provider's watch");
+  assert.deepEqual(record.watched, [["c1", "function", true]], "the provider's watch, on the computer's ref, with the viewer's handlers and signal");
   assert.equal(typeof answer.hold, "function", "the person's hold on its ports, for runTools");
   const [hold] = view.holds;
   assert.equal(hold.take(), true, "a person takes the desktop");
