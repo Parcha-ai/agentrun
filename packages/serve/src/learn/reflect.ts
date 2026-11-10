@@ -101,10 +101,13 @@ export function reflectPrompt(options: { dir: string; active: number; tools?: re
     "To change a draft you were given, give it again whole under its name.",
     "Its schemas are declared once under `schemas`, and `input` and `output` name one each by `schemaId`, never a schema",
     "written in place.",
+    "Give its front matter an `example:` line too: one JSON object on one line, the input this run would have given it.",
+    "The host dry-runs the draft on it before it is kept (no model or tool is called) and never keeps the example.",
     "",
     `\`\`\`\`${WORKFLOW_BLOCK} find-policies`,
     "---",
     "description: Finds a store's refund policy from its public pages; use when a case asks for it",
+    `example: ${JSON.stringify(tools.includes("web_fetch") ? { url: "https://shop.example/policies" } : { text: "Refunds are accepted within 30 days of delivery." })}`,
     "---",
     JSON.stringify(exampleDraft(tools.includes("web_fetch"))),
     "````",
@@ -115,6 +118,12 @@ export function reflectPrompt(options: { dir: string; active: number; tools?: re
  *  parseReflection's), and the whole answer again in the format. */
 export function reflectAgain(detail: string): string {
   return `Your answer could not be read: ${detail}. Give the whole answer again in the format asked for above, every note, skill and workflow block in it, and nothing else.`;
+}
+
+/** The end-of-run turn asked again, once, when the checks left a workflow draft out because its dry run failed: which
+ *  draft and why (`detail`, the check's words), and the whole answer again with that draft fixed or left out. */
+export function reflectDryRun(file: string, detail: string): string {
+  return `Your workflow draft ${file} did not pass its dry run: ${detail}. Give the whole answer again in the format asked for above, every note, skill and workflow block in it, with that draft fixed or left out, and nothing else.`;
 }
 
 /** The prompt's example workflow draft, whole: its schemas declared once, its input and output naming them by `schemaId`,

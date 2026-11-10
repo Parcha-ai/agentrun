@@ -1,7 +1,7 @@
 // What a run may propose beside its notes: one skill, `skills/<name>/SKILL.md`, and workflow drafts,
 // `workflows/<name>/workflow.json` with its `README.md`. Their places in the learning folder and the shape each file must
 // have. check.ts checks them; nothing here reads a file, runs a draft or calls a model.
-import type { assertWorkflowCapabilities, desugarWorkflow, inspectWorkflow, validateWorkflow, Workflow } from "@parcha/agentrun-dsl";
+import type { assertWorkflowCapabilities, desugarWorkflow, dryRunWorkflow, inspectWorkflow, validateWorkflow, Workflow } from "@parcha/agentrun-dsl";
 
 /** Where a skill and a workflow draft live in the folder. */
 export const SKILLS_DIR = "skills";
@@ -158,12 +158,58 @@ export const readmeOf = (name: string, description: string): string => `---\nnam
 
 /** A workflow block's two files: its `description:` front matter written as the draft's README.md (readmeOf), and the
  *  JSON after it as its workflow.json. A block with no front matter, or none that says what the draft is for, gives a
- *  README with no description, which the checker refuses; what the JSON holds is the checker's to judge. */
-export function draftFiles(name: string, block: string): { json: string; readme: string } {
+ *  README with no description, which the checker refuses; what the JSON holds is the checker's to judge. `example`, its
+ *  `example:` front matter line as written (the run's own input to the workflow, one JSON object): what its dry run runs
+ *  on (draftDryRun), and never a file's: the README holds its name and description alone, so the run's input, which can
+ *  be a customer's data, is never kept in the learning folder. */
+export function draftFiles(name: string, block: string): { json: string; readme: string; example?: string } {
   const front = frontOf(block);
   if (typeof front === "string") return { json: block, readme: readmeOf(name, "") };
   const description = (front.value("description") ?? "").replace(/\s+/g, " ").trim();
-  return { json: front.lf.slice(front.end + "\n---\n".length), readme: readmeOf(name, description) };
+  const example = front.value("example")?.trim();
+  return { json: front.lf.slice(front.end + "\n---\n".length), readme: readmeOf(name, description), ...(example ? { example } : {}) };
+}
+
+/** How a draft's dry run went (draftDryRun): `passed`, every step ran on synthetic values; `not_run`, a check could not
+ *  run (`detail` says which), so it is no proof; `failed`, `detail` says where. */
+export type DraftDryRun = { readonly status: "passed" | "not_run" | "failed"; readonly detail?: string };
+
+/** The words a draft that failed its dry run is left out with, before why: a re-ask reads them (reflect-hook.ts). */
+export const DRY_RUN_FAILED = "its dry run failed";
+/** The most synthetic steps a draft's dry run takes before it stops, as not run. */
+const DRY_RUN_STEPS = 2_000;
+
+/** A draft's workflow.json `json` dry-run by the workflow DSL (dryRunWorkflow) on `example` (its block's `example:`
+ *  line, one JSON object), else on an input synthesized from its input schema. Every model, Jev and tool-call answer is
+ *  synthesized from the node's output schema: no request is sent, nothing is paid, no tool runs, and a learned draft
+ *  holds no code node (draftProblems), so none runs. It checks the wiring at run time (the state each step reads, its
+ *  output's path and schema), never the answers. */
+export async function draftDryRun(dsl: { readonly dryRunWorkflow: typeof dryRunWorkflow }, json: string, example?: string): Promise<DraftDryRun> {
+  let doc: unknown;
+  let input: Record<string, unknown> | undefined;
+  try {
+    doc = JSON.parse(json);
+  } catch {
+    return { status: "failed", detail: `${DRY_RUN_FAILED}: it does not parse as JSON` };
+  }
+  if (example !== undefined) {
+    let given: unknown;
+    try {
+      given = JSON.parse(example);
+    } catch {
+      given = undefined;
+    }
+    if (typeof given !== "object" || given === null || Array.isArray(given)) return { status: "failed", detail: `${DRY_RUN_FAILED}: its example: line is not one JSON object` };
+    input = given as Record<string, unknown>;
+  }
+  let result: Awaited<ReturnType<typeof dryRunWorkflow>>;
+  try {
+    result = await dsl.dryRunWorkflow(doc as Workflow, { ...(input ? { input } : {}), maxSteps: DRY_RUN_STEPS });
+  } catch (error) {
+    return { status: "failed", detail: `${DRY_RUN_FAILED}: ${String((error as Error)?.message ?? error).slice(0, 300)}` };
+  }
+  if (result.ok) return result.status === "passed" ? { status: "passed" } : { status: "not_run", detail: (result.skipped ?? []).join("; ").slice(0, 300) || "a check could not run" };
+  return { status: "failed", detail: `${DRY_RUN_FAILED}${result.stage ? ` at "${result.stage.slice(0, 64)}"` : ""}: ${result.problems.join("; ").slice(0, 300)}` };
 }
 
 /** The refusal for a draft that names a tool when the host gave no tool list: the check fails closed. */

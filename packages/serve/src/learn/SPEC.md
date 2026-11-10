@@ -76,6 +76,17 @@ run is not given. So is an agent node that asks more than the learned runner's 8
 starts a fresh session). With no list, a draft that names any tool is refused. A draft
 holds no node that runs code: no `code` node, and no call `via: "shell"` or `via: "executor"`.
 
+A draft the checks pass is then dry-run (`draftDryRun`, the DSL's `dryRunWorkflow`) on its block's `example:` line, one
+JSON object, the run's own input to it, else on an input synthesized from its input schema. Every model, Jev and
+tool-call answer is synthesized from the node's output schema: no request is sent, nothing is paid, no tool runs and no
+code runs. It checks the wiring at run time (the state each step reads, the output's path and schema), never the
+answers. A draft whose dry run fails is left out (`workflow`, "its dry run failed ..."), and the end-of-run turn is asked
+once more for the whole answer with that draft fixed or left out; the second answer stands only when the checks keep it.
+The example is never written anywhere in the folder (the README holds `name` and `description` alone), and is read for
+what must never be stored as every text the run gives is: one holding a held secret or a secret's shape refuses the
+whole answer. The proposal keeps each kept draft's dry run (`dryRuns`: passed, or not run and why), and the grader is
+told it under the draft.
+
 ## The index
 
 `MEMORY.md` is one line per active note, by file name, `- [name](file.md) — description`, built by the host from the

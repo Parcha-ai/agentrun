@@ -6,7 +6,7 @@
 // (`refuse`: the host's secrets and what it was handed, its sign-in pointer among them) is refused by the checks, and cut
 // from everything the hook keeps; a run whose list can't be read learns nothing.
 import { cutStrings } from "../key-refusal.js";
-import { reflectAgain, reflectPrompt, redactSecrets } from "../learn/index.js";
+import { DRY_RUN_FAILED, reflectAgain, reflectDryRun, reflectPrompt, redactSecrets } from "../learn/index.js";
 import { said, STOPPED } from "../learning-words.js";
 import type { AlsoRow, EndOfRunTurn } from "./loop-contract.js";
 
@@ -65,6 +65,14 @@ const droppedRow = (turn: ReflectTurn | null, reason: string, detail: string, ex
  *  whole). */
 const cutRow = (row: AlsoRow, refuse: readonly string[]): AlsoRow =>
   row.table === "learning_proposals" ? { table: row.table, row: cutStrings(row.row, (text) => redactSecrets(text, refuse, Number.POSITIVE_INFINITY)) as typeof row.row } : row;
+
+/** The first workflow draft the checks left out of `checked` because its dry run failed (learn/skills.ts DRY_RUN_FAILED):
+ *  its path and the check's words; undefined when none was. */
+function dryRunFailure(checked: Checked): { path: string; detail: string } | undefined {
+  const problems = (checked.state === "proposed" ? checked.left ?? [] : checked.state === "dropped" && checked.reason === "checker" ? checked.problems : []) as readonly { rule?: unknown; path?: unknown; detail?: unknown }[];
+  const found = problems.find((problem) => problem?.rule === "workflow" && typeof problem.path === "string" && typeof problem.detail === "string" && problem.detail.startsWith(DRY_RUN_FAILED));
+  return found ? { path: found.path as string, detail: found.detail as string } : undefined;
+}
 
 /** The end-of-run turn for runs that learn. */
 export function createReflectHook(deps: ReflectDeps): EndOfRunTurn {
@@ -129,6 +137,21 @@ export function createReflectHook(deps: ReflectDeps): EndOfRunTurn {
         turn = turnOf(again.answer);
         checked = await checkOf(turn);
         if (!checked) return close([droppedRow(turn, "propose_failed", said.stopped(STOPPED.notChecked))]);
+      }
+    } else {
+      // A workflow draft the checks left out because its dry run failed is asked for again once, in the same turn and
+      // within its deadline, saying which draft and why: the second answer stands only when the checks keep it, else the
+      // first answer's, that draft left out, stands. Never a third time (a turn asks again once, for either reason).
+      const dry = dryRunFailure(checked);
+      const left = deadlineMs - (now() - started);
+      const again = dry && left > 0 ? await input.ask(reflectDryRun(dry.path, dry.detail), { origin: "reflect", deadlineMs: left, again: true }) : undefined;
+      if (again && "ended" in again) {
+        const second = turnOf(again.answer);
+        const kept = await checkOf(second);
+        if (kept?.state === "proposed") {
+          turn = second;
+          checked = kept;
+        }
       }
     }
     if (checked.state === "dropped") {

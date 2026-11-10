@@ -78,6 +78,9 @@ export type GradeInput = {
   /** The skill and workflow draft the run proposes beside them, each checked, by path in the folder: a skill's
    *  `skills/<name>/SKILL.md`, a draft's `workflows/<name>/workflow.json` with its `README.md`. */
   readonly files?: readonly NoteText[];
+  /** Each draft's dry run, by its workflow.json's path (skills.ts draftDryRun): passed, or not run and why. The prompt
+   *  says it under the draft, each detail cut to DRY_RUN_DETAIL with unseen characters taken out. */
+  readonly dryRuns?: Readonly<Record<string, { readonly status: string; readonly detail?: string }>>;
   /** What the user said in the run, in order: the messages the run was sent, never the host's end-of-run turn. The
    *  prompt holds every one, each cut to GRADE_CAPS.askedMessage, with unseen characters taken out, while together
    *  they fit GRADE_CAPS.askedTotal (askedOf). The host cuts them of its secrets first. */
@@ -261,6 +264,18 @@ export function gradePrompt(input: GradeInput): string {
   return promptWithin(input, GRADE_CAPS.askedTotal);
 }
 
+/** The most of a dry run's detail the grader's prompt holds. */
+const DRY_RUN_DETAIL = 300;
+/** What the grader is told of draft `file`'s dry run, under its fence: it ran every step on synthetic values (checking
+ *  the wiring, not the answers), or it could not run and why. Nothing for a file with none. */
+function dryRunLine(file: string, dryRuns: GradeInput["dryRuns"]): string[] {
+  const dry = dryRuns?.[file];
+  if (!dry) return [];
+  if (dry.status === "passed") return [`Its dry run passed: every step ran on synthetic values (no model or tool was called), so its wiring holds; that says nothing of its answers.`, ""];
+  const why = String(dry.detail ?? "").replace(/[\p{Cc}\p{Cf}]/gu, " ").slice(0, DRY_RUN_DETAIL).trim().replace(/\.+$/, "");
+  return [`Its dry run did not run: ${why || "a check could not run"}. It has never been exercised.`, ""];
+}
+
 /** gradePrompt with the user's messages given `budget` characters. Every other part is capped; the messages take the
  *  room the rest leaves: over the cap, it is built again with fewer (the first and the newest that fit, the rest named),
  *  so a proposal the checker passed never makes it throw. */
@@ -362,7 +377,7 @@ function promptWithin(input: GradeInput, budget: number): string {
     // Each new note as the grader judges it: without its run's risky mark, which the verdict's hold reads after.
     ...(proposed.length ? proposed.map(({ file, text }) => fence(`${file}, new`, withoutRiskyMark(text))) : ["There are none."]),
     ...(learned.length
-      ? ["", "## The new skill and workflow draft", "", "A workflow draft's README.md is judged with its workflow.json, as one item.", "", ...learned.map(({ file, text }) => fence(`${file}, new`, text))]
+      ? ["", "## The new skill and workflow draft", "", "A workflow draft's README.md is judged with its workflow.json, as one item.", "", ...learned.flatMap(({ file, text }) => [fence(`${file}, new`, text), ...dryRunLine(file, input.dryRuns)])]
       : []),
     "",
     "## Your verdict",

@@ -61,12 +61,13 @@ async function world(t, body, launchOf, setup = async () => {}) {
       await new Promise((resolve) => setTimeout(resolve, 20));
     }
   };
-  /** Starts the runner: run-1 on the adapter loop with `endOfRun` its end-of-run step; any other run it claims (the
-   *  learning run a proposal queues) is held, never run here, until the runner closes. */
-  const start = async (endOfRunOf) => {
+  /** Starts the runner: run-1 on the adapter loop with `endOfRun` its end-of-run step, its model following `script` with
+   *  `tools` (each model request pushed on `requests`); any other run it claims (the learning run a proposal queues) is
+   *  held, never run here, until the runner closes. */
+  const start = async (endOfRunOf, { script = [{ say: "The job's answer." }, { say: REFLECTED }], tools = {}, requests = [] } = {}) => {
     const store = await openSqliteStore({ dataDir: dir, role: "runner" });
     stores.push(store);
-    const spec = piAdapterSpec({ script: [{ say: "The job's answer." }, { say: REFLECTED }], tools: {}, hooks: quiet });
+    const spec = piAdapterSpec({ script, tools, hooks: quiet }, { requests });
     // Mode 1: the agent's learning folder is the local one under the data directory.
     const endOfRun = endOfRunOf({ store, data: dir, env: {}, learningFolder: (agentId) => learningFolderOf(dir, agentId) });
     const createLoop = (deps) => {
@@ -151,4 +152,29 @@ test("the tools the end-of-run prompt offers a workflow draft follow the server'
   const prompt = (await w.turnOf(row)).users[1] ?? "";
   assert.match(prompt, /It has no call node on a tool\./, `the store's deny leaves web_search out of the draft's tools: ${prompt.slice(prompt.indexOf("call node") - 80, prompt.indexOf("call node") + 120)}`);
   assert.ok(!prompt.includes("web_search"), "the file's allow is never read");
+});
+
+// A workflow draft whose dry run fails (learn/skills.ts draftDryRun) is left out, and the end-of-run turn is asked once
+// more, saying which draft and why: a second answer the checks keep stands, its draft's dry run kept for the grader.
+const draftBlock = (output) => `\`\`\`\`workflow answer\n---\ndescription: Answers a question as a number; use when asked\nexample: {"question":"What is six times seven?"}\n---\n${JSON.stringify({
+  v: 2, name: "answer",
+  schemas: { Question: { type: "object", properties: { question: { type: "string" } }, required: ["question"] }, Answer: { type: "object", properties: { answer: { type: "number" } }, required: ["answer"] } },
+  input: { schemaId: "Question" }, output: { schemaId: "Answer", path: "answer" },
+  root: { node: "chain", steps: [{ node: "extract", label: "answer", instructions: "Answer the question.", out: "Answer", as: output }] },
+})}\n\`\`\`\``;
+
+test("a workflow draft that fails its dry run is asked for again once, saying why; the fixed draft is proposed with its dry run passed, and the example kept nowhere", async (t) => {
+  const w = await world(t, { instructions: "Answer.", tools: ["read"], learning: true }, async (dir) => {
+    const seed = await seedOf(dir, "agent-1");
+    return runner(() => ({ given: [], seed: seed.sha, section: "", seedNotes: 0 }))(dir);
+  });
+  await w.start((deps) => learningEndOfRun(w.launch, deps), { script: [{ say: "The job's answer." }, { say: `${REFLECTED}\n\n${draftBlock("other")}` }, { say: `${REFLECTED}\n\n${draftBlock("answer")}` }] });
+  const row = await w.ended();
+  const turn = await w.turnOf(row);
+  assert.equal(turn.users.length, 3, `the job's message, the turn's prompt, and one re-ask: ${JSON.stringify(turn.users.map((u) => u.slice(0, 80)))}`);
+  assert.match(turn.users[2], /^Your workflow draft workflows\/answer\/workflow\.json did not pass its dry run: its dry run failed/, turn.users[2]);
+  const kept = await w.server.learning.proposal("run-1");
+  assert.deepEqual([kept?.proposal?.state, kept?.proposal?.notes, kept?.proposal?.workflows], ["proposed", 1, 1], JSON.stringify(kept?.proposal));
+  assert.deepEqual(kept.proposal.proposal.dryRuns, { "workflows/answer/workflow.json": { status: "passed" } });
+  assert.ok(!JSON.stringify(kept.proposal.proposal.files).includes("six times seven"), "the example is in no file");
 });
