@@ -2,7 +2,7 @@ import { act, type ReactElement, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { Banner, Button, Checkbox, Chip, ConfirmDialog, Dialog, Field, fieldBoxClass, Input, Menu, MenuItem, NavItem, Segmented, Spinner, Tabs, Textarea, ToastProvider, useToast } from ".";
+import { Banner, Button, Checkbox, Chip, ConfirmDialog, Dialog, Field, fieldBoxClass, Input, Menu, MenuItem, NavItem, Segmented, Spinner, tabPanelProps, Tabs, Textarea, ToastProvider, useToast } from ".";
 import * as foundations from "@/design/Foundations.stories";
 import * as primitives from "./Primitives.stories";
 
@@ -209,6 +209,16 @@ describe("Toast", () => {
     act(() => { say.click(); say.click(); say.click(); say.click(); });
     expect(document.querySelectorAll('[role="status"]').length).toBe(3);
   });
+  it("stays while the keyboard is on it, though the pointer came and went", () => {
+    vi.useFakeTimers();
+    const host = mount(<ToastProvider><Say /></ToastProvider>);
+    act(() => { host.querySelector("button")!.click(); });
+    const card = document.querySelector('[role="status"]')!;
+    act(() => { (card.querySelector("button") as HTMLElement).focus(); });
+    act(() => { card.dispatchEvent(new MouseEvent("mouseover", { bubbles: true })); card.dispatchEvent(new MouseEvent("mouseout", { bubbles: true })); });
+    act(() => { vi.advanceTimersByTime(20000); });
+    expect(document.querySelector('[role="status"]')).not.toBeNull();
+  });
   it("outside a provider, a toast is nothing and throws nothing", () => {
     const host = mount(<Say />);
     expect(() => act(() => host.querySelector("button")!.click())).not.toThrow();
@@ -239,6 +249,20 @@ describe("Tabs", () => {
     expect(open()).toBe("Overview");
     await click(tabs()[1]!);
     expect(open()).toBe("Runs");
+  });
+});
+
+describe("Tabs and their panel", () => {
+  it("with an id, each tab controls its panel and the panel is named by its tab", () => {
+    const host = mount(<><Tabs id="agent" value="b" onChange={() => {}} tabs={[{ id: "a", label: "Overview" }, { id: "b", label: "Runs" }]} /><div {...tabPanelProps("agent", "b")} /></>);
+    const tab = host.querySelector('[role="tab"][aria-selected="true"]')!;
+    const panel = host.querySelector('[role="tabpanel"]')!;
+    expect(tab.getAttribute("aria-controls")).toBe(panel.id);
+    expect(panel.getAttribute("aria-labelledby")).toBe(tab.id);
+  });
+  it("a value that is no tab leaves the first tab reachable", () => {
+    const host = mount(<Tabs value={"gone" as "a"} onChange={() => {}} tabs={[{ id: "a", label: "Overview" }, { id: "b", label: "Runs" }]} />);
+    expect([...host.querySelectorAll('[role="tab"]')].map((t) => (t as HTMLElement).tabIndex)).toEqual([0, -1]);
   });
 });
 

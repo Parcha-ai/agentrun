@@ -1,12 +1,12 @@
 import type { ReactNode } from "react";
 
 /** A story shown twice, light beside dark, so a change is seen in both themes at once. Each panel carries its theme's
- *  class, which sets every token under it (tokens.css). */
+ *  class, which sets every token under it (tokens.css), and holds what a story fixes to the viewport (a toast) inside itself. */
 export function Themes({ children }: { children: ReactNode }) {
   return (
     <div className="grid min-h-screen grid-cols-1 xl:grid-cols-2">
       {(["light", "dark"] as const).map((theme) => (
-        <section key={theme} data-theme={theme} className={`${theme} min-w-0 bg-background p-6 text-foreground md:p-8`}>
+        <section key={theme} data-theme={theme} className={`${theme} min-w-0 bg-background p-6 text-foreground [contain:layout] md:p-8`}>
           <p className="caps mb-6 border-b pb-2 text-label text-muted-foreground">{theme}</p>
           <div className="space-y-8">{children}</div>
         </section>

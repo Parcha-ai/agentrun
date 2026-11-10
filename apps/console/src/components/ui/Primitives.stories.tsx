@@ -2,7 +2,7 @@ import type { Meta, StoryObj } from "@storybook/react";
 import { Archive, Bot, Copy, History, LayoutDashboard, MoreHorizontal, Pencil, Play, Plus, Trash2 } from "lucide-react";
 import { useId, useState } from "react";
 import { Block, Themes } from "@/design/Themes";
-import { Banner, Button, Checkbox, Chip, ConfirmDialog, Dialog, Field, Input, Menu, MenuItem, MenuSeparator, NativeSelect, NavItem, Picker, Radio, Segmented, Spinner, Switch, Tabs, Textarea, Tip, ToastProvider, useToast } from ".";
+import { Banner, Button, Checkbox, Chip, ConfirmDialog, Dialog, Field, Input, Menu, MenuItem, MenuSeparator, NativeSelect, NavItem, Picker, Radio, Segmented, Spinner, Switch, tabPanelProps, Tabs, Textarea, Tip, ToastProvider, useToast } from ".";
 
 // Every primitive in every variant and state, in both themes. docs/console-design-system.md says which to reach for.
 const meta: Meta = { title: "Design system/Primitives" };
@@ -142,7 +142,8 @@ function ToastsDemo() {
     </div>
   );
 }
-export const Toasts: Story = { render: () => <ToastProvider><Themes><Block title="Toast" note="A short word that what you just did worked or did not. Leaves after 5 seconds; an error stays until dismissed."><ToastsDemo /></Block></Themes></ToastProvider> };
+// A provider in each panel, so a toast shows in the theme of the panel that said it.
+export const Toasts: Story = { render: () => <Themes><ToastProvider><Block title="Toast" note="A short word that what you just did worked or did not. Leaves after 5 seconds; an error stays until dismissed."><ToastsDemo /></Block></ToastProvider></Themes> };
 
 function NavigationDemo() {
   const [at, setAt] = useState("agents");
@@ -157,8 +158,8 @@ function NavigationDemo() {
         </nav>
       </Block>
       <Block title="Tabs" note="A page's views. Left and Right move between them.">
-        <Tabs label="Agent" value={tab} onChange={setTab} className="px-0 md:px-0" tabs={[{ id: "overview", label: "Overview" }, { id: "runs", label: "Runs" }, { id: "learning", label: "Learning" }]} />
-        <p role="tabpanel" aria-label={tab} className="pt-3 text-body text-muted-foreground">The {tab} panel.</p>
+        <Tabs label="Agent" id={group} value={tab} onChange={setTab} className="px-0 md:px-0" tabs={[{ id: "overview", label: "Overview" }, { id: "runs", label: "Runs" }, { id: "learning", label: "Learning" }]} />
+        <p {...tabPanelProps(group, tab)} className="pt-3 text-body text-muted-foreground">The {tab} panel.</p>
       </Block>
       <Block title="Segmented" note="One choice of a few, all in view.">
         <div className="flex flex-wrap items-center gap-3">

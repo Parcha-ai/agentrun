@@ -3,7 +3,7 @@ import plugin from "tailwindcss/plugin";
 
 // The AgentRun look as Tailwind names. Every value is a token in src/tokens.css (docs/console-design-system.md is the
 // guide); a scale set here replaces Tailwind's own, so a class off the scale (`text-sm`, `z-40`, `rounded-md`) makes no
-// CSS and src/design-system.sources.test.ts names it.
+// CSS.
 const hsl = (name: string) => `hsl(var(--${name}) / <alpha-value>)`;
 
 export default {
