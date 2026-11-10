@@ -23,7 +23,7 @@ import { runEntries } from "../dist/store-reads/journal.js";
 import { toolKeysOverStore } from "../dist/tool-keys-store.js";
 import { at as minute, claudeSession, claudeSubagent, codexSession, piSession, sessionId, writeSession } from "./fixtures/import-sessions.mjs";
 import { schemaProblems } from "./schema-support.mjs";
-import { agent, client, FAUX, scratch, triggerStore } from "./support.mjs";
+import { agent, client, FAUX, launchFor, scratch, triggerStore } from "./support.mjs";
 
 /** The server's store on a data directory: role "server" to import into, role "runner" to read what an import wrote. */
 const openData = (data, role = "server") => openSqliteStore({ dataDir: data, role });
@@ -135,7 +135,7 @@ test("each project is one agent with a revision per harness, its CLAUDE.md or AG
   assert.ok(Math.abs(notes.costUsd - 0.005) < 1e-12, "pi's requests' costs, summed");
   assert.equal((await rowsOf(store, report.agents[2].id))[0].state, "stopped", "an aborted Codex turn");
 
-  const server = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  const server = launchFor(await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" }));
   t.after(() => server.close());
   const api = client(server.baseUrl, server.token);
   const view = await api("GET", `/runs/${runs[0].id}`);
@@ -185,7 +185,7 @@ test("nothing the import writes holds a key-shaped variable's value; its places 
 test("an imported run takes no message (409 not_continuable, reason imported); a stop, a cancel and a restart answer as for an ended run and move nothing", { timeout: 60_000 }, async (t) => {
   const { data, store, report } = await imported(t);
   const run = (await runsOf(store, report.agents[0].id))[0];
-  const one = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  const one = launchFor(await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" }));
   let closed = false;
   t.after(() => (closed ? undefined : one.close()));
   const api = client(one.baseUrl, one.token);
@@ -199,7 +199,7 @@ test("an imported run takes no message (409 not_continuable, reason imported); a
   assert.deepEqual([cancel.status, cancel.body.cancel_requested, cancel.body.already_terminal], [202, false, true]);
   await one.close();
   closed = true;
-  const two = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  const two = launchFor(await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" }));
   t.after(() => two.close());
   assert.equal((await client(two.baseUrl, two.token)("GET", `/runs/${run.id}`)).body.status, "completed");
   // The run stays as imported: still ended, took no message, moved nothing.
@@ -218,7 +218,7 @@ test("an imported run whose journal holds nothing to render reads as such: its t
   // server must answer its views, never 500.
   await writer.importRun({ id: "thin-run", agentId, revisionId, importedFrom: { source: "pi", session: "thin" }, launch: { body: { input: { content: "" }, title: "thin", place: { mode: "runner" } } }, startedAt: Date.parse("2026-10-20T09:00:00Z"), transcript: [] });
   await writer.close();
-  const server = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  const server = launchFor(await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" }));
   t.after(() => server.close());
   const api = client(server.baseUrl, server.token);
   assert.equal((await api("GET", `/runs/thin-run`)).status, 200);
@@ -526,7 +526,7 @@ test("this server's own secrets, pasted into sessions, are cut out of what the i
   process.env.AGENTRUN_SEAL_KEY = seal.AGENTRUN_SEAL_KEY;
   // A server that made each of them, the webhook's secret shown once at its first PUT. Closed before the import, as a
   // person runs one.
-  const server = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s", accounts: true, openSetup: true });
+  const server = launchFor(await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s", accounts: true, openSetup: true }));
   let open = true;
   t.after(() => open && server.close());
   const api = client(server.baseUrl, server.token);
@@ -574,7 +574,7 @@ test("a webhook trigger's key or the outbound webhook's, pasted into sessions as
   const before = process.env.AGENTRUN_SEAL_KEY;
   t.after(() => (before === undefined ? delete process.env.AGENTRUN_SEAL_KEY : (process.env.AGENTRUN_SEAL_KEY = before)));
   process.env.AGENTRUN_SEAL_KEY = seal.AGENTRUN_SEAL_KEY;
-  const server = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s", store: await triggerStore() });
+  const server = launchFor(await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s", store: await triggerStore() }));
   let open = true;
   t.after(() => open && server.close());
   const api = client(server.baseUrl, server.token);
@@ -614,7 +614,7 @@ test("an import whose seal key does not open this server's webhook secret (a gen
   const before = process.env.AGENTRUN_SEAL_KEY;
   t.after(() => (before === undefined ? delete process.env.AGENTRUN_SEAL_KEY : (process.env.AGENTRUN_SEAL_KEY = before)));
   process.env.AGENTRUN_SEAL_KEY = key;
-  const server = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  const server = launchFor(await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" }));
   let open = true;
   t.after(() => open && server.close());
   assert.equal((await client(server.baseUrl, server.token)("PUT", "/settings/webhook", { url: "http://127.0.0.1:9/hook" })).status, 201);
@@ -652,7 +652,7 @@ test("what an import says on stderr goes through the cut its other lines do: a d
   const before = process.env.AGENTRUN_SEAL_KEY;
   t.after(() => (before === undefined ? delete process.env.AGENTRUN_SEAL_KEY : (process.env.AGENTRUN_SEAL_KEY = before)));
   process.env.AGENTRUN_SEAL_KEY = randomBytes(32).toString("base64");
-  const server = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  const server = launchFor(await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" }));
   let open = true;
   t.after(() => open && server.close());
   assert.equal((await client(server.baseUrl, server.token)("PUT", "/settings/webhook", { url: "http://127.0.0.1:9/hook" })).status, 201);

@@ -214,11 +214,11 @@ test("a person sees what the agent learned and controls it: the view, the log by
 });
 
 test("the console's page writes a note under its session as JSON {text} from its own origin: an edit and a create land as a Bearer text write does; text under the cookie alone is refused and changes nothing; a JSON body out of shape is refused by field", { timeout: 60_000 }, async (t) => {
-  const { api, data, port, token } = await serve(t);
+  const { api, data, port, token, launchCode } = await serve(t);
   await made(api, learner("paged"));
   const repo = repoOf(data, "paged");
   const files = "/v2/agents/paged/learning/files";
-  const cookie = (await call(port, { path: `/?token=${token}` })).headers["set-cookie"][0].split(";")[0];
+  const cookie = (await call(port, { path: `/?launch=${launchCode}` })).headers["set-cookie"][0].split(";")[0];
   const origin = `http://127.0.0.1:${port}`;
   const page = (method, path, body, headers = {}) => call(port, { method, path, headers: { cookie, origin, "content-type": "application/json", ...headers }, body });
   const head = () => git(repo, ["rev-parse", "main"]);

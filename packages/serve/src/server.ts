@@ -42,7 +42,7 @@ import { openapiDocument, servedOpenapi, UNSUPPORTED } from "./openapi.js";
 import { boxAvailability, boxesLine, defaultPlaceOf, NEW_AGENT_TOOLS, newAgentPlace, noBoxReason, type Place, placesOf, resolvePlace } from "./place.js";
 import { BOX_ALLOW_ENV, boxAllowOf, boxLimitsOf, boxNetworkOf, FAUX_BOX_ENV, fauxBoxes } from "./run-box.js";
 import { Owner, passwordProblem, SESSION_MS } from "./owner.js";
-import { answerPage, byOwnerSession, heldSessions, isJson, overHttps, ownerCookie, ownOrigin, sendHostRefused, signedIn } from "./page.js";
+import { answerPage, byOwnerSession, ConsoleSessions, heldSessions, isJson, overHttps, ownerCookie, ownOrigin, sendHostRefused, signedIn } from "./page.js";
 import { hostFix, hostName, loopbackNames } from "./host-check.js";
 import { computerViewerLink, familyReaches, handoverById, type LiveFamily, type LiveHandover, liveRest, liveViewer, liveViewerById, liveViewerFor, liveViewerLink, OpenViewers, proxyLiveUpgrade, readHandover, readHandovers, serveViewerFile, viewerAnswers, viewerLink } from "./browser-live.js";
 import { browserHandBack, handBackTarget } from "./browser-commands.js";
@@ -384,7 +384,9 @@ export function fauxEnvOf(options: ServeOptions): NodeJS.ProcessEnv {
 /** `setupUrl`: with accounts and no password yet, the page that sets it (with its code when setup needs one);
  *  `setupOpen`: whether that setup takes no code (open setup on a loopback listener). */
 /** `boxesLine`: what the start's banner says of the boxes, in words (place.ts boxesLine). */
-export type Serve = { url: string; baseUrl: string; port: number; token: string; tokenFile: string | null; tokenMade: boolean; setupUrl?: string; setupOpen?: boolean; boxesLine: string; close(): Promise<void>;
+/** `launchCode`: with no accounts, the code of the console's link this start prints (`/?launch=<code>`), which gives the
+ *  browser that opens it a console session (page.ts ConsoleSessions). */
+export type Serve = { url: string; baseUrl: string; port: number; token: string; tokenFile: string | null; tokenMade: boolean; setupUrl?: string; setupOpen?: boolean; launchCode?: string; boxesLine: string; close(): Promise<void>;
   /** What a stop waits on: the runs whose processes still finish their turn, and the longest it waits on them. */
   stopping(): { runs: number; boundMs: number } };
 
@@ -1290,6 +1292,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // (0.0.0.0 in the image, a LAN address), the first visit takes the printed code even with no public address.
   const openSetup = options.openSetup === true && isLoopback(host);
   const owner = options.accounts ? new Owner(data, openSetup, (line) => void process.stdout.write(`${line}\n`), options.signInAddresses) : undefined;
+  // With no accounts, the console's sessions: made by the link this start prints, never from the token (page.ts).
+  const consoleSessions = owner ? undefined : new ConsoleSessions();
   // Who a sign-in comes from, for its limit: the socket's peer, or, from a trusted proxy only, the client it forwards for.
   const trusted = (() => {
     if (!options.trustedProxies?.length) return undefined;
@@ -3097,7 +3101,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     if (owner && (raw === "/v2/setup" || raw === "/v2/setup/import" || raw.startsWith("/v2/auth/"))) return void ownerRoute(req, res, raw.slice(3), owner).catch(fail);
     if (raw === MCP_PATH) return void mcp(req, res).catch(fail);
     if (raw === "/llms.txt") return void answerLlms(req, res).catch(fail);
-    if (answerPage(req, res, raw, { token, dir: data, authFailed, console: options.console, takesBytes, ...(owner ? { owner } : {}), ...(options.publicUrl ? { publicUrl: options.publicUrl } : {}) })) return;
+    if (answerPage(req, res, raw, { token, dir: data, authFailed, console: options.console, takesBytes, ...(owner ? { owner } : {}), ...(consoleSessions ? { sessions: consoleSessions } : {}), ...(options.publicUrl ? { publicUrl: options.publicUrl } : {}) })) return;
     // Under --faux only: a faux desktop's live view, a page on this server's own address (faux-computers.ts viewPage), so
     // a run's take-over has a viewer to open in the console's real-browser flows. Gone after the computer's release.
     if (options.faux && raw.startsWith(`${FAUX_VIEW_PATH}/`)) {
@@ -3316,6 +3320,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     tokenFile,
     tokenMade: stored?.made ?? false,
     ...(setupUrl ? { setupUrl, setupOpen: openSetup } : {}),
+    ...(consoleSessions ? { launchCode: consoleSessions.code } : {}),
     boxesLine: boxesLine(boxOffers, enabledBoxes(env), boxAllow, boxesByDefault(env)),
     // Once: a second call, at any time, is the first one's promise, so a close repeated after the next server started
     // never writes this data root's record again (the next server's, by then).

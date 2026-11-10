@@ -78,8 +78,7 @@ An edit is a new revision: `PUT $AGENTRUN_BASE_URL/agents/calc/definition` with
 `AGENTRUN_TOKEN`, when set, is the token (32 characters or more), and the server prints `$AGENTRUN_TOKEN` in its
 place: a token from the environment stays out of the logs. `DIR/.token`'s token is printed only by the start that made
 it; a later start prints `AGENTRUN_API_KEY=<in DIR/.token>`, to read it there. With `AGENTRUN_ACCOUNTS=0` the `Open`
-link carries the token (`?token=<in DIR/.token>` on a later start); it encodes the token, and the server also takes one
-whose `+` arrived as a space. `AGENTRUN_PUBLIC_URL`, when set, is the
+link carries a launch code this start made at random (`?launch=<code>`), never the token. `AGENTRUN_PUBLIC_URL`, when set, is the
 address people open (a container's published port, or a proxy's URL): the printed `Open` link and `AGENTRUN_BASE_URL`
 use it.
 
@@ -143,7 +142,7 @@ at=2026-10-25T21:04:09.010Z event=auth_failed route=/v2/runs reason=wrong_token
 ```
 
 A request's path has no query. `auth_failed` names the route and why (`no_credential`, `wrong_token`,
-`wrong_link_token`, `wrong_password`, `sign_in_table_full`), never the token given nor any part of it. `AGENTRUN_LOG=quiet` leaves out the request lines; the
+`wrong_launch_code`, `wrong_password`, `sign_in_table_full`), never the token given nor any part of it. `AGENTRUN_LOG=quiet` leaves out the request lines; the
 run and `auth_failed` lines stay. A run whose process failed at its start says why in its `error.message`, in words.
 One line at start, `event=boxes`, says which boxes this server has ([Boxes](#boxes)), and with a Docker box,
 `event=box_image` says whether its image is `ready`, `preparing` (being built or pulled) or `unavailable` and why, again
@@ -2142,10 +2141,13 @@ comes through `/v2`. The store's read-only JSON stays under `/api/*` (`/api/stor
 the rest of [`@parcha/pi-durable-agent`](../pi-durable-agent/README.md#looking-at-a-store)'s store page's data), for a
 script with the token or a browser with its cookie. With accounts on (the default) the console asks for the owner's password
 ([your password](#your-password)) and the browser holds the owner's session cookie; a `?token=` link sets no cookie: the
-token is for scripts and the CLI. With `AGENTRUN_ACCOUNTS=0`, the printed link (`/?token=`) sets a cookie (`HttpOnly`,
-`SameSite=Strict`, `Path=/`, and `Secure` when `X-Forwarded-Proto` says https) and sends the browser to the same address
-without the token. The cookie's value is derived from the token, never the token itself, and it lasts until the browser
-closes. Without it, the console says to open the link. Either cookie takes the place of `Authorization: Bearer` on
+token is for scripts and the CLI. With `AGENTRUN_ACCOUNTS=0`, the printed link (`/?launch=<code>`, a code each start
+makes at random) gives the browser a console session: a cookie (`HttpOnly`, `SameSite=Strict`, `Path=/`, and `Secure`
+when `X-Forwarded-Proto` says https) whose value is an id made at random and kept by the server, and sends the browser
+to the same address without the code. Nothing about it is derived from the API token, and a `?token=` link sets no
+cookie there either, so the token alone never holds a console session (and so never writes a secret, below). The
+session lasts until the browser closes or the server stops; the next start prints its own link. Without it, the console
+says to open the link. Either cookie takes the place of `Authorization: Bearer` on
 `/api/*` and `/v2`: for a `GET`, and for any other method only when the request's `Origin` is the server's own origin
 and its body is `application/json`, or, on a `PUT` or `POST` to a route that takes bytes (`PUT /v2/files/{id}`,
 `POST /v2/files`), of any content type. A request that sends an `Authorization` header is checked on that header alone.
@@ -2530,7 +2532,7 @@ Who can approve: the owner, signed in with their password. No token approves, th
 `POST .../learning/files/{file}/approve` (and `.../restore`, which puts a retired item back into every run) takes the console's password session, sent from this server's own origin with
 a JSON body as every page write is. Any token is 403: the server's own (what scripts and the MCP endpoint's tools
 carry), a run's door token, and a token sent beside the session. So is every request on a server with accounts off
-(`AGENTRUN_ACCOUNTS=0`), whose page cookie any token holder can mint. With no credential it is 401, as every route.
+(`AGENTRUN_ACCOUNTS=0`), which has no password session. With no credential it is 401, as every route.
 `capabilities.learning.approve` is true only for the owner's session; every other caller reads `approve: false` with
 `approve_needs: "password"`. A note that is not pending is 400; a stale ETag is 412, none 428. The approval is one host
 commit, `learning: approved by a person: <file>`, with the trailers `Changed-By: user` and `Approved-Via: console`; the

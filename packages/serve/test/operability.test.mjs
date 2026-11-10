@@ -41,29 +41,31 @@ test("the image drains within Docker's 10 s grace, and Compose gives the stop mo
   assert.match(render, /maxShutdownDelaySeconds/, "render.yaml says how Render's grace stands");
 });
 
-test("the token link signs in whatever a token holds: + as sent raw (a space) or encoded, / and =", async (t) => {
+test("with accounts off the token's link signs no browser in, whatever the token holds; the launch link does, and a wrong code is a 401", async (t) => {
   const data = join(await scratch(t), "agents");
   const server = await startServe({ data, port: 0, token: AWKWARD });
   t.after(() => server.close());
   const open = (query) => fetch(`${server.url}/?${query}`, { redirect: "manual" });
   for (const query of [`token=${AWKWARD}`, `token=${encodeURIComponent(AWKWARD)}`, `token=${AWKWARD.replaceAll("+", "%2B")}`]) {
     const res = await open(query);
-    assert.equal(res.status, 303, query);
-    assert.match(res.headers.get("set-cookie") ?? "", /HttpOnly/);
+    assert.deepEqual([res.status, res.headers.get("location"), res.headers.get("set-cookie")], [303, "/", null], query);
   }
-  assert.equal((await open(`token=${encodeURIComponent(AWKWARD.replace("Ab", "Zz"))}`)).status, 401);
-  assert.equal((await open(`token=${AWKWARD.replaceAll("+", "-")}`)).status, 401, "only a space stands for +");
+  const launched = await open(`launch=${server.launchCode}`);
+  assert.equal(launched.status, 303);
+  assert.match(launched.headers.get("set-cookie") ?? "", /HttpOnly/);
+  assert.equal((await open(`launch=${server.launchCode.replace(/^./, (c) => (c === "A" ? "B" : "A"))}`)).status, 401);
 });
 
-test("the printed link encodes the token, and a token the first boot did not make is never printed", async () => {
+test("the printed link holds the launch code and never the token, and a token the first boot did not make is never printed", async () => {
   const { banner } = await import("../dist/index.js");
   assert.equal(typeof banner, "function", "the banner's lines come from one function");
-  const made = banner({ url: "http://127.0.0.1:7340", baseUrl: "http://127.0.0.1:7340/v2", data: "/data", token: AWKWARD, source: "made" });
+  const made = banner({ url: "http://127.0.0.1:7340", baseUrl: "http://127.0.0.1:7340/v2", data: "/data", token: AWKWARD, source: "made", launchCode: "LAUNCH-CODE-FOR-THE-TEST" });
   assert.ok(made.includes(`AGENTRUN_API_KEY=${AWKWARD}`));
-  assert.ok(made.includes(`Open http://127.0.0.1:7340/?token=${encodeURIComponent(AWKWARD)}`), made.join("\n"));
-  const kept = banner({ url: "http://127.0.0.1:7340", baseUrl: "http://127.0.0.1:7340/v2", data: "/data", token: AWKWARD, source: "file" });
+  assert.ok(made.includes("Open http://127.0.0.1:7340/?launch=LAUNCH-CODE-FOR-THE-TEST"), made.join("\n"));
+  assert.ok(!made.find((line) => line.startsWith("Open "))?.includes(AWKWARD.slice(0, 8)), "the link holds no token");
+  const kept = banner({ url: "http://127.0.0.1:7340", baseUrl: "http://127.0.0.1:7340/v2", data: "/data", token: AWKWARD, source: "file", launchCode: "LAUNCH-CODE-FOR-THE-TEST" });
   assert.ok(kept.includes("AGENTRUN_API_KEY=<in /data/.token>"), kept.join("\n"));
-  assert.ok(kept.includes("Open http://127.0.0.1:7340/?token=<in /data/.token>"), kept.join("\n"));
+  assert.ok(kept.includes("Open http://127.0.0.1:7340/?launch=LAUNCH-CODE-FOR-THE-TEST"), kept.join("\n"));
   const env = banner({ url: "http://127.0.0.1:7340", baseUrl: "http://127.0.0.1:7340/v2", data: "/data", token: AWKWARD, source: "env" });
   for (const lines of [kept, env]) assert.ok(!lines.join("\n").includes(AWKWARD.slice(0, 8)), "no token, nor its start");
 });
@@ -77,7 +79,7 @@ test("the stored token is printed on the boot that made it, and on no later one"
   await first.exited;
   const second = await bin(t, data, [], { AGENTRUN_ACCOUNTS: "0" });
   assert.ok(second.seen.out.includes(`AGENTRUN_API_KEY=<in ${join(data, ".token")}>`), second.seen.out);
-  assert.ok(second.seen.out.includes(`?token=<in ${join(data, ".token")}>`), second.seen.out);
+  assert.match(second.seen.out, /^Open http:\/\/127\.0\.0\.1:\d+\/\?launch=[A-Za-z0-9_-]{32}$/m, second.seen.out);
   assert.equal(second.seen.out.includes(token) || second.seen.out.includes(token.slice(0, 12)), false, "the second boot prints no token value");
 });
 
@@ -96,7 +98,7 @@ test.skip("one log line per request (method, path without its query, status, ms)
   await follow(api, run.run_id, ["completed"]);
   assert.equal((await client(server.baseUrl, "wrong-token-value")("GET", "/agents")).status, 401);
   assert.equal((await client(server.baseUrl)("GET", "/runs")).status, 401);
-  assert.equal((await fetch(`${server.url}/?token=${server.token.slice(0, 20)}`)).status, 401);
+  assert.equal((await fetch(`${server.url}/?launch=${server.token.slice(0, 20)}`)).status, 401);
   await api("GET", "/capabilities?probe=1");
   for (const line of lines) {
     assert.match(line, LINE);
@@ -107,7 +109,7 @@ test.skip("one log line per request (method, path without its query, status, ms)
   assert.ok(requests.some((r) => r.method === "GET" && r.path === "/v2/capabilities" && r.status === "200" && /^\d+$/.test(r.ms)), JSON.stringify(requests));
   assert.ok(requests.every((r) => !r.path.includes("?")), "no query");
   assert.ok(requests.some((r) => r.method === "POST" && r.path === "/agents/calc/runs".replace(/^/, "/v2") && r.status === "202"));
-  assert.deepEqual(of("auth_failed").map((a) => [a.route, a.reason]), [["/v2/agents", "wrong_token"], ["/v2/runs", "no_credential"], ["/", "wrong_link_token"]]);
+  assert.deepEqual(of("auth_failed").map((a) => [a.route, a.reason]), [["/v2/agents", "wrong_token"], ["/v2/runs", "no_credential"], ["/", "wrong_launch_code"]]);
   assert.deepEqual(of("run_started").map((r) => [r.run, r.agent, r.kind]), [[run.run_id, "calc", "agentic"]]);
   assert.deepEqual(of("run_ended").map((r) => [r.run, r.agent, r.status, r.cost_usd]), [[run.run_id, "calc", "completed", "0"]]);
   // One line at start says which boxes this server has (boxes.ts): with AGENTRUN_BOXES=none (the tests', support.mjs), none.

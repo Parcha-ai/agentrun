@@ -138,7 +138,7 @@ test("demo: started on an OpenAI key alone, pi's default model follows an Anthro
   t.after(closeProvider);
   const token = randomBytes(24).toString("hex");
   const env = { OPENAI_API_KEY: "not-a-secret", AGENTRUN_TOKEN: token, AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), ANTHROPIC_BASE_URL: `http://127.0.0.1:${provider.address().port}` };
-  const { base } = await serve(t, ["--port", "0"], env);
+  const { base, out } = await serve(t, ["--port", "0"], env);
   const api = (method, path, body) => fetch(`${base}/v2${path}`, { method, headers: { authorization: `Bearer ${token}`, ...(body ? { "content-type": "application/json" } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) });
   const piDefault = async () => (await (await api("GET", "/capabilities")).json()).harnesses.find((harness) => harness.id === "pi").default_model;
   const firstKeyed = (keys) => model.MODEL_KEYS.find((row) => keys.includes(row.field)).model;
@@ -148,7 +148,8 @@ test("demo: started on an OpenAI key alone, pi's default model follows an Anthro
   // console is the owner's.
   const origin = new URL(base).origin;
   let opened = await fetch(`${base}/v2/setup`, { method: "POST", redirect: "manual", headers: { authorization: `Bearer ${token}`, "content-type": "application/json", origin }, body: JSON.stringify({ password: `owner-${randomBytes(12).toString("hex")}` }) });
-  if (opened.status !== 201) opened = await fetch(`${origin}/?token=${token}`, { redirect: "manual" });
+  const launch = /^Open (\S+\?launch=\S+)$/m.exec(out)?.[1];
+  if (opened.status !== 201 && launch) opened = await fetch(launch, { redirect: "manual" });
   const cookie = opened.headers.getSetCookie().map((line) => line.split(";")[0]).join("; ");
   assert.ok(cookie, `an owner's session: ${opened.status}`);
   const saved = await fetch(`${base}/v2/settings/tool-keys/anthropic`, { method: "PUT", headers: { cookie, origin, "content-type": "application/json" }, body: JSON.stringify({ values: { ANTHROPIC_API_KEY: "not-a-secret" } }) });
@@ -181,8 +182,8 @@ test("demo: --open opens the console's address in the browser where there is a d
   const store = join(fake, "store");
   const made = await serve(t, ["--port", "0", "--open"], { PATH: path, DISPLAY: ":0", AGENTRUN_ACCOUNTS: "0" }, store);
   const handed = await handedLine();
-  assert.match(/^Open (\S+)/m.exec(made.out)?.[1] ?? "", /^http:\/\/127\.0\.0\.1:\d+\/\?token=[\w%.-]+$/, made.out);
-  assert.doesNotMatch(handed, /token=/, "no token in the opener's arguments");
+  assert.match(/^Open (\S+)/m.exec(made.out)?.[1] ?? "", /^http:\/\/127\.0\.0\.1:\d+\/\?launch=[A-Za-z0-9_-]{32}$/, made.out);
+  assert.doesNotMatch(handed, /token=|launch=/, "no token or launch code in the opener's arguments");
   assert.equal(handed, `${made.base}/\n`);
   rmSync(opened);
   await made.stop();

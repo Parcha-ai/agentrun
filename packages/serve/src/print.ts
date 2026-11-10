@@ -21,16 +21,16 @@ export type TokenSource = "made" | "file" | "env";
 
 /** The banner's lines. The token is printed only when this start made it; else where it is. `publicUrl` is the address
  *  people open (AGENTRUN_PUBLIC_URL), which the base URL and the link use. With `accounts` the page is the owner's
- *  password, so its link holds no token. `boxes`: which boxes are ready, in words (Serve's boxesLine), last. */
-export function banner(o: { url: string; baseUrl: string; data: string; token: string; source: TokenSource; listen?: string; publicUrl?: string; accounts?: boolean; boxes?: string }): string[] {
+ *  password, so its link holds nothing; with none, the link holds this start's launch code (`launchCode`), never the
+ *  token. `boxes`: which boxes are ready, in words (Serve's boxesLine), last. */
+export function banner(o: { url: string; baseUrl: string; data: string; token: string; source: TokenSource; listen?: string; publicUrl?: string; accounts?: boolean; launchCode?: string; boxes?: string }): string[] {
   const where = o.source === "env" ? "$AGENTRUN_TOKEN" : `<in ${join(o.data, ".token")}>`;
   const key = o.source === "made" ? o.token : where;
   return [
     `agentrun-serve on ${o.baseUrl} (agent store in ${o.data}${o.listen ? `, listening on ${o.listen}` : ""})`,
     `AGENTRUN_BASE_URL=${o.publicUrl ? `${o.publicUrl}/v2` : o.baseUrl}`,
     `AGENTRUN_API_KEY=${key}`,
-    // Encoded: a "+" in a token reads as a space in a query string.
-    o.accounts ? `Open ${o.publicUrl ?? o.url}/` : `Open ${o.publicUrl ?? o.url}/?token=${o.source === "made" ? encodeURIComponent(o.token) : where}`,
+    o.accounts || o.launchCode === undefined ? `Open ${o.publicUrl ?? o.url}/` : `Open ${o.publicUrl ?? o.url}/?launch=${o.launchCode}`,
     ...(o.boxes ? [o.boxes] : []),
   ];
 }

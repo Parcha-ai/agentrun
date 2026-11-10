@@ -410,7 +410,7 @@ test("the bin: accounts on with no AGENTRUN_ACCOUNTS, the first-visit line with 
   assert.match(open, /^Set your password: http:\/\/127\.0\.0\.1:\d+\/setup \(/m);
   assert.match(open, /^Open http:\/\/127\.0\.0\.1:\d+\/$/m, "with accounts on, the Open line holds no token");
   assert.match(await bin({ AGENTRUN_PUBLIC_URL: "http://127.0.0.1:8123" }, /Set up this server: .*\n/), /^Set up this server: http:\/\/127\.0\.0\.1:8123\/setup#code=[A-Za-z0-9_-]{22}$/m);
-  assert.doesNotMatch(await bin({ AGENTRUN_ACCOUNTS: "0" }, /\?token=.*\n/), /Set your password|Set up this server/);
+  assert.doesNotMatch(await bin({ AGENTRUN_ACCOUNTS: "0" }, /\?launch=.*\n/), /Set your password|Set up this server/);
 });
 
 test("with accounts on, the token link signs no browser in: it sets no cookie, and a cookie made from the token is no credential, before or after signing out everywhere", async (t) => {

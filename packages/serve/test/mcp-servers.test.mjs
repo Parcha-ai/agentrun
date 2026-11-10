@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { startServe } from "../dist/index.js";
 import { openapiDocument } from "../dist/openapi.js";
-import { client, FAUX, scratch, serve, storeBytes, withEnv } from "./support.mjs";
+import { client, FAUX, launchFor, scratch, serve, storeBytes, withEnv } from "./support.mjs";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 
 const TOOLS = ["add", "slow_write", "delete_thing", "paid"];
@@ -37,7 +37,7 @@ async function plain(t, answer) {
 /** A server on `data` that a test closes before starting another on it, and that is closed after the test whatever
  *  happens. */
 async function started(t, data) {
-  const server = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  const server = launchFor(await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" }));
   let closed;
   const close = () => (closed ??= server.close());
   t.after(close);

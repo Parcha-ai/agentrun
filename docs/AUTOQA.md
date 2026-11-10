@@ -404,7 +404,7 @@ node --input-type=module -e '
 **Checks.**
 
 1. The console loads at `/` and signs in: setup, then the password. With `AGENTRUN_ACCOUNTS=0` the printed
-   link signs the browser in and the token leaves the address.
+   link (`?launch=<code>`) signs the browser in and the code leaves the address; a `?token=` link signs nothing in.
 2. An agent is created from New agent with its defaults, and a run is started from its page. Once the workflow
    starter is on main (#1315), a workflow agent is created from it too.
 3. One run on a priced faux model (`packages/serve/test/fixtures/faux-priced.mjs`): its timeline's usage row, its

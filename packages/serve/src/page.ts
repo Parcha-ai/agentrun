@@ -1,10 +1,11 @@
 // The console at "/" (apps/console, which this package's build copies into dist/console): its index.html and Vite's
 // hashed assets under /assets/, public, under one strict CSP. The console signs a person in itself. With accounts it
-// takes the owner's session cookie (owner.ts); without, the server's token as a cookie that the printed link (`/?token=`)
-// sets once. Either stands in for the Bearer header on /v2, and for a write only from this origin with a JSON body, or
+// takes the owner's session cookie (owner.ts); without, a console session the link this start prints (`/?launch=<code>`)
+// sets (ConsoleSessions): made at random, kept by the server, never computable from the API token, and the token's own
+// link signs no browser in. Either stands in for the Bearer header on /v2, and for a write only from this origin with a JSON body, or
 // with any body on a route that takes bytes (a PUT or POST marked `raw` in server.ts). The
 // store's read-only JSON (/api/*, pi-durable-agent's store page's data) answers the Bearer token or either cookie.
-import { createHash, createHmac, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { readFile, realpath, stat } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { extname, join, sep } from "node:path";
@@ -39,8 +40,35 @@ const MOVED = new Set(["/console", "/console/", "/setup", "/sign-in"]);
 
 const digest = (text: string) => createHash("sha256").update(text).digest();
 const same = (given: string, expected: string) => timingSafeEqual(digest(given), digest(expected));
-/** The cookie's value: a MAC of the token, so the cookie is never the API key itself. */
-const sessionOf = (token: string) => createHmac("sha256", token).update("agentrun-serve page").digest("base64url");
+/** The most console sessions a server keeps at once; past it, the oldest is forgotten (its browser opens the link again). */
+const CONSOLE_SESSIONS = 64;
+
+/**
+ * The console's sessions on a server with no accounts. Each start makes a launch code at random and prints its link
+ * (`/?launch=<code>`, Serve's `consoleUrl`); a browser that opens it gets a session: an id made at random, kept here, in
+ * memory, as its cookie. Neither the code nor an id is derived from the API token, so the token, whoever holds it, never
+ * computes or fetches a session: its own link (`/?token=`) signs no browser in. A restart forgets them, and the new
+ * start prints its own link.
+ */
+export class ConsoleSessions {
+  readonly code = randomBytes(24).toString("base64url");
+  /** The sessions, by the hash of their id (a lookup that reads no id), oldest first. */
+  private readonly ids = new Set<string>();
+
+  /** A new session's id when `code` is this start's, else undefined. */
+  open(code: string): string | undefined {
+    if (!same(code, this.code)) return undefined;
+    const id = randomBytes(32).toString("base64url");
+    this.ids.add(digest(id).toString("hex"));
+    if (this.ids.size > CONSOLE_SESSIONS) this.ids.delete(this.ids.values().next().value!);
+    return id;
+  }
+
+  /** Whether `value` is a session this server made. */
+  holds(value: string): boolean {
+    return this.ids.has(digest(value).toString("hex"));
+  }
+}
 /** One name per port: cookies are kept per host, not per port, and another server on this machine has another token. */
 const cookieName = (req: IncomingMessage) => `agentrun-${req.socket.localPort}`;
 const cookiesOf = (req: IncomingMessage, name: string) =>
@@ -71,7 +99,8 @@ const refuse = (req: IncomingMessage, res: ServerResponse, error: ApiError) =>
 
 /** `takesBytes`: whether a request of `method` to `path` (under /v2) goes to a route whose body is bytes (server.ts). */
 /** `publicUrl`: the address people open (AGENTRUN_PUBLIC_URL); an https one adds HSTS to every page answer (hstsHeaders). */
-type PageServer = { token: string; dir: string; authFailed?: (route: string, reason: string) => void; owner?: Owner; console?: string | undefined; takesBytes?: (method: string | undefined, path: string) => boolean; publicUrl?: string };
+/** `sessions`: the console's sessions on a server with no accounts (ConsoleSessions); with `owner`, none. */
+type PageServer = { token: string; dir: string; authFailed?: (route: string, reason: string) => void; owner?: Owner; sessions?: ConsoleSessions; console?: string | undefined; takesBytes?: (method: string | undefined, path: string) => boolean; publicUrl?: string };
 
 const redirect = (res: ServerResponse, location: string, headers: Record<string, string> = {}) => (res.writeHead(303, { ...SECURITY, location, "content-length": 0, ...headers }), void res.end());
 
@@ -104,29 +133,29 @@ async function answer(req: IncomingMessage, res: ServerResponse, raw: string, se
   const dir = server.console ?? CONSOLE_DIR;
   if (MOVED.has(raw)) return redirect(res, `/${(req.url ?? "").slice(raw.length)}`);
   if (raw !== "/") return file(req, res, raw, dir, raw.slice(1));
-  // Without accounts, the printed link's token becomes this browser's cookie once. With an owner the console is the
-  // owner's session alone: the token is for scripts and the CLI, and its link signs no browser in.
+  // Without accounts, the printed link's launch code gives this browser a console session (ConsoleSessions). The token
+  // is for scripts and the CLI: a token in the address signs nothing in, here or with an owner, and leaves it (the same
+  // address without it, no cookie). With an owner the console is the owner's session alone.
   const url = new URL(req.url ?? "/", "http://serve");
-  const without = () => (url.searchParams.delete("token"), `/${url.searchParams.size ? `?${url.searchParams}` : ""}`);
-  // With an owner a token in the address signs nothing in, and leaves it: the same address without it, no cookie.
-  if (server.owner && url.searchParams.has("token")) return redirect(res, without());
-  const given = server.owner ? null : url.searchParams.get("token");
-  // A token holds no whitespace, so a space in the link is a "+" that was not encoded.
-  if (given !== null && (same(given, server.token) || same(given.replaceAll(" ", "+"), server.token))) {
-    return redirect(res, without(), { "set-cookie": `${cookieName(req)}=${sessionOf(server.token)}; HttpOnly; SameSite=Strict; Path=/${overHttps(req) ? "; Secure" : ""}` });
-  }
-  if (given !== null) server.authFailed?.(raw, "wrong_link_token");
+  const without = () => (url.searchParams.delete("token"), url.searchParams.delete("launch"), `/${url.searchParams.size ? `?${url.searchParams}` : ""}`);
+  const given = url.searchParams.get("launch");
+  if (url.searchParams.has("token") || (server.owner && given !== null)) return redirect(res, without());
+  // A code holds no "+", but a space in the link is one that was not encoded all the same.
+  const id = given === null ? undefined : server.sessions?.open(given) ?? server.sessions?.open(given.replaceAll(" ", "+"));
+  if (id !== undefined) return redirect(res, without(), { "set-cookie": `${cookieName(req)}=${id}; HttpOnly; SameSite=Strict; Path=/${overHttps(req) ? "; Secure" : ""}` });
+  if (given !== null) server.authFailed?.(raw, "wrong_launch_code");
   return file(req, res, raw, dir, "index.html", given === null ? 200 : 401);
 }
 
 /** The requests the owner's password session sends from the page (a write only from this server's own origin, with a
- *  JSON body), never under the cookie accounts-off mints from the token. */
+ *  JSON body), never under an accounts-off console session. */
 const ownerSessions = new WeakSet<IncomingMessage>();
 /** Whether `req` came from the owner's page under their password session (answerPage). A token, whoever holds it, never
  *  did. */
 export const byOwnerSession = (req: IncomingMessage): boolean => ownerSessions.has(req);
-/** The requests the console sends under the cookie accounts-off mints from the token (no password), held to this server's
- *  own origin and a JSON body as every page write is: a fact secret-writes.ts reads (mayWriteSecrets), never an owner. */
+/** The requests the console sends under an accounts-off console session (ConsoleSessions: the launch link's, made at
+ *  random, never from the token), held to this server's own origin and a JSON body as every page write is: a fact
+ *  secret-writes.ts reads (mayWriteSecrets), never an owner. */
 const consoleSessions = new WeakSet<IncomingMessage>();
 /** Whether `req` came from the accounts-off console's page session (answerPage). */
 export const byConsoleSession = (req: IncomingMessage): boolean => consoleSessions.has(req);
@@ -139,7 +168,7 @@ export const byConsoleSession = (req: IncomingMessage): boolean => consoleSessio
  * content type.
  */
 export function answerPage(req: IncomingMessage, res: ServerResponse, raw: string, server: PageServer): boolean {
-  const held = server.owner ? signedIn(req, server.owner) : cookiesOf(req, cookieName(req)).some((value) => same(value, sessionOf(server.token)));
+  const held = server.owner ? signedIn(req, server.owner) : cookiesOf(req, cookieName(req)).some((value) => server.sessions?.holds(value) === true);
   if (raw.startsWith("/v2/")) {
     const safe = req.method === "GET" || req.method === "HEAD";
     const bytes = (req.method === "PUT" || req.method === "POST") && server.takesBytes?.(req.method, raw.slice(3)) === true;

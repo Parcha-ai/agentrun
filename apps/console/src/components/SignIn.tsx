@@ -28,7 +28,7 @@ const FIELD = {
 const COPY = {
   sign_in: { title: "Sign in", body: "Sign in to make agents, start runs and follow them on this server." },
   setup: { title: "Start building", body: "This is the server's first visit: set the owner's password. You sign in with it from now on." },
-  token_link: { title: "Open the server's link", body: "This server has no accounts. Open the link it printed when it started: it signs this browser in once, and the token leaves the address." },
+  token_link: { title: "Open the server's link", body: "This server has no accounts. Open the link it printed when it started: it signs this browser in, and its code leaves the address." },
 } as const;
 
 /** The hosted console's sign-in card, over AgentRun Server's own: the owner's password (or its first setting), with the
