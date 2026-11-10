@@ -88,6 +88,8 @@ export interface ClaimDeps {
 export interface ClaimComputer {
   readonly computer?: RunComputer;
   readonly hold?: unknown;
+  /** A desktop's or a phone's kind and the person's hold on it: the spec's `computer`, which the adapter loop journals. */
+  readonly held?: unknown;
   release(): Promise<void>;
 }
 /** The one shared claim-time computer every spec takes (computer-for-claim.ts), passed in by the runner: the composer's
@@ -287,8 +289,9 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
     { ...deps.computerDeps, mode, workspace: ws.workspace, sealKey: deps.sealKey, ...(archil ? { revokeMount: () => archil.revoke() } : {}) },
   );
 
-  // The run's mode bounds its shell: 600 s locally or on a computer, 295 s on Archil's serverless exec (Mode 2, none).
-  const tools = await runTools(ws.workspace, computer.computer, { mode, context });
+  // The run's mode bounds its shell: 600 s locally or on a computer, 295 s on Archil's serverless exec (Mode 2, none). A
+  // desktop's or a phone's ports go through the person's hold on it (its take-over parks them).
+  const tools = await runTools(ws.workspace, computer.computer, { mode, context, ...(computer.hold ? { hold: computer.hold } : {}) });
 
   // The run's model route: its model through routeOf (NEVER re-resolved — the launch's model, pinned at start), the catalog
   // price with tiers for the cap, and the proxy's price (pi-ai calculateCost, tiered).
@@ -482,6 +485,9 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
     // The tool host's install lifecycle (its bindings' onConversation/beforeResume/beforeRelease), run by the adapter loop.
     lifecycle: life,
     agentId: runRow.agentId,
+    // A desktop's or a phone's hold: the adapter loop journals its changes and applies the owner's take-over and hand-back
+    // rows to it (runner/computer-journal.ts), which the live view and the routes read.
+    ...(computer.held ? { computer: computer.held } : {}),
     workRoot: root,
     // The end's metrics and cost, from the run's journal, as the old per-run end path read them (metrics.ts runMetrics =
     // runs.ts storedMetrics/costOf). A pi run adds its effort, no model (metrics.ts).

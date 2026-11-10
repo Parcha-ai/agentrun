@@ -1,9 +1,11 @@
 // The run's computer at its claim, the one call both runner specs make (the adapter loop's and the CLI's): the agent's
 // computer setting, resolved in the server's mode against the computer module's kind registry (resolveComputer), started
 // for this run under this claim (labels agentrun.run and agentrun.epoch, the run's folder mounted only where the provider
-// mounts it), with a hold and its live view when it is a desktop or a phone, and released once at the run's end. (The
-// owner's take-over over the store is not on this line yet: its routes answer 501, computer-routes.ts.) A computer that cannot be had is refused in words
-// with code computer_unavailable; kind none, or no setting where the server's default is none, is no computer.
+// mounts it), with a hold and its live view when it is a desktop or a phone, and released once at the run's end. The hold
+// goes back to the spec (`held`), whose adapter loop journals it and applies the owner's take-over and hand-back rows to it
+// (runner/computer-journal.ts); the live view (computer-live.ts openClaimView) drives the same hold. A computer that cannot
+// be had is refused in words with code computer_unavailable; kind none, or no setting where the server's default is none,
+// is no computer.
 //
 // A provider is made with its keys (the server's environment's, else the store's sealed keys, through the composer's
 // keyOf: computer-deps.ts), by the names the registry declares, through serve's own
@@ -17,7 +19,7 @@ import { KEY_TABLE, type KeyTable, type ProviderSettings, providerOptions } from
 import { getSealedKey } from "../server-keys.js";
 import type { Store } from "../store/index.js";
 import type { MountCheck } from "./attach.js";
-import { computerHold, heldHands } from "./computer-hold.js";
+import { computerHold, type HeldComputer, heldHands } from "./computer-hold.js";
 import { type ProviderLedger, storeLedger } from "./computer-ledger.js";
 import { type ClaimSide, type ComputerSetting, type ComputerSettingKind, type KindRegistry, type LaunchedComputer, type ProviderEntry, resolveComputer } from "./resolve-computer.js";
 import type { RunComputer, RunHold } from "./run-tools.js";
@@ -111,6 +113,9 @@ export interface ComputerForClaimDeps {
 export interface ClaimComputer {
   readonly computer?: RunComputer;
   readonly hold?: RunHold;
+  /** A desktop's or a phone's kind and its hold, for the spec's adapter loop (AdapterRunSpec.computer): it journals the
+   *  hold's changes and applies the owner's take-over and hand-back rows to it. */
+  readonly held?: HeldComputer;
   release(why?: ViewEnd): Promise<void>;
 }
 
@@ -277,6 +282,7 @@ export async function computerForClaim(launch: ClaimLaunch, store: Pick<Store, "
   // vendor's URL reaches a person), opened under this claim. A fenced open is a lost claim. The release ends the hold.
   let endHold: () => void = () => {};
   let hold: RunHold | undefined;
+  let held: HeldComputer | undefined;
   let view: { close(why: ViewEnd): unknown } | undefined;
   if (computer && (computer.kind === "desktop" || computer.kind === "phone")) {
     const theHold = computerHold();
@@ -296,11 +302,13 @@ export async function computerForClaim(launch: ClaimLaunch, store: Pick<Store, "
     // goes; the composer's `ended` ViewEnd maps onto it), the agent's open ask is let go at once, and nothing is taken after.
     endHold = () => theHold.close();
     hold = (ports) => heldHands(ports as never, theHold);
+    held = { kind: computer.kind, hold: theHold };
   }
   let released: Promise<void> | undefined;
   return {
     ...(computer ? { computer } : {}),
     ...(hold ? { hold } : {}),
+    ...(held ? { held } : {}),
     release: (why: ViewEnd = "released") =>
       (released ??= (async () => {
         await Promise.resolve(view?.close(why)).catch(() => undefined);
