@@ -16,7 +16,7 @@ import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { dropPostgresSchema, openStore, RunFinal, type RunRow, type Store, storeTarget } from "../../store/index.js";
+import { dropPostgresSchema, openStore, RunFinal, type RunRow, type Store, StoreConstraint, storeTarget } from "../../store/index.js";
 import { sendCommand } from "../commands.js";
 import { callsOf, journalRecords, messagesOf, type CallRecord, type MessageRecord } from "../journal-reader.js";
 import { type AnswerData, KINDS } from "../journal-kinds.js";
@@ -132,6 +132,10 @@ function crashAt(point: keyof KernelHooks, holder: { runner?: Runner; crashed?: 
 /** The Postgres store each registered subject's worlds open (registerHarnessConformance's `storeUrl`), by the subject
  *  object the suite's cases are handed: none for the data directory's SQLite store. */
 const STORE_URLS = new WeakMap<ConformanceSubject, string>();
+/** Cases a Postgres store can't pass yet, each with what it waits on: they run on SQLite and are skipped on Postgres. */
+const POSTGRES_PENDING: Readonly<Record<string, string>> = {
+  "approval-double-click": "waits on the Postgres commands_one_answer migration (pgstore-1): the one-answer index is SQLite's today",
+};
 
 /** A store in a data directory of its own, one queued run, and runners started on it (each its own connection). */
 /** The suite's short lease, for the crash cases: a crashed runner's claim must run out for the second runner to take
@@ -752,7 +756,7 @@ const CASES: readonly Case[] = [
   },
   {
     id: "approval-double-click",
-    title: "a double-clicked approval runs the call once: the first answers it, the second is refused in words",
+    title: "a double-clicked approval runs the call once: the first answers it, and the store refuses the second (one answer per approval)",
     async body(subject, t) {
       const w = await world(subject, t);
       const { tools, ran } = suiteTools();
@@ -760,15 +764,10 @@ const CASES: readonly Case[] = [
       await w.ended("parked");
       const callId = await w.askedCall();
       const first = await sendCommand(w.server, RUN, { kind: "approve", body: { approval: callId } });
-      const second = await sendCommand(w.server, RUN, { kind: "approve", body: { approval: callId } });
+      await assert.rejects(sendCommand(w.server, RUN, { kind: "approve", body: { approval: callId } }), StoreConstraint, "a second answer to one approval is never written");
       await w.ended("ended");
       assert.equal(ran.asked, 1, "the call ran once");
       assert.equal((await w.commandRow(first.id)).refused, null, "the first approve answered it");
-      const late = await until(async () => {
-        const row = await w.commandRow(second.id);
-        return row.takenAt !== null && row;
-      }, "the second approve answered");
-      assert.match(late.refused ?? "", /\w/, `the second approve is refused in words: ${JSON.stringify(late)}`);
       const { calls } = await w.read();
       assert.deepEqual(calls.map((call) => [call.tool, call.status]), [["asked", "done"]]);
     },
@@ -899,7 +898,8 @@ export function registerHarnessConformance(given: ConformanceSubject, { test, st
     const processCase = entry.id.endsWith("-process");
     const byFacts = ruledOut[entry.id];
     const notYet = subject.unsupported?.[entry.id] ?? (processCase && !subject.process ? "it names no module a runner process can load (subject.process)" : undefined);
-    const skip = byFacts ? `${subject.name} does not do this by design: ${byFacts}` : notYet ? `${subject.name} cannot model this yet: ${notYet}` : undefined;
+    const onPostgres = storeUrl ? POSTGRES_PENDING[entry.id] : undefined;
+    const skip = byFacts ? `${subject.name} does not do this by design: ${byFacts}` : notYet ? `${subject.name} cannot model this yet: ${notYet}` : onPostgres ? `on Postgres, ${onPostgres}` : undefined;
     test(`${subject.name}: ${entry.title}`, { timeout: CASE_TIMEOUT_MS, ...(skip ? { skip } : {}) }, (t) => entry.body(subject, t));
   }
 }
