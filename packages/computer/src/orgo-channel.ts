@@ -14,7 +14,10 @@
 // memory for the call. Neither is in a word this module returns.
 import { randomBytes } from "node:crypto";
 import { PassThrough, type Readable, Writable } from "node:stream";
-import { type ComputerErrorCode, fail, ok, type Result } from "./result.js";
+import { type ComputerErrorCode, errorOf, failFor, ok, type Result, vendorFail } from "./result.js";
+
+/** This module's failures: one with code vendor names Orgo. */
+const fail = failFor("orgo");
 
 /** Orgo's API. */
 export const ORGO_API_URL = "https://www.orgo.ai/api";
@@ -44,7 +47,7 @@ export interface OrgoRest {
 }
 
 const codeOfStatus = (status: number): ComputerErrorCode =>
-	status === 401 || status === 403 ? "denied" : status === 404 ? "not_found" : status === 429 ? "limit" : status === 400 || status === 422 ? "invalid" : status === 409 ? "refused" : "orgo";
+	status === 401 || status === 403 ? "denied" : status === 404 ? "not_found" : status === 429 ? "limit" : status === 400 || status === 422 ? "invalid" : status === 409 ? "refused" : "vendor";
 
 /** Orgo's REST API with a key: every call bounded, every failure a code and words that never hold the key. */
 export function orgoRest({ apiKey, apiUrl = ORGO_API_URL, fetch: fetcher = globalThis.fetch }: { apiKey: string; apiUrl?: string; fetch?: typeof fetch }): OrgoRest {
@@ -68,7 +71,7 @@ export function orgoRest({ apiKey, apiUrl = ORGO_API_URL, fetch: fetcher = globa
 			} catch (error) {
 				if (signal?.aborted) return fail("aborted", `${what} was aborted`);
 				if (bound.aborted) return fail("timeout", `${what} did not answer within ${timeoutMs / 1000} s`);
-				return fail("orgo", `${what} failed: ${scrub(error instanceof Error ? error.message : String(error))}`);
+				return vendorFail("orgo",`${what} failed: ${scrub(error instanceof Error ? error.message : String(error))}`);
 			}
 			const text = await response.text().catch(() => "");
 			let parsed: unknown;
@@ -81,7 +84,8 @@ export function orgoRest({ apiKey, apiUrl = ORGO_API_URL, fetch: fetcher = globa
 			const { error, code } = (parsed ?? {}) as { error?: unknown; code?: unknown };
 			const words = typeof error === "string" ? error : text || response.statusText;
 			const orgoCode = typeof code === "string" ? code : undefined;
-			return { ...fail(codeOfStatus(response.status), `${what} answered ${response.status}: ${scrub(words)}${orgoCode ? ` (${orgoCode})` : ""}`), status: response.status, ...(orgoCode ? { orgoCode } : {}) };
+			const error_ = errorOf(codeOfStatus(response.status), `${what} answered ${response.status}: ${scrub(words)}${orgoCode ? ` (${orgoCode})` : ""}`, "orgo");
+			return { ok: false as const, error: error_, status: response.status, ...(orgoCode ? { orgoCode } : {}) };
 		},
 	};
 }
@@ -151,15 +155,15 @@ async function typeLine(terminal: Terminal, line: string, heard: () => boolean, 
 	if (!prompted) return fail("timeout", "the shell never prompted");
 	for (let tries = 1; tries <= TYPE_TRIES; tries++) {
 		const ended = terminal.ended();
-		if (ended !== undefined) return fail("orgo", ended);
+		if (ended !== undefined) return vendorFail("orgo",ended);
 		terminal.send(line);
 		if (await terminal.waitFor(() => heard() || terminal.ended() !== undefined, Math.min(echoMs, left()))) {
 			const after = terminal.ended();
-			return after !== undefined && !heard() ? fail("orgo", after) : ok(undefined);
+			return after !== undefined && !heard() ? vendorFail("orgo",after) : ok(undefined);
 		}
 		if (Date.now() >= deadline) return fail("timeout", `the line was typed ${tries} ${tries === 1 ? "time" : "times"}, and the shell had not echoed it`);
 	}
-	return fail("orgo", `the line was typed ${TYPE_TRIES} times, and the shell never echoed it`);
+	return vendorFail("orgo",`the line was typed ${TYPE_TRIES} times, and the shell never echoed it`);
 }
 
 /** A frame's bytes as text, when they are: a string, an ArrayBuffer or a typed array; a Blob is read, in order. */
@@ -195,7 +199,7 @@ export function orgoTerminalChannel({
 		const ran = await rest.request<{ exit_code?: unknown; output?: unknown }>("POST", `/computers/${encodeURIComponent(computer)}/bash`, { body: { command, timeout }, timeoutMs: timeout * 1000 + BASH_PROXY_MS, ...(signal ? { signal } : {}) });
 		if (!ran.ok) return ran;
 		const { exit_code: exitCode, output } = ran.value ?? {};
-		if (typeof exitCode !== "number") return fail("orgo", `Orgo's bash call answered no exit code (${JSON.stringify(ran.value)?.slice(0, 200)})`);
+		if (typeof exitCode !== "number") return vendorFail("orgo",`Orgo's bash call answered no exit code (${JSON.stringify(ran.value)?.slice(0, 200)})`);
 		return ok({ exitCode, output: typeof output === "string" ? output : "" });
 	};
 
@@ -203,7 +207,7 @@ export function orgoTerminalChannel({
 		const read = await rest.request<{ vnc_password?: unknown }>("GET", `/computers/${encodeURIComponent(computer)}`, { timeoutMs, ...(signal ? { signal } : {}) });
 		if (!read.ok) return read;
 		const password = read.value?.vnc_password;
-		if (typeof password !== "string" || password === "") return fail("orgo", `Orgo gave no terminal password for ${computer}: is it running?`);
+		if (typeof password !== "string" || password === "") return vendorFail("orgo",`Orgo gave no terminal password for ${computer}: is it running?`);
 		const url = new URL(`/desktops/${encodeURIComponent(computer)}/ws/terminal`, rest.origin.replace(/^http/, "ws"));
 		url.searchParams.set("token", password);
 		if (session !== undefined) url.searchParams.set("session", session);
@@ -211,7 +215,7 @@ export function orgoTerminalChannel({
 		try {
 			socket = webSocket(url.href);
 		} catch (error) {
-			return fail("orgo", `the terminal of ${computer} could not be opened: ${String((error as Error)?.message ?? error).replaceAll(password, "[password]").slice(0, 200)}`);
+			return vendorFail("orgo",`the terminal of ${computer} could not be opened: ${String((error as Error)?.message ?? error).replaceAll(password, "[password]").slice(0, 200)}`);
 		}
 		const outputs: Array<(data: string) => void> = [];
 		const ends: Array<(words: string) => void> = [];
@@ -323,7 +327,7 @@ export function orgoTerminalChannel({
 			});
 			terminal.onEnd((words) => {
 				clearTimeout(timer);
-				settle(fail("orgo", `the terminal of ${computer} did not open: ${words}`));
+				settle(vendorFail("orgo",`the terminal of ${computer} did not open: ${words}`));
 			});
 		});
 		if (!opened.ok) {
@@ -354,7 +358,7 @@ export function orgoTerminalChannel({
 			if (how === "bash") {
 				const ran = await bash(computer, `setsid -f ${detached}`, timeoutMs, signal);
 				if (!ran.ok) return ran;
-				return ran.value.exitCode === 0 ? ok(undefined) : fail("orgo", `starting ${argv[0]} from bash exited ${ran.value.exitCode}: ${ran.value.output.trim().slice(0, 300)}`);
+				return ran.value.exitCode === 0 ? ok(undefined) : vendorFail("orgo",`starting ${argv[0]} from bash exited ${ran.value.exitCode}: ${ran.value.output.trim().slice(0, 300)}`);
 			}
 			const deadline = Date.now() + timeoutMs;
 			const terminal = await open(computer, { session: SESSION, timeoutMs, ...(signal ? { signal } : {}) });
@@ -391,7 +395,7 @@ export function orgoTerminalChannel({
 			const sent = () => `the terminal sent ${terminal.seen()} and no marker; its last bytes: ${JSON.stringify(before.slice(-300))}`;
 			terminal.onEnd((words) => {
 				said = words;
-				settle(fail("orgo", `computerd's bridge in ${computer} ended before it started: ${words}; ${sent()}`));
+				settle(vendorFail("orgo",`computerd's bridge in ${computer} ended before it started: ${words}; ${sent()}`));
 				readable.end();
 			});
 			const late = (why: string) => fail("timeout", `computerd's bridge in ${computer} did not start within ${timeoutMs / 1000} s: ${why}; ${sent()}`);

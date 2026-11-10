@@ -397,7 +397,7 @@ test("a create Daytona refuses is not retried, and a sandbox it may have made is
 	const { provider, fake } = setup({ fail: [{ method: "POST", path: /^\/api\/sandbox$/, status: 500, times: 1 }] });
 	const made = await provider.create(SPEC);
 	assert.equal(made.ok, false);
-	assert.equal(made.error.code, "daytona");
+	assert.deepEqual([made.error.code, made.error.vendor], ["vendor", "daytona"]);
 	assert.match(made.error.message, /Daytona did not create the sandbox: POST \/api\/sandbox: 500/);
 	assert.equal(created(fake).length, 1, "POST /sandbox is not idempotent: never retried");
 	const name = created(fake)[0].body.name;
@@ -929,7 +929,7 @@ test("release(): a DELETE that keeps failing is reported in words, with a forced
 	fake.knobs.fail = [{ method: "DELETE", path: /^\/api\/sandbox\/[^/]+$/, status: 500, times: 100 }];
 	const released = await provider.release(made.value, "delete");
 	assert.equal(released.ok, false);
-	assert.equal(released.error.code, "daytona");
+	assert.deepEqual([released.error.code, released.error.vendor], ["vendor", "daytona"]);
 	assert.match(released.error.message, /DELETE \/api\/sandbox\/[^ ]+: 500/);
 	assert.equal(of(fake, "POST", /\/stop$/).length, 1, "a forced stop before the last attempt");
 	assert.equal(of(fake, "POST", /\/stop$/)[0].url.endsWith("stop?force=true"), true);

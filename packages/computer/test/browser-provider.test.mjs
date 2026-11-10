@@ -412,7 +412,7 @@ for (const [id, vendor] of Object.entries(VENDORS)) {
 		const provider = await vendor.make(vendor.fake({ failCreate: 502 }));
 		const failed = await provider.create(spec());
 		assert.equal(failed.ok, false);
-		assert.equal(failed.error.code, id);
+		assert.deepEqual([failed.error.code, failed.error.vendor], ["vendor", id]);
 		assert.match(failed.error.message, /POST .* answered 502/);
 		assert.doesNotMatch(failed.error.message, new RegExp(ECHO));
 		const wrongKey = await vendor.make(vendor.fake(), { apiKey: "test-key" });

@@ -153,30 +153,35 @@ test("a build that fails says why and the next step, with none of Docker's outpu
 		fake.mark("build-fail", stderr);
 		return failure(await ensureImage({ recipe: RECIPE }, { docker: fake.docker }));
 	};
-	assert.deepEqual(await said(OFFLINE), { code: "docker", message: `the build of ${TAG} could not reach the network (it pulls alpine:3.20): call again once this machine can reach it` });
+	assert.deepEqual(await said(OFFLINE), { code: "vendor", vendor: "docker", message: `the build of ${TAG} could not reach the network (it pulls alpine:3.20): call again once this machine can reach it` });
 	assert.deepEqual(await said(`Err:1 http://deb.debian.org/debian bookworm InRelease Temporary failure resolving 'deb.debian.org' ${RAW}`), {
-		code: "docker",
+		code: "vendor",
+		vendor: "docker",
 		message: `the build of ${TAG} could not reach the network (it pulls alpine:3.20): call again once this machine can reach it`,
 	});
-	assert.deepEqual(await said(NO_BASE), { code: "docker", message: `the build of ${TAG} could not pull its base, alpine:3.20: name a base the registry has, or pull it on this machine first` });
-	assert.deepEqual(await said(`failed to copy files: write /var/lib/docker/x: no space left on device ${RAW}`), { code: "docker", message: `the build of ${TAG} ran out of disk space: free some, then call again` });
-	const PACKAGE = { code: "docker", message: `the recipe of ${TAG} names a package its base's package manager could not install: check the names, then call again` };
+	assert.deepEqual(await said(NO_BASE), { code: "vendor", vendor: "docker", message: `the build of ${TAG} could not pull its base, alpine:3.20: name a base the registry has, or pull it on this machine first` });
+	assert.deepEqual(await said(`failed to copy files: write /var/lib/docker/x: no space left on device ${RAW}`), { code: "vendor", vendor: "docker", message: `the build of ${TAG} ran out of disk space: free some, then call again` });
+	const PACKAGE = { code: "vendor", vendor: "docker", message: `the recipe of ${TAG} names a package its base's package manager could not install: check the names, then call again` };
 	assert.deepEqual(await said(`E: Unable to locate package nosuch ${RAW}`), PACKAGE);
 	assert.deepEqual(await said(`ERROR: unable to select packages:\n  nosuch (no such package): ${RAW}`), PACKAGE, "apk's words too");
 	assert.deepEqual(await said(`ERROR: failed to build: failed to solve: dockerfile parse error on line 2: unknown instruction: BOGUS ${RAW}`), {
-		code: "docker",
+		code: "vendor",
+		vendor: "docker",
 		message: `Docker could not parse the recipe of ${TAG} at line 2: fix that line`,
 	});
 	assert.deepEqual(await said(`#5 0.2 ${RAW}\nERROR: failed to build: failed to solve: process "/bin/sh -c test \\"a\\" = b" did not complete successfully: exit code: 1`), {
-		code: "docker",
+		code: "vendor",
+		vendor: "docker",
 		message: `the recipe of ${TAG} failed at the step \`RUN test "a" = b\` with exit code 1: fix that step`,
 	});
 	assert.deepEqual(await said(`The command '/bin/sh -c exit 3' returned a non-zero code: 3 ${RAW}`), {
-		code: "docker",
+		code: "vendor",
+		vendor: "docker",
 		message: `the recipe of ${TAG} failed at the step \`RUN exit 3\` with exit code 3: fix that step`,
 	}, "the legacy builder's words too");
 	assert.deepEqual(await said(`something else entirely ${RAW}`), {
-		code: "docker",
+		code: "vendor",
+		vendor: "docker",
 		message: `docker build of ${TAG} failed (exit 1): run docker build with the recipe on this machine to see why`,
 	});
 	assert.equal(fake.builds().length, 10, "every call built again: no failure is kept");
@@ -282,16 +287,18 @@ test("a pull that fails, or passes its bound, says why and the next step, with n
 		return failure(await ensureImage({ image: "nosuch/box:1" }, { docker: fake.docker }));
 	};
 	const see = "run docker pull nosuch/box:1 on this machine to see why";
-	assert.deepEqual(await said(DENIED), { code: "docker", message: `the registry refused the pull of nosuch/box:1 (no such repository, or it needs a docker login): ${see}` });
+	assert.deepEqual(await said(DENIED), { code: "vendor", vendor: "docker", message: `the registry refused the pull of nosuch/box:1 (no such repository, or it needs a docker login): ${see}` });
 	assert.deepEqual(await said(`Error response from daemon: manifest for nosuch/box:1 not found: manifest unknown ${RAW}`), {
-		code: "docker",
+		code: "vendor",
+		vendor: "docker",
 		message: "the registry has no nosuch/box:1: name an image it has",
 	});
 	assert.deepEqual(await said(`Error response from daemon: Get "https://registry-1.docker.io/v2/": dial tcp: connection refused ${RAW}`), {
-		code: "docker",
+		code: "vendor",
+		vendor: "docker",
 		message: `the registry could not be reached to pull nosuch/box:1: ${see}`,
 	});
-	assert.deepEqual(await said(`odd ${RAW}`), { code: "docker", message: `docker pull nosuch/box:1 failed (exit 1): ${see}` });
+	assert.deepEqual(await said(`odd ${RAW}`), { code: "vendor", vendor: "docker", message: `docker pull nosuch/box:1 failed (exit 1): ${see}` });
 	assert.equal(fake.pulls().length, 4, "no failure is kept");
 	fake.clear("pull-fail");
 	fake.mark("pull-hold");
@@ -307,12 +314,14 @@ test("a pull that fails, or passes its bound, says why and the next step, with n
 test("an inspect that fails, not for want of the image, builds and pulls nothing: Docker not answering, another failure, an inspect past its bound, no docker CLI", async () => {
 	const fake = fakeImageDocker({ "inspect-fail": `Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running? ${RAW}` });
 	assert.deepEqual(failure(await ensureImage({ recipe: RECIPE }, { docker: fake.docker })), {
-		code: "docker",
+		code: "vendor",
+		vendor: "docker",
 		message: `Docker did not answer docker image inspect ${TAG}: is it running, and may this user reach it?`,
 	});
 	fake.mark("inspect-fail", `strange ${RAW}`);
 	assert.deepEqual(failure(await ensureImage({ image: IMAGE }, { docker: fake.docker })), {
-		code: "docker",
+		code: "vendor",
+		vendor: "docker",
 		message: `docker image inspect ${IMAGE} failed (exit 1): run it on this machine as this process's user to see why`,
 	});
 	fake.clear("inspect-fail");
@@ -322,7 +331,7 @@ test("an inspect that fails, not for want of the image, builds and pulls nothing
 		message: `docker image inspect ${TAG} did not answer within 1 s, so it was stopped: call again`,
 	});
 	assert.deepEqual([fake.builds(), fake.pulls()], [[], []]);
-	assert.deepEqual(failure(await ensureImage({ recipe: RECIPE }, { docker: "/nonexistent/docker" })), { code: "docker", message: "the docker CLI (/nonexistent/docker) was not found" });
+	assert.deepEqual(failure(await ensureImage({ recipe: RECIPE }, { docker: "/nonexistent/docker" })), { code: "vendor", vendor: "docker", message: "the docker CLI (/nonexistent/docker) was not found" });
 });
 
 test("a build or pull that fails, and whose second inspect the bound stops, fails as the timeout, not as the build's or pull's failure", async () => {

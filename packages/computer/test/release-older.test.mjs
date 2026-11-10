@@ -154,9 +154,9 @@ test("a release that fails: every release is still attempted, and the result is 
 
 test("releaseOlder gives list's failure in words, and releases nothing", async () => {
 	const { provider, released } = await setup([["a1", "a", 1]]);
-	provider.list = async () => ({ ok: false, error: { code: "docker", message: "the docker CLI (docker) was not found" } });
+	provider.list = async () => ({ ok: false, error: { code: "vendor", vendor: "docker", message: "the docker CLI (docker) was not found" } });
 	const result = await releaseOlder(provider, "a", 2);
-	assert.deepEqual(result, { ok: false, error: { code: "docker", message: `could not list run "a"'s computers: the docker CLI (docker) was not found` } });
+	assert.deepEqual(result, { ok: false, error: { code: "vendor", vendor: "docker", message: `could not list run "a"'s computers: the docker CLI (docker) was not found` } });
 	assert.deepEqual(released(), []);
 });
 

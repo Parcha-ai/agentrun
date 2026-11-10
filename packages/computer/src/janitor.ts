@@ -2,7 +2,7 @@
 // takeover, the run's computers of an older claim.
 import { epochOf, epochProblem, RUN_LABEL, runProblem } from "./labels.js";
 import type { CallContext, ComputerProvider, ComputerRef } from "./provider.js";
-import { type ComputerError, fail, ok, type Result } from "./result.js";
+import { type ComputerError, fail, failAs, ok, type Result } from "./result.js";
 
 export interface SweepOptions {
 	/** Only computers with all of these labels; default every computer the provider made. */
@@ -77,7 +77,7 @@ export async function sweep(provider: ComputerProvider, { labels = {}, now, sign
 	}
 	if (firstError) {
 		const words = [...(failed.length > 0 ? [`could not delete ${failed.join("; ")}`] : []), ...(leftBehind === undefined ? [] : [`could not remove what its computers left behind: ${leftBehind}`])];
-		return fail(firstError.code, `the sweep deleted ${deleted.join(", ") || "none"} but ${words.join(", and ")}`);
+		return failAs(firstError, `the sweep deleted ${deleted.join(", ") || "none"} but ${words.join(", and ")}`);
 	}
 	return ok({ deleted, kept, ...(leftovers === undefined ? {} : { leftovers }) });
 }
@@ -109,7 +109,7 @@ export async function releaseOlder(provider: ComputerProvider, run: string, epoc
 	const what = `the release of run ${JSON.stringify(run)}'s computers below epoch ${epoch}`;
 	if (signal?.aborted) return fail("aborted", `${what} was aborted before it began`);
 	const listed = await provider.list({ [RUN_LABEL]: run }, { signal });
-	if (!listed.ok) return fail(listed.error.code, `could not list run ${JSON.stringify(run)}'s computers: ${listed.error.message}`);
+	if (!listed.ok) return failAs(listed.error, `could not list run ${JSON.stringify(run)}'s computers: ${listed.error.message}`);
 
 	const older: Array<{ ref: ComputerRef; epoch?: number }> = [];
 	const kept: ComputerRef[] = [];
@@ -145,6 +145,6 @@ export async function releaseOlder(provider: ComputerProvider, run: string, epoc
 			failed.push(`${ref.name} (${was === undefined ? "no epoch" : `epoch ${was}`}): ${result.error.message}`);
 		}
 	}
-	if (firstError) return fail(firstError.code, `${what} is incomplete: ${done()}`);
+	if (firstError) return failAs(firstError, `${what} is incomplete: ${done()}`);
 	return ok({ released, kept, unproven });
 }

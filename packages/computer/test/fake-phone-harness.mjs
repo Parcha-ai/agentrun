@@ -517,9 +517,9 @@ export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = fa
 	function handle(service, options) {
 		if (options.transport !== undefined) {
 			const serial = [...transports].find(([, id]) => id === options.transport)?.[0];
-			if (serial === undefined || !phone.connected.has(serial)) return { ok: false, error: { code: "phone", message: `the adb server refused host:transport-id: device not found` } };
+			if (serial === undefined || !phone.connected.has(serial)) return { ok: false, error: { code: "vendor", vendor: "phone-harness", message: `the adb server refused host:transport-id: device not found` } };
 			const shellService = /^shell(?:,v2)?(?:,raw)?:(.*)$/s.exec(service);
-			if (!shellService) return { ok: false, error: { code: "phone", message: `the adb server does not know ${service.split(":")[0]}` } };
+			if (!shellService) return { ok: false, error: { code: "vendor", vendor: "phone-harness", message: `the adb server does not know ${service.split(":")[0]}` } };
 			const ran = shellOn(serial, shellService[1]);
 			return { ok: true, value: ran.value.stdout.toString("utf8") };
 		}
@@ -530,7 +530,7 @@ export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = fa
 		if (service === "host:devices-l") {
 			return { ok: true, value: [...transports].map(([endpoint, id]) => `${endpoint}          device product:sdk_gphone64_x86_64 model:sdk_gphone64_x86_64 device:emu64xa transport_id:${id}\n`).join("") };
 		}
-		return { ok: false, error: { code: "phone", message: `the adb server does not know ${service}` } };
+		return { ok: false, error: { code: "vendor", vendor: "phone-harness", message: `the adb server does not know ${service}` } };
 	}
 	const serverCalls = [];
 

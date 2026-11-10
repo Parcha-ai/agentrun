@@ -203,7 +203,7 @@ export function fakeOrgoChannel({ install = 0, sha = "ok", x11 = true, box: boxP
 		async start(computer, argv, { how }) {
 			const mark = markOf(argv);
 			calls.push({ op: "start", computer, argv: [...argv], how, kind: mark?.kind });
-			if (startFails) return { ok: false, error: { code: "orgo", message: startFails } };
+			if (startFails) return { ok: false, error: { code: "vendor", vendor: "orgo", message: startFails } };
 			const box = boxOf(computer);
 			if (mark?.kind !== "init" || box.daemon === undefined) return { ok: true, value: undefined };
 			const [, deadline, user, , , display = "", max = ""] = mark.args;

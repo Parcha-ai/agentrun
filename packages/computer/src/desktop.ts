@@ -4,7 +4,7 @@
 // (hello re-checks the display on each call). Docker's desktops and E2B's start the display this way.
 import { setTimeout as sleep } from "node:timers/promises";
 import type { ComputerClient } from "./protocol.js";
-import { type ComputerErrorCode, fail, ok, type Result } from "./result.js";
+import { fail, ok, type Result, vendorFail } from "./result.js";
 
 export interface DesktopOptions {
 	/** The display the daemon and the X server use, given to the daemon as DISPLAY. Default ":0". */
@@ -41,13 +41,13 @@ export function desktopOf({ display = ":0", server, timeoutMs = 30_000 }: Deskto
 
 /**
  * Starts the desktop's X server through the daemon (process.start) and waits until hello declares the display: the
- * server ending first, or the bound passing, is a failure in words, with the server's own last words, under the
- * vendor's code. version is the client's, sent with each hello.
+ * server ending first, or the bound passing, is a failure in words, with the server's own last words, as the vendor's
+ * (code vendor, vendor the provider's id). version is the client's, sent with each hello.
  */
 export async function startDisplay(
 	client: ComputerClient,
 	desktop: Required<DesktopOptions>,
-	{ version, vendor, signal }: { version: string; vendor: ComputerErrorCode; signal?: AbortSignal | undefined },
+	{ version, vendor, signal }: { version: string; vendor: string; signal?: AbortSignal | undefined },
 ): Promise<Result<void>> {
 	const server = desktop.server.join(" ");
 	// Every call takes a signal that ends at the bound, so a hello the X connection setup holds, or a daemon that stops
@@ -69,7 +69,7 @@ export async function startDisplay(
 			const read = await client.call("process.read", { id, stream: "stderr", offset: 0 }, { signal: either });
 			const words = read.ok ? Buffer.from(read.value.data, "base64").toString("utf8").trim().split("\n").slice(-5).join("; ") : "";
 			const how = waited.value.signal ? `signal ${waited.value.signal}` : `exit code ${waited.value.exitCode}`;
-			return fail(vendor, `the X server (${server}) ended with ${how} before the display ${desktop.display} was up${words ? `: ${words}` : ""}`);
+			return vendorFail(vendor, `the X server (${server}) ended with ${how} before the display ${desktop.display} was up${words ? `: ${words}` : ""}`);
 		}
 		if (timedOut()) return late();
 		if (signal?.aborted) return fail("aborted", "create was aborted while the display came up");

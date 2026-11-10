@@ -8,7 +8,7 @@
 // all such a computer takes until a proxy carries open and allowlists out of that namespace.
 import { DAEMON_IN_COMPUTER } from "./drift.js";
 import type { ComputerClient } from "./protocol.js";
-import { fail, ok, type Result } from "./result.js";
+import { fail, failAs, ok, type Result } from "./result.js";
 
 /** The uid:gid the programs of a remote computer run as by default: the box image's agentrun-tool, no sudo. */
 export const TOOL_USER = "2510:2510";
@@ -67,7 +67,7 @@ export function probeOwnNetworkDrift(report: OwnNetworkReport): string[] {
  */
 export async function readOwnNetwork(client: ComputerClient, timeoutMs: number, signal?: AbortSignal): Promise<Result<string[]>> {
 	const ran = await client.call("exec.run", { argv: [DAEMON_IN_COMPUTER, "probe"], timeoutMs }, signal ? { signal } : undefined);
-	if (!ran.ok) return fail(ran.error.code, `reading the computer's own network back (computerd probe): ${ran.error.message}`);
+	if (!ran.ok) return failAs(ran.error, `reading the computer's own network back (computerd probe): ${ran.error.message}`);
 	const out = Buffer.from(ran.value.stdout, "base64").toString("utf8");
 	if (ran.value.exitCode !== 0) return fail("refused", `computerd probe, reading the computer's own network back, exited ${ran.value.exitCode}: ${Buffer.from(ran.value.stderr, "base64").toString("utf8").trim().slice(0, 300)}`);
 	try {

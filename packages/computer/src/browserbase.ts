@@ -42,7 +42,7 @@ import {
 	releaseConfirmed,
 	restCall,
 	type UrlStore,
-	vendorFail,
+	causedFail,
 	vendorFailure,
 	withoutCreateLabel,
 } from "./browser.js";
@@ -62,8 +62,11 @@ import type {
 	NetworkSpec,
 	Refusal,
 } from "./provider.js";
-import { fail, ok, type Result } from "./result.js";
+import { failFor, ok, type Result, vendorFail } from "./result.js";
 import { connectionError } from "./test-connection.js";
+
+/** This module's failures: one with code vendor names Browserbase. */
+const fail = failFor("browserbase");
 
 const VERSION: string = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
 const NAME = "Browserbase";
@@ -281,16 +284,16 @@ export class BrowserbaseProvider implements ComputerProvider {
 			const failed = vendorFailure("browserbase", NAME, "POST /v1/sessions", error);
 			if (failed.ok || !createUncertain(error)) return failed;
 			// The session may have been made though its answer never came: found by its create label, never made again.
-			return vendorFail(failed.error.code, `${failed.error.message}; ${await this.#recover(written)}`, causeOf(failed));
+			return causedFail(failed.error.code, `${failed.error.message}; ${await this.#recover(written)}`, causeOf(failed), "browserbase");
 		}
 		if (idProblem(made?.id, NAME) !== undefined) {
-			return fail("browserbase", `Browserbase POST /v1/sessions answered with no session id, so there is no session to connect to; ${await this.#recover(written)}`);
+			return vendorFail("browserbase",`Browserbase POST /v1/sessions answered with no session id, so there is no session to connect to; ${await this.#recover(written)}`);
 		}
 		const unusable = cdpUrlProblem(made.connectUrl, NAME, CDP_DOMAIN);
 		if (unusable !== undefined) {
 			// The session is made and billed (keepAlive, up to its timeout): released here, not left to a later sweep.
 			const released = await this.release(refOf(made), "delete");
-			return fail("browserbase", `Browserbase POST /v1/sessions made a session with no CDP URL to hand over: ${unusable}; ${released.ok ? "the session was released" : `the session was not released (${released.error.code}), and its labels let a sweep find it`}`);
+			return vendorFail("browserbase",`Browserbase POST /v1/sessions made a session with no CDP URL to hand over: ${unusable}; ${released.ok ? "the session was released" : `the session was not released (${released.error.code}), and its labels let a sweep find it`}`);
 		}
 		this.#urls.set(made.id, made.connectUrl as string);
 		return ok(refOf(made));
@@ -427,7 +430,7 @@ export class BrowserbaseProvider implements ComputerProvider {
 		}
 		// Whatever held it (create, a read, a host's url store), a URL a driver would dial is wss: on Browserbase's own domain.
 		const unusable = cdpUrlProblem(url, NAME, CDP_DOMAIN);
-		if (unusable !== undefined) return fail("browserbase", `the Browserbase session ${id} is not handed over: ${unusable}`);
+		if (unusable !== undefined) return vendorFail("browserbase",`the Browserbase session ${id} is not handed over: ${unusable}`);
 		this.#urls.set(id, url);
 		const hello = browserHello(VERSION, this.capabilities().groups);
 		const client = browserClient(hello, (signal) => this.#alive(id, signal));

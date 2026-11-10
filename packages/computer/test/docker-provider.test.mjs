@@ -268,7 +268,7 @@ test("create() removes a container that is not running and says why", async () =
 	const { provider, calls } = fakeDocker({ running: false });
 	const result = await provider.create(SPEC);
 	assert.equal(result.ok, false);
-	assert.equal(result.error.code, "docker");
+	assert.deepEqual([result.error.code, result.error.vendor], ["vendor", "docker"]);
 	assert.match(result.error.message, /exec format error/);
 	const [, run, , ...remove] = calls();
 	assert.deepEqual(remove, removal(valuesOf(run, "--name")[0]));
@@ -288,7 +288,7 @@ test("a computer whose lifetime ended before docker run finished says so, with b
 	// Exit 0 with lifetime left, or another exit after the deadline, is not that: the words stay Docker's state.
 	for (const [patch, lifetimeMs] of [[exited, 600_000], [{ State: { ...exited.State, ExitCode: 1 } }, 1]]) {
 		const other = await fakeDocker({ patch }).provider.create({ ...SPEC, lifetimeMs });
-		assert.equal(other.error.code, "docker", JSON.stringify(other));
+		assert.deepEqual([other.error.code, other.error.vendor], ["vendor", "docker"], JSON.stringify(other));
 		assert.match(other.error.message, new RegExp(`was not running after its start \\(status exited, exit code ${patch.State.ExitCode}\\), so it was removed$`));
 	}
 });
@@ -522,7 +522,7 @@ test("the host's enforcement is read once per provider, and a docker info that f
 	const broken = new DockerProvider({ daemonPath, docker: join(tmpdir(), "no-such-docker-cli") });
 	const first = await broken.host();
 	assert.equal(first.ok, false);
-	assert.equal(first.error.code, "docker");
+	assert.deepEqual([first.error.code, first.error.vendor], ["vendor", "docker"]);
 	assert.equal((await broken.host()).ok, false);
 });
 
