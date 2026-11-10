@@ -48,7 +48,8 @@ test("the timings are each file's median over the logs, each suite's file total 
   write(join(root, 'package.json'), { name: 'repo', private: true, workspaces: ['packages/*'], scripts: { 'test:viewer': 'node scripts/view.mjs' } });
   write(join(root, 'packages/a/package.json'), { name: '@x/a', scripts: { test: "node --test 'test/*.test.mjs'" } });
   write(join(root, 'packages/a/test/one.test.mjs'), "test('opens a run', () => {}); test(`a box of ${kind} starts`, () => {});");
-  write(join(root, 'packages/a/test/two.test.mjs'), "test(\"closes it\", () => {});");
+  // A RegExp's .test(`${a} ${b}`) is no test declared: read as one, its pattern would match every name, so none is credited.
+  write(join(root, 'packages/a/test/two.test.mjs'), "test(\"closes it\", () => { /x/.test(`${a} ${b}`); });");
   write(join(root, 'scripts/ci-shards.json'), { rootSuites: ['test:viewer'], whole: { 'test:viewer': 'node scripts/view.mjs' }, pools: { any: { shards: 1 } } });
   const run = (one, two, wall) => [
     at(0, '##[group]npm exec -w @x/a -c "node --test test/one.test.mjs test/two.test.mjs"'),
