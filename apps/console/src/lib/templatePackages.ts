@@ -1,5 +1,6 @@
 import { dollars } from "./format";
 import type { FieldIssue } from "./client";
+import { browserZone } from "./schedules";
 import type { TemplateView } from "./v2";
 
 // The server's templates (GET /v2/templates), as the Templates page reads them. (lib/templates.ts is Mission Control's
@@ -59,10 +60,18 @@ export function parametersOf(t: TemplateView, text: ParameterText): Record<strin
   return out;
 }
 
-/** The parameters form as it opens: each boolean at its served default ("true"/"false"), unticked with none; text and
- *  numbers empty (their default is shown as a hint, and the server applies it when the field is left out). */
+/** The parameters form as it opens: each boolean at its served default ("true"/"false"), unticked with none; a
+ *  `format: timezone` one at the browser's zone and a `format: cron` one at its default; other text and numbers empty
+ *  (their default is shown as a hint, and the server applies it when the field is left out). */
 export function startValues(t: TemplateView): ParameterText {
-  return Object.fromEntries(Object.entries(t.parameters).flatMap(([key, p]) => (p.type === "boolean" && typeof p.default === "boolean" ? [[key, String(p.default)]] : [])));
+  return Object.fromEntries(Object.entries(t.parameters).flatMap(([key, p]): [string, string][] => {
+    if (p.type === "boolean") return typeof p.default === "boolean" ? [[key, String(p.default)]] : [];
+    // A schedule's zone starts at the browser's own, as a new schedule on the Triggers page does; its cron line at the
+    // package's default, shown in words.
+    if (p.format === "timezone") return [[key, browserZone()]];
+    if (p.format === "cron") return typeof p.default === "string" ? [[key, p.default]] : [];
+    return [];
+  }));
 }
 
 /** The gate names the owner ticked, in the template's order: the consent an apply sends (`grants`), nothing else. */

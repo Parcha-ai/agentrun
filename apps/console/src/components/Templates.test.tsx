@@ -1,18 +1,20 @@
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { route } from "@/App";
 import { TemplatesPage } from "./Templates";
 import { ClientError } from "@/lib/client";
-import type { TemplateView } from "@/lib/v2";
-import { firstPicker, optionsOf, pick } from "@/test/picker";
+import { when } from "@/lib/format";
+import { type Schedule, whenWords } from "@/lib/schedules";
+import type { TemplateView, Trigger } from "@/lib/v2";
+import { firstPicker, optionsOf, pick, picker, valueOf } from "@/test/picker";
 
 // The server's templates (GET /v2/templates) and applying one (POST /v2/templates/{name}/apply): the list says what each
 // needs; the Apply screen takes its parameters and the owner's consent, one tick per MCP tool, none ticked until the owner
 // ticks it. Refusals are the server's words at their fields; a made agent opens, or, with warnings, they show first.
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 let root: ReturnType<typeof createRoot> | undefined;
-afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
+afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; vi.unstubAllEnvs(); });
 
 const REVIEWER: TemplateView = {
   name: "pr-reviewer", display_name: "PR reviewer", version: "1.0.0", description: "Reviews a pull request and leaves one review.",
@@ -29,13 +31,15 @@ const REVIEWER: TemplateView = {
 };
 const NOTES: TemplateView = { ...REVIEWER, name: "meeting-notes", display_name: null, version: "0.2.0", description: "Turns a transcript into notes.", mcp: [], parameters: {}, secrets: [], budget: null, triggers: [] };
 
-type Fake = { apply?: (name: string, body: unknown, key: string) => Promise<unknown>; servers?: string[]; templates?: TemplateView[] };
+type Fake = { apply?: (name: string, body: unknown, key: string) => Promise<unknown>; servers?: string[]; templates?: TemplateView[]; triggers?: Record<string, unknown> };
 async function open(name?: string, fake: Fake = {}) {
   const went: string[] = [];
   const sent: { name: string; body: { parameters?: Record<string, unknown>; grants?: string[]; overrides?: Record<string, unknown> }; key: string }[] = [];
   const v2 = {
     listTemplates: async () => ({ templates: fake.templates ?? [REVIEWER, NOTES] }),
     listMcpServers: async () => ({ servers: (fake.servers ?? ["github"]).map((n) => ({ name: n, url: `https://${n}.example/mcp`, auth: { type: "none" }, tools: [], credential: null })) }),
+    // A trigger the apply made, read back (GET /triggers/{id}); one the fake doesn't have is a 404.
+    getTrigger: async (id: string) => { if (!fake.triggers?.[id]) throw new ClientError(404, "not_found", `No trigger ${id}.`); return fake.triggers[id]; },
     applyTemplate: async (n: string, body: never, key: string) => { sent.push({ name: n, body, key }); return (fake.apply ?? (async () => ({ template: n, version: "1.0.0", agent_id: "pr-reviewer-1", trigger_ids: [], warnings: [] })))(n, body, key); },
   };
   const host = document.body.appendChild(document.createElement("div"));
@@ -341,6 +345,67 @@ describe("applying a template", () => {
     await t.click(t.button(/^Apply/));
     expect(t.sent[0].body.parameters).toEqual({ post_to: "slack", depth: 7 });
     expect(t.host.querySelector('[data-field="parameters.post_to"]')!.textContent).toContain("post_to takes one of: crm, slack, none.");
+  });
+
+  // A schedule's parameters (serve's `format`, market-monitor's cron and timezone): the cron line is picked in words, as
+  // the Triggers page picks one, and the zone from the browser's zones, starting at its own. Read from the served format,
+  // never the parameter's name: a parameter named cron with no format is a text field.
+  it("asks a format: cron parameter in words and a format: timezone one from a zone picker at the browser's zone", async () => {
+    vi.stubEnv("TZ", "America/New_York");
+    const MONITOR: TemplateView = { ...REVIEWER, name: "market-monitor", parameters: {
+      when: { type: "string", required: false, description: "when the digest runs", format: "cron", default: "0 8 * * 1" },
+      zone: { type: "string", required: false, description: "the zone it runs in", format: "timezone", default: "UTC" },
+      cron: { type: "string", required: false, description: "a word that only looks like a schedule" },
+    } };
+    const t = await open("market-monitor", { templates: [MONITOR] });
+    const when = t.host.querySelector('[data-field="parameters.when"]')!;
+    // The package's default, said as its shape: every week, on Monday, at 08:00. No raw cron line to type.
+    expect(valueOf(picker(when, "when")!)).toBe("weekly");
+    expect(valueOf(picker(when, "Day of the week")!)).toBe("1");
+    expect(when.querySelector<HTMLInputElement>('input[type="time"]')!.value).toBe("08:00");
+    expect(when.querySelector('input[aria-label="Cron line"]')).toBeNull();
+    const zone = t.host.querySelector('[data-field="parameters.zone"]')!;
+    expect(valueOf(picker(zone, "zone")!)).toBe("America/New_York");
+    expect((await optionsOf(picker(zone, "zone")!)).map((o) => o.value)).toContain("Europe/Madrid");
+    // No format: the text field it always was, whatever its name.
+    expect(t.host.querySelector('[data-field="parameters.cron"] input[type="text"]')).toBeTruthy();
+    await pick(picker(when, "when")!, "weekdays");
+    await t.type(when.querySelector('input[type="time"]'), "07:30");
+    await pick(picker(zone, "zone")!, "Europe/Madrid");
+    await t.click(t.button(/^Apply/));
+    expect(t.sent[0].body.parameters).toEqual({ when: "30 7 * * 1-5", zone: "Europe/Madrid" });
+  });
+
+  // After an apply that made a schedule, the screen stays to say when it runs and its next run, in the Triggers page's
+  // words ("At 07:30, Monday through Friday · Europe/Madrid · next …"), with a link to it; the agent is one click on.
+  it("after Apply, a schedule it made shows when it runs, in words, and its next run time, as on Triggers", async () => {
+    const DIGEST: Trigger = {
+      id: "trg_m", name: "weekly-digest", enabled: true, source: { kind: "schedule", cron: "30 7 * * 1-5", timezone: "Europe/Madrid" },
+      target: { kind: "start_run", agent_id: "market-monitor-1", input: { content: "Write the digest." }, max_cost_usd: 5 },
+      catchup_window_s: 0, max_active_runs: 1, failures_in_a_row: 0, disabled: null, last_run_id: null,
+      created_at: "2026-11-11T00:00:00Z", updated_at: "2026-11-11T00:00:00Z", next_at: "2026-11-12T06:30:00Z", last_firing: null,
+    };
+    const t = await open("pr-reviewer", {
+      apply: async () => ({ template: "pr-reviewer", version: "1.0.0", agent_id: "market-monitor-1", trigger_ids: ["trg_m"], warnings: [] }),
+      triggers: { trg_m: DIGEST },
+    });
+    await t.type(t.host.querySelector('[data-field="parameters.repo"] input'), "acme/web");
+    await t.click(t.button(/^Apply/));
+    expect(t.went).toEqual([]);
+    const row = t.host.querySelector('[aria-label="Schedules"] [data-trigger="trg_m"]')!;
+    expect(row.querySelector("a")!.getAttribute("href")).toBe("#/triggers/trg_m");
+    expect(row.textContent).toContain(`${whenWords(DIGEST.source as Schedule["source"])} · next ${when(DIGEST.next_at!)}`);
+    expect(row.textContent).toContain("Europe/Madrid");
+    expect(row.textContent).not.toContain("30 7 * * 1-5");
+    const link = [...t.host.querySelectorAll("a")].find((a) => a.textContent?.includes("Open the agent"));
+    expect(link?.getAttribute("href")).toBe("#/agents/market-monitor-1");
+  });
+
+  it("after Apply, a trigger that can't be read back (or isn't a schedule) leaves the agent to open at once", async () => {
+    const t = await open("pr-reviewer", { apply: async () => ({ template: "pr-reviewer", version: "1.0.0", agent_id: "pr-reviewer-1", trigger_ids: ["trg_gone"], warnings: [] }) });
+    await t.type(t.host.querySelector('[data-field="parameters.repo"] input'), "acme/web");
+    await t.click(t.button(/^Apply/));
+    expect(t.went).toEqual(["#/agents/pr-reviewer-1"]);
   });
 
   it("opens the made agent at once when there are no warnings", async () => {

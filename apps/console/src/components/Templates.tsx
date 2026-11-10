@@ -1,5 +1,7 @@
 import { ArrowLeft, Check, LayoutTemplate } from "lucide-react";
 import { Picker } from "@/components/ui/picker";
+import { ScheduleWhen } from "@/components/ScheduleWhen";
+import { ZonePicker } from "@/components/ZonePicker";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { ProblemCard } from "@/components/Problem";
 import { SecretOnce } from "@/components/Schedules";
@@ -9,7 +11,8 @@ import { Chip } from "@/components/ui/chip";
 import { Input } from "@/components/ui/field";
 import { type Client, ClientError, type FieldIssue } from "@/lib/client";
 import { keeper } from "@/lib/idempotency";
-import { hookUrlOf } from "@/lib/schedules";
+import { when } from "@/lib/format";
+import { hookUrlOf, isScheduleTrigger, type Schedule, whenWords } from "@/lib/schedules";
 import { type Problem, problem } from "@/lib/problem";
 import { choicesOf, grantsOf, issuesAt, needsOf, paramIssueWords, paramLabel, parametersOf, paramValid, type ParameterText, startValues, templateHash, titleOf } from "@/lib/templatePackages";
 import { type Approvals, NEVER_ASK_LINE, type TemplateApplied, type TemplateView } from "@/lib/v2";
@@ -72,7 +75,8 @@ function TemplateList({ templates, go }: { templates: TemplateView[]; go: (hash:
 
 /** One template's Apply screen: its parameters, the owner's consent (one tick per MCP tool, none ticked until the owner
  *  ticks it), and what it needs. Apply sends the parameters as typed and the ticks as `grants`, under one Idempotency-Key a
- *  retry reuses. A refusal is the server's words at its field; a made agent opens, or, with warnings, they show first. */
+ *  retry reuses. A refusal is the server's words at its field; a made agent opens, or, with warnings or a schedule, they
+ *  show first: a schedule with when it runs and its next run, as the Triggers page says them. */
 function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView }) {
   // The form starts at the template's served defaults for its checkboxes (a box shows what is sent); a text field
   // starts empty, its default as its hint, and is left out untouched for the server to apply that default.
@@ -87,6 +91,8 @@ function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView
   // The refusal's own words beside Apply; `withIssues` when it came with issues, so it goes once the last of them does.
   const [said, setSaid] = useState<{ text: string; withIssues: boolean } | null>(null);
   const [made, setMade] = useState<TemplateApplied | null>(null);
+  // The schedules the apply made, each read back (GET /triggers/{id}) for its next run.
+  const [schedules, setSchedules] = useState<Schedule[]>([]);
   // The parameters an apply sent: what its "applied" title names, whatever was typed while it was under way.
   const [sentValues, setSentValues] = useState<ParameterText>({});
   const keys = useRef(keeper()).current;
@@ -111,9 +117,15 @@ function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView
     try {
       const done = await v2.applyTemplate(t.name, body, keys.keyFor(t.name, body));
       keys.done();
-      // Opens the agent at once only when there is nothing to show first: a warning (a webhook trigger's among them).
-      if (!done.warnings.length && !done.webhook_secrets?.length) { go(`#/agents/${encodeURIComponent(done.agent_id)}`); return; }
+      // Each trigger the apply made, read back: a schedule shows when it runs next. One that can't be read is left out
+      // (the Triggers page has it).
+      const read = await Promise.all(done.trigger_ids.map(async (id) => { try { return await v2.getTrigger(id); } catch { return null; } }));
+      const scheduled = read.filter((x): x is Schedule => x !== null && isScheduleTrigger(x));
+      // Opens the agent at once only when there is nothing to show first: a warning (a webhook trigger's among them), or
+      // a schedule's next run.
+      if (!done.warnings.length && !done.webhook_secrets?.length && !scheduled.length) { go(`#/agents/${encodeURIComponent(done.agent_id)}`); return; }
       setSentValues(sending);
+      setSchedules(scheduled);
       setMade(done);
     } catch (e) {
       if (e instanceof ClientError && e.fields?.length) { setIssues(e.fields); setSaid({ text: e.message, withIssues: true }); }
@@ -161,6 +173,18 @@ function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView
               </div>
             );
         })}
+        {/* Each schedule the apply made: when it runs, in words in its zone, and its next run, as the Triggers page says
+            them. */}
+        {schedules.length > 0 && (
+          <ul className="mt-4 divide-y border" aria-label="Schedules">
+            {schedules.map((s) => (
+              <li key={s.id} data-trigger={s.id} className="px-4 py-3">
+                <a href={`#/triggers/${encodeURIComponent(s.id)}`} className="break-words text-prose font-semibold hover:underline">{s.name}</a>
+                <p className="mt-1 break-words font-mono text-small text-muted-foreground">{whenWords(s.source)} · {s.next_at ? `next ${when(s.next_at)}` : "no next time"}</p>
+              </li>
+            ))}
+          </ul>
+        )}
         <div className="mt-5" />
         <a href={`#/agents/${encodeURIComponent(made.agent_id)}`} className="inline-flex border px-3 py-2 font-mono text-body font-semibold hover:bg-accent">Open the agent</a>
       </section>
@@ -180,7 +204,11 @@ function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView
                 <span className="caps text-small font-semibold">{paramLabel(key)}{p.required && <span className="text-destructive-text"> *</span>}</span>
                 {/* The parameter's own words; its pattern is the server's to check, never printed. */}
                 <span className="mb-1.5 block text-small text-muted-foreground">{p.description}</span>
-                {choicesOf(p)
+                {p.format === "cron" && p.type === "string"
+                  ? <ScheduleWhen label={key} value={values[key] ?? ""} onChange={(v) => setParam(key, v)} />
+                  : p.format === "timezone" && p.type === "string"
+                  ? <ZonePicker label={key} className="w-full" value={values[key] ?? ""} onChange={(v) => setParam(key, v)} />
+                  : choicesOf(p)
                   ? <Picker label={key} className="w-full" value={values[key] ?? ""} onChange={(v) => setParam(key, v)}
                       options={[{ value: "", label: p.required ? "Choose one" : p.default !== undefined ? `${String(p.default)} (default)` : "None chosen" }, ...choicesOf(p)!.map((c) => ({ value: c, label: c }))]} />
                   : p.type === "boolean"
