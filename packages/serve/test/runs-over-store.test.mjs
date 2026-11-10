@@ -283,6 +283,35 @@ test("a message to a run that ended after its moment was read answers in the wor
   assert.equal((await commandsOf(store, id)).length, 0, "nothing written");
 });
 
+test("two messages racing at a completed agentic run are both taken as steers: one reopens it, the other lands on the reopened run, neither is refused", async () => {
+  const store = await freshStore();
+  const id = await endedRun(store, "run-two");
+  // Both read the run ended and are refused their steer; the other message's reopen lands between this one's refusal and
+  // its own reopen, so this one's reopen finds the run running again.
+  let raced = false;
+  const racing = {
+    runs: {
+      ...store.runs,
+      reopen: async (runId, command) => {
+        if (!raced) {
+          raced = true;
+          await message(store, endedMoment(id, "completed"), "first");
+        }
+        return store.runs.reopen(runId, command);
+      },
+    },
+    agents: store.agents,
+    command: (...args) => store.command(...args),
+    commands: (...args) => store.commands(...args),
+    runOfOrigin: (...args) => store.runOfOrigin(...args),
+  };
+  const answer = await message(racing, endedMoment(id, "completed"), "second");
+  assert.equal(answer.mode, "follow_up");
+  assert.equal((await store.runs.get(id)).state, "running");
+  const rows = await commandsOf(store, id);
+  assert.deepEqual(rows.map((row) => [row.kind, row.body.text, row.takenAt]), [["steer", "first", null], ["steer", "second", null]], "both steers, in the order the run took them");
+});
+
 // ---- raiseCap -------------------------------------------------------------------------------------------------------
 
 test("raiseCap above the run's cap writes one raise command with the new cap", async () => {
