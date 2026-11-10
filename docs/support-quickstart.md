@@ -1,6 +1,6 @@
 # Connect the support workflow to Jev and your agent
 
-Start with the [repository quickstart](../README.md#quickstart). The same [workflow document](../examples/support-answer.mjs) runs with scripted adapters or with live Jev and your configured host.
+Start with the [support example](examples.md#run-the-support-example). The same [workflow document](../examples/support-answer.mjs) runs with scripted adapters or with live Jev and your configured host.
 
 ## 1. Check the scripted baseline
 

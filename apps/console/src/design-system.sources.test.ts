@@ -1,0 +1,168 @@
+import { describe, expect, it } from "vitest";
+
+// The console's sources use the design system's names and no value of their own (docs/console-design-system.md). Each
+// rule below is one sentence of the guide; a line that breaks one is named with what to write instead. An exception is
+// listed in ALLOWED with its reason, and an entry that no longer matches anything fails too, so the list only shrinks.
+const sources = import.meta.glob("./**/*.{ts,tsx}", { query: "?raw", import: "default", eager: true }) as Record<string, string>;
+const files = Object.entries(sources)
+  .filter(([path]) => !/\.test\.tsx?$/.test(path) && !path.startsWith("./fixtures/") && !path.startsWith("./design/") && path !== "./lib/api.generated.ts")
+  .map(([path, text]) => ({ path: path.slice(2), lines: text.split("\n") }));
+
+/** `tag`: the rule reads a whole opening tag of these elements, however many lines it is written on, as one line. */
+type Rule = { id: string; says: string; fix: string; find: RegExp; unless?: RegExp; skip?: (path: string) => boolean; tag?: boolean; near?: number };
+const outsideUi = (path: string) => path.startsWith("components/ui/");
+const PALETTE = "slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose";
+const RULES: Rule[] = [
+  { id: "literal-colour", says: "A colour is a token, never a hex, rgb() or hsl() value.", fix: "a token class (bg-card, text-muted-foreground, border-border-strong); see the guide's colour table",
+    find: /\[#[0-9a-fA-F]{3,8}\]|(?:color|background|fill|stroke|border)[^;"'`\n]{0,24}#[0-9a-fA-F]{3,8}\b|\brgba?\(|\bhsla?\((?!var\()/ },
+  { id: "palette-colour", says: "Tailwind's own palette, white and black are not the console's colours.", fix: "bg-background, text-foreground, bg-overlay/70, or a tone token",
+    find: new RegExp(`\\b(?:bg|text|border|ring|fill|stroke|outline|decoration|accent|divide|from|to|via|placeholder)-(?:white|black|(?:${PALETTE})-\\d{2,3})\\b`) },
+  { id: "token-by-hand", says: "A token has a class; do not spell its variable out.", fix: "text-run-active, bg-primary/[0.28], accent-primary",
+    find: /\b(?:text|bg|border|accent|fill|stroke|ring|outline|decoration)-\[(?:hsl\(|(?:color:)?)var\(--/ },
+  { id: "off-scale-size", says: "Text is one of the type scale's steps.", fix: "text-micro 10, text-label 11, text-small 12, text-body 13, text-lead 14, text-prose 15, text-base 16, text-lg 18, text-xl 20, text-figure 22, text-2xl 24, text-display 32",
+    find: /\btext-\[\d[^\]]*\]|\btext-(?:xs|sm|3xl|4xl|5xl|6xl|7xl|8xl|9xl)\b/ },
+  { id: "off-scale-weight", says: "There are two weights: font-normal and font-semibold.", fix: "font-semibold",
+    find: /\bfont-(?:thin|extralight|light|medium|bold|extrabold|black)\b/ },
+  { id: "numbered-layer", says: "A layer has a name.", fix: "z-raised, z-sticky, z-overlay, z-dialog, z-popover, z-toast",
+    find: /(?<![\w-])-?z-(?:\d+|\[)/ },
+  { id: "rounded", says: "Every corner is square.", fix: "delete the class", find: /(?<![\w-])rounded(?![\w(])(?:-[a-z0-9[\]]+)*(?=[\s"'`])/ },
+  { id: "shadow", says: "There is one shadow, under what floats over the page.", fix: "shadow-float; for a halo round a mark, ring-*",
+    find: /(?<![\w-])shadow-(?:sm|md|lg|xl|2xl|inner|\[)|(?<![\w-])shadow(?=[\s"'`])(?=[^<>]*")/ },
+  { id: "off-scale-motion", says: "A duration and an easing are tokens.", fix: "duration-fast, duration-base, duration-slow; ease-standard",
+    find: /\bduration-(?:\d+|\[)|\bease-(?:in|out|in-out)\b|\bdelay-(?:\d+|\[)/ },
+  { id: "caps-by-hand", says: "Mono caps is the .caps class.", fix: "caps", find: /(?<![\w-])uppercase\b(?=[\s"'`])/, skip: (path) => path === "components/ui/tip.tsx" },
+  { id: "dark-variant", says: "Tokens change with the theme; a component never does.", fix: "the token whose two values you need, or a new one", find: /(?<![\w-])dark:[a-z]/ },
+  { id: "focus-removed", says: "outline-none comes with a focus-visible: replacement.", fix: "drop outline-none (the global ring shows), or add focus-visible:outline-offset-0 and friends",
+    find: /(?<![\w:-])outline-none\b/, unless: /focus-visible:(?!outline-none)|focus:(?!outline-none)|data-\[focus\]|tabIndex=\{-1\}/, near: 2 },
+  { id: "button-by-hand", says: "An action is a Button.", fix: '<Button size="xs|sm|md"> from @/components/ui', find: /^<button\b.*["`\s]caps\s[^"`]*\bborder\b(?!-[blrtxy]\b)|^<button\b.*["`\s]border\s[^"`]*\bcaps\b/, skip: outsideUi, tag: true },
+  { id: "field-by-hand", says: "A field is Input, Textarea or Picker.", fix: "the primitive from @/components/ui, inside a Field",
+    find: /^<(?:select|textarea)\b|^<input\b(?!.*\btype="(?:hidden|file|checkbox|radio)")/, skip: outsideUi, tag: true },
+  { id: "choice-by-hand", says: "A checkbox or a radio shows in the brand's colour.", fix: "Checkbox or Radio from @/components/ui, or accent-primary on the input; a segment's own radio is sr-only",
+    find: /^<input\b.*\btype="(?:checkbox|radio)"/, unless: /sr-only|accent-primary/, skip: outsideUi, tag: true },
+];
+
+/** An exception: the rule, the file, a string the line holds, and why the guide's sentence does not apply to it. */
+const ALLOWED: { rule: string; file: string; has: string; why: string }[] = [
+  { rule: "palette-colour", file: "components/NodeDrawer.tsx", has: "bg-white", why: "A page of a document is shown on paper white in both themes, as the document is." },
+  { rule: "focus-removed", file: "components/ui/field.tsx", has: "bareFieldClass", why: "A bare control sits in a fieldBoxClass box, which draws the ring while the control has the focus." },
+  { rule: "focus-removed", file: "components/ui/menu.tsx", has: "shadow-float outline-none", why: "An open menu holds the focus itself and shows it on the active item (data-[focus]:bg-accent)." },
+  { rule: "focus-removed", file: "components/ui/picker.tsx", has: "shadow-float outline-none", why: "An open list holds the focus itself and shows it on the active option (data-[focus]:bg-accent)." },
+];
+
+/** A source with its comments turned to spaces of the same shape, so every line number stays what it was. A `//` or
+ *  `/*` inside a quoted string (a title, a URL) is text, not a comment. A quote opened on a line ends with the line
+ *  (an apostrophe in JSX text opens nothing that lasts); a template string runs on. */
+function withoutComments(text: string): string {
+  let out = "", quote = "";
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i]!, two = text.slice(i, i + 2);
+    if (quote) { if (c === quote || (c === "\n" && quote !== "`")) quote = ""; out += c; continue; }
+    // An apostrophe after a letter ("Couldn't") is text, not the start of a string.
+    if (c === '"' || c === "`" || (c === "'" && !/[A-Za-z]/.test(text[i - 1] ?? ""))) { quote = c; out += c; continue; }
+    const end = two === "//" ? text.indexOf("\n", i) : two === "/*" ? text.indexOf("*/", i) + 2 : -1;
+    if (two !== "//" && two !== "/*") { out += c; continue; }
+    const stop = two === "//" ? (end < 0 ? text.length : end) : (end < 2 ? text.length : end);
+    out += text.slice(i, stop).replace(/[^\n]/g, " "); i = stop - 1;
+  }
+  return out;
+}
+
+/** Each opening tag of a native control in a source, joined onto one line, with the line it starts on. A `>` inside
+ *  braces (an arrow function, a comparison) or inside quotes (a title) is not the tag's end. A tag in a comment, or
+ *  one that is the text of a string, is no control and is not read. */
+function controlTags(text: string): { line: number; text: string }[] {
+  const tags: { line: number; text: string }[] = [];
+  text = withoutComments(text);
+  for (const m of text.matchAll(/<(?:button|input|select|textarea)\b/g)) {
+    if (/["'`]/.test(text[m.index - 1] ?? "")) continue;
+    let end = m.index + m[0].length;
+    for (let depth = 0, quote = ""; end < text.length; end++) {
+      const c = text[end]!;
+      if (quote) { if (c === quote) quote = ""; continue; }
+      if (c === '"' || c === "'" || c === "`") quote = c;
+      else if (c === "{") depth++;
+      else if (c === "}") depth--;
+      else if (c === ">" && depth === 0) break;
+    }
+    tags.push({ line: text.slice(0, m.index).split("\n").length, text: text.slice(m.index, end + 1).replace(/\s+/g, " ") });
+  }
+  return tags;
+}
+
+const comment = (line: string) => /^\s*(?:\/\/|\/?\*)/.test(line);
+const opensTag = (line: string) => /<[A-Za-z]/.test(line);
+/** The lines `unless` reads for a rule that looks `near` its line: a class list wrapped over a few lines keeps its
+ *  replacement a line or two from the class it replaces. The reach stops at the element's own edges, so one element's
+ *  focus mark never answers for its neighbour: back as far as the line that opens the tag, on to the line before the
+ *  next tag opens. Comments are not read. */
+function around(lines: string[], i: number, near: number): string {
+  let from = i, to = i;
+  while (from > 0 && i - from < near && !opensTag(lines[from]!)) from--;
+  while (to + 1 < lines.length && to - i < near && !opensTag(lines[to + 1]!)) to++;
+  return lines.slice(from, to + 1).filter((l) => !comment(l)).join(" ");
+}
+const breaks = (rule: Rule, text: string, context = text) => rule.find.test(text) && !rule.unless?.test(context);
+const lineHits = (rule: Rule, lines: string[]) => lines.flatMap((line, i) =>
+  !comment(line) && breaks(rule, line, rule.near ? around(lines, i, rule.near) : line) ? [{ line: i + 1, text: line.trim() }] : []);
+const hits = RULES.flatMap((rule) => files.filter((f) => !rule.skip?.(f.path)).flatMap((f) => {
+  if (rule.tag) return controlTags(f.lines.join("\n")).filter((t) => breaks(rule, t.text)).map((t) => ({ rule: rule.id, file: f.path, line: t.line, text: t.text }));
+  return lineHits(rule, f.lines).map((h) => ({ rule: rule.id, file: f.path, ...h }));
+}));
+const allowed = (h: (typeof hits)[number]) => ALLOWED.some((a) => a.rule === h.rule && a.file === h.file && h.text.includes(a.has));
+
+describe("the console's sources follow the design system", () => {
+  it("reads the sources", () => {
+    expect(files.length).toBeGreaterThan(80);
+    expect(files.some((f) => f.path === "components/Shell.tsx")).toBe(true);
+  });
+  for (const rule of RULES) {
+    it(`${rule.id}: ${rule.says}`, () => {
+      const found = hits.filter((h) => h.rule === rule.id && !allowed(h)).map((h) => `${h.file}:${h.line}  ${h.text.slice(0, 160)}`);
+      expect(found, `Write instead: ${rule.fix}.`).toEqual([]);
+    });
+  }
+  it("reads a control's whole opening tag, however it is wrapped", () => {
+    const rule = (id: string) => RULES.find((r) => r.id === id)!;
+    const one = (source: string) => controlTags(source).map((t) => t.text);
+    const wrapped = '<button type="button" onClick={() => go(a > b)}\n  className="caps border px-2">Go</button>';
+    expect(one(wrapped)).toEqual(['<button type="button" onClick={() => go(a > b)} className="caps border px-2">']);
+    expect(breaks(rule("button-by-hand"), one(wrapped)[0]!)).toBe(true);
+    expect(breaks(rule("button-by-hand"), one('<button type="button"\n  className={cn("flex w-full border-b text-left", on && "caps")}>')[0]!)).toBe(false);
+    expect(breaks(rule("choice-by-hand"), one('<input type="checkbox" checked={on}\n  className="mt-1 accent-primary" />')[0]!)).toBe(false);
+    expect(breaks(rule("choice-by-hand"), one('<input type="radio"\n  name="x" />')[0]!)).toBe(true);
+    expect(breaks(rule("choice-by-hand"), one('<input type="checkbox" title="more > 10" className="accent-primary" />')[0]!)).toBe(false);
+    expect(breaks(rule("field-by-hand"), one('<input\n  type="hidden" name="manifest" />')[0]!)).toBe(false);
+    expect(breaks(rule("field-by-hand"), one('<input\n  name="q" />')[0]!)).toBe(true);
+    // A tag in a comment or as a string's text is no control; the real one after it keeps its line.
+    expect(one('// <input name="q" />\nconst x = 1;')).toEqual([]);
+    expect(one('{/* <button className="caps border">Go</button> */}')).toEqual([]);
+    expect(one('/**\n * e.g. <select name="a">\n */')).toEqual([]);
+    expect(one("const example = '<input name=\"q\" />';")).toEqual([]);
+    expect(controlTags('// <input name="q" />\n<p>see https://a.example/x</p>\n<input name="real" />')).toEqual([{ line: 3, text: '<input name="real" />' }]);
+    // A // or /* inside a quoted attribute is text: the rest of the tag is still read.
+    const slashes = '<input type="checkbox" title="Paths start with // on Windows" className="accent-primary" />';
+    expect(one(slashes)).toEqual([slashes]);
+    expect(breaks(rule("choice-by-hand"), one(slashes)[0]!)).toBe(false);
+    expect(breaks(rule("choice-by-hand"), one('<input type="checkbox" title="a /* b" className="accent-primary" />')[0]!)).toBe(false);
+    expect(one("<p>Couldn't read it</p> // <input name=\"q\" />\n<input name=\"real\" />")).toEqual(['<input name="real" />']);
+  });
+  it("reads a wrapped class list's focus replacement, a token's variable in any spelling, and layer 0", () => {
+    const rule = (id: string) => RULES.find((r) => r.id === id)!;
+    const found = (id: string, source: string) => lineHits(rule(id), source.split("\n")).length;
+    expect(found("focus-removed", 'className={cn("border outline-none",\n  "focus-visible:outline-offset-0")}')).toBe(0);
+    expect(found("focus-removed", 'className="border outline-none"\nonClick={go}\ntitle="x"\naria-label="y"')).toBe(1);
+    // A neighbour's focus mark, or a comment that names one, does not answer for an element that has none.
+    expect(found("focus-removed", '<button className="outline-none">A</button>\n<button className="focus-visible:underline">B</button>')).toBe(1);
+    expect(found("focus-removed", '<a className="focus-visible:underline">B</a>\n<button className="outline-none">A</button>')).toBe(1);
+    expect(found("focus-removed", '<button className="outline-none"\n  // focus-visible:underline would do\n  onClick={go}>A</button>')).toBe(1);
+    expect(found("focus-removed", '<button onClick={go}\n  className={cn("outline-none",\n    "focus-visible:underline")}>A</button>')).toBe(0);
+    for (const c of ["text-[hsl(var(--primary))]", "text-[color:var(--primary-text)]", "bg-[var(--card)]"]) expect(found("token-by-hand", `className="${c}"`), c).toBe(1);
+    expect(found("token-by-hand", 'className="w-[var(--button-width)] [--anchor-gap:2px]"')).toBe(0);
+    for (const c of ["z-0", "z-10", "-z-1", "z-[5]"]) expect(found("numbered-layer", `className="${c}"`), c).toBe(1);
+    expect(found("numbered-layer", 'className="z-popover"')).toBe(0);
+  });
+  it("every exception still names a line that needs it", () => {
+    const stale = ALLOWED.filter((a) => !hits.some((h) => h.rule === a.rule && h.file === a.file && h.text.includes(a.has))).map((a) => `${a.rule} ${a.file} "${a.has}"`);
+    expect(stale).toEqual([]);
+  });
+});

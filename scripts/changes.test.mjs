@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
-import { bulletOf, fold, hasVersionSection, loadFragments, ownVersionPackages, parseFragment, releaseRace, staleOwnVersions, unreleasedEdits, unreleasedSection } from './changes.mjs';
+import { bulletOf, fold, hasVersionSection, loadFragments, movedPython, ownVersionPackages, parseFragment, releaseRace, stalePython, staleOwnVersions, unreleasedEdits, unreleasedSection } from './changes.mjs';
 
 const exec = promisify(execFile);
 const script = join(dirname(fileURLToPath(import.meta.url)), 'changes.mjs');
@@ -631,4 +631,86 @@ test('the command line passes a package catching up to the workspace version bes
   const fail = local();
   assert.equal(fail.status, 1);
   assert.match(fail.stderr, /release commit carries unfolded fragments: catch-up\.md; refold on current main/);
+}));
+
+// The Python client, parcha-agentrun: python/pyproject.toml's version is a line of its own, as @parcha/agentrun's is.
+const pythonClient = async (root, git, version) => {
+  await mkdir(join(root, 'python/agentrun'), { recursive: true });
+  await mkdir(join(root, 'python/tests'), { recursive: true });
+  await writeFile(join(root, 'python/pyproject.toml'), `[project]\nname = "parcha-agentrun"\nversion = "${version}"\n`);
+  await writeFile(join(root, 'python/agentrun/_client.py'), 'START = 1\n');
+  await writeFile(join(root, 'python/tests/test_rules.py'), 'MORE = 1\n');
+  await commitAll(git, 'the Python client');
+  return (await git('rev-parse', 'HEAD')).stdout.trim();
+};
+const setPythonVersion = async (root, version) => {
+  const path = join(root, 'python/pyproject.toml');
+  await writeFile(path, (await readFile(path, 'utf8')).replace(/^version = ".*"$/m, `version = "${version}"`));
+};
+
+test('the Python client that changes a file it publishes and keeps its version is stale; its tests, a bump or a new client are not', () => repo(async (root, git) => {
+  await withVersion(root, git);
+  assert.equal(await stalePython(root, (await git('rev-parse', 'HEAD')).stdout.trim()), false, 'a client the base does not have is new');
+  const base = await pythonClient(root, git, '0.3.0');
+  await writeFile(join(root, 'python/agentrun/_client.py'), 'START = 2\n');
+  assert.equal(await stalePython(root, base), false, 'with no release tag, nothing has been published to go stale');
+  await writeFile(join(root, 'python/agentrun/_client.py'), 'START = 1\n');
+  await git('tag', 'v0.1.0-beta.13');
+  await writeFile(join(root, 'python/tests/test_rules.py'), 'MORE = 2\n');
+  assert.equal(await stalePython(root, base), false, 'its tests are not published');
+  await writeFile(join(root, 'python/README.md'), 'Start it.\n');
+  assert.equal(await stalePython(root, base), true, 'the README is published');
+  await setPythonVersion(root, '0.3.1');
+  assert.equal(await stalePython(root, base), false);
+  await setPythonVersion(root, '0.3.0');
+  await rm(join(root, 'python/README.md'));
+  await writeFile(join(root, 'python/agentrun/_client.py'), 'START = 2\n');
+  assert.equal(await stalePython(root, base), true, 'so is the package');
+}));
+
+test('a pull request that moves the Python client\'s version is refused; one that starts its line from a pre-release is not', () => repo(async (root, git) => {
+  await withVersion(root, git);
+  const started = await pythonClient(root, git, '0.3.0a0');
+  await setPythonVersion(root, '0.3.0');
+  assert.equal(await movedPython(root, started), null, 'a base on a pre-release had no line yet');
+  await commitAll(git, 'the line starts');
+  const base = (await git('rev-parse', 'HEAD')).stdout.trim();
+  await git('tag', 'v0.1.0-beta.13');
+  assert.equal(await movedPython(root, base), null);
+  await setPythonVersion(root, '0.3.1');
+  assert.deepEqual(await movedPython(root, base), { was: '0.3.0', now: '0.3.1' });
+  await mkdir(join(root, 'scripts'));
+  await copyScript(root);
+  const local = () => spawnSync(process.execPath, [join(root, 'scripts/changes.mjs'), '--check', '--base', base], { cwd: root, encoding: 'utf8' });
+  const fail = local();
+  assert.equal(fail.status, 1);
+  assert.match(fail.stderr, /python moved its version from 0\.3\.0 to 0\.3\.1; the release sets it \(docs\/releasing\.md\), so a pull request leaves it at 0\.3\.0/);
+  await setPythonVersion(root, '0.3.0');
+  // A release commit that changes what the client publishes and keeps its version is refused.
+  await writeFile(join(root, 'python/agentrun/_client.py'), 'START = 2\n');
+  await bump(root, '0.1.0-beta.14');
+  const stale = local();
+  assert.equal(stale.status, 1);
+  assert.match(stale.stderr, /python changed the files it publishes and kept its version 0\.3\.0/);
+  await setPythonVersion(root, '0.3.1');
+  assert.equal(local().status, 0, local().stderr);
+}));
+
+test('a client change merged in an earlier pull request is still stale at the release that keeps its version: against the last release tag, not the release pull request\'s base', () => repo(async (root, git) => {
+  await withVersion(root, git);
+  await pythonClient(root, git, '0.3.0');
+  await git('tag', 'v0.1.0-beta.13');
+  // Pull request 1 changes the client and, as a pull request does, leaves its version; it merges.
+  await writeFile(join(root, 'python/agentrun/_client.py'), 'START = 2\n');
+  await commitAll(git, 'pull request 1: the client changes');
+  const merged = (await git('rev-parse', 'HEAD')).stdout.trim();
+  // Pull request 2 is the release: its base is pull request 1's merge, and it bumps the workspace, not the client.
+  await bump(root, '0.1.0-beta.14');
+  assert.equal(await stalePython(root, merged), true, 'what the client publishes differs from the last release\'s, though not from this base');
+  await setPythonVersion(root, '0.3.1');
+  assert.equal(await stalePython(root, merged), false, 'bumped, it publishes');
+  await setPythonVersion(root, '0.3.0');
+  await writeFile(join(root, 'python/agentrun/_client.py'), 'START = 1\n');
+  await commitAll(git, 'pull request 3: the change undone');
+  assert.equal(await stalePython(root, merged), false, 'the same files as the last release: nothing new to publish');
 }));

@@ -215,3 +215,79 @@ describe("LiveRun, a working run's cost", () => {
     expect(header()).not.toContain(cost(at$(0.09) as Run["cost"]));
   });
 });
+
+describe("LiveRun, a run that moves from one wait to the next", () => {
+  // A hand-back answers the agent's browser ask, and the agent asks its next question at once: the run is input_required
+  // and waiting before and after, and a timeline read (the server samples the run about once a second) can miss the
+  // working moment between. The page's new rows are what say the wait moved: the run is read again, so the hand-over's
+  // card goes and the question takes its place. The page carries no `pending` of its own.
+  const browserAsk = { kind: "browser", instruction: "Sign in with your own account", completion_condition: "the page shows you are signed in", asked_at: "2026-11-10T07:35:40Z", expires_at: "2026-11-10T07:50:40Z" };
+  const question = { kind: "question", question: "Shall I go on?", asked_at: "2026-11-10T07:35:43Z" };
+  const row = (id: number, kind: string, summary: string) => ({ id: `e${id}`, seq: id, kind, summary, timestamp: "2026-11-10T07:35:40Z" } as never);
+  const page = (next: number, rows: TimelinePage["rows"], { status = "input_required", state = "waiting", unchanged = false }: { status?: Run["status"]; state?: Run["state"]; unchanged?: boolean } = {}): TimelinePage =>
+    ({ cost: { usd: null, basis: "estimate", charge_state: null, cap_usd: null }, run_id: "r1", status, state, rows, drop: [], reset: next === 1, unchanged, final: false, has_more: false, next_after: next });
+
+  /** The run page over a run the test moves: `run()` is what each read of it gives, and each timeline read takes the next
+   *  page `push` gives (the long poll waits for one). `reads()`, how many times the run was read. */
+  async function mounted(run: () => Run, first: TimelinePage) {
+    let reads = 0;
+    const pages: TimelinePage[] = [first];
+    let waiter: ((next: TimelinePage) => void) | undefined;
+    const push = (next: TimelinePage) => { if (waiter) { const take = waiter; waiter = undefined; take(next); } else pages.push(next); };
+    const v2 = {
+      getRun: async () => { reads++; return run(); },
+      listFiles: async () => ({ run_id: "r1", files: [], complete: true, truncated: false }),
+      listRevisions: async () => ({ revisions: [], next_cursor: null }),
+      getTimeline: (_id: string, options?: { signal?: AbortSignal }) => {
+        const next = pages.shift();
+        if (next) return Promise.resolve(next);
+        return new Promise<TimelinePage>((resolve, reject) => { waiter = resolve; options?.signal?.addEventListener("abort", () => reject(new Error("aborted"))); });
+      },
+    };
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    act(() => root!.render(createElement(LiveRun, { v2: v2 as never, runId: "r1", caps: null, agentName: () => "Drive" })));
+    const settle = async () => { for (let i = 0; i < 12; i++) await act(async () => { await new Promise((r) => setTimeout(r, 40)); }); };
+    await settle();
+    return { host, push, settle, reads: () => reads };
+  }
+  const waitingOn = (pending: unknown): Run => ({ ...at("working", false), status: "input_required", state: "waiting", ended_at: null, pending } as never);
+
+  it("reads the run again when a page brings new rows while it waits, though its status and state are the same", async () => {
+    let moved = false;
+    const page1 = mounted(() => waitingOn(moved ? question : browserAsk), page(1, [row(1, "waiting", "Waiting for you: the hand-over")]));
+    const { host, push, settle, reads } = await page1;
+    expect(host.textContent).toContain("Sign in with your own account");
+    const before = reads();
+    // The person hands back; the agent asks its question. The next page: the same status and state, new rows (the
+    // question's waiting row among them, as the server serves it after the call's result).
+    moved = true;
+    push(page(4, [row(2, "phase", "You handed the browser back"), row(3, "tool_use", "Asked you a question"), { id: "e4", seq: 4, kind: "waiting", summary: "Waiting for you: Shall I go on?", text: "Shall I go on?", timestamp: "2026-11-10T07:35:43Z" } as never]));
+    await settle();
+    expect(reads()).toBeGreaterThan(before);
+    // The hand-over's card is gone, and the agent's question shows where the person answers it.
+    expect(host.textContent).not.toContain("Sign in with your own account");
+    const asks = host.querySelector('section[aria-label="The agent asks"]');
+    expect(asks?.textContent).toContain("Shall I go on?");
+  });
+
+  it("an unchanged page while the run waits reads nothing again", async () => {
+    const { push, settle, reads } = await mounted(() => waitingOn(browserAsk), page(1, [row(1, "waiting", "Waiting for you: the hand-over")]));
+    const before = reads();
+    // The long poll ran out with nothing new: the same status and state, no rows, unchanged.
+    push(page(1, [], { unchanged: true }));
+    await settle();
+    expect(reads()).toBe(before);
+  });
+
+  it("a status or state change still reads the run again, whatever the rows", async () => {
+    let working = false;
+    const { push, settle, reads } = await mounted(() => (working ? { ...at("working", false), state: "working", pending: null } as never : waitingOn(browserAsk)), page(1, [row(1, "waiting", "Waiting for you: the hand-over")]));
+    const before = reads();
+    // Answered: the run works again. The page names the new status and state, with nothing new in its rows.
+    working = true;
+    push(page(1, [], { status: "working", state: "working", unchanged: true }));
+    await settle();
+    expect(reads()).toBeGreaterThan(before);
+  });
+});
