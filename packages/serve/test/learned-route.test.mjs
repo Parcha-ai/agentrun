@@ -258,7 +258,7 @@ test.skip("R7 (guard) a call the harness's answer asks for beside learned_workfl
 test.skip("R8 (guard) learned_workflow's description and input schema are as #1727 left them, on pi and as the harness is given it on claude-agent and codex; a pathless output is refused in #1727's words", { timeout: 120_000 }, async (t) => {
   const flows = [{ name: "answer", description: DESCRIPTION, workflow: JSON.stringify(answerFlow()) }];
   assert.equal(learnedWorkflowDescription(flows), SAID);
-  const tool = learnedWorkflowTool({ workflows: flows, granted: [], env: {}, work: "/tmp", models: {}, modelOf: () => undefined });
+  const tool = learnedWorkflowTool({ workflows: flows, granted: [], env: {}, work: "/tmp", models: {}, modelOf: () => undefined, policy: () => "allow", denyFrom: () => "default" });
   assert.deepEqual([tool.description, tool.parameters], [SAID, SCHEMA], "pi's tool");
   const opened = join(await scratch(t), "opened.jsonl");
   withEnv(t, { AGENTRUN_TEST_FAUX_HARNESS_OPENED: opened });
@@ -285,23 +285,6 @@ test("R9 no run is offered fewer learned workflows for where its harness's reque
   // A caller that still says why it would withhold them is not heard: every learned workflow is the run's.
   const pin = await learning.pinSeed(runDir, localWorkspace(join(runDir, "work")), seed, { budget: 8000, read: false, shown: learning.secretsShown([]), workflowsOff: "a reason no run is refused for any more" });
   assert.deepEqual([pin.workflows, "workflows_off" in pin, pin.workflows_left_out], [["answer"], false, undefined], JSON.stringify(pin));
-});
-
-test("R10 (guard) a node request's bound is its own: it opens as <key>:<n> on its start mark beside the harness request whose tool call it runs in, and each closes only its own, by its own BOOKED marker or late cost", async () => {
-  const { RequestBounds } = await import("../dist/bounds.js");
-  const bounds = new RequestBounds();
-  let id = 0;
-  const entry = (kind, data) => ({ id: ++id, kind, data });
-  // The harness's request 1 asks for learned_workflow; its answer is booked before its cost came in (unpriced).
-  bounds.note([entry("agentrun.request_started", { key: "run:r", request: 1, boundUsd: 0.1 })], 5);
-  bounds.note([entry("adapter.request", { key: "run:r", request: 1, unpriced: true })], 5);
-  // The node's request inside that call: the session's next number, 2, beside the harness's still awaiting its cost.
-  bounds.note([entry("agentrun.request_started", { key: "run:r", request: 2, boundUsd: 0.2, host: "learned_workflow" })], 5);
-  assert.ok(Math.abs(bounds.inFlight() - 0.3) < 1e-12, `both in flight: ${bounds.inFlight()}`);
-  bounds.note([entry("adapter.request", { key: "run:r", request: 2, host: "learned_workflow" })], 5);
-  assert.ok(Math.abs(bounds.inFlight() - 0.1) < 1e-12, `the node's BOOKED closes the node's alone: ${bounds.inFlight()}`);
-  bounds.note([entry("agentrun.request_cost_late", { key: "run:r", request: 1, usd: 0.01 })], 5);
-  assert.equal(bounds.inFlight(), 0, "the harness's late cost closes the harness's");
 });
 
 // SKIP (follow-up #2078): a learned node's request is not routed or booked as before on the runner

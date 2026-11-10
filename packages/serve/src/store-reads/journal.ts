@@ -2,12 +2,14 @@
 // order, its timeline (the renderer unchanged), and what was said to it (its hearing). The old path read each run's
 // its own database file ("SELECT record FROM entries ORDER BY id") and fed the same pure renderer; these read the one store instead.
 // The renderer and the hearing keep their words; only where the entries come from changes.
+import { createHash } from "node:crypto";
 import type { Context } from "@earendil-works/chord";
 import type { EntryLike, TimelineEvent, TimelineOptions } from "@parcha/pi-durable-agent/timeline";
-import { timelineOf, TOOL_COST } from "@parcha/pi-durable-agent/timeline";
+import { CAPS, timelineOf, TOOL_COST } from "@parcha/pi-durable-agent/timeline";
 import { RUNNER_RECORDS } from "@parcha/agentrun-kernel";
 import { TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
 import { Hearing } from "../heard.js";
+import { redactedAnswer } from "../key-refusal.js";
 import { labelled, type Reflect } from "../learning-run.js";
 import { reflectFrom } from "../runner/end-of-run.js";
 import { journalEntries, journalRecords } from "../runner/journal-reader.js";
@@ -129,6 +131,65 @@ async function datedRows(store: Store, runId: string, rows: TimelineEvent[]): Pr
   if (!run) return rows;
   const started = new Date(run.startedAt).toISOString();
   return rows.map((row) => (Date.parse(row.timestamp) === 0 ? { ...row, timestamp: started, created_at: started } : row));
+}
+
+/** How a reader serves an answer whole: its redactor over the whole text (key-refusal.ts redactedAnswer with the run's
+ *  values), and a key for those values (their digest), so an answer is read once per held value set. */
+export type WholeAnswer = { readonly serve: (text: string) => string; readonly key: string };
+/** The WholeAnswer of a run whose served words are cut of `values` (run-cut.ts runCutValues). */
+export const wholeAnswerFor = (values: readonly string[]): WholeAnswer => ({
+  serve: (text) => redactedAnswer(text, values),
+  key: createHash("sha256").update(JSON.stringify([...values].sort())).digest("hex"),
+});
+
+/** What each store's readers last served of a cut answer row, by run, row and held value set: a console polls a run's
+ *  view and its Timeline, and an answer a run was made to write can be large (main's runs.ts servedOnce). A row is an
+ *  entry's, whose words never change. Kept by store, the newest ANSWERS_KEPT of each. */
+const answersServed = new WeakMap<Store, Map<string, string>>();
+const ANSWERS_KEPT = 32;
+
+/** `rows` (runTimeline's, rendered with `options`) with each final answer whole, as main served a run's answer: the renderer
+ *  cuts a row's text at CAPS.text, and its redactor (`options.redact`, key-refusal.ts redacted) reads only the head a row
+ *  shows and cuts the rest, ending what it cut in "..." (short of the cap when it replaced a held value there), or giving
+ *  "[redacted]" alone when all it read was redacted. A final answer row at the cap, ending so or reading so is read again
+ *  from the journal, settled as the rows were, with no text cap and none
+ *  of the rows' redactor, the same row by its id (its entry's), and given through `whole.serve`, which reads every byte
+ *  of it and never cuts. Every other row is as it was. */
+export async function wholeAnswers(store: Store, runId: string, context: Context, rows: TimelineEvent[], options: TimelineOptions, whole: WholeAnswer): Promise<TimelineEvent[]> {
+  // The rows' redactor gives exactly "[redacted]" for a text whose head it read was all held or secret-shaped values: the
+  // rest of the answer is past what it read, so that row is read again too.
+  const cut = (row: TimelineEvent) => row.kind === "final_answer" && row.text !== null && (row.text.length >= CAPS.text || row.text.endsWith("...") || row.text === "[redacted]");
+  if (!rows.some(cut)) return rows;
+  let kept = answersServed.get(store);
+  if (!kept) answersServed.set(store, (kept = new Map()));
+  const keyOf = (row: TimelineEvent) => `${runId}\0${row.id}\0${whole.key}`;
+  let uncut: Map<string, string | null> | undefined;
+  const out: TimelineEvent[] = [];
+  for (const row of rows) {
+    if (!cut(row)) {
+      out.push(row);
+      continue;
+    }
+    const key = keyOf(row);
+    let served = kept.get(key);
+    if (served === undefined) {
+      uncut ??= new Map((await runTimeline(store, runId, context, { settled: options.settled, caps: { ...options.caps, text: Number.POSITIVE_INFINITY } })).map((one) => [one.id, one.text]));
+      const text = uncut.get(row.id);
+      if (text === undefined || text === null) {
+        out.push(row);
+        continue;
+      }
+      served = whole.serve(text);
+      kept.delete(key);
+      kept.set(key, served);
+      for (const oldest of kept.keys()) {
+        if (kept.size <= ANSWERS_KEPT) break;
+        kept.delete(oldest);
+      }
+    }
+    out.push({ ...row, text: served });
+  }
+  return out;
 }
 
 /** What was said to a run (its hearing), from the one store's entries, as runs.ts noteTurns fed it from the stream: each
