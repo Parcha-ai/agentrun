@@ -70,7 +70,7 @@ An edit is a new revision: `PUT $AGENTRUN_BASE_URL/agents/calc/definition` with
 | `--allow-code-nodes` | off (`AGENTRUN_SERVE_CODE_NODES=1` turns it on) | Run workflows' `code` nodes. They run in the run's process through the DSL's `new Function` transform, which is no sandbox, so only turn it on for workflows you wrote. Off, a workflow with a code node saves with a `not_set_up_here` warning and its runs are `409 agent_not_runnable` with `details.code: true`. A call `via: "shell"` or `"executor"` is refused either way. |
 | `--learning on\|off` | on (`AGENTRUN_SERVE_LEARNING`) | Whether runs [learn](#learning). On, a run of an agent whose definition says `learning: true` starts from what that agent learned and adds to it; off, no run does, whatever its agent says. Any other value refuses the start. Capabilities report it as `features.learning`. |
 | `--learning-budget BYTES` | `8000` (`AGENTRUN_SERVE_LEARNING_BUDGET`) | How much of what an agent learned its runs' instructions hold under `# Learned`, in UTF-8 bytes: every note whole while they fit, else the index and the notes changed last, whole, while they fit ([learning](#learning)). `0` gives the index alone. A value that is not a whole number of bytes refuses the start. |
-| `--drain-timeout D` | `30s` (the image: `6s`) | How long the runner beside the server lets each busy run finish its turn when the server stops (`8s`, `500ms`, `1m`): a turn that ends within it keeps its outcome, and its model request is never sent again. A run still busy at the bound is stopped and resumes at the next start, its turn's model request sent again. |
+| `--drain-timeout D` | `30s` (the image: `6s`) | How long the runner beside the server lets each busy run finish its turn when the server stops (`8s`, `500ms`, `1m`): a turn that ends within it keeps its outcome, and its model request is never sent again. A run still busy at the bound is stopped and resumes at the next start, its turn's model request sent again. The stop says how long it waits and for how many runs. A runner of its own (`agentrun-serve runner`) takes `--drain-timeout` too, default `6s`. |
 
 `AGENTRUN_TOKEN`, when set, is the token (32 characters or more), and the server prints `$AGENTRUN_TOKEN` in its
 place: a token from the environment stays out of the logs. `DIR/.token`'s token is printed only by the start that made
@@ -264,7 +264,8 @@ on a host under 416 MB, opencode under 832 MB) is unavailable: capabilities say 
 its runs are `409 agent_not_runnable` with that reason. pi always has one place, however small the host.
 
 `--max-runs N` or `AGENTRUN_MAX_RUNS` sets that count (by default, as many as pi runs fit): the runner beside the
-server claims at most that many runs at once, of any harness, and the rest wait queued. Capabilities report pi's count in `limits.max_concurrent_runs`, and each harness's own in its `harnesses` entry
+server claims at most that many runs at once, of any harness, and the rest wait queued. A runner of its own
+(`agentrun-serve runner`) holds `--loops N`, else the same default. Capabilities report pi's count in `limits.max_concurrent_runs`, and each harness's own in its `harnesses` entry
 (`max_concurrent_runs`, beside `run_memory_mib`). A message to a run already going is never refused for a place, nor is
 the relaunch of one whose process went, and a run's process the next server adopts after a restart holds its harness's
 memory there. A run whose harness can never fit (the server restarted on a smaller host) is not started again: it fails

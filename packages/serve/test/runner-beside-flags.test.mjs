@@ -9,6 +9,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { commitWrites } from "@earendil-works/pi-durable/testing";
 import { maxRunsOf } from "../dist/host.js";
 import { besideRunnerOptions, DRAIN_TIMEOUT } from "../dist/runner/beside.js";
+import { RUNNER_DRAIN_TIMEOUT, runnerArgs, runnerHolds } from "../dist/runner/main.js";
 import { startRunner } from "../dist/runner/runner.js";
 import { observed, queue, recorder, STEADY_LEASE, stores, until } from "./runner-support.mjs";
 
@@ -83,6 +84,17 @@ test("the server's flags are the beside runner's: --max-runs its loops, as the c
   assert.equal(DRAIN_TIMEOUT, "30s");
   assert.equal(besideRunnerOptions({}, {}).loops, maxRunsOf({}), "with neither, as many as the host holds: the capabilities' own number");
   assert.equal(besideRunnerOptions({ drainTimeout: "0s" }, {}).drainMs, 0);
+});
+
+test("a runner process of its own (`agentrun-serve runner`, beside a --no-runner server) holds the same: --loops, else AGENTRUN_MAX_RUNS, else what the host holds; --drain-timeout, else the image's 6s", () => {
+  assert.deepEqual(runnerArgs(["--data", "/d", "--drain-timeout", "8s"]), { dataDir: "/d", drainMs: 8_000 });
+  assert.deepEqual(runnerArgs(["--data", "/d", "--drain-timeout=0s"]), { dataDir: "/d", drainMs: 0 });
+  assert.throws(() => runnerArgs(["--data", "/d", "--drain-timeout", "soon"]), /--drain-timeout is a duration such as 6s/);
+  assert.deepEqual(runnerHolds({ loops: 4, drainMs: 1_000 }, { AGENTRUN_MAX_RUNS: "2" }), { loops: 4, drainMs: 1_000 }, "its own flags first");
+  assert.deepEqual(runnerHolds({}, { AGENTRUN_MAX_RUNS: "2" }), { loops: 2, drainMs: 6_000 }, "else the server's AGENTRUN_MAX_RUNS and the image's drain");
+  assert.equal(RUNNER_DRAIN_TIMEOUT, "6s");
+  assert.equal(runnerHolds({}, {}).loops, maxRunsOf({}), "with neither, as many as the host holds, as the server counts them");
+  assert.throws(() => runnerHolds({}, { AGENTRUN_MAX_RUNS: "lots" }), /max runs is a positive integer/);
 });
 
 test("--max-runs 2 with 4 runs queued: the runner holds 2 at once, the other 2 wait queued, then run as places free", async (t) => {
