@@ -7,6 +7,7 @@ a download comes back byte for byte."""
 from __future__ import annotations
 
 import errno
+import inspect
 import json
 import os
 import pickle
@@ -41,6 +42,11 @@ from agentrun import (
 )
 import agentrun
 from agentrun._scrub import scrubber_of, secrets_of
+from agentrun._types import Group
+
+# The routes only the owner's browser reaches, which the server's document marks x-agentrun-browser-only: an MCP sign-in's
+# start (its callback needs the cookie its answer sets there) and Connect GitHub's start and its two returns.
+BROWSER_ONLY = ("startMcpOAuth", "connectGitHub", "gitHubCallback", "gitHubInstalled")
 
 # The package's own directory: a frame is the client's when its file is under it, whatever the checkout's path holds.
 PACKAGE = os.path.dirname(os.path.abspath(agentrun.__file__)) + os.sep
@@ -403,11 +409,36 @@ class Rules(unittest.TestCase):
         self.assertNotIn(KEY, printed(started))
         self.assertEqual(server.requests[-1].url, "/v2/agents/a/runs")
 
-    def test_an_mcp_sign_in_has_no_method_it_starts_in_the_owners_browser_whose_callback_needs_the_cookie_its_start_sets(self) -> None:
+    def test_an_mcp_sign_in_has_no_method_it_starts_in_the_owners_browser_whose_callback_needs_the_cookie_its_start_sets_nor_in_any_group_has_any_operation_only_a_browser_or_github_calls(self) -> None:
         client = AgentRun(base_url="https://agentrun.example.com/v2", api_key=KEY)
-        self.assertFalse(hasattr(client.mcp_servers, "oauth_start"))
+        # Every generated method of the client and of every group, each called once through a recording call: the operations
+        # the client has a method for, wherever the generator put them, so one that moves to another group is still seen.
+        sent: list[str] = []
+
+        def record(operation_id: str, *args: Any, **kwargs: Any) -> None:
+            sent.append(operation_id)
+
+        targets: list[Any] = [client, *(member for member in vars(client).values() if isinstance(member, Group))]
+        called = 0
+        for target in targets:
+            target.__dict__["_call" if isinstance(target, Group) else "_operation"] = record
+            for name, function in inspect.getmembers(type(target), inspect.isfunction):
+                if name.startswith("_") or function.__module__ != "agentrun._generated":
+                    continue
+                required = [p for p in inspect.signature(function).parameters.values() if p.name != "self" and p.default is p.empty and p.kind == p.POSITIONAL_OR_KEYWORD]
+                getattr(target, name)(*["x"] * len(required))
+                called += 1
+        self.assertGreater(called, 50)
+        self.assertEqual(len(sent), called, "each method sends one operation")
+        # The routes only the owner's browser reaches (the document marks them x-agentrun-browser-only): no method, and each
+        # stays in the table, so a body bound for a secret one is still cut.
+        for operation_id in BROWSER_ONLY:
+            self.assertNotIn(operation_id, sent, f"{operation_id} has a method")
+            self.assertIn(operation_id, OPERATIONS, f"{operation_id} stays in the operation table")
+        self.assertTrue(OPERATIONS["startMcpOAuth"].secret, "the start is a secret route: a body bound for it is cut from the answer")
+        # GitHub's own signed delivery: no method, as no command.
+        self.assertNotIn("receiveHook_github", sent)
         self.assertTrue(callable(client.mcp_servers.oauth_client), "its public client document stays")
-        self.assertNotIn("startMcpOAuth", OPERATIONS)
 
     def test_a_secret_bodys_list_items_are_public_by_brackets_as_the_cli_reads_them_each_item_kept_every_other_string_cut(self) -> None:
         body = json.dumps({"url": "https://mcp.example.com/mcp", "scopes": ["read", "write"], "client_id": "abc", "client_secret": "cs-1"})

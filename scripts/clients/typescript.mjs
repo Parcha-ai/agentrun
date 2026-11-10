@@ -2,7 +2,9 @@
 // generate-clients.mjs makes (operationsOf) and the same map (resources.json): per operation it offers, its request and
 // response types and a typed method on its resource group, `client.runs.start(agentId, body)`, plus the table the
 // client's hand-written runtime reads (route, parameters, body and answer types, secret body). An omitted operation, or
-// one this server turns off, gets no method, as it gets no command. The types are emitted here from each schema's
+// one this server turns off, gets no method, as it gets no command. One the document marks browser-only
+// (x-agentrun-browser-only: an MCP sign-in's start, Connect GitHub and its returns) gets no method either, and stays in
+// the table. The types are emitted here from each schema's
 // structure: the document's schemas use type, enum, const, properties, items, additionalProperties, oneOf, anyOf and
 // allOf, nothing a few lines can't write.
 const IDENT = /^[A-Za-z_$][\w$]*$/;
@@ -156,7 +158,9 @@ export function clientText(ops, map, commandOf, hash) {
       `      /** ${doc(op.summary)} (${route}). */`,
       `      ${key(name)}: ${download ? '<S extends boolean = false>' : ''}(${signature}): Promise<${result}> => call(${JSON.stringify(id)}, [${pathParams.map(argName).join(', ')}], ${argOf('body')}, ${argOf('params')}, options),`,
     ].join('\n');
-    groups.set(group, [...(groups.get(group) ?? []), method]);
+    // A browser-only operation (x-agentrun-browser-only) gets no method; it stays in the table, so a raw call's body bound
+    // for it, a secret route, is still cut.
+    if (!op.browserOnly) groups.set(group, [...(groups.get(group) ?? []), method]);
     table.push(`  ${id}: ${JSON.stringify({
       method: op.method, path: op.path, pathParams,
       multiSegment: map.multiSegment[id] ? [map.multiSegment[id]] : [],
