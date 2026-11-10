@@ -1,7 +1,7 @@
 {
   "name": "@parcha/agentrun-serve",
   "version": "0.1.0-beta.32",
-  "description": "The Agentrun v2 API on your own machine: an agent store's agents, revisions and runs, served on loopback.",
+  "description": "The AgentRun server: the /v2 API and console over one store, with runners that run your agents; the deployable process of the AgentRun platform.",
   "keywords": [
     "agentrun",
     "agent",

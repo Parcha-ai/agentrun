@@ -1,6 +1,8 @@
 # @parcha/agentrun
 
-Start AgentRun on your machine with one command:
+AgentRun is an open-source platform that gives your agents superpowers: they learn from repeated work, use whatever
+computer the job needs, never lose their progress, and you manage them all in one place. Start it on your machine with
+one command:
 
 ```sh
 npx @parcha/agentrun
