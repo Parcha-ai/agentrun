@@ -545,7 +545,6 @@
   "packages/serve/test/rows.test.mjs": 0,
   "packages/serve/test/run-end.test.mjs": 20,
   "packages/serve/test/run-manifest.test.mjs": 23.9,
-  "packages/serve/test/run-metrics.test.mjs": 44,
   "packages/serve/test/runnable.test.mjs": 3.4,
   "packages/serve/test/search-fetch-model-key.test.mjs": 52.5,
   "packages/serve/test/secret-custody.test.mjs": 84.2,
