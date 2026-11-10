@@ -82,14 +82,14 @@ try {
   const { page, errors } = await newPage(context);
   await setUp(page, origin);
   await page.goto(`${origin}/#/runs/${encodeURIComponent(runId)}`);
-  const tab = page.getByRole("tab", { name: "Watch live" });
+  const tab = page.getByRole("tab", { name: "Screen" });
   await tab.waitFor({ timeout: 20_000 });
   await tab.click();
-  const iframe = page.locator('section[aria-label="Browser"] iframe');
+  const iframe = page.locator('section[aria-label="Screen"] iframe');
   await iframe.waitFor({ timeout: 20_000 });
   const src = await iframe.getAttribute("src");
   check("the console frames the viewer under /computer/live", new URL(src).pathname.startsWith(`/v2/runs/${encodeURIComponent(runId)}/computer/live/v/`));
-  const viewer = page.frameLocator('section[aria-label="Browser"] iframe');
+  const viewer = page.frameLocator('section[aria-label="Screen"] iframe');
   const hands = viewer.locator("#hands");
   await hands.waitFor({ timeout: 20_000 });
   check("the viewer's button reads Take over", (await hands.innerText()) === "Take over");
