@@ -8,10 +8,12 @@ import { appendFileSync } from "node:fs";
 import { openStore } from "../../store/index.js";
 import type { LoopFactory } from "../loop-contract.js";
 import { startRunner } from "../runner.js";
-import { CONFORMANCE_TIMING, suiteTools } from "./harness.js";
+import { CONFORMANCE_PROCESS_TIMING, storeClockOf, suiteTools } from "./harness.js";
 import type { ConformanceSubject, KernelHooks, ToolName } from "./subject.js";
 
-const config = JSON.parse(process.argv[2] ?? "{}") as { dataDir: string; storeEnv?: Record<string, string>; module: string; export: string; tool: ToolName; point: keyof KernelHooks; countFile: string; eventsFile?: string; stopOnce?: boolean };
+// `clockFile`: the case's store clock skew (harness.ts runOut), so this process's store reads the same now as the case's:
+// its claim runs out when the case moves the clock past its until, never by waiting for a real lease.
+const config = JSON.parse(process.argv[2] ?? "{}") as { dataDir: string; storeEnv?: Record<string, string>; module: string; export: string; tool: ToolName; point: keyof KernelHooks; countFile: string; eventsFile?: string; stopOnce?: boolean; clockFile?: string };
 /** The store's URL, read whole from stdin (the harness writes it there and closes it): never on argv or in the environment. */
 const input: Buffer[] = [];
 for await (const chunk of process.stdin) input.push(chunk as Buffer);
@@ -33,6 +35,11 @@ const at = async (point: keyof KernelHooks) => {
   if (config.stopOnce && !stopped) {
     stopped = true;
     said({ type: "stopping", point });
+    // For the suite's own test: a pause between saying it stops and stopping, the whole process held (as a loaded box can
+    // hold it), so the case must wait until the process is stopped before it lets it go on (harness.ts processStopped),
+    // never take the word for it.
+    const gap = Number(process.env.AGENTRUN_TEST_STOP_GAP_MS ?? 0);
+    for (const until = Date.now() + gap; Date.now() < until; );
     process.kill(process.pid, "SIGSTOP");
     said({ type: "continued", point });
     return;
@@ -41,7 +48,7 @@ const at = async (point: keyof KernelHooks) => {
 };
 const hooks: KernelHooks = { beforeIntent: () => at("beforeIntent"), beforeResult: () => at("beforeResult") };
 // The store the harness's world opened (its data directory, or its own Postgres schema).
-const store = await openStore({ dataDir: config.dataDir, role: "runner", url: storeUrl ?? "", env: { ...process.env, ...config.storeEnv } });
+const store = await openStore({ dataDir: config.dataDir, role: "runner", url: storeUrl ?? "", env: { ...process.env, ...config.storeEnv }, now: storeClockOf(config.clockFile) });
 // Each journal commit's outcome, by the claim's epoch: one that lands, or one refused and by what (the runner's ClaimLost,
 // or the store's Fenced), so the case can say what a loop that lost its claim tried to write.
 const createLoop = subject.createLoop({ script: [{ call: config.tool }, { say: "done" }], tools, hooks });
@@ -67,4 +74,4 @@ const observedLoop: LoopFactory = (deps) =>
         },
       }),
   });
-startRunner({ store, createLoop: observedLoop, name: "runner-process", ...CONFORMANCE_TIMING, onEvent: said });
+startRunner({ store, createLoop: observedLoop, name: "runner-process", ...CONFORMANCE_PROCESS_TIMING, onEvent: said });

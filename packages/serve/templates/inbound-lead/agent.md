@@ -21,9 +21,9 @@ mcp:
     pin: { slack_send_message: { channel_id: "${parameters.slack_channel}" } }
 parameters:
   icp: { type: string, required: true, description: "your ideal customer in your own words: industry, company size, region, buying signals, and what disqualifies a lead (e.g. 'B2B fintech, 50-2000 people, US or EU, has a compliance team; never gambling operators')" }
-  post_to: { type: string, required: true, pattern: "^(crm|slack|none)$", description: "where each brief goes: crm (a note and the score field on the HubSpot contact), slack (a message in one channel) or none (the run's answer only)" }
-  slack_channel: { type: string, pattern: "^[CG][A-Z0-9]{8,12}$", description: "the ID of the Slack channel the brief is posted to when post_to is slack (C0123456789; the channel's details in Slack show it), never a name" }
-  crm_score_property: { type: string, pattern: "^[a-z][a-z0-9_]{0,99}$", description: "the internal name of the HubSpot contact number property the fit score is written to when post_to is crm (e.g. lead_fit_score); empty: the note only" }
+  post_to: { type: string, required: true, enum: [crm, slack, none], description: "where each brief goes: crm (a note and the score field on the HubSpot contact), slack (a message in one channel) or none (the run's answer only)" }
+  slack_channel: { type: string, pattern: "^[CG][A-Z0-9]{8,12}$", description: "a Slack channel ID like C0123ABCD (the channel's details in Slack show it), never its name: where the brief is posted when post_to is slack" }
+  crm_score_property: { type: string, pattern: "^[a-z][a-z0-9_]{0,99}$", description: "a HubSpot contact number property's internal name, like lead_fit_score (lowercase letters, digits and underscores): the fit score is written there when post_to is crm; empty: the note only" }
   competitors: { type: string, description: "your competitors' names or domains, comma-separated; a lead from one is flagged, never scored as a customer" }
 budget: { per_run_usd: 5.00 }
 learning: true

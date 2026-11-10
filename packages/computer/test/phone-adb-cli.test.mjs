@@ -9,7 +9,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
 
+import { fakePhoneHarness, KEY } from "./fake-phone-harness.mjs";
+
 const { adbCli, ADB_SERVER_PORT } = await import("../dist/phone-harness.js");
+const conformance = await import("../dist/conformance/phone-harness.js");
 
 const dir = mkdtempSync(join(tmpdir(), "computer-adb-cli-"));
 after(() => rmSync(dir, { recursive: true, force: true }));
@@ -68,4 +71,94 @@ test("adbCli on adb's default port names it too: the CLI would follow ANDROID_AD
 	const ran = await adbCli(script).run(["-t", "1", "shell", "echo ok"], { timeoutMs: 10_000 });
 	assert.equal(ran.ok, true, JSON.stringify(ran));
 	assert.deepEqual(JSON.parse(readFileSync(log, "utf8").trim()), ["-P", String(ADB_SERVER_PORT), "-t", "1", "shell", "echo ok"]);
+});
+
+/** A poisoned environment: each of these could send a spawned adb to another server or device than the provider's. */
+const POISON = {
+	ADB_SERVER_SOCKET: "tcp:203.0.113.7:5037",
+	ANDROID_ADB_SERVER_SOCKET: "tcp:203.0.113.7:5037",
+	ANDROID_ADB_SERVER_ADDRESS: "203.0.113.7",
+	ANDROID_ADB_SERVER_PORT: "1",
+	ANDROID_SERIAL: "another-device",
+	ADB_VENDOR_KEYS: "/elsewhere",
+};
+/**
+ * A stand-in adb that records the name of every variable it was given, then exits code. Each test hands the spawn an
+ * environment of its own, so the record is exactly the cleaned input: nothing of the test runner's environment (CI sets
+ * its own AGENTRUN_* names) reaches it, and the assertion reads none of it.
+ */
+function envRecorder(name, code = 0) {
+	const log = join(dir, `${name}.log`);
+	const script = join(dir, name);
+	writeFileSync(script, `#!${process.execPath}\nrequire("node:fs").writeFileSync(${JSON.stringify(log)}, JSON.stringify(Object.keys(process.env).sort()));\nprocess.exit(${code});\n`);
+	chmodSync(script, 0o755);
+	return { script, names: () => JSON.parse(readFileSync(log, "utf8")) };
+}
+/** The names a cleaned spawn keeps of an input: every adb variable, and those listed as gone, dropped. */
+const kept = (input, gone = []) => Object.keys(input).filter((name) => !/^(ADB_|ANDROID_ADB_|ANDROID_SERIAL$)/.test(name) && !gone.includes(name)).sort();
+/** The conformance module's own names, which its spawned adb never gets. */
+const MODULE_NAMES = ["COMPUTER_PHONE_HARNESS_API_KEY", "COMPUTER_PHONE_HARNESS_PLATFORM", "COMPUTER_PHONE_HARNESS_ADB", "COMPUTER_PHONE_HARNESS_LEDGER", "AGENTRUN_COMPUTER_LIVE_PHONE_HARNESS"];
+
+test("adbCli spawns adb from the environment it is given, with every ADB_*, ANDROID_ADB_* and ANDROID_SERIAL variable dropped", async () => {
+	const adb = envRecorder("adb-env");
+	const env = { ...POISON, AGENTRUN_UNRELATED: "kept", LANG: "C" };
+	const ran = await adbCli(adb.script, { env }).run(["-t", "1", "shell", "echo ok"], { timeoutMs: 10_000 });
+	assert.equal(ran.ok, true, JSON.stringify(ran));
+	assert.deepEqual(adb.names(), kept(env), "exactly the input, every adb variable dropped");
+	assert.deepEqual(kept(env), ["AGENTRUN_UNRELATED", "LANG"]);
+});
+
+test("the conformance module's provider spawns adb from its environment with every adb variable and its own settings dropped: the API key never reaches adb", async () => {
+	// The adb exits 1 at start-server, so connect stops there, before any socket: no adb server is asked.
+	const adb = envRecorder("adb-conformance", 1);
+	const fake = fakePhoneHarness();
+	const env = {
+		...POISON,
+		AGENTRUN_UNRELATED: "kept",
+		COMPUTER_PHONE_HARNESS_API_KEY: KEY,
+		COMPUTER_PHONE_HARNESS_ADB: adb.script,
+		COMPUTER_PHONE_HARNESS_LEDGER: join(dir, "conformance-ledger.json"),
+		AGENTRUN_COMPUTER_LIVE_PHONE_HARNESS: "1",
+	};
+	const provider = await conformance.createProvider({ env, fetch: fake.fetch, now: fake.clock.now, sleep: fake.clock.sleep });
+	const created = await provider.create({ image: "android", lifetimeMs: 60_000, network: "open" });
+	assert.equal(created.ok, true, JSON.stringify(created));
+	const connected = await provider.connect(created.value);
+	assert.equal(connected.ok, false);
+	assert.match(connected.error.message, /adb start-server failed/);
+	assert.deepEqual(adb.names(), kept(env, MODULE_NAMES), "exactly the input, with no adb variable and none of the module's own (the key among them)");
+	assert.deepEqual(kept(env, MODULE_NAMES), ["AGENTRUN_UNRELATED"]);
+	await provider.release(created.value, "delete");
+});
+
+test("the conformance module's adb option, given as a path, spawns that adb from the same cleaned environment", async () => {
+	// The module's environment holds every adb variable and its own settings, the key among them; adb comes as a path.
+	const adb = envRecorder("adb-option", 1);
+	const fake = fakePhoneHarness();
+	const env = {
+		...POISON,
+		AGENTRUN_UNRELATED: "kept",
+		COMPUTER_PHONE_HARNESS_API_KEY: KEY,
+		COMPUTER_PHONE_HARNESS_LEDGER: join(dir, "option-ledger.json"),
+		AGENTRUN_COMPUTER_LIVE_PHONE_HARNESS: "1",
+	};
+	const provider = await conformance.createProvider({ env, adb: adb.script, fetch: fake.fetch, now: fake.clock.now, sleep: fake.clock.sleep });
+	const created = await provider.create({ image: "android", lifetimeMs: 60_000, network: "open" });
+	assert.equal(created.ok, true, JSON.stringify(created));
+	const connected = await provider.connect(created.value);
+	assert.match(connected.error?.message ?? "", /adb start-server failed/);
+	assert.deepEqual(adb.names(), kept(env, MODULE_NAMES), "the path given as the adb option gets exactly the cleaned input: no adb variable, not the key");
+	await provider.release(created.value, "delete");
+});
+
+test("the conformance module's adb option, given as a transport, is used as it is", async () => {
+	const fake = fakePhoneHarness();
+	const env = { COMPUTER_PHONE_HARNESS_API_KEY: KEY, COMPUTER_PHONE_HARNESS_LEDGER: join(dir, "transport-ledger.json"), AGENTRUN_COMPUTER_LIVE_PHONE_HARNESS: "1" };
+	const provider = await conformance.createProvider({ env, adb: fake.adb, fetch: fake.fetch, now: fake.clock.now, sleep: fake.clock.sleep });
+	const created = await provider.create({ image: "android", lifetimeMs: 60_000, network: "open" });
+	const connected = await provider.connect(created.value);
+	assert.equal(connected.ok, true, JSON.stringify(connected));
+	assert.ok(fake.serverCalls().some((call) => call.startsWith("host:connect:")), "the given transport carried the connect");
+	await connected.value.close();
+	await provider.release(created.value, "delete");
 });
