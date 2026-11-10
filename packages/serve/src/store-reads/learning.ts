@@ -5,16 +5,17 @@
 // a person's words, the verdict, what it merged, learned, held for the owner's OK and lost, what the checks left out,
 // and what the grade spent. What the server keeps on a run before its end (what it was given and read, its seed's
 // notes, its answer's time and costs) is the run's, not this.
+import { posix } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { currentLearning, holdsForOk, type Learning, LEARNING_REASONS, type NoteUsed, type Shown } from "../learning.js";
 import { runLearningBody } from "../learning-routes.js";
 import { learningStartOf, readLaunchBody, type RunLaunch } from "../run-launch.js";
-import { type Impact, type ImpactLearning, learningImpact, noteRuns, notesRead, type Reflect } from "../learning-run.js";
+import { type Impact, type ImpactLearning, learningImpact, noteRuns, notesRead, type Reflect, reflects } from "../learning-run.js";
 import type { NoteRuns } from "../learning.js";
 import { type NoteFiles, notesOf } from "../usage.js";
 import type { RunRow } from "@parcha/pi-durable-agent";
-import type { TimelineEvent } from "@parcha/pi-durable-agent/timeline";
-import { runReflect, runTimeline } from "./journal.js";
+import type { EntryLike, TimelineEvent } from "@parcha/pi-durable-agent/timeline";
+import { runEntries, runReflect, runTimeline } from "./journal.js";
 import { FINAL_STATES } from "../store/store.js";
 import type { AnalyticsFilter } from "./analytics.js";
 import { journalEntries } from "../runner/journal-reader.js";
@@ -167,7 +168,8 @@ function impactLearningOf(end: RunLearningEnd, started: RunLaunch["learning"]): 
   const over = end.state === "merged" || end.state === "dropped";
   const looked = end.answered_at !== undefined ? { answered_at: end.answered_at, job_cost_usd: end.job_cost_usd ?? null, look_back_usd: end.look_back_usd ?? null } : over ? { look_back_usd: 0 } : {};
   return {
-    state: end.state, reason: end.reason, at: end.at, ...(started?.seedNotes !== undefined ? { seed_notes: started.seedNotes } : {}), ...looked,
+    state: end.state, reason: end.reason, at: end.at, ...(started?.seedNotes !== undefined ? { seed_notes: started.seedNotes } : {}),
+    ...(started?.skills?.length ? { seed_skills: started.skills.length } : {}), ...(started?.workflows?.length ? { seed_workflows: started.workflows.length } : {}), ...looked,
     ...(over ? { grade_usd: end.cost_usd ? end.cost_usd.grade : 0 } : {}),
   };
 }
@@ -183,6 +185,57 @@ export function notesReadOf(given: readonly NoteUsed[] | undefined, reflect: Pic
   if (!given?.length) return [];
   const names = new Map(given.map((note) => [note.file, note.name]));
   return notesRead(reflect as Reflect | undefined, rows).flatMap((file) => (names.has(file) ? [{ file, name: names.get(file)! }] : []));
+}
+
+/** What a run's job did with the learned skills and workflows its launch offered it (GET /runs/{id}/learning `skills`
+ *  and `workflows`): each skill, and whether the job read its SKILL.md (a read of `.agents/skills/<name>/SKILL.md`, or a
+ *  harness's own skill tool on it); each learned workflow the job called, by the call's `name` (workflowNamesOf), how
+ *  many calls and how many failed. The end-of-run turn's rows are left out, as notesRead leaves them. */
+export type LearnedUse = { readonly skills: readonly { readonly name: string; readonly read: boolean }[]; readonly workflows: readonly { readonly name: string; readonly calls: number; readonly failed: number }[] };
+/** The tools a skill's SKILL.md is read with: the read hand (claude-agent's by its host-tool name too), a CLI adapter's
+ *  read of a skill's file, and claude-agent's own Skill tool. */
+const SKILL_READS = new Set(["read", "mcp__hands__read", "read_skill_file", "Skill"]);
+/** learned_workflow by every name a harness calls it (runner/learning-end.ts LEARNED_NAMES). */
+const WORKFLOW_CALLS = new Set(["learned_workflow", "mcp__hands__learned_workflow"]);
+/** The workflow each learned_workflow call of a run's journal names (its `name` argument), by its call's id: pi's call in
+ *  its assistant entry, a CLI harness's in its record's call start. The timeline row shows no input for the call. */
+export function workflowNamesOf(entries: readonly EntryLike[]): Map<string, string> {
+  const out = new Map<string, string>();
+  const nameOf = (args: unknown) => (typeof (args as { name?: unknown } | null)?.name === "string" ? String((args as { name: string }).name) : undefined);
+  for (const entry of entries) {
+    if (entry.kind === "pi.assistant") {
+      for (const part of ((entry.model?.[0] as { content?: unknown } | undefined)?.content ?? []) as { type?: string; id?: string; name?: string; arguments?: unknown }[]) {
+        const name = part?.type === "toolCall" && WORKFLOW_CALLS.has(part.name ?? "") ? nameOf(part.arguments) : undefined;
+        if (name && typeof part.id === "string") out.set(part.id, name);
+      }
+    } else if (entry.kind === KINDS.callStart) {
+      const data = (entry.data ?? {}) as { callId?: unknown; tool?: unknown; input?: unknown };
+      const name = WORKFLOW_CALLS.has(String(data.tool ?? "")) ? nameOf(data.input) : undefined;
+      if (name && typeof data.callId === "string") out.set(data.callId, name);
+    }
+  }
+  return out;
+}
+
+export function learnedUseOf(started: RunLaunch["learning"], reflect: Pick<Reflect, "after" | "until"> | undefined, rows: readonly TimelineEvent[], names: ReadonlyMap<string, string> = new Map()): LearnedUse {
+  const job = rows.filter((row) => !reflects(reflect as Reflect | undefined, row.id));
+  const results = new Map(job.flatMap((row) => (row.kind === "tool_result" && row.tool_use_id ? [[row.tool_use_id, row.tool_status] as const] : [])));
+  const calls = job.filter((row) => row.kind === "tool_use" && !row.parent_tool_use_id && row.tool_use_id);
+  const skills = (started?.skills ?? []).map((name) => ({
+    name,
+    read: calls.some((row) => SKILL_READS.has(row.tool_name ?? "") && results.get(row.tool_use_id!) === "success" && (posix.normalize(row.tool_input_preview ?? "").includes(`skills/${name}/SKILL.md`) || (row.tool_name !== "read" && row.tool_name !== "mcp__hands__read" && (row.tool_input_preview ?? "").includes(JSON.stringify(name))))),
+  }));
+  const workflows = new Map<string, { calls: number; failed: number }>();
+  for (const row of calls) {
+    if (!WORKFLOW_CALLS.has(row.tool_name ?? "")) continue;
+    const name = names.get(row.tool_use_id!);
+    if (!name) continue;
+    const seen = workflows.get(name) ?? { calls: 0, failed: 0 };
+    seen.calls += 1;
+    if (results.get(row.tool_use_id!) !== "success") seen.failed += 1;
+    workflows.set(name, seen);
+  }
+  return { skills, workflows: [...workflows].map(([name, seen]) => ({ name, ...seen })) };
 }
 
 /** `end` with its run's given notes (from its launch's learning start) and the notes its job read. */
@@ -212,8 +265,10 @@ export async function runLearningOverStore(store: Store, runId: string, shown: S
   const started = await learningStartOfRun(store, runId);
   const row = await store.runs.get(runId);
   const settled = row !== undefined && FINAL_STATES.includes(row.state);
-  const read = started?.given.length ? notesReadOf(started.given, await runReflect(store, runId, BACKGROUND_CONTEXT), await runTimeline(store, runId, BACKGROUND_CONTEXT, { settled })) : [];
+  const used = started?.given.length || started?.skills?.length || started?.workflows?.length;
+  const [reflect, rows, entries] = used ? await Promise.all([runReflect(store, runId, BACKGROUND_CONTEXT), runTimeline(store, runId, BACKGROUND_CONTEXT, { settled }), runEntries(store, runId, BACKGROUND_CONTEXT)]) : [undefined, [], []];
+  const read = started?.given.length ? notesReadOf(started.given, reflect, rows) : [];
   const learning = withNotes(end, started, read) as Learning;
   const current = holdsForOk(learning) ? currentLearning(learning, undefined) : learning;
-  return runLearningBody({ id: runId, learning: current, seed: started?.seed ?? null, settled }, shown, secrets);
+  return runLearningBody({ id: runId, learning: current, seed: started?.seed ?? null, settled, used: learnedUseOf(started, reflect, rows, workflowNamesOf(entries)) }, shown, secrets);
 }

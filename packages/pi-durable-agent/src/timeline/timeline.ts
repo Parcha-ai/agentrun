@@ -57,6 +57,9 @@ export type TimelineEvent = {
    *  many charges have no known cost (model requests cut, stopped, still pending or with no price, and paid tool calls
    *  charged an unknown amount or cut). Absent when `usd` is known. */
   usage?: { usd: number | null; requests: number; so_far_usd?: number; unpriced?: number; not_metered?: number };
+  /** On a learned workflow call's `tool_result` row (serve's learned_workflow): each of the workflow's nodes that ran, as
+   *  the workflow DSL ended it, in order. Serve's to add; this projector writes none. */
+  learned_nodes?: { label: string; kind: string; status: string; duration_ms: number; error?: string }[];
 };
 
 /** A pi conversation entry as stored: `pi.assistant`, `pi.tool-result`, a host's own kind. */

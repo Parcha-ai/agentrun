@@ -10,6 +10,7 @@ import { RUNNER_RECORDS } from "@parcha/agentrun-kernel";
 import { TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
 import { Hearing } from "../heard.js";
 import { redactedAnswer } from "../key-refusal.js";
+import { LEARNED_NODES, LEARNED_NODES_MAX } from "../learned-nodes.js";
 import { labelled, type Reflect } from "../learning-run.js";
 import { reflectFrom } from "../runner/end-of-run.js";
 import { journalEntries, journalRecords } from "../runner/journal-reader.js";
@@ -116,7 +117,27 @@ export async function runTimeline(store: Store, runId: string, context: Context,
   const entries = await runEntries(store, runId, context);
   const cli = entries.some((entry) => entry.kind === KINDS.message || entry.kind === KINDS.callStart || entry.kind === KINDS.callEnd);
   const rows = timelineOf(withPaidCosts(cli ? piShaped(entries) : entries), options).filter((row) => !cli || row.kind !== "usage");
-  return labelled((await runReflect(store, runId, context)) as Reflect | undefined, await datedRows(store, runId, rows));
+  return labelled((await runReflect(store, runId, context)) as Reflect | undefined, withLearnedNodes(await datedRows(store, runId, rows), entries, options.redact));
+}
+
+/** `rows` with each learned_workflow call's result row carrying the nodes its workflow ran (`learned_nodes`), from the
+ *  LEARNED_NODES entry the call kept beside itself (learned-workflow.ts), joined by the call's id: each label and error
+ *  through `redact` when given (the run's cut), as every text a row shows. Rows of a run that ran none are as they were. */
+function withLearnedNodes(rows: TimelineEvent[], entries: readonly EntryLike[], redact?: (text: string) => string): TimelineEvent[] {
+  const traces = new Map<string, NonNullable<TimelineEvent["learned_nodes"]>>();
+  const said = (text: string) => (redact ? redact(text) : text);
+  for (const entry of entries) {
+    if (entry.kind !== LEARNED_NODES) continue;
+    const data = (entry.data ?? {}) as { call?: unknown; nodes?: unknown };
+    if (typeof data.call !== "string" || !Array.isArray(data.nodes)) continue;
+    traces.set(data.call, data.nodes.slice(0, LEARNED_NODES_MAX).flatMap((node) => {
+      const one = (node ?? {}) as { label?: unknown; kind?: unknown; status?: unknown; duration_ms?: unknown; error?: unknown };
+      if (typeof one.label !== "string" || typeof one.status !== "string") return [];
+      return [{ label: said(one.label), kind: String(one.kind ?? ""), status: one.status, duration_ms: typeof one.duration_ms === "number" ? one.duration_ms : 0, ...(typeof one.error === "string" ? { error: said(one.error) } : {}) }];
+    }));
+  }
+  if (!traces.size) return rows;
+  return rows.map((row) => (row.kind === "tool_result" && row.tool_use_id && traces.has(row.tool_use_id) ? { ...row, learned_nodes: traces.get(row.tool_use_id)! } : row));
 }
 
 /** `rows` with none dated 1970: a row the renderer found no time for (an entry of a CLI record written before its entries

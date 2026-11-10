@@ -25,6 +25,7 @@ const { cliRunSpecFromLaunch } = await import("../dist/runner/cli-run-spec.js");
 const { journalSessions } = await import("../dist/runner/sessions.js");
 const { CONFORMANCE_TIMING } = await import("../dist/runner/conformance/harness.js");
 const { LEARNED_WORKFLOW_TOOL } = await import("../dist/learned-workflow.js");
+const { runTimeline } = await import("../dist/store-reads/journal.js");
 
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
 const SEAL_KEY = Buffer.alloc(32, 7);
@@ -105,7 +106,9 @@ async function cliRun(t, { tools, instructions, learned }) {
   for (const key of await sessions.keys()) for (const record of await sessions.read(key)) all.push(record);
   const requests = all.filter((record) => record.kind === "runner.request").map((record) => record.data);
   const turns = all.filter((record) => record.kind === "runner.turn").map((record) => record.data);
-  return { row, requests, turns };
+  // The run's timeline as served from the store: a learned_workflow call's result row carries its nodes.
+  const timeline = await runTimeline(server, RUN, ctx, { settled: true });
+  return { row, requests, turns, timeline };
 }
 
 test("a CLI run's learned_workflow model node books on the run's one ledger, labelled learned_workflow and priced by the session", async (t) => {
@@ -132,4 +135,13 @@ test("a CLI turn that ends on its own error fails the run in main's words: the h
   const { row } = await cliRun(t, { tools: ["read"], instructions: `Fail with: ${said}`, learned: false });
   assert.equal(row.state, "failed", `the run failed: ${JSON.stringify(row)}`);
   assert.equal(row.summary, `${HARNESS}: ${said}`, "the run's error names its harness first");
+});
+
+test("a CLI run's learned_workflow call shows the nodes its workflow ran on its result row", async (t) => {
+  const { row, timeline } = await cliRun(t, { tools: ["read"], instructions: "Use the learned workflow answer on What is six times seven.", learned: true });
+  assert.equal(row.state, "ended", `the run ended: ${JSON.stringify(row)}`);
+  const result = timeline.find((one) => one.kind === "tool_result" && one.tool_name === LEARNED_WORKFLOW_TOOL);
+  assert.ok(result, `a learned_workflow result row: ${JSON.stringify(timeline.map((one) => [one.kind, one.tool_name]))}`);
+  assert.deepEqual(result.learned_nodes?.map(({ label, kind, status }) => ({ label, kind, status })), [{ label: "answer", kind: "extract", status: "ok" }], JSON.stringify(result));
+  assert.equal(typeof result.learned_nodes[0].duration_ms, "number");
 });
