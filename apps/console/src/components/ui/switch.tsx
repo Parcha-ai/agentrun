@@ -8,7 +8,7 @@ export function Switch({ checked, onChange, disabled, label, labelledBy, busy, c
       onClick={() => onChange(!checked)}
       className={cn("relative inline-flex h-5 w-9 shrink-0 items-center border transition-colors disabled:cursor-not-allowed disabled:opacity-45",
         checked ? "border-primary bg-primary/20" : "border-border-strong bg-background hover:border-foreground/60", busy && "motion-safe:animate-pulse", className)}>
-      <span aria-hidden className={cn("absolute top-1/2 size-3 -translate-y-1/2 transition-[left,background-color] duration-150", checked ? "left-[calc(100%-16px)] bg-primary" : "left-[3px] bg-muted-foreground")} />
+      <span aria-hidden className={cn("absolute top-1/2 size-3 -translate-y-1/2 transition-[left,background-color] duration-fast", checked ? "left-[calc(100%-16px)] bg-primary" : "left-[3px] bg-muted-foreground")} />
     </button>
   );
 }
