@@ -33,7 +33,7 @@ const { retire } = await import("../dist/learn/index.js");
 const { agentFolderOf } = await import("../dist/files.js");
 const { servedSkill } = await import("../dist/learn/skills.js");
 const { seedOf } = await import("../dist/learning.js");
-const { saveArchilSettings } = await import("../dist/archil-settings.js");
+const { saveArchilSettings, storeAgentDisk } = await import("../dist/archil-settings.js");
 const { sealColumn, sealedAt } = await import("../dist/store/seal.js");
 const { FakeArchilDisk } = await import("./fixtures/archil-fake.mjs");
 const { seal } = await import("@parcha/pi-durable-agent");
@@ -165,6 +165,8 @@ async function cliSpec(t, harness, { seed = "landed", archil, more, held = false
   const control = archil ? archilControlFetch() : undefined;
   if (archil) {
     await saveArchilSettings(server, ARCHIL_SETTINGS);
+    // The agent's own disk, made by an earlier run (run-disk.ts): this run keeps its folder there.
+    await storeAgentDisk(server, AGENT, { diskId: ARCHIL_SETTINGS.diskId });
     await server.sealedKeys.put(ARCHIL_API_KEY_ROW, sealColumn(SEAL_KEY, sealedAt.sealedKey(ARCHIL_API_KEY_ROW), "fake-test-key-api-0001"));
   }
   await server.flush?.();

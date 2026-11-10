@@ -752,10 +752,14 @@ owner's.
 - **Isolating tenants.** A run's start may name another disk: `"archil_disk": {"disk_id": "dsk-…"}` on
   `POST /v2/agents/{agent_id}/runs` or `POST /v2/runs` (an agent given inline). The run then keeps its folder there, and
   its token is minted there, so a system that runs one agent for many customers (one expert, say) names a disk per
-  customer. That disk is the caller's: agentrun never makes, renames or removes it. It takes the disk's id alone, never a
-  key or a region: it must be in the account key's region, and a disk elsewhere, or none of that id, fails the run at
-  its claim in words naming the region. The run's launch keeps the disk it used, and whether it was the launch's or the
-  agent's, so every claim, revoke and reclaim of that run acts on that one disk, after a restart too.
+  customer. That disk is the caller's: agentrun never makes, renames or removes it. It takes the id Archil returned when
+  the disk was made (`dsk-…`; Archil's API addresses disks by id, not owner/name), never a key or a region. The server
+  reads the disk at Archil before the run is made: a disk in another region than the account key's, or none of that id,
+  is a 422 naming the region, and no run is made; the claim reads it again, for a disk removed in between. The run's
+  launch keeps the disk it used, and whether it was the launch's or the agent's, so every claim, revoke and reclaim of
+  that run acts on that one disk, after a restart too. Any disk in the key's region may be named, by design: this
+  server has one owner, and a backend that launches runs for its customers is a trusted caller. Isolation comes from a
+  disk per boundary.
 - **The plan's disk limit.** Archil's free plan allows 5 disks per region. When Archil refuses to make an agent's disk
   for its plan's limit, the run fails in words ("your Archil plan allows 5 disks; upgrade or delete an agent"); no run
   falls back to a shared disk.
@@ -763,10 +767,9 @@ owner's.
   its disk included. `DELETE /v2/agents/{agent_id}/archil`, for an archived agent with no live run, deletes its own disk
   at Archil (its runs' folders, its home and its learning with it) and frees a disk of the plan. It never touches a disk
   a run's launch named.
-- **A server that had one disk.** Before agents had their own, Mode 2 kept every run on one disk the owner named. At its
-  start, such a server gives that disk to each agent it has, as the agent's, and keeps no server-wide disk: those agents
-  keep their files where they were, and an agent made later gets its own. Removing such an agent's disk only forgets it,
-  since the others share it. `diskId` is no longer a setting.
+- **Before you upgrade.** In Archil mode, an agent's files from before this release stay on the old server disk at
+  Archil; the agent starts on a new disk of its own. `diskId` is no longer a setting: there is no server-wide disk, and
+  no agent falls back to one.
 - **Later, narrower tokens.** Archil's tokens reach a whole disk; nothing narrower exists today. If Archil ships
   path-scoped tokens, a run's token narrows from its disk to its own folder with no other change.
 

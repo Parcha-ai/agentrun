@@ -56,8 +56,8 @@ export interface ArchilClaimOptions {
   /** The server's environment, passed in (never read here): an ARCHIL_API_KEY variable overrides the saved key. */
   readonly env?: KeyEnv;
   /** The run whose disk the claim resolves (run-disk.ts runDiskOf): its agent, the disk its launch record names, and the
-   *  store the agent's disk and the server's id are kept in. Absent (a test of the claim alone): the settings' `diskId`. */
-  readonly run?: { readonly agentId: string; readonly launch?: LaunchDisk; readonly store: RunDiskOptions["store"] };
+   *  store the agent's disk and the server's id are kept in. */
+  readonly run: { readonly agentId: string; readonly launch?: LaunchDisk; readonly store: RunDiskOptions["store"] };
 }
 
 export interface ArchilClaim {
@@ -107,9 +107,7 @@ export async function archilClaim(options: ArchilClaimOptions): Promise<ArchilCl
   const control = { region: settings.region, key: () => apiKey, ...(options.mount?.baseUrl ? { baseUrl: options.mount.baseUrl } : {}), ...(options.mount?.fetch ? { fetch: options.mount.fetch } : {}) };
   let chosen: RunDisk;
   try {
-    if (options.run !== undefined) chosen = await runDiskOf({ store: options.run.store, agentId: options.run.agentId, ...(options.run.launch ? { launch: options.run.launch } : {}), control, signal: options.signal });
-    else if (settings.diskId !== undefined) chosen = { diskId: settings.diskId, kind: "agent" };
-    else throw new ArchilClaimRefused("This claim names no run whose Archil disk it could resolve.");
+    chosen = await runDiskOf({ store: options.run.store, agentId: options.run.agentId, ...(options.run.launch ? { launch: options.run.launch } : {}), control, signal: options.signal });
   } catch (error) {
     held.clear();
     throw error;

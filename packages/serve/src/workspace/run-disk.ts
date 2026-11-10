@@ -2,11 +2,13 @@
 // archilDisk kind "launch"), else its agent's own. The claim resolves it before its mount credential is minted, so the
 // token is minted, mounted, revoked and reclaimed on that disk alone, and Archil refuses it on any other.
 // - A launch's disk is not agentrun's: it is read (GET /api/disks/{id}) to check it is in the account key's region, and
-//   never made, renamed or removed. One in another region, or none of that id, refuses the run in words naming the region.
+//   never made, renamed or removed. The server reads it at the launch (a 422 before any run is made) and the claim
+//   again, for a disk removed in between; one in another region, or none of that id, is refused in words naming the
+//   region.
 // - The agent's disk is stored on the agent (archil-settings.ts agentDiskOf). An agent with none yet has it made now, on
 //   its first run that uses it (never at the agent's creation: an agent whose runs all name a disk never has one), named
 //   agentrun-<server id>-<agent id> (diskNameOf), idempotent by that name. The plan's disk limit refuses the run in words.
-import { type AgentDisk, agentDiskOf, diskNameOf, serverIdOf, storeAgentDisk } from "../archil-settings.js";
+import { agentDiskOf, diskNameOf, serverIdOf, storeAgentDisk } from "../archil-settings.js";
 import type { Settings } from "../store/index.js";
 import type { LaunchDisk } from "../run-launch.js";
 import { ArchilClaimRefused } from "./archil-claim.js";
@@ -36,21 +38,30 @@ export interface RunDiskOptions {
 export const diskLimitWords = (limit: number | undefined): string =>
   limit === undefined ? "your Archil plan's disk limit is reached; upgrade or delete an agent" : `your Archil plan allows ${limit} disks; upgrade or delete an agent`;
 
-/** The run's disk: the launch's, checked to be in the key's region; else the agent's, made now when it has none. Refused
- *  in words (ArchilClaimRefused) naming the disk or the region, never a key. */
+/** Why disk `diskId`, named by a launch, can't hold a run here, in words naming the region; undefined when it can. A call
+ *  that fails (Archil not reached, or refusing the key) throws its ArchilDiskError. */
+export async function launchDiskProblem(control: ArchilControlOptions, diskId: string, context: { readonly signal?: AbortSignal } = {}): Promise<string | undefined> {
+  const region = control.region;
+  const disk = await getDisk(control, diskId, context);
+  if (disk === undefined) return `Archil has no disk ${diskId} in region ${region}, the region of this server's Archil key: name a disk in ${region}.`;
+  if (disk.region !== "" && disk.region !== region) return `The disk ${diskId} is in region ${disk.region}, and this server's Archil key is for region ${region}: name a disk in ${region}.`;
+  return undefined;
+}
+
+/** The run's disk: the launch's, checked again to be in the key's region; else the agent's, made now when it has none.
+ *  Refused in words (ArchilClaimRefused) naming the disk or the region, never a key. */
 export async function runDiskOf(options: RunDiskOptions): Promise<RunDisk> {
   const { launch, control, signal } = options;
   const region = control.region;
   if (launch?.kind === "launch") {
-    const disk = await getDisk(control, launch.diskId, signal ? { signal } : {}).catch((error: unknown) => {
+    const problem = await launchDiskProblem(control, launch.diskId, signal ? { signal } : {}).catch((error: unknown) => {
       throw new ArchilClaimRefused(`This run's Archil disk ${launch.diskId} could not be read: ${(error as Error).message}`, { cause: error });
     });
-    if (disk === undefined) throw new ArchilClaimRefused(`Archil has no disk ${launch.diskId} in region ${region}, the region of this server's Archil key: name a disk in ${region}.`);
-    if (disk.region !== "" && disk.region !== region) throw new ArchilClaimRefused(`The disk ${launch.diskId} is in region ${disk.region}, and this server's Archil key is for region ${region}: name a disk in ${region}.`);
+    if (problem !== undefined) throw new ArchilClaimRefused(problem);
     return { diskId: launch.diskId, kind: "launch" };
   }
   if (launch?.kind === "agent") return { diskId: launch.diskId, kind: "agent" };
-  const stored: AgentDisk | undefined = await agentDiskOf(options.store, options.agentId);
+  const stored = await agentDiskOf(options.store, options.agentId);
   if (stored !== undefined) return { diskId: stored.diskId, kind: "agent" };
   const name = diskNameOf(await serverIdOf(options.store), options.agentId);
   let id: string;
@@ -61,6 +72,6 @@ export async function runDiskOf(options: RunDiskOptions): Promise<RunDisk> {
     if (error instanceof ArchilDiskLimit) throw new ArchilClaimRefused(`This agent's Archil disk can't be made: ${diskLimitWords(error.limit)}.`, { cause: error });
     throw new ArchilClaimRefused(`This agent's Archil disk ${name} can't be made in region ${region}: ${(error as Error).message}`, { cause: error });
   }
-  await storeAgentDisk(options.store, options.agentId, { diskId: id, own: true });
+  await storeAgentDisk(options.store, options.agentId, { diskId: id });
   return { diskId: id, kind: "agent" };
 }

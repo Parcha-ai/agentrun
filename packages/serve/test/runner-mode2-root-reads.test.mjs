@@ -31,7 +31,7 @@ const { openSqliteStore } = await import("../dist/store/sqlite/store.js");
 const { adapterRunSpecFromLaunch } = await import("../dist/runner/adapter-run-spec.js");
 const { cliRunSpecFromLaunch } = await import("../dist/runner/cli-run-spec.js");
 const { runFolder, runKey, scratchFolder } = await import("../dist/workspace/paths.js");
-const { saveArchilSettings } = await import("../dist/archil-settings.js");
+const { saveArchilSettings, storeAgentDisk } = await import("../dist/archil-settings.js");
 const { ARCHIL_API_KEY_ROW } = await import("../dist/workspace/index.js");
 const { sealColumn, sealedAt } = await import("../dist/store/seal.js");
 const { OPENCODE_STANDIN_ENV } = await import("../dist/adapters.js");
@@ -135,6 +135,8 @@ async function mode2Spec(t, { harness, build, watch = false, use = async () => {
   // Mode 2: the server's Archil settings, and its account key sealed under the runner's seal key, as the server saves them.
   // No disk token is kept any more (places/computers): the mount credential is minted per run from the account key.
   await saveArchilSettings(server, ARCHIL_SETTINGS);
+  // The agent's own disk, made by an earlier run (run-disk.ts): this run keeps its folder there.
+  await storeAgentDisk(server, AGENT, { diskId: ARCHIL_SETTINGS.diskId });
   await server.sealedKeys.put(ARCHIL_API_KEY_ROW, sealColumn(SEAL_KEY, sealedAt.sealedKey(ARCHIL_API_KEY_ROW), "fake-test-key-api-0001"));
   await server.flush?.();
 

@@ -24,7 +24,7 @@ const { runTimeline } = await import("../dist/store-reads/journal.js");
 const { OPENCODE_STANDIN_ENV } = await import("../dist/adapters.js");
 const { DATA_ENV } = await import("../dist/server-fs.js");
 const { runFolder, runKey, scratchFolder } = await import("../dist/workspace/paths.js");
-const { saveArchilSettings } = await import("../dist/archil-settings.js");
+const { saveArchilSettings, storeAgentDisk } = await import("../dist/archil-settings.js");
 const { ARCHIL_API_KEY_ROW } = await import("../dist/workspace/index.js");
 const { sealColumn, sealedAt } = await import("../dist/store/seal.js");
 const { FakeArchilDisk } = await import("./fixtures/archil-fake.mjs");
@@ -148,6 +148,8 @@ async function specOn(t, harness, { archil, env: more = {}, model = { provider: 
   // them. No disk token is kept: a computer's mount credential is minted per run from the account key.
   if (archil) {
     await saveArchilSettings(server, ARCHIL_SETTINGS);
+    // The agent's own disk, made by an earlier run (run-disk.ts): this run keeps its folder there.
+    await storeAgentDisk(server, "agent-1", { diskId: ARCHIL_SETTINGS.diskId });
     await server.sealedKeys.put(ARCHIL_API_KEY_ROW, sealColumn(SEAL_KEY, sealedAt.sealedKey(ARCHIL_API_KEY_ROW), "fake-test-key-api-0001"));
   }
   await server.flush?.();

@@ -5,9 +5,8 @@
 // local folder). The owner sets them through the Archil routes (archil-routes.ts).
 //
 // There is no server-wide disk: every agent has its own (agentDiskOf), made on its first run that needs it, and a run's
-// launch may name another (a disk per customer: run-launch.ts archilDisk). A row saved before that names a `diskId`, the
-// old shared disk: the server's start gives it to every agent that has no disk yet (adoptServerDisk) and drops it from
-// the row, so a server that had one keeps working, its agents' files where they were.
+// launch may name another (a disk per customer: run-launch.ts archilDisk). A row saved before that still names a
+// `diskId`: it is dropped on read, and no agent uses that disk.
 import { createHash, randomBytes } from "node:crypto";
 import type { Settings } from "./store/index.js";
 
@@ -24,23 +23,21 @@ export interface ArchilSettings {
   readonly s3Url: string;
   /** A pinned image for the disk's exec, when the owner set one; absent, Archil's default image. */
   readonly image?: string;
-  /** The old server-wide disk, on a row saved before agents had their own: read only to hand it to the agents that had
-   *  none (adoptServerDisk), never saved again. */
-  readonly diskId?: string;
 }
 
 /** The Archil settings the owner saved, or undefined when none is (Mode 1). A row that is not the expected shape reads as
- *  undefined, never a half-configured Mode 2. */
+ *  undefined, never a half-configured Mode 2; a field it no longer keeps (an old row's `diskId`) is dropped. */
 export async function loadArchilSettings(store: { settings: Pick<Settings, "get"> }): Promise<ArchilSettings | undefined> {
   const read = await store.settings.get(ARCHIL_SETTINGS_KEY);
-  return isArchilSettings(read) ? read : undefined;
+  if (typeof read !== "object" || read === null) return undefined;
+  const { region, s3Url, image } = read as Record<string, unknown>;
+  if (typeof region !== "string" || typeof s3Url !== "string" || (image !== undefined && typeof image !== "string")) return undefined;
+  return { region, s3Url, ...(image !== undefined ? { image } : {}) };
 }
 
-/** Saves the Archil settings (Mode 2), replacing any kept. `diskId` is kept only as a test's old row (the routes never
- *  give one): the start adopts it as it adopts a row saved before. */
+/** Saves the Archil settings (Mode 2), replacing any kept. */
 export async function saveArchilSettings(store: { settings: Pick<Settings, "put"> }, settings: ArchilSettings): Promise<void> {
   await store.settings.put(ARCHIL_SETTINGS_KEY, {
-    ...(settings.diskId !== undefined ? { diskId: settings.diskId } : {}),
     region: settings.region,
     s3Url: settings.s3Url,
     ...(settings.image !== undefined ? { image: settings.image } : {}),
@@ -57,49 +54,29 @@ export async function inArchilMode(store: { settings: Pick<Settings, "get"> }): 
   return (await loadArchilSettings(store)) !== undefined;
 }
 
-function isArchilSettings(value: unknown): value is ArchilSettings {
-  if (typeof value !== "object" || value === null) return false;
-  const v = value as Record<string, unknown>;
-  return (v.diskId === undefined || typeof v.diskId === "string") && typeof v.region === "string" && typeof v.s3Url === "string" && (v.image === undefined || typeof v.image === "string");
-}
-
 // ---- the agent's own disk -----------------------------------------------------------------------------------------
 
-/** An Archil disk id as Archil makes them: dsk-<16 hex digits>. */
+/** An Archil disk id as Archil's API returns and addresses them: dsk-<16 hex digits>. */
 export const ARCHIL_DISK_ID = /^dsk-[0-9a-f]{16}$/;
 
-/** The disk an agent's runs keep their folders on, stored on the agent (never its revision: a rollback moves no files).
- *  `own`: agentrun made it for this agent (named diskNameOf), and removes it with the agent's disk; false for the old
- *  server-wide disk an agent was given at the cutover (adoptServerDisk), which other agents share and agentrun never
- *  removes. */
+/** The disk agentrun made for an agent, stored on the agent (never its revision: a rollback moves no files). */
 export interface AgentDisk {
   readonly diskId: string;
-  readonly own: boolean;
 }
 
 /** The settings key agent `agentId`'s disk is stored under. */
 export const agentDiskKey = (agentId: string): string => `${ARCHIL_SETTINGS_KEY}.agent.${agentId}`;
 
-/** The disk stored on agent `agentId`, or undefined when it has none yet. */
-export async function storedAgentDisk(store: { settings: Pick<Settings, "get"> }, agentId: string): Promise<AgentDisk | undefined> {
-  const read = await store.settings.get(agentDiskKey(agentId));
-  if (typeof read !== "object" || read === null) return undefined;
-  const { diskId, own } = read as Record<string, unknown>;
-  return typeof diskId === "string" && ARCHIL_DISK_ID.test(diskId) ? { diskId, own: own === true } : undefined;
-}
-
-/** The disk agent `agentId`'s runs use when their launch names none: the one stored on it; else, on a row still naming
- *  the old server-wide disk (its start has not adopted it yet), that one; else undefined (made on its first run). */
+/** The disk stored on agent `agentId`, or undefined when it has none yet (made on its first run that uses it). */
 export async function agentDiskOf(store: { settings: Pick<Settings, "get"> }, agentId: string): Promise<AgentDisk | undefined> {
-  const stored = await storedAgentDisk(store, agentId);
-  if (stored !== undefined) return stored;
-  const settings = await loadArchilSettings(store);
-  return settings?.diskId !== undefined ? { diskId: settings.diskId, own: false } : undefined;
+  const read = await store.settings.get(agentDiskKey(agentId));
+  const diskId = typeof read === "object" && read !== null ? (read as Record<string, unknown>).diskId : undefined;
+  return typeof diskId === "string" && ARCHIL_DISK_ID.test(diskId) ? { diskId } : undefined;
 }
 
 /** Stores `disk` on agent `agentId`. */
 export async function storeAgentDisk(store: { settings: Pick<Settings, "put"> }, agentId: string, disk: AgentDisk): Promise<void> {
-  await store.settings.put(agentDiskKey(agentId), { diskId: disk.diskId, own: disk.own });
+  await store.settings.put(agentDiskKey(agentId), { diskId: disk.diskId });
 }
 
 /** Forgets agent `agentId`'s disk: its next run that uses it makes a new one. */
@@ -126,21 +103,4 @@ export function diskNameOf(serverId: string, agentId: string): string {
   const plain = /^[A-Za-z0-9_-]{1,48}$/.test(agentId);
   const part = plain ? agentId : `${agentId.replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 32)}-${createHash("sha256").update(agentId).digest("hex").slice(0, 8)}`;
   return `agentrun-${serverId}-${part}`;
-}
-
-/** The server's start: a row naming the old server-wide disk gives it to each agent with no disk yet (archived ones too),
- *  as not its own (other agents share it; agentrun never removes it), then the row is saved without it. Their files stay
- *  where they were (agents/<agent>/... on that disk); an agent made after has its own. The agents it gave the disk to. */
-export async function adoptServerDisk(store: { settings: Pick<Settings, "get" | "put"> }, agentIds: readonly string[]): Promise<string[]> {
-  const settings = await loadArchilSettings(store);
-  if (settings?.diskId === undefined) return [];
-  const given: string[] = [];
-  for (const agentId of agentIds) {
-    if ((await storedAgentDisk(store, agentId)) !== undefined) continue;
-    await storeAgentDisk(store, agentId, { diskId: settings.diskId, own: false });
-    given.push(agentId);
-  }
-  const { diskId: _old, ...rest } = settings;
-  await saveArchilSettings(store, rest);
-  return given;
 }

@@ -10,12 +10,12 @@
 //   DELETE /v2/workspace/archil       off (the settings row removed; the key is kept, for turning it on again)
 //   POST   /v2/workspace/archil/test  one listing of the account's disks at the region's control plane, with the
 //                                     account key opened as a claim opens it: { ok, detail } or { ok: false, why }
-//   GET    /v2/agents/{id}/archil     the agent's disk: its id and whether agentrun made it for the agent, or none yet
-//   DELETE /v2/agents/{id}/archil     an archived agent with no live run: its own disk removed at Archil and forgotten. A
-//                                     disk agentrun did not make for it (the old shared one) is only forgotten; a disk a
-//                                     launch named is a customer's and never touched here
+//   GET    /v2/agents/{id}/archil     the agent's disk: its id, or none yet
+//   DELETE /v2/agents/{id}/archil     an archived agent with no live run: its disk removed at Archil and forgotten; a disk
+//                                     a launch named is a customer's and never touched here
+// And a launch's archil_disk is read here once before its run is made (checkLaunchDisk).
 // archilRoute holds the routes' rules, so serve's dispatch only calls it and sends the answer, or the ApiError's status.
-import { ARCHIL_API_KEY_ROW, type ArchilSettings, clearArchilSettings, forgetAgentDisk, loadArchilSettings, saveArchilSettings, storedAgentDisk } from "./archil-settings.js";
+import { agentDiskOf, ARCHIL_API_KEY_ROW, type ArchilSettings, clearArchilSettings, forgetAgentDisk, loadArchilSettings, saveArchilSettings } from "./archil-settings.js";
 import { ApiError, type InputIssue, invalid } from "./errors.js";
 import { type KeyEnv, type KeyMeta, keyMetaOf } from "./key-meta.js";
 import { registerNotSecretWrite, registerSecretWrite, secretName } from "./secret-writes.js";
@@ -26,6 +26,7 @@ import { ArchilClaimRefused } from "./workspace/archil-claim.js";
 import { pinnedImage } from "./workspace/archil-disk.js";
 import { deleteDisk, listOneDisk } from "./workspace/archil-disks.js";
 import { ARCHIL_API_KEY_ENV, archilApiKey } from "./workspace/archil-key.js";
+import { launchDiskProblem } from "./workspace/run-disk.js";
 
 /** The routes, by their operation names. */
 export const ARCHIL_ROUTES: ReadonlySet<string> = new Set(["getWorkspaceArchil", "putWorkspaceArchil", "deleteWorkspaceArchil", "testWorkspaceArchil", "getAgentArchil", "deleteAgentArchil"]);
@@ -48,9 +49,9 @@ const SECRET = { secret: secretName("workspace", "archil"), env: ARCHIL_API_KEY_
 /** The Archil settings as the owner reads them: the account key as `secret`, its SecretMeta, never a value. */
 export type ArchilView = { on: boolean; region?: string; s3Url?: string; image?: string; secret: KeyMeta };
 export type ArchilTest = { ok: true; detail: string } | { ok: false; why: string };
-/** An agent's disk as GET /v2/agents/{id}/archil answers it: none until its first run that uses it. `own`: agentrun made
- *  it for the agent (agentrun-<server id>-<agent id>), so removing the agent's disk removes it at Archil. */
-export type AgentArchilView = { on: boolean; archil_disk: { disk_id: string; own: boolean } | null };
+/** An agent's disk as GET /v2/agents/{id}/archil answers it: the one agentrun made for it (agentrun-<server id>-<agent
+ *  id>), or none until its first run that uses it. */
+export type AgentArchilView = { on: boolean; archil_disk: { disk_id: string } | null };
 
 export interface ArchilRoutesOptions {
   /** The server's one store: its settings and sealed keys. */
@@ -146,37 +147,57 @@ export function createArchilRoutes(options: ArchilRoutesOptions) {
   /** Agent `agentId`'s disk: none until its first run that uses it. */
   async function agentView(agentId: string): Promise<AgentArchilView> {
     const on = (await loadArchilSettings(store)) !== undefined;
-    const disk = on ? await storedAgentDisk(store, agentId) : undefined;
-    return { on, archil_disk: disk ? { disk_id: disk.diskId, own: disk.own } : null };
+    const disk = on ? await agentDiskOf(store, agentId) : undefined;
+    return { on, archil_disk: disk ? { disk_id: disk.diskId } : null };
   }
 
-  /** Agent `agentId`'s disk removed: archived, with no live run (its folders, home and learning go with the disk). Its own
-   *  disk is deleted at Archil, then forgotten; one agentrun did not make for it (the old shared disk) is forgotten only.
-   *  A launch's disk is never stored on the agent, so it is never reached here. The answer says which. */
-  async function removeAgentDisk(agent: { readonly id: string; readonly archived: boolean; readonly live: number }, signal?: AbortSignal): Promise<AgentArchilView & { removed: { disk_id: string; deleted_at_archil: boolean } | null }> {
+  /** The account key, opened now, or an ApiError `code` naming what to save (never a value). */
+  async function keyOr(code: "input_invalid" | "unavailable", what: string): Promise<string> {
+    try {
+      return (await archilApiKey({ env, keys: store.sealedKeys, sealKey })).value;
+    } catch (error) {
+      if (code === "input_invalid") throw invalid([{ field: "archil_disk", reason: "not_set_up_here", message: `${what}: ${describe(error)}` }]);
+      throw new ApiError(code, `${what}: ${describe(error)}`);
+    }
+  }
+
+  /** Agent `agentId`'s disk removed: archived, with no live run (its folders, home and learning go with the disk), deleted
+   *  at Archil, then forgotten: its next run, if it is unarchived, makes a new one. A launch's disk is never stored on the
+   *  agent, so it is never reached here. */
+  async function removeAgentDisk(agent: { readonly id: string; readonly archived: boolean; readonly live: number }, signal?: AbortSignal): Promise<AgentArchilView & { removed: { disk_id: string } | null }> {
     const settings = await loadArchilSettings(store);
-    const disk = settings === undefined ? undefined : await storedAgentDisk(store, agent.id);
+    const disk = settings === undefined ? undefined : await agentDiskOf(store, agent.id);
     if (settings === undefined || disk === undefined) return { ...(await agentView(agent.id)), removed: null };
     if (!agent.archived) throw new ApiError("precondition_failed", `the agent ${agent.id} is not archived: archive it first (POST /v2/agents/${agent.id}/archive), then remove its disk`);
     if (agent.live > 0) throw new ApiError("precondition_failed", `the agent ${agent.id} has ${agent.live} live run${agent.live === 1 ? "" : "s"} on its disk: stop ${agent.live === 1 ? "it" : "them"} first`);
-    if (disk.own) {
-      let key: string;
-      try {
-        key = (await archilApiKey({ env, keys: store.sealedKeys, sealKey })).value;
-      } catch (error) {
-        throw new ApiError("unavailable", `the agent's disk ${disk.diskId} can't be removed: ${describe(error)}`);
-      }
-      try {
-        await deleteDisk(control(settings, key), disk.diskId, signal ? { signal } : {});
-      } catch (error) {
-        throw new ApiError("upstream_failed", `Archil did not remove the agent's disk ${disk.diskId}: ${describe(error).split(key).join("[the key]")}`);
-      }
+    const key = await keyOr("unavailable", `the agent's disk ${disk.diskId} can't be removed`);
+    try {
+      await deleteDisk(control(settings, key), disk.diskId, signal ? { signal } : {});
+    } catch (error) {
+      throw new ApiError("upstream_failed", `Archil did not remove the agent's disk ${disk.diskId}: ${describe(error).split(key).join("[the key]")}`);
     }
     await forgetAgentDisk(store, agent.id);
-    return { ...(await agentView(agent.id)), removed: { disk_id: disk.diskId, deleted_at_archil: disk.own } };
+    return { ...(await agentView(agent.id)), removed: { disk_id: disk.diskId } };
   }
 
-  return { view, save, off, test, agentView, removeAgentDisk };
+  /** A launch's `archil_disk`, read once at Archil before the run is made (run-disk.ts launchDiskProblem): a disk that is
+   *  not there, or not in the key's region, is 422 at `archil_disk.disk_id` in words naming the region; Mode 1, or no key,
+   *  is 422 at `archil_disk`; Archil not reached (or refusing the key) is 503. The claim reads it again, for a disk
+   *  removed in between. */
+  async function checkLaunchDisk(diskId: string, signal?: AbortSignal): Promise<void> {
+    const settings = await loadArchilSettings(store);
+    if (settings === undefined) throw invalid([{ field: "archil_disk", reason: "not_allowed", message: "This server keeps run folders on its own disk (Mode 1): a run names an Archil disk only in Archil mode (PUT /v2/workspace/archil).", fix: "Remove archil_disk." }]);
+    const key = await keyOr("input_invalid", "This server's Archil key can't be read to check the run's disk");
+    let problem: string | undefined;
+    try {
+      problem = await launchDiskProblem(control(settings, key), diskId, signal ? { signal } : {});
+    } catch (error) {
+      throw new ApiError("unavailable", `Archil could not be asked about the disk ${diskId}: ${describe(error).split(key).join("[the key]")}`);
+    }
+    if (problem !== undefined) throw invalid([{ field: "archil_disk.disk_id", reason: "not_an_option", message: problem }]);
+  }
+
+  return { view, save, off, test, agentView, removeAgentDisk, checkLaunchDisk };
 }
 
 export type ArchilRoutes = ReturnType<typeof createArchilRoutes>;

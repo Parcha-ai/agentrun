@@ -20,7 +20,7 @@ const { seedOf } = await import("../dist/learning.js");
 const { folderTestHooks } = await import("../dist/learn/folder.js");
 const { learningWorkspace } = await import("../dist/workspace/index.js");
 const { learningCommit } = await import("../dist/learn/commit.js");
-const { saveArchilSettings } = await import("../dist/archil-settings.js");
+const { saveArchilSettings, storeAgentDisk } = await import("../dist/archil-settings.js");
 const { ARCHIL_API_KEY_ROW } = await import("../dist/workspace/index.js");
 const { sealColumn, sealedAt } = await import("../dist/store/seal.js");
 const { FakeArchilDisk } = await import("./fixtures/archil-fake.mjs");
@@ -78,6 +78,8 @@ test("a Mode 2 learning run through the pi spec builder checks its proposal agai
   const launch = { input: { content: "Follow the script." }, title: "t", place: { mode: "runner" }, model: { provider: "anthropic", modelId: "claude-sonnet-5.5" }, learning: { given: [], seed: seed.sha, section: "", seedNotes: 1 } };
   await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: launch });
   await saveArchilSettings(server, ARCHIL_SETTINGS);
+  // The agent's own disk, made by an earlier run (run-disk.ts): this run keeps its folder there.
+  await storeAgentDisk(server, "agent-1", { diskId: ARCHIL_SETTINGS.diskId });
   await server.sealedKeys.put(ARCHIL_API_KEY_ROW, sealColumn(SEAL_KEY, sealedAt.sealedKey(ARCHIL_API_KEY_ROW), "fake-test-key-api-0001"));
   await server.flush?.();
 

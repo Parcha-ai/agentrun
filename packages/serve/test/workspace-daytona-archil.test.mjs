@@ -61,7 +61,7 @@ async function archilSandbox(t, provider = "daytona", { existing = [] } = {}) {
   await putSealedKey(store, sealKey, "archil.api_key", ARCHIL_KEY);
   const disk = new FakeArchilDisk();
   const controller = new AbortController();
-  const claim = await archilClaim({ settings: SETTINGS, keys: store.sealedKeys, sealKey, signal: controller.signal, makeDisk: () => disk, mount: { runId: "run-1", epoch: 3, ttlMs: 86_400_000, baseUrl: control.baseUrl } });
+  const claim = await archilClaim({ settings: SETTINGS, keys: store.sealedKeys, sealKey, signal: controller.signal, makeDisk: () => disk, run: { agentId: "a", launch: { diskId: SETTINGS.diskId, kind: "agent" } }, mount: { runId: "run-1", epoch: 3, ttlMs: 86_400_000, baseUrl: control.baseUrl } });
   const workspace = archilWorkspace(disk, "agents/a/runs/run-1/work", { region: SETTINGS.region, mountToken: () => claim.token() });
   const scratch = realpathSync(mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-archil-sandbox-")));
   dirs.push(scratch);

@@ -627,8 +627,8 @@ const ARCHIL_VIEW = closedWith({
 const AGENT_ARCHIL_VIEW = closed({
   on: { type: "boolean", description: "Whether this server is in Archil mode (Mode 2). Off, no agent has a disk here." },
   archil_disk: {
-    oneOf: [closed({ disk_id: { type: "string", pattern: "^dsk-[0-9a-f]{16}$" }, own: { type: "boolean", description: "Whether agentrun made the disk for this agent (named `agentrun-<server id>-<agent id>`): only then does DELETE remove it at Archil. False for the old server-wide disk an agent was given when its server moved to a disk per agent, which other agents share." } }), { type: "null" }],
-    description: "The agent's own disk: null until its first run that uses it (a run whose launch names no `archil_disk`), when it is made.",
+    oneOf: [closed({ disk_id: { type: "string", pattern: "^dsk-[0-9a-f]{16}$" } }), { type: "null" }],
+    description: "The agent's own disk, which agentrun made for it (named `agentrun-<server id>-<agent id>`): null until its first run that uses it (a run whose launch names no `archil_disk`), when it is made.",
   },
 });
 const COMPUTER_MARK = { "x-agentrun-serve": "computer/1" };
@@ -1059,7 +1059,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       requestBody: { required: true, content: { "application/json": { schema: ref("schemas/RunCreateInline") } } },
       responses: {
         "202": { description: "The run, accepted, as POST /agents/{agent_id}/runs answers it. Follow it on its timeline.", headers: { Location: ref("headers/Location"), "Idempotent-Replayed": ref("headers/IdempotentReplayed") }, content: { "application/json": { schema: ref("schemas/Run") } } },
-        ...errors(400, 401, 409, 422, 429, 500),
+        ...errors(400, 401, 409, 422, 429, 500, 503),
       },
       "x-agentrun-serve": "inlineagent/1",
     },
@@ -1288,10 +1288,10 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
     },
     delete: {
       operationId: "deleteAgentArchil", tags: ["agents"], summary: "Remove an archived agent's own Archil disk, and everything on it",
-      description: "For an archived agent with no live run: its own disk is deleted at Archil (DELETE /api/disks/{id}), with its runs' folders, its home and its learning, and forgotten; an unarchived agent's next run would make a new, empty one. This frees a disk of the Archil plan's limit. A disk agentrun did not make for the agent (the old server-wide disk, `own` false) is only forgotten, never deleted, since other agents share it. A disk a run's launch named is never touched. 412 precondition_failed for an agent not archived or with a live run; 424 upstream_failed when Archil does not remove it (nothing is forgotten). Answers the agent's disk now (none) and what was removed.",
+      description: "For an archived agent with no live run: its own disk is deleted at Archil (DELETE /api/disks/{id}), with its runs' folders, its home and its learning, and forgotten; an unarchived agent's next run would make a new, empty one. This frees a disk of the Archil plan's limit. A disk a run's launch named is never touched. 412 precondition_failed for an agent not archived or with a live run; 424 upstream_failed when Archil does not remove it (nothing is forgotten). Answers the agent's disk now (none) and what was removed.",
       parameters: [ref("parameters/AgentId")],
       responses: {
-        "200": json({ ...AGENT_ARCHIL_VIEW, required: [...AGENT_ARCHIL_VIEW.required, "removed"], properties: { ...AGENT_ARCHIL_VIEW.properties, removed: { oneOf: [closed({ disk_id: { type: "string" }, deleted_at_archil: { type: "boolean", description: "True when the disk was the agent's own and Archil deleted it; false when it was only forgotten." } }), { type: "null" }], description: "The disk removed, or null when the agent had none." } } }, "The agent's disk removed, or none to remove."),
+        "200": json({ ...AGENT_ARCHIL_VIEW, required: [...AGENT_ARCHIL_VIEW.required, "removed"], properties: { ...AGENT_ARCHIL_VIEW.properties, removed: { oneOf: [closed({ disk_id: { type: "string" } }), { type: "null" }], description: "The disk deleted at Archil, or null when the agent had none." } } }, "The agent's disk removed, or none to remove."),
         ...errors(401, 404, 412, 429, 500, 503),
         "424": { description: "`upstream_failed`: Archil did not remove the agent's disk (refused, or not reached); nothing is forgotten.", content: { "application/json": { schema: ref("schemas/Error") } } },
       },
@@ -1879,8 +1879,8 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
     cap_mode: { ...CAP_MODE, description: `${CAP_MODE.description as string} Absent: the agent's (its definition's \`cap_mode\`), else expected. 422 not_allowed for a run with no cap.` },
     archil_disk: {
       type: "object", additionalProperties: false, required: ["disk_id"],
-      properties: { disk_id: { type: "string", pattern: "^dsk-[0-9a-f]{16}$", description: "The Archil disk's id, in this server's Archil region (the account key's)." } },
-      description: "Archil mode only: the disk this run keeps its folder on, instead of its agent's own (a disk per customer, say). It is the caller's: agentrun never makes, renames or removes it, and removing the agent's disk never touches it. Its region is the account key's: one in another region, or none of that id, fails the run at its claim in words naming the region. Its id alone: never a key or a region. The run's mount credential is minted on this disk, so Archil takes it on no other. 422 in Mode 1.",
+      properties: { disk_id: { type: "string", pattern: "^dsk-[0-9a-f]{16}$", description: "The disk id Archil returned when the disk was made (`dsk-` and 16 hex digits): Archil's API addresses disks by id, not by owner/name. In this server's Archil region (the account key's)." } },
+      description: "Archil mode only: the disk this run keeps its folder on, instead of its agent's own (a disk per customer, say). It is the caller's: agentrun never makes, renames or removes it, and removing the agent's disk never touches it. It is read at Archil before the run is made: none of that id, or one in another region than the account key's, is 422 at `archil_disk.disk_id` in words naming the region, and no run is made (503 when Archil can't be asked). The claim reads it again, so a disk removed in between fails the run in the same words. Its id alone: never a key or a region. The run's mount credential is minted on this disk, so Archil takes it on no other. 422 in Mode 1, or with no account key saved.",
       "x-agentrun-serve": "archil/1",
     },
   },
