@@ -54,6 +54,22 @@ test("pi: a run of an agent whose computer is a desktop is handed desktop_screen
   assert.notEqual(input.isError, true, `the click ran: ${input.text}`);
 });
 
+test("pi: the agent's computer_request_handoff asks the person through the claim's hold: the call waits for their answer, never refused at once, and a stop ends the wait", async (t) => {
+  const { spec } = await specFor(t, { body: { tools: ["read"], computer: FAUX_DESKTOP }, computer: fauxComposer });
+  const stop = new AbortController();
+  let settled = false;
+  const call = callOf(spec, "computer_request_handoff").call({ instruction: "Sign in with your own password.", completion_condition: "The inbox shows." }, { callId: "h1", signal: stop.signal, attempt: 0 });
+  void call.finally(() => (settled = true));
+  // With no hold the hand-over has no port and answers at once, refused; held, it waits for the person.
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  assert.equal(settled, false, `the hand-over waits for the person's answer: ${settled ? JSON.stringify(await call) : ""}`);
+  stop.abort();
+  let bound;
+  const answer = await Promise.race([call, new Promise((_, reject) => (bound = setTimeout(() => reject(new Error("the hand-over's wait did not end on the stop within 5 s")), 5_000)))]);
+  clearTimeout(bound);
+  assert.doesNotMatch(answer.text ?? "", /not available|needs a|no host tool/i, `the stop ended the ask, not a missing port: ${answer.text}`);
+});
+
 test("pi: a run with no computer is handed none of the desktop's tools", async (t) => {
   const { spec } = await specFor(t, { body: { tools: ["read"] }, computer: fauxComposer });
   const names = toolNames(spec);
