@@ -38,7 +38,7 @@ async function gateway(t) {
   const auth = [];
   const server = createServer(async (req, res) => {
     for await (const _ of req);
-    auth.push(req.headers.authorization ?? null);
+    auth.push({ method: req.method, path: req.url, auth: req.headers.authorization ?? null });
     const events = [
       { type: "response.output_text.delta", item_id: "m_0", output_index: 0, content_index: 0, delta: "Hello." },
       { type: "response.completed", response: { id: "resp_0", object: "response", status: "completed", usage: { input_tokens: 10, output_tokens: 2, input_tokens_details: { cached_tokens: 0 } } } },
@@ -86,8 +86,11 @@ test("a CLI run whose model key the runner holds only by name (as the launcher h
     return ["ended", "failed", "stopped"].includes(now.state) && now.runner === null && now;
   }, "the run's end");
   assert.equal(row.state, "ended", `the run ended: ${JSON.stringify(row)}`);
-  assert.ok(gw.auth.length > 0, "the run asked its model");
-  assert.ok(gw.auth.every((header) => header === `Bearer ${KEY}`), `every request carried the key: ${JSON.stringify(gw.auth)}`);
+  // Its model requests (POSTs): a stand-in's own startup GETs, which carry no credential and may or may not land before
+  // the run ends, are not model requests.
+  const asked = gw.auth.filter((request) => request.method === "POST");
+  assert.ok(asked.length > 0, `the run asked its model: ${JSON.stringify(gw.auth)}`);
+  assert.ok(asked.every((request) => request.auth === `Bearer ${KEY}`), `every model request carried the key: ${JSON.stringify(gw.auth)}`);
   const names = JSON.parse(readFileSync(seen, "utf8"));
   assert.ok(names.length > 0 && !names.includes("AGENT_MODEL_API_KEY"), `the program the run started sees no key: ${JSON.stringify(names)}`);
 });
