@@ -39,6 +39,18 @@ export type RunLearning = {
   skills?: LearnedFileRef[];
   workflows?: LearnedFileRef[];
 } | null;
+/** GET /v2/runs/{id}/learning. Unlike the list's summary, this carries the actual grader decision,
+ * validation problems and commit provenance. Null means this run has no recorded learning. Missing counters
+ * remain unknown; grading input excludes both cache reads and cache writes. */
+export type RunLearningResultData = NonNullable<RunLearning> & {
+  run: string;
+  seed: string | null;
+  merged: string | null;
+  verdict: { merge: boolean; reason: string; items: { file: string; keep: boolean; why: string; pending?: boolean; origin?: string; question?: string }[] } | null;
+  problems: NoteProblem[];
+  cost_usd: { grade: number | null };
+  tokens: { grade: { input: number; output: number; cache_read: number; cache_write: number } | null };
+};
 /** A skill or a workflow a run kept: its file (a SKILL.md, a workflow.json), its name, and whether it waits. */
 export type LearnedFileRef = { file: string; name: string; pending?: true };
 /** A skill or a workflow the agent learned, as GET .../learning lists it (a newer server's): its name, its file (a

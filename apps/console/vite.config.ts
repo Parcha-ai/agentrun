@@ -44,7 +44,9 @@ export default defineConfig({
       "@": fileURLToPath(new URL("./src", import.meta.url)),
     },
   },
-  build: { outDir: "dist", assetsInlineLimit: 0 },
+  // The server serves scripts, styles and fonts; its CSP also permits data images. Keep the small coding-agent
+  // icons in the bundle so handoffs work with existing servers, without widening their asset allowlist.
+  build: { outDir: "dist", assetsInlineLimit: (file) => file.replaceAll("\\", "/").includes("/src/assets/coding-agents/") },
   // css: tokens.css is read as text (`?raw`) by the design-system test and stories; every other stylesheet stays a stub.
   test: { environment: "jsdom", include: ["src/**/*.test.ts", "src/**/*.test.tsx"], css: { include: [/\.css\?raw$/] }, ...(workers ? { minWorkers: 1, maxWorkers: workers } : {}) },
 });

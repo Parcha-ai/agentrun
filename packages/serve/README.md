@@ -2183,12 +2183,23 @@ An agent or a run is archived, never deleted: `DELETE` stays `405`. These routes
 Open the link the server prints, once, in a browser. `/` is the console (`apps/console` in the repository), on the
 server's own origin, under a CSP that allows that origin only:
 
-- **Mission Control**: the store's counts and the latest runs.
-- **Agents**: each agent with its kind and harness, archived ones behind **Archived**. **New agent** and an agent's page:
-  a name, a description, a prompt (with its model, thinking level and tools) or a workflow, sent to `POST /v2/agents`;
-  an edit is `PUT /v2/agents/{id}/definition` with `If-Match` set to the revision it started from (412 when another came
-  first). Its revisions, with **Make current** (`POST /v2/agents/{id}/current`), and **Archive** or **Unarchive**.
-- **Playground**: a run of an agent, on the revision you pick, with its input, followed as it goes.
+- **Mission Control**: the store's counts, imported history, analytics and the latest runs, available before the first
+  server-run agent and without a model-provider key. Its introduction is dismissible. Import agents and Query use
+  the coding-agent selector; the page refreshes when you return from your coding agent.
+- **Agents**: **Build** opens a description composer and local starter templates; **Connected agents** lists definitions,
+  with archived ones behind **Archived**. Build, edit and run actions share the remembered coding-agent dropdown,
+  including **API playground**. Choosing a template prepares its full definition without creating or running it.
+  Each agent opens an overview beside its runs, versions and supported workflow, learning and analytics tabs.
+- **Learning Dojo** (`#/dojo`): learning across connected agents, read from this server. It shows retained notes,
+  learned skills and workflow drafts, pending reviews, and recent changes with their source runs. Open an agent's
+  Learning tab to inspect its knowledge, enable learning, or review a pending change. Counts say when a read is
+  incomplete; missing results are not shown as zero.
+- **API playground**: create an agent with `POST /v2/agents`, edit its definition with
+  `PUT /v2/agents/{id}/definition`, query runs with `GET /v2/runs` (or one agent's runs), or start a run on the revision
+  you pick and follow it live. Query links retain the agent, state and archive filters. Build descriptions and
+  templates carry into the editable create request. Edits preserve other configuration and use `If-Match` (412 when
+  another revision came first). Definition management does not require a model-provider key. The existing detailed
+  editor remains available at `#/agents/{id}/edit`, including making an older revision current.
 - **Runs**: every run, newest first, filtered by agent and by state, archived runs behind **Archived**; the address
   keeps the filters. A run's page follows `GET /v2/runs/{id}/timeline` with a long poll, sends messages (an answer while
   it waits on `ask_person`), stops or cancels the run, shows its files and a workflow's graph, and has **Archive** or
@@ -2197,6 +2208,11 @@ server's own origin, under a CSP that allows that origin only:
   or **Sign in** with OAuth), **Preview** its tools and protocol, then **Save**; each saved one with its tool count and
   its credential's state, **Refresh**, **Change** (a credential left empty keeps the saved one) and **Delete**. An
   agent's Tools step lists each saved server's tools; a box ticked grants `mcp:<server>/<tool>`.
+
+A run that reports learning also has a **Learning result** panel: the outcome, the grader's reasons for keeping or
+rejecting each proposed item, validation problems, seed and merge revisions, and reported grading usage. Its changed
+files remain available beside the result. The agent's Learning tab refreshes after returning to the console and
+while visible, without replacing an open edit or review.
 
 Its files (`index.html`, and Vite's hashed files under `/assets/`) are public and hold no data: everything it shows
 comes through `/v2`. The store's read-only JSON stays under `/api/*` (`/api/store`, `/api/agents/{id}`, `/api/runs` and
@@ -2251,6 +2267,16 @@ token still works for scripts meanwhile). Serve it over https where you can: on 
 cookie to every server on the same host name, whatever its port, so another app on that host could read it.
 
 ## Importing your sessions
+
+**Import agents** in Mission Control or Agents gives your coding agent a prompt for the import. The selector remembers
+your app or CLI choice across the console; CLI choices copy the prompt, supported apps open it, and Copy prompt is
+always available. It downloads no file. The prompt verifies the source machine and this server's data directory, then
+uses a dry run to review the scope. Applying the CLI import requires an approved maintenance window: stop the
+existing server and runners through their supervisor, import into the same store, then restart and verify that service.
+The prompt checks active work first and never bypasses the store lock. A remote console cannot read your laptop's sessions: there is no remote import
+endpoint, and importing into a different local store does not populate that remote console. Imports remain history,
+not live connections. Build, edit, run, query and playground handoffs use the same selector and target this server's
+skill, MCP endpoint and API.
 
 `agentrun-serve import --data DIR` reads the Claude Code, Codex and pi sessions in your own home (`~/.claude/projects`,
 `~/.codex/sessions`, `~/.pi/agent/sessions`) into the data directory, once. Each project folder becomes an agent, with its
@@ -2338,6 +2364,17 @@ Learning is off unless an agent's definition says `learning: true` (an agentic o
 definition that sets it keeps it on its revision, `false` included, and an edit that leaves it out keeps the agent's; one
 that never sets it stores nothing, so its revision id is the one it had before the switch. The server's `--learning off`
 turns learning off for every run it starts, whatever the agent says.
+
+The console uses this existing loop: run, reflect, validate and grade the proposal, retain accepted knowledge, then
+seed later runs from that knowledge. It reads `GET /v2/agents/{id}/learning` for the agent's retained knowledge and
+history, and `GET /v2/runs/{id}/learning` and its `/diff` for an individual result. Observation requires no model key;
+producing new learning requires an agentic run through this server with learning enabled and a configured model.
+
+Importing Claude Code, Codex or pi session history does not replay learning or connect a live learning stream. A
+run made directly in an external harness needs that harness to persist compatible learning results through a host
+integration before the console can display them. Learning Dojo shows this server's actual reflection results, not inferred
+training scores from imported conversations. Before/after cost and duration are observations, not an accuracy
+evaluation.
 
 An agent that learns has a learning folder, `learning/` in its folder on the disk (`DATA/disk/agents/<key>/learning/`), in Claude Code's
 auto-memory format:

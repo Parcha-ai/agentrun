@@ -13,6 +13,10 @@ import { pick } from "@/test/picker";
 
 // Mission Control is the first page: the bare address and the old start page's both open it, so no link dead-ends.
 describe("route", () => {
+  it("opens Learning Dojo without changing per-agent learning links", () => {
+    expect(route("#/dojo")).toEqual({ section: "dojo" });
+    expect(route("#/agents/researcher/learning")).toEqual({ section: "agents", agent: "researcher", tab: "learning" });
+  });
   it("opens Mission Control for the bare address and the old start page", () => {
     for (const h of ["", "#", "#/", "#/start"]) expect(route(h).section, h).toBe("mission");
   });
@@ -20,6 +24,17 @@ describe("route", () => {
     expect(route("#/runs")).toEqual({ section: "runs" });
     expect(route("#/runs/r1")).toEqual({ section: "runs", run: "r1" });
     expect(route("#/runs?agent=calc")).toEqual({ section: "runs", runsOf: "calc" });
+  });
+  it("keeps the selected agent in a Playground link", () => {
+    expect(route("#/playground?agent=agent%20two")).toEqual({ section: "playground", playgroundAgent: "agent two" });
+    expect(route("#/playground")).toEqual({ section: "playground" });
+  });
+  it("keeps creation and editing requests separate from starting a run", () => {
+    expect(route("#/playground?operation=create-agent&draft=%7B%7D")).toEqual({ section: "playground", operation: "create-agent", draft: "{}" });
+    expect(route("#/playground?operation=edit-agent&agent=agent%20two")).toEqual({ section: "playground", operation: "edit-agent", playgroundAgent: "agent two" });
+  });
+  it("keeps the scope of a read-only query playground link", () => {
+    expect(route("#/playground?operation=list-runs&agent=agent%20two&status=failed&archived=true")).toEqual({ section: "playground", operation: "list-runs", playgroundAgent: "agent two", status: "failed", archived: true });
   });
   it("opens the triggers list, a new schedule, a new webhook, one trigger, and a schedule's editor at their own addresses", () => {
     expect(route("#/triggers")).toEqual({ section: "triggers" });
@@ -288,45 +303,34 @@ describe("App, Settings", () => {
   });
 });
 
-// The first screen asks for a model key while the server says an agent that names no model can't run, and the card
-// goes once a key saved through its route makes the capabilities say ready.
-describe("App, the model key card on the first screen", () => {
-  it("shows while models.ready is false, saves the key, reads the capabilities again, and goes once they say ready", async () => {
-    const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
-    const features = { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false }, tool_keys: { routes: true, at_rest: "sealed" } };
-    const keys = { keys: [servedKey({ id: "anthropic", kind: "model", label: "Anthropic", fields: [{ name: "ANTHROPIC_API_KEY", set: false, source: null, changed_at: null }], unlocks: [], harnesses: ["pi"], check: null })], reenter: null };
+// Observation works before a server-managed run or model credential exists.
+describe("App, Mission Control with imported history and no model key", () => {
+  it("shows imported runs and analytics without asking for provider keys", async () => {
+    const json = (body: unknown) => new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
+    const run = { run_id: "history-1", agent_id: "project", agent_version: 1, revision: "rev-1", kind: "agentic", status: "completed", state: "idle", title: "Existing coding session", created_at: "2026-10-30T06:00:00Z", ended_at: "2026-10-30T06:00:03Z", result: null, error: null, cost: null, imported_from: { source: "codex", session_id: "local-1" } };
     const asked: string[] = [];
-    let ready = false;
-    vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
-      const path = new URL(url, "http://serve.test").pathname;
-      asked.push(`${init?.method ?? "GET"} ${path}`);
-      if (path === "/v2/auth/session") return json(200, { password_set: true, signed_in: true, secrets_writable: true });
-      if (path === "/v2/capabilities") return json(200, { harnesses: [], features, models: { source: "providers", default: ready ? "anthropic/claude-sonnet-5-5" : null, ready, needs: ready ? null : "key" } });
-      if (path === "/v2/settings/tool-keys/anthropic") { ready = true; return new Response(null, { status: 204 }); }
-      if (path === "/v2/settings/tool-keys") return json(200, keys);
-      if (path === "/v2/stats") return json(404, { error: { code: "not_found", message: "no route GET /v2/stats", retryable: false } });
-      if (path === "/v2/runs" || path === "/v2/agents") return json(200, { runs: [], agents: [], next_cursor: null });
-      return json(404, { error: { code: "not_found", message: path, retryable: false } });
+    vi.stubGlobal("fetch", async (url: string) => {
+      const u = new URL(url, "http://serve.test");
+      asked.push(u.pathname);
+      if (u.pathname === "/v2/auth/session") return json({ password_set: true, signed_in: true });
+      if (u.pathname === "/v2/capabilities") return json({ harnesses: [{ id: "pi", available: true, default_model: null }], features: { tool_keys: { routes: true, at_rest: "sealed" } }, models: { source: "providers", default: null, ready: false, needs: "key" } });
+      if (u.pathname === "/v2/stats") return json({ agents: 1, runs: { total: 1, active: 0, needs_input: 0, failed: 0, status_unknown: 0, needs_review: 0 }, per_agent: [{ agent_id: "project", name: "Existing project", runs: 1 }], cost: { usd: null, basis: null, unknown_runs: 1 }, archived: { agents: 0, runs: 0 }, analytics: { ...ANALYTICS, by_source: [{ source: "codex", ...ANALYTICS.totals, runs: 1 }] } });
+      if (u.pathname === "/v2/runs") return json({ runs: u.searchParams.has("status") ? [] : [run], next_cursor: null });
+      if (u.pathname === "/v2/agents") return json({ agents: [], next_cursor: null });
+      return new Response("{}", { status: 404 });
     });
     location.hash = "";
     const host = document.body.appendChild(document.createElement("div"));
     root = createRoot(host);
     act(() => root!.render(createElement(App)));
-    const card = () => host.querySelector('section[aria-label="Model key"]');
-    const until = async (done: () => boolean) => { const end = Date.now() + 4000; while (!done() && Date.now() < end) await act(async () => { await new Promise((r) => setTimeout(r, 25)); }); };
-    await until(() => !!card()?.querySelector("button"));
-    expect(card()?.textContent).toContain("Add a model key to run agents");
-    const button = (label: RegExp) => [...host.querySelectorAll("button")].find((b) => label.test((b.textContent ?? "").trim()))!;
-    await act(async () => { button(/^Anthropic$/).click(); });
-    await until(() => !!host.querySelector('input[name="ANTHROPIC_API_KEY"]'));
-    const input = host.querySelector('input[name="ANTHROPIC_API_KEY"]') as HTMLInputElement;
-    await act(async () => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "not-a-real-key-0123"); input.dispatchEvent(new Event("input", { bubbles: true })); });
-    await act(async () => { button(/^Save$/).click(); });
-    await until(() => !card());
-    expect(asked).toContain("PUT /v2/settings/tool-keys/anthropic");
-    expect(asked.filter((a) => a === "GET /v2/capabilities").length).toBe(2);
-    expect(card()).toBeNull();
-    expect(host.innerHTML).not.toContain("not-a-real-key-0123");
+    const end = Date.now() + 4000;
+    while (!host.querySelector('[aria-label="Start here"]') && Date.now() < end) await act(async () => { await new Promise((r) => setTimeout(r, 25)); });
+    expect(host.textContent).toContain("Existing coding session");
+    expect(host.querySelector('[aria-label="Analytics"]')).not.toBeNull();
+    expect(host.querySelector('[aria-label="Model key"]')).toBeNull();
+    expect(host.querySelector('[aria-label="No model"]')).toBeNull();
+    expect(asked).not.toContain("/v2/settings/tool-keys");
+    expect(host.querySelector('[aria-label="Start here"]')?.textContent).toContain("No model key needed");
   });
 });
 
@@ -461,17 +465,20 @@ describe("App, the agents' names", () => {
 
   it("names an agent made here, not by its id, on its run's page and in Runs, with no reload", async () => {
     server();
-    const { host, until, button, type, rows } = await open("#/agents/new");
-    // Create it from the editor, as a person does: its name and instructions, then Create.
-    await until(() => !!host.querySelector('input[placeholder="e.g., Invoice checker"]'));
-    await type(host.querySelector<HTMLInputElement>('input[placeholder="e.g., Invoice checker"]')!, made.definition.name!);
-    await type(host.querySelector<HTMLTextAreaElement>('textarea[placeholder^="Describe what the agent does"]')!, made.definition.instructions!);
-    await act(async () => { button(/^Create$/)!.click(); });
-    // Its page, then a run of it from the run bar: the run's page opens.
-    await until(() => location.hash === `#/agents/${encodeURIComponent(made.agent_id)}` && !!host.querySelector('section[aria-label="Start a run"] textarea'));
-    await type(host.querySelector<HTMLTextAreaElement>('section[aria-label="Start a run"] textarea')!, "Check the 2.3.0 entry.");
-    await act(async () => { button(/^Run$/)!.click(); });
-    await until(() => location.hash === `#/runs/${encodeURIComponent(started.run_id)}` && !!host.querySelector("h1"));
+    const { host, until, button, type, rows } = await open("#/playground?operation=create-agent");
+    // Create through the same API workbench linked from the hosted-style action menu.
+    await until(() => !!host.querySelector("input"));
+    await type(host.querySelector<HTMLInputElement>("input")!, made.definition.name!);
+    await type(host.querySelector<HTMLTextAreaElement>("textarea")!, made.definition.instructions!);
+    await act(async () => { button(/send request/i)!.click(); });
+    await until(() => !![...host.querySelectorAll("a")].find((a) => a.textContent === "Open agent"));
+    await act(async () => { location.hash = `#/playground?agent=${encodeURIComponent(made.agent_id)}`; });
+    await until(() => host.querySelector<HTMLButtonElement>('button[aria-haspopup="listbox"][aria-label="Agent"]')?.textContent === made.definition.name);
+    await type(host.querySelector<HTMLTextAreaElement>("textarea")!, "Check the 2.3.0 entry.");
+    await act(async () => { button(/send request/i)!.click(); });
+    await until(() => !!button(/Open this run/));
+    await act(async () => { button(/Open this run/)!.click(); });
+    await until(() => location.hash === `#/runs/${encodeURIComponent(started.run_id)}` && !button(/Open this run/) && !!host.querySelector('nav[aria-label="Breadcrumb"]'));
     // The run's page names its agent in its breadcrumb.
     await until(() => host.textContent!.includes(made.definition.name!));
     expect(host.textContent).not.toContain(made.agent_id);
@@ -481,23 +488,17 @@ describe("App, the agents' names", () => {
     expect(rows().join("\n")).not.toContain(made.agent_id);
   });
 
-  it("names an agent made here, not by its id, on its first run in the Playground", async () => {
+  it("opens the requested agent in the Playground and names its first run correctly", async () => {
     server();
-    const { host, until, button, type } = await open("#/agents/new");
-    await until(() => !!host.querySelector('input[placeholder="e.g., Invoice checker"]'));
-    await type(host.querySelector<HTMLInputElement>('input[placeholder="e.g., Invoice checker"]')!, made.definition.name!);
-    await type(host.querySelector<HTMLTextAreaElement>('textarea[placeholder^="Describe what the agent does"]')!, made.definition.instructions!);
-    await act(async () => { button(/^Create$/)!.click(); });
-    await until(() => location.hash === `#/agents/${encodeURIComponent(made.agent_id)}`);
+    const { host, until, button, type } = await open("#/playground?operation=create-agent");
+    await until(() => !!host.querySelector("input"));
+    await type(host.querySelector<HTMLInputElement>("input")!, made.definition.name!);
+    await type(host.querySelector<HTMLTextAreaElement>("textarea")!, made.definition.instructions!);
+    await act(async () => { button(/send request/i)!.click(); });
+    await until(() => !![...host.querySelectorAll("a")].find((a) => a.textContent === "Open agent"));
     // Straight to the Playground, as a person tries a new agent: it is offered there, picked, and run.
-    await act(async () => { location.hash = "#/playground"; });
-    // The Agent picker: opened, the agent made here is among its options, and picked.
+    await act(async () => { location.hash = `#/playground?agent=${encodeURIComponent(made.agent_id)}`; });
     const pick = () => host.querySelector<HTMLButtonElement>('button[aria-haspopup="listbox"][aria-label="Agent"]');
-    await until(() => !!pick());
-    await act(async () => { pick()!.click(); });
-    const option = () => [...document.querySelectorAll('[role="listbox"] [role="option"]')].find((o) => o.textContent === made.definition.name) as HTMLElement | undefined;
-    await until(() => !!option());
-    await act(async () => { option()!.click(); });
     await until(() => !!pick()?.textContent?.includes(made.definition.name!));
     await type(host.querySelector<HTMLTextAreaElement>("textarea")!, "Check the 2.3.0 entry.");
     await act(async () => { button(/send request/i)!.click(); });
@@ -506,6 +507,40 @@ describe("App, the agents' names", () => {
     await until(() => crumb().includes(`Run ${runLabel(started.run_id)}`));
     await until(() => crumb().includes(made.definition.name!));
     expect(crumb()).not.toContain(made.agent_id);
+  });
+
+  it("updates the Playground target when its URL changes and never substitutes a missing agent", async () => {
+    const [first, second] = agentsList();
+    server({ active: [first, second] });
+    const { host, until } = await open(`#/playground?agent=${encodeURIComponent(second.agent_id)}`);
+    const selected = () => host.querySelector<HTMLButtonElement>('button[aria-haspopup="listbox"][aria-label="Agent"]')?.textContent;
+    await until(() => selected() === second.definition.name);
+    expect(selected()).toBe(second.definition.name);
+    await act(async () => { location.hash = `#/playground?agent=${encodeURIComponent(first.agent_id)}`; });
+    await until(() => selected() === first.definition.name);
+    expect(selected()).toBe(first.definition.name);
+    await act(async () => { location.hash = "#/playground?agent=missing-agent"; });
+    await until(() => !!host.querySelector('[role="alert"]'));
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain("selected agent is unavailable or archived");
+    expect(host.querySelector('button[aria-haspopup="listbox"][aria-label="Agent"]')).toBeNull();
+    expect([...host.querySelectorAll("button")].some((b) => /send request/i.test(b.textContent ?? ""))).toBe(false);
+  });
+  it("edits the agent selected in the run form when it differs from the original link", async () => {
+    const [first, second] = agentsList();
+    server({ active: [first, second] });
+    const { host, until } = await open(`#/playground?agent=${encodeURIComponent(first.agent_id)}`);
+    const picker = () => host.querySelector<HTMLButtonElement>('button[aria-haspopup="listbox"][aria-label="Agent"]');
+    await until(() => !!picker());
+    await act(async () => { picker()!.click(); });
+    await until(() => !!document.querySelector('[role="listbox"]'));
+    await act(async () => {
+      const option = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find((o) => o.textContent === second.definition.name)!;
+      option.click();
+    });
+    await until(() => picker()?.textContent === second.definition.name);
+    await pick(host.querySelector<HTMLButtonElement>("#api-operation")!, "edit-agent");
+    await until(() => location.hash.includes(`agent=${encodeURIComponent(second.agent_id)}`) && !!host.querySelector('input[aria-label="Name"]'));
+    expect(host.querySelector<HTMLInputElement>('input[aria-label="Name"]')!.value).toBe(second.definition.name);
   });
 
   it("names a run of an archived agent, which is not gone, and shows the id of one that is", async () => {
@@ -551,8 +586,7 @@ describe("App, the playground when its agents can't be read", () => {
   });
 });
 
-// QA's first run with no model key gave no sign until a run failed: every page but the first screen (which has the key
-// card) shows a bar while capabilities say no model is ready, and it goes by itself once they say ready.
+// Execution setup is shown in the Playground only. Browsing history and agents needs no provider key.
 describe("App, the no-model bar", () => {
   const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
   // `keys`: how the server keeps tool keys (features.tool_keys): sealed, routes with no seal key, or no key routes at all.
@@ -580,10 +614,10 @@ describe("App, the no-model bar", () => {
   const until = async (done: () => boolean) => { const end = Date.now() + 4000; while (!done() && Date.now() < end) await act(async () => { await new Promise((r) => setTimeout(r, 25)); }); };
   const bar = (host: HTMLElement) => host.querySelector('[aria-label="No model"]');
 
-  it("says what to set on a page that is not the first screen, leading with the Settings link, and goes once the server says ready, read again when the page comes back into view", async () => {
+  it("says what to set in the Playground, leading with the Settings link, and goes once the server says ready, read again when the page comes back into view", async () => {
     let ready = false;
     const asked = serve(() => ({ source: "providers", default: ready ? "anthropic/claude-sonnet-5-5" : null, ready, needs: ready ? null : "key" }));
-    const host = await mount("#/runs");
+    const host = await mount("#/playground");
     await until(() => !!bar(host));
     expect(bar(host)?.textContent).toBe("No model yet. Add a key in Settings → Model keys (one OpenRouter key gives every harness its model), and it takes effect at once. Or set OPENROUTER_API_KEY, ANTHROPIC_API_KEY or OPENAI_API_KEY where AgentRun starts, and restart.");
     expect(bar(host)?.querySelector("a")?.textContent).toBe("Add a key in Settings → Model keys");
@@ -595,23 +629,27 @@ describe("App, the no-model bar", () => {
     expect(asked.filter((a) => a === "GET /v2/capabilities").length).toBeGreaterThanOrEqual(2);
   });
 
-  it("sits above the page, outside its scrolling main, so a full-height page (the agent editor) keeps its footer in view", async () => {
+  it("sits above the run request panels, leaving their footer in view, and is absent from the build page", async () => {
     serve(() => ({ source: "providers", default: null, ready: false, needs: "key" }));
-    const host = await mount("#/agents/new");
-    await until(() => !!bar(host) && !!host.querySelector("main"));
-    const main = host.querySelector("main")!;
-    // The bar is not inside main: main's height is what is left under it, and the editor fills main, not main plus the bar.
-    expect(main.contains(bar(host))).toBe(false);
-    expect(bar(host)!.compareDocumentPosition(main) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(main.parentElement!.className.split(" ")).toEqual(expect.arrayContaining(["flex", "flex-col", "min-h-0"]));
-    expect(main.className.split(" ")).toEqual(expect.arrayContaining(["flex-1", "min-h-0"]));
+    const host = await mount("#/playground");
+    const request = () => host.querySelector('section[aria-label="Request"]');
+    await until(() => !!bar(host) && !!request());
+    // Execution setup stays outside the request's scrolling panel, whose footer does not shrink out of view.
+    expect(request()!.contains(bar(host))).toBe(false);
+    expect(bar(host)!.compareDocumentPosition(request()!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(bar(host)!.parentElement!.className.split(" ")).toEqual(expect.arrayContaining(["flex", "flex-col", "min-h-0"]));
+    expect(request()!.querySelector("footer")!.className.split(" ")).toContain("shrink-0");
+    // Describing an agent or handing it to a local coding agent needs no model key on this server.
+    await act(async () => { location.hash = "#/agents/new"; });
+    await until(() => !!host.textContent?.includes("What do you want to build?"));
+    expect(bar(host)).toBeNull();
   });
 
   it("reads the capabilities again on its own while no model is ready, and stops once one is", async () => {
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
     let ready = false;
     const asked = serve(() => ({ source: "providers", default: null, ready, needs: ready ? null : "key" }));
-    const host = await mount("#/agents");
+    const host = await mount("#/playground");
     await until(() => !!bar(host));
     const reads = () => asked.filter((a) => a === "GET /v2/capabilities").length;
     const before = reads();
@@ -626,7 +664,7 @@ describe("App, the no-model bar", () => {
 
   it("says to set a key and restart where the server keeps no keys, one OpenRouter key giving every harness its model", async () => {
     serve(() => ({ source: "providers", default: null, ready: false, needs: "key" }), false);
-    const host = await mount("#/runs");
+    const host = await mount("#/playground");
     await until(() => !!bar(host));
     expect(bar(host)?.textContent).toBe("No model yet. Set OPENROUTER_API_KEY (one key gives every harness its model), or ANTHROPIC_API_KEY or OPENAI_API_KEY, and restart.");
     expect(bar(host)?.querySelector("a")).toBeNull();
@@ -634,7 +672,7 @@ describe("App, the no-model bar", () => {
 
   it("says to set a key and restart, with no Settings link, where the server has key routes but no seal key to keep one", async () => {
     serve(() => ({ source: "providers", default: null, ready: false, needs: "key" }), "unavailable");
-    const host = await mount("#/runs");
+    const host = await mount("#/playground");
     await until(() => !!bar(host));
     expect(bar(host)?.textContent).toBe("No model yet. Set OPENROUTER_API_KEY (one key gives every harness its model), or ANTHROPIC_API_KEY or OPENAI_API_KEY, and restart.");
     expect(bar(host)?.querySelector("a")).toBeNull();
@@ -644,7 +682,7 @@ describe("App, the no-model bar", () => {
   for (const model of ["anthropic/claude-sonnet-5-5", "deepseek/deepseek-v4-pro"])
     it(`names the server's default model ${model} and says to set its provider's key and restart, with no Settings link or OpenRouter promise, where the server keeps keys`, async () => {
       serve(() => ({ source: "providers", default: model, ready: false, needs: "key" }));
-      const host = await mount("#/runs");
+      const host = await mount("#/playground");
       await until(() => !!bar(host));
       expect(bar(host)?.textContent).toBe(`No model yet. This server's default model is ${model}: set its provider's key where AgentRun starts, and restart.`);
       expect(bar(host)?.querySelector("a")).toBeNull();
@@ -652,7 +690,7 @@ describe("App, the no-model bar", () => {
 
   it("names the server's default model and says to set its provider's key and restart where the server can't keep a key", async () => {
     serve(() => ({ source: "providers", default: "anthropic/claude-sonnet-5-5", ready: false, needs: "key" }), "unavailable");
-    const host = await mount("#/runs");
+    const host = await mount("#/playground");
     await until(() => !!bar(host));
     expect(bar(host)?.textContent).toBe("No model yet. This server's default model is anthropic/claude-sonnet-5-5: set its provider's key where AgentRun starts, and restart.");
     expect(bar(host)?.querySelector("a")).toBeNull();
@@ -660,7 +698,7 @@ describe("App, the no-model bar", () => {
 
   it("says to name the gateway's model in AGENT_MODEL, or add a model key in Settings, with no OpenRouter promise, where the server sends its models to a gateway", async () => {
     serve(() => ({ source: "gateway", default: null, ready: false, needs: "key" }));
-    const host = await mount("#/runs");
+    const host = await mount("#/playground");
     await until(() => !!bar(host));
     expect(bar(host)?.textContent).toBe("No model yet. This server sends its models to a gateway: name the gateway's model in AGENT_MODEL where AgentRun starts, and restart, or add a model key in Settings → Model keys.");
     expect(bar(host)?.querySelector("a")?.textContent).toBe("add a model key in Settings → Model keys");
@@ -669,21 +707,22 @@ describe("App, the no-model bar", () => {
 
   it("says only to name the gateway's model in AGENT_MODEL, with no Settings link, on a gateway server that can't keep a key", async () => {
     serve(() => ({ source: "gateway", default: null, ready: false, needs: "key" }), "unavailable");
-    const host = await mount("#/runs");
+    const host = await mount("#/playground");
     await until(() => !!bar(host));
     expect(bar(host)?.textContent).toBe("No model yet. This server sends its models to a gateway: name the gateway's model in AGENT_MODEL where AgentRun starts, and restart.");
     expect(bar(host)?.querySelector("a")).toBeNull();
   });
 
-  it("names AGENT_MODEL when it is the problem, has no Settings link where the server keeps no keys, and is not on the first screen, which has the key card", async () => {
+  it("names AGENT_MODEL for execution when it is the problem, with no key request on the first screen", async () => {
     serve(() => ({ source: "providers", default: "acme/unknown", ready: false, needs: "model" }), false);
-    const host = await mount("#/runs");
+    const host = await mount("#/playground");
     await until(() => !!bar(host));
     expect(bar(host)?.textContent).toBe("This server's default model doesn't run here: set AGENT_MODEL to a model it knows, and restart.");
     expect(bar(host)?.querySelector("a")).toBeNull();
     act(() => root!.unmount()); root = undefined;
     const first = await mount("");
-    await until(() => !!first.querySelector('section[aria-label="Model key"]'));
+    await until(() => !!first.textContent?.includes("Mission Control could not be read"));
+    expect(first.querySelector('section[aria-label="Model key"]')).toBeNull();
     expect(bar(first)).toBeNull();
   });
 
@@ -704,7 +743,7 @@ describe("App, the no-model bar", () => {
       if (path === "/v2/runs" || path === "/v2/agents") return json(200, { runs: [], agents: [], next_cursor: null });
       return json(404, { error: { code: "not_found", message: path, retryable: false } });
     });
-    const host = await mount("#/runs");
+    const host = await mount("#/playground");
     await until(() => !!bar(host));
     held = true;
     await act(async () => { window.dispatchEvent(new Event("focus")); });
@@ -717,64 +756,17 @@ describe("App, the no-model bar", () => {
     expect(bar(host)).toBeNull();
   });
 
-  // QA: the first screen's start-here step told the person to restart with AGENT_MODEL and reload, under a key card
-  // that saves a key with no restart. Where the server keeps keys it points at the card; where it keeps none, the env.
-  it("points the first screen's model step at the key card above where the server keeps keys, and keeps the env text where it keeps none", async () => {
-    const step = (host: HTMLElement) => host.querySelector('section[aria-label="Start here"]');
-    // Nothing of the owner's has run yet, so the first screen shows the start-here panel.
-    const fresh = { agents: 0, runs: { total: 0, active: 0, needs_input: 0, failed: 0, status_unknown: 0, needs_review: 0 }, per_agent: [], cost: { usd: null, basis: null, unknown_runs: 0 }, archived: { agents: 0, runs: 0 }, analytics: { ...ANALYTICS, by_source: [] } };
-    serve(() => ({ source: "providers", default: null, ready: false, needs: "key" }), "sealed", fresh);
-    const keys = await mount("");
-    await until(() => !!step(keys)?.textContent?.includes("Add a model key"));
-    expect(keys.querySelector('section[aria-label="Model key"]')).not.toBeNull();
-    expect(step(keys)?.textContent).toContain("Add a model key in the card above, and the templates here run in one click.");
-    expect(step(keys)?.textContent).not.toContain("AGENT_MODEL");
-    expect(step(keys)?.textContent).not.toContain("reload");
-    act(() => root!.unmount()); root = undefined;
-    serve(() => ({ source: "providers", default: null, ready: false, needs: "key" }), false, fresh);
-    const none = await mount("");
-    await until(() => !!step(none)?.textContent?.includes("Add a model key"));
-    expect(step(none)?.textContent).toContain("AGENT_MODEL");
-    expect(step(none)?.textContent).toContain("Then reload this page");
-    expect(step(none)?.textContent).not.toContain("card above");
-    act(() => root!.unmount()); root = undefined;
-    // Key routes but no seal key: the server refuses every save (no_sealing_key), so the card can't take one.
-    serve(() => ({ source: "providers", default: null, ready: false, needs: "key" }), "unavailable", fresh);
-    const unsealed = await mount("");
-    await until(() => !!step(unsealed)?.textContent?.includes("Add a model key"));
-    expect(step(unsealed)?.textContent).toContain("AGENT_MODEL");
-    expect(step(unsealed)?.textContent).toContain("Then reload this page");
-    expect(step(unsealed)?.textContent).not.toContain("card above");
-    act(() => root!.unmount()); root = undefined;
-    // A gateway with no AGENT_MODEL: a provider's key saved in the card names no gateway model, so the env text stays.
-    serve(() => ({ source: "gateway", default: null, ready: false, needs: "key" }), "sealed", fresh);
-    const gateway = await mount("");
-    await until(() => !!step(gateway)?.textContent?.includes("Add a model key"));
-    expect(step(gateway)?.textContent).toContain("AGENT_MODEL_BASE_URL");
-    expect(step(gateway)?.textContent).not.toContain("card above");
-    act(() => root!.unmount()); root = undefined;
-    // AGENT_MODEL names a default whose provider's key the card may not offer: the step keeps the env text.
-    serve(() => ({ source: "providers", default: "deepseek/deepseek-v4-pro", ready: false, needs: "key" }), "sealed", fresh);
-    const named = await mount("");
-    await until(() => !!step(named)?.textContent?.includes("Add a model key"));
-    expect(step(named)?.textContent).toContain("AGENT_MODEL");
-    expect(step(named)?.textContent).not.toContain("card above");
-    act(() => root!.unmount()); root = undefined;
-    // AGENT_MODEL is the problem, which the card says no key fixes: the step keeps the env text.
-    serve(() => ({ source: "providers", default: "acme/unknown", ready: false, needs: "model" }), "sealed", fresh);
-    const model = await mount("");
-    await until(() => !!step(model)?.textContent?.includes("Add a model key"));
-    expect(step(model)?.textContent).toContain("AGENT_MODEL");
-    expect(step(model)?.textContent).not.toContain("card above");
+  it("does not ask for model credentials while browsing agents, runs or Settings", async () => {
+    for (const hash of ["#/agents", "#/runs", "#/settings/keys"]) {
+      serve(() => ({ source: "providers", default: null, ready: false, needs: "key" }));
+      const host = await mount(hash);
+      await until(() => !!host.querySelector('[aria-label="Navigation"]'));
+      expect(bar(host)).toBeNull();
+      expect(host.querySelector('[aria-label="Model key"]')).toBeNull();
+      act(() => root!.unmount()); root = undefined;
+    }
   });
 
-  it("shows nothing while a model is ready", async () => {
-    const asked = serve(() => ({ source: "providers", default: "anthropic/claude-sonnet-5-5", ready: true, needs: null }));
-    const host = await mount("#/runs");
-    await until(() => asked.includes("GET /v2/capabilities"));
-    await act(async () => { await new Promise((r) => setTimeout(r, 200)); });
-    expect(bar(host)).toBeNull();
-  });
 });
 
 // A run page's back arrow goes back: to the console page the person came from (the runs list, the agent's page), or, on a

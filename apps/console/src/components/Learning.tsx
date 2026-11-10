@@ -1,4 +1,4 @@
-import { BookOpen, ChevronDown, Hourglass, Pencil, Plus, RotateCcw, Sparkles, TriangleAlert, User } from "lucide-react";
+import { BookOpen, ChevronDown, Hourglass, Pencil, Plus, RefreshCw, RotateCcw, Sparkles, TriangleAlert, User } from "lucide-react";
 import { type KeyboardEvent, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
@@ -31,13 +31,33 @@ const PROSE = "text-[14px] leading-[1.65] [&_a]:text-primary [&_a]:underline [&_
 const MAC = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
 /** The most pages of notes, or of changes, the tab reads past the first on its own (for a link's note, or a note's source). */
 const MORE_PAGES = 20;
+const REFRESH_MS = 15_000;
 const field = "w-full border bg-background px-3 py-2 font-mono text-[13px] outline-none placeholder:text-muted-foreground focus:border-border-strong";
+
+/** Keep the version a person is editing, reviewing or confirming stable until they finish. Take/release the hold
+ * in the state setter: a reply can arrive before React commits, or it can batch a quick operation's start and end. */
+type RefreshHolds = { items: Set<symbol>; changed: (held: boolean) => void };
+function useRefreshState<T = boolean>(holds: RefreshHolds, initial: T = false as T) {
+  const [active, setActive] = useState(initial);
+  const token = useRef(Symbol("learning interaction")).current;
+  useEffect(() => () => { holds.items.delete(token); holds.changed(holds.items.size > 0); }, [holds, token]);
+  const set = (value: T) => {
+    if (value) holds.items.add(token); else holds.items.delete(token);
+    holds.changed(holds.items.size > 0); setActive(value);
+  };
+  return [active, set] as const;
+}
 
 /** The agent's Learning tab: the notes it wrote for itself after its runs, which every later run reads first. Each note
  *  shows where it came from and how often it was used, and a person edits it (its version named, so a change made since
  *  is never written over), retires it, or adds one. Beside them: the learning switch, what runs did not keep and why, the
  *  before and after once there is one, and what the next run reads. */
-export function LearningTab({ agent, v2, focus = [], server, onAgent, places, onChanged }: LearningProps) {
+export function LearningTab(props: LearningProps) {
+  // Drafts and outstanding reads belong to one agent, even if the router reuses this component for another.
+  return <LearningView key={props.agent.agent_id} {...props} />;
+}
+
+function LearningView({ agent, v2, focus = [], server, onAgent, places, onChanged }: LearningProps) {
   const [view, setView] = useState<AgentLearning | null>(null);
   const [error, setError] = useState<unknown>(null);
   const [runs, setRuns] = useState<Run[]>([]);
@@ -45,24 +65,52 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent, places, on
   // The changes past the view's first page, read only while a note's source is not yet known.
   const [olderLog, setOlderLog] = useState<{ items: LearningChange[]; cursor: string | null; pages: number }>({ items: [], cursor: null, pages: 0 });
   // Whether the runs read are all the agent's (false: the latest page of them only).
-  const [adding, setAdding] = useState(false);
+  const [held, setHeld] = useState(false);
+  const refreshHolds = useMemo<RefreshHolds>(() => ({ items: new Set<symbol>(), changed: setHeld }), []);
+  const [adding, setAdding] = useRefreshState(refreshHolds);
   const asked = useRef(0);
   const reading = useRef(false);
+  const live = useRef(true);
+  const refreshing = useRef(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const canRefresh = useRef<() => boolean>(() => false);
+  // Once extra note pages are loaded, keep that snapshot and its cursors until an explicit refresh. Background
+  // replies also check this, since editing or pagination may have begun while the network request was in flight.
+  canRefresh.current = () => !adding && !refreshHolds.items.size && !reading.current && later.pages === 0;
   // Reads the tab again. The answer settles once the list is read, or once that read failed (it never rejects), so an
   // approve or a retire that landed stays busy until then, and is never left busy after it.
-  const read = (): Promise<void> => {
+  const refresh = (background: boolean): Promise<void> => {
+    if (!live.current || (background && (refreshing.current || !canRefresh.current()))) return Promise.resolve();
     const n = ++asked.current;
+    refreshing.current = true; setIsRefreshing(true);
     reading.current = false;
     setError(null);
+    const current = () => live.current && n === asked.current && (!background || canRefresh.current());
     const learning = v2.agentLearning(agent.agent_id).then((r) => {
-      if (n !== asked.current) return;
+      if (!current()) return;
       setView(r); setLater({ items: [], cursor: r.notes.next_cursor, pages: 0 }); setOlderLog({ items: [], cursor: r.log.next_cursor, pages: 0 });
-    }, (e) => { if (n === asked.current) setError(e ?? new Error("unknown")); });
+    }, (e) => { if (current()) setError(e ?? new Error("unknown")); });
     // The agent's latest runs: what each read and kept, the titles a note's source is named by, and the drops.
-    v2.listAgentRuns(agent.agent_id, 50, null, !!agent.archived_at).then((r) => { if (n === asked.current) { setRuns(r.runs); } }, () => {});
-    return learning;
+    v2.listAgentRuns(agent.agent_id, 50, null, !!agent.archived_at).then((r) => { if (current()) { setRuns(r.runs); } }, () => {});
+    return learning.finally(() => { if (n === asked.current) { refreshing.current = false; setIsRefreshing(false); } });
   };
-  useEffect(() => { void read(); }, [v2, agent.agent_id]); // eslint-disable-line react-hooks/exhaustive-deps
+  const read = () => refresh(false);
+  const automatic = useRef<() => void>(() => {});
+  automatic.current = () => { if (!document.hidden) void refresh(true); };
+  useEffect(() => {
+    live.current = true;
+    void read();
+    const refresh = () => automatic.current();
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", refresh);
+    const timer = window.setInterval(refresh, REFRESH_MS);
+    return () => {
+      live.current = false; asked.current++;
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", refresh);
+      window.clearInterval(timer);
+    };
+  }, [v2, agent.agent_id, agent.archived_at]); // eslint-disable-line react-hooks/exhaustive-deps
   // After a write of the tab's own: the tab reads again, and the page is told.
   const changed = (): Promise<void> => { onChanged?.(); return read(); };
   // The next page of notes, for this read only: a page asked for before a refresh (an edit, a retire) never lands after
@@ -115,14 +163,19 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent, places, on
   }, [view, unknown, olderLog.cursor]); // eslint-disable-line react-hooks/exhaustive-deps
   const lookedBack = runs.filter((r) => r.learning && (r.learning.state === "merged" || r.learning.state === "dropped")).length;
 
-  if (error && !view) return <ProblemCard problem={problem(error, "what this agent learned")} onRetry={read} className="" />;
-  if (!view) return <Skeleton />;
+  const frame = (content: ReactNode) => <div className="space-y-3">
+    <div className="flex justify-end"><Button size="icon" variant="ghost" aria-label="Refresh learning" title="Refresh learning" disabled={held || isRefreshing}
+      onClick={() => { if (!refreshHolds.items.size && !refreshing.current) void read(); }}><RefreshCw className={cn(isRefreshing && "animate-spin")} aria-hidden /></Button></div>
+    {content}
+  </div>;
+  if (error && !view) return frame(<ProblemCard problem={problem(error, "what this agent learned")} onRetry={read} className="" />);
+  if (!view) return frame(<Skeleton />);
   // A refresh that failed (after an edit, a retire or a new note) leaves the notes read before it on screen: a line beside
   // them says they were not read again, and why, and Try again reads them again.
   const stale = error ? <RefreshFailed error={error} onRetry={read} /> : null;
 
   const switchRow = (quiet: boolean) => <SavedSwitch agent={agent} v2={v2} onAgent={onAgent} server={server} disabled={readOnly} quiet={quiet} />;
-  if (!all.length && !skills.length && !workflows.length && !adding) return (
+  if (!all.length && !skills.length && !workflows.length && !adding) return frame(
     <div className="space-y-6">
       {stale}
       <Empty on={on} lookedBack={lookedBack} switchRow={switchRow(true)} onAdd={readOnly ? undefined : () => setAdding(true)} />
@@ -130,7 +183,7 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent, places, on
     </div>
   );
 
-  return (
+  return frame(
     <div className="space-y-6">
       {waiting.length > 0 && (
         <section className="border border-warning/50" aria-label="Waiting for your OK">
@@ -142,7 +195,7 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent, places, on
           <ul className="space-y-3 p-4">
             {waiting.map((x) => (
               <li key={x.file}>
-                <NoteCard note={x} v2={v2} agentId={agent.agent_id} readOnly={readOnly} focused={focus.includes(x.file)} from={from.get(x.file)} runs={byRun} onChanged={changed} approves={approves} />
+                <NoteCard note={x} v2={v2} agentId={agent.agent_id} readOnly={readOnly} focused={focus.includes(x.file)} from={from.get(x.file)} runs={byRun} onChanged={changed} refreshHolds={refreshHolds} approves={approves} />
               </li>
             ))}
           </ul>
@@ -165,13 +218,13 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent, places, on
           <ul className="space-y-3">
             {active.map((x) => (
               <li key={x.file}>
-                <NoteCard note={x} v2={v2} agentId={agent.agent_id} readOnly={readOnly} focused={focus.includes(x.file)} from={from.get(x.file)} runs={byRun} onChanged={changed} />
+                <NoteCard note={x} v2={v2} agentId={agent.agent_id} readOnly={readOnly} focused={focus.includes(x.file)} from={from.get(x.file)} runs={byRun} onChanged={changed} refreshHolds={refreshHolds} />
               </li>
             ))}
           </ul>
           {later.error !== undefined && <ProblemCard problem={problem(later.error, "more notes")} onRetry={more} className="" />}
           {later.cursor && <div className="flex justify-center"><Button size="sm" onClick={more}>Load more notes</Button></div>}
-          {earlier.length > 0 && <Earlier notes={earlier} all={all} from={from} focus={focus} runs={byRun} v2={v2} agentId={agent.agent_id} readOnly={readOnly} onChanged={changed} />}
+          {earlier.length > 0 && <Earlier notes={earlier} all={all} from={from} focus={focus} runs={byRun} v2={v2} agentId={agent.agent_id} readOnly={readOnly} onChanged={changed} refreshHolds={refreshHolds} />}
         </section>
         {(["skill", "workflow"] as const).map((kind) => {
           const items = kind === "skill" ? skills : workflows;
@@ -188,10 +241,10 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent, places, on
               </div>
               {inUse.length > 0 && (
                 <ul className="space-y-3">
-                  {inUse.map((x) => <li key={x.file}><LearnedCard item={x} kind={kind} v2={v2} agentId={agent.agent_id} readOnly={readOnly} runs={byRun} approves={approves} onChanged={changed} /></li>)}
+                  {inUse.map((x) => <li key={x.file}><LearnedCard item={x} kind={kind} v2={v2} agentId={agent.agent_id} readOnly={readOnly} runs={byRun} approves={approves} onChanged={changed} refreshHolds={refreshHolds} /></li>)}
                 </ul>
               )}
-              {gone.length > 0 && <EarlierLearned kind={kind} items={gone} v2={v2} agentId={agent.agent_id} runs={byRun} readOnly={readOnly} onChanged={changed} />}
+              {gone.length > 0 && <EarlierLearned kind={kind} items={gone} v2={v2} agentId={agent.agent_id} runs={byRun} readOnly={readOnly} onChanged={changed} refreshHolds={refreshHolds} />}
             </section>
           );
         })}
@@ -349,12 +402,12 @@ type From = { run?: { id: string; at: string; reason: string } } | undefined;
 /** One note: its name, type and description, its body, where it came from and how often runs used it; Edit and Retire. */
 /** `approves`: for a note that waits, whether this caller approves from the console (undefined while that is read).
  */
-function NoteCard({ note, v2, agentId, readOnly, focused, from, runs, onChanged, approves }: { note: LearningNote; v2: Client; agentId: string; readOnly: boolean; focused: boolean; from: From; runs: Map<string, Run>; onChanged: () => void | Promise<void>; approves?: Approval }) {
-  const [editing, setEditing] = useState(false);
-  const [retiring, setRetiring] = useState(false);
+function NoteCard({ note, v2, agentId, readOnly, focused, from, runs, onChanged, approves, refreshHolds }: { note: LearningNote; v2: Client; agentId: string; readOnly: boolean; focused: boolean; from: From; runs: Map<string, Run>; onChanged: () => void | Promise<void>; approves?: Approval; refreshHolds: RefreshHolds }) {
+  const [editing, setEditing] = useRefreshState(refreshHolds);
+  const [retiring, setRetiring] = useRefreshState(refreshHolds);
   const [flash, setFlash] = useState(focused);
   const [saved, setSaved] = useState<string | null>(null);
-  const [approving, setApproving] = useState(false);
+  const [approving, setApproving] = useRefreshState(refreshHolds);
   const [said, setSaid] = useState<ReactNode>(null);
   const ref = useRef<HTMLElement>(null);
   const waits = isPending(note);
@@ -435,14 +488,14 @@ function NoteCard({ note, v2, agentId, readOnly, focused, from, runs, onChanged,
  *  Retire (after the notes' confirm) are made on the file that says whether it is in use, a skill's SKILL.md or a
  *  workflow's README, at the version listed, or an open skill's shown. A run changes it; a person approves or retires
  *  it, never edits it. */
-function LearnedCard({ item, kind, v2, agentId, readOnly, runs, approves, onChanged }: { item: LearnedItem; kind: "skill" | "workflow"; v2: Client; agentId: string; readOnly: boolean; runs: Map<string, Run>; approves?: Approval; onChanged: () => void | Promise<void> }) {
-  const [open, setOpen] = useState(false);
+function LearnedCard({ item, kind, v2, agentId, readOnly, runs, approves, onChanged, refreshHolds }: { item: LearnedItem; kind: "skill" | "workflow"; v2: Client; agentId: string; readOnly: boolean; runs: Map<string, Run>; approves?: Approval; onChanged: () => void | Promise<void>; refreshHolds: RefreshHolds }) {
+  const [open, setOpen] = useRefreshState(refreshHolds);
   const [text, setText] = useState<string | null>(null);
   // The version of the text shown: a skill is approved on it, never on a newer one the list holds (its etag).
   const [shown, setShown] = useState<string | null>(null);
   const [readError, setReadError] = useState<unknown>(null);
-  const [approving, setApproving] = useState(false);
-  const [retiring, setRetiring] = useState(false);
+  const [approving, setApproving] = useRefreshState(refreshHolds);
+  const [retiring, setRetiring] = useRefreshState(refreshHolds);
   const [said, setSaid] = useState<ReactNode>(null);
   const waits = item.status === "pending";
   const load = async () => {
@@ -751,8 +804,8 @@ function NoteEditor({ title, v2, agentId, file, seen, taken: names = [], onDone 
 }
 
 /** The notes no longer in use: replaced by a newer one, or retired. Closed until asked; one a link points at opens it. */
-function Earlier({ notes: list, all, from, focus, runs, v2, agentId, readOnly, onChanged }: { notes: LearningNote[]; all: LearningNote[]; from: ReturnType<typeof provenance>; focus: string[]; runs: Map<string, Run>; v2: Client; agentId: string; readOnly: boolean; onChanged: () => void | Promise<void> }) {
-  const [restoring, setRestoring] = useState<string | null>(null);
+function Earlier({ notes: list, all, from, focus, runs, v2, agentId, readOnly, onChanged, refreshHolds }: { notes: LearningNote[]; all: LearningNote[]; from: ReturnType<typeof provenance>; focus: string[]; runs: Map<string, Run>; v2: Client; agentId: string; readOnly: boolean; onChanged: () => void | Promise<void>; refreshHolds: RefreshHolds }) {
+  const [restoring, setRestoring] = useRefreshState<string | null>(refreshHolds, null);
   const [open, setOpen] = useState(list.some((x) => focus.includes(x.file)));
   // The retired notes opened to their text: read-only, as no later run reads them.
   const [shown, setShown] = useState<Set<string>>(new Set());
@@ -815,9 +868,9 @@ function Folded({ title, count, open, onToggle, children }: { title: string; cou
 
 /** The skills or the workflows a person retired, as retired notes are shown: closed until asked, each by its name, and
  *  who retired it and when once the changes read say. No Approve and no Retire: no later run is given it. */
-function EarlierLearned({ kind, items, v2, agentId, runs, readOnly, onChanged }: { kind: "skill" | "workflow"; items: LearnedItem[]; v2: Client; agentId: string; runs: Map<string, Run>; readOnly: boolean; onChanged: () => void | Promise<void> }) {
+function EarlierLearned({ kind, items, v2, agentId, runs, readOnly, onChanged, refreshHolds }: { kind: "skill" | "workflow"; items: LearnedItem[]; v2: Client; agentId: string; runs: Map<string, Run>; readOnly: boolean; onChanged: () => void | Promise<void>; refreshHolds: RefreshHolds }) {
   const [open, setOpen] = useState(false);
-  const [restoring, setRestoring] = useState<string | null>(null);
+  const [restoring, setRestoring] = useRefreshState<string | null>(refreshHolds, null);
   // The ones opened to their text, read from the file when opened (a skill's SKILL.md, a workflow's workflow.json).
   const [shown, setShown] = useState<Set<string>>(new Set());
   const toggle = (file: string) => setShown((s) => { const n = new Set(s); if (n.has(file)) n.delete(file); else n.add(file); return n; });

@@ -1,4 +1,4 @@
-// Start a run on the faux model from its agent's page and follow it to its end: the run's page reads Completed, and its
+// Start a run on the faux model through the agent page's API playground option and follow it to its end: its page reads Completed, and its
 // Timeline shows the answer the model gave. The faux model (packages/serve/test/fixtures/faux-model.mjs) answers a message it
 // has no rule for with "On <the message>: done.", so the answer is known before the run starts.
 import { check } from "../harness.mjs";
@@ -14,15 +14,19 @@ export default {
     check(made.status === 201, `creating the agent answered ${made.status}: ${JSON.stringify(made.body)}`);
     const agentId = made.body.agent_id;
 
-    // The agent's page: the first message, then Run, read from the server's answer to the start.
+    // The agent's shared dropdown carries this agent to the playground, where the first message starts the run.
     await page.goto(`${base}/#/agents/${encodeURIComponent(agentId)}`);
-    const bar = page.getByRole("region", { name: "Start a run" });
-    await bar.getByRole("textbox", { name: "The run's first message" }).fill(PROMPT);
+    await page.getByRole("button", { name: "Choose coding agent for Run agent", exact: true }).click();
+    await page.getByRole("menuitem", { name: "API playground", exact: true }).click();
+    await page.waitForURL((url) => url.hash === `#/playground?agent=${encodeURIComponent(agentId)}`);
+    await page.getByPlaceholder(/^The run's first message/).fill(PROMPT);
     const started = page.waitForResponse((r) => r.request().method() === "POST" && new URL(r.url()).pathname === `/v2/agents/${encodeURIComponent(agentId)}/runs`);
-    await bar.getByRole("button", { name: "Run", exact: true }).click();
+    await page.getByRole("button", { name: "Send request", exact: true }).click();
     const response = await started;
     check(response.ok(), `the start answered ${response.status()}: ${await response.text()}`);
+    check(JSON.parse(response.request().postData() ?? "{}").input?.content === PROMPT, "the playground changed the first message");
     const runId = (await response.json()).run_id;
+    await page.getByRole("button", { name: "Open this run", exact: true }).click();
     await page.waitForURL((url) => url.hash === `#/runs/${encodeURIComponent(runId)}`);
 
     // It ends: the header's status reads Completed, as the page reads the run again.

@@ -43,14 +43,18 @@ export default {
     const agent = await api("GET", `/agents/${encodeURIComponent(agentId)}`);
     check(agent.body.definition.approvals === "never", `the agent's approvals are ${JSON.stringify(agent.body.definition.approvals)}, not never`);
 
-    // A run: its read is set to ask, and it runs without waiting; the run ends, and its header says Unattended.
-    const bar = page.getByRole("region", { name: "Start a run" });
-    await bar.getByRole("textbox", { name: "The run's first message" }).fill(PROMPT);
+    // The agent's dropdown opens its playground. Its read is set to ask, but the agent's unattended run ends without waiting.
+    await page.getByRole("button", { name: "Choose coding agent for Run agent", exact: true }).click();
+    await page.getByRole("menuitem", { name: "API playground", exact: true }).click();
+    await page.waitForURL((url) => url.hash === `#/playground?agent=${encodeURIComponent(agentId)}`);
+    await page.getByPlaceholder(/^The run's first message/).fill(PROMPT);
     const started = page.waitForResponse((r) => r.request().method() === "POST" && new URL(r.url()).pathname === `/v2/agents/${encodeURIComponent(agentId)}/runs`);
-    await bar.getByRole("button", { name: "Run", exact: true }).click();
+    await page.getByRole("button", { name: "Send request", exact: true }).click();
     const start = await started;
     check(start.ok(), `the start answered ${start.status()}: ${await start.text()}`);
+    check(JSON.parse(start.request().postData() ?? "{}").input?.content === PROMPT, "the playground changed the first message");
     const runId = (await start.json()).run_id;
+    await page.getByRole("button", { name: "Open this run", exact: true }).click();
     await page.waitForURL((url) => url.hash === `#/runs/${encodeURIComponent(runId)}`);
     const head = page.getByRole("heading", { level: 1 }).locator("xpath=..");
     await head.getByText("Completed", { exact: true }).waitFor({ timeout: 45_000 });

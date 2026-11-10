@@ -71,14 +71,18 @@ export function SignIn({ mode, code = null, codeNeeded = false, onSubmit, proble
             )}
             <Field label={FIELD[mode].label} note={setup ? "12 characters or more." : undefined}>
               <span className="flex items-center gap-3 border border-[#444] bg-black px-3 focus-within:border-[#f5f5f5]">
-                <KeyRound className="size-4 text-[#888]" aria-hidden />
+                <KeyRound className="size-4 shrink-0 text-[#888]" aria-hidden />
                 <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete={FIELD[mode].autocomplete} autoFocus
                   aria-label={FIELD[mode].label} className="h-10 min-w-0 flex-1 bg-transparent font-mono text-[14px] outline-none" />
               </span>
             </Field>
             {setup && (
               <Field label="Again" note={again && again !== password ? "The two passwords differ." : undefined}>
-                <input type="password" value={again} onChange={(e) => setAgain(e.target.value)} autoComplete="new-password" aria-label="Password again" className={input} />
+                <span className="flex items-center gap-3 border border-[#444] bg-black px-3 focus-within:border-[#f5f5f5]">
+                  <KeyRound className="size-4 shrink-0 text-[#888]" aria-hidden />
+                  <input type="password" value={again} onChange={(e) => setAgain(e.target.value)} autoComplete="new-password" aria-label="Password again"
+                    className="h-10 min-w-0 flex-1 bg-transparent font-mono text-[14px] outline-none" />
+                </span>
               </Field>
             )}
             {offered && (
