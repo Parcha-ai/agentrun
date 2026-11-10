@@ -684,11 +684,15 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     // A seal while the steer is placed fails it before it is awaited: handled here.
     taken.catch(() => undefined);
     const theGate = gate;
-    // The session idle (a turn just ended, no wait taking messages yet): this places a turn no one tracks. Kept, so a wait
-    // that starts next takes it as its answer.
+    // The session idle (a turn just ended, no wait taking messages yet): this places a turn no one tracks.
     const idle = session.state === "idle";
+    // A message that may not answer a person, delivered while the session is idle after a turn that ended on its question
+    // to the person (between that turn's end and the run's wait or park): refused in the waiting words, as the server
+    // refuses one while the run waits; never placed, so it neither answers the question nor resumes the agent.
+    if (followUp && idle && root && endedOnTurnEndingTool((await entriesOf(theGate.journal, root.id, context)) as never) !== undefined) return { refused: "The run is waiting on a person." };
     const steering = session.steer(text, requestId, followUp ? "followUp" : "steer", origin ? { origin } : undefined);
-    if (idle) idleSteer = { requestId, placed: steering.then(() => true, () => false) };
+    // A person's message (never a trigger's) placed so: kept, so a wait that starts next takes it as its answer.
+    if (idle && !followUp) idleSteer = { requestId, placed: steering.then(() => true, () => false) };
     try {
       await steering;
     } catch (error) {

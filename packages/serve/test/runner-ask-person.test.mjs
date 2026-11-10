@@ -279,6 +279,8 @@ test("wait in the claim: a trigger's message (answers: false) delivered while th
   const { server, gw } = await askRun(t, { tools: ["ask_person"], personWait: wait.personWait, settled: waitingInClaim(wait.seen) });
   const before = modelCalls(gw).length;
   const trigger = await sendCommand(server, RUN, { kind: "steer", body: { text: "A push came in.", answers: false } });
+  // Not taken yet, it is no answer: the run reads waiting on its question still (the server tells run.needs_input by it).
+  assert.equal((await viewOverStore(server, RUN, VIEW_DEPS)).status, "input_required", "a trigger's message counts as no answer");
   const row = await until(async () => (await server.commands(RUN, 0)).find((c) => c.id === trigger.id && (c.refused !== null || c.takenAt !== null)), "the trigger's row answered");
   assert.equal(row.refused, "The run is waiting on a person.", JSON.stringify(row));
   const now = await server.runs.get(RUN);
@@ -289,4 +291,30 @@ test("wait in the claim: a trigger's message (answers: false) delivered while th
     const r = await server.runs.get(RUN);
     return r.state === "ended" && r.runner === null && r;
   }, "the person's answer ends the run");
+});
+
+test("wait in the claim: a trigger's message (answers: false) delivered between the question's turn end and the wait's start is refused too, never taken as the answer", async (t) => {
+  const wait = fakeWait();
+  let server;
+  let trigger;
+  const beforePersonWait = async () => {
+    if (trigger) return;
+    trigger = await sendCommand(server, RUN, { kind: "steer", body: { text: "A push came in.", answers: false } });
+    await until(async () => (await server.commands(RUN, 0)).find((c) => c.id === trigger.id && (c.refused !== null || c.takenAt !== null)), "the trigger's row answered");
+  };
+  const { gw } = await askRun(t, { tools: ["ask_person"], personWait: wait.personWait, loopOptions: { beforePersonWait }, settled: async (s) => {
+    server = s;
+    return waitingInClaim(wait.seen)(s);
+  } });
+  const row = (await server.commands(RUN, 0)).find((c) => c.id === trigger.id);
+  assert.equal(row.refused, "The run is waiting on a person.", JSON.stringify(row));
+  const now = await server.runs.get(RUN);
+  assert.deepEqual([now.state, now.summary], ["running", "Waiting for your reply"], "the run waits on its person");
+  const asks = modelCalls(gw).length;
+  await sendCommand(server, RUN, { kind: "steer", body: { text: "us-west-2" } });
+  await until(async () => {
+    const r = await server.runs.get(RUN);
+    return r.state === "ended" && r.runner === null && r;
+  }, "the person's answer ends the run");
+  assert.ok(modelCalls(gw).length > asks);
 });

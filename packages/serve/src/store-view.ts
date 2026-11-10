@@ -238,7 +238,11 @@ async function storeRunOf(store: Store, runId: string, deps: ViewDeps): Promise<
   // The person's messages its runner has not taken yet (steer rows neither taken nor refused): the file path's `submitted`.
   // A run that waits on its person (a parked question) and has just been answered reads as going on from the answer's
   // row, never input_required again until its runner places it, as main's run read once the message was submitted.
-  const submitted = terminal || row.kind !== "agentic" ? 0 : (await commandsNow()).filter((command) => command.kind === "steer" && command.takenAt === null && command.refused === null).length;
+  // Read only for a run not working now (a working run reads working anyway), so a run list adds no read for those; and
+  // only a message that may answer a person counts (a trigger's, answers: false, never does, and is refused while it waits).
+  const submitted = terminal || row.kind !== "agentic" || working
+    ? 0
+    : (await commandsNow()).filter((command) => command.kind === "steer" && command.takenAt === null && command.refused === null && (command.body as { answers?: unknown } | null)?.answers !== false).length;
   const outcome = terminal ? STATUS_OF[row.state as Exclude<RunReadState, "running">] : undefined;
   const view: RunView = {
     id: row.id,
