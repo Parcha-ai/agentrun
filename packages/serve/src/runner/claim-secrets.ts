@@ -6,6 +6,7 @@
 // one runner never see each other's keys: each claim reads its own, into its own environment. (MCP credentials are the
 // other per-claim secret; they come through mcp-claim.ts, which already opens them from the store under the claim.)
 import { decisionKeysFor } from "../decisions.js";
+import { GATEWAY_KEY_ENV, PROVIDER_KEYS } from "../model.js";
 import type { RunLaunch } from "../run-launch.js";
 import { keysFor, needsOf, RUN_SECRETS } from "../runs.js";
 import { DECISION_KEYS, withoutSecrets } from "../secrets.js";
@@ -47,4 +48,36 @@ export async function claimSecrets(deps: ClaimSecretsDeps, revision: Revision, l
   const decision = decisionKeysFor(working, { providers: needs.decisionProviders, parallelWeb: launch.plane ? handsParallel(launch.plane) : false });
   for (const [name, value] of Object.entries(decision)) env[name] = value;
   return env;
+}
+
+/** Every model key a model route reads by name: each of pi-ai's providers' (model.ts PROVIDER_KEYS) and the gateway's. */
+export const MODEL_KEY_NAMES: readonly string[] = [...new Set([...Object.values(PROVIDER_KEYS).flat(), GATEWAY_KEY_ENV])];
+
+/** `env` for a model route (model-route.ts routeOf, a CLI's providerFor): the runner's own environment, its secrets kept
+ *  as runEnv makes them (readable by name, never enumerable), with each model key it lacks taken from `opened`: the keys
+ *  a claim opened from the store (claimSecrets, scoped to the run's model), or every one the server holds
+ *  (savedModelKeys). So a model key saved in Settings → Model keys reaches the next run's model requests with no
+ *  restart, as a tool key reaches its tools; a key set where AgentRun starts still wins (claimSecrets reads it first).
+ *  The keys added are never enumerable either: a spread of the result, or a spawn given it, carries none of them. */
+export function withModelKeys(env: NodeJS.ProcessEnv, opened: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const out: NodeJS.ProcessEnv = { ...env };
+  for (const name of Object.getOwnPropertyNames(env)) {
+    if (!Object.prototype.propertyIsEnumerable.call(env, name)) Object.defineProperty(out, name, Object.getOwnPropertyDescriptor(env, name)!);
+  }
+  for (const name of MODEL_KEY_NAMES) {
+    if (out[name] !== undefined || opened[name] === undefined) continue;
+    Object.defineProperty(out, name, { value: opened[name], enumerable: false, writable: false, configurable: false });
+  }
+  return out;
+}
+
+/** Every model key the server holds, for a model route with no revision to scope it by (a learning run's grade): each
+ *  by its name from `deps.env` first, then the store's sealed value, as claimSecrets reads them. */
+export async function savedModelKeys(deps: ClaimSecretsDeps): Promise<NodeJS.ProcessEnv> {
+  const out: NodeJS.ProcessEnv = {};
+  for (const name of MODEL_KEY_NAMES) {
+    const value = deps.env?.[name] ?? (deps.sealKey ? await getSealedKey(deps.store, deps.sealKey, name) : undefined);
+    if (value !== undefined) out[name] = value;
+  }
+  return out;
 }
