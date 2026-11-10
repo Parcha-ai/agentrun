@@ -18,11 +18,22 @@ const quiet = { beforeIntent: async () => {}, beforeResult: async () => {} };
 // One runner, never meant to lose its claim: a lease no stall outlasts.
 const TIMING = { leaseMs: 60_000, renewEveryMs: 20_000, stopMarginMs: 5_000, pollMs: 20, commandPollMs: 30 };
 const WAIT_MS = 30_000;
+/** How long the run's release may take after the row reads ended. */
+const RELEASE_MS = 5_000;
 after(closeOpenSessions);
 
 /** Run-1 of agent-1 through a real runner on the adapter loop: its spec gets `onSpec` (an endOfRun, a beforeRelease, a
- *  release), the loop's deps `deps`. Resolves with the run's row and learning kept once it ended. */
+ *  release), the loop's deps `deps`. Resolves with the run's row and learning kept once it ended and, when the spec has
+ *  a release, once that release has run. The row reads ended with no runner at the end's commit (an ending patch clears
+ *  the runner), and the loop calls the spec's release after it, when it closes the session, so reading the order on the
+ *  row alone races the release. */
 async function runWith(t, { onSpec = {}, deps = {} }) {
+  let released;
+  const releaseDone = new Promise((resolve) => (released = resolve));
+  if (onSpec.release) {
+    const release = onSpec.release;
+    onSpec = { ...onSpec, release: async () => { try { await release(); } finally { released(); } } };
+  }
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-endofrun-spec-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -41,7 +52,13 @@ async function runWith(t, { onSpec = {}, deps = {} }) {
   const deadline = Date.now() + WAIT_MS;
   for (;;) {
     const row = await server.runs.get("run-1");
-    if (row.state === "ended" && row.runner === null) return { row, kept: await server.learning.proposal("run-1") };
+    if (row.state === "ended" && row.runner === null) {
+      if (onSpec.release) {
+        let bound;
+        await Promise.race([releaseDone, new Promise((_, reject) => (bound = setTimeout(() => reject(new Error(`run-1's release (AdapterRunSpec.release) did not run within ${RELEASE_MS} ms of its end`)), RELEASE_MS)))]).finally(() => clearTimeout(bound));
+      }
+      return { row, kept: await server.learning.proposal("run-1") };
+    }
     if (Date.now() > deadline) throw new Error(`run-1 did not end: ${JSON.stringify(row)}`);
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
