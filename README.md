@@ -34,7 +34,7 @@ Save it in the console (Settings → Tool keys → Model keys), which takes effe
 1. **On Render, in one click**: [Deploy to Render](https://render.com/deploy?repo=https://github.com/Parcha-ai/agentrun) from [`render.yaml`](render.yaml).
 
    - Needs a card on your Render workspace: the 1 CPU / 2 GB instance (about $25 a month) and a 10 GB disk (about $2.50 a month), at Render's prices when this was written.
-   - In the form, paste one model key: OPENROUTER_API_KEY (any model) or ANTHROPIC_API_KEY. The rest are optional.
+   - In the form, paste OPENROUTER_API_KEY. We recommend an OpenRouter key with a dollar cap and an expiration date. Do not share this key with anyone. The other keys are optional.
    - When it's live, open its URL and paste AGENTRUN_TOKEN from the service's Environment tab to set your password.
 
 2. **Free**: run the public image, `ghcr.io/parcha-ai/agentrun-server`, with `docker compose` on your own Linux machine

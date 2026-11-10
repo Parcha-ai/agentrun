@@ -27,7 +27,7 @@ services:
       # generates it once (base64 of 256 bits); a service that already has it keeps its own. Losing it loses them.
       - key: AGENTRUN_SEAL_KEY
         generateValue: true
-      # One key runs every template: OpenRouter covers every model.
+      # The recommended key: OpenRouter covers every model, Jev included.
       - key: OPENROUTER_API_KEY
         sync: false
       - key: ANTHROPIC_API_KEY
