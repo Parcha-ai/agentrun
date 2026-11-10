@@ -18,8 +18,6 @@ import { fixture, launchBrowser, LOOPBACK, newContext, newPage, ROOT, setUp } fr
 
 const { values } = parseArgs({ options: { tap: { type: "string" } } });
 const dir = await mkdtemp(join(tmpdir(), "agentrun-e2e-computer-"));
-// The seal key the server makes at its start and its runner reads: one config home for both, this run's own.
-process.env.XDG_CONFIG_HOME = join(dir, "config");
 // The desktop's provider key: a stand-in, given only to the fake desktop.
 process.env.E2B_API_KEY = "e2b-test-not-a-key";
 const dist = (file) => import(join(ROOT, "packages/serve/dist", file));
@@ -29,7 +27,7 @@ const { startRunner } = await dist("runner/runner.js");
 const { dispatchRunner } = await dist("runner/harness-loops.js");
 const { runEnv, runnerComputers } = await dist("runner/main.js");
 const { routeOf } = await dist("runner/model-route.js");
-const { ensureSealKey, sealKeyHome } = await dist("seal-key.js");
+const { bootSealKey } = await dist("seal-key.js");
 const { fakeDesktopProvider } = await import(join(ROOT, "packages/serve/test/computer-live-support.mjs"));
 
 const results = [];
@@ -61,7 +59,8 @@ try {
   // The runner beside it, on the same store, with the server's seal key and the faux model.
   runnerStore = await openSqliteStore({ dataDir: data, role: "runner" });
   const env = { ...runEnv(process.env), ...fauxEnvOf({ faux }) };
-  const sealKey = ensureSealKey(undefined, { configHome: sealKeyHome(process.env) }).key;
+  // The seal key the server made at its start, beside the store, read as the runner reads it.
+  const sealKey = (await bootSealKey(runnerStore, data, { role: "runner" })).key;
   const computers = runnerComputers(runnerStore, env, sealKey, { load: desktop.load });
   runner = startRunner({ store: runnerStore, createLoop: dispatchRunner({ env, data, journal: (claim) => runnerStore.journal(claim), store: runnerStore, sealKey, routeOf, computerForClaim: computers.computerForClaim, computerDeps: computers.computerDeps }) });
 
