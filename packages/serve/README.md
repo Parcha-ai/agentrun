@@ -1527,7 +1527,11 @@ the secret's bytes. A receiver checks the signature against the raw body and ref
 from its clock, so a replay does not pass. The first `PUT` makes the secret, `whsec_` and 32 random bytes in base64,
 and answers `201` with it, once; `GET /v2/settings/webhook` never shows it. It is kept like a [tool key](#tool-keys):
 sealed under the server's seal key in the store, and a replaced or removed one is kept sealed too, so a run that echoes
-it is still cut. A new secret is a `DELETE` and a `PUT`. A `DIR/webhook.json` an earlier build left is not read: the
+it is still cut. A `PUT` that changes the URL makes a new secret and shows it once, as the first does; one that keeps the
+URL keeps it. `GET` and the log show the URL's origin and its last four characters, never the whole URL (a chat
+service's incoming-hook URL is a credential itself). The URL is refused when it is on a private network or this machine,
+by address or by any address its name resolves to, and each try resolves the name again and dials the address it
+checked; an operator who sends to an internal receiver sets `AGENTRUN_WEBHOOK_PRIVATE_TARGETS=1` where the server starts. A `DIR/webhook.json` an earlier build left is not read: the
 server says so at its start (`condition=webhook_left_over`), and a `PUT` sets the webhook again.
 
 A try that is not answered 2xx within 15 s fails; a redirect is not followed. A failed message is tried again on the
