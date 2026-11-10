@@ -4,6 +4,7 @@
 // grade is booked as the grade's (learning-ask.ts bookedAsk: the learning run's own records, the kernel's model proxy)
 // and capped by nothing: main books it to the learning meter and caps no grade. A grader that never answers is cut at
 // the grade's bound, and what it spent is unknown (null).
+import { openRouterOnly, providerFor } from "../provider.js";
 import { bookedAsk, type GraderRoute } from "./learning-ask.js";
 import { learningLoopFactory } from "./learning-factory.js";
 import { GRADE_TIMEOUT_MS, type LearningLoopDeps } from "./learning-loop.js";
@@ -30,6 +31,27 @@ export interface LearningDispatchDeps {
 }
 
 const objectOf = (value: unknown): Record<string, unknown> => (value !== null && typeof value === "object" ? (value as Record<string, unknown>) : {});
+
+/** The grade's route for `model` (the grade model the server names; undefined, the agent's own), from the runner's one
+ *  route (`routeOf`), but where this host reaches the model's vendor only through OpenRouter (provider.ts
+ *  openRouterOnly: its one key for that wire is OpenRouter's, no gateway), as main's grade reaches it there:
+ *  - an Anthropic model, at OpenRouter's Messages endpoint as a claude-agent run's requests go (providerFor: Anthropic's
+ *    own id on the wire, OpenRouter's key as a bearer token, its one credential), priced at OpenRouter's catalog price of
+ *    the model (its priceModel, through the runner's route);
+ *  - an OpenAI model, the same model on OpenRouter (`openrouter/openai/<id>`, the route's own translation).
+ *  Every other model and host: the runner's route as named. */
+export async function gradeRouteOf(model: string | undefined, env: NodeJS.ProcessEnv, routeOf: (model: string | undefined) => GraderRoute | Promise<GraderRoute>): Promise<GraderRoute> {
+  const slash = model?.indexOf("/") ?? -1;
+  if (model === undefined || slash < 1 || env.AGENT_MODEL_BASE_URL) return routeOf(model);
+  const [vendor, id] = [model.slice(0, slash), model.slice(slash + 1)];
+  if (vendor === "anthropic" && openRouterOnly("anthropic-messages", env)) {
+    const sent = providerFor("anthropic-messages", env, { provider: "anthropic", modelId: id }, "the grader");
+    const priced = await routeOf(`${sent.priceModel.provider}/${sent.priceModel.modelId}`);
+    return { model: sent.modelId, provider: { api: "anthropic-messages", origin: sent.origin, credential: sent.credential, auth: sent.auth }, ...(priced.like ? { like: priced.like } : {}), ...(priced.price ? { price: priced.price } : {}) };
+  }
+  if (vendor === "openai" && openRouterOnly("openai-responses", env)) return routeOf(`openrouter/openai/${id}`);
+  return routeOf(model);
+}
 
 /** The learning run's grade route: its launch's grade model, and the agent of the run that learned. */
 async function gradeOf(store: LearningDispatchDeps["store"], learningRunId: string): Promise<GradeRouteAsk> {
