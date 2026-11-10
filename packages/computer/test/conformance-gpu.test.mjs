@@ -48,7 +48,7 @@ test("gpu.present is a Full case of its own group, run only where gpu is declare
 	const [found] = conformanceCases.filter((c) => c.id === "gpu.present");
 	assert.equal(found.level, "full");
 	assert.equal(found.group, "gpu");
-	assert.deepEqual([...found.needs].sort(), ["exec", "gpu"]);
+	assert.deepEqual([...found.needs], ["gpu"], "exec is checked on its own computer: a need would make the run's shared one for it");
 	const undeclared = await run({}, ["gpu.present"], { gpu: { type: "T4", count: 1 } });
 	assert.equal(statuses(undeclared)["gpu.present"], "skip");
 	assert.match(reasonOf(undeclared, "gpu.present"), /does not declare gpu/);
@@ -59,8 +59,10 @@ test("gpu.present is a Full case of its own group, run only where gpu is declare
 
 test("gpu.present passes where attach reads back the GPUs asked and nvidia-smi lists them as the computer's user; it fails where either does not", async () => {
 	const asked = { type: "A100-80GB", count: 2 };
-	const passing = await run({ gpu: GPU }, ["gpu.present"], { gpu: asked });
+	const fakes = fakeComputers({ gpu: GPU });
+	const passing = await runConformance(fakes.provider, { image: IMAGE, cases: conformanceCases.filter((c) => c.id === "gpu.present"), gpu: asked });
 	assert.equal(statuses(passing)["gpu.present"], "pass", reasonOf(passing, "gpu.present"));
+	assert.equal(fakes.made.length, 1, "one computer, the GPU one: no shared computer is made for the case alone");
 	assert.ok(passing.results[0].observed.some((line) => line.includes("GPU 1: NVIDIA A100-80GB")), JSON.stringify(passing.results[0].observed));
 	for (const [options, words] of [
 		[{ gpu: GPU, gpuUnseen: true }, /nvidia-smi -L as the computer's user/],

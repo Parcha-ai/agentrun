@@ -1,6 +1,9 @@
 // GPU: a computer asked for with a GPU the provider declares has it, as the vendor reports it (attach's read-back) and
 // as its programs see it from inside (nvidia-smi, as the computer's user). The run names the GPU it pays for (t.gpu()):
-// a GPU bills by the second, so this case makes one computer and keeps it no longer than it takes to look.
+// a GPU bills by the second, so this case makes one computer and keeps it no longer than it takes to look. It needs
+// exec but does not name it among its needs: the runner checks a group need on the run's shared computer, which it
+// would make for this case alone, a second computer billed for nothing. The provider's declared groups and its own GPU
+// computer's hello hold it to exec instead.
 import type { Case } from "../types.js";
 import { CASE_LABEL } from "./util.js";
 
@@ -12,17 +15,19 @@ export const gpuCases: Case[] = [
 		id: "gpu.present",
 		level: "full",
 		group: "gpu",
-		needs: ["gpu", "exec"],
+		needs: ["gpu"],
 		computer: "none",
 		timeoutMs: 600_000,
 		async run(t) {
 			const gpu = t.gpu();
+			t.assert(t.provider.capabilities().groups.includes("exec"), "the provider declares exec: nvidia-smi runs as the computer's user");
 			const labels = { ...t.runLabels, [CASE_LABEL]: "gpu" };
 			t.deepEqual(t.provider.check(t.spec({ labels, gpu })), [], `check of a spec with gpu ${JSON.stringify(gpu)}`);
 			const ref = await t.create({ labels, gpu });
 			const attached = t.ok(await t.provider.attach({ id: ref.id }, { signal: t.signal }), "attach by id");
 			t.deepEqual(attached.spec.gpu, gpu, "the GPUs attach reads back: the vendor's report, or what create recorded where the vendor reports none");
 			const connected = await t.connect(ref);
+			t.assert(connected.hello.groups.includes("exec"), "the GPU computer's hello declares exec");
 			if (AMD.test(gpu.type)) {
 				const seen = await t.exec(["sh", "-c", "rocm-smi --showproductname 2>&1; true"], {}, connected.client);
 				t.observe(`the GPUs the computer's user sees (rocm-smi): ${seen.out.trim().slice(0, 600) || "nothing"}`);
