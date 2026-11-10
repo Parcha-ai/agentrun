@@ -82,6 +82,21 @@ export const REQUEST_COST = "agentrun.request_cost";
 /** A request the host refused before it left (the run was cancelled): pi answers it with an error entry, which is not a
  *  request and not a failure to show, so the timeline skips the error entry that answers each refusal. */
 export const REQUEST_REFUSED = "agentrun.request_refused";
+
+/** Whether pi's error for a request is the model proxy's own refusal of it for the run's spend cap, before it was sent:
+ *  the proxy's JSON body after the HTTP status pi-ai puts first, read by its fields (`type` "agentrun_proxy", `code`
+ *  "spend_cap_reached", as the proxy writes them), never by its words. Any other error, a provider's 400 included, is not. */
+function proxyCapRefusal(errorMessage: unknown): boolean {
+  if (typeof errorMessage !== "string") return false;
+  const at = errorMessage.indexOf("{");
+  if (at < 0 || !/^\d{3}\s*$/.test(errorMessage.slice(0, at))) return false;
+  try {
+    const error = (JSON.parse(errorMessage.slice(at)) as { error?: { type?: unknown; code?: unknown } } | null)?.error;
+    return error?.type === "agentrun_proxy" && error.code === "spend_cap_reached";
+  } catch {
+    return false;
+  }
+}
 /** Written right after an answer whose cost was not in when it was written (a harness's proxy books a response after
  *  answering it): that answer's cost is still to come, as a REQUEST_COST_LATE. Until it comes the cost is unknown. */
 export const REQUEST_COST_PENDING = "agentrun.request_cost_pending";
@@ -347,6 +362,10 @@ function createMeter() {
       capRefusals -= 1;
       refusedAny = true;
       return "refusal";
+    } else if (entry.kind === "pi.assistant" && message?.stopReason === "error" && proxyCapRefusal(message.errorMessage)) {
+      // pi's entry for a request the model proxy refused for the run's spend cap before sending it: no request, no cost,
+      // and no row (the run's park at its cap says what happened).
+      refusedAny = true;
     } else if (entry.kind === REQUEST_STARTED) {
       capRefusals = 0;
       marked += 1;

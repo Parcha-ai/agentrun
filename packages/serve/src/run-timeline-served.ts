@@ -20,7 +20,7 @@ import { answersOf, asksOf, type SignInReader, shownOf, withApprovalRows, withAs
 import { journalRecords } from "./runner/journal-reader.js";
 import { decisionsOverStore } from "./store-reads/decisions.js";
 import { readRun } from "./store-reads/runs.js";
-import { runTimeline } from "./store-reads/journal.js";
+import { runTimeline, wholeAnswerFor, wholeAnswers } from "./store-reads/journal.js";
 import { FINAL_STATES, type Store } from "./store/store.js";
 
 export type ServedTimelineDeps = {
@@ -51,7 +51,10 @@ export async function servedTimelineRows(deps: ServedTimelineDeps, store: Store,
   // A question the agent asked (ask_person) and waits on: its waiting row after the call's result (run-view.ts withAsks), as
   // the run's view carries it and main's served Timeline did, so the console's "The agent asks" box reads that question,
   // never an earlier wait's words.
-  const rows = withApprovalRows(withAsks(await runTimeline(store, runId, context, { redact })), asksOf(records.entries), answersOf(records.entries, { final }), redact);
+  // Its final answer whole, as the run's view serves it (store-reads/journal.ts wholeAnswers): a row's cut is no answer's.
+  const options = { redact };
+  const timeline = await wholeAnswers(store, runId, context, await runTimeline(store, runId, context, options), options, wholeAnswerFor(values));
+  const rows = withApprovalRows(withAsks(timeline), asksOf(records.entries), answersOf(records.entries, { final }), redact);
   // A workflow's decisions: their rows among the model nodes' by time, each text shown through the cut set, with as many
   // characters held back from a text stored cut as a held value takes in its widest form (main's decisionShown).
   const receipts = await decisionsOverStore(store, runId, context).catch(() => null);
