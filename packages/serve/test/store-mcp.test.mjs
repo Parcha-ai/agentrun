@@ -191,10 +191,22 @@ test("an owner's tools refresh, or a save that keeps the sealed credential, neve
 test("a runner's refresh in flight across an owner's save that keeps the credential still lands, and the server stays signed in", async (t) => {
   const KEY = Buffer.from(randomBytes(32));
   const { fake, store, tokens, rotation, bearer, registry } = await rotatingServer(t, KEY);
-  const before = await store.mcp.server("fake");
+  // The set as a runner last kept it, with its access token's end (token_until), as an OAuth set's is.
+  const saved = await store.mcp.server("fake");
+  assert.equal((await store.mcp.keepRefreshed("fake", { seen: saved.sealed, sealed: saved.sealed, holder: "run-0@1", tokenLeftMs: 3_600_000 })).kept, true);
   // The runner leased its refresh and sent it before the owner's save; its keep lands after.
-  assert.equal((await store.mcp.leaseRefresh("fake", { seen: before.sealed, holder: "run-1@1" })).leased, true);
+  assert.equal((await store.mcp.leaseRefresh("fake", { seen: saved.sealed, holder: "run-1@1" })).leased, true);
+  const before = await store.mcp.server("fake");
+  assert.deepEqual([before.tokenLeftMs, before.refreshHolder], [3_600_000, "run-1@1"]);
   await registry().save("fake", { url: fake.url, auth: { type: "bearer" }, prices: { add: 0.03 } });
+  // The owner's save left the credential's columns and the runner's lease as it found them: no other runner may take the
+  // lease and refresh with the token already spent.
+  const after = await store.mcp.server("fake");
+  assert.deepEqual(
+    [[...after.sealed], after.tokenLeftMs, after.credentialChangedAt, after.refreshHolder, after.refreshUntil],
+    [[...before.sealed], before.tokenLeftMs, before.credentialChangedAt, before.refreshHolder, before.refreshUntil],
+    "sealed, its token's end, its time and the lease are as they were",
+  );
   // The provider's answer: a new set, the token the owner's save listed with now spent.
   const sealed = rotation();
   assert.equal((await store.mcp.keepRefreshed("fake", { seen: before.sealed, holder: "run-1@1", sealed })).kept, true, "the rotated set is kept: the owner's save left the credential as it found it");
