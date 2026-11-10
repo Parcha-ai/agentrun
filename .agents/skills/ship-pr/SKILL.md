@@ -21,7 +21,7 @@ slot for paid runs, a model gateway) live outside the repository: in the file `S
 | Fact | Value |
 |---|---|
 | Protection | ruleset `main`: pull request, 1 approval, stale approvals dismissed on push, threads resolved, linear history; merge queue, ALLGREEN, up to 5 entries, squash |
-| Required checks | `verify (22.19.0)` and `verify (22.23.2)`; `gh api repos/{owner}/{repo}/rulesets` is the authority. Every other job (stranger, floors, `pi-1-2`, `real-chrome`, `transport-docker`, `lean`) is a merge condition by this skill, not by the ruleset: a red one is fixed or named with its cause in the batch line |
+| Required checks | `verify (22.19.0)` and `verify (22.23.2)`; `gh api repos/{owner}/{repo}/rulesets` is the authority. Every other job (stranger, floors, `pi-1-2`, `real-chrome`, `lean`) is a merge condition by this skill, not by the ruleset: a red one is fixed or named with its cause in the batch line |
 | Toolchain | Node 22.19 or later on 22, or 24.2 or later; npm 11. Regenerate `package-lock.json` only with npm 11 (`--package-lock-only`), never by hand |
 | Changelog | a fragment in `changes/` per pull request with a user-visible change; no pull request edits an `Unreleased` section (`changes/README.md`) |
 | Identity | the machine identity authors, pushes, replies, resolves and arms auto-merge; only the maintainer approves |
@@ -111,44 +111,6 @@ required, the command, the pass rule and the cost. Its lead owns that section.
   - For the live check, a Browserbase or Kernel key whose plan allows at least one concurrent session.
   - No other credential, and no secret ever goes into the repository.
 - **Cost:** the Chrome suites and the stranger spec are $0. A provider live check is one session of about a minute. At Browserbase's list price ($0.12 per session-hour, one-minute minimum) that is under $0.01; Kernel is on the same order.
-
-### `@parcha/pi-transport`
-
-Three live checks: Docker (free, on every source change), Daytona and Modal (paid, when the code they reach
-changes). Each suite labels every box it makes with a label of its own run, lists that label at the provider at the
-end, and fails if a box is left. All three run from the repository root at the head after `npm run build`.
-
-- **When:**
-  - **Docker:** the diff touches `packages/pi-transport/src/**`, `package.json`, or a `test/*docker.live.test.ts`
-    file. A diff of only the README, `changes/` or offline tests skips it.
-  - **Daytona:** the diff touches `src/box/daytona.ts`, the shared box code (`src/box/box.ts`, `files.ts`,
-    `child.ts`), `src/hands/**`, or `test/box-*daytona*.live.test.ts`.
-  - **Modal:** the diff touches `src/box/modal.ts`, the shared box code, `src/hands/**`, or
-    `test/*modal*.live.test.ts`.
-- **Command:**
-
-  ```bash
-  npm run build
-  npm run test:live:docker -w @parcha/pi-transport
-  # Daytona, under the credential wrapper that exports DAYTONA_API_KEY, DAYTONA_API_URL, DAYTONA_TARGET:
-  PI_TRANSPORT_LIVE_DAYTONA=1 npm run test:live -w @parcha/pi-transport
-  # Modal, under the wrapper that exports MODAL_TOKEN_ID and MODAL_TOKEN_SECRET:
-  npm install --no-save --ignore-scripts modal@0.11.0
-  PI_TRANSPORT_LIVE_MODAL=1 npm run test:live -w @parcha/pi-transport
-  ```
-
-  `test:live` loads every live file; each provider's own variable picks the files that run, and the others skip.
-  `PI_TRANSPORT_LIVE_MODAL_KINDS` picks Modal kinds (`sandbox,vm` by default; add `gpu` only when the change
-  touches GPU handling). `PI_TRANSPORT_LIVE_PREFIX` and `PI_TRANSPORT_LIVE_LABELS` (`a=b,c=d`) name and label the
-  run's boxes, so two runs never touch each other's boxes.
-- **Pass:** each command exits 0 and its Vitest summary shows `0 failed` (skipped files are fine). A non-zero exit,
-  a failed test, or a run killed before its summary blocks. The suites' own last test counts the run's boxes still
-  at the provider; a non-zero count fails the run. Put each summary line in the pull request body.
-- **Needs:** a Docker daemon and Node 22.19 or later; for Daytona, a key for a TEST organization (never a
-  production key) and its API URL and target; for Modal, a token pair and the `modal` SDK installed with `--no-save`
-  (the package never depends on it). No credential enters a box, a log or the pull request.
-- **Cost:** Docker $0. Daytona under $0.05 a run (about 60 short one-vCPU boxes, seconds each). Modal sandbox and VM
-  under $0.10 a run; the T4 kind adds about $0.05 when asked for. Estimates from list prices.
 
 ## Step 5: CI and threads
 

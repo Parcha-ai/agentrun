@@ -81,9 +81,8 @@ jobs:
     name: test (${{ matrix.node }}, ${{ matrix.shard }})
     needs: [build]
     # Merge-queue candidates run on Blacksmith (shards took 127 to 227 s there, 230 to 390 s here); pull requests, forks
-    # included, stay on GitHub's runners. The gh pool stays too: Blacksmith's kernels have no Yama ptrace_scope, so
-    # pi-transport's launcher refuses a launch with stdin or secrets there.
-    runs-on: ${{ github.event_name == 'merge_group' && !startsWith(matrix.shard, 'gh-') && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-latest' }}
+    # included, stay on GitHub's runners.
+    runs-on: ${{ github.event_name == 'merge_group' && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-latest' }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -91,7 +90,7 @@ jobs:
         # 24.11 = the supported floor (first 24 LTS), 24.21 = current. The merge queue runs current only: every pull
         # request and every push to main runs both.
         node: ${{ fromJSON(github.event_name == 'merge_group' && '["24.21.0"]' || '["24.11.0","24.21.0"]') }}
-        shard: [checks, packages, source, gh-1, gh-2, lean-1, lean-2, any-1, any-2, any-3, any-4, any-5, any-6]
+        shard: [checks, packages, source, lean-1, lean-2, any-1, any-2, any-3, any-4, any-5, any-6]
         # The downloaded source's consumer runs on current only, as it did in `checks`.
         exclude:
           - node: '24.11.0'
@@ -296,36 +295,6 @@ jobs:
           CONSOLE: ${{ needs.console.result }}
         run: test "$RESULT" = success && test "$CONSOLE" = success
 
-  transport-docker:
-    # @parcha/pi-transport's formatter and linter, and its box conformance suite on real Docker containers. They are not
-    # part of the verify matrix: the suite needs a Docker daemon and an image, not both Node versions. A daemon that
-    # cannot start a box fails a test here instead of skipping it. Then serve's boxed tools on the same daemon, advisory
-    # (a failure shows, and blocks nothing): a sandbox run's bash and file tools in a box with no network and no key.
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '24.21.0'
-          cache: npm
-      - run: npm install --global npm@11.21.0 --ignore-scripts
-      - run: node scripts/npm-ci-retry.mjs --ignore-scripts
-      - run: npm run lint -w @parcha/pi-transport
-      - run: docker pull debian:bookworm-slim
-      - run: npm run test:live:docker -w @parcha/pi-transport
-      - name: Build, for serve's boxed tools on Docker (advisory)
-        continue-on-error: true
-        run: npm run build
-      - name: Serve's boxed tools on Docker, no network and no key in the box, and the default box image built (advisory)
-        continue-on-error: true
-        working-directory: packages/serve
-        env:
-          AGENTRUN_SERVE_LIVE_DOCKER: '1'
-          AGENTRUN_SERVE_LIVE_DOCKER_BUILD: '1'
-        # The flag bounds the whole file, which builds the default box image (python, git, curl) once.
-        run: node --test --test-timeout=900000 test/boxed-tools.docker.test.mjs
-
   computer-docker:
     # @parcha/agentrun-computer on real Docker: the daemon's vet and Go tests, then the live demo of a command run in a
     # Docker computer. On an x64 and an arm64 runner, so each architecture's daemon runs on its own, not under emulation.
@@ -459,7 +428,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        spec: [agentrun-dsl, agentrun-jev, agentrun-pi, pi-durable-disk, pi-browser, pi-transport, pi-transport-docker, pi-durable-agent, agentrun-kernel, agentrun-harness-claude, agentrun-harness-codex, agentrun-serve]
+        spec: [agentrun-dsl, agentrun-jev, agentrun-pi, pi-durable-disk, pi-browser, pi-durable-agent, agentrun-kernel, agentrun-harness-claude, agentrun-harness-codex, agentrun-serve]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
