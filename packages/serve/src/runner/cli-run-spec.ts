@@ -48,7 +48,7 @@ import { imageWaitWords } from "../workspace/computer-deps.js";
 import { type AdapterRun, type AdapterRunSpec, hostLifecycle, type RunCapConfig } from "./adapter-loop.js";
 import { adapterRunGate, type AdapterSpecDeps, answersCut, buildToolHost, hostToolCtxOf, learnedWorkflowHostTool, learnsWorkflows, modelAskOf, webHostTools, webToolNames } from "./adapter-run-spec.js";
 import { signInReads } from "../sign-ins-store.js";
-import { claimSecrets } from "./claim-secrets.js";
+import { claimSecrets, withModelKeys } from "./claim-secrets.js";
 import { mcpForClaim } from "./mcp-run.js";
 import { TOOL_PLANE_ENV } from "../tool-plane.js";
 import { resolveHarness } from "./adapters/index.js";
@@ -109,6 +109,18 @@ function capModelOf(id: string, wire: string, listed: { cost?: Partial<CapPrice>
   return { id, api: wire, price, outputCeiling: typeof listed?.maxTokens === "number" ? listed.maxTokens : null };
 }
 type CapPrice = { input: number; output: number; cacheRead: number; cacheWrite: number; tiers: readonly { inputTokensAbove: number; input: number; output: number; cacheRead: number; cacheWrite: number }[] };
+
+/** A CLI run's environment: the runner's run environment (`env`, runner/main.ts runEnv), built from it itself and never
+ *  a spread of it, with the model keys the claim opened (`claimed`, withModelKeys) and the server's data directory named
+ *  (DATA_ENV). The run environment's secrets, and the keys added, are readable by name and never enumerable: the
+ *  harness's model route finds the key its requests carry (model.ts, `env[row.field]`) while a program spawned with this
+ *  environment carries none. A spread would drop every secret the launcher handed the runner, and the route would send no
+ *  key. The data directory is a plain variable, which a spawn carries. */
+function cliRunEnv(env: NodeJS.ProcessEnv | undefined, data: string, claimed: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
+  const out = withModelKeys(env ?? {}, claimed);
+  Object.defineProperty(out, DATA_ENV, { value: data, enumerable: true, writable: true, configurable: true });
+  return out;
+}
 
 /**
  * One claimed CLI run's AdapterRunSpec, built from its launch record and its revision.
@@ -220,7 +232,13 @@ export async function cliRunSpecFromLaunch(launch: RunLaunch, run: AdapterRun, d
   // The run's model (the launch's, pinned at start, else the revision's) and its adapter, as main builds them, on the
   // environment main's server gives its runs: the server's data directory named (DATA_ENV), so the CLI's install is
   // looked up there (the data's harnesses directory), never under the runner's HOME.
-  const env: NodeJS.ProcessEnv = { ...deps.env, [DATA_ENV]: deps.data };
+  // The run's keys for this claim (claim-secrets.ts: scoped to its tools and its model, the environment's first, then the
+  // store's), held by the runner's one redactor and this spec's log cut before anything can echo one. Its model's key goes
+  // to the model choice and the adapter's provider (withModelKeys, never enumerable), so a key saved in
+  // Settings → Model keys runs the next run with no restart, as one set where AgentRun starts does.
+  const claimed = await claimSecrets({ store: deps.store, sealKey: deps.sealKey, env: deps.env }, revisionRow as unknown as Parameters<typeof claimSecrets>[1], launch);
+  for (const redact of [...(run.redact ? [heldRedactor(run.redact)] : []), cut]) holdClaimed(redact, claimed);
+  const env = cliRunEnv(deps.env, deps.data, claimed);
   const chosen = await modelsOf(entry, env, modelAskOf(launch.model, body.model));
   const built = await entry.adapter(env, { model: chosen.model, models: chosen.models, unpriced: chosen.unpriced, ...(native.length ? { skills: native } : {}) });
   // The harness's own session options, its private directory and its working directory (SessionIO's dir and cwd, which
@@ -292,10 +310,9 @@ export async function cliRunSpecFromLaunch(launch: RunLaunch, run: AdapterRun, d
   const workflows = seedLaid?.workflows ?? [];
   const learns = learnsWorkflows(revision.kind, workflows);
   if (webNames.length || learns) {
-    const toolEnv = await claimSecrets({ store: deps.store, sealKey: deps.sealKey, env: deps.env }, revisionRow as unknown as Parameters<typeof claimSecrets>[1], launch);
+    // The claim's keys (above, already held by the redactors), a copy of its own for the tools' plane below.
+    const toolEnv: NodeJS.ProcessEnv = { ...claimed };
     handedKeys = runnerSecrets(toolEnv);
-    // The keys it opened join the runner's one redactor (the loop's), and this spec's log cut.
-    for (const redact of [...(run.redact ? [heldRedactor(run.redact)] : []), cut]) holdClaimed(redact, toolEnv);
     // The run's resolved tool plane (its web tools' providers), as the pi spec hands it its web tools.
     delete toolEnv[TOOL_PLANE_ENV];
     if (launch.plane && Object.keys(launch.plane).length) toolEnv[TOOL_PLANE_ENV] = JSON.stringify(launch.plane);

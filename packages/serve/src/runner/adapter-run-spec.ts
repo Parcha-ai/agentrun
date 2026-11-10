@@ -45,7 +45,7 @@ import { runTools, type ToolResults, withKindTools } from "../workspace/run-tool
 import { INPUTS_DIR, UPLOADS_DIR, Uploads } from "../uploads.js";
 import { handedSignInReadsBack, signInReads } from "../sign-ins-store.js";
 import { UNREADABLE_SIGN_IN } from "../runs.js";
-import { claimSecrets } from "./claim-secrets.js";
+import { claimSecrets, withModelKeys } from "./claim-secrets.js";
 import { mcpForClaim } from "./mcp-run.js";
 import { join } from "node:path";
 import { type AdapterRun, type AdapterRunSpec, hostLifecycle, type RunCapConfig } from "./adapter-loop.js";
@@ -310,7 +310,15 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
   // pi speaks both of main's wires: an OpenAI-family model's route is OpenAI's Responses itself.
   // The runner's one redactor (run.redact) goes to the route's translation and to the session's model proxy: a provider's
   // error that echoes a secret reaches pi's record with none in it, on any route.
-  const route = await deps.routeOf(modelAskOf(launch.model, body.model), deps.env, "default", PI_WIRES, undefined, cut);
+  // The run's secrets for this claim, read from the one store (never this process's environment or a pipe): the keys its
+  // tools unlock and its model needs, scoped to the run as the old per-run environment was, so one run's keys never reach
+  // another's on this runner (claim-secrets.ts). MCP credentials are the other per-claim secret and come through mcp-claim.
+  const toolEnv = await claimSecrets({ store: deps.store, sealKey: deps.sealKey, env: deps.env }, revisionRow as unknown as Parameters<typeof claimSecrets>[1], launch);
+  // The keys it opened join the run's one redactor before any tool or model request can echo one.
+  holdClaimed(cut, toolEnv);
+  // The route reads its model's key from the runner's environment, else the one the claim opened from the store: a key
+  // saved in Settings → Model keys runs the next run with no restart (withModelKeys).
+  const route = await deps.routeOf(modelAskOf(launch.model, body.model), withModelKeys(deps.env, toolEnv), "default", PI_WIRES, undefined, cut);
   // The run's pi-native extensions, in the root agent through the pi adapter (PiAdapterOptions.extensions), which installs
   // them in the claim's registry and offers each tool once:
   // - ask_person is pi's own tool (tools.ts): a run granted it carries its native extension, so pi runs it as its own tool
@@ -362,12 +370,6 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
         followUpOf: (raised: number) => followUpOf(raised),
       };
 
-  // The run's secrets for this claim, read from the one store (never this process's environment or a pipe): the keys its
-  // tools unlock and its model needs, scoped to the run as the old per-run environment was, so one run's keys never reach
-  // another's on this runner (claim-secrets.ts). MCP credentials are the other per-claim secret and come through mcp-claim.
-  const toolEnv = await claimSecrets({ store: deps.store, sealKey: deps.sealKey, env: deps.env }, revisionRow as unknown as Parameters<typeof claimSecrets>[1], launch);
-  // The keys it opened join the run's one redactor before any tool or model request can echo one.
-  holdClaimed(cut, toolEnv);
   // And every secret the server keeps sealed (store-secrets.ts): a run's text may quote one it was never handed.
   await holdStored(cut, deps.store, deps.sealKey, deps.data);
   // The run's resolved tool plane (its web_search/web_fetch/browser providers), as main hands its per-run process (runs.ts):
