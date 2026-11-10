@@ -12,9 +12,9 @@ import { after, test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { createRegistry, Harness, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
-import { HOST_PHASE, timelineReducer } from "@parcha/pi-durable-agent/timeline";
-import { emptyState, translate } from "../dist/live/translate.js";
+import { HOST_PHASE } from "@parcha/pi-durable-agent/timeline";
 import { openSqliteStore } from "../dist/store/index.js";
+import { runTimeline } from "../dist/store-reads/journal.js";
 import { startRunner } from "../dist/runner/runner.js";
 import { closeOpenSessions, piAdapterSpec } from "./conformance-pi-adapter.mjs";
 
@@ -25,6 +25,8 @@ const TIMING = { leaseMs: 60_000, renewEveryMs: 20_000, stopMarginMs: 5_000, pol
 after(closeOpenSessions);
 const BEFORE = "Preparing the computer's image: building it (python, git, curl, node, npm, rg)…";
 const AFTER = "A step of the host's, said once the root exists.";
+/** The run's end entry on its root (journal-kinds.ts KINDS.end). */
+const END = "agentrun.end";
 /** An entry the spec's onConversation writes in each conversation it is handed (a tool host's, as the browser's config). */
 const MARK = "test.root-mark";
 
@@ -49,21 +51,9 @@ async function rootEntries(store, kinds) {
 }
 const phaseRows = async (store) => (await rootEntries(store, [HOST_PHASE])).map((entry) => entry.data);
 
-/** run-1's timeline as a person's live view shows it: every stored commit through the live translate, its events through
- *  the timeline's reducer, as the console reads them. Read-only, so it reads while the runner holds the run. */
-async function liveRows(store) {
-  const row = await store.runs.get("run-1");
-  const journal = store.journal({ runId: "run-1", runner: "test-live-reader", epoch: row.epoch, until: 0, from: row.state });
-  const state = emptyState();
-  const reducer = timelineReducer();
-  for (let from = 0; ; ) {
-    const page = await journal.commitsAfter(from, 500, BACKGROUND_CONTEXT);
-    for (const commit of page.commits) reducer.apply(translate(state, commit));
-    if (page.next === undefined) break;
-    from = page.next;
-  }
-  return reducer.rows();
-}
+/** run-1's timeline rows as a person reads them (GET /v2/runs/{id}/timeline: store-reads' runTimeline over the store's
+ *  entries). Read-only, so it reads while the runner holds the run. */
+const liveRows = (store) => runTimeline(store, "run-1", BACKGROUND_CONTEXT);
 
 /** `check()` truthy within `ms`, or a failure that names what never came. */
 async function until(what, check, ms = 30_000) {
@@ -139,6 +129,8 @@ test("a long step after its phase (an image build): the row is on the person's t
   // The build, held by the case: the spec waits on it, as computerForClaim waits on Docker's image build.
   let finishBuild;
   const build = new Promise((resolve) => (finishBuild = resolve));
+  // A case that fails while the build is held lets it go, so the runner closes at once (t.after runs last-in, first-out).
+  t.after(() => finishBuild());
   let building = false;
   const loop = createAdapterLoop(async (claim, run) => {
     run.phase?.(BEFORE);
@@ -148,7 +140,10 @@ test("a long step after its phase (an image build): the row is on the person's t
     return marked({ ...(await spec(claim, run)), agentId: "agent-1" });
   });
   w.runner = startRunner({ store: w.store, createLoop: loop, name: "runner-a", ...TIMING });
-  const shown = await until("the phase row on the live timeline while the build runs", async () => (await liveRows(w.server)).filter((row) => row.kind === "phase" && row.summary === BEFORE));
+  const shown = await until("the phase row on the timeline while the build runs", async () => {
+    const rows = (await liveRows(w.server)).filter((row) => row.kind === "phase" && row.summary === BEFORE);
+    return rows.length > 0 && rows;
+  });
   assert.equal(building, true, "read while the build still runs");
   assert.equal(shown.length, 1, "one row");
   finishBuild();
@@ -164,7 +159,7 @@ test("a step that fails after its phase (a failed image build) keeps its row, an
   const loop = createAdapterLoop(async (_claim, run) => {
     run.phase?.(BEFORE);
     // The row is written before the build fails (the claim waits on the build, the row shows meanwhile).
-    await until("the phase row is on the live timeline", async () => (await liveRows(w.server)).some((one) => one.kind === "phase" && one.summary === BEFORE), 10_000);
+    await until("the phase row is on the timeline", async () => (await liveRows(w.server)).some((one) => one.kind === "phase" && one.summary === BEFORE), 10_000);
     throw new Error(FAILED);
   });
   w.runner = startRunner({ store: w.store, createLoop: loop, name: "runner-a", ...TIMING });
@@ -173,7 +168,10 @@ test("a step that fails after its phase (a failed image build) keeps its row, an
   assert.match(row.summary ?? "", /the image build failed/, `the row says why: ${JSON.stringify(row)}`);
   assert.deepEqual((await phaseRows(w.server)).map((one) => one.summary), [BEFORE], "the failed build keeps its row");
   const rows = await liveRows(w.server);
-  const at = rows.findIndex((one) => one.kind === "phase" && one.summary === BEFORE);
-  assert.ok(at >= 0, `the person's timeline keeps the phase row: ${JSON.stringify(rows)}`);
-  assert.ok(JSON.stringify(rows.slice(at + 1)).includes("the image build failed"), `the failure reads after it: ${JSON.stringify(rows)}`);
+  assert.ok(rows.some((one) => one.kind === "phase" && one.summary === BEFORE), `the person's timeline keeps the phase row: ${JSON.stringify(rows)}`);
+  // The run's end is on that root, after the row, with why: the journal reads the run failed, as its row does.
+  const kept = await rootEntries(w.server, [HOST_PHASE, END]);
+  assert.deepEqual(kept.map((entry) => entry.kind), [HOST_PHASE, END], `the row, then the end: ${JSON.stringify(kept)}`);
+  assert.equal(kept[1].data.state, "failed");
+  assert.match(String(kept[1].data.summary), /the image build failed/);
 });
