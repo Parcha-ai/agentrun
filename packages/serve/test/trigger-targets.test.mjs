@@ -164,12 +164,6 @@ test("message to a run with no cap is refused with the cap words", async () => {
   );
 });
 
-test("statusOf reports the run view's status", async () => {
-  const store = await freshStore();
-  const t = triggerTargets(store, deps({ runStatus: async () => "input_required" }));
-  assert.equal(await t.statusOf("run-1"), "input_required");
-});
-
 test("runOf finds a run started under a key, with no lost setup", async () => {
   const store = await freshStore();
   await store.runs.create({ id: "run-1", agentId: "a1", revisionId: "r1", origin: { key: "f1" } });

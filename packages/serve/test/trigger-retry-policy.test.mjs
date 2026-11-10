@@ -10,7 +10,6 @@ import { storeOn, T0 } from "./store-helpers.mjs";
 import { fakeClock } from "./trigger-support.mjs";
 
 const START = new Date(T0).toISOString();
-const settle = () => new Promise((resolve) => setImmediate(resolve));
 /** Until `check()` holds, letting the engine's promises and the store's worker run: at most 10 s. */
 async function until(check, what) {
   for (const end = Date.now() + 10_000; Date.now() < end; await new Promise((resolve) => setTimeout(resolve, 5))) if (await check()) return;
@@ -73,9 +72,10 @@ test("a firing a full server refused keeps its next try in the store: after a re
   // A new server on the same store: before the next try, nothing; at it, the run.
   const second = open(fakeClock(new Date(T0 + 1_000).toISOString()));
   await second.engine.start();
-  await until(async () => true, "a turn");
-  assert.equal(calls.start.length, 1, "not driven before its next try");
+  // The timer armed for its next try: arm passes over a firing being driven (triggers.ts arm), so one driven at the start,
+  // before its time, would leave the timer never armed for it.
   await armed(second.clock, T0 + 5_000);
+  assert.equal(calls.start.length, 1, "not driven before its next try");
   second.clock.to(new Date(T0 + 5_000).toISOString());
   await until(async () => (await store.triggers.firings(trigger.id))[0].status === "started", "started at its next try");
   assert.equal(calls.start.length, 2);
@@ -130,8 +130,7 @@ test("past max_active_runs a firing waits, with no try counted; it starts once a
   assert.equal((await store.triggers.get(trigger.id)).failuresInARow, 0, "a wait is no failure");
   await armed(clock, T0 + 500);
   clock.to(new Date(T0 + 500).toISOString());
-  await until(async () => true, "a turn");
-  assert.equal(calls.start.length, 1, "still waiting while the first run has not ended");
+  // Not driven while the first run works: the waiting firings test below counts no read of one with no room.
   await end(first.runId);
   // Woken within two ticks of the run's end.
   for (const step of [2, 3]) {
@@ -145,7 +144,7 @@ test("past max_active_runs a firing waits, with no try counted; it starts once a
   assert.equal(calls.start.length, 2);
 });
 
-test("three hundred waiting firings are read with one store query a tick, never one read each", async (t) => {
+test("waiting firings, one per trigger, are read with one store query a tick, never one read each", async (t) => {
   const { store, open, calls } = await engineOn(t);
   const reads = { waiting: 0, perFiring: 0 };
   const counted = (inner) => ({
@@ -164,7 +163,8 @@ test("three hundred waiting firings are read with one store query a tick, never 
   });
   const { engine, clock } = open(fakeClock(START), counted);
   await engine.start();
-  const N = 300;
+  // A read per waiting firing shows as N reads a tick at any N of two or more.
+  const N = 5;
   for (let n = 0; n < N; n++) {
     const trigger = await engine.create(runNow(`by hand ${n}`));
     await store.triggers.update(trigger.id, { maxActiveRuns: 1 });
@@ -180,4 +180,7 @@ test("three hundred waiting firings are read with one store query a tick, never 
   }
   assert.equal(reads.waiting - before.waiting, 3, "one waiting read a tick");
   assert.equal(reads.perFiring - before.perFiring, 0, "no read per waiting firing while none has room");
+  // And no drive: the third tick's turn done (the timer armed again), no waiting firing was started while none had room.
+  await armed(clock, T0 + 2_000);
+  assert.equal(calls.start.length, N, "no waiting firing started while none has room");
 });
