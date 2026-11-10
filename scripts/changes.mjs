@@ -384,6 +384,39 @@ export async function movedOwnVersions(root, base) {
 /** Whether a changelog's text has the section for `version`. */
 export const hasVersionSection = (text, version) => text.split('\n').some(line => isVersionHeading(line, version));
 
+// The Python client, parcha-agentrun (python/), is on a version line of its own too: python/pyproject.toml's version, above the 0.2.x
+// the old hosted SDK left on PyPI (scripts/python-release.mjs checks it). The same two rules hold for it as for the packages above.
+const PYTHON_PROJECT = 'python/pyproject.toml';
+/** The version a pyproject.toml's [project] table names, or undefined. */
+export const pythonVersionOf = text => /^\[project\][\s\S]*?^version\s*=\s*"([^"]*)"/m.exec(text)?.[1];
+/** What the Python client publishes, by its path under python/: its project, README, LICENSE and NOTICE, and its package. */
+const pythonShipped = path => ['pyproject.toml', 'README.md', 'LICENSE', 'NOTICE'].includes(path) || path.startsWith('agentrun/');
+
+/** Whether the Python client's published files differ from the merge base's while its version does not: the release would find that
+ *  version on PyPI already and publish nothing. A client the base does not have is new. */
+export async function stalePython(root, base) {
+  const mergeBase = (await git(root, ['merge-base', base, 'HEAD'])).trim();
+  const was = await gitShow(root, mergeBase, PYTHON_PROJECT);
+  const now = await readOptional(join(root, PYTHON_PROJECT));
+  if (was === null || now === null || pythonVersionOf(was) !== pythonVersionOf(now)) return false;
+  const under = list => list.split('\n').filter(Boolean).map(path => path.slice('python/'.length));
+  const changed = under(await git(root, ['diff', '--name-only', mergeBase, '--', 'python']));
+  const added = under(await git(root, ['ls-files', '--others', '--exclude-standard', '--', 'python']));
+  return [...changed, ...added].some(pythonShipped);
+}
+
+/** The Python client's version move against the merge base, `{ was, now }`, or null. Only the release sets it. A base on a
+ *  pre-release (0.3.0a0, before the client was published) had no line yet, so the move that starts it is no move. */
+export async function movedPython(root, base) {
+  const mergeBase = (await git(root, ['merge-base', base, 'HEAD'])).trim();
+  const was = await gitShow(root, mergeBase, PYTHON_PROJECT);
+  const now = await readOptional(join(root, PYTHON_PROJECT));
+  if (was === null || now === null) return null;
+  const [before, after] = [pythonVersionOf(was), pythonVersionOf(now)];
+  if (before === after || !/^\d+\.\d+\.\d+$/.test(before ?? '')) return null;
+  return { was: before, now: after };
+}
+
 async function main() {
   const args = process.argv.slice(2);
   const option = name => { const at = args.indexOf(name); return at >= 0 ? args[at + 1] : undefined; };
@@ -399,9 +432,12 @@ async function main() {
     if (!release) {
       const moved = await movedOwnVersions(root, base);
       if (moved.length) throw new Error(moved.map(({ directory, was, now }) => `packages/${directory} moved its version from ${was} to ${now}; the release sets it (docs/releasing.md), so a pull request leaves it at ${was}`).join('\n'));
+      const python = await movedPython(root, base);
+      if (python) throw new Error(`python moved its version from ${python.was} to ${python.now}; the release sets it (docs/releasing.md), so a pull request leaves it at ${python.was}`);
     }
     const stale = release ? await staleOwnVersions(root, base) : [];
     if (stale.length) throw new Error(`${stale.map(directory => `packages/${directory}`).join(', ')} changed the files it publishes and kept its version; the release sets its next version in its package.json (it is published at its own version, and a release stops on a version already published with other bytes)`);
+    if (release && await stalePython(root, base)) throw new Error(`python changed the files it publishes and kept its version ${pythonVersionOf(await readFile(join(root, PYTHON_PROJECT), 'utf8'))}; the release sets its next version in python/pyproject.toml (PyPI holds each version once, and the release skips one already there)`);
     console.log(`Changes: ${fragments.length} fragment(s) valid; no Unreleased section edited${isFold ? ' (the fold)' : ''}.`);
   } else if (args[0] === '--fold') {
     const version = args[1];

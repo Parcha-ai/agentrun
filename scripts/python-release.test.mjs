@@ -86,6 +86,10 @@ test('the project is the one to publish: its name, its own version line, no Do-N
   await assert.rejects(checkPythonProject(old.root), /must be above 0\.2\.1/);
   const beta = await tree(t, { version: '0.3.0b1' });
   await assert.rejects(checkPythonProject(beta.root), /not a PEP 440 x\.y\.z/);
+  await ok.write('python/agentrun/__init__.py', '__version__ = "0.2.9"\n');
+  await assert.rejects(checkPythonProject(ok.root), /__init__\.py says __version__ 0\.2\.9; python\/pyproject\.toml says 0\.3\.0/);
+  await ok.write('python/agentrun/__init__.py', '__version__ = "0.3.0"\n');
+  assert.deepEqual(await checkPythonProject(ok.root), { name: 'parcha-agentrun', version: '0.3.0' });
   await ok.write('python/LICENSE', 'MIT\n');
   await assert.rejects(checkPythonProject(ok.root), /python\/LICENSE is not the root LICENSE/);
 });
@@ -116,4 +120,22 @@ test('the sdist and wheel are this tree\'s python/, file for file and by their v
   await writeFile(join(root, 'python/agentrun/_live.py'), 'LIVE = 1\n');
   await assert.rejects(checkPythonDist(root, dist), /is missing agentrun\/_live\.py/);
   assert.equal(await readFile(join(root, 'python/agentrun/_live.py'), 'utf8'), 'LIVE = 1\n');
+});
+
+test('release.yml publishes parcha-agentrun only after the npm packages, by trusted publishing, after its checks, and never twice', async () => {
+  const { parse } = await import('yaml');
+  const workflow = parse(await readFile(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8'));
+  const job = workflow.jobs.pypi;
+  assert.equal(job.needs, 'publish', 'after the npm packages are published and verified');
+  assert.equal(job.if, workflow.jobs.publish.if, 'where npm publishing runs, and nowhere else');
+  assert.equal(job.environment, 'pypi-release');
+  assert.deepEqual(job.permissions, { contents: 'read', 'id-token': 'write' });
+  const uses = job.steps.filter((step) => step.uses).map((step) => step.uses);
+  for (const action of uses) assert.match(action, /@[0-9a-f]{40}$/, `${action} is pinned by commit: the job holds an OIDC token`);
+  const text = JSON.stringify(job);
+  assert.ok(!/secrets\.|password|token:/i.test(text.replace(/"id-token":"write"/, '')), 'no token or secret: trusted publishing only');
+  const at = (pattern) => job.steps.findIndex((step) => pattern.test(step.run ?? step.uses ?? ''));
+  const upload = at(/^pypa\/gh-action-pypi-publish@/);
+  assert.ok(at(/python -m build /) < at(/python-release\.mjs --verify/) && at(/python-release\.mjs --verify/) < at(/python-release\.mjs --on-pypi/) && at(/--on-pypi/) < upload, 'build, then the checks, then the PyPI probe, then the upload');
+  assert.equal(job.steps[upload].if, "steps.pypi.outputs.publish == 'true'", 'a version on PyPI already is not published again');
 });
