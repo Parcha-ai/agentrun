@@ -1,7 +1,8 @@
 // The store's one schema, version 3 (design 2.1). Nothing migrates into it: the rewrite replaces the old stores, and a store
 // an older build made is refused as a version this build does not know. The server sets it up once at its start (a
 // store_meta row holds the version); a runner refuses a version it does not know. Version 2 adds the computer ledger;
-// version 3 numbers each save of a sign-in (sign_ins.save).
+// version 3 numbers each save of a sign-in (sign_ins.save); version 5 adds the run-change feed (run_changes) and each
+// channel post's tries (channel_attempts).
 // Conventions: every time is INTEGER epoch milliseconds; JSON is TEXT checked by json_valid; money is REAL US dollars;
 // sealed columns hold ciphertext only (sealed with the server's key outside the store), so the store never sees a secret
 // in the clear. Foreign keys are on (the connection's pragma).
@@ -245,6 +246,20 @@ export const STORE_DDL: readonly string[] = [
     at INTEGER NOT NULL,
     PRIMARY KEY (channel, run_id, marker)
   ) STRICT`,
+  // Each try of a channel's post (the outbound webhook's deliveries log): kept to the newest few per channel.
+  `CREATE TABLE IF NOT EXISTS channel_attempts (
+    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+    channel TEXT NOT NULL,
+    post_id TEXT NOT NULL,
+    moment TEXT NOT NULL,
+    at INTEGER NOT NULL,
+    status_code INTEGER,
+    latency_ms INTEGER NOT NULL,
+    error TEXT,
+    retry_at INTEGER,
+    redelivery INTEGER NOT NULL CHECK (redelivery IN (0, 1))
+  ) STRICT`,
+  `CREATE INDEX IF NOT EXISTS channel_attempts_by_channel ON channel_attempts (channel, seq)`,
 
   // A code review's ledger, per head and firing.
   `CREATE TABLE IF NOT EXISTS review_ledger (

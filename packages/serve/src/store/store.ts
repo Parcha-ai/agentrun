@@ -290,6 +290,64 @@ export interface ChannelPost {
   readonly nextAt?: number;
 }
 
+/** A channel post as the store keeps it (store schema `channel_posts`): `body` its JSON text, byte for byte as it was
+ *  given; `state` queued (still to send), sending, sent or dropped (given up, `reason` says why). */
+export interface ChannelPostRow {
+  readonly id: string;
+  readonly channel: string;
+  readonly runId: string | null;
+  readonly moment: string;
+  readonly body: string;
+  readonly attempts: number;
+  readonly nextAt: number;
+  readonly state: "queued" | "sending" | "sent" | "dropped";
+  readonly reason: string | null;
+  readonly createdAt: number;
+}
+/** One try of a channel's post (store schema `channel_attempts`): its HTTP status, or null when none came back. */
+export interface ChannelAttemptRow {
+  readonly postId: string;
+  readonly moment: string;
+  readonly at: number;
+  readonly statusCode: number | null;
+  readonly latencyMs: number;
+  readonly error: string | null;
+  readonly retryAt: number | null;
+  readonly redelivery: boolean;
+}
+/** What a channel was told of a run (store schema `channel_told`): a marker, and when. */
+export interface ChannelToldRow {
+  readonly runId: string;
+  readonly marker: string;
+  readonly at: number;
+}
+
+/** A channel's outbox (channel_posts), the tries of its posts (channel_attempts) and what it told each run
+ *  (channel_told), for a channel the server sends itself (the outbound webhook). */
+export interface Channels {
+  /** Queues `post` (by its id: one already there is left as it is) and, in the same transaction, `told` (each marker of
+   *  its run; `replacing`, a prefix, drops that run's markers with it first). Answers whether the post is new. */
+  post(
+    post: { id: string; channel: string; runId?: string | null; moment: string; body: string; nextAt: number },
+    told?: { runId: string; marker: string; replacing?: string },
+  ): Promise<boolean>;
+  /** The post `id`, or undefined. */
+  get(id: string): Promise<ChannelPostRow | undefined>;
+  /** `channel`'s posts still to send (queued or sending), oldest first. */
+  queued(channel: string): Promise<ChannelPostRow[]>;
+  /** The post's new state, with `attempt` added to its channel's tries in the same transaction; the channel keeps its
+   *  newest `kept` tries, and of its sent or dropped posts only those a kept try names. */
+  settle(id: string, to: { state: ChannelPostRow["state"]; attempts?: number; nextAt?: number; reason?: string | null }, attempt?: ChannelAttemptRow, kept?: number): Promise<void>;
+  /** Every queued or sending post of `channel` dropped, `reason` kept on each: how many. */
+  dropAll(channel: string, reason: string): Promise<number>;
+  /** `channel`'s newest tries, newest first, at most `limit`. */
+  attempts(channel: string, limit: number): Promise<ChannelAttemptRow[]>;
+  /** What `channel` told: every run's markers, or `runId`'s. */
+  told(channel: string, runId?: string): Promise<ChannelToldRow[]>;
+  /** The told rows given go. */
+  forget(channel: string, rows: readonly { runId: string; marker: string }[]): Promise<void>;
+}
+
 /** A trigger as a template or an upgrade gives it. `scopes`: the (kind, scope) keys it answers, rows only while enabled. */
 export interface TriggerDef {
   readonly id: string;
@@ -925,6 +983,8 @@ export interface Store {
   readonly computerLedger: ComputerLedger;
   /** Each trigger source's sealed settings (design 2.1): a value per adapter, scope and field. */
   readonly triggerSettings: TriggerSettings;
+  /** The outbox of a channel the server sends itself, its tries and what it told each run. */
+  readonly channels: Channels;
   /** MCP OAuth sign-ins in flight (design 2.1): one row per pending sign-in, its verifier sealed. */
   readonly mcpOauth: McpOauth;
   /** Each agent's saved browser sign-ins (design 2.1): one live row per agent and provider, its pointer sealed, with the

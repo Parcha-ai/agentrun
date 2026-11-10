@@ -16,7 +16,7 @@ import {
   type JournalReads, type UpdatedRun,
   type ReleasedState, type RunState, type Store, type StoreRole, type TemplatePackage, type Templates, type TriggerDef, type TriggerPatch, type TriggerRow, type Triggers, type TriggerScope,
   FINAL_STATES, MCP_REFRESH_CALL_MS, MCP_REFRESH_LEASE_MS, type Learning, type LearningProposal, type Live, type LiveRow, type LiveViewerRow, type LiveViewers, type Mcp, type McpPinRow, type McpServerRow,
-  type McpOauth, type McpOauthPendingRow, type SealedKeyRow, type SealedKeys, type SealedSecretRow, type SealedSecrets, type Settings, type SettingRow, type TriggerSettingRow, type TriggerSettings,
+  type McpOauth, type McpOauthPendingRow, type SealedKeyRow, type SealedKeys, type SealedSecretRow, type SealedSecrets, type Settings, type SettingRow, type TriggerSettingRow, type TriggerSettings, type Channels, type ChannelAttemptRow, type ChannelPostRow,
   SignInHandedTo, SignInMissing, SIGN_IN_TOMBSTONES_KEPT, type SignIns, type SignInRow, type SignInTombstoneRow, type ViewerKind,
   type ComputerLedger, type ComputerLedgerRow, RUN_CHANGES_PAGE, type RunChangeCursor,
 } from "../store.js";
@@ -188,8 +188,8 @@ async function versionOf(db: Connection): Promise<number | null> {
  *  triggers, tool keys and trigger secrets (all in the store now), and the per-run door's token (the per-run door is
  *  gone). This version's own top-level files are not among them, so a directory holding them opens: .token and
  *  .server.json beside the store and its lock, a leftover box-image.json, and the files this version still keeps beside
- *  the store in the same format an earlier version did (the webhook config and its outbox, the kept idempotency answers,
- *  and the learning usage ledger), which an earlier version's copy of reads the same. */
+ *  the store in the same format an earlier version did (the kept idempotency answers and the learning usage ledger), which
+ *  an earlier version's copy of reads the same. */
 const EARLIER_ROOT_FILES = ["mcp-servers.json", "triggers.json", "tool-keys.json", "trigger-secrets.json", ".door-token"];
 
 /** The files an earlier version kept in a data directory, relative to it: its store (a STORE_FILE with tables and no
@@ -291,6 +291,19 @@ function fenced(claim: Claim, sql: string, params: readonly SqliteValue[]): Stat
   return { sql, params, expect: { kind: "fenced", runId: claim.runId, epoch: claim.epoch } };
 }
 
+/** A channel post's columns, as channelPostOf reads them. */
+const CHANNEL_POST_COLUMNS = "id, channel, run_id, moment, body, attempts, next_at, state, reason, created_at";
+type ChannelPostRecord = { id: string; channel: string; run_id: string | null; moment: string; body: string; attempts: number; next_at: number; state: ChannelPostRow["state"]; reason: string | null; created_at: number };
+const channelPostOf = (row: ChannelPostRecord): ChannelPostRow => ({
+  id: row.id, channel: row.channel, runId: row.run_id, moment: row.moment, body: row.body, attempts: Number(row.attempts), nextAt: Number(row.next_at), state: row.state, reason: row.reason, createdAt: Number(row.created_at),
+});
+type ChannelAttemptRecord = { post_id: string; moment: string; at: number; status_code: number | null; latency_ms: number; error: string | null; retry_at: number | null; redelivery: number };
+const channelAttemptOf = (row: ChannelAttemptRecord): ChannelAttemptRow => ({
+  postId: row.post_id, moment: row.moment, at: Number(row.at), statusCode: row.status_code === null ? null : Number(row.status_code), latencyMs: Number(row.latency_ms), error: row.error,
+  retryAt: row.retry_at === null ? null : Number(row.retry_at), redelivery: Number(row.redelivery) === 1,
+});
+type ChannelToldRecord = { run_id: string; marker: string; at: number };
+
 /** The Store over `connection`, on whichever database it is (SQLite here, Postgres in postgres/store.ts), on the store's
  *  clock `now` (ms), its identity `where` (Store.where). The opener sets the schema up and checks its version first. */
 export function storeOver(connection: StoreConnection, now: () => number): Store {
@@ -312,6 +325,7 @@ class SqliteStore implements Store {
   readonly sealedKeys: SealedKeys;
   readonly computerLedger: ComputerLedger;
   readonly triggerSettings: TriggerSettings;
+  readonly channels: Channels;
   readonly mcpOauth: McpOauth;
   readonly signIns: SignIns;
   readonly sealedSecrets: SealedSecrets;
@@ -1047,6 +1061,57 @@ class SqliteStore implements Store {
       },
       removeScope: async (adapter, scope) => {
         await db.write([{ sql: "DELETE FROM trigger_settings WHERE adapter = ? AND scope = ?", params: [adapter, scope] }]);
+      },
+    };
+
+    this.channels = {
+      post: async (post, told) =>
+        db.transaction(async (tx) => {
+          const added = await tx.runCounted(
+            "INSERT INTO channel_posts (id, channel, run_id, moment, body, next_at, state, created_at) VALUES (?, ?, ?, ?, ?, ?, 'queued', ?) ON CONFLICT (id) DO NOTHING",
+            post.id, post.channel, post.runId ?? null, post.moment, post.body, post.nextAt, now(),
+          );
+          if (told) {
+            if (told.replacing !== undefined) await tx.run("DELETE FROM channel_told WHERE channel = ? AND run_id = ? AND substr(marker, 1, length(?)) = ?", post.channel, told.runId, told.replacing, told.replacing);
+            await tx.run("INSERT INTO channel_told (channel, run_id, marker, at) VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING", post.channel, told.runId, told.marker, now());
+          }
+          return added > 0;
+        }),
+      get: async (id) => {
+        const row = await db.get<ChannelPostRecord>(`SELECT ${CHANNEL_POST_COLUMNS} FROM channel_posts WHERE id = ?`, id);
+        return row === undefined ? undefined : channelPostOf(row);
+      },
+      queued: async (channel) =>
+        (await db.all<ChannelPostRecord>(`SELECT ${CHANNEL_POST_COLUMNS} FROM channel_posts WHERE channel = ? AND state IN ('queued', 'sending') ORDER BY created_at, id`, channel)).map(channelPostOf),
+      settle: async (id, to, attempt, kept = 50) => {
+        await db.transaction(async (tx) => {
+          const post = await tx.get<{ channel: string }>("SELECT channel FROM channel_posts WHERE id = ?", id);
+          if (!post) return;
+          await tx.run(
+            "UPDATE channel_posts SET state = ?, attempts = COALESCE(?, attempts), next_at = COALESCE(?, next_at), reason = ? WHERE id = ?",
+            to.state, to.attempts ?? null, to.nextAt ?? null, to.reason ?? null, id,
+          );
+          if (!attempt) return;
+          await tx.run(
+            "INSERT INTO channel_attempts (channel, post_id, moment, at, status_code, latency_ms, error, retry_at, redelivery) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            post.channel, attempt.postId, attempt.moment, attempt.at, attempt.statusCode, attempt.latencyMs, attempt.error, attempt.retryAt, attempt.redelivery ? 1 : 0,
+          );
+          await tx.run("DELETE FROM channel_attempts WHERE channel = ? AND seq NOT IN (SELECT seq FROM channel_attempts WHERE channel = ? ORDER BY seq DESC LIMIT ?)", post.channel, post.channel, kept);
+          await tx.run("DELETE FROM channel_posts WHERE channel = ? AND state IN ('sent', 'dropped') AND id NOT IN (SELECT post_id FROM channel_attempts WHERE channel = ?)", post.channel, post.channel);
+        });
+      },
+      dropAll: async (channel, reason) =>
+        db.transaction((tx) => tx.runCounted("UPDATE channel_posts SET state = 'dropped', reason = ? WHERE channel = ? AND state IN ('queued', 'sending')", reason, channel)),
+      attempts: async (channel, limit) =>
+        (await db.all<ChannelAttemptRecord>("SELECT post_id, moment, at, status_code, latency_ms, error, retry_at, redelivery FROM channel_attempts WHERE channel = ? ORDER BY seq DESC LIMIT ?", channel, limit)).map(channelAttemptOf),
+      told: async (channel, runId) =>
+        (runId === undefined
+          ? await db.all<ChannelToldRecord>("SELECT run_id, marker, at FROM channel_told WHERE channel = ? ORDER BY run_id, at, marker", channel)
+          : await db.all<ChannelToldRecord>("SELECT run_id, marker, at FROM channel_told WHERE channel = ? AND run_id = ? ORDER BY at, marker", channel, runId)
+        ).map((row) => ({ runId: row.run_id, marker: row.marker, at: Number(row.at) })),
+      forget: async (channel, rows) => {
+        if (!rows.length) return;
+        await db.write(rows.map((row) => ({ sql: "DELETE FROM channel_told WHERE channel = ? AND run_id = ? AND marker = ?", params: [channel, row.runId, row.marker] })));
       },
     };
 
