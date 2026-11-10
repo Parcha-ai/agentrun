@@ -100,7 +100,6 @@ test("a learning run is no run of a person's: runs.list never names it, by agent
 
 test("what learning spent reads in one call over a window: a learning dropped before it was proposed costs 0 when it was kept; a proposal costs its learning run's cost when that run ended or failed, null kept unknown; one still waiting is none", async (t) => {
   const { store, clock } = await storeOn(t);
-  const { store, clock } = await storeOn(t);
   // run-a: dropped before it was proposed. run-b: proposed, its learning run ended with the grade's spend on its row.
   // run-c: proposed, its learning run failed with the grade's spend unknown. run-d: proposed, its learning run still queued.
   await store.runs.update(await claimedRun(store, "run-a"), { state: "ended" }, { also: [kept(TURN, { state: "dropped", reason: "empty" })] });
