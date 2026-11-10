@@ -101,7 +101,7 @@ export function AgentEditPage({ v2, caps, choices = [], gates = [], focusTool, a
       const { agent: now, etag: t } = await v2.getAgent(done.agent_id);
       const r = await revisionsOf(done.agent_id).catch(() => revisions);
       setAgent(now); setEtag(t); setRevisions(r);
-      if (now.revision !== formRevision) {
+      if ((now.revision ?? null) !== formRevision) {
         setFormRevision(now.revision ?? null); setVersion((n) => n + 1);
         setNotice(what === "Make current" ? null : `${what} done. This agent changed since you opened it: the form now shows its current revision.`);
       } else setNotice(null);
