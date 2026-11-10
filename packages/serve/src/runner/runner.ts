@@ -439,7 +439,12 @@ export function startRunner(options: RunnerOptions): Runner {
    *  call and the journal would not take it or could not be read: the refusal is then the run's (endRefused). */
   const endStopped = async (claim: Claim, stop: Command): Promise<boolean> => {
     try {
-      await endRun(claim, stopEnd(stop.kind === "cancel"), [stop.id]);
+      // A learning run is never reopened (reopenableWhere), so its person's stop keeps no outcome 'stopped' (which would
+      // read it waiting on a message for good): it reads stopped, as the learning loop's own stop end leaves it.
+      const end = stopEnd(stop.kind === "cancel");
+      const launch = end.outcome === "stopped" ? await store.runs.launch?.(claim.runId).catch(() => undefined) : undefined;
+      const learning = (launch?.body as { harness?: unknown } | undefined)?.harness === "learning";
+      await endRun(claim, learning ? { state: end.state, summary: end.summary } : end, [stop.id]);
       return true;
     } catch (error) {
       if (!(error instanceof EndNotWithdrawn)) throw error;

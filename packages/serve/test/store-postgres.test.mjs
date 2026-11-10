@@ -806,3 +806,34 @@ test("a runner process on a schema not set up is refused in the SQLite words, na
   assert.equal(error.message, `The store in the Postgres schema ${schema} is not set up yet: start the server on the Postgres schema ${schema} first, then the runner.`);
   assert.ok(!error.message.includes(PG_URL), "the URL is not in the words");
 });
+
+test("a run's outcome takes 'stopped' and 'cancelled' on a fresh schema and on one an earlier build set up (0001 and 0002) and migrated since", ONLY, async (t) => {
+  const outcomeCheck = async (schema) => (await sql(schema, "SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint WHERE conrelid = 'runs'::regclass AND conname = 'runs_outcome_check'")).map((row) => row.def);
+  for (const from of ["fresh", "0002"]) {
+    const schema = await schemaFor(t);
+    if (from === "0002") {
+      // A schema an earlier build set up (0001 and 0002: the outcome's CHECK takes no stop), migrated by this build's server.
+      const connection = await PgConnection.open({ url: PG_URL, schema });
+      try {
+        await connection.withClient((c) => migrate(c, schema, 0, migrationsIn().filter((m) => m.version <= 2)));
+      } finally {
+        await connection.close();
+      }
+      const [before] = await outcomeCheck(schema);
+      assert.ok(before && !before.includes("stopped"), `the earlier CHECK takes no stop: ${before}`);
+    }
+    const store = await openPostgresStore({ url: PG_URL, schema });
+    try {
+      await store.agents.create({ id: "agent-1", name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer." } });
+      for (const [id, outcome] of [["run-stopped", "stopped"], ["run-cancelled", "cancelled"]]) {
+        await store.runs.create({ id, agentId: "agent-1", revisionId: "rev-1" });
+        await store.runs.update(await store.claim(id, "runner-a", { leaseMs: 30_000 }), { state: "stopped", summary: outcome, outcome });
+        assert.equal((await store.runs.get(id)).outcome, outcome, `${from}: ${outcome}`);
+      }
+    } finally {
+      await store.close();
+    }
+    await assert.rejects(sql(schema, "UPDATE runs SET outcome = 'paused' WHERE id = 'run-stopped'"), /runs_outcome_check/, `${from}: any other outcome is refused`);
+    assert.equal((await outcomeCheck(schema)).length, 1, `${from}: one CHECK on the outcome`);
+  }
+});

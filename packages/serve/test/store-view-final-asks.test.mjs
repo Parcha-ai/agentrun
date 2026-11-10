@@ -59,7 +59,10 @@ async function parkedRun(t, refusing = () => false) {
   const base = piAdapterSpec({ script, tools, hooks: quiet }, { fetch: scriptedOrigin(script, []) });
   const gate = Object.assign(() => "ask", { askedAs: (tool) => tool });
   const loop = createAdapterLoop(async (claim, run) => ({ ...(await base(claim, run)), gate }));
-  const runner = startRunner({ store: refusingEnds(opened.runners[0], refusing), createLoop: loop, name: "runner-a", ...TIMING });
+  // A stopped end that must withdraw a call is retried while the journal refuses it, and only past its last try written on
+  // the run's row alone (runner.ts endRefused): here that give-up comes at the second refusal, 1 ms apart, so a refused
+  // end reaches the row-only stop at once rather than after the default hour of retries.
+  const runner = startRunner({ store: refusingEnds(opened.runners[0], refusing), createLoop: loop, name: "runner-a", ...TIMING, endRetryBackoffMs: 1, endRetryCapMs: 1, endRetryAtCap: 1 });
   t.after(() => runner.close());
   await until(async () => (await opened.server.runs.get("run-1")).state === "parked", "the run parked on the call", 30_000);
   return Object.assign(opened.server, { runnerStore: opened.runners[0], runner });

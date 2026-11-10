@@ -1161,15 +1161,21 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         }
         // Taken over from a runner whose lease ran out mid-run: said on the run's timeline once, at this claim's first pass.
         if (restarts === 0 && claim.lost) await noteTakenOver(harness, root, claim.lost.runner);
-        // Reopened by a person's follow-up (runs.reopen): its journal holds an end and its session opens idle. Set before the
-        // session is ready, so the follow-up's steer, handed over once it is, is sent as this claim's turn. A run a person
-        // stopped opens with the turn they stopped still open in its session (an interrupt writes no end there): that turn
-        // is done, never resumed, so it is settled first (settleOpenTurn, as a host done with a stopped turn settles it),
-        // and the follow-up is a turn of its own.
+        // Reopened by a person's follow-up (runs.reopen, or the end's own reopen): a fresh reopen is a claim whose journal's
+        // root ends on an end entry, with no input of the root in flight. Then any turn its session still reads open is one
+        // that end already closed (a person's stop leaves the turn they stopped open in the session: an interrupt writes no
+        // end there), done and never resumed, so it is settled (settleOpenTurn, as a host done with a stopped turn settles
+        // it), and the session, idle, takes the follow-up as this claim's turn: set before the session is ready, so the
+        // follow-up's steer, handed over once it is, is sent as that turn. A claim that finds the follow-up already under way
+        // (anything on the root after the end, or a root input in flight: a takeover or a drain mid follow-up) is no reopen:
+        // its session recovers that turn as any open turn.
         if (restarts === 0) {
-          const lastEnd = (await entriesOf(gate.journal, root.id, context)).findLast((entry) => entry.kind === KINDS.end);
-          if (lastEnd && session!.state === "open_turn" && (lastEnd.data as EndData | undefined)?.state === "stopped") await session!.settleOpenTurn();
-          if (lastEnd && session!.state === "idle") reopen = {};
+          const rootId = root.id;
+          const entries = await entriesOf(gate.journal, rootId, context);
+          const endsRoot = entries.at(-1)?.kind === KINDS.end;
+          const inFlight = (await harness.inspect(context)).submissions.some((one) => one.conversationId === rootId && one.type === "input");
+          if (endsRoot && !inFlight && session!.state === "open_turn") await session!.settleOpenTurn();
+          if (endsRoot && !inFlight && session!.state === "idle") reopen = {};
         }
         opened();
         await reportHeld(harness, root.id);
