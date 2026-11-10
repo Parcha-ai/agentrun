@@ -16,7 +16,7 @@ const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { journalRecords } = await import("../dist/runner/journal-reader.js");
 const { adapterRunGate } = await import("../dist/runner/adapter-run-spec.js");
 const { saveToolSettings } = await import("../dist/tool-plane.js");
-const { deniedText, NOT_RUN, RAN_UNKNOWN } = await import("../dist/refusal-words.js");
+const { deniedText, NOT_RUN, RAN_UNKNOWN, refusedText } = await import("../dist/refusal-words.js");
 const TIMING = { ...STEADY_LEASE, pollMs: 20, commandPollMs: 30 };
 const quiet = { beforeIntent: async () => {}, beforeResult: async () => {} };
 /** The bound on a wait for the run's own event: it caps the wait, it never orders anything. */
@@ -98,6 +98,39 @@ test("a replay-safe call its runner lost mid-call, its tool set to deny on this 
   const said = lastResult(requests);
   assert.equal(said, deniedText("web_fetch", "web_fetch", "server", "unknown"), `the deny's words, saying the call may have taken effect: ${said}`);
   assert.ok(said.includes(RAN_UNKNOWN) && !said.includes(NOT_RUN), said);
+});
+
+test("a replay-safe call its runner lost mid-call, its tool set to ask before the next claim reruns it, is asked anew: the run parks on it unrun, and the owner's deny refuses it in words saying it may have taken effect", { timeout: 120_000 }, async (t) => {
+  const { server, runners: [one, two], clock } = await stores({ runners: 2 });
+  await saveToolSettings(server, { web_fetch: { permission: "allow" } });
+  await queue(server, "run-1");
+  const work = [];
+  const requests = [];
+  let release = () => {};
+  const held = new Promise((resolve) => (release = resolve));
+  const tools = { web_fetch: { name: "web_fetch", replaySafe: true, ask: false, run: async () => (work.push("started"), await held, "the page") } };
+  const script = [{ call: "web_fetch", args: { url: "https://example.com/a" } }, { sayLastResult: true }];
+  const base = piAdapterSpec({ script, tools, hooks: quiet }, { fetch: scriptedOrigin(script, requests) });
+  const root = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-gate-contracts-"));
+  const loopOn = (store) => createAdapterLoop(async (claim, spec) => ({ ...(await base(claim, spec)), gate: await adapterRunGate(store, claim, { kind: "agentic", body: { approvals: "ask" } }, root) }));
+  const runners = [startRunner({ store: one, createLoop: loopOn(one), name: "runner-a", ...TIMING })];
+  t.after(async () => {
+    release();
+    await Promise.all(runners.map((runner) => runner.close()));
+  });
+  await until(() => work.length > 0, "the call runs", EVENT_WAIT_MS);
+  runners[0].kill();
+  await saveToolSettings(server, { web_fetch: { permission: "ask" } });
+  clock.skewMs = TIMING.leaseMs * 2;
+  runners.push(startRunner({ store: two, createLoop: loopOn(two), name: "runner-b", ...TIMING }));
+  await settled(server, "parked");
+  assert.deepEqual(work, ["started"], "parked on it, never run again while it waits");
+  const asks = (await entriesOf(server)).filter((entry) => entry.kind === "agentrun.ask").map((entry) => entry.data);
+  assert.deepEqual(asks.map((ask) => ask.tool), ["web_fetch"], `asked anew, once: ${JSON.stringify(asks)}`);
+  await server.command("run-1", { kind: "deny", body: { approval: asks[0].callId } });
+  await settled(server, "ended");
+  assert.deepEqual(work, ["started"], "the denied rerun never ran");
+  assert.equal(lastResult(requests), refusedText("web_fetch", undefined, "unknown"), "the owner's deny, saying the earlier attempt may have taken effect");
 });
 
 test("two ask calls entered at once, as pi runs a turn's calls in parallel: exactly one parks, and the other is refused in the usual words", { timeout: 120_000 }, async (t) => {

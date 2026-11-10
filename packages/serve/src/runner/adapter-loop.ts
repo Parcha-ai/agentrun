@@ -21,7 +21,7 @@ import type { KernelHooks, ToolCall } from "./conformance/subject.js";
 import { type AnswerData, type ApprovalPrice, type AskData, type BudgetData, type CallEndData, type CallStartData, type CallStatus, type EndData, KINDS, type MessageData, type RaiseData, withdrawnAnswers } from "./journal-kinds.js";
 import { endedOnTurnEndingTool, type MessageOrigin, originOf, RUN_RESUMED } from "@parcha/pi-durable-agent/timeline";
 import { type AlsoRow, type Claim, ClaimRefused, type Command, type CommandOutcome, deniedText, endedBy, type EndOfRunAnswer, type EndOfRunTurn, type Loop, type LoopDeps, type LoopEnd, type LoopFactory, noteOf, type StopReason } from "./loop-contract.js";
-import { alreadyWaitsText, deniedText as setToDenyText } from "../refusal-words.js";
+import { alreadyWaitsText, deniedText as setToDenyText, refusedText } from "../refusal-words.js";
 import { ADAPTER_API } from "../turn-end.js";
 import { answerText, REFLECT_NOTE_ONLY, reflectRequestId, underLearning, WRITES } from "./end-of-run.js";
 import { approvalOf, CLOSE_MS, CUT_STEP_MS, STOP_SETTLE_MS, commandRequest, cutLast, DEFAULT_RESTART_LIMIT, entriesOf, findData, Gate, heldReporter, Interrupted, KernelFault, Parked, quiet, restartLimited, writesEntry, writesSubmission } from "./loop.js";
@@ -808,6 +808,17 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
               const now = await spec.gate({ callId: toolContext.callId, tool: name as never, args: (args ?? {}) as Record<string, unknown> }, { replayed: true });
               if (now === "deny") return { text: setToDenyText(asked, undefined, "server", "unknown"), isError: true };
               if (typeof now === "object") return { text: now.deny, isError: true };
+              // Set to ask since (or asked, and answered before the crash): asked as any call is, as main's gate parked a
+              // replayed call as a request of its own. Its answer stands; else the run parks on it, the call held unrun until
+              // the claim lets it go; a deny says the earlier attempt may have taken effect.
+              if (now === "ask") {
+                const call = { callId: toolContext.callId, tool: name, args: (args ?? {}) as Record<string, unknown> };
+                const other = await anotherWaits(call.callId, asked);
+                if (other) return { text: alreadyWaitsText(asked, other), isError: true };
+                const answer = await waitedOn(call.callId, answerOf(call, mcp?.priceOf(name) ?? spec.approvalPrice?.({ ...call, tool: name as never }) ?? null, asked));
+                if (answer === "park") return await heldUntilAborted(toolContext.signal);
+                if (!answer.approved) return { text: refusedText(asked, answer.note, "unknown"), isError: true };
+              }
             }
             if (record) await record.start(toolContext.callId, tool.name, args ?? {}, tool.replay === "safe");
             try {
@@ -1137,7 +1148,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       if (decision === "allow") return "allow";
       const other = await anotherWaits(call.callId, asked);
       if (other) return { deny: alreadyWaitsText(asked, other) };
-      const answer = await answerOf({ ...call, tool }, mcp?.priceOf(tool) ?? spec.approvalPrice?.(kernelCall) ?? null, asked);
+      const answer = await waitedOn(call.callId, answerOf({ ...call, tool }, mcp?.priceOf(tool) ?? spec.approvalPrice?.(kernelCall) ?? null, asked));
       if (answer === "park") return { park: true };
       return answer.approved ? "allow" : { deny: deniedText(asked, answer.note) };
     };
@@ -1212,15 +1223,45 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     return undefined;
   }
 
-  /** Another call than `callId` the journal has asked and not answered: the one that waits, by its asked name. */
-  function waitingOn(entries: readonly { readonly kind: string; readonly data?: unknown }[], callId: string): { callId: string; tool: string } | undefined {
-    const answered = new Set(entries.filter((entry) => entry.kind === KINDS.answer).map((entry) => (entry.data as AnswerData).callId));
+  /** `answering`, the answer of the call that waits (`callId`): once it settles other than a park (an answer, or a throw),
+   *  the call waits no more in this pass. A park keeps it: the pass ends on it. */
+  async function waitedOn<T>(callId: string, answering: Promise<T | "park">): Promise<T | "park"> {
+    let answer: T | "park" | undefined;
+    try {
+      answer = await answering;
+      return answer;
+    } finally {
+      if (answer !== "park" && waiting?.callId === callId) waiting = undefined;
+    }
+  }
+
+  /** Another call than `callId` the journal has asked and not answered, and that has not ended (a call can end with no
+   *  answer: refused by its harness before its gate, a tool gone on a resume): the one that waits, by its asked name. A
+   *  result pi wrote for an abort or an abandon (a parked call's, its pass ended on the park) is no end: it still waits. */
+  function waitingOn(entries: readonly { readonly kind: string; readonly data?: unknown; readonly model?: unknown }[], callId: string): { callId: string; tool: string } | undefined {
+    const done = new Set(entries.filter((entry) => entry.kind === KINDS.answer).map((entry) => (entry.data as AnswerData).callId));
+    for (const entry of entries) {
+      if (entry.kind === KINDS.callEnd && (entry.data as CallEndData).status !== "interrupted") done.add((entry.data as CallEndData).callId);
+      if (entry.kind !== "pi.tool-result") continue;
+      const result = Array.isArray(entry.model) ? (entry.model[0] as { toolCallId?: unknown } | undefined) : undefined;
+      const diagnostics = (entry.data as { diagnostics?: { code?: string }[] } | undefined)?.diagnostics ?? [];
+      if (typeof result?.toolCallId === "string" && !diagnostics.some((diagnostic) => diagnostic.code === "aborted" || diagnostic.code === "abandoned")) done.add(result.toolCallId);
+    }
     for (const entry of entries) {
       if (entry.kind !== KINDS.ask) continue;
       const ask = entry.data as AskData;
-      if (ask.callId !== callId && !answered.has(ask.callId)) return { callId: ask.callId, tool: ask.tool };
+      if (ask.callId !== callId && !done.has(ask.callId)) return { callId: ask.callId, tool: ask.tool };
     }
     return undefined;
+  }
+
+  /** A call parked from inside its run (a rerun asked again): held unrun until its signal aborts (the pass ends on the
+   *  park), then thrown, so nothing of it is answered in this pass. */
+  function heldUntilAborted(signal: AbortSignal): Promise<never> {
+    return new Promise<never>((_, reject) => {
+      if (signal.aborted) return reject(new Error("parked"));
+      signal.addEventListener("abort", () => reject(new Error("parked")), { once: true });
+    });
   }
 
   /** Whether a call of this run waits for the answer `approval` names: asked, and not answered yet. */
