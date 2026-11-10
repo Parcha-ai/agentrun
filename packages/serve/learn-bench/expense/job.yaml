@@ -1,0 +1,16 @@
+# Learning bench smoke job (sprint learning.md 1c's job): 8 pasted card transactions a week, categorised into a fixed
+# format. Step 01 teaches the format and says "every week"; steps 02-07 paste the data alone. No template: the agent is
+# this folder's agent.md (a template manifest, no tools), and every grader is a regex, so the job is cheap and needs no
+# grader model. The data is work/bench/jobs.py's expense_data(0..6), the old bench's series.
+parameters: {}
+grants: []
+fakes: {}
+harnesses: [pi, claude-agent]
+steps:
+  - { id: "01", kind: teach }
+  - { id: "02", kind: repeat }
+  - { id: "03", kind: repeat }
+  - { id: "04", kind: repeat }
+  - { id: "05", kind: repeat }
+  - { id: "06", kind: repeat }
+  - { id: "07", kind: repeat }
