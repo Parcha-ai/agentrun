@@ -19,10 +19,7 @@ import { client, FAUX, scratch, serve, storeBytes, withEnv } from "./support.mjs
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 
 const TOOLS = ["add", "slow_write", "delete_thing", "paid"];
-/** This file's one seal key: one process holds one key at a time (seal-key.ts), and the file's shared server holds it
- *  while each test's own servers start. */
-const FILE_KEY = randomBytes(32).toString("base64");
-const sealKey = () => FILE_KEY;
+const sealKey = () => randomBytes(32).toString("base64");
 /** The refusal of a store whose secrets another key sealed (seal-key.ts), word for word. */
 const SEALED_ELSEWHERE = "this store's secrets were sealed with another key; hand the server the original AGENTRUN_SEAL_KEY";
 /** Saved server `name`'s credential in the stopped store at `data`, sealed again under another key: a row this server's key

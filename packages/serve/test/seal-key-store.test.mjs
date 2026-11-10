@@ -4,7 +4,8 @@
 // every process that opens it (the server, a runner, the import) checks the key it holds against that record: a store
 // whose secrets were sealed with another key refuses to start, in words, and no key is ever made over sealed secrets. A
 // fresh store records the fingerprint at its first start. On Postgres a second machine with another key refuses the same
-// way. Only the server's start makes and records a key; a runner never does. One process holds one key at a time.
+// way. Only the server's start makes and records a key; a runner never does. Two data directories in one process each
+// keep their own key.
 import assert from "node:assert/strict";
 import { createHmac, randomBytes } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -238,15 +239,42 @@ test("a runner never makes or records a key: on a store the server has not keyed
   assert.equal(recorded(data), undefined, "a runner records no key");
 });
 
-test("one process holds one seal key at a time: a server on a second data directory with another key is refused while the first is open, and starts once it closes", { timeout: 120_000 }, async (t) => {
+test("two servers on two data directories in one process each keep their own key: each opens only its own sealed secrets, never the other's, and both keys are on the redaction list while open", { timeout: 120_000 }, async (t) => {
   await cleanEnv(t);
+  const { client } = await import("./support.mjs");
+  const { hostSecrets } = await import("../dist/secrets.js");
+  const { webhookSecretIn } = await import("../dist/webhooks.js");
   const [a, b] = [join(await scratch(t), "a"), join(await scratch(t), "b")];
-  await startAndStop(b);
-  const first = await startServe({ data: a, port: 0 });
-  let open = true;
-  t.after(() => open && first.close());
-  await refuses(startServe({ data: b, port: 0 }), /already holds another seal key/);
-  await first.close();
-  open = false;
-  await startAndStop(b);
+  // Both boot at once, each making a key of its own in its data directory.
+  const [first, second] = await Promise.all([startServe({ data: a, port: 0 }), startServe({ data: b, port: 0 })]);
+  const open = new Set([first, second]);
+  t.after(() => Promise.all([...open].map((server) => server.close())));
+  const [keyA, keyB] = [readFileSync(keyFile(a), "utf8").trim(), readFileSync(keyFile(b), "utf8").trim()];
+  assert.notEqual(keyA, keyB, "two keys");
+  // Each seals a secret while both are open, and reads it back under its own key.
+  for (const [server, url] of [[first, "http://127.0.0.1:9/a"], [second, "http://127.0.0.1:9/b"]]) {
+    const api = client(server.baseUrl, server.token);
+    assert.equal((await api("PUT", "/settings/webhook", { url })).status, 201);
+    assert.equal((await api("GET", "/settings/webhook")).body.signing, "sealed", `${url}: sealed under its own key and read back`);
+  }
+  // What each sealed opens under its own key alone, never the other's.
+  for (const [data, own, other] of [[a, keyA, keyB], [b, keyB, keyA]]) {
+    assert.ok("secret" in webhookSecretIn(data, { AGENTRUN_SEAL_KEY: own }), `${data}: its own key opens it`);
+    assert.ok(!("secret" in webhookSecretIn(data, { AGENTRUN_SEAL_KEY: other })), `${data}: the other's key does not`);
+  }
+  // Both keys are cut from what a run writes while their servers are open.
+  const listed = hostSecrets({});
+  assert.ok(listed.includes(keyA) && listed.includes(keyB), "both keys on the redaction list");
+  for (const server of [first, second]) {
+    await server.close();
+    open.delete(server);
+  }
+  assert.ok(!hostSecrets({}).some((value) => value === keyA || value === keyB), "closed, neither is held");
+  // Each opens alone again under its own key.
+  for (const data of [a, b]) {
+    const again = await startServe({ data, port: 0 });
+    const read = (await client(again.baseUrl, again.token)("GET", "/settings/webhook")).body;
+    await again.close();
+    assert.equal(read.signing, "sealed", `${data}: its webhook's secret opens under its own key`);
+  }
 });

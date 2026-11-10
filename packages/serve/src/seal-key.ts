@@ -14,7 +14,7 @@
 // sealed secrets, in the store or beside it in the data directory: a lost key file is not replaced by a new one. A store
 // with no fingerprint takes a key that opens every value it keeps sealed, or any key when it keeps none. The server's
 // start makes a key and records it (and the import's, which sets a data directory up as the server does); a runner reads
-// one and checks it, and never makes or records one.
+// one and checks it, and never makes or records one. Several data directories in one process each keep their own key.
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { chmodSync, closeSync, linkSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, rmSync, type Stats, writeSync } from "node:fs";
 import { join } from "node:path";
@@ -46,7 +46,7 @@ export class SealKeyNotTheStores extends SealKeyRefused {
 
 /** The key, as bytes and as its base64 text; where it is kept (null when it was handed over); whether this start made it. */
 export type SealKey = { readonly key: Buffer; readonly text: string; readonly path: string | null; readonly generated: boolean };
-/** A key a start booted: held as this process's one key (secrets.ts holdSealKey) until release(), which its holder calls
+/** A key a start booted: on this process's redaction list (secrets.ts holdSealKey) until release(), which its holder calls
  *  as it closes. */
 export type BootedSealKey = SealKey & { readonly release: () => void };
 
@@ -317,9 +317,8 @@ function startRefusal(error: SealKeyRefused): SealKeyRefused {
  *  its own process) and the `import` command all call this, so there is one rule. The key handed over (AGENTRUN_SEAL_KEY),
  *  else the one in `dataDir`, checked against what `store` records of its key (refused, in words, when it is not the
  *  store's). The server's start makes a key in `dataDir` for a store that holds no secret and records its fingerprint; a
- *  runner or the import never makes or records one. The key is held as this process's one key until release() (secrets.ts
- *  holdSealKey: a second, different key at once is refused); its holder passes it on itself (withSealKey), and nothing
- *  reads it from the process by name. Throws SealKeyRefused with the start message when there is no key it can use. */
+ *  runner or the import never makes or records one. The key is on this process's redaction list until release()
+ *  (secrets.ts holdSealKey); its holder passes it on itself (withSealKey), and nothing reads it from the process by name. Throws SealKeyRefused with the start message when there is no key it can use. */
 export async function bootSealKey(store: SealKeyStore, dataDir: string, options?: BootSealKeyOptions & { readonly write?: true }): Promise<BootedSealKey>;
 export async function bootSealKey(store: SealKeyStore, dataDir: string, options: BootSealKeyOptions): Promise<BootedSealKey | undefined>;
 export async function bootSealKey(store: SealKeyStore, dataDir: string, options: BootSealKeyOptions = {}): Promise<BootedSealKey | undefined> {
@@ -333,12 +332,8 @@ export async function bootSealKey(store: SealKeyStore, dataDir: string, options:
     throw error;
   }
   if (!seal) return undefined;
-  let release: () => void;
-  try {
-    release = holdSealKey(seal.text);
-  } catch (error) {
-    throw new SealKeyRefused(`agentrun-serve does not start: ${(error as Error).message} (another data directory's, open in this process now)`, { cause: error });
-  }
+  // On this process's redaction list while it is open (secrets.ts holdSealKey); each holder passes its own key on.
+  const release = holdSealKey(seal.text);
   if (seal.generated) say(`${sealKeyLine(seal)}\n`);
   return { ...seal, release };
 }

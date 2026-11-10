@@ -108,15 +108,13 @@ export const hostSecrets = (env: NodeJS.ProcessEnv, stored?: StoredKeys): string
   return [...new Set([...held, ...named])].filter((value) => value.replace(/\s+/g, "").length >= MIN_SECRET);
 };
 
-/** The seal key each open store of this process was booted with (seal-key.ts bootSealKey), by how many hold it. One at a
- *  time: a second, different key while the first is held is refused (holdSealKey). Never read as a secret by name (each
- *  holder passes its own key on): only listed by hostSecrets, so what a run writes is cut of it. */
+/** The seal keys this process's open stores were booted with (seal-key.ts bootSealKey), by how many hold each: several
+ *  data directories in one process each keep their own. Never read as a secret by name (each holder passes its own key
+ *  on): only listed by hostSecrets, so what a run writes is cut of every one. */
 const sealKeys = new Map<string, number>();
 
-/** Holds `text` as this process's seal key until the returned release is called. Throws when another key is held now:
- *  one process works under one key. */
+/** Lists `text` among this process's seal keys, for redaction alone, until the returned release is called. */
 export function holdSealKey(text: string): () => void {
-  for (const [other, count] of sealKeys) if (other !== text && count > 0) throw new Error("this process already holds another seal key: one process opens stores under one key");
   sealKeys.set(text, (sealKeys.get(text) ?? 0) + 1);
   let released = false;
   return () => {
