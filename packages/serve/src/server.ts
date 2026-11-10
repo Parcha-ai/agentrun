@@ -65,7 +65,7 @@ import { watchRun } from "./live/stream.js";
 import { stats as statsOverStore } from "./store-reads/stats.js";
 import { analytics as analyticsOverStore } from "./store-reads/analytics.js";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { type AgenticBody, type NewRevision, openStore, type RevisionPlace, type RunRow, type Store, StoreBusy, StoreConstraint, type WorkflowBody } from "./store/index.js";
+import { type AgenticBody, type McpCredentialMark, type NewRevision, openStore, type RevisionPlace, type RunRow, type Store, StoreBusy, StoreConstraint, type WorkflowBody } from "./store/index.js";
 import { FINAL_STATES } from "./store/store.js";
 import { runModelRef } from "./model.js";
 // The v2 run statuses, as the run view names them (run-view.ts Status), for the list filter's validation. */
@@ -88,7 +88,7 @@ import { DOCUMENTS_ENV } from "./pdf-pages.js";
 import { CAP_MODES, type CapMode } from "./cap.js";
 import { type Blocker, blockersOf, CODE_NODES_ENV, issueOf, MCP_HARNESSES, NOT_SET_UP, type RevisionShape } from "./runnable.js";
 import { hostSecrets, SECRET_NAMES, secret, type StoredKeys, withSecrets } from "./secrets.js";
-import { isSecretWriteOperation, SECRET_WRITE_REFUSAL, secretsWritableFields, secretWriterFacts, writesSecret, writesSecretsAllowed } from "./secret-writes.js";
+import { isSecretWriteOperation, SECRET_WRITE_REFUSAL, type SecretRequest, secretsWritableFields, secretWriterFacts, writesSecretFor, writesSecretsAllowed } from "./secret-writes.js";
 import { bootSealKey } from "./seal-key.js";
 import { redactedOutput } from "./key-refusal.js";
 import { analyticsFilter, analyticsView, statsView } from "./stats.js";
@@ -2419,12 +2419,25 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // Saving, replacing or removing a secret (secret-writes.ts): the one check. Who may is mayWriteSecrets' alone (the
     // owner's session); which writes are secret is each plane's registered predicate, read from the body, so a token's
     // non-secret edit on the same route still goes through. A body that does not read counts as the plane says of none.
+    // What a stored predicate read to let the request through (SecretRequest.seen): the operation's write is refused if
+    // that changed before it lands, so a write allowed against one stored credential never lands over another.
+    let secretSeen: unknown;
     if (isSecretWriteOperation(found.name) && req.headers.authorization !== undefined && !writesSecretsAllowed(req, { accounts: owner !== undefined, loopbackBound: isLoopback(host) })) {
       const body = req.method === "DELETE" || req.method === "GET" ? undefined : await bodyOf(req).catch(() => undefined);
-      if (writesSecret(found.name, body)) {
+      // A segment that is not valid percent-encoding is taken as it came: the request goes on to the token's own check.
+      const params = (found.pattern.exec(path) ?? []).slice(1).map((part) => {
+        try {
+          return part === undefined ? "" : decodeURIComponent(part);
+        } catch {
+          return part;
+        }
+      });
+      const checked: SecretRequest = { params, store };
+      if (await writesSecretFor(found.name, body, checked)) {
         authFailed(`/v2${path}`, "secret_without_session");
         throw new ApiError("forbidden", SECRET_WRITE_REFUSAL);
       }
+      secretSeen = checked.seen;
     }
     if (!timingSafeEqual(digest(String(req.headers.authorization ?? "")), expected)) {
       authFailed(`/v2${path}`, req.headers.authorization === undefined ? "no_credential" : "wrong_token");
@@ -2841,7 +2854,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       case "previewMcpServer":
         return send(res, 200, await mcpServers.preview(await bodyOf(req), stopping.signal));
       case "saveMcpServer": {
-        const saved = await mcpServers.save(id, await bodyOf(req), stopping.signal);
+        const saved = await mcpServers.save(id, await bodyOf(req), stopping.signal, secretSeen as McpCredentialMark | undefined);
         await refreshMcpMeta();
         return send(res, 200, saved);
       }
@@ -2888,7 +2901,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       case "putMcpPrivateHosts":
         return send(res, 200, await privateHostsRoute(mcpServers, { method: "PUT", body: () => bodyOf(req) }), { "cache-control": "no-store" });
       case "deleteMcpServer":
-        await mcpServers.remove(id);
+        await mcpServers.remove(id, secretSeen as McpCredentialMark | undefined);
         await refreshMcpMeta();
         return void res.writeHead(204, { "cache-control": "no-store" }).end();
       case "getToolSettings":

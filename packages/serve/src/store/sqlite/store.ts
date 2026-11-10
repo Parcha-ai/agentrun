@@ -15,7 +15,7 @@ import {
   type AlsoRow, type Claim, type Command, type FiringChange, type FiringRow, type FiringStatus, type ImportRunInput, type Journal, type NewRevision, type RevisionRow, type RunPatch, type RunRow, type Runs,
   type JournalReads, type UpdatedRun,
   type ReleasedState, type RunState, type Store, type StoreRole, type TemplatePackage, type Templates, type TriggerDef, type TriggerPatch, type TriggerRow, type Triggers, type TriggerScope,
-  FINAL_STATES, MCP_REFRESH_CALL_MS, MCP_REFRESH_LEASE_MS, type Learning, type LearningProposal, type LearningSpend, type Live, type LiveRow, type LiveViewerRow, type LiveViewers, type Mcp, type McpPinRow, type McpServerRow,
+  FINAL_STATES, MCP_REFRESH_CALL_MS, MCP_REFRESH_LEASE_MS, type Learning, type LearningProposal, type LearningSpend, type Live, type LiveRow, type LiveViewerRow, type LiveViewers, type Mcp, type McpCredentialMark, type McpPinRow, type McpServerRow, type McpServerWrite,
   type McpOauth, type McpOauthPendingRow, type SealedKeyRow, type SealedKeys, type SealedSecretRow, type SealedSecrets, type Settings, type SettingRow, type TriggerSettingRow, type TriggerSettings,
   SignInHandedTo, SignInMissing, SIGN_IN_TOMBSTONES_KEPT, type SignIns, type SignInRow, type SignInTombstoneRow, type ViewerKind,
   type ComputerLedger, type ComputerLedgerRow,
@@ -853,34 +853,56 @@ class SqliteStore implements Store {
       },
     };
 
+    /** A server's write (Mcp.put), or with `expected` (Mcp.putIfCredential) only while the row's credential is still that:
+     *  the statement's own WHERE compares it, so the comparison and the write are one statement. */
+    const putServer = async (
+      { name, url, auth, protocol = null, tools, prices = null, serverInfo = null, instructions = null, sealed = null, listedAt, updatedAt, credentialChangedAt, tokenLeftMs = null }: McpServerWrite,
+      expected: McpCredentialMark | undefined,
+    ): Promise<McpServerRow | undefined> => {
+      const at = now();
+      // The access token's end on the deadlines' clock (the database's on Postgres): the writer's measure of its life (a
+      // duration, clock-free) laid on that clock's now (token_until), in the statement that writes it.
+      const left = sealed !== null && typeof tokenLeftMs === "number" && Number.isFinite(tokenLeftMs) ? tokenLeftMs : null;
+      const stamp = clock();
+      // updated_at defaults to now (a save or a sign-in); a refresh passes the kept one so it is not read as an edit.
+      // listed_at is the tools' listing time, now unless given.
+      const updated = updatedAt ?? at;
+      const listed = listedAt ?? at;
+      // The credential's own time: now for a put that writes one, unless the caller says it kept the sealed one (its
+      // time given back); null with none. A token refresh (keepRefreshed) never moves it.
+      const credentialAt = sealed === null ? null : credentialChangedAt === undefined ? at : credentialChangedAt;
+      const values = [url, auth, protocol, json(tools), json(prices), serverInfo === null ? null : json(serverInfo), instructions, sealed] as const;
+      // Expected present: an UPDATE of that row while its credential is still the one expected (gone, or changed: no row).
+      // Expected absent: an insert only (a row there: no row). Else the upsert. Either way RETURNING answers what it wrote.
+      const statement = expected !== undefined && expected !== null
+        ? {
+          sql: `UPDATE mcp_servers SET url = ?, auth = ?, protocol = ?, tools = ?, prices = ?, server_info = ?, instructions = ?, sealed = ?, refresh_holder = NULL, refresh_until = NULL,
+              updated_at = ?, listed_at = ?, credential_changed_at = ?, token_until = ${stamp.sql} + ${d.bigintParam}
+            WHERE name = ? AND auth = ? AND sealed IS ${expected.sealed ? "NOT NULL" : "NULL"} AND ${expected.changedAt === null ? "credential_changed_at IS NULL" : "credential_changed_at = ?"}
+            RETURNING ${mcpServerColumnsAt(stamp)}`,
+          params: [...values, updated, listed, credentialAt, ...stamp.params, left, name, expected.auth, ...(expected.changedAt === null ? [] : [expected.changedAt]), ...stamp.params],
+        }
+        : {
+          sql: `INSERT INTO mcp_servers (name, url, auth, protocol, tools, prices, server_info, instructions, sealed, created_at, updated_at, listed_at, credential_changed_at, token_until) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ${stamp.sql} + ${d.bigintParam})
+            ON CONFLICT (name) DO UPDATE SET url = excluded.url, auth = excluded.auth, protocol = excluded.protocol, tools = excluded.tools,
+              prices = excluded.prices, server_info = excluded.server_info, instructions = excluded.instructions, sealed = excluded.sealed, refresh_holder = NULL, refresh_until = NULL, updated_at = excluded.updated_at, listed_at = excluded.listed_at, credential_changed_at = excluded.credential_changed_at, token_until = excluded.token_until
+              ${expected === null ? "WHERE 1 = 0" : ""}
+            RETURNING ${mcpServerColumnsAt(stamp)}`,
+          params: [name, ...values, at, updated, listed, credentialAt, ...stamp.params, left, ...stamp.params],
+        };
+      const [result] = await db.write([statement]);
+      const written = result!.rows[0] as McpServerRecord | undefined;
+      return written && mcpServerOf(written);
+    };
+
     const server = async (executor: Pick<SqliteExecutor, "get">, name: string) => {
       const at = clock();
       const row = await executor.get<McpServerRecord>(`SELECT ${mcpServerColumnsAt(at)} FROM mcp_servers WHERE name = ?`, ...at.params, name);
       return row && mcpServerOf(row);
     };
     this.mcp = {
-      put: async ({ name, url, auth, protocol = null, tools, prices = null, serverInfo = null, instructions = null, sealed = null, listedAt, updatedAt, credentialChangedAt, tokenLeftMs = null }) => {
-        const at = now();
-        // The access token's end on the deadlines' clock (the database's on Postgres): the writer's measure of its life (a
-        // duration, clock-free) laid on that clock's now (token_until), in the statement that writes it.
-        const left = sealed !== null && typeof tokenLeftMs === "number" && Number.isFinite(tokenLeftMs) ? tokenLeftMs : null;
-        const stamp = clock();
-        // updated_at defaults to now (a save or a sign-in); a refresh passes the kept one so it is not read as an edit.
-        // listed_at is the tools' listing time, now unless given.
-        const updated = updatedAt ?? at;
-        const listed = listedAt ?? at;
-        // The credential's own time: now for a put that writes one, unless the caller says it kept the sealed one (its
-        // time given back); null with none. A token refresh (keepRefreshed) never moves it.
-        const credentialAt = sealed === null ? null : credentialChangedAt === undefined ? at : credentialChangedAt;
-        const [result] = await db.write([{
-          sql: `INSERT INTO mcp_servers (name, url, auth, protocol, tools, prices, server_info, instructions, sealed, created_at, updated_at, listed_at, credential_changed_at, token_until) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ${stamp.sql} + ${d.bigintParam})
-            ON CONFLICT (name) DO UPDATE SET url = excluded.url, auth = excluded.auth, protocol = excluded.protocol, tools = excluded.tools,
-              prices = excluded.prices, server_info = excluded.server_info, instructions = excluded.instructions, sealed = excluded.sealed, refresh_holder = NULL, refresh_until = NULL, updated_at = excluded.updated_at, listed_at = excluded.listed_at, credential_changed_at = excluded.credential_changed_at, token_until = excluded.token_until
-            RETURNING ${mcpServerColumnsAt(stamp)}`,
-          params: [name, url, auth, protocol, json(tools), json(prices), serverInfo === null ? null : json(serverInfo), instructions, sealed, at, updated, listed, credentialAt, ...stamp.params, left, ...stamp.params],
-        }]);
-        return mcpServerOf(result!.rows[0] as McpServerRecord);
-      },
+      put: async (row) => (await putServer(row, undefined))!,
+      putIfCredential: (row, expected) => putServer(row, expected),
       // One statement compares the credential and writes, as keepRefreshed: no read between, so a refresh's keep never lands
       // in a gap and is then written over. The credential's columns and the refresh lease are not in its SET.
       rewrite: async ({ name, url, auth, protocol = null, tools, prices = null, serverInfo = null, instructions = null, listedAt, updatedAt }, seen) => {
@@ -897,6 +919,13 @@ class SqliteStore implements Store {
       },
       remove: async (name) => {
         await db.write([{ sql: "DELETE FROM mcp_servers WHERE name = ?", params: [name] }]);
+      },
+      removeIfCredential: async (name, expected) => {
+        const [result] = await db.write([{
+          sql: `DELETE FROM mcp_servers WHERE name = ? AND auth = ? AND sealed IS ${expected.sealed ? "NOT NULL" : "NULL"} AND ${expected.changedAt === null ? "credential_changed_at IS NULL" : "credential_changed_at = ?"} RETURNING name`,
+          params: [name, expected.auth, ...(expected.changedAt === null ? [] : [expected.changedAt])],
+        }]);
+        return result!.rows.length === 1;
       },
       servers: async () => {
         const at = clock();
