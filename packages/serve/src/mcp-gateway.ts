@@ -395,7 +395,7 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
     if (!now) return `The MCP server ${server} is no longer saved on this server; nothing was sent.`;
     if (now.url !== pinned.url) return `The MCP server ${server}'s address changed since this run started; nothing was sent. Start a new run to use it at its new address.`;
     // A credential that does not open is never a call without it.
-    // The reason carries its own remedy (mcp-servers.ts UNUSABLE): nothing is added to it here.
+    // The reason carries its own remedy (mcp-probe.ts UNUSABLE): nothing is added to it here.
     if (now.unopened !== undefined) return `The MCP server ${server}'s credential can't be used right now: ${now.unopened}.`;
     // A token minted for this run's launch is not renewed while it runs: past its end, said, never sent to be refused.
     if (now.expires_at !== undefined && Date.now() >= now.expires_at) return `The GitHub token for this run expired: it is minted again when the run resumes. Nothing was sent to the MCP server ${server}.`;

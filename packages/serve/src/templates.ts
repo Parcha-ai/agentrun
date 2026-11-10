@@ -12,7 +12,7 @@ import { type InputIssue, invalid } from "./errors.js";
 import type { GitHubConnectionView } from "./github-connection.js";
 import { HARNESSES } from "./harness.js";
 import { TOOL_KEY_ROWS } from "./key-words.js";
-import { MCP_SERVER_NAME } from "./mcp-servers.js";
+import { MCP_SERVER_NAME } from "./mcp-probe.js";
 import { chooseModel, harnessRuns, hostModel, MODEL_KEYS, THINKING_LEVELS, type Tier } from "./model.js";
 import { mcpToolName, type PinScalar, type PinValue } from "./tool-gate.js";
 import { AGENT_LAYER_PINS, pinIssues, sortedPin } from "./tool-plane.js";

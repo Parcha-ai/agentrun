@@ -1329,22 +1329,18 @@ naming the limit and how many tools were read.
 
 `PUT /v2/settings/mcp-servers/{name}` previews the same way, then keeps the server: its URL, the tools it listed (the
 snapshot an agent will be shown) and its credential. A name is lowercase letters, digits and dashes, starting with a
-letter, at most 32, with no underscores, so `mcp__<server>__<tool>` splits one way. Each credential header's value is
-sealed like a [tool key](#tool-keys): AES-256-GCM under `AGENTRUN_SEAL_KEY`, bound to the server's name and the header,
-in `DIR/mcp-servers.json` (0600, written whole, synced and renamed), which holds no value in the clear. With no seal key,
-a server that takes a credential is `409 no_sealing_key`, before anything is contacted; one with `auth.type` none is
-kept. A `PUT` that sends no `token` (or no `headers`) keeps the sealed credential, as long as the auth type and the URL's
+letter, at most 32, with no underscores, so `mcp__<server>__<tool>` splits one way. The credential is sealed like a
+[tool key](#tool-keys): AES-256-GCM under `AGENTRUN_SEAL_KEY`, bound to the server's name and its URL's origin, in the
+data directory's store, which holds no value in the clear. The server does not start without its seal key. A `PUT` that sends no `token` (or no `headers`) keeps the sealed credential, as long as the auth type and the URL's
 origin stay the same: a saved credential never goes to another origin unless you send it again.
 
-`GET /v2/settings/mcp-servers` and `GET .../{name}` show each server with `credential`: `sealed`, `seal_key_missing`
-(no seal key now) or `unreadable` (sealed under another key, or damaged: a `PUT` with the credential seals it again),
-null for `auth.type` none. No read, log line or error shows a credential; a server's error text is cut of the values
+`GET /v2/settings/mcp-servers` and `GET .../{name}` show each server with `credential`: `sealed`, `unreadable` (sealed
+under another key, or damaged: a `PUT` with the credential seals it again) or `expired` (an OAuth sign-in whose refresh
+its authorization server refused: sign in again), null for `auth.type` none. No read, log line or error shows a credential; a server's error text is cut of the values
 sent before it is shown. `POST .../{name}/refresh` lists the tools again with the saved URL and credential, keeps them,
 and answers `{added, removed, changed, server}`: `changed` names a tool whose title, description, schemas or
-annotations differ. `DELETE .../{name}` forgets the server and its credential. A saved-servers file that does not read (damaged, or
-another format) is never written over: the list answers `servers: []` with `file_unreadable: true`, and every other
-route is `409 store_unreadable` until the file is restored or removed. Capabilities' `features.mcp_client`
-says `transports: ["streamable-http"]`, the `auth` types and `at_rest` (`sealed`, or `unavailable` with no seal key).
+annotations differ. `DELETE .../{name}` forgets the server and its credential. Capabilities' `features.mcp_client`
+says `transports: ["streamable-http"]`, the `auth` types and `at_rest: "sealed"`.
 
 ### Signing in with OAuth
 

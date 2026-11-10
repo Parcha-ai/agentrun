@@ -566,7 +566,7 @@ export class GitHubConnect {
 }
 
 /** GitHub that did not answer a listing token's call: a 429, a 5xx, a rate limit's 403, or no answer at all. Nothing is
- *  learned from it, so nothing is refused for good: try again (mcp-servers.ts, 502 github_failed). */
+ *  learned from it, so nothing is refused for good: try again (mcp-servers-store.ts, 502 github_failed). */
 type Unanswered = { failed: string };
 const UNANSWERED: Unanswered = { failed: "GitHub didn't answer: try again." };
 const unanswered = (answer: { status: number; json: unknown; headers: Headers }) => answer.status === 429 || answer.status >= 500 || (answer.status === 403 && rateLimited(answer));

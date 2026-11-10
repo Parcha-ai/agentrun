@@ -1,7 +1,6 @@
-// The MCP server probe and request validation, shared between the file McpServers (mcp-servers.ts) and the store-backed one
-// (mcp-servers-store.ts). Moved here verbatim so both answer and refuse byte-identically; the storage, sealing and sign-in
-// state differ between the two, nothing here does. Until the cutover deletes mcp-servers.ts, the file class still carries
-// its own copies; from the cutover on this is the one home (the switch repoints mcp-gateway.ts's UNUSABLE import here).
+// The MCP server probe and request validation of the owner's registry (mcp-servers-store.ts), and the words a run's calls
+// read when a saved credential can't be used (UNUSABLE, which the runner's claim step
+// runner/mcp-claim.ts hands the gateway).
 //
 // Nothing here opens a credential or touches a store: listServer connects to a URL with the official SDK client, agrees a
 // protocol revision and lists every tool (all pages, under caps); the validation turns a request body into a URL, auth and
@@ -9,21 +8,18 @@
 import { ApiError, invalid, type InputIssue } from "./errors.js";
 import { metaToolOf } from "./mcp-meta.js";
 import { SIGN_IN_AGAIN } from "./mcp-oauth.js";
-import { SEAL_KEY_ENV } from "./tool-keys.js";
 import { isObject, unknownFields } from "./validate.js";
 
 export const MCP_SERVER_NAME = /^[a-z][a-z0-9-]{0,31}$/;
 /** The names AgentRun's own tools are called by, which no MCP server takes: claude-agent calls the kernel's host tools
  *  as `mcp__hands__<tool>`, and monid's are `monid_<tool>` (tool-gate.ts settingsKeyOf reads both as AgentRun's). */
-export const RESERVED_MCP_NAMES: readonly string[] = ["hands", "monid"];
+const RESERVED_MCP_NAMES: readonly string[] = ["hands", "monid"];
 export const MCP_AUTH_TYPES = ["none", "bearer", "headers", "oauth", "github_app"] as const;
 /** Where an owner updates a saved MCP server, as people read it. */
 const MCP_SETTINGS = "Settings → MCP servers";
 /** Why a saved credential can't be used for a run's calls, each with its own remedy and no other, as the model reads it
  *  after "The MCP server <name>'s credential can't be used right now: " (mcp-gateway.ts). The one place they are said. */
 export const UNUSABLE = {
-  /** This server was started without its seal key. */
-  noSealKey: `this server was started without its seal key (${SEAL_KEY_ENV}); start it with the key the credential was saved under, or update the credential in ${MCP_SETTINGS}`,
   /** Sealed under another seal key, or damaged. */
   damaged: `it was sealed under another seal key, or damaged; update it in ${MCP_SETTINGS}`,
   /** An OAuth sign-in its authorization server refused to refresh, or with no refresh token left. */
@@ -78,9 +74,6 @@ export type Listed = { protocol: string; server_info: unknown; instructions?: st
 export type McpPrices = Record<string, number>;
 export type HeaderMap = Record<string, string>;
 export type Auth = { type: AuthType; headers?: HeaderMap };
-
-/** How a server gets a seal key: what its launcher does (launcher/agentrun-serve). */
-export const SEAL_KEY_HOW = `Start it with its launcher, agentrun-serve, which keeps one in agentrun/seal.key under $XDG_CONFIG_HOME (~/.config by default), made at the first start, 0600 in a 0700 directory; or hand it ${SEAL_KEY_ENV} (32 random bytes in base64).`;
 
 export const notFound = (name: string) => new ApiError("not_found", `No MCP server ${name}: GET /v2/settings/mcp-servers lists them.`);
 export const credentialMissing = (type: AuthType, message: string): InputIssue => ({ field: type === "bearer" ? "auth.token" : type === "oauth" ? "auth.type" : "auth.headers", reason: "missing", message: type === "oauth" ? `${message} An OAuth server is signed in to first: POST /v2/settings/mcp-servers/{name}/oauth/start.` : message });

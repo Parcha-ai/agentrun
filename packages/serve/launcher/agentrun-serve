@@ -14,7 +14,7 @@
 # exists. A process of the same user started earlier could open the FIFO while it is named.
 #
 # AGENTRUN_SEAL_KEY, the key the server keeps tool keys and MCP server credentials under (src/tool-keys.ts,
-# src/mcp-servers.ts), is one of them. Not set, it is the
+# src/mcp-servers-store.ts), is one of them. Not set, it is the
 # one in agentrun/seal.key under XDG_CONFIG_HOME (or ~/.config), made here the first time: 32 random bytes in base64,
 # 0600 in a 0700 directory, written by this shell's printf, never on a command line. It is outside the data directory
 # on purpose: a copy of that holds the tool keys as ciphertext alone.
