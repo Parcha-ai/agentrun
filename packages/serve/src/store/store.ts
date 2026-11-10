@@ -628,12 +628,23 @@ export const STORE_WRITE_DEADLINE_MS = 10_000;
  *  with the spent one. Made from the two bounds so it cannot drift. */
 export const MCP_REFRESH_LEASE_MS = MCP_REFRESH_CALL_MS + STORE_WRITE_DEADLINE_MS + 2_000;
 
+/** A saved server's credential as a writer read it: its auth type, whether one is sealed, and when that was set (a token
+ *  refresh keeps the time; a new credential or a sign-in moves it). Null: no server by that name. */
+export type McpCredentialMark = { readonly auth: string; readonly sealed: boolean; readonly changedAt: number | null } | null;
+
+/** The fields of a server's write (Mcp.put). */
+export type McpServerWrite = { name: string; url: string; auth: string; protocol?: string | null; tools: unknown; prices?: unknown; serverInfo?: unknown; instructions?: string | null; sealed?: Uint8Array | null; listedAt?: number; updatedAt?: number; credentialChangedAt?: number | null; tokenLeftMs?: number | null };
+
 export interface Mcp {
   /** The server's write: the server's row, inserted or replaced by name (its first save's time kept). An owner's save
    *  clears any refresh lease and changes the credential, so a refresh in flight is dropped (keepRefreshed's `kept: false`)
    *  and never overwrites it. `tokenLeftMs`: the writer's measure of the credential's access token's remaining life (a
    *  duration, on its own clock); the store stamps the token's end on its clock from it (token_until), none without it. */
-  put(server: { name: string; url: string; auth: string; protocol?: string | null; tools: unknown; prices?: unknown; serverInfo?: unknown; instructions?: string | null; sealed?: Uint8Array | null; listedAt?: number; updatedAt?: number; credentialChangedAt?: number | null; tokenLeftMs?: number | null }): Promise<McpServerRow>;
+  put(server: McpServerWrite): Promise<McpServerRow>;
+  /** put(), only while the server's credential is still `expected` (its mark as the writer read it; null: no server by
+   *  that name), compared and written in one statement: no other write lands between. Undefined, writing nothing, when
+   *  it is not. */
+  putIfCredential(server: McpServerWrite, expected: McpCredentialMark): Promise<McpServerRow | undefined>;
   /** An owner's rewrite of a row it read, its credential kept as it is (a tools refresh, a save that sends no new
    *  credential): the listing, prices, url and times written by a compare-and-set on the CREDENTIAL, iff the row is still
    *  saved and its sealed value is still `seen` (the one the owner read). The credential's columns (sealed, token_until,
@@ -642,6 +653,9 @@ export interface Mcp {
    *  the caller reads it again and re-applies its change onto the fresh row, a bounded few times. */
   rewrite(server: { name: string; url: string; auth: string; protocol?: string | null; tools: unknown; prices?: unknown; serverInfo?: unknown; instructions?: string | null; listedAt?: number; updatedAt?: number }, seen: Uint8Array | null): Promise<McpServerRow | undefined>;
   remove(name: string): Promise<void>;
+  /** remove(), only while the server's credential is still `expected` (its mark as the remover read it), compared and
+   *  deleted in one statement. False, deleting nothing, when it is not (or the server is gone). */
+  removeIfCredential(name: string, expected: NonNullable<McpCredentialMark>): Promise<boolean>;
   /** The registry's rows, by name. */
   servers(): Promise<McpServerRow[]>;
   server(name: string): Promise<McpServerRow | undefined>;
