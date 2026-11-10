@@ -43,7 +43,7 @@ import { BOX_ALLOW_ENV, boxAllowOf, boxLimitsOf, boxNetworkOf, FAUX_BOX_ENV, fau
 import { Owner, passwordProblem, SESSION_MS } from "./owner.js";
 import { answerPage, byOwnerSession, heldSessions, isJson, overHttps, ownerCookie, ownOrigin, sendHostRefused, signedIn } from "./page.js";
 import { hostFix, hostName, loopbackNames } from "./host-check.js";
-import { computerViewerLink, handoverById, type LiveFamily, type LiveHandover, liveRest, liveViewer, liveViewerById, liveViewerFor, liveViewerLink, OpenViewers, proxyLiveUpgrade, readHandover, readHandovers, serveViewerFile, viewerAnswers, viewerLink } from "./browser-live.js";
+import { computerViewerLink, familyReaches, handoverById, type LiveFamily, type LiveHandover, liveRest, liveViewer, liveViewerById, liveViewerFor, liveViewerLink, OpenViewers, proxyLiveUpgrade, readHandover, readHandovers, serveViewerFile, viewerAnswers, viewerLink } from "./browser-live.js";
 import { browserHandBack, handBackTarget } from "./browser-commands.js";
 import { type ComputerOf, computerView } from "./computer-view.js";
 import { durationMs, logLine } from "./print.js";
@@ -2917,10 +2917,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     await needRun(runId);
     // The run's live viewer from the store (the runner's browser/computer tool wrote it under its claim; liveViewerFor picks
     // a named viewer's handover or the run's open one). None for a run no runner holds; with no seal key this server serves
-    // no live view. A /computer/live path reaches only a computer-kind viewer, a /browser/live path a browser one.
+    // no live view. A /computer/live path reaches a viewer of every kind (the link GET /computer gives, a browser's among
+    // them), a /browser/live path a browser's alone (familyReaches).
     const handover = sealKey ? await liveViewerFor(store, sealKey, runId, rest) : undefined;
-    const browserKind = handover !== undefined && (handover.kind ?? "browser") === "browser";
-    if (handover === undefined || browserKind !== (family === "browser")) throw new ApiError("not_found", `this run's ${family} has no live view at that address`);
+    if (handover === undefined || !familyReaches(family, handover)) throw new ApiError("not_found", `this run's ${family} has no live view at that address`);
     await serveViewerFile(req, res, rest);
   }
 
@@ -3012,11 +3012,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     void (async () => {
       const run = ID.test(viewing[1]!) ? await momentOverStore(store, viewing[1]!, viewDepsFor(ownOriginOf())) : undefined;
       // The run's live viewer from the store (the runner's browser/computer tool wrote it under its claim): none for a run no
-      // runner holds; with no seal key no live view is served. The family (viewing[2]) holds a /computer/live socket to a
-      // computer-kind viewer and a /browser/live socket to a browser one.
-      const liveFamily = viewing[2] as LiveFamily;
+      // runner holds; with no seal key no live view is served. A /computer/live socket reaches a viewer of every kind, a
+      // /browser/live socket a browser's alone (familyReaches), as the page does.
       const viewerHandover = run && sealKey ? await liveViewerById(store, sealKey, run.id, viewing[3]!.slice(3, -3)) : undefined;
-      const handover = viewerHandover !== undefined && (((viewerHandover.kind ?? "browser") === "browser") === (liveFamily === "browser")) ? viewerHandover : undefined;
+      const handover = viewerHandover !== undefined && familyReaches(viewing[2] as LiveFamily, viewerHandover) ? viewerHandover : undefined;
       if (!handover) return deny("404 Not Found");
       // Gone during the lookup, or the server is closing and has ended its viewers, or is about to.
       if (socket.destroyed || closing) return void socket.destroy();
