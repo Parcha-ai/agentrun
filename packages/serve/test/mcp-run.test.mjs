@@ -37,9 +37,13 @@ async function addFake(t, api, name = "fake", fake) {
 
 /** Every file under `dir`, with its text. */
 async function filesUnder(dir) {
+  // Walked a folder at a time: a CLI mid-run makes and removes files in its home as this reads, and one recursive read
+  // fails whole when a folder goes under it. A folder or file that went is skipped; the rest is read.
   const out = [];
-  for (const entry of await readdir(dir, { withFileTypes: true, recursive: true }).catch(() => [])) {
-    if (entry.isFile()) out.push({ path: join(entry.parentPath, entry.name), text: await readFile(join(entry.parentPath, entry.name), "utf8").catch(() => "") });
+  for (const entry of await readdir(dir, { withFileTypes: true }).catch(() => [])) {
+    const path = join(dir, entry.name);
+    if (entry.isDirectory()) out.push(...(await filesUnder(path)));
+    else if (entry.isFile()) out.push({ path, text: await readFile(path, "utf8").catch(() => "") });
   }
   return out;
 }
