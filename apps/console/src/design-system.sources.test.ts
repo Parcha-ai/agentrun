@@ -46,6 +46,7 @@ const ALLOWED: { rule: string; file: string; has: string; why: string }[] = [
   { rule: "palette-colour", file: "components/NodeDrawer.tsx", has: "bg-white", why: "A page of a document is shown on paper white in both themes, as the document is." },
   { rule: "focus-removed", file: "components/ui/field.tsx", has: "bareFieldClass", why: "A bare control sits in a fieldBoxClass box, which draws the ring while the control has the focus." },
   { rule: "focus-removed", file: "components/ui/menu.tsx", has: "shadow-float outline-none", why: "An open menu holds the focus itself and shows it on the active item (data-[focus]:bg-accent)." },
+  { rule: "focus-removed", file: "components/ui/picker.tsx", has: "shadow-float outline-none", why: "An open list holds the focus itself and shows it on the active option (data-[focus]:bg-accent)." },
 ];
 
 /** Each opening tag of a native control in a source, joined onto one line, with the line it starts on. A `>` inside
@@ -67,11 +68,21 @@ function controlTags(text: string): { line: number; text: string }[] {
   return tags;
 }
 
-/** `around` is what `unless` reads when the rule looks `near` its line: a class list wrapped over a few lines keeps
- *  its replacement a line or two from the class it replaces. */
-const breaks = (rule: Rule, text: string, around = text) => rule.find.test(text) && !rule.unless?.test(around);
+const comment = (line: string) => /^\s*(?:\/\/|\/?\*)/.test(line);
+const opensTag = (line: string) => /<[A-Za-z]/.test(line);
+/** The lines `unless` reads for a rule that looks `near` its line: a class list wrapped over a few lines keeps its
+ *  replacement a line or two from the class it replaces. The reach stops at the element's own edges, so one element's
+ *  focus mark never answers for its neighbour: back as far as the line that opens the tag, on to the line before the
+ *  next tag opens. Comments are not read. */
+function around(lines: string[], i: number, near: number): string {
+  let from = i, to = i;
+  while (from > 0 && i - from < near && !opensTag(lines[from]!)) from--;
+  while (to + 1 < lines.length && to - i < near && !opensTag(lines[to + 1]!)) to++;
+  return lines.slice(from, to + 1).filter((l) => !comment(l)).join(" ");
+}
+const breaks = (rule: Rule, text: string, context = text) => rule.find.test(text) && !rule.unless?.test(context);
 const lineHits = (rule: Rule, lines: string[]) => lines.flatMap((line, i) =>
-  !/^\s*(?:\/\/|\/?\*)/.test(line) && breaks(rule, line, rule.near ? lines.slice(Math.max(0, i - rule.near), i + rule.near + 1).join(" ") : line) ? [{ line: i + 1, text: line.trim() }] : []);
+  !comment(line) && breaks(rule, line, rule.near ? around(lines, i, rule.near) : line) ? [{ line: i + 1, text: line.trim() }] : []);
 const hits = RULES.flatMap((rule) => files.filter((f) => !rule.skip?.(f.path)).flatMap((f) => {
   if (rule.tag) return controlTags(f.lines.join("\n")).filter((t) => breaks(rule, t.text)).map((t) => ({ rule: rule.id, file: f.path, line: t.line, text: t.text }));
   return lineHits(rule, f.lines).map((h) => ({ rule: rule.id, file: f.path, ...h }));
@@ -107,6 +118,11 @@ describe("the console's sources follow the design system", () => {
     const found = (id: string, source: string) => lineHits(rule(id), source.split("\n")).length;
     expect(found("focus-removed", 'className={cn("border outline-none",\n  "focus-visible:outline-offset-0")}')).toBe(0);
     expect(found("focus-removed", 'className="border outline-none"\nonClick={go}\ntitle="x"\naria-label="y"')).toBe(1);
+    // A neighbour's focus mark, or a comment that names one, does not answer for an element that has none.
+    expect(found("focus-removed", '<button className="outline-none">A</button>\n<button className="focus-visible:underline">B</button>')).toBe(1);
+    expect(found("focus-removed", '<a className="focus-visible:underline">B</a>\n<button className="outline-none">A</button>')).toBe(1);
+    expect(found("focus-removed", '<button className="outline-none"\n  // focus-visible:underline would do\n  onClick={go}>A</button>')).toBe(1);
+    expect(found("focus-removed", '<button onClick={go}\n  className={cn("outline-none",\n    "focus-visible:underline")}>A</button>')).toBe(0);
     for (const c of ["text-[hsl(var(--primary))]", "text-[color:var(--primary-text)]", "bg-[var(--card)]"]) expect(found("token-by-hand", `className="${c}"`), c).toBe(1);
     expect(found("token-by-hand", 'className="w-[var(--button-width)] [--anchor-gap:2px]"')).toBe(0);
     for (const c of ["z-0", "z-10", "-z-1", "z-[5]"]) expect(found("numbered-layer", `className="${c}"`), c).toBe(1);
