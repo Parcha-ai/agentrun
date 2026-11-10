@@ -41,10 +41,12 @@ import {
 	type ComputerProvider,
 	type ComputerRef,
 	type ComputerSpec,
-	checkLifetime,
+	checkTenure,
 	type NetworkPolicy,
 	type NetworkSpec,
 	type Refusal,
+	type ReleaseHow,
+	runLifetimeMs,
 } from "./provider.js";
 import { type ComputerError, type ComputerErrorCode, errorOf, failFor, ok, type Result, vendorFail } from "./result.js";
 import { daemonWatch, type ScreenWatch, type ScreenWatchHandlers, type WatchOptions } from "./screen-watch.js";
@@ -713,7 +715,7 @@ export class DaytonaProvider implements ComputerProvider {
 		const { image, lifetimeMs, network, labels } = given;
 		if (typeof image !== "string" || image.trim() === "") refuse("image", `an image is required: the id or name of a Daytona snapshot, or "${DAYTONA_DEFAULT_SNAPSHOT}" for Daytona's default snapshot`);
 		else if (/[\0-\x1f]/.test(image)) refuse("image", "a snapshot name has no control characters");
-		refusals.push(...checkLifetime(lifetimeMs, this.capabilities()));
+		refusals.push(...checkTenure(given, this.capabilities(), "Daytona"));
 		if (network === "open" || (typeof network === "object" && network !== null && "allow" in network)) refuse("network", OWN_NETWORK_ONLY);
 		else if (network !== "none") refuse("network", 'network is required: "none"');
 		if (labels !== undefined) {
@@ -752,7 +754,7 @@ export class DaytonaProvider implements ComputerProvider {
 		const sha256 = createHash("sha256").update(daemon).digest("hex");
 		if (signal?.aborted) return fail("aborted", "create was aborted before Daytona was called");
 		const name = `computer-${randomBytes(6).toString("hex")}`;
-		const deadline = new Date(Date.now() + spec.lifetimeMs).toISOString();
+		const deadline = new Date(Date.now() + runLifetimeMs(spec)).toISOString();
 		const archil = archilOf(spec);
 		const body = {
 			name,
@@ -763,7 +765,7 @@ export class DaytonaProvider implements ComputerProvider {
 			env: {},
 			public: false,
 			...(this.#target === undefined ? {} : { target: this.#target }),
-			ttlMinutes: Math.max(1, Math.ceil(spec.lifetimeMs / 60_000)),
+			ttlMinutes: Math.max(1, Math.ceil(runLifetimeMs(spec) / 60_000)),
 			autoStopInterval: this.#autoStop,
 			autoDeleteInterval: this.#autoDelete,
 			// An Archil computer's root reaches Archil: Daytona's network is open, and init's own namespace (loopback alone)
@@ -1396,7 +1398,7 @@ export class DaytonaProvider implements ComputerProvider {
 	 * Daytona answers a delete or a stop before the sandbox is gone or stopped, and its listing trails both: release
 	 * returns once Daytona reads the computer as release left it, or fails naming the last state it read.
 	 */
-	async release(ref: ComputerRef, how: "stop" | "delete", { signal }: CallContext = {}): Promise<Result<void>> {
+	async release(ref: ComputerRef, how: ReleaseHow, { signal }: CallContext = {}): Promise<Result<void>> {
 		if (!NAME.test(ref?.name ?? "") || typeof ref?.id !== "string" || ref.id === "") return fail("invalid", `${ref?.name} is not a Daytona computer's ref ({ id, name: computer-<12 hex digits> })`);
 		if (how !== "stop" && how !== "delete") return fail("invalid", `release is "stop" or "delete", not ${String(how)}`);
 		const found = await this.#rest.get(ref.id, signal);

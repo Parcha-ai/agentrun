@@ -51,10 +51,12 @@ import {
 	type ComputerRef,
 	type ComputerSpec,
 	type CreatedComputer,
-	checkLifetime,
+	checkTenure,
 	type NetworkPolicy,
 	type NetworkSpec,
 	type Refusal,
+	type ReleaseHow,
+	runLifetimeMs,
 } from "./provider.js";
 import { type ComputerError, failFor, ok, type Result, vendorFail } from "./result.js";
 import { daemonWatch, type ScreenWatch, type ScreenWatchHandlers, type WatchOptions } from "./screen-watch.js";
@@ -321,7 +323,7 @@ export class OrgoProvider implements ComputerProvider {
 		const given = (typeof spec === "object" && spec !== null ? spec : {}) as unknown as Record<string, unknown>;
 		const { image, lifetimeMs, network, cpus, memoryMb, labels, mount } = given;
 		if (image !== BASE && !(typeof image === "string" && TEMPLATE.test(image))) refuse("image", `an image is "${BASE}" (Orgo's base desktop) or an Orgo template, namespace/name@version`);
-		refusals.push(...checkLifetime(lifetimeMs, this.capabilities()));
+		refusals.push(...checkTenure(given, this.capabilities(), "Orgo"));
 		if (network !== "none") refuse("network", NETWORK);
 		if (memoryMb !== undefined && !RAM_GB.some((gb) => gb * 1024 === memoryMb)) refuse("memoryMb", "memoryMb is one of Orgo's sizes: 4096, 8192, 16384 or 32768");
 		if (cpus !== undefined && !CPUS.includes(cpus as number)) refuse("cpus", "cpus is one of Orgo's sizes: 0.5, 1, 2, 4 or 6");
@@ -353,7 +355,7 @@ export class OrgoProvider implements ComputerProvider {
 		if (signal?.aborted) return fail("aborted", "create was aborted before Orgo was called");
 		const labels = { ...spec.labels };
 		const now = Date.now();
-		const deadline = new Date(now + spec.lifetimeMs).toISOString();
+		const deadline = new Date(now + runLifetimeMs(spec)).toISOString();
 		const maxDeadline = new Date(now + this.#maxLifetimeMs).toISOString();
 		// The janitor's deadline is in the name, so list() and the sweep read it with nothing run inside.
 		const name = orgoName(labels, randomBytes(6).toString("hex"), new Date(deadline));
@@ -367,7 +369,7 @@ export class OrgoProvider implements ComputerProvider {
 			ram,
 			cpu,
 			// Orgo's end, the vendor's backstop: whole hours, deleting the computer and its disk. init ends it on time.
-			ends_in_hours: Math.max(1, Math.ceil(spec.lifetimeMs / HOUR)),
+			ends_in_hours: Math.max(1, Math.ceil(runLifetimeMs(spec) / HOUR)),
 			...(spec.image === BASE ? {} : { template_ref: spec.image }),
 		};
 		const made = await this.#rest.request<OrgoComputer>("POST", "/computers", { body, timeoutMs: this.#timeouts.createMs, ...(signal ? { signal } : {}) });
@@ -821,7 +823,7 @@ export class OrgoProvider implements ComputerProvider {
 	}
 
 	/** delete: idempotent, a computer Orgo no longer has is done; it waits until Orgo no longer has it. No stop. */
-	async release(ref: ComputerRef, how: "stop" | "delete", { signal }: CallContext = {}): Promise<Result<void>> {
+	async release(ref: ComputerRef, how: ReleaseHow, { signal }: CallContext = {}): Promise<Result<void>> {
 		const problem = refProblem(ref);
 		if (problem) return fail("invalid", problem);
 		if (how !== "stop" && how !== "delete") return fail("invalid", `release is "stop" or "delete", not ${String(how)}`);

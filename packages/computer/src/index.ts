@@ -108,7 +108,7 @@ export type { KernelBrowserSettings, KernelProvider, KernelProviderOptions, Kern
 export { DAEMON_IN_COMPUTER, helloDrift, type HelloExpected } from "./drift.js";
 export { drift, hostOf, inspectDrift, mountOf, networkOf, type DockerHost, type DockerInfo, type DockerInspect, type DriftExpected } from "./docker/inspect.js";
 export { type ReleasedOlder, releaseOlder, sweep, type SweepOptions, type Swept } from "./janitor.js";
-export { EPOCH_LABEL, epochOf, epochProblem, RUN_LABEL, runLabels, runProblem } from "./labels.js";
+export { EPOCH_LABEL, epochOf, epochProblem, IDLE_TTL_LABEL, OWNER_LABEL, ownerLabels, ownerOf, RUN_LABEL, runLabels, runProblem } from "./labels.js";
 export { waitUntil, type WaitOptions } from "./wait.js";
 export {
 	type BuiltinProviderId,
