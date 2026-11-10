@@ -13,7 +13,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { commitWrites } from "@earendil-works/pi-durable/testing";
 import { openSqliteStore } from "../dist/store/index.js";
 import { startServe } from "../dist/index.js";
-import { ATTEMPTS_KEPT, signatureOf, Webhooks } from "../dist/webhooks.js";
+import { ATTEMPTS_KEPT, signatureOf, waitMarkerOf, Webhooks } from "../dist/webhooks.js";
 import { verify } from "../dist/standard-webhooks.js";
 import { schemaProblems } from "./schema-support.mjs";
 import { client, FAUX, follow, printed, scratch, secretWritePath, serve, startInProcessRunner, startRun, withEnv } from "./support.mjs";
@@ -1204,7 +1204,7 @@ test("a run still waiting on the same question a day later, its message gone fro
   await hook.when(1);
   await onDisk(dir, () => JSON.parse(readFileSync(join(dir, "webhook-outbox.json"), "utf8")).messages.every((m) => m.status !== "pending"));
   assert.deepEqual(hook.got.map((r) => JSON.parse(r.body).type), ["run.ended"], "the same wait is not sent again");
-  // A new question of the run is a wait of its own, and replaces the last; then the run ends.
+  // A new question of the run is a wait of its own, the one it stands at now (the last kept as told); then the run ends.
   webhooks.emit("run.needs_input", waiting, "row_12");
   const end = new Date().toISOString();
   webhooks.emit("run.ended", { ...waiting, status: "completed", pending: undefined }, end);
@@ -1213,7 +1213,7 @@ test("a run still waiting on the same question a day later, its message gone fro
   // The new wait and the end were queued together, and each message goes on its own tries: they land in either order.
   const types = hook.got.map((r) => JSON.parse(r.body).type);
   assert.deepEqual([types[0], types.slice(1).sort()], ["run.ended", ["run.ended", "run.needs_input"]]);
-  assert.deepEqual(ledgerOf(dir).waiting, { wait: "row_12", ended: end }, "the newest wait, and the end past it");
+  assert.deepEqual(ledgerOf(dir).waiting, { wait: "row_12", told: ["row_9"], ended: end }, "the newest wait, the one told before it, and the end past them");
 });
 
 test("a run that ends while the webhook is off leaves its wait behind in the ledger; the next start, the webhook set again, drops it and sends nothing", async (t) => {
@@ -1262,5 +1262,80 @@ test("a start drops the ledger's waits of runs the store holds as ended or no lo
   // The catch-up has returned, its queuing done in it: with nothing pending, nothing is sent.
   nothingPending(dir);
   assert.equal(hook.got.length, 0, "nothing sent");
+});
+
+// #2291: one message per (run, wait). A wait's marker is its ask's own, so the same ask read again is the same wait,
+// whenever it is read and whatever was told between.
+test("the same wait sent again does nothing, right after or after another wait of the run, here and in the next server: one message per (run, wait)", async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, SEAL);
+  const hook = await receiver(t);
+  const dir = await scratch(t);
+  const env = { AGENTRUN_SEAL_KEY: sealKey() };
+  const first = new Webhooks(dir, env, () => undefined, []);
+  t.after(() => first.close());
+  first.save({ url: hook.url });
+  const waiting = (kind) => ({ run_id: "run_1", agent_id: "a", status: "input_required", title: "t", pending: { kind } });
+  assert.equal(first.emit("run.needs_input", waiting("question"), "row_3:waiting"), "queued");
+  assert.equal(first.emit("run.needs_input", waiting("question"), "row_3:waiting"), "queued", "the same wait again: already queued");
+  assert.equal(first.emit("run.needs_input", waiting("approval"), "approval:call_8"), "queued");
+  // The question read again after the approval was told (a stale read of the run): still the question's one message.
+  assert.equal(first.emit("run.needs_input", waiting("question"), "row_3:waiting"), "queued");
+  await hook.when(2);
+  await settled(dir);
+  assert.deepEqual(ledgerOf(dir).run_1, { wait: "approval:call_8", told: ["row_3:waiting"] }, "the wait it stands at, and the one told before it");
+  await first.close();
+  // The next server reads the ledger: neither wait goes again.
+  const next = new Webhooks(dir, env, () => undefined, []);
+  t.after(() => next.close());
+  assert.equal(next.emit("run.needs_input", waiting("question"), "row_3:waiting"), "queued");
+  assert.equal(next.emit("run.needs_input", waiting("approval"), "approval:call_8"), "queued");
+  nothingPending(dir);
+  const ids = ofType(hook.got, "run.needs_input").map((r) => r.headers["webhook-id"]);
+  assert.deepEqual(ids, [noticeId("run_1", "run.needs_input", "row_3:waiting"), noticeId("run_1", "run.needs_input", "approval:call_8")], "two waits, two messages, each under its wait's id");
+});
+
+test("an outbox an earlier server wrote (version 3, no told waits) is read as it was: its pending messages are sent, the wait it holds is not told again, and the next wait keeps it as told", async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, SEAL);
+  const hook = await receiver(t);
+  const dir = await scratch(t);
+  const env = { AGENTRUN_SEAL_KEY: sealKey() };
+  const setup = new Webhooks(dir, env, () => undefined, []);
+  setup.save({ url: hook.url });
+  await setup.close();
+  // As an earlier server left it: a run.needs_input still pending (its first try due), and the ledger's one wait per run.
+  const id = noticeId("run_old", "run.needs_input", "row_5:waiting");
+  const created = new Date().toISOString();
+  const body = JSON.stringify({ type: "run.needs_input", timestamp: created, data: { run_id: "run_old", agent_id: "a", status: "input_required", title: "t", url: "http://x/#/runs/run_old", pending: { kind: "question" } } });
+  const message = { id, type: "run.needs_input", body, created_at: created, status: "pending", attempts: 0, next_at: Date.now() };
+  writeFileSync(join(dir, "webhook-outbox.json"), `${JSON.stringify({ v: 3, messages: [message], attempts: [], notices: { run_old: { wait: "row_5:waiting" } } })}\n`);
+  const lines = [];
+  const webhooks = new Webhooks(dir, env, (fields) => lines.push(fields), []);
+  t.after(() => webhooks.close());
+  await hook.when(1);
+  await settled(dir);
+  assert.deepEqual(hook.got.map((r) => r.headers["webhook-id"]), [id], "the pending message is sent, under its own id");
+  assert.ok(!lines.some((l) => l.condition === "outbox_not_read"), `the file is read: ${JSON.stringify(lines)}`);
+  const waiting = { run_id: "run_old", agent_id: "a", status: "input_required", title: "t", pending: { kind: "question" } };
+  assert.equal(webhooks.emit("run.needs_input", waiting, "row_5:waiting"), "queued");
+  nothingPending(dir);
+  assert.equal(webhooks.emit("run.needs_input", { ...waiting, pending: { kind: "approval" } }, "approval:call_2"), "queued");
+  await hook.when(2);
+  await settled(dir);
+  assert.deepEqual(ledgerOf(dir).run_old, { wait: "approval:call_2", told: ["row_5:waiting"] });
+  assert.equal(hook.got.length, 2, "the held wait went no second time");
+});
+
+test("a wait's marker is its ask's, never the last row: a question's waiting row with the answer shown after it, an approval's call, a budget pause's time, a hand-over's ask; a stop's is its last row", () => {
+  const rows = [{ id: "row_1", kind: "user" }, { id: "row_2", kind: "tool_result" }, { id: "row_2:waiting", kind: "waiting" }];
+  const answered = [...rows, { id: "row_4", kind: "user" }, { id: "row_5", kind: "phase" }];
+  assert.equal(waitMarkerOf(rows, { kind: "question" }, true, "Learning"), "row_2:waiting");
+  assert.equal(waitMarkerOf(answered, null, true, "Learning"), "row_2:waiting", "the answer shown after it: still the question's");
+  assert.equal(waitMarkerOf(answered, { kind: "approval", id: "call_8" }, true, "Learning"), "approval:call_8");
+  assert.equal(waitMarkerOf(answered, { kind: "budget", at: "2026-11-10T00:00:00.000Z" }, true, "Learning"), "budget:2026-11-10T00:00:00.000Z");
+  assert.equal(waitMarkerOf(answered, { kind: "browser", asked_at: "2026-11-10T00:01:00.000Z" }, true, "Learning"), "browser:2026-11-10T00:01:00.000Z");
+  assert.equal(waitMarkerOf(answered, { kind: "computer", asked_at: "2026-11-10T00:02:00.000Z" }, true, "Learning"), "computer:2026-11-10T00:02:00.000Z");
+  assert.equal(waitMarkerOf([...answered, { id: "row_6", kind: "assistant", agent_label: "Learning" }], null, false, "Learning"), "row_4", "a stop: its last row that shows (no phase, no learning's)");
+  assert.equal(waitMarkerOf([{ id: "row_1", kind: "user" }], null, true, "Learning"), "row_1", "no waiting row: the last row that shows");
+  assert.equal(waitMarkerOf([], null, true, "Learning"), undefined);
 });
 
