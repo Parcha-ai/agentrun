@@ -76,11 +76,25 @@ function dispatchLoop(deps: DispatchDeps, loopDeps: LoopDeps): Loop {
     // buffered row and no buffered stop is lost between choosing the loop and replaying what was buffered.
     inner = factory(innerDeps);
     const end = inner.start(claim);
-    // Replay the buffered commands through the inner loop in order, each awaited, then let its `delivered` resolve.
+    // Replay the buffered commands through the inner loop in order, each awaited, then let its `delivered` resolve. A
+    // command the inner loop cannot take any more (its claim ended before it was ready, so its session is gone) is never
+    // thrown out of here, where nothing would catch it and the runner's process would go down. Its row stays untaken (the
+    // dispatch's `taken` is only its word that it holds the row; the store's take is the inner loop's own commit), so the
+    // run's next claim delivers it again and nobody's words are lost.
     const buffered = early.splice(0);
+    const loop = inner;
     void (async () => {
-      for (const command of buffered) await inner!.command(command);
-      replayed();
+      try {
+        for (const command of buffered) {
+          try {
+            await loop.command(command);
+          } catch (error) {
+            console.warn(`[runner] ${claim.runId}: a ${command.kind} row held before its loop was chosen was not delivered, and is left for the run's next claim: ${(error as Error)?.message ?? String(error)}`);
+          }
+        }
+      } finally {
+        replayed();
+      }
     })();
     if (earlyStop) void inner.stop(earlyStop);
     return end;

@@ -242,6 +242,15 @@ export async function runUntilSignalled(process: RunnerProcess, signals: readonl
   await process.close();
 }
 
+/** The runner process's handler for a promise rejection nothing handled (runnerMain installs it): one line on stderr in the
+ *  runner's name, its stack when it has one, and the process goes on serving. Exported for its test. */
+export function unhandledRejectionLogger(name: string, write: (line: string) => void = (line) => void process.stderr.write(line)): (reason: unknown) => void {
+  return (reason) => {
+    const said = reason instanceof Error ? (reason.stack ?? `${reason.name}: ${reason.message}`) : String(reason);
+    write(`agentrun-serve runner: Runner ${name}: a promise rejected with no handler (logged; the runner goes on): ${said}\n`);
+  };
+}
+
 /** One line of what the runner did, in its name. */
 function said(name: string, event: RunnerEvent): string | undefined {
   if (event.type === "claimed") return `Runner ${name} claimed ${event.claim.runId} (epoch ${event.claim.epoch})`;
@@ -278,6 +287,10 @@ export async function runnerMain(argv: readonly string[], env: NodeJS.ProcessEnv
   }
   let started: RunnerProcess;
   const runnerOf = name ?? runnerName();
+  // The last resort, in this process only (never the library's): a promise no one handled is a bug in one run's work.
+  // It is logged, and the runner keeps serving every other run rather than taking the process and all its claims down
+  // with it. The cause is fixed where it is found; this only keeps the rest running.
+  process.on("unhandledRejection", unhandledRejectionLogger(runnerOf));
   try {
     started = await startRunnerProcess({
       dataDir: args.dataDir,

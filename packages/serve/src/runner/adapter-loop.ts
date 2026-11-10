@@ -1297,12 +1297,22 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     }
   }
 
-  /** Whether a call of this run waits for the answer `approval` names: asked, and not answered yet. */
-  async function waitsFor(approval: string | undefined): Promise<boolean> {
+  /** Whether a call of this run waits for the answer `approval` names: asked, and not answered yet. `ended` when this loop
+   *  has no open Harness to read it in: its claim ended before it was ready, or its session closed. The answer is then the
+   *  next claim's to read, never this loop's to refuse, and a closed Harness is never read (its root() throws). */
+  async function waitsFor(approval: string | undefined): Promise<boolean | "ended"> {
     if (approval === undefined) return false;
     await Promise.race([ready, (finished ?? new Promise<never>(() => {})).then(() => undefined, () => undefined)]);
-    if (!gate || !harness) return false;
-    const conversation = await harness.root(context);
+    const open = harness;
+    if (!gate || !open) return "ended";
+    let conversation: Awaited<ReturnType<Harness["root"]>>;
+    try {
+      conversation = await open.root(context);
+    } catch (error) {
+      // The session closed under this read (closeSession lets go of the Harness first): the next claim reads the answer.
+      if (harness !== open) return "ended";
+      throw error;
+    }
     const entries = await entriesOf(gate.journal, conversation.id, context);
     const asked = findData<AskData>(entries, KINDS.ask, (data) => data.callId === approval) !== undefined;
     return asked && findData<AnswerData>(entries, KINDS.answer, (data) => data.callId === approval) === undefined;
@@ -1478,7 +1488,11 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
   async function closeSession(): Promise<void> {
     gate?.seal(new Interrupted("the Session is closing"));
     endWait();
-    const closing = Promise.all([session?.close().catch(() => {}), harness?.close(BACKGROUND_CONTEXT).catch(() => {})]);
+    // Let go of the Harness before it closes: a command that reads it from here on (waitsFor) finds none and leaves its
+    // row for the next claim, never driving a closed one, whose reads throw "Session is closed".
+    const closingHarness = harness;
+    harness = undefined;
+    const closing = Promise.all([session?.close().catch(() => {}), closingHarness?.close(BACKGROUND_CONTEXT).catch(() => {})]);
     let timer: NodeJS.Timeout | undefined;
     await Promise.race([closing, new Promise<void>((resolve) => (timer = setTimeout(resolve, CLOSE_MS)))]);
     clearTimeout(timer);
@@ -1706,7 +1720,10 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         // An answer names its approval: the asked call's id. One that names no call waiting for its answer (an old
         // approval, another run's) is refused, never applied to the call that waits now.
         const approval = approvalOf(command);
-        if (!(await waitsFor(approval))) {
+        const waits = await waitsFor(approval);
+        // This loop has ended (or never opened): the answer is left untaken, for the run's next claim to apply.
+        if (waits === "ended") return { later: "the run's loop has ended: the answer waits for the run's next claim" };
+        if (!waits) {
           refusals += 1;
           wakeInbox();
           return { refused: `no call of this run waits for approval ${JSON.stringify(approval ?? "")}` };
