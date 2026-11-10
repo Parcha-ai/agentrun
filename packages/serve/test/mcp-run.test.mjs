@@ -48,6 +48,15 @@ async function filesUnder(dir) {
   return out;
 }
 
+/** Every folder under `dir`, recursively, a folder at a time (one that went is skipped). */
+async function foldersUnder(dir) {
+  const out = [];
+  for (const entry of await readdir(dir, { withFileTypes: true }).catch(() => [])) {
+    if (entry.isDirectory()) out.push(join(dir, entry.name), ...(await foldersUnder(join(dir, entry.name))));
+  }
+  return out;
+}
+
 /** The files of a run's scratch folder (the CLI's home and config, its working directory), while it is there: it is swept
  *  at the run's end. */
 const scratchOf = async (data, runId) => (await filesUnder(join(data, "scratch"))).filter((file) => file.path.includes(`/${runId}/`));
@@ -264,7 +273,9 @@ test("claude-agent: the Claude CLI's own MCP client calls mcp:fake/add through t
   const runId = await runOf(api, "claude-adder", "Add 2 and 3 with the add tool.");
   await held.reached;
   const scratchFiles = await scratchOf(data, runId);
-  assert.ok(scratchFiles.some((file) => file.path.includes(`/${runId}/harness/`)), `the CLI's own files are read: ${scratchFiles.map((file) => file.path).join(", ")}`);
+  // The scan reached the CLI's own folder (its home and state, made at the session's start); it may hold no file yet, as
+  // the CLI writes some only later: the scan of what is there is what proves no file of its holds the token.
+  assert.ok((await foldersUnder(join(data, "scratch"))).some((folder) => folder.endsWith(`/${runId}/harness`)), `the CLI's own folder is read: ${scratchFiles.map((file) => file.path).join(", ")}`);
   const leakedMidCall = scratchFiles.filter((file) => file.text.includes(TOKEN)).map((file) => file.path);
   assert.deepEqual(leakedMidCall, [], "no file of the CLI's own (its home, its MCP config) holds the token");
   held.release();
