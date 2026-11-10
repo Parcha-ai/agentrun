@@ -104,7 +104,8 @@ export function browserSpend(provider: string, price: { usdPerHour: number | nul
         const refused = capped ? String((error as Error).message) : `${name} could not be held: ${String((error as Error)?.message ?? error)}`;
         // The cap's own refusal, as the run's pause reads it (a room refusal's figures; a refusal for good).
         const given = error as { forGood?: boolean; figures?: LedgerRefusal["figures"] };
-        return { refused, ...(capped ? { refusal: { refuse: refused, forGood: given.forGood ?? true, ...(given.figures ? { figures: given.figures } : {}) } } : {}) };
+        // Its code rides with it (Refusal.code): the model request the pause refuses next is the cap's refusal.
+        return { refused, ...(capped ? { refusal: { refuse: refused, code: SPEND_CAP_REACHED, forGood: given.forGood ?? true, ...(given.figures ? { figures: given.figures } : {}) } } : {}) };
       },
     );
     pending.add(admitted);
