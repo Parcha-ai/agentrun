@@ -153,6 +153,36 @@ test("a duplicate write on a store with a pool of one client is StoreConstraint 
   assert.equal((await store.agents.get("agent-1"))?.name, "Agent", "and the store's one client is free again");
 });
 
+test("openStore's Postgres pool holds at most AGENTRUN_STORE_POOL_SIZE connections, as the server and as a runner", ONLY, async (t) => {
+  const schema = await schemaFor(t);
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-pool-size-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const env = { AGENTRUN_STORE_SCHEMA: schema, AGENTRUN_STORE_POOL_SIZE: "2" };
+  const server = await openStore({ dataDir: dir, role: "server", url: PG_URL, env });
+  t.after(() => server.close().catch(() => undefined));
+  const runner = await openStore({ dataDir: dir, role: "runner", url: PG_URL, env });
+  t.after(() => runner.close().catch(() => undefined));
+  await server.agents.create({ id: "agent-1", name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer." } });
+  for (const [who, store] of [["server", server], ["runner", runner]]) {
+    // A session of the test's own holds the agents table; five reads of it through the store each wait on that lock with
+    // a pool client of their own, so the sessions blocked behind the holder are the pool's size, not the reads' count.
+    const holder = await client(schema);
+    await holder.query("BEGIN");
+    await holder.query("LOCK TABLE agents IN ACCESS EXCLUSIVE MODE");
+    const holderPid = (await holder.query("SELECT pg_backend_pid() AS pid")).rows[0].pid;
+    const reads = Array.from({ length: 5 }, () => store.agents.list());
+    for (const read of reads) read.catch(() => undefined);
+    const blocked = async () => (await sql(schema, "SELECT count(*)::int AS n FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid))", holderPid))[0].n;
+    const until = Date.now() + 3_000;
+    while ((await blocked()) < 2 && Date.now() < until) await new Promise((resolve) => setTimeout(resolve, 20));
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    assert.equal(await blocked(), 2, `${who}: two of the five reads hold a connection, the others wait for one`);
+    await holder.query("ROLLBACK");
+    await holder.end();
+    for (const read of await Promise.all(reads)) assert.deepEqual(read.map((agent) => agent.id), ["agent-1"], `${who}: every read is answered once the lock goes`);
+  }
+});
+
 /** A TCP server on loopback that takes every connection and never says a word (a database host that hangs), closed
  *  after the test. With `forward`, a connection is piped to the test Postgres instead while `forward.on` is true; set it
  *  false and every connection open is cut, and new ones hang. */

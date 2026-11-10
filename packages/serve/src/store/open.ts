@@ -2,7 +2,8 @@
 // postgresql:// URL (in the schema AGENTRUN_STORE_SCHEMA names, "agentrun" by default), else SQLite in the data
 // directory, as before. The URL may hold the database's password, so it is a secret: the launcher hands it over its pipe
 // and takes it out of the environment (agentrun-serve's list), and it is read here by name (secrets.ts secret), never
-// from an environment. Nothing else reads those two variables.
+// from an environment. Nothing else reads those two variables. AGENTRUN_STORE_POOL_SIZE sets how many connections each
+// process's Postgres pool holds at most (storePoolSize, DEFAULT_STORE_POOL_SIZE by default), read here alone too.
 import type { Store, StoreOwned, StoreRole } from "./store.js";
 import { openSqliteStore, STORE_FILE } from "./sqlite/store.js";
 import { DEFAULT_SCHEMA, openPostgresStore } from "./postgres/store.js";
@@ -27,6 +28,25 @@ export function storeTarget(dataDir: string, env: NodeJS.ProcessEnv = process.en
   return { kind: "postgres", url: named, schema: env.AGENTRUN_STORE_SCHEMA?.trim() || DEFAULT_SCHEMA };
 }
 
+/** A Postgres pool's size when AGENTRUN_STORE_POOL_SIZE is unset or empty. */
+export const DEFAULT_STORE_POOL_SIZE = 10;
+/** The largest AGENTRUN_STORE_POOL_SIZE taken: a value past it is a typo, not a pool (Postgres allows 100 connections by
+ *  default, for every process on it). */
+export const MAX_STORE_POOL_SIZE = 1_000;
+
+/** The most connections this process's Postgres pool holds at once, from `env`'s AGENTRUN_STORE_POOL_SIZE: a whole number
+ *  from 1 to MAX_STORE_POOL_SIZE, DEFAULT_STORE_POOL_SIZE when unset or empty. Anything else is refused in words (a
+ *  TypeError), so a server or a runner never starts on a pool it was not asked for. */
+export function storePoolSize(env: NodeJS.ProcessEnv = process.env): number {
+  const given = env.AGENTRUN_STORE_POOL_SIZE?.trim();
+  if (!given) return DEFAULT_STORE_POOL_SIZE;
+  const size = /^[0-9]+$/.test(given) ? Number(given) : Number.NaN;
+  if (!Number.isSafeInteger(size) || size < 1 || size > MAX_STORE_POOL_SIZE) {
+    throw new TypeError(`AGENTRUN_STORE_POOL_SIZE is a whole number from 1 to ${MAX_STORE_POOL_SIZE} (the most connections this process's Postgres store holds at once), or unset for ${DEFAULT_STORE_POOL_SIZE}, not ${JSON.stringify(given)}`);
+  }
+  return size;
+}
+
 /** Where `target` is, in words for a person: the store's file, or the Postgres schema (never its URL, which may carry a
  *  password). */
 export function storePlace(target: StoreTarget): string {
@@ -43,7 +63,7 @@ export interface OpenStoreOptions {
   /** The store's URL, for a caller that holds it itself (a test, the conformance harness). By default this process's
    *  AGENTRUN_STORE_URL secret (secrets.ts secret: as the launcher handed it over), never an environment's. */
   readonly url?: string;
-  /** The environment AGENTRUN_STORE_SCHEMA is read from (process.env). The schema's name is no secret. */
+  /** The environment AGENTRUN_STORE_SCHEMA and AGENTRUN_STORE_POOL_SIZE are read from (process.env). Neither is a secret. */
   readonly env?: NodeJS.ProcessEnv;
   /** Told what a person should know at the open (a runner's clock far from Postgres's; a server waiting for another to
    *  let the Postgres schema go). */
@@ -52,9 +72,11 @@ export interface OpenStoreOptions {
   readonly onOwnerLost?: (error: StoreOwned) => void;
 }
 
-/** Opens the store `options` names (storeTarget): the server's and the runner's one way in. */
-export function openStore({ dataDir, role = "server", now, url, env = process.env, warn, onOwnerLost }: OpenStoreOptions): Promise<Store> {
+/** Opens the store `options` names (storeTarget): the server's and the runner's one way in. On Postgres its pool holds at
+ *  most storePoolSize(env) connections; a pool size that is no size is refused on either store. */
+export async function openStore({ dataDir, role = "server", now, url, env = process.env, warn, onOwnerLost }: OpenStoreOptions): Promise<Store> {
   const target = storeTarget(dataDir, env, url ?? storeUrl());
+  const poolSize = storePoolSize(env);
   if (target.kind === "sqlite") return openSqliteStore({ dataDir, role, ...(now ? { now } : {}) });
-  return openPostgresStore({ url: target.url, schema: target.schema, role, ...(now ? { now } : {}), ...(warn ? { warn } : {}), ...(onOwnerLost ? { onOwnerLost } : {}) });
+  return openPostgresStore({ url: target.url, schema: target.schema, role, poolSize, ...(now ? { now } : {}), ...(warn ? { warn } : {}), ...(onOwnerLost ? { onOwnerLost } : {}) });
 }

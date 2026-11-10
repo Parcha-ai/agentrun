@@ -20,7 +20,7 @@ export { claimFence, type FenceVariant } from "./fence.js";
 export { DEFAULT_LEASE_MS, openSqliteStore, type SqliteStoreOptions, storeOver } from "./sqlite/store.js";
 export { Connection, DEFAULT_TRANSACTION_DEADLINE_MS, type SqliteDatabase, type SqliteExecutor, type SqliteValue, type StoreConnection, type TransactionOptions, type Tx } from "./sqlite/connection.js";
 export { cleanText, type Dialect, SQLITE } from "./dialect.js";
-export { openStore, type OpenStoreOptions, storePlace, storeTarget, type StoreTarget } from "./open.js";
+export { DEFAULT_STORE_POOL_SIZE, MAX_STORE_POOL_SIZE, openStore, type OpenStoreOptions, storePlace, storePoolSize, storeTarget, type StoreTarget } from "./open.js";
 export { CLOCK_WARN_MS, DEFAULT_SCHEMA, openPostgresStore, type PostgresStoreOptions, postgresWhere } from "./postgres/store.js";
 export { LEASE_DEADLINE_MS, OWNER_WAIT_MS, PgConnection, SCHEMA_NAME, STORE_CONNECT_TIMEOUT_MS, Unanswered } from "./postgres/connection.js";
 export { dropPostgresSchema, migrate, migrationsIn, versionOf as postgresVersionOf } from "./postgres/migrate.js";
