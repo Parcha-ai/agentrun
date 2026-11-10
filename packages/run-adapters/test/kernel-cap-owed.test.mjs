@@ -67,3 +67,43 @@ test("an owed step with no figure is no money: refused for good, as any hold tha
   const refused = await tools.admit({ ...release, id: "s1@release#5", holdUsd: Number.NaN, owed: true }).then(() => undefined, (error) => error);
   assert.ok(refused instanceof cap.CapRefused && refused.forGood === true, `refused for good: ${refused ?? "admitted"}`);
 });
+
+// A hold-only step (`hold`): money reserved, not spent. While its claim holds it, it is held like any step (refusable
+// steps beside it see it); a claim lost with it open gives it back on the next claim, never booked as cut. Every other cut
+// step keeps today's rule: a model request cut by the same lost claim still books as cut, at its hold.
+test("a lost claim's hold-only step is given back by the next claim, while a cut model request of the same run still books as cut", async () => {
+  const store = memorySessionStore();
+  const run = capOf(store, 1);
+  const tools = await run.tools(await store.open(cap.TOOL_SESSION));
+  await tools.admit({ ...release, id: "s1@reserve#1", name: "this browser session's reserve", holdUsd: 0.4, hold: true });
+  const beside = await tools.admit({ id: "c1#1", name: "this browser call", holdUsd: 0.7, basis: "a stretch", call: "c1" }).then(() => undefined, (error) => error);
+  assert.ok(beside instanceof cap.CapRefused, `held while its claim holds it: a call beside it does not fit: ${beside ?? "admitted"}`);
+  // A model request of the same claim, admitted and never answered: the claim is lost with both open.
+  const writer = await store.open(MODEL_SESSION);
+  await writer.append([{ kind: RUNNER_RECORDS.request, data: { turn: 1, model: MODEL.id, heldUsd: 0.05 } }]);
+  // The next claim: the hold is given back, the model request booked cut at its hold.
+  const next = capOf(store, 1);
+  const tools2 = await next.tools(await store.open(cap.TOOL_SESSION));
+  near(tools2.spentUsd(), 0, "the reserve is given back: no spend");
+  const turns = (await store.read(cap.TOOL_SESSION)).filter((r) => r.kind === RUNNER_RECORDS.turn).map((r) => r.data);
+  assert.deepEqual(turns, [{ turn: 1, usd: 0, givenBack: true }], "given back, never booked as cut");
+  const model = await next.before({ key: MODEL_SESSION, label: MODEL_SESSION, model: MODEL.id, turn: 2, maxTurns: null, spentUsd: 0, inputTokensMax: 100 });
+  assert.ok(model && !("refuse" in model), `the next model request fits: ${JSON.stringify(model)}`);
+  const cut = await cap.runCap({ sessions: store, capUsd: () => 0.04, mode: "expected", now: () => T0, modelOf: (id) => (id === MODEL.id ? MODEL : undefined) }).before({ key: MODEL_SESSION, label: MODEL_SESSION, model: MODEL.id, turn: 2, maxTurns: null, spentUsd: 0, inputTokensMax: 100 });
+  assert.ok(cut && "refuse" in cut, `the cut model request still counts at its hold: ${JSON.stringify(cut)}`);
+  near(cut.figures?.spentUsd, 0.05, "its figures: the cut request at its hold, the reserve none");
+});
+
+test("a ref names one booking: a second admit of it, on this claim or a later one, books nothing", async () => {
+  const store = memorySessionStore();
+  const tools = await capOf(store, 1).tools(await store.open(cap.TOOL_SESSION));
+  const owed = { ...release, id: "a#1", owed: true, ref: "browser:s1@2026-11-10T02:00:00.000Z/final" };
+  const first = await tools.admit(owed);
+  assert.equal(first.booked, undefined, "the first admit books it");
+  await tools.settle("a#1", 0.0014);
+  const again = await tools.admit({ ...owed, id: "a#2" });
+  assert.equal(again.booked, true, "the same claim's second admit books nothing");
+  const later = await (await capOf(store, 1).tools(await store.open(cap.TOOL_SESSION))).admit({ ...owed, id: "a#3" });
+  assert.equal(later.booked, true, "a later claim's books nothing either");
+  near((await capOf(store, 1).tools(await store.open(cap.TOOL_SESSION))).spentUsd(), 0.0014, "booked once");
+});

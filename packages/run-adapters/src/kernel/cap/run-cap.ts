@@ -6,7 +6,7 @@
 // spend of both from the journal: a decision held and never answered counts at its hold and its bound, as any request.
 // Decisions book under their own session (DECISION_SESSION), priced as main holds them (decisionAsk).
 import { runBooking, type RunSessions } from "../../run-booking.js";
-import { type BeforeRequest, modelPortFor } from "../../runner.js";
+import { type BeforeRequest, modelPortFor, RUNNER_RECORDS } from "../../runner.js";
 import type { ModelRequest, ModelTicket, SessionWriter } from "../../types.js";
 import { decisionAsk } from "./admit.js";
 import { CapRefused, DecisionPriceUnreadable } from "./errors.js";
@@ -67,8 +67,10 @@ export interface RunTools {
   /** Admits the paid request `id` at its price (`holdUsd`): its hold, or CapRefused. `call`: the tool call it runs under,
    *  named on its runner.request (none for a step under no call, a person's browser time); `chargedBy`, who charges
    *  for it, named there as `charged_by`; `tool` and `tag`, the tool whose charge it is and its session (ModelRequest.paid);
-   *  `owed`, money its provider is already owed: held and booked, never refused. */
-  admit(request: { readonly id: string; readonly name: string; readonly holdUsd: number; readonly basis: string; readonly call?: string; readonly chargedBy?: string; readonly tool?: string; readonly tag?: string; readonly owed?: true }): Promise<Admission>;
+   *  `owed`, money its provider is already owed: held and booked, never refused. `hold`: a hold-only step: money
+   *  reserved, not spent; given back on a lost claim, never booked as cut. `ref`: the one booking it names: a ref already
+   *  booked (on the run's records, or on this claim) books nothing again, and the answer says `booked`. */
+  admit(request: { readonly id: string; readonly name: string; readonly holdUsd: number; readonly basis: string; readonly call?: string; readonly chargedBy?: string; readonly tool?: string; readonly tag?: string; readonly owed?: true; readonly hold?: true; readonly ref?: string }): Promise<Admission & { readonly booked?: true }>;
   /** Settles it at what it charged (null: at its hold; 0: nothing was billed). `givenBack`: its hold let go unused,
    *  nothing sent (at 0), its record marked so (ModelUsage.givenBack): never read as a $0 charge or an unpriced one. */
   settle(id: string, usd: number | null, options?: { readonly givenBack?: true }): Promise<number | null>;
@@ -127,9 +129,26 @@ export function runCap(options: RunCapOptions): RunCap {
  *  rule's tool judgement), flushed first when `flush` is given, and settled at what it charged. */
 export async function paidCalls(writer: SessionWriter, before: BeforeRequest, options: { flush?: () => Promise<void> } = {}): Promise<RunTools> {
   const steps = await stepsOn(writer, before, options.flush, "paid call", () => {});
-  return {
+  // Each `ref` the run's paid steps have booked (on its records, or admitted on this claim): a ref names one booking, so a
+  // second admit of it books nothing (`booked`) and opens no step.
+  let refs: Promise<Set<string>> | undefined;
+  const refsOf = () => (refs ??= writer.read().then((records) => new Set(records.filter((r) => r.kind === RUNNER_RECORDS.request).map((r) => (r.data as { ref?: unknown } | undefined)?.ref).filter((ref): ref is string => typeof ref === "string"))));
+  const book = (request: Parameters<RunTools["admit"]>[0]) =>
     // A hold that is no figure (an unpriced browser provider's) goes to the rule as given, which refuses it for good.
-    admit: (request) => steps.book(request.id, { model: `paid:${request.name}`, inputTokensMax: 0, ...(request.holdUsd !== 0 ? { feeUsd: request.holdUsd } : {}), paid: { name: request.name, basis: request.basis, ...(request.call === undefined ? {} : { call: request.call }), ...(request.chargedBy === undefined ? {} : { charged_by: request.chargedBy }), ...(request.tool === undefined ? {} : { tool: request.tool }), ...(request.tag === undefined ? {} : { tag: request.tag }), ...(request.owed ? { owed: true as const } : {}) } }),
+    steps.book(request.id, { model: `paid:${request.name}`, inputTokensMax: 0, ...(request.holdUsd !== 0 ? { feeUsd: request.holdUsd } : {}), paid: { name: request.name, basis: request.basis, ...(request.call === undefined ? {} : { call: request.call }), ...(request.chargedBy === undefined ? {} : { charged_by: request.chargedBy }), ...(request.tool === undefined ? {} : { tool: request.tool }), ...(request.tag === undefined ? {} : { tag: request.tag }), ...(request.owed ? { owed: true as const } : {}), ...(request.hold ? { hold: true as const } : {}), ...(request.ref === undefined ? {} : { ref: request.ref }) } });
+  return {
+    admit: async (request) => {
+      if (request.ref === undefined) return book(request);
+      const booked = await refsOf();
+      if (booked.has(request.ref)) return { id: request.id, heldUsd: 0, boundUsd: 0, worstUsd: 0, stoppedUsd: () => 0, booked: true as const };
+      booked.add(request.ref);
+      try {
+        return await book(request);
+      } catch (error) {
+        booked.delete(request.ref);
+        throw error;
+      }
+    },
     settle: (id, usd, options) => steps.settle(id, options?.givenBack ? 0 : usd, options),
     spentUsd: steps.spentUsd,
     heldUsd: steps.heldUsd,

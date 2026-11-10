@@ -32,7 +32,9 @@ export function runBooking(sessions: RunSessions, before: BeforeRequest): Before
       for (const key of await sessions.keys()) {
         const spend = sessionSpendOf(await sessions.read(key));
         spentUsd = spentUsd === null || spend.spentUsd === null ? null : spentUsd + spend.spentUsd;
-        for (const turn of spend.turns) recorded.add(idOf(key, turn));
+        // A hold-only step still open is no spend in its records: this booking keeps counting the one it admitted, in
+        // flight at its hold, until it is answered (a lost claim's, admitted by no booking here, counts nothing).
+        for (const turn of spend.turns) if (!spend.openHolds.has(turn)) recorded.add(idOf(key, turn));
       }
       for (const id of [...admitted.keys()]) if (recorded.has(id)) admitted.delete(id);
       const verdict = await before({ ...request, spentUsd, inFlight: [...admitted.values()] });

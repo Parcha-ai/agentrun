@@ -147,8 +147,10 @@ export interface ModelRequest {
    *  `tool` and `tag`: the tool whose charge it is (a browser's, "browser") and its session, written there for the run
    *  view to place it as main's charge of that tool. `owed`: money its provider is already owed (a browser session's
    *  release, the time a person used): held at `feeUsd` and booked, never asked of the cap's rule, so a run past its cap
-   *  or of unknown spend still counts it (main keeps it so: keepHold). */
-  paid?: { name: string; basis: string; call?: string; charged_by?: string; tool?: string; tag?: string; owed?: true };
+   *  or of unknown spend still counts it (main keeps it so: keepHold). `hold`: a hold-only step: money reserved, not
+   *  spent; given back on a lost claim, never booked as cut (its holder's charges book the money, each its own step).
+   *  `ref`: the one booking it names (a browser charge's session and time): a second admit of the same ref is not booked. */
+  paid?: { name: string; basis: string; call?: string; charged_by?: string; tool?: string; tag?: string; owed?: true; hold?: true; ref?: string };
   /** A side call, never its turn's own: on another model than the session's (a client's title, a summary), or the
    *  host's own request beside the harness's (`host`). */
   side?: true;

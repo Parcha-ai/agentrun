@@ -60,8 +60,9 @@ export type BeforeRequest = (request: {
   feeUsd?: number;
   /** A paid tool call, no model request (ModelRequest.paid): held at its fee alone, named so in a refusal. `call`: the
    *  tool call it was booked under, `charged_by`, who charges for it, and `tool`/`tag`, the tool it is and its session,
-   *  all written on its runner.request. `owed`: money already owed at its provider, held and booked, never refused. */
-  paid?: { name: string; basis: string; call?: string; charged_by?: string; tool?: string; tag?: string; owed?: true };
+   *  all written on its runner.request. `owed`: money already owed at its provider, held and booked, never refused.
+   *  `hold`: a hold-only step, given back on a lost claim; `ref`: the one booking it names (ModelRequest.paid). */
+  paid?: { name: string; basis: string; call?: string; charged_by?: string; tool?: string; tag?: string; owed?: true; hold?: true; ref?: string };
   /** A side call (ModelRequest.side): on another model than the session's (a client's), or the host's own (`host`). */
   side?: true;
   /** It carries the host's note (ModelRequest.noted), and its input measured without it (`inputTokensMaxWithoutNote`):
@@ -190,9 +191,13 @@ export async function modelPortFor(writer: SessionWriter, options: ModelPortOpti
  *  session's spend (null: unknown). A turn is a paid request that left: counted from the records written before each one
  *  left, so a request a crash cut off (or one still in flight, read from another process or session) counts at the
  *  figure its host held for it, and leaves the spend unknown when there is none. */
-export function sessionSpendOf(records: readonly SessionRecord[]): { turns: number[]; held: Map<number, number>; bounds: Map<number, number>; hosts: Map<number, string>; answered: Set<number>; spentUsd: number | null; cost: SessionCost } {
-  const requests = records.filter((r) => r.kind === RUNNER_RECORDS.request).map((r) => (r.data ?? {}) as { turn?: number; heldUsd?: unknown; boundUsd?: unknown; host?: unknown });
+export function sessionSpendOf(records: readonly SessionRecord[]): { turns: number[]; held: Map<number, number>; bounds: Map<number, number>; hosts: Map<number, string>; answered: Set<number>; openHolds: Set<number>; spentUsd: number | null; cost: SessionCost } {
+  const requests = records.filter((r) => r.kind === RUNNER_RECORDS.request).map((r) => (r.data ?? {}) as { turn?: number; heldUsd?: unknown; boundUsd?: unknown; host?: unknown; hold?: unknown });
   const turns = requests.map((data, i) => data.turn ?? i + 1);
+  // Hold-only steps (ModelRequest.paid.hold): money reserved, never spent. One still open is no spend here: the process
+  // that holds it counts it in flight (runBooking), and a lost claim's is given back (bookCut), never booked as cut.
+  const holdOnly = new Set<number>();
+  requests.forEach((data, i) => { if (data.hold === true) holdOnly.add(turns[i]!); });
   const hosts = new Map<number, string>();
   requests.forEach((data, i) => { if (typeof data.host === "string") hosts.set(turns[i]!, data.host); });
   const held = new Map<number, number>();
@@ -234,12 +239,17 @@ export function sessionSpendOf(records: readonly SessionRecord[]): { turns: numb
     if (own === null) unpriced++;
     else soFarUsd += own;
   }
+  const openHolds = new Set<number>();
   for (const turn of turns) {
     if (answered.has(turn)) continue;
+    if (holdOnly.has(turn)) {
+      openHolds.add(turn);
+      continue;
+    }
     spentUsd = spent(spentUsd, worst(turn));
     unpriced++;
   }
-  return { turns, held, bounds, hosts, answered, spentUsd, cost: { usd: unpriced > 0 ? null : soFarUsd, soFarUsd, unpriced } };
+  return { turns, held, bounds, hosts, answered, openHolds, spentUsd, cost: { usd: unpriced > 0 ? null : soFarUsd, soFarUsd, unpriced } };
 }
 
 /** Whether a request was booked lost (bookRequest's rule `lost`, or `lost:<label>`): billed or not, no cost came in. */
@@ -327,7 +337,7 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
     // Durable before the request leaves: admitted, then sent. It counts as a turn once its record is written (admissions
     // run one at a time), so a write that fails refuses the request and costs no turn.
     const turn = turns + 1;
-    await write([{ kind: RUNNER_RECORDS.request, data: { turn, model, ...(hold === undefined ? {} : { heldUsd: hold }), ...(bound ? { boundUsd: bound } : {}), ...(side ? { side } : {}), ...(host === undefined ? {} : { host }), ...(paid?.call === undefined ? {} : { call: paid.call }), ...(paid?.charged_by === undefined ? {} : { charged_by: paid.charged_by }), ...(paid?.tool === undefined ? {} : { tool: paid.tool }), ...(paid?.tag === undefined ? {} : { tag: paid.tag }), ...(paid?.owed ? { owed: true as const } : {}) } }]);
+    await write([{ kind: RUNNER_RECORDS.request, data: { turn, model, ...(hold === undefined ? {} : { heldUsd: hold }), ...(bound ? { boundUsd: bound } : {}), ...(side ? { side } : {}), ...(host === undefined ? {} : { host }), ...(paid?.call === undefined ? {} : { call: paid.call }), ...(paid?.charged_by === undefined ? {} : { charged_by: paid.charged_by }), ...(paid?.tool === undefined ? {} : { tool: paid.tool }), ...(paid?.tag === undefined ? {} : { tag: paid.tag }), ...(paid?.owed ? { owed: true as const } : {}), ...(paid?.hold ? { hold: true as const } : {}), ...(paid?.ref === undefined ? {} : { ref: paid.ref }) } }]);
     turns = turn;
     if (host !== undefined) hosts.set(turn, host);
     if (hold !== undefined) held.set(turn, hold);
@@ -438,7 +448,16 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
     // Each is booked once, as cut, at an unknown price, and the host is told as for any answered request, so its ledger
     // shows the possible spend instead of nothing. Booked, it is answered: a later attempt never books it again.
     // Only requests an earlier process admitted: one this process has in flight is not cut.
-    const numbers = inherited.filter((t) => !answered.has(t));
+    const left = inherited.filter((t) => !answered.has(t));
+    if (left.length === 0) return;
+    // A hold-only step an earlier process left open is given back: money reserved, not spent (its holder's charges book
+    // the money), never booked as cut. Every other cut step keeps the rule below.
+    const givenBack = left.filter((t) => read.openHolds.has(t));
+    const numbers = left.filter((t) => !read.openHolds.has(t));
+    if (givenBack.length) {
+      await append(givenBack.map((turn) => ({ kind: RUNNER_RECORDS.turn, data: { turn, usd: 0, givenBack: true } })));
+      for (const turn of givenBack) answered.add(turn);
+    }
     if (numbers.length === 0) return;
     // A cut request whose response had begun carries the ids it gave: the provider saw it, under them. One with none may
     // still have reached the provider before any answer; both are booked at an unknown price.
