@@ -43,6 +43,13 @@ describe("RunDetail, the Files tab's count", () => {
     const host = open(done, { files: [file("stats.py"), file("__pycache__/stats.pyc"), file(".git/HEAD"), file(".env.example")] });
     expect(tabNamed(host, /^Files/)?.textContent).toBe("Files 2");
   });
+
+  it("with the hidden ones shown, counts them too", () => {
+    const host = open(done, { files: [file("stats.py"), file("__pycache__/stats.pyc"), file(".git/HEAD"), file(".env.example")], tab: "files" as never });
+    act(() => [...host.querySelectorAll("button")].find((b) => b.textContent === "Show 2 hidden")!.click());
+    expect(tabNamed(host, /^Files/)?.textContent).toBe("Files 4");
+    expect(host.querySelectorAll("li")).toHaveLength(4);
+  });
 });
 
 // A run that waits on the person in its browser or on its computer says where, and what the server asks: never that a

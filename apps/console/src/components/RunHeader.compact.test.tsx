@@ -88,6 +88,15 @@ describe("RunDetail, the header while the steps scroll", () => {
 
   // Steps that would fit once the header shrank would snap the scroll back to the top, and the header would grow again:
   // a flicker. A page the compact header lets fit stays whole.
+  // Another tab is another page of the run: it starts at its top, so the header is whole again there.
+  it("is whole again on another tab", () => {
+    const el = open();
+    scrollTo(el, 120);
+    expect(compact(el)).toBe(true);
+    act(() => [...el.querySelectorAll('[role="tab"]')].find((t) => t.textContent === "Report")!.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    expect(compact(el)).toBe(false);
+  });
+
   it("stays whole when the steps overflow by less than the compact header gives back", () => {
     const el = open();
     scrollTo(el, 60, { scrollHeight: 428, clientHeight: 360 });

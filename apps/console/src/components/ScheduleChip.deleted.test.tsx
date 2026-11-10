@@ -66,8 +66,9 @@ describe("a run whose trigger was deleted", () => {
 // The app's read of the triggers: the names and kinds, and the ids a fresh read asked for by a chip didn't find.
 describe("useTriggerKnown", () => {
   const trigger = (id: string, name: string) => ({ id, name, source: { kind: "schedule", cron: "0 8 * * *" } } as unknown as Trigger);
-  function Probe({ v2, on }: { v2: { listTriggers: () => Promise<{ triggers: Trigger[] }> }; on: (got: ReturnType<typeof useTriggerKnown>) => void }) {
-    on(useTriggerKnown(v2, true, []));
+  // `page`: the app's page; a change reads the list again, as App's route does.
+  function Probe({ v2, on, page = "runs" }: { v2: { listTriggers: () => Promise<{ triggers: Trigger[] }> }; on: (got: ReturnType<typeof useTriggerKnown>) => void; page?: string }) {
+    on(useTriggerKnown(v2, true, [page]));
     return null;
   }
 
@@ -91,6 +92,33 @@ describe("useTriggerKnown", () => {
     const before = v2.listTriggers.mock.calls.length;
     await act(async () => { got!.reads.ask("trg_x"); got!.reads.ask("trg_x"); });
     expect(v2.listTriggers.mock.calls.length - before).toBe(1);
+  });
+
+  // A runs page of many runs whose triggers were deleted asks once: one fresh read answers every id waiting on it.
+  it("many missing ids share one read", async () => {
+    const v2 = { listTriggers: vi.fn(async () => ({ triggers: [] as Trigger[] })) };
+    let got: ReturnType<typeof useTriggerKnown> | undefined;
+    await act(async () => { mount(createElement(Probe, { v2, on: (g) => { got = g; } })); });
+    const before = v2.listTriggers.mock.calls.length;
+    await act(async () => { for (let i = 0; i < 50; i++) got!.reads.ask(`trg_${i}`); });
+    expect(v2.listTriggers.mock.calls.length - before).toBe(1);
+    expect(got!.reads.gone.size).toBe(50);
+  });
+
+  // A trigger a fresh read found, deleted later: the next read that lacks it calls it gone, so its runs stop linking to a
+  // page that would answer 404.
+  it("a trigger found once and deleted later reads gone after the next read", async () => {
+    let reads = 0;
+    const v2 = { listTriggers: vi.fn(async () => ({ triggers: reads++ === 1 ? [trigger("trg_a", "a"), trigger("trg_new", "new one")] : [trigger("trg_a", "a")] })) };
+    let got: ReturnType<typeof useTriggerKnown> | undefined;
+    const on = (g: ReturnType<typeof useTriggerKnown>) => { got = g; };
+    await act(async () => { mount(createElement(Probe, { v2, on })); });
+    await act(async () => { got!.reads.ask("trg_new"); });
+    expect(got!.known.get("trg_new")?.name).toBe("new one");
+    expect(got!.reads.gone.has("trg_new")).toBe(false);
+    await act(async () => { root!.render(createElement(Probe, { v2, on, page: "run" })); });
+    expect(got!.known.has("trg_new")).toBe(false);
+    expect(got!.reads.gone.has("trg_new")).toBe(true);
   });
 });
 
