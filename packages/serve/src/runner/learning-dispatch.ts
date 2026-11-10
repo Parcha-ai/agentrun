@@ -11,11 +11,17 @@ import { GRADE_TIMEOUT_MS, type LearningLoopDeps } from "./learning-loop.js";
 import type { LoopFactory } from "./loop-contract.js";
 import type { Store } from "../store/store.js";
 
-/** What a grade asks the runner's route for: the grade model the launch names (none: the agent's own), and the agent. */
+/** What a grade asks the runner's route for: the grade model the launch names (`model`), the model of the run that
+ *  learned, as its revision names it (`own`: main grades on it when no grade model is named), and the agent. */
 export interface GradeRouteAsk {
   readonly model?: string;
+  readonly own?: string;
   readonly agentId: string;
 }
+
+/** The model a grade runs on, main's order: the grade model the server names, else the agent's own (the model its
+ *  revision names), else none (the host's default, which the route picks). */
+export const gradeModelFor = (grade: Pick<GradeRouteAsk, "model" | "own">): string | undefined => grade.model ?? grade.own;
 
 export interface LearningDispatchDeps {
   readonly store: Pick<Store, "runs" | "agents" | "learning">;
@@ -53,13 +59,15 @@ export async function gradeRouteOf(model: string | undefined, env: NodeJS.Proces
   return routeOf(model);
 }
 
-/** The learning run's grade route: its launch's grade model, and the agent of the run that learned. */
+/** The learning run's grade route: its launch's grade model, the model the revision of the run that learned names (its
+ *  `model`, as main's grade reads agent.model), and that run's agent. */
 async function gradeOf(store: LearningDispatchDeps["store"], learningRunId: string): Promise<GradeRouteAsk> {
   const body = objectOf((await store.runs.launch(learningRunId)).body);
   const sourceId = objectOf(body.input).runId;
   const source = typeof sourceId === "string" ? await store.runs.get(sourceId) : undefined;
   if (!source) throw new Error(`the learning run ${learningRunId} names no run it learns from`);
-  return { ...(typeof body.model === "string" && body.model !== "" ? { model: body.model } : {}), agentId: source.agentId };
+  const own = objectOf((await store.agents.revision(source.revisionId))?.body).model;
+  return { ...(typeof body.model === "string" && body.model !== "" ? { model: body.model } : {}), ...(typeof own === "string" && own !== "" ? { own } : {}), agentId: source.agentId };
 }
 
 /** The loop for a launch of harness "learning": the runner's dispatch calls it for each such run it claims. */

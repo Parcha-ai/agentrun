@@ -13,7 +13,7 @@ import { adapterRunSpecFromLaunch, type AdapterSpecDeps, PI_WIRES } from "./adap
 import { createAdapterLoop } from "./adapter-loop.js";
 import { createDispatchLoop } from "./dispatch.js";
 import { cliRunSpecFromLaunch } from "./cli-run-spec.js";
-import { gradeRouteOf, learningLoopOf } from "./learning-dispatch.js";
+import { gradeModelFor, gradeRouteOf, learningLoopOf } from "./learning-dispatch.js";
 import type { LoopFactory } from "./loop-contract.js";
 import { createWorkflowLoop, isWorkflowRevision } from "./workflow-loop.js";
 import { workflowSpecOf } from "./workflow-spec.js";
@@ -43,7 +43,8 @@ export function resolveRunnerLoop(deps: AdapterSpecDeps): (harness: string, laun
         // sessionProvider), so its route is asked on pi's wires; a model on neither keeps the route's Messages translation.
         // A grade model whose vendor this host reaches only through OpenRouter goes there as main's grade does
         // (gradeRouteOf): OpenRouter's key its one credential, priced at OpenRouter's price.
-        routeOf: (grade) => gradeRouteOf(grade.model, deps.env ?? process.env, (model) => deps.routeOf(model, deps.env, "default", PI_WIRES)),
+        // The grade's model, main's order (gradeModelFor): the grade model the server names, else the agent's own.
+        routeOf: (grade) => gradeRouteOf(gradeModelFor(grade), deps.env ?? process.env, (model) => deps.routeOf(model, deps.env, "default", PI_WIRES)),
         ...(deps.log ? { log: deps.log } : {}),
       });
     }
