@@ -113,6 +113,36 @@ test("a server that takes its lost owner lock back on a schema a newer build mig
   await assert.rejects(openPostgresStore({ url: PG_URL, schema, ownerWaitMs: 0 }), (error) => !(error instanceof StoreOwned), "not StoreOwned: the lock was given up");
 });
 
+test("a store closed while its taken-back owner lock's schema check is in flight lets the lock go: the fresh owner connection is never installed, and another server takes the schema", ONLY, async (t) => {
+  const schema = await schemaFor(t);
+  await (await openPostgresStore({ url: PG_URL, schema })).close();
+  // The schema check (PgConnection's ownerCheck, as openPostgresStore supplies it) held open on a promise this test lets go.
+  let checking;
+  const checked = new Promise((resolve) => (checking = resolve));
+  let release;
+  const held = new Promise((resolve) => (release = resolve));
+  let asks = 0;
+  const connection = await PgConnection.open({ url: PG_URL, schema, owner: true, ownerCheck: async () => (asks++, checking(), await held, undefined) });
+  t.after(() => connection.close());
+  await killOwner(schema);
+  assert.notEqual(await within(checked, 10_000), "hung", "the take-back reached its schema check");
+  // Closed while the check waits: close() ends only the old (already ended) session.
+  await connection.close();
+  release();
+  // The check answers; the take-back must let its fresh connection go, not install it on the closed store.
+  const startedAt = Date.now();
+  let owners;
+  do {
+    owners = (await sql(schema, "SELECT count(*)::int AS n FROM pg_stat_activity WHERE application_name = $1", `agentrun-store-owner:${schema}`))[0].n;
+    if (owners) await new Promise((resolve) => setTimeout(resolve, 50));
+  } while (owners && Date.now() - startedAt < 5_000);
+  assert.equal(owners, 0, "no owner connection left open on the closed store");
+  assert.equal(asks, 1, "one take-back");
+  const next = await openPostgresStore({ url: PG_URL, schema, ownerWaitMs: 0 });
+  t.after(() => next.close());
+  assert.equal(await next.agents.get("agent-1"), undefined, "another server holds the schema and serves it");
+});
+
 test("a server whose lost owner lock can't be taken back (the database never answers) gives it up at the end of its wait: told (onOwnerLost), never refusing calls for ever", ONLY, async (t) => {
   const schema = await schemaFor(t);
   // Set up directly, then reached only through a host that forwards until it is told to stop.

@@ -382,6 +382,8 @@ export class PgConnection implements StoreConnection {
           await asked.taken.client.end().catch(() => undefined);
           return this.#lostForGood(new StoreOwned(`the owner lock on the Postgres schema ${this.schema} was taken back, but ${unknown}: this server no longer serves the store`));
         }
+        // Closed while the schema was checked: close() ended only the old session, so this one lets the lock go here.
+        if (this.#closed) return void (await asked.taken.client.end().catch(() => undefined));
         this.#owner = asked.taken;
         this.#watch(asked.taken);
         this.#ownerLost = undefined;
