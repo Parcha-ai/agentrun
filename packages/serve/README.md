@@ -1,7 +1,6 @@
 # @parcha/agentrun-serve
 
-The AgentRun server: the process you deploy to run AgentRun, the open-source platform that gives your agents
-superpowers. `agentrun-serve` serves the `/v2` API (`agentrun.v2/0`) and the console over one store (SQLite in its data
+The AgentRun server: the process you deploy to run AgentRun, the open-source platform that supercharges your agents. `agentrun-serve` serves the `/v2` API (`agentrun.v2/0`) and the console over one store (SQLite in its data
 directory, or Postgres): many agents, each with revisions written once (an agentic prompt, or an agentrun-dsl
 workflow), and every run pinned to the revision it ran. Runners claim runs from that store and run them; by default one
 runner starts beside the server. The capabilities document (`GET /v2/capabilities`) says what this server offers.
