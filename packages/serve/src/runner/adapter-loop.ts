@@ -18,7 +18,7 @@ import { createModels } from "@earendil-works/pi-ai/models";
 import { type Conversation, type ConversationId, createRegistry, Harness, LiveDoc, ROOT_CONVERSATION_ID, type Tx } from "@earendil-works/pi-durable";
 import { type AdapterSession, type AgentAdapter, type BeforeRequest, type HostTool, modelPortFor, type Refusal, RUNNER_RECORDS, type SessionRecord, type SessionSpec, sessionSpendOf } from "@parcha/agentrun-kernel";
 import type { KernelHooks, ToolCall } from "./conformance/subject.js";
-import { type AnswerData, type ApprovalPrice, type AskData, type BudgetData, type CallEndData, type CallStartData, type CallStatus, type EndData, KINDS, type MessageData, type RaiseData, withdrawnAnswers } from "./journal-kinds.js";
+import { type AnswerData, type ApprovalPrice, type AskData, type BudgetData, type CallEndData, type CallStartData, type CallStatus, endedAnswer, type EndData, KINDS, type MessageData, type RaiseData, withdrawnAnswers } from "./journal-kinds.js";
 import { endedOnTurnEndingTool, type MessageOrigin, originOf, RUN_RESUMED } from "@parcha/pi-durable-agent/timeline";
 import { type AlsoRow, type Claim, ClaimRefused, type Command, type CommandOutcome, deniedText, endedBy, type EndOfRunAnswer, type EndOfRunTurn, type Loop, type LoopDeps, type LoopEnd, type LoopFactory, noteOf, type StopReason } from "./loop-contract.js";
 import { deniedText as setToDenyText } from "../refusal-words.js";
@@ -306,6 +306,8 @@ interface CliRecord {
   input(text: string, origin: MessageOrigin): Promise<void>;
   /** A call's start, before it runs (once per call id). */
   start(callId: string, tool: string, input: unknown, replaySafe: boolean): Promise<void>;
+  /** The end the record holds for a call, if any: a call issued again under its id is answered from it, never run. */
+  endOf(callId: string): { status: CallStatus; output?: string } | undefined;
   /** A started call's end (once). */
   end(callId: string, status: CallStatus, output?: string): Promise<void>;
   /** The end-of-run turn starts: what the model says from now on is that turn's answer, never a message on the record. */
@@ -322,11 +324,13 @@ async function openCliRecord(harness: Harness, journal: Gate["journal"], context
   const append = async (kind: string, data: CallStartData | CallEndData | MessageData): Promise<void> => {
     await harness.commit((tx) => tx.appendEntry(root.id, { kind, data: data as unknown as JsonValue }), context);
   };
-  // Each call started on the record: whether it has its end.
+  // Each call started on the record: whether it has its end; and each end, by call id.
   const started = new Map<string, boolean>();
+  const ends = new Map<string, { status: CallStatus; output?: string }>();
   let personWritten = false;
   for (const entry of await entriesOf(journal, root.id, context)) {
-    const data = (entry.data ?? {}) as { callId?: unknown; role?: unknown };
+    const data = (entry.data ?? {}) as { callId?: unknown; role?: unknown; status?: CallStatus; output?: unknown };
+    if (entry.kind === KINDS.callEnd && typeof data.callId === "string") ends.set(data.callId, { status: data.status ?? "done", ...(typeof data.output === "string" ? { output: data.output } : {}) });
     if (entry.kind === KINDS.callStart && typeof data.callId === "string") started.set(data.callId, started.get(data.callId) ?? false);
     else if (entry.kind === KINDS.callEnd && typeof data.callId === "string") started.set(data.callId, true);
     else if ((entry.kind === KINDS.message && data.role === "person") || entry.kind === KINDS.input) personWritten = true;
@@ -335,6 +339,7 @@ async function openCliRecord(harness: Harness, journal: Gate["journal"], context
     if (ended) continue;
     await append(KINDS.callEnd, { callId, status: "interrupted" });
     started.set(callId, true);
+    ends.set(callId, { status: "interrupted" });
   }
   let text = "";
   /** The end-of-run turn's answer while that turn runs (answering), else undefined. */
@@ -382,11 +387,13 @@ async function openCliRecord(harness: Harness, journal: Gate["journal"], context
         started.set(callId, false);
       });
     },
+    endOf: (callId) => ends.get(callId),
     end: (callId, status, output) =>
       inTurn(async () => {
         if (started.get(callId) !== false) return;
         await append(KINDS.callEnd, { callId, status, ...(output === undefined ? {} : { output }) });
         started.set(callId, true);
+        ends.set(callId, { status, ...(output === undefined ? {} : { output }) });
       }),
     answering() {
       answer = "";
@@ -834,6 +841,10 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           // its result, and the loop restarts it. A CLI's call reaches here only once the gate allowed it (its tool
           // bridge asks first), so its record's start is written here, before the flush and the call, and its end after.
           call: async (args, toolContext) => {
+            // A call its CLI issues again under an id the record already ended (after the CLI's own resume) is answered
+            // from that end, never run again.
+            const ended = record?.endOf(toolContext.callId);
+            if (ended) return endedAnswer(tool.name, ended);
             if (record) await record.start(toolContext.callId, tool.name, args ?? {}, tool.replay === "safe");
             try {
               const answer = await sideEffect({

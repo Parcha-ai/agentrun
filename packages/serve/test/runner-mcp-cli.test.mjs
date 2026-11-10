@@ -28,6 +28,7 @@ const { KINDS } = await import("../dist/runner/journal-kinds.js");
 const { journalRecords } = await import("../dist/runner/journal-reader.js");
 const { TOOL_UNMETERED } = await import("@parcha/pi-durable-agent/timeline");
 const { mcpForClaim } = await import("../dist/runner/mcp-run.js");
+const { adapterRunGate } = await import("../dist/runner/adapter-run-spec.js");
 
 const KEY = randomBytes(32);
 const TOKEN = `not-a-secret-${"runner-mcp-cli-bearer-for-the-scan"}`;
@@ -96,7 +97,7 @@ function mcpCli(seen) {
   };
 }
 
-async function cliRun(t, { settings = {}, grants = ["mcp:fake/add"] } = {}) {
+async function cliRun(t, { settings = {}, grants = ["mcp:fake/add"], before, gateOf } = {}) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-mcp-cli-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -112,6 +113,7 @@ async function cliRun(t, { settings = {}, grants = ["mcp:fake/add"] } = {}) {
   await server.mcp.put({ name: "fake", url: fake.url, auth: "bearer", tools: [listed(ADD)], sealed: sealMcpCredential(KEY, "fake", { type: "headers", headers: { authorization: `Bearer ${TOKEN}` } }, fake.url) });
   await server.agents.create({ id: "agent-1", name: "Cli" }, { id: "rev-1", kind: "agentic", body: {} });
   await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" });
+  await before?.({ server });
   const seen = {};
   const lookup = { name: "lookup", description: "Look it up.", inputSchema: { type: "object" }, replay: "never", call: async () => ({ text: "found" }) };
   const work = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-mcp-cli-work-"));
@@ -124,7 +126,9 @@ async function cliRun(t, { settings = {}, grants = ["mcp:fake/add"] } = {}) {
       input: "Add them.",
       record: "loop",
       hooks: quiet,
-      gate: (call) => permissionOf(call.tool, settings),
+      // `gateOf`: the run's own gate as a run's spec makes it (adapterRunGate over the store's settings), else the plain
+      // permission of `settings`.
+      gate: gateOf ? await gateOf({ store, claim, work }) : (call) => permissionOf(call.tool, settings),
       runCap: { capUsd: () => undefined, modelOf: () => undefined },
       ...(mcp ? { mcp } : {}),
     };
@@ -203,6 +207,20 @@ test("C4: a parked call the owner denies is told in their words, and nothing is 
 test("C3: a call set to deny is refused in the gate's words, nothing sent", async (t) => {
   const { seen, fake } = await cliRun(t, { settings: { "mcp:fake/add": { permission: "deny" } } });
   assert.deepEqual(seen.answer, { content: [{ type: "text", text: setToDenyText("mcp:fake/add") }], isError: true });
+  assert.equal(toolCalls(fake).length, 0, "nothing sent");
+});
+
+test("C3b: a CLI's call outside its server's argument pin is refused in the pin's words before it is asked or sent, through the run's own gate", async (t) => {
+  // The server's setting allows the tool pinned to a = 7; the CLI calls it with a = 2.
+  const { seen, fake } = await cliRun(t, {
+    before: ({ server }) => server.settings.put("tool-settings", { "mcp:fake/add": { permission: "allow", pin: { a: 7 } } }),
+    gateOf: ({ store, claim, work }) => adapterRunGate(store, claim, { kind: "agentic", body: {} }, work),
+  });
+  const said = seen.answer?.content?.[0]?.text ?? "";
+  assert.equal(seen.answer?.isError, true, JSON.stringify(seen.answer));
+  assert.match(said, /mcp:fake\/add/, said);
+  assert.match(said, /a = 7/, `the pin's words: ${said}`);
+  assert.match(said, /nothing was sent and nothing was charged/, said);
   assert.equal(toolCalls(fake).length, 0, "nothing sent");
 });
 

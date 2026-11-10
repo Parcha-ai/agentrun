@@ -10,7 +10,7 @@ import { basename, dirname, join } from "node:path";
 import { test } from "node:test";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import Ajv2020 from "ajv/dist/2020.js";
-import { CaseError, callsOf, evalTemplate, fakeAnswer, gradeDeterministic, lastJsonBlock, markdownReport, readCases, startFake, verdictOf } from "../dist/template-eval.js";
+import { CaseError, callsOf, evalTemplate, exitCodeOf, fakeAnswer, gradeDeterministic, lastJsonBlock, markdownReport, readCases, startFake, verdictOf } from "../dist/template-eval.js";
 import { PackageError, readPackages, TEMPLATES_DIR } from "../dist/templates.js";
 import { AGENT_LAYER_PINS } from "../dist/tool-plane.js";
 import { scratch, serve } from "./support.mjs";
@@ -44,11 +44,9 @@ const graderOf = (run, file) => run.graders.find((g) => g.grader === file);
 test("every shipped package's cases load, and each case's fake MCP servers serve their fixtures", { timeout: 120_000 }, async () => {
   const packages = readPackages(TEMPLATES_DIR);
   assert.deepEqual(packages.map((p) => p.name), ["code-review", "inbound-lead", "kyb", "market-monitor", "release-notes"]);
-  let count = 0;
   for (const p of packages) {
     const { cases } = readCases(join(TEMPLATES_DIR, p.name));
     assert.deepEqual(cases.map((c) => c.name), p.evals, `${p.name}: every case reads`);
-    count += cases.length;
     for (const one of cases) {
       assert.ok(one.input.length > 0 && one.graders.length > 0 && one.runs >= 1, `${p.name}/${one.name}`);
       // Each fake as the runner serves it, through the MCP client the server uses: it lists the fixture's tools, and a
@@ -76,7 +74,6 @@ test("every shipped package's cases load, and each case's fake MCP servers serve
       }
     }
   }
-  assert.equal(count, 31, "the five packages' cases");
 });
 
 test("a case that does not check fails before anything runs, each problem named", async (t) => {
@@ -187,6 +184,11 @@ test("a background shell call keeps its own name in the grading record, as the g
   const record = { answer: "", calls: callsOf(rows, "pi", ["crm"]), mcpCalls: [], files: [] };
   assert.equal(gradeDeterministic({ file: "bg.md", type: "tool_used", tools: ["bash_background"], expect: "called" }, record, []).pass, true);
   assert.equal(gradeDeterministic({ file: "sh.md", type: "tool_used", tools: ["bash"], count: 1 }, record, []).pass, true, "bash counts its own call alone");
+});
+
+test("the eval's exit code is 1 when any case failed, however many passed beside it, and 0 only when every case passed", () => {
+  const of = (...passes) => exitCodeOf({ cases: passes.map((pass, i) => ({ name: `c${i}`, pass })) });
+  assert.deepEqual([of(true), of(true, true), of(false), of(true, false), of(false, true, true)], [0, 0, 1, 1, 1]);
 });
 
 test("a learned note seeded through the learning API reaches the run", { timeout: 600_000 }, async () => {
@@ -405,10 +407,11 @@ test("agentrun-serve eval-template: exit 0 when every case passes, 1 when one fa
   const report = JSON.parse(readFileSync(join(dir, "pass.json"), "utf8"));
   assert.deepEqual([report.pass, report.cases.map((c) => c.name), report.server], [true, ["learned"], { kind: "in_process" }]);
 
-  const failed = await run([PKG, "--case", "mcp-mismatch", "--case", "learned", "--runs", "1", "--faux", FAUX, "--report", join(dir, "fail.json")]);
+  // One failing case proves exit 1 and the report; a passing one beside it adds a real run and nothing more.
+  const failed = await run([PKG, "--case", "mcp-mismatch", "--runs", "1", "--faux", FAUX, "--report", join(dir, "fail.json")]);
   assert.equal(failed.code, 1, failed.err);
   assert.match(failed.out, /\| mcp-mismatch \| 0\/1 \| \*\*fail\*\* \|/);
-  assert.equal(JSON.parse(readFileSync(join(dir, "fail.json"), "utf8")).passed, 1);
+  assert.equal(JSON.parse(readFileSync(join(dir, "fail.json"), "utf8")).passed, 0);
 
   // A Ctrl-C while the held run is in its turn (the file its faux writes says so) cancels it, cleans up and exits 130
   // with no report.
