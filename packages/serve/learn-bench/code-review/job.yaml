@@ -1,0 +1,17 @@
+# Learning bench job: one repo's pull requests, reviewed in order, with a house rule the reviewer can only know by
+# learning it. Step 01 teaches it; every later step needs it (or, at 04 and 05, needs it NOT applied), with no hint.
+# The diffs are pasted, as the template's own evals paste them (evals/repo-rule, evals/off-by-one): no fake is needed.
+template: code-review
+parameters: { repo: example/shop }
+grants: []
+fakes: {}
+harnesses: [pi, claude-agent]
+steps:
+  - { id: "01", kind: teach }    # the rule: src/api/** timestamps go through formatUtc; cite "house rule: utc-timestamps"
+  - { id: "02", kind: repeat }   # toLocaleDateString in a handler
+  - { id: "03", kind: repeat }   # a template literal of a Date, beside a real paging bug
+  - { id: "04", kind: repeat }   # formatUtc used right: no rule finding
+  - { id: "05", kind: repeat }   # toLocaleString outside src/api/**: out of the rule's scope, no rule finding
+  - { id: "06", kind: repeat }   # String(date) in a handler
+  - { id: "07", kind: repeat }   # REVIEW.md's requireUser rule (evals/repo-rule) and the house rule, both
+  - { id: "08", kind: repeat }   # toLocaleTimeString in a handler that also uses formatUtc right
