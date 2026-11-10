@@ -9,13 +9,15 @@ import { createServer } from "node:http";
 const made = (prefix) => `${prefix}-${randomBytes(16).toString("hex")}`;
 
 /** `cimd`: it says it takes client metadata documents. `clients`: pre-registered `{client_id: client_secret}`.
- *  `expiresIn`: seconds an access token lives; null, it says none. */
-export async function startFakeOAuth({ cimd = false, clients = {}, expiresIn = 3600 } = {}) {
+ *  `expiresIn`: seconds an access token lives; null, it says none. `reuseRevokes`: a spent refresh token sent again
+ *  revokes every token it gave (reuse detection, as a provider that rotates refresh tokens may do). */
+export async function startFakeOAuth({ cimd = false, clients = {}, expiresIn = 3600, reuseRevokes = false } = {}) {
   const log = [];
   const registered = new Map(Object.entries(clients).map(([id, secret]) => [id, { secret, redirect_uris: undefined }]));
   const codes = new Map();
   const access = new Set();
   const refresh = new Map();
+  const spent = new Set();
   const issued = [];
   let hanging = false;
   let failing = 0;
@@ -115,6 +117,8 @@ export async function startFakeOAuth({ cimd = false, clients = {}, expiresIn = 3
       if (form.grant_type === "refresh_token") {
         const was = refresh.get(form.refresh_token);
         refresh.delete(form.refresh_token);
+        if (!was && reuseRevokes && spent.has(form.refresh_token)) refresh.clear(), access.clear();
+        spent.add(form.refresh_token);
         if (!was || was.client_id !== id) return answer(400, { error: "invalid_grant", error_description: "the refresh token is spent or revoked" });
         const set = grant();
         refresh.set(set.refresh_token, was);

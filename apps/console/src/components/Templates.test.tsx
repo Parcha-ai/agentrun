@@ -5,6 +5,7 @@ import { route } from "@/App";
 import { TemplatesPage } from "./Templates";
 import { ClientError } from "@/lib/client";
 import type { TemplateView } from "@/lib/v2";
+import { firstPicker, optionsOf, pick } from "@/test/picker";
 
 // The server's templates (GET /v2/templates) and applying one (POST /v2/templates/{name}/apply): the list says what each
 // needs; the Apply screen takes its parameters and the owner's consent, one tick per MCP tool, none ticked until the owner
@@ -288,17 +289,17 @@ describe("applying a template", () => {
     } };
     const t = await open("inbound-lead", { templates: [LEAD] });
     const field = t.host.querySelector('[data-field="parameters.post_to"]')!;
-    const select = field.querySelector("select")!;
+    const select = firstPicker(field)!;
     expect(select).toBeTruthy();
     expect(field.querySelector('input[type="text"]')).toBeNull();
-    expect([...select.options].map((o) => o.value).filter(Boolean)).toEqual(["crm", "slack", "none"]);
+    expect((await optionsOf(select)).map((o) => o.value).filter(Boolean)).toEqual(["crm", "slack", "none"]);
     // The help says the parameter's own words, never its pattern.
     const section = t.host.querySelector('section[aria-label="Parameters"]')!.textContent ?? "";
     expect(section).not.toContain("^(");
     expect(section).not.toContain("(as ");
     expect(section).not.toContain("[CG]");
     expect(field.textContent).toContain("where each brief goes");
-    await act(async () => { select.value = "slack"; select.dispatchEvent(new Event("change", { bubbles: true })); });
+    await pick(select, "slack");
     await t.click(t.button(/^Apply/));
     expect(t.sent[0].body.parameters).toEqual({ post_to: "slack" });
   });
@@ -310,11 +311,11 @@ describe("applying a template", () => {
     } };
     const t = await open("mixed", { templates: [T] });
     // "." matches any character for the server: not a fixed list, so it stays a text field.
-    expect(t.host.querySelector('[data-field="parameters.host"] select')).toBeNull();
+    expect(firstPicker(t.host.querySelector('[data-field="parameters.host"]')!)).toBeNull();
     expect(t.host.querySelector('[data-field="parameters.host"] input[type="text"]')).toBeTruthy();
     // Left on its empty option, the server applies the default: the option says so.
-    const empty = t.host.querySelector<HTMLOptionElement>('[data-field="parameters.post_to"] select option[value=""]')!;
-    expect(empty.textContent).toBe("crm (default)");
+    const empty = (await optionsOf(firstPicker(t.host.querySelector('[data-field="parameters.post_to"]')!)!)).find((o) => o.value === "")!;
+    expect(empty.text).toBe("crm (default)");
   });
 
   it("offers a parameter's enum as a choice of its values, sends an integer one as a number, and shows not_an_option under it", async () => {
@@ -326,15 +327,16 @@ describe("applying a template", () => {
       { field: "parameters.post_to", reason: "not_an_option", message: "parameters.post_to is one of crm, slack, none: where each brief goes" },
     ] });
     const t = await open("inbound-lead", { templates: [T], apply: async () => { throw refusal; } });
-    const post = t.host.querySelector<HTMLSelectElement>('[data-field="parameters.post_to"] select')!;
+    const post = firstPicker(t.host.querySelector('[data-field="parameters.post_to"]')!)!;
     expect(post).toBeTruthy();
-    expect(t.host.querySelector('[data-field="parameters.post_to"] input')).toBeNull();
-    expect([...post.options].map((o) => o.value).filter(Boolean)).toEqual(["crm", "slack", "none"]);
-    const depth = t.host.querySelector<HTMLSelectElement>('[data-field="parameters.depth"] select')!;
-    expect([...depth.options].map((o) => o.value).filter(Boolean)).toEqual(["1", "3", "7"]);
-    expect(depth.querySelector('option[value=""]')!.textContent).toBe("3 (default)");
-    await act(async () => { post.value = "slack"; post.dispatchEvent(new Event("change", { bubbles: true })); });
-    await act(async () => { depth.value = "7"; depth.dispatchEvent(new Event("change", { bubbles: true })); });
+    expect(t.host.querySelector('[data-field="parameters.post_to"] input:not([type="hidden"])')).toBeNull();
+    expect((await optionsOf(post)).map((o) => o.value).filter(Boolean)).toEqual(["crm", "slack", "none"]);
+    const depth = firstPicker(t.host.querySelector('[data-field="parameters.depth"]')!)!;
+    const depths = await optionsOf(depth);
+    expect(depths.map((o) => o.value).filter(Boolean)).toEqual(["1", "3", "7"]);
+    expect(depths.find((o) => o.value === "")!.text).toBe("3 (default)");
+    await pick(post, "slack");
+    await pick(depth, "7");
     await t.click(t.button(/^Apply/));
     expect(t.sent[0].body.parameters).toEqual({ post_to: "slack", depth: 7 });
     expect(t.host.querySelector('[data-field="parameters.post_to"]')!.textContent).toContain("parameters.post_to is one of crm, slack, none: where each brief goes");

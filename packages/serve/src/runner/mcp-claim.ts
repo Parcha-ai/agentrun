@@ -20,7 +20,10 @@
 // (seal-key.ts ensureSealKey), so a claim always has one.
 //
 // fresh(). After the pin check and before the loop, and again on a command-row resume: an OAuth access token past its
-// expiry is refreshed, bounded (4 s a request, two tries), under the server's refresh lease (leaseRefresh, then the
+// expiry is refreshed, bounded (the call within MCP_REFRESH_CALL_MS; a request not yet dialled within 4 s, and tried again
+// only when it provably never left: a refused or unmade connection, an address check out of time; one request that left
+// is sent once, its answer awaited within the call's deadline, and after no answer the lease is held to its end so no
+// claim sends the possibly spent refresh token again), under the server's refresh lease (leaseRefresh, then the
 // network outside any transaction, then keepRefreshed writing the new set iff the credential is still the one it started
 // from, and clearing the lease if still ours; a newer credential drops ours, logged by name): one refresh at a time,
 // so a provider that rotates refresh tokens never sees one spent twice; a claim without the lease takes the set its
@@ -38,7 +41,7 @@
 // end is refreshed first, through open's lease path, then the call goes. Concurrent calls to one server share one such
 // open.
 import { randomUUID } from "node:crypto";
-import { EndpointRefused, REFRESH_REQUEST_MS, refreshed, refused, systemNetwork, type OAuthNetwork, type TokenSet } from "../mcp-oauth.js";
+import { EndpointRefused, REFRESH_REQUEST_MS, refreshed, refused, RequestUnsent, type Seen, systemNetwork, type OAuthNetwork, type TokenSet } from "../mcp-oauth.js";
 import { type McpCredentials, type McpPin, mcpPinOf } from "../mcp-gateway.js";
 import { META_REASON, metaToolOf } from "../mcp-meta.js";
 import { boundTool, type McpTool } from "../mcp-probe.js";
@@ -154,23 +157,34 @@ export async function mcpClaim(options: McpClaimOptions): Promise<McpClaimStep> 
   };
   signal.addEventListener("abort", release, { once: true });
 
-  /** The OAuth token set refreshed at its authorization server, bounded: the new set, or why not. `stop` keeps a request
-   *  from being sent, never cuts one short: once sent, the authorization server may already have spent the refresh token
-   *  (a provider that rotates them), so its answer is awaited, within its own deadline, for the caller to keep. */
-  const refresh = async (row: McpServerRow, set: TokenSet, stop: AbortSignal): Promise<{ set: TokenSet } | { refused: true } | { silent: true } | { unsent: true } | { blocked: string }> => {
+  /** The OAuth token set refreshed at its authorization server, bounded: the new set, or why not. One request is sent per
+   *  lease: `stop` and the try's own time (requestMs) bound a request only until it is dialled, and it is tried again only
+   *  when it provably never left (RequestUnsent). Once sent, the authorization server may already have spent the refresh
+   *  token (a provider that rotates them, and may revoke the grant on its reuse), so it is never cut short nor sent again:
+   *  its answer is awaited within the call's deadline. `silent` with `held`: it left and no answer came (or an unclear
+   *  failure), so the lease is held to its end and no claim sends that refresh token again meanwhile. */
+  const refresh = async (row: McpServerRow, set: TokenSet, stop: AbortSignal): Promise<{ set: TokenSet } | { refused: true } | { silent: true; held?: true } | { unsent: true } | { blocked: string }> => {
     if (!set.tokens.refresh_token) return { refused: true };
     const call = AbortSignal.timeout(callMs);
     const reach = { allowed: await privateOAuthHosts(store) };
     for (let tried = 0; tried < tries && !call.aborted; tried++) {
-      if (stop.aborted) return tried === 0 ? { unsent: true } : { silent: true };
-      const one = AbortSignal.any([call, AbortSignal.timeout(requestMs)]);
+      // Every try before this one provably never left: nothing is spent.
+      if (stop.aborted) return { unsent: true };
+      const seen: Seen = {};
       try {
-        return { set: await bounded(refreshed(set, row.url, one, network, reach), one) };
+        return { set: await bounded(refreshed(set, row.url, AbortSignal.any([call, stop, AbortSignal.timeout(requestMs)]), network, reach, { within: call, seen }), call) };
       } catch (error) {
         if (await refused(error)) return { refused: true };
         // Its authorization server's address is refused here (mcp-oauth.ts checked): nothing was sent, and a second try
         // meets the same refusal.
         if (error instanceof EndpointRefused) return { blocked: error.message };
+        // Never left: tried again, while the call has time.
+        if (error instanceof RequestUnsent) continue;
+        // It answered with an error and granted nothing (a 5xx, an OAuth error but a revocation): no token is in flight,
+        // so the lease is let go for the next claim; never sent again by this one.
+        if (seen.failed?.status !== undefined) return { silent: true };
+        // It left and no answer came, or failed unclearly: the refresh token may be spent.
+        return { silent: true, held: true };
       }
     }
     return { silent: true };
@@ -256,14 +270,18 @@ export async function mcpClaim(options: McpClaimOptions): Promise<McpClaimStep> 
       if (left) await open(name, pinnedUrl, left);
       else delete credentials[name];
     };
-    const settle = async (stop: AbortSignal): Promise<void> => {
+    const settle = async (stop: AbortSignal, again = false): Promise<void> => {
       // One refresh at a time per server, across claims and runners: a provider that rotates its refresh tokens spends
       // the one used, so a second refresh with it would sign the server out. Without the lease, take the row the
       // holder leaves.
       const lease = await store.mcp.leaseRefresh(name, { seen: row.sealed, holder });
       if (!lease.leased) {
         const left = await settled(name, stop);
-        if (!stop.aborted && !released && left) await open(name, pinnedUrl, left);
+        if (stop.aborted || released || !left) return;
+        // Its holder kept nothing and its lease ran out (a refresh that got no answer holds the lease to its end, so its
+        // possibly spent token is sent by no one meanwhile): the refresh is this claim's to try now, once.
+        if (!again && left.refreshLapsed && sameSealed(left.sealed, row.sealed)) return settle(stop, true);
+        await open(name, pinnedUrl, left);
         return;
       }
       try {
@@ -303,9 +321,11 @@ export async function mcpClaim(options: McpClaimOptions): Promise<McpClaimStep> 
           if (stop.aborted || released) return;
           return void (await takeLeft(await store.mcp.server(name)));
         }
-        // No answer within its deadline: the lease is let go and the refresh token kept for the next try; an access token
-        // past its expiry is never handed over.
-        await store.mcp.releaseRefresh(name, holder).catch(() => undefined);
+        // No answer within its deadline. When its request left (held), the lease is held to its end: the refresh token may
+        // be spent, and no claim sends it again before then. Otherwise (it never left, or the server answered and granted
+        // nothing) the lease is let go and the refresh token kept for the next try. An access token past its expiry is never
+        // handed over.
+        if (!("held" in got)) await store.mcp.releaseRefresh(name, holder).catch(() => undefined);
         if (left() <= 0) entry({ unopened: UNUSABLE.silent });
       } finally {
         // The lease is let go (kept, released, or left to lapse on a failed write): the claims waiting on it read the row.
