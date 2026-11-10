@@ -34,7 +34,7 @@ async function splitRun(reread: (done: Run) => Promise<Run> = async (done) => do
 
 const efforts = recorded<{ features: { efforts: string[] } }>("capabilities").body.features.efforts;
 /** A start's answer: the run (202), or a recorded refusal thrown as the client throws it. */
-type Answer = { run: Run } | { refused: string };
+type Answer = { run: Run } | { refused: string } | { thrown: { status: number; code: string; message: string; fields?: FieldIssue[] } };
 /** Each recorded run's timeline by its run's id: an agent's latest run with one is followed through it. */
 const recordedPages = new Map(runNames.map((n) => recorded<TimelinePage>(`${n}.timeline`).body).map((p) => [p.run_id, p]));
 /** A final page with no rows, at the run's own status: what a run without a recorded timeline is followed through. */
@@ -54,6 +54,7 @@ async function open(agent: Agent, { runs = runsOf("invoice-checker"), next = nul
       starts.push({ id, body, key });
       await hold;
       if ("run" in answer) return { run: answer.run, status: 202 };
+      if ("thrown" in answer) throw Object.assign(new ClientError(answer.thrown.status, answer.thrown.code, answer.thrown.message), answer.thrown.fields ? { fields: answer.thrown.fields } : {});
       const r = recorded<{ error: { code: string; message: string; fields?: FieldIssue[] } }>(answer.refused);
       throw Object.assign(new ClientError(r.status, r.body.error.code, r.body.error.message), r.body.error.fields ? { fields: r.body.error.fields } : {});
     },
@@ -394,6 +395,19 @@ describe("AgentPage", () => {
     await page.set(page.input(), '{ "subject": "No body" }');
     await page.click(/^Run$/);
     expect(page.bar()!.querySelector('[role="alert"]')?.textContent).toContain("the workflow does not take this input");
+    expect(page.went).toEqual([]);
+  });
+
+  it("a refused input (#1926) shows the server's schema path and reason, and each further field under it", async () => {
+    const first = "the workflow does not take this input: #/properties/b: must not have fewer than 1 characters";
+    const second = "the workflow does not take this input: #/properties/c: must be integer";
+    const page = await open(agentFixture("support-triage"), { answer: { thrown: { status: 422, code: "input_invalid", message: first, fields: [{ field: "input at #/properties/b", reason: "invalid", message: first }, { field: "input at #/properties/c", reason: "invalid", message: second }] } } });
+    await page.set(page.input(), '{ "a": "hello", "b": "", "c": "x" }');
+    await page.click(/^Run$/);
+    const alert = page.bar()!.querySelector('[role="alert"]') as HTMLElement;
+    expect(alert.textContent).toContain(`The run did not start: ${first}`);
+    expect([...alert.querySelectorAll("li")].map((li) => li.textContent)).toEqual([`input at #/properties/c: ${second}`]);
+    expect(alert.textContent).not.toContain("INPUT_INVALID");
     expect(page.went).toEqual([]);
   });
 

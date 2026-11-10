@@ -33,6 +33,15 @@ export function fakeClock(start) {
 export const RUN_EXEC = "waits on running a fired run on the runner (dispatch and command delivery)";
 /** A case whose trigger target is a message_run: the message is delivered to an existing run over the store. */
 export const MESSAGE_RUN = "waits on delivering a message_run target over the store";
+/** What a server that went down between a firing's run (or message) and its settle leaves: the firing `key` of trigger `id`
+ *  due again in the store with no run named, while what it started stays under the firing's key (its run's origin row, or
+ *  its message's command row). The engine starts a run (or queues a message) and settles its firing in two transactions,
+ *  so a kill between them leaves exactly this; a restart's drive must find what is there, never start or send it twice.
+ *  `store`: a handle on the server's store (serve()'s), the server itself closed. */
+export async function leftDue(store, id, key, extra = {}) {
+  const settled = await store.triggers.settle(id, key, { status: "due", runId: null, ...extra });
+  assert.ok(settled, `firing ${key} of ${id} is in the store`);
+}
 export const keyOf = (kind, id, what) => `fir_${createHash("sha256").update(`${kind}\n${id}\n${what}`).digest("hex").slice(0, 32)}`;
 export const schedule = (id, source, extra = {}) => ({ name: "nightly", source: { kind: "schedule", ...source }, target: { kind: "start_run", agent_id: id, input: { content: "Say hello." }, max_cost_usd: 0.5 }, ...extra });
 

@@ -41,9 +41,11 @@ const NAMES = {
   codex: [
     ...Object.keys(REPLAY).flatMap((name) => [[name, folded(name)], [wireName(name), folded(name)]]),
     ["web_search", "web_search"], ["shell", "bash"],
+    // The adapter's own read of a skill's file, from the session's copy of the run's skills: read's key.
+    ["read_skill_file", "read"],
     ["mcp__srv__echo", "mcp:srv/echo"],
   ],
-  opencode: [["mcp__srv__echo", "mcp:srv/echo"]],
+  opencode: [["read_skill_file", "read"], ["mcp__srv__echo", "mcp:srv/echo"]],
 };
 
 test("every name a call reaches the gate by, on every harness, maps to its settings key", () => {
@@ -63,6 +65,54 @@ test("a name nothing maps fails closed: it asks, and where no one can approve it
   assert.equal(new RunGate(where).policy("mystery_tool"), "ask", "never allow");
   const park = { commit: async (change) => change({ appendEntry: async () => undefined }) };
   assert.deepEqual(await new RunGate(where, {}, true, false).enter("mystery_tool", {}, "c1", park), { text: noApproverText("mystery_tool"), isError: true });
+});
+
+/** A run's gate on `harness`, its server settings `settings` (none: the default), and its answer for one call as the
+ *  runner's loops ask it (RunGate.decide, the adapter loop's spec.gate): "allow" (it runs), "ask" (it waits for a person,
+ *  under the name askedAs gives) or { deny } (refused, in those words). */
+async function decideOn(t, harness, settings, name, args, mcpServers) {
+  const [root, work, data] = [await scratch(t), await scratch(t), await scratch(t)];
+  if (settings) await writeFile(join(data, "tool-settings.json"), JSON.stringify(settings));
+  const runGate = new RunGate({ root, work, data, runId: "r1", harness, ...(mcpServers ? { mcpServers } : {}) });
+  return { decided: await runGate.decide(name, args), askedAs: runGate.askedAs(name), policy: runGate.policy(name) };
+}
+const SKILL_READ = { skill: "status-report-format", path: "SKILL.md" };
+
+test("read_skill_file, codex's and OpenCode's own read of a skill's file, is held to read's key: the default runs it, never asked", async (t) => {
+  for (const harness of ["codex", "opencode"]) {
+    const { decided, policy } = await decideOn(t, harness, undefined, "read_skill_file", SKILL_READ);
+    assert.equal(policy, "allow", `${harness}: allowed, as read is`);
+    assert.equal(decided, "allow", `${harness}: it runs, with no approval asked`);
+  }
+});
+
+test("read_skill_file is refused when the server denies read, in the deny words naming read's setting", async (t) => {
+  for (const harness of ["codex", "opencode"]) {
+    const { decided, policy } = await decideOn(t, harness, { read: { permission: "deny" } }, "read_skill_file", SKILL_READ);
+    assert.equal(policy, "deny", harness);
+    assert.deepEqual(decided, { deny: deniedText("read") }, harness);
+  }
+});
+
+test("on OpenCode, an agent's MCP tool whose wire name is read_skill_file (server read, tool skill_file) keeps its own key and setting: never read's", async (t) => {
+  assert.equal(keyOf("opencode", "read_skill_file", ["read"]), "mcp:read/skill_file", "the run's MCP server named read owns the name");
+  assert.equal(keyOf("opencode", "read_skill_file", ["other"]), "read", "another server's: the adapter's own read of a skill's file");
+  assert.equal(keyOf("codex", "read_skill_file", ["read"]), "read", "codex names no MCP tool <server>_<tool>");
+  assert.equal(keyOf("codex", "mcp__hands__read_skill_file", ["read"]), "read", "hands is the host's own server, never an agent's");
+  // Set to ask, as an MCP tool's default is: it waits for a person's approval, asked under its own key, never run as read.
+  const { decided, askedAs, policy } = await decideOn(t, "opencode", { "mcp:read/skill_file": { permission: "ask" } }, "read_skill_file", { q: 1 }, ["read"]);
+  assert.equal(policy, "ask");
+  assert.equal(decided, "ask", "it does not run: it waits for a person");
+  assert.equal(askedAs, "mcp:read/skill_file", "asked under its own key");
+});
+
+test("the key only: read_skill_file's own path is no read path to the gate, so one that looks like it leaves the work folder is not refused here (the skill reader's own bounds are its own)", async (t) => {
+  for (const harness of ["codex", "opencode"]) {
+    for (const path of ["../x/SKILL.md", "/etc/passwd"]) {
+      const { decided } = await decideOn(t, harness, undefined, "read_skill_file", { skill: "status-report-format", path });
+      assert.equal(decided, "allow", `${harness} ${path}: the gate lets it through to the reader`);
+    }
+  }
 });
 
 /** pi's registration `name`, wrapped by a run's gate on `data`'s settings: what its call answers, whether the tool ran,

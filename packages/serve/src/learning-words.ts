@@ -90,7 +90,7 @@ export const STOPPED = {
   timedOut: "looking back took too long",
   failed: "looking back ended on an error",
   notChecked: "the new notes could not be checked",
-  signInUnread: "what the run was handed of its agent's browser sign-in could not be read back, so nothing it learned is kept",
+  refuseUnread: "what the run must never learn (its agent's browser sign-in, the server's secrets) could not be read back, so nothing it learned is kept",
   noReview: "the review of the new notes gave no answer",
   unread: "the review of the new notes gave an answer that could not be read",
 } as const;
