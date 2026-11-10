@@ -9,7 +9,7 @@ import { createInterface } from "node:readline";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { agent, client, FAUX, follow, printed, scratch } from "./support.mjs";
-import { dropSchema, freshSchema, PG_URL, postgresOnly } from "./store-target.mjs";
+import { client as pgClient, dropSchema, freshSchema, PG_URL, postgresOnly } from "./store-target.mjs";
 
 const { openPostgresStore, StoreOwned } = await import("../dist/store/index.js");
 
@@ -29,6 +29,53 @@ function cli(t, args, env) {
   });
   return child;
 }
+
+test("a deploy on Postgres: a second server waits for the first's owner lock instead of exiting; when the first's lock is lost it takes the schema and serves, and the first exits 1", { ...postgresOnly("a deployment's Postgres store"), timeout: 180_000 }, async (t) => {
+  const schema = await freshSchema();
+  t.after(() => dropSchema(schema));
+  const root = await scratch(t);
+  const env = {
+    PATH: `${dirname(process.execPath)}:/usr/bin:/bin`,
+    HOME: root,
+    XDG_CONFIG_HOME: join(root, "config"),
+    TMPDIR: process.env.TMPDIR ?? root,
+    AGENTRUN_ACCOUNTS: "0",
+    AGENTRUN_TOKEN: TOKEN,
+    AGENTRUN_SEAL_KEY: SEAL,
+    AGENTRUN_STORE_URL: PG_URL,
+    AGENTRUN_STORE_SCHEMA: schema,
+  };
+  const start = (name) => {
+    const child = cli(t, ["--data", join(root, name), "--port", "0", "--faux", FAUX, "--no-runner"], env);
+    const err = [];
+    createInterface({ input: child.stderr }).on("line", (line) => err.push(line));
+    const exited = new Promise((resolve) => child.once("exit", (code) => resolve(code)));
+    return { child, err, exited };
+  };
+  const first = start("first");
+  const firstPort = Number(/^agentrun-serve on http:\/\/127\.0\.0\.1:(\d+)\/v2 /m.exec(await printed(first.child, /^Open /m))[1]);
+  // The second starts while the first holds the schema (a rolling deploy): it waits, saying so, and never exits.
+  const second = start("second");
+  const secondUp = printed(second.child, /^Open /m);
+  secondUp.catch(() => undefined);
+  for (const deadline = Date.now() + 30_000; !second.err.some((line) => /waiting up to \d+ s for it to let go/.test(line)) && Date.now() < deadline; ) await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.ok(second.err.some((line) => /another server holds the store in the Postgres schema \w+: waiting up to \d+ s/.test(line)), `the second says it waits: ${second.err.join("\n")}`);
+  assert.equal(second.child.exitCode, null, "and has not exited");
+  assert.equal((await fetch(`http://127.0.0.1:${firstPort}/v2/health`)).status, 200, "the first serves meanwhile");
+  // The first's owner connection ends (a failover): the waiting second takes the schema before the first asks again.
+  const admin = await pgClient();
+  try {
+    await admin.query(`SELECT pg_terminate_backend(pid) FROM pg_locks WHERE locktype = 'advisory' AND granted AND objsubid = 2
+      AND classid::bigint = (hashtext($1)::bigint & 4294967295) AND objid::bigint = (hashtext('owner')::bigint & 4294967295)`, [schema]);
+  } finally {
+    await admin.end();
+  }
+  const secondPort = Number(/^agentrun-serve on http:\/\/127\.0\.0\.1:(\d+)\/v2 /m.exec(await secondUp)[1]);
+  assert.equal((await fetch(`http://127.0.0.1:${secondPort}/v2/health`)).status, 200, "the second serves the schema");
+  const code = await Promise.race([first.exited, new Promise((resolve) => setTimeout(() => resolve("still running"), 30_000))]);
+  assert.equal(code, 1, `the first exits 1 once another server holds its schema: ${first.err.join("\n")}`);
+  assert.ok(first.err.some((line) => /another server took the store in the Postgres schema/.test(line)), "saying why");
+});
 
 test("a server on Postgres whose store stops reading (its schema dropped under it) answers /v2/health 503 does_not_open, within the health bound", { ...postgresOnly("a deployment's Postgres store"), timeout: 120_000 }, async (t) => {
   const schema = await freshSchema();
@@ -77,7 +124,7 @@ test("a server started on AGENTRUN_STORE_URL opens that Postgres store under its
   const port = Number(/^agentrun-serve on http:\/\/127\.0\.0\.1:(\d+)\/v2 /m.exec(out)[1]);
   // The server's store is the Postgres schema, and the server holds it: a second server on the schema is refused, and no
   // SQLite store was made in the data directory.
-  const second = await openPostgresStore({ url: PG_URL, schema, role: "server" }).then(async (store) => (await store.close(), null), (error) => error);
+  const second = await openPostgresStore({ url: PG_URL, schema, role: "server", ownerWaitMs: 0 }).then(async (store) => (await store.close(), null), (error) => error);
   assert.ok(second instanceof StoreOwned, `the server holds the schema's owner lock: ${second ?? "a second server opened it"}`);
   assert.equal(existsSync(join(data, "store.sqlite")), false, "no SQLite store in the data directory");
   // Health reads that store (a compose's runners wait for it: depends_on service_healthy), never a file in the data dir.

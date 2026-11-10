@@ -31,8 +31,16 @@ export interface PgConnectionOptions {
   /** postgres:// or postgresql:// URL. Never printed: it may carry a password. */
   readonly url: string;
   readonly schema: string;
-  /** Take the owner lock (a server): StoreOwned when another server holds the schema. */
+  /** Take the owner lock (a server): waited for while another server holds the schema (ownerWaitMs), StoreOwned past it. */
   readonly owner?: boolean;
+  /** How long a server waits for the owner lock another server holds, at its open and to take its own back once its
+   *  lock's connection is lost (OWNER_WAIT_MS by default; 0 refuses at once). */
+  readonly ownerWaitMs?: number;
+  /** Told once, in words, when the open waits for another server to let the schema go (a deploy's old server stopping). */
+  readonly onOwnerWait?: (message: string) => void;
+  /** Told when this server's owner lock is lost for good (another server took the schema, or it could not be taken back
+   *  within ownerWaitMs): every call is refused from then, and the process should exit so its platform restarts it. */
+  readonly onOwnerLost?: (error: StoreOwned) => void;
   /** How long a statement waits for another writer's lock before StoreBusy. */
   readonly busyTimeoutMs?: number;
   /** Most clients open at once. */
@@ -127,6 +135,56 @@ function int8(text: string): number {
 }
 const types = { getTypeParser: (oid: number, format?: "text" | "binary") => (oid === 20 ? int8 : pg.types.getTypeParser(oid, format as "text")) } as pg.CustomTypesConfig;
 
+/** How long a server waits for the owner lock another server holds before it gives up (StoreOwned), in ms, at its open
+ *  and to take its own back after its lock's connection is lost: a deploy's new server waits out the old one's drain
+ *  (a runner's 35 s graceful stop, the server's own) instead of exiting, and a lost lock is never a 503 forever. */
+export const OWNER_WAIT_MS = 120_000;
+/** How often a waiting server asks for the owner lock again (ms). */
+const OWNER_POLL_MS = 250;
+/** How long after its lock's connection ends a server first asks for it back (ms): a server already waiting for the
+ *  schema (a deploy's new one) takes it first, and this one then exits. */
+const OWNER_RETAKE_DELAY_MS = 1_000;
+/** The owner session's own keepalives on the database's end: a dead server's session, and its lock, end in about 60 s,
+ *  later than this end finds the connection dead (Node's keepalive: 10 s, then 10 probes 1 s apart), so the database
+ *  never lets the lock go while this server still believes it holds it. */
+const OWNER_SESSION = "-c tcp_keepalives_idle=30 -c tcp_keepalives_interval=10 -c tcp_keepalives_count=3";
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+/** The owner lock's session: its client, and the backend holding the lock (its pid and start), by which a later
+ *  connection tells this server's own dead session from another server's. */
+type OwnerSession = { readonly client: pg.Client; readonly pid: number; readonly startedAt: string };
+/** What a server needs to take its owner lock back: the URL, how long it may take, and who is told when it is lost for
+ *  good. */
+type OwnerConfig = { readonly url: string; readonly waitMs: number; readonly onLost: ((error: StoreOwned) => void) | undefined };
+/** One ask for the owner lock: taken, or held by a backend (undefined when none holds it now: let go meanwhile). */
+type OwnerTry = { readonly taken: OwnerSession } | { readonly heldBy: { readonly pid: number; readonly startedAt: string | null } | undefined };
+
+/** Asks for `schema`'s owner lock once, on a connection of its own: kept open, holding the lock, when taken. */
+async function tryOwner(url: string, schema: string, connectMs: number, where: string): Promise<OwnerTry> {
+  const client = new pg.Client({ connectionString: url, types, options: OWNER_SESSION, application_name: `agentrun-store-owner:${schema}`, connectionTimeoutMillis: connectMs, keepAlive: true, keepAliveInitialDelayMillis: KEEPALIVE_IDLE_S * 1_000 });
+  // A lost owner connection lets the lock go: its error is never left unhandled (the store watches its end).
+  client.on("error", () => undefined);
+  try {
+    await client.connect();
+  } catch (error) {
+    await client.end().catch(() => undefined);
+    throw connectTimedOut(error) ? connectDeadline(where, connectMs) : typed(error);
+  }
+  try {
+    const asked = (await client.query("SELECT pg_try_advisory_lock(hashtext($1), hashtext('owner')) AS held, pg_backend_pid() AS pid, (SELECT backend_start::text FROM pg_stat_activity WHERE pid = pg_backend_pid()) AS started", [schema])).rows[0] as { held: boolean; pid: number; started: string };
+    if (asked.held === true) return { taken: { client, pid: Number(asked.pid), startedAt: String(asked.started) } };
+    // Who holds it: the advisory lock (hashtext(schema), hashtext('owner')), its two keys as pg_locks shows them.
+    const holder = (await client.query(`SELECT l.pid, a.backend_start::text AS started FROM pg_locks l LEFT JOIN pg_stat_activity a ON a.pid = l.pid
+      WHERE l.locktype = 'advisory' AND l.granted AND l.objsubid = 2
+        AND l.classid::bigint = (hashtext($1)::bigint & 4294967295) AND l.objid::bigint = (hashtext('owner')::bigint & 4294967295)`, [schema])).rows[0] as { pid: number; started: string | null } | undefined;
+    await client.end().catch(() => undefined);
+    return { heldBy: holder ? { pid: Number(holder.pid), startedAt: holder.started ?? null } : undefined };
+  } catch (error) {
+    await client.end().catch(() => undefined);
+    throw typed(error);
+  }
+}
+
 /** `?` parameters numbered $1, $2 … (outside quoted text and identifiers), kept per statement text. */
 const numbered = new Map<string, string>();
 export function numberParams(sql: string): string {
@@ -211,12 +269,16 @@ export class PgConnection implements StoreConnection {
   readonly #pool: pg.Pool;
   /** One connection kept for renewing claims (TransactionOptions.lease). */
   readonly #leasePool: pg.Pool;
-  readonly #owner: pg.Client | undefined;
+  /** The owner lock's session (a server's), replaced when it is taken back after its connection was lost. */
+  #owner: OwnerSession | undefined;
+  /** What taking the owner lock back needs. */
+  readonly #ownerConfig: OwnerConfig | undefined;
   readonly #busyTimeoutMs: number;
   /** The bound on getting a connection (PgConnectionOptions.connectTimeoutMs). */
   readonly #connectMs: number;
   #closed = false;
-  /** Set once the owner lock's connection ended or failed: every call is refused with it from then. */
+  /** Set while the owner lock is not held (its connection ended or failed, and it is being taken back), and for good once
+   *  another server has the schema: every call is refused with it meanwhile. */
   #ownerLost: StoreOwned | undefined;
   /** Calls in flight: close waits for them. */
   readonly #inFlight = new Set<Promise<unknown>>();
@@ -239,27 +301,72 @@ export class PgConnection implements StoreConnection {
     return columns;
   };
 
-  private constructor(pool: pg.Pool, owner: pg.Client | undefined, schema: string, busyTimeoutMs: number, where: string, testClock: boolean, connectMs: number, leasePool: pg.Pool) {
+  private constructor(pool: pg.Pool, owner: OwnerSession | undefined, schema: string, busyTimeoutMs: number, where: string, testClock: boolean, connectMs: number, leasePool: pg.Pool, ownerConfig: OwnerConfig | undefined) {
     this.#connectMs = connectMs;
     this.#pool = pool;
     this.#leasePool = leasePool;
     this.#owner = owner;
+    this.#ownerConfig = ownerConfig;
     this.schema = schema;
     this.where = where;
     this.#busyTimeoutMs = busyTimeoutMs;
     this.dialect = postgresDialect(schema, { testClock });
-    // The owner lock lives on its own connection: when that connection ends or fails (the database went away, or killed
-    // it), the lock is gone and another server may take the schema. From then this store refuses every call (StoreOwned),
-    // never writing beside the server that holds the schema now.
+    if (owner) this.#watch(owner);
+  }
+
+  /** The owner lock lives on its own connection: when that connection ends or fails (the database restarted, a failover,
+   *  an operator killed it), the lock may be gone and another server may take the schema. From then this store refuses
+   *  every call (StoreOwned), never writing beside a server that may hold the schema now, and takes the lock back
+   *  (#retake). */
+  #watch(session: OwnerSession): void {
     const lost = () => {
-      if (!this.#closed) this.#ownerLost ??= new StoreOwned(`the owner lock on the Postgres schema ${schema} was lost (its connection ended): this server no longer holds the store`);
+      if (this.#closed || this.#owner !== session || this.#ownerLost) return;
+      this.#ownerLost = new StoreOwned(`the owner lock on the Postgres schema ${this.schema} was lost (its connection ended): this server is taking it back, and refuses every call until it holds it again`);
+      void this.#retake(session);
     };
-    owner?.on("error", lost);
-    owner?.on("end", lost);
+    session.client.on("error", lost);
+    session.client.on("end", lost);
+  }
+
+  /** Takes the owner lock back on a fresh connection, after OWNER_RETAKE_DELAY_MS (a server waiting for the schema takes
+   *  it first). Held by this server's own lost session (the database not yet told its client is gone: a partition), that
+   *  session is ended and the lock taken. Held by another server, or not taken within ownerWaitMs, it is lost for good:
+   *  every call is refused from then, and onOwnerLost is told, so the process exits and its platform restarts it. */
+  async #retake(old: OwnerSession): Promise<void> {
+    const config = this.#ownerConfig!;
+    const until = Date.now() + OWNER_RETAKE_DELAY_MS + config.waitMs;
+    await sleep(OWNER_RETAKE_DELAY_MS);
+    while (!this.#closed) {
+      const asked = await tryOwner(config.url, this.schema, this.#connectMs, this.where).catch(() => undefined);
+      if (asked && "taken" in asked) {
+        if (this.#closed) return void (await asked.taken.client.end().catch(() => undefined));
+        this.#owner = asked.taken;
+        this.#watch(asked.taken);
+        this.#ownerLost = undefined;
+        return;
+      }
+      const holder = asked?.heldBy;
+      if (holder && holder.pid === old.pid && holder.startedAt === old.startedAt) {
+        // This server's own session, its client gone but its backend not: ended, so its lock comes back.
+        await this.#pool.query("SELECT pg_terminate_backend($1)", [old.pid]).catch(() => undefined);
+      } else if (holder) {
+        return this.#lostForGood(new StoreOwned(`another server took the store in the Postgres schema ${this.schema} after this server's owner lock was lost: this server no longer holds it`));
+      }
+      if (Date.now() >= until) {
+        return this.#lostForGood(new StoreOwned(`the owner lock on the Postgres schema ${this.schema} was lost and could not be taken back within ${Math.round(config.waitMs / 1000)} s: this server no longer holds the store`));
+      }
+      await sleep(OWNER_POLL_MS);
+    }
+  }
+
+  #lostForGood(error: StoreOwned): void {
+    if (this.#closed) return;
+    this.#ownerLost = error;
+    this.#ownerConfig?.onLost?.(error);
   }
 
   /** The pool on `url` in `schema`, and (owner) the owner lock: StoreOwned when another server holds the schema. */
-  static async open({ url, schema, owner = false, busyTimeoutMs = 10_000, poolSize = 10, testClock = false, connectTimeoutMs = STORE_CONNECT_TIMEOUT_MS }: PgConnectionOptions): Promise<PgConnection> {
+  static async open({ url, schema, owner = false, busyTimeoutMs = 10_000, poolSize = 10, testClock = false, connectTimeoutMs = STORE_CONNECT_TIMEOUT_MS, ownerWaitMs = OWNER_WAIT_MS, onOwnerWait, onOwnerLost }: PgConnectionOptions): Promise<PgConnection> {
     if (!SCHEMA_NAME.test(schema)) throw new TypeError(`the store's schema is a lower-case name of letters, digits and underscores, not ${JSON.stringify(schema)}`);
     // The database's end of the keepalives (KEEPALIVE_IDLE_S): a vanished client's session, and its locks, ended in ~25 s.
     const keepalives = `-c tcp_keepalives_idle=${KEEPALIVE_IDLE_S} -c tcp_keepalives_interval=5 -c tcp_keepalives_count=3`;
@@ -270,25 +377,27 @@ export class PgConnection implements StoreConnection {
     // keepAlive: this end's TCP keepalives, from KEEPALIVE_IDLE_S (pg's default delay, 0, is the OS's 2 h).
     const tcp = { keepAlive: true, keepAliveInitialDelayMillis: KEEPALIVE_IDLE_S * 1_000 };
     const config: pg.PoolConfig = { connectionString: url, options: session, types, max: poolSize, allowExitOnIdle: true, application_name: "agentrun-store", connectionTimeoutMillis: connectMs, ...tcp };
-    let lock: pg.Client | undefined;
+    let lock: OwnerSession | undefined;
+    const waitMs = Math.max(0, Math.floor(ownerWaitMs));
     if (owner) {
-      // This end's keepalives only: the database keeps the owner lock past a partition for its own default, so this server
-      // finds its lock's connection dead (StoreOwned on every call) long before another server can take the schema.
-      lock = new pg.Client({ connectionString: url, types, application_name: `agentrun-store-owner:${schema}`, connectionTimeoutMillis: connectMs, ...tcp });
-      // A lost owner connection lets the lock go; the error is not left unhandled.
-      lock.on("error", () => undefined);
-      try {
-        await lock.connect();
-      } catch (error) {
-        await lock.end().catch(() => undefined);
-        throw connectTimedOut(error) ? connectDeadline(where, connectMs) : typed(error);
-      }
-      try {
-        const held = await lock.query("SELECT pg_try_advisory_lock(hashtext($1), hashtext('owner')) AS held", [schema]);
-        if (held.rows[0]?.held !== true) throw new StoreOwned(`another server holds the store in the Postgres schema ${schema}`);
-      } catch (error) {
-        await lock.end().catch(() => undefined);
-        throw error instanceof StoreOwned ? error : typed(error);
+      // Another server's lock is waited for (a deploy's old server draining and stopping), asked again every
+      // OWNER_POLL_MS, up to waitMs; past it StoreOwned. Its keepalives: OWNER_SESSION.
+      const until = Date.now() + waitMs;
+      let told = false;
+      for (;;) {
+        const asked = await tryOwner(url, schema, connectMs, where);
+        if ("taken" in asked) {
+          lock = asked.taken;
+          break;
+        }
+        if (Date.now() >= until) {
+          throw new StoreOwned(`another server holds the store in the Postgres schema ${schema}${waitMs > 0 ? `, and still held it after ${Math.round(waitMs / 1000)} s` : ""}`);
+        }
+        if (!told) {
+          told = true;
+          onOwnerWait?.(`another server holds the store in the Postgres schema ${schema}: waiting up to ${Math.round(waitMs / 1000)} s for it to let go`);
+        }
+        await sleep(OWNER_POLL_MS);
       }
     }
     const pool = new pg.Pool(config);
@@ -306,7 +415,7 @@ export class PgConnection implements StoreConnection {
       each.on("error", () => undefined);
       each.on("connect", (fresh) => fresh.on("error", () => undefined));
     }
-    return new PgConnection(pool, lock, schema, busyTimeoutMs, where, testClock, connectMs, leasePool);
+    return new PgConnection(pool, lock, schema, busyTimeoutMs, where, testClock, connectMs, leasePool, lock ? { url, waitMs, onLost: onOwnerLost } : undefined);
   }
 
   /** `work`, counted in flight, refused after close. A connection it never got in time is StoreDeadline, naming the
@@ -539,6 +648,6 @@ export class PgConnection implements StoreConnection {
     await Promise.allSettled([...this.#inFlight]);
     await this.#pool.end().catch(() => undefined);
     await this.#leasePool.end().catch(() => undefined);
-    await this.#owner?.end().catch(() => undefined);
+    await this.#owner?.client.end().catch(() => undefined);
   }
 }

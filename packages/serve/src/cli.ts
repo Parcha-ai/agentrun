@@ -300,6 +300,12 @@ const trustedProxies = (process.env.AGENTRUN_TRUSTED_PROXIES ?? "").split(",").m
 try {
   serve = await startServe(serveOptions = {
     onBoxImage,
+    // The owner lock on a Postgres store lost for good: this server can serve nothing more, so it exits non-zero and its
+    // platform starts it again, rather than answer 503 for as long as it runs.
+    onStoreLost: (error) => {
+      console.error(`agentrun-serve: ${error.message}`);
+      process.exit(1);
+    },
     data, port, ...(values.port === undefined ? { nextFreePort: true } : {}), ...(values.listen ? { host: values.listen } : {}), ...(given ? { token: given } : {}), ...(values.faux ? { faux: values.faux } : {}), ...(values["faux-browser"] ? { fauxBrowser: values["faux-browser"] } : {}), allowHosts: values["allow-host"],
     ...(values["max-runs"] !== undefined ? { maxRuns: Number(values["max-runs"]) } : {}),
     ...(values["drain-timeout"] ? { drainTimeout: values["drain-timeout"] } : {}), ...(values.documents ? { documents: values.documents } : {}), ...(values["allow-code-nodes"] ? { allowCodeNodes: true } : {}), ...(values.learning !== undefined ? { learning: values.learning as LearningMode } : {}), ...(values["grade-model"] ? { gradeModel: values["grade-model"] } : {}), ...(budget !== undefined ? { learningBudget: Number(budget) } : {}), log: (line) => void process.stdout.write(`${line}\n`),

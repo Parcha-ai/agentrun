@@ -1,7 +1,7 @@
 // The Store on Postgres: the same domain code as SQLite's (sqlite/store.ts storeOver) over a Postgres connection
 // (connection.ts) in the store's own schema (default "agentrun"). The server sets the schema up (migrate.ts) and holds the
 // owner lock, one server per schema; runners are many, set nothing up, and refuse a schema version they do not know.
-import { SchemaVersionUnknown, type Store, type StoreRole } from "../store.js";
+import { SchemaVersionUnknown, type Store, type StoreOwned, type StoreRole } from "../store.js";
 import { storeOver } from "../sqlite/store.js";
 import { PgConnection, SCHEMA_NAME } from "./connection.js";
 import { migrate, migrationsIn, placeOf, versionOf } from "./migrate.js";
@@ -37,8 +37,15 @@ export interface PostgresStoreOptions {
    *  come free (STORE_CONNECT_TIMEOUT_MS, 4 s, by default). Past it the call, or the open, is refused (StoreDeadline,
    *  naming the database's host, database and schema, never the URL), never left hanging. */
   readonly connectTimeoutMs?: number;
-  /** Told, at a runner's open, when its clock is more than CLOCK_WARN_MS from the database's. */
+  /** Told, at a runner's open, when its clock is more than CLOCK_WARN_MS from the database's; at a server's, when it waits
+   *  for another server to let the schema go. */
   readonly warn?: (message: string) => void;
+  /** A server's: how long it waits for the owner lock another server holds, at its open and to take its own back after its
+   *  lock's connection is lost (OWNER_WAIT_MS, 2 min, by default; 0 refuses at once with StoreOwned). */
+  readonly ownerWaitMs?: number;
+  /** A server's: told when its owner lock is lost for good (another server took the schema, or it could not be taken back
+   *  within ownerWaitMs). Every call is refused from then: the process should exit non-zero, so its platform restarts it. */
+  readonly onOwnerLost?: (error: StoreOwned) => void;
 }
 
 /** Opens the store in `schema` on the Postgres at `url`. As the server (the default): takes the owner lock (StoreOwned when
@@ -57,6 +64,9 @@ export async function openPostgresStore(options: PostgresStoreOptions): Promise<
     ...(options.busyTimeoutMs === undefined ? {} : { busyTimeoutMs: options.busyTimeoutMs }),
     ...(options.poolSize === undefined ? {} : { poolSize: options.poolSize }),
     ...(options.connectTimeoutMs === undefined ? {} : { connectTimeoutMs: options.connectTimeoutMs }),
+    ...(options.ownerWaitMs === undefined ? {} : { ownerWaitMs: options.ownerWaitMs }),
+    ...(options.warn ? { onOwnerWait: options.warn } : {}),
+    ...(options.onOwnerLost ? { onOwnerLost: options.onOwnerLost } : {}),
   });
   try {
     const found = await connection.withClient((client) => (role === "server" ? migrate(client, schema, now(), migrations) : versionOf(client, schema)));

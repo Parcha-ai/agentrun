@@ -3,7 +3,7 @@
 // directory, as before. The URL may hold the database's password, so it is a secret: the launcher hands it over its pipe
 // and takes it out of the environment (agentrun-serve's list), and it is read here by name (secrets.ts secret), never
 // from an environment. Nothing else reads those two variables.
-import type { Store, StoreRole } from "./store.js";
+import type { Store, StoreOwned, StoreRole } from "./store.js";
 import { openSqliteStore, STORE_FILE } from "./sqlite/store.js";
 import { DEFAULT_SCHEMA, openPostgresStore } from "./postgres/store.js";
 import { secret } from "../secrets.js";
@@ -45,13 +45,16 @@ export interface OpenStoreOptions {
   readonly url?: string;
   /** The environment AGENTRUN_STORE_SCHEMA is read from (process.env). The schema's name is no secret. */
   readonly env?: NodeJS.ProcessEnv;
-  /** Told what a person should know at the open (a runner's clock far from Postgres's). */
+  /** Told what a person should know at the open (a runner's clock far from Postgres's; a server waiting for another to
+   *  let the Postgres schema go). */
   readonly warn?: (message: string) => void;
+  /** A server's, on Postgres: told when its owner lock is lost for good (PostgresStoreOptions.onOwnerLost). */
+  readonly onOwnerLost?: (error: StoreOwned) => void;
 }
 
 /** Opens the store `options` names (storeTarget): the server's and the runner's one way in. */
-export function openStore({ dataDir, role = "server", now, url, env = process.env, warn }: OpenStoreOptions): Promise<Store> {
+export function openStore({ dataDir, role = "server", now, url, env = process.env, warn, onOwnerLost }: OpenStoreOptions): Promise<Store> {
   const target = storeTarget(dataDir, env, url ?? storeUrl());
   if (target.kind === "sqlite") return openSqliteStore({ dataDir, role, ...(now ? { now } : {}) });
-  return openPostgresStore({ url: target.url, schema: target.schema, role, ...(now ? { now } : {}), ...(warn ? { warn } : {}) });
+  return openPostgresStore({ url: target.url, schema: target.schema, role, ...(now ? { now } : {}), ...(warn ? { warn } : {}), ...(onOwnerLost ? { onOwnerLost } : {}) });
 }
