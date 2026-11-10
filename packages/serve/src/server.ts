@@ -2297,7 +2297,14 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     let secretSeen: unknown;
     if (isSecretWriteOperation(found.name) && req.headers.authorization !== undefined && !writesSecretsAllowed(req, { accounts: owner !== undefined, loopbackBound: isLoopback(host) })) {
       const body = req.method === "DELETE" || req.method === "GET" ? undefined : await bodyOf(req).catch(() => undefined);
-      const params = (found.pattern.exec(path) ?? []).slice(1).map((part) => (part === undefined ? "" : decodeURIComponent(part)));
+      // A segment that is not valid percent-encoding is taken as it came: the request goes on to the token's own check.
+      const params = (found.pattern.exec(path) ?? []).slice(1).map((part) => {
+        try {
+          return part === undefined ? "" : decodeURIComponent(part);
+        } catch {
+          return part;
+        }
+      });
       const checked: SecretRequest = { params, store };
       if (await writesSecretFor(found.name, body, checked)) {
         authFailed(`/v2${path}`, "secret_without_session");

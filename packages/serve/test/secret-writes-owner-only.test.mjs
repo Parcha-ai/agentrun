@@ -92,6 +92,14 @@ test("a token's save let through against no credential never lands over one the 
   assert.ok(seen.includes(`Bearer ${TOKEN}`), "the bearer is what a refresh lists with");
 });
 
+test("a secret write's path segment that is not valid percent-encoding is answered as any request is: the token's removal of it is refused, never a crash", async (t) => {
+  const server = await serve(t);
+  const token = asToken(server);
+  const odd = await token("DELETE", "/settings/mcp-servers/%");
+  assert.equal(odd.status, 403, odd.text);
+  assert.equal(odd.json?.error?.message, gate.SECRET_WRITE_REFUSAL);
+});
+
 test("removing an MCP server is the owner's alone: the token is refused and the server stays; the console removes it as the page does", async (t) => {
   const { page, token } = await withSavedServer(t);
   const refused = await token("DELETE", "/settings/mcp-servers/fake");
