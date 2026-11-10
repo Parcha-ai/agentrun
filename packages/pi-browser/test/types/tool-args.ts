@@ -15,14 +15,17 @@ void tools.screenshot({ url: "https://example.test/" }, port, call);
 // @ts-expect-error
 void tools.browser_read({ what: "pdf" }, port, call);
 
-// RunAction and the vendored facade's RefAction each accept the other, so the driver-neutral type cannot drift from the
-// facade; the op list names RunAction's ops exactly, and run_actions.test.mjs holds the same list to the contract.
+// RunAction's actions by id and the vendored facade's RefAction each accept the other, so the driver-neutral type cannot
+// drift from the facade (goto, which names no id, the Stagehand driver runs as the facade's own page.goto); the op list
+// names RunAction's ops exactly, and run_actions.test.mjs holds the same list to the contract.
 type Same<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
-const facadeAgrees: Same<RunAction, RefAction> = true;
+const facadeAgrees: Same<Exclude<RunAction, { op: "goto" }>, RefAction> = true;
 const opsAgree: Same<(typeof RUN_ACTION_OPS)[number], RunAction["op"]> = true;
 void [facadeAgrees, opsAgree];
 
-void tools.run({ actions: [{ op: "click", id: "12" }, { op: "type", id: "7", text: "hello", delay: 20 }, { op: "select", id: "3", values: ["a", "b"] }] }, port, call);
+void tools.run({ actions: [{ op: "goto", url: "https://example.test/" }, { op: "click", id: "12" }, { op: "type", id: "7", text: "hello", delay: 20 }, { op: "select", id: "3", values: ["a", "b"] }] }, port, call);
+// @ts-expect-error
+void tools.run({ actions: [{ op: "goto", id: "12" }] }, port, call);
 // @ts-expect-error
 void tools.run({ actions: [{ op: "click", id: 42 }] }, port, call);
 // @ts-expect-error

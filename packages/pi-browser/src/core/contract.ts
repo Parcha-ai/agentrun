@@ -34,7 +34,7 @@ const object = (properties: Record<string, unknown>, required: string[] = []): J
 const snapshot: ToolContract = {
   name: "snapshot",
   label: "Browser: snapshot",
-  description: "Capture the active page's Stagehand accessibility tree and hydrate its displayed IDs for subsequent run actions. Every call replaces the active page's ID map.",
+  description: "Capture the active page's accessibility tree and hydrate its displayed IDs for subsequent run actions. Every call replaces the active page's ID map. On the local browser (this machine's Chrome) a frame another site runs in its own process is not in the tree: the snapshot names each frame it left out.",
   parameters: object({ includeIframes: { type: "boolean", default: true } }),
   effect: "read", replay: "safe", executionMode: "sequential", evidence: "none", listedWhen: "always",
 };
@@ -47,8 +47,8 @@ export const BROWSER_KEEPS = Object.freeze({
 });
 
 const runDescription = (signIns: boolean): string =>
-  `Browse and automate websites in the persistent Stagehand browser. ${signIns ? BROWSER_KEEPS.signIns : BROWSER_KEEPS.cookies} ` +
-  'Navigate with JavaScript such as await page.goto("https://example.com"); there is no separate navigate or start tool. Execute either a JavaScript workflow against the Stagehand Playwright facade or a batch of actions using IDs from the latest snapshot. Code is the body of an async function with page, context and browser in scope: `return` the value you want back. Provide exactly one of code or actions. Each action must use "op" (never "kind") and "id" (never "ref"). Copy the bracketed snapshot ID as a string. Examples: {"actions":[{"op":"click","id":"1-42"}]}, {"actions":[{"op":"fill","id":"2-14","value":"Miami"}]}, {"actions":[{"op":"select","id":"3-9","values":"Lowest price"}]}.';
+  `Browse and automate websites in the persistent browser. ${signIns ? BROWSER_KEEPS.signIns : BROWSER_KEEPS.cookies} ` +
+  'Navigate with JavaScript such as await page.goto("https://example.com"), or with a goto action; there is no separate navigate or start tool. Execute either a JavaScript workflow against the Stagehand Playwright facade or a batch of actions using IDs from the latest snapshot. Code is the body of an async function with page, context and browser in scope: `return` the value you want back. Provide exactly one of code or actions. The local browser (this machine\'s Chrome) takes actions only: code is refused there. Each action must use "op" (never "kind") and "id" (never "ref"), but goto, which takes a "url". Copy the bracketed snapshot ID as a string. Examples: {"actions":[{"op":"goto","url":"https://example.com"}]}, {"actions":[{"op":"click","id":"1-42"}]}, {"actions":[{"op":"fill","id":"2-14","value":"Miami"}]}, {"actions":[{"op":"select","id":"3-9","values":"Lowest price"}]}.';
 
 const run: ToolContract = {
   name: "run",
@@ -59,9 +59,18 @@ const run: ToolContract = {
     code: { type: "string", minLength: 1 },
     actions: {
       type: "array",
-      description: 'Snapshot actions with the exact fields "op" and "id". Do not use "kind" or "ref".',
+      description: 'Snapshot actions with the exact fields "op" and "id" (goto: "op" and "url"). Do not use "kind" or "ref".',
       items: {
         oneOf: [
+          {
+            type: "object",
+            properties: {
+              op: { const: "goto", description: 'Action operation. Use "op": "goto"; never use a "kind" field.' },
+              url: { type: "string", description: "The http or https URL to open in the active page (or about:blank)." },
+            },
+            required: ["op", "url"],
+            additionalProperties: false,
+          },
           actionSchema("click"),
           actionSchema("hover"),
           actionSchema("fill", { value: { type: "string" } }),
@@ -233,7 +242,7 @@ export function browserSection(policy: { readonly idleReleaseS: number }, offere
   return [
     "You control one remote browser:",
     "- snapshot: the active page's accessibility tree, with bracketed element IDs for run actions.",
-    "- run: snapshot actions by ID, or JavaScript against the Playwright-shaped page API. Pass exactly one of code or actions; every action uses \"op\" and \"id\", never \"kind\" or \"ref\".",
+    "- run: snapshot actions by ID, or JavaScript against the Playwright-shaped page API. Pass exactly one of code or actions; every action uses \"op\" and \"id\" (a goto action \"op\" and \"url\"), never \"kind\" or \"ref\". The local browser (this machine's Chrome) takes actions only.",
     "- screenshot: the rendered page as an image.",
     "- browser_read: the current page's content, filed as evidence with its URL.",
     "- browser_relaunch: a fresh session, Verified or egressing from a given place.",

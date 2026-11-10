@@ -51,6 +51,8 @@ function overriding<T extends object>(target: T, own: Record<string, unknown>): 
 }
 
 type Deadlines = { batchMs: number; snapshotMs: number; screenshotMs: number };
+/** An action by snapshot id: every op but goto, which the facade does not know. */
+type ById = Exclude<RunAction, { op: "goto" }>;
 
 /** Batches run under `batchMs`, not the facade's fixed 60 s; one failing at or past it is a `TimeoutError`, since
  *  Stagehand's own is a plain Error. Each active page's snapshot and screenshot are bounded on the page itself, under
@@ -112,7 +114,7 @@ export function pageDriver(stagehand: Stagehand, deadlines: { batchMs: number; s
   /** An action after the first of a batch checked as one (driving-guard): run by the facade with the snapshot taken as at
    *  the page's address now, for this action only, so an address the batch's own earlier actions moved is not a stale
    *  snapshot; then the snapshot's own address again, so a later call on the moved page is told to snapshot again. */
-  const afterChecked = async (actions: RunAction[]) => {
+  const afterChecked = async (actions: ById[]) => {
     const page = await active();
     const snapshot = kept().get(page.pageId);
     // Only on the snapshot's own document: an earlier action that loaded a new one (a link to another page, a reload)
@@ -132,6 +134,21 @@ export function pageDriver(stagehand: Stagehand, deadlines: { batchMs: number; s
       if (current && current.xpathById === snapshot.xpathById) kept().set(page.pageId, { ...current, url: snapshot.url });
     }
   };
+  /** A batch with a goto: the actions one at a time, a goto through the facade's page (http, https or about:blank only), each
+   *  other action by its id as the facade runs it, so an id after a goto meets the new page and fails as a stale snapshot. */
+  const withGoto = async (actions: RunAction[], checked: boolean) => {
+    if (!actions.some((action) => action.op === "goto")) return checked ? afterChecked(actions as ById[]) : facade.runActions(actions as ById[]);
+    let completed = 0;
+    let url = "";
+    for (const action of actions) {
+      if (action.op === "goto") {
+        if (!/^(https?:\/\/|about:blank$)/i.test(action.url)) throw new Error(`goto takes an http or https URL (or about:blank), not ${JSON.stringify(action.url.slice(0, 100))}`);
+        url = await facade.run(`await page.goto(${JSON.stringify(action.url)}); return page.url();`) as string;
+      } else url = (await facade.runActions([action])).url;
+      completed++;
+    }
+    return { completed, url };
+  };
   return {
     snapshot: async (snapshotOptions) => {
       const tree = await reads.snapshot(snapshotOptions);
@@ -140,7 +157,7 @@ export function pageDriver(stagehand: Stagehand, deadlines: { batchMs: number; s
       if (page && taken) snapshotDocuments.set(page.pageId, { xpathById: taken.xpathById, document: documentOf(page) });
       return tree;
     },
-    run: (input) => input.actions !== undefined ? (input.checked ? afterChecked(input.actions) : facade.runActions(input.actions)) : facade.run(input.code ?? ""),
+    run: (input) => input.actions !== undefined ? withGoto(input.actions, input.checked === true) : facade.run(input.code ?? ""),
     // As the facade's own batch checks a run's actions before it sends any (runActionsNow): the active page's snapshot,
     // the page still at its address, and every id in it. Read from the facade's snapshots, as forgetSnapshots does.
     checkActions: async (actions) => {
@@ -148,7 +165,11 @@ export function pageDriver(stagehand: Stagehand, deadlines: { batchMs: number; s
       const snapshot = (facade as unknown as { snapshotsByPage: Map<string, { url: string; xpathById: Record<string, string> }> }).snapshotsByPage.get(page.pageId);
       if (!snapshot) throw new Error(NO_HYDRATED_SNAPSHOT_ERROR);
       if ((await page.url()) !== snapshot.url) throw new Error(NAVIGATED_SNAPSHOT_ERROR);
-      for (const action of actions) if (!snapshot.xpathById[action.id]) throw new Error(staleSnapshotIdError(action.id));
+      for (const action of actions) {
+        // What follows a goto is on the next page: its ids are checked when it runs.
+        if (action.op === "goto") break;
+        if (!snapshot.xpathById[action.id]) throw new Error(staleSnapshotIdError(action.id));
+      }
     },
     url: async () => documentUrl(stagehand, await active()),
     // The facade keeps each page's last snapshot's ids for its own actions; with none, an action by id fails NO_HYDRATED (a stale snapshot).

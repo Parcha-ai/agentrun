@@ -20,9 +20,10 @@ test("a packed tarball installs with pi into a scratch home, and a pi process lo
   const packed = JSON.parse(execFileSync("npm", ["pack", "--json", "--pack-destination", packs], { cwd: pkgDir, encoding: "utf8", env: { ...process.env, npm_config_loglevel: "silent", TMPDIR: tmp } }));
   const names = packed[0].files.map((f) => f.path);
   assert.ok(names.includes("dist/coding-agent.js") && names.includes("LICENSE") && names.includes("NOTICE") && names.includes("README.md") && names.includes("CHANGELOG.md"), "the files a pi user needs are in the tarball");
-  const outside = names.filter((n) => !n.startsWith("dist/") && !["package.json", "LICENSE", "NOTICE", "README.md", "CHANGELOG.md", "src/vendor/stagehand-facade/UPSTREAM.json"].includes(n));
-  assert.deepEqual(outside, [], "the tarball is dist, the licence files, the README, and the vendored facade's UPSTREAM.json: no sources, tests, fixtures or scratch");
+  const outside = names.filter((n) => !n.startsWith("dist/") && !["package.json", "LICENSE", "NOTICE", "README.md", "CHANGELOG.md", "src/vendor/stagehand-facade/UPSTREAM.json", "src/vendor/browser-use-pi/UPSTREAM.json"].includes(n));
+  assert.deepEqual(outside, [], "the tarball is dist, the licence files, the README, and the vendored code's UPSTREAM.json files: no sources, tests, fixtures or scratch");
   assert.ok(names.includes("src/vendor/stagehand-facade/UPSTREAM.json"), "the vendored facade's provenance travels with it");
+  assert.ok(names.includes("src/vendor/browser-use-pi/UPSTREAM.json"), "the adapted Browser Use Pi files' provenance travels with them");
   assert.deepEqual(names.filter((n) => n.endsWith(".map")), [], "no source maps: they point at sources the tarball does not carry");
   assert.ok(names.includes("dist/vendor/stagehand-facade/runtime.js"), "the vendored facade is in the tarball");
   const manifest = JSON.parse(execFileSync("tar", ["-xzOf", path.join(packs, packed[0].filename), "package/package.json"], { encoding: "utf8" }));

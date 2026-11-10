@@ -42,6 +42,7 @@ export function runnableCode(code: string): string {
 }
 
 export type RunAction =
+  | { op: "goto"; url: string }
   | { op: "click"; id: string }
   | { op: "hover"; id: string }
   | { op: "fill"; id: string; value: string }

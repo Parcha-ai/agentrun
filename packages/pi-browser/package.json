@@ -60,6 +60,10 @@
       "types": "./dist/driver/stagehand.d.ts",
       "import": "./dist/driver/stagehand.js"
     },
+    "./driver/cdp": {
+      "types": "./dist/driver/cdp.d.ts",
+      "import": "./dist/driver/cdp.js"
+    },
     "./testing": {
       "types": "./dist/testing/index.d.ts",
       "import": "./dist/testing/index.js"
@@ -73,6 +77,7 @@
     "dist",
     "!dist/**/*.map",
     "src/vendor/stagehand-facade/UPSTREAM.json",
+    "src/vendor/browser-use-pi/UPSTREAM.json",
     "CHANGELOG.md",
     "LICENSE",
     "NOTICE",

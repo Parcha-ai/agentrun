@@ -44,6 +44,11 @@ test("the Stagehand driver serves the page tools' contract on a real Chrome", { 
       assert.equal(await driver.run({ code: `await page.goto(${JSON.stringify(`${site.base}/a`)}); return await page.title();` }), "Page A");
       assert.equal(await driver.url(), `${site.base}/a`);
     });
+    await t.test("a goto action navigates as run code does, and a scheme other than http, https or about:blank is refused", async () => {
+      assert.deepEqual(await driver.run({ actions: [{ op: "goto", url: `${site.base}/a` }] }), { completed: 1, url: `${site.base}/a` });
+      await assert.rejects(driver.run({ actions: [{ op: "goto", url: "file:///etc/hostname" }] }), /goto takes an http or https URL/);
+      assert.equal(await driver.url(), `${site.base}/a`);
+    });
     await t.test("page() returns the page's url, title, text and html", async () => {
       const page = await driver.page();
       assert.equal(page.url, `${site.base}/a`);
