@@ -239,7 +239,7 @@ test("a runner never makes or records a key: on a store the server has not keyed
   assert.equal(recorded(data), undefined, "a runner records no key");
 });
 
-test("two servers on two data directories in one process each keep their own key: each opens only its own sealed secrets, never the other's, and both keys are on the redaction list while open", { timeout: 120_000 }, async (t) => {
+test("two servers on two data directories in one process each keep their own key: each opens only its own sealed secrets, never the other's (handed the other's key, a store refuses in the words), and both keys are on the redaction list while open", { timeout: 120_000 }, async (t) => {
   await cleanEnv(t);
   const { client } = await import("./support.mjs");
   const { hostSecrets } = await import("../dist/secrets.js");
@@ -270,6 +270,12 @@ test("two servers on two data directories in one process each keep their own key
     open.delete(server);
   }
   assert.ok(!hostSecrets({}).some((value) => value === keyA || value === keyB), "closed, neither is held");
+  // Each store opens with its own key alone: handed the other's, it refuses in the words.
+  for (const [data, other] of [[a, keyB], [b, keyA]]) {
+    process.env.AGENTRUN_SEAL_KEY = other;
+    await refuses(startServe({ data, port: 0 }));
+  }
+  delete process.env.AGENTRUN_SEAL_KEY;
   // Each opens alone again under its own key.
   for (const data of [a, b]) {
     const again = await startServe({ data, port: 0 });
