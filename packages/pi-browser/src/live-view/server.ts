@@ -9,6 +9,9 @@ import { newToken, newViewerId, tokenMatches } from "./token.js";
 import { viewerAssets } from "./viewer.js";
 import { acceptWebSocket, type WsConn } from "./ws.js";
 
+/** Where the live view's own server listens with no `listen`: this machine alone. */
+const LOOPBACK_HOST = "127.0.0.1"; // key-gate: loopback-rule the default, this machine alone
+
 export type LiveViewOptions = {
   /** The one origin allowed to frame the viewer (`frame-ancestors`). Null: none. Required, so the choice is never a default. */
   hostOrigin: string | null;
@@ -16,7 +19,7 @@ export type LiveViewOptions = {
    *  header must equal. Absent: the live view starts its own server on 127.0.0.1 (never 0.0.0.0), on an ephemeral port, at the first `open`. */
   baseUrl?: string;
   /** With no `baseUrl`: the address its own server listens on, and the host the viewer's link names, for a host whose
-   *  viewer is reached from another machine (its own proxy, never a person's browser directly). Absent: 127.0.0.1 for
+   *  viewer is reached from another machine (its own proxy, never a person's browser directly). Absent: loopback for
    *  both. A host that listens off loopback gives `admit` too. */
   listen?: { readonly bind: string; readonly host: string };
   /** Asked of every page request and upgrade before anything else is read of it: false is a 403. The host's own check
@@ -344,7 +347,7 @@ export function createLiveView(options: LiveViewOptions): LiveViewHost {
       s.once("error", reject);
       // Loopback unless the host names another address (`listen`, with its `admit`): the host that wants more mounts the
       // handler on its own server.
-      const at = options.listen ?? { bind: "127.0.0.1", host: "127.0.0.1" };
+      const at = options.listen ?? { bind: LOOPBACK_HOST, host: LOOPBACK_HOST };
       s.listen(0, at.bind, () => { s.unref(); server = s; origin = `http://${at.host}:${(s.address() as AddressInfo).port}`; resolve(); });
     });
     return starting;
