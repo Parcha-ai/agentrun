@@ -23,7 +23,7 @@ import { DEFAULT_PORT } from "./server.js";
 import { REDACTED, secretCut, secretsIn } from "./secret-cut.js";
 import { handedSecret, SECRET_NAMES, withSecrets } from "./secrets.js";
 import { SEAL_KEY_ENV } from "./tool-keys.js";
-import { bootSealKey, SealKeyRefused } from "./seal-key.js";
+import { bootSealKey, SealKeyRefused, withSealKey } from "./seal-key.js";
 import { toolKeysOverStore } from "./tool-keys-store.js";
 import { openServerSecretsOverStore } from "./server-secrets-store.js";
 import { WEBHOOK_FILE, webhookSecretIn } from "./webhooks.js";
@@ -1082,9 +1082,8 @@ export async function importCommand(
     const seal = await bootSealKey(store, dir!, { given: handedKey, write, say: (line) => void warnings.push(line.trimEnd()) });
     if (!seal) return;
     printed.add([seal.text]);
-    // This process's own environment again, with the key the boot holds now; a caller's own is given it when it has none.
-    if (ownEnv) env = withSecrets(process.env);
-    else if (env![SEAL_KEY_ENV] === undefined) Object.defineProperty(env!, SEAL_KEY_ENV, { value: seal.text, enumerable: false, configurable: true });
+    // The environment the import reads, this process's own or a caller's, with the key the boot checked as its seal key.
+    env = withSealKey(ownEnv ? withSecrets(process.env) : env!, seal.text);
   };
   /** A start the seal key refuses (seal-key.ts): said, in its words, and the import does not go on. */
   const sealRefused = (error: unknown): boolean => {

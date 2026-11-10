@@ -146,6 +146,9 @@ test("a runner refuses a store sealed with another key, as the server does; with
   await startAndStop(data);
   const createLoop = () => assert.fail("no run is claimed");
   await refuses(startRunnerProcess({ dataDir: data, env: { ...process.env, AGENTRUN_SEAL_KEY: newKey() }, createLoop, name: "runner-wrong" }));
+  // With no key handed it reads the data directory's, the server's, and starts.
+  const runner = await startRunnerProcess({ dataDir: data, env: { ...process.env }, createLoop, name: "runner-right" });
+  await runner.close();
   rmSync(keyFile(data));
   await refuses(startRunnerProcess({ dataDir: data, env: { ...process.env }, createLoop, name: "runner-none" }));
   assert.equal(existsSync(keyFile(data)), false, "a runner makes no key over the store's fingerprint");
@@ -217,4 +220,47 @@ test("(d) Postgres: a second process with another key on the same database refus
   await refuses(startRunnerProcess({ dataDir: await scratch(t), storeUrl: PG_URL, env: { ...env, AGENTRUN_SEAL_KEY: newKey() }, createLoop, name: "pg-wrong" }));
   const runner = await startRunnerProcess({ dataDir: await scratch(t), storeUrl: PG_URL, env: { ...env, AGENTRUN_SEAL_KEY: first }, createLoop, name: "pg-right" });
   await runner.close();
+});
+
+test("an earlier build's key is moved in for a store whose only secret is kept beside it (the outbound webhook's signing secret), and a new key is never made over that secret", { timeout: 60_000 }, async (t) => {
+  const config = await cleanEnv(t);
+  const legacy = newKey();
+  // A server of the earlier build's kind: its key handed, a webhook set (its secret sealed in webhook.json, not the
+  // store), then the store's record of the key dropped, as a store that build left has none.
+  const data = join(await scratch(t), "data");
+  process.env.AGENTRUN_SEAL_KEY = legacy;
+  const server = await startServe({ data, port: 0 });
+  const { client } = await import("./support.mjs");
+  assert.equal((await client(server.baseUrl, server.token)("PUT", "/settings/webhook", { url: "http://127.0.0.1:9/hook" })).status, 201);
+  await server.close();
+  delete process.env.AGENTRUN_SEAL_KEY;
+  const db = new DatabaseSync(join(data, "store.sqlite"));
+  db.prepare("DELETE FROM settings WHERE key = 'seal_key'").run();
+  assert.equal(db.prepare("SELECT count(*) AS n FROM sealed_keys").get().n, 0, "no secret in the store");
+  db.close();
+  // No key under the config home either: refused, nothing made over the webhook's secret.
+  await refuses(startServe({ data, port: 0 }));
+  assert.equal(existsSync(keyFile(data)), false, "no key is made over the webhook's secret");
+  // The earlier build's key under the config home: it opens the webhook's secret, so it is moved in.
+  mkdirSync(join(config, "agentrun"), { mode: 0o700 });
+  writeFileSync(join(config, "agentrun", "seal.key"), `${legacy}\n`, { mode: 0o600 });
+  await startAndStop(data);
+  assert.equal(readFileSync(keyFile(data), "utf8").trim(), legacy, "the webhook's key, moved into the data directory");
+});
+
+test("two servers on two data directories in one process each keep their own key: what each saves opens under its own at its next start", { timeout: 120_000 }, async (t) => {
+  await cleanEnv(t);
+  const { client } = await import("./support.mjs");
+  const [a, b] = [join(await scratch(t), "a"), join(await scratch(t), "b")];
+  // Both boot at once, each making a key of its own in its data directory.
+  const [first, second] = await Promise.all([startServe({ data: a, port: 0 }), startServe({ data: b, port: 0 })]);
+  assert.notEqual(readFileSync(keyFile(a), "utf8"), readFileSync(keyFile(b), "utf8"), "two keys");
+  for (const [server, url] of [[first, "http://127.0.0.1:9/a"], [second, "http://127.0.0.1:9/b"]]) assert.equal((await client(server.baseUrl, server.token)("PUT", "/settings/webhook", { url })).status, 201);
+  await Promise.all([first.close(), second.close()]);
+  for (const data of [a, b]) {
+    const again = await startServe({ data, port: 0 });
+    const read = (await client(again.baseUrl, again.token)("GET", "/settings/webhook")).body;
+    await again.close();
+    assert.equal(read.signing, "sealed", `${data}: its webhook's secret opens under its own key: ${JSON.stringify(read)}`);
+  }
 });

@@ -87,7 +87,7 @@ import { CAP_MODES, type CapMode } from "./cap.js";
 import { type Blocker, blockersOf, CODE_NODES_ENV, issueOf, MCP_HARNESSES, NOT_SET_UP, type RevisionShape } from "./runnable.js";
 import { hostSecrets, SECRET_NAMES, secret, type StoredKeys, withSecrets } from "./secrets.js";
 import { isSecretWriteOperation, SECRET_WRITE_REFUSAL, secretsWritableFields, secretWriterFacts, writesSecret, writesSecretsAllowed } from "./secret-writes.js";
-import { bootSealKey } from "./seal-key.js";
+import { bootSealKey, withSealKey } from "./seal-key.js";
 import { redactedOutput } from "./key-refusal.js";
 import { analyticsFilter, analyticsView, statsView } from "./stats.js";
 import { agentLearningOverStore, learningCountsOverStore } from "./store-reads/learning.js";
@@ -840,9 +840,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // secrets another key sealed is refused, in words, and no key is made over them. Every secret here is kept under it;
   // there is no keeping one in the clear.
   const seal = await bootSealKey(store, data);
+  // This server's own key on every environment it reads its secrets from, so a reader opens what this store holds with the
+  // key checked against it, never another data directory's that this process booted too (secrets.ts holds one made key).
+  const own = (env: NodeJS.ProcessEnv): NodeJS.ProcessEnv => withSealKey(env, seal.text);
   // Which fields are the server's is read from what it is started with alone: handed the saved keys too, ToolKeys would
   // call each the server's, and none could be deleted. The keys are sealed rows in the store; load() reads them once here.
-  const toolKeys = toolKeysOverStore(store, withSecrets(base, "own"), (fields) => (log ? log(logLine("tool_keys", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("tool_keys", fields)}\n`)));
+  const toolKeys = toolKeysOverStore(store, own(withSecrets(base, "own")), (fields) => (log ? log(logLine("tool_keys", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("tool_keys", fields)}\n`)));
   await toolKeys.load();
   // A key's check as it is saved (key-check.ts) goes to its provider; under faux only to the tests' fake for that provider,
   // the one its runs are given (monid, Parallel, TypeSafe's Jev), never to the network: one with no fake is not checked.
@@ -858,7 +861,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const storedKeys: StoredKeys = (name) => toolKeys.value(name);
   // A stored key that does not open is said once at the start, never a refusal to start.
   toolKeys.view();
-  const mcpServers = mcpServersOverStore(store, withSecrets(base, "own"), VERSION);
+  const mcpServers = mcpServersOverStore(store, own(withSecrets(base, "own")), VERSION);
   if (options.githubMcpOrigin) mcpServers.appOrigin = options.githubMcpOrigin;
   // The saved MCP servers' metadata (their addresses and the tools they list), a snapshot the run-grant checks read in
   // step (blockersOf's `mcp`, and the template apply): the server is the one writer of these rows (a save, refresh, sign-in
@@ -894,7 +897,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // settings, caps; a save or delete of a key, env and caps, and the offers only when what they are made from changed,
   // which no tool key is. So a write answers at once, and capabilities, save checks and run checks after it see it, with
   // no restart and no request opening the file. The offers are probed once saved keys are read (below), at the start.
-  let env = withSecrets(base, "all", storedKeys);
+  let env = own(withSecrets(base, "all", storedKeys));
   let offers!: HarnessCapability[];
   let caps!: ReturnType<typeof capabilitiesWith>;
   // Whether a revision that names no model runs (needsOf): made from env alone, so remade with it, before the caps.
@@ -924,7 +927,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const keysChanged = async () => {
     // A run's learning, view, list and timeline row are cut of the keys saved now by the run view at read time (it reads
     // serverSecrets live, store-view), so a key change needs no cache invalidation here.
-    env = withSecrets(base, "all", storedKeys);
+    env = own(withSecrets(base, "all", storedKeys));
     const mine = ++needsAsked;
     const next = await needsOf(env);
     if (mine === needsAsked) needs = next;
@@ -1348,7 +1351,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // worker's memory alone: what the import cuts out of everything it writes. The keys saved on the Tool keys page are
         // not passed; the worker reads them from the store over the port (sealed rows it opens with the seal key among these
         // secrets), the same cut as the CLI's import, where a saved key and the server's own of the same name may differ.
-        workerData: { task, data, home: options.sessionsHome?.home ?? homedir(), ...(options.sessionsHome?.temp ? { temp: options.sessionsHome.temp } : {}), secrets: Object.fromEntries(SECRET_NAMES.flatMap((name) => { const value = secret(name); return value === undefined ? [] : [[name, value]]; })) } satisfies ImportTask,
+        workerData: { task, data, home: options.sessionsHome?.home ?? homedir(), ...(options.sessionsHome?.temp ? { temp: options.sessionsHome.temp } : {}), secrets: Object.fromEntries(SECRET_NAMES.flatMap((name) => { const value = name === SEAL_KEY_ENV ? seal.text : secret(name); return value === undefined ? [] : [[name, value]]; })) } satisfies ImportTask,
         // Started from a string (its launcher runs node --input-type=module -e), the server's flags are given again
         // without that string and its type: a worker started from a file with them is refused. Otherwise the worker
         // inherits them as Node passes them on, which leaves out the flags a worker may not take (on Node 24 a test

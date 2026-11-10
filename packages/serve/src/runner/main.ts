@@ -31,7 +31,7 @@ export interface RunnerProcessOptions {
   /** This runner's name in the runs it claims, its lines and its heartbeat. Default runner.ts runnerName(). */
   name?: string;
   /** Each claimed run's loop; default the runner's dispatch over the store (runnerLoop). */
-  createLoop?: LoopFactory | ((store: Store) => LoopFactory);
+  createLoop?: LoopFactory | ((store: Store, sealKey: Buffer) => LoopFactory);
   onEvent?: (event: RunnerEvent) => void;
   /** For tests: the clock the heartbeat is written by. Default Date.now. */
   now?: () => number;
@@ -169,9 +169,9 @@ export async function startRunnerProcess(options: RunnerProcessOptions): Promise
     // (another machine's key on a shared Postgres, a lost key file) is refused in the server's words, and makes no key.
     const seal = await bootSealKey(store, options.dataDir, { given: handedSecret(SEAL_KEY_ENV) ?? env[SEAL_KEY_ENV], env });
     const name = options.name ?? runnerName();
-    const made = options.createLoop ?? ofStore((opened) => runnerLoop(opened, options.dataDir, undefined, seal.key));
+    const made = options.createLoop ?? ofStore((opened, sealKey) => runnerLoop(opened, options.dataDir, undefined, sealKey));
     // A factory of the store (marked by ofStore) is given the store; a loop factory is used as is.
-    const createLoop = isStoreFactory(made) ? made(store) : made;
+    const createLoop = isStoreFactory(made) ? made(store, seal.key) : made;
     runner = startRunner({
       store,
       createLoop,
@@ -198,11 +198,11 @@ export async function startRunnerProcess(options: RunnerProcessOptions): Promise
 
 const storeFactories = new WeakSet<object>();
 /** Marks `make` as a function of the store (startRunnerProcess gives it the store it opens). */
-export function ofStore(make: (store: Store) => LoopFactory): (store: Store) => LoopFactory {
+export function ofStore(make: (store: Store, sealKey: Buffer) => LoopFactory): (store: Store, sealKey: Buffer) => LoopFactory {
   storeFactories.add(make);
   return make;
 }
-const isStoreFactory = (made: LoopFactory | ((store: Store) => LoopFactory)): made is (store: Store) => LoopFactory => storeFactories.has(made);
+const isStoreFactory = (made: LoopFactory | ((store: Store, sealKey: Buffer) => LoopFactory)): made is (store: Store, sealKey: Buffer) => LoopFactory => storeFactories.has(made);
 
 /** The runner process's arguments: `--data D [--loops N] [--name N]`, or `--check --data D [--name N]`. Each option with
  *  a value is also taken as `--option=value` (the bin hands a data directory that starts with "-" so, never read as an
@@ -291,7 +291,7 @@ export async function runnerMain(argv: readonly string[], env: NodeJS.ProcessEnv
       name: runnerOf,
       env,
       ...(args.loops ? { loops: args.loops } : {}),
-      createLoop: ofStore((store) => runnerLoop(store, args.dataDir, env)),
+      createLoop: ofStore((store, sealKey) => runnerLoop(store, args.dataDir, env, sealKey)),
       onEvent: (event) => {
         if (event.type === "error") return void console.error(`Runner ${runnerOf}: ${event.step}${event.runId ? ` ${event.runId}` : ""}: ${event.message}`);
         const line = said(runnerOf, event);
