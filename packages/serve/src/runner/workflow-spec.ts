@@ -40,7 +40,7 @@ import { searchArgs, WEB_SEARCH_TOOL } from "../web-search.js";
 import { money, pricingOf, requestPrice, type RunTools, TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
 import { claimSecrets } from "./claim-secrets.js";
 import { type ModelRoute, routeOf } from "./model-route.js";
-import { PI_WIRES } from "./adapter-run-spec.js";
+import { PI_WIRES, storeSettings } from "./adapter-run-spec.js";
 import { policyFor } from "./adapters/pi.js";
 import { sessionProvider } from "../port-models.js";
 import { journalSessions } from "./sessions.js";
@@ -618,18 +618,18 @@ export const releaseCallHold = async (): Promise<void> => {
 
 /** A call tool's permission now, as main's per-run process read it at each call node (app.ts:382-384, the gate's
  *  policy): the revision's tool settings and approvals over the server's, the server's read again from the store at each
- *  call, so a deny or an ask set while the run goes reaches its next call. A read that fails holds the last good one. */
+ *  call, so a deny or an ask set while the run goes reaches its next call. A read that fails is unread, as the agentic
+ *  gate's is (adapter-run-spec.ts storeSettings): with no good read before it every tool asks, so a call node is refused
+ *  (the revision's own allow never stands alone over settings no read has seen); after one, the gate holds to that read
+ *  marked unread (RunGate.serverSettings), so its denies still refuse. */
 type CallPolicy = (tool: string) => Promise<{ permission: "allow" | "ask" | "deny"; denyFrom: Parameters<typeof deniedText>[2] }>;
 function callPolicyOf(store: Pick<Store, "settings">, runId: string, claimed: Claimed): CallPolicy {
-  let current: Awaited<ReturnType<typeof loadToolSettings>> = { settings: {}, problems: [] } as never;
+  // Nothing read yet: unread, so a policy asked before the first read fails closed too.
+  let current: Awaited<ReturnType<typeof loadToolSettings>> = { settings: {}, problems: [], unreadable: true };
   // Only the permission is read here: a workflow never parks, so whether anyone can answer an ask plays no part.
   const gate = runGate({ root: claimed.workRoot, work: claimed.workRoot }, runId, claimed.revision as never, () => current, undefined, true);
   return async (tool) => {
-    try {
-      current = await loadToolSettings(store);
-    } catch {
-      // Unread: the gate holds to its last good read.
-    }
+    current = await storeSettings(store);
     return { permission: gate.policy(tool), denyFrom: gate.denyFrom(tool) };
   };
 }
