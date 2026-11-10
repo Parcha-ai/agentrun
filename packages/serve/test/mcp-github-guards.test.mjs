@@ -115,22 +115,24 @@ test("the store's save never writes a github_app row off GitHub's hosted MCP; Gi
 });
 
 test("the runner's claim refuses a github_app row off GitHub's hosted MCP at the pin step: the run ends in words, nothing minted, no pin row", async (t) => {
-  for (const url of BAD) {
-    const { store } = await storeOn(t);
-    const sent = noRequests(t);
-    await store.mcp.put({ name: "gh", url, auth: "github_app", tools: [{ name: "add", inputSchema: { type: "object" } }], sealed: null });
-    await queued(store, "run-1");
-    const claim = await store.claim("run-1", "runner-a", { leaseMs: 60_000 });
+  // One store: a row and a run of its own for each URL.
+  const { store } = await storeOn(t);
+  const sent = noRequests(t);
+  for (const [i, url] of BAD.entries()) {
+    const name = `gh${i}`;
+    const run = `run-${i}`;
+    await store.mcp.put({ name, url, auth: "github_app", tools: [{ name: "add", inputSchema: { type: "object" } }], sealed: null });
+    await queued(store, run);
+    const claim = await store.claim(run, "runner-a", { leaseMs: 60_000 });
     let mints = 0;
     const githubApp = { mint: async () => (mints++, { ok: true, token: APP_TOKEN, expires_at: Date.now() + 3_600_000 }), target: { installation: 7, repo: "acme/widgets" } };
     await assert.rejects(
-      mcpClaim({ store, claim, grants: ["mcp:gh/add"], sealKey: KEY, signal: new AbortController().signal, githubApp }),
-      (error) => error instanceof McpClaimRefused && error.message.includes(GITHUB_MCP_ONLY) && error.message.includes("gh"),
+      mcpClaim({ store, claim, grants: [`mcp:${name}/add`], sealKey: KEY, signal: new AbortController().signal, githubApp }),
+      (error) => error instanceof McpClaimRefused && error.message.includes(GITHUB_MCP_ONLY) && error.message.includes(name),
       url,
     );
     assert.equal(mints, 0, `${url}: no token minted`);
-    assert.equal(await store.mcp.pin("run-1"), undefined, `${url}: no pin row`);
-    assert.deepEqual(sent, [], `${url}: no request sent`);
-    t.mock.restoreAll();
+    assert.equal(await store.mcp.pin(run), undefined, `${url}: no pin row`);
   }
+  assert.deepEqual(sent, [], "no request sent");
 });

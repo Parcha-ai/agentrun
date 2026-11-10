@@ -10,7 +10,7 @@ const { saveMcpServer, MCP_META_MAX_BYTES } = await import("../dist/mcp-store.js
 const KEY = Buffer.from(randomBytes(32));
 const base = (over = {}) => ({ name: "github", url: "https://mcp.example.com/github", auth: "none", tools: [], ...over });
 
-test("server_info and instructions round-trip through a save and read back from the store", async (t) => {
+test("server_info and instructions round-trip through a save and read back from the store; saved without them, both read null", async (t) => {
   const { store } = await storeOn(t);
   const row = await saveMcpServer(store, KEY, base({ serverInfo: { name: "GitHub MCP", version: "1.2.3" }, instructions: "Call create_issue to open issues." }));
   assert.deepEqual(row.serverInfo, { name: "GitHub MCP", version: "1.2.3" });
@@ -18,13 +18,9 @@ test("server_info and instructions round-trip through a save and read back from 
   const read = await store.mcp.server("github");
   assert.deepEqual(read.serverInfo, { name: "GitHub MCP", version: "1.2.3" }, "reads back from the store");
   assert.equal(read.instructions, "Call create_issue to open issues.");
-});
-
-test("a server saved without them reads null", async (t) => {
-  const { store } = await storeOn(t);
-  const row = await saveMcpServer(store, KEY, base());
-  assert.equal(row.serverInfo, null);
-  assert.equal(row.instructions, null);
+  // Saved without them, both read null.
+  const bare = await saveMcpServer(store, KEY, base({ name: "plain" }));
+  assert.deepEqual([bare.serverInfo, bare.instructions], [null, null]);
 });
 
 test("a save sets listed_at with updated_at; a later save that keeps updated_at (a refresh) moves listed_at alone", async (t) => {

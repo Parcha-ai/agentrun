@@ -13,7 +13,7 @@ const recorded = JSON.parse(readFileSync(new URL("../../../apps/console/src/fixt
 
 test("the console's MCP requests, replayed on a real server, are taken and answered as the console reads them", async (t) => {
   withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") });
-  const { api } = await serve(t);
+  const { api } = await serve(t, { runner: false });
   const token = `not-a-secret-${randomBytes(8).toString("hex")}`;
   const mcp = await startFakeMcp({ token });
   const as = await startFakeOAuth();
