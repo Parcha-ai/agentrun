@@ -107,7 +107,9 @@ export default function browser(env = process.env, vendor = "browserbase", signI
   // that echoes a key the run holds), and FAUX_BROWSER_CREATE_401_ECHO one a vendor's 401 on create echoes.
   const echoed = (name) => (name ? String(env[name] ?? "") : "");
   const pageEcho = echoed(process.env.FAUX_BROWSER_PAGE_ECHO);
-  const backend = new FakeBackend({ name: process.env.FAUX_BROWSER_PROVIDER || vendor, start, caps: { profiles: true }, pages: { [start]: fixturePage(start, `The answer is forty-two. This browser is ${vendor}'s.${pageEcho ? ` The page shows ${pageEcho} here.` : ""}`, "Example") }, ...(log ? { logFile: log } : {}) });
+  // With $FAUX_BROWSER_DOWNLOADS (JSON, a name to each file's text), every session has those files downloaded.
+  const downloads = process.env.FAUX_BROWSER_DOWNLOADS ? JSON.parse(process.env.FAUX_BROWSER_DOWNLOADS) : undefined;
+  const backend = new FakeBackend({ name: process.env.FAUX_BROWSER_PROVIDER || vendor, start, caps: { profiles: true }, ...(downloads ? { downloads } : {}), pages: { [start]: fixturePage(start, `The answer is forty-two. This browser is ${vendor}'s.${pageEcho ? ` The page shows ${pageEcho} here.` : ""}`, "Example") }, ...(log ? { logFile: log } : {}) });
   // The vendor's sessions as the last process left them.
   const stateFile = process.env.FAUX_BROWSER_STATE;
   const saved = stateFile ? (() => { try { return JSON.parse(readFileSync(stateFile, "utf8")); } catch { return []; } })() : [];

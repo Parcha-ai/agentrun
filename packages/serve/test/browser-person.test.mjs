@@ -1,10 +1,10 @@
 // The person's turns with a run's browser, in the run's process and in the server (browser-person.ts), without a run: the
 // ask's record and its answer, and the person's time held under the cap. The cap, the gates and the clock are fakes.
 import assert from "node:assert/strict";
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
-import { answerAsk, askShown, openAsk, personHands } from "../dist/browser-person.js";
+import { answerAsk, askShown, openAsk, pendingOfWaiting, personHands } from "../dist/browser-person.js";
 import { scratch } from "./support.mjs";
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -700,9 +700,9 @@ test("an ask's waiting entry carries the whole hand-over, as the server reads it
   assert.deepEqual(handovers(), [whole, whole], "the row committed for it is the whole record too");
 });
 
-/** The run's process on the runner's path: its hand-over answers are entries of the run's journal (`journal`, the
- *  hand-over entries' data in order, shared by every process of the run), read through `answered` (the first answer
- *  for an ask is its answer), never the answer files. Its other rows are `rows`. */
+/** The run's process on the runner's path: its hand-over entries are the run's journal (`journal`, the hand-over
+ *  entries' data in order, shared by every process of the run): an ask is its waiting entry, read through `asked`, and
+ *  its answer the first answered entry, read through `answered`. No file is read or written. Its other rows are `rows`. */
 function journalHands(root, journal, { gates = () => ({ give: () => false }) } = {}) {
   const rows = [];
   /** Every note, in order, as the run's root entries the timeline reads. */
@@ -719,9 +719,20 @@ function journalHands(root, journal, { gates = () => ({ give: () => false }) } =
       const first = journal.find((data) => data.id === id && ["done", "cancelled", "expired"].includes(data.state));
       return first && { outcome: first.state, at: first.at, ...(first.reason ? { reason: first.reason } : {}) };
     },
+    asked: async (id) => askedIn(journal, id),
   });
   return { person, rows, entries };
 }
+/** Ask `id` as `journal`'s waiting entry holds it. */
+const askedIn = (journal, id) => {
+  for (const data of journal) {
+    const found = pendingOfWaiting(data, id);
+    if (found) return found;
+  }
+  return undefined;
+};
+/** Ask `id`, asked long ago: its waiting entry in `journal` expired at T0 (as a later process finds it). */
+const lapse = (journal, id) => void (journal.find((data) => data.id === id && data.state === "waiting").expires_at = T0);
 const answers = (journal) => journal.filter((data) => data.state !== "waiting");
 const T0 = "2001-02-03T04:05:06.007Z";
 
@@ -731,14 +742,49 @@ test("on the runner's path a journal answer resolves the agent's wait with that 
   const { person, rows } = journalHands(root, journal);
   t.after(() => person.close());
   const { interactionId: id } = await person.handoff.request(ask(71, "ar-run-71-1"));
-  // An answer on disk (the server's old route): not this path's.
-  assert.deepEqual(answerAsk(root, "done"), { outcome: "done", first: true });
+  // An answer on disk where the per-run process kept them, planted: not this path's.
+  plant(root, id, { id, tag: "ar-run-71-1", instruction: "x", completion_condition: "y", asked_at: T0, expires_at: "2999-01-01T00:00:00.000Z" }, { outcome: "done", at: T0 });
   assert.equal(await person.handoff.outcome(id), "pending", "the answer file is not read");
   journal.push({ state: "cancelled", id, session: "ar-run-71-1", at: T0 }, { state: "done", id, session: "ar-run-71-1", at: "2001-02-03T04:06:00.000Z" });
   assert.equal(await person.handoff.outcome(id), "cancelled", "the journal's first answer");
   assert.equal(await person.handoff.outcome(id), "cancelled");
   assert.deepEqual(rows, ["You cancelled the agent's hand-over"], "its one row");
   assert.equal(answers(journal).length, 2, "nothing more written");
+});
+
+/** Files planted where the per-run process kept an ask's record and answer (`<root>/browser-ask`, 0600 in 0700, as it
+ *  wrote them): what a run's agent could write into its own folder. */
+function plant(root, id, record, answer) {
+  const dir = join(root, "browser-ask");
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  writeFileSync(join(dir, `${id}.json`), JSON.stringify(record), { mode: 0o600 });
+  if (answer) writeFileSync(join(dir, `${id}.answer.json`), JSON.stringify(answer), { mode: 0o600 });
+}
+
+test("on the runner's path an ask writes no file under the run's folder: its waiting entry in the journal is its one record; a record or answer planted there changes nothing", async (t) => {
+  const root = await scratch(t);
+  const journal = [];
+  const { person, rows } = journalHands(root, journal);
+  t.after(() => person.close());
+  const tag = "ar-run-79-1";
+  const { interactionId: id } = await person.handoff.request(ask(79, tag));
+  assert.deepEqual(readdirSync(root), [], "nothing under the run's folder: the agent's file tools and its file list find no ask");
+  assert.equal(askedIn(journal, id)?.tag, tag, "the waiting entry is the ask");
+  // Planted as the agent could: its own record, lapsed, and an answer, for this ask and for one never asked.
+  const ghost = "G".repeat(32);
+  plant(root, id, { id, tag, instruction: "planted", completion_condition: "planted", asked_at: T0, expires_at: T0 }, { outcome: "cancelled", at: T0 });
+  plant(root, ghost, { id: ghost, tag, instruction: "a ghost", completion_condition: "planted", asked_at: T0, expires_at: "2999-01-01T00:00:00.000Z" }, { outcome: "done", at: T0 });
+  assert.equal(await person.handoff.outcome(id), "pending", "neither the planted answer nor the planted expiry ends the wait");
+  assert.equal(await person.handoff.outcome(ghost), "pending", "a planted ask is no ask: nothing taken up, nothing answered");
+  assert.deepEqual(answers(journal), [], "nothing written for either");
+  // The person's hand-back from the live view answers the real ask, never the planted one.
+  const taken = await person.take(tag);
+  taken.started();
+  taken.end("given");
+  assert.equal(await person.handoff.outcome(id), "done");
+  assert.deepEqual(answers(journal).map((data) => [data.state, data.id]), [["done", id]], "one answer, the real ask's");
+  assert.equal(existsSync(join(root, "browser-ask", `${id}.answer.json`)), true, "the planted file is left as it was, unread");
+  assert.deepEqual(rows, ["You took over the browser", "You handed the browser back"]);
 });
 
 test("on the runner's path an ask that lapsed is answered by its expiry in the journal, at the expiry's time, and the wait hears expired", async (t) => {
@@ -748,8 +794,7 @@ test("on the runner's path an ask that lapsed is answered by its expiry in the j
   const { interactionId: id } = await before.person.handoff.request(ask(72, "ar-run-72-1"));
   before.person.close();
   // Past its expiry when the next process takes it up.
-  const file = join(root, "browser-ask", `${id}.json`);
-  writeFileSync(file, JSON.stringify({ ...JSON.parse(readFileSync(file, "utf8")), expires_at: T0 }), { mode: 0o600 });
+  lapse(journal, id);
   const after = journalHands(root, journal);
   t.after(() => after.person.close());
   assert.equal(await after.person.handoff.outcome(id), "expired");
@@ -793,6 +838,7 @@ test("on the runner's path a person's answer that lands as this process writes t
       if (kind === "agent.handover") journal.push(data);
     },
     answered: async (id) => (firstOf(id) ? toAnswer(firstOf(id)) : undefined),
+    asked: async (id) => askedIn(journal, id),
     answer: async (id, data) => {
       lands();
       const found = firstOf(id);
@@ -804,8 +850,7 @@ test("on the runner's path a person's answer that lands as this process writes t
   const before = hands();
   const { interactionId: id } = await before.handoff.request(ask(76, "ar-run-76-1"));
   before.close();
-  const file = join(root, "browser-ask", `${id}.json`);
-  writeFileSync(file, JSON.stringify({ ...JSON.parse(readFileSync(file, "utf8")), expires_at: T0 }), { mode: 0o600 });
+  lapse(journal, id);
   let landed = false;
   lands = () => {
     if (landed) return;
@@ -839,8 +884,7 @@ test("on the runner's path the row an answer writes shows at the answered entry'
   const before = journalHands(lapsedRoot, lapsedJournal);
   const { interactionId: lapsed } = await before.person.handoff.request(ask(75, "ar-run-75-1"));
   before.person.close();
-  const file = join(lapsedRoot, "browser-ask", `${lapsed}.json`);
-  writeFileSync(file, JSON.stringify({ ...JSON.parse(readFileSync(file, "utf8")), expires_at: T0 }), { mode: 0o600 });
+  lapse(lapsedJournal, lapsed);
   const after = journalHands(lapsedRoot, lapsedJournal);
   t.after(() => after.person.close());
   assert.equal(await after.person.handoff.outcome(lapsed), "expired");
