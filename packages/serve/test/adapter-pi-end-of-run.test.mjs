@@ -228,8 +228,11 @@ test("pi through the adapter: an end patch whose reader stalls cannot hold a per
   await until((row) => row.state === "stopped" && row.runner === null, "the run did not stop");
 });
 
+// On a lease no stall outlasts: the case's point is the Harness's commit and its fence after the run's end, never the lease.
+// On the short lease a stall of the box between the mark and the tool's result lets the claim lapse unrenewed, the runner
+// takes the run back, and the replay-safe tool runs (and marks) again.
 test("pi through the adapter: a mark committed through harnessReady's commit is in the run's journal, and refused once the run's claim is gone", async (t) => {
-  const { start, until, entriesOf } = await setup(t);
+  const { start, until, entriesOf } = await setup(t, STEADY);
   let commit;
   const marked = [];
   const mark = (n) => commit((tx) => tx.appendEntry(ROOT_CONVERSATION_ID, { kind: "test.mark", data: { n } }), BACKGROUND_CONTEXT);

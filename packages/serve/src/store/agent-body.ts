@@ -112,15 +112,15 @@ export function bodyOf(input: RevisionBodyInput): { body: AgenticBody | Workflow
   const capped = { ...(input.maxCostUsd !== undefined ? { maxCostUsd: input.maxCostUsd } : {}), ...(input.capMode !== undefined ? { capMode: input.capMode } : {}) };
 
   // Whether the agent runs unattended (its definition.approvals): "never" lets an ask run without a person, for a revision
-  // of either kind. Nothing else is a value here.
-  if (input.approvals !== undefined && input.approvals !== "never") invalid('approvals, when set, is "never"');
-  const unattended = input.approvals !== undefined ? { approvals: input.approvals } : {};
+  // of either kind. "ask" (the default, as an agent read says it) is taken and kept as no value, so the default stays
+  // implicit and a definition put back as it reads is the same revision; "never" is kept.
+  if (input.approvals !== undefined && input.approvals !== "ask" && input.approvals !== "never") invalid("approvals is ask or never");
+  const unattended = input.approvals === "never" ? { approvals: "never" as const } : {};
 
   if (input.kind === "agentic") {
     if (typeof input.instructions !== "string") invalid("an agentic revision needs instructions (its prompt, possibly empty)");
     for (const field of ["model", "thinking"] as const) if (input[field] !== undefined && (typeof input[field] !== "string" || input[field] === "")) invalid(`the ${field} is not a non-empty string`);
     if (input.learning !== undefined && typeof input.learning !== "boolean") invalid("learning is not true or false");
-    if (input.approvals !== undefined && input.approvals !== "ask" && input.approvals !== "never") invalid("approvals is ask or never");
     const body: AgenticBody = {
       instructions: input.instructions,
       skills: skillShas,
@@ -130,8 +130,8 @@ export function bodyOf(input: RevisionBodyInput): { body: AgenticBody | Workflow
       ...(input.prompts !== undefined ? { prompts: structuredClone(input.prompts) } : {}),
       ...host,
       ...(input.learning !== undefined ? { learning: input.learning } : {}),
-      // The agent's unattended policy (PR #2003): the runner's gate reads it from the revision body at claim.
-      ...(input.approvals !== undefined ? { approvals: input.approvals } : {}),
+      // The agent's unattended policy (PR #2003): the runner's gate reads it from the revision body at claim (`unattended`
+      // below: "never" alone is kept).
       ...capped,
       ...unattended,
     };

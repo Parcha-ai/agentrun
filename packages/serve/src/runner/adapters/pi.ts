@@ -60,7 +60,7 @@ export interface PiAdapterOptions {
   /** The model pi asks for. */
   readonly model: string;
   /** The catalog's entry for the model: whether it reasons, its window and its output ceiling, as pi-ai's model of it. */
-  readonly like?: { readonly reasoning?: boolean; readonly contextWindow?: number; readonly maxTokens?: number };
+  readonly like?: { readonly reasoning?: boolean; readonly contextWindow?: number; readonly maxTokens?: number; readonly input?: readonly string[]; readonly inputLimits?: unknown };
   /** The price of a request's usage, for the proxy's booking. */
   readonly price?: (model: string, usage: never) => number | null;
   /** The proxy's upstream fetch (a test's scripted origin). */
@@ -312,7 +312,10 @@ export function refusalWords() {
   };
 }
 
-/** A host tool as a pi tool: replay-safe or at most once, its answer the host's text and any images it shows. */
+/** A host tool as a pi tool: replay-safe or at most once, its answer the host's text and any images it shows. Each call
+ *  gets what pi's own tool task gives a tool: the calling agent's model, resolved in the session's models (its input and
+ *  input limits, which a file read sizes an image by), and pi's output stream (the running tool's live slot); and its
+ *  attempt (`attemptOf`: above 0 for a call the gate did not pass in this session, pi's rerun after a crash). */
 function piTool(tool: HostTool, io: PiSessionIO, attemptOf: (callId: string) => number | undefined = () => undefined) {
   return defineTool({
     name: tool.name,
@@ -322,7 +325,14 @@ function piTool(tool: HostTool, io: PiSessionIO, attemptOf: (callId: string) => 
     execute: async (args: unknown, api, toolContext: Context) => {
       io.onEvent({ type: "tool_start", callId: api.callId, name: tool.name, args });
       const attempt = attemptOf(api.callId);
-      const answer = await tool.call(args ?? {}, { callId: api.callId, signal: toolContext.abortSignal ?? io.signal, ...(attempt === undefined ? {} : { attempt }) });
+      const ref = (await api.agent(toolContext)).model;
+      const model = ref === undefined ? undefined : api.models.getModel(ref.provider, ref.modelId);
+      const answer = await tool.call(args ?? {}, {
+        callId: api.callId, signal: toolContext.abortSignal ?? io.signal,
+        ...(model ? { model } : {}),
+        output: (chunk: string) => api.output(chunk),
+        ...(attempt === undefined ? {} : { attempt }),
+      });
       io.onEvent({ type: "tool_end", callId: api.callId, name: tool.name, isError: Boolean(answer.isError), result: answer.text });
       const images = (answer.images ?? []).map((image) => ({ type: "image" as const, data: image.data, mimeType: image.mimeType }));
       return { output: [{ type: "text" as const, text: answer.text }, ...images], ...(answer.isError ? { isError: true } : {}) } as never;

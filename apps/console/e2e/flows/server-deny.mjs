@@ -15,7 +15,7 @@ export default {
     await page.goto(`${base}/#/settings/tools`);
     const bash = page.locator('tr[data-tool="bash"]');
     await bash.getByText(LINE).waitFor();
-    check((await bash.locator('select[aria-label="bash permission"]').inputValue()) === "deny", "bash's permission doesn't read deny");
+    check((await bash.locator('button[aria-label="bash permission"]').getAttribute("data-value")) === "deny", "bash's permission doesn't read deny");
     check((await page.locator('tr[data-tool="read"]').getByText(LINE).count()) === 0, "read, at allow, says the server's deny line");
     check((await bash.getByText(ONLY).count()) === 1, "bash, at deny, doesn't say deny stops that tool only");
     check((await page.locator('tr[data-tool="read"]').getByText(ONLY).count()) === 0, "read, at allow, says deny's line");
