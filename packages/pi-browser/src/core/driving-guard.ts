@@ -7,6 +7,38 @@ import type { ToolCall, ToolImpl } from "./tools.js";
 export const PERSON_DROVE = "A person used this browser through the live view since your last call, so the page may have changed even where its address did not: take a snapshot before you act on an element by its id.";
 /** Told, before PERSON_DROVE, to a call that waited while the person held the browser. */
 export const PERSON_HAD = "This call waited while the person had the browser: they took it over through the live view and have handed it back.";
+/** Told, instead, to a call that waited through a take the person did not use: no input of theirs reached the page, so the
+ *  snapshot stands and nothing says the page changed. */
+export const PERSON_HAD_UNUSED = "This call waited while the person had the browser: they took it over through the live view and handed it back without using it, so the page is as you left it.";
+
+/** The mark (in a call's result details) of an act the person's take made stale: the person drove the session through the
+ *  live view while the call waited, so the snapshot its element ids came from no longer stands. Its timeline row reads
+ *  neutral, in plain words (pi-durable-agent's timeline), never as a failure. */
+export const PAGE_CHANGED_WHILE_HELD = "page_changed_while_held";
+/** Told to the model by such an act: nothing was done, and its next step is a snapshot. */
+export const PAGE_CHANGED_FOR_MODEL = "The person changed the page while they had the browser, so this action was not done. Take a snapshot first, then act on the page as it is now.";
+
+/** The body of a failed result whose failure is a stale snapshot, or undefined: what an act the person's take made stale
+ *  answers before it is said otherwise. */
+function staleFailureOf(out: ToolOutput): Record<string, unknown> | undefined {
+  const first = out.isError ? out.content[0] : undefined;
+  if (first?.type !== "text") return undefined;
+  try {
+    const body = JSON.parse(first.text) as unknown;
+    return body !== null && typeof body === "object" && (body as { code?: unknown }).code === "stale_snapshot" ? (body as Record<string, unknown>) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** An act that failed on the snapshot the person's take made stale, said as what it is: no error (the call did nothing,
+ *  and the agent takes a new look), the model told to snapshot first, the notice it was given kept, and the result marked
+ *  PAGE_CHANGED_WHILE_HELD for its timeline row. Its details as the tool gave them, beside the mark. */
+const pageChanged = (out: ToolOutput, failure: Record<string, unknown>): ToolOutput => ({
+  content: [{ type: "text", text: JSON.stringify({ ...(typeof failure.notice === "string" ? { notice: failure.notice } : {}), done: false, page_changed: true, next: "snapshot", message: PAGE_CHANGED_FOR_MODEL }) }],
+  details: { ...out.details, [PAGE_CHANGED_WHILE_HELD]: true },
+  ...(out.usage ? { usage: out.usage } : {}),
+});
 
 /** What a model call that was under way when the person took the browser is told at its next act on it: nothing more of it reached the page. */
 export const personTookFailure = (acted: boolean, batch?: { completed: number; of: number }) => {
@@ -95,10 +127,14 @@ export function drivingGuard<D extends BrowserDriver, A = unknown>(impl: ToolImp
      *  was done, and its result claims no wait that ended in an act. */
     let waitedMs = 0;
     let stopped = false;
+    /** Whether the person's own hand drove this call's session through the live view since the model's last call (their
+     *  input reached it, not only a take): its snapshot's ids were dropped for it (told), so an act on them is one their hand
+     *  made stale. */
+    let personDrove = false;
     /** Takes the tag's gate for the model, first waiting (inside the call, never failing it) while the person holds the browser; `drove` when a person
      *  has driven that session since the model's last call, `waited` when this call waited for the person to hand it back. */
-    const enter = async (tag: string): Promise<{ drove: boolean; waited: boolean }> => {
-      if (held?.tag === tag) return { drove: false, waited: false };
+    const enter = async (tag: string): Promise<{ drove: boolean; waited: boolean; handled: boolean }> => {
+      if (held?.tag === tag) return { drove: false, waited: false, handled: false };
       let waited = false;
       for (;;) {
         const gate = gates(tag);
@@ -114,29 +150,39 @@ export function drivingGuard<D extends BrowserDriver, A = unknown>(impl: ToolImp
         if (entered === PERSON_DRIVING) throw new BrowserFailureError(personDrivingFailure());
         held?.release();
         held = { tag, release: entered.release, gate, epoch: epochOf(gate) };
-        return { drove: entered.drove === true, waited };
+        return { drove: entered.drove === true, waited, handled: entered.handled };
       }
     };
     /** A person drove: the session's snapshot ids are dropped (an old id then fails as a stale snapshot, whatever the URL), the call is told why,
-     *  and only then is the gate told. A call that took the gate without its session (release, relaunch) tells nothing and uses nothing up. */
-    const told = <S extends { tag: string; driver: D; notice?: string | null }>(attached: S, entered: { drove: boolean; waited: boolean }): S => {
+     *  and only then is the gate told. A take the person did not use (no input of theirs reached the page) keeps the ids: the page
+     *  is as the agent left it, so its next act just works, and the call is told only that it waited, if it did. A call that took
+     *  the gate without its session (release, relaunch) tells nothing and uses nothing up. */
+    const told = <S extends { tag: string; driver: D; notice?: string | null }>(attached: S, entered: { drove: boolean; waited: boolean; handled: boolean }): S => {
       if (!entered.drove && !entered.waited) return attached;
-      try { void Promise.resolve((attached.driver as { forgetSnapshots?: () => unknown }).forgetSnapshots?.()).catch(() => undefined); } catch { /* a driver without snapshot ids has none to drop */ }
+      if (entered.handled) {
+        try { void Promise.resolve((attached.driver as { forgetSnapshots?: () => unknown }).forgetSnapshots?.()).catch(() => undefined); } catch { /* a driver without snapshot ids has none to drop */ }
+      }
       gates(attached.tag).told();
-      return { ...attached, notice: [attached.notice, entered.waited ? PERSON_HAD : null, PERSON_DROVE].filter(Boolean).join(" ") };
+      const said = entered.handled ? [entered.waited ? PERSON_HAD : null, PERSON_DROVE] : [entered.waited ? PERSON_HAD_UNUSED : null];
+      const notice = [attached.notice, ...said].filter(Boolean).join(" ");
+      return notice === (attached.notice ?? "") ? attached : { ...attached, notice };
     };
     /** The session's driver as this call holds it: refused once the browser changes hands. */
     const fenced = <S extends { tag: string; driver: D }>(attached: S): S => (held?.tag === attached.tag && typeof attached.driver === "object" && attached.driver !== null ? { ...attached, driver: epochFenced(attached.driver, held.gate, held.epoch) } : attached);
     // Every other member runs on the real port (`this` is the port, so a class-based port's own state is written to it, not to a copy).
     const overrides: Record<string | symbol, unknown> = {
-      session: async (signal?: AbortSignal) => { const attached = await port.session(signal); return fenced(told(attached, await enter(attached.tag))); },
+      session: async (signal?: AbortSignal) => { const attached = await port.session(signal); const entered = await enter(attached.tag); personDrove ||= entered.handled; return fenced(told(attached, entered)); },
       relaunch: async (o: Parameters<CustodyPort<D>["relaunch"]>[0]) => { const attached = await port.relaunch(o); await enter(attached.tag); return fenced(attached); },
     };
     const guarded = new Proxy(port, { get(target, key) { if (key in overrides) return overrides[key]; const value = Reflect.get(target, key, target); return typeof value === "function" ? value.bind(target) : value; } });
     try {
       // A tool that ends the session (release, relaunch) does not ask for it first: the gate is taken for the session that is attached now.
       if (options.early) { const tag = await port.current?.(); if (tag) await enter(tag); }
-      const out = await impl(args, guarded, call);
+      const given = await impl(args, guarded, call);
+      // An act on the snapshot the person's hand made stale (they drove the session while this call waited, or since the
+      // last one) failed only because the page moved under it: it did nothing, and the next step is a new look.
+      const stale = personDrove ? staleFailureOf(given) : undefined;
+      const out = stale ? pageChanged(given, stale) : given;
       return waitedMs > 0 && !stopped ? { ...out, details: { ...out.details, [WAITED_FOR_PERSON]: Math.round(waitedMs) } } : out;
     } finally {
       (held as { release(): void } | null)?.release();

@@ -92,7 +92,8 @@ export type PaidBooking = {
   /** `chargedBy`: who charges for it (the charge's `charged_by` on main's records: parallel, monid, an MCP server, a
    *  browser vendor), named on its runner.request. */
   admit(request: { id: string; name: string; holdUsd: number; basis: string; call?: string; chargedBy?: string }): Promise<unknown>;
-  settle(id: string, usd: number | null): Promise<unknown>;
+  /** `givenBack`: the hold let go unused, nothing sent (RunTools.settle). */
+  settle(id: string, usd: number | null, options?: { readonly givenBack?: true }): Promise<unknown>;
 };
 const ledgers = new AsyncLocalStorage<Ledger>();
 

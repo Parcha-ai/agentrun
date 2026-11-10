@@ -12,7 +12,6 @@ import { fileURLToPath } from "node:url";
 import { claudeAgentExecutable } from "@parcha/agentrun-harness-claude";
 import { codexTarget } from "../../run-adapters-codex/dist/binary.js";
 import { processAlive } from "@parcha/agentrun-kernel/host";
-import { openStoreReader } from "@parcha/pi-durable-agent";
 import { startServe } from "../dist/index.js";
 import { fauxEnvOf } from "../dist/server.js";
 import { readRunDbSync } from "../dist/run-db.js";
@@ -266,7 +265,7 @@ function withAgents(store) {
     },
   });
   // The trigger settings too: the GitHub App is kept there (server.ts, sealed-settings-store.ts).
-  return { triggers, runs: store.runs, agents, triggerSettings: store.triggerSettings, flush: () => store.flush() };
+  return { triggers, runs: store.runs, agents, liveViewers: store.liveViewers, triggerSettings: store.triggerSettings, flush: () => store.flush() };
 }
 
 /** Trigger stores handed to servers a test starts itself (startServe, not serve()): closed when the file's tests are done,
@@ -474,13 +473,42 @@ export const answerFlow = (instructions = "Answer the question.") => ({
 /** A workflow agent `id`: its definition carries `workflow` in place of instructions. */
 export const flowAgent = (id, workflow = answerFlow(), extra = {}) => ({ definition: { id, name: id, workflow, ...extra } });
 
-/** The store's row for run `runId`, read from the data directory. */
+/** A run's v2 state from the stored kernel state and an ended run's outcome (mirrors store-reads/runs.ts stateOf): a plain
+ *  completion reads 'completed', an escalation 'escalated', stopped and failed their own, anything not yet ended 'running'. */
+const runViewState = (state, outcome) =>
+  state === "ended" ? (outcome === "escalated" ? "escalated" : "completed")
+  : state === "stopped" ? "stopped"
+  : state === "failed" ? "failed"
+  : "running";
+const isoOf = (ms) => new Date(ms).toISOString();
+
+/** The server's view row for run `runId`, read from the server's own store (the one it writes; opened read-only so it
+ *  coexists with the server's owner, as runRecordOf does), in the v2 shape the old per-run store gave: state, revision,
+ *  kind, cost, summary and times. Undefined for an unknown run. */
 export function storeRun(data, runId) {
-  const reader = openStoreReader(data);
+  const db = new DatabaseSync(join(data, "store.sqlite"), { readOnly: true, timeout: 5_000 });
   try {
-    return reader.readRun(runId);
+    const run = db.prepare("SELECT id, agent_id, revision_id, state, cost_usd, summary, outcome, imported_from, started_at, ended_at, archived_at FROM runs WHERE id = ?").get(runId);
+    if (!run) return undefined;
+    const rev = db.prepare("SELECT kind FROM revisions WHERE id = ?").get(run.revision_id);
+    const agent = db.prepare("SELECT archived_at FROM agents WHERE id = ?").get(run.agent_id);
+    const archivedAt = run.archived_at ?? agent?.archived_at ?? null;
+    const imported = run.imported_from ? JSON.parse(run.imported_from) : null;
+    return {
+      id: run.id,
+      agent: run.agent_id,
+      revision: run.revision_id,
+      kind: rev?.kind ?? "agentic",
+      state: runViewState(run.state, run.outcome),
+      startedAt: isoOf(run.started_at),
+      ...(run.ended_at !== null ? { endedAt: isoOf(run.ended_at) } : {}),
+      ...(run.cost_usd !== null ? { costUsd: run.cost_usd } : {}),
+      ...(run.summary !== null ? { summary: run.summary } : {}),
+      ...(archivedAt !== null ? { archivedAt: isoOf(archivedAt) } : {}),
+      ...(imported ? { importedFrom: { source: imported.source, session: imported.session } } : {}),
+    };
   } finally {
-    reader.close();
+    db.close();
   }
 }
 
