@@ -6,10 +6,14 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { storeOn } from "./store-helpers.mjs";
+import { sqliteOnly } from "./store-target.mjs";
 
 const { Connection, StoreDeadline } = await import("../dist/store/index.js");
 
-test("a transaction whose deadline counts from its call, queued behind a held one, ends within it never begun", async (t) => {
+// The SQLite connection's own queue (Connection.open on the store's file). Postgres's pool has no such queue; its twin, a
+// keep behind a held pool client or row lock ending within the deadline counted from its call, comes with the Postgres
+// connection's from-call deadline.
+test("a transaction whose deadline counts from its call, queued behind a held one, ends within it never begun", sqliteOnly("the SQLite connection's queue behind a held transaction"), async (t) => {
   const { file } = await storeOn(t);
   const connection = await Connection.open(file);
   t.after(() => connection.close().catch(() => {}));

@@ -101,6 +101,18 @@ function releaseObserved(store) {
   return { store: { where: store.where, mcp, runs: store.runs, settings: store.settings }, released };
 }
 
+/** `promise`, the event loop held until it settles. A refresh that gets no answer ends at its request bound
+ *  (AbortSignal.timeout), a timer that does not hold the loop, and an idle store lets its worker go: without a hold of the
+ *  test's own, nothing keeps the process up for that wait. */
+async function held(promise) {
+  const hold = setInterval(() => {}, 60_000);
+  try {
+    return await promise;
+  } finally {
+    clearInterval(hold);
+  }
+}
+
 // A server that never answers is ended by the request's own bound alone, so it runs at a short one (20 ms).
 for (const [why, net, bounds] of [["gets no answer", () => network({ answer: "never" }), { requestMs: 20, tries: 1 }], ["is refused unsent by the address check", () => network({ address: "10.0.0.1" })]]) {
   test(`a claim whose clock runs ahead uses a token near its end at once, and keeps it when the refresh behind it ${why}`, async (t) => {
@@ -111,7 +123,7 @@ for (const [why, net, bounds] of [["gets no answer", () => network({ answer: "ne
     t.after(() => step.release());
     assert.equal(bearer(step), `Bearer ${KEPT}`, `used at once: ${JSON.stringify(step.credentials.fake)}`);
     // The refresh behind it fails and lets its lease go; what the step does next is judged after that turn.
-    await watched.released;
+    await held(watched.released);
     await new Promise((resolve) => setImmediate(resolve));
     assert.equal(bearer(step), `Bearer ${KEPT}`, `still used after the refresh failed: ${JSON.stringify(step.credentials.fake)}`);
     assert.equal(unopened(step), undefined, "never refused");

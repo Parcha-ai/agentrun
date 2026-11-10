@@ -18,7 +18,7 @@ import { createModels } from "@earendil-works/pi-ai/models";
 import { type Conversation, type ConversationId, createRegistry, Harness, LiveDoc, ROOT_CONVERSATION_ID, type Tx } from "@earendil-works/pi-durable";
 import { type AdapterSession, type AgentAdapter, type BeforeRequest, type HostTool, modelPortFor, type Refusal, RUNNER_RECORDS, type SessionRecord, type SessionSpec, sessionSpendOf } from "@parcha/agentrun-kernel";
 import type { KernelHooks, ToolCall } from "./conformance/subject.js";
-import { type AnswerData, type ApprovalPrice, type AskData, type BudgetData, type CallEndData, type CallStartData, type CallStatus, type EndData, KINDS, type MessageData, type RaiseData, withdrawnAnswers } from "./journal-kinds.js";
+import { type AnswerData, type ApprovalPrice, type AskData, type BudgetData, type CallEndData, type CallStartData, type CallStatus, endedAnswer, type EndData, KINDS, type MessageData, type RaiseData, withdrawnAnswers } from "./journal-kinds.js";
 import { endedOnTurnEndingTool, type MessageOrigin, originOf, RUN_RESUMED } from "@parcha/pi-durable-agent/timeline";
 import { type AlsoRow, type Claim, ClaimRefused, type Command, type CommandOutcome, deniedText, endedBy, type EndOfRunAnswer, type EndOfRunTurn, type Loop, type LoopDeps, type LoopEnd, type LoopFactory, noteOf, type StopReason } from "./loop-contract.js";
 import { deniedText as setToDenyText } from "../refusal-words.js";
@@ -230,6 +230,46 @@ const cliErrorAnswer = (harness: string, error: string, at: number) => ({
   usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
 });
 
+/** The turns a session's records booked (its runner.turn records), in order. */
+export function turnsOf(records: readonly SessionRecord[]): number[] {
+  return records.filter((record) => record.kind === RUNNER_RECORDS.turn).map((record) => (record.data as { turn?: unknown }).turn).filter((turn): turn is number => typeof turn === "number");
+}
+
+/** The turns whose requests were side requests (their runner.request record marked `side`, or under a `host` label):
+ *  a client's call on another model, a summary, or the host's own request beside the harness's (a learned workflow's
+ *  model node). They are no answer's own. */
+function sideTurnsOf(records: readonly SessionRecord[]): Set<number> {
+  const side = new Set<number>();
+  for (const record of records) {
+    if (record.kind !== RUNNER_RECORDS.request) continue;
+    const data = record.data as { turn?: unknown; side?: unknown; host?: unknown };
+    if (typeof data.turn === "number" && (data.side === true || typeof data.host === "string")) side.add(data.turn);
+  }
+  return side;
+}
+
+/** What the request that just answered cost, from the session's records, and the bookings that answer gives (`turns`):
+ *  every runner.turn record no answer was given yet (`given`). A side request's booking (sideTurnsOf) is given and never
+ *  read: it is no answer's, and it stays on the run's ledger and cap. The answer reads the session's own requests
+ *  booked since the answer before it, their booked figures summed (pi asks one at a time, so that is its own; were a
+ *  retry ever booked without an answer of its own, it would be summed in), null when any is unknown; undefined when none
+ *  is booked. Each booking is given once, so one unknown figure stays that answer's, never every later answer's. */
+export function bookingOfAnswer(records: readonly SessionRecord[], given: ReadonlySet<number>): { turns: number[]; usd: number | null | undefined } {
+  const side = sideTurnsOf(records);
+  const turns: number[] = [];
+  let usd: number | null | undefined;
+  for (const record of records) {
+    if (record.kind !== RUNNER_RECORDS.turn) continue;
+    const turn = record.data as { turn?: unknown; usd?: unknown; bookedUsd?: unknown };
+    if (typeof turn.turn !== "number" || given.has(turn.turn)) continue;
+    turns.push(turn.turn);
+    if (side.has(turn.turn)) continue;
+    const figure = turn.bookedUsd !== undefined ? turn.bookedUsd : turn.usd;
+    usd = usd !== null && typeof figure === "number" && Number.isFinite(figure) ? (usd ?? 0) + figure : null;
+  }
+  return { turns, usd };
+}
+
 /** A host check's refusal as the cap's rule reads it (AdapterRunSpec.cap.park). */
 const refusalOf = (refusal: Refusal) => ({ message: refusal.refuse, forGood: refusal.forGood ?? true, ...(refusal.figures ? { figures: refusal.figures } : {}) });
 
@@ -248,6 +288,8 @@ interface CliRecord {
   input(text: string, origin: MessageOrigin): Promise<void>;
   /** A call's start, before it runs (once per call id). */
   start(callId: string, tool: string, input: unknown, replaySafe: boolean): Promise<void>;
+  /** The end the record holds for a call, if any: a call issued again under its id is answered from it, never run. */
+  endOf(callId: string): { status: CallStatus; output?: string } | undefined;
   /** A started call's end (once). */
   end(callId: string, status: CallStatus, output?: string): Promise<void>;
   /** The end-of-run turn starts: what the model says from now on is that turn's answer, never a message on the record. */
@@ -264,11 +306,13 @@ async function openCliRecord(harness: Harness, journal: Gate["journal"], context
   const append = async (kind: string, data: CallStartData | CallEndData | MessageData): Promise<void> => {
     await harness.commit((tx) => tx.appendEntry(root.id, { kind, data: data as unknown as JsonValue }), context);
   };
-  // Each call started on the record: whether it has its end.
+  // Each call started on the record: whether it has its end; and each end, by call id.
   const started = new Map<string, boolean>();
+  const ends = new Map<string, { status: CallStatus; output?: string }>();
   let personWritten = false;
   for (const entry of await entriesOf(journal, root.id, context)) {
-    const data = (entry.data ?? {}) as { callId?: unknown; role?: unknown };
+    const data = (entry.data ?? {}) as { callId?: unknown; role?: unknown; status?: CallStatus; output?: unknown };
+    if (entry.kind === KINDS.callEnd && typeof data.callId === "string") ends.set(data.callId, { status: data.status ?? "done", ...(typeof data.output === "string" ? { output: data.output } : {}) });
     if (entry.kind === KINDS.callStart && typeof data.callId === "string") started.set(data.callId, started.get(data.callId) ?? false);
     else if (entry.kind === KINDS.callEnd && typeof data.callId === "string") started.set(data.callId, true);
     else if ((entry.kind === KINDS.message && data.role === "person") || entry.kind === KINDS.input) personWritten = true;
@@ -277,6 +321,7 @@ async function openCliRecord(harness: Harness, journal: Gate["journal"], context
     if (ended) continue;
     await append(KINDS.callEnd, { callId, status: "interrupted" });
     started.set(callId, true);
+    ends.set(callId, { status: "interrupted" });
   }
   let text = "";
   /** The end-of-run turn's answer while that turn runs (answering), else undefined. */
@@ -324,11 +369,13 @@ async function openCliRecord(harness: Harness, journal: Gate["journal"], context
         started.set(callId, false);
       });
     },
+    endOf: (callId) => ends.get(callId),
     end: (callId, status, output) =>
       inTurn(async () => {
         if (started.get(callId) !== false) return;
         await append(KINDS.callEnd, { callId, status, ...(output === undefined ? {} : { output }) });
         started.set(callId, true);
+        ends.set(callId, { status, ...(output === undefined ? {} : { output }) });
       }),
     answering() {
       answer = "";
@@ -753,6 +800,10 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           // its result, and the loop restarts it. A CLI's call reaches here only once the gate allowed it (its tool
           // bridge asks first), so its record's start is written here, before the flush and the call, and its end after.
           call: async (args, toolContext) => {
+            // A call its CLI issues again under an id the record already ended (after the CLI's own resume) is answered
+            // from that end, never run again.
+            const ended = record?.endOf(toolContext.callId);
+            if (ended) return endedAnswer(tool.name, ended);
             if (record) await record.start(toolContext.callId, tool.name, args ?? {}, tool.replay === "safe");
             try {
               const answer = await sideEffect({
@@ -809,16 +860,16 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           ...(port.responded ? { responded: port.responded.bind(port) } : {}),
           ...(port.note ? { note: port.note.bind(port) } : {}),
         };
-        // What the request that just answered cost: its booking (the request's runner.turn record, the latest one once
-        // the session's requests are booked), its figure or null when unknown. A refused request's record is its $0.
+        // What the request that just answered cost, once the session's requests are booked (bookingOfAnswer): its own
+        // booking's figure, null when unknown; a side request's is given and never read. A refused request's record is its $0.
+        // The bookings already given to an answer: every one the session holds when it opens (an earlier claim's), then each
+        // this claim gives.
+        const given = new Set(turnsOf(await writer.read().catch(() => [] as SessionRecord[])));
         const bookedCost = async (): Promise<number | null | undefined> => {
           await bookingsSettled();
-          const records = await writer.read().catch(() => [] as SessionRecord[]);
-          const last = [...records].reverse().find((one) => one.kind === RUNNER_RECORDS.turn);
-          if (!last) return undefined;
-          const turn = last.data as { usd?: unknown; bookedUsd?: unknown };
-          const figure = turn.bookedUsd !== undefined ? turn.bookedUsd : turn.usd;
-          return typeof figure === "number" && Number.isFinite(figure) ? figure : null;
+          const booking = bookingOfAnswer(await writer.read().catch(() => [] as SessionRecord[]), given);
+          for (const turn of booking.turns) given.add(turn);
+          return booking.usd;
         };
         const io: PiSessionIO = { writer, models: counted, signal: deps.signal, onEvent: record ? (event) => record.onEvent(event) : () => {}, gate: gateOf, bookedCost };
         // The MCP tools: pi's own (host tools, through the gate above); for a harness with its own MCP client, the session's

@@ -6,12 +6,12 @@
 // authorization server and an MCP server on loopback (fixtures), reached as a development loopback sign-in is.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { mcpServersOverStore } from "../dist/mcp-servers-store.js";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { startFakeOAuth } from "./fixtures/fake-oauth-server.mjs";
 import { storeOn } from "./store-helpers.mjs";
+import { storeAtRest } from "./store-target.mjs";
 
 // Built with the `not-a-secret-` prefix so the source scan that flags a hardcoded credential does not fire on this test.
 const SECRET = `not-a-secret-${randomBytes(12).toString("hex")}`;
@@ -43,24 +43,15 @@ async function approved(authorizationUrl) {
   return new URLSearchParams({ code: back.searchParams.get("code"), state: back.searchParams.get("state") });
 }
 
-/** The store file and its sidecars hold no byte of any value in `secrets`. A fresh write sits in the write-ahead log
- *  first, so the -wal (and its -shm index) are scanned beside the main file, before any checkpoint moves the write. The
- *  DB file MUST read — a scan that silently skipped it would pass having checked nothing; only the -wal and -shm, which a
- *  checkpointed or tiny store may not have, are optional. */
+/** The store at rest (store-target.mjs storeAtRest: SQLite's file and its -wal and -shm, a fresh write sitting in the
+ *  WAL first; Postgres's every column of every table) holds no byte of any value in `secrets`. The store MUST read: a
+ *  scan that silently read nothing would pass having checked nothing. */
 async function noSecretInStore(store, file, secrets) {
   await store.flush();
-  const scan = (bytes, where) => {
+  const atRest = await storeAtRest(file);
+  assert.ok(atRest.length > 0, "the store at rest was read");
+  for (const [where, bytes] of atRest) {
     for (const secret of secrets) assert.equal(bytes.includes(Buffer.from(secret, "utf8")), false, `a secret is not in ${where}`);
-  };
-  scan(readFileSync(file), "the DB file"); // required: not caught, so an unreadable DB file fails the test
-  for (const [path, where] of [[`${file}-wal`, "the WAL"], [`${file}-shm`, "the WAL index"]]) {
-    let bytes;
-    try {
-      bytes = readFileSync(path);
-    } catch {
-      continue;
-    }
-    scan(bytes, where);
   }
 }
 

@@ -93,7 +93,13 @@ async function saved(store) {
 const stepOf = (store, claim, extra) => mcpClaim({ store, claim, grants: ["mcp:fake/add"], sealKey: KEY, signal: new AbortController().signal, bounds: { requestMs: 5_000, tries: 1 }, now: () => T0, ...extra });
 const bearer = (step) => step.credentials.fake?.headers?.authorization;
 /** `step`'s outcome, or "asleep" if it has not settled within a bound of its own (only a failing case waits that long). */
-const within = (step, ms = 5_000) => Promise.race([step.then(() => "woke"), new Promise((resolve) => setTimeout(() => resolve("asleep"), ms).unref())]);
+// The window is a real wait the test means to sit through: its timer holds the event loop (nothing else may, an idle store
+// lets its worker go), and is cleared the moment the step settles first.
+const within = (step, ms = 5_000) => {
+  let window;
+  const asleep = new Promise((resolve) => (window = setTimeout(() => resolve("asleep"), ms)));
+  return Promise.race([step.then(() => "woke"), asleep]).finally(() => clearTimeout(window));
+};
 
 test("two Store instances over the same data in one process: the second claim wakes on the first's release, with no timer advanced", async (t) => {
   const { store: a, file, clock } = await storeOn(t);

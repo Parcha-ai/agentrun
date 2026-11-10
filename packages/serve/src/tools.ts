@@ -37,6 +37,7 @@ import { handedSignIn, hostSecrets } from "./secrets.js";
 import { redactedAnswer } from "./key-refusal.js";
 import { SIGN_IN_KEY, SIGN_IN_SAVED, vendorsOver } from "./sign-ins.js";
 import { answerIn, answerOnce } from "./runner/hand-back.js";
+import { runnerSecrets } from "./runner/redact.js";
 import type { HandoverAnswered } from "./runner/journal-kinds.js";
 import type { LiveHandover, LiveViewerStore } from "./browser-live.js";
 import type { Claim, Store } from "./store/store.js";
@@ -111,9 +112,12 @@ export type ToolHost = {
   /** The run's ledger, as the adapter loop hands it (spendcap-1's AdapterRun.ledger): `paid`, the claim's one-ledger
    *  booking (the kernel cap's paidCalls, paid-calls.ts PaidBooking), and `pause`, how a refusal at the cap parks the run.
    *  The browser passes `paid` to browserSpend, so its calls are held and settled there and a session's release is booked
-   *  there, never on this process's own spend. The runner lists the browser only with `paid` and on the native route
-   *  (adapter-run-spec.ts browserListed), so today it lists none. */
+   *  there, never on this process's own spend. The runner installs the browser only with `paid` and the grant, on pi's
+   *  native route (adapter-run-spec.ts browserListed). */
   ledger?: { paid: PaidBooking; pause?: (refusal: Refusal) => Promise<void> };
+  /** The run's one redactor (the runner's: every secret value the runner and the claim hold, in every form): what the
+   *  browser's answers pass through before pi stores them or the model reads them. Absent on the old per-run process. */
+  redact?: (text: string) => string;
 };
 
 /** What a name stands for in the run: the pi tools it offers, and the extensions a conversation selects for them. */
@@ -238,6 +242,35 @@ export const keptContexts = (ref: string | undefined) => ({
     throw new Error("this run's browser has no saved sign-in to open");
   },
 });
+
+/** Every string in `value` (a tool's answer: its content, its details) passed through `cut`; anything else as it is. */
+function cutStrings<T>(value: T, cut: (text: string) => string): T {
+  if (typeof value === "string") return cut(value) as T;
+  if (Array.isArray(value)) return value.map((item) => cutStrings(item, cut)) as T;
+  if (value && typeof value === "object" && Object.getPrototypeOf(value) === Object.prototype) {
+    return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, item]) => [key, cutStrings(item, cut)])) as T;
+  }
+  return value;
+}
+
+/** `tool` whose answer, and a throw's message, pass `cut` inside its execute: before pi stores the result or the model
+ *  reads it. */
+function answersCutInside(tool: ToolRegistration, cut: (text: string) => string): ToolRegistration {
+  return {
+    ...tool,
+    execute: (async (...args: Parameters<ToolRegistration["execute"]>) => {
+      try {
+        return cutStrings(await (tool.execute as (...a: unknown[]) => Promise<unknown>)(...args), cut);
+      } catch (error) {
+        if (error instanceof Error) {
+          error.message = cut(error.message);
+          if (error.stack) error.stack = cut(error.stack);
+        }
+        throw error;
+      }
+    }) as ToolRegistration["execute"],
+  } as ToolRegistration;
+}
 
 /** Kernel's provider, opening the agent's saved profile (`ref`, its name at Kernel) where a session asks for the
  *  profile `default`: the policy, the session's record and the model see only that name. */
@@ -417,8 +450,10 @@ const browserTool: ToolEntry = {
     // vendor's refusal can quote it, as pi-browser's one-saver rule names Kernel's profile.
     // A run handed its agent's sign-in tells the model its browser keeps it (`run`'s description): one with none claims
     // cookies across pages only.
-    const browser = createBrowserExtension({ provider, driver: parts.driver as never, evidence: evidenceIn(localWorkspace(host.where.work)) as never, ...files, gates, handoff: hands.handoff, onSession: onSessions as never, signIns: kept !== undefined, beforeCreate: spend.opening, redact: { values: () => (kept ? [kept.ref] : []) }, prices: { sessionUsdPerHour: price.usdPerHour, sessionMinimumS: price.minimumS }, onCharge: spend.onCharge });
-    const tools = (browser.tools as unknown as ToolRegistration[]).map(spend.capped);
+    const browser = createBrowserExtension({ provider, driver: parts.driver as never, evidence: evidenceIn(localWorkspace(host.where.work)) as never, ...files, gates, handoff: hands.handoff, onSession: onSessions as never, signIns: kept !== undefined, beforeCreate: spend.opening, redact: { values: () => [...runnerSecrets(host.env), ...(kept ? [kept.ref] : [])] }, prices: { sessionUsdPerHour: price.usdPerHour, sessionMinimumS: price.minimumS }, onCharge: spend.onCharge });
+    // On the runner, every answer the browser's tools give passes the run's one redactor inside the call, so what pi stores
+    // (its result record) and what the model reads hold no value the runner or the claim holds.
+    const tools = (browser.tools as unknown as ToolRegistration[]).map(spend.capped).map((tool) => (host.redact ? answersCutInside(tool, host.redact) : tool));
     const extension = { ...(browser.extension as unknown as Extension), tools } as Extension;
     host.install(extension);
     host.onConversation(async (tx, conversationId) => {

@@ -399,9 +399,9 @@ in the kernel's tool registry, keyed by these groups.
   | id | label | kinds | keys (required unless marked) | mounts | metered |
   | --- | --- | --- | --- | --- | --- |
   | docker | Docker | sandbox, desktop | none | bind | no |
-  | daytona | Daytona | sandbox | `DAYTONA_API_KEY`; `DAYTONA_API_URL`, `DAYTONA_TARGET` (optional) | none until D6's archil | yes |
-  | modal | Modal | sandbox | `MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET` | none until D6's archil | yes |
-  | e2b | E2B | sandbox, desktop | `E2B_API_KEY` | none until D6's archil | yes |
+  | daytona | Daytona | sandbox | `DAYTONA_API_KEY`; `DAYTONA_API_URL`, `DAYTONA_TARGET` (optional) | archil | yes |
+  | modal | Modal | sandbox | `MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET` | archil | yes |
+  | e2b | E2B | sandbox, desktop | `E2B_API_KEY` | archil | yes |
   | orgo | Orgo | desktop | `ORGO_API_KEY` | none | yes |
   | phone-harness | Phone harness | phone | `PHONE_HARNESS_API_KEY` | none | yes |
   | browserbase | Browserbase | browser | `BROWSERBASE_API_KEY`, `BROWSERBASE_PROJECT_ID` | none | yes |
@@ -1797,28 +1797,11 @@ to the cap, once it is more than 2 s past where create set it (its start plus th
 to the second E2B rounds to); extend never leaves E2B's end inside those 2 s, moving it at least 3 s past create's end,
 so an extend however short reads back.
 
-**Limit: `publicStream` is refused for now.** create() throws in words on `publicStream: true` (in a conformance run,
-`COMPUTER_E2B_PUBLIC_STREAM=1`): the
-stream's servers would run as the daemon's programs, inside their own network namespace, where E2B's proxy cannot reach
-noVNC's port, and a public stream's network is open, which a remote computer does not take yet. No provider has
-`stream()` until an inbound forward lifts this. The rest of this paragraph is what `stream()` does then, and its code
-and tests stay for it (the tests skipped, in words).
-
-`stream()` exists only on a provider made with `publicStream: true` (in a conformance run, `COMPUTER_E2B_PUBLIC_STREAM=1`): a private sandbox's
-URL needs the `e2b-traffic-access-token` header, which a browser cannot send (E2B docs, network/restrict-public-access),
-so a stream URL a person can open needs public traffic, and that opens every port, so such a provider's computers are
-network `open` only, and `check()` refuses none in words. `stream()` starts x11vnc on the display, listening on
-loopback only and IPv4 alone, with a fresh password from a file only the computer's user reads, and noVNC in front of it, both through
-the daemon (the ports and paths are E2B Desktop's own: `@e2b/desktop@2.5.0` `dist/index.mjs:426-506`), and returns
-`https://6080-<id>.<domain>/vnc.html?autoconnect=true&resize=scale&password=<password>`. The password is the URL's
-only secret beyond the sandbox's id, a bearer token: it is never logged and never in an error (a unit test holds that).
-VNC authentication reads 8 characters at most (it keys DES with them), so it is 8 random letters and digits. Each call
-starts the stream anew, so an earlier URL stops working: it reads every page of the process table, kills the running
-x11vnc and noVNC it finds, waits up to 10 s for each to end (a signal is only sent, and an old server holds its port
-until it ends), then starts the new pair, and returns the URL only once both new servers still run and ports 5900 and
-6080 both listen; a new server that ended first is an error with its last lines of stderr. `viewOnly` starts x11vnc
-with `-viewonly`. E2B's own SDK
-leaves x11vnc listening on every interface (`dist/index.mjs:502`); this provider does not.
+There is no `stream()`: a screen is streamed through agentrun, never through a vendor URL. A URL into an E2B sandbox
+that a browser could open needs public traffic, since a private sandbox's URL needs the `e2b-traffic-access-token`
+header, which a browser cannot send (E2B docs, network/restrict-public-access). Public traffic opens every port in the
+computer to anyone with its address. So the provider takes no `publicStream` option: making one with it throws in
+words, whatever its value, and every sandbox is made with public traffic off.
 
 ### What the provider does
 
@@ -1875,9 +1858,9 @@ live switch.
 The conformance module's `settingsFromEnv` reads these names, and the sweep and `e2b-diagnose.js` read them through it,
 each passed to `create()` as the option in brackets: `COMPUTER_E2B_API_KEY` (`apiKey`, required),
 `COMPUTER_E2B_DOMAIN` (`domain`), `COMPUTER_E2B_DAEMON` (`daemonPath`), `COMPUTER_E2B_KIND` (`kind`),
-`COMPUTER_E2B_MAX_LIFETIME_MS` (`maxLifetimeMs`, a whole number of ms), `COMPUTER_E2B_USER` (`daemonUser`) and
-`COMPUTER_E2B_PUBLIC_STREAM` (`publicStream`, `1` or unset). It refuses while `E2B_SANDBOX_URL` is set in the
-environment it reads, as the provider does in `process.env`.
+`COMPUTER_E2B_MAX_LIFETIME_MS` (`maxLifetimeMs`, a whole number of ms) and `COMPUTER_E2B_USER` (`daemonUser`). It
+refuses while `E2B_SANDBOX_URL` is set in the environment it reads, as the provider does in `process.env`.
+`COMPUTER_E2B_PUBLIC_STREAM` is no longer read.
 
 ### What waits for a live run
 
@@ -1893,8 +1876,7 @@ A live run must show:
   the IPv6 target refused and every IPv4 one accepted with 0 bytes), and what else `denyOut 0.0.0.0/0` lets through;
 - that envd keeps init running once create disconnects, and how long `getInfo` takes to answer not found after a kill;
 - that Xvfb starts as uid 1000 in the desktop template, and the screen and input cases pass against it;
-- `endAt` against E2B's start plus the timeout, to the second, and how long the listing takes to show a new sandbox;
-- with `publicStream`, that noVNC answers 200 at the URL.
+- `endAt` against E2B's start plus the timeout, to the second, and how long the listing takes to show a new sandbox.
 
 ### Sources
 
@@ -2044,7 +2026,11 @@ the API's control URL) is a later change: `platform: "ios"` is refused in words.
 - **adb** is an option too: a transport, `{ run(args, { input }), server(service) }` (tests give a fake), or the path of
   the `adb` CLI (Android platform-tools; default `adb` on PATH), whose server it starts and speaks to on the loopback
   (port 5037, adb's own, or `adbCli(path, { port })`). Every spawned adb names that port with `-P`, so the CLI and the
-  socket requests reach one server. Without adb, connect says so in words.
+  socket requests reach one server. `adbCli(path, { env })` spawns adb from the environment given, with every
+  `ADB_*`, `ANDROID_ADB_*` and `ANDROID_SERIAL` variable dropped, so nothing in it points the CLI at another server or
+  device. The library reads no environment of its own: the conformance module passes its own, minus its
+  `COMPUTER_PHONE_HARNESS_*` names (the key never reaches adb), and serve should pass one too. Without `env`, a spawned
+  adb inherits the process's environment as it is. Without adb, connect says so in words.
 - **testConnection** is list(): one `GET /sessions` joined to the ledger, and a GET of any phone the listing leaves out.
   It rents nothing and reaches no phone: ok with the
   count of this provider's phones, `unauthorized` for a refused key, `unreachable` when the phone harness is not

@@ -28,6 +28,7 @@ const { META_REASON } = await import("../dist/mcp-meta.js");
 const { TOOL_COST, TOOL_UNMETERED } = await import("@parcha/pi-durable-agent/timeline");
 const { journalRecords } = await import("../dist/runner/journal-reader.js");
 const { mcpForClaim } = await import("../dist/runner/mcp-run.js");
+const { adapterRunGate } = await import("../dist/runner/adapter-run-spec.js");
 const { GITHUB_UNUSABLE } = await import("../dist/runner/mcp-github.js");
 
 test.after(() => closeOpenSessions());
@@ -87,7 +88,9 @@ async function mcpRun(t, { script, grants, settings = {}, tools = [ADD, PAID], p
     return {
       ...(await base(claim, run)),
       workRoot: work,
-      gate: (call) => permissionOf(call.tool, settings),
+      // `settings` as a function: the run's own gate as a run's spec makes it (adapterRunGate over the store's
+      // settings), made for the claim; else the plain permission of `settings`.
+      gate: typeof settings === "function" ? await settings({ store, claim, work }) : (call) => permissionOf(call.tool, settings),
       ...(mcp ? { mcp } : {}),
       ...(capUsd === undefined ? {} : {
         cap: specCap(capUsd),
@@ -203,6 +206,24 @@ test("R4: a set-to-deny MCP call is refused in words before its intent, and noth
   assert.equal(row.state, "ended", JSON.stringify(row));
   assert.equal(lastResult(sent), setToDenyText("mcp:fake/add"));
   assert.equal(toolCalls(fake).length, 0);
+});
+
+test("R4b: an MCP call outside its server's argument pin is refused in the pin's words before it is asked or sent, through the run's own gate", async (t) => {
+  // The server's setting allows the tool pinned to a = 2; the model calls it with a = 5. The gate is the one a run's spec
+  // gives it (adapterRunGate, over the store's tool settings).
+  const script = [{ call: "mcp__fake__add", args: { a: 5, b: 1 } }, { sayLastResult: true }];
+  const { row, sent, fake } = await mcpRun(t, {
+    script,
+    grants: ["mcp:fake/add"],
+    before: ({ server }) => server.settings.put("tool-settings", { "mcp:fake/add": { permission: "allow", pin: { a: 2 } } }),
+    settings: ({ store, claim, work }) => adapterRunGate(store, claim, { kind: "agentic", body: {} }, work),
+  });
+  assert.equal(row.state, "ended", JSON.stringify(row));
+  const said = lastResult(sent);
+  assert.match(said, /mcp:fake\/add/, said);
+  assert.match(said, /a = 2/, `the pin's words: ${said}`);
+  assert.match(said, /nothing was sent and nothing was charged/, said);
+  assert.equal(toolCalls(fake).length, 0, "the server got nothing");
 });
 
 test("R5: no byte of a credential in the store file, its WAL, or any log line after a run that called the server", async (t) => {

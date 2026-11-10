@@ -181,7 +181,12 @@ async function firstSignIn(store: Pick<Store, "signIns">, sealKey: Buffer, agent
   // the one this run is handed. Exactly one object is left, saved.
   if (!won.saved) await gone();
   const pointer = open(sealKey, agentId, vendor, won.row.pointerSealed);
-  return pointer === undefined ? "unreadable" : { pointer };
+  if (pointer === undefined) {
+    // The winner's sign-in won't open under this server's seal key: the run starts signed out, said as every other path.
+    log?.("its browser starts signed out: the saved sign-in can't be opened here");
+    return "unreadable";
+  }
+  return { pointer };
 }
 
 /** Whether every sign-in run `run` was handed (its sign_in_handed hashes) reads back here: a live sign-in of its agent, or

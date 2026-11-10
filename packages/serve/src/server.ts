@@ -32,6 +32,7 @@ import { HarnessInstall, harnessesOf, installDirOf, NPM_STOP_GRACE_MS, npmInstal
 import { healthOf, hostMemory, maxRunsOf, MIN_FREE_MIB, runsThatFit } from "./host.js";
 import { IMPORT_ASKED } from "./import.js";
 import type { ImportAnswer, ImportTask } from "./import-worker.js";
+import { answerStoreCall, type StoreCall } from "./import-proxy.js";
 import type { MessageOrigin } from "@parcha/pi-durable-agent/timeline";
 import { gradeModelOf, LEARNING_LABEL, learningBudgetOf, type LearningMode, learningOf, seedOf } from "./learning.js";
 import { agentLearning, learningLog, learningNotes, noteBody, pendingCount, readNote, secretsShown, sendNote, writeNote } from "./learning-routes.js";
@@ -42,7 +43,7 @@ import { BOX_ALLOW_ENV, boxAllowOf, boxLimitsOf, boxNetworkOf, FAUX_BOX_ENV, fau
 import { Owner, passwordProblem, SESSION_MS } from "./owner.js";
 import { answerPage, byOwnerSession, heldSessions, isJson, overHttps, ownerCookie, ownOrigin, sendHostRefused, signedIn } from "./page.js";
 import { hostFix, hostName, loopbackNames } from "./host-check.js";
-import { computerViewerLink, handoverById, type LiveFamily, type LiveHandover, liveRest, liveViewer, liveViewerById, liveViewerFor, liveViewerLink, OpenViewers, proxyLiveUpgrade, readHandover, readHandovers, serveViewerFile, viewerAnswers, viewerLink } from "./browser-live.js";
+import { computerViewerLink, familyReaches, handoverById, type LiveFamily, type LiveHandover, liveRest, liveViewer, liveViewerById, liveViewerFor, liveViewerLink, OpenViewers, proxyLiveUpgrade, readHandover, readHandovers, serveViewerFile, viewerAnswers, viewerLink } from "./browser-live.js";
 import { browserHandBack, handBackTarget } from "./browser-commands.js";
 import { type ComputerOf, computerView } from "./computer-view.js";
 import { durationMs, logLine } from "./print.js";
@@ -84,9 +85,9 @@ import { memoryMbOf } from "./run-box.js";
 import { DOCUMENTS_ENV } from "./pdf-pages.js";
 import { CAP_MODES, type CapMode } from "./cap.js";
 import { type Blocker, blockersOf, CODE_NODES_ENV, issueOf, MCP_HARNESSES, NOT_SET_UP, type RevisionShape } from "./runnable.js";
-import { handedSecret, holdMadeSecret, hostSecrets, SECRET_NAMES, secret, type StoredKeys, withSecrets } from "./secrets.js";
+import { hostSecrets, SECRET_NAMES, secret, type StoredKeys, withSecrets } from "./secrets.js";
 import { isSecretWriteOperation, SECRET_WRITE_REFUSAL, secretsWritableFields, secretWriterFacts, writesSecret, writesSecretsAllowed } from "./secret-writes.js";
-import { ensureSealKey, SealKeyRefused, sealKeyHome, sealKeyLine } from "./seal-key.js";
+import { bootSealKey } from "./seal-key.js";
 import { redactedOutput } from "./key-refusal.js";
 import { analyticsFilter, analyticsView, statsView } from "./stats.js";
 import { agentLearningOverStore, learningCountsOverStore } from "./store-reads/learning.js";
@@ -119,10 +120,11 @@ import { webhook } from "./trigger-webhook.js";
 import { SCHEME_NAMES } from "./trigger-signatures.js";
 import { permissionFrom, pinWords } from "./tool-gate.js";
 import { CATCHUP_WINDOW_S, FAILURES_TO_PAUSE, HISTORY_KEPT, MIN_EVERY_S, PAYLOAD_KEPT_BYTES, type RunTrigger, SOURCE_KINDS, TARGET_KINDS, type TriggerClock, Triggers } from "./triggers.js";
-import { applyBodyOf, compiled, madeTriggerIssues, type Package, packageModel, packageView, readPackages, type TemplatesDeps } from "./templates.js";
+import { applyBodyOf, compiled, GITHUB_TRIGGER_UNCONNECTED, githubTriggerWords, madeTriggerIssues, type Package, packageModel, packageView, readPackages, type TemplatesDeps } from "./templates.js";
 import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, type DefinitionBody, definitionBodyIssues, ID, IDEMPOTENCY_TTL_S, inputIssues, isObject, type Json, stable, unknownFields } from "./validate.js";
 import { agentTools, browserKeyRow, isUnavailable, keptVendor, type Plane, recheckPlane, settingsIssues, ToolSettings, type ToolSettingsMap, whyUnavailable, withDefaults } from "./tool-plane.js";
 import { toolSettingsOverStore } from "./tool-settings-store.js";
+import { writeApprovers } from "./server-approvers.js";
 import { MAX_FILES_PER_RUN, MAX_UPLOAD_BYTES, Uploads, UPLOADS_DIR } from "./uploads.js";
 import { entryAt, listFiles, sendFile as sendWorkspaceFile, viewOf } from "./run-files.js";
 import { COMPUTER_ROUTES, computerHoldOf, computerRoute } from "./computer-routes.js";
@@ -336,7 +338,7 @@ export type ServeOptions = {
   triggerClock?: TriggerClock;
   /** The server's store (store/index.ts), where the triggers and their firings live, with the agents they run as. Without
    *  it the trigger routes answer unavailable and nothing fires. */
-  store?: Pick<Store, "triggers" | "runs" | "agents">;
+  store?: Pick<Store, "triggers" | "runs" | "agents"> & Partial<Pick<Store, "liveViewers">>;
   /** A test's seam: the trigger sources this server has (default the registry, trigger-adapters.ts). */
   triggerAdapters?: readonly TriggerAdapter[];
   /** A test's seam: GitHub's API, which Connect GitHub converts its code with and asks of the App's installations
@@ -769,16 +771,7 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   delete process.env[HARNESS_TABLE_ENV];
   // No start without a seal key (seal-key.ts): the one handed over, else the one kept under the config home, made at the
   // first start with only its path printed. Every secret here is kept under it; there is no keeping one in the clear.
-  const handedSeal = handedSecret(SEAL_KEY_ENV);
-  let seal;
-  try {
-    seal = ensureSealKey(handedSeal, { configHome: sealKeyHome(process.env) });
-  } catch (error) {
-    if (error instanceof SealKeyRefused) throw new Error(`agentrun-serve does not start without a seal key. ${error.message}`, { cause: error });
-    throw error;
-  }
-  if (!handedSeal) holdMadeSecret(SEAL_KEY_ENV, seal.text);
-  if (seal.generated) process.stderr.write(`${sealKeyLine(seal)}\n`);
+  const seal = bootSealKey();
   await mkdir(resolve(options.data), { recursive: true, mode: 0o700 });
   // Canonical once, here: a box's mount source below it must then be its own canonical path, through no link (run-box.ts).
   const data = await realpath(resolve(options.data));
@@ -888,6 +881,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // once here.
   const settings = toolSettingsOverStore(store);
   await settings.load();
+  // Whether anyone can answer an ask here (accounts on), for the runners, which read it from the store at each claim
+  // (server-approvers.ts): the one way a runner learns it.
+  await writeApprovers(store.settings, options.accounts === true);
   mcpServers.toolSettings = () => settings.get();
   // The server's reading, in parts: `env`, its environment with its secrets, saved keys among them (storedKeys);
   // `offers`, what each harness offers, probed from env without the tool keys (offersEnvOf), the one slow part (each
@@ -1346,11 +1342,11 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const onWorker = (task: ImportTask["task"]): Promise<ImportAnswer> =>
     closing ? Promise.resolve({ stopped: true }) : new Promise((answered, failed) => {
       const worker = new Worker(new URL("./import-worker.js", import.meta.url), {
-        // The secrets this process holds (secrets.ts keeps them out of every environment, so the worker's has none), and
-        // the keys saved on its Tool keys page, opened now (each cut too, the same rule as the CLI's import: a saved key
-        // and the server's own of the same name may differ), in the worker's memory alone: what the import cuts out of
-        // everything it writes.
-        workerData: { task, data, home: options.sessionsHome?.home ?? homedir(), ...(options.sessionsHome?.temp ? { temp: options.sessionsHome.temp } : {}), secrets: Object.fromEntries(SECRET_NAMES.flatMap((name) => { const value = secret(name); return value === undefined ? [] : [[name, value]]; })), stored: toolKeys.values() } satisfies ImportTask,
+        // The secrets this process holds (secrets.ts keeps them out of every environment, so the worker's has none), in the
+        // worker's memory alone: what the import cuts out of everything it writes. The keys saved on the Tool keys page are
+        // not passed; the worker reads them from the store over the port (sealed rows it opens with the seal key among these
+        // secrets), the same cut as the CLI's import, where a saved key and the server's own of the same name may differ.
+        workerData: { task, data, home: options.sessionsHome?.home ?? homedir(), ...(options.sessionsHome?.temp ? { temp: options.sessionsHome.temp } : {}), secrets: Object.fromEntries(SECRET_NAMES.flatMap((name) => { const value = secret(name); return value === undefined ? [] : [[name, value]]; })) } satisfies ImportTask,
         // Started from a string (its launcher runs node --input-type=module -e), the server's flags are given again
         // without that string and its type: a worker started from a file with them is refused. Otherwise the worker
         // inherits them as Node passes them on, which leaves out the flags a worker may not take (on Node 24 a test
@@ -1359,7 +1355,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       });
       workers.set(worker, { task, exit: once(worker, "exit").catch(() => undefined) });
       let answer: ImportAnswer | undefined;
-      worker.on("message", (message: ImportAnswer) => void (answer = message));
+      // The import worker opens no store of its own: a message carrying `req` is one of its calls to this server's open
+      // store, answered against it and posted back; anything else is its one final answer.
+      worker.on("message", (message: StoreCall | ImportAnswer) => {
+        if (typeof message === "object" && message !== null && "req" in message) void answerStoreCall(store, ctx, message).then((reply) => worker.postMessage(reply));
+        else answer = message as ImportAnswer;
+      });
       worker.once("error", failed);
       worker.once("exit", (code) => {
         workers.delete(worker);
@@ -1612,7 +1613,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  agent made as POST /agents makes one, its MCP tools at the owner's own settings save those granted, set to allow (a
    *  deny the owner set on this server stays, with a warning), its body held to POST /agents' limit (413), on the first harness of its list this server runs and the model packageModel
    *  picks, then each trigger on it as POST /triggers makes one. A trigger refused undoes the apply: the triggers made
-   *  before it are deleted and the agent is archived (an agent store keeps every agent), and the refusal is the answer, a 422's fields under `triggers.<i>`. A webhook
+   *  before it are deleted and the agent is archived (an agent store keeps every agent), and the refusal is the answer, a 422's fields under `triggers.<i>`; a
+   *  github trigger GitHub is not connected for is skipped instead, with a warning there, and one made is said there. A webhook
    *  trigger's secret is not in the answer (the Idempotency-Key record would keep it): POST /triggers/{id}/secret makes one. */
   async function applyTemplate(pkg: Package, body: Json) {
     const { parameters, grants, model: override, approvals } = applyBodyOf(pkg, body);
@@ -1660,6 +1662,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // Each webhook trigger's signing secret, minted as it is made: handed back in the apply's first answer alone, as POST
     // /triggers hands back its own, so the owner can give it to the sender.
     const secrets: { trigger_id: string; secret: string }[] = [];
+    // A github trigger on a server GitHub is not connected to is skipped, never the apply: the agent stands, and the
+    // answer says to connect GitHub and apply again (a warning under triggers.<i>).
+    const unconnected = new Set<number>();
     try {
       for (const [i, trigger] of made.triggers.entries()) {
         try {
@@ -1667,6 +1672,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
           ids.push(madeId);
           if (secret) secrets.push({ trigger_id: madeId, secret });
         } catch (error) {
+          if (error instanceof ApiError && error.code === "github_not_connected" && isObject(trigger.source) && trigger.source.kind === "github") {
+            unconnected.add(i);
+            continue;
+          }
           if (error instanceof ApiError && error.code === "input_invalid" && error.extra.fields) throw told(new ApiError("input_invalid", error.message, { ...error.extra, fields: error.extra.fields.map((f) => ({ ...f, field: `triggers.${i}.${f.field}` })) }));
           throw error;
         }
@@ -1694,10 +1703,14 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const appShort = appPermissionWarnings({ name: pkg.name, mcp: saved }, (server) => mcpMeta.get(server)?.auth === "github_app");
     // A webhook trigger's secret is in no apply answer: each one's warning sends the person to the console for it.
     const hooks = made.triggers.flatMap((trigger, i) => (isObject(trigger.source) && trigger.source.kind === "webhook" ? [templateTriggerSecret(i)] : []));
+    // Each github trigger: what it runs on, when made (a note, never a lack); skipped, what to do about it.
+    const githubTriggers: InputIssue[] = made.triggers.flatMap((trigger, i) => (isObject(trigger.source) && trigger.source.kind === "github"
+      ? [unconnected.has(i) ? { field: `triggers.${i}`, reason: NOT_SET_UP, message: GITHUB_TRIGGER_UNCONNECTED } : { field: `triggers.${i}`, reason: "not_an_option", message: githubTriggerWords(pkg.name, trigger.source) }]
+      : []));
     // Each trigger it made, a webhook trigger's with its secret's metadata; the values go back beside the answer, never in it
     // (the route adds them to the first answer to the owner's session, after the Idempotency-Key's record is written).
     const minted = new Map(secrets.map(({ trigger_id, secret }) => [trigger_id, secret]));
-    const applied = { template: pkg.name, version: pkg.version, agent_id: entry.agent.id, trigger_ids: ids, ...templateWebhookSecrets([...minted.keys()], new Date().toISOString()), warnings: [...skipped, ...kept, ...modelWarnings, ...unpinned, ...unkept, ...warnings, ...hooks, ...appShort] };
+    const applied = { template: pkg.name, version: pkg.version, agent_id: entry.agent.id, trigger_ids: ids, ...templateWebhookSecrets([...minted.keys()], new Date().toISOString()), warnings: [...skipped, ...kept, ...modelWarnings, ...unpinned, ...unkept, ...warnings, ...hooks, ...githubTriggers, ...appShort] };
     return { applied, minted };
   }
 
@@ -2903,10 +2916,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     await needRun(runId);
     // The run's live viewer from the store (the runner's browser/computer tool wrote it under its claim; liveViewerFor picks
     // a named viewer's handover or the run's open one). None for a run no runner holds; with no seal key this server serves
-    // no live view. A /computer/live path reaches only a computer-kind viewer, a /browser/live path a browser one.
+    // no live view. A /computer/live path reaches a viewer of every kind (the link GET /computer gives, a browser's among
+    // them), a /browser/live path a browser's alone (familyReaches).
     const handover = sealKey ? await liveViewerFor(store, sealKey, runId, rest) : undefined;
-    const browserKind = handover !== undefined && (handover.kind ?? "browser") === "browser";
-    if (handover === undefined || browserKind !== (family === "browser")) throw new ApiError("not_found", `this run's ${family} has no live view at that address`);
+    if (handover === undefined || !familyReaches(family, handover)) throw new ApiError("not_found", `this run's ${family} has no live view at that address`);
     await serveViewerFile(req, res, rest);
   }
 
@@ -2998,11 +3011,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     void (async () => {
       const run = ID.test(viewing[1]!) ? await momentOverStore(store, viewing[1]!, viewDepsFor(ownOriginOf())) : undefined;
       // The run's live viewer from the store (the runner's browser/computer tool wrote it under its claim): none for a run no
-      // runner holds; with no seal key no live view is served. The family (viewing[2]) holds a /computer/live socket to a
-      // computer-kind viewer and a /browser/live socket to a browser one.
-      const liveFamily = viewing[2] as LiveFamily;
+      // runner holds; with no seal key no live view is served. A /computer/live socket reaches a viewer of every kind, a
+      // /browser/live socket a browser's alone (familyReaches), as the page does.
       const viewerHandover = run && sealKey ? await liveViewerById(store, sealKey, run.id, viewing[3]!.slice(3, -3)) : undefined;
-      const handover = viewerHandover !== undefined && (((viewerHandover.kind ?? "browser") === "browser") === (liveFamily === "browser")) ? viewerHandover : undefined;
+      const handover = viewerHandover !== undefined && familyReaches(viewing[2] as LiveFamily, viewerHandover) ? viewerHandover : undefined;
       if (!handover) return deny("404 Not Found");
       // Gone during the lookup, or the server is closing and has ended its viewers, or is about to.
       if (socket.destroyed || closing) return void socket.destroy();

@@ -5,5 +5,7 @@
 import { test } from "node:test";
 import { registerHarnessConformance } from "../dist/runner/conformance/harness.js";
 import { workflowSubject } from "./conformance-workflow.mjs";
+import { PG_URL } from "./store-target.mjs";
 
-registerHarnessConformance(workflowSubject(), { test });
+// On the test Postgres when AGENTRUN_TEST_PG_URL names one, handed to the suite by hand; else SQLite.
+registerHarnessConformance(workflowSubject(), { test, storeUrl: PG_URL });

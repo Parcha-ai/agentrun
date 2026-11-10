@@ -10,7 +10,7 @@ import { runLabel, when } from "@/lib/format";
 import { keeper, uuid } from "@/lib/idempotency";
 import { type Problem, problem } from "@/lib/problem";
 import type { Tone } from "@/lib/runState";
-import { atLeast, bodyOf, capOf, dollars, acceptWords, emptyGitHub, FIRED_BY, GITHUB_EVENTS, githubBodyOf, type GitHubDraft, githubWhen, type GitHubTrigger, isGitHubTrigger, HOOK_URL_HINT, hookUrlOf, hookWhen, isScheduleTrigger, isWebhookTrigger, SIGNATURE_WORDS, utcWhen, type Draft, draftOf, type Schedule, type WebhookTrigger, emptyDraft, FIRING_LABEL, firingWords, instantKept, issuesOf, patchOf, whenWords, emptyWebhook, type WebhookDraft, webhookBodyOf } from "@/lib/schedules";
+import { atLeast, bodyOf, capOf, dollars, acceptWords, onceState, type OnceState, emptyGitHub, FIRED_BY, GITHUB_EVENTS, githubBodyOf, type GitHubDraft, githubWhen, type GitHubTrigger, isGitHubTrigger, HOOK_URL_HINT, hookUrlOf, hookWhen, isScheduleTrigger, isWebhookTrigger, SIGNATURE_WORDS, utcWhen, type Draft, draftOf, type Schedule, type WebhookTrigger, emptyDraft, FIRING_LABEL, firingWords, instantKept, issuesOf, patchOf, whenWords, emptyWebhook, type WebhookDraft, webhookBodyOf } from "@/lib/schedules";
 import type { Firing, Trigger, TriggerCreate, TriggerMade } from "@/lib/v2";
 
 /** Which triggers page: the list (no `trigger`), a new one (`trigger` null, of `kind`), one trigger, or a schedule's editor
@@ -27,11 +27,12 @@ const TONE: Record<Firing["status"], Tone | "plain"> = { started: "success", sen
 
 /** Triggers (serve's trigger/1): schedules and webhooks, each starting an agent's capped runs with no one there. */
 /** `refreshMs`: how often an open trigger's page reads it again, so a firing shows as it happens (the list, twice that). */
-export function SchedulesPage({ v2, view, go, agentName, minEvery, refreshMs = 15_000 }: PageProps & { view: ScheduleView; minEvery?: number; refreshMs?: number }) {
-  if (view.trigger === undefined) return <ScheduleList v2={v2} go={go} agentName={agentName} every={refreshMs * 2} />;
+/** `now`: the page's clock, for whether a one-time schedule's time has passed. */
+export function SchedulesPage({ v2, view, go, agentName, minEvery, refreshMs = 15_000, now = Date.now }: PageProps & { view: ScheduleView; minEvery?: number; refreshMs?: number; now?: () => number }) {
+  if (view.trigger === undefined) return <ScheduleList v2={v2} go={go} agentName={agentName} every={refreshMs * 2} now={now} />;
   if (view.trigger === null) return view.kind === "webhook" ? <WebhookForm v2={v2} go={go} /> : view.kind === "github" ? <GitHubForm v2={v2} go={go} /> : <ScheduleForm v2={v2} go={go} minEvery={minEvery} />;
   if (view.edit) return <ScheduleEdit key={view.trigger} v2={v2} go={go} id={view.trigger} minEvery={minEvery} />;
-  return <ScheduleDetail key={view.trigger} v2={v2} go={go} agentName={agentName} id={view.trigger} every={refreshMs} />;
+  return <ScheduleDetail key={view.trigger} v2={v2} go={go} agentName={agentName} id={view.trigger} every={refreshMs} now={now} />;
 }
 
 /** `read` again every `every` ms while the tab shows, and once when it shows again; nothing while it is hidden (SWR's
@@ -48,10 +49,13 @@ function useRereads(read: () => void, every: number, deps: unknown[]) {
   }, [every, ...deps]); // eslint-disable-line react-hooks/exhaustive-deps
 }
 
+/** A passed one time in words: "Done · ran <when>", or "Its time passed · <when>" with no run known to have started. */
+const onceWords = (state: OnceState): string | null => (!state ? null : "ran" in state ? `Done · ran ${at(state.ran.nominal_at)}` : `Its time passed · ${at(state.passed)}`);
+
 /** How a schedule's last firing went, or that it has not fired. */
 const lastWords = (t: Trigger) => (t.last_firing ? `${firingWords(t.last_firing)} · ${at(t.last_firing.nominal_at)}` : "Not fired yet");
 
-function ScheduleList({ v2, go, agentName, every }: PageProps & { every: number }) {
+function ScheduleList({ v2, go, agentName, every, now }: PageProps & { every: number; now: () => number }) {
   const [triggers, setTriggers] = useState<Trigger[] | null>(null);
   const [error, setError] = useState<Problem | null>(null);
   const [tries, setTries] = useState(0);
@@ -87,12 +91,12 @@ function ScheduleList({ v2, go, agentName, every }: PageProps & { every: number 
                   <div className="flex flex-wrap items-center gap-2">
                     <a href={hashOf(t.id)} className="min-w-0 break-words text-[15px] font-semibold hover:underline">{t.name}</a>
                     <Chip>{KIND_WORDS[t.source.kind]}</Chip>
-                    {!t.enabled && <Chip tone="muted">Paused</Chip>}
+                    {!t.enabled && !onceState(t, now()) && <Chip tone="muted">Paused</Chip>}
                   </div>
-                  <p className="mt-1 break-words font-mono text-[12px] text-muted-foreground">{whatWords(t, agentName)}</p>
+                  <p className="mt-1 break-words font-mono text-[12px] text-muted-foreground" title={cronOf(t)}>{whatWords(t, agentName)}</p>
                 </div>
                 <div className="min-w-0 font-mono text-[12px] text-muted-foreground md:text-right">
-                  {t.source.kind === "schedule" && <p>{t.next_at ? `Next ${at(t.next_at)}` : "No next time"}</p>}
+                  {t.source.kind === "schedule" && <p>{onceWords(onceState(t, now())) ?? (t.next_at ? `Next ${at(t.next_at)}` : "No next time")}</p>}
                   <p className="mt-1 break-words">{lastWords(t)}</p>
                 </div>
               </li>
@@ -107,6 +111,9 @@ function ScheduleList({ v2, go, agentName, every }: PageProps & { every: number 
 /** A trigger's when and what, in one line: a schedule's times or a webhook's signed requests, then the agent it starts or
  *  the run it messages. */
 const KIND_WORDS: Record<Trigger["source"]["kind"], string> = { schedule: "Schedule", webhook: "Webhook", github: "GitHub" };
+
+/** A schedule's raw cron line, the tooltip on its words; none for any other trigger. */
+const cronOf = (t: Trigger): string | undefined => (t.source.kind === "schedule" && "cron" in t.source ? t.source.cron : undefined);
 
 function whatWords(t: Trigger, agentName: (id: string) => string): string {
   const when = t.source.kind === "schedule" ? whenWords(t.source) : t.source.kind === "github" ? githubWhen(t.source) : hookWhen(t.source);
@@ -124,7 +131,7 @@ function NotASchedule() {
   );
 }
 
-function ScheduleDetail({ v2, go, agentName, id, every }: PageProps & { id: string; every: number }) {
+function ScheduleDetail({ v2, go, agentName, id, every, now }: PageProps & { id: string; every: number; now: () => number }) {
   const [trigger, setTrigger] = useState<Trigger | null>(null);
   const [firings, setFirings] = useState<Firing[]>([]);
   const [error, setError] = useState<Problem | null>(null);
@@ -172,6 +179,10 @@ function ScheduleDetail({ v2, go, agentName, id, every }: PageProps & { id: stri
   const gh = isGitHubTrigger(trigger) ? trigger : null;
   if (!hook && !gh && !isScheduleTrigger(trigger)) return <NotASchedule />;
   const runs = trigger as Schedule | WebhookTrigger | GitHubTrigger;
+  // A one-time schedule whose time has passed: Done with when it ran (a started firing of its own time, the server's word:
+  // nothing to resume), or that its time passed. Resume stays unless the server says it ran: the browser's clock alone
+  // may run ahead of the server's.
+  const done = onceState(trigger, now(), firings);
 
   const act = async (what: "pause" | "delete", work: () => Promise<unknown>, failed: string) => {
     setBusy(what); setSaid(null);
@@ -210,12 +221,12 @@ function ScheduleDetail({ v2, go, agentName, id, every }: PageProps & { id: stri
       <a href="#/triggers" className="caps flex items-center gap-2 text-[11px] text-muted-foreground hover:text-foreground"><ArrowLeft className="size-3.5" aria-hidden /> Triggers</a>
       <div className="mt-3 flex flex-col items-start gap-x-6 gap-y-3 sm:flex-row">
         <div className="min-w-0 flex-1 self-stretch">
-          <h1 className="flex flex-wrap items-center gap-2 break-words text-2xl font-semibold leading-tight">{trigger.name}{!trigger.enabled && <Chip tone="muted">Paused</Chip>}</h1>
-          <p className="mt-2 break-words font-mono text-[12px] text-muted-foreground">{hook ? `Webhook · ${hookWhen(hook.source)}` : gh ? `GitHub · ${githubWhen(gh.source)}` : `${whenWords(runs.source as Schedule["source"])} · ${trigger.next_at ? `next ${at(trigger.next_at)}` : "no next time"}`}</p>
+          <h1 className="flex flex-wrap items-center gap-2 break-words text-2xl font-semibold leading-tight">{trigger.name}{!trigger.enabled && !done && <Chip tone="muted">Paused</Chip>}</h1>
+          <p className="mt-2 break-words font-mono text-[12px] text-muted-foreground">{hook ? `Webhook · ${hookWhen(hook.source)}` : gh ? `GitHub · ${githubWhen(gh.source)}` : <><span title={cronOf(trigger)}>{whenWords(runs.source as Schedule["source"])}</span>{` · ${done ? onceWords(done) : trigger.next_at ? `next ${at(trigger.next_at)}` : "no next time"}`}</>}</p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <Button size="sm" variant="solid" onClick={() => void runNow()} disabled={busy === "fire"}><Zap aria-hidden /> {busy === "fire" ? "Starting" : "Run now"}</Button>
-          <Button size="sm" onClick={() => void toggle()} disabled={busy !== null}>{trigger.enabled ? <><Pause aria-hidden /> Pause</> : <><Play aria-hidden /> Resume</>}</Button>
+          {!(done && "ran" in done) && <Button size="sm" onClick={() => void toggle()} disabled={busy !== null}>{trigger.enabled ? <><Pause aria-hidden /> Pause</> : <><Play aria-hidden /> Resume</>}</Button>}
           {!hook && !gh && <Button size="sm" onClick={() => go(`${hashOf(id)}/edit`)}><Pencil aria-hidden /> Edit</Button>}
           {hook && (!rotating ? <Button size="sm" onClick={() => setRotating(true)} disabled={busy !== null || renewing}><KeyRound aria-hidden /> Rotate secret</Button> : (
             <span className="flex items-center gap-2 border border-warning/50 px-2 py-1 text-[12px]" role="alertdialog" aria-label="Make a new secret?">
@@ -294,6 +305,9 @@ function Field({ label, field, issue, hint, children }: { label: string; field: 
   );
 }
 
+/** An empty cap field's placeholder: the picked agent's own default cap as served (definition.max_cost_usd), which an
+ *  empty field takes; none when the agent has none, never a made-up example. */
+const capPlaceholder = (agentCap: number | undefined) => (agentCap !== undefined ? `${dollars(agentCap)}, the agent's default` : undefined);
 const INPUT = "h-10 w-full border bg-background px-3 font-mono text-[13px]";
 const ZONES: string[] = typeof (Intl as { supportedValuesOf?: (key: string) => string[] }).supportedValuesOf === "function" ? (Intl as unknown as { supportedValuesOf: (key: string) => string[] }).supportedValuesOf("timeZone") : [];
 
@@ -376,7 +390,7 @@ function ScheduleForm({ v2, go, trigger, minEvery }: FormProps & { trigger?: Sch
           </div>
           <div className="mt-3 grid grid-cols-1 gap-4 sm:grid-cols-2">
             {draft.kind === "cron" && <Field label="Cron line" field="source.cron" issue={issues["source.cron"]} hint="Minute, hour, day of month, month, day of week."><input name="cron" className={INPUT} value={draft.cron} onChange={(e) => set("cron")(e.target.value)} placeholder="30 1 * * *" /></Field>}
-            {draft.kind === "at" && <Field label="At, your time" field="source.at" issue={issues["source.at"]} hint={atInstant ? `= ${utcWhen(atInstant)}` : undefined}><input name="at" type="datetime-local" step={1} className={INPUT} value={draft.at} onChange={(e) => set("at")(e.target.value)} /></Field>}
+            {draft.kind === "at" && <Field label="At, your time" field="source.at" issue={issues["source.at"]} hint={atInstant ? `= ${utcWhen(atInstant)}` : undefined}><input name="at" type="datetime-local" step={60} className={INPUT} value={draft.at} onChange={(e) => set("at")(e.target.value)} /></Field>}
             {draft.kind === "every" && (
               <Field label="Every" field="source.every_s" issue={issues["source.every_s"]} hint={minEvery ? atLeast(minEvery) : undefined}>
                 <span className="flex gap-2">
@@ -392,7 +406,7 @@ function ScheduleForm({ v2, go, trigger, minEvery }: FormProps & { trigger?: Sch
                 <input name="timezone" list="schedule-zones" className={INPUT} value={draft.timezone} onChange={(e) => set("timezone")(e.target.value)} />
               </Field>
             )}
-            {draft.kind === "every" && <Field label="Starting, your time (optional)" field="source.start_at" issue={issues["source.start_at"]} hint={startInstant ? `= ${utcWhen(startInstant)}` : undefined}><input name="startAt" type="datetime-local" step={1} className={INPUT} value={draft.startAt} onChange={(e) => set("startAt")(e.target.value)} /></Field>}
+            {draft.kind === "every" && <Field label="Starting, your time (optional)" field="source.start_at" issue={issues["source.start_at"]} hint={startInstant ? `= ${utcWhen(startInstant)}` : undefined}><input name="startAt" type="datetime-local" step={60} className={INPUT} value={draft.startAt} onChange={(e) => set("startAt")(e.target.value)} /></Field>}
           </div>
           {ZONES.length > 0 && <datalist id="schedule-zones">{ZONES.map((z) => <option key={z} value={z} />)}</datalist>}
           {restarts && <p className="mt-3 text-[12px] text-warning-text" role="note">Changing when restarts the schedule from now.</p>}
@@ -407,7 +421,7 @@ function ScheduleForm({ v2, go, trigger, minEvery }: FormProps & { trigger?: Sch
         <Field label="Each run is asked" field="target.input" issue={issues["target.input"]}><textarea name="content" rows={4} className="w-full border bg-background p-3 text-[13px]" value={draft.content} onChange={(e) => set("content")(e.target.value)} /></Field>
         <Field label="Cost cap, US dollars a run" field="target.max_cost_usd" issue={issues["target.max_cost_usd"]}
           hint={agentCap !== undefined ? `Uses the agent's default (${dollars(agentCap)}) if empty.` : capOptional ? "Uses the agent's default if empty." : "Required: each run this schedule starts stops at this spend."}>
-          <input name="maxCost" inputMode="decimal" className={`${INPUT} max-w-40`} value={draft.maxCost} onChange={(e) => set("maxCost")(e.target.value)} placeholder="2" />
+          <input name="maxCost" inputMode="decimal" className={`${INPUT} max-w-64`} value={draft.maxCost} onChange={(e) => set("maxCost")(e.target.value)} placeholder={capPlaceholder(agentCap)} />
         </Field>
         {!trigger && (
           <div>
@@ -545,7 +559,7 @@ function WebhookForm({ v2, go }: { v2: Client; go: (hash: string) => void }) {
         <Field label="Each run is asked" field="target.input" issue={issues["target.input"]}><textarea name="content" rows={4} className="w-full border bg-background p-3 text-[13px]" value={draft.content} onChange={(e) => set("content")(e.target.value)} /></Field>
         <Field label="Cost cap, US dollars a run" field="target.max_cost_usd" issue={issues["target.max_cost_usd"]}
           hint={agentCap !== undefined ? `Uses the agent's default (${dollars(agentCap)}) if empty.` : "Required: each run this webhook starts stops at this spend."}>
-          <input name="maxCost" inputMode="decimal" className={`${INPUT} max-w-40`} value={draft.maxCost} onChange={(e) => set("maxCost")(e.target.value)} placeholder="1" />
+          <input name="maxCost" inputMode="decimal" className={`${INPUT} max-w-64`} value={draft.maxCost} onChange={(e) => set("maxCost")(e.target.value)} placeholder={capPlaceholder(agentCap)} />
         </Field>
       </div>
       <div className="mt-6 flex flex-wrap gap-2">
@@ -653,7 +667,7 @@ function GitHubForm({ v2, go }: { v2: Client; go: (hash: string) => void }) {
         <Field label="Each run is asked" field="target.input" issue={issues["target.input"]} hint="The event's payload comes with it."><textarea name="content" rows={4} className="w-full border bg-background p-3 text-[13px]" value={draft.content} onChange={(e) => set("content")(e.target.value)} /></Field>
         <Field label="Cost cap, US dollars a run" field="target.max_cost_usd" issue={issues["target.max_cost_usd"]}
           hint={agentCap !== undefined ? `Uses the agent's default (${dollars(agentCap)}) if empty.` : "Required: each run this trigger starts stops at this spend."}>
-          <input name="maxCost" inputMode="decimal" className={`${INPUT} max-w-40`} value={draft.maxCost} onChange={(e) => set("maxCost")(e.target.value)} placeholder="1" />
+          <input name="maxCost" inputMode="decimal" className={`${INPUT} max-w-64`} value={draft.maxCost} onChange={(e) => set("maxCost")(e.target.value)} placeholder={capPlaceholder(agentCap)} />
         </Field>
       </div>
       <div className="mt-6 flex flex-wrap gap-2">
