@@ -215,3 +215,46 @@ describe("LiveRun, a working run's cost", () => {
     expect(header()).not.toContain(cost(at$(0.09) as Run["cost"]));
   });
 });
+
+describe("LiveRun, a run that moves from one wait to the next", () => {
+  // A hand-back answers the agent's browser ask, and the agent asks its next question at once: the run is input_required
+  // and waiting before and after, and a timeline read (the server samples the run about once a second) can miss the
+  // working moment between. The page's new rows are what say the wait moved: the run is read again, so the hand-over's
+  // card goes and the question takes its place.
+  it("reads the run again when a page brings new rows while it waits, though its status and state are the same", async () => {
+    const waiting = (pending: unknown): Run => ({ ...at("working", false), status: "input_required", state: "waiting", ended_at: null, pending } as never);
+    const browserAsk = { kind: "browser", instruction: "Sign in with your own account", completion_condition: "the page shows you are signed in", asked_at: "2026-11-10T07:35:40Z", expires_at: "2026-11-10T07:50:40Z" };
+    const question = { kind: "question", question: "Shall I go on?", asked_at: "2026-11-10T07:35:43Z" };
+    const page = (next: number, rows: TimelinePage["rows"]): TimelinePage => ({ cost: { usd: null, basis: "estimate", charge_state: null, cap_usd: null }, run_id: "r1", status: "input_required", state: "waiting", rows, drop: [], reset: next === 1, unchanged: false, final: false, has_more: false, next_after: next });
+    const row = (id: number, kind: string, summary: string) => ({ id: `e${id}`, seq: id, kind, summary, timestamp: "2026-11-10T07:35:40Z" } as never);
+    let moved = false;
+    let reads = 0;
+    // The timeline: each read takes the next page; with none yet, the long poll waits for one (or for the page to go).
+    const pages: TimelinePage[] = [page(1, [row(1, "waiting", "Waiting for you: the hand-over")])];
+    let waiter: ((next: TimelinePage) => void) | undefined;
+    const push = (next: TimelinePage) => { if (waiter) { const take = waiter; waiter = undefined; take(next); } else pages.push(next); };
+    const v2 = {
+      getRun: async () => { reads++; return waiting(moved ? question : browserAsk); },
+      listFiles: async () => ({ run_id: "r1", files: [], complete: true, truncated: false }),
+      listRevisions: async () => ({ revisions: [], next_cursor: null }),
+      getTimeline: (_id: string, options?: { signal?: AbortSignal }) => {
+        const next = pages.shift();
+        if (next) return Promise.resolve(next);
+        return new Promise<TimelinePage>((resolve, reject) => { waiter = resolve; options?.signal?.addEventListener("abort", () => reject(new Error("aborted"))); });
+      },
+    };
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    act(() => root!.render(createElement(LiveRun, { v2: v2 as never, runId: "r1", caps: null, agentName: () => "Drive" })));
+    const settle = async () => { for (let i = 0; i < 12; i++) await act(async () => { await new Promise((r) => setTimeout(r, 40)); }); };
+    await settle();
+    expect(host.textContent).toContain("Sign in with your own account");
+    const before = reads;
+    // The person hands back; the agent asks its question. The next page: the same status and state, new rows.
+    moved = true;
+    push(page(3, [row(2, "phase", "You handed the browser back"), row(3, "tool_use", "Asked you a question")]));
+    await settle();
+    expect(reads).toBeGreaterThan(before);
+    expect(host.textContent).not.toContain("Sign in with your own account");
+  });
+});
