@@ -26,7 +26,7 @@ import type { OAuthNetwork } from "../mcp-oauth.js";
 import type { Store, TriggerSettings } from "../store/index.js";
 import { type ApprovalPrice, argsPreview, mcpToolName, resumeText, RESUME_PREFIX, waitingText } from "../tool-gate.js";
 import { deniedText } from "./loop-contract.js";
-import { type AnswerData, type AskData, type CallEndData, KINDS } from "./journal-kinds.js";
+import { type AnswerData, type AskData, type CallEndData, endedAnswer, KINDS } from "./journal-kinds.js";
 import type { Claim } from "./loop-contract.js";
 import { mcpClaim, type McpClaimStep } from "./mcp-claim.js";
 import type { GithubAppAccess, GithubTimer } from "./mcp-github.js";
@@ -232,7 +232,8 @@ export async function parkedFollowUp(mcp: ClaimMcp, options: ParkedFollowUpOptio
     else {
       const done = ended.get(call.callId);
       const denied = await options.deniedNow(call);
-      result = done ? { text: typeof done.output === "string" ? done.output : `The ${call.tool} call ended ${done.status}.`, isError: done.status !== "done" } : denied !== undefined ? { text: denied, isError: true } : await options.run(call);
+      // A call that already ended is answered from its end (endedAnswer: a crash-cut one in the kernel's words).
+      result = done ? endedAnswer(call.tool, done) : denied !== undefined ? { text: denied, isError: true } : await options.run(call);
     }
     texts.push(resumeText({ tool: call.tool, call_id: call.callId }, argsPreview(call.args), answer.approved ? "allow" : "deny", { text: result.text, isError: result.isError === true }));
     callIds.push(call.callId);
