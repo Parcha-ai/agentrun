@@ -8,6 +8,8 @@ export const NOT_RUN = "It was not run: nothing was sent and nothing was charged
 export const RAN_UNKNOWN = "It had started before the deny, and whether it took effect is not known.";
 /** A call that waited for approval when its run was stopped: withdrawn, never sent (its row's words, and its end's). */
 export const STOPPED_WHILE_WAITING = "Not run: the run was stopped while it waited";
+/** A call that waited when its run ended (completed or failed) without anyone stopping it: never sent. */
+export const ENDED_WHILE_WAITING = "Not run: the run ended while it waited";
 /** Where a permission was set (permissionFrom's `from`): the agent's own tool settings, the server's, or the default; or
  *  "unattended": an ask the agent's approvals "never" allowed. */
 export type SettingFrom = "agent" | "server" | "default" | "unattended";

@@ -21,7 +21,7 @@ import type { KernelHooks, ToolCall } from "./conformance/subject.js";
 import { type AnswerData, type ApprovalPrice, type AskData, type BudgetData, type CallEndData, type CallStartData, type CallStatus, endedAnswer, type EndData, KINDS, type MessageData, type RaiseData, withdrawnAnswers } from "./journal-kinds.js";
 import { endedOnTurnEndingTool, type MessageOrigin, originOf, RUN_RESUMED } from "@parcha/pi-durable-agent/timeline";
 import { type AlsoRow, type Claim, ClaimRefused, type Command, type CommandOutcome, deniedText, endedBy, type EndOfRunAnswer, type EndOfRunTurn, type Loop, type LoopDeps, type LoopEnd, type LoopFactory, noteOf, type StopReason } from "./loop-contract.js";
-import { deniedText as setToDenyText, STOPPED_WHILE_WAITING } from "../refusal-words.js";
+import { deniedText as setToDenyText, ENDED_WHILE_WAITING, STOPPED_WHILE_WAITING } from "../refusal-words.js";
 import { ADAPTER_API } from "../turn-end.js";
 import { answerText, REFLECT_NOTE_ONLY, reflectRequestId, underLearning, WRITES } from "./end-of-run.js";
 import { approvalOf, CLOSE_MS, CUT_STEP_MS, STOP_SETTLE_MS, commandRequest, cutLast, DEFAULT_RESTART_LIMIT, entriesOf, findData, Gate, heldReporter, Interrupted, KernelFault, Parked, quiet, restartLimited, writesEntry, writesSubmission } from "./loop.js";
@@ -455,6 +455,9 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
   };
   let stopped: () => void = () => {};
   const stopping = new Promise<void>((resolve) => (stopped = resolve));
+  // Aborted by any stop of the run: a host tool call in flight (a CLI's door call among them, whose own request signal
+  // its CLI may never abort) is cut with it, as pi's own abort cuts pi's calls.
+  const stopAbort = new AbortController();
   let parked: () => void = () => {};
   const parking = new Promise<void>((resolve) => (parked = resolve));
   let finished: Promise<LoopEnd> | undefined;
@@ -847,7 +850,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
                 flush: () => deps.flush(),
                 // Its paid requests booked under this call, on the run's one ledger (paid-calls.ts bookedIn, Ledger.paid); one
                 // refused for room pauses the run (Ledger.pause, the run's pause), as main's paidCall does.
-                route: () => bookedIn({ call: toolContext.callId, record: async () => {}, paid, pause: ledger.pause }, () => tool.call(args, toolContext)),
+                route: () => bookedIn({ call: toolContext.callId, record: async () => {}, paid, pause: ledger.pause }, () => tool.call(args, { ...toolContext, signal: toolContext.signal ? AbortSignal.any([toolContext.signal, stopAbort.signal]) : stopAbort.signal })),
                 beforeResult: async (answer) => {
                   const call: ToolCall = { callId: toolContext.callId, tool: tool.name as never, args: (args ?? {}) as Record<string, unknown> };
                   try {
@@ -859,7 +862,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
                   }
                 },
               });
-              if (record) await record.end(toolContext.callId, answer.isError ? "failed" : "done", answer.text);
+              // A call a stop cut answers whatever its tool said of the abort: it ends interrupted, never as its outcome.
+              if (record) await record.end(toolContext.callId, stopAbort.signal.aborted ? "interrupted" : answer.isError ? "failed" : "done", answer.text);
               return answer;
             } catch (error) {
               // A call its stop or its signal cut off ends interrupted; a fault leaves its end to the next open (the
@@ -1004,6 +1008,9 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
             refused: async (call, text) => cliRecord?.end(call.callId, "refused", text),
           });
           if (follow === "park") {
+            // A person's stop (or cancel) waiting here is taken: the run ends stopped, its waiting calls withdrawn in the
+            // end's commit. Released parked instead, its untaken stop would have it claimed again at once, and again.
+            if (stopReason?.kind === "command") return await writeEnd(harness, root, gate, { state: "stopped", summary: endedBy(stopReason.cancel) }, [stopReason.commandId], await cutRows(claim, spec, "stopped"));
             gate.seal(new Parked());
             return { state: "parked" };
           }
@@ -1477,17 +1484,17 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     // card reads answered (withdrawn), never waiting for good on a final run.
     const byPerson = data.state === "stopped" || stopReason?.kind === "command";
     const withdrawn = byPerson ? withdrawnAnswers(await entriesOf(theGate.journal, conversation.id, context), isoNow()) : [];
-    // A CLI's call parked at its gate and never sent, withdrawn here: its record ends in the same commit, in the
-    // withdrawal's words (never interrupted: it never left).
-    const unsent = new Set(cliRecord?.unsentParked() ?? []);
-    const recordEnds = withdrawn.filter((answer) => unsent.has(answer.callId)).map((answer) => answer.callId);
+    // A CLI's call on the record from its gate and never sent (parked, or its runner gone before its send): its record ends
+    // with the run's, in the same commit, saying it was not run (never interrupted: it never left).
+    const recordEnds = cliRecord?.unsentParked() ?? [];
+    const notRun = data.state === "stopped" ? STOPPED_WHILE_WAITING : ENDED_WHILE_WAITING;
     const ended = theGate.expect(writesEntry(KINDS.end), { run, ...(also.length ? { also } : {}), ...(take.length ? { take } : {}) });
     // A seal while the end is committed fails it before it is awaited: handled here, read by the await below.
     ended.catch(() => undefined);
     try {
       await on.commit(async (tx) => {
         for (const answer of withdrawn) await tx.appendEntry(conversation.id, { kind: KINDS.answer, data: answer as unknown as JsonValue });
-        for (const callId of recordEnds) await tx.appendEntry(conversation.id, { kind: KINDS.callEnd, data: { callId, status: "refused", output: STOPPED_WHILE_WAITING } as unknown as JsonValue });
+        for (const callId of recordEnds) await tx.appendEntry(conversation.id, { kind: KINDS.callEnd, data: { callId, status: "refused", output: notRun } as unknown as JsonValue });
         if (failedWith !== undefined) await tx.appendEntry(conversation.id, { kind: PI_ASSISTANT, model: [cliErrorAnswer(specNow?.adapter.id ?? "cli", failedWith, now())] as never });
         return tx.appendEntry(conversation.id, { kind: KINDS.end, data: data as unknown as JsonValue });
       }, context);
@@ -1497,7 +1504,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       throw error;
     }
     await ended;
-    for (const callId of recordEnds) cliRecord?.noteEnd(callId, "refused", STOPPED_WHILE_WAITING);
+    for (const callId of recordEnds) cliRecord?.noteEnd(callId, "refused", notRun);
     return data.state === "failed" ? { state: "failed", error: { code: "run-failed", message: data.summary ?? "the run failed" } } : { state: data.state };
   }
 
@@ -1535,6 +1542,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       stopReason ??= reason;
       if (reason.kind !== "command") gate?.seal(new Interrupted(reason.kind));
       stopped();
+      stopAbort.abort(new Interrupted(reason.kind));
       wakeInbox();
       await finished?.catch(() => undefined);
     },

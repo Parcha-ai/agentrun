@@ -43,7 +43,7 @@ const quiet = { beforeIntent: async () => {}, beforeResult: async () => {} };
 
 /** A CLI stand-in with its own MCP client (Claude Code's call-id key): its session's proxy mounts the session's MCP, and
  *  its one turn calls `add` there over HTTP, then says what the door answered. `seen` keeps what it was handed. */
-function mcpCli(seen) {
+function mcpCli(seen, { reissue = false } = {}) {
   const client = { callIdMeta: "claudecode/toolUseId" };
   return {
     id: "stand-in-cli",
@@ -59,8 +59,25 @@ function mcpCli(seen) {
         credential: async () => "not-a-secret-provider",
         ...(spec.mcp ? { mcp: { session: spec.mcp, client } } : {}),
       }, randomBytes(32).toString("base64url"));
-      let state = (await io.writer.read()).some((record) => record.kind === "stand-in.sent") ? "idle" : "new";
+      // `reissue`: a session opened again after its turn was cut (sent, never done) is open; its recover() runs the turn
+      // again, issuing the same call under the same id, as a CLI's own resume does.
+      const kept = await io.writer.read();
+      const sentBefore = kept.some((record) => record.kind === "stand-in.sent");
+      let state = !sentBefore ? "new" : reissue && !kept.some((record) => record.kind === "stand-in.done") ? "open_turn" : "idle";
       let turn;
+      const callTurn = async () => {
+        const response = await fetch(`${proxy.url}/mcp/fake`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${proxy.key}`, "content-type": "application/json", accept: "application/json" },
+          body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "add", arguments: { a: 2, b: 3 }, _meta: { [client.callIdMeta]: CALL_ID } } }),
+        });
+        const body = await response.json();
+        seen.answer = body.result;
+        await io.writer.append([{ kind: "stand-in.done", data: null }]);
+        io.onEvent({ type: "text", delta: `It said ${body.result?.content?.[0]?.text}.` });
+        io.onEvent({ type: "turn_end", status: "completed" });
+        return { status: "completed" };
+      };
       return {
         get state() { return state; },
         async send(text) {
@@ -76,20 +93,12 @@ function mcpCli(seen) {
           }
           await io.writer.append([{ kind: "stand-in.sent", data: null }]);
           state = "idle";
-          turn = (async () => {
-            const response = await fetch(`${proxy.url}/mcp/fake`, {
-              method: "POST",
-              headers: { authorization: `Bearer ${proxy.key}`, "content-type": "application/json", accept: "application/json" },
-              body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "add", arguments: { a: 2, b: 3 }, _meta: { [client.callIdMeta]: CALL_ID } } }),
-            });
-            const body = await response.json();
-            seen.answer = body.result;
-            io.onEvent({ type: "text", delta: `It said ${body.result?.content?.[0]?.text}.` });
-            io.onEvent({ type: "turn_end", status: "completed" });
-            return { status: "completed" };
-          })();
+          turn = callTurn();
         },
-        async recover() {},
+        async recover() {
+          state = "idle";
+          turn = callTurn();
+        },
         async settleOpenTurn() { state = "idle"; },
         turnEnd: () => turn,
         async interrupt() {},
@@ -99,7 +108,7 @@ function mcpCli(seen) {
   };
 }
 
-async function cliRun(t, { settings = {}, grants = ["mcp:fake/add"], before, gateOf, wrap = (store) => store, timing = STEADY } = {}) {
+async function cliRun(t, { settings = {}, grants = ["mcp:fake/add"], before, gateOf, wrap = (store) => store, timing = STEADY, reissue = false } = {}) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-mcp-cli-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -123,7 +132,7 @@ async function cliRun(t, { settings = {}, grants = ["mcp:fake/add"], before, gat
   const loop = createAdapterLoop(async (claim, run) => {
     const mcp = await mcpForClaim({ claim, store, sealKey: KEY, grants, harness: run.harness, work: () => work });
     return {
-      adapter: mcpCli(seen),
+      adapter: mcpCli(seen, { reissue }),
       session: { key: "root", label: "root", system: [], tools: [lookup], context: "fresh" },
       input: "Add them.",
       record: "loop",
@@ -336,9 +345,13 @@ test("P6: an allowed parked call whose runner dies after its sent mark, before t
 test("P4: a stop withdraws a parked call: its record ends in the withdrawal's words, never interrupted, and nothing is sent", async (t) => {
   const run = await cliRun(t);
   assert.equal(run.row.state, "parked", JSON.stringify(run.row));
+  const parkedAt = run.row.epoch;
   await run.server.command("run-1", { kind: "stop" });
   await reached(async () => (await run.server.runs.get("run-1")).state === "stopped", "the run ends stopped");
-  const { entries } = await run.settled();
+  const { entries, row } = await run.settled();
+  // The stop is taken by the one claim that read it (its end is its release): never released parked and claimed again.
+  assert.ok(row.epoch - parkedAt <= 2, `one claim for the stop, not a loop: the epoch moved ${row.epoch - parkedAt}`);
+  assert.equal((await run.server.commands("run-1", 0)).find((one) => one.kind === "stop")?.refused, null, "the stop row taken");
   assert.deepEqual(ofCall(entries, KINDS.callEnd).map((data) => [data.status, data.output]), [["refused", STOPPED_WHILE_WAITING]]);
   assert.equal(toolCalls(run.fake).length, 0, "nothing sent");
 });
@@ -350,4 +363,22 @@ test("P5: a parked call the owner denies ends refused on the record in the deny'
   const { entries } = await run.settled();
   assert.deepEqual(ofCall(entries, KINDS.callEnd).map((data) => [data.status, data.output]), [["refused", deniedText("mcp:fake/add", "not today")]]);
   assert.equal(toolCalls(run.fake).length, 0, "nothing sent");
+});
+
+test("P7: an allowed call whose runner dies after its start and before its sent mark is run once when the CLI issues it again, never interrupted", async (t) => {
+  let hit;
+  const atMark = new Promise((resolve) => (hit = resolve));
+  const run = await cliRun(t, {
+    settings: { "mcp:fake/add": { permission: "allow" } },
+    timing: SHORT,
+    reissue: true,
+    wrap: (store) => sentWatched(store, () => (hit(), new Promise(() => {}))),
+  }).catch((error) => assert.fail(error));
+  await atMark;
+  run.crashRunner();
+  await reached(async () => (await run.server.runs.get("run-1")).state === "ended", "the next runner ends the run");
+  const { entries } = await run.settled();
+  assert.equal(toolCalls(run.fake).length, 1, "sent once, on the CLI's re-issue");
+  assert.deepEqual([ofCall(entries, KINDS.callStart).length, ofCall(entries, SENT).length], [1, 1], "one start, one sent mark");
+  assert.deepEqual(ofCall(entries, KINDS.callEnd).map((data) => [data.status, data.output]), [["done", "5"]], "its real result, never interrupted");
 });
