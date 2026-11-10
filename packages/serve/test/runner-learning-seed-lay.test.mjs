@@ -2,7 +2,8 @@
 // into the run's work through the run's Workspace, on both spec builders: pi's (adapterRunSpecFromLaunch) and the CLI
 // harnesses' (cliRunSpecFromLaunch: claude-agent, codex), as main's start laid it (learning.ts pinSeed, minus the pin):
 // - .learning/, made fresh: the served index (MEMORY.md) and each active note, each cut of the server's secrets (the
-//   runner's own and every key saved on the server); the run's own read tool reads a note there;
+//   runner's own and every one the server keeps sealed, runner/store-secrets.ts storeSecrets: its saved keys, a trigger's
+//   signing secret among the rest); the run's own read tool reads a note there;
 // - each active learned skill at .agents/skills/<name>/ (its SKILL.md as a harness is served it), in the skill list the
 //   harness is handed (pi's prompt; codex's native skills), unless a revision skill has its name;
 // - Mode 2: both on the run's Archil disk under the run's key, from the disk's learning folder, nothing on this machine.
@@ -31,6 +32,7 @@ const { seedOf } = await import("../dist/learning.js");
 const { saveArchilSettings } = await import("../dist/archil-settings.js");
 const { sealColumn, sealedAt } = await import("../dist/store/seal.js");
 const { FakeArchilDisk } = await import("./fixtures/archil-fake.mjs");
+const { seal } = await import("@parcha/pi-durable-agent");
 const { archilControlFetch } = await import("./archil-control-fake.mjs");
 
 const AGENT = "agent-1";
@@ -42,6 +44,12 @@ const STAND_IN = new URL("./fixtures/fake-opencode-serve.mjs", import.meta.url).
 const SAVED = { name: "SOME_SERVICE_KEY", value: "saved-value-for-the-cut-0001" };
 const NOTE = "---\nname: Retry slowly\ndescription: Back off between retries\ntype: reference\n---\nWait a little longer after each failed call.\n";
 const LEAKY = `---\nname: Use the key\ndescription: Call the service\ntype: reference\n---\nCall it with ${SAVED.value} in the header.\n`;
+/** A webhook trigger's signing secret the store keeps (trigger_settings), with no shape a check knows: plainly a test
+ *  value, and never one the run is handed. */
+const HOOK = `plantedhookplain${"q8".repeat(12)}`;
+const HOOKED = `---\nname: Sign the hook\ndescription: Sign each delivery\ntype: reference\n---\nSign it with ${HOOK} first.\n`;
+/** Keeps HOOK as the webhook source's settings keep a trigger's secret (sealed-settings-store.ts), sealed under its AAD. */
+const plantHook = (server) => server.triggerSettings.put({ adapter: "webhook", scope: "trg-1", field: "secret", sealed: seal(SEAL_KEY, Buffer.from(HOOK, "utf8"), "trigger_settings|webhook|trg-1|secret").toString("base64") });
 const SKILL = "---\nname: weekly-summary\ndescription: Summarize the week.\n---\nList the week's items, newest first.\n";
 const scratch = (name) => mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), name));
 const skillAt = (work) => join(work, ".agents", "skills", "weekly-summary", "SKILL.md");
@@ -74,14 +82,15 @@ async function readThrough(spec, path) {
 /** pi's spec for a learning run claimed through runner-spec-support; `seed`: "landed" (the seed is in the folder),
  *  "gone" (the start pins a commit the folder does not have), or "none" (no learning start). `skills`: the revision's
  *  own skills. `more`: more seed notes. */
-async function piSpec(t, { seed = "landed", skills, more } = {}) {
+async function piSpec(t, { seed = "landed", skills, more, plant } = {}) {
   const launch = {};
   return specFor(t, {
     body: { learning: true, tools: ["read"] },
     ...(skills ? { skills } : {}),
     keys: { [SAVED.name]: SAVED.value },
     launch,
-    before: async (_server, _key, dir) => {
+    before: async (server, _key, dir) => {
+      await plant?.(server);
       if (seed === "landed") launch.learning = startAt(await landSeed(dir, { more }));
       if (seed === "gone") launch.learning = startAt("0".repeat(40));
     },
@@ -91,7 +100,7 @@ async function piSpec(t, { seed = "landed", skills, more } = {}) {
 /** A CLI harness's spec for a learning run, built for its claim as the dispatch builds it (no session opened), the way
  *  runner-cli-spec's specOn does. `archil`: Mode 2 over that disk fake, the learning folder on "the disk" a local
  *  folder of its own (folderTestHooks), Archil's control plane a fake fetch. `log`: the spec's log lines. */
-async function cliSpec(t, harness, { seed = "landed", archil } = {}) {
+async function cliSpec(t, harness, { seed = "landed", archil, more, plant } = {}) {
   const dir = scratch("runner-learning-seed-lay-");
   const diskFolder = archil ? scratch("runner-learning-seed-disk-") : undefined;
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
@@ -108,7 +117,7 @@ async function cliSpec(t, harness, { seed = "landed", archil } = {}) {
   });
   // The seed lands where the run's place keeps the learning folder: Mode 2's on the disk (a stand-in folder), with a
   // decoy note of other text in the local data directory, which a Mode 2 run must never lay.
-  const sha = seed === "landed" ? await landSeed(diskFolder ?? dir) : seed === "gone" ? "0".repeat(40) : undefined;
+  const sha = seed === "landed" ? await landSeed(diskFolder ?? dir, { more }) : seed === "gone" ? "0".repeat(40) : undefined;
   if (archil) {
     await landSeed(dir, { note: NOTE.replace("Wait a little longer", "Call again at once") });
     folderTestHooks.workspace = (place) => learningWorkspace({ mode: "local", data: place.mode === "archil" ? diskFolder : place.data, agentId: place.agentId });
@@ -117,6 +126,7 @@ async function cliSpec(t, harness, { seed = "landed", archil } = {}) {
   await server.agents.create({ id: AGENT, name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", harness, tools: ["read"], learning: true } });
   const launch = { input: { content: "Read your notes." }, title: "t", place: { mode: "runner" }, harness, model, ...(sha !== undefined ? { learning: startAt(sha) } : {}) };
   await server.runs.create({ id: RUN, agentId: AGENT, revisionId: "rev-1" }, { body: launch });
+  await plant?.(server);
   const control = archil ? archilControlFetch() : undefined;
   if (archil) {
     await saveArchilSettings(server, ARCHIL_SETTINGS);
@@ -183,6 +193,20 @@ test("a note holding a key saved on the server is laid cut of it", async (t) => 
   const laid = readFileSync(join(workFolder, ".learning", "use-the-key.md"), "utf8");
   assert.equal(laid.includes(SAVED.value), false, "the saved key's value is cut");
   assert.match(laid, /Call it with .* in the header\./, "the rest of the note is there");
+});
+
+test("pi: a note holding a webhook trigger's signing secret the store keeps is laid cut of it", async (t) => {
+  const { workFolder } = await piSpec(t, { more: { "sign-the-hook.md": HOOKED }, plant: plantHook });
+  const laid = readFileSync(join(workFolder, ".learning", "sign-the-hook.md"), "utf8");
+  assert.equal(laid.includes(HOOK), false, "the trigger's secret is cut");
+  assert.match(laid, /Sign it with .* first\./, "the rest of the note is there");
+});
+
+test("codex: a note holding a webhook trigger's signing secret the store keeps is laid cut of it", async (t) => {
+  const { workFolder } = await cliSpec(t, "codex", { more: { "sign-the-hook.md": HOOKED }, plant: plantHook });
+  const laid = readFileSync(join(workFolder, ".learning", "sign-the-hook.md"), "utf8");
+  assert.equal(laid.includes(HOOK), false, "the trigger's secret is cut");
+  assert.match(laid, /Sign it with .* first\./, "the rest of the note is there");
 });
 
 test("a revision skill named like a learned one is the revision's: the learned one is not laid over it", async (t) => {
