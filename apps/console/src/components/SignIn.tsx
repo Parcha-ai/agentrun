@@ -121,3 +121,23 @@ function offerNote(offer: ImportOffer): string {
   if (offer.sessions === null || offer.projects === null) return `The count isn't known. ${EACH}`;
   return `${count(offer.sessions, "session")} in ${count(offer.projects, "project")}. ${EACH}`;
 }
+
+/** The card a first load shows while this server's session can't be read (`GET /v2/auth/session` failed): what failed,
+ *  that it is tried again on its own, and Retry now. Never a sign-in or a setup: without the session's answer the page
+ *  can't tell whether the server has its owner yet. `starting`: the address answered with a gateway's page (502, 503 or
+ *  504, not the server's JSON), as a host's edge does while the server starts, redeploys or wakes. */
+export function SessionUnread({ problem, starting = false, onRetry }: { problem: string; starting?: boolean; onRetry: () => void }) {
+  return (
+    <main className="grid min-h-dvh place-items-center bg-background p-6 text-foreground">
+      <div className="w-full max-w-[440px] border bg-card p-8">
+        <span className="flex items-center gap-1.5 font-mono text-figure font-semibold" aria-label="AgentRun"><ChevronRight className="size-5 text-primary-text" aria-hidden /><span>agent<span className="text-primary-text">.run()</span></span></span>
+        <h1 className="mb-3 mt-8 text-2xl">{starting ? "This server is starting" : "Can't read this server's sign-in"}</h1>
+        <p className="mb-4 text-prose leading-relaxed text-muted-foreground">{starting
+          ? "Its address answers for it until it is up (a first start, a redeploy or a wake can take a minute or two). Trying again…"
+          : "The page asked the server whether it has its owner yet, and got no answer it could read, so it can't show setup or sign-in. It asks again on its own."}</p>
+        <p className="mb-6 break-words font-mono text-body text-destructive-text" role="alert">{problem}</p>
+        <Button type="button" variant="solid" onClick={onRetry} className="w-full text-body">Retry now</Button>
+      </div>
+    </main>
+  );
+}
