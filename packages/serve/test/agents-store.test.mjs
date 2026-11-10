@@ -191,3 +191,32 @@ test("agentView: the contract shape, its skills with sizes, the sign-ins and run
   assert.equal(view.definition.id, "a");
   assert.match(view.created_at, /^\d{4}-\d{2}-\d{2}T/);
 });
+
+test("two servers on one store race an If-Match edit of the same revision: exactly one lands, the other is precondition_failed, and the store's write is the guarantee", async (t) => {
+  const first = await storeOn(t);
+  const { store: second } = await storeOn(t, { file: first.file, role: "runner" });
+  const entry = await createAgent(first.store, { definition: DEF({ id: "raced" }), skills: SKILLS });
+  // Both read the same current revision and both checks pass before either writes: each server's own reads agree, so only
+  // the store's conditional write can tell them apart.
+  let arrived = 0;
+  let release;
+  const both = new Promise((resolve) => (release = resolve));
+  const check = async () => {
+    if (++arrived === 2) release();
+    await both;
+  };
+  const edits = await Promise.allSettled([
+    commitAgent(first.store, entry, { definition: DEF({ id: "raced", instructions: "From the first." }), skills: SKILLS }, { ifCurrent: entry.revision.id, check }),
+    commitAgent(second, entry, { definition: DEF({ id: "raced", instructions: "From the second." }), skills: SKILLS }, { ifCurrent: entry.revision.id, check }),
+  ]);
+  assert.deepEqual(edits.map((e) => e.status).sort(), ["fulfilled", "rejected"]);
+  const lost = edits.find((e) => e.status === "rejected");
+  assert.ok(lost.reason instanceof ApiError && lost.reason.code === "precondition_failed", String(lost.reason));
+  const now = await getAgent(first.store, "raced");
+  assert.equal(now.revisions, 2, "one revision added, not two");
+  assert.equal(now.revision.parent, entry.revision.id, "on the revision both read");
+  // And at the store itself: an addRevision on a current revision that moved writes nothing.
+  const { RevisionMoved } = await import("../dist/store/index.js");
+  await assert.rejects(second.agents.addRevision({ agentId: "raced", ifCurrent: entry.revision.id, id: "rev-late", kind: "agentic", body: now.revision.body }), (e) => e instanceof RevisionMoved && e.current === now.revision.id);
+  assert.equal((await getAgent(first.store, "raced")).revisions, 2);
+});
