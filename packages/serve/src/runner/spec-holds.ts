@@ -13,6 +13,8 @@ type Held = {
   readonly ws?: { end(): Promise<void> };
   /** The claim's Archil keys, dropped from memory last, once nothing more reads the disk (the CLI spec's). */
   readonly keys?: { release(): void } | undefined;
+  /** What the spec hands the loop, which lets it go itself (the claim's MCP): let go here only when the build throws. */
+  readonly passed?: { release(): void } | undefined;
 };
 
 const words = (error: unknown): string => (error as Error)?.message ?? String(error);
@@ -49,16 +51,26 @@ export class SpecHolds {
     await ws?.end().catch((error: unknown) => log(`the run's workspace end failed: ${words(error)}`));
     keys?.release();
   }
+
+  /** What the spec would have handed the loop, let go: only a build that throws calls it. */
+  releasePassed(): void {
+    try {
+      this.#held.passed?.release();
+    } catch (error) {
+      this.#log(`the run's MCP could not be let go: ${words(error)}`);
+    }
+  }
 }
 
 /** A spec built by `build`, which holds what it makes in the SpecHolds it is given; when it throws, everything held by
- *  then is let go (SpecHolds.release) and its own error thrown, unchanged. */
+ *  then is let go (SpecHolds.release, then what it would have handed the loop) and its own error thrown, unchanged. */
 export async function specBuilt<T>(build: (holds: SpecHolds) => Promise<T>): Promise<T> {
   const holds = new SpecHolds();
   try {
     return await build(holds);
   } catch (error) {
     await holds.release();
+    holds.releasePassed();
     throw error;
   }
 }

@@ -146,6 +146,8 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // credentials opened under the runner's seal key (deps.sealKey) into this claim's memory, one gateway for the claim.
   // First, before the session opens: a refusal (a pin that cannot be made, a pinned meta tool) ends the run in its words.
   const mcp = await mcpForClaim({ claim, store: deps.store, sealKey: deps.sealKey, grants: granted, harness: run.harness, work: () => runFolder(deps.data, runRow.agentId, claim.runId), launchInput: launch.input, githubAppAccess: (store, key, input) => githubAppAccess(store, key, input, deps.githubApi ? { api: deps.githubApi } : {}), ...(deps.githubMcpOrigin ? { githubMcpOrigin: deps.githubMcpOrigin } : {}) });
+  // The claim's MCP goes to the loop, which lets it go; a build that throws lets it go itself.
+  holds.hold({ passed: mcp });
 
   // The harness: the launch's, else the revision's. Its table entry (facts, model choice, adapter, skill check), read from
   // the run's environment table as main does (harnessOf: the built-in entries, a test's module merged over them under a
@@ -168,12 +170,14 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     // fake) is spread into the mount, so no test reaches the real control plane. TODO(k2 lazy mint): the mint moves into
     // computerForClaim (a mounting computer only), with the ttl the run's lifetime bound (not this fixed figure). As pi does.
     : await archilClaim({ settings: archilSettings, keys: deps.store.sealedKeys, sealKey: deps.sealKey, signal: run.signal ?? new AbortController().signal, env: deps.env, mount: { runId: claim.runId, epoch: claim.epoch, ttlMs: MOUNT_TTL_MS, ...(deps.mountControl ?? {}) }, ...(deps.makeArchilDisk ? { makeDisk: deps.makeArchilDisk } : {}) });
+  // Each resource is held the moment it exists (spec-holds.ts): a throw after it lets it go. The claim's Archil keys go
+  // from memory last, once nothing more reads the disk.
+  holds.hold({ archil, keys: archil });
   // The run's Workspace at the claim, and its uploaded files copied into work/inputs/ once.
   const ws = archil === undefined
     ? await openRunWorkspace({ mode: 1, agentId: runRow.agentId, runId: claim.runId, data: deps.data, log })
     : await openRunWorkspace({ mode: 2, agentId: runRow.agentId, runId: claim.runId, archil, log });
-  // The claim's Archil keys go from memory last, once nothing more reads the disk.
-  holds.hold({ archil, ws, keys: archil });
+  holds.hold({ ws });
   if (launch.files?.length) {
     const copied = await ws.workspace.list(INPUTS_DIR).then(() => true, () => false);
     if (!copied) {
@@ -190,6 +194,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     // run's end revokes it too, so it goes on every outcome even with no computer. Idempotent. As the pi spec does.
     { ...deps.computerDeps, mode, workspace: ws.workspace, sealKey: deps.sealKey, ...(archil ? { revokeMount: () => archil.revoke() } : {}), ...(run.phase ? { onImageWait: (making, image) => run.phase?.(imageWaitWords(making, image)) } : {}) },
   );
+  holds.hold({ computer });
 
   // The CLI works in the run's scratch folder on this machine (its working directory, swept at the run's end), its own
   // files (home, state) in a private folder inside it, never on the run's disk. The scratch is an alias of the run's
@@ -200,7 +205,6 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   await mkdir(dir, { recursive: true, mode: 0o700 });
   // The run's shell is its computer's (600 s) where one mounts its folder; with none, Archil's serverless exec in Mode 2
   // (295 s), and in Mode 1 none at all: no bash family, its folder being one of this server's own (run-tools.ts).
-  holds.hold({ computer });
   const tools = await runTools(ws.workspace, computer.computer, { mode, context, aliases: [scratch], ...(computer.hold ? { hold: computer.hold } : {}) });
   holds.hold({ tools });
   const root = runFolder(deps.data, runRow.agentId, claim.runId);

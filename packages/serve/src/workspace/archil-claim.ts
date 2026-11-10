@@ -129,7 +129,8 @@ export async function archilClaim(options: ArchilClaimOptions): Promise<ArchilCl
    *  by their names, once per mint asked for: a mint whose answer was lost (Archil made the user, this claim never heard
    *  of it) is found there; and Archil's list, read right after another caller's mint, may not hold that user yet
    *  (mint-4), so the reclaim before this claim's mint can miss an earlier claim's, which by the run's end the list holds.
-   *  A mint never heard of gets one more read 2 s later, past that lag. Best effort: one still missed ends at its ttl. */
+   *  A mint never heard of always gets one more read 2 s later, past that lag. Best effort: one still missed ends at its
+   *  ttl. */
   const revoke = async (): Promise<void> => {
     const credential = live ?? (await minted?.catch(() => undefined));
     if (credential !== undefined) {
@@ -142,8 +143,10 @@ export async function archilClaim(options: ArchilClaimOptions): Promise<ArchilCl
     if (!asked || mount === undefined) return;
     asked = false;
     // No signal: a lost claim's is aborted already, and this remove is what its loss asks for.
-    const found = await removeRunMountTokens(credentialOptions, mount.runId, mount.epoch).catch(() => []);
-    if (credential === undefined && found.length === 0) {
+    await removeRunMountTokens(credentialOptions, mount.runId, mount.epoch).catch(() => undefined);
+    // A mint never heard of: its user may not be in the list yet, whatever this read found (another epoch's user it
+    // removed is not this mint's), so the list is read once more past Archil's lag, and every match then removed too.
+    if (credential === undefined) {
       await new Promise((done) => setTimeout(done, LOST_MINT_REREAD_MS));
       await removeRunMountTokens(credentialOptions, mount.runId, mount.epoch).catch(() => undefined);
     }

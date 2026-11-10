@@ -30,7 +30,7 @@ import { createRegistry, Harness } from "@earendil-works/pi-durable";
 const { openSqliteStore } = await import("../dist/store/sqlite/store.js");
 const { adapterRunSpecFromLaunch } = await import("../dist/runner/adapter-run-spec.js");
 const { cliRunSpecFromLaunch } = await import("../dist/runner/cli-run-spec.js");
-const { runFolder, runKey } = await import("../dist/workspace/paths.js");
+const { runFolder, runKey, scratchFolder } = await import("../dist/workspace/paths.js");
 const { saveArchilSettings } = await import("../dist/archil-settings.js");
 const { ARCHIL_API_KEY_ROW } = await import("../dist/workspace/index.js");
 const { sealColumn, sealedAt } = await import("../dist/store/seal.js");
@@ -111,12 +111,13 @@ const mountingComputer = async (_launch, _store, given) => {
  *  revision's grant; `monid`: the answer monid's faked API gives (its key then in the runner's environment). `routeOf`: the
  *  run's model route (the stub by default). `fails`: the build is expected to throw, and its error is answered.
  *  `controlFetch`: the claim's fetch to the control fake, given the fake's own (a test that loses an answer wraps it).
- *  `existing`: token users the disk holds before the claim (another claim's, another run's). */
-async function mode2Spec(t, { harness, build, watch = false, use = async () => {}, computer = async () => ({ release: async () => {} }), signal, phase, tools = ["read", "write"], monid, routeOf = stubRoute, fails = false, controlFetch = (fetch) => fetch, existing = [] }) {
+ *  `controlOptions`: the control fake's own (its users before the claim, `existing`; a forced answer; a lagging list).
+ *  `prepare(dir)`: called with the data directory before the build (a test that breaks a folder the build makes). */
+async function mode2Spec(t, { harness, build, watch = false, use = async () => {}, computer = async () => ({ release: async () => {} }), signal, phase, tools = ["read", "write"], monid, routeOf = stubRoute, fails = false, controlFetch = (fetch) => fetch, controlOptions = {}, prepare = async () => {} }) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-mode2-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
-  const control = archilControlFetch({ existing });
+  const control = archilControlFetch(controlOptions);
   const guard = guardFetch(monid);
   let spec;
   let harnessRun;
@@ -147,6 +148,7 @@ async function mode2Spec(t, { harness, build, watch = false, use = async () => {
   writeFileSync(join(local, "inputs", "decoy.txt"), "on this machine");
   writeFileSync(join(local, "turn-origin.json"), JSON.stringify({ origin: "person" }));
 
+  await prepare(dir);
   const [claim] = await store.runs.claimMany("runner-a", 1, { leaseMs: 60_000 });
   const registry = createRegistry();
   let models = createModels();
@@ -400,10 +402,61 @@ test("pi's spec in Mode 2: the cleanup of a mint never heard of removes the run'
     await given.workspace.mountSpec();
     return { release: async () => {} };
   };
-  const { error, control } = await mode2Spec(t, { build: adapterRunSpecFromLaunch, computer: minting, controlFetch: losing, existing, fails: true });
+  const { error, control } = await mode2Spec(t, { build: adapterRunSpecFromLaunch, computer: minting, controlFetch: losing, controlOptions: { existing }, fails: true });
   assert.match(error.message, /the connection closed before the answer/);
   const minted = control.requests.find((one) => one.method === "POST");
   assert.equal(minted?.body?.nickname, `agentrun:${RUN}:1`, "this claim is epoch 1");
   const left = [...control.users.values()].map((user) => user.identifier).sort();
   assert.deepEqual(left, ["tok-newer", "tok-other"], "the run's later epoch's user and another run's stay; this epoch's and the earlier one's are gone");
+});
+
+// Each resource is held the moment it exists: the CLI spec makes its harness folder after the computer is made, and a
+// mkdir that fails there (a file where the folder goes) still lets the computer go and removes the credential.
+test("the CLI spec (opencode) in Mode 2: its harness folder's mkdir failing after the computer is made lets the computer go once and removes the run's mount credential once", async (t) => {
+  let released = 0;
+  const made = async (_launch, _store, given) => {
+    await given.workspace.mountSpec();
+    return { release: async () => {
+      released += 1;
+      await given.revokeMount?.();
+    } };
+  };
+  // A file where the harness folder goes: the mkdir under it fails.
+  const blocked = async (dir) => {
+    const scratch = scratchFolder(dir, AGENT, RUN);
+    mkdirSync(scratch, { recursive: true });
+    writeFileSync(join(scratch, "harness"), "a file, not a folder");
+  };
+  const { error, control, outbound } = await mode2Spec(t, { harness: "opencode", build: cliRunSpecFromLaunch, computer: made, prepare: blocked, fails: true });
+  assert.match(String(error.code ?? error.message), /EEXIST|ENOTDIR/, `the mkdir's own error: ${error.message}`);
+  assert.equal(released, 1, "the computer made for the run is let go, once");
+  assert.deepEqual(deletesOf(control), [`DELETE ${DISK_PATH}/users/token?identifier=tok-1`], "the credential removed, once");
+  assert.deepEqual(outbound, []);
+});
+
+// A lost mint's user is removed even when the first sweep at the revoke found another of the run's users: that one is an
+// older claim's, missing from the list read before the mint and listed by the revoke; the lost mint's own is listed
+// only on the read 2 s later.
+test("pi's spec in Mode 2: a lost mint's user that appears only on the later read is removed, though the first sweep removed an older claim's user", async (t) => {
+  let lists = 0;
+  const controlOptions = {
+    existing: [{ identifier: "tok-older", nickname: `agentrun:${RUN}:0`, token: "fake-test-key-older" }],
+    // The list read before the mint misses the older user (Archil's list lags); the revoke's first read, right after the
+    // mint, misses the minted one (lagging); the read 2 s later holds it.
+    lagging: true,
+    answer: ({ method, path }) => (method === "GET" && /^\/api\/disks\/[^/]+$/.test(path) && lists++ === 0 ? { status: 200, body: { success: true, data: { authorizedUsers: [] } } } : undefined),
+  };
+  const losing = (fetch) => async (input, init) => {
+    const answer = await fetch(input, init);
+    if ((init?.method ?? "GET") === "POST") throw new TypeError("fetch failed: the connection closed before the answer");
+    return answer;
+  };
+  const minting = async (_launch, _store, given) => {
+    await given.workspace.mountSpec();
+    return { release: async () => {} };
+  };
+  const { error, control } = await mode2Spec(t, { build: adapterRunSpecFromLaunch, computer: minting, controlFetch: losing, controlOptions, fails: true });
+  assert.match(error.message, /the connection closed before the answer/);
+  assert.deepEqual(deletesOf(control), [`DELETE ${DISK_PATH}/users/token?identifier=tok-older`, `DELETE ${DISK_PATH}/users/token?identifier=tok-1`], "the older claim's user on the first read, the lost mint's on the later one");
+  assert.deepEqual([...control.users.keys()], [], "no user of the run is left");
 });
