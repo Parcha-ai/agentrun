@@ -7,7 +7,7 @@ import { test } from "node:test";
 import { mcpSource, snapshotVersion, MCP_CLIP, MAX_TOOLS } from "../dist/sources/mcp/index.js";
 import { baseTools, credentialOf, ELSEWHERE, fakeMcpNetwork, ORIGIN, URL_ } from "./fake-mcp-network.mjs";
 
-const SECRET = "sk-live-0123456789abcdef";
+const SECRET = `not-a-secret-${"upstream-key-0123456789abcdef"}`;
 const bearer = { url: URL_, auth: "bearer", name: "fake" };
 const ctxOf = (fake, settings = bearer, extra = {}) => ({ signal: new AbortController().signal, fetch: fake.fetch, credential: credentialOf({ authorization: SECRET }), settings, ...extra });
 const callCtxOf = (fake, settings = bearer, extra = {}) => ({ ...ctxOf(fake, settings), callId: "call-1", attempt: 1, filed: [], async file(name, body) { this.filed.push({ name, body }); return name; }, ...extra });
