@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { raw } from "./store-target.mjs";
 import { Triggers } from "../dist/triggers.js";
+import { RunFinal } from "../dist/store/index.js";
 import { storeOn, T0 } from "./store-helpers.mjs";
 import { fakeClock } from "./trigger-support.mjs";
 
@@ -100,6 +101,21 @@ test("the bound is read in the queueing transaction: two firings at once cannot 
   assert.deepEqual(both.map((r) => ("skipped" in r ? "skipped" : "sent")).sort(), ["sent", "skipped"]);
   const statuses = (await store.triggers.firings("trg-1")).map((f) => f.status).sort();
   assert.deepEqual(statuses, ["sent", "skipped"]);
+});
+
+test("a run that has ended takes no trigger message: RunFinal, as a command to it is, no row written and the firing still due", async (t) => {
+  const { store, file } = await storeOn(t);
+  await store.agents.create({ id: "agent-1", name: "One" }, { id: "rev-1", kind: "agentic", body: {} });
+  await store.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" });
+  await store.triggers.create({ id: "trg-1", agentId: "agent-1", name: "poke", enabled: true, source: { kind: "webhook" }, target: { kind: "message_run", run_id: "run-1", input: { content: "Poke." } }, nextAt: null, catchupWindowS: 3600 });
+  await store.triggers.record("trg-1", [{ key: "fir-1", by: "webhook", nominalAt: T0, status: "due" }]);
+  const db = await raw(file);
+  await db.run("UPDATE runs SET state = 'ended' WHERE id = 'run-1'");
+  await db.close();
+  const body = { text: "Poke.", origin: { kind: "trigger", trigger_id: "trg-1", source: "webhook", owner: false }, answers: false };
+  await assert.rejects(store.triggers.message({ triggerId: "trg-1", key: "fir-1" }, "run-1", { kind: "steer", body }, { max: 20, reason: "full" }), RunFinal);
+  assert.deepEqual(await store.commands("run-1", 0), [], "no command row");
+  assert.equal((await store.triggers.firing("trg-1", "fir-1")).status, "due", "the firing as it was");
 });
 
 test("a trigger is named once per agent: a second of the same name, made or renamed, is 409 name_taken in words", async (t) => {

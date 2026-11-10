@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { claimFence, storeNow, type StoreNow } from "../fence.js";
 import { RunStorage } from "../journal/storage.js";
-import { DDL, SCHEMA_VERSION } from "../schema.js";
+import { COMMANDS_ONE_ANSWER, DDL, SCHEMA_VERSION } from "../schema.js";
 import {
   AgentArchived, CommandTaken, Fenced, RunFinal, SchemaVersionUnknown, STORE_WRITE_DEADLINE_MS, StoreConstraint, StoreFromEarlierVersion, TriggerFull, type AgentRow, type Agents,
   type AlsoRow, type Claim, type Command, type FiringChange, type FiringRow, type FiringStatus, type ImportRunInput, type Journal, type NewRevision, type RevisionRow, type RunPatch, type RunRow, type Runs,
@@ -266,13 +266,29 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
     if (found !== SCHEMA_VERSION) throw new SchemaVersionUnknown(file, found, SCHEMA_VERSION);
     // The per-run viewer table was renamed browser_viewers → computer_viewers (schema.ts). Its rows are ephemeral, so none
     // migrate; the server drops a stale browser_viewers an earlier build of this version left, so none lingers beside it.
-    if (role === "server") await connection.write([{ sql: "DROP TABLE IF EXISTS browser_viewers" }], { full: true });
+    // An earlier build of this version made no one-answer index on commands (schema.ts COMMANDS_ONE_ANSWER), or one that
+    // counted refused answers: the server rebuilds it, so a second answer to one approval is refused on every store. A
+    // store such a build left may hold two unrefused answers to one approval: the earliest stands (the one the runner
+    // acted on) and each later one is refused in the same write, before the index, so the store opens. None is deleted.
+    if (role === "server") {
+      await connection.write([
+        { sql: "DROP TABLE IF EXISTS browser_viewers" },
+        { sql: SECOND_ANSWERS_REFUSED, params: [(options.now ?? Date.now)()] },
+        { sql: "DROP INDEX IF EXISTS commands_one_answer" },
+        { sql: COMMANDS_ONE_ANSWER },
+      ], { full: true });
+    }
   } catch (error) {
     await connection.close().catch(() => undefined);
     throw error;
   }
   return storeOver(connection, options.now ?? Date.now);
 }
+
+/** Every unrefused approve or deny after the first for one approval of a run, refused with why (the open above). */
+const SECOND_ANSWERS_REFUSED = `UPDATE commands SET taken_at = COALESCE(taken_at, ?), refused = 'a second answer to one approval: the first one stands'
+  WHERE kind IN ('approve', 'deny') AND refused IS NULL AND json_extract(body, '$.approval') IS NOT NULL
+    AND id NOT IN (SELECT MIN(id) FROM commands WHERE kind IN ('approve', 'deny') AND refused IS NULL AND json_extract(body, '$.approval') IS NOT NULL GROUP BY run_id, json_extract(body, '$.approval'))`;
 
 /** How many released claims a store remembers, to refuse their journals. */
 const RELEASED_KEPT = 1024;
@@ -610,7 +626,10 @@ class SqliteStore implements Store {
             await tx.run(`UPDATE trigger_firings SET status = 'skipped', reason = ?, ${clear} WHERE trigger_id = ? AND key = ?`, bound.reason, triggerId, key);
             return { skipped: bound.reason };
           }
-          const row = await tx.get<{ id: number }>("INSERT INTO commands (run_id, kind, body, created_at) VALUES (?, ?, ?, ?) RETURNING id", runId, command.kind, json(command.body), at);
+          // As command(): the run row read under the share lock, so a message never lands on a run whose end is in flight
+          // or written, where it would wait untaken; a final run takes none (RunFinal) and the firing stays as it was.
+          const row = await tx.get<{ id: number }>(`INSERT INTO commands (run_id, kind, body, created_at) SELECT id, ?, ?, ? FROM runs WHERE id = ? AND state NOT IN (${FINAL})${d.shareLock} RETURNING id`, command.kind, json(command.body), at, runId);
+          if (!row) throw new RunFinal(runId);
           await tx.run(`UPDATE trigger_firings SET status = 'sent', run_id = ?, reason = NULL, ${clear} WHERE trigger_id = ? AND key = ?`, runId, triggerId, key);
           await tx.run("UPDATE triggers SET failures_in_a_row = 0, updated_at = ? WHERE id = ?", at, triggerId);
           return { sent: true as const, commandId: row!.id };
@@ -823,6 +842,20 @@ class SqliteStore implements Store {
           params: [name, url, auth, protocol, json(tools), json(prices), serverInfo === null ? null : json(serverInfo), instructions, sealed, at, updated, listed, credentialAt, ...stamp.params, left, ...stamp.params],
         }]);
         return mcpServerOf(result!.rows[0] as McpServerRecord);
+      },
+      // One statement compares the credential and writes, as keepRefreshed: no read between, so a refresh's keep never lands
+      // in a gap and is then written over. The credential's columns and the refresh lease are not in its SET.
+      rewrite: async ({ name, url, auth, protocol = null, tools, prices = null, serverInfo = null, instructions = null, listedAt, updatedAt }, seen) => {
+        const at = now();
+        const stamp = clock();
+        const [result] = await db.write([{
+          sql: `UPDATE mcp_servers SET url = ?, auth = ?, protocol = ?, tools = ?, prices = ?, server_info = ?, instructions = ?, updated_at = ?, listed_at = ?
+            WHERE name = ? AND ${d.nullSafeEquals("sealed")}
+            RETURNING ${mcpServerColumnsAt(stamp)}`,
+          params: [url, auth, protocol, json(tools), json(prices), serverInfo === null ? null : json(serverInfo), instructions, updatedAt ?? at, listedAt ?? at, name, seen, ...stamp.params],
+        }]);
+        const row = result!.rows[0] as McpServerRecord | undefined;
+        return row && mcpServerOf(row);
       },
       remove: async (name) => {
         await db.write([{ sql: "DELETE FROM mcp_servers WHERE name = ?", params: [name] }]);

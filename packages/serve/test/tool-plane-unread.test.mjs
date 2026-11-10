@@ -8,7 +8,8 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { permissionFrom } from "../dist/tool-gate.js";
-import { NATIVE_ASKS, planeFor, readToolSettings, relaunchPlane, ToolSettings } from "../dist/tool-plane.js";
+import { NATIVE_ASKS, planeFor, readToolSettings, relaunchPlane, TOOL_SETTINGS_KEY, ToolSettings } from "../dist/tool-plane.js";
+import { openSqliteStore, STORE_FILE } from "../dist/store/sqlite/store.js";
 import { fauxTable } from "./fixtures/faux-table.mjs";
 import { agent, scratch, serve } from "./support.mjs";
 
@@ -48,11 +49,14 @@ test("unread server settings: an ask is never lifted under never, in the gate's 
   }
 });
 
-test("a server started on an unreadable tool-settings.json: a never agent with native web_search on claude-agent and codex is held to ask (the native-ask warning, no CLI search); a PUT of the settings lifts it", { timeout: 120_000 }, async (t) => {
+test("a server started on a stored tool-settings row that does not read: a never agent with native web_search on claude-agent and codex is held to ask (the native-ask warning, no CLI search); a PUT of the settings lifts it", { timeout: 120_000 }, async (t) => {
   const first = await serve(t, GATE);
   const { data } = first;
   await first.close();
-  writeFileSync(join(data, "tool-settings.json"), "{ not json");
+  // A row that is not an object of tools to their settings (tool-plane.ts checkToolSettings), as a hand-edited store holds it.
+  const planted = await openSqliteStore({ file: join(data, STORE_FILE), role: "server" });
+  await planted.settings.put(TOOL_SETTINGS_KEY, "{ not json");
+  await planted.close();
   const { api } = await serve(t, { ...GATE, data });
   const NATIVE_ASKS_WORDS = /native search cannot wait for an approval/;
   for (const harness of ["claude-agent", "codex"]) {
@@ -64,7 +68,7 @@ test("a server started on an unreadable tool-settings.json: a never agent with n
     const search = tools.find((tool) => tool.name === "web_search");
     assert.equal(search?.permission, "ask", `${harness}: the agent read says ask, not an unattended allow: ${JSON.stringify(search)}`);
   }
-  // A PUT replaces the unread file: the settings read again, and never lifts the ask as before.
+  // A PUT replaces the unread row: the settings read again, and never lifts the ask as before.
   assert.equal((await api("PUT", "/settings/tools", {})).status, 200);
   const after = (await api("GET", "/agents/unread-codex")).body.tools.find((tool) => tool.name === "web_search");
   assert.deepEqual([after?.permission, after?.permission_from], ["allow", "unattended"], `after a PUT the settings read: ${JSON.stringify(after)}`);
