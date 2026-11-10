@@ -114,6 +114,8 @@ export function logged() {
     const found = lines.find((line) => parts.every((part) => line.includes(part)));
     return found ? Promise.resolve(found) : arriving(new Promise((resolve) => waiting.push({ parts, resolve })), `the log line with ${parts.join(" and ")}`);
   };
+  return { lines, push, when };
+}
 
 /** `check()`'s value once truthy, read again at each change in `dir` (the store's file or its write-ahead log written
  *  there): what the server writes, awaited as it is written, never polled. A read that meets a write mid-way is read again
@@ -237,7 +239,8 @@ export async function meetsDocument(api, path, method, status, value) {
 /** Every file under `dir`, read. */
 export const filesIn = (dir) => readdirSync(dir, { recursive: true, withFileTypes: true }).filter((e) => e.isFile()).map((e) => readFileSync(join(e.parentPath, e.name)));
 
-
+/** Run `id` of `agentId`, parked on the question it asked, as a runner leaves it (its ask, then its release as parked):
+ *  written into the store by `writer` (a runner's handle), so no runner's ask_person is needed. Its wake time is past, so
  *  the test can claim it again (no runner runs beside these tests' servers to claim it first). */
 export async function parkedOnQuestion(writer, agentId, id, question, { wake = true } = {}) {
   const ROOT = 1;
