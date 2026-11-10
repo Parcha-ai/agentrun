@@ -3188,18 +3188,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         if (!closing) (endsTimer = setTimeout(followChanges, RUN_CHANGES_POLL_MS)).unref();
       });
   };
-  /** The start, in this order, so no change is lost between its steps: the feed's head first (read to its end, untold),
+  /** The start, in this order, so no change is lost between its steps: the feed's head first (one read, untold),
    *  then what the store holds now (the ends the ledger lacks, webhooks.ts catchUp, and the waits of the runs let go: the
    *  feed has none from before its table, and none from a time no server read it), then the feed from that head. A change
    *  after the head is read by the feed even when the store's rows already showed it, and the ledger tells it once. */
   const startFollowing = async () => {
-    let head: RunChangeCursor | undefined;
-    for (;;) {
-      const page = await store.runs.changedSince(head, { limit: RUN_CHANGES_PAGE });
-      head = page.next;
-      if (page.changes.length < RUN_CHANGES_PAGE) break;
-    }
-    changesCursor = head;
+    changesCursor = await store.runs.changesHead();
     const rows = await store.runs.list({});
     // An end catchUp cannot read is said there and left for each read to try (endsLeft): it is before the feed's head.
     await webhooks.catchUp(rows.filter((row) => !row.importedFrom).map(endOf), (id) => endNotice(id).catch((error: Error) => (endsLeft.add(id), Promise.reject(error))));
