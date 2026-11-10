@@ -36,12 +36,12 @@ export async function reserved(t, earlier, seal, options = {}) {
   return { ...served, seal };
 }
 
-/** A run of `alpha` whose message, so its title and its answer ("On <message>: done."), holds `said`. Ended unless
- *  `hold`: then it waits (running) until its gate's file is made by the returned `release`. */
-export async function runSaying({ api, data }, said, { hold = false } = {}) {
+/** A run of `agentId` (alpha by default) whose message, so its title and its answer ("On <message>: done."), holds
+ *  `said`. Ended unless `hold`: then it waits (running) until its gate's file is made by the returned `release`. */
+export async function runSaying({ api, data }, said, { hold = false, agentId = "alpha" } = {}) {
   const gate = join(data, "..", `gate-${randomBytes(4).toString("hex")}`);
   if (!hold) writeFileSync(gate, "");
-  const started = await api("POST", "/agents/alpha/runs", { input: { content: `${said} Hold, then echo, until ${gate}.` } });
+  const started = await api("POST", `/agents/${agentId}/runs`, { input: { content: `${said} Hold, then echo, until ${gate}.` } });
   assert.equal(started.status, 202, JSON.stringify(started.body));
   const runId = started.body.run_id;
   if (!hold) await follow(api, runId, ["completed", "failed"]);

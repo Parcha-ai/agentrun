@@ -4,6 +4,8 @@
 // forgotten with its tombstone opening, reads back, and the run goes on.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
+import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { specFor } from "./runner-spec-support.mjs";
 import { storeOn } from "./store-helpers.mjs";
@@ -51,6 +53,35 @@ test("a runner-path run handed a sign-in that won't read back is refused at its 
       return true;
     },
   );
+});
+
+test("a run whose mark column holds the JSON text null (no writer writes it; never the column's SQL NULL) is refused at its claim as one that won't read back", async (t) => {
+  await assert.rejects(
+    specFor(t, {
+      body: { tools: ["read", "browser"] },
+      before: async (_server, _key, dir) => {
+        const db = new DatabaseSync(join(dir, "store.sqlite"), { timeout: 10_000 });
+        try {
+          db.exec("BEGIN IMMEDIATE");
+          db.prepare("UPDATE runs SET sign_in_handed = 'null' WHERE id = ?").run("run-1");
+          db.exec("COMMIT");
+        } finally {
+          db.close();
+        }
+      },
+    }),
+    (error) => error.name === "ClaimRefused" && error.message === UNREADABLE_SIGN_IN,
+  );
+});
+
+test("after the seal key changed, a run that was never handed the sign-in is taken up at its claim as any run: only a run handed one that won't read back is refused", async (t) => {
+  // The agent's sign-in is kept under another seal key (it does not open here), and this run was never handed it.
+  const got = await specFor(t, {
+    body: { tools: ["read", "browser"] },
+    before: (server) => signIns.saveSignIn(server, randomBytes(32), { agentId: "agent-1", provider: "browserbase", pointer: `ctx-${randomBytes(8).toString("hex")}` }),
+  });
+  assert.ok(got?.spec, "its spec is built, never refused");
+  assert.equal((await got.store.runs.get("run-1")).state, "running");
 });
 
 test("the loop ends a run whose claim is refused failed, in the refusal's words, with nothing sent", async (t) => {

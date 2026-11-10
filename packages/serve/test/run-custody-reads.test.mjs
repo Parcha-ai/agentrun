@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { test } from "node:test";
 import { WITHHELD_SIGN_IN, WITHHELD_TITLE } from "../dist/run-view.js";
-import { marked, pointerOf, reads, runSaying as said, saved, server as served, sha } from "./custody-support.mjs";
+import { marked, pointerOf, reads, runSaying as said, saved, server as served, sha, written } from "./custody-support.mjs";
 
 /** The shared server, its agent `alpha` of `tools`. */
 const server = (t, { tools = ["browser"], env = {} } = {}) => served(t, { agentTools: tools, env });
@@ -88,6 +88,24 @@ test("a mark no server writes (a legacy true, one hash alone, an object, an empt
   // handed, is its words as said.
   marked(s, runId, null);
   assert.match((await reads(s, runId)).view.result.final_answer, new RegExp(`^On ${pointer}`));
+});
+
+test("a mark column holding the JSON text null (a value no writer writes, never the column's SQL NULL) fails closed: the run is withheld, its title, answer and Timeline rows, and its files and learning refused", { timeout: 120_000 }, async (t) => {
+  const s = await server(t);
+  const pointer = pointerOf();
+  const runId = await runSaying(s, pointer);
+  await saved(s, pointer);
+  written(s, "UPDATE runs SET sign_in_handed = 'null' WHERE id = ?", runId);
+  const { view, lists, timeline } = await reads(s, runId);
+  assert.equal(view.result?.final_answer ?? null, null, JSON.stringify(view.result));
+  assert.equal(view.title, WITHHELD_TITLE);
+  for (const row of lists) assert.equal(row.title, WITHHELD_TITLE);
+  assert.deepEqual(timeline.rows, []);
+  for (const shown of [view, lists, timeline]) assert.ok(!JSON.stringify(shown).includes(pointer), JSON.stringify(shown));
+  for (const path of [`/runs/${runId}/files`, `/runs/${runId}/learning`]) {
+    const refused = await s.api("GET", path);
+    assert.deepEqual([refused.status, refused.body.error?.message], [403, WITHHELD_SIGN_IN], `${path}: ${JSON.stringify(refused.body)}`);
+  }
 });
 
 test("a tool key this server holds, repeated by a run handed nothing, is cut from its answer, its title and every Timeline row", { timeout: 120_000 }, async (t) => {

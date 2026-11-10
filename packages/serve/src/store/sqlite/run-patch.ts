@@ -27,11 +27,23 @@ export type RunRecord = {
 
 export const RUN_COLUMNS = "id, agent_id, revision_id, state, epoch, runner, claimed_until, wake_at, backoff_until, cost_usd, metrics, summary, outcome, archived_at, imported_from, sign_in_handed, started_at, ended_at";
 
+/** What a sign_in_handed column reads as when it holds JSON that is not an array (a JSON null, a `true`, an object or a
+ *  string: no writer writes one; the column's SQL NULL alone is no mark): one entry that is no hash. So every reader of
+ *  the mark fails closed on it, never reading it as a run handed none: run-view.ts handedMark reads it MALFORMED (the run
+ *  is withheld), and sign-ins-store.ts handedSignInReadsBack finds no pointer of it (the claim is refused). */
+export const UNREADABLE_HANDED_MARK = "unreadable";
+
+/** A non-NULL sign_in_handed column: its array as it was written, or UNREADABLE_HANDED_MARK alone for any other JSON. */
+const handedColumn = (text: string): string[] => {
+  const mark = JSON.parse(text) as unknown;
+  return Array.isArray(mark) ? (mark as string[]) : [UNREADABLE_HANDED_MARK];
+};
+
 export const runOf = (r: RunRecord): RunRow => ({
   id: r.id, agentId: r.agent_id, revisionId: r.revision_id, state: r.state, epoch: r.epoch, runner: r.runner, claimedUntil: r.claimed_until,
   wakeAt: r.wake_at, backoffUntil: r.backoff_until, costUsd: r.cost_usd, metrics: r.metrics === null ? null : JSON.parse(r.metrics), summary: r.summary,
   outcome: (r.outcome as RunOutcome | null) ?? null, archivedAt: r.archived_at, importedFrom: r.imported_from === null ? null : (JSON.parse(r.imported_from) as ImportedFrom),
-  signInHanded: r.sign_in_handed === null ? null : (JSON.parse(r.sign_in_handed) as string[]), startedAt: r.started_at, endedAt: r.ended_at,
+  signInHanded: r.sign_in_handed === null ? null : handedColumn(r.sign_in_handed), startedAt: r.started_at, endedAt: r.ended_at,
 });
 
 /** Applies `patch` to the claim's run, then writes `also`, through `tx` (an open transaction's handle). Fenced, with nothing
