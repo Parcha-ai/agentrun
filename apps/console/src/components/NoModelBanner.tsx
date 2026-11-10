@@ -10,7 +10,7 @@ import type { Capabilities } from "@/lib/client";
  *  AGENT_MODEL, or add a model key in Settings (its default goes to the gateway), with no OpenRouter promise. */
 export function NoModelBanner({ needs, settings, model, source }: { needs?: "key" | "model" | null; settings: boolean; model?: string | null; source?: NonNullable<Capabilities["models"]>["source"] }) {
   return (
-    <p role="status" aria-label="No model" className="border-b bg-card px-5 py-3 text-[13px] text-warning-text md:px-8">
+    <p role="status" aria-label="No model" className="border-b bg-card px-5 py-3 text-body text-warning-text md:px-8">
       {needs === "model" ? (
         "This server's default model doesn't run here: set AGENT_MODEL to a model it knows, and restart."
       ) : (

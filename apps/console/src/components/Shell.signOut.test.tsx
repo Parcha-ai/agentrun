@@ -56,4 +56,15 @@ describe("Shell's sign-outs", () => {
     expect((document.activeElement as HTMLElement | null)?.textContent?.trim()).toBe("Sign out everywhere");
     expect(p.said).toEqual([]);
   });
+  it("keeps the scrollbar on the page's own box: the window's box clips, and both hold what is positioned inside them", () => {
+    // Text kept for a screen reader alone (sr-only) is absolutely positioned. With no positioned box around it, it is
+    // placed in the document and stretches it past the window, so the whole console scrolls away.
+    const p = mount();
+    const main = p.host.querySelector("main")!;
+    const outer = main.closest(".h-dvh")!;
+    expect(outer.className).toMatch(/(?:^| )relative(?: |$)/);
+    expect(outer.className).toMatch(/(?:^| )overflow-hidden(?: |$)/);
+    expect(main.className).toMatch(/(?:^| )relative(?: |$)/);
+    expect(main.className).toMatch(/(?:^| )overflow-auto(?: |$)/);
+  });
 });

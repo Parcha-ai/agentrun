@@ -9,6 +9,7 @@ import { NO_MESSAGES, runState } from "@/lib/runState";
 import { cn } from "@/lib/utils";
 import { pausedWords } from "@/components/NeedsYou";
 import { ComputerAskCard } from "@/components/ComputerAskCard";
+import { Input } from "@/components/ui/field";
 import { askOf } from "@/lib/computerAsk";
 import type { BudgetPending, ComputerAsk, HandBackOutcome, PendingApproval, Run, RunSummary } from "@/lib/v2";
 
@@ -82,13 +83,13 @@ export function NeedsYouStrip({ asking, failed, live, learning = [], agentName, 
   const at = now();
   return (
     <section aria-label="Needs you" className="space-y-3">
-      {needs > 0 && <h2 className="caps text-[12px] font-semibold">Needs you <span className="text-warning-text">· {needs}</span></h2>}
-      {problem && <p className="border border-destructive/50 px-4 py-2.5 font-mono text-[12px] text-destructive-text" role="alert">{problem}</p>}
+      {needs > 0 && <h2 className="caps text-small font-semibold">Needs you <span className="text-warning-text">· {needs}</span></h2>}
+      {problem && <p className="border border-destructive/50 px-4 py-2.5 font-mono text-small text-destructive-text" role="alert">{problem}</p>}
       {/* Said apart from the card unless that same approval's card still shows: the run may wait on its next call now. */}
       {refused.filter((x) => !asking.some((r) => r.run_id === x.runId && waitsOn(r) === x.what)).map((x) => (
-        <p key={x.runId} className="flex items-start gap-3 border border-destructive/50 px-4 py-2.5 font-mono text-[12px] text-destructive-text" role="alert">
+        <p key={x.runId} className="flex items-start gap-3 border border-destructive/50 px-4 py-2.5 font-mono text-small text-destructive-text" role="alert">
           <span className="min-w-0 flex-1"><a href={runHref(x.runId)} className="underline-offset-4 hover:underline">{x.title}</a>: your answer wasn't taken. {x.text}</span>
-          <button type="button" className="caps shrink-0 text-[11px] text-muted-foreground hover:text-foreground" onClick={() => setRefused((held) => held.filter((y) => y.runId !== x.runId))}>Dismiss</button>
+          <button type="button" className="caps shrink-0 text-label text-muted-foreground hover:text-foreground" onClick={() => setRefused((held) => held.filter((y) => y.runId !== x.runId))}>Dismiss</button>
         </p>
       ))}
       {asking.length > 0 && (
@@ -102,7 +103,7 @@ export function NeedsYouStrip({ asking, failed, live, learning = [], agentName, 
       )}
       {groups.length > 0 && (
         <div className="border">
-          <p className="caps flex items-center justify-between border-b px-4 py-2.5 text-[11px] text-muted-foreground">
+          <p className="caps flex items-center justify-between border-b px-4 py-2.5 text-label text-muted-foreground">
             <span>Failed · {failures}</span>
             <a href="#/runs?status=failed" className="normal-case tracking-normal hover:text-foreground">All failed runs →</a>
           </p>
@@ -111,20 +112,20 @@ export function NeedsYouStrip({ asking, failed, live, learning = [], agentName, 
       )}
       {waiting.length > 0 && (
         <div className="border">
-          <p className="caps border-b px-4 py-2.5 text-[11px] text-muted-foreground">Learned, waiting for your OK · {learned}</p>
+          <p className="caps border-b px-4 py-2.5 text-label text-muted-foreground">Learned, waiting for your OK · {learned}</p>
           <ul>{waiting.map((a) => (
             <li key={a.agent_id} className="flex min-w-0 items-center gap-3 border-b px-4 py-3 last:border-b-0">
-              <span className="size-2 shrink-0 rounded-full bg-warning" aria-hidden />
-              <span className="shrink-0 font-mono text-[12px]">{a.name}</span>
-              <span className="min-w-0 flex-1 truncate text-[13px] text-muted-foreground">{waitingWords(a.pending)}</span>
-              <a href={`#/agents/${encodeURIComponent(a.agent_id)}/learning`} className="caps shrink-0 text-[11px] text-muted-foreground hover:text-foreground">Review →</a>
+              <span className="size-2 shrink-0 bg-warning" aria-hidden />
+              <span className="shrink-0 font-mono text-small">{a.name}</span>
+              <span className="min-w-0 flex-1 truncate text-body text-muted-foreground">{waitingWords(a.pending)}</span>
+              <a href={`#/agents/${encodeURIComponent(a.agent_id)}/learning`} className="caps shrink-0 text-label text-muted-foreground hover:text-foreground">Review →</a>
             </li>
           ))}</ul>
         </div>
       )}
       {live.length > 0 && (
         <div className="border">
-          <p className="caps border-b px-4 py-2.5 text-[11px] text-muted-foreground">Running now · {live.length}</p>
+          <p className="caps border-b px-4 py-2.5 text-label text-muted-foreground">Running now · {live.length}</p>
           <ul>{live.map((r) => <Live key={r.run_id} run={r} agentName={agentName(r.agent_id)} at={at} onStop={onStop} />)}</ul>
         </div>
       )}
@@ -151,7 +152,7 @@ function Asking({ run, ask, agentName, at, onHandBack }: { run: RunSummary; ask:
     <li data-run={run.run_id} className="min-w-0 border border-warning/50 bg-warning/5">
       <ComputerAskCard compact ask={ask}
         heading={<Head run={run} agentName={agentName} since={`asked ${ago(ask.asked_at, at)} ago`} />}
-        open={<a href={runHref(run.run_id)} className="text-[13px] underline underline-offset-2">Open its screen</a>}
+        open={<a href={runHref(run.run_id)} className="text-body underline underline-offset-2">Open its screen</a>}
         onAnswer={onHandBack && ((outcome) => onHandBack(run.run_id, ask, outcome))} />
     </li>
   );
@@ -165,14 +166,14 @@ function Question(props: { run: RunSummary; agentName: string; at: number; onAns
 function Paused({ run, pending, agentName }: { run: RunSummary; pending: BudgetPending; agentName: string }) {
   return (
     <li data-run={run.run_id} className="min-w-0 border border-warning/50 bg-warning/5 p-4">
-      <p className="flex min-w-0 items-center gap-2 text-[13px]">
-        <span className="size-2 shrink-0 rounded-full bg-warning" aria-hidden />
-        <span className="shrink-0 font-mono text-[12px]">{agentName}</span>
+      <p className="flex min-w-0 items-center gap-2 text-body">
+        <span className="size-2 shrink-0 bg-warning" aria-hidden />
+        <span className="shrink-0 font-mono text-small">{agentName}</span>
         <a href={runHref(run.run_id)} className="min-w-0 truncate text-muted-foreground hover:text-foreground">{runTitle(run)}</a>
       </p>
-      <p className="caps mt-2 text-[11px] text-warning-text">{pausedWords(pending)}</p>
-      {typeof pending.said === "string" && <p className="mt-1 text-[15px] leading-snug">{pending.said}</p>}
-      <p className="mt-3 font-mono text-[12px] text-muted-foreground"><a href={runHref(run.run_id)} className="underline-offset-4 hover:underline">open the run</a></p>
+      <p className="caps mt-2 text-label text-warning-text">{pausedWords(pending)}</p>
+      {typeof pending.said === "string" && <p className="mt-1 text-prose leading-snug">{pending.said}</p>}
+      <p className="mt-3 font-mono text-small text-muted-foreground"><a href={runHref(run.run_id)} className="underline-offset-4 hover:underline">open the run</a></p>
     </li>
   );
 }
@@ -180,11 +181,11 @@ function Paused({ run, pending, agentName }: { run: RunSummary; pending: BudgetP
 /** A waiting run's line: its agent, its title (a link to the run) and when it asked. */
 function Head({ run, agentName, since }: { run: RunSummary; agentName: string; since?: string }) {
   return (
-    <p className="flex min-w-0 items-center gap-2 text-[13px]">
-      <span className="size-2 shrink-0 rounded-full bg-warning" aria-hidden />
-      <span className="shrink-0 font-mono text-[12px]">{agentName}</span>
+    <p className="flex min-w-0 items-center gap-2 text-body">
+      <span className="size-2 shrink-0 bg-warning" aria-hidden />
+      <span className="shrink-0 font-mono text-small">{agentName}</span>
       <a href={runHref(run.run_id)} className="min-w-0 truncate text-muted-foreground hover:text-foreground">{runTitle(run)}</a>
-      {since && <span className="ml-auto shrink-0 font-mono text-[12px] text-muted-foreground">{since}</span>}
+      {since && <span className="ml-auto shrink-0 font-mono text-small text-muted-foreground">{since}</span>}
     </p>
   );
 }
@@ -209,18 +210,18 @@ function Asked({ run, agentName, at, onAnswer }: { run: RunSummary; agentName: s
   return (
     <li data-run={run.run_id} className="min-w-0 border border-warning/50 bg-warning/5 p-4">
       <Head run={run} agentName={agentName} since={pending?.asked_at ? `asked ${ago(pending.asked_at, at)} ago` : undefined} />
-      <p className="mt-2 text-[16px] leading-snug">{question}</p>
+      <p className="mt-2 text-base leading-snug">{question}</p>
       {sent ? (
-        <p className="mt-3 font-mono text-[13px] text-success-text">Answered: {sent} · <a href={runHref(run.run_id)} className="underline-offset-4 hover:underline">open the run</a></p>
+        <p className="mt-3 font-mono text-body text-success-text">Answered: {sent} · <a href={runHref(run.run_id)} className="underline-offset-4 hover:underline">open the run</a></p>
       ) : (
         <form onSubmit={(e) => void send(e)} className="mt-3 flex flex-wrap items-center gap-2">
           {choices.map((c) => (
-            <button key={c} type="button" onClick={() => setText(c)} className={cn("rounded-full border px-3 py-1.5 text-[13px] hover:border-border-strong", text === c ? "border-warning text-warning-text" : "border-border")}>{c}</button>
+            <button key={c} type="button" onClick={() => setText(c)} className={cn("border px-3 py-1.5 text-body hover:border-border-strong", text === c ? "border-warning text-warning-text" : "border-border")}>{c}</button>
           ))}
-          <input value={text} onChange={(e) => setText(e.target.value)} aria-label={`Answer ${agentName}`} placeholder={choices.length ? "Or type an answer…" : "Type an answer…"}
-            className="h-9 min-w-[9rem] flex-1 border bg-background px-3 text-[14px] outline-none focus:border-border-strong" />
+          <Input value={text} onChange={(e) => setText(e.target.value)} aria-label={`Answer ${agentName}`} placeholder={choices.length ? "Or type an answer…" : "Type an answer…"}
+            className="h-9 min-w-[9rem] flex-1 font-sans text-lead" />
           <Button type="submit" variant="solid" size="sm" disabled={busy || !text.trim()}>{busy ? "Sending…" : "Send"}</Button>
-          {problem && <p className="w-full font-mono text-[12px] text-destructive-text" role="alert">{problem}</p>}
+          {problem && <p className="w-full font-mono text-small text-destructive-text" role="alert">{problem}</p>}
         </form>
       )}
     </li>
@@ -240,11 +241,11 @@ function Failure({ message, runs: all, agentName, at, onRunAgain }: { message: s
     setBusy(false); setProblem(p);
     setStartedIds((held) => new Set([...held, ...started]));
   };
-  const startedNote = startedCount > 0 && <span className="font-mono text-[12px] text-success-text">Started again: {startedCount === 1 ? "1 run" : `${startedCount} runs`}</span>;
+  const startedNote = startedCount > 0 && <span className="font-mono text-small text-success-text">Started again: {startedCount === 1 ? "1 run" : `${startedCount} runs`}</span>;
   if (!runs.length) return (
     <li className="flex flex-wrap items-center gap-x-4 gap-y-1 border-b px-4 py-3 last:border-b-0">
-      <span className="size-2 shrink-0 rounded-full bg-border-strong" aria-hidden />
-      <p className="min-w-0 flex-1 truncate font-mono text-[12px] text-muted-foreground">{message}</p>
+      <span className="size-2 shrink-0 bg-border-strong" aria-hidden />
+      <p className="min-w-0 flex-1 truncate font-mono text-small text-muted-foreground">{message}</p>
       {startedNote}
     </li>
   );
@@ -252,21 +253,21 @@ function Failure({ message, runs: all, agentName, at, onRunAgain }: { message: s
   const one = runs.length === 1;
   return (
     <li className="flex flex-wrap items-center gap-x-4 gap-y-1 border-b px-4 py-3 last:border-b-0">
-      <span className="size-2 shrink-0 rounded-full bg-destructive" aria-hidden />
+      <span className="size-2 shrink-0 bg-destructive" aria-hidden />
       <div className="min-w-0 flex-1">
         {one
-          ? <p className="flex min-w-0 gap-3 text-[14px]"><span className="shrink-0 font-mono text-[12px] leading-5">{agentName(first.agent_id)}</span><a href={runHref(first.run_id)} className="min-w-0 truncate hover:underline">{runTitle(first)}</a></p>
-          : <p className="text-[14px]">{runs.length} runs failed <span className="text-muted-foreground">· {[...new Set(runs.map((r) => agentName(r.agent_id)))].join(", ")}</span></p>}
-        <p className="mt-0.5 truncate font-mono text-[12px] text-destructive-text">{message}</p>
+          ? <p className="flex min-w-0 gap-3 text-lead"><span className="shrink-0 font-mono text-small leading-5">{agentName(first.agent_id)}</span><a href={runHref(first.run_id)} className="min-w-0 truncate hover:underline">{runTitle(first)}</a></p>
+          : <p className="text-lead">{runs.length} runs failed <span className="text-muted-foreground">· {[...new Set(runs.map((r) => agentName(r.agent_id)))].join(", ")}</span></p>}
+        <p className="mt-0.5 truncate font-mono text-small text-destructive-text">{message}</p>
         {!one && (
-          <details className="mt-1 text-[13px]">
-            <summary className="cursor-pointer font-mono text-[12px] text-muted-foreground">The runs</summary>
-            <ul className="mt-1 space-y-1">{runs.map((r) => <li key={r.run_id}><a href={runHref(r.run_id)} className="hover:underline">{runTitle(r)}</a> <span className="font-mono text-[12px] text-muted-foreground">· {agentName(r.agent_id)}</span></li>)}</ul>
+          <details className="mt-1 text-body">
+            <summary className="cursor-pointer font-mono text-small text-muted-foreground">The runs</summary>
+            <ul className="mt-1 space-y-1">{runs.map((r) => <li key={r.run_id}><a href={runHref(r.run_id)} className="hover:underline">{runTitle(r)}</a> <span className="font-mono text-small text-muted-foreground">· {agentName(r.agent_id)}</span></li>)}</ul>
           </details>
         )}
-        {problem && <p className="mt-1 font-mono text-[12px] text-destructive-text" role="alert">{problem}</p>}
+        {problem && <p className="mt-1 font-mono text-small text-destructive-text" role="alert">{problem}</p>}
       </div>
-      <span className="font-mono text-[12px] text-muted-foreground">{ago(first.ended_at ?? first.created_at, at)} ago</span>
+      <span className="font-mono text-small text-muted-foreground">{ago(first.ended_at ?? first.created_at, at)} ago</span>
       {startedNote}
       <Button type="button" size="sm" disabled={busy} onClick={() => void again()}>{one ? "Run again" : "Run all again"}</Button>
     </li>
@@ -281,18 +282,18 @@ function Live({ run, agentName, at, onStop }: { run: RunSummary; agentName: stri
   const spent = usd === 0 ? "nothing spent yet" : typeof usd === "number" ? `${cost(run.cost)} so far` : soFar(run.cost) ? cost(run.cost) : "cost not known yet";
   return (
     <li className="flex flex-wrap items-center gap-x-4 gap-y-1 border-b px-4 py-3 last:border-b-0">
-      <span className="size-2 shrink-0 rounded-full bg-[hsl(var(--run-active))] shadow-[0_0_0_4px_hsl(var(--run-active)/0.18)]" aria-hidden />
-      <span className="shrink-0 font-mono text-[12px]">{agentName}</span>
-      <a href={runHref(run.run_id)} className="min-w-0 flex-1 truncate text-[14px] hover:underline">{runTitle(run)}</a>
-      <span className="font-mono text-[13px] text-[hsl(var(--run-active))]">working · {elapsed(at - Date.parse(run.created_at))}</span>
-      <span className="font-mono text-[12px] text-muted-foreground">{spent}</span>
-      <a href={runHref(run.run_id)} className="caps inline-flex h-8 items-center border px-3 text-[12px] hover:bg-accent">Steer</a>
+      <span className="size-2 shrink-0 bg-run-active ring-4 ring-run-active/[0.18]" aria-hidden />
+      <span className="shrink-0 font-mono text-small">{agentName}</span>
+      <a href={runHref(run.run_id)} className="min-w-0 flex-1 truncate text-lead hover:underline">{runTitle(run)}</a>
+      <span className="font-mono text-body text-run-active">working · {elapsed(at - Date.parse(run.created_at))}</span>
+      <span className="font-mono text-small text-muted-foreground">{spent}</span>
+      <a href={runHref(run.run_id)} className="caps inline-flex h-8 items-center border px-3 text-small hover:bg-accent">Steer</a>
       {/* Stop ends an agentic run's turn (runState's rule, as the run page offers it). A workflow run, or one not in a
           turn, doesn't stop: its page has Cancel. */}
       {runState(run.status, run.state, run.kind, NO_MESSAGES, true, run.error, run.review).canStop
         ? <Button type="button" size="sm" disabled={busy} onClick={async () => { setBusy(true); setProblem(await onStop(run.run_id)); setBusy(false); }}>Stop</Button>
-        : <a href={runHref(run.run_id)} className="caps inline-flex h-8 items-center border px-3 text-[12px] hover:bg-accent">Open to cancel</a>}
-      {problem && <p className="w-full font-mono text-[12px] text-destructive-text" role="alert">{problem}</p>}
+        : <a href={runHref(run.run_id)} className="caps inline-flex h-8 items-center border px-3 text-small hover:bg-accent">Open to cancel</a>}
+      {problem && <p className="w-full font-mono text-small text-destructive-text" role="alert">{problem}</p>}
     </li>
   );
 }

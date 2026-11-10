@@ -107,8 +107,8 @@ export function AgentEditPage({ v2, caps, choices = [], gates = [], focusTool, a
       } else setNotice(null);
     } catch (e) { setNotice(`${what} done. The page could not be refreshed: ${problemOf(e).message}. Reload to see the current state.`); }
   };
-  if (agentId && loadError && !agent) return <p className="m-8 border p-4 font-mono text-[13px] text-destructive-text" role="alert">{loadError}</p>;
-  if (agentId && !agent) return <p className="p-8 text-center font-mono text-[13px] text-muted-foreground">Loading the agent...</p>;
+  if (agentId && loadError && !agent) return <p className="m-8 border p-4 font-mono text-body text-destructive-text" role="alert">{loadError}</p>;
+  if (agentId && !agent) return <p className="p-8 text-center font-mono text-body text-muted-foreground">Loading the agent...</p>;
   return (
     // Keyed on loads only: a save updates the agent in place, so the editor keeps its form and says "Saved".
     <AgentEditor key={`${agent?.agent_id ?? "new"}:${version}`} agent={agent} revisions={revisions} caps={{ ...caps, computers }} providerChoices={choices} permissionGates={gates} mcpServers={mcpServers} serverToolSettings={serverTools} onRetryMcp={loadMcp} {...(focusTool ? { focusTool, step: "tools" as const } : {})} notice={notice} validate={v2.validateWorkflow} onBack={() => go("#/agents")} onReload={() => { void load(); loadMcp(); }}

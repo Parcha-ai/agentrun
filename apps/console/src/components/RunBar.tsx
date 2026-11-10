@@ -4,6 +4,7 @@ import { FilePicker, type UploadLimits, useAttachments } from "@/components/File
 import { Picker } from "@/components/ui/picker";
 import { ToolBlockers } from "@/components/ToolBlockers";
 import { Button } from "@/components/ui/button";
+import { Textarea } from "@/components/ui/field";
 import type { Agent } from "@/lib/agentForm";
 import { type Client, ClientError, type FieldIssue } from "@/lib/client";
 import { exampleHint, exampleInput, keeper, startBody, submitStart } from "@/lib/runStart";
@@ -63,15 +64,15 @@ export function RunBar({ agent, efforts, v2, go, blocked, limits, upload = sendU
           row with Effort and Run: the textarea and the controls come out of their box, so the three wrap as one row. */}
       <div data-phone-row className="max-sm:flex max-sm:flex-wrap max-sm:items-center max-sm:gap-x-2 max-sm:gap-y-2">
         <div className="flex flex-col gap-3 max-sm:contents lg:flex-row lg:items-start">
-          <textarea value={text} onChange={(e) => setText(e.target.value)} rows={workflow ? 6 : 2} spellCheck={!workflow}
+          <Textarea value={text} onChange={(e) => setText(e.target.value)} rows={workflow ? 6 : 2} spellCheck={!workflow}
             aria-label={workflow ? "The run's input, as JSON" : "The run's first message"}
             placeholder={workflow ? "The workflow's input, as JSON" : "The run's first message"}
             onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); void start(); } }}
-            className={cn("min-w-0 flex-1 resize-y border bg-background px-3 py-2.5 font-mono text-[13px] outline-none placeholder:text-muted-foreground focus:border-border-strong max-sm:order-first max-sm:basis-full", workflow ? "leading-[1.6]" : "max-sm:h-10")} />
+            className={cn("min-w-0 flex-1 resize-y max-sm:order-first max-sm:basis-full", workflow ? "leading-[1.6]" : "max-sm:h-10")} />
           <div className="flex shrink-0 items-center gap-3 max-sm:order-last max-sm:gap-2">
             {efforts.length > 0 && (
               <div className="flex items-center gap-2" title="How hard the model thinks before it answers. default leaves it to the agent.">
-                <span className="flex flex-col leading-tight"><label htmlFor="runbar-effort" className="caps text-[11px] text-muted-foreground">Effort</label><span className="text-[11px] text-muted-foreground max-sm:hidden">How hard the model thinks</span></span>
+                <span className="flex flex-col leading-tight"><label htmlFor="runbar-effort" className="caps text-label text-muted-foreground">Effort</label><span className="text-label text-muted-foreground max-sm:hidden">How hard the model thinks</span></span>
                 <Picker id="runbar-effort" label="Effort" value={effort} onChange={setEffort} className="w-32" options={["", ...efforts].map((e) => ({ value: e, label: e || "default" }))} />
               </div>
             )}
@@ -80,10 +81,10 @@ export function RunBar({ agent, efforts, v2, go, blocked, limits, upload = sendU
         </div>
         <div className="mt-3 max-sm:mt-0"><FilePicker attachments={attachments} limits={limits} disabled={!!blocked} compact /></div>
       </div>
-      {example && <p className="mt-2 font-mono text-[11px] text-muted-foreground">{exampleHint(example, "run")}</p>}
-      {!built.ok && text.trim() && <p className="mt-2 font-mono text-[12px] text-destructive-text" role="alert">{built.message}</p>}
+      {example && <p className="mt-2 font-mono text-label text-muted-foreground">{exampleHint(example, "run")}</p>}
+      {!built.ok && text.trim() && <p className="mt-2 font-mono text-small text-destructive-text" role="alert">{built.message}</p>}
       {problem && (
-        <div className="mt-3 border border-destructive/50 bg-destructive/10 px-3 py-2 font-mono text-[12px] text-destructive-text" role="alert">
+        <div className="mt-3 border border-destructive/50 bg-destructive/10 px-3 py-2 font-mono text-small text-destructive-text" role="alert">
           <p>The run did not start: {problem.message}</p>
           {problem.box && <p className="mt-1">This server can't run the {problem.box} box this agent runs in: change where it runs in its settings.</p>}
           <ToolBlockers agentId={agent.agent_id} details={problem.details} />

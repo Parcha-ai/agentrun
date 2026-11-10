@@ -2,6 +2,8 @@ import { graphDiff, workflowGraph } from "@dsl/graph";
 import { CircleAlert, TriangleAlert } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { GraphLegend, WorkflowGraph } from "@/components/WorkflowGraph";
+import { Button } from "@/components/ui/button";
+import { Textarea } from "@/components/ui/field";
 import type { WorkflowCheck, WorkflowCheckBody } from "@/lib/v2";
 import { metaOf } from "@/lib/runGraph";
 import { cn } from "@/lib/utils";
@@ -124,24 +126,24 @@ export function WorkflowEditor({ text, onText, base, baseLabel, serverIssues, re
     <div className="grid min-h-0 grid-cols-1 border xl:grid-cols-[minmax(420px,5fr)_7fr]">
       <div className="flex min-h-0 flex-col border-b xl:border-b-0 xl:border-r">
         <div className="flex items-center gap-3 border-b px-4 py-2">
-          <span className="caps text-[11px] font-semibold">workflow.json</span>
-          <span className="font-mono text-[11px] text-muted-foreground">{lines} lines</span>
+          <span className="caps text-label font-semibold">workflow.json</span>
+          <span className="font-mono text-label text-muted-foreground">{lines} lines</span>
           <span className="flex-1" />
-          {readOnly ? <span className="caps text-[11px] text-muted-foreground">Read-only</span> : <>
+          {readOnly ? <span className="caps text-label text-muted-foreground">Read-only</span> : <>
           {server.mode === "failed" && parsed.ok
-            ? <span className="font-mono text-[11px] text-warning-text" title={server.failed}>server check failed, showing local checks <button type="button" onClick={server.retry} className="caps ml-1 border px-1.5 text-[10px] text-foreground hover:bg-accent">Retry</button></span>
-            : server.mode !== "lint" && parsed.ok && <span className="font-mono text-[11px] text-muted-foreground">{server.mode === "pending" ? "checking..." : "checked by the server"}</span>}
-          {errors ? <span className="caps inline-flex items-center gap-1 text-[11px] text-destructive-text"><CircleAlert className="size-3.5" aria-hidden /> {errors} {errors === 1 ? "problem" : "problems"}</span>
-            : <span className="caps text-[11px] text-success-text">{server.mode === "server" ? "Valid" : "Valid shape"}</span>}
+            ? <span className="font-mono text-label text-warning-text" title={server.failed}>server check failed, showing local checks <Button type="button" onClick={server.retry} size="xs" className="ml-1">Retry</Button></span>
+            : server.mode !== "lint" && parsed.ok && <span className="font-mono text-label text-muted-foreground">{server.mode === "pending" ? "checking..." : "checked by the server"}</span>}
+          {errors ? <span className="caps inline-flex items-center gap-1 text-label text-destructive-text"><CircleAlert className="size-3.5" aria-hidden /> {errors} {errors === 1 ? "problem" : "problems"}</span>
+            : <span className="caps text-label text-success-text">{server.mode === "server" ? "Valid" : "Valid shape"}</span>}
           </>}
         </div>
         <div className="relative flex h-[560px] min-h-0 xl:h-[calc(100vh-390px)] xl:min-h-[440px]">
-          <div ref={gutter} aria-hidden className="w-12 shrink-0 select-none overflow-hidden border-r bg-card py-3 text-right font-mono text-[11px] text-muted-foreground" style={{ lineHeight: `${LINE_PX}px` }}>
+          <div ref={gutter} aria-hidden className="w-12 shrink-0 select-none overflow-hidden border-r bg-card py-3 text-right font-mono text-label text-muted-foreground" style={{ lineHeight: `${LINE_PX}px` }}>
             {Array.from({ length: lines }, (_, k) => (
               <div key={k} className={cn("pr-2", bad.get(k + 1) === "error" && "bg-destructive/15 text-destructive-text", bad.get(k + 1) === "warning" && "bg-warning/15 text-warning-text")}>{k + 1}</div>
             ))}
           </div>
-          <textarea ref={area} value={text} readOnly={readOnly} spellCheck={false} wrap="off" aria-label="Workflow JSON"
+          <Textarea bare ref={area} value={text} readOnly={readOnly} spellCheck={false} wrap="off" aria-label="Workflow JSON"
             onChange={(e) => { if (!readOnly) onText(e.target.value); setCursor(e.target.selectionStart); }}
             onSelect={(e) => setCursor((e.target as HTMLTextAreaElement).selectionStart)}
             onScroll={(e) => { if (gutter.current) gutter.current.scrollTop = (e.target as HTMLTextAreaElement).scrollTop; }}
@@ -152,10 +154,10 @@ export function WorkflowEditor({ text, onText, base, baseLabel, serverIssues, re
               onText(`${text.slice(0, a)}  ${text.slice(b)}`);
               requestAnimationFrame(() => t.setSelectionRange(a + 2, a + 2));
             }}
-            className="min-w-0 flex-1 resize-none overflow-auto bg-background px-3 py-3 font-mono text-[12px] outline-none selection:bg-[hsl(var(--primary)/0.28)] selection:text-foreground"
+            className="flex-1 resize-none overflow-auto bg-background px-3 py-3 text-small selection:bg-primary/[0.28] selection:text-foreground focus-visible:outline focus-visible:outline-focus focus-visible:-outline-offset-2 focus-visible:outline-ring"
             style={{ lineHeight: `${LINE_PX}px`, tabSize: 2 }} />
         </div>
-        {!readOnly && <ul className="max-h-48 min-h-[44px] overflow-auto border-t font-mono text-[12px]" aria-label="Problems">
+        {!readOnly && <ul className="max-h-48 min-h-[44px] overflow-auto border-t font-mono text-small" aria-label="Problems">
           {rows.length === 0 && <li className="px-4 py-3 text-muted-foreground">{server.mode === "server" ? "No problems: the server's validator takes this workflow as it is." : "No problems the console can see. The server checks the workflow again when you save."}</li>}
           {rows.map((r, k) => (
             <li key={k}>
@@ -170,13 +172,13 @@ export function WorkflowEditor({ text, onText, base, baseLabel, serverIssues, re
       </div>
       <div className="flex min-h-0 flex-col">
         <div className="flex flex-wrap items-center gap-3 border-b px-4 py-2">
-          <span className="caps text-[11px] font-semibold">Graph</span>
-          <span className="font-mono text-[11px] text-muted-foreground">{graph.nodes.length} nodes</span>
+          <span className="caps text-label font-semibold">Graph</span>
+          <span className="font-mono text-label text-muted-foreground">{graph.nodes.length} nodes</span>
           {diff && (changes
-            ? <span className="font-mono text-[11px]">{[diff.added.length && `${diff.added.length} new`, diff.changed.length + diff.rewritten.length && `${diff.changed.length + diff.rewritten.length} edited`, diff.removed.length && `${diff.removed.length} removed`, diff.moved.length && `${diff.moved.length} moved`, !diff.moved.length && rewired && `${rewired} ${rewired === 1 ? "connection" : "connections"} changed`].filter(Boolean).join(" · ")} <span className="text-muted-foreground">against {baseLabel ?? "the current revision"}</span></span>
-            : <span className="font-mono text-[11px] text-muted-foreground">Same as {baseLabel ?? "the current revision"}</span>)}
+            ? <span className="font-mono text-label">{[diff.added.length && `${diff.added.length} new`, diff.changed.length + diff.rewritten.length && `${diff.changed.length + diff.rewritten.length} edited`, diff.removed.length && `${diff.removed.length} removed`, diff.moved.length && `${diff.moved.length} moved`, !diff.moved.length && rewired && `${rewired} ${rewired === 1 ? "connection" : "connections"} changed`].filter(Boolean).join(" · ")} <span className="text-muted-foreground">against {baseLabel ?? "the current revision"}</span></span>
+            : <span className="font-mono text-label text-muted-foreground">Same as {baseLabel ?? "the current revision"}</span>)}
           <span className="flex-1" />
-          {!parsed.ok && good.current && <span className="caps text-[11px] text-warning-text">Showing the last JSON that parsed</span>}
+          {!parsed.ok && good.current && <span className="caps text-label text-warning-text">Showing the last JSON that parsed</span>}
         </div>
         <div className={cn("min-h-[360px] flex-1 overflow-auto bg-[radial-gradient(hsl(var(--border))_1px,transparent_1px)] [background-size:22px_22px] px-4 py-5 xl:h-[calc(100vh-330px)] xl:min-h-[480px]", !parsed.ok && "opacity-60")}>
           {graph.nodes.length ? (
@@ -185,7 +187,7 @@ export function WorkflowEditor({ text, onText, base, baseLabel, serverIssues, re
               const s = parsed.ok ? parsed.spans.get(`${hit.path}/label`) ?? parsed.spans.get(hit.path) : undefined;
               if (s) jump(s.start, s.end);
             }} />
-          ) : <p className="p-6 text-center font-mono text-[13px] text-muted-foreground">No root node to draw yet.</p>}
+          ) : <p className="p-6 text-center font-mono text-body text-muted-foreground">No root node to draw yet.</p>}
         </div>
         <div className="border-t px-4 py-2"><GraphLegend /></div>
       </div>

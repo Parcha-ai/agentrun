@@ -13,6 +13,7 @@ import { LearningChips, WaitingCount } from "@/components/LearningChips";
 import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
 import { GraphLegend, WorkflowGraph } from "@/components/WorkflowGraph";
+import { Tabs } from "@/components/ui/tabs";
 import { type Agent, runsWhere } from "@/lib/agentForm";
 import { type Client, ClientError } from "@/lib/client";
 import { cost, runEnded, soFar, when, runTitle } from "@/lib/format";
@@ -128,7 +129,7 @@ export function AgentPage({ v2, agentId, routePrefix, harnesses, efforts = [], g
       <header className="border-b px-5 py-4 max-sm:py-3 md:px-8">
         {/* On a phone the back button joins the name row (its word read, not shown), and Edit shows its icon alone. */}
         <div data-phone-row className="flex flex-col gap-3 max-sm:flex-row max-sm:items-center">
-          <button type="button" onClick={() => go(agent.archived_at ? "#/agents?archived=true" : "#/agents")} className="caps flex items-center gap-2 self-start text-[11px] text-muted-foreground hover:text-foreground max-sm:-m-1 max-sm:self-center max-sm:p-1">
+          <button type="button" onClick={() => go(agent.archived_at ? "#/agents?archived=true" : "#/agents")} className="caps flex items-center gap-2 self-start text-label text-muted-foreground hover:text-foreground max-sm:-m-1 max-sm:self-center max-sm:p-1">
             <ArrowLeft className="size-3.5" aria-hidden /> <span className="max-sm:sr-only">Agents</span>
           </button>
           <div className="flex flex-wrap items-center gap-3 max-sm:min-w-0 max-sm:flex-1 max-sm:flex-nowrap max-sm:gap-2">
@@ -142,24 +143,24 @@ export function AgentPage({ v2, agentId, routePrefix, harnesses, efforts = [], g
           </div>
         </div>
         {/* On a phone a long description is cut at two lines until the facts' line is opened, which shows it whole. */}
-        {d.description && <p id="agent-description" className={cn("mt-2 max-w-3xl text-[14px] text-muted-foreground", !factsOpen && "max-sm:line-clamp-2")}>{d.description}</p>}
+        {d.description && <p id="agent-description" className={cn("mt-2 max-w-3xl text-lead text-muted-foreground", !factsOpen && "max-sm:line-clamp-2")}>{d.description}</p>}
         {/* On a phone the facts fold into one line, which opens them; 640 px and up show the list. */}
         <button type="button" aria-expanded={factsOpen} aria-controls={d.description ? "agent-description agent-facts" : "agent-facts"} onClick={() => setFactsOpen((o) => !o)}
-          className="mt-1.5 flex w-full min-w-0 items-center gap-1.5 text-left font-mono text-[12px] text-muted-foreground sm:hidden">
+          className="mt-1.5 flex w-full min-w-0 items-center gap-1.5 text-left font-mono text-small text-muted-foreground sm:hidden">
           <ChevronRight className={cn("size-3.5 shrink-0 transition-transform", factsOpen && "rotate-90")} aria-hidden />
           <span className="truncate">{facts.map(([, v]) => v).join(" · ")}</span>
         </button>
         <dl id="agent-facts" className={cn("mt-3 flex flex-wrap gap-x-6 gap-y-2", !factsOpen && "max-sm:hidden")} aria-label="Current revision">
           {facts.map(([k, v, title]) => (
-            <div key={k} className="flex items-baseline gap-2"><dt className="caps text-[10px] text-muted-foreground">{k}</dt><dd className="font-mono text-[12px]" title={title}>{v}</dd></div>
+            <div key={k} className="flex items-baseline gap-2"><dt className="caps text-micro text-muted-foreground">{k}</dt><dd className="font-mono text-small" title={title}>{v}</dd></div>
           ))}
           {/* The tools the current revision grants, as GET /v2/agents/{id} serves them (the provider and permission in force,
               the agent's own setting over the server's): the name (its line for people as its title), the provider where
               it has a choice of one, the permission. A workflow's tools are its call nodes', which its editor shows. */}
           {!workflow && (
             <div className="flex items-baseline gap-2">
-              <dt className="caps text-[10px] text-muted-foreground">Tools</dt>
-              <dd className="font-mono text-[12px]">
+              <dt className="caps text-micro text-muted-foreground">Tools</dt>
+              <dd className="font-mono text-small">
                 {agent.tools?.length ? (
                   <ul className="flex flex-wrap gap-x-4 gap-y-1" aria-label="Tools">
                     {agent.tools.map((t) => (
@@ -172,23 +173,15 @@ export function AgentPage({ v2, agentId, routePrefix, harnesses, efforts = [], g
           )}
         </dl>
         {stale && (
-          <p role="alert" className="mt-3 flex items-center gap-3 text-[13px] text-warning-text">
+          <p role="alert" className="mt-3 flex items-center gap-3 text-body text-warning-text">
             Couldn't refresh this agent.
             <Button size="sm" variant="outline" onClick={reread}>Retry</Button>
           </p>
         )}
-        {offText && <p className="mt-3 font-mono text-[12px] text-warning-text" role="status" aria-label="Harness not available">{offText}</p>}
+        {offText && <p className="mt-3 font-mono text-small text-warning-text" role="status" aria-label="Harness not available">{offText}</p>}
       </header>
       {!agent.archived_at && <RunBar agent={agent} efforts={efforts} v2={v2} go={go} blocked={offText} limits={limits} />}
-      <div className="flex border-b px-5 md:px-8" role="tablist">
-        {tabs.map((t) => (
-          <button key={t.id} type="button" role="tab" aria-selected={at.id === t.id} onClick={() => go(agentHash(agent.agent_id, t.id))}
-            className={cn("caps -mb-px whitespace-nowrap border-b-2 px-3 py-3 text-[12px] max-sm:px-2.5 max-sm:py-2", at.id === t.id ? "border-primary text-primary" : "border-transparent text-muted-foreground hover:text-foreground")}>
-            {t.label}
-            {t.id === "learning" && <WaitingCount n={itemsWaiting} className="ml-1.5" />}
-          </button>
-        ))}
-      </div>
+      <Tabs tabs={tabs.map((t) => (t.id === "learning" ? { ...t, label: <>{t.label}<WaitingCount n={itemsWaiting} className="ml-1.5" /></> } : t))} value={at.id} onChange={(id) => go(agentHash(agent.agent_id, id))} />
       <div role="tabpanel" aria-label={waiting ? undefined : at.label} className="min-h-0 flex-1 overflow-auto px-5 py-6 md:px-8">
         {waiting ? <ListSkeleton label="Loading the tab" rows={4} /> : <at.Body agent={agent} v2={v2} go={go} stats={stats} focus={notes} learning={learning} onAgent={onAgent} onChanged={onChanged} places={places} />}
       </div>
@@ -220,32 +213,32 @@ function RunsTab({ agent, v2 }: TabProps) {
   if (!runs) return <ListSkeleton label="Loading the runs" rows={5} />;
   if (!runs.length) return (
     <div className="border px-4 py-12 text-center">
-      <p className="font-mono text-[13px] text-muted-foreground">No runs of this agent yet.</p>
-      {!agent.archived_at && <p className="mt-2 text-[13px] text-muted-foreground">Start one above: its timeline shows here as the agent works.</p>}
+      <p className="font-mono text-body text-muted-foreground">No runs of this agent yet.</p>
+      {!agent.archived_at && <p className="mt-2 text-body text-muted-foreground">Start one above: its timeline shows here as the agent works.</p>}
     </div>
   );
   return (
     <>
       <LatestRun key={runs[0].run_id} v2={v2} run={runs[0]} onRun={(r) => setRuns((xs) => xs && xs.map((x) => (x.run_id === r.run_id ? r : x)))} />
-      <p className="mb-3 font-mono text-[12px] text-muted-foreground">{runs.length}{cursor ? "+" : ""} {runs.length === 1 && !cursor ? "run" : "runs"}</p>
+      <p className="mb-3 font-mono text-small text-muted-foreground">{runs.length}{cursor ? "+" : ""} {runs.length === 1 && !cursor ? "run" : "runs"}</p>
       <ul className="border" aria-label="Runs">
         {runs.map((r) => (
           <li key={r.run_id} className="border-b last:border-b-0">
             <a href={`#/runs/${encodeURIComponent(r.run_id)}`} className="flex flex-wrap items-center gap-x-4 gap-y-1 px-4 py-3 hover:bg-accent">
               <StatusBadge run={r} />
-              <span className="min-w-0 flex-1 truncate text-[14px]" title={runTitle(r)}>{runTitle(r)}</span>
+              <span className="min-w-0 flex-1 truncate text-lead" title={runTitle(r)}>{runTitle(r)}</span>
               <LearningChips run={r} />
               {r.effort && <Chip>effort {r.effort}</Chip>}
-              <span className="font-mono text-[12px] text-muted-foreground">{when(r.created_at)}</span>
-              {r.ended_at && <span className="font-mono text-[12px] text-muted-foreground" title="How long it ran">{elapsed(Date.parse(r.ended_at) - Date.parse(r.created_at))}</span>}
-              {r.cost && (r.cost.usd !== null || soFar(r.cost)) && <span className="font-mono text-[12px] text-muted-foreground">{cost(r.cost, { ended: runEnded(r.status) })}</span>}
+              <span className="font-mono text-small text-muted-foreground">{when(r.created_at)}</span>
+              {r.ended_at && <span className="font-mono text-small text-muted-foreground" title="How long it ran">{elapsed(Date.parse(r.ended_at) - Date.parse(r.created_at))}</span>}
+              {r.cost && (r.cost.usd !== null || soFar(r.cost)) && <span className="font-mono text-small text-muted-foreground">{cost(r.cost, { ended: runEnded(r.status) })}</span>}
             </a>
           </li>
         ))}
       </ul>
       {/* A failed Load more keeps the runs already read, and the button to try again. */}
       {error && <ProblemCard problem={error} className="mt-4" />}
-      {cursor && <div className="mt-4 flex justify-center"><button type="button" onClick={() => read(cursor)} disabled={more} className="caps border px-4 py-2 text-[12px] hover:bg-accent disabled:opacity-45">{more ? "Loading" : "Load more"}</button></div>}
+      {cursor && <div className="mt-4 flex justify-center"><Button type="button" size="sm" onClick={() => read(cursor)} disabled={more}>{more ? "Loading" : "Load more"}</Button></div>}
     </>
   );
 }
@@ -258,14 +251,14 @@ function WorkflowTab({ agent, go }: TabProps) {
   return (
     <section className="border">
       <div className="flex flex-wrap items-center gap-3 border-b px-4 py-2">
-        <span className="caps text-[11px] font-semibold">Graph</span>
-        <span className="font-mono text-[11px] text-muted-foreground">{graph.nodes.length} nodes · rev {agent.definition.version}</span>
+        <span className="caps text-label font-semibold">Graph</span>
+        <span className="font-mono text-label text-muted-foreground">{graph.nodes.length} nodes · rev {agent.definition.version}</span>
         <span className="flex-1" />
         <Button size="sm" onClick={() => go(agentHash(agent.agent_id, "edit"))}><Pencil aria-hidden /> Edit the workflow</Button>
       </div>
       <div className="min-h-[360px] overflow-auto bg-[radial-gradient(hsl(var(--border))_1px,transparent_1px)] [background-size:22px_22px] px-4 py-5">
         {graph.nodes.length ? <WorkflowGraph graph={graph} marks={marks} label="The workflow's graph" minScale={0.55} />
-          : <p className="p-6 text-center font-mono text-[13px] text-muted-foreground">This revision's workflow has no root node to draw.</p>}
+          : <p className="p-6 text-center font-mono text-body text-muted-foreground">This revision's workflow has no root node to draw.</p>}
       </div>
       <div className="border-t px-4 py-2"><GraphLegend /></div>
     </section>
