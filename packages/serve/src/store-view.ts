@@ -240,9 +240,12 @@ async function storeRunOf(store: Store, runId: string, deps: ViewDeps): Promise<
   // row, never input_required again until its runner places it, as main's run read once the message was submitted.
   // Read only for a run not working now (a working run reads working anyway), so a run list adds no read for those; and
   // only a message that may answer a person counts (a trigger's, answers: false, never does, and is refused while it waits).
-  const submitted = terminal || row.kind !== "agentic" || working
-    ? 0
-    : (await commandsNow()).filter((command) => command.kind === "steer" && command.takenAt === null && command.refused === null && (command.body as { answers?: unknown } | null)?.answers !== false).length;
+  // A run parked at its cap counts its raises not taken yet the same way: raised, it reads as going on from the raise's
+  // row, never input_required again until its runner takes it (and parks it anew if the raise falls short).
+  const pending = (command: { kind: string; takenAt: number | null; refused: string | null; body: unknown }) =>
+    command.takenAt === null && command.refused === null &&
+    ((command.kind === "steer" && (command.body as { answers?: unknown } | null)?.answers !== false) || (command.kind === "raise" && budget?.kind === "budget"));
+  const submitted = terminal || row.kind !== "agentic" || working ? 0 : (await commandsNow()).filter(pending).length;
   const outcome = terminal ? STATUS_OF[row.state as Exclude<RunReadState, "running">] : undefined;
   const view: RunView = {
     id: row.id,

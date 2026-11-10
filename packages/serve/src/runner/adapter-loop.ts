@@ -651,10 +651,18 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     if (reflecting) return { later: "the run has answered and is ending: the steer is not placed in its end-of-run turn" };
     const text = typeof (command.body as { text?: unknown } | null)?.text === "string" ? (command.body as { text: string }).text : "";
     const requestId = commandRequest(command.id);
-    // A message that may not answer a person (a trigger's, answers: false) accepted while the run worked and delivered
-    // once it waits in its claim on its person: never this wait's answer, refused in the words the server refuses one
-    // with while the run waits (runs-over-store.ts WAITS_ON_A_PERSON).
-    if (reopen && reopen === waitTurn && (command.body as { answers?: unknown } | null)?.answers === false) return { refused: "The run is waiting on a person." };
+    // A message that answers nothing (a trigger's, answers: false) waits for the turn's end and runs as a turn of its
+    // own, never steering the turn in flight, and never as a waiting call's answer.
+    const followUp = (command.body as { answers?: unknown } | null)?.answers === false;
+    // The session idle with no wait taking messages yet: whether the last turn ended on a question to the person, read
+    // first. It is an await, so a wait may start meanwhile: every path below is chosen after it, with nothing awaited
+    // between that choice and the message's placing.
+    const askedLast = !reopen && session.state === "idle" && root !== undefined && endedOnTurnEndingTool((await entriesOf(gate.journal, root.id, context)) as never) !== undefined;
+    if (!gate || !session || gate.sealed) return { later: "the run is parking: the steer waits for its resume" };
+    // A message that may not answer a person (a trigger's), delivered once the run waits on its person (in its claim, or
+    // between the question's turn end and that wait): never the wait's answer, never placed, refused in the words the
+    // server refuses one with while the run waits (runs-over-store.ts WAITS_ON_A_PERSON).
+    if (followUp && (askedLast || (reopen !== undefined && reopen === waitTurn))) return { refused: "The run is waiting on a person." };
     // A reopened run's follow-up, its session idle: sent as a turn of its own, tracked to its end (as the input and a raise's
     // follow-up are), its row taken in its submission's commit; the claim waits on it before the run's next end.
     if (reopen && !reopen.sent && session.state === "idle") {
@@ -677,22 +685,13 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       return { taken: true };
     }
     if (!session.steer) return { refused: "this harness takes no steer mid-turn" };
-    // A message that answers nothing (a trigger's, answers: false) waits for the turn's end and runs as a turn of its
-    // own, never steering the turn in flight, and never as a waiting call's answer.
-    const followUp = (command.body as { answers?: unknown } | null)?.answers === false;
     // Who wrote it, when the person did not (a trigger's message): carried on its input, as the Timeline shows it.
     const origin = originOf((command.body as { origin?: unknown } | null)?.origin);
     const taken = gate.expect(writesSubmission(requestId), { take: [command.id] });
     // A seal while the steer is placed fails it before it is awaited: handled here.
     taken.catch(() => undefined);
     const theGate = gate;
-    // The session idle (a turn just ended, no wait taking messages yet): this places a turn no one tracks.
-    const idle = session.state === "idle";
-    // A message that may not answer a person, delivered while the session is idle after a turn that ended on its question
-    // to the person (between that turn's end and the run's wait or park): refused in the waiting words, as the server
-    // refuses one while the run waits; never placed, so it neither answers the question nor resumes the agent.
-    const askedLast = idle && root !== undefined && endedOnTurnEndingTool((await entriesOf(theGate.journal, root.id, context)) as never) !== undefined;
-    if (followUp && askedLast) return { refused: "The run is waiting on a person." };
+    // The session idle after a question (askedLast), no wait taking messages yet: this places a turn no one tracks.
     const steering = session.steer(text, requestId, followUp ? "followUp" : "steer", origin ? { origin } : undefined);
     // A person's message (never a trigger's) answering the question the last turn ended on, placed so: kept, so the wait
     // on that question, starting next, takes it as its answer. Any other idle steer is no answer to a wait.
