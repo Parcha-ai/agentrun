@@ -13,8 +13,7 @@ import { sqliteAdapterTests } from "./store-target.mjs";
 // Postgres's busy wait (lock_timeout, StoreBusy): store-postgres.test.mjs.
 const test = sqliteAdapterTests(nodeTest, "the store file held by another connection");
 import { AgentHomeError, openStore } from "@parcha/pi-durable-agent";
-import { startServe } from "../dist/index.js";
-import { agent, answerFlow, client, FAUX, flowAgent, follow, scratch, serve, startRun, withEnv } from "./support.mjs";
+import { agent, answerFlow, client, FAUX, flowAgent, follow, scratch, serve, startRun, startServe, withEnv } from "./support.mjs";
 /** A fake key, made at runtime: distinct per name, and no credential-shaped literal for the source export to flag. */
 const fakeKey = (name) => ["not-a-secret", name].join("-");
 

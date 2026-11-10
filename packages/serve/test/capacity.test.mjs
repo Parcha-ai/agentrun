@@ -8,9 +8,8 @@ import { request } from "node:http";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { startServe } from "../dist/index.js";
 import { sealKeyOf } from "../dist/tool-keys.js";
-import { agent, client, FAUX, follow, launchFor, runDir, runRecordOf, scratch, serve, storeRun, withEnv } from "./support.mjs";
+import { agent, client, FAUX, follow, runDir, runRecordOf, scratch, serve, startServe, storeRun, withEnv } from "./support.mjs";
 
 const MiB = 2 ** 20;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -250,7 +249,7 @@ test("a run's first message waits for a process slower to come up than a request
 test.skip("a run whose first message never landed before the server stopped: nothing of it is written after the close, and the next server gives it the message, however slow its process", async (t) => {
   const SLOW = new URL("./fixtures/faux-slow-start.mjs", import.meta.url).pathname;
   const data = join(await scratch(t), "agents");
-  const one = launchFor(await startServe({ data, port: 0, faux: SLOW, drainTimeout: "5s" }));
+  const one = await startServe({ data, port: 0, faux: SLOW, drainTimeout: "5s" });
   const api = client(one.baseUrl, one.token);
   assert.equal((await api("POST", "/agents", agent("slow"))).status, 201);
   const run = await api("POST", "/agents/slow/runs", { input: { content: "hi" } });
@@ -265,7 +264,7 @@ test.skip("a run whose first message never landed before the server stopped: not
   await sleep(1_500);
   assert.deepEqual(said, [], "nothing of the run after the server stopped");
   process.stderr.write = write;
-  const two = launchFor(await startServe({ data, port: 0, faux: SLOW, drainTimeout: "5s", readyTimeoutMs: 1_000 }));
+  const two = await startServe({ data, port: 0, faux: SLOW, drainTimeout: "5s", readyTimeoutMs: 1_000 });
   t.after(() => two.close());
   const { last } = await follow(client(two.baseUrl, two.token), run.body.run_id, ["completed", "failed"]);
   assert.equal(last.status, "completed", JSON.stringify(last));
@@ -273,7 +272,7 @@ test.skip("a run whose first message never landed before the server stopped: not
 
 test("AGENTRUN_MAX_RUNS and --max-runs set the cap; a value that is not a positive integer is refused", async (t) => {
   const { data } = await serve(t);
-  const zero = launchFor(await startServe({ data: join(data, "..", "other"), port: 0, faux: FAUX, maxRuns: 0 })).then((server) => (t.after(() => server.close()), "started"), (error) => error.message);
+  const zero = await startServe({ data: join(data, "..", "other"), port: 0, faux: FAUX, maxRuns: 0 }).then((server) => (t.after(() => server.close()), "started"), (error) => error.message);
   assert.match(zero, /max runs/i, "0 is refused");
   const caps = await (await import("../dist/index.js")).capabilities({ AGENTRUN_MAX_RUNS: "7" });
   assert.equal(caps.limits.max_concurrent_runs, 7);
@@ -363,7 +362,7 @@ test.skip("a cancel settles a run whose carry back cannot be written: cancelled,
 // SKIP (follow-up #2078): the run never reads working on the runner
 test.skip("a run cancelled as the server stops has its end in the store once the stop is done: no next start opens it again", async (t) => {
   const data = join(await scratch(t), "agents");
-  const one = launchFor(await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" }));
+  const one = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
   const api = client(one.baseUrl, one.token);
   assert.equal((await api("POST", "/agents", agent("busy"))).status, 201);
   const { body: run } = await api("POST", "/agents/busy/runs", { input: { content: "Take your time." } });

@@ -17,9 +17,8 @@ import { test } from "node:test";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import { awaitImage, BOX_RECIPE, DEFAULT_DOCKER_IMAGE, dockerImage, IMAGE_STATE_FILE, RECIPE_HASH, RECIPE_LABEL, STALE_AFTER_MS } from "../dist/box-image.js";
 import { startTimeOf } from "../dist/box/sweep.js";
-import { client, follow, jsonLines, runDir, scratch, serve, withEnv } from "./support.mjs";
+import { client, follow, jsonLines, runDir, scratch, serve, startServe, withEnv } from "./support.mjs";
 import { daytonaSandboxes } from "./fixtures/fake-daytona.mjs";
-import { startServe } from "../dist/index.js";
 
 const PROBE = new URL("./fixtures/faux-probe.mjs", import.meta.url).pathname;
 const FAKE = new URL("./fixtures/fake-docker.mjs", import.meta.url).pathname;

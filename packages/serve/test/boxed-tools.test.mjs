@@ -9,10 +9,9 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { startServe } from "../dist/index.js";
 import { writesHeld } from "../dist/workspace.js";
 import fauxBoxes, { fauxRoot } from "./fixtures/faux-box.mjs";
-import { client, flowAgent, follow, jsonLines, runDir, runRecordOf, scratch, serve, withEnv } from "./support.mjs";
+import { client, flowAgent, follow, jsonLines, runDir, runRecordOf, scratch, serve, startServe, withEnv } from "./support.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const PROBE = new URL("./fixtures/faux-probe.mjs", import.meta.url).pathname;

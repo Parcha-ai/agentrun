@@ -5,8 +5,7 @@ import assert from "node:assert/strict";
 import { lstat, mkdir, readFile, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
-import { startServe } from "../dist/index.js";
-import { client, FAUX, scratch } from "./support.mjs";
+import { client, FAUX, scratch, startServe } from "./support.mjs";
 
 const exists = (path) => lstat(path).then(() => true, () => false);
 

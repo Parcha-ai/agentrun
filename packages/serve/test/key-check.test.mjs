@@ -11,10 +11,9 @@ import { createServer } from "node:http";
 import { join } from "node:path";
 import { test } from "node:test";
 import { setImmediate as turn } from "node:timers/promises";
-import { startServe } from "../dist/index.js";
 import { calls as monidCalls, KEY as MONID_KEY, release as releaseMonid, stalled as monidStalled } from "./fixtures/faux-monid.mjs";
 import { schemaProblems } from "./schema-support.mjs";
-import { client, FAUX, launchFor, scratch, serve, storeBytes, withEnv } from "./support.mjs";
+import { client, FAUX, scratch, serve, startServe, storeBytes, withEnv } from "./support.mjs";
 
 const FAUX_MONID = new URL("./fixtures/faux-monid.mjs", import.meta.url).pathname;
 const KEYS = ["PARALLEL_API_KEY", "MONID_API_KEY", "BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "TYPESAFE_API_KEY", "AGENTRUN_SEAL_KEY", "AGENTRUN_TEST_FAUX_MONID_CALLS", "AGENTRUN_TEST_FAUX_MONID_KEY", "AGENTRUN_TEST_FAUX_MONID_DOWN", "AGENTRUN_TEST_FAUX_MONID_STATUS", "AGENTRUN_TEST_FAUX_MONID_STALL"];
@@ -132,7 +131,7 @@ test("a save still waiting on its provider when the server closes stores nothing
   withEnv(t, { AGENTRUN_SEAL_KEY: sealKey(), AGENTRUN_TEST_FAUX_MONID_STALL: "1" }, KEYS);
   t.after(releaseMonid);
   const data = join(await scratch(t), "agents");
-  const server = launchFor(await startServe({ data, port: 0, faux: FAUX, fauxMonid: FAUX_MONID, drainTimeout: "5s" }));
+  const server = await startServe({ data, port: 0, faux: FAUX, fauxMonid: FAUX_MONID, drainTimeout: "5s" });
   const put = client(server.baseUrl, server.token)("PUT", "/settings/tool-keys/monid", { values: { MONID_API_KEY: MONID_KEY } }).catch((error) => ({ error }));
   // The save reaches monid's check, which the fake holds; were it answered first (a refusal before the check), the
   // check would never be reached: the race ends on whichever comes first, and that one says why.

@@ -12,8 +12,7 @@ import { test } from "node:test";
 import { pathToFileURL } from "node:url";
 import { BOX_IDS, BOX_KEYS, boxesLog, boxRegistry, VM_PROVIDER } from "../dist/boxes.js";
 import { SERVER_LOCK } from "../dist/server-lock.js";
-import { startServe } from "../dist/index.js";
-import { FAUX, scratch, withEnv } from "./support.mjs";
+import { FAUX, scratch, startServe, withEnv } from "./support.mjs";
 // A fake Daytona API on loopback (each request kept in `seen`, `answer` writing the response); daytona-boxes.test.mjs
 // runs whole sandboxes on the same fixture.
 import { fakeDaytona } from "./fixtures/fake-daytona.mjs";

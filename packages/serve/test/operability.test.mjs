@@ -6,8 +6,7 @@ import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { BOX_IDS } from "../dist/boxes.js";
-import { startServe } from "../dist/index.js";
-import { agent, client, FAUX, follow, printed, scratch, withEnv } from "./support.mjs";
+import { agent, client, FAUX, follow, printed, scratch, startServe, withEnv } from "./support.mjs";
 
 const CLI = new URL("../dist/cli.js", import.meta.url).pathname;
 const DOCKER = new URL("../docker/", import.meta.url);

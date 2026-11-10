@@ -10,8 +10,7 @@ import { test } from "node:test";
 import * as harness from "../dist/harness.js";
 import * as table from "../dist/harness-table.js";
 import * as host from "../dist/host.js";
-import { startServe } from "../dist/index.js";
-import { agent, client, FAUX, follow, scratch, serve } from "./support.mjs";
+import { agent, client, FAUX, follow, scratch, serve, startServe } from "./support.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const MiB = 2 ** 20;

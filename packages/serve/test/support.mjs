@@ -12,7 +12,7 @@ import { fileURLToPath } from "node:url";
 import { claudeAgentExecutable } from "@parcha/agentrun-harness-claude";
 import { codexTarget } from "../../run-adapters-codex/dist/binary.js";
 import { processAlive } from "@parcha/agentrun-kernel/host";
-import { startServe } from "../dist/index.js";
+import { startServe as startServeBuilt } from "../dist/index.js";
 import { fauxEnvOf } from "../dist/server.js";
 import { readRunDbSync } from "../dist/run-db.js";
 import { resolve } from "node:path";
@@ -60,6 +60,9 @@ const ownerCookies = new Map();
 const launchCodes = new Map();
 /** Registers `server`'s launch code (a Serve, or anything with `baseUrl` and `launchCode`) for the test client. */
 export const launchFor = (server) => (server?.launchCode ? launchCodes.set(server.baseUrl, server.launchCode) : undefined, server);
+/** The server's startServe, its launch code registered for the test client (launchFor): every test starts a server
+ *  through this one, so the client's secret writes open that server's launch link with accounts off. */
+export const startServe = async (options) => launchFor(await startServeBuilt(options));
 
 export const FAUX = new URL("./fixtures/faux-model.mjs", import.meta.url).pathname;
 
@@ -335,7 +338,7 @@ export async function serve(t, { harnesses: asked, runner: wantRunner = true, ..
   const dir = options.data ? undefined : await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "agentrun-serve-"));
   const data = options.data ?? join(dir, "agents");
   if (harnesses) await linkHarnesses(data, harnesses === true ? {} : harnesses);
-  const server = launchFor(await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s", ...options }));
+  const server = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s", ...options });
   // A runner beside the server on the same data (the CLI start's server-and-runner): it claims and runs what the server
   // starts, so a test reads a run that runs, not one that queues forever. `runner: false` leaves it off for a test that
   // wants the server alone. Its loop is the switch's dispatch (learning wired; pi/workflow the server's own, E2r).

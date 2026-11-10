@@ -15,8 +15,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { BOX_ENV } from "../dist/run-box.js";
-import { follow, jsonLines, runDir, scratch, serve, withEnv } from "./support.mjs";
-import { startServe } from "../dist/index.js";
+import { follow, jsonLines, runDir, scratch, serve, startServe, withEnv } from "./support.mjs";
 
 const PROBE = new URL("./fixtures/faux-probe.mjs", import.meta.url).pathname;
 const FAKE = new URL("./fixtures/fake-docker.mjs", import.meta.url).pathname;

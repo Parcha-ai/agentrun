@@ -14,8 +14,7 @@ import { test } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import * as timeline from "@parcha/pi-durable-agent/timeline";
-import { startServe } from "../dist/index.js";
-import { client, FAUX, follow, runDir, scratch, serve, withEnv } from "./support.mjs";
+import { client, FAUX, follow, runDir, scratch, serve, startServe, withEnv } from "./support.mjs";
 import { CLI_STORE, MESSAGE_RUN, fakeClock, firings, made, schedule } from "./trigger-support.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
 

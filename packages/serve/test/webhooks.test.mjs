@@ -12,11 +12,10 @@ import { test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { commitWrites } from "@earendil-works/pi-durable/testing";
 import { openSqliteStore } from "../dist/store/index.js";
-import { startServe } from "../dist/index.js";
 import { ATTEMPTS_KEPT, signatureOf, Webhooks } from "../dist/webhooks.js";
 import { verify } from "../dist/standard-webhooks.js";
 import { schemaProblems } from "./schema-support.mjs";
-import { client, FAUX, follow, printed, scratch, secretWritePath, serve, startInProcessRunner, startRun, withEnv } from "./support.mjs";
+import { client, FAUX, follow, printed, scratch, secretWritePath, serve, startInProcessRunner, startRun, startServe, withEnv } from "./support.mjs";
 
 // Removing the outbound webhook takes its secret with it: the client sends it from the owner's session, as the console does.
 secretWritePath(["DELETE"], /^\/settings\/webhook$/);

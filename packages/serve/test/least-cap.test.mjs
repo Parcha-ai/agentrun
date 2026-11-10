@@ -7,9 +7,8 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { REQUEST_STARTED } from "@parcha/pi-durable-agent/timeline";
 import { capBefore, paidCall, useSpend } from "../dist/cap.js";
-import { startServe } from "../dist/index.js";
 import { KEY } from "./fixtures/faux-monid.mjs";
-import { agent, client, follow, runDir, scratch, serve, withEnv } from "./support.mjs";
+import { agent, client, follow, runDir, scratch, serve, startServe, withEnv } from "./support.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
 
 /** The tests' faux model priced on output only, $100 a million: a request's least (1,024 tokens) is $0.1024. */

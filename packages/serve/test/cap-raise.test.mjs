@@ -12,8 +12,7 @@ import { test } from "node:test";
 import { processAlive } from "@parcha/agentrun-kernel/host";
 import { REQUEST_STARTED } from "@parcha/pi-durable-agent/timeline";
 import { spentIn } from "../dist/cap.js";
-import { startServe } from "../dist/index.js";
-import { agent, client, follow, letGo, runDir, runRecordOf, scratch, serve, withEnv } from "./support.mjs";
+import { agent, client, follow, letGo, runDir, runRecordOf, scratch, serve, startServe, withEnv } from "./support.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
 
 /** The tests' faux model priced on output only, $100 a million: a request's least (1,024 tokens) is $0.1024. */
