@@ -44,6 +44,9 @@ test("the schema has every table, and every time column is an INTEGER", async (t
     assert.ok(times.some(([table, name]) => table === "runs" && name === "left_running_at"), "runs.left_running_at (the Browserbase settle window reads it)");
     assert.ok((await columnsOf("revisions")).some((column) => column.name === "package"), "revisions.package");
     assert.ok((await columnsOf("commands")).some((column) => column.name === "refused"), "commands.refused");
+    // An externally owned agent keeps its source reference; each of its revisions keeps the external version it maps.
+    assert.ok((await columnsOf("agents")).some((column) => column.name === "external_ref"), "agents.external_ref");
+    assert.ok((await columnsOf("revisions")).some((column) => column.name === "external_version"), "revisions.external_version");
     assert.ok(times.some(([table, name]) => table === "mcp_servers" && name === "credential_changed_at"), "mcp_servers.credential_changed_at");
   } finally {
     await db.close();

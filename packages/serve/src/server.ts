@@ -13,7 +13,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import { type Revision, type RunOrigin } from "@parcha/pi-durable-agent";
-import { type AgentEntry, agentRevision, agentRevisions, agentView, commitAgent, createAgent, definitionOf, etagOf, getAgent, listAgents, revisionView, setAgentArchived, setCurrentRevision } from "./agents-store.js";
+import { type AgentEntry, agentRevision, agentRevisions, agentView, commitAgent, createAgent, definitionOf, etagOf, getAgent, listAgents, makeRevision, refuseExternal, revisionView, setAgentArchived, setCurrentRevision } from "./agents-store.js";
 import { WORKFLOW_ADAPTERS } from "./app.js";
 import { DECISION_ADAPTER, decisionsOf, FAUX_JEV_ENV, FAUX_OPENROUTER_ENV, FAUX_PARALLEL_ENV, fauxFetch } from "./decisions.js";
 import { FAUX_WEB_ENV } from "./web-fetch-direct.js";
@@ -38,7 +38,7 @@ import { gradeModelOf, LEARNING_LABEL, learningBudgetOf, type LearningMode, lear
 import { agentLearning, learningLog, learningNotes, noteBody, pendingCount, readNote, secretsShown, sendNote, writeNote } from "./learning-routes.js";
 import { answerLlms, MCP_PATH, mcpEndpoint } from "./mcp.js";
 import { openapiDocument, servedOpenapi, UNSUPPORTED } from "./openapi.js";
-import { boxesLine, defaultPlaceOf, NEW_AGENT_TOOLS, newAgentPlace, noBoxReason, type Place, placesOf, resolvePlace } from "./place.js";
+import { boxAvailability, boxesLine, defaultPlaceOf, NEW_AGENT_TOOLS, newAgentPlace, noBoxReason, type Place, placesOf, resolvePlace } from "./place.js";
 import { BOX_ALLOW_ENV, boxAllowOf, boxLimitsOf, boxNetworkOf, FAUX_BOX_ENV, fauxBoxes } from "./run-box.js";
 import { Owner, passwordProblem, SESSION_MS } from "./owner.js";
 import { answerPage, byOwnerSession, heldSessions, isJson, overHttps, ownerCookie, ownOrigin, sendHostRefused, signedIn } from "./page.js";
@@ -48,7 +48,7 @@ import { browserHandBack, handBackTarget } from "./browser-commands.js";
 import { type ComputerOf, computerView } from "./computer-view.js";
 import { durationMs, logLine } from "./print.js";
 import { knownToolCostOf, redactorOf, type RunMoment, type State, type Status, toolCostOf } from "./run-view.js";
-import { approve, archiveRun, cancel, message, pause as pauseRunOverStore, raiseCap, resume as resumeRunOverStore, type StartDeps, type StartOptions, startRun, stop as stopRunOverStore, WAITS_ON_A_PERSON } from "./runs-over-store.js";
+import { approve, archiveRun, cancel, message, pause as pauseRunOverStore, raiseCap, resume as resumeRunOverStore, type StartDeps, startInline, type StartOptions, startRun, stop as stopRunOverStore, WAITS_ON_A_PERSON } from "./runs-over-store.js";
 import { momentOverStore, summaryOverStore, timelineOverStore, type ViewDeps, viewOverStore, withheldOverStore } from "./store-view.js";
 import { servedTimelineRows } from "./run-timeline-served.js";
 import { servedRunLearning } from "./run-learning-served.js";
@@ -63,7 +63,7 @@ import { watchRun } from "./live/stream.js";
 import { stats as statsOverStore } from "./store-reads/stats.js";
 import { analytics as analyticsOverStore } from "./store-reads/analytics.js";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { type AgenticBody, type NewRevision, openSqliteStore, type RevisionPlace, type RunRow, type Store, StoreBusy, StoreConstraint, type WorkflowBody } from "./store/index.js";
+import { type AgenticBody, type NewRevision, openStore, type RevisionPlace, type RunRow, type Store, StoreBusy, StoreConstraint, type WorkflowBody } from "./store/index.js";
 import { FINAL_STATES } from "./store/store.js";
 import { runModelRef } from "./model.js";
 // The v2 run statuses, as the run view names them (run-view.ts Status), for the list filter's validation. */
@@ -121,7 +121,7 @@ import { SCHEME_NAMES } from "./trigger-signatures.js";
 import { permissionFrom, pinWords } from "./tool-gate.js";
 import { CATCHUP_WINDOW_S, FAILURES_TO_PAUSE, HISTORY_KEPT, MIN_EVERY_S, PAYLOAD_KEPT_BYTES, type RunTrigger, SOURCE_KINDS, TARGET_KINDS, type TriggerClock, Triggers } from "./triggers.js";
 import { applyBodyOf, compiled, GITHUB_TRIGGER_UNCONNECTED, githubTriggerWords, madeTriggerIssues, type Package, packageModel, packageView, readPackages, type TemplatesDeps } from "./templates.js";
-import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, type DefinitionBody, definitionBodyIssues, ID, IDEMPOTENCY_TTL_S, inputIssues, isObject, type Json, stable, unknownFields } from "./validate.js";
+import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, type DefinitionBody, definitionBodyIssues, EXTERNAL_NAME, ID, IDEMPOTENCY_TTL_S, inputIssues, isObject, type Json, stable, unknownFields } from "./validate.js";
 import { agentTools, browserKeyRow, isUnavailable, keptVendor, type Plane, recheckPlane, settingsIssues, ToolSettings, type ToolSettingsMap, whyUnavailable, withDefaults } from "./tool-plane.js";
 import { toolSettingsOverStore } from "./tool-settings-store.js";
 import { writeApprovers } from "./server-approvers.js";
@@ -136,7 +136,8 @@ import { computerCapabilities, type ComputerRoutes, createComputerRoutes, folder
 import { FAUX_VIEW_PATH, type FauxComputers, fauxComputers } from "./faux-computers.js";
 import { runComputerField } from "./run-computer.js";
 import { writesHeld } from "./workspace.js";
-import { agentHomeFolder, computerProviderFactories, computerProviderMakers, isWorkspaceError, localWorkspace, runFolder, serverRunWorkspace, storeLedger, type Workspace } from "./workspace/index.js";
+import { agentHomeFolder, claimKinds, computerProviderFactories, computerProviderMakers, computerReadiness, isWorkspaceError, localWorkspace, runFolder, serverRunWorkspace, storeLedger, type Workspace } from "./workspace/index.js";
+import { keyReader } from "./key-meta.js";
 // server-lock.ts is gone: the store's EXCLUSIVE connection is the one-server lock (StoreOwned refuses a second server).
 
 export const CONTRACT = "agentrun.v2/0";
@@ -436,6 +437,7 @@ export const ROUTES: readonly Route[] = [
   { method: "PUT", pattern: /^\/agents\/([^/]+)\/home\/files\/(.+)$/, name: "writeHomeFile" },
   { method: "DELETE", pattern: /^\/agents\/([^/]+)\/home\/files\/(.+)$/, name: "deleteHomeFile" },
   { method: "GET", pattern: /^\/runs$/, name: "listAllRuns" },
+  { method: "POST", pattern: /^\/runs$/, name: "createInlineRun" },
   { method: "GET", pattern: /^\/runs\/([^/]+)$/, name: "getRun" },
   { method: "PATCH", pattern: /^\/runs\/([^/]+)$/, name: "raiseRunCap" },
   { method: "GET", pattern: /^\/runs\/([^/]+)\/timeline$/, name: "getTimeline" },
@@ -838,7 +840,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // EXCLUSIVE lock is the one-server lock (no server-lock.ts), and it refuses a data directory an earlier version wrote, in
   // words, to start fresh (no oldHomes/oldLayout checks, no migration). Every agent, run, setting and sign-in is a row; the
   // server writes and reads rows, and a runner (its own process, sharing only this store) runs every run.
-  const store = await openSqliteStore({ dataDir: data, role: "server" });
+  // On Postgres when this process's AGENTRUN_STORE_URL secret names one (store/open.ts), its owner lock the one-server lock.
+  const store = await openStore({ dataDir: data, role: "server" });
   stops.push(() => store.close());
   // Which fields are the server's is read from what it is started with alone: handed the saved keys too, ToolKeys would
   // call each the server's, and none could be deleted. The keys are sealed rows in the store; load() reads them once here.
@@ -1066,6 +1069,19 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         factories: computerProviderFactories(computerProviderMakers(), (id) => storeLedger(store.computerLedger, id)),
       }),
   }));
+  /** Whether an agent's computer setting can be had here now, by the answers the runner's claim gives (resolve-computer.ts
+   *  computerReadiness): over the registry the claim reads (workspace/computer-deps.ts claimKinds, asked with what the
+   *  runner composes with: runner/main.ts gives it no faux, so the package's, under --faux too), in the folder mode of
+   *  now, with keys read as the runner reads them (the secrets this process was started with, withSecrets "own", as
+   *  runner/main.ts runEnv hands them; else the saved one). What runnable.ts checks for an agent with
+   *  a computer setting, in place of the box check. Whether Docker answers here is the boxes' own start-time probe
+   *  (boxOffers, in memory: no new probe), with its reason, which says how to fix it. */
+  const dockerAnswers = (provider: string): true | string => {
+    const box = boxAvailability(boxOffers).find((one) => one.id === provider);
+    return box?.available ? true : box?.reason ?? `${provider} is not a box this server has`;
+  };
+  const computerReady = async (setting: { kind: string; provider?: string }) =>
+    computerReadiness(setting, (await folderModeOf(store)()) === "disk" ? 2 : 1, claimKinds({}), keyReader(store, checked.sealKey, withSecrets(process.env, "own")), dockerAnswers);
   const archil = createArchilRoutes({ store, sealKey: checked.sealKey, env: process.env });
   /** A run's computer on its read: its revision's computer setting, else the one its place says; absent for none. */
   const runComputerOf = async (runId: string, view: Record<string, unknown>): Promise<Record<string, unknown>> => {
@@ -1546,7 +1562,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  does not have yet. `capped`: the run has a spend cap, which a web tool's resolution reads (tool-plane.ts). */
   async function runnable(revision: Revision, place: Place, { capped = false }: { capped?: boolean } = {}): Promise<void> {
     const shape = { ...shapeOf(revision), place, ...(revision.body.place ? {} : { unnamed: true as const }) };
-    const blockers = await blockersOf(env, shape, settings.get(), { capped, boxes: boxOffers, offers, mcp: mcpTools, decisionPrice });
+    const blockers = await blockersOf(env, shape, settings.get(), { capped, boxes: boxOffers, computerReady, offers, mcp: mcpTools, decisionPrice });
     if (!blockers.length) return;
     const message = blockers.map((b) => b.message).join(" ");
     // Each blocker as a 422 names its issue: its field, reason and message, and the fix when it has one.
@@ -1582,14 +1598,14 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     }
     const named = (revision.kind === "agentic" ? { kind: "agentic" as const, ...(body as AgenticBody) } : workflowShape(body as never)) as unknown as RevisionShape;
     const shape = named.place ? named : { ...named, place: fallbackPlace(named.kind, named.tools ?? []), unnamed: true as const };
-    const blockers = await blockersOf(env, shape, settings.get(), { boxes: boxOffers, offers, mcp: mcpTools });
+    const blockers = await blockersOf(env, shape, settings.get(), { boxes: boxOffers, computerReady, offers, mcp: mcpTools });
     // An agent's default cap caps each run started without one of its own, and a web tool resolves by the cap: what a cap
     // alone keeps from running under the definition's own picks, whatever this host's settings, would keep every such run
     // from running, so the save is refused, not each run (claude-agent's or codex's own search, picked, under a cap).
     if ((body.maxCostUsd ?? 0) > 0) {
       const key = (b: Blocker) => `${b.field}\n${b.message}`;
-      const plain = new Set((await blockersOf(env, shape, {}, { boxes: boxOffers, offers, mcp: mcpTools })).map(key));
-      const capped = await blockersOf(env, shape, {}, { capped: true, boxes: boxOffers, offers, mcp: mcpTools, decisionPrice });
+      const plain = new Set((await blockersOf(env, shape, {}, { boxes: boxOffers, computerReady, offers, mcp: mcpTools })).map(key));
+      const capped = await blockersOf(env, shape, {}, { capped: true, boxes: boxOffers, computerReady, offers, mcp: mcpTools, decisionPrice });
       // A model with no price (`unpriced`) is a setting this host fixes (AGENT_MODEL_PRICE): a warning, as it is; the
       // agent saves and updates, and only a run under the cap is refused (409). A tool's pick a cap rules out refuses it.
       const added = capped.filter((b) => !plain.has(key(b)));
@@ -1749,7 +1765,14 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   function workflowInputIssues(validateWorkflow: typeof import("@parcha/agentrun-dsl").validateWorkflow, revision: Revision, input: Json): InputIssue[] {
     if (revision.kind !== "workflow") return [];
     const checked = validateWorkflow(revision.body.workflow, { executeCode: false, input });
-    return checked.ok ? [] : checked.issues.map((i) => ({ field: `input${i.path ? ` at ${i.path}` : ""}`, reason: "invalid", message: `the workflow does not take this input: ${i.code}${i.path ? ` at ${i.path}` : ""}` }));
+    if (checked.ok) return [];
+    return checked.issues.map((i) => {
+      // An input problem has no path of its own; its message names the schema's path and why (the DSL's schemaProblems
+      // reports schema paths, never the input's data), so it is said as it is, and the field carries that path (#1926).
+      const said = !i.path && i.code === "INPUT_INVALID" && i.message ? i.message.replace(/^input:\s*/, "") : `${i.code}${i.path ? ` at ${i.path}` : ""}`;
+      const at = i.path || /^(#\/\S*?):\s/.exec(said)?.[1];
+      return { field: `input${at ? ` at ${at}` : ""}`, reason: "invalid", message: `the workflow does not take this input: ${said}` };
+    });
   }
 
   /** Where a person opens a page an answer to `req` names (a run's or an agent's console_url, console-links.ts): the
@@ -1774,6 +1797,69 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       // Its view from the store: the run and its launch were inserted in one transaction, so the view reads it whole.
       return { status: 202, body: await viewOverStore(store, run.id, viewDepsFor(linkOrigin(req))), headers: { location: `/v2/runs/${run.id}` } };
     });
+  }
+
+  /** POST /runs: a run of an agent another system owns, given inline. The body is POST /agents/{agent_id}/runs' own, but
+   *  `revision` (the run's revision is its external version's), with the agent's reference in its source (`external`) and
+   *  the agent as POST /agents takes one (`definition`, `skills`, `note`), checked as that route checks it, in its words.
+   *  Its first run makes the agent, a version's first run its revision; a later run of the version reuses both
+   *  (runs-over-store startInline). The answer is POST /agents/{agent_id}/runs' own: 202 and the run. */
+  async function createInlineRun(req: IncomingMessage) {
+    const body = await bodyOf(req);
+    const { external, definition, skills, note, revision: pinned, ...run } = body;
+    const given = { definition, ...(skills !== undefined ? { skills } : {}), ...(note !== undefined ? { note } : {}) };
+    const issues: InputIssue[] = [
+      ...externalIssues(external),
+      ...(pinned !== undefined ? [{ field: "revision", reason: "not_allowed", message: "An inline run pins no revision: it runs the revision of its external version.", fix: "Remove revision." }] : []),
+      ...runBodyIssues(run),
+      ...definitionBodyIssues(given),
+      // The agent's id is this server's, one per external reference, and its version is the reference's.
+      ...(["id", "version"] as const).flatMap((key) => (isObject(definition) && definition[key] !== undefined ? [{ field: `definition.${key}`, reason: "not_allowed", message: `An inline agent's ${key} is its external reference's: the definition names none.`, fix: `Remove definition.${key}.` }] : [])),
+    ];
+    if (issues.length) throw invalid(issues);
+    const checked = checkDefinitionBody(given);
+    const revision = makeRevision(checked.definition, checked.skills ?? {}, checked.note);
+    // Refused where POST /agents refuses the definition (one this host can never run); what this host still lacks for it
+    // is the run's own refusal (prepareLaunch's runnable), as for a run of a stored agent.
+    await saveable(revision);
+    const ref = external as { source: string; kind: string; id: string; version: string | number };
+    const inline = {
+      external: { source: ref.source, kind: ref.kind, id: ref.id, version: String(ref.version) },
+      name: checked.definition.name as string,
+      description: typeof checked.definition.description === "string" ? checked.definition.description : null,
+      revision,
+    };
+    return idempotent(req, "/runs", body, async (origin) => {
+      // A run the store started under this key, though no answer was kept (its server went down first): that run, as it is now.
+      const first = origin && (await agents.request(() => agents.store.runOfOrigin(origin.key)));
+      if (first) {
+        if (first.existing?.fingerprint !== origin.fingerprint) throw mismatch();
+        const headers: Record<string, string> = { location: `/v2/runs/${first.runId}`, "idempotent-replayed": "true" };
+        return { status: 202, body: await viewOverStore(store, first.runId, viewDepsFor(linkOrigin(req))), headers };
+      }
+      const started = await startInline(store, startDeps, inline, run, { ...(origin ? { origin } : {}) });
+      return { status: 202, body: await viewOverStore(store, started.id, viewDepsFor(linkOrigin(req))), headers: { location: `/v2/runs/${started.id}` } };
+    });
+  }
+
+  /** An inline run's `external`, field by field: its source and kind (no colon, which the reference's key splits on), its
+   *  id in its source (text), and its version there (text or a whole number). */
+  function externalIssues(external: unknown): InputIssue[] {
+    if (external === undefined) return [{ field: "external", reason: "missing", message: "external is the agent's reference in the system that owns it: {source, kind, id, version}" }];
+    if (!isObject(external)) return [{ field: "external", reason: "wrong_type", message: "external is an object: {source, kind, id, version}" }];
+    const issues: InputIssue[] = unknownFields(external, ["source", "kind", "id", "version"]).map((issue) => ({ ...issue, field: `external.${issue.field}`, message: `external keeps no field ${issue.field}.` }));
+    for (const key of ["source", "kind"] as const) {
+      const value = external[key];
+      if (value === undefined) issues.push({ field: `external.${key}`, reason: "missing", message: `external.${key} is required` });
+      else if (typeof value !== "string") issues.push({ field: `external.${key}`, reason: "wrong_type", message: `external.${key} is text` });
+      else if (!EXTERNAL_NAME.test(value)) issues.push({ field: `external.${key}`, reason: "bad_format", message: `external.${key} does not match ${EXTERNAL_NAME.source}` });
+    }
+    if (external.id === undefined) issues.push({ field: "external.id", reason: "missing", message: "external.id is required" });
+    else if (typeof external.id !== "string" || external.id.length < 1 || external.id.length > 255) issues.push({ field: "external.id", reason: "wrong_type", message: "external.id is the agent's id in its source: text of 1 to 255 characters" });
+    const { version } = external;
+    if (version === undefined) issues.push({ field: "external.version", reason: "missing", message: "external.version is required" });
+    else if (!((typeof version === "string" && version.length >= 1 && version.length <= 128) || (Number.isSafeInteger(version) && (version as number) >= 0))) issues.push({ field: "external.version", reason: "wrong_type", message: "external.version is the agent's version in its source: text of 1 to 128 characters, or a whole number" });
+    return issues;
   }
 
   /** A run of `entry`'s agent from a create's body, checked as POST /agents/{id}/runs checks it: that route's, and a
@@ -2180,6 +2266,11 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const BODY_CHECKS: Record<string, (sent: Json) => ((body: unknown) => readonly InputIssue[]) | undefined> = {
     createAgent: () => definitionCheck(true),
     updateDefinition: (sent) => ("definition" in sent ? definitionCheck(false) : undefined),
+    // POST /runs' agent, given inline, is POST /agents' body inside its own: checked as that one is.
+    createInlineRun: () => (body: unknown) => {
+      const { definition, skills, note } = isObject(body) ? body : {};
+      return definitionBodyIssues({ definition, ...(skills !== undefined ? { skills } : {}), ...(note !== undefined ? { note } : {}) });
+    },
   };
 
   /** An operation's documented request bodies (its JSON media type's examples), each its value. */
@@ -2375,7 +2466,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       }
       case "archiveAgent":
       case "unarchiveAgent": {
-        await needAgent(id);
+        // An agent another system owns is that system's to keep or drop: archiving it here is refused, as an edit is.
+        refuseExternal((await needAgent(id)).agent);
         // No run sweep on archive: a runner reads an archived agent's run rows directly, nothing to sweep.
         // The engine archives (or unarchives) the agent itself: archived, every trigger that runs as it turns off with
         // agent_archived in that same store transaction; unarchived, none turns on. Never archived first by another path,
@@ -2397,6 +2489,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       }
       case "createRun": {
         const answer = await createRun(req, id);
+        return send(res, answer.status, answer.body, answer.headers);
+      }
+      case "createInlineRun": {
+        const answer = await createInlineRun(req);
         return send(res, answer.status, answer.body, answer.headers);
       }
       case "listRuns":
