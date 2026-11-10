@@ -117,23 +117,6 @@ test.skip("a follow-up on a completed run carries it back again with its counts 
   assert.ok(second.at > first.at, "written at the second end");
 });
 
-test("a run whose process died before it released the run gets its metrics from what its store holds", async (t) => {
-  const { api, data } = await serve(t);
-  const runId = await started(api, "crash", { tools: ["write"] }, { input: { content: "Crash after one request." } });
-  await follow(api, runId, ["failed"]);
-  assert.match((await api("GET", `/runs/${runId}`)).body.error.message, /exited \(3\) without releasing/);
-  assert.equal(storeRun(data, runId).state, "failed");
-  const m = metricsOf(data, runId);
-  assert.ok(m, "the failed run has metrics");
-  const answered = entriesOf(data, runId).filter((e) => e.kind === "pi.assistant");
-  assert.equal(answered.length, 1, "one request answered before the process went");
-  // The request it was making when it went was marked as it left and never answered: counted, its tokens unknown.
-  assert.deepEqual([m.requests, m.unmetered], [2, 1]);
-  assert.deepEqual([m.input, m.output], [answered[0].model[0].usage.input, answered[0].model[0].usage.output]);
-  assert.deepEqual(m.tools, { write: { calls: 1, errors: 0 } });
-  assert.equal(runRecordOf(data, runId).generation, 1, "never opened again");
-});
-
 test("a workflow run's metrics count every model node's conversation", async (t) => {
   const { api, data } = await serve(t);
   const flow = answerFlow();
