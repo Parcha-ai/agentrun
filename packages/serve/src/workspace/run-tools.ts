@@ -39,7 +39,7 @@ import { answerText, type PiAnswer, piExecutor, type PiExecutor } from "./execut
 import { ARCHIL_MAX_EXEC_S, type Hands, handsOf, MAX_EXEC_S, shellEnv } from "./hands.js";
 import { COMPUTER_ROOT, realOf, workspaceRelative } from "./paths.js";
 import { bashTool, fileTools, OUTPUT_DIR, piEnv, readAnywhereInComputer } from "./pi-env.js";
-import { type ShellPlace, shellPlaceOf } from "./resolve-computer.js";
+import { type ClaimBrowser, type ShellPlace, shellPlaceOf } from "./resolve-computer.js";
 import type { Workspace } from "./workspace.js";
 
 /**
@@ -49,14 +49,15 @@ import type { Workspace } from "./workspace.js";
  * - desktop: a screen and input; the folder is attached only when its provider mounts it (`check` given) and it offers
  *   files and exec;
  * - phone: a screen, touch and apps; never attached;
- * - browser: its CDP connect; never attached.
+ * - browser: its CDP connect, and what the run's browser tool drives it by (`browser`, from a provider's launch); never
+ *   attached.
  * `groups`: what the computer offers (its hello's groups), which fill its kind's ports.
  */
 export type RunComputer =
   | { readonly kind: "sandbox"; readonly computer: AttachableComputer; readonly check: MountCheck }
   | { readonly kind: "desktop"; readonly computer: AttachableComputer; readonly groups: readonly Group[]; readonly check?: MountCheck }
   | { readonly kind: "phone"; readonly computer: { readonly client: ComputerClient }; readonly groups: readonly Group[] }
-  | { readonly kind: "browser"; readonly connect: () => Promise<CdpSession> };
+  | { readonly kind: "browser"; readonly connect: () => Promise<CdpSession>; readonly browser?: ClaimBrowser };
 
 /** A desktop's or a phone's ports as a person's hold on the computer gives them back: each call made while the person
  *  holds it waits for hand-back; a read then runs, an action then is refused (the take-over's own words). With them, the
@@ -257,20 +258,22 @@ export type RunBrowser = {
  * (the run's folder on Archil); `options.aliases`: other absolute names of the run's folder a tool call may give (the
  * harness's scratch folder); `options.browser`: a browser computer's runs and offers. The tools' definitions, words and
  * limits come only from the kernel's registry, and a browser's from pi-browser's BROWSER_TOOLS; this binds their
- * executors to the run.
+ * executors to the run. A browser computer given no runs lists none of the kernel's browser tools: the run's browser
+ * tool (tools.ts, pi-browser's durable extension) drives it instead.
  */
 export async function runTools(workspace: Workspace, computer: RunComputer | undefined, options: { readonly mode: 1 | 2; readonly context: Context; readonly aliases?: readonly string[]; readonly browser?: RunBrowser; readonly hold?: RunHold }): Promise<RunTools> {
   const run = await runHands(workspace, computer, options);
+  const kinds = options.browser ? run.kinds : run.kinds.filter((kind) => kind !== "browser");
   // pi-browser's contracts, listed for what this browser offers; with no browser, all of them, so a browser tool called
   // in another run is refused in words that name the setting.
   const { BROWSER_TOOLS, listedFor } = await import("@parcha/pi-browser");
   const offers = options.browser?.offers;
-  const browserTools = run.kinds.includes("browser") ? BROWSER_TOOLS.filter((contract) => listedFor(contract, offers ?? { downloads: false, upload: false, handoff: false })) : BROWSER_TOOLS;
+  const browserTools = kinds.includes("browser") ? BROWSER_TOOLS.filter((contract) => listedFor(contract, offers ?? { downloads: false, upload: false, handoff: false })) : BROWSER_TOOLS;
   const registry = createRegistry({
-    maxExecS: run.maxExecS, shell: run.shell, kinds: run.kinds, browserTools, without: run.without,
+    maxExecS: run.maxExecS, shell: run.shell, kinds, browserTools, without: run.without,
     executors: { ...run.executors, ...(options.browser ? { browser: options.browser.executors } : {}) },
   });
-  const brought = new Set(run.kinds.filter((kind) => kind !== "browser").flatMap((kind) => capabilityToolDefs(kind).map((def) => def.name)));
+  const brought = new Set(kinds.filter((kind) => kind !== "browser").flatMap((kind) => capabilityToolDefs(kind).map((def) => def.name)));
   return {
     workspace: run.workspace,
     registry,

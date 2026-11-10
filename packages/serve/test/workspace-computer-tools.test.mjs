@@ -220,7 +220,10 @@ test("a browser: the browser's tools are pi-browser's BROWSER_TOOLS (the same ob
   const [snapshot] = run.hostTools(["snapshot"]);
   assert.deepEqual(await snapshot.call({}, { callId: "c1", signal: new AbortController().signal }), { text: "snapshot ran", isError: false });
   assert.deepEqual(sent, [["Fake.snapshot", {}]]);
-  await assert.rejects(runTools(localWorkspace(root), { kind: "browser", connect }, { mode: 1, context: ctx }), /no executor for snapshot/);
+  // Given no runs, a browser computer lists none of the kernel's browser tools: the run's browser tool drives it instead.
+  const bare = await runTools(localWorkspace(root), { kind: "browser", connect }, { mode: 1, context: ctx });
+  assert.deepEqual(names(bare), FILES);
+  assert.deepEqual(bare.kindTools, []);
 });
 
 test("a person's hold on the computer: runTools hands a desktop's or a phone's ports to the hold given, and only those", async () => {

@@ -100,10 +100,11 @@ const BROWSER_TOOL = "browser";
 /** Whether the runner offers the browser at all: on pi's native route (PiAdapterOptions.extensions), where pi-browser's
  *  durable extension runs in the claim's Harness, its tools pi's own tool tasks (their memo, task and conversations). */
 export const BROWSER_ON_RUNNER = true;
-/** Whether the runner installs the browser for a run whose revision grants `granted`, fail closed: only on the native route
- *  (BROWSER_ON_RUNNER), and only with the run's ledger booking on its ToolHost (host.ledger.paid), so no browser call is
- *  held on this process's own spend. */
-export const browserListed = (host: Pick<ToolHost, "ledger">, granted: readonly string[]): boolean => BROWSER_ON_RUNNER && host.ledger?.paid !== undefined && granted.includes(BROWSER_TOOL);
+/** Whether the runner installs the browser for a run whose revision grants `granted`, or whose computer is a browser
+ *  (host.browserComputer), fail closed: only on the native route (BROWSER_ON_RUNNER), and only with the run's ledger
+ *  booking on its ToolHost (host.ledger.paid), so no browser call is held on this process's own spend. */
+export const browserListed = (host: Pick<ToolHost, "ledger" | "browserComputer">, granted: readonly string[]): boolean =>
+  BROWSER_ON_RUNNER && host.ledger?.paid !== undefined && (granted.includes(BROWSER_TOOL) || host.browserComputer !== undefined);
 
 /** What the runner hands the spec builder, beside the claim and the loop's own Harness (the AdapterRun): the store (its
  *  agent and run reads, and the live-viewer seam the browser tool writes through), the data directory a Mode 1 run folder
@@ -423,7 +424,9 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
 
   // The ToolHost the non-hand tools (browser, web, MCP, decisions, monid) bind through (buildToolHost, the one the CLI
   // spec builds too), on the claim's keys and the run's one ledger and redactor.
-  const host = buildToolHost({ root, workspace: ws.workspace, claim, env: toolEnv, run, store: deps.store, sealKey: deps.sealKey, life, redact: cut });
+  // An agent whose computer is a browser the claim started gets the browser tool on that one session (tools.ts).
+  const claimBrowser = computer.computer?.kind === "browser" ? computer.computer.browser : undefined;
+  const host: ToolHost = { ...buildToolHost({ root, workspace: ws.workspace, claim, env: toolEnv, run, store: deps.store, sealKey: deps.sealKey, life, redact: cut }), ...(claimBrowser ? { browserComputer: claimBrowser } : {}) };
 
   // The run's tools. The hands (read/write/edit/bash and the background tools) are the kernel registry's over the run's
   // Workspace and computer (runTools.hostTools); the gate is the adapter loop's own (spec.gate), so they run as asked.

@@ -38,11 +38,13 @@ import { forModel } from "./result.js";
 export const BROWSER_SESSION_OPEN = "agentrun.browser_session_open";
 
 /** List prices by pi-browser provider name (`provider.name`): Browserbase's (pi-browser's LIST_PRICES), $0.12 an hour with
- *  a one-minute minimum; Kernel's headless browser, about $0.06 an hour billed by the second; a local Chrome (`cdp`), free. */
+ *  a one-minute minimum; Kernel's headless browser, about $0.06 an hour billed by the second; a local Chrome (`cdp`, and
+ *  the `local` computer provider's), free. */
 export const BROWSER_PRICES: Readonly<Record<string, { usdPerHour: number; minimumS: number }>> = Object.freeze({
   browserbase: { usdPerHour: 0.12, minimumS: 60 },
   kernel: { usdPerHour: 0.06, minimumS: 0 },
   cdp: { usdPerHour: 0, minimumS: 0 },
+  local: { usdPerHour: 0, minimumS: 0 },
 });
 /** An operator's price for a provider, in USD an hour: this prefix and the provider's name in capitals
  *  (AGENTRUN_BROWSER_USD_PER_HOUR_BROWSERBASE, _KERNEL, _CDP). */

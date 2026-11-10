@@ -45,7 +45,17 @@ export type LaunchedComputer = {
   readonly client?: ComputerClient;
   readBack?(): Promise<Result<MountReadBack>>;
   connect?(): Promise<CdpSession>;
+  /** A browser's CDP URL as its provider's connect hands it over now (a secret: it goes only to a socket), for the run's
+   *  browser tool to drive; throws the provider's words, with its code, when the session has ended. */
+  cdpUrl?(): Promise<string>;
   release(): Promise<void>;
+};
+
+/** A browser computer as the run's browser tool drives it: its id, its provider's id, and its CDP URL now. */
+export type ClaimBrowser = {
+  readonly id: string;
+  readonly provider: string;
+  url(): Promise<string>;
 };
 
 /** The claim's side: the keys saved for a provider (Settings → Computers; values, never shown), and the launch of one
@@ -233,7 +243,7 @@ export async function resolveComputer(given: ComputerSetting | undefined, mode: 
       } catch (error) {
         throw unavailable(`${entry.label} could not start a ${kind} computer: ${error instanceof Error ? error.message : String(error)}`);
       }
-      const computer = runComputerOf(kind, launched, mounts ? check : undefined);
+      const computer = runComputerOf(kind, launched, mounts ? check : undefined, entry.id);
       if (typeof computer === "string") {
         await launched.release();
         throw unavailable(`${entry.label} could not start a ${kind} computer: ${computer}`);
@@ -244,9 +254,14 @@ export async function resolveComputer(given: ComputerSetting | undefined, mode: 
 }
 
 /** The started computer as runTools takes it, or what it lacks, in words. */
-function runComputerOf(kind: Exclude<ComputerSettingKind, "none">, launched: LaunchedComputer, check: MountCheck | undefined): RunComputer | string {
+function runComputerOf(kind: Exclude<ComputerSettingKind, "none">, launched: LaunchedComputer, check: MountCheck | undefined, provider: string): RunComputer | string {
   const groups = launched.groups as readonly Group[];
-  if (kind === "browser") return launched.connect ? { kind, connect: () => launched.connect!() } : "it gave no CDP connection";
+  if (kind === "browser") {
+    if (!launched.connect) return "it gave no CDP connection";
+    // The run's browser tool drives it over its CDP URL (a launch that gives only a connect leaves the tool none).
+    const browser: ClaimBrowser | undefined = launched.cdpUrl ? { id: launched.id, provider, url: () => launched.cdpUrl!() } : undefined;
+    return { kind, connect: () => launched.connect!(), ...(browser ? { browser } : {}) };
+  }
   const { client } = launched;
   if (!client) return "it gave no computer protocol client";
   if (kind === "phone") return { kind, computer: { client }, groups };

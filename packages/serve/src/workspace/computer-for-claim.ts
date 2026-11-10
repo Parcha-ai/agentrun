@@ -105,6 +105,9 @@ export interface ComputerForClaimDeps {
    *  a host that lacks it, or a named image pulled); never when the host has it. The run's caller says it on the run's
    *  timeline. Absent: nothing is said. */
   readonly onImageWait?: ImageWait;
+  /** Why this run's harness takes no computer of `kind`, in words (a CLI harness's of a browser), or undefined: a kind
+   *  it refuses is refused with code computer_unavailable before anything is made. Absent: every kind. */
+  readonly refuseKind?: (kind: Exclude<ComputerSettingKind, "none">) => string | undefined;
   readonly signal?: AbortSignal;
 }
 
@@ -159,14 +162,20 @@ type Watching = { watch(ref: { readonly id: string; readonly name: string }, con
 const watching = (provider: ComputerProvider): Watching | undefined =>
   typeof (provider as Partial<Watching>).watch === "function" ? (provider as unknown as Watching) : undefined;
 
-/** A CDP session to the browser computer `ref`: the provider's connect (its signed CDP URL, refused in words for a
- *  session that has ended), dialed by pi-browser's link (connectCdp). The connection itself is let go once read. */
-async function cdpOf(provider: ComputerProvider, ref: { readonly id: string; readonly name: string }): Promise<CdpSession> {
+/** The browser computer `ref`'s CDP URL now: the provider's connect (its signed URL), its words and code when the session
+ *  has ended. The connection itself is let go once read. */
+async function cdpUrlOf(provider: ComputerProvider, ref: { readonly id: string; readonly name: string }): Promise<string> {
   const connected = await provider.connect(ref);
-  if (!connected.ok) throw new Error(connected.error.message);
+  if (!connected.ok) throw Object.assign(new Error(connected.error.message), { code: connected.error.code });
   const url = connected.value.cdp?.url;
   await connected.value.close().catch(() => undefined);
   if (!url) throw new Error(`the ${provider.id} computer ${ref.id} gave no CDP connection`);
+  return url;
+}
+
+/** A CDP session to the browser computer `ref`: its URL now (cdpUrlOf), dialed by pi-browser's link (connectCdp). */
+async function cdpOf(provider: ComputerProvider, ref: { readonly id: string; readonly name: string }): Promise<CdpSession> {
+  const url = await cdpUrlOf(provider, ref);
   const { connectCdp } = await import("@parcha/pi-browser/providers/cdp-session");
   return connectCdp(url);
 }
@@ -204,7 +213,7 @@ async function providerLaunch(
     // A browser's CDP session (its connection carries a CDP target): each dial asks the provider's connect again, so a
     // session its vendor ended is refused in the provider's words, and dials the signed URL it hands over with
     // pi-browser's own link. The URL is a secret: it goes only to the socket.
-    ...(connected.value.cdp ? { connect: () => cdpOf(provider, ref) } : {}),
+    ...(connected.value.cdp ? { connect: () => cdpOf(provider, ref), cdpUrl: () => cdpUrlOf(provider, ref) } : {}),
     async readBack(): Promise<Result<MountReadBack>> {
       const attached = await provider.attach({ id: ref.id });
       if (!attached.ok) return attached;
@@ -278,6 +287,8 @@ export async function computerForClaim(launch: ClaimLaunch, store: Pick<Store, "
   const resolved = await resolveComputer(await settingOf(launch, store), deps.mode, deps.kinds, side);
   if ("refused" in resolved) throw unavailable(resolved.refused);
   if (resolved.kind === "none") return { computer: undefined, release: noop };
+  const refusedKind = deps.refuseKind?.(resolved.kind);
+  if (refusedKind) throw unavailable(refusedKind);
 
   // The run's mount credential (Mode 2), minted when the mount was made: removed with the computer, or at once when the
   // start fails after it was minted.

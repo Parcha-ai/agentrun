@@ -67,6 +67,10 @@ export type { ClaimComputer, ClaimDeps, ClaimLaunch, ComputerForClaim } from "./
  *  makeArchilDisk are on AdapterSpecDeps, shared by both). One per runner. */
 export type CliSpecDeps = AdapterSpecDeps;
 
+/** What a CLI harness refuses of an agent's computer, in words: a browser, which only pi's browser tool drives. */
+export const cliRefusesKind = (kind: string): string | undefined =>
+  kind === "browser" ? "This agent's computer is a browser, which only the pi harness drives here: pick pi for this agent, or another kind of computer in Settings → Computers." : undefined;
+
 /** The revision's body, as the fields the spec reads of it. */
 type RevisionBody = {
   readonly instructions?: string;
@@ -204,7 +208,9 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     deps.store,
     // revokeMount removes the run's Archil mount credential at the computer's release (and if a start fails after a mint); the
     // run's end revokes it too, so it goes on every outcome even with no computer. Idempotent. As the pi spec does.
-    { ...deps.computerDeps, mode, workspace: ws.workspace, sealKey: deps.sealKey, ...(archil ? { revokeMount: () => archil.revoke() } : {}), ...(run.phase ? { onImageWait: (making, image) => run.phase?.(imageWaitWords(making, image)) } : {}) },
+    // A browser computer is driven by the browser tool, which runs on pi's native route alone: a CLI's run of an agent
+    // whose computer is a browser is refused in words at its claim, before anything is made.
+    { ...deps.computerDeps, mode, workspace: ws.workspace, sealKey: deps.sealKey, refuseKind: cliRefusesKind, ...(archil ? { revokeMount: () => archil.revoke() } : {}), ...(run.phase ? { onImageWait: (making, image) => run.phase?.(imageWaitWords(making, image)) } : {}) },
   );
   holds.hold({ computer });
 
