@@ -15,7 +15,7 @@ import type { Context, JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import type { Models } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
-import { type Conversation, type ConversationId, createRegistry, Harness, LiveDoc, ROOT_CONVERSATION_ID, type Tx } from "@earendil-works/pi-durable";
+import { type Conversation, type ConversationId, createRegistry, defineDoc, Harness, LiveDoc, ROOT_CONVERSATION_ID, type Tx } from "@earendil-works/pi-durable";
 import { type AdapterSession, type AgentAdapter, type BeforeRequest, type HostTool, modelPortFor, type Refusal, RUNNER_RECORDS, type SessionRecord, type SessionSpec, sessionSpendOf } from "@parcha/agentrun-kernel";
 import type { KernelHooks, ToolCall } from "./conformance/subject.js";
 import { type AnswerData, type ApprovalPrice, ASK_PERSON_WAITING, type AskData, type BudgetData, type CallEndData, type CallStartData, type CallStatus, endedAnswer, type EndData, KINDS, type MessageData, type RaiseData, withdrawnAnswers } from "./journal-kinds.js";
@@ -186,6 +186,11 @@ export function hostLifecycle(): HostLifecycle & {
 export function agentConversation(record: { readonly id: number | ConversationId; readonly owner?: { readonly taskId: unknown } }): boolean {
   return Number(record.id) === Number(ROOT_CONVERSATION_ID) || record.owner !== undefined;
 }
+
+/** On the run's root: the spec's onConversation writes for it are owed (a phase made the root while the spec was built,
+ *  before the spec's lifecycle was known). Set in the root's creating commit, cleared in the commit that makes them, so a
+ *  claim lost in between leaves them to the next claim. */
+const RootWritesOwed = defineDoc<{ owed: boolean }>({ kind: "agentrun.root-writes-owed", version: 1, scope: "conversation", history: "latest", fork: "initial", initial: () => ({ owed: false }), checkpointWhen: () => false });
 
 /** What the loop lends the spec for one Session: the run's Harness (pi adds its turns to it). */
 export type AdapterRun = PiRun & {
@@ -745,9 +750,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         // The spec's phases said before the run's root exists (AdapterRun.phase), written in the root's creating commit.
         const phasesBeforeRoot: { summary: string; at: number }[] = [];
         let rootMade = false;
-        // The root made by a phase while the spec was built (below), before the spec's own lifecycle was known: its
-        // onConversation writes for the root are owed, made once the spec is (after specOf).
-        let rootWritesOwed = false;
+        // A root made by a phase while the spec was built (below), before the spec's own lifecycle was known: its
+        // onConversation writes for the root are owed (RootWritesOwed, on the root), made once the spec is (after specOf).
         let specKnown = false;
         /** The root a phase is making, awaited before the owed writes are read. */
         let rootMaking: Promise<unknown> | undefined;
@@ -761,7 +765,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
               rootMade = true;
               for (const data of phasesBeforeRoot.splice(0)) await tx.appendEntry(record.id, { kind: HOST_PHASE, data });
               if (!specKnown) {
-                rootWritesOwed = true;
+                (await tx.doc(RootWritesOwed, record.id)).owed = true;
                 return;
               }
             }
@@ -862,18 +866,20 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         mcp = spec.mcp;
         specNow = spec;
         specKnown = true;
-        // A root a phase made while the spec was built took none of the spec's onConversation writes: they are made now,
-        // in a commit of their own, before anything of the session's. A root still being made is waited for first (made
-        // from here on, its creating commit takes them itself).
+        // The spec's resources are the pass's from here: a claim lost in any write below still lets them go (closeSession).
+        releaseNow = spec.release;
+        // A root a phase made while the spec was built (on this claim or an earlier one lost before this point) took none
+        // of the spec's onConversation writes: they are made now, in a commit of their own, before anything of the
+        // session's. A root still being made is waited for first (made from here on, its creating commit takes them itself).
         await rootMaking?.catch(() => undefined);
-        if (rootWritesOwed) {
-          rootWritesOwed = false;
+        if (await harness.conversation(ROOT_CONVERSATION_ID, context)) {
           await harness.commit(async (tx) => {
-            if (!(await tx.conversation(ROOT_CONVERSATION_ID))) return;
+            const owed = await tx.doc(RootWritesOwed, ROOT_CONVERSATION_ID);
+            if (!owed.owed) return;
+            owed.owed = false;
             for (const write of spec.lifecycle?.onConversation ?? []) await write(tx, Number(ROOT_CONVERSATION_ID));
           }, context);
         }
-        releaseNow = spec.release;
         // A mark of the run's commits through its own Harness, under its fence.
         const opened_ = harness;
         spec.harnessReady?.((change, ctx) => opened_.commit(change, ctx));

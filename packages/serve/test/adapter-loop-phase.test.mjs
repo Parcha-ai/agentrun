@@ -13,7 +13,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { createRegistry, Harness, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { HOST_PHASE } from "@parcha/pi-durable-agent/timeline";
-import { openSqliteStore } from "../dist/store/index.js";
+import { Fenced, openSqliteStore } from "../dist/store/index.js";
 import { runTimeline } from "../dist/store-reads/journal.js";
 import { startRunner } from "../dist/runner/runner.js";
 import { closeOpenSessions, piAdapterSpec } from "./conformance-pi-adapter.mjs";
@@ -22,6 +22,8 @@ const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 
 const quiet = { beforeIntent: async () => {}, beforeResult: async () => {} };
 const TIMING = { leaseMs: 60_000, renewEveryMs: 20_000, stopMarginMs: 5_000, pollMs: 20, commandPollMs: 30 };
+/** A lease the next runner outwaits quickly, for a runner killed mid-claim. */
+const SHORT = { leaseMs: 600, renewEveryMs: 150, stopMarginMs: 200, pollMs: 20, commandPollMs: 30 };
 after(closeOpenSessions);
 const BEFORE = "Preparing the computer's image: building it (python, git, curl, node, npm, rg)…";
 const AFTER = "A step of the host's, said once the root exists.";
@@ -71,7 +73,7 @@ async function world(t) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-loop-phase-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
-  const w = { server, store, runner: undefined };
+  const w = { server, store, dir, runner: undefined };
   t.after(async () => {
     await w.runner?.close().catch(() => {});
     await store.close().catch(() => {});
@@ -151,6 +153,79 @@ test("a long step after its phase (an image build): the row is on the person's t
   assert.deepEqual((await phaseRows(w.server)).map((one) => one.summary), [BEFORE], "still exactly one row");
   const marks = await rootEntries(w.server, [MARK]);
   assert.equal(marks.length, 1, `the spec's onConversation wrote the root once, though the phase made it before the spec was known: ${JSON.stringify(marks)}`);
+});
+
+test("a runner lost after a phase made the root, before its spec was built: the next claim makes the spec's root write, once", async (t) => {
+  const w = await world(t);
+  const second = await openSqliteStore({ dataDir: w.dir, role: "runner" });
+  let other;
+  t.after(async () => {
+    await other?.close().catch(() => {});
+    await second.close().catch(() => {});
+  });
+  const spec = piAdapterSpec({ script: [{ say: "done" }], tools: {}, hooks: quiet });
+  // The first claim's build never finishes: its runner is killed while the spec waits on it, the root made by its phase.
+  let failBuild;
+  const build = new Promise((_, reject) => (failBuild = reject));
+  build.catch(() => undefined);
+  t.after(() => failBuild(new Error("the test ended")));
+  const first = createAdapterLoop(async (_claim, run) => {
+    run.phase?.(BEFORE);
+    await build;
+    throw new Error("never built");
+  });
+  w.runner = startRunner({ store: w.store, createLoop: first, name: "runner-a", ...SHORT });
+  await until("the phase row on the timeline while the build runs", async () => (await liveRows(w.server)).some((row) => row.kind === "phase" && row.summary === BEFORE));
+  w.runner.kill();
+  // The next claim finds the image built (no phase of its own) and goes on onto the root the first claim's phase made.
+  const next = createAdapterLoop(async (claim, run) => marked({ ...(await spec(claim, run)), agentId: "agent-1" }));
+  other = startRunner({ store: second, createLoop: next, name: "runner-b", ...TIMING });
+  assert.equal((await finished(w.server)).state, "ended");
+  assert.deepEqual((await phaseRows(w.server)).map((one) => one.summary), [BEFORE], "the first claim's row");
+  const marks = await rootEntries(w.server, [MARK]);
+  assert.equal(marks.length, 1, `the spec's onConversation wrote the root once, on the claim after the lost one: ${JSON.stringify(marks)}`);
+});
+
+test("a claim lost while the spec's owed root writes commit still lets the spec's resources go", async (t) => {
+  const w = await world(t);
+  const spec = piAdapterSpec({ script: [{ say: "done" }], tools: {}, hooks: quiet });
+  let released = 0;
+  let refused = false;
+  const loop = createAdapterLoop(async (claim, run) => {
+    run.phase?.(BEFORE);
+    await until("the phase row on the timeline", async () => (await liveRows(w.server)).some((one) => one.kind === "phase" && one.summary === BEFORE), 10_000);
+    const base = marked({ ...(await spec(claim, run)), agentId: "agent-1" });
+    return {
+      ...base,
+      release: async () => {
+        released += 1;
+        await base.release?.();
+      },
+    };
+  });
+  // The store refuses the commit that makes the owed root write: the claim was lost (Fenced), as a lost lease reads.
+  const losing = (deps) =>
+    loop({
+      ...deps,
+      journal: (claim) =>
+        new Proxy(deps.journal(claim), {
+          get(target, key) {
+            const value = Reflect.get(target, key, target);
+            if (key !== "commit" || typeof value !== "function") return typeof value === "function" ? value.bind(target) : value;
+            return async (batches, ...rest) => {
+              if (!refused && JSON.stringify(batches).includes(MARK)) {
+                refused = true;
+                throw new Fenced(claim.runId, claim.epoch);
+              }
+              return value.call(target, batches, ...rest);
+            };
+          },
+        }),
+    });
+  w.runner = startRunner({ store: w.store, createLoop: losing, name: "runner-a", ...TIMING });
+  await until("the owed root write is refused", () => refused);
+  await until("the spec's release is called", () => released > 0, 10_000);
+  assert.equal(released, 1, "released once");
 });
 
 test("a step that fails after its phase (a failed image build) keeps its row, and the run's end on that root says why", async (t) => {
