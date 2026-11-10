@@ -47,8 +47,8 @@ export type PromptVariant = { role: "base" | "overlay" | "generic" | "question";
 
 export type RevisionPlace = { mode: string; box?: string };
 /** A revision's computer (computer-setting.ts): its kind and the provider that serves it, ids its host knows; `place` is
- *  its v2 view. */
-export type RevisionComputer = { kind: string; provider?: string };
+ *  its v2 view. `image`: one the provider offers for the kind, absent for its default. */
+export type RevisionComputer = { kind: string; provider?: string; image?: string };
 /** A revision's tool settings as its body keeps them: a map of a tool's key to its settings ({provider?, permission?,
  *  pin?}), checked and made canonical by the caller (agents-store.ts, through tool-plane's settingsIssues +
  *  canonicalToolSettings, the one copy). The store body holds it as it is given; this validator never reimplements it. */
@@ -69,11 +69,14 @@ function placeOf(place: unknown): RevisionPlace {
   return { mode: ok.mode, ...(ok.box !== undefined ? { box: ok.box } : {}) };
 }
 
-/** A computer as a body keeps it: `{kind, provider?}`, each an id, nothing else. */
+/** A computer as a body keeps it: `{kind, provider?, image?}`, kind and provider each an id, image a name with no
+ *  spaces around it, nothing else. */
 function computerOf(computer: unknown): RevisionComputer {
-  if (!isObject(computer) || !hostId(computer.kind) || (computer.provider !== undefined && !hostId(computer.provider)) || Object.keys(computer).some((key) => key !== "kind" && key !== "provider")) invalid("the computer is not {kind, provider?}, each an id (lowercase letters, digits and dashes)");
-  const ok = computer as { kind: string; provider?: string };
-  return { kind: ok.kind, ...(ok.provider !== undefined ? { provider: ok.provider } : {}) };
+  const image = isObject(computer) ? computer.image : undefined;
+  const named = (value: unknown) => typeof value === "string" && value !== "" && value === value.trim();
+  if (!isObject(computer) || !hostId(computer.kind) || (computer.provider !== undefined && !hostId(computer.provider)) || (image !== undefined && !named(image)) || Object.keys(computer).some((key) => key !== "kind" && key !== "provider" && key !== "image")) invalid("the computer is not {kind, provider?, image?}, kind and provider each an id (lowercase letters, digits and dashes), image a name");
+  const ok = computer as { kind: string; provider?: string; image?: string };
+  return { kind: ok.kind, ...(ok.provider !== undefined ? { provider: ok.provider } : {}), ...(ok.image !== undefined ? { image: ok.image } : {}) };
 }
 
 /** The body of a new revision and the text of each skill it names (path to text), everything checked here, before any

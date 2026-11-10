@@ -51,6 +51,14 @@ test("a revision keeps the place it names, {mode, box?}; one that names none kee
   }
 });
 
+test("a revision keeps the computer it names, {kind, provider?, image?}; one with no image keeps none, so its body (and id) is as before", () => {
+  assert.deepEqual(bodyOf({ ...A, computer: { kind: "desktop", provider: "orgo" } }).body.computer, { kind: "desktop", provider: "orgo" });
+  assert.deepEqual(bodyOf({ ...A, computer: { image: "windows", provider: "orgo", kind: "desktop" } }).body.computer, { kind: "desktop", provider: "orgo", image: "windows" });
+  for (const computer of [{ kind: "desktop", provider: "orgo", image: "" }, { kind: "desktop", provider: "orgo", image: " windows" }, { kind: "desktop", provider: "orgo", image: 3 }, { kind: "desktop", provider: "orgo", os: "windows" }]) {
+    assert.throws(() => bodyOf({ ...A, computer }), refused(/computer/), JSON.stringify(computer));
+  }
+});
+
 test("a revision keeps a default spend cap and its mode, and the learning switch, when they are set; bad values are refused", () => {
   assert.equal(bodyOf({ ...A, maxCostUsd: 2.5, capMode: "strict" }).body.maxCostUsd, 2.5);
   assert.equal(bodyOf({ ...A, maxCostUsd: 2.5, capMode: "strict" }).body.capMode, "strict");

@@ -14,17 +14,24 @@ test("the setting and its place map one to one where a place can say it; a deskt
   assert.deepEqual(computerOfPlace({ mode: "sandbox", box: "docker" }), { kind: "sandbox", provider: "docker" });
 });
 
-test("a computer is {kind, provider?}: a kind of the five, a provider for every kind but none, nothing else", () => {
+test("a computer is {kind, provider?, image?}: a kind of the five, a provider for every kind but none, an image by name, nothing else", () => {
   const reasons = (value) => computerIssues(value, "definition.computer").map((issue) => issue.reason);
   assert.deepEqual(reasons({ kind: "none" }), []);
   assert.deepEqual(reasons({ kind: "phone", provider: "phone-harness" }), []);
+  assert.deepEqual(reasons({ kind: "desktop", provider: "orgo", image: "windows" }), []);
   assert.deepEqual(reasons("sandbox"), ["wrong_type"]);
   assert.deepEqual(reasons({ kind: "tablet", provider: "x" }), ["not_an_option"]);
   assert.deepEqual(reasons({ provider: "x" }), ["missing"]);
   assert.deepEqual(reasons({ kind: "desktop" }), ["missing"]);
   assert.deepEqual(reasons({ kind: "none", provider: "docker" }), ["not_allowed"]);
-  assert.deepEqual(reasons({ kind: "sandbox", provider: "docker", image: "x" }), ["not_allowed"]);
+  assert.deepEqual(reasons({ kind: "sandbox", provider: "docker", region: "x" }), ["not_allowed"]);
+  const none = computerIssues({ kind: "none", image: "windows" }, "definition.computer");
+  assert.deepEqual(none.map((issue) => [issue.field, issue.reason, issue.message]), [["definition.computer", "not_allowed", "no computer names no image"]]);
+  for (const image of ["", " windows", 3]) {
+    assert.deepEqual(computerIssues({ kind: "desktop", provider: "orgo", image }, "definition.computer").map((issue) => [issue.field, issue.reason]), [["definition.computer.image", "invalid"]], JSON.stringify(image));
+  }
   assert.deepEqual(settingConflict({ kind: "sandbox", provider: "docker" }, { mode: "sandbox", box: "docker" }, "definition"), []);
+  assert.deepEqual(settingConflict({ kind: "sandbox", provider: "modal", image: "python:3.12" }, { mode: "sandbox", box: "modal" }, "definition"), [], "a place says no image, so it can't contradict one");
   assert.deepEqual(settingConflict({ kind: "desktop", provider: "e2b" }, { mode: "sandbox", box: "docker" }, "definition").map((issue) => issue.field), ["definition.place"]);
 });
 
@@ -43,6 +50,10 @@ test("through the API: a computer saved shows with its place, a place saved show
   const kept = await api("PUT", "/agents/desk/definition", agent("desk", { version: 2, instructions: "Answer briefly." }));
   assert.equal(kept.status, 200, JSON.stringify(kept.body));
   assert.deepEqual(kept.body.definition.computer, { kind: "desktop", provider: "e2b" });
+  // An image is kept as named, and read back with the computer.
+  const imaged = await api("POST", "/agents", agent("win", { computer: { kind: "desktop", provider: "orgo", image: "windows" } }));
+  assert.equal(imaged.status, 201, JSON.stringify(imaged.body));
+  assert.deepEqual((await api("GET", "/agents/win")).body.definition.computer, { kind: "desktop", provider: "orgo", image: "windows" });
   const moved = await api("PUT", "/agents/desk/definition", agent("desk", { version: 3, place: { mode: "runner" } }));
   assert.equal(moved.status, 200, JSON.stringify(moved.body));
   assert.deepEqual([moved.body.definition.computer, moved.body.definition.place], [{ kind: "none" }, { mode: "runner" }]);

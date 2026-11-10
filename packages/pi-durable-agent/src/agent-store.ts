@@ -26,7 +26,7 @@ export type RevisionKind = "agentic" | "workflow";
  *  knows (absent: the host's default). `computer`: the computer its runs are given, a kind and the provider that serves
  *  it, ids its host knows (absent: the host's default; `place` is its view where it can say it). */
 export type RevisionPlace = { mode: string; box?: string };
-export type RevisionComputer = { kind: string; provider?: string };
+export type RevisionComputer = { kind: string; provider?: string; image?: string };
 export type AgenticBody = { instructions: string; skills: Record<string, string>; tools: string[]; model?: string; thinking?: string; prompts?: Record<string, PromptVariant>; harness?: string; place?: RevisionPlace; computer?: RevisionComputer; learning?: boolean; toolSettings?: Record<string, Record<string, string>>; approvals?: "never"; maxCostUsd?: number; capMode?: string };
 export type WorkflowBody = { workflow: Workflow; skills: Record<string, string>; tools: string[]; harness?: string; place?: RevisionPlace; computer?: RevisionComputer; toolSettings?: Record<string, Record<string, string>>; approvals?: "never"; maxCostUsd?: number; capMode?: string };
 /** Written once, never edited. `id` is the SHA-256 of the canonical JSON of `{ agent, parent, kind, body }`; `body.skills` maps a skill path to the SHA-256 of its text. */
@@ -322,8 +322,10 @@ function placeOf(place: unknown): RevisionPlace {
 
 /** A computer as a body keeps it: `{kind, provider?}`, nothing else, each an id its host knows. */
 function computerOf(computer: unknown): RevisionComputer {
-  if (!isObject(computer) || !hostId(computer.kind) || (computer.provider !== undefined && !hostId(computer.provider)) || Object.keys(computer).some((key) => key !== "kind" && key !== "provider")) throw invalid("the computer is not {kind, provider?}, each an id (lowercase letters, digits and dashes)");
-  return { kind: computer.kind, ...(computer.provider !== undefined ? { provider: computer.provider } : {}) };
+  const image = isObject(computer) ? computer.image : undefined;
+  const named = (value: unknown): value is string => typeof value === "string" && value !== "" && value === value.trim();
+  if (!isObject(computer) || !hostId(computer.kind) || (computer.provider !== undefined && !hostId(computer.provider)) || (image !== undefined && !named(image)) || Object.keys(computer).some((key) => key !== "kind" && key !== "provider" && key !== "image")) throw invalid("the computer is not {kind, provider?, image?}, kind and provider each an id (lowercase letters, digits and dashes), image a name");
+  return { kind: computer.kind, ...(computer.provider !== undefined ? { provider: computer.provider } : {}), ...(named(image) ? { image } : {}) };
 }
 
 /** The body of a new revision and the text of each skill it names. Everything about the input is checked here, before any write. */
