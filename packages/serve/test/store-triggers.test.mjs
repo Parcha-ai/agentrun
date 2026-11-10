@@ -109,3 +109,19 @@ test("a trigger's conversations: kept by key, its run named once and never moved
   await store.triggers.remove("trg-1");
   assert.equal(await store.triggers.conversation("trg-1", "C1:1.0"), undefined, "gone with its trigger");
 });
+
+test("two keeps of one conversation at once, each naming its own run, are one statement each: exactly one run is the conversation's, and no later keep moves it", async (t) => {
+  const { store, clock } = await storeOn(t);
+  await withTrigger(store);
+  for (const n of [1, 2, 3]) await store.triggers.fire({ triggerId: "trg-1", key: `k${n}`, by: "schedule" }, { id: `run-${n}`, agentId: "agent-1", revisionId: "rev-1" });
+  const at = clock.now;
+  for (let round = 0; round < 5; round++) {
+    const key = `C1:${round}.0`;
+    await Promise.all([store.triggers.keepConversation({ triggerId: "trg-1", key, runId: "run-1", at }), store.triggers.keepConversation({ triggerId: "trg-1", key, runId: "run-2", at: at + 1 })]);
+    const kept = await store.triggers.conversation("trg-1", key);
+    assert.ok(["run-1", "run-2"].includes(kept.runId), JSON.stringify(kept));
+    assert.equal(kept.lastAt, at + 1, "the later write's time");
+    await store.triggers.keepConversation({ triggerId: "trg-1", key, runId: "run-3", at: at + 2 });
+    assert.equal((await store.triggers.conversation("trg-1", key)).runId, kept.runId, "the first run stays the conversation's");
+  }
+});

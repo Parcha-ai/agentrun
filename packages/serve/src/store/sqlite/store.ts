@@ -536,18 +536,22 @@ class SqliteStore implements Store {
         const row = await db.get<{ trigger_id: string; key: string; run_id: string | null; created_at: number; last_at: number }>("SELECT trigger_id, key, run_id, created_at, last_at FROM trigger_conversations WHERE trigger_id = ? AND key = ?", triggerId, key);
         return row && { triggerId: row.trigger_id, key: row.key, runId: row.run_id, createdAt: Number(row.created_at), lastAt: Number(row.last_at) };
       },
-      // Its run is set once (COALESCE keeps the first), so a conversation never moves to another run; its last_at only moves on.
+      // One statement, so two keeps of one conversation at once are atomic: its run is set once (COALESCE keeps the first),
+      // so a conversation never moves to another run, and its last_at only moves on (a keep stamped earlier never moves it
+      // back).
       keepConversation: async ({ triggerId, key, runId, at }) => {
         await db.write([{ sql: `INSERT INTO trigger_conversations (trigger_id, key, run_id, created_at, last_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT (trigger_id, key) DO UPDATE SET last_at = ${d.greatest}(trigger_conversations.last_at, excluded.last_at), run_id = COALESCE(trigger_conversations.run_id, excluded.run_id)`, params: [triggerId, key, runId ?? null, at, at] }]);
       },
+      // One statement, on the (trigger_id, last_at) index: every conversation of the trigger untouched since `keptMs` before
+      // `at`, and every one past its newest `kept`, go together.
       pruneConversations: async (triggerId, { keptMs, kept, now: at }) =>
-        db.transaction(async (tx) => {
-          const stale = await tx.all<{ key: string }>("SELECT key FROM trigger_conversations WHERE trigger_id = ? AND last_at < ?", triggerId, at - keptMs);
-          const over = await tx.all<{ key: string }>(`SELECT key FROM trigger_conversations WHERE trigger_id = ? AND last_at >= ? ORDER BY last_at DESC, key DESC ${d.limitAll} OFFSET ?`, triggerId, at - keptMs, kept);
-          const gone = [...stale, ...over].map((r) => r.key);
-          for (const key of gone) await tx.run("DELETE FROM trigger_conversations WHERE trigger_id = ? AND key = ?", triggerId, key);
-          return gone.length;
-        }),
+        db.transaction(async (tx) =>
+          tx.runCounted(
+            `DELETE FROM trigger_conversations WHERE trigger_id = ? AND (last_at < ? OR key NOT IN (
+               SELECT key FROM trigger_conversations WHERE trigger_id = ? ORDER BY last_at DESC, key DESC LIMIT ?))`,
+            triggerId, at - keptMs, triggerId, kept,
+          ),
+        ),
       remove: async (id) => {
         await db.write([{ sql: "DELETE FROM triggers WHERE id = ?", params: [id] }]);
       },
