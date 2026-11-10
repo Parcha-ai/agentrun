@@ -14,6 +14,7 @@
 //
 // A key goes into the server-side provider call alone (the provider's create() options): the spec a computer is made
 // with names no key, no account key and no database or Redis credential, and carries no environment at all.
+import { isIP } from "node:net";
 import { type ComputerSpec, DEFAULT_DOCKER_IMAGE, DOCKER_RECIPE, DOCKER_RECIPE_HAS, PROVIDERS, providerFor, readBackOf, servingRefusals, SETTING_KINDS } from "@parcha/agentrun-computer";
 import { DOCKER_IMAGE_ENV } from "../box-image.js";
 import type { ProviderFactories } from "../computer-keys.js";
@@ -34,6 +35,22 @@ export const COMPUTER_LIFETIME_MS = 24 * 60 * 60_000;
 
 /** A computer this server cannot make here, with the code the run fails with and its words. */
 const refused = (words: string): Error => Object.assign(new Error(words), { code: "computer_unavailable" });
+
+/** The Docker host's own addresses, for a Docker provider whose interfaces aren't that host's (the server in a
+ *  container): a comma list of IP addresses. The Docker provider's egress proxy refuses them as the host's, so a
+ *  computer's allow-list never reaches the host itself; without them it refuses any allow-list there. */
+export const DOCKER_HOST_ADDRESSES_ENV = "AGENTRUN_DOCKER_HOST_ADDRESSES";
+
+/** `env`'s AGENTRUN_DOCKER_HOST_ADDRESSES: its addresses, each once; undefined when unset or empty, never one made up.
+ *  An entry that is not an IP address throws, naming it: the server's start checks the setting, so no run meets one. */
+export function dockerHostAddressesOf(env: KeyEnv): string[] | undefined {
+  const value = envValue(env, DOCKER_HOST_ADDRESSES_ENV);
+  if (value === undefined) return undefined;
+  const addresses = [...new Set(value.split(",").map((one) => one.trim()).filter((one) => one !== ""))];
+  const bad = addresses.find((one) => isIP(one) === 0);
+  if (bad !== undefined) throw new Error(`${DOCKER_HOST_ADDRESSES_ENV} is a comma list of the Docker host's own IP addresses (such as 172.17.0.1): ${JSON.stringify(bad)} is not an IP address`);
+  return addresses.length > 0 ? addresses : undefined;
+}
 
 /** The deps computerForClaim takes once per process: all but the claim's own. */
 export type ComputerDeps = Omit<ComputerForClaimDeps, "mode" | "workspace" | "sealKey" | "revokeMount" | "signal">;
@@ -132,8 +149,13 @@ export function computerDepsFrom(options: ComputerDepsOptions): { computerForCla
   // recipe's bare tag, which no registry has.
   const named = envValue(env, DOCKER_IMAGE_ENV);
   const dockerImage = named !== undefined ? { image: named } : { recipe: DOCKER_RECIPE };
+  // And the Docker host's own addresses when the operator names them (AGENTRUN_DOCKER_HOST_ADDRESSES), for its egress
+  // proxy where this server is not on the Docker host; none named, none given, and the provider keeps refusing an
+  // allow-list there.
+  const hostAddresses = dockerHostAddressesOf(env);
+  const docker = { image: dockerImage, ...(hostAddresses ? { egress: { hostAddresses } } : {}) };
   const load = options.load ?? (providerFor as unknown as ProviderLoad);
-  const providers = computerProviderMakers({ load: (id, given) => load(id, id === "docker" ? { ...given, image: dockerImage } : given) });
+  const providers = computerProviderMakers({ load: (id, given) => load(id, id === "docker" ? { ...given, ...docker } : given) });
   const computerDeps: ComputerDeps = {
     kinds,
     providers,

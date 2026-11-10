@@ -79,7 +79,7 @@ import { BOX_QUARANTINE, type BoxHost, Quarantine } from "./box/sweep.js";
 import { type BoxOffer, boxesByDefault, boxesLog, boxRegistry, daytonaApi, enabledBoxes, VM_NO_LIST, VM_PROVIDER } from "./boxes.js";
 import { type DockerNetwork, egressParentTooLong, FAUX_EGRESS_ENV, MAX_EGRESS_PARENT, sweepEgressDirs } from "./box-egress.js";
 import { type EgressContainer, startEgressContainer } from "./box-egress-vm.js";
-import { type DockerPaths, dockerPathsOf, egressParentOf, FAUX_MOUNTINFO_ENV } from "./box-paths.js";
+import { COMPUTERS_IN_CONTAINER, COMPUTERS_REMOTE_DOCKER, type DockerPaths, dockerPathsOf, egressParentOf, FAUX_MOUNTINFO_ENV, remoteDocker } from "./box-paths.js";
 import { boxImageOf, clearImage, type DockerImage, dockerImage, type ImageState, withImage } from "./box-image.js";
 import { startBoxRelay } from "./box-relay.js";
 import { vmRelay, type VmSdk } from "./box-relay-vm.js";
@@ -138,7 +138,7 @@ import { computerCapabilities, type ComputerRoutes, createComputerRoutes, folder
 import { FAUX_VIEW_PATH, type FauxComputers, fauxComputers } from "./faux-computers.js";
 import { runComputerField } from "./run-computer.js";
 import { writesHeld } from "./workspace.js";
-import { agentHomeFolder, claimKinds, computerProviderFactories, computerProviderMakers, computerReadiness, isWorkspaceError, localWorkspace, runFolder, serverRunWorkspace, storeLedger, type Workspace } from "./workspace/index.js";
+import { agentHomeFolder, claimKinds, computerProviderFactories, computerProviderMakers, computerReadiness, dockerHostAddressesOf, isWorkspaceError, localWorkspace, runFolder, serverRunWorkspace, storeLedger, type Workspace } from "./workspace/index.js";
 import { keyReader } from "./key-meta.js";
 // server-lock.ts is gone: the store's EXCLUSIVE connection is the one-server lock (StoreOwned refuses a second server).
 
@@ -791,6 +791,8 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   if (options.drainTimeout !== undefined && durationMs(options.drainTimeout) === undefined) throw new Error(`the drain timeout ${options.drainTimeout} is not a duration such as 8s`);
   enabledBoxes(process.env);
   boxLimitsOf(process.env);
+  // The Docker host's addresses an operator names (workspace/computer-deps.ts): a bad entry stops the start, in words.
+  dockerHostAddressesOf(process.env);
   const boxAllow = boxAllowOf(process.env);
   const maxRuns = maxRunsOf(process.env, options.maxRuns);
   const learning = learningOf(process.env, options.learning);
@@ -975,9 +977,15 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // On a Mac whose Docker runs in a VM this server knows, the list is served by one proxy container inside that VM
   // (box-egress-vm.ts): a box's network is the list once it is ready, and none, saying why, until then or when it can't start.
   let egress: EgressContainer | undefined;
+  // A run's Docker computer binds the run's folder, and the computer's daemon, by this server's own paths
+  // (@parcha/agentrun-computer's Docker provider): only a server on its Docker's own host has them for the daemon. A
+  // server in a container of that Docker's (compose.yaml), or one whose DOCKER_HOST is another machine's, can't run a
+  // Docker computer yet, and says so here, where capabilities, the run's start (dockerAnswers) and a place's box check
+  // all read it: no run starts only to fail at its create.
+  const dockerElsewhere = fauxBox || !boxes.provider("docker") ? undefined : !("here" in dockerPaths) ? COMPUTERS_IN_CONTAINER : remoteDocker(env) ? COMPUTERS_REMOTE_DOCKER : undefined;
   const dockerNetwork = (offer: BoxOffer): BoxOffer => {
     if (!offer.available) return offer;
-    if ("reason" in dockerPaths) return { id: offer.id, available: false, state: "unavailable", reason: dockerPaths.reason };
+    if (dockerElsewhere !== undefined) return { id: offer.id, available: false, state: "unavailable", reason: dockerElsewhere };
     if (boxNetwork.allow === "none") return { ...offer, network: "none", network_reason: boxNetwork.reason };
     const proxy = egress?.state();
     return proxy && proxy.state !== "ready" ? { ...offer, network: "none", network_reason: proxy.reason } : { ...offer, network: "allowlist" };

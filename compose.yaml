@@ -1,4 +1,4 @@
-# AgentRun Server in a container, with Docker sandboxes, on a Linux host with Docker Engine 26 or later. In the directory
+# AgentRun Server in a container, on a Linux host with Docker Engine 26 or later. In the directory
 # that holds this file, once, then every later compose command in any shell:
 #   echo "DOCKER_GID=$(stat -c %g /var/run/docker.sock)" >> .env
 #   docker compose up -d
@@ -6,9 +6,14 @@
 # (packages/serve/docker/Dockerfile) in place of the published one.
 #
 # The server gets this host's Docker socket, and so does every process it starts. Whatever can reach that socket is root
-# on this host: run this only where you would give the server root. A run's box is a container beside the server's, made
-# through that socket: no socket, no network but the server's egress proxy (the hosts of AGENTRUN_BOX_ALLOW), every
-# capability dropped, the server's own uid, and of the data volume only that run's work/ and its proxy's socket.
+# on this host: run this only where you would give the server root.
+#
+# Docker sandboxes here wait on a fix: a run's Docker computer mounts the run's folder by the server's own path, which
+# the host's Docker doesn't have while the server runs in a container. Until that lands, the server says so where
+# Docker is offered (capabilities and a run's start), so an agent that names a Docker computer is refused at
+# its start in those words, and an agent with no computer runs on the runner, with the file tools and no shell. A
+# vendor's computer (Settings → Computers) is unaffected.
+#
 # The port is published on this machine's loopback only; put a reverse proxy with TLS in front of it before you publish it
 # anywhere else, and set AGENTRUN_TRUSTED_PROXIES to the address the server sees it come from (Docker's bridge, in the
 # private ranges: uniquelocal), so the sign-in limit counts each visitor by its own address.
@@ -21,8 +26,7 @@ services:
     ports:
       - "127.0.0.1:${AGENTRUN_PORT:-7340}:7340" # key-gate: loopback-rule this machines loopback, where the port is published
     volumes:
-      # Everything the server keeps, on a named volume: a box mounts its run's part of it by the volume's subpath, which is
-      # the one way a server in a container gives a box the run's files.
+      # Everything the server keeps, on a named volume.
       - agentrun-data:/data
       - /var/run/docker.sock:/var/run/docker.sock
     # The socket's group, so the server (the image's node user) may use it.
@@ -38,6 +42,11 @@ services:
       AGENTRUN_BOXES: docker
       # The hosts a box may reach, as a comma list; empty, the package registries and GitHub; none for no network.
       AGENTRUN_BOX_ALLOW: ${AGENTRUN_BOX_ALLOW:-}
+      # This Docker host's own IP addresses, as a comma list (such as its docker0 address, 172.17.0.1, and its LAN
+      # address): a Docker sandbox's egress proxy refuses them, so an allow-list never reaches the host itself. The server
+      # in a container can't read them, and without them a Docker sandbox's allow-list is refused. Not used until Docker
+      # sandboxes run here (see the head of this file).
+      AGENTRUN_DOCKER_HOST_ADDRESSES: ${AGENTRUN_DOCKER_HOST_ADDRESSES:-}
       AGENTRUN_TOKEN: ${AGENTRUN_TOKEN:-}
       AGENTRUN_TRUSTED_PROXIES: ${AGENTRUN_TRUSTED_PROXIES:-}
       AGENTRUN_PUBLIC_URL: "${AGENTRUN_PUBLIC_URL:-http://127.0.0.1:7340/}" # key-gate: loopback-rule the published loopback port, the printed link

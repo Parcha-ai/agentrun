@@ -19,7 +19,7 @@ import { dockerHost } from "./docker-host-fake.mjs";
 import { FAUX_VIEW_PATH, fauxComputers } from "../dist/faux-computers.js";
 import { DEFAULT_BOX_ALLOW } from "../dist/run-box.js";
 import { putSealedKey } from "../dist/server-keys.js";
-import { computerDepsFrom, computerSpecOf, localWorkspace } from "../dist/workspace/index.js";
+import { computerDepsFrom, computerSpecOf, dockerHostAddressesOf, localWorkspace } from "../dist/workspace/index.js";
 import { fakeComputer } from "./workspace-fake-computer.mjs";
 import { KINDS } from "./workspace-kinds-fixture.mjs";
 
@@ -198,14 +198,14 @@ function fakeSandbox(root, record, declared = {}) {
 
 /** A claim as the runner's spec builders make one (its run, epoch, revision and place), over a store that also has the
  *  run's launch row (runs.launch), as the runner's store does. `boxAllow`: the launch's box_allow. `declared`: more of
- *  the provider's capabilities. */
-async function placeClaim(place, boxAllow, declared = {}) {
+ *  the provider's capabilities. `env`: the server's environment. */
+async function placeClaim(place, boxAllow, declared = {}, env = ENV) {
   const root = scratch();
   const sealKey = randomBytes(32);
   const store = { ...(await savedKeysStore(sealKey)), runs: { launch: async (runId) => ({ runId, body: { input: { content: "Go." }, title: "t", place, ...(boxAllow === undefined ? {} : { box_allow: boxAllow }) }, sealed: null, createdAt: 0 }) } };
   const record = { created: [], released: [], loaded: [] };
   const load = async (id, options) => (record.loaded.push([id, options]), fakeSandbox(root, record, declared));
-  const { computerForClaim, computerDeps } = computerDepsFrom({ env: ENV, store, sealKey, kinds: KINDS, load });
+  const { computerForClaim, computerDeps } = computerDepsFrom({ env, store, sealKey, kinds: KINDS, load });
   const answer = await computerForClaim({ runId: "run-1", epoch: 3, revisionId: "rev-1", place }, store, { ...computerDeps, mode: 1, workspace: localWorkspace(root), sealKey });
   return { answer, record };
 }
@@ -336,4 +336,32 @@ test("the composer builds every provider through the one provider builder, and g
   for (const id of ["docker", "daytona", "modal", "e2b", "orgo", "phone-harness", "browserbase", "kernel"]) assert.equal(typeof computerDeps.providers[id], "function", `${id} is built by the provider builder`);
   assert.equal(typeof computerDeps.check?.readBackOf, "function", "the mount check the claim's attach runs");
   assert.equal(typeof computerDeps.spec, "function");
+});
+
+// AGENTRUN_DOCKER_HOST_ADDRESSES: the Docker host's own addresses, for a Docker provider that isn't on that host (the
+// server in a container). The provider's egress proxy refuses them as the host's; without them it refuses any
+// allow-list there. Each entry is an IP address or the setting is refused in words; nothing is ever made up.
+test("AGENTRUN_DOCKER_HOST_ADDRESSES is a comma list of IP addresses, each once; unset or empty is none; an entry that is no IP address is refused, named", () => {
+  assert.equal(dockerHostAddressesOf({}), undefined);
+  assert.equal(dockerHostAddressesOf({ AGENTRUN_DOCKER_HOST_ADDRESSES: "  " }), undefined);
+  assert.equal(dockerHostAddressesOf({ AGENTRUN_DOCKER_HOST_ADDRESSES: " , ," }), undefined);
+  assert.deepEqual(dockerHostAddressesOf({ AGENTRUN_DOCKER_HOST_ADDRESSES: "172.17.0.1, 192.0.2.10,fd00::1,172.17.0.1" }), ["172.17.0.1", "192.0.2.10", "fd00::1"]);
+  for (const bad of ["host.docker.internal", "172.17.0.0/16", "192.0.2.10:2375", "300.1.1.1"]) {
+    assert.throws(() => dockerHostAddressesOf({ AGENTRUN_DOCKER_HOST_ADDRESSES: `172.17.0.1,${bad}` }), { message: `AGENTRUN_DOCKER_HOST_ADDRESSES is a comma list of the Docker host's own IP addresses (such as 172.17.0.1): ${JSON.stringify(bad)} is not an IP address` });
+  }
+});
+
+test("the claim's Docker provider gets the Docker host's addresses as its egress.hostAddresses when the setting names them, and none otherwise", async () => {
+  const named = await placeClaim({ mode: "sandbox", box: "docker" }, [...DEFAULT_BOX_ALLOW], {}, { ...ENV, AGENTRUN_DOCKER_HOST_ADDRESSES: "172.17.0.1,fd00::1" });
+  const [[id, options]] = named.record.loaded;
+  assert.equal(id, "docker");
+  assert.deepEqual(options.egress, { hostAddresses: ["172.17.0.1", "fd00::1"] });
+  await named.answer.release();
+  const unset = await placeClaim({ mode: "sandbox", box: "docker" }, [...DEFAULT_BOX_ALLOW]);
+  assert.equal(unset.record.loaded[0][1].egress, undefined, "no addresses are made up");
+  await unset.answer.release();
+  // The computer package's own Docker provider takes the option as given (its egress options' check), built with no call
+  // to Docker.
+  const provider = await providerFor("docker", { daemonPath: join(scratch(), "computerd"), user: "1000:1000", egress: options.egress, image: { image: DEFAULT_DOCKER_IMAGE } });
+  assert.equal(typeof provider.create, "function");
 });

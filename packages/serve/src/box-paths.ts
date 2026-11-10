@@ -24,6 +24,20 @@ export const IN_COMPOSE = "run AgentRun in a container with `docker compose up` 
 /** An engine that cannot mount a volume's subpath. */
 export const OLD_ENGINE = "Docker Engine <26 can't mount a named volume's subpath: upgrade to Docker 26+";
 
+/** Why a Docker computer can't run for a server that is not on its Docker's own host: a run's computer binds the run's
+ *  folder (and the computer's daemon) by this server's own paths, which a daemon elsewhere doesn't have. Not yet a way
+ *  in: the named volume's subpaths the old box stack mounted aren't the computer's. */
+export const COMPUTERS_IN_CONTAINER = "the server runs in a container: Docker can't mount the run's folder from inside it yet, so Docker computers aren't available on this setup (give the agent another computer, or run the server on the Docker host)";
+/** The same, for a daemon this server reaches other than through a local unix socket. */
+export const COMPUTERS_REMOTE_DOCKER = "DOCKER_HOST names a Docker daemon that isn't a local unix socket: it can't mount the run's folder from this machine, so Docker computers aren't available on this setup (give the agent another computer, or run the server on the Docker host)";
+
+/** Whether `env`'s DOCKER_HOST names a daemon other than a local unix socket (tcp://, ssh://, or any other). Unset or
+ *  unix://, the daemon is this machine's. */
+export const remoteDocker = (env: NodeJS.ProcessEnv): boolean => {
+  const host = env.DOCKER_HOST?.trim();
+  return host !== undefined && host !== "" && !host.startsWith("unix://");
+};
+
 /** Under `--faux` only: a file the server reads as its /proc/self/mountinfo (server.ts fauxMountinfo). */
 export const FAUX_MOUNTINFO_ENV = "AGENTRUN_SERVE_FAUX_MOUNTINFO";
 
