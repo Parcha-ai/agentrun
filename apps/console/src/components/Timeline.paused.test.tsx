@@ -88,7 +88,7 @@ describe("the timeline, the pause row the server writes for a request the spend 
   };
   const warning = (el: Element) => [el, ...el.querySelectorAll("*")].some((e) => /\b(text|border|bg)-warning/.test(e.getAttribute("class") ?? ""));
   /** The row's title line: the served summary, as the timeline shows a row's words. */
-  const titleOf = (li: Element) => [...li.querySelectorAll("span.block")].find((e) => /text-\[15px\]/.test(e.getAttribute("class") ?? ""));
+  const titleOf = (li: Element) => [...li.querySelectorAll("span.block")].find((e) => /\btext-prose\b/.test(e.getAttribute("class") ?? ""));
 
   it("reads as a server row: AgentRun, the served summary as its title, muted, with a pause icon, no warning border and nothing red", () => {
     const [li] = draws([pausedRow()]);

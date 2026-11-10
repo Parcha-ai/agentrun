@@ -20,11 +20,26 @@ import { canonicalToolSettings, settingsIssues, type ToolSettingsMap } from "./t
 import { computerOfPlace, type PlaceView, settingOfDefinition } from "./computer-setting.js";
 import { type DefinitionBody, type Json, skillIssues, skillNames } from "./validate.js";
 
-/** A UUIDv7: time-ordered, so a listing by created_at is stable, and unique per revision and per minted agent. */
-function uuidv7(now = Date.now()): string {
+/** The last millisecond a UUIDv7 was minted in, and how many were minted in it. */
+let mintedMs = -1;
+let mintedInMs = 0;
+
+/** A UUIDv7: time-ordered, so a listing by (created_at, id) is stable, and unique per revision and per minted agent. Two
+ *  minted in one millisecond keep their order: the 12 bits after the time count them up (RFC 9562's monotonic counter),
+ *  and a clock that steps back keeps the last millisecond, so each id sorts after the one before it. Without that, two
+ *  edits in one millisecond tie on created_at and their random ids could number the newer revision first. */
+export function uuidv7(now = Date.now()): string {
+  if (now > mintedMs) {
+    mintedMs = now;
+    mintedInMs = 0;
+  } else if (++mintedInMs > 0xfff) {
+    mintedMs += 1;
+    mintedInMs = 0;
+  }
   const bytes = randomBytes(16);
-  bytes.writeUIntBE(now, 0, 6);
-  bytes[6] = (bytes[6]! & 0x0f) | 0x70;
+  bytes.writeUIntBE(mintedMs, 0, 6);
+  bytes[6] = 0x70 | (mintedInMs >> 8);
+  bytes[7] = mintedInMs & 0xff;
   bytes[8] = (bytes[8]! & 0x3f) | 0x80;
   const hex = bytes.toString("hex");
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;

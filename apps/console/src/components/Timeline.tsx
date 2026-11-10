@@ -1,8 +1,9 @@
-import { Brain, ChevronRight, CircleAlert, CircleDollarSign, CirclePause, FileText, Flag, LoaderCircle, MessageCircleQuestion, MessageSquareText, Scale, ShieldQuestion, User, Wrench } from "lucide-react";
+import { Brain, ChevronRight, CircleAlert, CircleDollarSign, CirclePause, FileText, Flag, MessageCircleQuestion, MessageSquareText, Scale, ShieldQuestion, User, Wrench } from "lucide-react";
 import { useState } from "react";
 import { BROWSER_TOOL_NAMES } from "@pi-browser/contract";
 import { nameOf } from "@timeline/labels";
 import { Chip } from "@/components/ui/chip";
+import { Spinner } from "@/components/ui/spinner";
 import { clock } from "@/lib/format";
 import { mcpToolLabel } from "@/lib/mcp";
 import { rowDetail, rowFailed, rowPaused, type Step, steps } from "@/lib/timeline";
@@ -95,7 +96,7 @@ function Row({ step, last, waitingChip }: { step: Step; last: boolean; waitingCh
       <div className="min-w-0 flex-1 border-b py-3">
         <button type="button" className="flex w-full items-start gap-3 text-left" onClick={() => setOpen((v) => !v)} aria-expanded={open} disabled={!detail}>
           <span className="min-w-0 flex-1">
-            <span className="flex min-w-0 items-center gap-2 text-[13px] text-muted-foreground">
+            <span className="flex min-w-0 items-center gap-2 text-body text-muted-foreground">
               {/* A label can be long (a trigger's name, up to 200 characters, spaces or none): cut to the row's width, so it
                   never widens the page or runs over the time; whole on hover. */}
               <span data-label className="min-w-0 truncate" title={label(row)}>{label(row)}</span>
@@ -103,17 +104,17 @@ function Row({ step, last, waitingChip }: { step: Step; last: boolean; waitingCh
               {awaitsApproval(row) && <Chip tone="warning">Approval required</Chip>}
               {failed && <Chip tone="error">Error</Chip>}
               {row.agent_label && <Chip>{row.agent_label}</Chip>}
-              {step.ms !== undefined && <span className="font-mono text-[11px]">{took(step.ms)}</span>}
-              {step.times && <span className="font-mono text-[11px]">{step.times} times{step.until ? ` over ${took(Math.max(0, Date.parse(step.until) - Date.parse(row.timestamp)))}` : ""}</span>}
+              {step.ms !== undefined && <span className="font-mono text-label">{took(step.ms)}</span>}
+              {step.times && <span className="font-mono text-label">{step.times} times{step.until ? ` over ${took(Math.max(0, Date.parse(step.until) - Date.parse(row.timestamp)))}` : ""}</span>}
             </span>
-            <span className={cn("mt-0.5 block break-words text-[15px] leading-snug", fromServer(row) && "text-muted-foreground")}>{shown}</span>
-            {step.saved && <span className="mt-0.5 block font-mono text-[12px] text-muted-foreground">saved {step.saved}</span>}
-            {notSent(row) && <span className="mt-0.5 block break-words text-[13px] text-muted-foreground">{notSent(row)}</span>}
+            <span className={cn("mt-0.5 block break-words text-prose leading-snug", fromServer(row) && "text-muted-foreground")}>{shown}</span>
+            {step.saved && <span className="mt-0.5 block font-mono text-small text-muted-foreground">saved {step.saved}</span>}
+            {notSent(row) && <span className="mt-0.5 block break-words text-body text-muted-foreground">{notSent(row)}</span>}
           </span>
-          <span className="caps shrink-0 pt-0.5 text-[11px] text-muted-foreground">{clock(row.timestamp)}</span>
+          <span className="caps shrink-0 pt-0.5 text-label text-muted-foreground">{clock(row.timestamp)}</span>
           {detail && <ChevronRight className={cn("mt-0.5 size-4 shrink-0 text-muted-foreground transition-transform", open && "rotate-90")} aria-hidden />}
         </button>
-        {open && detail && <pre className="mt-3 max-h-80 overflow-auto whitespace-pre-wrap break-words border bg-card p-3 font-mono text-[12px] leading-[1.7]">{detail}</pre>}
+        {open && detail && <pre className="mt-3 max-h-80 overflow-auto whitespace-pre-wrap break-words border bg-card p-3 font-mono text-small leading-[1.7]">{detail}</pre>}
       </div>
     </li>
   );
@@ -137,7 +138,7 @@ export function Timeline({ rows, live, fold = 6, asking, waitingOn }: { rows: Ti
   return (
     <div>
       {hidden > 0 && (
-        <button type="button" className="caps mb-1 ml-10 flex items-center gap-1 py-2 text-[11px] text-muted-foreground hover:text-foreground" onClick={() => setAll(true)}>
+        <button type="button" className="caps mb-1 ml-10 flex items-center gap-1 py-2 text-label text-muted-foreground hover:text-foreground" onClick={() => setAll(true)}>
           <ChevronRight className="size-3" aria-hidden /> {hidden} earlier steps
         </button>
       )}
@@ -151,9 +152,9 @@ export function Timeline({ rows, live, fold = 6, asking, waitingOn }: { rows: Ti
 export function Working({ title, note, spin = true }: { title: string; note: string; spin?: boolean }) {
   return (
     <div className="flex flex-col items-center gap-2 py-12 text-center">
-      {spin && <LoaderCircle className="size-5 animate-spin text-run-active" aria-hidden />}
-      <p className="caps text-[11px] font-semibold">{title}</p>
-      <p className="max-w-sm text-[13px] text-muted-foreground">{note}</p>
+      {spin && <Spinner className="size-5" />}
+      <p className="caps text-label font-semibold">{title}</p>
+      <p className="max-w-sm text-body text-muted-foreground">{note}</p>
     </div>
   );
 }

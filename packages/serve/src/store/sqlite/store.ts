@@ -1080,6 +1080,11 @@ class SqliteStore implements Store {
       put: async (key, value) => {
         await db.write([{ sql: "INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at", params: [key, json(value), now()] }]);
       },
+      putIfAbsent: async (key, value) => {
+        await db.write([{ sql: "INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT (key) DO NOTHING", params: [key, json(value), now()] }]);
+        const row = await db.get<{ value: string }>("SELECT value FROM settings WHERE key = ?", key);
+        return row === undefined ? undefined : JSON.parse(row.value);
+      },
       remove: async (key) => {
         await db.write([{ sql: "DELETE FROM settings WHERE key = ?", params: [key] }]);
       },
@@ -1150,31 +1155,40 @@ class SqliteStore implements Store {
       all: async () => {
         const out: SealedSecretRow[] = [];
         const bytes = (value: Uint8Array) => Uint8Array.from(value);
+        // A row whose AAD cannot be built (a key holding the separator) was never sealed by this store's writers, which
+        // build the same AAD: it is left out, never a failed read of every other.
+        const add = (row: () => SealedSecretRow) => {
+          try {
+            out.push(row());
+          } catch {
+            // Left out: see above.
+          }
+        };
         for (const row of await db.all<{ name: string; sealed: Uint8Array }>("SELECT name, sealed FROM sealed_keys ORDER BY name")) {
-          out.push({ plane: "sealed_keys", where: { name: row.name }, aad: aadOf(sealedAt.sealedKey(row.name)), sealed: bytes(row.sealed) });
+          add(() => ({ plane: "sealed_keys", where: { name: row.name }, aad: aadOf(sealedAt.sealedKey(row.name)), sealed: bytes(row.sealed) }));
         }
         for (const row of await db.all<{ name: string; sealed: Uint8Array }>("SELECT name, sealed FROM mcp_servers WHERE sealed IS NOT NULL ORDER BY name")) {
-          out.push({ plane: "mcp_servers", where: { name: row.name }, aad: aadOf(sealedAt.mcpServer(row.name)), sealed: bytes(row.sealed) });
+          add(() => ({ plane: "mcp_servers", where: { name: row.name }, aad: aadOf(sealedAt.mcpServer(row.name)), sealed: bytes(row.sealed) }));
         }
         for (const row of await db.all<{ state: string; sealed: Uint8Array }>("SELECT state, sealed FROM mcp_oauth_pending ORDER BY state")) {
-          out.push({ plane: "mcp_oauth_pending", where: { state: row.state }, aad: aadOf(sealedAt.oauthPending(row.state)), sealed: bytes(row.sealed) });
+          add(() => ({ plane: "mcp_oauth_pending", where: { state: row.state }, aad: aadOf(sealedAt.oauthPending(row.state)), sealed: bytes(row.sealed) }));
         }
         for (const row of await db.all<{ adapter: string; scope: string; field: string; sealed: string }>("SELECT adapter, scope, field, sealed FROM trigger_settings ORDER BY adapter, scope, field")) {
           // Base64 text in this column (sealed-settings-store.ts), under the table's documented composite-key AAD.
-          out.push({ plane: "trigger_settings", where: { adapter: row.adapter, scope: row.scope, field: row.field }, aad: `trigger_settings|${row.adapter}|${row.scope}|${row.field}`, sealed: Uint8Array.from(Buffer.from(row.sealed, "base64")) });
+          add(() => ({ plane: "trigger_settings", where: { adapter: row.adapter, scope: row.scope, field: row.field }, aad: `trigger_settings|${row.adapter}|${row.scope}|${row.field}`, sealed: Uint8Array.from(Buffer.from(row.sealed, "base64")) }));
         }
         for (const row of await db.all<{ agent_id: string; provider: string; pointer_sealed: Uint8Array }>("SELECT agent_id, provider, pointer_sealed FROM sign_ins ORDER BY agent_id, provider")) {
-          out.push({ plane: "sign_ins", where: { agentId: row.agent_id, provider: row.provider }, aad: aadOf(sealedAt.signIn(row.agent_id, row.provider)), sealed: bytes(row.pointer_sealed) });
+          add(() => ({ plane: "sign_ins", where: { agentId: row.agent_id, provider: row.provider }, aad: aadOf(sealedAt.signIn(row.agent_id, row.provider)), sealed: bytes(row.pointer_sealed) }));
         }
         // A tombstone keeps the pointer's sealed bytes under the live row's binding (store/seal.ts signIn).
         for (const row of await db.all<{ id: number; agent_id: string; provider: string; pointer_sealed: Uint8Array }>("SELECT id, agent_id, provider, pointer_sealed FROM sign_in_tombstones ORDER BY id")) {
-          out.push({ plane: "sign_in_tombstones", where: { id: String(row.id), agentId: row.agent_id, provider: row.provider }, aad: aadOf(sealedAt.signIn(row.agent_id, row.provider)), sealed: bytes(row.pointer_sealed) });
+          add(() => ({ plane: "sign_in_tombstones", where: { id: String(row.id), agentId: row.agent_id, provider: row.provider }, aad: aadOf(sealedAt.signIn(row.agent_id, row.provider)), sealed: bytes(row.pointer_sealed) }));
         }
         for (const row of await db.all<{ run_id: string; kind: string; tag: string; sealed: Uint8Array }>("SELECT run_id, kind, tag, sealed FROM computer_viewers ORDER BY run_id, kind, tag")) {
-          out.push({ plane: "computer_viewers", where: { runId: row.run_id, kind: row.kind, tag: row.tag }, aad: aadOf(sealedAt.liveViewer(row.run_id, row.kind, row.tag)), sealed: bytes(row.sealed) });
+          add(() => ({ plane: "computer_viewers", where: { runId: row.run_id, kind: row.kind, tag: row.tag }, aad: aadOf(sealedAt.liveViewer(row.run_id, row.kind, row.tag)), sealed: bytes(row.sealed) }));
         }
         for (const row of await db.all<{ run_id: string; sealed: Uint8Array }>("SELECT run_id, sealed FROM run_launch WHERE sealed IS NOT NULL ORDER BY run_id")) {
-          out.push({ plane: "run_launch", where: { runId: row.run_id }, aad: aadOf({ table: "run_launch", row: row.run_id, column: "sealed" }), sealed: bytes(row.sealed) });
+          add(() => ({ plane: "run_launch", where: { runId: row.run_id }, aad: aadOf({ table: "run_launch", row: row.run_id, column: "sealed" }), sealed: bytes(row.sealed) }));
         }
         return out;
       },
