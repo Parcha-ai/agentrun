@@ -242,12 +242,16 @@ export async function runUntilSignalled(process: RunnerProcess, signals: readonl
   await process.close();
 }
 
-/** The runner process's handler for a promise rejection nothing handled (runnerMain installs it): one line on stderr in the
- *  runner's name, its stack when it has one, and the process goes on serving. Exported for its test. */
-export function unhandledRejectionLogger(name: string, write: (line: string) => void = (line) => void process.stderr.write(line)): (reason: unknown) => void {
+/** The runner process's last resort (runnerMain installs it for unhandledRejection and uncaughtException): says what
+ *  went wrong, in the runner's name with its stack, then exits 1 at once, closing nothing. A runner that went on after
+ *  an error nothing handled could keep renewing the claim of a run whose loop is dead, and that run would hang claimed
+ *  by a live runner. Exiting lets the claim lapse: another runner (or this one, started again) takes the run back at the
+ *  next epoch, and the fence refuses the dead loop's late writes. Exported for its test. */
+export function lastResort(name: string, write: (line: string) => void = (line) => void process.stderr.write(line), exit: (code: number) => void = (code) => process.exit(code)): (reason: unknown) => void {
   return (reason) => {
     const said = reason instanceof Error ? (reason.stack ?? `${reason.name}: ${reason.message}`) : String(reason);
-    write(`agentrun-serve runner: Runner ${name}: a promise rejected with no handler (logged; the runner goes on): ${said}\n`);
+    write(`agentrun-serve runner: Runner ${name}: an error nothing handled, so the runner exits (its claims lapse, and are taken back): ${said}\n`);
+    exit(1);
   };
 }
 
@@ -287,10 +291,11 @@ export async function runnerMain(argv: readonly string[], env: NodeJS.ProcessEnv
   }
   let started: RunnerProcess;
   const runnerOf = name ?? runnerName();
-  // The last resort, in this process only (never the library's): a promise no one handled is a bug in one run's work.
-  // It is logged, and the runner keeps serving every other run rather than taking the process and all its claims down
-  // with it. The cause is fixed where it is found; this only keeps the rest running.
-  process.on("unhandledRejection", unhandledRejectionLogger(runnerOf));
+  // The last resort, in this process only (never the library, the server's CLI or the runner beside a server): an error
+  // nothing handled is said with its stack, and the process exits 1 at once (lastResort: crashing is the safe failure).
+  const fatal = lastResort(runnerOf);
+  process.on("unhandledRejection", fatal);
+  process.on("uncaughtException", fatal);
   try {
     started = await startRunnerProcess({
       dataDir: args.dataDir,
