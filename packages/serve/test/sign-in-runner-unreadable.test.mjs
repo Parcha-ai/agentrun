@@ -9,7 +9,7 @@ import { specFor } from "./runner-spec-support.mjs";
 import { storeOn } from "./store-helpers.mjs";
 
 const signIns = await import("../dist/sign-ins-store.js");
-const { UNREADABLE_SIGN_IN } = await import("../dist/runs.js");
+const { UNREADABLE_SIGN_IN } = await import("../dist/run-view.js");
 const contract = await import("../dist/runner/loop-contract.js");
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 

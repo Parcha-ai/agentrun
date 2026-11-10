@@ -9,6 +9,8 @@ Use Node 24.11 or newer and npm. Follow the [support example](examples.md#run-th
 
 For TypeScript authoring and reusable child workflows, follow the [research tutorial](authoring.md). The [standalone starter](../examples/starter/README.md) runs outside this checkout. See [all examples](examples.md) for their commands and failure paths.
 
+To run agents and workflows behind an HTTP API and a console instead of in your own process, start [AgentRun Server](../packages/serve/README.md). To run the interpreter inside your own application, see [Integrate with your application](host-integration.md).
+
 ## Inspect the smaller triage workflow
 
 In your project, install the core and save the complete triage workflow:
@@ -112,69 +114,6 @@ A `judge` schema is a flat object. Boolean properties become Noul questions (a p
 
 Confidence is a model output, not an empirically calibrated accuracy guarantee. The demo's 70% threshold is illustrative. Test thresholds on your own fixed cases before using them for consequential decisions.
 
-<a id="pi"></a>
-## Let Pi build and run a workflow
-
-Pi drafts a typed workflow for your task, checks it, dry-runs it for free, runs it, and shows every node on its graph. With [Pi installed](../packages/pi/README.md#install) (1.5.0 exactly; CI tests 1.5.0), run these commands in your project:
-
-```sh
-pi install npm:@parcha/agentrun-pi@latest -l
-pi --offline
-```
-
-`-l` installs in this project. `--offline` skips startup downloads, not intentional model calls. Pi asks whether you trust the project before loading its extension on first launch. If the install stops with "Project is not trusted", add `--approve`. Pi starts with `read`, `bash`, `edit` and `write` active; `pi --tools read,grep,find,ls,agentrun` gives workflows the read-only tools and keeps the AgentRun tool on. If Pi is already open, use `/reload` first. The npm package includes the extension and the authoring skill; no AgentRun checkout is needed.
-
-Inside Pi, `/agentrun demo` runs a scripted research workflow and shows its graph without a model call. `/agentrun status` confirms that the authoring skill loaded.
-
-With model access configured in Pi, describe a task:
-
-```text
-/agentrun Research how this repository handles cancellation. Investigate the runtime and tests separately, then report the gaps with file references.
-```
-
-Pi then takes five steps, and you can step in at each one:
-
-1. **Draft.** Pi asks the `agentrun` tool to describe the tools this session offers and the workflow language, then drafts a workflow from them. It is typed: each step that asks a model names the JSON Schema its answer must match.
-2. **Check.** Pi inspects the complete draft with its input. Inspection checks the structure, the schemas, the state paths between steps and the tools each step calls, and runs no code. Pi repairs what it reports and inspects again.
-3. **Dry-run.** Pi dry-runs the inspected workflow on synthetic values, or on the input you gave, with no model, Jev or tool call, so it costs nothing. `passed` means every check ran, `failed` lists the problems, and `not_run` names a check that could not run and proves nothing. A boolean whose schema leaves it open (no `const` or `enum`) is `false` in a dry run, so an `escalate` on such a boolean being `false` always fires there, and the dry run reports `not_run` with that escalation in `skipped`; the steps after it are not exercised. Run one yourself with `/agentrun dry-run`; a workflow with code nodes needs `/agentrun dry-run --trusted`.
-4. **Run.** Pi runs the workflow when you ask it to, or you run it with `/agentrun run`. Agent steps use Pi's current model. Code nodes and the `bash`, `edit` and `write` tools run only after you issue `/agentrun run --trusted`, and only for that run.
-5. **Graph.** `/agentrun` opens the graph. Every node is on it with its state: planned before a run, then running, succeeded, failed or interrupted, and skipped when a route chose another branch. These are the moments `nodeStatus` from `@parcha/agentrun-dsl/graph` reads from a durable run, named for a person: planned and skipped are `not-run`, running is `working`, succeeded is `done`, failed is `failed`, and interrupted is a node still `working` when the run stopped, or `not-run` when it left no mark: a code node cut off before its commit leaves none, so `not-run` does not prove that a node never started. Select a node for its contract, its instructions or criteria, and what the run observed. Closing the view does not stop the run; `/agentrun stop` asks it to stop.
-
-To see the graph before anything runs, ask for a preview ("Do not run it yet."): Pi stops before the run and says so. `/agentrun save <name>` and `/agentrun load <name>` keep a definition in this project for new input; a save keeps neither the input nor permission to run. Jev access is needed only for system one decisions. See [Pi setup and limits](../packages/pi/README.md).
-
-### Embed the Pi SDK
-
-Use `createPiHostRunner` inside an existing Pi extension or `createPiRunner` with a configured standalone SDK runtime. Supply tools explicitly. The runner forwards schema and review feedback to the same agent session, bounds turns and submissions, and honors cancellation.
-
-For authoring, `authorWorkflow` from `@parcha/agentrun-dsl` retains a candidate and its feedback without activating it. Pass it a Pi runner as its `runNode`. Supply your own acceptance callback to evaluate behavior. Without that callback, acceptance checks structure only.
-
-For an authoritative SOP, supply complete `rubricSections` during authoring and the same source text through runtime `sop`. The author conservatively requires every generative node to carry all supplied sections and rejects semantic paths that cannot carry them. See [Pi SDK setup](../packages/pi/README.md#sdk-embed-the-runner) for configuration and limits.
-
-<a id="transport"></a>
-## Run an agent's tools where each step needs them
-
-[`@parcha/pi-transport`](../packages/pi-transport/README.md) runs a pi agent's tools on another machine: this machine, a Docker container, or a Daytona or Modal sandbox, behind one `Box` interface. The session, its store and its model calls stay with the host; only the tools go to the box. Use it when a step needs a machine the host is not: a GPU, more memory, or a sandbox apart from the host for code the agent writes and runs. Jev can choose the machine for each step from a one-line purpose you give each environment.
-
-Install it with `npm install @parcha/pi-transport@latest`. This runs with no key and no Docker. The box is a directory on this machine, with no isolation:
-
-```js
-import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { localBoxes } from "@parcha/pi-transport/box/local";
-import { boxEnv } from "@parcha/pi-transport/hands";
-
-const created = await localBoxes({ root: "./boxes" }).create({ maxLifetimeMs: 10 * 60_000 }, BACKGROUND_CONTEXT);
-if (!created.ok) throw created.error;
-const box = created.value;
-
-const env = boxEnv(box);
-await env.writeFile("notes/a.txt", "hello from the box\n", BACKGROUND_CONTEXT);
-const ran = await env.exec("cat notes/a.txt", { timeout: 10, onOutput: (text) => process.stdout.write(text) }, BACKGROUND_CONTEXT);
-console.log(ran.ok ? `exit ${ran.value.exitCode}` : ran.error);
-await box.destroy(BACKGROUND_CONTEXT);
-```
-
-`boxEnv` is pi's `ExecutionEnv`, so a pi-durable Harness given it as `env` runs the agent's `read`, `write`, `edit` and `bash` in the box. For a container, use `dockerBoxes()` from `@parcha/pi-transport/box/docker`. The [package README](../packages/pi-transport/README.md) covers the providers, the config that sends each conversation's tools to an environment, and Jev's placement.
-
 <a id="primitives"></a>
 ## The primitives
 
@@ -251,7 +190,7 @@ Verification questions assess the evidence given to them. They are not an indepe
 - **Trusted execution.** JavaScript runs in the process. Validation can execute probes. Run unknown workflows in a host-controlled isolation boundary.
 - **State ownership.** Input and seeded state must be structured-cloneable. The runtime copies caller input and each map item or parallel branch. Parallel branches that change the same top-level field conflict, including nested mutations; unchanged copies are not writes.
 - **Admission.** Required adapters and all named SOP sections are checked before any node runs, including untaken branches and child workflows. Invalid input contracts are reported as `WorkflowInputInvalidError`.
-- **Cancellation.** Core adapters receive signals; effect deadlines and caller cancellation bound the core's wait for an injected effect, while Pi and Jev bound their own callers. An uncooperative tool can continue its effect after cancellation. Synchronous JavaScript can block the process. There is no general hard-kill sandbox here.
+- **Cancellation.** Core adapters receive signals; effect deadlines and caller cancellation bound the core's wait for an injected effect, while the Jev adapter bounds its own calls. An uncooperative tool can continue its effect after cancellation. Synchronous JavaScript can block the process. There is no general hard-kill sandbox here.
 - **Effects.** The host implements `runEffect`, enforces tools and file access, verifies promised files, and handles custody. Idempotency keys help a host deduplicate; they do not confer exactly-once delivery. Inspect uncertain outcomes before retrying. An admitted effect still pending at cutoff throws `EffectOutcomeUnknownError` (`effect_outcome_unknown`) and is never retried automatically. Its `settlement` promise retains any eventual fulfillment or rejection, and `effect.late_settled` reports that evidence to the host. Late settled results are not memoized, committed, or delivered. A result already known to be late throws `EffectDeadlineExceededError` with `lateResult`. Concurrent failures can return an `AggregateError`; inspect its `errors` recursively for every uncertain effect, with the original failure retained as `cause`.
 - **Escalation in collections.** Pure map escalation emits `map.escalated`, keeps the triggering item's local state, and does not call the failure persistence hook. Completed sibling state is not promoted as a completed map. If cancellation leaves uncertain effects, the run rejects with an `AggregateError`; inspect its `errors` and `cause` for public `EscalationSignal` and `EffectOutcomeUnknownError` instances. Reconcile effects before retrying. No escalation evidence is discarded.
 - **Failures in collections.** Under recovery a collected failure is committed with its item before the map goes on, and every later process ends the item on it without running its body; a store without `recovery.failItem` and `recovery.itemFailure` cannot hold such a map, and it is refused before any step runs. An item whose call the driver left with an unknown outcome is refused as `FROZEN_EFFECT_UNKNOWN`, never collected. A failed item's spend still counts. Run a collecting workflow only once every process that can open the run is on a release that knows `onItemFailure`: an earlier release refuses the workflow at its open, which fails its task and ends the agent nodes in flight, and they start again in new conversations at the cost of those turns (in the reference kill storm, 4.27 to 4.30 model requests per committed turn with old processes against 3.04 and 3.40 without (the medians of four 50-seed storms), about 33% more).

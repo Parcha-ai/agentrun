@@ -15,7 +15,7 @@ import { rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import { type Revision, type RunOrigin } from "@parcha/pi-durable-agent";
 import { type AgentEntry, agentRevision, agentRevisions, agentView, commitAgent, createAgent, definitionOf, etagOf, getAgent, listAgents, makeRevision, refuseExternal, revisionView, setAgentArchived, setCurrentRevision } from "./agents-store.js";
-import { WORKFLOW_ADAPTERS } from "./app.js";
+import { WORKFLOW_ADAPTERS } from "./runner/workflow-adapters.js";
 import { DECISION_ADAPTER, decisionsOf, FAUX_JEV_ENV, FAUX_OPENROUTER_ENV, FAUX_PARALLEL_ENV, fauxFetch } from "./decisions.js";
 import { FAUX_WEB_ENV } from "./web-fetch-direct.js";
 import { FAUX_MONID_ENV } from "./monid.js";
@@ -40,7 +40,7 @@ import { agentLearning, learningLog, learningNotes, noteBody, pendingCount, read
 import { answerLlms, MCP_PATH, mcpEndpoint } from "./mcp.js";
 import { openapiDocument, servedOpenapi, UNSUPPORTED } from "./openapi.js";
 import { boxAvailability, boxesLine, defaultPlaceOf, NEW_AGENT_TOOLS, newAgentPlace, noBoxReason, type Place, placesOf, resolvePlace } from "./place.js";
-import { BOX_ALLOW_ENV, boxAllowOf, boxLimitsOf, boxNetworkOf, FAUX_BOX_ENV, fauxBoxes } from "./run-box.js";
+import { BOX_ALLOW_ENV, boxAllowOf, boxLimitsOf, boxNetworkOf, FAUX_BOX_ENV, fauxBoxes, memoryMbOf } from "./box-settings.js";
 import { Owner, passwordProblem, SESSION_MS } from "./owner.js";
 import { answerPage, byOwnerSession, heldSessions, isJson, overHttps, ownerCookie, ownOrigin, sendHostRefused, signedIn } from "./page.js";
 import { hostFix, hostName, loopbackNames } from "./host-check.js";
@@ -84,7 +84,6 @@ import { hostAddressesOnce, noHostAddresses, unionOf } from "./docker-host-addre
 import { boxImageOf, clearImage, type DockerImage, dockerImage, type ImageState, withImage } from "./box-image.js";
 import { startBoxRelay } from "./box-relay.js";
 import { vmRelay, type VmSdk } from "./box-relay-vm.js";
-import { memoryMbOf } from "./run-box.js";
 import { DOCUMENTS_ENV } from "./pdf-pages.js";
 import { CAP_MODES, type CapMode } from "./cap.js";
 import { type Blocker, blockersOf, CODE_NODES_ENV, issueOf, MCP_HARNESSES, NOT_SET_UP, type RevisionShape } from "./runnable.js";
@@ -961,7 +960,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // is preparing until it is in, and unavailable if the pull fails. Its record tells the run's processes; with no Docker
   // box here there is none, so no run waits on one an earlier start left.
   let image: DockerImage | undefined;
-  // What a Docker box's programs reach, resolved once here (run-box.ts boxNetworkOf): the setting's list, on a Docker
+  // What a Docker box's programs reach, resolved once here (box-settings.ts boxNetworkOf): the setting's list, on a Docker
   // daemon of this Linux machine's own; else none, and why. A run's process gets the list or none (RUN_BOX_ALLOW_ENV).
   // Under --faux, the mountinfo a test gives (fauxMountinfo, or FAUX_MOUNTINFO_ENV in the process's own environment, which
   // `env` leaves out: a server under test in a container names its own /proc/self/mountinfo there); with none, a faux
@@ -1320,6 +1319,18 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     try { return proxyaddr.compile([...options.trustedProxies]); } catch (error) { throw new Error(`trustedProxies: ${(error as Error).message}`); }
   })();
   const clientOf = (req: IncomingMessage) => (trusted ? proxyaddr(req, trusted) : req.socket.remoteAddress) ?? "unknown";
+  // The owner's own sign-in (the right password) that came with X-Forwarded-For from an address not trusted as a proxy is
+  // said once a start, with that address (`event=forwarded_untrusted peer=<it>`): behind a proxy that publishes no
+  // address (Render's), the proxy that carried the owner's request, the one to name in AGENTRUN_TRUSTED_PROXIES. Only a
+  // right password says it, so a peer that can reach the server without the password can't put its own address there;
+  // once, so the log says it one time.
+  let forwardedSaid = false;
+  const sayForwarded = (req: IncomingMessage) => {
+    const peer = req.socket.remoteAddress ?? "unknown";
+    if (forwardedSaid || req.headers["x-forwarded-for"] === undefined || (trusted?.(peer, 0) ?? false)) return;
+    forwardedSaid = true;
+    log?.(logLine("forwarded_untrusted", { peer }));
+  };
   /** Whether `req` may be shown a secret this server mints (trigger-secrets-shown.ts): the caller that may write one. */
   const mayHoldSecrets = (req: IncomingMessage) => writesSecretsAllowed(req, { accounts: owner !== undefined, loopbackBound: isLoopback(host) });
   /** A trigger's view with its minted secret's metadata, never the secret (trigger-secrets-shown.ts). */
@@ -2257,6 +2268,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
           authFailed("/v2/auth/sign-in", "wrong_password");
           throw new ApiError("unauthenticated", "that is not the password");
         }
+        sayForwarded(req);
         return send(res, 200, { signed_in: true }, { "set-cookie": ownerCookie(req, me.session(), SESSION_S) });
       }
       // This browser: its session revoked on the server (a copy of its cookie is no session either) and its cookie
