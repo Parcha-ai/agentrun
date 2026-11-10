@@ -1,0 +1,6 @@
+---
+packages: @parcha/agentrun-serve, @parcha/agentrun-client
+kind: breaking
+---
+The server no longer describes states it cannot be in, or routes it never served. Since the server and its runner always start with a seal key, the API's no-seal-key words are gone: the `no_sealing_key` error code, the `seal_key_missing` reason of a tool key to enter again and of a webhook's `signing`. `GET` and `PUT /v2/agents/{id}/home` (a home's packed export and import) and `POST /v2/runs/{id}/kill`, which only ever answered `501 unsupported_here`, are no longer served: they answer `404`, and the served OpenAPI document leaves them out (`info.x-agentrun-serve.not_served` lists them). The TypeScript and Python clients' webhook and tool-key types drop `seal_key_missing`. A program that checked for one of these codes or reasons, or for the `501` of these routes, drops that branch; capabilities still say each route is off. Quotes still answer `501`.
+- An agent edit whose checks run while another request moves the agent's current revision is built again on the new one (or, sent with `If-Match`, answers `412`), so it never carries over a place, harness or learning switch from a revision it does not follow.
