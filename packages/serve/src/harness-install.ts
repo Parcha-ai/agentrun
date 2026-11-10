@@ -408,12 +408,19 @@ export class HarnessInstall {
     if (this.done) return Promise.resolve();
     if (this.stopping.signal.aborted) return Promise.reject(new Error("the server is stopping"));
     this.running ??= (async () => {
-      const pins = await this.pins();
-      if (this.entry.lacking(this.dir, pins) === undefined) return void (this.done = true);
-      const started = performance.now();
       // The mark a run's claim reads, in this process or a runner's own (installSettled): installing now, then gone once
-      // it is in, or why it failed.
+      // it is in, or why it failed. Written first, before anything is read, so a claim made as this install starts (a run
+      // started just after the save that started it) finds it; gone at once when the harness is installed already.
       await writeMark(this.dir, { host: hostname(), pid: process.pid, startedAt: Date.now() });
+      const pins = await this.pins().catch(async (error: unknown) => {
+        await rm(installMarkOf(this.dir), { force: true }).catch(() => undefined);
+        throw error;
+      });
+      if (this.entry.lacking(this.dir, pins) === undefined) {
+        await rm(installMarkOf(this.dir), { force: true });
+        return void (this.done = true);
+      }
+      const started = performance.now();
       try {
         await this.install(this.entry, this.dir, pins, this.stopping.signal);
       } catch (error) {

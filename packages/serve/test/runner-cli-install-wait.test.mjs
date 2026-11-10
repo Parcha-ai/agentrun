@@ -87,6 +87,31 @@ test("installSettled: while the server's install runs it waits for it, and reads
   assert.ok(!existsSync(installMarkOf(target)), "the mark goes once the install is in");
 });
 
+test("an install's mark is there from its start, before it reads its pins or what is installed: a claim made as it starts waits for it", async (t) => {
+  const target = join(scratch(t, "install-start"), "harnesses", "fake");
+  const pinsGiven = gate();
+  let pinsAsked = false;
+  const install = new HarnessInstall(FAKE, target, async () => ((pinsAsked = true), await pinsGiven.opened, PINS), async (_entry, dir) => {
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "whole"), "");
+  });
+  const installing = install.ensure();
+  await until(() => pinsAsked, "the install asks for its pins");
+  assert.ok(existsSync(installMarkOf(target)), "the mark is there while the install has not yet read its pins");
+  const settled = installSettled(FAKE, target, PINS, { pollMs: 5 });
+  pinsGiven.open();
+  await installing;
+  assert.equal(await settled, "installed");
+});
+
+test("an install of a harness already installed whole leaves no mark", async (t) => {
+  const target = join(scratch(t, "install-already"), "harnesses", "fake");
+  mkdirSync(target, { recursive: true });
+  writeFileSync(join(target, "whole"), "");
+  await new HarnessInstall(FAKE, target, async () => PINS, async () => assert.fail("nothing to install")).ensure();
+  assert.ok(!existsSync(installMarkOf(target)));
+});
+
 test("installSettled: an install that fails is read with the install's own words", async (t) => {
   const target = join(scratch(t, "install-fail"), "harnesses", "fake");
   const why = "Couldn't install Fake CLI (fake-cli@1.0.0) from npm: the registry answered 503";
