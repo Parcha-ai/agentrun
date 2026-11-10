@@ -5,7 +5,8 @@
 // gone), and looked for so in a text folded the same way. A shorter hex run is not folded, an unrelated UUID is not
 // matched, and a value with no such run (a key in mixed case) is found as written only. A run that is only a key's tail
 // (under half of it) is not folded: another value sharing it is not cut. The fold only adds cutting: a held key split by
-// a line break is still seen whole and the text redacted whole, as before the fold.
+// a line break is still seen whole and the text redacted whole, as before the fold; a folded one split by whitespace or
+// percent-encoded is redacted whole too.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { redactSecrets, valueMatcher } from "../dist/learn/secrets.js";
@@ -83,4 +84,13 @@ test("the fold never stops the whole-text check: a held pointer split by a line 
   // Its hex alone, cut in place, would leave the rest unseen as the pointer: the whole-text check runs first.
   const text = `Use ${PROFILE.slice(0, 8)}\n${PROFILE.slice(8)} now.`;
   assert.equal(redactSecrets(text, [PROFILE]), "[redacted]");
+});
+
+test("a folded pointer split by whitespace or percent-encoded is found and the text redacted whole, never handed back", () => {
+  const hex = UUID.replaceAll("-", "").toUpperCase();
+  for (const [how, written] of [["split by a space", `${hex.slice(0, 16)} ${hex.slice(16)}`], ["split by a line break", `${hex.slice(0, 16)}\n${hex.slice(16)}`], ["percent-encoded", [...hex].map((c) => `%${c.charCodeAt(0).toString(16)}`).join("")]]) {
+    const text = `Open ${written} first.`;
+    assert.equal(valueMatcher([CONTEXT])(text), true, `${how}: found`);
+    assert.equal(redactSecrets(text, [CONTEXT]), "[redacted]", how);
+  }
 });

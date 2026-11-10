@@ -74,7 +74,8 @@ export const PRINT_MAX = 4096;
  *  that still holds a value or a shape after that (a form not found as it stands: percent encoded, split by whitespace,
  *  an NFKC variant), or that is over `max` bytes (PRINT_MAX unless the caller names more), is redacted whole, never in
  *  part. The folded finds only ever add to that: the whole-text check is first made with them left in (a value split by
- *  a line break is still seen whole, never hidden by its hex part cut alone), and again once they are cut. */
+ *  a line break is still seen whole, never hidden by its hex part cut alone), and the fold-aware one always after, on
+ *  what is left (a folded value split by whitespace or percent-encoded is found there, never handed back). */
 export function redactSecrets(text: string, values: readonly string[], max = PRINT_MAX): string {
   if (Buffer.byteLength(text) > max) return "[redacted]";
   const given = values.filter((v) => v.length > 0);
@@ -86,9 +87,10 @@ export function redactSecrets(text: string, values: readonly string[], max = PRI
   ];
   const unfolded = cutAt(text, found);
   if (valueMatcher(given, { fold: false })(unfolded) || secretShapes(unfolded).length > 0) return "[redacted]";
+  // Then the folded finds cut in place, and the fold-aware check over what is left, always: a folded value split by
+  // whitespace or percent-encoded has no span here, but the matcher's squeezed and decoded views still see it.
   const folds = given.filter(longEnough).flatMap((v) => needlesOf(v).folded.flatMap((needle) => spans(text, foldedPattern(needle))));
-  if (!folds.length) return unfolded;
-  const out = cutAt(text, [...found, ...folds]);
+  const out = folds.length ? cutAt(text, [...found, ...folds]) : unfolded;
   return valueMatcher(given)(out) || secretShapes(out).length > 0 ? "[redacted]" : out;
 }
 
