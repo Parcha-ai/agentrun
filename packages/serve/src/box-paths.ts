@@ -33,7 +33,7 @@ export const remoteDockerWords = (endpoint: string): string =>
   `this server's Docker daemon (${endpoint}) is another machine's: it can't mount the run's folder from this machine, so Docker computers aren't available on this setup (give the agent another computer, or run the server on the Docker host)`;
 
 /** Loopback, by name or address: a daemon this machine reaches over its own loopback. */
-const LOOPBACK = /^(localhost|127(\.\d{1,3}){3}|\[?::1\]?)$/i;
+const LOOPBACK = /^(localhost|127(\.\d{1,3}){3}|\[?::1\]?)$/i; // key-gate: loopback-rule names this machine only, to tell its own daemon from another machine; the line dials nothing
 
 /** Whether a daemon endpoint is another machine's: ssh://, or tcp:// to a host that is not this machine's loopback.
  *  Everything else is this machine's: unix:// (and fd://), npipe:// (Docker Desktop on Windows), tcp:// to loopback. Its
