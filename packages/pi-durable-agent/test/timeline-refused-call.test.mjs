@@ -29,19 +29,22 @@ test("every labelled tool refused before it ran reads refused in plain words: an
       call("b", "bash", { command: "rm -rf build" }),
       call("f", "web_fetch", { url: "https://example.com/page" }),
       call("o", "submit", { answer: "no" }),
+      call("m", "mcp__fake__send_message", { channel_id: "C0EVIL", text: "hi" }),
     ], 0),
     refusedResult("e", "edit", "Permission denied: edit is set to deny on this server."),
     refusedResult("r", "read", "The user denied this read call."),
     refusedResult("b", "bash", "Permission denied: bash is set to deny on this server."),
     refusedResult("f", "web_fetch", "Permission denied: web_fetch is set to deny on this server."),
     refusedResult("o", "submit", "Permission denied: submit is set to deny on this server."),
+    refusedResult("m", "mcp__fake__send_message", "mcp:fake/send_message may only be called with channel_id = C0123."),
   ]);
-  assert.deepEqual(["e", "r", "b", "f", "o"].map((id) => rowFor(rows, id, "tool_result")), [
+  assert.deepEqual(["e", "r", "b", "f", "o", "m"].map((id) => rowFor(rows, id, "tool_result")), [
     "Refused: edit notes.md: Permission denied: edit is set to deny on this server.",
     "Refused: read secret.md: The user denied this read call.",
     "Refused: bash `rm -rf build`: Permission denied: bash is set to deny on this server.",
     "Refused: web_fetch example.com/page: Permission denied: web_fetch is set to deny on this server.",
     "Refused: submit: Permission denied: submit is set to deny on this server.",
+    "Refused: fake · send_message: mcp:fake/send_message may only be called with channel_id = C0123.",
   ]);
 });
 

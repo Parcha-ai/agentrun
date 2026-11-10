@@ -112,11 +112,12 @@ const GOTO = /page\.goto\(\s*["'`]([^"'`]+)/;
 
 /** A call refused before it ran, in plain words: "Refused: " and the tool's name with what it would have acted on (the
  *  path it would have read or written, the command it would have run, the page it would have fetched), never a label's
- *  past tense ("Wrote deny.md"), which says it ran. Any tool: one with none of those reads as its name alone. */
+ *  past tense ("Wrote deny.md"), which says it ran. Any tool: one with none of those reads as its name alone (an MCP
+ *  server's tool as its server and name, "fake · send_message", as its label reads it). */
 export function refusedLabel(tool: string, args: Obj): string {
   const command = str(args.command);
   const subject = path(args) ?? (str(args.url) ? where(str(args.url)!) : undefined) ?? (command ? `\`${cut(scrubUrls(firstLine(command)), 60)}\`` : undefined);
-  return `Refused: ${tool}${subject ? ` ${subject}` : ""}`;
+  return `Refused: ${mcpLabel(tool) ?? tool}${subject ? ` ${subject}` : ""}`;
 }
 
 registerLabel("read", (a) => `Read ${path(a) ?? "a file"}`, { many: (n) => `Read ${n} files`, subject: (input) => input ?? undefined, path: true }, { name: "Read files" });
