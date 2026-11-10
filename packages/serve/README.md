@@ -679,16 +679,6 @@ has the Docker client (Debian's `docker-cli`) and no daemon; `group_add` gives t
   it root. A box never gets it.
 - **A box is a container beside the server's.** It is made as on a Linux host (`--network none`, every capability dropped,
   no new privileges, the server's uid, the box limits).
-- **No host list from a container yet.** A Docker sandbox's egress proxy refuses the Docker host's own addresses, so it
-  must know them, and a provider that runs in a container (`/.dockerenv`, `/run/.containerenv` or a container's cgroup)
-  can't read them from its own interfaces. The computer package's Docker provider takes them as its
-  `egress.hostAddresses` option (IP addresses, the host's public ones and any NAT'd or elastic IP;
-  [its README](../computer/README.md)), but this server sets no such option and has no setting for it. So in a
-  container, a Docker sandbox asked for a host list (`AGENTRUN_BOX_ALLOW`, whose default is a list) is refused before
-  anything is made: "this provider runs in a container (…), so this provider's own interfaces are not the Docker
-  host's, and the egress proxy could not refuse the host's own addresses: pass them as egress.hostAddresses, or ask for
-  network none or open". With `AGENTRUN_BOX_ALLOW=none` a sandbox asks for no network, which this check does not
-  refuse.
 - **Its files.** The daemon has none of the server's paths, only what it mounted into the server's container. At its
   start the server reads its own container's id from `/proc/self/mountinfo`, asks Docker for that container's mounts
   (`docker inspect`), and takes the named volume that holds the data directory. A run's sandbox mounts that run's folder
