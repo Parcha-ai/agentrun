@@ -32,6 +32,7 @@ function resealElsewhere(data, name) {
   } finally {
     db.close();
   }
+}
 /** A throwaway value: none is a real token. */
 const made = () => `not-a-secret-${randomBytes(12).toString("hex")}`;
 const formsOf = (value) => [value, ...["base64", "base64url", "hex"].map((code) => Buffer.from(value).toString(code))];
