@@ -2,73 +2,25 @@
 @import "@fontsource/jetbrains-mono/600.css";
 @import "@fontsource/schibsted-grotesk/400.css";
 @import "@fontsource/schibsted-grotesk/600.css";
+@import "./tokens.css";
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
-/* The AgentRun look, the hosted AgentRun console's: shadcn's variables, light or dark as the OS is or as the person
-   picked (lib/theme.ts puts .dark or .light on <html>), an orange primary, a 1px border on everything, and no rounded
-   corners. Values are HSL triplets. */
+/* The AgentRun look: light or dark as the OS is or as the person picked (lib/theme.ts puts .dark or .light on <html>),
+   an orange primary, a 1px border on everything, and no rounded corners. Every value is a token in tokens.css;
+   docs/console-design-system.md is the guide. */
 @layer base {
-  :root {
-    color-scheme: light;
-    --background: 0 0% 100%;
-    --foreground: 240 10% 3.9%;
-    --card: 0 0% 100%;
-    --card-foreground: 240 10% 3.9%;
-    --muted: 240 4.8% 95.9%;
-    --muted-foreground: 240 3.8% 46.1%;
-    --accent: 240 4.8% 95.9%;
-    --accent-foreground: 240 5.9% 10%;
-    --primary: 30 100% 50%;
-    --primary-foreground: 0 0% 100%;
-    --destructive: 0 84.2% 60.2%;
-    --destructive-text: 0 72.2% 50.6%;
-    --success: 142 71% 45%;
-    --success-text: 142.4 71.8% 29.2%;
-    --warning: 38 92% 50%;
-    --warning-text: 35.5 91.7% 32.9%;
-    --info: 217 91% 60%;
-    --border: 240 5.9% 90%;
-    --border-strong: 216 12% 84%;
-    --input: 240 5.9% 90%;
-    --ring: 30 100% 50%;
-    --run-active: 239 83.3% 67%;
-    --run-error-surface: 0 85.7% 97.3%;
-  }
-  .dark {
-    color-scheme: dark;
-    --background: 240 6% 9%;
-    --foreground: 0 0% 95%;
-    --card: 240 5% 12%;
-    --card-foreground: 0 0% 95%;
-    --muted: 240 5% 18%;
-    --muted-foreground: 240 5% 66%;
-    --accent: 240 5% 18%;
-    --accent-foreground: 0 0% 98%;
-    --primary: 30 100% 50%;
-    --primary-foreground: 0 0% 98%;
-    --destructive: 0 84.2% 60.2%;
-    --destructive-text: 0 90.6% 70.8%;
-    --success: 142 71% 45%;
-    --success-text: 142 71% 45%;
-    --warning: 38 92% 55%;
-    --warning-text: 38 92% 55%;
-    --info: 217 91% 66%;
-    --border: 240 5% 18%;
-    --border-strong: 240 5% 45%;
-    --input: 240 5% 18%;
-    --ring: 30 100% 50%;
-    --run-active: 239 83.3% 71.8%;
-    --run-error-surface: 0 33.3% 17.1%;
-  }
-  * { @apply border-border; border-radius: 0 !important; }
+  * { @apply border-border; border-radius: var(--radius) !important; }
   html, body, #root { height: 100%; }
-  /* Before the script puts the theme on <html>, a dark OS's page is dark already (.dark's background), never a white
-     flash. */
-  @media (prefers-color-scheme: dark) { html:not(.light):not(.dark) { --background: 240 6% 9%; color-scheme: dark; } }
   body { @apply bg-background font-sans text-foreground antialiased; }
-  :focus-visible { outline: 1px solid hsl(var(--ring)); outline-offset: 1px; }
+  /* One focus ring, for the keyboard only: the text colour, so it passes 3:1 on every surface in both themes (the
+     orange does not on white). A control that draws its own (`outline-none`) draws it with these two tokens. */
+  :focus-visible { outline: var(--focus-ring-width) solid hsl(var(--ring)); outline-offset: var(--focus-ring-offset); }
+  /* Someone who asked their OS for less motion gets none: an animation shows its end state, a transition is a cut. */
+  @media (prefers-reduced-motion: reduce) {
+    *, ::before, ::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; scroll-behavior: auto !important; }
+  }
   /* Code and mono text read character by character: JetBrains Mono's ligatures drawn "==" as one long bar. .caps takes
      the font by @apply (no .font-mono class), and the workflow graph's `font:` shorthands reset only the variant, so
      both are named here and the feature settings (inherited) hold under them. */
@@ -78,33 +30,31 @@
 @layer components {
   /* Mono caps: buttons, tabs, chips and small labels. */
   .caps { @apply font-mono uppercase tracking-[0.06em]; }
-  .report h1 { @apply mb-10 border-b-[3px] border-foreground pb-5 text-[32px] font-semibold leading-tight; }
+  .report h1 { @apply mb-10 border-b-[3px] border-foreground pb-5 text-display font-semibold leading-tight; }
   .report h2 { @apply mb-4 mt-10 border-b pb-3 text-xl font-semibold; }
   .report h3 { @apply mb-2 mt-6 text-base font-semibold; }
-  .report p, .report li { @apply text-[16px] leading-[1.75]; }
+  .report p, .report li { @apply text-base leading-[1.75]; }
   .report p { @apply mb-4; }
   .report ul { @apply mb-4 list-disc pl-6; }
   .report ol { @apply mb-4 list-decimal pl-6; }
-  .report code { @apply bg-muted px-1 font-mono text-[13px]; }
-  .report pre { @apply mb-4 overflow-x-auto border bg-card p-4 font-mono text-[12px] leading-[1.8]; }
-  .report table { @apply mb-4 w-full border-collapse text-sm; }
+  .report code { @apply bg-muted px-1 font-mono text-body; }
+  .report pre { @apply mb-4 overflow-x-auto border bg-card p-4 font-mono text-small leading-[1.8]; }
+  .report table { @apply mb-4 w-full border-collapse text-lead leading-5; }
   .report th, .report td { @apply border px-3 py-2 text-left align-top; }
-  .report th { @apply caps text-[11px] text-muted-foreground; }
-  .report a, .report button[data-run-file] { @apply text-primary underline underline-offset-2; }
+  .report th { @apply caps text-label text-muted-foreground; }
+  .report a, .report button[data-run-file] { @apply text-primary-text underline underline-offset-2; }
   /* A run file the answer links (format.ts markdown): a button that opens it in the viewer, read as a link. */
   .report button[data-run-file] { @apply cursor-pointer text-left; font: inherit; }
 }
 
 /* The workflow graph (src/lib/wfGraph.ts, after pi-durable-agent's serve page.css): who works colours a card's swatch, a
-   run's state its box, and an item's cell. Decision providers: Jev pink, Parallel teal, OpenRouter indigo. Outside a layer: Tailwind keeps it whole. */
-:root { --wf-jev: 322 58% 51%; --wf-parallel: 174 72% 33%; --wf-openrouter: 239 70% 60%; --wf-tool: 207 70% 41%; --wf-exit: 251 55% 53%; }
-.dark { --wf-jev: 318 73% 61%; --wf-parallel: 172 66% 50%; --wf-openrouter: 234 89% 74%; --wf-tool: 206 83% 65%; --wf-exit: 253 100% 81%; }
+   run's state its box, and an item's cell. Decision providers: Jev pink, Parallel teal, OpenRouter indigo (tokens.css). Outside a layer: Tailwind keeps it whole. */
 svg.wf { display: block; max-width: 100%; height: auto; margin: 0 auto; font-family: "JetBrains Mono", monospace; }
 .wf .wire { fill: none; stroke: hsl(var(--border-strong) / 0.55); stroke-width: 1.5; }
 .wf .exit-wire { stroke: hsl(var(--wf-exit)); }
 .wf .branch.taken, .wf .wire.taken { stroke: hsl(var(--foreground)); stroke-width: 2.5; }
 .wf .frame { fill: none; stroke: hsl(var(--border-strong) / 0.7); stroke-dasharray: 4 3; }
-.wf .box { fill: hsl(var(--card)); stroke: hsl(var(--border-strong) / 0.6); stroke-width: 1.2; transition: fill .4s, stroke .4s; }
+.wf .box { fill: hsl(var(--card)); stroke: hsl(var(--border-strong) / 0.6); stroke-width: 1.2; transition: fill var(--duration-slow), stroke var(--duration-slow); }
 .wf .swatch { fill: hsl(var(--muted-foreground)); }
 .wf .who-agent .swatch { fill: hsl(var(--primary)); }
 .wf .who-jev .swatch { fill: hsl(var(--wf-jev)); }
@@ -154,7 +104,7 @@ svg.wf { display: block; max-width: 100%; height: auto; margin: 0 auto; font-fam
 .wf .sel { fill: none; stroke: hsl(var(--primary)); stroke-width: 1.5; }
 .wf g.card, .wf g.exit, .wf .cell { cursor: pointer; }
 .wf g.card:hover > .box { stroke: hsl(var(--foreground) / 0.8); }
-.wf .cell { fill: hsl(var(--card)); stroke: hsl(var(--border-strong) / 0.7); stroke-width: 1; transition: fill .4s, stroke .4s; }
+.wf .cell { fill: hsl(var(--card)); stroke: hsl(var(--border-strong) / 0.7); stroke-width: 1; transition: fill var(--duration-slow), stroke var(--duration-slow); }
 .wf .cell:hover { stroke: hsl(var(--foreground)); }
 .wf .cell.done { fill: hsl(var(--success) / 0.75); stroke: hsl(var(--success)); }
 .wf .cell.working { fill: hsl(var(--primary) / 0.25); stroke: hsl(var(--primary)); animation: wf-cell 1.6s ease-in-out infinite; animation-delay: var(--wf-phase, 0s); }

@@ -224,7 +224,7 @@ function Bar({ p, strong, tick, tone = "fg" }: { p: number; strong?: boolean; ti
   const fill = { fg: "bg-foreground", success: "bg-success", warning: "bg-warning", muted: "bg-muted-foreground/50" }[tone];
   return (
     <span className="relative block h-2 flex-1 bg-muted">
-      <span className={cn("absolute inset-y-0 left-0 transition-[width] duration-500", strong ? fill : "bg-muted-foreground/45")} style={{ width: pct(Math.max(0, Math.min(1, p))) }} />
+      <span className={cn("absolute inset-y-0 left-0 transition-[width] duration-slow", strong ? fill : "bg-muted-foreground/45")} style={{ width: pct(Math.max(0, Math.min(1, p))) }} />
       {tick !== undefined && <span className="absolute -inset-y-1 w-px bg-primary" style={{ left: pct(tick) }} title={`threshold ${p2(tick)}`} />}
     </span>
   );
@@ -440,7 +440,7 @@ function Zoom({ src, onClose }: { src: string; onClose: () => void }) {
     return () => window.removeEventListener("keydown", on);
   }, [onClose]);
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-6" role="dialog" aria-label="Page image" onClick={onClose}>
+    <div className="fixed inset-0 z-dialog flex items-center justify-center bg-overlay/80 p-6" role="dialog" aria-label="Page image" onClick={onClose}>
       <img src={src} alt="Page" className="max-h-full max-w-full border bg-white" />
     </div>
   );
