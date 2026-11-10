@@ -255,7 +255,7 @@ test("pi: a server whose address changed after the run started answers the run's
   assert.deepEqual([sent(fake.log, before), sent(moved.log, movedBefore)].map((log) => log.filter((entry) => entry.method === "initialize" || entry.method === "server/discover").length), [0, 0], `the run connected to neither: ${JSON.stringify([fake.log.slice(before), moved.log.slice(movedBefore)])}`);
 });
 
-test("claude-agent: the Claude CLI's own MCP client calls mcp:fake/add through the session's proxy; the fake saw the bearer, the CLI never held it", { timeout: 180_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
+test("claude-agent: the Claude CLI's own MCP client calls mcp:fake/add through the session's proxy; the fake saw the bearer, the CLI never held it", { timeout: 180_000, skip: process.platform !== "linux" ? "the CLI process's exit is read from /proc: Linux only" : !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
   const anthropic = await fakeAnthropic({
     // The CLI's own background requests offer no tools: they get a plain answer.
     reply: (request) => (Object.keys(request.results).length ? { text: `The tool said: ${Object.values(request.results)[0]}` } : request.tools.includes("mcp__fake__add") ? { tool: { name: "mcp__fake__add", input: { a: 2, b: 3 } } } : { text: "Noted." }),
@@ -278,7 +278,7 @@ test("claude-agent: the Claude CLI's own MCP client calls mcp:fake/add through t
   await held.reached;
   const scratchFiles = await scratchOf(data, runId);
   // The CLI is found working in the run's scratch (so its exit, waited on below, is seen).
-  if (existsSync("/proc/self/cwd")) assert.ok((await workingIn(join(data, "scratch"), runId)).length > 0, "the CLI process works in the run's scratch");
+  assert.ok((await workingIn(join(data, "scratch"), runId)).length > 0, "the CLI process works in the run's scratch");
   // Mid-call, an extra check: what the CLI has written so far (maybe nothing yet) holds no token. The scan that must read
   // files is the one after the CLI exited, below.
   const leakedMidCall = scratchFiles.filter((file) => file.text.includes(TOKEN)).map((file) => file.path);
