@@ -8,9 +8,10 @@
 //   harness is handed (pi's prompt; codex's native skills), unless a revision skill has its name;
 // - Mode 2: both on the run's Archil disk under the run's key, from the disk's learning folder, nothing on this machine.
 // A run with no learning start lays nothing; a seed the folder no longer has lays nothing, logs one line, and the claim
-// goes on.
+// goes on. The index laid names the active notes alone, as main's copy does: a line a hand edit left for a pending or a
+// retired note is not in it, and neither note's file is laid.
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -19,6 +20,7 @@ import { createRegistry, Harness } from "@earendil-works/pi-durable";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { specFor } from "./runner-spec-support.mjs";
 import { linkHarnesses } from "./support.mjs";
+import { git, resnap } from "./learn-support.mjs";
 
 const { openSqliteStore } = await import("../dist/store/sqlite/store.js");
 const { cliRunSpecFromLaunch } = await import("../dist/runner/cli-run-spec.js");
@@ -26,7 +28,9 @@ const { OPENCODE_STANDIN_ENV } = await import("../dist/adapters.js");
 const { runFolder, runKey } = await import("../dist/workspace/paths.js");
 const { learningWorkspace, ARCHIL_API_KEY_ROW } = await import("../dist/workspace/index.js");
 const { learningCommit } = await import("../dist/learn/commit.js");
-const { folderTestHooks } = await import("../dist/learn/folder.js");
+const { folderTestHooks, readSnapshot } = await import("../dist/learn/folder.js");
+const { retire } = await import("../dist/learn/index.js");
+const { agentFolderOf } = await import("../dist/files.js");
 const { servedSkill } = await import("../dist/learn/skills.js");
 const { seedOf } = await import("../dist/learning.js");
 const { saveArchilSettings } = await import("../dist/archil-settings.js");
@@ -54,19 +58,50 @@ const SKILL = "---\nname: weekly-summary\ndescription: Summarize the week.\n---\
 const scratch = (name) => mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), name));
 const skillAt = (work) => join(work, ".agents", "skills", "weekly-summary", "SKILL.md");
 
+const PENDING = "---\nname: Ask first\ndescription: Ask which currency\ntype: reference\n---\nAsk which currency before converting.\n";
+const RETIRED = "---\nname: Old way\ndescription: Round every amount\ntype: reference\n---\nRound every amount to the dollar.\n";
+
 /** Lands the seed in `data`'s learning folder for the agent (a note, a learned skill, and `more` notes by file), and
- *  answers its commit: the sha a run's learning start pins. */
-async function landSeed(data, { note = NOTE, more = {} } = {}) {
+ *  answers its commit: the sha a run's learning start pins. `held`: beside them a note pending its owner's OK (a run's
+ *  merge held it) and a retired one (a person retired it), then MEMORY.md edited by hand to name both. */
+async function landSeed(data, { note = NOTE, more = {}, held = false } = {}) {
   const folder = learningWorkspace({ mode: "local", data, agentId: AGENT });
   try {
-    for (const [file, text] of [["retry-slowly.md", note], ["skills/weekly-summary/SKILL.md", SKILL], ...Object.entries(more)]) {
+    for (const [file, text] of [["retry-slowly.md", note], ["skills/weekly-summary/SKILL.md", SKILL], ...Object.entries(more), ...(held ? [["old-way.md", RETIRED]] : [])]) {
       const made = await learningCommit(folder.workspace, { kind: "person", action: "created", file, text, ifMatch: null });
       assert.equal(made.ok, true, JSON.stringify(made));
+    }
+    if (held) {
+      const merged = await learningCommit(folder.workspace, { kind: "merge", runId: "run-learned", reason: "Learned.", files: [{ path: "ask-first.md", text: PENDING }], held: ["ask-first.md"], graded: {} });
+      assert.equal(merged.ok, true, JSON.stringify(merged));
+      const oid = (await readSnapshot(folder.workspace)).notes.find((one) => one.file === "old-way.md").oid;
+      const retired = await learningCommit(folder.workspace, { kind: "person", action: "retired", file: "old-way.md", text: retire(RETIRED), ifMatch: oid });
+      assert.equal(retired.ok, true, JSON.stringify(retired));
     }
   } finally {
     await folder.end();
   }
+  if (held) {
+    // MEMORY.md naming the pending and the retired note too, as only a hand edit could.
+    const repo = join(agentFolderOf(data, AGENT), "learning");
+    const index = readFileSync(join(repo, "MEMORY.md"), "utf8");
+    writeFileSync(join(repo, "MEMORY.md"), `${index}- [Ask first](ask-first.md): Ask which currency\n- [Old way](old-way.md): Round every amount\n`);
+    git(repo, ["commit", "-q", "-am", "the index by hand"]);
+    await resnap(data, AGENT);
+    const statuses = Object.fromEntries((await readSnapshotOf(data)).map(({ file, status }) => [file, status]));
+    assert.deepEqual([statuses["ask-first.md"], statuses["old-way.md"], statuses["retry-slowly.md"]], ["pending", "retired", "active"]);
+  }
   return (await seedOf(data, AGENT)).sha;
+}
+
+/** The notes of the agent's learning folder's snapshot, each with its status. */
+async function readSnapshotOf(data) {
+  const folder = learningWorkspace({ mode: "local", data, agentId: AGENT });
+  try {
+    return (await readSnapshot(folder.workspace)).notes;
+  } finally {
+    await folder.end();
+  }
 }
 
 /** The run's learning start, as a launch carries it: the seed its learning pinned, nothing given whole. */
@@ -82,7 +117,7 @@ async function readThrough(spec, path) {
 /** pi's spec for a learning run claimed through runner-spec-support; `seed`: "landed" (the seed is in the folder),
  *  "gone" (the start pins a commit the folder does not have), or "none" (no learning start). `skills`: the revision's
  *  own skills. `more`: more seed notes. */
-async function piSpec(t, { seed = "landed", skills, more, plant } = {}) {
+async function piSpec(t, { seed = "landed", skills, more, held, plant } = {}) {
   const launch = {};
   return specFor(t, {
     body: { learning: true, tools: ["read"] },
@@ -91,7 +126,7 @@ async function piSpec(t, { seed = "landed", skills, more, plant } = {}) {
     launch,
     before: async (server, _key, dir) => {
       await plant?.(server);
-      if (seed === "landed") launch.learning = startAt(await landSeed(dir, { more }));
+      if (seed === "landed") launch.learning = startAt(await landSeed(dir, { more, held }));
       if (seed === "gone") launch.learning = startAt("0".repeat(40));
     },
   });
@@ -100,7 +135,7 @@ async function piSpec(t, { seed = "landed", skills, more, plant } = {}) {
 /** A CLI harness's spec for a learning run, built for its claim as the dispatch builds it (no session opened), the way
  *  runner-cli-spec's specOn does. `archil`: Mode 2 over that disk fake, the learning folder on "the disk" a local
  *  folder of its own (folderTestHooks), Archil's control plane a fake fetch. `log`: the spec's log lines. */
-async function cliSpec(t, harness, { seed = "landed", archil, more, plant } = {}) {
+async function cliSpec(t, harness, { seed = "landed", archil, more, held = false, plant } = {}) {
   const dir = scratch("runner-learning-seed-lay-");
   const diskFolder = archil ? scratch("runner-learning-seed-disk-") : undefined;
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
@@ -117,7 +152,7 @@ async function cliSpec(t, harness, { seed = "landed", archil, more, plant } = {}
   });
   // The seed lands where the run's place keeps the learning folder: Mode 2's on the disk (a stand-in folder), with a
   // decoy note of other text in the local data directory, which a Mode 2 run must never lay.
-  const sha = seed === "landed" ? await landSeed(diskFolder ?? dir, { more }) : seed === "gone" ? "0".repeat(40) : undefined;
+  const sha = seed === "landed" ? await landSeed(diskFolder ?? dir, { more, held }) : seed === "gone" ? "0".repeat(40) : undefined;
   if (archil) {
     await landSeed(dir, { note: NOTE.replace("Wait a little longer", "Call again at once") });
     folderTestHooks.workspace = (place) => learningWorkspace({ mode: "local", data: place.mode === "archil" ? diskFolder : place.data, agentId: place.agentId });
@@ -233,4 +268,23 @@ test("a seed the learning folder no longer has lays nothing, logs one line, and 
   const said = cli.log.filter((line) => /learn/.test(line));
   assert.equal(said.length, 1, JSON.stringify(cli.log));
   assert.match(said[0], /gone/);
+});
+
+/** Asserts the run's `.learning/` names and holds the active note alone: no line, and no file, for the pending or the
+ *  retired note its MEMORY.md names. */
+function laysActiveOnly(workFolder) {
+  const index = readFileSync(join(workFolder, ".learning", "MEMORY.md"), "utf8");
+  assert.match(index, /\(retry-slowly\.md\)/, index);
+  assert.doesNotMatch(index, /ask-first\.md/, `no line for the pending note: ${index}`);
+  assert.doesNotMatch(index, /old-way\.md/, `no line for the retired note: ${index}`);
+  for (const file of ["ask-first.md", "old-way.md"]) assert.equal(existsSync(join(workFolder, ".learning", file)), false, `${file} is not laid`);
+  assert.equal(readFileSync(join(workFolder, ".learning", "retry-slowly.md"), "utf8"), NOTE);
+}
+
+test("pi: the index laid names the active notes alone: a hand-edited MEMORY.md's line for a pending or a retired note is left out, and neither note is laid", async (t) => {
+  laysActiveOnly((await piSpec(t, { held: true })).workFolder);
+});
+
+test("codex: the index laid names the active notes alone, as on pi", async (t) => {
+  laysActiveOnly((await cliSpec(t, "codex", { held: true })).workFolder);
 });
