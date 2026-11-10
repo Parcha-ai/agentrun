@@ -732,6 +732,20 @@ the provider with them and starts nothing. A key set in the server's environment
 computer time. The older [`place`](#place) is this setting's v2 view: `{"mode": "runner"}` is kind `none`, and
 `{"mode": "sandbox", "box": X}` is a sandbox on provider X. Writing either sets both.
 
+**GPUs.** A sandbox may ask for GPUs: `computer: {"kind": "sandbox", "provider": "daytona", "gpu": {"type": "H100",
+"count": 1}}`. `GET /v2/computers` shows each sandbox provider's `gpu`: the types it gives, by the vendor's own names, the
+most one computer gets, and where a GPU computer differs from its others. A provider whose GPU computers cannot hold
+this server's run folder says why there. The save checks the shape, and only a sandbox takes one. The run's start (409)
+and the claim refuse a type or a count the provider does not give, in the computer package's `checkGpu` words, and the
+computer is made with the GPUs asked.
+
+- **Daytona** gives `H100`, `H200`, `RTX-PRO-6000`, `RTX-4090`, `RTX-5090` and `MI355X`, up to 8. A GPU sandbox runs
+  in region `earth`. Stopping it deletes it: it has no pause and no snapshot, so nothing on it outlives the run. Each GPU
+  comes with 16 vCPU, 192 GiB of memory and 512 GiB of disk. The Daytona org needs GPU credits. A Daytona GPU sandbox
+  with the run's folder mounted from Archil, and its network allowlist, are not yet proven live.
+- **Modal** declares its GPUs, but a Modal GPU sandbox runs on gVisor, and the Archil mount the run's folder needs is not
+  proven there. So this server refuses a Modal sandbox with a `gpu` for now. A Modal GPU is also preemptible.
+
 **Where the run's folder lives.** A server keeps its runs' folders in one of two modes:
 
 - **Mode 1** (the default): on this server's own disk. Only a provider that binds a folder of this machine can hold

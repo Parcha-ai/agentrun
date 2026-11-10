@@ -25,6 +25,13 @@ test("checkGpu: no spec.gpu is no refusal; a provider with no gpu refuses any; a
 	assert.match(checkGpu({ type: "V100", count: 1 }, { gpu: GPU })[0].message, /not one this provider offers: T4, A100-80GB/);
 	assert.match(checkGpu({ type: "T4", count: 5 }, { gpu: GPU })[0].message, /from 1 to 4/);
 	assert.deepEqual(checkGpu({ type: "A100-80GB", count: 4 }, { gpu: GPU }), []);
+	// gpu.mounts: the mount kinds a GPU computer takes, where the provider names fewer than its own.
+	const unmounted = { ...GPU, mounts: [] };
+	assert.deepEqual(field(checkGpu({ type: "T4", count: 1 }, { gpu: unmounted }, { kind: "archil" })), ["gpu"]);
+	assert.match(checkGpu({ type: "T4", count: 1 }, { gpu: unmounted }, { kind: "archil" })[0].message, /takes no archil mount: it is not proven/);
+	assert.deepEqual(checkGpu({ type: "T4", count: 1 }, { gpu: unmounted }), [], "no mount asked: none refused");
+	assert.deepEqual(checkGpu({ type: "T4", count: 1 }, { gpu: { ...GPU, mounts: ["archil"] } }, { kind: "archil" }), []);
+	assert.deepEqual(checkGpu({ type: "T4", count: 1 }, { gpu: GPU }, { kind: "archil" }), [], "no gpu.mounts: the provider's own mounts hold");
 });
 
 test("provider.check-refuses: a provider with no gpu refuses any spec.gpu; one that declares gpu refuses a type it does not offer and a count outside 1 to max", async () => {

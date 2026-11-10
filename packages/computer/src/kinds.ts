@@ -7,9 +7,9 @@
 // The default images are values: each from the provider module that owns it. Those modules import this one for types
 // alone, so this is no import cycle.
 import { BROWSER_IMAGE } from "./browser.js";
-import { DAYTONA_DEFAULT_SNAPSHOT, DAYTONA_GPU_MAX, DAYTONA_GPU_TYPES } from "./daytona.js";
+import { DAYTONA_DEFAULT_SNAPSHOT, DAYTONA_GPU } from "./daytona.js";
 import { E2B_BASE_TEMPLATE, E2B_DESKTOP_TEMPLATE } from "./e2b.js";
-import { MODAL_DEFAULT_IMAGE, MODAL_GPU_MAX, MODAL_GPU_TYPES } from "./modal.js";
+import { MODAL_DEFAULT_IMAGE, MODAL_GPU } from "./modal.js";
 import type { MountKind } from "./mount.js";
 import { ORGO_BASE_IMAGE } from "./orgo.js";
 import { PHONE_IMAGE } from "./phone-harness.js";
@@ -105,6 +105,8 @@ export interface ProviderEntry {
 
 const SANDBOX: KindCapabilities = { kind: "linux", groups: ["exec", "files", "processes"] };
 const LINUX_DESKTOP: KindCapabilities = { kind: "desktop", groups: ["exec", "files", "processes", "screen", "input.pointer", "input.keys"] };
+/** A provider's GPU capability as its configuration carries it: a deep copy of the module's own. */
+const gpuOf = (gpu: Readonly<NonNullable<KindCapabilities["gpu"]>>): NonNullable<KindCapabilities["gpu"]> => structuredClone(gpu) as NonNullable<KindCapabilities["gpu"]>;
 
 /** An entry with its kinds derived from its capabilities. */
 function entry(fields: Omit<ProviderEntry, "kinds">): ProviderEntry {
@@ -127,7 +129,7 @@ export const PROVIDERS: readonly ProviderEntry[] = [
 		],
 		mounts: ["archil"],
 		metered: true,
-		capabilities: [{ ...SANDBOX, gpu: { types: [...DAYTONA_GPU_TYPES], max: DAYTONA_GPU_MAX } }],
+		capabilities: [{ ...SANDBOX, gpu: gpuOf(DAYTONA_GPU) }],
 		defaultImage: { sandbox: DAYTONA_DEFAULT_SNAPSHOT },
 	}),
 	entry({
@@ -139,7 +141,7 @@ export const PROVIDERS: readonly ProviderEntry[] = [
 		],
 		mounts: ["archil"],
 		metered: true,
-		capabilities: [{ ...SANDBOX, gpu: { types: [...MODAL_GPU_TYPES], max: MODAL_GPU_MAX } }],
+		capabilities: [{ ...SANDBOX, gpu: gpuOf(MODAL_GPU) }],
 		defaultImage: { sandbox: MODAL_DEFAULT_IMAGE },
 	}),
 	entry({

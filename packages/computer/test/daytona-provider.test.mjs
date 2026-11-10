@@ -86,7 +86,8 @@ test("capabilities: a linux computer with init a child of Daytona's toolbox, a v
 		stopDeletes: false,
 		mount: ["archil"],
 		vendorAgentPorts: [2280],
-		gpu: { types: ["H100", "H200", "RTX-PRO-6000", "RTX-4090", "RTX-5090", "MI355X"], max: 8 },
+		// A GPU sandbox's limits: its stop deletes it, it runs in region earth, and its size is Daytona's per GPU.
+		gpu: { types: ["H100", "H200", "RTX-PRO-6000", "RTX-4090", "RTX-5090", "MI355X"], max: 8, stopDeletes: true, region: "earth", perGpu: { cpus: 16, memoryMb: 196608, diskMb: 524288 } },
 	});
 	assert.deepEqual(kindRefusals(provider.capabilities()), []);
 	assert.equal(provider.extend, undefined, "no extend()");
@@ -326,6 +327,8 @@ test("create() of a GPU computer asks Daytona for gpu and gpuType, holds the rea
 	const [posted] = of(fake, "POST", "/api/sandbox");
 	assert.equal(posted.body.gpu, 2, "CreateSandbox gpu: how many");
 	assert.deepEqual(posted.body.gpuType, ["H100"], "CreateSandbox gpuType: the one type asked, as Daytona's preference list");
+	assert.equal(posted.body.target, "earth", "a GPU sandbox runs in region earth alone");
+	assert.equal(posted.body.autoDeleteInterval, 0, "a GPU sandbox's stop deletes it");
 	const attached = await provider.attach({ id: made.value.id });
 	assert.equal(attached.ok, true, JSON.stringify(attached));
 	assert.deepEqual(attached.value.spec.gpu, gpu, "attach reports the GPUs Daytona reads back");

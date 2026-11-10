@@ -173,3 +173,25 @@ test("at the claim in Mode 2: Docker's sandbox is refused", async (t) => {
   assert.match(await routes.claimRefusal({ kind: "sandbox", provider: "docker" }), /can't mount the owner's disk/);
   assert.equal(await routes.claimRefusal({ kind: "desktop", provider: "docker" }), undefined);
 });
+
+test("a sandbox provider's GPUs show on GET /v2/computers as its configuration declares them, with why a run here cannot have them; the claim holds a sandbox's gpu to them in checkGpu's words", async (t) => {
+  const { routes } = await setup(t, { mode: "disk" });
+  const view = await routes.view();
+  const daytona = providerOf(view, "sandbox", "daytona").gpu;
+  assert.deepEqual([daytona.types, daytona.max, daytona.stopDeletes, daytona.region, daytona.perGpu, daytona.why], [["H100", "H200", "RTX-PRO-6000", "RTX-4090", "RTX-5090", "MI355X"], 8, true, "earth", { cpus: 16, memoryMb: 196608, diskMb: 524288 }, undefined]);
+  const modal = providerOf(view, "sandbox", "modal").gpu;
+  assert.deepEqual([modal.types.slice(0, 2), modal.isolation, modal.preemptible, modal.mounts], [["T4", "L4"], "gvisor", true, []]);
+  assert.match(modal.why, /^a GPU computer here takes no archil mount: it is not proven/, "Mode 2 mounts the run's folder from Archil, which Modal's GPU computers have not proven");
+  assert.equal(providerOf(view, "sandbox", "docker").gpu, undefined, "Docker declares no GPU");
+  assert.equal(providerOf(view, "desktop", "e2b").gpu, undefined, "only a sandbox takes GPUs");
+
+  await routes.saveKeys("daytona", { DAYTONA_API_KEY: "good-d" });
+  await routes.saveKeys("modal", { MODAL_TOKEN_ID: "good-i", MODAL_TOKEN_SECRET: "good-s" });
+  assert.equal(await routes.claimRefusal({ kind: "sandbox", provider: "daytona", gpu: { type: "H100", count: 2 } }), undefined);
+  assert.equal(await routes.claimRefusal({ kind: "sandbox", provider: "daytona", gpu: { type: "T4", count: 1 } }), "Daytona can't give this agent's computer its GPUs: gpu.type \"T4\" is not one this provider offers: H100, H200, RTX-PRO-6000, RTX-4090, RTX-5090, MI355X (Settings → Computers)");
+  assert.match(await routes.claimRefusal({ kind: "sandbox", provider: "daytona", gpu: { type: "H100", count: 9 } }), /gpu.count 9 is not a whole number from 1 to 8/);
+  assert.match(await routes.claimRefusal({ kind: "sandbox", provider: "modal", gpu: { type: "T4", count: 1 } }), /^Modal can't give this agent's computer its GPUs: a GPU computer here takes no archil mount: it is not proven/);
+  assert.equal(await routes.claimRefusal({ kind: "sandbox", provider: "modal" }), undefined, "a Modal sandbox with no GPU is as before");
+  const local = (await setup(t)).routes;
+  assert.match(await local.claimRefusal({ kind: "sandbox", provider: "docker", gpu: { type: "T4", count: 1 } }), /^Docker can't give this agent's computer its GPUs: this provider offers no GPU/);
+});

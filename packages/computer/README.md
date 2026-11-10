@@ -1265,8 +1265,12 @@ of that slice, and the live conformance file waits for a key (below).
   VM's on any other. Init starts with `--own-network` as on every computer, so a gVisor that cannot give it its own network
   namespace refuses at init and the create fails in words, never with a weaker isolation. Modal reads no GPU back: the
   spec tag records the GPUs, and attach reports them on a computer the probe reads as gVisor. `capabilities().isolation`
-  stays `vm`, every other computer's; a GPU computer's is gVisor. A GPU with an Archil mount is refused: the Archil
-  client's FUSE mount is not proven on gVisor yet.
+  stays `vm`, every other computer's; a GPU computer's is declared apart, `gpu.isolation: "gvisor"`, so a caller that
+  needs a VM's isolation can tell. Modal's GPUs are `preemptible: true`: Modal may move a GPU workload, so a run on one
+  can be cut short (guide/preemption). `gpu.mounts` is `[]`: a GPU with an Archil mount is refused (checkGpu), since the
+  Archil client's FUSE mount is not proven on gVisor yet. That keeps serve from giving a run a Modal GPU sandbox in either
+  mode, as a serve sandbox always mounts the run's folder; the library takes one without a mount. Not yet proven live:
+  no GPU computer has been made on Modal from this package.
 
 ### What every Modal fact rests on
 
@@ -1508,7 +1512,7 @@ the TTL.
 | `user` | none | the daemon runs as the provider's `daemonUser`; a spec cannot name a user |
 | `release` | `stop`, `delete` | `POST /sandbox/{id}/stop` and `DELETE /sandbox/{id}` |
 | `stopDeletes` | `true` with `autoDeleteMinutes: 0`, else `false` | `autoDeleteInterval` 0 deletes a sandbox as soon as it stops |
-| `gpu` | `H100`, `H200`, `RTX-PRO-6000`, `RTX-4090`, `RTX-5090`, `MI355X`; at most 8 | Daytona's `GpuType` names (its API's enum, `daytona_api_client` 0.214.0) and its 8 VFIO GPUs to a sandbox ([dotfiles/gpu-sandboxes](https://www.daytona.io/dotfiles/gpu-sandboxes)); `spec.gpu` becomes `gpu` (how many) and `gpuType` (the one type, as its preference list), and the read-back's `gpu` and `gpuType` must match. Whether a GPU sandbox takes a snapshot of box/Dockerfile, its class, and the root init needs for its own network, waits for a live run |
+| `gpu` | `H100`, `H200`, `RTX-PRO-6000`, `RTX-4090`, `RTX-5090`, `MI355X`; at most 8 | Daytona's `GpuType` names (its API's enum, `daytona_api_client` 0.214.0) and its 8 VFIO GPUs to a sandbox ([dotfiles/gpu-sandboxes](https://www.daytona.io/dotfiles/gpu-sandboxes)); `spec.gpu` becomes `gpu` (how many) and `gpuType` (the one type, as its preference list), and the read-back's `gpu` and `gpuType` must match. A GPU computer's limits, declared on `capabilities().gpu`: `stopDeletes: true` (it is made with `autoDeleteInterval: 0`, whatever `autoDeleteMinutes` says: a GPU sandbox has no pause and no snapshot, so stopping it deletes it and nothing on it persists); `region: "earth"` (Daytona's one GPU region, sent as `target` in place of the provider's); `perGpu` 16 vCPU, 192 GiB memory and 512 GiB disk, Daytona's defaults for each GPU. The org needs GPU credits, or the create is refused in Daytona's words. A GPU computer whose image is `"default"` (`DAYTONA_DEFAULT_SNAPSHOT`: the create sends no snapshot) gets Daytona's `daytona-gpu` snapshot. Whether a GPU sandbox takes a snapshot of box/Dockerfile, its class, the root init needs for its own network, and the network allowlist are not yet proven live |
 
 ### What the provider does
 

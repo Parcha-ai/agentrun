@@ -202,13 +202,19 @@ export type ModalRuntime = "vm" | "gvisor";
 export const MODAL_GPU_TYPES = ["T4", "L4", "A10", "L40S", "A100", "A100-40GB", "A100-80GB", "RTX-PRO-6000", "H100", "H200", "B200", "B300"] as const;
 /** The most GPUs Modal gives one container: 8 (guide/gpu; an A10 container takes at most 4, which Modal refuses in words past). */
 export const MODAL_GPU_MAX = 8;
-/** The GPUs Modal offers, as capabilities().gpu and CAPABILITIES declare them. */
-const MODAL_GPU: GpuCapability = { types: [...MODAL_GPU_TYPES], max: MODAL_GPU_MAX };
+/**
+ * The GPUs Modal offers, as capabilities().gpu and CAPABILITIES declare them: on gVisor, Modal's one GPU runtime;
+ * preemptible, as Modal may end a GPU container to free capacity; and no mount yet, the Archil client's FUSE mount not
+ * being proven on gVisor.
+ */
+export const MODAL_GPU: Readonly<GpuCapability> = Object.freeze({ types: [...MODAL_GPU_TYPES], max: MODAL_GPU_MAX, isolation: "gvisor", preemptible: true, mounts: [] });
+/** A copy of MODAL_GPU, so no caller can change the provider's own. */
+const modalGpuCapability = (): GpuCapability => ({ ...MODAL_GPU, types: [...MODAL_GPU.types], mounts: [] });
 /** A GPU as the SDK takes it: the type, then :count past one ("T4", "H100:8"). */
 const modalGpu = ({ type, count }: GpuSpec) => (count === 1 ? type : `${type}:${count}`);
 
 /** The machine kind, groups and GPUs of its one configuration: a linux computer, with GPUs when asked. */
-export const CAPABILITIES: readonly KindCapabilities[] = [{ kind: "linux", groups: ["exec", "files", "processes"], gpu: MODAL_GPU }];
+export const CAPABILITIES: readonly KindCapabilities[] = [{ kind: "linux", groups: ["exec", "files", "processes"], gpu: modalGpuCapability() }];
 /** A registry tag for linux/amd64 that Modal can pull: the default when a setting names no image. */
 export const MODAL_DEFAULT_IMAGE = "debian:bookworm-slim";
 
@@ -821,8 +827,8 @@ export class ModalProvider implements ComputerProvider {
 			release: ["delete"],
 			mount: [...MOUNT],
 			vendorAgentPorts: [],
-			// A GPU computer runs on gVisor, Modal's one GPU runtime: isolation vm is every other computer's.
-			gpu: { types: [...MODAL_GPU.types], max: MODAL_GPU.max },
+			// A GPU computer runs on gVisor, Modal's one GPU runtime (gpu.isolation): isolation vm is every other computer's.
+			gpu: modalGpuCapability(),
 		};
 	}
 
@@ -866,9 +872,9 @@ export class ModalProvider implements ComputerProvider {
 		if (archil && user !== undefined && !isRootUser(user) && userOf(user) !== ARCHIL_USER) {
 			refuse("user", `a computer with an Archil mount runs its tools as agentrun-tool, ${ARCHIL_USER}, the user its image makes with no way to root; leave user unset or ask for ${ARCHIL_USER}`);
 		}
-		// A GPU computer runs on gVisor, Modal's one GPU runtime, where the Archil client's FUSE mount is not yet proven.
-		refusals.push(...checkGpu(given.gpu, this.capabilities()));
-		if (archil && given.gpu !== undefined) refuse("gpu", "a GPU computer runs on Modal's gVisor runtime, where the Archil mount is not proven yet: ask for a GPU computer without a mount, or a mount without a GPU");
+		// A GPU computer runs on gVisor, Modal's one GPU runtime, where the Archil client's FUSE mount is not yet proven:
+		// its gpu.mounts is empty, so checkGpu refuses a GPU with a mount.
+		refusals.push(...checkGpu(given.gpu, this.capabilities(), mount as { kind?: unknown } | undefined));
 		for (const [field, value] of Object.entries(given)) {
 			if (SPEC_FIELDS.has(field) || value === undefined) continue;
 			refuse(field, `a Modal computer does not support ${field}`);

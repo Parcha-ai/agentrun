@@ -37,10 +37,25 @@ export interface GpuSpec {
 	count: number;
 }
 
-/** The GPUs a provider offers: the types it takes, by the vendor's own names, and the most one computer may have. */
+/**
+ * The GPUs a provider offers: the types it takes, by the vendor's own names, and the most one computer may have; and
+ * how a GPU computer differs from the provider's others, each stated where the vendor makes it so.
+ */
 export interface GpuCapability {
 	types: string[];
 	max: number;
+	/** A GPU computer's isolation, where it is not capabilities().isolation (Modal's GPUs run on gVisor only). */
+	isolation?: ComputerCapabilities["isolation"];
+	/** The vendor may end a GPU computer to free capacity, at any time. */
+	preemptible?: boolean;
+	/** A GPU computer's stop deletes it: nothing of it is kept (Daytona: no pause, no snapshot). */
+	stopDeletes?: boolean;
+	/** The one region a GPU computer runs in, whatever the provider's own (Daytona's "earth"). */
+	region?: string;
+	/** The size a GPU computer gets for each GPU (the vendor's defaults). */
+	perGpu?: { cpus: number; memoryMb: number; diskMb: number };
+	/** The mount kinds a GPU computer takes, where fewer than capabilities().mount: none yet proven on its GPU computers. */
+	mounts?: MountKind[];
 }
 
 /** One kind of allowlist entry a provider takes: how many a list may hold, and the ports an entry opens. */
@@ -154,9 +169,10 @@ export function checkLifetime(lifetimeMs: unknown, { lifetime, maxLifetimeMs }: 
 /**
  * The one GPU rule every provider's check() shares, with no vendor call: no spec.gpu is no refusal; one given is an
  * object of a declared type (capabilities().gpu.types) and a whole count from 1 to capabilities().gpu.max; a provider
- * that declares no gpu refuses any.
+ * that declares no gpu refuses any. With `mount`, the spec's, a GPU computer takes only the kinds gpu.mounts names, where
+ * it names them. Serve's claim and readiness read the same rule, so a refusal reads alike wherever it is met.
  */
-export function checkGpu(gpu: unknown, { gpu: offered }: Pick<ComputerCapabilities, "gpu">): Refusal[] {
+export function checkGpu(gpu: unknown, { gpu: offered }: Pick<ComputerCapabilities, "gpu">, mount?: { kind?: unknown }): Refusal[] {
 	if (gpu === undefined) return [];
 	const refuse = (message: string): Refusal[] => [{ field: "gpu", message }];
 	if (offered === undefined) return refuse("this provider offers no GPU: ask a provider that declares one (capabilities().gpu) for a GPU computer");
@@ -166,6 +182,9 @@ export function checkGpu(gpu: unknown, { gpu: offered }: Pick<ComputerCapabiliti
 	if (typeof type !== "string" || !offered.types.includes(type)) return refuse(`gpu.type ${JSON.stringify(type)} is not one this provider offers: ${types}`);
 	if (!Number.isSafeInteger(count) || (count as number) < 1 || (count as number) > offered.max) {
 		return refuse(`gpu.count ${JSON.stringify(count)} is not a whole number from 1 to ${offered.max}, the most GPUs this provider gives one computer`);
+	}
+	if (mount !== undefined && offered.mounts !== undefined && !offered.mounts.includes(mount.kind as MountKind)) {
+		return refuse(`a GPU computer here takes no ${String(mount.kind)} mount: it is not proven on this provider's GPU computers yet; ask for a GPU computer without a mount, or a mount without a GPU`);
 	}
 	return [];
 }

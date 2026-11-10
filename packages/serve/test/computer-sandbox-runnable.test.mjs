@@ -96,6 +96,20 @@ test("an agent whose computer is an e2b sandbox with no key saved is refused in 
   assert.doesNotMatch(said.started[2], PLACE_WORDS);
 });
 
+test("Mode 2: a Daytona sandbox's GPUs are checked at the save and the run's start in checkGpu's words: a type Daytona gives runs, one it does not is refused (409)", async (t) => {
+  const api = await server(t, { archil: true });
+  assert.equal((await api("PUT", "/computers/daytona/keys", { DAYTONA_API_KEY: "fake-test-key" })).status, 200);
+  const given = await saveAndStart(api, "gpu-given", { computer: { kind: "sandbox", provider: "daytona", gpu: { type: "H100", count: 1 } } });
+  assert.deepEqual([given.saved, given.refused], [[], []], JSON.stringify(given));
+  const said = await saveAndStart(api, "gpu-refused", { computer: { kind: "sandbox", provider: "daytona", gpu: { type: "T4", count: 1 } } });
+  const words = /^A Daytona sandbox can't have this agent's GPUs: gpu\.type "T4" is not one this provider offers: H100, /;
+  assert.deepEqual(said.saved.map((one) => one.slice(0, 2)), [["definition.computer", "not_set_up_here"]], JSON.stringify(said));
+  assert.match(said.saved[0][2], words);
+  assert.deepEqual(said.refused.map((one) => one.slice(0, 2)), [["definition.computer", "not_set_up_here"]], JSON.stringify(said));
+  assert.match(said.refused[0][2], words);
+  assert.equal(said.started[1], "agent_not_runnable", JSON.stringify(said));
+});
+
 test("Mode 1: an e2b sandbox is refused, as a sandbox there needs a bind mount of this machine's folder, which only Docker gives", async (t) => {
   // main's design (resolve-computer.ts): Mode 1 runs a sandbox only on Docker, whose bind mount reaches the run's folder on
   // this machine; a remote sandbox cannot, whatever keys it has.

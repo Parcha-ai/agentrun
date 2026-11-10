@@ -84,6 +84,20 @@ test("a revision keeps the place it names, {mode, box?}, in its body and so its 
   store.close();
 });
 
+test("a revision's computer keeps a sandbox's gpu, {type, count}, in its body and so its id; a gpu that is not a type name and a whole count from 1 is refused before a write", async () => {
+  const store = openStore(await scratch());
+  const agent = store.createAgent({ name: "G" });
+  const plain = await store.commitRevision(agent.id, { ...A, computer: { kind: "sandbox", provider: "daytona" } });
+  const gpu = await store.commitRevision(agent.id, { ...A, computer: { kind: "sandbox", provider: "daytona", gpu: { count: 2, type: "H100" } } });
+  assert.deepEqual(store.readRevision(gpu.id).body.computer, { kind: "sandbox", provider: "daytona", gpu: { type: "H100", count: 2 } });
+  assert.notEqual(gpu.id, plain.id, "the GPUs are part of the body, so of the id");
+  for (const bad of ["H100", { type: "H100" }, { type: "H 100", count: 1 }, { type: "H100", count: 0 }, { type: "H100", count: 1, region: "earth" }]) {
+    await assert.rejects(store.commitRevision(agent.id, { ...A, computer: { kind: "sandbox", provider: "daytona", gpu: bad } }), refused("invalid", /gpu is not \{type, count\}/), JSON.stringify(bad));
+  }
+  assert.equal(store.listRevisions(agent.id).length, 2);
+  store.close();
+});
+
 test("a revision is written once: the database refuses an UPDATE, and a row whose content was changed does not pass the id check", async () => {
   const dir = await scratch();
   const store = openStore(dir);
