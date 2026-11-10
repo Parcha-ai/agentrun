@@ -3,7 +3,7 @@ import { useState } from "react";
 import { agentHash } from "@/components/AgentPage";
 import { LearningChips } from "@/components/LearningChips";
 import { capWords, leastCap, RaiseCap, suggestedCap } from "@/components/NeedsYou";
-import { ScheduleChip } from "@/components/ScheduleChip";
+import { ScheduleChip, type TriggerKind } from "@/components/ScheduleChip";
 import { StatusBadge } from "@/components/StatusBadge";
 import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
@@ -12,6 +12,7 @@ import { cost, isEstimate, runEnded, runLabel, soFar, soFarNote, when, runTitle 
 import { NO_MESSAGES, runState } from "@/lib/runState";
 import type { RaiseAnswer, Run } from "@/lib/v2";
 import { placeOf, runPlaceWords } from "@/lib/place";
+import { cn } from "@/lib/utils";
 
 /** `onRaiseCap`: raises the run's spend cap (PATCH /v2/runs/{id}) and reads the run again; offered on a capped agentic
  *  run that has not ended, here and beside a budget pause's banner. */
@@ -26,8 +27,11 @@ const costTitle = (c: Run["cost"], ended: boolean): string | undefined => {
 
 /** The run's title bar: back to its agent, the title, its status, what it cost so far, stop versus cancel, and archive.
  *  Stop ends the turn and keeps the run open (it waits for a message); cancel ends the run for good, after a confirm.
- *  Archive hides the run from the runs list and keeps it; the server takes it in any state, as serve's own page offers it. */
-export function RunHeader({ run, agentName, actions = {}, costText }: { run: Run; agentName: string; actions?: RunActions; costText?: string }) {
+ *  Archive hides the run from the runs list and keeps it; the server takes it in any state, as serve's own page offers it.
+ *  `compact` (the run page sets it once its steps scroll): on a phone, the title on one line beside the status and the
+ *  actions, without the breadcrumb and the details, so the steps get the screen; only below-sm classes change, so a wider
+ *  screen shows it whole. `triggerKind`: the run's trigger's kind, from its own trigger row, for its chip. */
+export function RunHeader({ run, agentName, actions = {}, costText, compact = false, triggerKind }: { run: Run; agentName: string; actions?: RunActions; costText?: string; compact?: boolean; triggerKind?: TriggerKind }) {
   // Where it ran, as its start resolved it.
   const ranIn = runPlaceWords(placeOf((run as { place?: unknown }).place));
   const view = runState(run.status, run.state, run.kind, NO_MESSAGES, true, run.error, run.review);
@@ -39,8 +43,8 @@ export function RunHeader({ run, agentName, actions = {}, costText }: { run: Run
   const [raising, setRaising] = useState(false);
   const budget = run.pending?.kind === "budget" ? run.pending : null;
   return (
-    <header className="border-b px-5 py-4 max-sm:py-3 md:px-8">
-      <nav className="caps flex min-w-0 items-center gap-2 text-[11px] text-muted-foreground" aria-label="Breadcrumb">
+    <header className={cn("border-b px-5 py-4 md:px-8", compact ? "max-sm:py-2" : "max-sm:py-3")}>
+      <nav className={cn("caps flex min-w-0 items-center gap-2 text-[11px] text-muted-foreground", compact && "max-sm:hidden")} aria-label="Breadcrumb">
         {/* Back where the person came from in the console (the runs list, the agent's page), else to the run's agent. */}
         <button type="button" aria-label="Back" title="Back" onClick={() => goBack(agentHash(run.agent_id))} className="-m-1 shrink-0 p-1 hover:text-foreground">
           <ArrowLeft className="size-3.5" aria-hidden />
@@ -51,11 +55,12 @@ export function RunHeader({ run, agentName, actions = {}, costText }: { run: Run
       </nav>
       {/* On a phone the title's column and the facts' box step aside (display: contents), so the facts and the actions
           share one wrapping row under a two-line title. 640 px and up keep the column and the actions beside it. */}
-      <div data-phone-row className="mt-3 flex flex-col items-start gap-x-6 gap-y-3 max-sm:mt-2 max-sm:flex-row max-sm:flex-wrap max-sm:items-center max-sm:gap-x-3 max-sm:gap-y-2 sm:flex-row">
+      <div data-phone-row className={cn("mt-3 flex flex-col items-start gap-x-6 gap-y-3 max-sm:flex-row max-sm:flex-wrap max-sm:items-center max-sm:gap-x-3 max-sm:gap-y-2 sm:flex-row", compact ? "max-sm:mt-0" : "max-sm:mt-2")}>
         <div className="min-w-0 flex-1 self-stretch max-sm:contents">
           {/* A workflow run's title can be its input as JSON: then the agent's name reads better. */}
-          <h1 className="break-words text-2xl font-semibold leading-tight max-sm:line-clamp-2 max-sm:basis-full max-sm:text-lg" title={runTitle(run)}>{run.kind === "workflow" && /^[[{]/.test(run.title.trim()) ? agentName : runTitle(run)}</h1>
-          <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-2 text-[12px] text-muted-foreground max-sm:contents">
+          <h1 className={cn("break-words text-2xl font-semibold leading-tight", compact ? "max-sm:line-clamp-1 max-sm:min-w-0 max-sm:flex-1 max-sm:text-base" : "max-sm:line-clamp-2 max-sm:basis-full max-sm:text-lg")} title={runTitle(run)}>{run.kind === "workflow" && /^[[{]/.test(run.title.trim()) ? agentName : runTitle(run)}</h1>
+          {/* Compact on a phone: the details (kind, time, cost) go, from here, and the status and any chips stay. */}
+          <div className={cn("mt-2 flex flex-wrap items-center gap-x-4 gap-y-2 text-[12px] text-muted-foreground max-sm:contents", compact && "max-sm:[&>.font-mono]:hidden")}>
             <StatusBadge run={run} />
             {archived && <Chip tone="muted">Archived</Chip>}
             {run.approvals === "never" && <Chip tone="warning" title="This run's agent never asks: no call of it waits for you.">Unattended</Chip>}
@@ -65,7 +70,7 @@ export function RunHeader({ run, agentName, actions = {}, costText }: { run: Run
             {costText !== undefined ? <span className="font-mono" title="The run's decisions and model calls, as the providers priced them">{costText}</span>
               : <span className="font-mono" title={costTitle(run.cost, runEnded(run.status))}>{cost(run.cost, { ended: runEnded(run.status) })}</span>}
             <LearningChips run={run} link />
-            <ScheduleChip run={run} />
+            <ScheduleChip run={run} kind={triggerKind} />
           </div>
           {run.status === "completed" && run.review && <p className="mt-2 text-[13px] text-warning-text max-sm:mt-0 max-sm:basis-full">Needs review: {run.review.reason}</p>}
         </div>

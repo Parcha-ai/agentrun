@@ -56,7 +56,7 @@ describe("a recorded run that escalated for review (status completed, with revie
     expect(detail).toContain("Needs review");
     expect(detail).toContain(run.review!.reason);
     expect(detail).toContain("Stopped at request-better-evidence");
-    expect(detail).not.toContain("This run gave no answer.");
+    expect(detail).not.toContain("The agent finished without writing an answer.");
   });
   it("a completed run with no review reads as it always did", () => {
     const done = runFixture("run.completed.idle.1").run;

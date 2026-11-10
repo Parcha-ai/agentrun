@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import { bytes, markdown, openLinkedFile, when } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import type { RunFile } from "@/lib/v2";
-import { viewKind } from "@/lib/viewing";
+import { hiddenFile, viewKind } from "@/lib/viewing";
 
 type View = "rendered" | "raw";
 const VIEWS: { id: View; label: string }[] = [{ id: "rendered", label: "Rendered" }, { id: "raw", label: "Raw" }];
@@ -22,17 +22,28 @@ function ViewToggle({ view, onView }: { view: View; onView: (view: View) => void
   );
 }
 
-/** The run's FILES tab: what it wrote, in the server's path order, each opened in the viewer. */
+/** The run's FILES tab: what it wrote, in the server's path order, each opened in the viewer. Files in dot and cache
+ *  folders (`hiddenFile`: .git, __pycache__, node_modules…) wait behind "Show hidden", and the count is of what it lists. */
 export function RunFiles({ files, onOpen }: { files: RunFile[]; onOpen: (file: RunFile) => void }) {
-  const total = files.reduce((n, f) => n + f.size_bytes, 0);
+  const [showHidden, setShowHidden] = useState(false);
+  const hidden = files.filter((f) => hiddenFile(f.path)).length;
+  const listed = showHidden ? files : files.filter((f) => !hiddenFile(f.path));
+  const total = listed.reduce((n, f) => n + f.size_bytes, 0);
   return (
     <section>
-      <p className="caps mb-2 flex items-center gap-2 text-[11px] text-muted-foreground"><Folder className="size-3.5" aria-hidden /> Files · {files.length} {files.length === 1 ? "file" : "files"} ({bytes(total)})</p>
-      {files.length === 0 ? (
-        <p className="border px-4 py-8 text-center font-mono text-[13px] text-muted-foreground">This run wrote no files.</p>
+      <div className="mb-2 flex items-center gap-3">
+        <p className="caps flex items-center gap-2 text-[11px] text-muted-foreground"><Folder className="size-3.5" aria-hidden /> Files · {listed.length} {listed.length === 1 ? "file" : "files"} ({bytes(total)})</p>
+        {hidden > 0 && (
+          <button type="button" className="caps ml-auto text-[11px] text-muted-foreground underline-offset-2 hover:text-foreground hover:underline" aria-pressed={showHidden} onClick={() => setShowHidden((v) => !v)}>
+            {showHidden ? "Hide" : "Show"} {hidden} hidden
+          </button>
+        )}
+      </div>
+      {listed.length === 0 ? (
+        <p className="border px-4 py-8 text-center font-mono text-[13px] text-muted-foreground">{hidden ? `Only files in hidden folders (${hidden}).` : "This run wrote no files."}</p>
       ) : (
         <ul className="border">
-          {files.map((f) => (
+          {listed.map((f) => (
             <li key={f.path} className="border-b last:border-b-0">
               <button type="button" onClick={() => onOpen(f)} className="flex w-full items-center gap-3 px-3 py-2.5 text-left hover:bg-accent">
                 <FileText className="size-4 shrink-0 text-muted-foreground" aria-hidden />

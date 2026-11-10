@@ -17,19 +17,20 @@ const open = (run: Run, { rows = [] as TimelineRow[], files = [] as RunFile[], t
 };
 const tabNamed = (host: HTMLElement, word: RegExp) => [...host.querySelectorAll('[role="tab"]')].find((t) => word.test(t.textContent ?? ""));
 
-const done = runFixture("run.completed.idle.1").run;
+// A completed agentic run (the recorded completed runs are workflows, whose answer is their output).
+const done = { ...runFixture("run.completed.idle.1").run, kind: "agentic", result: { final_answer: "Done." } } as Run;
 const NO_ANSWER = "The agent finished without writing an answer.";
 
 // A run that completed with an empty answer says so on its Report tab, and how to get one when it takes messages.
 describe("RunDetail, a completed run with an empty answer", () => {
   it("says the agent wrote no answer, and that a follow-up can ask for one", () => {
-    const host = open({ ...done, result: { ...(done.result ?? {}), final_answer: "" } as Run["result"] });
+    const host = open({ ...done, result: { final_answer: "" } } as Run);
     expect(host.textContent).toContain(NO_ANSWER);
     expect(host.textContent).toContain("Send a follow-up below to ask for one.");
   });
 
   it("an answer of only spaces is empty too: no blank report", () => {
-    const host = open({ ...done, result: { ...(done.result ?? {}), final_answer: "  \n " } as Run["result"] });
+    const host = open({ ...done, result: { final_answer: "  \n " } } as Run);
     expect(host.querySelector("article.report")).toBeNull();
     expect(host.textContent).toContain(NO_ANSWER);
   });

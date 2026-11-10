@@ -72,8 +72,9 @@ describe("useTriggerKnown", () => {
   }
 
   it("a fresh read that lacks the asked id calls it gone; one that has it names it", async () => {
-    const lists = [[trigger("trg_a", "a")], [trigger("trg_a", "a"), trigger("trg_new", "new one")]];
-    const v2 = { listTriggers: vi.fn(async () => ({ triggers: lists.shift() ?? [] })) };
+    // The app's first read, then every read after a trigger was made in another tab.
+    let reads = 0;
+    const v2 = { listTriggers: vi.fn(async () => ({ triggers: reads++ === 0 ? [trigger("trg_a", "a")] : [trigger("trg_a", "a"), trigger("trg_new", "new one")] })) };
     let got: ReturnType<typeof useTriggerKnown> | undefined;
     await act(async () => { mount(createElement(Probe, { v2, on: (g) => { got = g; } })); });
     expect(got!.known.get("trg_a")?.name).toBe("a");

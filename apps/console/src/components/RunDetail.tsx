@@ -13,7 +13,7 @@ import { APPROVAL_ROW, approvalOf } from "@/lib/approval";
 import { type LearningDiff, learningSteps } from "@/lib/learning";
 import { isEscalated, type MessageFeatures, type RunView, runState } from "@/lib/runState";
 import { cn } from "@/lib/utils";
-import { latest, pendingQuestion } from "@/lib/viewing";
+import { hiddenFile, latest, NO_ANSWER, pendingQuestion } from "@/lib/viewing";
 import type { Run, RunBrowser, RunFile, TimelineRow } from "@/lib/v2";
 
 export type RunDetailProps = {
@@ -52,25 +52,23 @@ type Tab = "graph" | "report" | "timeline" | "files" | "browser";
 /** The message box's words while a tool call waits on an approval: a message declines the call, and the agent reads it. */
 const DECLINES = { label: "Decline and say what to do instead", placeholder: "Tell the agent what to do instead...", does: "Sending it declines the waiting call; the agent reads your message." };
 
-/** What the Report tab says while a run has no answer and has not ended: only a queued or working run is writing it. One
- *  that waits on a kind of thing this console doesn't know (its `pending.kind`, a newer server's; nothing else of it is
- *  read) waits for the person, whatever its state; one that asked a question (named so, or from a server that sends no
- *  `pending`) waits for the answer, in the box below where the server takes one from here; a stopped one (input
- *  required, idle) stopped before it wrote one, and a message continues it; a paused workflow run starts no step until
- *  it is resumed. */
+/** What the Report tab says while a run has no answer and has not ended, by what it waits on (its `pending.kind`, one of
+ *  the generated Run type's): its spend cap, from the served figures; an approval, answered above; the person in its
+ *  browser or on its computer, with the server's instruction (done there, never by a reply below); a question, answered
+ *  in the box below where the server takes one from here. A stopped one (input required, idle) stopped before it wrote
+ *  one, and a message continues it; a paused workflow run starts no step until it is resumed. */
 function beforeAnswer(run: Pick<Run, "status" | "state" | "pending">, view: RunView): { title: string; note: string; spin: boolean } {
-  const kind = (run.pending as { kind?: unknown } | null | undefined)?.kind;
-  // Paused at its spend cap: what it spent of its cap, from the served figures (without them, said without them).
-  if (run.status === "input_required" && run.pending?.kind === "budget") {
-    // Each figure only as served: a pause sent with its kind alone says so without an amount, as its banner does.
-    const { cap_usd: cap, spent_usd: spent } = run.pending;
-    const capped = typeof cap === "number" && Number.isFinite(cap);
-    const words = capped && typeof spent === "number" ? `It has spent ${capWords(spent)} of its ${capWords(cap)} cap.` : capped ? `Its ${capWords(cap)} cap is reached.` : "Its spend cap is reached.";
-    return { title: "Paused at its spend cap", note: `${words} Raise the cap above to continue.`, spin: false };
+  const pending = run.status === "input_required" ? run.pending : null;
+  switch (pending?.kind) {
+    case "budget": {
+      const spent = pending.spent_usd;
+      const words = typeof spent === "number" ? `It has spent ${capWords(spent)} of its ${capWords(pending.cap_usd)} cap.` : `Its ${capWords(pending.cap_usd)} cap is reached.`;
+      return { title: "Paused at its spend cap", note: `${words} Raise the cap above to continue.`, spin: false };
+    }
+    case "approval": return { title: "Waiting for your approval", note: `The run continues once you answer the approval above${view.canMessage ? ", or send a message below to decline it" : ""}.`, spin: false };
+    case "browser": return { title: "Waiting for you in the browser", note: pending.instruction, spin: false };
+    case "computer": return { title: `Waiting for you on its ${pending.computer}`, note: pending.instruction, spin: false };
   }
-  // A tool call waiting on the owner's approval: the card above answers it, and a message below declines it.
-  if (run.status === "input_required" && kind === "approval") return { title: "Waiting for your approval", note: `The run continues once you answer the approval above${view.canMessage ? ", or send a message below to decline it" : ""}.`, spin: false };
-  if (run.status === "input_required" && kind !== undefined && kind !== "question") return { title: "Waiting for you", note: "The run continues once you give it what it waits on.", spin: false };
   if (run.status === "input_required" && run.state === "waiting") return { title: "Waiting for your answer", note: view.messageMode === "answer" ? "The run continues when you reply below." : "The run continues once the question is answered.", spin: false };
   if (run.status === "input_required") return { title: "Stopped", note: `Stopped before it wrote an answer.${view.canMessage ? " Send a message below to continue it." : ""}`, spin: false };
   if (run.status === "paused") return { title: "Paused", note: "No new step starts until it's resumed. The answer appears here when it finishes.", spin: false };
@@ -85,6 +83,12 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
   const view = budget ? { ...state, canMessage: false, messageMode: null } : state;
   const defaultTab: Tab = graphView ? "graph" : view.final && run.status === "completed" ? "report" : "timeline";
   const [tab, setTab] = useState<Tab>(initial ?? defaultTab);
+  // Once the page's steps scroll, a phone's header goes compact (RunHeader's `compact`), and whole again back near the
+  // top: in past 24 px, out under 4, so a scroll that rests near the line doesn't flicker it.
+  const [compact, setCompact] = useState(false);
+  // The kind of trigger that started the run, from its own trigger row (served `trigger.source`): its chip says
+  // "Schedule deleted", not only "Trigger deleted", once the trigger is gone.
+  const triggerKind = run.trigger ? rows.find((r) => r.trigger?.id === run.trigger!.id)?.trigger?.source : undefined;
   const [open, setOpen] = useState<{ file: RunFile; text: string | null } | null>(openFile ? { file: openFile, text: null } : null);
   // A tool call waiting on the owner's approval takes the question's place: an earlier question, answered, may still be
   // the newest waiting row, and is no question now.
@@ -131,10 +135,10 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
   // A story or a deep link can open a file on first render.
   useEffect(() => { if (openFile && readFile) void show(openFile); }, [openFile]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const tabs: [Tab, string][] = [...(graphView ? [["graph", "Graph"] as [Tab, string]] : []), ["report", "Report"], ["timeline", "Timeline"], ["files", `Files ${files.length}`], ...(browser ? [["browser", browser.state === "live" ? "Watch live" : "Browser"] as [Tab, string]] : [])];
+  const tabs: [Tab, string][] = [...(graphView ? [["graph", "Graph"] as [Tab, string]] : []), ["report", "Report"], ["timeline", "Timeline"], ["files", `Files ${files.filter((f) => !hiddenFile(f.path)).length}`], ...(browser ? [["browser", browser.state === "live" ? "Watch live" : "Browser"] as [Tab, string]] : [])];
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <RunHeader run={run} agentName={agentName} actions={actions} costText={costText} />
+      <RunHeader run={run} agentName={agentName} actions={actions} costText={costText} compact={compact} triggerKind={triggerKind} />
       <div className="flex border-b px-5 md:px-8" role="tablist">
         {tabs.map(([id, name]) => (
           <button key={id} type="button" role="tab" aria-selected={tab === id} onClick={() => setTab(id)}
@@ -143,7 +147,15 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
           </button>
         ))}
       </div>
-      {tab === "graph" ? <div className="min-h-0 flex-1">{graphView}</div> : <div className="min-h-0 flex-1 overflow-auto">
+      {tab === "graph" ? <div className="min-h-0 flex-1">{graphView}</div> : <div className="min-h-0 flex-1 overflow-auto" data-run-scroll onScroll={(e) => {
+        const area = e.currentTarget;
+        const top = area.scrollTop;
+        // Only when the steps would still scroll with the header compact, by more than the 24 px it takes to go compact:
+        // else the shrink lets them fit, the scroll snaps back to the top, and the header grows again, a flicker. The
+        // compact header is about 72 px at 390 px, so going compact frees the whole header's height less that.
+        const frees = (area.parentElement?.querySelector("header")?.offsetHeight ?? 0) - 72;
+        setCompact((c) => (c ? top > 4 : top > 24 && area.scrollHeight - area.clientHeight > frees + 24));
+      }}>
         <div className="mx-auto max-w-4xl space-y-6 px-5 py-8 md:px-8">
           {run.status === "failed" && run.error && <RunError error={run.error} title={isEscalated(run.status, run.error) ? "The run escalated" : undefined} />}
           {run.status === "cancelled" && (
@@ -158,12 +170,12 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
           {refused && refused.id !== approval?.id && <p className="border border-destructive/50 px-4 py-2.5 font-mono text-[12px] text-destructive-text" role="alert">Your answer wasn't taken: {refused.text}</p>}
           {approval ? <ApprovalCard key={approval.id} pending={approval} onAnswer={(decision, note) => approve(approval.id, decision, note)} />
             : view.needsYou && (budget ? <BudgetPaused pending={budget} /> : <NeedsYou waiting={waiting} />)}
-          {/* With no served cap the banner names none to raise above; the run header's raise reads the run's own cap. */}
-          {view.needsYou && budget && typeof budget.cap_usd === "number" && actions?.onRaiseCap && <RaiseCap key={`${run.run_id}:${budget.at}`} cap={budget.cap_usd} suggested={suggestedCap(budget)} least={leastCap(budget)} paused onRaise={actions.onRaiseCap} />}
+          {view.needsYou && budget && actions?.onRaiseCap && <RaiseCap key={`${run.run_id}:${budget.at}`} cap={budget.cap_usd} suggested={suggestedCap(budget)} least={leastCap(budget)} paused onRaise={actions.onRaiseCap} />}
           {tab === "report" && <RunResult run={run} rows={rows} files={files} onOpen={show} />}
           {tab === "report" && !run.result && !view.final && <Working {...beforeAnswer(run, view)} />}
-          {tab === "report" && view.final && !run.result?.final_answer && !run.result?.output && !rows.some((r) => r.kind === "final_answer") && run.status !== "failed" && run.status !== "cancelled" && !run.review && (
-            <p className="font-mono text-[13px] text-muted-foreground">This run gave no answer.</p>
+          {/* An answer of only spaces is none: the agent wrote none, and a follow-up can ask for one. */}
+          {tab === "report" && view.final && !run.result?.final_answer?.trim() && !run.result?.output && !rows.some((r) => r.kind === "final_answer" && r.text?.trim()) && run.status !== "failed" && run.status !== "cancelled" && !run.review && (
+            <p className="font-mono text-[13px] text-muted-foreground">{NO_ANSWER}{view.canMessage ? " Send a follow-up below to ask for one." : ""}</p>
           )}
           {tab === "timeline" && <Timeline rows={learningSteps(rows, run.learning)} live={view.live} asking={approvalRow?.id ?? (view.needsYou && !budget ? waiting?.id : undefined)} waitingOn={run.status === "input_required" ? run.pending?.kind : undefined} />}
           {(tab === "report" || tab === "timeline") && changes && <RunChanges got={changes.got} retry={changes.retry} />}

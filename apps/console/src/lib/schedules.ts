@@ -127,6 +127,32 @@ export const hookWhen = (source: HookSource): string =>
   source.accept?.length ? `Only signed requests for ${source.accept.map((a) => acceptWords(a, false)).join(" or ")}` : "On each signed request";
 
 export const FIRED_BY: Record<Firing["by"], string> = { schedule: "On schedule", manual: "Run now", webhook: "On a request", github: "On a GitHub event" };
+/** What fired a firing, and whether it caught up a time missed while the server was down (served `catch_up`). */
+export const firedBy = (f: Firing): string => `${FIRED_BY[f.by]}${f.catch_up ? ", caught up late" : ""}`;
+
+/** Why the server turned a trigger off (served `disabled`), in words; null for one it didn't (on, or paused by a person).
+ *  After failures, the count is the trigger's own served streak (`failures_in_a_row`). */
+export function offWords(t: Pick<Trigger, "disabled" | "failures_in_a_row">): string | null {
+  const off = t.disabled;
+  if (!off) return null;
+  switch (off.reason) {
+    case "auto_paused": return `Turned off after ${t.failures_in_a_row} ${t.failures_in_a_row === 1 ? "failure" : "failures"} in a row.`;
+    case "source_unreadable": return `Turned off: its source can't be read (${off.detail}).`;
+    case "agent_archived": return `Turned off: its agent is archived (${off.detail}).`;
+    case "connection_lost": return `Turned off: its connection was lost (${off.detail}).`;
+  }
+}
+/** What a person does about a trigger the server turned off: Resume (PATCH enabled, which clears the reason and the
+ *  streak on the server), after fixing what the reason names. */
+export function offFix(t: Pick<Trigger, "disabled">): string | null {
+  switch (t.disabled?.reason) {
+    case undefined: return null;
+    case "source_unreadable": return "Edit its when, then Resume.";
+    case "agent_archived": return "Restore the agent, or edit the trigger to run another, then Resume.";
+    case "connection_lost": return "Connect it again, then Resume.";
+    default: return "Resume turns it on again.";
+  }
+}
 
 /** When a github trigger fires, in one line: the GitHub events its filter takes, delivered to the server's GitHub App. */
 export const githubWhen = (source: Extract<TriggerSource, { kind: "github" }>): string => `On GitHub ${source.accept.map((a) => acceptWords(a, false)).join(" or ")}`;
@@ -135,7 +161,7 @@ export const githubWhen = (source: Extract<TriggerSource, { kind: "github" }>): 
 export function firingWords(f: Firing): string {
   const why = (head: string, text: string | null | undefined) => (text ? `${head}: ${text}` : head);
   switch (f.status) {
-    case "started": return "Started";
+    case "started": return f.catch_up ? "Started, caught up late" : "Started";
     case "skipped": return why("Skipped", f.reason);
     case "missed": return why(`Missed ${f.count ?? 1} ${f.count === 1 || f.count === undefined ? "time" : "times"}`, f.reason);
     case "failed": return why("Failed", f.error?.message ?? f.reason);

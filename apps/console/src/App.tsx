@@ -15,7 +15,7 @@ import { BoxImageBanner } from "@/components/BoxImageBanner";
 import { WebhookPage } from "@/components/WebhookPage";
 import { ComputersPage } from "@/components/ComputersPage";
 import { WorkspacePage } from "@/components/WorkspacePage";
-import { ScheduleNames, type TriggerKnown } from "@/components/ScheduleChip";
+import { ScheduleNames, TriggerReads, useTriggerKnown } from "@/components/ScheduleChip";
 import { SchedulesPage } from "@/components/Schedules";
 import { TemplatesPage } from "@/components/Templates";
 import { LiveRun } from "@/components/LiveRun";
@@ -235,13 +235,8 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
   // The triggers' names and kinds, for the chip on a run a trigger started: read where the server has triggers, again on
   // each page change (a trigger made or renamed shows by its name on its runs).
   const scheduling = caps?.features?.triggers?.routes === true;
-  const [scheduleNames, setScheduleNames] = useState<ReadonlyMap<string, TriggerKnown>>(new Map());
-  useEffect(() => {
-    if (!scheduling) return;
-    let live = true;
-    v2.listTriggers().then((r) => { if (live) setScheduleNames(new Map(r.triggers.map((t) => [t.id, { name: t.name, kind: t.source.kind }]))); }, () => {});
-    return () => { live = false; };
-  }, [v2, scheduling, where.section, where.trigger]);
+  // A chip whose trigger the names lack asks for a fresh read, and says it's deleted only once that read lacks it too.
+  const { known: scheduleNames, reads: triggerReads } = useTriggerKnown(v2, scheduling, [where.section, where.trigger]);
   // Mission Control: the store's counts (GET /v2/stats) and the latest runs, read each time the page opens.
   const [mission, setMission] = useState<MissionView | null>(null);
   const [missionError, setMissionError] = useState<Problem | null>(null);
@@ -509,7 +504,7 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
     return () => { clearInterval(timer); window.removeEventListener("focus", again); };
   }, [v2, modelsReady, preparing]);
   return (
-    <ScheduleNames.Provider value={scheduleNames}>
+    <ScheduleNames.Provider value={scheduleNames}><TriggerReads.Provider value={triggerReads}>
     <Shell active={where.section} settings={settingsOffered.length > 0} triggers={scheduling} onNavigate={nav} onSignOut={() => {
       // The card comes back only once the server ended the session: a sign-out that did not reach it says so instead.
       v2.signOut().then(onSignedOut, (e) => setSignOutError(e instanceof ClientError ? e.message : "The sign-out did not reach the server. Try again."));
@@ -568,6 +563,6 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
             filter={runsFilter} onFilter={(f) => go(runsHash({ runsOf: where.runsOf, ...f }))}
             onMore={cursor ? () => { const n = asked.current; setMore(true); (where.runsOf ? v2.listAgentRuns(where.runsOf, 50, cursor, runsFilter) : v2.listRuns(50, cursor, runsFilter)).then((r) => { if (n === asked.current) { setRuns((x) => appendRuns(x ?? [], r.runs)); setCursor(r.next_cursor); setError(null); } }).catch((e) => setError(problem(e, "more runs"))).finally(() => setMore(false)); } : undefined} />}
     </Shell>
-    </ScheduleNames.Provider>
+    </TriggerReads.Provider></ScheduleNames.Provider>
   );
 }

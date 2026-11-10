@@ -76,11 +76,12 @@ export { keeper };
 
 const sh = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
 
-/** The request as cURL for the code pane. The token is `$AGENTRUN_TOKEN`: a value never appears. */
+/** The request as cURL for the code pane. The key is `$AGENTRUN_API_KEY`, the name the server prints it by: a value
+ *  never appears. */
 export function curlFor(origin: string, agentId: string, body: StartBody, key: string): string {
   return [
     `curl -X POST ${sh(`${origin}/v2/agents/${encodeURIComponent(agentId)}/runs`)} \\`,
-    `  -H "Authorization: Bearer $AGENTRUN_TOKEN" \\`,
+    `  -H "Authorization: Bearer $AGENTRUN_API_KEY" \\`,
     `  -H 'Content-Type: application/json' \\`,
     `  -H ${sh(`Idempotency-Key: ${key}`)} \\`,
     `  -d ${sh(JSON.stringify(body))}`,

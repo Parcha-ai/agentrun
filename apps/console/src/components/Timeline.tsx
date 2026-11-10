@@ -1,5 +1,5 @@
 import { Brain, ChevronRight, CircleAlert, CircleDollarSign, CirclePause, FileText, Flag, LoaderCircle, MessageCircleQuestion, MessageSquareText, Scale, ShieldQuestion, User, Wrench } from "lucide-react";
-import { useState } from "react";
+import { type ReactNode, useState } from "react";
 import { BROWSER_TOOL_NAMES } from "@pi-browser/contract";
 import { nameOf } from "@timeline/labels";
 import { Chip } from "@/components/ui/chip";
@@ -8,6 +8,7 @@ import { mcpToolLabel } from "@/lib/mcp";
 import { rowDetail, rowFailed, rowPaused, type Step, steps } from "@/lib/timeline";
 import { cn } from "@/lib/utils";
 import type { TimelineRow } from "@/lib/v2";
+import { NO_ANSWER } from "@/lib/viewing";
 
 const ICON: Record<string, typeof Brain> = {
   user_message: User, thinking: Brain, tool_use: Wrench, tool_result: Wrench, waiting: MessageCircleQuestion,
@@ -37,20 +38,35 @@ const triggerParts = (row: TimelineRow): { who: string | null; said: string } =>
   const m = /^([^:]+):\s*/.exec(summary);
   return m ? { who: m[1]!, said: summary.slice(m[0].length) } : { who: null, said: summary };
 };
+/** A line's own Markdown, bold (`**…**`) and code (`` `…` ``) only, as elements; the rest stays text (React escapes it,
+ *  so no HTML gets through), and a mark with no partner stays as typed. Code inside bold is code; bold inside code is as
+ *  typed. `__…__` is not bold here: a step names files like `__init__.py`. */
+function inline(text: string): ReactNode {
+  const parts = text.split(/(\*\*[^*\n]+?\*\*|`[^`\n]+`)/);
+  if (parts.length === 1) return text;
+  return parts.map((p, i) =>
+    i % 2 === 0 ? p
+      : p.startsWith("`") ? <code key={i} className="font-mono text-[0.9em]">{p.slice(1, -1)}</code>
+      // A command inside bold is code there too (a model's heading, **Run `npm test` first**); bold can't nest in bold.
+      : <strong key={i} className="font-semibold">{inline(p.slice(2, -2))}</strong>);
+}
+
 /** The title a row shows: its summary without the kind's own prefix ("Thinking: ", "You: ", a server message's
- *  "AgentRun: ", a trigger's "<Source> <its name>: ", e.g. "Webhook inbound-lead: ", which is that row's label). */
+ *  "AgentRun: ", a trigger's "<Source> <its name>: ", e.g. "Webhook inbound-lead: ", which is that row's label). Its
+ *  bold and code show as such (`inline`, where the row is drawn). */
 const title = (row: TimelineRow) => {
   const text = fromTrigger(row) ? triggerParts(row).said : (row.summary ?? "").replace(fromServer(row) ? /^AgentRun:\s*/ : /^(You|Thinking|Asked you|Waiting for you):\s*/, "");
   // A workflow run's input is a JSON object: show its fields, not its braces.
   if (row.kind === "user_message" && text.startsWith("{")) {
     try { return Object.entries(JSON.parse(text) as Record<string, unknown>).map(([k, v]) => `${k}: ${typeof v === "string" ? v : JSON.stringify(v)}`).join(" · "); } catch { /* not whole JSON: as is */ }
   }
-  // An answer's first line as text: its markdown (a heading's #, bold's **, code's `) is not shown as typed. The summary is
-  // that first line (the server's), so an answer with more says so with "…": the rest is a click away, never dropped unseen.
-  if (row.kind === "final_answer") {
-    const more = (row.text ?? "").split("\n").filter((l) => l.trim()).length > 1;
-    return `${text.replace(/^\s*(#{1,6}\s+|>\s+|[-*+]\s+)/, "").replace(/(\*\*|__|`)/g, "")}${more ? "…" : ""}`;
-  }
+  // An answer's or your message's summary is its first line (the server's), so one with more says so with "…": the rest
+  // is a click away, never dropped unseen.
+  const more = (row.text ?? "").split("\n").filter((l) => l.trim()).length > 1 ? "…" : "";
+  // An answer the agent left empty is said, not shown as a blank step; a written one shows its first line without its
+  // block marks (a heading's #, a quote's >, a list's -), its bold and code as such.
+  if (row.kind === "final_answer") return text.trim() || row.text?.trim() ? `${text.replace(/^\s*(#{1,6}\s+|>\s+|[-*+]\s+)/, "")}${more}` : NO_ANSWER;
+  if (row.kind === "user_message") return `${text}${more}`;
   return text;
 };
 /** How long a tool took: "27 ms", or "3.5 s" from a second on. */
@@ -106,7 +122,7 @@ function Row({ step, last, waitingChip }: { step: Step; last: boolean; waitingCh
               {step.ms !== undefined && <span className="font-mono text-[11px]">{took(step.ms)}</span>}
               {step.times && <span className="font-mono text-[11px]">{step.times} times{step.until ? ` over ${took(Math.max(0, Date.parse(step.until) - Date.parse(row.timestamp)))}` : ""}</span>}
             </span>
-            <span className={cn("mt-0.5 block break-words text-[15px] leading-snug", fromServer(row) && "text-muted-foreground")}>{shown}</span>
+            <span className={cn("mt-0.5 block break-words text-[15px] leading-snug", fromServer(row) && "text-muted-foreground")}>{inline(shown)}</span>
             {step.saved && <span className="mt-0.5 block font-mono text-[12px] text-muted-foreground">saved {step.saved}</span>}
             {notSent(row) && <span className="mt-0.5 block break-words text-[13px] text-muted-foreground">{notSent(row)}</span>}
           </span>
@@ -138,7 +154,7 @@ export function Timeline({ rows, live, fold = 6, asking, waitingOn }: { rows: Ti
     <div>
       {hidden > 0 && (
         <button type="button" className="caps mb-1 ml-10 flex items-center gap-1 py-2 text-[11px] text-muted-foreground hover:text-foreground" onClick={() => setAll(true)}>
-          <ChevronRight className="size-3" aria-hidden /> {hidden} earlier steps
+          <ChevronRight className="size-3" aria-hidden /> {hidden} earlier {hidden === 1 ? "step" : "steps"}
         </button>
       )}
       <ol>{shown.map((step, i) => <Row key={step.row.id} step={step} last={i === shown.length - 1 && !live} waitingChip={step.row.id === current && waitingOn ? WAITING_CHIP[waitingOn] : undefined} />)}</ol>

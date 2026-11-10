@@ -16,7 +16,7 @@ afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
 // snippets read that name, never AGENTRUN_TOKEN (the console's own dev server's).
 describe("the Playground's snippets name AGENTRUN_API_KEY", () => {
   it("cURL sends $AGENTRUN_API_KEY", () => {
-    const c = curlFor("http://127.0.0.1:7340", "meeting-notes", { input: { content: "Go." } }, "k1");
+    const c = curlFor("http://serve.test", "meeting-notes", { input: { content: "Go." } }, "k1");
     expect(c).toContain('-H "Authorization: Bearer $AGENTRUN_API_KEY"');
     expect(c).not.toContain("AGENTRUN_TOKEN");
   });
@@ -26,8 +26,7 @@ describe("the Playground's snippets name AGENTRUN_API_KEY", () => {
     const host = document.body.appendChild(document.createElement("div"));
     root = createRoot(host);
     act(() => root!.render(createElement(Playground, { agents: [base], revisions: [], efforts: [], origin: "http://serve.test", agentId: base.agent_id })));
-    const fetchTab = [...host.querySelectorAll("button")].find((b) => b.textContent === "fetch");
-    if (fetchTab) act(() => fetchTab.click());
+    act(() => [...host.querySelectorAll("button")].find((b) => b.textContent === "JavaScript")!.click());
     expect(host.textContent).toContain("process.env.AGENTRUN_API_KEY");
     expect(host.textContent).toContain("set AGENTRUN_API_KEY in your environment");
     expect(host.textContent).not.toContain("AGENTRUN_TOKEN");
