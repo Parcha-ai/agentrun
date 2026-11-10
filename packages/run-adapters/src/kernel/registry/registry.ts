@@ -5,7 +5,7 @@
 // over the hands' narrow ports; the browser's are the host's contracts and runs (pi-browser's). A registry missing an
 // executor for a tool the model sees is refused when it is built, so a run never offers a tool it cannot run. A kind's
 // tool the run does not have is refused in words that name the setting.
-import { BACKGROUND_EXECUTORS, NEEDS_A_COMPUTER } from "./background.js";
+import { BACKGROUND_EXECUTORS, NEEDS_A_COMPUTER, NO_SHELL } from "./background.js";
 import { boundedBash } from "./bash.js";
 import type { BrowserContract } from "./browser.js";
 import { CAPABILITY_KINDS, capabilityToolDefs, hostToolDefs, type ShellPlace, type ToolDef } from "./defs.js";
@@ -66,6 +66,8 @@ export function createRegistry(options: { maxExecS: number; shell: ShellPlace; k
         if (shell !== "computer" && (BACKGROUND_TOOLS as readonly string[]).includes(name)) {
           throw new Error(NEEDS_A_COMPUTER);
         }
+        // No shell at all: bash is not listed, and a call of it anyway says how to get one.
+        if (shell === "none" && name === "bash") throw new Error(NO_SHELL);
         const kind = kindOf.get(name);
         if (kind) throw new Error(needsKindWords(name, kind));
         throw new Error(`there is no host tool ${name} in this run`);

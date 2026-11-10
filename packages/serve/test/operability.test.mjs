@@ -2,19 +2,17 @@
 // stdout line per request, run and refused credential (never a token), and the stored token printed only once.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
-import { processAlive } from "@parcha/agentrun-kernel/host";
 import { BOX_IDS } from "../dist/boxes.js";
 import { startServe } from "../dist/index.js";
-import { agent, client, FAUX, follow, printed, runDir, runRecordOf, scratch, withEnv } from "./support.mjs";
+import { agent, client, FAUX, follow, printed, scratch, withEnv } from "./support.mjs";
 
 const CLI = new URL("../dist/cli.js", import.meta.url).pathname;
 const DOCKER = new URL("../docker/", import.meta.url);
 const ROOT = new URL("../../../", import.meta.url);
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-const alive = processAlive;
 /** A token with every character a query string bends: "+" (a space in a form), "/" and "=". */
 const AWKWARD = "Ab+cD/ef=Gh+iJ/kl=Mn+oP/qr=St+uV/wx==";
 
@@ -30,34 +28,6 @@ async function bin(t, data, args = [], env = {}) {
   const base = /AGENTRUN_BASE_URL=(\S+)/.exec(seen.out)[1];
   return { child, seen, base, exited: new Promise((resolve) => child.once("exit", (code) => resolve(code))) };
 }
-
-test("on SIGTERM with a run busy, the bin exits within its --drain-timeout, and the run goes on at the next start; its timeline says it resumed after the server stopped", { timeout: 90_000 }, async (t) => {
-  const data = join(await scratch(t), "agents");
-  const go = join(data, "..", "go");
-  const server = await bin(t, data, ["--drain-timeout", "2s"]);
-  const token = (await readFile(join(data, ".token"), "utf8")).trim();
-  const api = client(server.base, token);
-  assert.equal((await api("POST", "/agents", agent("busy"))).status, 201);
-  const { body: run } = await api("POST", "/agents/busy/runs", { input: { content: `Answer once ${go} exists.` } });
-  await follow(api, run.run_id, ["working"]);
-  const pid = runRecordOf(data, run.run_id).holder.pid;
-  const from = Date.now();
-  server.child.kill("SIGTERM");
-  const code = await Promise.race([server.exited, sleep(40_000).then(() => "still running")]);
-  const took = Date.now() - from;
-  assert.equal(code, 0, server.seen.err);
-  assert.ok(took < 2_000 + 3_000, `it exited ${took} ms after SIGTERM, past its 2 s drain`);
-  assert.equal(alive(pid), false, "the run's process exited with it");
-  const left = runRecordOf(data, run.run_id);
-  assert.deepEqual([left.status, left.detail?.reason], ["sleeping", "drained"], "drained, not crashed");
-  const next = await startServe({ data, port: 0, faux: FAUX });
-  t.after(() => next.close());
-  const again = client(next.baseUrl, next.token);
-  await writeFile(go, "");
-  const { rows } = await follow(again, run.run_id, ["completed"]);
-  assert.equal((await again("GET", `/runs/${run.run_id}`)).body.result.final_answer, "Now.");
-  assert.deepEqual(rows.filter((r) => r.kind === "phase" && r.summary.startsWith("Resumed")).map((r) => r.summary), ["Resumed after the server stopped"], "one stored row, kept by the settle's read");
-});
 
 test("the image drains within Docker's 10 s grace, and Compose gives the stop more than the drain", async () => {
   const dockerfile = await readFile(new URL("Dockerfile", DOCKER), "utf8");

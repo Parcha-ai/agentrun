@@ -48,13 +48,18 @@ test("bound: the registry's tools the run names, in the run's order, with their 
   ]);
 });
 
-test("bound: a call's text is today's host tool's for the same call on the same files, a path named relative to the run's folder", async () => {
+test("bound: a call's text is today's host tool's for the same call on the same files, a path named relative to the run's folder (bash on a Mode 2 run: a Mode 1 run with no computer has none)", async () => {
   const [left, right] = [scratch(), scratch()];
   const leftEnv = piEnv(localWorkspace(left), { cwd: left, env: { PATH: "/usr/bin:/bin" }, defaultTimeoutS: 120 });
   const today = Object.fromEntries(hostTools({ env: async () => leftEnv }, ["read", "write", "edit", "bash"], ctx, new Map(), [...fileTools(), bashTool()]).map((tool) => [tool.name, tool]));
   const run = await runHands(localWorkspace(right), undefined, { mode: 1, context: ctx });
+  // bash on Archil's exec (Mode 2), here over the same folder: its texts name no path.
+  const shell = await runHands(localWorkspace(right), undefined, { mode: 2, context: ctx });
   const results = new Map();
-  const bound = Object.fromEntries(bindTools(run, registryOf(run), ["read", "write", "edit", "bash"], { results }).map((tool) => [tool.name, tool]));
+  const bound = Object.fromEntries([
+    ...bindTools(run, registryOf(run), ["read", "write", "edit"], { results }),
+    ...bindTools(shell, registryOf(shell), ["bash"], { results }),
+  ].map((tool) => [tool.name, tool]));
   const cases = [
     ["read", { path: "a.txt" }], ["read", { path: "nope.txt" }], ["read", { path: "../x" }], ["write", { path: "w.txt", content: "w" }],
     ["edit", { path: "a.txt", edits: [{ oldText: "two", newText: "2" }] }], ["edit", { path: "a.txt", edits: [{ oldText: "zzz", newText: "2" }] }],

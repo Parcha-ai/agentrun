@@ -52,7 +52,11 @@ So:
   page "to be sure". Write down the few lines you need (a price, an entry, a date) and move on.
 - More than 4 companies: give each 2 fetches (changelog, pricing) and its search, and say in the footer which you
   checked lightly. If a request is refused for the cap, post what you have proven, with what you didn't read in
-  `unreachable`.
+  `unreachable` (reason `skipped`).
+- **`unreachable`** lists each page the plan needed and could not read, with why: `blocked` (a challenge or an
+  access-denied page, e.g. detail "bot-protection challenge (403)"), `not_found` (gone, and nothing found in its
+  place), `error` (a timeout or a server error) or `skipped` (left out to keep within the budget). A 404 you
+  recovered from (the page found elsewhere) is not unreachable, and neither is a company that publishes no pricing.
 
 ## Steps
 
@@ -72,8 +76,8 @@ So:
    1. **Changelog** (`max_chars: 3000`): the changelog, release notes or product blog (`/changelog`, `/releases`,
       `/blog`, `/news`). Entries are dated: keep those inside the window. Unknown URL: fetch the home page once at
       offset 0 with `max_chars: 1000` for its links, then read the changelog it links with this step's fetch. That
-      costs one fetch more, so this run skips the pricing baseline (fetch 3) for that company and says so in
-      `unreachable`; the discovered URL goes in a learned note, so next week starts from it.
+      costs one fetch more, so this run skips the pricing baseline (fetch 3) for that company, listing it in
+      `unreachable` as `skipped`; the discovered URL goes in a learned note, so next week starts from it.
    2. **Pricing** (`max_chars: 6000`): the pricing page's plan table. It carries no dates, so it needs a baseline: a
       price the previous digest quoted, else fetch 3. The URL is the one a learned note names, else `/pricing`. A
       not-found answer (404, "page not found") or a page with no plans means the guess is wrong, never that the
@@ -81,9 +85,10 @@ So:
       changelog step fetched the home page this run, else one home fetch now (offset 0, `max_chars: 1000`). Read
       the page it links, and put its URL in a learned note so next week starts from it. This recovery may take up to
       2 fetches beyond the 3 (the home page and the found page); it then skips the pricing baseline (fetch 3) for
-      that company this run, putting the baseline's URL in `unreachable`. No pricing link on the home page (some
-      companies publish none): put the guessed pricing URL in `unreachable` and give the company's digest line
-      "no public pricing page", never a block. A challenge or an access-denied page is a block; say that instead.
+      that company this run, listing the baseline's URL in `unreachable` as `skipped`. The 404 itself is not listed:
+      you recovered from it. No pricing link on the home page (some companies publish none): the company's digest
+      line says "no public pricing page", and nothing goes in `unreachable` for it. A challenge or an access-denied
+      page is a block: list it as `blocked`, with what blocked it.
    3. **Pricing baseline** (`max_chars: 6000`): the archive copy from before the window,
       `https://web.archive.org/web/<YYYYMMDD of from>/<pricing URL>`. Check the snapshot's own date in the URL it
       lands on, and use it only when it is on or before `from`. A plan, price, limit, free tier or billing unit that
@@ -130,7 +135,7 @@ So:
          _So what:_ <so_what>
      ...
      *<Company with no item>*: nothing new this week (checked: <pages>)
-     _<n> sources unreachable: ...>_   (only when there were)
+     _Unreachable: <url> (<reason>: <detail>); ...>_   (only when there were, each with its reason)
      ```
 
      A quiet week: `*Market monitor:* <from> to <to>` and then `Nothing notable changed at <companies> this week.`
@@ -168,7 +173,7 @@ So:
   "digest": "*Market monitor:* 2026-11-02 to 2026-11-09\n*Acme*\n• [pricing] ...",
   "delivery": { "via": "slack", "to": "C0123ABCD", "status": "posted" },
   "dropped_repeats": ["Acme: Pulse dashboards launch (reported 2026-11-02)"],
-  "unreachable": []
+  "unreachable": [{ "url": "https://globex.io/pricing", "reason": "blocked", "detail": "bot-protection challenge (403)" }]
 }
 ```
 
