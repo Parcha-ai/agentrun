@@ -112,7 +112,11 @@ export function runnerLoop(store: Store, dataDir: string, env: NodeJS.ProcessEnv
   // The key handed over (the launcher's pipe, or the environment), else the one the server keeps under the config home
   // (seal-key.ts), read and never made here: the server makes it at its first start, and a runner's own would not open
   // what the server sealed.
-  let sealKey = sealKeyOf(secret(SEAL_KEY_ENV) ?? env[SEAL_KEY_ENV]);
+  const handed = secret(SEAL_KEY_ENV) ?? env[SEAL_KEY_ENV];
+  let sealKey = sealKeyOf(handed);
+  // A handed key that is no key is refused, as the server refuses it (seal-key.ts ensureSealKey): never passed over for
+  // the kept one, which may not be the server's.
+  if (handed && !sealKey) throw new RunnerRefused(`${SEAL_KEY_ENV} is set but is not 32 bytes in base64: hand the runner the server's seal key.`);
   try {
     sealKey ??= keptSealKey(sealKeyHome(env))?.key;
   } catch (error) {

@@ -168,9 +168,14 @@ function errorOf(error: unknown): WorkerError {
 function takeOwnerLock(file: string): void {
   if (inMemory(file)) return;
   // The lock is the server's alone, as server.lock was: made 0600 (no umask takes from that) before SQLite opens it, which
-  // would make it 0644 under a 022 umask. A held one's bytes and times are left as they are (opened to append, never
-  // written).
-  closeSync(openSync(`${file}.owner`, "a", 0o600));
+  // would make it 0644 under a 022 umask. Made only when it is not there ("wx"): a file descriptor opened and closed on a
+  // lock file another connection of this process holds drops that process's POSIX lock on it, so one that is there is
+  // never opened here but through SQLite, which keeps its locks across its own connections.
+  try {
+    closeSync(openSync(`${file}.owner`, "wx", 0o600));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+  }
   const lock = new DatabaseSync(`${file}.owner`);
   try {
     lock.exec("PRAGMA busy_timeout = 0");

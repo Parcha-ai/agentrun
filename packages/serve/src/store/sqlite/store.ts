@@ -11,7 +11,7 @@ import { claimFence, storeNow, type StoreNow } from "../fence.js";
 import { RunStorage } from "../journal/storage.js";
 import { DDL, SCHEMA_VERSION } from "../schema.js";
 import {
-  AgentArchived, CommandTaken, Fenced, RunFinal, SchemaVersionUnknown, STORE_WRITE_DEADLINE_MS, StoreConstraint, StoreFromEarlierVersion, TriggerFull, type AgentRow, type Agents,
+  AgentArchived, CommandTaken, Fenced, RunFinal, SchemaVersionUnknown, STORE_WRITE_DEADLINE_MS, StoreConstraint, StoreFromEarlierVersion, StoreOwned, TriggerFull, type AgentRow, type Agents,
   type AlsoRow, type Claim, type Command, type FiringChange, type FiringRow, type FiringStatus, type ImportRunInput, type Journal, type NewRevision, type RevisionRow, type RunPatch, type RunRow, type Runs,
   type JournalReads, type UpdatedRun,
   type ReleasedState, type RunState, type Store, type StoreRole, type TemplatePackage, type Templates, type TriggerDef, type TriggerPatch, type TriggerRow, type Triggers, type TriggerScope,
@@ -217,21 +217,37 @@ function earlierVersionIn(dataDir: string): string[] {
   return found.sort();
 }
 
+/** How long the earlier-version read of a busy store.sqlite waits for it. */
+const EARLIER_READ_WAIT_MS = 5_000;
+
+/** Whether another server holds the store at `file`: its owner lock (`<file>.owner`, worker.ts takeOwnerLock) taken and
+ *  not to be had, read through SQLite (which keeps its locks across its connections in one process: never a raw file
+ *  descriptor on that file, whose close would drop this process's lock). None there: none holds it. */
+function ownerHeld(file: string): boolean {
+  if (!existsSync(`${file}.owner`)) return false;
+  const lock = new DatabaseSync(`${file}.owner`);
+  try {
+    lock.exec("PRAGMA busy_timeout = 0");
+    lock.exec("BEGIN EXCLUSIVE");
+    lock.exec("ROLLBACK");
+    return false;
+  } catch (error) {
+    const code = (error as { errcode?: number }).errcode;
+    if (typeof code === "number" && ((code & 0xff) === 5 || (code & 0xff) === 6)) return true;
+    throw error;
+  } finally {
+    lock.close();
+  }
+}
+
 /** Whether `file` is this version's store, or one with nothing in it yet: an earlier one has tables and no store_meta. */
 export function isThisVersionsStore(file: string): boolean {
-  const db = new DatabaseSync(file, { readOnly: true });
+  // A busy file says nothing of whose store it is (an earlier version's server mid-commit, in its rollback journal): the
+  // read waits for it, and a store still busy after that is an error, never "this version's". A store a server of this
+  // version holds was refused already by its owner lock (ownerHeld), before this read.
+  const db = new DatabaseSync(file, { readOnly: true, timeout: EARLIER_READ_WAIT_MS });
   try {
-    let tables: { name: string }[];
-    try {
-      tables = db.prepare("SELECT name FROM sqlite_schema WHERE type = 'table'").all() as { name: string }[];
-    } catch (error) {
-      // Held by a server (its EXCLUSIVE owner lock: SQLITE_BUSY or SQLITE_LOCKED, as worker.ts reads them): a store only
-      // this version takes that lock on. The owner lock then refuses this start in words (StoreOwned), or a start waits
-      // for that server's stop.
-      const code = (error as { errcode?: number }).errcode;
-      if (typeof code === "number" && ((code & 0xff) === 5 || (code & 0xff) === 6)) return true;
-      throw error;
-    }
+    const tables = db.prepare("SELECT name FROM sqlite_schema WHERE type = 'table'").all() as { name: string }[];
     if (tables.length === 0) return true;
     if (!tables.some((table) => table.name === "store_meta")) return false;
     return db.prepare("SELECT schema_version FROM store_meta WHERE singleton = 1").get() !== undefined;
@@ -257,6 +273,10 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
     // The server makes its data directory; a runner opens only one that is there. No migration: a directory an earlier
     // version wrote is refused before anything in it is opened or made.
     if (role === "server") {
+      // A store another server holds is refused by its owner lock alone (StoreOwned, or a start waits for that server's
+      // stop), before its file is read.
+      const held = join(options.dataDir, STORE_FILE);
+      if (ownerHeld(held)) throw new StoreOwned(`another server holds the store at ${held}`);
       const earlier = earlierVersionIn(options.dataDir);
       if (earlier.length > 0) throw new StoreFromEarlierVersion(options.dataDir, earlier);
       mkdirSync(options.dataDir, { recursive: true });

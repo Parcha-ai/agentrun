@@ -182,8 +182,17 @@ export type RunnerBeside = { held(): readonly unknown[]; close(): Promise<void> 
 export function stoppingBeside(serve: Pick<Serve, "stopping">, runner: RunnerBeside | undefined, drainMs: number): { runs: number; boundMs: number } {
   const own = serve.stopping();
   const held = runner?.held().length ?? 0;
-  return { runs: own.runs + held, boundMs: Math.max(own.boundMs, held > 0 ? drainMs + 1_000 : 0) };
+  // The runner's whole close: the drain and a second (main's words for it), and after it the wait for a loop that stops
+  // late (runner.ts close: its claim's lease less its margin), so the stop's deadline never cuts a close still going.
+  return { runs: own.runs + held, boundMs: Math.max(own.boundMs, held > 0 ? drainMs + 1_000 + RUNNER_LATE_STOP_MS : 0) };
 }
+
+/** How long a runner's close may wait past its drain for a loop that stops late: its claim's lease less its margin
+ *  (runner.ts close, leaseMs - stopMarginMs, at their defaults). */
+const RUNNER_LATE_STOP_MS = 25_000;
+
+/** Each server's one stop (stopBeside): a second call answers the first's, and writes nothing again. */
+const stops = new WeakMap<object, Promise<void>>();
 
 /**
  * The stop of a server and the runner beside it on `data` (the CLI's, once per stop): it says how long it waits and for
@@ -191,16 +200,30 @@ export function stoppingBeside(serve: Pick<Serve, "stopping">, runner: RunnerBes
  * start meanwhile waits for it (openStoreAfterStop), lets the runner drain its runs' turns while the API still answers,
  * then closes the server, whose store lock the next start takes.
  */
-export async function stopBeside(serve: Pick<Serve, "stopping" | "close">, runner: RunnerBeside | undefined, { data, drainMs, notice }: { data: string; drainMs: number; notice?: (line: string) => void }): Promise<void> {
+export function stopBeside(serve: Pick<Serve, "stopping" | "close">, runner: RunnerBeside | undefined, options: { data: string; drainMs: number; notice?: (line: string) => void }): Promise<void> {
+  // Once per server: a second call (after the next server took the root) never marks that server's record stopping.
+  let stopping = stops.get(serve);
+  if (!stopping) stops.set(serve, (stopping = stopOnce(serve, runner, options)));
+  return stopping;
+}
+
+async function stopOnce(serve: Pick<Serve, "stopping" | "close">, runner: RunnerBeside | undefined, { data, drainMs, notice }: { data: string; drainMs: number; notice?: (line: string) => void }): Promise<void> {
   const { runs, boundMs } = stoppingBeside(serve, runner, drainMs);
-  if (runs > 0) noticeOf({ notice })(`stopping: waiting up to ${seconds(boundMs)} for ${runs === 1 ? "1 run to finish its turn" : `${runs} runs to finish their turn`}`);
+  // Main's words for what it waits on: the runs' drain and a second.
+  const heldRuns = runner?.held().length ?? 0;
+  const saidMs = Math.max(serve.stopping().boundMs, heldRuns > 0 ? drainMs + 1_000 : 0);
+  if (runs > 0) noticeOf({ notice })(`stopping: waiting up to ${seconds(saidMs)} for ${runs === 1 ? "1 run to finish its turn" : `${runs} runs to finish their turn`}`);
   try {
     markStopping(data, Date.now() + boundMs + STOP_MARGIN_MS);
   } catch {
     // The mark is for a start that comes meanwhile: the stop goes on without it.
   }
-  await runner?.close();
-  await serve.close();
+  // The server closes even when the runner's close throws: its listener, deliveries and store go either way.
+  try {
+    await runner?.close();
+  } finally {
+    await serve.close();
+  }
 }
 
 /**
