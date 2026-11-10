@@ -795,7 +795,7 @@ const TEMPLATE_APPLIED = closedWith({
     }),
   },
 });
-const TRIGGER_ERRORS = "409 store_unreadable when triggers.json in the data directory does not read: nothing fires, and nothing is written over it.";
+const TRIGGER_ERRORS = "The triggers are rows in the server's store, read as they are now. A store busy with another write answers 409 home_busy, retryable: send it again.";
 const RUN_LEARNING = {
   oneOf: [
     closedWith({
