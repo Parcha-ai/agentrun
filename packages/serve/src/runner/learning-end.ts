@@ -29,7 +29,7 @@ import { gradeModelOf, PROPOSAL } from "../learning.js";
 import { reflects, type Reflect } from "../learning-run.js";
 import { said, STOPPED } from "../learning-words.js";
 import { proposeRun } from "../propose.js";
-import { learningStartOf, type RunLaunch } from "../run-launch.js";
+import { learningStartOf, type RunLaunch, seedFailed } from "../run-launch.js";
 import { costOf, type SignInReader } from "../run-view.js";
 import type { Store } from "../store/store.js";
 import { runEntries, runReflect, runTimeline } from "../store-reads/journal.js";
@@ -108,10 +108,11 @@ export function learningEndOfRun(launch: RunLaunch, deps: LearningEndDeps): EndO
     ...(gradeModel ? { gradeModel } : {}),
   });
   return async (input) => {
-    // A seed that could not be read (no seedNotes, no commit): the server dropped its learning at the start, and the run
-    // was never asked to look back.
-    if (start.seed === null && start.seedNotes === undefined) {
-      return { also: [{ table: "learning_proposals", row: { turn: null, proposal: { state: "dropped", reason: "seed_failed", detail: said.stopped(STOPPED.notCopied) } } }] };
+    // A seed that failed at the start (seedFailed): the server dropped its learning there, and the run was never asked to
+    // look back. Said as main says it: a folder that could not be read, or a start that could not be made from it.
+    const failed = seedFailed(start);
+    if (failed) {
+      return { also: [{ table: "learning_proposals", row: { turn: null, proposal: { state: "dropped", reason: "seed_failed", detail: said.stopped(failed === "unreadable" ? STOPPED.unreadable : STOPPED.notCopied) } } }] };
     }
     return hookFor(input.runId)(input);
   };

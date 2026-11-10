@@ -19,7 +19,7 @@ import { harnessOfBody } from "./harness.js";
 import { redacted, redactedOutput } from "./key-refusal.js";
 import { givenOf, LEARNING_BUDGET, learnedOf, type LearningMode, type NoteUsed, type Seed, type Shown } from "./learning.js";
 import { type Place, resolvePlace } from "./place.js";
-import { launchBody, type RunLaunch } from "./run-launch.js";
+import { launchBody, type RunLaunch, type SeedFailed } from "./run-launch.js";
 import type { ApprovalDecision, RunMoment } from "./run-view.js";
 import { sendCommand } from "./runner/commands.js";
 import { ExternalBodyConflict, type NewRevision, RunFinal, type RunOrigin, type RunRow, type Store, StoreConstraint } from "./store/index.js";
@@ -336,16 +336,22 @@ const noShown: Shown = { text: (text) => text, name: (name) => name, holds: () =
  *  names (givenOf, the one decision the runner puts in the prompt), the # Learned text (learnedOf), the seed sha it starts
  *  from and the count of all the seed's notes before the budget picked `given` (seedNotes) — or given empty, seed null and no
  *  seedNotes when its seed cannot be read (a learning fault never refuses a run). */
-async function learningStartFor(deps: StartDeps, entry: AgentEntry, revision: Revision, rbody: StartBody): Promise<{ given: NoteUsed[]; seed: string | null; section: string; seedNotes?: number } | undefined> {
+async function learningStartFor(deps: StartDeps, entry: AgentEntry, revision: Revision, rbody: StartBody): Promise<{ given: NoteUsed[]; seed: string | null; section: string; seedNotes?: number; seedFailed?: SeedFailed } | undefined> {
   const learns = deps.learning !== undefined && deps.learning !== "off" && revision.kind === "agentic" && rbody.learning === true;
   if (!learns || !deps.seedFor) return undefined;
   const seeded = await deps.seedFor(entry.agent.id);
-  if (!("seed" in seeded)) return { given: [], seed: null, section: "" };
-  const options = { budget: deps.learningBudget ?? LEARNING_BUDGET, read: Array.isArray(rbody.tools) && rbody.tools.includes("read"), shown: deps.shown ? deps.shown() : noShown };
-  // The notes and the # Learned text are the old start's one decision (learnedParts): givenOf and learnedOf over the same
-  // seed and options, so the runner lays exactly this section for exactly these notes and reads no learning folder. seedNotes
-  // is the whole seed's note count, before the budget narrowed `given` (as the old seed_notes was).
-  return { given: givenOf(seeded.seed, options), seed: seeded.seed.sha, section: learnedOf(seeded.seed, options) ?? "", seedNotes: Object.keys(seeded.seed.notes).length };
+  // The folder could not be read (main's STOPPED.unreadable), or what it read could not be made into the start (main's
+  // copy that threw, STOPPED.notCopied): the run starts with nothing learned, and its learning end says which.
+  if (!("seed" in seeded)) return { given: [], seed: null, section: "", seedFailed: "unreadable" };
+  try {
+    const options = { budget: deps.learningBudget ?? LEARNING_BUDGET, read: Array.isArray(rbody.tools) && rbody.tools.includes("read"), shown: deps.shown ? deps.shown() : noShown };
+    // The notes and the # Learned text are the old start's one decision (learnedParts): givenOf and learnedOf over the same
+    // seed and options, so the runner lays exactly this section for exactly these notes and reads no learning folder. seedNotes
+    // is the whole seed's note count, before the budget narrowed `given` (as the old seed_notes was).
+    return { given: givenOf(seeded.seed, options), seed: seeded.seed.sha, section: learnedOf(seeded.seed, options) ?? "", seedNotes: Object.keys(seeded.seed.notes).length };
+  } catch {
+    return { given: [], seed: null, section: "", seedFailed: "not_copied" };
+  }
 }
 
 /** Starts a run of `entry`'s agent from a create body, as POST /agents/{id}/runs starts it: every check the old start made
