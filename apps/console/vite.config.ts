@@ -17,6 +17,17 @@ const v2 = devProxy(process.env)["/v2"];
 const wanted = process.env.VITEST_MAX_WORKERS?.trim() ?? "";
 if (wanted !== "" && !/^[1-9][0-9]*$/.test(wanted)) throw new Error(`VITEST_MAX_WORKERS must be a whole number of workers, got "${wanted}"`);
 const workers = wanted === "" ? undefined : Number(wanted);
+const alias = {
+  "@dsl": fileURLToPath(new URL("../../packages/dsl/src", import.meta.url)),
+  // The timeline library's tool names and pi-browser's tool list, from their sources (each imports nothing of Node).
+  "@timeline": fileURLToPath(new URL("../../packages/pi-durable-agent/src/timeline", import.meta.url)),
+  "@pi-browser": fileURLToPath(new URL("../../packages/pi-browser/src/core", import.meta.url)),
+  "@": fileURLToPath(new URL("./src", import.meta.url)),
+};
+// Story tests run from this file through @storybook/addon-vitest: with VITEST_STORYBOOK=true (`npm run test-storybook`, or
+// Storybook's own process) the only project is .storybook/vitest.project.ts's. Every other run, `npm test` among them,
+// keeps the unit configuration below and no projects.
+const projects = process.env.VITEST_STORYBOOK === "true" ? [(await import("./.storybook/vitest.project")).storybookProject(alias)] : undefined;
 
 export default defineConfig({
   base: "./",
@@ -35,16 +46,8 @@ export default defineConfig({
       },
     },
   },
-  resolve: {
-    alias: {
-      "@dsl": fileURLToPath(new URL("../../packages/dsl/src", import.meta.url)),
-      // The timeline library's tool names and pi-browser's tool list, from their sources (each imports nothing of Node).
-      "@timeline": fileURLToPath(new URL("../../packages/pi-durable-agent/src/timeline", import.meta.url)),
-      "@pi-browser": fileURLToPath(new URL("../../packages/pi-browser/src/core", import.meta.url)),
-      "@": fileURLToPath(new URL("./src", import.meta.url)),
-    },
-  },
+  resolve: { alias },
   build: { outDir: "dist", assetsInlineLimit: 0 },
   // css: tokens.css is read as text (`?raw`) by the design-system test and stories; every other stylesheet stays a stub.
-  test: { environment: "jsdom", include: ["src/**/*.test.ts", "src/**/*.test.tsx"], css: { include: [/\.css\?raw$/] }, ...(workers ? { maxWorkers: workers } : {}) },
+  test: { environment: "jsdom", include: ["src/**/*.test.ts", "src/**/*.test.tsx"], css: { include: [/\.css\?raw$/] }, ...(workers ? { maxWorkers: workers } : {}), ...(projects ? { projects } : {}) },
 });
