@@ -1,6 +1,6 @@
 import { KeyRound } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { KeyForm } from "@/components/KeysPage";
+import { KEY_ADVICE, KeyForm } from "@/components/KeysPage";
 import { RunError } from "@/components/RunError";
 import { Button } from "@/components/ui/button";
 import { type Client, ClientError } from "@/lib/client";
@@ -49,7 +49,8 @@ export function ModelKeyCard({ v2, needs, model, atRest, onSaved, writable, whyN
             ? <p className="text-[13px] text-muted-foreground">The server's AGENT_MODEL names a model it doesn't know, so an agent that names no model can't run. Set AGENT_MODEL to a provider/model-id where the server starts, or name a model in each agent.</p>
             : required
             ? <p className="text-[13px] text-muted-foreground">This server's default model is <span className="font-mono">{model}</span>, and no {required.label} key is set, so an agent that names no model can't run. Save the {required.label} key: such an agent then runs on that model.</p>
-            : <p className="text-[13px] text-muted-foreground">No model provider's key is set on this server, so an agent that names no model can't run. Save one: such an agent then runs on that provider's everyday model.</p>}
+            : <><p className="text-[13px] text-muted-foreground">No model provider's key is set on this server, so an agent that names no model can't run. Save one: such an agent then runs on that provider's everyday model.</p>
+              <p className="text-[13px] text-muted-foreground">{KEY_ADVICE}</p></>}
           {needs !== "model" && loadError && (
             <div role="alert">
               <p className="font-mono text-[13px] text-destructive-text">The keys could not be read: {loadError.code}: {loadError.message}</p>

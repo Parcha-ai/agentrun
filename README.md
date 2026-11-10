@@ -261,9 +261,11 @@ can keep a secret it was handed. [SECURITY.md](SECURITY.md) says how to report a
 
 ## Deploy it
 
-**Render.** The button above deploys [`render.yaml`](render.yaml): one 2 GB instance with a 10 GB disk, with the token
-and seal key generated for you. Then set `OPENROUTER_API_KEY` (or another provider's key) in the service's Environment
-tab and open the service's URL. The first visit asks for the setup code the server prints in the Logs tab.
+**Render.** The button above deploys [`render.yaml`](render.yaml): one 1 CPU / 2 GB instance with a 10 GB disk, the
+published image (no build), and the token and seal key generated for you. It needs a card on your Render workspace: about $25 a
+month for the instance and $2.50 for the disk, at Render's prices when this was written. In Render's form, paste
+`OPENROUTER_API_KEY`. We recommend an OpenRouter key with a dollar cap and an expiration date. Do not share this key with anyone.
+When it's live, open its URL and paste `AGENTRUN_TOKEN` from the service's Environment tab to set your password.
 
 **Docker Compose: a server and two runners.** On a Linux machine with Docker:
 

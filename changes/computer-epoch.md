@@ -1,8 +1,0 @@
----
-packages: @parcha/agentrun-computer
-kind: feature
----
-Every computer of a run carries two labels, `agentrun.run` and `agentrun.epoch` (`RUN_LABEL`, `EPOCH_LABEL`, in `src/labels.ts`), and a takeover releases the run's computers of an older claim with `releaseOlder(provider, run, epoch, { signal? })`. The claim epoch is the one fence for runs and computers: a new claim is epoch + 1, and its first step deletes every computer of the run labelled with a lower epoch.
-- `runLabels(run, epoch)` gives the two labels; a run id is a non-empty string with no NUL byte (`runProblem`), an epoch a whole number from 0 to 2^53 - 1 (`epochProblem`). `epochOf(labels)` reads a computer's epoch, decimal with no sign, leading zero or space, and names anything else in words. No provider refuses the labels: they are outside its own `agentrun.computer` namespace, and Docker takes them with no code of its own.
-- `releaseOlder` lists by `agentrun.run`, holds each listed computer to the run's label again, deletes each with a lower epoch or with no epoch it can read (named in `unproven`), keeps this epoch's, and returns `{ released, kept, unproven }`. A computer of the run with a higher epoch refuses the call as fenced before anything is released. Every release is attempted, and when any fails the result is an error naming each computer left and why: a partial cleanup is never a success. An aborted call starts no further release and says which ran. It revokes no mount; there is no `unmount` on the provider.
-- The conformance suite has a Full case, `provider.release-older`: computers of one run at epochs 1, 2 and 3 and of another run at epoch 1; `releaseOlder` at epoch 3 leaves 3 and the other run's, and at epoch 2 after it is refused as fenced.
