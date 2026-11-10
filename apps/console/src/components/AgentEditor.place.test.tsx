@@ -13,7 +13,7 @@ let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
 
 const places = placesOf({ places: { modes: ["runner", "sandbox"], boxes: [{ id: "bwrap", available: false, reason: "fixture: no bwrap" }, { id: "docker", available: true }] } });
-const tools = toolOffers([{ name: "read", available: true }, { name: "bash", available: true, sandbox_only: true }]);
+const tools = toolOffers([{ name: "read", available: true, harnesses: ["pi", "claude-agent", "codex", "opencode"] }, { name: "bash", available: true, sandbox_only: true, harnesses: ["pi"] }]);
 const caps = { harnesses: [{ id: "pi", available: true }], thinking: ["low"], tools, places };
 const agent = (place?: unknown, tools: string[] = ["read"]): Agent => ({
   agent_id: "boxed", kind: "agentic", revision: "rv1", revisions: 1, archived_at: null,
@@ -44,7 +44,7 @@ describe("AgentEditor, where the agent runs", () => {
     shell.step(/Tools/);
     expect(shell.input('input[type="checkbox"][value="bash"]')!.disabled).toBe(false);
     act(() => root?.unmount()); document.body.innerHTML = "";
-    const browsing = mount({ agent: agent(undefined, ["read", "browser"]), caps: { ...caps, places: boxed, tools: toolOffers([{ name: "read", available: true }, { name: "browser", available: true }, { name: "bash", available: true, sandbox_only: true }]) }, step: "computer" });
+    const browsing = mount({ agent: agent(undefined, ["read", "browser"]), caps: { ...caps, places: boxed, tools: toolOffers([{ name: "read", available: true, harnesses: ["pi", "claude-agent", "codex", "opencode"] }, { name: "browser", available: true, harnesses: ["pi"] }, { name: "bash", available: true, sandbox_only: true, harnesses: ["pi"] }]) }, step: "computer" });
     expect(browsing.input('input[name="place"][value="runner"]')!.checked).toBe(true);
   });
 
@@ -78,7 +78,7 @@ describe("AgentEditor, where the agent runs", () => {
   });
 
   it("a tool the server can't run says the server's reason, never a bare \"Needs \"", () => {
-    const withReason = toolOffers([{ name: "read", available: true }, { name: "bash", available: false, sandbox_only: true, reason: "fixture: no box can run it here" }]);
+    const withReason = toolOffers([{ name: "read", available: true, harnesses: ["pi", "claude-agent", "codex", "opencode"] }, { name: "bash", available: false, sandbox_only: true, reason: "fixture: no box can run it here", harnesses: ["pi"] }]);
     const html = renderToStaticMarkup(createElement(AgentEditor, { agent: agent({ mode: "sandbox", box: "docker" }), caps: { ...caps, tools: withReason }, step: "tools" }));
     expect(html).toContain("fixture: no box can run it here");
     expect(html).not.toMatch(/Needs\s*</);

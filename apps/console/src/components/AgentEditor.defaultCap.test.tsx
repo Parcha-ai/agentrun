@@ -7,7 +7,7 @@ import { AgentEditor } from "./AgentEditor";
 // The agent's default spend cap per run (`definition.max_cost_usd`): a run started without a cap of its own, and a
 // trigger with none, is capped at it. Empty means none, and clearing one sends an explicit 0 (the server's "no default"):
 // leaving the field out never removes a spend limit. The server judges the number and its 422 shows under the field.
-const caps = { harnesses: [{ id: "pi", available: true }], tools: [{ name: "read", available: true }], thinking: ["low"] };
+const caps = { harnesses: [{ id: "pi", available: true }], tools: [{ name: "read", available: true, harnesses: ["pi", "claude-agent", "codex", "opencode"] }], thinking: ["low"] };
 const capped = { agent_id: "inv", kind: "agentic" as const, revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: "Invoices", instructions: "Check.", harness: "pi", skills: [], tools: ["read"], max_cost_usd: 2.5 } };
 const LABEL = "Default spend cap per run, $";
 

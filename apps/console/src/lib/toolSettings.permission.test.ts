@@ -19,7 +19,7 @@ describe("tool permissions", () => {
       { name: "ask_person", permission: "allow", default_permission: "allow", permissions: ["allow", "deny"] },
       { name: "web_search", permission: "ask", default_permission: "allow", permissions: ["allow", "ask", "deny"] },
     ]);
-    expect(toolGates([{ name: "read", available: true }])).toEqual([]);
+    expect(toolGates([{ name: "read", available: true, harnesses: ["pi", "claude-agent", "codex", "opencode"] }])).toEqual([]);
     expect(toolGates(undefined)).toEqual([]);
   });
 

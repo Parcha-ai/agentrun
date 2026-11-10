@@ -14,11 +14,11 @@ afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
 const ALL: ("allow" | "ask" | "deny")[] = ["allow", "ask", "deny"];
 const SEARCH = { name: "web_search", available: true, providers: ["auto", "native", "exa-keyless", "parallel", "off"], provider: "auto", default_provider: "auto", resolves: { pi: "exa-keyless" }, permission: "allow", default_permission: "allow", permissions: ALL };
 const RAW = [
-  { name: "read", available: true, permission: "allow", default_permission: "allow", permissions: ALL },
-  { name: "bash", available: true, permission: "deny", default_permission: "allow", permissions: ALL },
+  { name: "read", available: true, permission: "allow", default_permission: "allow", permissions: ALL, harnesses: ["pi", "claude-agent", "codex", "opencode"] },
+  { name: "bash", available: true, permission: "deny", default_permission: "allow", permissions: ALL, harnesses: ["pi"] },
   SEARCH,
 ];
-const caps = { harnesses: [{ id: "pi", available: true }], tools: RAW.map(({ name, available }) => ({ name, available })), thinking: [] };
+const caps = { harnesses: [{ id: "pi", available: true }], tools: RAW.map(({ name, available }) => ({ name, available, harnesses: ["pi"] })), thinking: [] };
 const agentWith = (toolSettings?: Agent["definition"]["tool_settings"], over: Partial<Agent> = {}): Agent => ({
   agent_id: "fetcher", kind: "agentic", revision: "r1", revisions: 1, archived_at: null,
   definition: { version: 1, name: "Fetcher", instructions: "Fetch it.", harness: "pi", skills: [], tools: ["read", "bash", "web_search"], ...(toolSettings ? { tool_settings: toolSettings } : {}) },

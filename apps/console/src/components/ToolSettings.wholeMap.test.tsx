@@ -26,8 +26,8 @@ const ALL = ["allow", "ask", "deny"];
 const SEARCH = { name: "web_search", providers: ["auto", "native", "exa-keyless", "parallel", "off"], provider: "auto", default_provider: "auto", available: true, resolves: { pi: "exa-keyless", "claude-agent": "native", codex: "native" } };
 const FETCH = { name: "web_fetch", providers: ["kernel", "parallel"], provider: "kernel", default_provider: "kernel", available: true, resolves: { pi: "kernel", "claude-agent": "native", codex: "native" } };
 const RAW = [
-  { name: "read", available: true, permission: "allow", default_permission: "allow", permissions: ALL },
-  { name: "bash", available: true, permission: "allow", default_permission: "allow", permissions: ALL },
+  { name: "read", available: true, permission: "allow", default_permission: "allow", permissions: ALL, harnesses: ["pi", "claude-agent", "codex", "opencode"] },
+  { name: "bash", available: true, permission: "allow", default_permission: "allow", permissions: ALL, harnesses: ["pi"] },
   { ...FETCH, permission: "allow", default_permission: "allow", permissions: ALL },
   { ...SEARCH, permission: "allow", default_permission: "allow", permissions: ALL },
 ];
@@ -95,7 +95,7 @@ describe("the agent editor saves the agent's whole tool_settings, changed in one
     const saves: AgentFields[] = [];
     const host = document.body.appendChild(document.createElement("div"));
     root = createRoot(host);
-    const caps = { harnesses: [{ id: "pi", available: true }], tools: RAW.map(({ name }) => ({ name, available: true })), thinking: [] };
+    const caps = { harnesses: [{ id: "pi", available: true }], tools: RAW.map(({ name }) => ({ name, available: true, harnesses: ["pi"] })), thinking: [] };
     act(() => root!.render(createElement(AgentEditor, { agent, caps, providerChoices: toolChoices(RAW), permissionGates: toolGates(RAW), step: "tools", onSave: async (f: AgentFields) => { saves.push(f); return null; } })));
     await settle();
     const scope = host.querySelector("section[aria-label='Tool settings']")!;

@@ -293,11 +293,11 @@ describe("same", () => {
 
 describe("tools by default (tools on, Miguel's rule), and whether the agent reaches the web", () => {
   const offers = toolOffers([
-    { name: "read", available: true }, { name: "write", available: true }, { name: "edit", available: true },
-    { name: "web_fetch", available: true }, { name: "ask_person", available: true }, { name: "browser", available: false, missing: ["BROWSERBASE_API_KEY"] },
+    { name: "read", available: true, harnesses: ["pi", "claude-agent", "codex", "opencode"] }, { name: "write", available: true, harnesses: ["pi", "claude-agent", "codex", "opencode"] }, { name: "edit", available: true, harnesses: ["pi", "claude-agent", "codex", "opencode"] },
+    { name: "web_fetch", available: true, harnesses: ["pi"] }, { name: "ask_person", available: true, harnesses: ["pi"] }, { name: "browser", available: false, missing: ["BROWSERBASE_API_KEY"], harnesses: ["pi"] },
   ]);
   it("takes the server's tools as objects", () => {
-    expect(offers.find((t) => t.name === "browser")).toEqual({ name: "browser", available: false, missing: ["BROWSERBASE_API_KEY"] });
+    expect(offers.find((t) => t.name === "browser")).toEqual({ name: "browser", available: false, missing: ["BROWSERBASE_API_KEY"], harnesses: ["pi"] });
   });
   it("a new pi agent starts with every tool the server can run ticked, never one it can't", () => {
     expect(defaultTools("pi", offers)).toEqual(["read", "write", "edit", "web_fetch", "ask_person"]);
@@ -316,14 +316,15 @@ describe("tools by default (tools on, Miguel's rule), and whether the agent reac
     expect(reachesWeb([])).toBe(false);
   });
   it("keeps what each tool does, as the server says it", () => {
-    expect(toolOffers([{ name: "web_fetch", available: true, summary: "Read one public web page." }])).toEqual([{ name: "web_fetch", available: true, summary: "Read one public web page." }]);
+    expect(toolOffers([{ name: "web_fetch", available: true, summary: "Read one public web page.", harnesses: ["pi"] }])).toEqual([{ name: "web_fetch", available: true, summary: "Read one public web page.", harnesses: ["pi"] }]);
   });
 });
 
 describe("toolOffers, a tool object that doesn't say whether it's available", () => {
   it("reads it as available: only an explicit false makes a tool unavailable", () => {
-    expect(toolOffers([{ name: "read" }])).toEqual([{ name: "read", available: true }]);
-    expect(toolOffers([{ name: "read", available: false }])).toEqual([{ name: "read", available: false }]);
+    // No `harnesses` served: no harness runs it here.
+    expect(toolOffers([{ name: "read" }])).toEqual([{ name: "read", available: true, harnesses: [] }]);
+    expect(toolOffers([{ name: "read", available: false, harnesses: ["pi", "claude-agent", "codex", "opencode"] }])).toEqual([{ name: "read", available: false, harnesses: ["pi", "claude-agent", "codex", "opencode"] }]);
   });
 });
 
@@ -363,6 +364,6 @@ describe("sandbox-only tools", () => {
 // Where an agent runs (its computer: "the agent's computer" above), and a tool's reason from the server is kept.
 describe("places in the definition", () => {
   it("toolOffers keeps a tool's reason, for a tool the server can't run with nothing missing", () => {
-    expect(toolOffers([{ name: "bash", available: false, sandbox_only: true, reason: "fixture: no box" }])).toEqual([{ name: "bash", available: false, sandbox_only: true, reason: "fixture: no box" }]);
+    expect(toolOffers([{ name: "bash", available: false, sandbox_only: true, reason: "fixture: no box", harnesses: ["pi"] }])).toEqual([{ name: "bash", available: false, sandbox_only: true, reason: "fixture: no box", harnesses: ["pi"] }]);
   });
 });

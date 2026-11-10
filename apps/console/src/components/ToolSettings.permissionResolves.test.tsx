@@ -27,7 +27,7 @@ describe("a permission change and what the tool resolves to", () => {
       definition: { version: 1, name: "Searcher", instructions: "Look it up.", harness: "pi", skills: [], tools: ["web_search"] },
       tools: [{ name: "web_search", provider: "auto", provider_from: "default", default_provider: "auto", resolved: "exa-keyless", permission: "allow", permission_from: "default", default_permission: "allow", permissions: ["allow", "ask", "deny"] }],
     };
-    const caps = { harnesses: [{ id: "pi", available: true }], tools: [{ name: "web_search", available: true }], thinking: [] };
+    const caps = { harnesses: [{ id: "pi", available: true }], tools: [{ name: "web_search", available: true, harnesses: ["pi"] }], thinking: [] };
     const host = document.body.appendChild(document.createElement("div"));
     root = createRoot(host);
     act(() => root!.render(createElement(AgentEditor, { agent, caps, providerChoices: toolChoices([SEARCH]), permissionGates: toolGates([SEARCH]), step: "tools", onSave: async () => null })));

@@ -345,24 +345,53 @@ function frameBox(ctx: Ctx, node: Node, body: Node): Box {
   };
 }
 
+/** How a node is drawn: an exit, a card with nothing inside, a chain (only the line its steps sit on, no box of its own),
+ *  a fan of branches under its card, or a frame round its one body. The drawing and its node count both read it. */
+function drawnAs(node: Node, kids: Kid[]): "exit" | "leaf" | "chain" | "fan" | "frame" {
+  if (node.kind === "escalate") return "exit";
+  if (!kids.length) return "leaf";
+  if (node.kind === "chain") return "chain";
+  if (node.kind === "route" || node.kind === "parallel") return "fan";
+  return "frame";
+}
+
 function layout(ctx: Ctx, node: Node): Box {
   const kids = ctx.kids[node.path] ?? [];
-  if (node.kind === "escalate") return exitRow(ctx, node, true);
-  if (!kids.length) return leaf(ctx, node);
-  if (node.kind === "chain") return chainBox(ctx, node, kids);
-  if (node.kind === "route" || node.kind === "parallel") return fanBox(ctx, node, kids);
+  const as = drawnAs(node, kids);
+  if (as === "exit") return exitRow(ctx, node, true);
+  if (as === "leaf") return leaf(ctx, node);
+  if (as === "chain") return chainBox(ctx, node, kids);
+  if (as === "fan") return fanBox(ctx, node, kids);
   return frameBox(ctx, node, kids[0].node);
 }
+
+/** The nodes the drawing shows as boxes of their own (a card or an exit), laid out from the root: every node but a chain
+ *  with steps, and a frame's one body only. The count every page prints beside a graph. */
+export function drawnNodeCount(graph: GraphInput | null | undefined): number {
+  const { byPath, kids } = treeOf(nodesOf(graph));
+  const count = (node: Node): number => {
+    const k = kids[node.path] ?? [];
+    const as = drawnAs(node, k);
+    const inner = as === "frame" ? count(k[0].node) : as === "chain" || as === "fan" ? k.reduce((n, c) => n + count(c.node), 0) : 0;
+    return (as === "chain" ? 0 : 1) + inner;
+  };
+  return byPath["/root"] ? count(byPath["/root"]) : 0;
+}
+
+/** A count of nodes in words: "1 node", "4 nodes". */
+export const nodesWord = (n: number) => `${n} ${n === 1 ? "node" : "nodes"}`;
+
+/** The graph's nodes the drawing can place: each with a path and a kind. */
+const nodesOf = (graph: GraphInput | null | undefined): Node[] => (graph && Array.isArray(graph.nodes) ? graph.nodes : [])
+  .filter((n) => n && typeof n.path === "string" && typeof n.kind === "string")
+  .map((n) => ({ path: n.path, kind: n.kind, label: String(n.label ?? n.kind), via: typeof n.via === "string" ? n.via : "" }));
 
 /** Draws `graph` (the DSL's workflowGraph) into `svg` at its natural size, which CSS shrinks to fit and never grows.
  *  Drawing again clears the last. Returns the drawing's size. */
 export function drawWorkflowGraph(svg: SVGSVGElement, graph: GraphInput | null | undefined, marks: GraphMarks = {}): { w: number; h: number } {
   while (svg.firstChild) svg.removeChild(svg.firstChild);
   svg.classList.add("wf");
-  const nodes: Node[] = (graph && Array.isArray(graph.nodes) ? graph.nodes : [])
-    .filter((n) => n && typeof n.path === "string" && typeof n.kind === "string")
-    .map((n) => ({ path: n.path, kind: n.kind, label: String(n.label ?? n.kind), via: typeof n.via === "string" ? n.via : "" }));
-  const tree = treeOf(nodes);
+  const tree = treeOf(nodesOf(graph));
   const size = (w: number, h: number) => {
     svg.setAttribute("viewBox", `0 0 ${w} ${h}`);
     svg.setAttribute("width", String(w));

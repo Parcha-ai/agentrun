@@ -48,14 +48,14 @@ describe("AgentEditor: a harness switch keeps no tool the new harness can't run"
     t.pick("claude-agent");
     // The reason is on the Settings step, where the switch was made, before Save.
     expect(t.notice()!.textContent).toContain("Claude doesn't run this tool here, so it's unticked.");
-    expect(t.notice()!.textContent).toContain("ask_person: Not on claude-agent on this server");
+    expect(t.notice()!.textContent).toContain("ask_person: Runs on Pi here, not on Claude");
     expect(t.notice()!.textContent).not.toContain(MCP);
     // The Tools step shows it unticked, can't be ticked, with the same reason.
     t.step("Tools");
     const box = t.host.querySelector<HTMLInputElement>('input[type="checkbox"][value="ask_person"]')!;
     expect(box.checked).toBe(false);
     expect(box.disabled).toBe(true);
-    expect(box.closest("label")!.textContent).toContain("Not on claude-agent on this server");
+    expect(box.closest("label")!.textContent).toContain("Runs on Pi here, not on Claude");
     await t.save();
     expect(t.sent).toHaveLength(1);
     expect(t.sent[0].harness).toBe("claude-agent");
@@ -67,8 +67,8 @@ describe("AgentEditor: a harness switch keeps no tool the new harness can't run"
     t.pick("codex");
     const said = t.notice()!.textContent ?? "";
     expect(said).toContain("Codex doesn't run these tools here, so they're unticked. Switching back ticks them again.");
-    expect(said).toContain("ask_person: Not on codex on this server");
-    expect(said).toContain(`${MCP}: codex doesn't run MCP tools on this server: pi and claude-agent do`);
+    expect(said).toContain("ask_person: Runs on Pi here, not on Codex");
+    expect(said).toContain(`${MCP}: Codex doesn't run MCP tools here: Pi and Claude do`);
     // Through another harness and back: what pi runs is ticked again, and nothing is left to save.
     t.pick("claude-agent");
     t.pick("pi");
@@ -85,7 +85,7 @@ describe("AgentEditor: a harness switch keeps no tool the new harness can't run"
     await act(async () => { t.host.querySelector<HTMLInputElement>('input[type="checkbox"][value="read"]')!.click(); });
     t.step("Settings");
     t.pick("claude-agent");
-    expect(t.notice()!.textContent).toContain("ask_person: Not on claude-agent on this server");
+    expect(t.notice()!.textContent).toContain("ask_person: Runs on Pi here, not on Claude");
     t.pick("pi");
     t.step("Tools");
     expect(t.host.querySelector<HTMLInputElement>('input[type="checkbox"][value="read"]')!.checked).toBe(false);

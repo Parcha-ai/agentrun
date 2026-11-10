@@ -13,7 +13,7 @@ let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
 
 const NEVER_LINE = "Never ask: every tool this agent has runs without waiting for you. A tool set to deny, and a template's pins, still hold.";
-const caps = { harnesses: [{ id: "pi", available: true }], thinking: ["low"], tools: toolOffers([{ name: "read", available: true }, { name: "bash", available: true }]) };
+const caps = { harnesses: [{ id: "pi", available: true }], thinking: ["low"], tools: toolOffers([{ name: "read", available: true, harnesses: ["pi", "claude-agent", "codex", "opencode"] }, { name: "bash", available: true, harnesses: ["pi"] }]) };
 const gates = toolGates([{ name: "bash", permission: "ask", default_permission: "ask", permissions: ["allow", "ask", "deny"] }]);
 const agentWith = (approvals?: "ask" | "never"): Agent => ({ agent_id: "a1", kind: "agentic", revision: "rv1", revisions: 1, archived_at: null,
   definition: { version: 1, name: "Mine", instructions: "Do it.", harness: "pi", skills: [], tools: ["read", "bash"], ...(approvals ? { approvals } : {}) } });
@@ -101,7 +101,7 @@ describe("AgentEditor, the agent's approvals while a save is under way and with 
 
 describe("AgentEditor, the Tool settings words under Never ask", () => {
   const SEARCH = { name: "web_search", providers: ["auto", "native", "exa-keyless", "parallel", "off"], provider: "auto", default_provider: "auto", available: true, resolves: { pi: "exa-keyless" } };
-  const searchCaps = { ...caps, tools: toolOffers([{ name: "read", available: true }, { name: "web_search", available: true }]) };
+  const searchCaps = { ...caps, tools: toolOffers([{ name: "read", available: true, harnesses: ["pi", "claude-agent", "codex", "opencode"] }, { name: "web_search", available: true, harnesses: ["pi"] }]) };
   const GATE = { permission: "ask" as const, permission_from: "default" as const, default_permission: "ask" as const, permissions: ["allow" as const, "ask" as const, "deny" as const] };
   const searcher = (approvals: "ask" | "never"): Agent => ({ agent_id: "s1", kind: "agentic", revision: "rv1", revisions: 1, archived_at: null,
     definition: { version: 1, name: "Searcher", instructions: "Look.", harness: "pi", skills: [], tools: ["read", "web_search"], approvals },

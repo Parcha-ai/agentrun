@@ -24,6 +24,7 @@ import { elapsed, metaOf } from "@/lib/runGraph";
 import { cn } from "@/lib/utils";
 import { rangeFrom, type Stats } from "@/lib/mission";
 import type { Run } from "@/lib/v2";
+import { drawnNodeCount, nodesWord } from "@/lib/wfGraph";
 
 /** `stats`: the page's own read of the agent's stats over the Analytics tab's first range, which that tab starts from. */
 type TabProps = { agent: Agent; v2: Client; go: (hash: string) => void; stats?: Stats | null };
@@ -216,7 +217,7 @@ function WorkflowTab({ agent, go }: TabProps) {
     <section className="border">
       <div className="flex flex-wrap items-center gap-3 border-b px-4 py-2">
         <span className="caps text-[11px] font-semibold">Graph</span>
-        <span className="font-mono text-[11px] text-muted-foreground">{graph.nodes.length} nodes · rev {agent.definition.version}</span>
+        <span className="font-mono text-[11px] text-muted-foreground">{nodesWord(drawnNodeCount(graph))} · rev {agent.definition.version}</span>
         <span className="flex-1" />
         <Button size="sm" onClick={() => go(agentHash(agent.agent_id, "edit"))}><Pencil aria-hidden /> Edit the workflow</Button>
       </div>

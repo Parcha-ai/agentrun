@@ -8,7 +8,7 @@ import { AgentEditor, type EditorCaps } from "./AgentEditor";
 // reason never picks it.
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-const tools = [{ name: "read", available: true }, { name: "write", available: true }];
+const tools = [{ name: "read", available: true, harnesses: ["pi", "claude-agent", "codex", "opencode"] }, { name: "write", available: true, harnesses: ["pi", "claude-agent", "codex", "opencode"] }];
 const caps: EditorCaps = { harnesses: [{ id: "pi", available: true }, { id: "claude-agent", available: true }, { id: "codex", available: false, reason: "codex needs OPENAI_API_KEY." }], tools, thinking: ["low"] };
 
 let root: ReturnType<typeof createRoot> | undefined;

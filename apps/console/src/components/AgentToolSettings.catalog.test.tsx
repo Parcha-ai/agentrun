@@ -19,7 +19,7 @@ afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
 const ALL = ["allow", "ask", "deny"] as ("allow" | "ask" | "deny")[];
 // As capabilities give each tool (serve's toolsView, serverGate): monid's catalog tools among them, ask by default.
 const GATES = [{ name: "read", permission: "allow", default_permission: "allow", permissions: ALL }, { name: "web_fetch", permission: "allow", default_permission: "allow", permissions: ALL }, { name: "monid.discover", permission: "allow", default_permission: "ask", permissions: ALL }];
-const CAPS = { harnesses: [{ id: "pi", available: true }], thinking: [], tools: toolOffers([{ name: "read", available: true }, { name: "web_fetch", available: true }, { name: "monid.discover", available: true }]), mcp: true, mcpHarnesses: ["pi"] };
+const CAPS = { harnesses: [{ id: "pi", available: true }], thinking: [], tools: toolOffers([{ name: "read", available: true, harnesses: ["pi", "claude-agent", "codex", "opencode"] }, { name: "web_fetch", available: true, harnesses: ["pi"] }, { name: "monid.discover", available: true, harnesses: ["pi"] }]), mcp: true, mcpHarnesses: ["pi"] };
 // As a saved server's read gives a tool: with its permission in force under the server's tool settings (`inForce`).
 const tool = (name: string, inForce?: "allow" | "ask" | "deny") => ({ name, description: `${name}.`, input_schema: { type: "object" }, ...(inForce ? { permission: inForce, default_permission: "ask" as const, permissions: ALL } : {}) });
 const github = (inForce?: "allow" | "ask" | "deny"): McpServer => ({ name: "github", url: "https://mcp.example.test/mcp", auth: { type: "bearer" }, credential: "sealed", tools: [tool("list_issues", inForce), tool("create_issue", inForce)], protocol: "2026-07-28" });

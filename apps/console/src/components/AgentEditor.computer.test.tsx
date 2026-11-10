@@ -13,7 +13,7 @@ let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
 
 const places = placesOf({ places: { modes: ["runner", "sandbox"], boxes: [{ id: "docker", available: true }] } });
-const tools = toolOffers([{ name: "read", available: true }, { name: "bash", available: true, sandbox_only: true }]);
+const tools = toolOffers([{ name: "read", available: true, harnesses: ["pi", "claude-agent", "codex", "opencode"] }, { name: "bash", available: true, sandbox_only: true, harnesses: ["pi"] }]);
 const caps = { harnesses: [{ id: "pi", available: true }], thinking: ["low"], tools, places };
 const agent = (definition: Record<string, unknown> = {}): Agent => ({
   agent_id: "computed", kind: "agentic", revision: "rv1", revisions: 1, archived_at: null,

@@ -111,26 +111,24 @@ export function capOf(text: string | undefined): { ok: true; value: number | und
 
 /** One tool the server offers (`GET /v2/capabilities` `tools`): whether it can run here, what it lacks, what it does
  *  (`summary`), and, when the server says, which harnesses run it. */
-export type ToolOffer = { name: string; available: boolean; summary?: string; missing?: string[]; reason?: string; harnesses?: string[]; call_only?: true; sandbox_only?: true; nodes?: boolean };
+export type ToolOffer = { name: string; available: boolean; summary?: string; /** One line for people, served beside the model-facing `summary`; an MCP server's tool has none. */ blurb?: string; missing?: string[]; reason?: string; /** The harnesses that run it here (served on every tool). */ harnesses: string[]; call_only?: true; sandbox_only?: true; nodes?: boolean };
 
 export function toolOffers(raw: unknown): ToolOffer[] {
   return (Array.isArray(raw) ? raw : []).flatMap((t): ToolOffer[] => {
     if (!t || typeof t !== "object" || typeof (t as { name?: unknown }).name !== "string") return [];
-    const { name, available, summary, missing, reason, harnesses, call_only, sandbox_only, nodes } = t as { name: string; available?: boolean; summary?: unknown; missing?: string[]; reason?: unknown; harnesses?: string[]; call_only?: unknown; sandbox_only?: unknown; nodes?: unknown };
+    const { name, available, summary, blurb, missing, reason, harnesses, call_only, sandbox_only, nodes } = t as { name: string; available?: boolean; summary?: unknown; blurb?: unknown; missing?: string[]; reason?: unknown; harnesses?: string[]; call_only?: unknown; sandbox_only?: unknown; nodes?: unknown };
     return [{
-      name, available: available !== false, ...(typeof summary === "string" && summary ? { summary } : {}), ...(missing?.length ? { missing } : {}), ...(typeof reason === "string" && reason ? { reason } : {}), ...(harnesses ? { harnesses } : {}),
+      name, available: available !== false, ...(typeof summary === "string" && summary ? { summary } : {}), ...(typeof blurb === "string" && blurb.trim() ? { blurb: blurb.trim() } : {}), ...(missing?.length ? { missing } : {}), ...(typeof reason === "string" && reason ? { reason } : {}), harnesses: Array.isArray(harnesses) ? harnesses : [],
       ...(call_only === true ? { call_only: true as const } : {}), ...(sandbox_only === true ? { sandbox_only: true as const } : {}), ...(typeof nodes === "boolean" ? { nodes } : {}),
     }];
   });
 }
 
-/** The tools a harness runs here. The server says per tool when it can (`harnesses`); until it does, its own rule
- *  (serve's runnable.ts): pi binds every tool, another harness only the file tools, and any other tool refuses its run. */
-const FILE_TOOLS = ["read", "write", "edit"];
+/** The tools a harness runs here: the server says per tool which harnesses run it (`capabilities.tools[].harnesses`). */
 export function toolsFor(harness: string, offers: ToolOffer[]): ToolOffer[] {
   // A call-only tool (capabilities' `call_only`) runs only in a workflow's call node: no harness binds it, and no
   // revision names it in its tools.
-  return offers.filter((t) => !t.call_only && (t.harnesses ? t.harnesses.includes(harness) : harness === "pi" || FILE_TOOLS.includes(t.name)));
+  return offers.filter((t) => !t.call_only && t.harnesses.includes(harness));
 }
 
 /** Whether a granted tool (a built-in's name, or an MCP grant `mcp:<server>/<tool>`) runs on `harness` here. A built-in
@@ -145,9 +143,16 @@ export function runsOn(harness: string, tool: string, offers: ToolOffer[], { mcp
   return toolsFor(harness, offers).some((t) => t.name === tool);
 }
 
-/** Why a granted tool doesn't run on `harness` here (runsOn says it doesn't), in the form's words. */
-export const notOn = (harness: string, tool: string, mcpHarnesses?: readonly string[]): string =>
-  tool.startsWith("mcp:") ? `${harness} doesn't run MCP tools on this server${mcpHarnesses?.length ? `: ${mcpHarnesses.join(" and ")} do` : ""}` : `Not on ${harness} on this server`;
+/** A harness by the name the Harness step shows ("Claude" for claude-agent); one the console doesn't name, by its id. */
+export const harnessLabel = (id: string): string => (LABEL as Record<string, string>)[id] ?? id;
+const named = (ids: readonly string[]) => ids.map(harnessLabel).join(" and ");
+
+/** Why a granted tool doesn't run on `harness` here (runsOn says it doesn't): the harnesses that do run it, by their names. */
+export function notOn(harness: string, tool: string, offers: ToolOffer[], mcpHarnesses?: readonly string[]): string {
+  if (tool.startsWith("mcp:")) return `${harnessLabel(harness)} doesn't run MCP tools here${mcpHarnesses?.length ? `: ${named(mcpHarnesses)} do` : ""}`;
+  const runs = offers.find((t) => t.name === tool)?.harnesses ?? [];
+  return runs.length ? `Runs on ${named(runs)} here, not on ${harnessLabel(harness)}` : `No harness runs it here`;
+}
 
 /** A harness switch's tools: of the ticked ones and those an earlier switch took off (`held`), the ones `harness` runs
  *  here stay ticked, in their order, and the rest are taken off and held, so switching back ticks them again. A tool

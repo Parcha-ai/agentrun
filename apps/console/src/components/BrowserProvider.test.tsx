@@ -71,7 +71,7 @@ describe("Settings → Tools, the browser row", () => {
 });
 
 describe("an agent's browser pick in its editor", () => {
-  const caps = { harnesses: [{ id: "pi", available: true }], tools: [{ name: "read", available: true }, { name: "browser", available: true }], thinking: ["low"] };
+  const caps = { harnesses: [{ id: "pi", available: true }], tools: [{ name: "read", available: true, harnesses: ["pi", "claude-agent", "codex", "opencode"] }, { name: "browser", available: true, harnesses: ["pi"] }], thinking: ["low"] };
   const agentWith = (provider?: ToolSetting["provider"]): Agent => ({
     agent_id: "browsing", kind: "agentic", revision: "r1", revisions: 1, archived_at: null,
     definition: { version: 1, name: "Browsing", instructions: "Look.", harness: "pi", skills: [], tools: ["read", "browser"], ...(provider ? { tool_settings: { browser: { provider } } } : {}) },

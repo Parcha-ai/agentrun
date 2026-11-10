@@ -16,7 +16,7 @@ import recorded from "@/fixtures/mcp.requests.json";
 // grants `mcp:<server>/<tool>`, and a grant whose server is gone, or no longer lists the tool, says so.
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-const CAPS = { harnesses: [{ id: "pi", available: true }, { id: "codex", available: true }], thinking: [], tools: toolOffers([{ name: "read", available: true }]), mcp: true, mcpHarnesses: ["pi", "claude-agent"] };
+const CAPS = { harnesses: [{ id: "pi", available: true }, { id: "codex", available: true }], thinking: [], tools: toolOffers([{ name: "read", available: true, harnesses: ["pi", "claude-agent", "codex", "opencode"] }]), mcp: true, mcpHarnesses: ["pi", "claude-agent"] };
 const definition = (tools: string[]) => ({ id: "calc", version: 1, name: "Calc", instructions: "Answer.", harness: "pi", skills: [], tools });
 const agent = (tools: string[], harness = "pi"): Agent => ({ agent_id: "calc", kind: "agentic", revision: "r1", revisions: 1, archived_at: null, definition: { ...definition(tools), harness } } as Agent);
 const tool = (name: string, description: string) => ({ name, description, input_schema: { type: "object" } });

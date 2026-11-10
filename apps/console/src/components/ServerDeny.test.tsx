@@ -50,8 +50,8 @@ describe("a server deny, in Settings → Tools", () => {
 
 describe("a server deny, in the agent editor", () => {
   const RAW = [
-    { name: "read", available: true, permission: "allow", default_permission: "allow", permissions: ALL },
-    { name: "bash", available: true, permission: "deny", default_permission: "allow", permissions: ALL },
+    { name: "read", available: true, permission: "allow", default_permission: "allow", permissions: ALL, harnesses: ["pi", "claude-agent", "codex", "opencode"] },
+    { name: "bash", available: true, permission: "deny", default_permission: "allow", permissions: ALL, harnesses: ["pi"] },
   ];
   const caps = { harnesses: [{ id: "pi", available: true }], tools: RAW.map(({ name, available }) => ({ name, available, harnesses: ["pi"] })), thinking: [] };
   const agentWith = (tools: string[], over: Partial<Agent> = {}, toolSettings?: ToolSettings): Agent => ({
