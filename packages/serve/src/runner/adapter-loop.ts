@@ -1322,15 +1322,25 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     }
   }
 
-  /** Whether a call of this run waits for the answer `approval` names: asked, and not answered yet. */
-  async function waitsFor(approval: string | undefined): Promise<boolean> {
+  /** Whether a call of this run waits for the answer `approval` names: asked, and not answered yet. `later` when this
+   *  claim can no longer say: its Harness never opened, or its pass is parking, ending or stopping (the journal sealed,
+   *  closeSession closing the Harness behind the seal). The row is left untaken and the run's next claim checks it, as a
+   *  steer that comes as the run parks is (#2292: the read went through the closed Harness and threw). */
+  async function waitsFor(approval: string | undefined): Promise<boolean | "later"> {
     if (approval === undefined) return false;
     await Promise.race([ready, (finished ?? new Promise<never>(() => {})).then(() => undefined, () => undefined)]);
-    if (!gate || !harness) return false;
-    const conversation = await harness.root(context);
-    const entries = await entriesOf(gate.journal, conversation.id, context);
-    const asked = findData<AskData>(entries, KINDS.ask, (data) => data.callId === approval) !== undefined;
-    return asked && findData<AnswerData>(entries, KINDS.answer, (data) => data.callId === approval) === undefined;
+    const [theGate, theHarness] = [gate, harness];
+    if (!theGate || !theHarness || theGate.sealed) return "later";
+    try {
+      const conversation = await theHarness.root(context);
+      const entries = await entriesOf(theGate.journal, conversation.id, context);
+      const asked = findData<AskData>(entries, KINDS.ask, (data) => data.callId === approval) !== undefined;
+      return asked && findData<AnswerData>(entries, KINDS.answer, (data) => data.callId === approval) === undefined;
+    } catch (error) {
+      // Sealed while it read: closeSession seals, then closes the Harness the read went through.
+      if (theGate.sealed) return "later";
+      throw error;
+    }
   }
 
   async function reportHeld(session: Harness, conversationId: ConversationId): Promise<void> {
@@ -1731,7 +1741,9 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         // An answer names its approval: the asked call's id. One that names no call waiting for its answer (an old
         // approval, another run's) is refused, never applied to the call that waits now.
         const approval = approvalOf(command);
-        if (!(await waitsFor(approval))) {
+        const waits = await waitsFor(approval);
+        if (waits === "later") return { later: "the run is parking or ending: the answer waits for its next claim" };
+        if (!waits) {
           refusals += 1;
           wakeInbox();
           return { refused: `no call of this run waits for approval ${JSON.stringify(approval ?? "")}` };
