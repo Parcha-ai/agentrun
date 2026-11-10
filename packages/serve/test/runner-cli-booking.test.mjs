@@ -109,7 +109,7 @@ async function cliRun(t, { tools, instructions, learned }) {
 }
 
 test("a CLI run's learned_workflow model node books on the run's one ledger, labelled learned_workflow and priced by the session", async (t) => {
-  const { row, requests, turns } = await cliRun(t, { tools: ["read", LEARNED_WORKFLOW_TOOL], instructions: "Use the learned workflow answer on What is six times seven.", learned: true });
+  const { row, requests, turns } = await cliRun(t, { tools: ["read"], instructions: "Use the learned workflow answer on What is six times seven.", learned: true });
   assert.equal(row.state, "ended", `the run ended: ${JSON.stringify(row)}`);
   const node = requests.filter((request) => request.host === LEARNED_WORKFLOW_TOOL);
   assert.equal(node.length, 1, `the node's one request is the session's, labelled learned_workflow: ${JSON.stringify(requests)}`);

@@ -15,7 +15,7 @@ export type Definition = { version: number; approvals?: Approvals; name: string;
 export type SaveWarning = { field: string; reason: string; message: string };
 /** `warnings`: on a create's or an edit's answer only (never on a read of the agent); the console keeps a create's for
  *  the agent's page that opens after it (client.ts). */
-export type Agent = { agent_id: string; kind: "agentic" | "workflow"; revision: string; revisions: number; definition: Definition; archived_at: string | null; runs?: { count: number; live: number }; warnings?: SaveWarning[]; tools?: AgentTool[] };
+export type Agent = { agent_id: string; kind: "agentic" | "workflow"; revision: string; revisions: number; definition: Definition; archived_at: string | null; runs?: { count: number; live: number }; warnings?: SaveWarning[]; tools?: AgentTool[]; learning?: { pending: number } };
 export type AgentFields = Partial<Pick<Definition, "name" | "description" | "instructions" | "harness" | "thinking" | "model" | "tools" | "workflow" | "learning" | "tool_settings" | "max_cost_usd" | "approvals">> & { workflowText?: string; maxCostText?: string; place?: Place; computer?: Computer };
 
 /** The body of a definition edit: the current definition with the edited fields; name and

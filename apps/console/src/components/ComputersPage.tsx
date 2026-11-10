@@ -5,6 +5,7 @@ import { ListSkeleton } from "@/components/Skeleton";
 import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
 import { type Client, ClientError, problemOf } from "@/lib/client";
+import { BY_THE_MINUTE, METERED } from "@/lib/computers";
 import { clock } from "@/lib/format";
 import { type SecretsWhyNot, WHY_NOT_WORDS } from "@/lib/secrets";
 import type { ApiError, ComputerKindView, ComputerProvider, Computers } from "@/lib/v2";
@@ -21,9 +22,6 @@ const wordsOf = (kind: string) => KIND_WORDS[kind] ?? { label: kind, gives: "" }
 
 const apiError = (e: unknown): ApiError => (e instanceof ClientError ? e.toApiError() : { code: "network", message: e instanceof Error ? e.message : String(e), retryable: false });
 
-/** Said on a metered provider of a kind that bills by the minute: its minutes are the vendor's, outside the run's cap. */
-const METERED = "This provider bills by the minute through your own vendor account, and those minutes aren't counted in a run's spending cap.";
-const BY_THE_MINUTE: ReadonlySet<string> = new Set(["sandbox", "desktop", "phone"]);
 /** A provider's secret is named "computer:<provider>:<KEY>"; its PUT takes the KEY. */
 const keyOf = (name: string) => name.slice(name.lastIndexOf(":") + 1);
 /** A key's form (paste or replace) or its removal's confirm, open under one row. */
