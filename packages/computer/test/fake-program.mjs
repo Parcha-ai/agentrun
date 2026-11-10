@@ -1,6 +1,6 @@
 // A fake CLI for a test, run in the test's own process: the provider execs a real program at `path` (the Go client in
 // fake-program-client.go, built once per machine and source, or a Node client where there is no Go), and the client
-// hands its argv, pid and stdin to the program's body here over the unix socket at <path>.sock, then gives back its
+// hands its argv, pid and stdin to the program's body here over a unix socket named by a hash of path (socketOf), then gives back its
 // stdout, stderr and exit code. The exec, the argv, the pipes and the exit code stay real; only the Node start per call
 // is gone, which made the Docker tests half the package's unit time.
 //
@@ -24,7 +24,8 @@ const SOURCE = fileURLToPath(new URL("./fake-program-client.go", import.meta.url
 /** The Node client: the Go client's protocol, for a machine with no Go (slower: a Node start per call). */
 const NODE_CLIENT = `
 const net = require("node:net");
-const conn = net.connect(process.argv[1] + ".sock");
+const name = "agentrun-fake-" + require("node:crypto").createHash("sha256").update(process.argv[1]).digest("hex").slice(0, 32);
+const conn = net.connect(process.platform === "linux" ? "\\0" + name : "/tmp/" + name + ".sock");
 conn.write(JSON.stringify({ argv: process.argv.slice(2), pid: process.pid }) + "\\n");
 const frame = (kind, data) => { const head = Buffer.alloc(5); head[0] = kind; head.writeUInt32BE(data.length, 1); return Buffer.concat([head, data]); };
 process.stdin.on("data", (data) => conn.write(frame(0, data)));
@@ -75,14 +76,32 @@ after(() => {
 const EXIT = Symbol("exit");
 
 /**
+ * Where the fake program at path takes its calls: a socket whose name is a hash of path, which the client computes from
+ * its argv[0] too. On Linux an abstract socket (no file, and no path a long TMPDIR can push past a unix socket's 108
+ * bytes); elsewhere a short file in /tmp.
+ */
+export function socketOf(path) {
+	const name = `agentrun-fake-${createHash("sha256").update(path).digest("hex").slice(0, 32)}`;
+	return process.platform === "linux" ? `\0${name}` : `/tmp/${name}.sock`;
+}
+
+/**
  * Makes `path` a program whose calls run `body` here. `wholeStdin(argv)` says a call reads all of stdin at once
- * (readFileSync(0)): it then starts once stdin has ended. Returns `path`.
+ * (readFileSync(0)): it then starts once stdin has ended. Returns `path`. A fake that cannot listen throws here, in
+ * words: a unix socket binds as listen() is called, so its failure is known now, never as an error after the test.
  */
 export function fakeProgram(path, body, { wholeStdin = () => false } = {}) {
 	const run = new Function("require", "process", "setTimeout", "setInterval", "clearTimeout", "clearInterval", body);
-	fs.symlinkSync(CLIENT, path);
+	const at = socketOf(path);
+	if (process.platform !== "linux") fs.rmSync(at, { force: true });
 	const server = createServer((socket) => call(socket, path, run, wholeStdin));
-	server.listen(`${path}.sock`);
+	let failed;
+	server.on("error", (error) => (failed ??= error));
+	server.listen(at);
+	if (!server.listening) {
+		throw new Error(`the fake program ${path} cannot listen at ${JSON.stringify(at)}${failed ? `: ${failed.message}` : ""}`);
+	}
+	fs.symlinkSync(CLIENT, path);
 	server.unref();
 	servers.push(server);
 	return path;
