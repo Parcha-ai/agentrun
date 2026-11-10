@@ -207,9 +207,10 @@ function alreadyAnswered(id: string, decision: ApprovalDecision, ended = false):
 }
 
 /** The answer to approval `id` of run `runId` already written as a command, taken by its runner or not: the first approve or
- *  deny naming it (the store keeps one, schema.ts COMMANDS_ONE_ANSWER). */
+ *  deny naming it that the runner has not refused (the store keeps one, schema.ts COMMANDS_ONE_ANSWER). A refused one (its
+ *  run could not resume) answers nothing, so the person may answer again. */
 async function sentAnswer(store: RunsStore, runId: string, id: string): Promise<{ decision: "allow" | "deny" } | undefined> {
-  const row = (await store.commands(runId, 0)).find((command) => (command.kind === "approve" || command.kind === "deny") && isObject(command.body) && command.body.approval === id);
+  const row = (await store.commands(runId, 0)).find((command) => (command.kind === "approve" || command.kind === "deny") && command.refused === null && isObject(command.body) && command.body.approval === id);
   return row && { decision: row.kind === "approve" ? "allow" : "deny" };
 }
 

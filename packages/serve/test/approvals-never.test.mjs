@@ -256,7 +256,7 @@ test("native web_search set to ask on claude-agent and codex: under never it is 
   }
 });
 
-test("approvals takes ask back: a definition put back as it reads (the console's edit) is taken and still reads ask; a never agent edited to ask reads ask; one edited naming none stays never", { timeout: 60_000 }, async (t) => {
+test("approvals takes ask back: a definition put back as it reads (the console's edit) keeps what it reads, ask or never; a never agent edited to ask reads ask; an edit that leaves approvals out asks, of either kind, and a change of kind naming none asks", { timeout: 60_000 }, async (t) => {
   const { api } = await serve(t);
   assert.equal((await api("POST", "/agents", agent("plain"))).status, 201);
   const read = (await api("GET", "/agents/plain")).body.definition;
@@ -266,11 +266,45 @@ test("approvals takes ask back: a definition put back as it reads (the console's
   assert.equal(echoed.status, 200, JSON.stringify(echoed.body));
   assert.equal((await api("GET", "/agents/plain")).body.definition.approvals, "ask", "still ask");
 
+  // A never agent: the console's edit sends back the approvals it read, so it stays never.
   assert.equal((await api("POST", "/agents", agent("unattended", { approvals: "never" }))).status, 201);
-  const kept = await api("PUT", "/agents/unattended/definition", agent("unattended", { version: 2, instructions: "Answer briefly." }));
-  assert.equal(kept.status, 200, JSON.stringify(kept.body));
-  assert.equal((await api("GET", "/agents/unattended")).body.definition.approvals, "never", "an edit naming none keeps never");
-  const turned = await api("PUT", "/agents/unattended/definition", agent("unattended", { version: 3, approvals: "ask" }));
+  const asRead = (await api("GET", "/agents/unattended")).body.definition;
+  assert.equal(asRead.approvals, "never");
+  const roundTrip = await api("PUT", "/agents/unattended/definition", { definition: { ...asRead, instructions: "Answer briefly.", version: asRead.version + 1 } });
+  assert.equal(roundTrip.status, 200, JSON.stringify(roundTrip.body));
+  assert.equal((await api("GET", "/agents/unattended")).body.definition.approvals, "never", "the console's round trip keeps never");
+  // An edit that leaves approvals out asks: openapi.ts's own words for DefinitionInput.approvals, "An edit that leaves it
+  // out asks, so no edit makes an agent unattended by saying nothing" (main's agents.ts says the same).
+  const left = await api("PUT", "/agents/unattended/definition", agent("unattended", { version: asRead.version + 2, instructions: "Answer in a word." }));
+  assert.equal(left.status, 200, JSON.stringify(left.body));
+  assert.equal((await api("GET", "/agents/unattended")).body.definition.approvals, "ask", "an edit leaving approvals out asks");
+  assert.equal((await api("PUT", "/agents/unattended/definition", agent("unattended", { version: asRead.version + 3, approvals: "never" }))).status, 200);
+  const turned = await api("PUT", "/agents/unattended/definition", agent("unattended", { version: asRead.version + 4, approvals: "ask" }));
   assert.equal(turned.status, 200, JSON.stringify(turned.body));
   assert.equal((await api("GET", "/agents/unattended")).body.definition.approvals, "ask", "an edit naming ask turns it to ask");
+
+  // A workflow agent: the same rule.
+  // The workflow the call-node case below runs (one web_fetch call node).
+  const flow = {
+    v: 2, name: "read-site",
+    schemas: {
+      In: { type: "object", required: ["website"], properties: { website: { type: "string" } } },
+      Page: { type: "object", required: ["ok"], properties: { ok: { type: "boolean" } } },
+    },
+    input: { schemaId: "In" },
+    output: { schemaId: "Page", path: "home" },
+    root: { node: "chain", steps: [{ node: "call", label: "Read the home page", via: "tool", tool: "web_fetch", args: { url: "{website}" }, out: "Page", as: "home", deadline_s: 60 }] },
+  };
+  const made = await api("POST", "/agents", { definition: { id: "flow-never", name: "flow-never", workflow: flow, tools: ["web_fetch"], approvals: "never" } });
+  assert.equal(made.status, 201, JSON.stringify(made.body));
+  assert.equal((await api("GET", "/agents/flow-never")).body.definition.approvals, "never");
+  const flowLeft = await api("PUT", "/agents/flow-never/definition", { definition: { id: "flow-never", name: "flow-never", version: 2, workflow: { ...flow, name: "read-site-again" }, tools: ["web_fetch"] } });
+  assert.equal(flowLeft.status, 200, JSON.stringify(flowLeft.body));
+  assert.equal((await api("GET", "/agents/flow-never")).body.definition.approvals, "ask", "a workflow edit leaving approvals out asks");
+
+  // A change of kind (agentic → workflow) naming no approvals asks too.
+  assert.equal((await api("POST", "/agents", agent("switcher", { approvals: "never" }))).status, 201);
+  const switched = await api("PUT", "/agents/switcher/definition", { definition: { id: "switcher", name: "switcher", version: 2, workflow: flow, tools: ["web_fetch"] } });
+  assert.equal(switched.status, 200, JSON.stringify(switched.body));
+  assert.equal((await api("GET", "/agents/switcher")).body.definition.approvals, "ask", "a change of kind naming none asks");
 });

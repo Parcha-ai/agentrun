@@ -266,15 +266,29 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
     if (found !== SCHEMA_VERSION) throw new SchemaVersionUnknown(file, found, SCHEMA_VERSION);
     // The per-run viewer table was renamed browser_viewers → computer_viewers (schema.ts). Its rows are ephemeral, so none
     // migrate; the server drops a stale browser_viewers an earlier build of this version left, so none lingers beside it.
-    // An earlier build of this version made no one-answer index on commands (schema.ts COMMANDS_ONE_ANSWER): the server
-    // adds it, so a second answer to one approval is refused on every store.
-    if (role === "server") await connection.write([{ sql: "DROP TABLE IF EXISTS browser_viewers" }, { sql: COMMANDS_ONE_ANSWER }], { full: true });
+    // An earlier build of this version made no one-answer index on commands (schema.ts COMMANDS_ONE_ANSWER), or one that
+    // counted refused answers: the server rebuilds it, so a second answer to one approval is refused on every store. A
+    // store such a build left may hold two unrefused answers to one approval: the earliest stands (the one the runner
+    // acted on) and each later one is refused in the same write, before the index, so the store opens. None is deleted.
+    if (role === "server") {
+      await connection.write([
+        { sql: "DROP TABLE IF EXISTS browser_viewers" },
+        { sql: SECOND_ANSWERS_REFUSED, params: [(options.now ?? Date.now)()] },
+        { sql: "DROP INDEX IF EXISTS commands_one_answer" },
+        { sql: COMMANDS_ONE_ANSWER },
+      ], { full: true });
+    }
   } catch (error) {
     await connection.close().catch(() => undefined);
     throw error;
   }
   return storeOver(connection, options.now ?? Date.now);
 }
+
+/** Every unrefused approve or deny after the first for one approval of a run, refused with why (the open above). */
+const SECOND_ANSWERS_REFUSED = `UPDATE commands SET taken_at = COALESCE(taken_at, ?), refused = 'a second answer to one approval: the first one stands'
+  WHERE kind IN ('approve', 'deny') AND refused IS NULL AND json_extract(body, '$.approval') IS NOT NULL
+    AND id NOT IN (SELECT MIN(id) FROM commands WHERE kind IN ('approve', 'deny') AND refused IS NULL AND json_extract(body, '$.approval') IS NOT NULL GROUP BY run_id, json_extract(body, '$.approval'))`;
 
 /** How many released claims a store remembers, to refuse their journals. */
 const RELEASED_KEPT = 1024;

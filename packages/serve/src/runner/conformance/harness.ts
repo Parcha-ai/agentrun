@@ -132,6 +132,10 @@ function crashAt(point: keyof KernelHooks, holder: { runner?: Runner; crashed?: 
 /** The Postgres store each registered subject's worlds open (registerHarnessConformance's `storeUrl`), by the subject
  *  object the suite's cases are handed: none for the data directory's SQLite store. */
 const STORE_URLS = new WeakMap<ConformanceSubject, string>();
+/** Cases a Postgres store can't pass yet, each with what it waits on: they run on SQLite and are skipped on Postgres. */
+const POSTGRES_PENDING: Readonly<Record<string, string>> = {
+  "approval-double-click": "waits on the Postgres commands_one_answer migration (pgstore-1): the one-answer index is SQLite's today",
+};
 
 /** A store in a data directory of its own, one queued run, and runners started on it (each its own connection). */
 /** The suite's short lease, for the crash cases: a crashed runner's claim must run out for the second runner to take
@@ -894,7 +898,8 @@ export function registerHarnessConformance(given: ConformanceSubject, { test, st
     const processCase = entry.id.endsWith("-process");
     const byFacts = ruledOut[entry.id];
     const notYet = subject.unsupported?.[entry.id] ?? (processCase && !subject.process ? "it names no module a runner process can load (subject.process)" : undefined);
-    const skip = byFacts ? `${subject.name} does not do this by design: ${byFacts}` : notYet ? `${subject.name} cannot model this yet: ${notYet}` : undefined;
+    const onPostgres = storeUrl ? POSTGRES_PENDING[entry.id] : undefined;
+    const skip = byFacts ? `${subject.name} does not do this by design: ${byFacts}` : notYet ? `${subject.name} cannot model this yet: ${notYet}` : onPostgres ? `on Postgres, ${onPostgres}` : undefined;
     test(`${subject.name}: ${entry.title}`, { timeout: CASE_TIMEOUT_MS, ...(skip ? { skip } : {}) }, (t) => entry.body(subject, t));
   }
 }

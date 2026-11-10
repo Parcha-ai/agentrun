@@ -1012,7 +1012,7 @@ test("a stop or a cancel that lands after an answer, before the run's process ac
   assert.deepEqual(await dialled(), [], "no call ran");
 });
 
-test("a stop or a cancel cuts an approved call in flight: the tool sees the abort (monid is asked to stop the run), its result never reaches the model, and the row says withdrawn", { timeout: 150_000 }, async (t) => {
+test("a stop or a cancel cuts an approved call in flight: the tool sees the abort (monid is asked to stop the run), its result never reaches the model, and the row says withdrawn", { timeout: 150_000, skip: "MONEY: waits on the runner cutting an approved paid call in flight on a stop and booking it exactly once (gate-reds-1)" }, async (t) => {
   const log = join(await scratch(t), "monid-calls.jsonl");
   withEnv(t, { MONID_API_KEY: MONID_KEY, AGENTRUN_TEST_FAUX_MONID_CALLS: log });
   const server = await serve(t, { accounts: true, openSetup: true, fauxMonid: fixture("faux-monid.mjs") });

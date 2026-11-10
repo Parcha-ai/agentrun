@@ -233,8 +233,8 @@ export async function commitAgent(
         // The computer and its place go together: an edit naming neither keeps both (the computer, else the place).
         ...(definition.place === undefined && definition.computer === undefined ? (currentBody.computer ? { computer: currentBody.computer } : currentBody.place ? { place: currentBody.place } : {}) : {}),
         ...(definition.learning === undefined && current.kind === "agentic" && !isObject(definition.workflow) && (currentBody as AgenticBody).learning !== undefined ? { learning: (currentBody as AgenticBody).learning } : {}),
-        // An edit naming no approvals keeps the agent's, of either kind (a workflow's "never" too).
-        ...(definition.approvals === undefined && current.kind === (isObject(definition.workflow) ? "workflow" : "agentic") && (currentBody as { approvals?: unknown }).approvals !== undefined ? { approvals: (currentBody as { approvals?: unknown }).approvals } : {}),
+        // No approvals here: an edit that leaves them out asks (openapi.ts DefinitionInput.approvals, as main's agents.ts),
+        // so no edit makes an agent unattended by saying nothing. The console's edit sends back the approvals it read.
         ...(definition.max_cost_usd === undefined && currentBody.maxCostUsd !== undefined ? { max_cost_usd: currentBody.maxCostUsd } : {}),
         ...(definition.cap_mode === undefined && currentBody.capMode !== undefined ? { cap_mode: currentBody.capMode } : {}),
       }

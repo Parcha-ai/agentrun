@@ -5,6 +5,10 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { approve } from "../dist/runs-over-store.js";
 import { queued, storeOn } from "./store-helpers.mjs";
+import { onPostgres, raw } from "./store-target.mjs";
+
+/** The one-answer index is SQLite's today (schema.ts COMMANDS_ONE_ANSWER); Postgres gets it in its own migration. */
+const ONE_ANSWER_INDEX = { skip: onPostgres ? "waits on the Postgres commands_one_answer migration (pgstore-1)" : false };
 
 const CALL = "call-1";
 /** The moment a server reads before the runner took any answer: the call waits, nothing answered yet. */
@@ -33,7 +37,7 @@ test("a deny the runner has not taken yet: an allow after it is 409 with deny", 
   assert.deepEqual(await answers(store), [["deny", CALL]]);
 });
 
-test("two answers racing on one stale moment: exactly one is written, the other is 409 with the winner's decision", async (t) => {
+test("two answers racing on one stale moment: exactly one is written, the other is 409 with the winner's decision", ONE_ANSWER_INDEX, async (t) => {
   const { store } = await storeOn(t);
   await queued(store);
   const moment = waiting();
@@ -46,10 +50,43 @@ test("two answers racing on one stale moment: exactly one is written, the other 
   assert.ok(alreadyAnswered(winner)(lost));
 });
 
-test("the same answer racing itself: both succeed, one command row", async (t) => {
+test("the same answer racing itself: both succeed, one command row", ONE_ANSWER_INDEX, async (t) => {
   const { store } = await storeOn(t);
   await queued(store);
   const moment = waiting();
   await Promise.all([approve(store, moment, CALL, "allow"), approve(store, moment, CALL, "allow")]);
   assert.deepEqual(await answers(store), [["approve", CALL]]);
+});
+
+/** Refuses command row `id` as the runner does when a woken run's loop cannot start (runner.ts resumeFailed): taken, with
+ *  its reason, so the run is released parked with nothing to wake it. */
+async function refuse(file, id) {
+  const db = await raw(file);
+  try {
+    await db.run("UPDATE commands SET taken_at = ?, refused = ? WHERE id = ?", Date.now(), "the run could not resume", id);
+  } finally {
+    await db.close?.();
+  }
+}
+const live = async (store, runId = "run-1") => (await store.commands(runId, 0)).filter((c) => (c.kind === "approve" || c.kind === "deny") && c.refused === null).map((c) => [c.kind, c.body.approval]);
+
+test("an answer the runner refused (its run could not resume) answers nothing: the same answer again is written anew and wakes the run", async (t) => {
+  const { store, file } = await storeOn(t);
+  await queued(store);
+  await approve(store, waiting(), CALL, "allow");
+  const [first] = (await store.commands("run-1", 0)).filter((c) => c.kind === "approve");
+  await refuse(file, first.id);
+  await approve(store, waiting(), CALL, "allow");
+  assert.deepEqual(await live(store), [["approve", CALL]], "a new, unrefused answer");
+  assert.equal((await store.commands("run-1", 0)).filter((c) => c.kind === "approve").length, 2, "the refused one kept, never deleted");
+});
+
+test("an answer the runner refused answers nothing: the other decision is taken, never 409", async (t) => {
+  const { store, file } = await storeOn(t);
+  await queued(store);
+  await approve(store, waiting(), CALL, "allow");
+  const [first] = (await store.commands("run-1", 0)).filter((c) => c.kind === "approve");
+  await refuse(file, first.id);
+  await approve(store, waiting(), CALL, "deny", "Not now.");
+  assert.deepEqual(await live(store), [["deny", CALL]]);
 });
