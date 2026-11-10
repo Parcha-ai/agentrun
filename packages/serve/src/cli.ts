@@ -60,7 +60,8 @@ const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--
   --no-runner       run the server alone, with no runner beside it (default: one runner beside the server); start one or
                     more \`agentrun-serve runner --data DIR\` processes on the same data directory to claim and run runs;
                     each holds at most --loops N runs (default AGENTRUN_MAX_RUNS, else as many pi runs as its host's
-                    memory holds) and on SIGTERM lets each busy run finish its turn for up to --drain-timeout D (default 6s)
+                    memory holds; the rest wait queued) and on SIGTERM lets each busy run finish its turn for up to
+                    --drain-timeout D (default AGENTRUN_DRAIN_TIMEOUT, else 6s), then hands the rest back to resume
 
 Without --faux, a revision's model ("provider/model-id", or AGENT_MODEL when it names none; a workflow node's tier maps
 to AGENT_MODEL_FAST or AGENT_MODEL_STRONG, each falling back to AGENT_MODEL) is served by pi-ai's providers with their

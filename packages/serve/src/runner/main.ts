@@ -6,7 +6,7 @@
 // the data directory) as its loop turns, which `agentrun-serve runner --check --data D [--name N]` reads without a store
 // connection. It holds at most --loops runs at once (default AGENTRUN_MAX_RUNS, else as many pi runs as this host's
 // memory holds: the server's --max-runs default, host.ts maxRunsOf). SIGTERM or SIGINT closes it: each busy run finishes
-// its turn for up to --drain-timeout (default RUNNER_DRAIN_TIMEOUT), then every loop left is stopped where it can resume
+// its turn for up to --drain-timeout (default AGENTRUN_DRAIN_TIMEOUT, else RUNNER_DRAIN_TIMEOUT), then every loop left is stopped where it can resume
 // and its run handed back for another runner (a loop that never stops is given up when its claim would run out, and its
 // run is claimable when its lease lapses); then 0. Bad arguments exit 2, a store schema it does not know 3, anything else 1.
 import { mkdirSync, statSync, utimesSync, writeFileSync } from "node:fs";
@@ -232,14 +232,19 @@ export function ofStore(make: (store: Store, sealKey: Buffer) => LoopFactory): (
 }
 const isStoreFactory = (made: LoopFactory | ((store: Store, sealKey: Buffer) => LoopFactory)): made is (store: Store, sealKey: Buffer) => LoopFactory => storeFactories.has(made);
 
-/** How long a runner process lets each busy run finish its turn on SIGTERM, unless --drain-timeout says: the image's
- *  server drain (its CMD's --drain-timeout 6s), so a runner beside a --no-runner server drains as the server's own runner
- *  would, and with its stuck-loop bound (the claim's lease less its margin, 25 s) stays inside a 35 s stop grace. */
+/** How long a runner process lets each busy run finish its turn on SIGTERM, unless --drain-timeout or
+ *  AGENTRUN_DRAIN_TIMEOUT says: the image's server drain (its CMD's --drain-timeout 6s), so a runner beside a --no-runner
+ *  server drains as the server's own runner would.
+ *  BOUND: this drain plus the stuck-loop stop after it (the claim's lease less its margin, runner.ts 30 s - 5 s = 25 s) is
+ *  6 + 25 = 31 s, inside deploy/compose.yaml's 35 s stop_grace_period for its runners. Raise this default only with
+ *  that grace. */
 export const RUNNER_DRAIN_TIMEOUT = "6s";
+/** The environment's drain for a runner process when --drain-timeout gives none. */
+export const RUNNER_DRAIN_ENV = "AGENTRUN_DRAIN_TIMEOUT";
 
 /** What a runner process holds, from its arguments and `env`: --loops, else the server's --max-runs default
  *  (AGENTRUN_MAX_RUNS, else as many pi runs as this host's memory holds; maxRunsOf); --drain-timeout, else
- *  RUNNER_DRAIN_TIMEOUT. A bad AGENTRUN_MAX_RUNS is RunnerRefused. */
+ *  AGENTRUN_DRAIN_TIMEOUT, else RUNNER_DRAIN_TIMEOUT. A bad AGENTRUN_MAX_RUNS or AGENTRUN_DRAIN_TIMEOUT is RunnerRefused. */
 export function runnerHolds(args: { loops?: number; drainMs?: number }, env: NodeJS.ProcessEnv): { loops: number; drainMs: number } {
   let loops = args.loops;
   if (loops === undefined) {
@@ -249,7 +254,13 @@ export function runnerHolds(args: { loops?: number; drainMs?: number }, env: Nod
       throw new RunnerRefused((error as Error).message);
     }
   }
-  return { loops, drainMs: args.drainMs ?? durationMs(RUNNER_DRAIN_TIMEOUT)! };
+  let drainMs = args.drainMs;
+  if (drainMs === undefined) {
+    const given = env[RUNNER_DRAIN_ENV];
+    drainMs = durationMs(given || RUNNER_DRAIN_TIMEOUT);
+    if (drainMs === undefined) throw new RunnerRefused(`${RUNNER_DRAIN_ENV} is a duration such as 6s, 500ms or 1m, not ${JSON.stringify(given)}`);
+  }
+  return { loops, drainMs };
 }
 
 /** The runner process's arguments: `--data D [--loops N] [--drain-timeout D] [--name N]`, or `--check --data D [--name

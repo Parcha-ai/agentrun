@@ -8,7 +8,7 @@ AgentRun runs as two kinds of process on one store:
 - **A runner** claims runs from the store and runs them, many at once (`--loops`, default `AGENTRUN_MAX_RUNS`, else as
   many pi runs as its host's memory holds, as the server's `--max-runs`); the rest wait queued. Run as many runners as
   you need; each one holds a run under a claim it renews every 10 s. A runner that stops lets each busy run finish its
-  turn for up to `--drain-timeout` (default `6s`, the image's server drain), then hands the rest back, and the runs of
+  turn for up to `--drain-timeout` (default `AGENTRUN_DRAIN_TIMEOUT`, else `6s`, the image's server drain), then hands the rest back, and the runs of
   one that dies are claimed by another runner once their 30 s lease lapses.
 
 Both come from one image, built from `packages/serve/docker/Dockerfile`, so a runner always knows the schema of the
@@ -36,6 +36,7 @@ What each takes, from its environment alone:
 | `AGENTRUN_STORE_SCHEMA` | optional | optional | The Postgres schema the store is in (default `agentrun`). |
 | `AGENTRUN_STORE_POOL_SIZE` | optional | optional | The most connections this process's Postgres store holds at once (default `10`): a whole number from 1 to 1000; any other value stops the process at start, in words. Each process holds its own pool, plus one connection for renewing claims, and the server one more for its owner lock, so a server with a runner beside it holds up to twice the size plus three. Keep the sum over every server and runner below the database's `max_connections`. With the SQLite store the size has no effect, but a value that is no size still stops the start. |
 | `AGENTRUN_MAX_RUNS` | optional | optional | The most runs at once: the server's `--max-runs` and a runner's `--loops` when not given. Unset, as many pi runs as the host's memory holds. |
+| `AGENTRUN_DRAIN_TIMEOUT` | | optional | A runner's `--drain-timeout` when not given (`8s`, `500ms`, `1m`); unset, `6s`. Keep it plus 25 s below the grace a SIGKILL waits for. |
 | `AGENTRUN_RUNNER_NAME` | | optional | The runner's name when `--name` gives none: in the runs it claims, its log lines and its heartbeat. Give each runner its own. |
 | `AGENTRUN_TOKEN` | optional | | The API token. Unset, the server makes one in `/data/.token` and prints it once. |
 | Model keys (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `AGENT_MODEL`, ...) | yes | yes | The runner makes a run's model requests; the server checks a run's model can run before it starts it. |

@@ -86,7 +86,7 @@ test("the server's flags are the beside runner's: --max-runs its loops, as the c
   assert.equal(besideRunnerOptions({ drainTimeout: "0s" }, {}).drainMs, 0);
 });
 
-test("a runner process of its own (`agentrun-serve runner`, beside a --no-runner server) holds the same: --loops, else AGENTRUN_MAX_RUNS, else what the host holds; --drain-timeout, else the image's 6s", () => {
+test("a runner process of its own (`agentrun-serve runner`, beside a --no-runner server) holds the same: --loops, else AGENTRUN_MAX_RUNS, else what the host holds; --drain-timeout, else AGENTRUN_DRAIN_TIMEOUT, else the image's 6s", () => {
   assert.deepEqual(runnerArgs(["--data", "/d", "--drain-timeout", "8s"]), { dataDir: "/d", drainMs: 8_000 });
   assert.deepEqual(runnerArgs(["--data", "/d", "--drain-timeout=0s"]), { dataDir: "/d", drainMs: 0 });
   assert.throws(() => runnerArgs(["--data", "/d", "--drain-timeout", "soon"]), /--drain-timeout is a duration such as 6s/);
@@ -95,6 +95,9 @@ test("a runner process of its own (`agentrun-serve runner`, beside a --no-runner
   assert.equal(RUNNER_DRAIN_TIMEOUT, "6s");
   assert.equal(runnerHolds({}, {}).loops, maxRunsOf({}), "with neither, as many as the host holds, as the server counts them");
   assert.throws(() => runnerHolds({}, { AGENTRUN_MAX_RUNS: "lots" }), /max runs is a positive integer/);
+  assert.equal(runnerHolds({}, { AGENTRUN_DRAIN_TIMEOUT: "2s" }).drainMs, 2_000, "else AGENTRUN_DRAIN_TIMEOUT");
+  assert.equal(runnerHolds({ drainMs: 0 }, { AGENTRUN_DRAIN_TIMEOUT: "2s" }).drainMs, 0, "--drain-timeout over the environment");
+  assert.throws(() => runnerHolds({}, { AGENTRUN_DRAIN_TIMEOUT: "soon" }), /AGENTRUN_DRAIN_TIMEOUT is a duration such as 6s/);
 });
 
 test("--max-runs 2 with 4 runs queued: the runner holds 2 at once, the other 2 wait queued, then run as places free", async (t) => {
