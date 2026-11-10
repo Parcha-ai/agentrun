@@ -7,7 +7,7 @@ import { spawn } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { connect, createServer as createNetServer } from 'node:net';
-import { networkInterfaces, tmpdir } from 'node:os';
+import { networkInterfaces } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { after, test } from 'node:test';
@@ -16,7 +16,9 @@ import { addressBytes, checkAddress, EGRESS_RANGES } from '../dist/docker/egress
 
 const MAIN = fileURLToPath(new URL('../dist/docker/egress-main.js', import.meta.url));
 
-const ROOT = mkdtempSync(join(tmpdir(), 'agentrun-egress-'));
+// Under /tmp, not tmpdir(): each proxy listens on ROOT/run-N/egress.sock, and a long TMPDIR (an agent shell's) puts that
+// past a unix socket path's 108 bytes, where listen fails with EINVAL.
+const ROOT = mkdtempSync('/tmp/agentrun-egress-');
 after(() => rmSync(ROOT, { recursive: true, force: true }));
 let made = 0;
 const socketPath = () => join(ROOT, `run-${++made}`, 'egress.sock');
