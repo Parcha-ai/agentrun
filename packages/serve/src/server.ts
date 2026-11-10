@@ -1117,12 +1117,15 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const shellKinds = claimKinds({});
   const folderMode = folderModeOf(store);
   const modeNow = async (): Promise<1 | 2> => ((await folderMode()) === "disk" ? 2 : 1);
-  /** Where a run of `revision` has its shell: its computer setting as the claim reads it (computer-for-claim.ts
-   *  settingOf), its computer, else its place, else the place its run would resolve to (fallbackPlace). */
+  /** Where a run has its shell from `computer`, its computer setting as the claim reads it (computer-for-claim.ts
+   *  settingOf), else `place`'s computer: the save and run checks (runnable.ts) and the agent's tool list read it alike. */
+  const shellOf = async (computer: ComputerSetting | undefined, place: PlaceView): Promise<ShellPlace> =>
+    runShellOf(computer ?? computerOfPlace(place), await modeNow(), shellKinds);
+  /** Where a run of `revision` has its shell: its computer, else its place, else the place its run would resolve to
+   *  (fallbackPlace). */
   const shellOfRevision = async (revision: Revision): Promise<ShellPlace> => {
     const body = revision.body as { computer?: ComputerSetting; place?: Place; tools?: readonly unknown[] };
-    const setting = body.computer ?? computerOfPlace(resolvePlace(body.place, fallbackPlace(revision.kind, revision.kind === "agentic" ? (body.tools ?? []) : [])));
-    return runShellOf(setting, await modeNow(), shellKinds);
+    return shellOf(body.computer, resolvePlace(body.place, fallbackPlace(revision.kind, revision.kind === "agentic" ? (body.tools ?? []) : [])));
   };
   /** A tool capabilities show available after all: as it was, with no reason. */
   const withoutReason = <T extends { reason?: string }>({ reason, ...tool }: T): Omit<T, "reason"> & { available: true } => ({ ...tool, available: true }) as Omit<T, "reason"> & { available: true };
@@ -1628,7 +1631,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  does not have yet. `capped`: the run has a spend cap, which a web tool's resolution reads (tool-plane.ts). */
   async function runnable(revision: Revision, place: Place, { capped = false }: { capped?: boolean } = {}): Promise<void> {
     const shape = { ...shapeOf(revision), place, ...(revision.body.place ? {} : { unnamed: true as const }) };
-    const blockers = await blockersOf(env, shape, settings.get(), { capped, boxes: boxOffers, computerReady, offers, mcp: mcpTools, decisionPrice });
+    const shell = await shellOf((revision.body as { computer?: ComputerSetting }).computer, place);
+    const blockers = await blockersOf(env, shape, settings.get(), { capped, boxes: boxOffers, computerReady, offers, mcp: mcpTools, decisionPrice, shell });
     if (!blockers.length) return;
     const message = blockers.map((b) => b.message).join(" ");
     // Each blocker as a 422 names its issue: its field, reason and message, and the fix when it has one.
@@ -1664,14 +1668,15 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     }
     const named = (revision.kind === "agentic" ? { kind: "agentic" as const, ...(body as AgenticBody) } : workflowShape(body as never)) as unknown as RevisionShape;
     const shape = named.place ? named : { ...named, place: fallbackPlace(named.kind, named.tools ?? []), unnamed: true as const };
-    const blockers = await blockersOf(env, shape, settings.get(), { boxes: boxOffers, computerReady, offers, mcp: mcpTools });
+    const shell = await shellOf(body.computer as ComputerSetting | undefined, shape.place as PlaceView);
+    const blockers = await blockersOf(env, shape, settings.get(), { boxes: boxOffers, computerReady, offers, mcp: mcpTools, shell });
     // An agent's default cap caps each run started without one of its own, and a web tool resolves by the cap: what a cap
     // alone keeps from running under the definition's own picks, whatever this host's settings, would keep every such run
     // from running, so the save is refused, not each run (claude-agent's or codex's own search, picked, under a cap).
     if ((body.maxCostUsd ?? 0) > 0) {
       const key = (b: Blocker) => `${b.field}\n${b.message}`;
-      const plain = new Set((await blockersOf(env, shape, {}, { boxes: boxOffers, computerReady, offers, mcp: mcpTools })).map(key));
-      const capped = await blockersOf(env, shape, {}, { capped: true, boxes: boxOffers, computerReady, offers, mcp: mcpTools, decisionPrice });
+      const plain = new Set((await blockersOf(env, shape, {}, { boxes: boxOffers, computerReady, offers, mcp: mcpTools, shell })).map(key));
+      const capped = await blockersOf(env, shape, {}, { capped: true, boxes: boxOffers, computerReady, offers, mcp: mcpTools, decisionPrice, shell });
       // A model with no price (`unpriced`) is a setting this host fixes (AGENT_MODEL_PRICE): a warning, as it is; the
       // agent saves and updates, and only a run under the cap is refused (409). A tool's pick a cap rules out refuses it.
       const added = capped.filter((b) => !plain.has(key(b)));

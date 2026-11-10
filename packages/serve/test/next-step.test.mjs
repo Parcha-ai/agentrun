@@ -13,6 +13,9 @@ import { boxesLine } from "../dist/place.js";
 import { hostOwnedRefusal } from "../dist/home-path.js";
 import { banner } from "../dist/print.js";
 import { ROUTES } from "../dist/server.js";
+import { NEEDS_A_COMPUTER } from "@parcha/agentrun-kernel/kernel";
+import { saveArchilSettings } from "../dist/archil-settings.js";
+import { openSqliteStore } from "../dist/store/index.js";
 import { agent, flowAgent, scratch, serve, withEnv } from "./support.mjs";
 
 const VM = VM_PROVIDER.id;
@@ -205,4 +208,33 @@ test("the learning/ refusal on a server whose routes include the learning API na
   assert.equal(hostOwnedRefusal("learning", "keeper", false, () => undefined).message, "the server keeps learning/ for itself; this server has no learning API yet");
   assert.equal(hostOwnedRefusal("learning", "keeper", true, at).message, "learning/ is written by the server, not through the API");
   assert.deepEqual(hostOwnedRefusal("learning", "keeper", false, at).extra, { details: { reason: "host_owned" } });
+});
+
+test("the save check follows where a run's shell is: in Mode 1 an agent with no computer is refused bash, pointing at a sandbox computer; in Mode 2 it saves with bash (Archil's exec runs it) and is refused a background tool in words", async (t) => {
+  // The server alone: these are saves, and no run starts.
+  const { api, data } = await serve(t, { runner: false });
+  const runner = { mode: "runner" };
+  const mode1 = await api("POST", "/agents", { definition: agent("shell-1", { tools: ["read", "bash"], place: runner }).definition });
+  assert.equal(mode1.status, 422, JSON.stringify(mode1.body));
+  assert.match(issueAt(mode1.body, "definition.tools[1]").message, /^bash runs only in a box, .*has no shell.*a sandbox computer/);
+  // Mode 2: the server's Archil settings saved (only their row: saving an agent reaches no disk).
+  const own = await openSqliteStore({ dataDir: data, role: "server" });
+  try {
+    await saveArchilSettings(own, { diskId: "dsk-0000000000000001", region: "aws-us-east-1", s3Url: "https://s3.example.com" });
+  } finally {
+    await own.close();
+  }
+  const bash = await api("POST", "/agents", { definition: agent("shell-2", { tools: ["read", "bash"], place: runner }).definition });
+  assert.equal(bash.status, 201, `bash runs on Archil's exec: ${JSON.stringify(bash.body)}`);
+  const unnamed = await api("POST", "/agents", { definition: agent("shell-2-unnamed", { tools: ["bash"] }).definition });
+  assert.equal(unnamed.status, 201, `with no place too: ${JSON.stringify(unnamed.body)}`);
+  const background = await api("POST", "/agents", { definition: agent("shell-2-bg", { tools: ["read", "bash", "bash_background"], place: runner }).definition });
+  assert.equal(background.status, 422, JSON.stringify(background.body));
+  assert.deepEqual(issueAt(background.body, "definition.tools[2]"), {
+    field: "definition.tools[2]",
+    reason: "not_an_option",
+    message: `bash_background: ${NEEDS_A_COMPUTER} This agent's runs have bash on Archil's exec, one command at a time.`,
+    fix: 'Remove "bash_background" from definition.tools.',
+  });
+  assert.equal(issueAt(background.body, "definition.tools[1]"), undefined, "bash itself is not refused");
 });

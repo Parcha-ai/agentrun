@@ -21,6 +21,7 @@ import { keyNeeded } from "./key-words.js";
 import { wireName } from "./catalog.js";
 import { mcpHeaderProblem, mcpNameOf } from "./mcp-gateway.js";
 import type { McpTool } from "@parcha/agentrun-kernel";
+import { NEEDS_A_COMPUTER, type ShellPlace } from "@parcha/agentrun-kernel/kernel";
 
 /** The harnesses an agent's MCP tools run on here. */
 export const MCP_HARNESSES: readonly string[] = HARNESSES.filter((id) => builtinHarness(id)!.mcp);
@@ -74,8 +75,12 @@ export const CODE_NODES_ENV = "AGENTRUN_SERVE_CODE_NODES";
 /** What keeps `revision` from running in `env` under the server's tool `settings` (tool-plane.ts). `boxes`: what this
  *  server's box registry set up at its start (boxes.ts); none, every box is unavailable. `offers`: the harnesses' offers
  *  the server already holds (its reading); none given, they are probed here. `computerReady`: whether an agent's computer
- *  setting can be had here now, or its refusal (resolve-computer.ts computerReadiness); none given, the box check. */
-export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape, settings: ToolSettingsMap = {}, { capped = false, boxes = [], offers, mcp, decisionPrice, computerReady }: { capped?: boolean; boxes?: readonly BoxOffer[]; offers?: readonly HarnessCapability[]; mcp?: (server: string) => readonly (McpTool & { grantable?: false; reason?: string })[] | undefined; decisionPrice?: (model: string) => Promise<unknown>; computerReady?: (setting: { kind: string; provider?: string }) => Promise<{ readonly ok: true } | { readonly refused: string; readonly box?: string }> } = {}): Promise<Blocker[]> {
+ *  setting can be had here now, or its refusal (resolve-computer.ts computerReadiness); none given, the box check.
+ *  `shell`: where a runner-placed run of it has its shell, as the claim gives it (workspace/resolve-computer.ts runShellOf
+ *  over its computer setting, in the server's mode): "none" refuses every bash-family tool; "local" (Archil's serverless
+ *  exec, Mode 2) allows bash and refuses the background tools; "computer" (a desktop whose provider mounts the folder)
+ *  allows them all. None given: "none". */
+export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape, settings: ToolSettingsMap = {}, { capped = false, boxes = [], offers, mcp, decisionPrice, computerReady, shell = "none" }: { capped?: boolean; boxes?: readonly BoxOffer[]; offers?: readonly HarnessCapability[]; mcp?: (server: string) => readonly (McpTool & { grantable?: false; reason?: string })[] | undefined; decisionPrice?: (model: string) => Promise<unknown>; computerReady?: (setting: { kind: string; provider?: string }) => Promise<{ readonly ok: true } | { readonly refused: string; readonly box?: string }>; shell?: ShellPlace } = {}): Promise<Blocker[]> {
   const out: Blocker[] = [];
   /** A web tool its run would resolve unavailable (tool-plane.ts): a warning at save, a 409 at a run, never another
    *  provider in its place. One set to deny is not: its run starts, and the gate refuses each call. */
@@ -157,8 +162,10 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
         return;
       }
       if (!allows(BOUND_TOOLS, tool)) out.push({ field: `definition.tools[${index}]`, reason: "not_an_option", message: `agentrun-serve binds the tools ${BOUND_TOOLS.join(", ")}; ${tool} is not one of them.`, host: false, tool });
-      // A shell runs only in a box: no place, or the runner, has none.
-      else if (toolOf(tool)!.sandboxOnly && (place?.mode ?? "runner") === "runner") out.push(shellOnRunner(tool, `definition.tools[${index}]`, !!place && !revision.unnamed));
+      // On the runner (no place, or the runner), the shell is where the claim puts it (`shell`): none, so no bash family;
+      // Archil's exec, so bash alone; or a computer that mounts the run's folder, so all of them.
+      else if (toolOf(tool)!.sandboxOnly && (place?.mode ?? "runner") === "runner" && shell === "none") out.push(shellOnRunner(tool, `definition.tools[${index}]`, !!place && !revision.unnamed));
+      else if (toolOf(tool)!.sandboxOnly && (place?.mode ?? "runner") === "runner" && shell === "local" && tool !== "bash") out.push({ field: `definition.tools[${index}]`, reason: "not_an_option", message: `${tool}: ${NEEDS_A_COMPUTER} This agent's runs have bash on Archil's exec, one command at a time.`, fix: `Remove "${tool}" from definition.tools.`, host: false, tool });
       // Its writes into work/ go by path from this machine, and a box's command could swap a link in on their way.
       else if (toolOf(tool)!.runnerOnly && place?.mode === "sandbox") out.push({ field: `definition.tools[${index}]`, reason: "not_an_option", message: `${tool} does not run in a sandbox place yet: it saves files into the run's work/ from this server, outside the box, and a command in the box could point those writes elsewhere on this server. Give it to an agent whose place is the runner.`, fix: `Remove "${tool}" from definition.tools.`, host: false, tool });
       // Another harness gets the host tools only (host-tools.ts: the file tools, web_fetch, web_search and
