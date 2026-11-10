@@ -28,3 +28,23 @@ export const OPTIONS = [
   ["0, read", { budget: 0, read: true }],
   ["2000, read", { budget: 2000, read: true }],
 ];
+
+/** Topics an agent learned about, each with the words its notes use. */
+const TOPICS = [
+  ["invoices", "Reconcile invoices", "Match each invoice total to its ledger entry, and flag an invoice whose currency differs from the ledger's."],
+  ["refunds", "Refund policy pages", "Refund policies live under /help/refunds; quote the refund window in days."],
+  ["shipping", "Shipping estimates", "Shipping estimates come from the carrier's tracking page; never promise a delivery date."],
+  ["migrations", "Database migrations", "Every schema migration gets a down migration and runs inside one transaction."],
+  ["tables", "Answer with tables", "When comparing options, answer with a table: one row per option."],
+];
+/** `n` notes, `per` per topic in turn, each `pad` bytes of filler after its rule, the newest first: a topic's notes are
+ *  spread through the history, and the newest ones are about whatever topic came last. */
+export function topical(n, pad = 400) {
+  const files = Array.from({ length: n }, (_, i) => `${TOPICS[i % TOPICS.length][0]}-${String(i).padStart(2, "0")}.md`);
+  const text = Object.fromEntries(files.map((file, i) => {
+    const [, name, rule] = TOPICS[i % TOPICS.length];
+    return [file, note(`${name} ${i}`, rule.split(";")[0].split(",")[0], `${rule}\n\n${"Kept from an earlier run. ".repeat(Math.ceil(pad / 25)).slice(0, pad)}\n`)];
+  }));
+  const index = files.map((file, i) => line(`${TOPICS[i % TOPICS.length][1]} ${i}`, file, TOPICS[i % TOPICS.length][2].split(";")[0].split(",")[0])).join("\n");
+  return { sha: "t".repeat(40), index, notes: text, files: [...files, "MEMORY.md"], skipped: [], recent: [...files].reverse() };
+}

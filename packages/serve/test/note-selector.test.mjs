@@ -47,3 +47,55 @@ test("a selector never undoes the cut: a note holding a value the host keeps sec
   const { section } = learnedParts(seed, { budget: 8000, read: true, shown: secretsShown([SECRET]), select: all });
   assert.ok(!section.includes(SECRET) && section.includes("[redacted]"), section);
 });
+
+const { byRelevance } = await import("../dist/learning.js");
+const { topical } = await import("./note-selector-cases.mjs");
+const shown = secretsShown([SECRET]);
+const wholeFiles = (section) => [...section.matchAll(/^## .* \(([^)]+)\)$/gm)].map((m) => m[1]);
+const lineFiles = (section) => [...section.matchAll(/^- .* \(([^)]+)\): /gm)].map((m) => m[1]);
+
+test("past the budget, a run about one topic reads that topic's notes whole, best first, and one rule line for each of the rest in place of the index; by recency it read the newest", () => {
+  const seed = topical(40);
+  const run = { input: { content: "Reconcile this month's invoices against the ledger; two are in a different currency." } };
+  const relevant = learnedParts(seed, { budget: 8000, read: true, shown, run });
+  const whole = wholeFiles(relevant.section);
+  assert.ok(whole.length >= 3 && whole.every((file) => file.startsWith("invoices-")), `the invoice notes whole: ${whole.join(", ")}`);
+  assert.ok(relevant.section.startsWith("What you learned in earlier runs: the notes that bear most on this run whole"), relevant.section.slice(0, 120));
+  // Every other note as one line, none twice, and the read tool told of the files.
+  const lines = lineFiles(relevant.section);
+  assert.deepEqual([...lines, ...whole].sort(), Object.keys(seed.notes).sort());
+  assert.ok(relevant.section.includes("open one with the read tool"), "the read tool is told of the rest");
+  assert.ok(!relevant.section.includes("- [Reconcile invoices"), "no index line: the rule lines take its place");
+  assert.deepEqual(relevant.given.map(({ file }) => file).sort(), Object.keys(seed.notes).sort(), "given: every note, whole or as a line");
+  assert.ok(Buffer.byteLength(relevant.section) < 8000 + 2_000, `about the budget: ${Buffer.byteLength(relevant.section)} bytes`);
+  // By recency the same run read the newest notes, whatever their topic.
+  const recent = learnedParts(seed, { budget: 8000, read: true, shown, run, select: byRecency });
+  assert.ok(wholeFiles(recent.section).some((file) => !file.startsWith("invoices-")), wholeFiles(recent.section).join(", "));
+});
+
+test("a code review's changed paths count: a diff touching the migrations reads the migration notes whole", () => {
+  const seed = topical(40);
+  const diff = ["Review this change.", "diff --git a/db/migrations/0042_add_index.sql b/db/migrations/0042_add_index.sql", "--- a/db/migrations/0042_add_index.sql", "+++ b/db/migrations/0042_add_index.sql", "@@ -0,0 +1 @@", "+CREATE INDEX ix ON t (a);"].join("\n");
+  const whole = wholeFiles(learnedParts(seed, { budget: 8000, read: false, shown, run: { input: { content: diff } } }).section);
+  assert.ok(whole.length && whole.every((file) => file.startsWith("migrations-")), whole.join(", "));
+});
+
+test("within the budget nothing changes, whatever the input: the default reads every case as recency did", () => {
+  for (const [name, seed] of CASES) for (const [label, opts] of OPTIONS) {
+    const options = { ...opts, shown, run: { input: { content: "Note 1 applies: the rule about note 2." } } };
+    const fits = Object.values(seed.notes).reduce((sum, text) => sum + Buffer.byteLength(text), 0) < opts.budget / 2;
+    if (!fits) continue;
+    assert.equal(learnedOf(seed, options) ?? null, GOLDEN[`${name} | ${label}`].section, `${name} | ${label}`);
+  }
+});
+
+test("an input with no word any note holds, or none at all, reads by recency past the budget too", () => {
+  for (const [name, seed] of CASES) for (const [label, opts] of OPTIONS) {
+    for (const input of [undefined, { content: "" }, { content: "zzzz qqqq" }]) {
+      const options = { ...opts, shown, ...(input ? { run: { input } } : {}) };
+      assert.equal(learnedOf(seed, options) ?? null, GOLDEN[`${name} | ${label}`].section, `${name} | ${label} | ${JSON.stringify(input)}`);
+      assert.deepEqual(givenOf(seed, options), GOLDEN[`${name} | ${label}`].given);
+    }
+  }
+  assert.deepEqual(byRelevance({ notes: [], indexBytes: 0, indexComplete: true, budget: 0 }, {}), { whole: [], index: false });
+});
