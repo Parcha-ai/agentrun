@@ -58,7 +58,8 @@ but get no shell.
 **Harnesses.** An agent runs on Claude Code, Codex, OpenCode or pi. Name one in the agent's definition with
 `harness` (`claude-agent`, `codex`, `opencode` or `pi`). Approvals, caps, computers, triggers and learning work the
 same on each. Claude Code and Codex install themselves on first use; OpenCode needs its `opencode-ai` package beside
-the server, and AgentRun prints the line that installs it.
+the server, and AgentRun prints the line that installs it. `npx @parcha/agentrun server capabilities` says which
+harnesses your server runs.
 
 ## How it fits together
 
@@ -151,7 +152,7 @@ flowchart LR
 
 | Kind | What the agent can do | Providers |
 | --- | --- | --- |
-| `none` | Read and write files in its run folder; no shell | none needed |
+| `none` | Read and write files in its run folder; no shell (with Archil, commands run on Archil's exec) | none needed |
 | `sandbox` | Run code, install packages, keep processes in the background, on Linux | Docker, Daytona, Modal, E2B |
 | `desktop` | See a Linux screen, move the mouse, type | Orgo, E2B, Docker (your own image with an X server) |
 | `phone` | Tap, swipe, type, open apps and read the screen on Android | phone harness (a rented cloud Android) |
@@ -236,8 +237,8 @@ can keep a secret it was handed. [SECURITY.md](SECURITY.md) says how to report a
 
 ## Deploy it
 
-**Render.** The button above deploys [`render.yaml`](render.yaml): one 2 GB instance with a 10 GB disk, about $27.50 a
-month, with the token and seal key generated for you. Then set `OPENROUTER_API_KEY` (or another provider's key) in the
+**Render.** The button above deploys [`render.yaml`](render.yaml): one 2 GB instance with a 10 GB disk, with the token and
+seal key generated for you. Then set `OPENROUTER_API_KEY` (or another provider's key) in the
 service's Environment tab and open the service's URL. The first visit asks for the setup code the server prints in the
 Logs tab.
 
@@ -252,6 +253,10 @@ docker compose logs server     # the console's link and, the first time, the tok
 ```
 
 The port is published on this machine's loopback only; put a TLS proxy in front before you open it to anyone else.
+A server in a container has no Docker sandbox yet, so agents there get file tools and `web_fetch` but no shell; for a
+sandbox, run the server on the host, or use a Daytona or E2B computer with workspaces on Archil.
+A server running in a container has no Docker sandbox yet (agents there get file tools and `web_fetch`, no shell); for
+a sandbox, run the server on the host or use a Daytona or E2B computer with an Archil disk.
 
 **Runners on Postgres.** Set `AGENTRUN_STORE_URL` to a `postgres://` URL on the server and every runner (the compose
 file's `pg` profile runs one), start the server with `--no-runner`, and start each runner from the same image with
