@@ -297,6 +297,74 @@ export interface ChannelPost {
   readonly nextAt?: number;
 }
 
+/** A channel post as the store keeps it (store schema `channel_posts`): `body` its JSON text, byte for byte as it was
+ *  given; `state` queued (still to send), sending, sent or dropped (given up, `reason` says why). */
+export interface ChannelPostRow {
+  readonly id: string;
+  readonly channel: string;
+  readonly runId: string | null;
+  readonly moment: string;
+  readonly body: string;
+  readonly attempts: number;
+  readonly nextAt: number;
+  readonly state: "queued" | "sending" | "sent" | "dropped";
+  readonly reason: string | null;
+  /** Until when a sender's claim holds the post (state sending); null when none does. */
+  readonly claimedUntil: number | null;
+  readonly createdAt: number;
+}
+/** One try of a channel's post (store schema `channel_attempts`): its HTTP status, or null when none came back. */
+export interface ChannelAttemptRow {
+  readonly postId: string;
+  readonly moment: string;
+  readonly at: number;
+  readonly statusCode: number | null;
+  readonly latencyMs: number;
+  readonly error: string | null;
+  readonly retryAt: number | null;
+  readonly redelivery: boolean;
+}
+/** What a channel was told of a run (store schema `channel_told`): a marker, and when. */
+export interface ChannelToldRow {
+  readonly runId: string;
+  readonly marker: string;
+  readonly at: number;
+}
+
+/** A channel's outbox (channel_posts), the tries of its posts (channel_attempts) and what it told each run
+ *  (channel_told), for a channel the server sends itself (the outbound webhook). */
+export interface Channels {
+  /** Queues `post` (by its id: one already there is left as it is) and, in the same transaction, `told` (each marker of
+   *  its run; `replacing`, a prefix, drops that run's markers with it first). Answers whether the post is new. */
+  post(
+    post: { id: string; channel: string; runId?: string | null; moment: string; body: string; nextAt: number },
+    told?: { runId: string; marker: string; replacing?: string },
+  ): Promise<boolean>;
+  /** The post `id`, or undefined. */
+  get(id: string): Promise<ChannelPostRow | undefined>;
+  /** `channel`'s posts still to send (queued or sending), oldest first. */
+  queued(channel: string): Promise<ChannelPostRow[]>;
+  /** The post `id` claimed for a try until `now + leaseMs` (state sending), by compare-and-set: it is queued and due
+   *  (`next_at` at or before `now`), or a claim on it ran out. True for the one caller that took it; false for any other
+   *  at the same time, and for a post sent, dropped or held. */
+  claim(id: string, now: number, leaseMs: number): Promise<boolean>;
+  /** Every claim on `channel`'s posts let go (sending back to queued): a server's start, when it is the store's one server
+   *  and no try of an earlier one is still out. Answers how many. */
+  release(channel: string): Promise<number>;
+  /** The post's new state, with `attempt` added to its channel's tries in the same transaction; the channel keeps its
+   *  newest `kept` tries (50 by default), and of its sent or dropped posts only those a kept try names or `sending` lists
+   *  (a try of it still in flight, which a redelivery may send again). */
+  settle(id: string, to: { state: ChannelPostRow["state"]; attempts?: number; nextAt?: number; reason?: string | null }, attempt?: ChannelAttemptRow, options?: { kept?: number; sending?: readonly string[] }): Promise<void>;
+  /** Every queued or sending post of `channel` dropped, `reason` kept on each: how many. */
+  dropAll(channel: string, reason: string): Promise<number>;
+  /** `channel`'s newest tries, newest first, at most `limit`. */
+  attempts(channel: string, limit: number): Promise<ChannelAttemptRow[]>;
+  /** What `channel` told: every run's markers, or `runId`'s. */
+  told(channel: string, runId?: string): Promise<ChannelToldRow[]>;
+  /** The told rows given go. */
+  forget(channel: string, rows: readonly { runId: string; marker: string }[]): Promise<void>;
+}
+
 /** A trigger as a template or an upgrade gives it. `scopes`: the (kind, scope) keys it answers, rows only while enabled. */
 export interface TriggerDef {
   readonly id: string;
@@ -590,6 +658,43 @@ export interface Runs {
    *  pointer, counting a running run and (within `signInSettleMs` of leaving running, a vendor's settle window) one that
    *  recently left running. `signInSettleMs` defaults to 0 (other vendors free the lease the instant a run leaves running). */
   update(claim: Claim, patch: RunPatch, rows?: { readonly also?: readonly AlsoRow[]; readonly take?: readonly number[]; readonly signInSettleMs?: number }): Promise<UpdatedRun>;
+  /** The run changes after `cursor` (undefined: from the feed's start), oldest first, at most `limit` (default
+   *  RUN_CHANGES_PAGE), and the cursor to read on from (`next`; the one given when nothing is new). A change is a run
+   *  reaching a final state, or its runner letting it go (parked, or running with no runner), recorded by the write that
+   *  made it, in that write's own transaction, with the row as that write left it.
+   *
+   *  The guarantee: every change is read exactly once by a reader that reads on from each `next` it was handed. None is
+   *  skipped, even one committed after a change numbered above it was already read (concurrent writers): `next` never
+   *  passes a change a transaction still in flight may yet commit (a watermark; a store with one writer commits in the
+   *  order it numbers, so its watermark is its last change). None is read twice from a later cursor. The cursor is the
+   *  store's own: never a time, so writes in one millisecond are each read. */
+  changedSince(cursor: RunChangeCursor | undefined, options?: { limit?: number }): Promise<RunChanges>;
+  /** The feed's head, in one read: the cursor a reader holds once it has read on until a page comes back empty, so one
+   *  that starts here reads only the changes made after. It keeps changedSince's watermark: never past a change a
+   *  transaction still in flight may yet commit. */
+  changesHead(): Promise<RunChangeCursor>;
+}
+
+/** A position in the run-change feed (Runs.changedSince): opaque, the store's own; only one it handed back is valid. */
+export type RunChangeCursor = string;
+
+/** The most run changes one read returns unless asked for fewer. */
+export const RUN_CHANGES_PAGE = 200;
+
+/** A run change (Runs.changedSince): the run, and its row as the write that made the change left it. */
+export interface RunChange {
+  readonly id: string;
+  readonly state: RunState;
+  /** When it ended (ms): set for a final state, null otherwise. */
+  readonly endedAt: number | null;
+  readonly epoch: number;
+  readonly runner: string | null;
+}
+
+/** One read of the run-change feed: its changes, oldest first, and the cursor to read on from. */
+export interface RunChanges {
+  readonly changes: readonly RunChange[];
+  readonly next: RunChangeCursor;
 }
 
 /** A saved MCP server: its listed tools (each with whether it can be granted, and why not), the owner's prices, and its
@@ -947,6 +1052,8 @@ export interface Store {
   readonly computerLedger: ComputerLedger;
   /** Each trigger source's sealed settings (design 2.1): a value per adapter, scope and field. */
   readonly triggerSettings: TriggerSettings;
+  /** The outbox of a channel the server sends itself, its tries and what it told each run. */
+  readonly channels: Channels;
   /** MCP OAuth sign-ins in flight (design 2.1): one row per pending sign-in, its verifier sealed. */
   readonly mcpOauth: McpOauth;
   /** Each agent's saved browser sign-ins (design 2.1): one live row per agent and provider, its pointer sealed, with the

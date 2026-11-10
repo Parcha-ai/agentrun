@@ -6,6 +6,7 @@ import { ToolsPage } from "./ToolsPage";
 import type { Agent } from "@/lib/agentForm";
 import { toolChoices, toolGates } from "@/lib/toolSettings";
 import type { AgentTool, ToolSettings } from "@/lib/v2";
+import { picker, valueOf } from "@/test/picker";
 
 // A server's deny is absolute: a tool set to deny in the server's table is refused for every agent, whatever the agent's
 // own setting or Never ask. Settings → Tools says so at the row; the agent editor says the same at the tool, keeps its
@@ -64,7 +65,7 @@ describe("a server deny, in the agent editor", () => {
     act(() => root!.render(createElement(AgentEditor, { agent, caps, providerChoices: toolChoices(raw), permissionGates: toolGates(raw), step: "tools", onSave: async () => null })));
     await settle();
     const row = (tool: string) => host.querySelector<HTMLTableRowElement>(`section[aria-label="Tool settings"] tr[data-tool="${tool}"]`)!;
-    const select = (tool: string) => row(tool).querySelector<HTMLSelectElement>(`select[aria-label="${tool} permission"]`)!;
+    const select = (tool: string) => picker(row(tool), `${tool} permission`)!;
     const tick = (tool: string) => host.querySelector<HTMLInputElement>(`input[type="checkbox"][value="${tool}"]`)!;
     return { host, row, select, tick };
   }
@@ -72,7 +73,7 @@ describe("a server deny, in the agent editor", () => {
   it("keeps a server-denied tool's permission at deny, says why, and leaves the others to set", async () => {
     // The agent's own allow is kept in its definition, and holds nothing over the server's deny.
     const page = await open(agentWith(["read", "bash"], {}, { bash: { permission: "allow" } }));
-    expect(page.select("bash").value).toBe("deny");
+    expect(valueOf(page.select("bash"))).toBe("deny");
     expect(page.select("bash").disabled).toBe(true);
     expect(page.row("bash").textContent).toContain(LINE);
     expect(page.select("read").disabled).toBe(false);
@@ -104,7 +105,7 @@ describe("a server deny, in the agent editor", () => {
     act(() => root!.render(createElement(AgentEditor, { agent, caps: { ...caps, mcp: true, mcpHarnesses: ["pi"] }, providerChoices: toolChoices(RAW), permissionGates: toolGates(RAW), mcpServers: [LINEAR] as never, step: "tools", onSave: async () => null })));
     await settle();
     const row = (tool: string) => host.querySelector<HTMLTableRowElement>(`section[aria-label="Tool settings"] tr[data-tool="${tool}"]`)!;
-    const select = (tool: string) => row(tool).querySelector<HTMLSelectElement>(`select[aria-label="${tool} permission"]`)!;
+    const select = (tool: string) => picker(row(tool), `${tool} permission`)!;
     const tick = (tool: string) => host.querySelector<HTMLInputElement>(`input[type="checkbox"][value="${tool}"]`)!;
     return { host, row, select, tick };
   }
@@ -112,7 +113,7 @@ describe("a server deny, in the agent editor", () => {
   it("an MCP tool picked from its server's read, not saved yet, is held at deny when that read says the server denies it", async () => {
     const page = await openMcp(agentWith(["read", "mcp:linear/create_issue"]));
     expect(page.select("mcp:linear/create_issue").disabled).toBe(true);
-    expect(page.select("mcp:linear/create_issue").value).toBe("deny");
+    expect(valueOf(page.select("mcp:linear/create_issue"))).toBe("deny");
     expect(page.row("mcp:linear/create_issue").textContent).toContain(LINE);
   });
 

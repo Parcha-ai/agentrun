@@ -14,8 +14,8 @@ import { queued, storeOn, T0 } from "./store-helpers.mjs";
 import { raw, sqliteOnly } from "./store-target.mjs";
 
 const TABLES = [
-  "agents", "channel_posts", "channel_told", "commands", "computer_ledger", "computer_viewers", "idempotency", "learning", "learning_proposals", "mcp_oauth_pending", "mcp_pins",
-  "mcp_servers", "review_ledger", "revisions", "run_launch", "run_live", "run_origins", "runs", "sealed_keys", "settings", "sign_in_tombstones", "sign_ins", "store_meta",
+  "agents", "channel_attempts", "channel_posts", "channel_told", "commands", "computer_ledger", "computer_viewers", "idempotency", "learning", "learning_proposals", "mcp_oauth_pending", "mcp_pins",
+  "mcp_servers", "review_ledger", "revisions", "run_changes", "run_launch", "run_live", "run_origins", "runs", "sealed_keys", "settings", "sign_in_tombstones", "sign_ins", "store_meta",
   "trigger_conversations", "trigger_firings", "trigger_scopes", "trigger_settings", "triggers",
 ];
 

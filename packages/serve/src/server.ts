@@ -64,7 +64,7 @@ import { stats as statsOverStore } from "./store-reads/stats.js";
 import { analytics as analyticsOverStore } from "./store-reads/analytics.js";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { type AgenticBody, type NewRevision, openStore, type RevisionPlace, type RunRow, type Store, StoreBusy, StoreConstraint, type WorkflowBody } from "./store/index.js";
-import { FINAL_STATES } from "./store/store.js";
+import { FINAL_STATES, RUN_CHANGES_PAGE, type RunChange, type RunChangeCursor } from "./store/store.js";
 import { runModelRef } from "./model.js";
 // The v2 run statuses, as the run view names them (run-view.ts Status), for the list filter's validation. */
 const STATUSES = ["queued", "working", "paused", "input_required", "completed", "failed", "cancelled"] as const;
@@ -104,7 +104,7 @@ import { mcpServersOverStore } from "./mcp-servers-store.js";
 import { privateHostsRoute } from "./mcp-private-hosts.js";
 import { metaToolOf } from "./mcp-meta.js";
 import { MCP_SETTINGS_PAGE, signInCookie, startedHere } from "./mcp-oauth.js";
-import { type RunNotice, WEBHOOK_EVENTS, Webhooks } from "./webhooks.js";
+import { type RunNotice, WEBHOOK_EVENTS, WEBHOOK_FILE, Webhooks } from "./webhooks.js";
 import { appPermissionWarnings } from "./template-github-permissions.js";
 import { templateApplied, templateTriggerSecret, templateWebhookSecrets, triggerMade, triggerRotated, webhookSaved, withTriggerSecret } from "./trigger-secrets-shown.js";
 import { type SealedSettingsOverStore } from "./sealed-settings-store.js";
@@ -360,6 +360,9 @@ export type ServeOptions = {
   webhookRetryMs?: readonly number[];
   /** A test's seam: each trigger source's service, by source, in place of its own (Slack's Web API: trigger-slack.ts). */
   sourceApis?: Readonly<Record<string, string>>;
+  /** Whether the outbound webhook may send to a private network or this machine: off by default, so no caller of the API
+   *  can make the server POST inside its own network. The operator's AGENTRUN_WEBHOOK_PRIVATE_TARGETS=1 turns it on. */
+  webhookPrivateTargets?: boolean;
   /** The box runs' harnesses run in (4a's Box: its reap; on a shared server its run cgroups): the boxes runs leave are
    *  swept at start and let go at archive. The quarantine of boxes a reap could not empty is kept in the data directory. */
   box?: BoxHost;
@@ -1137,57 +1140,52 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // (under faux, the vendor's fake alone), under this server's seal key. The store holds whether a sign-in is still held
   // (a live run's sign_in_handed) and who was handed it, so this takes no `holds`/`handedTo` callback — one store, one lock.
   const signIns = signInsOverStore(store, sealKey, vendorsOver(() => env, checkFetch));
-  const webhooks = new Webhooks(data, env, (fields) => (log ? log(logLine("webhook", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("webhook", fields)}\n`)), options.webhookRetryMs);
+  const webhooks = new Webhooks(store, checked.sealKey, (fields) => (log ? log(logLine("webhook", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("webhook", fields)}\n`)), {
+    ...(options.webhookRetryMs ? { retryMs: options.webhookRetryMs } : {}),
+    privateTargets: options.webhookPrivateTargets ?? process.env.AGENTRUN_WEBHOOK_PRIVATE_TARGETS === "1",
+  });
   // The outbound webhook's secret, as it stands (set by a PUT, gone with a DELETE), and each it held before.
-  secretStores.add("webhook", () => webhooks.signingSecrets());
   stops.push(() => webhooks.close());
   // The server's Slack app (slack.ts): its settings in the Slack source's sealed settings, its lines posted in threads.
   const slack = new Slack(data, triggerSettings.get("slack"), (fields) => (log ? log(logLine("slack", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("slack", fields)}\n`)), options.sourceApis?.slack, options.webhookRetryMs);
   stops.push(async () => slack.close());
   // A run a Slack trigger started is told in its thread when it needs its person and when it ends, beside the webhook's
-  // notice (the run follower below). Its thread is the conversation its trigger's firing started it in: the run's launch
+  // notice: subscribers of the run follower's notices (runNotices, below), after the webhook. Its thread is the conversation its trigger's firing started it in: the run's launch
   // names the trigger and the conversation it started in (triggers.ts RunTrigger).
   const slackThreadOf = async (runId: string): Promise<{ channel: string; thread_ts: string; post_answer: boolean } | undefined> => {
-    const launch = await store.runs.launch(runId).catch(() => undefined);
+    const launch = await store.runs.launch(runId);
     const trigger = isObject(launch?.body) && isObject(launch.body.trigger) ? launch.body.trigger : undefined;
     if (typeof trigger?.id !== "string" || typeof trigger.conversation !== "string") return undefined;
     const found = await triggers.triggerOf(trigger.id);
     return found?.source.kind === "slack" ? { ...threadIn(trigger.conversation), post_answer: found.source.post_answer === true } : undefined;
   };
-  // An answer-bearing end whose run cannot be read yet (a busy store) is read again after each of these waits, never
-  // told without its answer; past the last it stays untold here, and the next start's catch-up tells it.
-  const SLACK_READ_RETRY_MS = [1_000, 2_000, 5_000, 15_000, 60_000, 300_000];
-  const slackReads = new Set<NodeJS.Timeout>();
-  stops.push(async () => slackReads.forEach((timer) => clearTimeout(timer)));
-  const tellSlack = (event: "run.needs_input" | "run.ended", run: RunNotice, marker: string, tries = 0): void => {
-    void (async () => {
-      const thread = await slackThreadOf(run.run_id);
-      if (!thread) return;
-      // Read from the run's view only where the line needs it: the answer, for a trigger that posts it (its source's
-      // post_answer, as the trigger is now); the tool an approval waits on, which the notice does not carry.
-      const answered = event === "run.ended" && run.status === "completed" && thread.post_answer;
-      const approval = event === "run.needs_input" && run.pending?.kind === "approval";
-      const emit = (view: Json | null) => {
-        const tool = approval ? (view?.pending as { tool?: unknown } | null | undefined)?.tool : undefined;
-        const told = typeof tool === "string" ? ({ ...run, pending: { kind: "approval", tool } } as RunNotice) : run;
-        const answer = answered ? ((view?.result as { final_answer?: string } | null | undefined)?.final_answer ?? null) : null;
-        slack.emit(event, told, marker, { channel: thread.channel, thread_ts: thread.thread_ts }, answer);
-      };
-      if (!answered && !approval) return emit(null);
-      await viewOverStore(store, run.run_id, viewDepsFor(ownOriginOf())).then(
-        (view) => emit((view as Json | null) ?? null),
-        (error: Error) => {
-          // Unread: an approval's line goes without its tool's name; an end that carries the answer waits for it.
-          if (!answered) return emit(null);
-          const wait = SLACK_READ_RETRY_MS[tries];
-          if (wait === undefined) return void process.stderr.write(`agentrun-serve: slack: the answer of run ${run.run_id} is still unread (${error.message}); its end is left for the next start\n`);
-          const timer = setTimeout(() => (slackReads.delete(timer), tellSlack(event, run, marker, tries + 1)), wait);
-          timer.unref();
-          slackReads.add(timer);
-        },
-      );
-    })().catch((error: Error) => void process.stderr.write(`agentrun-serve: slack: ${error.message}\n`));
+  // Slack's line for a run's moment, idempotent on its marker (slack.ts keeps what each run's thread was told): a throw is
+  // the follower's to tell again on its next read. An end that carries the answer is never told without it, so an
+  // unread view throws; an approval's line whose view is unread goes without its tool's name.
+  const tellSlack = async (event: "run.needs_input" | "run.ended", run: RunNotice, marker: string): Promise<void> => {
+    const thread = await slackThreadOf(run.run_id);
+    if (!thread) return;
+    // Read from the run's view only where the line needs it: the answer, for a trigger that posts it (its source's
+    // post_answer, as the trigger is now); the tool an approval waits on, which the notice does not carry.
+    const answered = event === "run.ended" && run.status === "completed" && thread.post_answer;
+    const approval = event === "run.needs_input" && run.pending?.kind === "approval";
+    let view: Json | null = null;
+    if (answered || approval) {
+      try {
+        view = ((await viewOverStore(store, run.run_id, viewDepsFor(ownOriginOf()))) as Json | null) ?? null;
+      } catch (error) {
+        if (answered) throw new Error(`Slack: run ${run.run_id}'s answer is unread (${(error as Error).message})`);
+      }
+    }
+    const tool = approval ? (view?.pending as { tool?: unknown } | null | undefined)?.tool : undefined;
+    const told = typeof tool === "string" ? ({ ...run, pending: { kind: "approval", tool } } as RunNotice) : run;
+    const answer = answered ? ((view?.result as { final_answer?: string } | null | undefined)?.final_answer ?? null) : null;
+    slack.emit(event, told, marker, { channel: thread.channel, thread_ts: thread.thread_ts }, answer);
   };
+  await webhooks.load();
+  // Where an earlier version kept the webhook: no longer read.
+  if (existsSync(join(data, WEBHOOK_FILE))) log?.(logLine("webhook", { condition: "webhook_left_over", file: join(data, WEBHOOK_FILE), effect: "not read: the webhook is kept in the store now; set it again with PUT /v2/settings/webhook" }));
+  secretStores.add("webhook", () => webhooks.signingSecrets());
   const uploads = new Uploads(join(data, UPLOADS_DIR));
   // Under the data directory's lock and before this server answers anything, so no PUT of its own is in flight: an upload
   // temp file found now is a crashed one's.
@@ -2296,7 +2294,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         return send(res, 200, { signed_out: true }, { "set-cookie": ownerCookie(req, "", 0) });
       }
       case "/auth/session": {
-        // Before the owner's password is set: whether setup takes the printed code (a server at a public address), so
+        // Before the owner's password is set: whether setup takes the printed code (a server at a public address, or on a non-loopback listener), so
         // the page asks for it when opened with no link. Never the code itself.
         const set = me.hasPassword();
         // secrets_writable: whether this browser may save a secret (secret-writes.ts mayWriteSecrets, the dispatch check's
@@ -2994,11 +2992,11 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       case "saveWebhook": {
         // Never through `idempotent`: its record would keep the answer, and the first one holds the secret.
         // Its minted secret to the owner's session alone (trigger-secrets-shown.ts); the token gets its metadata and the words.
-        const saved = webhooks.save(await bodyOf(req));
+        const saved = await webhooks.save(await bodyOf(req));
         return send(res, saved.created ? 201 : 200, webhookSaved(saved.view, saved.secret, mayHoldSecrets(req)));
       }
       case "deleteWebhook":
-        webhooks.remove();
+        await webhooks.remove();
         return void res.writeHead(204, { "cache-control": "no-store" }).end();
       case "getSourceSettings": {
         const adapter = serverSettingsOf(adapters, id);
@@ -3017,7 +3015,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       case "testWebhook":
         return send(res, 200, await webhooks.test());
       case "listWebhookDeliveries":
-        return send(res, 200, webhooks.attemptsView());
+        return send(res, 200, await webhooks.attemptsView());
       case "redeliverWebhook":
         return send(res, 200, await webhooks.redeliver(id));
       case "listTriggers":
@@ -3256,15 +3254,14 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   });
   mcpServers.attach(options.publicUrl ?? url, url);
   // A run's end and its wait are the outbound webhook's run.ended and run.needs_input (webhooks.ts). The runners write them
-  // to the store and this server runs no run, so it follows the store: each read takes the runs not final yet and the
-  // newest runs (one that started and ended between two reads is among them). It tells each end it has not told once the
-  // run reads final, and each wait of a run a runner left parked (or let go of) once it reads input_required. The markers
-  // are main's (an end's time, a wait's last row), so each webhook-id is the one it always had, and the ledger tells each
-  // once across restarts; a start first catches up the ends the ledger lacks, which no server was up to see. A store read
-  // of the runs ended (or parked) since a mark would be the cleaner seam than this read of the open runs every 250 ms.
-  const RUN_ENDS_POLL_MS = 250;
-  const RUN_ENDS_NEWEST = 50;
-  const final = (row: RunRow) => (FINAL_STATES as readonly string[]).includes(row.state);
+  // to the store and this server runs no run, so it follows the store's run-change feed (Store.runs.changedSince): every
+  // run reaching a final state, or let go by its runner (parked, or running with none), once, in order, under a cursor
+  // kept in this process. It tells each end once the run reads final, and each wait of a run let go once it reads
+  // input_required. The markers are main's (an end's time, a wait's last row), so each webhook-id is the one it always
+  // had, and the ledger tells each once across restarts. The feed is read every 250 ms; a store that woke its readers on a
+  // change would be the next seam.
+  const RUN_CHANGES_POLL_MS = 250;
+  const final = (row: { state: string }) => (FINAL_STATES as readonly string[]).includes(row.state);
   const endOf = (row: RunRow) => ({ id: row.id, state: final(row) ? row.state : "running", ...(final(row) && row.endedAt !== null ? { endedAt: new Date(row.endedAt).toISOString() } : {}) });
   /** The run as the store holds it now, with its notice (the run list's own view of it); null when there is no such run. */
   const endNotice = async (id: string) => {
@@ -3279,62 +3276,156 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const readWaits = new Map<string, string>();
   const waitKinds = new Set(["question", "approval", "budget", "browser"]);
   /** The wait of a run its runner left parked (or let go of), told once as main told it: its marker the run's last row
-   *  that shows (not usage, a phase or learning's), its kind the pending card's (a stop's when it waits on no card). */
-  const tellWait = async (row: RunRow): Promise<void> => {
+   *  that shows (not usage, a phase or learning's), its kind the pending card's (a stop's when it waits on no card). False
+   *  when it is not done (a read that failed, or its notice not saved): it is read again. */
+  const tellWait = async (row: RunRow): Promise<boolean> => {
     const seen = `${row.state}\n${row.epoch}\n${row.runner ?? ""}`;
-    if (readWaits.get(row.id) === seen) return;
+    if (readWaits.get(row.id) === seen) return true;
     const view = await viewOverStore(store, row.id, viewDepsFor(ownOriginOf()));
-    if (view?.status !== "input_required") return void readWaits.set(row.id, seen);
+    if (view?.status !== "input_required") return (readWaits.set(row.id, seen), true);
     const rows = (await timelineOverStore(store, row.id, viewDepsFor(ownOriginOf()))) ?? [];
     const marker = rows.findLast((r) => r.kind !== "usage" && r.kind !== "phase" && r.agent_label !== LEARNING_LABEL)?.id;
-    if (!marker) return void readWaits.set(row.id, seen);
+    if (!marker) return (readWaits.set(row.id, seen), true);
     const card = (view.pending as { kind?: unknown } | null | undefined)?.kind;
     const kind = view.state !== "waiting" ? "stopped" : typeof card === "string" && waitKinds.has(card) ? card : "question";
-    const notice = { run_id: row.id, agent_id: row.agentId, status: "input_required", title: typeof view.title === "string" ? view.title : "", pending: { kind } } as RunNotice;
-    tellSlack("run.needs_input", notice, marker);
-    if (webhooks.emit("run.needs_input", notice, marker) !== "unsaved") readWaits.set(row.id, seen);
+    const wait = { kind } as NonNullable<RunNotice["pending"]>;
+    const notice: RunNotice = { run_id: row.id, agent_id: row.agentId, status: "input_required", title: typeof view.title === "string" ? view.title : "", pending: wait };
+    if (!(await toldAll(row.id, waitSubscribers.map((tell) => () => tell(notice, wait, marker))))) return false;
+    readWaits.set(row.id, seen);
+    return true;
   };
-  let openRuns = new Set<string>();
+  /** Who hears of each run's end and each wait the follower reads (runNotices): the outbound webhook first. Each is called
+   *  once a run reads final (onEnded) or is let go waiting on a person (onWaits), and again on a later read while any of
+   *  them threw (said once, run_notice_unread): so at least once, and the same moment always comes with the same `marker`
+   *  (an end's time, a wait's last row), on which each dedupes in a ledger of its own. An end from while no server was up
+   *  reaches the webhook alone, through its own catch-up (webhooks.ts catchUp). */
+  const endedSubscribers: Array<(run: RunNotice, marker: string) => unknown> = [];
+  const waitSubscribers: Array<(run: RunNotice, wait: NonNullable<RunNotice["pending"]>, marker: string) => unknown> = [];
+  const runNotices = {
+    onEnded: (tell: (run: RunNotice, marker: string) => unknown) => void endedSubscribers.push(tell),
+    onWaits: (tell: (run: RunNotice, wait: NonNullable<RunNotice["pending"]>, marker: string) => unknown) => void waitSubscribers.push(tell),
+  };
+  runNotices.onEnded(async (run, marker) => {
+    if ((await webhooks.emit("run.ended", run, marker)) === "unsaved") throw new Error("its run.ended is not saved yet");
+  });
+  runNotices.onWaits(async (run, _wait, marker) => {
+    if ((await webhooks.emit("run.needs_input", run, marker)) === "unsaved") throw new Error("its run.needs_input is not saved yet");
+  });
+  // Then Slack's line in the run's thread, for a run a Slack trigger started (tellSlack).
+  runNotices.onEnded((run, marker) => tellSlack("run.ended", run, marker));
+  runNotices.onWaits((run, wait, marker) => tellSlack("run.needs_input", { ...run, pending: wait }, marker));
+  /** Every call of `calls` made: false when one threw (said once for the run), so the run is told again. */
+  const toldAll = async (id: string, calls: ReadonlyArray<() => unknown>): Promise<boolean> => {
+    let done = true;
+    for (const call of calls) {
+      try {
+        await call();
+      } catch (error) {
+        sayUnread(id, (error as Error).message);
+        done = false;
+      }
+    }
+    return done;
+  };
+  /** Why a run's notice is not done yet, said once for the run (until it is done): one that stays undone shows. */
+  const unreadSaid = new Set<string>();
+  const sayUnread = (id: string, error: string) => {
+    if (unreadSaid.has(id)) return;
+    unreadSaid.add(id);
+    log?.(logLine("webhook", { condition: "run_notice_unread", run: id, error }));
+  };
+  /** A run's end, told once the run reads final. False when it is not done (a read that failed, or its notice not saved). */
+  const tellEnd = async (id: string): Promise<boolean> => {
+    const now = await endNotice(id).catch((error: Error) => (sayUnread(id, error.message), undefined));
+    if (now === undefined) return false;
+    readWaits.delete(id);
+    if (!now?.endedAt || toldEnds.get(id) === now.endedAt) return (unreadSaid.delete(id), true);
+    if (!(await toldAll(id, endedSubscribers.map((tell) => () => tell(now.notice, now.endedAt!))))) return false;
+    toldEnds.set(id, now.endedAt);
+    unreadSaid.delete(id);
+    return true;
+  };
+  /** A run's row as the store holds it now: undefined when there is no such run, UNREAD when the read failed. */
+  const UNREAD = Symbol("unread");
+  const rowNow = (id: string) => store.runs.get(id).catch((): typeof UNREAD => UNREAD);
+  const letGo = (row: RunRow) => row.state === "parked" || (row.state === "running" && row.runner === null);
+  /** One change of the feed, handled: an end told, a wait told, or nothing to tell. One not done goes to endsLeft or
+   *  waitsLeft, by its run, which each read tries first until it is: a run that stays undone holds back no other. A wait is
+   *  read from the run as it is now (a run gone since, or moved on, has none to tell). */
+  const handle = async (change: RunChange): Promise<void> => {
+    if (final(change)) {
+      if (!(await tellEnd(change.id))) endsLeft.add(change.id);
+      return;
+    }
+    if (change.state === "parked" || (change.state === "running" && change.runner === null)) {
+      if (!(await tellLetGo(change.id))) waitsLeft.add(change.id);
+    }
+  };
+  /** The wait of run `id` if it is let go now: false when not done (its read failed, or its wait not told). */
+  const tellLetGo = async (id: string): Promise<boolean> => {
+    const row = await rowNow(id);
+    if (row === UNREAD) return (sayUnread(id, "its row could not be read"), false);
+    if (row === undefined || !letGo(row)) return true;
+    const told = await tellWait(row).catch((error: Error) => (sayUnread(id, error.message), false));
+    if (told) unreadSaid.delete(id);
+    return told;
+  };
+  /** Where the feed is read on from: past each page once its changes are handled, each told or left in endsLeft or
+   *  waitsLeft. None is dropped (a run left is tried again on each read), none is skipped, and none is read twice. */
+  let changesCursor: RunChangeCursor | undefined;
+  /** The runs whose end, or whose wait, is not told yet (a read that failed, or a notice not saved): from the feed, or from
+   *  the start. Each read tries them first, until each is done. */
+  const endsLeft = new Set<string>();
+  const waitsLeft = new Set<string>();
+  const readChanges = async (): Promise<void> => {
+    for (const id of [...endsLeft]) {
+      if (closing) return;
+      if (await tellEnd(id)) endsLeft.delete(id);
+    }
+    for (const id of [...waitsLeft]) {
+      if (closing) return;
+      if (await tellLetGo(id)) waitsLeft.delete(id);
+    }
+    for (;;) {
+      if (closing) return;
+      const page = await store.runs.changedSince(changesCursor, { limit: RUN_CHANGES_PAGE });
+      for (const change of page.changes) await handle(change);
+      changesCursor = page.next;
+      if (page.changes.length < RUN_CHANGES_PAGE) return;
+    }
+  };
   let endsTimer: NodeJS.Timeout | undefined;
   let endsRead: Promise<void> = Promise.resolve();
-  const readEnds = async (): Promise<void> => {
-    const open = new Set<string>();
-    for (const state of ["queued", "running", "parked"] as const) {
-      for (const row of await store.runs.list({ state })) {
-        open.add(row.id);
-        // A run waits on its person once its runner has let it go: parked, or running with no runner.
-        if (!closing && (row.state === "parked" || (row.state === "running" && row.runner === null))) await tellWait(row).catch(() => undefined);
-      }
-    }
-    const newest = await store.runs.list({ limit: RUN_ENDS_NEWEST });
-    for (const id of new Set([...openRuns, ...newest.map((row) => row.id)])) {
-      if (open.has(id) || closing) continue;
-      const now = await endNotice(id).catch(() => undefined);
-      // Unread (a busy store): read again at the next turn, never lost.
-      if (now === undefined) {
-        open.add(id);
-        continue;
-      }
-      readWaits.delete(id);
-      if (!now?.endedAt || toldEnds.get(id) === now.endedAt) continue;
-      tellSlack("run.ended", now.notice, now.endedAt);
-      if (webhooks.emit("run.ended", now.notice, now.endedAt) !== "unsaved") toldEnds.set(id, now.endedAt);
-    }
-    openRuns = open;
-  };
-  const followEnds = () => {
+  /** Whether the start (startFollowing) is done: until it is, each turn runs it again before it reads the feed, so the ends
+   *  and waits from while no server was up are told whatever failed it. Said once. */
+  let started = false;
+  let startSaid = false;
+  const followChanges = () => {
     if (closing) return;
-    endsRead = readEnds()
-      .catch((error: Error) => log?.(logLine("webhook", { condition: "run_ends_unread", error: error.message })))
+    const turn = started
+      ? readChanges()
+      : startFollowing().then(
+          () => ((started = true), readChanges()),
+          (error: Error) => void (startSaid || ((startSaid = true), log?.(logLine("webhook", { condition: "catch_up_unread", error: error.message })))),
+        );
+    endsRead = turn
+      .catch((error: Error) => log?.(logLine("webhook", { condition: "run_changes_unread", error: error.message })))
       .finally(() => {
-        if (!closing) (endsTimer = setTimeout(followEnds, RUN_ENDS_POLL_MS)).unref();
+        if (!closing) (endsTimer = setTimeout(followChanges, RUN_CHANGES_POLL_MS)).unref();
       });
   };
-  void store.runs
-    .list({})
-    .then((rows) => webhooks.catchUp(rows.filter((row) => !row.importedFrom).map(endOf), endNotice))
-    .catch((error: Error) => log?.(logLine("webhook", { condition: "catch_up_unread", error: error.message })))
-    .finally(followEnds);
+  /** The start, in this order, so no change is lost between its steps: the feed's head first (one read, untold),
+   *  then what the store holds now (the ends the ledger lacks, webhooks.ts catchUp, and the waits of the runs let go: the
+   *  feed has none from before its table, and none from a time no server read it), then the feed from that head. A change
+   *  after the head is read by the feed even when the store's rows already showed it, and the ledger tells it once. */
+  const startFollowing = async () => {
+    changesCursor = await store.runs.changesHead();
+    const rows = await store.runs.list({});
+    // An end catchUp cannot read is said there and left for each read to try (endsLeft): it is before the feed's head.
+    await webhooks.catchUp(rows.filter((row) => !row.importedFrom).map(endOf), (id) => endNotice(id).catch((error: Error) => (endsLeft.add(id), Promise.reject(error))));
+    for (const row of rows) if (!closing && letGo(row) && !(await tellWait(row).catch((error: Error) => (sayUnread(row.id, error.message), false)))) waitsLeft.add(row.id);
+  };
+  followChanges();
   const setupUrl = owner && !owner.hasPassword() ? owner.setupLink() : undefined;
   /** The server's stop: once (`close` keeps its promise). */
   let stopped: Promise<void> | undefined;
