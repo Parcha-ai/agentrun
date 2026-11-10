@@ -64,6 +64,10 @@ services:
     environment:
       <<: *agentrun-env
       AGENTRUN_TOKEN: ${AGENTRUN_TOKEN:-}
+      # The runners whose live viewers (a run's browser, desktop or phone, watched and taken over) this server reaches
+      # on this stack's own network: each by the host it names (its AGENTRUN_RUNNER_LIVE_HOST). A host not listed here
+      # is never dialled.
+      AGENTRUN_RUNNER_HOSTS: runner-1,runner-2
       AGENTRUN_PUBLIC_URL: "${AGENTRUN_PUBLIC_URL:-http://127.0.0.1:7340/}" # key-gate: loopback-rule the published loopback port, the printed link
     healthcheck:
       test: ["CMD", "env", "-i", "/usr/local/bin/node", "-e", "fetch('http://server:7340/v2/health').then(({ ok, status }) => { if (!ok) throw new Error(String(status)) })"]
@@ -74,18 +78,26 @@ services:
     restart: unless-stopped
     stop_grace_period: 15s
 
+  # Each runner names the host the server reaches its live viewers at (its own, on this stack's network), and its
+  # viewers listen there, taking only the server's signed requests (live-reach.ts). The hop is this stack's own network.
   runner-1:
     <<: *runner
+    hostname: runner-1
     command: ["runner", "--data", "/data", "--name", "runner-1"]
-    environment: *agentrun-env
+    environment:
+      <<: *agentrun-env
+      AGENTRUN_RUNNER_LIVE_HOST: runner-1
     healthcheck:
       <<: *runner-check
       test: ["CMD", "env", "-i", "/usr/local/bin/node", "/opt/agentrun/packages/serve/dist/cli.js", "runner", "--check", "--data", "/data", "--name", "runner-1"]
 
   runner-2:
     <<: *runner
+    hostname: runner-2
     command: ["runner", "--data", "/data", "--name", "runner-2"]
-    environment: *agentrun-env
+    environment:
+      <<: *agentrun-env
+      AGENTRUN_RUNNER_LIVE_HOST: runner-2
     healthcheck:
       <<: *runner-check
       test: ["CMD", "env", "-i", "/usr/local/bin/node", "/opt/agentrun/packages/serve/dist/cli.js", "runner", "--check", "--data", "/data", "--name", "runner-2"]

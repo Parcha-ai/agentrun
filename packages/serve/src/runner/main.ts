@@ -23,7 +23,8 @@ import { handedSecret, SECRET_NAMES, secret } from "../secrets.js";
 import { migrationsIn, openStore, SchemaVersionUnknown, type Store, storePlace, storeTarget } from "../store/index.js";
 import { SCHEMA_VERSION } from "../store/schema.js";
 import { SEAL_KEY_ENV, sealKeyOf } from "../tool-keys.js";
-import { openClaimView } from "../computer-live.js";
+import { claimViewOpener } from "../computer-live.js";
+import { runnerLiveOf } from "../live-reach.js";
 import type { KeyEnv } from "../key-meta.js";
 import { computerDepsFrom, type ComputerDepsOptions } from "../workspace/computer-deps.js";
 import { createDispatchLoop } from "./dispatch.js";
@@ -120,7 +121,8 @@ export function runEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv 
  *  runner's. `own`: where Docker has the data directory and this host's addresses, and a test's kind registry and
  *  provider loader in place of the computer package's. */
 export const runnerComputers = (store: Store, env: KeyEnv, sealKey: Buffer, own: Pick<ComputerDepsOptions, "kinds" | "load" | "dockerPaths" | "hostAddresses"> = {}) =>
-  computerDepsFrom({ env, store, sealKey, openComputerView: openClaimView, ...own });
+  // A runner on another host than its server (AGENTRUN_RUNNER_LIVE_HOST): its viewers answer there (live-reach.ts).
+  computerDepsFrom({ env, store, sealKey, openComputerView: claimViewOpener(runnerLiveOf(env, sealKey)), ...own });
 
 /** The beside-runner's environment (the CLI start's server-and-runner): runEnv of `env` with every test switch this
  *  process inherited taken out (AGENTRUN_SERVE_FAUX*, the harness table: a leftover in a shell would otherwise reach a
