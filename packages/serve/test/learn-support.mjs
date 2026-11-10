@@ -1,9 +1,9 @@
-// What the learning tests share: an agent that learns, a run followed until the server's part of its learning is done,
-// the runner's learning run's grade and merge on its proposal, waited for (learnedOnMain), and git in the test's own hands to read
+// What the learning tests share: an agent that learns, a run followed until its learning ended (its end-of-run turn on the
+// runner, then its learning run's grade and merge), and git in the test's own hands to read
 // the agent's folder.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { mergedNote } from "../dist/learn/notes.js";
 import { agentFolderOf } from "../dist/files.js";
@@ -43,31 +43,19 @@ export async function started(api, id, content = "Go.", extra = {}) {
   return run.body.run_id;
 }
 
-/** The server's part of a run's learning: seeded, its end-of-run turn asked, then what the turn wrote checked and kept as
- *  its proposal (proposed) or dropped. The grade and the merge are the runner's learning run (learnedOnMain). */
-const UNDER_WAY = ["seeded", "reflecting"];
-/** The run followed until it ended (`until`), then until the server's part of its learning is done: proposed, or
- *  dropped. Its view and its rows. */
+/** A run's learning while it is under way: seeded, its end-of-run turn asked, then what the turn wrote kept as its
+ *  proposal (proposed) until the runner's learning run grades and merges it or drops it. */
+const UNDER_WAY = ["seeded", "reflecting", "proposed"];
+/** The run followed until it ended (`until`), then until its learning ended: merged or dropped, its learning run's end
+ *  read with it (the runner's learning run, runner/learning-loop.ts, grades and merges a proposal). Its view and its
+ *  rows, the run's learning row among them. */
 export async function ended(api, runId, until = ["completed"]) {
   await follow(api, runId, until, { deadlineMs: 90_000 });
   for (let i = 0; UNDER_WAY.includes((await api("GET", `/runs/${runId}`)).body.learning?.state); i++) {
-    assert.ok(i < 1200, "the run's learning ends");
+    assert.ok(i < 1800, "the run's learning ends");
     await sleep(50);
   }
   return { view: (await api("GET", `/runs/${runId}`)).body, rows: (await follow(api, runId, until)).rows };
-}
-
-/** Why a case on a run's own learning end (merged or dropped, its words, the verdict, what it learned or holds, the
- *  ledger's, usage's and stats' lines) waits: the server's grade wrote that end, and its reader of the runner's learning
- *  run is to come. The case is skipped with this reason (a failing todo is a `not ok` line, which a push refuses), and
- *  turns back on when it lands. With LEARN_RUN_END_PROBE set, every such case runs (skip false), to see which pass against
- *  the server as it stands while the switch lands; the marker goes from each case once it passes. */
-export const RUN_END_TODO = process.env.LEARN_RUN_END_PROBE ? false : "E2s's reader: a run's learning end from learning_proposals and the learning run's journal";
-export const SWITCH_TODO = process.env.LEARN_SWITCH_PROBE ? false : "the switch: the server answers from the store-backed run view (viewOverStore), which reads a run's learning end; these drive the file-backed server and turn back on when it is wired onto the store";
-
-/** The server's part of the run's learning done: what its end-of-run turn wrote is kept as its proposal. */
-export function proposedOf(view) {
-  assert.equal(view.learning?.state, "proposed", JSON.stringify(view.learning));
 }
 
 /** A grade as the runner's learning run makes it (runner/learning-loop.ts), on a faux grader `reply` (a faux module's
@@ -107,6 +95,24 @@ export async function entriesOf(server, runId, kinds) {
   const all = await overStore(server, (store) => runEntries(store, runId, BACKGROUND_CONTEXT));
   return all.filter((entry) => kinds.includes(entry.kind)).map((entry) => ({ kind: entry.kind, ...entry.data }));
 }
+
+/** Everything run `runId`'s learning run keeps in the one store, as one text: its kept learning (learning_proposals: the
+ *  turn and the proposal) and every record of its learning run's journal (entries, tasks and submissions), for a scan that
+ *  a value is nowhere learning keeps it. */
+export async function learningKept(server, runId) {
+  const { journalRecords } = await import("../dist/runner/journal-reader.js");
+  const { BACKGROUND_CONTEXT } = await import("@earendil-works/chord/context");
+  return overStore(server, async (store) => {
+    const kept = await store.learning.proposal(runId);
+    const journal = kept?.learningRunId ? await journalRecords(store.readJournal(kept.learningRunId), BACKGROUND_CONTEXT) : null;
+    return JSON.stringify({ kept, journal });
+  });
+}
+
+/** Why a case waits on the runner refusing every secret the server keeps (untangle/cutover-learning-refuse-all: the
+ *  runner's learning end refuses each stored secret, storeSecrets, a webhook trigger's signing secret and the server's own
+ *  API token among them). LEARN_REFUSE_ALL_PROBE runs them. */
+export const REFUSE_ALL_TODO = process.env.LEARN_REFUSE_ALL_PROBE ? false : "untangle/cutover-learning-refuse-all: the runner's learning end refuses every secret the server keeps (storeSecrets)";
 
 /** Why a case waits on the runner's learned workflows (the lead's untangle/cutover-learning-workflows): the runner
  *  offers learned_workflow whenever the seed names workflows, as main's app.ts did (no grant needed), on pi and the CLI
@@ -167,12 +173,6 @@ export async function savedOf(data, runId) {
   }
 }
 
-/** The learning ledger's lines, in order. */
-export const ledgerOf = (data) => {
-  const file = join(data, "learning-usage.jsonl");
-  return existsSync(file) ? readFileSync(file, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)) : [];
-};
-
 /** git in the test's own hands: no hook, and no system or global config. */
 export function git(cwd, args) {
   const out = spawnSync("git", ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", ...args], { cwd, env: { PATH: process.env.PATH, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_AUTHOR_NAME: "person", GIT_AUTHOR_EMAIL: "person@example.invalid", GIT_COMMITTER_NAME: "person", GIT_COMMITTER_EMAIL: "person@example.invalid" }, encoding: "utf8" });
@@ -223,8 +223,6 @@ export const objects = (repo) => spawnSync("git", ["cat-file", "--batch-all-obje
 /** The agent's learning folder: `learning/` in its folder on the disk, as files.ts agentFolderOf names it. */
 export const repoOf = (data, agentId) => join(agentFolderOf(data, agentId), "learning");
 export const copyOf = (data, runId) => join(runDir(data, runId), "work", ".learning");
-/** What the run's end-of-run turn answered, and what the user said, as its directory kept them when the run settled. */
-export const turnOf = (data, runId) => JSON.parse(readFileSync(join(runDir(data, runId), "learning-turn.json"), "utf8"));
 /** The commits on main that name run `runId` in a Run-Id trailer. */
 export const mergesOf = (repo, runId) => git(repo, ["log", "--format=%H %(trailers:key=Run-Id,valueonly)", "main"]).split("\n").filter((entry) => entry.split(" ")[1] === runId);
 

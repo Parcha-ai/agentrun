@@ -13,7 +13,7 @@ import { test } from "node:test";
 import { ANSWER_TOKENS_LEAST } from "../dist/cap.js";
 import { agentFolderOf } from "../dist/files.js";
 import { answerWith, note } from "./fixtures/faux-learn.mjs";
-import { copyOf, ended, git, keptProposal, LEARN, learnedOnMain, learner, learningRows, made, onMain, proposedOf, reflectRows, repoOf, savedOf, settled, sleep, started } from "./learn-support.mjs";
+import { copyOf, ended, git, keptProposal, LEARN, learnedOnMain, learner, learningRows, made, onMain, reflectRows, repoOf, savedOf, settled, sleep, started } from "./learn-support.mjs";
 import { agent, client, follow, serve, withEnv } from "./support.mjs";
 
 const CLI = new URL("../dist/cli.js", import.meta.url).pathname;
@@ -58,7 +58,6 @@ test("the end-of-run turn's write under .learning/ is refused, in words that kee
   await made(api, learner("writer", { plan: PLAN, tools: ["write"], instructions: "Answer the question.\nReflect by writing first." }));
   const runId = await started(api, "writer");
   const { view, rows } = await ended(api, runId);
-  proposedOf(view);
   assert.equal((await learnedOnMain({ api, data }, "writer", runId)).result?.ok, true);
   const refused = rows.find((row) => row.kind === "tool_result" && row.tool_name === "write");
   assert.equal(refused?.tool_result_preview, "A note is kept only from your answer: write it in a ```note block, not to a file.", "the write is refused in those words");
@@ -74,7 +73,6 @@ test("what the user asks the agent to remember during the task survives: the job
   const { view, rows } = await ended(api, runId);
   assert.ok(rows.some((row) => row.kind === "tool_result" && row.tool_name === "write" && row.agent_label !== "learning"), "the job wrote in .learning/ during the task");
   assert.equal(view.result.final_answer, "Got it: I saved that in .learning/notes.txt.");
-  proposedOf(view);
   assert.equal((await learnedOnMain({ api, data }, "keeper", runId)).result?.ok, true);
   const repo = repoOf(data, "keeper");
   assert.deepEqual(git(repo, ["ls-tree", "--name-only", "main"]).split("\n"), ["MEMORY.md", "remembered.md"], "the answer's note, and nothing the job wrote");

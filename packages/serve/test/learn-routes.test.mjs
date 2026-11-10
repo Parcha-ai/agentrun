@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { parseNoteFile } from "../dist/learn/notes.js";
 import { note } from "./fixtures/faux-learn.mjs";
-import { copyOf, ended, git, LEARN, learnedIn, learnedOnMain, learner, made, objects, proposedOf, repoOf, resnap, SWITCH_TODO, savedOf, settled, started, wholeIn } from "./learn-support.mjs";
+import { copyOf, ended, git, LEARN, learnedIn, learnedOnMain, learner, made, objects, repoOf, resnap, savedOf, settled, started, wholeIn } from "./learn-support.mjs";
 import { schemaProblems } from "./schema-support.mjs";
 import { folderTestHooks, forgetBodies } from "../dist/learn/folder.js";
 import { spiedWorkspace } from "./learn-support.mjs";
@@ -27,7 +27,7 @@ const added = (text) => {
   return `@@ -0,0 +1,${lines.length} @@\n${lines.map((one) => `+${one}\n`).join("")}`;
 };
 
-test("a person sees what the agent learned and controls it: the view, the log by run and by person, a run's diff and its drop, an edit, a create and a retire through preconditions, the checks on a person's note, and the next run reading the result", { timeout: 300_000, skip: SWITCH_TODO }, async (t) => {
+test("a person sees what the agent learned and controls it: the view, the log by run and by person, a run's diff and its drop, an edit, a create and a retire through preconditions, the checks on a person's note, and the next run reading the result", { timeout: 300_000 }, async (t) => {
   const { api, baseUrl, data, token } = await serve(t, { learning: "on", faux: LEARN });
   const doc = await (await fetch(`${baseUrl}/openapi.json`)).json();
   const answer = (path, method = "get", status = "200") => doc.paths[path][method].responses[status].content["application/json"].schema;
@@ -303,7 +303,7 @@ test("a link planted at the agent's learning folder makes a person's edit, creat
   assert.deepEqual(state(), before, "nothing written where the link points: main, its objects, its files and its .git as they were");
 });
 
-test("a restarted server counts an agent's runs that tried to learn from the learning ledger, as GET /stats does: its view's counts read with runs/ unreadable", { timeout: 180_000, skip: SWITCH_TODO }, async (t) => {
+test("a restarted server counts an agent's runs that tried to learn from the store, as GET /stats does: its view's counts read with runs/ unreadable", { timeout: 180_000 }, async (t) => {
   const first = await serve(t, { learning: "on", faux: LEARN });
   const { data } = first;
   await made(first.api, learner("counted", { plan: [["check-units.md", UNITS]], once: true }));
@@ -401,7 +401,7 @@ test("a commit's notes are read once: a later page and the view at the same main
   assert.deepEqual(reads(), ["read .agentrun/snapshot.json"]);
 });
 
-test("a note's name that holds a value made secret after it was written is never shown: the view, the notes, the log, the run's diff and the notes a run learned and used read it [redacted], its route answers the real name only to a caller who knows it, and a retire by it takes it out of the index", { timeout: 240_000, skip: SWITCH_TODO }, async (t) => {
+test("a note's name that holds a value made secret after it was written is never shown: the view, the notes, the log, the run's diff and the notes a run learned and used read it [redacted], its route answers the real name only to a caller who knows it, and a retire by it takes it out of the index", { timeout: 240_000 }, async (t) => {
   // Built at the run: a value no file of this repository holds, made a launcher's secret only once its note is on main.
   const value = ["s3cret", "store", "pass", process.pid, Date.now().toString(36)].join("-");
   const named = `${value}.md`;
@@ -463,7 +463,7 @@ test("a note's name that holds a value made secret after it was written is never
   assert.ok(!shown.includes(value), "the value is nowhere a person reads");
 });
 
-test("a key a person saves on the server is cut like the server's own secrets, from the next read on: notes a run and a host commit put on main holding it read [redacted] in the view, the notes, the file, the log and the run's diff and learning, and a person's note holding it is refused", { timeout: 240_000, skip: SWITCH_TODO }, async (t) => {
+test("a key a person saves on the server is cut like the server's own secrets, from the next read on: notes a run and a host commit put on main holding it read [redacted] in the view, the notes, the file, the log and the run's diff and learning, and a person's note holding it is refused", { timeout: 240_000 }, async (t) => {
   // Built at the run: a value no file of this repository holds, saved as a tool key only once notes holding it are on main.
   const value = ["saved", "store", "pass", process.pid, Date.now().toString(36)].join("-");
   const named = `${value}.md`;
@@ -472,7 +472,6 @@ test("a key a person saves on the server is cut like the server's own secrets, f
   const { api, data } = await serve(t, { learning: "on", faux: LEARN });
   await made(api, learner("saver", { plan: [[named, KEPT]], once: true }));
   const run = await ended(api, await started(api, "saver"));
-  proposedOf(run.view);
   assert.equal((await learnedOnMain({ api, data }, "saver", run.view.run_id)).result?.ok, true);
   // A host commit too: a note whose text holds the value.
   const repo = repoOf(data, "saver");
@@ -627,7 +626,7 @@ test("a file on main that is not a note (over the read cap, not UTF-8, executabl
   assert.equal(git(repo, ["status", "--porcelain"]), "", "the checked-out files are main's");
 });
 
-test("a run's learning shows the grader's item for each new note: of two notes, the kept one merges and the dropped one is named with its question and why", { timeout: 120_000, skip: SWITCH_TODO }, async (t) => {
+test("a run's learning shows the grader's item for each new note: of two notes, the kept one merges and the dropped one is named with its question and why", { timeout: 120_000 }, async (t) => {
   const { api, baseUrl } = await serve(t, { learning: "on", faux: LEARN });
   const doc = await (await fetch(`${baseUrl}/openapi.json`)).json();
   const ONE_CASE = note("One case", "The answer for this one input was 42");

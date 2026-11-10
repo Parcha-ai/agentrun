@@ -7,7 +7,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { note } from "./fixtures/faux-learn.mjs";
-import { ended, git, learnedOnMain, learner, LEARN, made, proposedOf, repoOf, SWITCH_TODO, started } from "./learn-support.mjs";
+import { ended, git, learnedOnMain, learner, LEARN, made, repoOf, started } from "./learn-support.mjs";
 import { schemaProblems } from "./schema-support.mjs";
 import { call, cookieOf, runDir, serve, withEnv } from "./support.mjs";
 
@@ -40,13 +40,12 @@ async function learned(t, id, more = [], options = {}) {
   await made(server.api, learner(id, { instructions: ["Answer the question.", `Answer: ${JSON.stringify(ANSWER)}`, ...more].join("\n") }));
   const runId = await started(server.api, id);
   const { view } = await ended(server.api, runId);
-  proposedOf(view);
   const merged = await learnedOnMain(server, id, runId);
   assert.equal(merged.result?.ok, true, JSON.stringify(merged));
   return { ...server, runId, view, repo: repoOf(server.data, id) };
 }
 
-test("the agent's learning lists the skill and the workflow it learned beside its notes: name, description, the run that kept it, size, status and version; each file reads as text; a person's edit and retire stay for notes; the run's learning names them", { timeout: 180_000, skip: SWITCH_TODO }, async (t) => {
+test("the agent's learning lists the skill and the workflow it learned beside its notes: name, description, the run that kept it, size, status and version; each file reads as text; a person's edit and retire stay for notes; the run's learning names them", { timeout: 180_000 }, async (t) => {
   const { api, baseUrl, runId, view, repo } = await learned(t, "keeper");
   const doc = await (await fetch(`${baseUrl}/openapi.json`)).json();
   const agentSchema = doc.paths["/agents/{agent_id}/learning"].get.responses["200"].content["application/json"].schema;

@@ -1,18 +1,17 @@
 // One grader decides whether a run's checked notes join main: a bounded call, read fail-closed. The server keeps what
 // the run proposed, with what the user said in it cut of the server's secrets; the runner's learning run grades and
-// merges it (runner/learning-loop.ts), here through learn-support's learnedOnMain, its grader on the faux model. No
-// injection screen runs: the grader's Planted question decides. The cases on a run's own learning end (its words, the
-// verdict, what the grade spent in the ledger, /v2/usage and /v2/stats) wait for the reader of the learning run's end
-// (SWITCH_TODO).
+// merges it (runner/learning-loop.ts), here through learn-support's learnedOnMain and ended, its grader on the faux model.
+// No injection screen runs: the grader's Planted question decides. A run's learning end (its words, the verdict, what the
+// grade spent on /v2/usage and /v2/stats) is read from the store: its kept learning and its learning run's journal.
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { createHash, randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { test } from "node:test";
 import { CANARY } from "./fixtures/faux-jev.mjs";
 import { note } from "./fixtures/faux-learn.mjs";
-import { ended, git, keptProposal, LEARN, learnedOnMain, learner, ledgerOf, made, mergesOf, proposedOf, repoOf, SWITCH_TODO, savedOf, settled, sleep, started } from "./learn-support.mjs";
-import { agent, follow, runsFolders, scratch, serve, withEnv } from "./support.mjs";
+import { CLI_TOOLS_TODO, ended, git, keptProposal, LEARN, learnedOnMain, learner, learningKept, made, mergesOf, repoOf, savedOf, settled, sleep, started } from "./learn-support.mjs";
+import { agent, follow, scratch, serve, withEnv } from "./support.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const FAUX_JEV = new URL("./fixtures/faux-jev.mjs", import.meta.url).pathname;
@@ -28,7 +27,7 @@ const hostKey = (t) => {
 };
 const callsIn = (file) => (existsSync(file) ? readFileSync(file, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line)) : []);
 
-test("the grader's verdict decides: a drop, a merge that keeps no note and an answer that is no verdict are dropped as grader, with the verdict kept; a model that fails is grade_failed", { timeout: 150_000, skip: SWITCH_TODO }, async (t) => {
+test("the grader's verdict decides: a drop, a merge that keeps no note and an answer that is no verdict are dropped as grader, with the verdict kept; a model that fails is grade_failed", { timeout: 150_000 }, async (t) => {
   const calls = join(await scratch(t), "calls.jsonl");
   withEnv(t, { AGENTRUN_TEST_FAUX_CALLS: calls }, ["AGENTRUN_TEST_FAUX_GRADE_HOLD", "TYPESAFE_API_KEY", "OPENROUTER_API_KEY"]);
   const { api, data } = await serve(t, { learning: "on", faux: LEARN });
@@ -51,15 +50,14 @@ test("the grader's verdict decides: a drop, a merge that keeps no note and an an
     const { learning } = await savedOf(data, runId);
     assert.deepEqual(learning.verdict, verdict, rule);
     assert.equal(git(repoOf(data, id), ["rev-list", "--count", "main"]), "1", `${rule}: nothing merged`);
-    // Its cost kept, unknown when the call failed; an answer that could not be read, read twice, is kept as it came.
+    // Its cost kept, unknown when the call failed.
     assert.equal(learning.cost_usd.grade === null, reason === "grade_failed", JSON.stringify(learning.cost_usd));
-    assert.equal(learning.unread, rule === "Grade: garbage." ? "Looks fine to me." : undefined, rule);
   }
   // One grader call a run, and one more for the answer that could not be read.
   assert.equal(callsIn(calls).filter((call) => call.kind === "grade").length, cases.length + 1, "one grader call a run, two for the unread one");
 });
 
-test("what is read from a partial answer goes through the grader like any answer: a note beside an opening never closed is graded, alone, before it merges or drops", { timeout: 150_000, skip: SWITCH_TODO }, async (t) => {
+test("what is read from a partial answer goes through the grader like any answer: a note beside an opening never closed is graded, alone, before it merges or drops", { timeout: 150_000 }, async (t) => {
   const calls = join(await scratch(t), "calls.jsonl");
   withEnv(t, { AGENTRUN_TEST_FAUX_CALLS: calls }, ["AGENTRUN_TEST_FAUX_GRADE_HOLD", "TYPESAFE_API_KEY", "OPENROUTER_API_KEY"]);
   const { api, data } = await serve(t, { learning: "on", faux: LEARN });
@@ -79,7 +77,7 @@ test("what is read from a partial answer goes through the grader like any answer
   }
 });
 
-test("an answer the host cannot read is asked once more with the same prompt: a readable second answer decides, and each ask's spend is booked once; two unreadable answers drop, with the last kept on the run cut of secrets and in size, and never served", { timeout: 150_000, skip: SWITCH_TODO }, async (t) => {
+test("an answer the host cannot read is asked once more with the same prompt: a readable second answer decides, and each ask's spend is booked once; two unreadable answers drop, and neither is kept with the run's learning or served, nor any part of a key it holds", { timeout: 150_000 }, async (t) => {
   const calls = join(await scratch(t), "calls.jsonl");
   // A value saved as a tool key before the runs: the grader's answer holds it, and the run's learning never does.
   // It holds a space, as a tool key may: an answer cut before it is cut of secrets could keep one half of it.
@@ -101,15 +99,16 @@ test("an answer the host cannot read is asked once more with the same prompt: a 
   settled(once.view, once.rows, "merged");
   assert.equal(grades(), 3, "an unreadable answer is asked once more, and no more");
   const [one, two] = [(await savedOf(data, plain.view.run_id)).learning, (await savedOf(data, once.view.run_id)).learning];
-  assert.equal(two.unread, undefined, "a verdict read on the second ask keeps no answer");
   // The same prompt asked twice: twice the input tokens of one ask, near enough (the prompts differ by their run's id).
   assert.ok(two.tokens.grade.input > 1.8 * one.tokens.grade.input && two.tokens.grade.input < 2.2 * one.tokens.grade.input, JSON.stringify([one.tokens, two.tokens]));
   assert.ok(two.cost_usd.grade > one.cost_usd.grade, JSON.stringify([one.cost_usd, two.cost_usd]));
-  const booked = ledgerOf(data).filter((line) => line.run === once.view.run_id);
-  assert.deepEqual(booked.map(({ cost, tokens }) => ({ cost, tokens })), [{ cost: two.cost_usd.grade, tokens: two.tokens.grade }], "one ledger line, with both asks");
+  // Booked once each, the second with both asks: the learning meter is the two grades.
+  const round = (v) => Math.round(v * 1e6) / 1e6;
+  const meter = (await api("GET", "/usage?group_by=meter")).body.lines.find((entry) => entry.meter === "learning");
+  assert.deepEqual([meter.usd, meter.unpriced_runs], [round(one.cost_usd.grade + two.cost_usd.grade), 0], "each grade once, with both asks");
 
   // Unreadable twice, past any bound, holding the key at its start and again with its space before the 1,500th character
-  // and its back half across it: dropped, with the last answer kept cut of the key, in whole and in part, then in size.
+  // and its back half across it: dropped, and neither answer is kept, nor any part of the key.
   const spaced = value.replace(" ", "_");
   const babble = `${spaced}_${"word_".repeat(271)}${spaced}_${"word_".repeat(1_000)}end`;
   await made(api, learner("babble", { instructions: `Grade: garbage saying ${babble}.`, plan: PLAN }));
@@ -118,17 +117,16 @@ test("an answer the host cannot read is asked once more with the same prompt: a 
   assert.equal(grades(), 5, "two asks");
   const { learning } = await savedOf(data, dropped.view.run_id);
   assert.deepEqual(learning.verdict, { merge: false, reason: "the grader's verdict could not be read", items: [] });
-  assert.ok(learning.unread.startsWith("Looks fine to me. [redacted] word word") && learning.unread.endsWith("word word end"), learning.unread.slice(0, 80));
-  assert.match(learning.unread, /word \n…\n word/);
-  assert.ok(learning.unread.length <= 2_000, `${learning.unread.length} characters`);
-  for (const part of [front.slice(0, 8), front.slice(-8), back.slice(0, 8), back.slice(-8)]) assert.ok(!learning.unread.includes(part), "no part of the key");
-  assert.equal(learning.unread.split("[redacted]").length - 1, 2, "the key, twice");
-  // Kept on the run's file for a person to diagnose; no read serves it.
+  // Nothing of it is kept with the run's learning (its kept learning, its learning run's journal), and no read serves it.
+  const kept = await learningKept({ api, data }, dropped.view.run_id);
   const served = JSON.stringify([(await api("GET", `/runs/${dropped.view.run_id}`)).body, (await api("GET", `/runs/${dropped.view.run_id}/learning`)).body, (await api("GET", "/runs")).body, (await api("GET", "/agents/babble/runs")).body, dropped.rows]);
-  assert.ok(!served.includes("Looks fine to me") && !served.includes("word word"), "the answer is never served");
+  for (const [where, text] of [["kept", kept], ["served", served]]) {
+    assert.ok(!text.includes("Looks fine to me") && !text.includes("word_word"), `${where}: no answer of the grader's`);
+    for (const part of [front.slice(0, 8), front.slice(-8), back.slice(0, 8), back.slice(-8)]) assert.ok(!text.includes(part), `${where}: no part of the key`);
+  }
 });
 
-test("the grader runs on the model the server names for it, --grade-model (AGENTRUN_SERVE_GRADE_MODEL) before its strong tier (AGENT_MODEL_STRONG), whatever the agent's own model; with neither, on the agent's own", { timeout: 180_000, skip: SWITCH_TODO }, async (t) => {
+test("the grader runs on the model the server names for it, --grade-model (AGENTRUN_SERVE_GRADE_MODEL) before its strong tier (AGENT_MODEL_STRONG), whatever the agent's own model; with neither, on the agent's own", { timeout: 180_000 }, async (t) => {
   const calls = join(await scratch(t), "calls.jsonl");
   withEnv(t, { AGENTRUN_TEST_FAUX_CALLS: calls }, ["AGENTRUN_TEST_FAUX_GRADE_HOLD", "TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AGENT_MODEL_STRONG", "AGENTRUN_SERVE_GRADE_MODEL"]);
   const named = [];
@@ -152,8 +150,6 @@ test("the grader runs on the model the server names for it, --grade-model (AGENT
   assert.deepEqual(named, [null, "faux-strong", "faux-grader", "faux-named"], "capabilities.learning.grade_model");
 });
 
-// A learning end an older server wrote, with a reason no server gives any more, is read as any reason this server does
-// not give: it is not counted in /v2/stats.
 test("the grader reads what the user said in the run, in order and cut of the host's secrets, and never the end-of-run turn's message", { timeout: 150_000 }, async (t) => {
   const calls = join(await scratch(t), "calls.jsonl");
   withEnv(t, { AGENTRUN_TEST_FAUX_CALLS: calls }, ["AGENTRUN_TEST_FAUX_GRADE_HOLD", "TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AGENT_MODEL_STRONG", "AGENTRUN_SERVE_GRADE_MODEL"]);
@@ -161,7 +157,7 @@ test("the grader reads what the user said in the run, in order and cut of the ho
   const { api, data } = await serve(t, { learning: "on", faux: LEARN });
   await made(api, learner("asked", { plan: PLAN }));
   const runId = await started(api, "asked", `For next time: answer in tables. The server's token is ${token}.`);
-  proposedOf((await ended(api, runId)).view);
+  await ended(api, runId);
   assert.equal((await learnedOnMain({ api, data }, "asked", runId)).result?.ok, true);
   const [call] = callsIn(calls);
   assert.deepEqual(call.asked, ["1. For next time: answer in tables. The server's token is [redacted]."]);
@@ -190,7 +186,7 @@ test("a user message past 2,000 characters reaches the grader whole from the run
   const message = reversed(2_500);
   assert.ok(message.length === 2_500 && message.indexOf(REVERSAL) > 2_000);
   const runId = await started(api, "long", message);
-  proposedOf((await ended(api, runId)).view);
+  await ended(api, runId);
   assert.equal((await learnedOnMain({ api, data }, "long", runId)).result?.ok, true);
   const [call] = callsIn(calls);
   const [asked] = (await keptProposal({ api, data }, runId)).proposal.proposal.asked;
@@ -217,7 +213,7 @@ test("a follow-up sent while the run works, past 2,000 characters, reaches the g
   const sent = await api("POST", `/runs/${runId}/messages`, { content: reversed(2_500) });
   assert.equal(sent.status, 202, JSON.stringify(sent.body));
   writeFileSync(gate, "");
-  proposedOf((await ended(api, runId)).view);
+  await ended(api, runId);
   assert.equal((await learnedOnMain({ api, data }, "followed", runId)).result?.ok, true);
   const [call] = callsIn(calls);
   assert.equal(call.asked.length, 2, JSON.stringify(call.asked).slice(0, 200));
@@ -236,7 +232,7 @@ test("a host secret the user's message holds across either point it is shortened
   const message = `${"Look at this. ".repeat(60).slice(0, 640)}${token} and the rest of what the user said. ${"More. ".repeat(100)}${token} and the last words the user said.${" End.".repeat(50)}`;
   assert.ok(message.length <= 2_000 && message.length - message.lastIndexOf(token) > 300 && message.length - message.lastIndexOf(token) - token.length < 300, "the second token across the tail's start");
   const runId = await started(api, "straddled", message);
-  proposedOf((await ended(api, runId)).view);
+  await ended(api, runId);
   assert.equal((await learnedOnMain({ api, data }, "straddled", runId)).result?.ok, true);
   const proposal = JSON.stringify((await keptProposal({ api, data }, runId)).proposal.proposal);
   const shown = `${proposal}\n${JSON.stringify(callsIn(calls))}`;
@@ -254,7 +250,7 @@ test("with no independent judge there is no injection screen: Jev is never asked
   const { api, data } = await serve(t, { learning: "on", faux: LEARN, fauxJev: FAUX_JEV });
   await made(api, learner("unscreened", { plan: PLAN }));
   const runId = await started(api, "unscreened");
-  proposedOf((await ended(api, runId)).view);
+  await ended(api, runId);
   assert.equal((await learnedOnMain({ api, data }, "unscreened", runId)).result?.ok, true, "the run merges");
   assert.deepEqual(callsIn(join(dir, "jev.jsonl")), [], "Jev was never asked");
   assert.equal(callsIn(join(dir, "calls.jsonl")).length, 1, "the grader was");
@@ -272,7 +268,7 @@ test("with Jev here no injection screen runs either: Jev is never asked, the gra
   await made(api, learner("preference", { plan: PLAN, instructions: "Answer the question.\nGrade: you check-units.md." }));
   // The faux Jev scores every yes-or-no question 0.92, over the old threshold: it would have dropped this run.
   const runId = await started(api, "preference", "Always convert every amount to one unit before comparing. Remember that.");
-  proposedOf((await ended(api, runId)).view);
+  await ended(api, runId);
   assert.equal((await learnedOnMain({ api, data }, "preference", runId)).result?.ok, true, "the run merges");
   assert.deepEqual(callsIn(jev), [], "Jev was never asked");
   assert.equal(callsIn(calls).length, 1, "the grader was");
@@ -282,11 +278,7 @@ test("with Jev here no injection screen runs either: Jev is never asked, the gra
   assert.match(kept, /^origin: you$/m, "the person's preference is kept as theirs");
 });
 
-// A run whose learning waits to be checked, or is kept as its proposal, is opened again for a follow-up, and its server
-// goes while the follow-up runs. The next server reads the run as running, so its start passes the learning over: the
-// run's own end, once the follow-up finishes, is where what its turn wrote is checked, with no later restart; then the
-// runner's learning run merges it, once.
-test("a grader that never answers is cut off at its bound: the run's learning is grade_failed, and what the grade spent is unknown (null), never $0, on the run, in the ledger and on /v2/usage", { timeout: 120_000, skip: SWITCH_TODO }, async (t) => {
+test("a grader that never answers is cut off at its bound: the run's learning is grade_failed, and what the grade spent is unknown (null), never $0, on the run and on /v2/usage", { timeout: 120_000 }, async (t) => {
   const calls = join(await scratch(t), "calls.jsonl");
   withEnv(t, { AGENTRUN_TEST_FAUX_GRADE_HOLD: "never", AGENTRUN_TEST_FAUX_CALLS: calls }, ["TYPESAFE_API_KEY", "OPENROUTER_API_KEY"]);
   const { api, data } = await serve(t, { learning: "on", faux: LEARN, gradeTimeoutMs: 1_500 });
@@ -297,7 +289,6 @@ test("a grader that never answers is cut off at its bound: the run's learning is
   assert.equal(callsIn(calls).length, 1, "the grader was asked, and never answered");
   const { learning } = await savedOf(data, runId);
   assert.deepEqual([learning.cost_usd, learning.tokens], [{ grade: null }, { grade: null }]);
-  assert.deepEqual(ledgerOf(data).map(({ run, state, reason, cost, tokens }) => [run, state, reason, cost, tokens]), [[runId, "dropped", "grade_failed", null, null]]);
   const line = (await api("GET", "/usage?group_by=meter")).body.lines.find((entry) => entry.meter === "learning");
   assert.deepEqual([line.usd, line.unpriced_runs], [0, 1], "unpriced, never $0");
 });
@@ -305,7 +296,7 @@ test("a grader that never answers is cut off at its bound: the run's learning is
 // GET /v2/usage on one server with both kinds of spend outside a run's tokens: a run whose paid tool charged (monid's
 // `tools`, from S2) and a run whose grade spent (the learning ledger's `learning`). Each groups the same way, and the
 // total is every line once.
-test("GET /v2/usage books a run's tool charge as tools and a grade as learning, beside the runs' tokens: by meter, agent and day the lines sum to the same total", { timeout: 180_000, skip: SWITCH_TODO }, async (t) => {
+test("GET /v2/usage books a run's tool charge as tools and a grade as learning, beside the runs' tokens: by meter, agent and day the lines sum to the same total", { timeout: 180_000, skip: CLI_TOOLS_TODO }, async (t) => {
   const saved = ["not-a-secret", "monid", randomBytes(6).toString("hex")].join("-");
   withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), AGENTRUN_TEST_FAUX_MONID_CALLS: join(await scratch(t), "monid.jsonl"), AGENTRUN_TEST_FAUX_MONID_ACCEPTS: createHash("sha256").update(saved).digest("hex") }, ["MONID_API_KEY", "TYPESAFE_API_KEY", "OPENROUTER_API_KEY"]);
   const { api, data } = await serve(t, { learning: "on", faux: LEARN, harnessTable: fauxTable(FAUX_HARNESS), fauxMonid: FAUX_MONID });
@@ -345,7 +336,7 @@ test("GET /v2/usage books a run's tool charge as tools and a grade as learning, 
   assert.deepEqual(caps.features.usage.meters, ["tokens", "tools", "browser_time", "learning"]);
 });
 
-test("GET /v2/usage books each grade under the meter learning, by agent and by day; GET /v2/stats counts the runs that tried to learn, over its filters, from the ledger, and a restarted server counts the same with runs/ unreadable", { timeout: 180_000, skip: SWITCH_TODO }, async (t) => {
+test("GET /v2/usage books each grade under the meter learning, by agent and by day; GET /v2/stats counts the runs that tried to learn, over its filters, from the store, and a restarted server counts the same", { timeout: 180_000 }, async (t) => {
   withEnv(t, {}, ["TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AGENTRUN_TEST_FAUX_GRADE_HOLD", "AGENTRUN_TEST_FAUX_CALLS"]);
   const first = await serve(t, { learning: "on", faux: LEARN });
   const { api, data } = first;
@@ -358,45 +349,31 @@ test("GET /v2/usage books each grade under the meter learning, by agent and by d
   const mute = await ended(api, await started(api, "mute"));
   await ended(api, await started(api, "plain"));
   assert.deepEqual([merged.view.learning.state, empty.view.learning.reason, mute.view.learning.reason], ["merged", "empty", "unparsed"]);
-  const grade = (await savedOf(data, merged.view.run_id)).learning.cost_usd.grade;
+  const saved = await savedOf(data, merged.view.run_id);
+  const grade = saved.learning.cost_usd.grade;
   assert.ok(grade > 0);
-  for (const { view } of [empty, mute]) await savedOf(data, view.run_id);
+  // The two never graded spent nothing on learning.
+  for (const { view } of [empty, mute]) assert.equal((await savedOf(data, view.run_id)).learning.cost_usd, undefined, "never graded");
   const byMeter = (await api("GET", "/usage?group_by=meter")).body;
   const line = byMeter.lines.find((entry) => entry.meter === "learning");
-  assert.equal(line.usd, Math.round(grade * 1e6) / 1e6);
+  assert.deepEqual([line.usd, line.unpriced_runs], [Math.round(grade * 1e6) / 1e6, 0]);
   assert.ok(byMeter.lines.find((entry) => entry.meter === "tokens").usd > 0, "the runs' own cost stays under tokens");
-  assert.ok((await api("GET", "/usage?group_by=agent")).body.lines.find((entry) => entry.group === "counted").usd >= line.usd);
+  const byAgent = (await api("GET", "/usage?group_by=agent")).body.lines;
+  assert.ok(byAgent.find((entry) => entry.group === "counted").usd >= line.usd);
 
   const want = { runs: 3, merged: 1, dropped: { empty: 1, unparsed: 1 }, in_progress: 0 };
   assert.deepEqual((await api("GET", "/stats")).body.learning, want);
   assert.deepEqual((await api("GET", "/stats?agent=mute")).body.learning, { runs: 1, merged: 0, dropped: { unparsed: 1 }, in_progress: 0 });
   assert.deepEqual((await api("GET", `/stats?from=${new Date(Date.now() + 60_000).toISOString()}`)).body.learning, { runs: 0, merged: 0, dropped: {}, in_progress: 0 });
-  // One ledger line per run that tried to learn, once its end was saved: the grade's spend on the merged one, none on the
-  // others, which were never graded.
-  const lines = ledgerOf(data).map(({ run, agent, state, reason, at, cost, tokens }) => ({ run, agent, state, reason, at: typeof at, cost, tokens }));
-  const zero = { input: 0, cache_read: 0, cache_write: 0, output: 0 };
-  const saved = await savedOf(data, merged.view.run_id);
-  assert.deepEqual(lines.sort((a, b) => a.run.localeCompare(b.run)), [
-    { run: merged.view.run_id, agent: "counted", state: "merged", reason: null, at: "string", cost: grade, tokens: saved.learning.tokens.grade },
-    { run: empty.view.run_id, agent: "counted", state: "dropped", reason: "empty", at: "string", cost: 0, tokens: zero },
-    { run: mute.view.run_id, agent: "mute", state: "dropped", reason: "unparsed", at: "string", cost: 0, tokens: zero },
-  ].sort((a, b) => a.run.localeCompare(b.run)));
   await first.close();
+  // A restarted server holds none of these runs: it counts them from the store, and books each grade once.
   const again = await serve(t, { learning: "on", faux: LEARN, data });
-  // The restarted server holds none of these runs: it counts them from the ledger alone, and never opens runs/.
-  const runs = runsFolders(data);
-  for (const folder of runs) chmodSync(folder, 0o000);
-  try {
-    assert.deepEqual((await again.api("GET", "/stats")).body.learning, want, "read back from the ledger");
-    assert.deepEqual((await again.api("GET", "/stats?agent=mute")).body.learning, { runs: 1, merged: 0, dropped: { unparsed: 1 }, in_progress: 0 });
-  } finally {
-    for (const folder of runs) chmodSync(folder, 0o700);
-  }
+  assert.deepEqual((await again.api("GET", "/stats")).body.learning, want, "read back from the store");
+  assert.deepEqual((await again.api("GET", "/stats?agent=mute")).body.learning, { runs: 1, merged: 0, dropped: { unparsed: 1 }, in_progress: 0 });
   assert.equal((await again.api("GET", "/usage?group_by=meter")).body.lines.find((entry) => entry.meter === "learning").usd, line.usd, "counted once");
-  assert.equal(ledgerOf(data).length, 3, "the restart wrote no line again");
 });
 
-test("a note the checks refuse is left out and the rest of the proposal goes on: the good note is graded and merged, the bad one named with its problem; a secret in any note still drops every note", { timeout: 150_000, skip: SWITCH_TODO }, async (t) => {
+test("a note the checks refuse is left out and the rest of the proposal goes on: the good note is graded and merged, the bad one named with its problem; a secret in any note still drops every note", { timeout: 150_000 }, async (t) => {
   withEnv(t, {}, ["AGENTRUN_TEST_FAUX_GRADE_HOLD", "AGENTRUN_TEST_FAUX_CALLS", "TYPESAFE_API_KEY", "OPENROUTER_API_KEY"]);
   const { api, data } = await serve(t, { learning: "on", faux: LEARN });
   const GOOD = note("Check units", "Convert every amount to one unit before comparing");

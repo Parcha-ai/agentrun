@@ -9,19 +9,15 @@ import { createHash, randomBytes } from "node:crypto";
 import { readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
 import { test } from "node:test";
 import { homeOf } from "../dist/files.js";
 import { SignIns, vendorOf, vendorsOver } from "../dist/sign-ins.js";
 import { keptContexts, keptProfile, savedOnRelease } from "../dist/tools.js";
 import { openapiDocument } from "../dist/openapi.js";
 import { WITHHELD_SIGN_IN } from "../dist/runs.js";
-import { learningTestHooks } from "../dist/learning.js";
 import { calls as bbCalls, contexts, KEY as BB_KEY } from "./fixtures/faux-browserbase-check.mjs";
 import { KEY as KERNEL_KEY } from "./fixtures/faux-kernel-check.mjs";
 import { agent, answerFlow, client, FAUX, flowAgent, follow, runDir, runRecordOf, scratch, serve, storeRun, withEnv } from "./support.mjs";
-import { ended, LEARN, learner, made, objects, repoOf, started } from "./learn-support.mjs";
-import { note } from "./fixtures/faux-learn.mjs";
 import { saveSignIn, signInsOverStore } from "../dist/sign-ins-store.js";
 import { agentWithRevision, storeOn } from "./store-helpers.mjs";
 
@@ -299,83 +295,6 @@ test("a run's end keeps its line in the agent store cut of its browser sign-in's
   assert.ok(!JSON.stringify((await api("GET", "/runs")).body).includes(ref));
 });
 
-test("a run's end-of-run learning never keeps its browser sign-in's pointer: a note that holds it is refused as a held value, and nothing of it reaches the agent's learning", { timeout: 180_000 }, async (t) => {
-  const dir = await scratch(t);
-  const log = join(dir, "browser.jsonl");
-  withEnv(t, { BROWSERBASE_API_KEY: BB_KEY, BROWSERBASE_PROJECT_ID: "proj-1", AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), FAUX_BROWSER_LOG: log }, KEYS);
-  const { api, data } = await serve(t, { learning: "on", faux: LEARN, fauxBrowser: FAUX_BROWSER, fauxBrowserbase: FAUX_BROWSERBASE });
-  await made(api, learner("alpha", { tools: ["browser"] }));
-  // Its first run makes its sign-in: the pointer, as the run's browser was handed it.
-  await ended(api, await started(api, "alpha"));
-  const { ref } = (await readFile(log, "utf8")).trim().split("\n").map((line) => JSON.parse(line)).find((op) => op.op === "sign-in");
-  // Its next run's end-of-run turn writes the pointer into a note (a model that repeats what it was given).
-  const kept = note("The pointer", "What the browser opened", `It opened ${ref} for me.\n`);
-  const { id: _, version: __, ...definition } = learner("alpha", { tools: ["browser"], plan: [["the-pointer.md", kept]] }).definition;
-  const edited = await api("PUT", "/agents/alpha/definition", { definition });
-  assert.equal(edited.status, 200, JSON.stringify(edited.body));
-  const runId = await started(api, "alpha");
-  const { view } = await ended(api, runId);
-  assert.deepEqual([view.learning.state, view.learning.reason], ["dropped", "checker"], JSON.stringify(view.learning));
-  const notes = JSON.stringify((await api("GET", "/agents/alpha/learning/notes")).body);
-  assert.ok(!notes.includes(ref), notes);
-  assert.ok(!objects(repoOf(data, "alpha")).includes(ref), "nothing of it in the agent's learning, in any commit");
-  for (const shown of [JSON.stringify(view), JSON.stringify((await api("GET", `/runs/${runId}/learning`)).body), await readFile(join(runDir(data, runId), "serve.json"), "utf8")]) assert.ok(!shown.includes(ref), shown);
-});
-
-test("a run's end-of-run learning left unchecked by a server that went is not checked while the next server cannot read its browser sign-in: nothing reaches the agent's learning, and the server that can read it refuses the note as a held value", { timeout: 240_000 }, async (t) => {
-  const dir = await scratch(t);
-  const log = join(dir, "browser.jsonl");
-  const sealKey = randomBytes(32).toString("base64");
-  withEnv(t, { BROWSERBASE_API_KEY: BB_KEY, BROWSERBASE_PROJECT_ID: "proj-1", AGENTRUN_SEAL_KEY: sealKey, FAUX_BROWSER_LOG: log }, KEYS);
-  // Each run's serve.json as its server left it just before its check: what a server that went right then leaves.
-  const before = new Map();
-  learningTestHooks.beforePropose = async (folder) => void before.set(folder, await readFile(join(folder, "serve.json"), "utf8"));
-  t.after(() => (learningTestHooks.beforePropose = undefined));
-  const first = await serve(t, { learning: "on", faux: LEARN, fauxBrowser: FAUX_BROWSER, fauxBrowserbase: FAUX_BROWSERBASE });
-  const { data } = first;
-  await made(first.api, learner("alpha", { tools: ["browser"] }));
-  // Its first run makes its sign-in: the pointer, as the run's browser was handed it.
-  await ended(first.api, await started(first.api, "alpha"));
-  const { ref } = (await readFile(log, "utf8")).trim().split("\n").map((line) => JSON.parse(line)).find((op) => op.op === "sign-in");
-  // Another agent's run, with no browser, left unchecked too: the next server's start checks it after alpha's (newest
-  // first), so its end says that start has passed alpha's run.
-  await made(first.api, learner("beta"));
-  const betaId = await started(first.api, "beta");
-  await ended(first.api, betaId);
-  // Alpha's next run's end-of-run turn writes the pointer into a note (a model that repeats what it was given).
-  const kept = note("The pointer", "What the browser opened", `It opened ${ref} for me.\n`);
-  const { id: _, version: __, ...definition } = learner("alpha", { tools: ["browser"], plan: [["the-pointer.md", kept]] }).definition;
-  assert.equal((await first.api("PUT", "/agents/alpha/definition", { definition })).status, 200);
-  const runId = await started(first.api, "alpha");
-  await ended(first.api, runId);
-  await first.close();
-  // The server went after both runs ended and before their notes were checked.
-  for (const id of [runId, betaId]) {
-    const folder = runDir(data, id);
-    assert.equal(JSON.parse(before.get(folder)).learning.state, "reflecting");
-    await writeFile(join(folder, "serve.json"), before.get(folder));
-    await rm(join(folder, "learning-proposal.json"), { force: true });
-  }
-  // The next server holds another seal key: the sign-in no longer opens, so the pointer is not among the values its
-  // check refuses. Alpha's run is not checked; beta's is.
-  process.env.AGENTRUN_SEAL_KEY = randomBytes(32).toString("base64");
-  const second = await serve(t, { data, learning: "on", faux: LEARN, fauxBrowser: FAUX_BROWSER, fauxBrowserbase: FAUX_BROWSERBASE });
-  assert.deepEqual((await second.api("GET", "/agents/alpha")).body.sign_ins.map((s) => s.state), ["unreadable"]);
-  assert.deepEqual([(await ended(second.api, betaId)).view.learning.state], ["dropped"], "the start's check passed alpha's run");
-  const saved = JSON.parse(await readFile(join(runDir(data, runId), "serve.json"), "utf8"));
-  assert.deepEqual([saved.learning.state, saved.unshown], ["reflecting", undefined], "left as it was, and never saved hidden");
-  assert.ok(!existsSync(join(runDir(data, runId), "learning-proposal.json")), "nothing proposed");
-  assert.ok(!objects(repoOf(data, "alpha")).includes(ref), "nothing of it in the agent's learning, in any commit");
-  await second.close();
-  // The right seal key back: the run is checked, and the note is refused as a held value.
-  process.env.AGENTRUN_SEAL_KEY = sealKey;
-  const third = await serve(t, { data, learning: "on", faux: LEARN, fauxBrowser: FAUX_BROWSER, fauxBrowserbase: FAUX_BROWSERBASE });
-  const { view } = await ended(third.api, runId);
-  assert.deepEqual([view.learning.state, view.learning.reason], ["dropped", "checker"], JSON.stringify(view.learning));
-  assert.ok(!objects(repoOf(data, "alpha")).includes(ref), "nothing of it in the agent's learning, in any commit");
-  assert.ok(!(await readFile(join(runDir(data, runId), "serve.json"), "utf8")).includes(ref));
-});
-
 test("a follow-up handed a sign-in starts signed in and saves, though its run's first launch had none and its conversation was made with no profile", { timeout: 180_000 }, async (t) => {
   const dir = await scratch(t);
   const log = join(dir, "browser.jsonl");
@@ -401,9 +320,9 @@ test("a follow-up handed a sign-in starts signed in and saves, though its run's 
 });
 
 /** A server in a process of its own on `data` (fixtures/serve-signed-in.mjs), killed as a crash kills it: its client. */
-async function crashable(t, data, { faux = FAUX, learning } = {}) {
+async function crashable(t, data) {
   const fixture = new URL("./fixtures/serve-signed-in.mjs", import.meta.url).pathname;
-  const child = spawn(process.execPath, [fixture, data, faux, FAUX_BROWSER, FAUX_BROWSERBASE, ...(learning ? [learning] : [])], { stdio: ["ignore", "pipe", "inherit"] });
+  const child = spawn(process.execPath, [fixture, data, FAUX, FAUX_BROWSER, FAUX_BROWSERBASE], { stdio: ["ignore", "pipe", "inherit"] });
   t.after(() => child.kill("SIGKILL"));
   const base = await new Promise((resolve, reject) => {
     let out = "";
@@ -563,32 +482,6 @@ async function hiddenRun(t, dir, data, log) {
   await until(async () => { try { process.kill(holder.pid, 0); return false; } catch { return true; } }, (gone) => gone);
   return { runId, ref };
 }
-
-test("a hidden run interrupted in its end-of-run learning turn still ends failed, saying why: its learning never turns it completed", { timeout: 240_000 }, async (t) => {
-  const dir = await scratch(t);
-  const data = join(dir, "agents");
-  const log = join(dir, "browser.jsonl");
-  withEnv(t, { BROWSERBASE_API_KEY: BB_KEY, BROWSERBASE_PROJECT_ID: "proj-1", AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), FAUX_BROWSER_LOG: log }, KEYS);
-  const first = await crashable(t, data, { faux: LEARN, learning: "on" });
-  const hold = join(dir, "reflect");
-  await made(first.api, learner("alpha", { tools: ["browser"], instructions: `Answer the question.\nReflect once ${hold} exists.` }));
-  const runId = await started(first.api, "alpha");
-  await until(async () => (await first.api("GET", `/runs/${runId}`)).body.learning?.state, (state) => state === "reflecting");
-  // Killed only once serve.json on disk holds the end-of-run turn (`reflect`): a kill before it was saved would leave a
-  // run the next server never finds reflecting, and this would pass whatever learning does with a hidden run.
-  const saved = await until(async () => JSON.parse(await readFile(join(runDir(data, runId), "serve.json"), "utf8").catch(() => "{}")).reflect, (reflect) => Boolean(reflect));
-  assert.equal(saved.outcome, "completed", "its job's outcome, which a hidden run must never end with");
-  first.child.kill("SIGKILL");
-  await new Promise((resolve) => first.child.once("exit", resolve));
-  const { holder } = runRecordOf(data, runId);
-  process.kill(holder.pid, "SIGKILL");
-  await until(async () => { try { process.kill(holder.pid, 0); return false; } catch { return true; } }, (gone) => gone);
-  process.env.AGENTRUN_SEAL_KEY = randomBytes(32).toString("base64");
-  const { api } = await serve(t, { data, learning: "on", faux: LEARN, fauxBrowser: FAUX_BROWSER, fauxBrowserbase: FAUX_BROWSERBASE });
-  await follow(api, runId, ["failed", "completed"], { deadlineMs: 60_000 });
-  const view = (await api("GET", `/runs/${runId}`)).body;
-  assert.deepEqual([view.status, view.error?.message], ["failed", "This server can't read the run's browser sign-in (its seal key changed or is missing, or the sign-in is damaged): the run was stopped, so nothing it says can show it."]);
-});
 
 test("a forget never slips between a launch handing the sign-in and that run keeping it was handed: the launch keeps it under the lock forget asks under", { timeout: 20_000 }, async (t) => {
   const data = await scratch(t);

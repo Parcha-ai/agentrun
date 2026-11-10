@@ -4,18 +4,16 @@
 // (fired on time or by hand), false for a webhook, whatever its body says. The model reads the very text it did. Faux
 // model and faux harness: no key, no network.
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
-import { basename, dirname, join } from "node:path";
+import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
 import * as timeline from "@parcha/pi-durable-agent/timeline";
-import { startServe } from "../dist/index.js";
-import { client, FAUX, follow, runDir, scratch, serve, withEnv } from "./support.mjs";
-import { CLI_STORE, MESSAGE_RUN, RUN_EXEC, fakeClock, firings, made, schedule } from "./trigger-support.mjs";
+import { follow, runDir, scratch, serve, withEnv } from "./support.mjs";
+import { MESSAGE_RUN, RUN_EXEC, fakeClock, firings, made, schedule } from "./trigger-support.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const { Webhook } = createRequire(import.meta.url)("standardwebhooks");
@@ -143,62 +141,4 @@ test("a webhook's message to a working run is refused busy and sent again on the
   const entries = userEntries(data, run.body.run_id);
   assert.deepEqual(entries.map((e) => e.origin), [undefined, origin], "the person's first message, then the trigger's, once");
   assert.match(entries[1].text, /^A new event came in\./);
-});
-
-const CLI = new URL("../dist/cli.js", import.meta.url).pathname;
-const HOLD_SEED = new URL("./fixtures/hold-seed.mjs", import.meta.url).href;
-
-/** A webhook trigger's run whose server is killed after the run's serve.json (input, origin) is written and before its
- *  first message is sent: a server of its own, held where a learning run's seed is copied. */
-async function killedBeforeFirstMessage(t) {
-  const data = join(await scratch(t), "agents");
-  const signal = join(await scratch(t), "held");
-  const child = spawn(process.execPath, ["--import", HOLD_SEED, CLI, "--data", data, "--port", "0", "--faux", FAUX], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, HOME: dirname(data), AGENTRUN_TEST_HOLD_SEED: "beforePin", AGENTRUN_TEST_HOLD_SIGNAL: signal } });
-  t.after(() => child.kill("SIGKILL"));
-  let out = "";
-  child.stderr.resume();
-  await new Promise((resolve, reject) => {
-    child.stdout.on("data", (chunk) => ((out += chunk), /^AGENTRUN_BASE_URL=\S+\n/m.test(out) && /^AGENTRUN_API_KEY=.*\n/m.test(out) && resolve()));
-    child.once("exit", (code) => reject(new Error(`the server exited (${code}): ${out}`)));
-  });
-  const baseUrl = /AGENTRUN_BASE_URL=(\S+)/.exec(out)[1];
-  const api = client(baseUrl, (await readFile(join(data, ".token"), "utf8")).trim());
-  await made(api, "learner", { learning: true, tools: ["write"] });
-  const created = await api("POST", "/triggers", { name: "on push", source: { kind: "webhook" }, target: { kind: "start_run", agent_id: "learner", input: { content: "Answer soon." }, max_cost_usd: 0.5 } });
-  assert.equal(created.status, 201, JSON.stringify(created.body));
-  const { id, signing_secret: secret } = created.body;
-  assert.equal((await post(baseUrl, id, "{}", secret)).status, 202);
-  let dir = "";
-  for (const end = Date.now() + 60_000; !(dir = await readFile(signal, "utf8").catch(() => "")); await sleep(50)) assert.ok(Date.now() < end, "the run's seed copy was reached");
-  child.kill("SIGKILL");
-  await new Promise((resolve) => child.once("exit", resolve));
-  return { data, dir, runId: basename(dir), id };
-}
-
-test("a trigger's run whose server went down before its first message was taken: the next server sends that message as the trigger's, its origin read back from the run's serve.json", { timeout: 120_000, skip: CLI_STORE }, async (t) => {
-  withEnv(t, SEAL);
-  const { data, dir, runId, id } = await killedBeforeFirstMessage(t);
-  assert.deepEqual(JSON.parse(await readFile(join(dir, "serve.json"), "utf8")).input_origin, { kind: "trigger", trigger_id: id, source: "webhook", owner: false }, "kept with its input");
-  const next = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
-  t.after(() => next.close());
-  await follow(client(next.baseUrl, next.token), runId, ["completed"]);
-  assert.deepEqual(userEntries(data, runId), [{ text: await inputOf(data, runId), origin: { kind: "trigger", trigger_id: id, source: "webhook", owner: false } }], "the first message, sent by the next server, is the trigger's");
-});
-
-test("an origin read back from a run's serve.json that does not hold up for the run's own trigger (forged, another trigger's, or missing) is rebuilt as that trigger's with owner false: never its owner's, never another trigger's", { timeout: 240_000, skip: CLI_STORE }, async (t) => {
-  withEnv(t, SEAL);
-  const forgeries = [["owner true", (o) => ({ ...o, owner: true })], ["another trigger", (o) => ({ ...o, trigger_id: "trg_someone_else" })], ["a schedule's source", (o) => ({ ...o, source: "schedule" })], ["missing", () => undefined]];
-  for (const [what, forge] of forgeries) {
-    const { data, dir, runId, id } = await killedBeforeFirstMessage(t);
-    const file = join(dir, "serve.json");
-    const { input_origin, ...meta } = JSON.parse(await readFile(file, "utf8"));
-    const forged = forge(input_origin);
-    await writeFile(file, `${JSON.stringify(forged === undefined ? meta : { ...meta, input_origin: forged })}\n`);
-    const next = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
-    t.after(() => next.close());
-    await follow(client(next.baseUrl, next.token), runId, ["completed"]);
-    const [{ origin }] = userEntries(data, runId);
-    assert.deepEqual(origin, { kind: "trigger", trigger_id: id, source: "webhook", owner: false }, `${what}: read back as this run's trigger, never its owner's`);
-    await next.close();
-  }
 });

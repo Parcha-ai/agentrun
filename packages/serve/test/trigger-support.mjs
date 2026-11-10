@@ -33,10 +33,6 @@ export function fakeClock(start) {
 export const RUN_EXEC = "waits on running a fired run on the runner (dispatch and command delivery)";
 /** A case whose trigger target is a message_run: the message is delivered to an existing run over the store. */
 export const MESSAGE_RUN = "waits on delivering a message_run target over the store";
-/** A case that starts the server as its CLI does (a child process): until the server opens its own store at the cutover, a
- *  server started so has none, and its triggers routes answer unavailable. */
-export const CLI_STORE = "the server opens its own store at the cutover (a CLI-started server has none until then)";
-
 export const keyOf = (kind, id, what) => `fir_${createHash("sha256").update(`${kind}\n${id}\n${what}`).digest("hex").slice(0, 32)}`;
 export const schedule = (id, source, extra = {}) => ({ name: "nightly", source: { kind: "schedule", ...source }, target: { kind: "start_run", agent_id: id, input: { content: "Say hello." }, max_cost_usd: 0.5 }, ...extra });
 
