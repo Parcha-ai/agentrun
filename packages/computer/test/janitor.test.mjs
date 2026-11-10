@@ -16,13 +16,15 @@ function fakeProvider(computers, { lifetime = "janitor", failRelease = [], liste
 		async list(labels, context) {
 			calls.push(["list", labels, context?.signal instanceof AbortSignal]);
 			if (listed) return listed;
-			const infos = computers.map(({ name, deadline, state = "running", labels = {}, detachedAt }) => ({
+			const infos = computers.map(({ name, deadline, state = "running", labels = {}, detachedAt, owned, owner }) => ({
 				ref: { id: `id-${name}`, name },
 				labels,
 				deadline,
 				state,
 				network: "none",
 				...(detachedAt ? { detachedAt } : {}),
+				...(owned === undefined ? {} : { owned }),
+				...(owner === undefined ? {} : { owner }),
 			}));
 			return { ok: true, value: infos };
 		},
@@ -110,6 +112,21 @@ test("sweep() never deletes an agent's computer by a deadline: past, missing or 
 	);
 	assert.deepEqual(await sweep(provider, { now: NOW }), { ok: true, value: { deleted: ["run-past"], kept: 2 } });
 	assert.deepEqual(calls.filter(([what]) => what === "release"), [["release", "run-past", "delete"]]);
+});
+
+test("sweep() keeps a computer its provider lists as owned, with no owner label and no deadline; a run's computer with no deadline is still swept", async () => {
+	const { provider, calls } = fakeProvider(
+		[
+			{ name: "owned", deadline: undefined, owned: true },
+			{ name: "owned-known", deadline: undefined, owned: true, owner: { agent: "gone" } },
+			{ name: "run-none", deadline: undefined },
+		],
+		{ persistence: PERSISTS },
+	);
+	assert.deepEqual(await sweep(provider, { now: NOW }), { ok: true, value: { deleted: ["run-none"], kept: 2 } });
+	assert.deepEqual(calls.filter(([what]) => what === "release"), [["release", "run-none", "delete"]]);
+	// An owned info whose owner the listing knows still goes by its owner's rules: gone, it is deleted.
+	assert.deepEqual(await sweep(provider, { now: NOW, ownerGone: (id) => id === "gone" }), { ok: true, value: { deleted: ["owned-known", "run-none"], kept: 1 } });
 });
 
 test("sweep() deletes an agent's computer whose owner is gone, by the caller's answer, and keeps one whose owner is there", async () => {

@@ -2324,7 +2324,9 @@ it one at a time, and it keeps its files between them. The contract, in `src/pro
   `agentrun.run` and `agentrun.epoch` and `releaseOlder` of that run finds it. A claim of the same run below the epoch
   the computer carries is refused as fenced, with nothing changed. A claim on a computer with no owner is refused: a
   run's computer belongs to its run.
-- **The janitor.** `sweep` never deletes an owned computer by a deadline. It deletes one only when its owner agent is
+- **The janitor.** A computer is owned when it carries the owner label or its provider's `list()` marks it `owned: true`
+  (with `owner` when the listing knows it: a vendor whose stopped computer shows no labels). `sweep` never deletes an
+  owned computer by a deadline. It deletes one only when its owner agent is
   gone (`ownerGone(agent)`, the caller's answer, in `SweepOptions`), or when it has been detached for longer than its
   owner's idle TTL. An owner label it cannot read keeps the computer: the janitor never deletes an agent's state on a
   rule it cannot read. On a provider that declares persistence it sweeps owned computers under lifetime `"vendor"`

@@ -235,6 +235,8 @@ export interface ReadBackSpec {
 	kind?: ComputerKind;
 	/** What is mounted at /workspace, never a token; absent when nothing is. */
 	mount?: MountReadBack;
+	/** An agent's computer: its owner, read back; absent for a run's computer. */
+	owner?: ComputerOwner;
 }
 
 /**
@@ -260,12 +262,19 @@ export interface AttachedComputer extends ComputerRef {
 export interface ComputerInfo {
 	ref: ComputerRef;
 	labels: Record<string, string>;
-	/** undefined when the deadline label is missing or unreadable: the janitor deletes such a computer. */
+	/** undefined when the deadline label is missing or unreadable: the janitor deletes such a run's computer. An agent's has none. */
 	deadline: Date | undefined;
 	state: "running" | "stopped";
 	network: NetworkPolicy;
 	/** What is mounted at /workspace, read back, never a token; absent when nothing is. */
 	mount?: MountReadBack;
+	/**
+	 * An agent's computer (spec.owner), as the provider knows it, owner label or not: true. The janitor never deletes one
+	 * by a deadline. A provider whose listing carries the owner label need not set it.
+	 */
+	owned?: boolean;
+	/** An owned computer's owner, when the listing knows it (its labels, or the provider's own record). */
+	owner?: ComputerOwner;
 	/** An agent's computer that is detached now: when it was detached, the janitor's idle clock. Absent otherwise. */
 	detachedAt?: Date;
 }
