@@ -15,6 +15,13 @@
 
 export const SCHEMA_VERSION = 4;
 
+/** One answer per approval of a run: a second approve or deny command naming the same approval is refused
+ *  (StoreConstraint), so the first answer a person gives wins from the moment it is written, before the runner takes it
+ *  (runs-over-store.ts approve). In STORE_DDL, and added at a server open to a store an earlier build of this version made. */
+/** One unrefused answer per approval of a run: an answer the runner refused (its run could not resume) holds no place, so
+ *  the person can answer again. */
+export const COMMANDS_ONE_ANSWER = `CREATE UNIQUE INDEX IF NOT EXISTS commands_one_answer ON commands (run_id, json_extract(body, '$.approval')) WHERE kind IN ('approve', 'deny') AND refused IS NULL`;
+
 const json = (column: string, nullable = false) => `${column} TEXT${nullable ? "" : " NOT NULL"} CHECK (${column} IS NULL OR json_valid(${column}))`;
 
 export const STORE_DDL: readonly string[] = [
@@ -110,6 +117,7 @@ export const STORE_DDL: readonly string[] = [
   ) STRICT`,
   `CREATE INDEX IF NOT EXISTS commands_by_run ON commands (run_id, id)`,
   `CREATE INDEX IF NOT EXISTS commands_untaken ON commands (run_id) WHERE taken_at IS NULL`,
+  COMMANDS_ONE_ANSWER,
 
   // An API call's answer kept under its idempotency key, per scope.
   `CREATE TABLE IF NOT EXISTS idempotency (
