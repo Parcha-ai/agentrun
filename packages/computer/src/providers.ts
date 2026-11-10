@@ -1,11 +1,14 @@
-// The registry: one line per computer, id → () => import("./<vendor>.js"). The conformance CLI (and serve, once wired)
-// resolves providers through it alone, so a new computer is its provider file and its line here, with no edit to either. Every import is
-// lazy: loading the registry loads no provider and no vendor SDK.
+// The registry: id → the provider module's lazy import, derived from the built-in descriptors (descriptors/index.ts),
+// so a new computer is its descriptor and its provider file, with no line here. The conformance CLI and serve resolve
+// providers through it alone. Every import is lazy: loading the registry loads no provider and no vendor SDK.
+// ProviderId is any id: a descriptor from outside this package (CP-3) is as much a provider as a built-in one.
 //
 // A provider is built from its options alone, create(options), its key included: the library reads no environment
 // (README, Settings). The caller owns its settings' names: serve passes its own (DAYTONA_API_KEY, MODAL_TOKEN_ID, ...),
 // and the conformance CLI's modules read their COMPUTER_<ID>_* names and pass them in.
 import type { RunFolder } from "./conformance/types.js";
+import type { ProviderDescriptor } from "./descriptor.js";
+import { DESCRIPTORS } from "./descriptors/index.js";
 import type { KindCapabilities } from "./kinds.js";
 import type { MountKind } from "./mount.js";
 import type { ComputerProvider } from "./provider.js";
@@ -57,36 +60,42 @@ export interface ProviderModule {
 	conformance?(): Promise<ConformanceModule>;
 }
 
-export const providers = {
-	docker: () => import("./docker.js"),
-	modal: () => import("./modal.js"),
-	daytona: () => import("./daytona.js"),
-	e2b: () => import("./e2b.js"),
-	browserbase: () => import("./browserbase.js"),
-	kernel: () => import("./kernel.js"),
-	"phone-harness": () => import("./phone-harness.js"),
-	orgo: () => import("./orgo.js"),
-} satisfies Record<string, () => Promise<ProviderModule>>;
+/** A provider's id: any descriptor's. The built-in ones are BuiltinProviderId. */
+export type ProviderId = string;
 
-export type ProviderId = keyof typeof providers;
+type Builtin = (typeof DESCRIPTORS)[number];
+/** The id of a provider this package holds. */
+export type BuiltinProviderId = Builtin["id"];
 
-/** The options a registry id's create() takes. */
-export type ProviderOptions<Id extends ProviderId> = Parameters<Awaited<ReturnType<(typeof providers)[Id]>>["create"]>[0];
+/** Each built-in id's lazy import of its provider module: its descriptor's load(). */
+export const providers = Object.fromEntries(DESCRIPTORS.map((descriptor) => [descriptor.id, descriptor.load])) as { readonly [D in Builtin as D["id"]]: D["load"] };
 
-/** Every id, in the registry's order. */
-export const providerIds = Object.keys(providers) as ProviderId[];
+/** The options a built-in id's create() takes. */
+export type ProviderOptions<Id extends BuiltinProviderId> = Parameters<Awaited<ReturnType<Extract<Builtin, { id: Id }>["load"]>>["create"]>[0];
 
-export function isProviderId(id: string): id is ProviderId {
+/** Every built-in id, in the registry's order. */
+export const providerIds: readonly BuiltinProviderId[] = DESCRIPTORS.map((descriptor) => descriptor.id);
+
+/** Whether id names a provider this package holds. */
+export function isProviderId(id: string): id is BuiltinProviderId {
 	return Object.hasOwn(providers, id);
+}
+
+/** A built-in provider's descriptor, or undefined for an id this package does not hold. */
+export function descriptorOf(id: string): ProviderDescriptor | undefined {
+	return DESCRIPTORS.find((descriptor) => descriptor.id === id);
 }
 
 /** The provider file's module for an id; an id the registry does not hold is refused, naming the ones it does. */
 export async function providerModule(id: string): Promise<ProviderModule> {
-	if (!isProviderId(id)) throw new Error(`unknown computer provider ${JSON.stringify(id)}: the registry holds ${providerIds.join(", ")}`);
-	return providers[id]();
+	const descriptor = descriptorOf(id);
+	if (descriptor === undefined) throw new Error(`unknown computer provider ${JSON.stringify(id)}: the registry holds ${providerIds.join(", ")}`);
+	return descriptor.load();
 }
 
 /** The provider for an id, built by the provider file's create() from the options given, and nothing else. */
-export async function providerFor<Id extends ProviderId>(id: Id, options: ProviderOptions<Id>): Promise<ComputerProvider> {
-	return (await providerModule(id)).create(options as object);
+export async function providerFor<Id extends BuiltinProviderId>(id: Id, options: ProviderOptions<Id>): Promise<ComputerProvider>;
+export async function providerFor(id: ProviderId, options: object): Promise<ComputerProvider>;
+export async function providerFor(id: ProviderId, options?: object): Promise<ComputerProvider> {
+	return (await providerModule(id)).create(options ?? {});
 }

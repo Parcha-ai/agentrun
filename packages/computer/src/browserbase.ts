@@ -15,6 +15,7 @@
 // label key of letters, digits and dots alone, so no label key holds an "_" and the mapping is one to one; a value with
 // ' or \ is refused too, since list's query quotes it.
 import { readFileSync } from "node:fs";
+import { BROWSERBASE } from "./descriptors/browserbase.js";
 import {
 	cdpUrlProblem,
 	BROWSER_IMAGE,
@@ -104,10 +105,10 @@ export function browserbaseLabelsProblem(labels: unknown): string | undefined {
 }
 
 /** A browser takes no mount. */
-export const MOUNT: readonly MountKind[] = [];
+export const MOUNT: readonly MountKind[] = BROWSERBASE.mounts;
 
-/** The one configuration it offers, the kind registry's entry (kinds.ts): a browser with a CDP target and a live view. */
-export const CAPABILITIES: readonly KindCapabilities[] = [{ kind: "browser", groups: ["cdp", "stream"] }];
+/** The one configuration it offers, its descriptor's: a browser with a CDP target and a live view. */
+export const CAPABILITIES: readonly KindCapabilities[] = BROWSERBASE.capabilities;
 
 /** A session as Browserbase answers it; only what the provider reads. */
 export interface BrowserbaseSession {

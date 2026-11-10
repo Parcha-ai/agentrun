@@ -31,6 +31,7 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { checkActions } from "./actions.js";
 import { readPng } from "./conformance/png.js";
+import { MACOS_GROUPS, ORGO_MACOS_IMAGE, ORGO_WINDOWS_IMAGE, WINDOWS_GROUPS } from "./descriptors/orgo.js";
 import { EPOCH_LABEL, RUN_LABEL } from "./labels.js";
 import { checkMount } from "./mount.js";
 import { ORGO_API_URL, type OrgoRest, orgoRest } from "./orgo-channel.js";
@@ -87,14 +88,8 @@ import { type ComputerError, type ComputerErrorCode, fail, ok, type Result } fro
 import { daemonWatch, type ScreenWatch, type ScreenWatchHandlers, type WatchOptions } from "./screen-watch.js";
 import { listTested } from "./test-connection.js";
 
-/** The image a spec names for an Orgo Windows desktop (Windows Server 2019, Orgo's own). */
-export const ORGO_WINDOWS_IMAGE = "windows";
-/** The image a spec names for an Orgo macOS desktop. */
-export const ORGO_MACOS_IMAGE = "macos";
-/** What a Windows desktop offers: PowerShell for exec and files, and the screen, the pointer and the keys. */
-export const WINDOWS_GROUPS: readonly Group[] = ["exec", "files", "screen", "input.pointer", "input.keys"];
-/** What a macOS desktop offers: the shell for exec, and the screen, the pointer and the keys. */
-export const MACOS_GROUPS: readonly Group[] = ["exec", "screen", "input.pointer", "input.keys"];
+// The images and each desktop's groups are its descriptor's (descriptors/orgo.ts), declared there once.
+export { MACOS_GROUPS, ORGO_MACOS_IMAGE, ORGO_WINDOWS_IMAGE, WINDOWS_GROUPS };
 
 export type OrgoDesktopOs = "windows" | "macos";
 

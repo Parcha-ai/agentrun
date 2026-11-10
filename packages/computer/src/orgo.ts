@@ -16,13 +16,14 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { childCommands, type DaemonExpected, daemonDrift } from "./child.js";
 import { DaemonClient } from "./client.js";
+import { ORGO, ORGO_BASE_IMAGE, ORGO_MACOS_IMAGE, ORGO_WINDOWS_IMAGE } from "./descriptors/orgo.js";
 import { DESKTOP_GROUPS } from "./desktop.js";
 import { DAEMON_IN_COMPUTER, helloDrift, type ProbeReport, probeNetworkDrift, probeNotes, probeReportOf, SOCKET_DIR, WORK } from "./drift.js";
 import { EPOCH_LABEL, RUN_LABEL } from "./labels.js";
 import type { KindCapabilities } from "./kinds.js";
 import { checkMount, type MountKind } from "./mount.js";
 import { type OrgoChannel, type OrgoRest, type OrgoStart, type OrgoWebSocketFactory, ORGO_API_URL, orgoRest, orgoTerminalChannel, START_LOG } from "./orgo-channel.js";
-import { ORGO_MACOS_IMAGE, ORGO_WINDOWS_IMAGE, OrgoDesktopProvider, type OrgoDesktopOptions, WINDOWS_GROUPS, MACOS_GROUPS } from "./orgo-desktop.js";
+import { OrgoDesktopProvider, type OrgoDesktopOptions } from "./orgo-desktop.js";
 import {
 	COMPUTER_ID,
 	filterProblem,
@@ -60,20 +61,16 @@ import { daemonWatch, type ScreenWatch, type ScreenWatchHandlers, type WatchOpti
 import { listTested } from "./test-connection.js";
 
 /** The mount kinds an Orgo computer takes: none yet (an Archil mount needs an Orgo template that bakes the helper). */
-export const MOUNT: readonly MountKind[] = [];
+export const MOUNT: readonly MountKind[] = ORGO.mounts;
 
 /** The groups every Orgo computer offers: a Linux shell, files and processes, and the desktop's screen and input. */
 const GROUPS: Group[] = ["exec", "files", "processes", ...DESKTOP_GROUPS];
 
 /**
- * What a built provider declares, known without building one, per configuration (the registry's entry): the Linux
- * desktop with computerd (the default), then the Windows and the macOS desktops Orgo's own API answers (options.os).
+ * What a built provider declares, known without building one, per configuration (its descriptor's): the Linux desktop
+ * with computerd (the default), then the Windows and the macOS desktops Orgo's own API answers (options.os).
  */
-export const CAPABILITIES: readonly KindCapabilities[] = [
-	{ kind: "desktop", groups: [...GROUPS] },
-	{ kind: "desktop", groups: [...WINDOWS_GROUPS] },
-	{ kind: "desktop", groups: [...MACOS_GROUPS] },
-];
+export const CAPABILITIES: readonly KindCapabilities[] = ORGO.capabilities;
 
 export { ORGO_MACOS_IMAGE, ORGO_WINDOWS_IMAGE, OrgoDesktopProvider, orgoName };
 export type { OrgoDesktopOptions };
@@ -142,8 +139,8 @@ const CPU_FOR_RAM: Record<number, number> = { 4: 1, 8: 2, 16: 4, 32: 6 };
 const CPUS = [0.5, 1, 2, 4, 6];
 /** An Orgo template: namespace/name@version. */
 const TEMPLATE = /^[a-z0-9][a-z0-9_.-]{0,63}\/[a-z0-9][a-z0-9_.-]{0,63}@[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$/;
-/** Orgo's base desktop, no template: the image a spec names for a plain Linux desktop, and the default for kind desktop. */
-export const ORGO_BASE_IMAGE = "linux";
+/** Orgo's base desktop, no template: the image a spec names for a plain Linux desktop, and its descriptor's default. */
+export { ORGO_BASE_IMAGE };
 const BASE = ORGO_BASE_IMAGE;
 const WORKSPACE_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 const USER = /^(\d+):(\d+)$/;

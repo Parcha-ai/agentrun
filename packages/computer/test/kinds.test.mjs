@@ -1,12 +1,16 @@
 // The kind registry, to the agreed shape (SHAPE.md): the setting kind an agent is given (none, sandbox, desktop, phone,
 // browser) as its machine kinds and capability groups, no tool names; the protocol's machine kinds with browser; the
-// provider entries Settings reads (id, label, key names, mounts, metered) with kinds derived by serves() from each
-// provider's static capabilities; and entries for providers whose file lands later, held to it once it does.
+// provider entries Settings reads (id, label, keys and their options, mounts, metered), derived from the providers'
+// descriptors, with kinds derived by serves() from each provider's static capabilities; and the descriptor's own check.
 // No vendor, no Docker.
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
 	DaytonaProvider,
+	DESCRIPTORS,
+	defineProvider,
+	descriptorProblems,
+	entryOf,
 	GROUPS,
 	KIND_SHAPES,
 	kindOf,
@@ -77,16 +81,28 @@ test("serves() is the machine kind among the kind's and every required group dec
 
 test("PROVIDERS is the agreed table of ids, labels, key names, mounts and metering", () => {
 	const rows = PROVIDERS.map(({ id, label, keys, metered }) => ({ id, label, keys, metered }));
+	const key = (name, option, required = true) => ({ name, option, required });
 	assert.deepEqual(rows, [
 		{ id: "docker", label: "Docker", keys: [], metered: false },
-		{ id: "daytona", label: "Daytona", keys: [{ name: "DAYTONA_API_KEY", required: true }, { name: "DAYTONA_API_URL", required: false }, { name: "DAYTONA_TARGET", required: false }], metered: true },
-		{ id: "modal", label: "Modal", keys: [{ name: "MODAL_TOKEN_ID", required: true }, { name: "MODAL_TOKEN_SECRET", required: true }], metered: true },
-		{ id: "e2b", label: "E2B", keys: [{ name: "E2B_API_KEY", required: true }], metered: true },
-		{ id: "orgo", label: "Orgo", keys: [{ name: "ORGO_API_KEY", required: true }], metered: true },
-		{ id: "phone-harness", label: "Phone harness", keys: [{ name: "PHONE_HARNESS_API_KEY", required: true }], metered: true },
-		{ id: "browserbase", label: "Browserbase", keys: [{ name: "BROWSERBASE_API_KEY", required: true }, { name: "BROWSERBASE_PROJECT_ID", required: true }], metered: true },
-		{ id: "kernel", label: "Kernel", keys: [{ name: "KERNEL_API_KEY", required: true }], metered: true },
+		{ id: "daytona", label: "Daytona", keys: [key("DAYTONA_API_KEY", "apiKey"), key("DAYTONA_API_URL", "apiUrl", false), key("DAYTONA_TARGET", "target", false)], metered: true },
+		{ id: "modal", label: "Modal", keys: [key("MODAL_TOKEN_ID", "tokenId"), key("MODAL_TOKEN_SECRET", "tokenSecret")], metered: true },
+		{ id: "e2b", label: "E2B", keys: [key("E2B_API_KEY", "apiKey")], metered: true },
+		{ id: "orgo", label: "Orgo", keys: [key("ORGO_API_KEY", "apiKey")], metered: true },
+		{ id: "phone-harness", label: "Phone harness", keys: [key("PHONE_HARNESS_API_KEY", "apiKey")], metered: true },
+		{ id: "browserbase", label: "Browserbase", keys: [key("BROWSERBASE_API_KEY", "apiKey"), key("BROWSERBASE_PROJECT_ID", "projectId")], metered: true },
+		{ id: "kernel", label: "Kernel", keys: [key("KERNEL_API_KEY", "apiKey")], metered: true },
 	]);
+	// What is no key: Modal's app (default the server's own), Docker's image made before the first create on this host, and
+	// the phone harness's ledger the server keeps.
+	const extra = Object.fromEntries(PROVIDERS.map(({ id, settings, prepareImage, local, ledger }) => [id, { settings, prepareImage, local, ledger }]));
+	assert.deepEqual(extra.modal.settings, [{ name: "modalApp", option: "app", default: "agentrun" }]);
+	assert.deepEqual([extra.docker.prepareImage, extra.docker.local], [true, true]);
+	assert.deepEqual(extra["phone-harness"].ledger, { option: "ledger" });
+	for (const [id, fields] of Object.entries(extra)) {
+		if (id !== "modal") assert.equal(fields.settings, undefined, id);
+		if (id !== "docker") assert.deepEqual([fields.prepareImage, fields.local], [undefined, undefined], id);
+		if (id !== "phone-harness") assert.equal(fields.ledger, undefined, id);
+	}
 	const kinds = Object.fromEntries(PROVIDERS.map((entry) => [entry.id, entry.kinds]));
 	assert.deepEqual(kinds, { docker: ["sandbox", "desktop"], daytona: ["sandbox"], modal: ["sandbox"], e2b: ["sandbox", "desktop"], orgo: ["desktop"], "phone-harness": ["phone"], browserbase: ["browser"], kernel: ["browser"] });
 	const mounts = Object.fromEntries(PROVIDERS.map((entry) => [entry.id, entry.mounts]));
@@ -131,19 +147,35 @@ test("each entry's kinds are derived by serves() from its static capabilities, n
 	}
 });
 
-test("every registry provider has an entry, and its module's static capabilities and mounts are the entry's", async () => {
-	for (const id of providerIds) {
-		const entry = PROVIDERS.find((one) => one.id === id);
-		assert.ok(entry, `${id} has a PROVIDERS entry`);
-		const module = await providerModule(id);
-		assert.deepEqual(module.CAPABILITIES, entry.capabilities, `${id}: its module's CAPABILITIES are its entry's`);
-		assert.deepEqual(module.MOUNT, entry.mounts, `${id}: its module's MOUNT is its entry's mounts`);
+test("PROVIDERS is derived from the descriptors, and each provider module's MOUNT and CAPABILITIES are its descriptor's own", async () => {
+	assert.deepEqual(PROVIDERS, DESCRIPTORS.map(entryOf), "every entry is its descriptor through entryOf");
+	assert.deepEqual(PROVIDERS.map((entry) => entry.id), [...providerIds], "one entry per registry provider, in the descriptors' order");
+	for (const descriptor of DESCRIPTORS) {
+		const module = await providerModule(descriptor.id);
+		assert.equal(module.CAPABILITIES, descriptor.capabilities, `${descriptor.id}: its module's CAPABILITIES are its descriptor's, not a copy`);
+		assert.equal(module.MOUNT, descriptor.mounts, `${descriptor.id}: its module's MOUNT is its descriptor's mounts, not a copy`);
+		assert.equal("load" in PROVIDERS.find((entry) => entry.id === descriptor.id), false, `${descriptor.id}: an entry is data, without load()`);
 	}
 });
 
-test("an entry whose provider file has not landed is data alone; once it lands, the test above holds it to its file", () => {
-	const pending = PROVIDERS.filter((entry) => !providerIds.includes(entry.id)).map((entry) => entry.id);
-	assert.deepEqual(pending, [], "every entry's provider file has landed: none is data alone");
+test("a descriptor is checked when it is defined: its id, keys, settings and configurations, in words", () => {
+	const good = { id: "acme-cloud", label: "Acme", keys: [{ name: "ACME_KEY", option: "apiKey", required: true }], metered: true, mounts: [], capabilities: [{ kind: "linux", groups: ["exec"] }], load: async () => ({}) };
+	assert.equal(defineProvider(good), good);
+	assert.deepEqual(descriptorProblems(good), []);
+	for (const [change, words] of [
+		[{ id: "Acme Cloud" }, /id "Acme Cloud" is not lowercase letters, digits and hyphens/],
+		[{ label: " " }, /label is not a name in words/],
+		[{ keys: [{ name: "ACME_KEY", option: "apiKey", required: true }, { name: "ACME_KEY", option: "other", required: false }] }, /keys names ACME_KEY or fills other twice/],
+		[{ keys: [{ name: "ACME_KEY", option: "", required: true }] }, /each of keys has a name and the option it fills/],
+		[{ keys: [{ name: "ACME_KEY", option: "apiKey" }] }, /each key says whether it is required/],
+		[{ capabilities: [] }, /capabilities is not a list of one configuration or more/],
+		[{ mounts: ["nfs"] }, /mounts is not a list of mount kinds/],
+		[{ load: "./acme.js" }, /load is not a function/],
+		[{ ledger: {} }, /ledger names the option it fills/],
+	]) {
+		assert.throws(() => defineProvider({ ...good, ...change }), (error) => words.test(error.message), JSON.stringify(change));
+	}
+	assert.deepEqual(descriptorProblems(null), ["it is not an object"]);
 });
 
 /** Each provider built as the registry offers it, from the unit tests' fakes. */

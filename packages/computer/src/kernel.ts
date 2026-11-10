@@ -12,6 +12,7 @@
 // connection closes, and sets no wall clock. So lifetimeMs is the longest a browser lives unwatched, at most Kernel's
 // largest idle timeout (72 h), and list reads no deadline.
 import { readFileSync } from "node:fs";
+import { KERNEL } from "./descriptors/kernel.js";
 import {
 	cdpUrlProblem,
 	BROWSER_IMAGE,
@@ -75,10 +76,10 @@ export const KERNEL_MAX_LIFETIME_MS = 259_200_000;
 const MAX_PAGES = 100;
 
 /** A browser takes no mount. */
-export const MOUNT: readonly MountKind[] = [];
+export const MOUNT: readonly MountKind[] = KERNEL.mounts;
 
-/** The one configuration it offers, the kind registry's entry (kinds.ts): a browser with a CDP target and a live view. */
-export const CAPABILITIES: readonly KindCapabilities[] = [{ kind: "browser", groups: ["cdp", "stream"] }];
+/** The one configuration it offers, its descriptor's: a browser with a CDP target and a live view. */
+export const CAPABILITIES: readonly KindCapabilities[] = KERNEL.capabilities;
 
 /** A browser as Kernel answers it; only what the provider reads. */
 export interface KernelBrowser {

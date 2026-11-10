@@ -12,6 +12,7 @@ import { fileURLToPath } from "node:url";
 import { childCommands, type DaemonExpected, daemonDrift } from "./child.js";
 import { OWN_NETWORK_ONLY, readOwnNetwork, TOOL_USER } from "./isolation.js";
 import { DaemonClient } from "./client.js";
+import { E2B, E2B_BASE_TEMPLATE, E2B_DESKTOP_TEMPLATE } from "./descriptors/e2b.js";
 import { DESKTOP_GROUPS, type DesktopOptions, desktopOf, startDisplay } from "./desktop.js";
 import { COMPUTER_LABEL, DAEMON_IN_COMPUTER, DEADLINE_LABEL, helloDrift, type ProbeReport, probeNetworkDrift, probeNotes, probeReportOf, WORK } from "./drift.js";
 import { releaseOlder } from "./janitor.js";
@@ -266,10 +267,8 @@ const VERSION: string = JSON.parse(readFileSync(new URL("../package.json", impor
 const NAME = /^computer-[0-9a-f]{12}$/;
 const SANDBOX_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 const TEMPLATE = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/;
-/** E2B Desktop's template: a screen with an X server, the default for kind desktop. */
-export const E2B_DESKTOP_TEMPLATE = "desktop";
-/** E2B's plain template: no screen, the default for kind linux (a sandbox). */
-export const E2B_BASE_TEMPLATE = "base";
+/** E2B Desktop's template (a screen with an X server) and its plain one (no screen): its descriptor's defaults. */
+export { E2B_BASE_TEMPLATE, E2B_DESKTOP_TEMPLATE };
 const NAME_LABEL = `${COMPUTER_LABEL}.name`;
 /** The template create was asked for: E2B reports its id, and the alias only sometimes. */
 const IMAGE_LABEL = `${COMPUTER_LABEL}.image`;
@@ -301,15 +300,12 @@ const DEFAULTS: E2BTimeouts = {
 };
 
 /** The mount kinds an E2B computer takes, as capabilities().mount declares them: the run's folder on an Archil disk. */
-export const MOUNT: readonly MountKind[] = ["archil"];
+export const MOUNT: readonly MountKind[] = E2B.mounts;
 /** The user an Archil computer's tools run as: the image's agentrun-tool, with no sudo and no capability. */
 const ARCHIL_USER = `${ARCHIL_TOOL_UID}:${ARCHIL_TOOL_UID}`;
 
 /** The machine kind and groups of each configuration: kind linux (the plain template), and kind desktop (the default). */
-export const CAPABILITIES: readonly KindCapabilities[] = [
-	{ kind: "linux", groups: ["exec", "files", "processes"] },
-	{ kind: "desktop", groups: ["exec", "files", "processes", ...DESKTOP_GROUPS] },
-];
+export const CAPABILITIES: readonly KindCapabilities[] = E2B.capabilities;
 const RELEASE_POLL_MAX_MS = 5_000;
 const LISTED_POLL_MS = 150;
 const LISTED_ROUNDS = 2;

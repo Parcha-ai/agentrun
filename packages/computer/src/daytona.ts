@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import { childCommands, type DaemonExpected, daemonDrift, shellCommand } from "./child.js";
 import { OWN_NETWORK_ONLY, readOwnNetwork, TOOL_USER } from "./isolation.js";
 import { DaemonClient } from "./client.js";
+import { DAYTONA, DAYTONA_DEFAULT_SNAPSHOT } from "./descriptors/daytona.js";
 import { COMPUTER_LABEL, DEADLINE_LABEL, helloDrift, WORK } from "./drift.js";
 import { releaseOlder } from "./janitor.js";
 import type { KindCapabilities } from "./kinds.js";
@@ -172,10 +173,10 @@ interface CallInit {
  * The mount kinds a Daytona computer takes: an Archil mount of the run's folder (mount-archil.ts), made as root through
  * the toolbox, from a snapshot of box/Dockerfile, with the daemon user agentrun-tool (daemonUser "2510:2510").
  */
-export const MOUNT: readonly MountKind[] = ["archil"];
+export const MOUNT: readonly MountKind[] = DAYTONA.mounts;
 
-/** The machine kind and groups of its one configuration: a linux computer. */
-export const CAPABILITIES: readonly KindCapabilities[] = [{ kind: "linux", groups: ["exec", "files", "processes"] }];
+/** The machine kind and groups of its one configuration (its descriptor's): a linux computer. */
+export const CAPABILITIES: readonly KindCapabilities[] = DAYTONA.capabilities;
 
 /** What create() takes: the provider's options, the daemon optional (default this package's build for the arch). */
 export type DaytonaCreateOptions = Omit<DaytonaProviderOptions, "daemonPath"> & { daemonPath?: string };
@@ -198,8 +199,8 @@ export const conformance = () => import("./conformance/daytona.js");
 
 const VERSION: string = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
 const DEFAULT_API_URL = "https://app.daytona.io/api";
-/** The image that asks for Daytona's default snapshot: the create sends no snapshot field. */
-export const DAYTONA_DEFAULT_SNAPSHOT = "default";
+/** The image that asks for Daytona's default snapshot: the create sends no snapshot field. Its descriptor's. */
+export { DAYTONA_DEFAULT_SNAPSHOT };
 /** The label, in the provider's own namespace beside the deadline's, that holds the image create was asked for: Daytona
  *  reports only the snapshot it resolved that image to, a name of its own for "default". */
 const IMAGE_LABEL = `${COMPUTER_LABEL}.image`;

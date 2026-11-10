@@ -8,6 +8,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { DaemonClient } from "./client.js";
 import { daemonCopy, defaultDaemonCache } from "./daemon-copy.js";
+import { DOCKER } from "./descriptors/docker.js";
 import { DESKTOP_GROUPS, type DesktopOptions, desktopOf, startDisplay } from "./desktop.js";
 import {
 	COMPUTER_LABEL,
@@ -141,13 +142,10 @@ export interface DockerProviderOptions {
 }
 
 /** The mount kinds a Docker computer takes, as capabilities().mount declares them: a bind of a folder on this host. */
-export const MOUNT: readonly MountKind[] = ["bind"];
+export const MOUNT: readonly MountKind[] = DOCKER.mounts;
 
-/** The machine kind and groups of each configuration: a linux computer, and one made with the desktop option. */
-export const CAPABILITIES: readonly KindCapabilities[] = [
-	{ kind: "linux", groups: ["exec", "files", "processes"] },
-	{ kind: "desktop", groups: ["exec", "files", "processes", ...DESKTOP_GROUPS] },
-];
+/** The machine kind and groups of each configuration (its descriptor's): a linux computer, and a desktop. */
+export const CAPABILITIES: readonly KindCapabilities[] = DOCKER.capabilities;
 
 /** What create() takes: the provider's options, the daemon optional. */
 export interface DockerCreateOptions extends Partial<DockerProviderOptions> {
