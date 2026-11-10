@@ -746,6 +746,14 @@ export function withApprovalRows(rows: readonly TimelineEvent[], asks: ReadonlyM
     const failed = answer!.decision === "allow" && result?.tool_status === "failed";
     // The result's words: a tool_result row keeps them as its preview (the renderer's, redacted and cut), its text empty.
     const told: TimelineEvent = { ...(result ?? row), id: `${at}:outcome`, kind: "phase", origin: "server", summary: outcomeSays(approval.tool, answer!, failed, redact), text: outcomeShows(approval.tool, answer!, redact(result?.text || result?.tool_result_preview || ""), failed), tool_name: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null } as TimelineEvent;
+    // A person's message that declined the call (runs-over-store.ts message: a deny carrying their words) is theirs as any
+    // message is: its own row, between the approval and what came of it, as main's declineBy kept it.
+    if (answer!.decision === "deny" && answer!.by === "message" && answer!.note) {
+      const words = redact(answer!.note);
+      const { origin: _origin, ...base } = result ?? row;
+      const theirs: TimelineEvent = { ...base, id: `${at}:message`, kind: "user_message", summary: clip(`You: ${words.split("\n", 1)[0]}`, 500), text: words, tool_name: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null };
+      return [own, asked, theirs, told];
+    }
     return [own, asked, told];
   });
 }

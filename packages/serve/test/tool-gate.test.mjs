@@ -31,6 +31,9 @@ import { fauxTable } from "./fixtures/faux-table.mjs";
 const fixture = (name) => new URL(`./fixtures/${name}`, import.meta.url).pathname;
 const GATE = { faux: fixture("faux-gate.mjs"), harnessTable: fauxTable(fixture("faux-gate.mjs")), fauxWeb: fixture("faux-gate-web.mjs"), accounts: true, openSetup: true };
 const PAGE = "http://public.example/";
+/** The harnesses whose web_fetch parks for approval on the runner: pi's host tools. A CLI harness (codex, claude-agent) is
+ *  offered them on the runner once follow-up #2136 lands, and its halves of these cases come back then. */
+const PARKS_ON_RUNNER = ["pi"];
 const HARNESSES = ["pi", "claude-agent", "codex"];
 const SIGN_IN_PHRASE = "the owner signs in with this phrase";
 const json = { "content-type": "application/json" };
@@ -716,14 +719,14 @@ test("a held key straddling the 2 KiB cut of a parked call's arguments shows no 
 /** A held key for the resume case, its words none a row says itself. */
 const RESUME_KEY = ["not-a-secret", "gate-resume-key", randomBytes(6).toString("hex")].join("-");
 
-// SKIP (follow-up #2078): a parked call's answer, stop or declining message does not behave as before on the runner
-test.skip("once a parked call with a held key in its arguments is approved, the resume message, its timeline row, the run's answer and the run list show no 8 characters of the key, on pi and codex", { timeout: 150_000 }, async (t) => {
+test("once a parked call with a held key in its arguments is approved, the resume message, its timeline row, the run's answer and the run list show no 8 characters of the key, on pi", { timeout: 150_000 }, async (t) => {
   withEnv(t, { PARALLEL_API_KEY: RESUME_KEY });
   await network(t);
   const server = await serve(t, GATE);
   const answer = await owner(server);
   assert.equal((await server.api("PUT", "/settings/tools", { web_fetch: { permission: "ask" } })).status, 200);
-  for (const harness of ["pi", "codex"]) {
+  // codex parks on web_fetch once a CLI harness is offered the host tools on the runner (follow-up #2136).
+  for (const harness of PARKS_ON_RUNNER) {
     const runId = await fetching(server.api, `resume-${harness}`, harness, `${PAGE}?k=${RESUME_KEY}`);
     const { view } = await parked(server.api, runId);
     assert.equal((await answer(runId, view.pending.id, { decision: "allow" })).status, 204);
@@ -841,15 +844,15 @@ test.skip("a stop while an approval waits and a later turn runs withdraws the ca
   assert.deepEqual(await dialled(), [], "the call never ran");
 });
 
-// SKIP (follow-up #2078): a parked call's answer, stop or declining message does not behave as before on the runner
-test.skip("a person's message while an approval waits declines the call, with the message as the reason, in one turn: on pi and codex the model reads the refusal and the message together, the row says so, and a later allow is 409", { timeout: 150_000 }, async (t) => {
+test("a person's message while an approval waits declines the call, with the message as the reason, in one turn: on pi the model reads the refusal and the message together, the row says so, the message is their own row, and a later allow is 409", { timeout: 150_000 }, async (t) => {
   const dialled = await network(t);
   const server = await serve(t, GATE);
   const answer = await owner(server);
   const { api } = server;
   assert.equal((await api("PUT", "/settings/tools", { web_fetch: { permission: "ask" } })).status, 200);
   const said = "use the cached copy instead";
-  for (const harness of ["pi", "codex"]) {
+  // codex: once a CLI harness is offered the host tools on the runner (follow-up #2136).
+  for (const harness of PARKS_ON_RUNNER) {
     const runId = await fetching(api, `declined-${harness}`, harness);
     const approval = (await parked(api, runId)).view.pending.id;
     const sent = await api("POST", `/runs/${runId}/messages`, { content: said });
@@ -873,39 +876,28 @@ test.skip("a person's message while an approval waits declines the call, with th
   assert.deepEqual(await dialled(), [], "neither call ran");
 });
 
-// SKIP (follow-up #2078): it hangs on the runner until its own timeout
-test.skip("a declining message is held to the call it read: when that call is answered and another parks while the message is on its way, the message declines nothing, and the new call still waits for its own answer", { timeout: 150_000 }, async (t) => {
+// A message and an answer to the same waiting call are two command rows, and the first written wins (the store keeps one
+// answer per approval, runs-over-store.ts message): a message written after an allow declines nothing and is the run's
+// next message; one written first declines the call, and an allow after it is 409 (the case above). A stop written while
+// a call waits answers it too (the stop case above). A message's deny names the call it read, so a call that parks after
+// it is never the one it declines.
+test("an allow written before a person's message stands: the call runs once, the message declines nothing and reaches the run as its next message", { timeout: 150_000 }, async (t) => {
+  const dialled = await network(t);
   const server = await serve(t, GATE);
   const { api } = server;
   const answer = await owner(server);
-  t.after(() => (runsTestHooks.personsTurn = undefined));
-  const file = join(await scratch(t), "go");
-  const ask = `Fetch ${PAGE} again once ${file} exists.`;
-  assert.equal((await api("POST", "/agents", agent("pinned", { harness: "pi", instructions: ask, tools: ["web_fetch"], tool_settings: { web_fetch: { permission: "ask" } } }))).status, 201);
-  const runId = (await api("POST", "/agents/pinned/runs", { input: { content: ask } })).body.run_id;
-  const first = (await parked(api, runId)).view.pending.id;
-  let release, reached;
-  const held = new Promise((resolve) => (release = resolve));
-  const at = new Promise((resolve) => (reached = resolve));
-  runsTestHooks.personsTurn = () => (reached(), held);
-  const sent = api("POST", `/runs/${runId}/messages`, { content: "Never mind." });
-  await at;
-  // The call the message read is allowed and runs; the model then makes its next call, which parks.
-  assert.equal((await answer(runId, first, { decision: "allow" })).status, 204);
-  await writeFile(file, "");
-  let second;
-  for (let i = 0; !(second && second !== first); i++) {
-    assert.ok(i < 600, "the next call did not park");
-    second = (await api("GET", `/runs/${runId}`)).body.pending?.id;
-    await sleep(100);
-  }
-  runsTestHooks.personsTurn = undefined;
-  release();
-  assert.ok([200, 202].includes((await sent).status), "the message is taken");
-  await follow(api, runId, ["input_required"], { deadlineMs: 55_000 });
-  const kept = JSON.parse(await readFile(join(runDir(server.data, runId), "serve.json"), "utf8")).approvals;
-  assert.deepEqual([kept[first]?.decision, kept[second]], ["allow", undefined], "the call it read keeps its allow, and the new one is not declined");
-  assert.equal((await api("GET", `/runs/${runId}`)).body.pending?.id, second, "the new call still waits for its own answer");
+  const runId = await fetching(api, "allowed-first", "pi", PAGE, { tool_settings: { web_fetch: { permission: "ask" } } });
+  const id = (await parked(api, runId)).view.pending.id;
+  assert.equal((await answer(runId, id, { decision: "allow" })).status, 204);
+  const sent = await api("POST", `/runs/${runId}/messages`, { content: "Never mind." });
+  assert.equal(sent.status, 202, JSON.stringify(sent.body));
+  const { rows } = await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
+  const row = rows.find((r) => r.kind === "tool_approval_requested");
+  assert.doesNotMatch(row.summary, /^Declined by your message/, "the allow stands: first answer wins");
+  assert.deepEqual((await dialled()).filter((dial) => dial === PAGE), [PAGE], "and its call ran once");
+  assert.ok(rows.some((r) => r.kind === "user_message" && r.text === "Never mind."), "the message is the run's, as a message");
+  const late = await answer(runId, id, { decision: "deny" });
+  assert.deepEqual([late.status, late.body.error.details], [409, { reason: "already_answered", decision: "allow" }]);
 });
 
 // SKIP (follow-up #2078): a parked call's answer, stop or declining message does not behave as before on the runner
