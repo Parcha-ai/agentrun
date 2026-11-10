@@ -1,7 +1,7 @@
 // The outbound webhook's signature, idempotency and custody: every message signed by the Standard Webhooks spec under a
 // secret the server makes, shows once and keeps sealed in the store; each moment of a run told once, under one webhook-id,
 // across restarts; the API's shapes. The outbox's durability (tries, a 410, restarts, the store refusing a write) is
-// webhooks-outbox.test.mjs. Each case has a server of its own, so they run at once.
+// webhooks-outbox.test.mjs. Each case has a server of its own, so they run a few at once.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { readdirSync } from "node:fs";
@@ -16,6 +16,10 @@ import {
   askerStore, endedInStore, endNotice, filesIn, nothingPending, hadWebhook, meetsDocument, noticed, noticeId, ofType, onDisk, outboxOf, parkedOnQuestion, receiver, reclaimed,
   settled, startWithRunner, verifies, waitNotice, Webhook, webhookOn,
 } from "./webhook-support.mjs";
+
+/** How many cases run at once: each starts a server, a runner and its runs, so all of them at once would load a small
+ *  machine past the runs' own deadlines. */
+const CASES_AT_ONCE = 4;
 
 // Removing the outbound webhook takes its secret with it: the client sends it from the owner's session, as the console does.
 secretWritePath(["DELETE"], /^\/settings\/webhook$/);
@@ -45,7 +49,7 @@ function startedAndEndedAtOnce(data, template, count) {
   }
 }
 
-describe("the outbound webhook: signature, idempotency and custody", { concurrency: true }, () => {
+describe("the outbound webhook: signature, idempotency and custody", { concurrency: CASES_AT_ONCE }, () => {
   test("the signature is the Standard Webhooks spec's, byte for byte: its published test vector", () => {
     const secret = "whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw";
     const [id, timestamp, body] = ["msg_p5jXN8AQM9LWM0D4loKWxJek", "1614265330", '{"test": 2432232314}'];

@@ -1,7 +1,7 @@
 // The outbound webhook's outbox and its durability: a message not answered 2xx is tried again on its schedule, then
 // logged as failed; a 410 turns the webhook off; a queued one goes on after a restart; a store that refuses a write loses
 // no notice; a start's catch-up queues each end the ledger lacks, once. Signing, idempotency and custody are
-// webhooks-signing.test.mjs. Each case in the block below has a server (or a store) of its own, so they run at once; the
+// webhooks-signing.test.mjs. Each case in the block below has a server (or a store) of its own, so they run a few at once; the
 // two first ones watch the process's unhandled rejections, so they run alone.
 import assert from "node:assert/strict";
 import { join } from "node:path";
@@ -13,6 +13,10 @@ import {
   arriving, askerStore, endedInStore, meetsDocument, endNotice, endParked, hadWebhook, killed, logged, noticed, noticeId, nothingPending, ofType, onDisk, outboxOf, parkedOnQuestion,
   leftAs, processOn, receiver, refusing, rejections, saidBy, settled, startWithRunner, turn, waitNotice, Webhook, webhookOn,
 } from "./webhook-support.mjs";
+
+/** How many cases run at once: each starts a server, a runner and its runs, so all of them at once would load a small
+ *  machine past the runs' own deadlines. */
+const CASES_AT_ONCE = 4;
 
 // Removing the outbound webhook takes its secret with it: the client sends it from the owner's session, as the console does.
 secretWritePath(["DELETE"], /^\/settings\/webhook$/);
@@ -91,7 +95,7 @@ test("a scheduled try that throws is said in the log, never an unhandled rejecti
   assert.deepEqual(rejected, [], "no unhandled rejection");
 });
 
-describe("the outbound webhook: the outbox, its tries and its durability", { concurrency: true }, () => {
+describe("the outbound webhook: the outbox, its tries and its durability", { concurrency: CASES_AT_ONCE }, () => {
   test("a run whose end cannot be read holds back no other run's notice: the next run's run.ended is told, the unreadable one is said once, and told once it reads", async (t) => {
     const hook = await receiver(t);
     const log = logged();
