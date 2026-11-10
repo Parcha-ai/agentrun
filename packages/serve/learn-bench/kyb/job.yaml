@@ -8,7 +8,7 @@ parameters: { risk_appetite: medium, jurisdictions_of_interest: "" }
 grants: []
 fakes: {}
 deny: [web_search, web_fetch]
-harnesses: [pi, claude-agent]
+harnesses: [pi]   # claude-agent: ask_person (kyb's tools) is not bound there yet, so the server refuses its run (409 agent_not_runnable)
 steps:
   - { id: "01", kind: teach }   # Maplestone Logistics Inc.
   - { id: "02", kind: repeat }  # Cedarline Software Corp.
