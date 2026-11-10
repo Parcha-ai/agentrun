@@ -29,6 +29,8 @@ const skillMd = (name, body) => `---\nname: ${name}\ndescription: What ${name} i
 const filler = (bytes) => "Keep each figure as the source gives it.\n".repeat(Math.ceil(bytes / 40)).slice(0, bytes);
 const UNITS = skillMd("check-units", "Convert every amount to one unit before comparing. Read reference/units.md for the table.");
 const UNITS_TABLE = "cents = dollars x 100\n";
+/** UNITS as a run is given it (learn/skills.ts servedSkill): its name and description quoted. */
+const UNITS_SERVED = UNITS.replace("name: check-units\ndescription: What check-units is for.", 'name: "check-units"\ndescription: "What check-units is for."');
 const CITE = skillMd("cite", "Cite every source you read.");
 const { dropSeed, layPinnedSkills, learningTestHooks, pinSeed, readPin, secretsShown, seedOf, skillsAt, withLearned } = learning;
 const PLAIN = { budget: 8000, read: false, shown: secretsShown([]) };
@@ -108,7 +110,7 @@ test("with claude-agent's own check: 900 KiB of the revision's skills and a 200 
   assert.deepEqual(pin, { seed: sha, skills: ["check-units/SKILL.md"], skills_left_out: ["big-notes"] });
   assert.deepEqual(await readPin(runDir), pin);
   assert.deepEqual(readdirSync(skillsDir(work)).sort(), ["check-units", "cite"], "the one left out is not laid");
-  assert.equal(readFileSync(join(skillsDir(work), "check-units", "SKILL.md"), "utf8"), UNITS);
+  assert.equal(readFileSync(join(skillsDir(work), "check-units", "SKILL.md"), "utf8"), UNITS_SERVED);
 
   // Without the budget the 200 KiB one would be laid too: the set is over the adapter's 1 MiB, and every skill, the
   // revision's among them, goes back in the prompt.
@@ -172,7 +174,7 @@ test("a learned skill's copy is the host's: a copy that fails takes it back with
   writeFileSync(join(skillsDir(work), "check-units", "SKILL.md"), "written by the run\n");
   writeFileSync(join(skillsDir(work), "check-units", "scratch.md"), "written by the run\n");
   await layPinnedSkills(ws, pin, () => skillsAt(data, "copied", sha));
-  assert.equal(readFileSync(join(skillsDir(work), "check-units", "SKILL.md"), "utf8"), UNITS);
+  assert.equal(readFileSync(join(skillsDir(work), "check-units", "SKILL.md"), "utf8"), UNITS_SERVED);
   assert.equal(readFileSync(join(skillsDir(work), "check-units", "reference", "units.md"), "utf8"), UNITS_TABLE);
   assert.equal(existsSync(join(skillsDir(work), "check-units", "scratch.md")), false);
   assert.equal(readFileSync(join(skillsDir(work), "cite", "SKILL.md"), "utf8"), CITE, "the revision's is not touched");

@@ -257,19 +257,19 @@ test("a skill or a draft whose seed text has a status (a person retired it, or i
 
 test("a skill is laid with name and description alone in its front matter, whatever its file on main holds; its body as it is", () => {
   const laid = servedSkill(HOOKED);
-  assert.equal(laid, "---\nname: find-policies\ndescription: Find a store's refund and shipping policies\n---\n1. Collect the tickets.\n");
+  assert.equal(laid, "---\nname: \"find-policies\"\ndescription: \"Find a store's refund and shipping policies\"\n---\n1. Collect the tickets.\n");
   assert.equal(servedSkill(skill({ description: "Use when: a case asks" })).split("\n")[2], 'description: "Use when: a case asks"');
 });
 
 test("a learned skill's description that wraps onto an indented line is served whole, on one line", () => {
   const served = servedSkill("---\nname: find-policies\ndescription: Find refund policies\n  and shipping policies\n---\nDo the job.\n");
-  assert.equal(served.split("\n")[2], "description: Find refund policies and shipping policies");
+  assert.equal(served.split("\n")[2], 'description: "Find refund policies and shipping policies"');
   assert.equal(servedSkill(served), served);
 });
 
 test("a skill whose plain name is followed by an indented comment keeps its name: the comment is no part of it", () => {
   const served = servedSkill("---\nname: find-policies\n  # a helper\ndescription: Find refund policies\n---\nDo the job.\n");
-  assert.equal(served.split("\n")[1], "name: find-policies");
+  assert.equal(served.split("\n")[1], 'name: "find-policies"');
 });
 
 // A call node's tool set to ask or deny (tool-gate.ts): the run would park or refuse it, so a learned draft never names
