@@ -1950,7 +1950,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     if (status !== null && !(STATUSES as readonly string[]).includes(status)) throw new ApiError("bad_request", `status is one of ${STATUSES.join(", ")}`);
     for (const [key, value] of Object.entries(filter)) if (value !== undefined && !ID.test(value)) throw new ApiError("bad_request", `${key} is an id`);
     const archived = archivedParam(url);
-    // Each `label=<key>:<value>`: only the runs holding every one (run-labels.ts), filtered in the store.
+    // `label=<key>:<value>`, once: only the runs holding it (run-labels.ts), filtered in the store.
     const labels = labelFilter(url.searchParams.getAll("label"));
     const vd = viewDepsFor(origin);
     let rows = (await listRunsOverStore(store, { ...filter, ...(labels ? { labels } : {}) }, ctx)).filter((row) => Boolean(row.archivedAt) === archived);

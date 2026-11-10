@@ -51,7 +51,7 @@ const RUN_LABELS: Json = {
 /** runlabels/1: GET /runs' and GET /agents/{agent_id}/runs' filter on a run's labels. */
 const LABEL_PARAMETER: Json = {
   name: "label", in: "query", required: false,
-  description: `Only runs holding this label: \`<key>:<value>\`, split at the first \`:\` (a key holds none). Given more than once (up to ${MAX_LABELS} times), only runs holding every one. One that does not read as a label is 400.`,
+  description: "Only runs holding this label: `<key>:<value>`, split at the first `:` (a key holds none). Once per request; a second `label`, or one that does not read as a label, is 400.",
   schema: { type: "string" },
   "x-agentrun-serve": "runlabels/1",
 };

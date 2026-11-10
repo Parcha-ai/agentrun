@@ -1,5 +1,6 @@
 // A run's labels: a small map of the caller's own strings, given at its start (POST /agents/{agent_id}/runs, POST /runs),
-// kept on the run, served on every read of it, and filtered on by GET /runs (`label=<key>:<value>`). The server never reads
+// kept on the run, served on every read of it, and filtered on by GET /runs (`label=<key>:<value>`, one per request: the
+// OpenAPI document declares it a single string, which every generated client sends once). The server never reads
 // them otherwise: they are the caller's way to find its runs again (its own ids for a run, a job, a tenant). They are no
 // place for a secret: every read of the run serves them as given.
 import { ApiError, type InputIssue } from "./errors.js";
@@ -10,7 +11,8 @@ export const MAX_LABELS = 16;
 /** A label's key: 1 to 63 characters, letters, digits and `.`, `_`, `-`, `/`, starting with a letter or a digit. No `:`, so
  *  a filter's `<key>:<value>` splits at its first one. */
 export const LABEL_KEY = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,62}$/;
-/** A label's value: text of 1 to this many characters. */
+/** A label's value: text of 1 to this many characters, counted as Unicode code points (as JSON Schema's maxLength counts
+ *  them), never UTF-16 units: an emoji is one character. */
 export const MAX_LABEL_VALUE = 256;
 /** No control character in a value: a label is shown as one line. */
 const CONTROL = /[\u0000-\u001f\u007f]/;
@@ -20,7 +22,8 @@ const isObject = (value: unknown): value is Record<string, unknown> => typeof va
 /** Why a value is not a label's, or undefined when it is one. */
 function valueProblem(value: unknown): string | undefined {
   if (typeof value !== "string") return "is text";
-  if (value.length < 1 || value.length > MAX_LABEL_VALUE) return `is text of 1 to ${MAX_LABEL_VALUE} characters`;
+  const characters = [...value].length;
+  if (characters < 1 || characters > MAX_LABEL_VALUE) return `is text of 1 to ${MAX_LABEL_VALUE} characters`;
   if (CONTROL.test(value)) return "holds no control character (a newline, a tab, NUL)";
   return undefined;
 }
@@ -50,22 +53,18 @@ export function labelsOf(labels: unknown): RunLabels | undefined {
   return Object.fromEntries(Object.entries(labels).map(([key, value]) => [key, String(value)]));
 }
 
-/** GET /runs' `label` parameters, each `<key>:<value>` (split at the first `:`, which a key never holds): the labels a run
- *  must hold, every one. 400 bad_request for one that does not read, more than MAX_LABELS, or one key asked for twice with
- *  two values (no run holds both). */
+/** GET /runs' `label` parameter, `<key>:<value>` (split at the first `:`, which a key never holds): the label a run must
+ *  hold. One per request: the document declares a single string, and a client generated from it sends one, so a second
+ *  is 400 bad_request rather than read here and dropped by a client. 400 too for one that does not read as a label. */
 export function labelFilter(given: readonly string[]): RunLabels | undefined {
   if (given.length === 0) return undefined;
-  if (given.length > MAX_LABELS) throw new ApiError("bad_request", `label is given at most ${MAX_LABELS} times`);
-  const filter: Record<string, string> = {};
-  for (const one of given) {
-    const at = one.indexOf(":");
-    const key = at < 0 ? one : one.slice(0, at);
-    const value = at < 0 ? undefined : one.slice(at + 1);
-    if (!LABEL_KEY.test(key) || value === undefined || valueProblem(value) !== undefined) {
-      throw new ApiError("bad_request", `label is <key>:<value>, a label's key and its value (${JSON.stringify(one)} is not one)`);
-    }
-    if (Object.hasOwn(filter, key) && filter[key] !== value) throw new ApiError("bad_request", `label names the key ${key} twice with two values: a run holds one value for a key`);
-    filter[key] = value;
+  if (given.length > 1) throw new ApiError("bad_request", "label is given once: one <key>:<value> per request");
+  const one = given[0]!;
+  const at = one.indexOf(":");
+  const key = at < 0 ? one : one.slice(0, at);
+  const value = at < 0 ? undefined : one.slice(at + 1);
+  if (!LABEL_KEY.test(key) || value === undefined || valueProblem(value) !== undefined) {
+    throw new ApiError("bad_request", `label is <key>:<value>, a label's key and its value (${JSON.stringify(one)} is not one)`);
   }
-  return filter;
+  return { [key]: value };
 }
