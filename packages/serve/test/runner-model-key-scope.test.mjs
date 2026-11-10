@@ -87,3 +87,15 @@ test("with none of a provider's keys where AgentRun started, the key saved in Se
   const route = await routeOf(modelAskOf(launch.model, undefined), env, "default", PI_WIRES);
   assert.equal(await route.provider.credential(), ANTHROPIC_SAVED);
 });
+
+test("a provider's key present with no value where AgentRun started (-e NAME, an empty optional secret) holds nothing: the key saved in Settings is opened and sent", async (t) => {
+  const store = await storeWith(t, { ANTHROPIC_API_KEY: ANTHROPIC_SAVED });
+  const runner = { ANTHROPIC_API_KEY: "" };
+  const launch = { plane: {}, model: { provider: "anthropic", modelId: "claude-sonnet-5-5" } };
+  const claimed = await claimSecrets({ store, sealKey: KEY, env: runner }, { kind: "agentic", body: { tools: [] } }, launch);
+  assert.equal(claimed.ANTHROPIC_API_KEY, ANTHROPIC_SAVED, "the empty value does not shadow the saved key");
+  const env = withModelKeys(runner, claimed);
+  assert.equal(env.ANTHROPIC_API_KEY, ANTHROPIC_SAVED);
+  const route = await routeOf(modelAskOf(launch.model, undefined), env, "default", PI_WIRES);
+  assert.equal(await route.provider.credential(), ANTHROPIC_SAVED, "the route sends the saved key, not an empty one");
+});

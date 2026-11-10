@@ -38,8 +38,9 @@ export async function claimSecrets(deps: ClaimSecretsDeps, revision: Revision, l
   // name (the secrets rule 4: env always overrides a pasted value), so a key set where the server starts is not shadowed by a
   // stale one saved in the store.
   const working: NodeJS.ProcessEnv = { ...base };
+  // A name present with no value (`-e NAME`, an empty optional secret) is not a key: the store's saved one stands.
   for (const name of CANDIDATES) {
-    const value = deps.env?.[name] ?? (deps.sealKey ? await getSealedKey(deps.store, deps.sealKey, name) : undefined);
+    const value = deps.env?.[name] || (deps.sealKey ? await getSealedKey(deps.store, deps.sealKey, name) : undefined);
     if (value !== undefined) working[name] = value;
   }
   const needs = await needsOf(revision);
@@ -73,9 +74,12 @@ export function withModelKeys(env: NodeJS.ProcessEnv, opened: NodeJS.ProcessEnv)
   // AgentRun started (ANTHROPIC_AUTH_TOKEN, an AWS key id) is never mixed with a saved key of the same provider, which its
   // route would send first (ANTHROPIC_API_KEY before the token) or pair with it (another AWS name).
   for (const names of [...Object.values(PROVIDER_KEYS), [GATEWAY_KEY_ENV]]) {
-    if (names.some((name) => env[name] !== undefined)) continue;
+    // A key held empty (`-e NAME` with no value) holds nothing: the saved key fills it.
+    if (names.some((name) => env[name])) continue;
     for (const name of names) {
-      if (out[name] !== undefined || opened[name] === undefined) continue;
+      if (out[name] || !opened[name]) continue;
+      const held = Object.getOwnPropertyDescriptor(out, name);
+      if (held && !held.configurable) continue;
       Object.defineProperty(out, name, { value: opened[name], enumerable: false, writable: false, configurable: false });
     }
   }
@@ -87,7 +91,7 @@ export function withModelKeys(env: NodeJS.ProcessEnv, opened: NodeJS.ProcessEnv)
 export async function savedModelKeys(deps: ClaimSecretsDeps): Promise<NodeJS.ProcessEnv> {
   const out: NodeJS.ProcessEnv = {};
   for (const name of MODEL_KEY_NAMES) {
-    const value = deps.env?.[name] ?? (deps.sealKey ? await getSealedKey(deps.store, deps.sealKey, name) : undefined);
+    const value = deps.env?.[name] || (deps.sealKey ? await getSealedKey(deps.store, deps.sealKey, name) : undefined);
     if (value !== undefined) out[name] = value;
   }
   return out;
