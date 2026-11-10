@@ -181,12 +181,6 @@ export type ConfineChild = (child: Readonly<{ command: string; args: string[] }>
  *  which its own check took: skills.ts). */
 export type AdapterNeeds = { model: ModelRef; models: { getModel(provider: string, id: string): { cost?: Partial<ModelCost> } | undefined }; confine?: ConfineChild; skills?: readonly SkillFiles[]; unpriced?: ReadonlySet<string> };
 
-/** The ConfineChild that starts a child under `prefix` (the argv pi's commands start under, ending in "--"); none when
- *  the run confines nothing, since an adapter refuses a confinement that adds nothing. */
-export function confineOf(prefix: readonly string[]): ConfineChild | undefined {
-  if (!prefix.length) return undefined;
-  return (child) => ({ command: prefix[0]!, args: [...prefix.slice(1), child.command, ...child.args] });
-}
 
 /** The model key a run on `harness` (one on an adapter, by its wire's route) of `model` (the revision's; none, the host's default for the
  *  harness) takes: the one its requests carry on the route its provider below takes, as key-refusal.ts' runKeyOf names

@@ -78,4 +78,24 @@ describe("RunHeader's Raise the cap", () => {
     }
     expect(mount(run()).button("Raise the cap")).toBeUndefined();
   });
+
+  // A run that waits on the person for something other than its cap (an approval, a question, its browser or computer)
+  // is not held by its cap: a raise there changes nothing it waits on, so the header offers none. A cap pause does.
+  it("a run waiting on an approval, a question, its browser or its computer offers no raise; one paused at its cap does", () => {
+    const raise = async (): Promise<RaiseAnswer> => { throw new Error("not raised here"); };
+    const asked = { instruction: "Sign in to the portal.", completion_condition: "The portal shows the list.", asked_at: "2026-11-05T00:00:30Z", expires_at: "2026-11-05T00:30:00Z" };
+    const waits: Run["pending"][] = [
+      { kind: "approval", id: "ap1", tool: "web_fetch", call_id: "c1", args_preview: "{}", requested_at: "2026-11-05T00:00:30Z" },
+      { kind: "question", question: "Which currency?", asked_at: "2026-11-05T00:00:30Z" },
+      { kind: "browser", ...asked },
+      { kind: "computer", computer: "phone", ...asked },
+    ];
+    for (const pending of waits) {
+      const t = mount(run({ status: "input_required", state: "waiting", pending }), raise);
+      expect(t.button("Raise the cap"), pending!.kind).toBeUndefined();
+      act(() => root?.unmount()); document.body.innerHTML = "";
+    }
+    const paused = mount(run({ status: "input_required", state: "waiting", pending: { kind: "budget", cap_usd: 10, said: "Paused at its cap.", at: "2026-11-05T00:00:30Z" } }), raise);
+    expect(paused.button("Raise the cap")).toBeDefined();
+  });
 });

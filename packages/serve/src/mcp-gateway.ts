@@ -156,18 +156,6 @@ export function mcpPinOf(names: readonly string[], source: McpServerSource): Mcp
   return pin;
 }
 
-/** What a launch hands the run for its pin: each pinned server's URL now, with its headers only when it has not moved. A
- *  server no longer saved is absent. */
-export function mcpCredentialsOf(pin: McpPin, source: McpServerSource, runId?: string): McpCredentials {
-  const out: McpCredentials = Object.create(null);
-  for (const [name, pinned] of Object.entries(pin)) {
-    const saved = source.server(name);
-    if (!saved) continue;
-    const credential = saved.url === pinned.url ? source.headers(name, runId) : undefined;
-    out[name] = { url: saved.url, ...(credential && "unopened" in credential ? { unopened: credential.unopened } : credential ? { headers: credential.headers, ...(credential.expires_at !== undefined ? { expires_at: credential.expires_at } : {}) } : {}) };
-  }
-  return out;
-}
 
 /** Why a connection failed, in a few words: the network's own code, read down the error's causes (the SDK wraps fetch's
  *  error, which wraps the socket's), else the deepest message, cut short. */

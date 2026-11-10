@@ -16,7 +16,7 @@ import { homeOf } from "../dist/files.js";
 import { vendorsOver } from "../dist/sign-ins.js";
 import { keptContexts, keptProfile, savedOnRelease } from "../dist/tools.js";
 import { openapiDocument } from "../dist/openapi.js";
-import { WITHHELD_SIGN_IN } from "../dist/runs.js";
+import { WITHHELD_SIGN_IN } from "../dist/run-view.js";
 import { learningTestHooks } from "../dist/learning.js";
 import { calls as bbCalls, contexts, KEY as BB_KEY } from "./fixtures/faux-browserbase-check.mjs";
 import { KEY as KERNEL_KEY } from "./fixtures/faux-kernel-check.mjs";

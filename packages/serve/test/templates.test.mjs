@@ -315,7 +315,8 @@ test("a package's triggers are made on its agent, placeholders filled; a trigger
 
   const broken = await api("POST", "/templates/broken/apply", { parameters: {} });
   assert.equal(broken.status, 422, JSON.stringify(broken.body));
-  assert.deepEqual(broken.body.error.fields.map((f) => [f.field, f.message]), [["triggers.1.source.at", "at is in the past"]]);
+  assert.deepEqual(broken.body.error.fields.map((f) => f.field), ["triggers.1.source.at"]);
+  assert.match(broken.body.error.fields[0].message, /^Pick a time in the future: \d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ has already passed\.$/, "in words, never the raw field name");
   assert.deepEqual((await api("GET", "/triggers")).body.triggers.map((x) => x.id), [id], "the broken package's first trigger was never made");
   assert.deepEqual((await api("GET", "/agents")).body.agents.map((a) => a.agent_id), [applied.body.agent_id], "nor its agent");
   assert.deepEqual((await api("GET", "/agents?archived=true")).body.agents, [], "every trigger is checked before the agent is made, so a refused one archives nothing");
