@@ -8,9 +8,12 @@ import { test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { commitWrites } from "@earendil-works/pi-durable/testing";
 import { maxRunsOf } from "../dist/host.js";
-import { besideRunnerOptions, DRAIN_TIMEOUT } from "../dist/runner/beside.js";
+import { readFile } from "node:fs/promises";
+import { besideRunnerOptions, besideStopping, DRAIN_TIMEOUT } from "../dist/runner/beside.js";
+import { durationMs } from "../dist/print.js";
+import { DEADLINE_MARGIN_MS } from "../dist/stop-signals.js";
 import { RUNNER_DRAIN_TIMEOUT, runnerArgs, runnerHolds } from "../dist/runner/main.js";
-import { startRunner } from "../dist/runner/runner.js";
+import { RUNNER_LEASE_MS, RUNNER_STOP_MARGIN_MS, runnerCloseBoundMs, startRunner } from "../dist/runner/runner.js";
 import { observed, queue, recorder, STEADY_LEASE, stores, until } from "./runner-support.mjs";
 
 const TIMING = { ...STEADY_LEASE, pollMs: 20, commandPollMs: 20 };
@@ -98,6 +101,25 @@ test("a runner process of its own (`agentrun-serve runner`, beside a --no-runner
   assert.equal(runnerHolds({}, { AGENTRUN_DRAIN_TIMEOUT: "2s" }).drainMs, 2_000, "else AGENTRUN_DRAIN_TIMEOUT");
   assert.equal(runnerHolds({ drainMs: 0 }, { AGENTRUN_DRAIN_TIMEOUT: "2s" }).drainMs, 0, "--drain-timeout over the environment");
   assert.throws(() => runnerHolds({}, { AGENTRUN_DRAIN_TIMEOUT: "soon" }), /AGENTRUN_DRAIN_TIMEOUT is a duration such as 6s/);
+});
+
+test("the CLI's stop deadline covers the runner's whole close: its drain, then the stop of the loops left, from the runner's own lease and margin", () => {
+  const stopWindow = RUNNER_LEASE_MS - RUNNER_STOP_MARGIN_MS;
+  assert.equal(stopWindow, 25_000, "a loop that does not stop is given up 25 s after the drain");
+  assert.equal(runnerCloseBoundMs(6_000), 6_000 + stopWindow);
+  assert.deepEqual(besideStopping({ runs: 0, boundMs: 0 }, 1, 6_000), { runs: 1, boundMs: 31_000 }, "the image's 6 s drain: 31 s, then the stop's margin");
+  assert.deepEqual(besideStopping({ runs: 2, boundMs: 90_000 }, 3, 30_000), { runs: 5, boundMs: 90_000 }, "a longer server bound stands");
+  assert.equal(besideStopping({ runs: 0, boundMs: 0 }, 0, 0).boundMs, stopWindow, "with no drain, still the loops' stop");
+  assert.ok(DEADLINE_MARGIN_MS > 0);
+});
+
+test("a runner of its own stops inside compose's stop grace: its default drain and the loops' stop after it", async () => {
+  const compose = await readFile(new URL("../../../deploy/compose.yaml", import.meta.url), "utf8");
+  const runner = /x-runner: &runner\n(?:  .*\n)*?  stop_grace_period: (\d+)s/.exec(compose);
+  assert.ok(runner, "compose's runners name their stop_grace_period");
+  const bound = runnerCloseBoundMs(durationMs(RUNNER_DRAIN_TIMEOUT));
+  assert.equal(bound, 31_000, "6 + 25 = 31 s");
+  assert.ok(bound < Number(runner[1]) * 1_000, `the runner's close (${bound} ms) is inside compose's ${runner[1]} s`);
 });
 
 test("--max-runs 2 with 4 runs queued: the runner holds 2 at once, the other 2 wait queued, then run as places free", async (t) => {

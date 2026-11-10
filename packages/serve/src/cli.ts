@@ -18,7 +18,7 @@ import type { ImageState } from "./box-image.js";
 import { banner, boxImageLine } from "./print.js";
 import type { LearningMode } from "./learning.js";
 import { DEFAULT_PORT, fauxEnvOf, type Serve, type ServeOptions, startServe } from "./server.js";
-import { besideRunnerOptions, runnerBeside } from "./runner/beside.js";
+import { besideRunnerOptions, besideStopping, runnerBeside } from "./runner/beside.js";
 
 
 const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--open] [--faux MODULE] [--faux-browser MODULE] [--allow-host NAME ...] [--max-runs N] [--drain-timeout D] [--documents DIR] [--allow-code-nodes] [--learning on|off] [--learning-budget BYTES] [--grade-model MODEL] [--no-runner]
@@ -363,11 +363,9 @@ const stop = stopOnSignals({
     if (busy > 0 && drainMs > 0) console.error(`agentrun-serve: stopping: waiting up to ${Math.ceil(drainMs / 1000)} s for ${busy} ${busy === 1 ? "run" : "runs"} to finish ${busy === 1 ? "its turn" : "their turns"}`);
     return Promise.all([runnerProc?.close() ?? Promise.resolve(), serve.close()]).then(() => undefined);
   },
-  // The stop's deadline waits out the runner's drain too: the runs it holds finish their turns for up to drainMs.
-  stopping: () => {
-    const { runs, boundMs } = serve.stopping();
-    return runnerProc ? { runs: runs + runnerProc.runner.held().length, boundMs: Math.max(boundMs, drainMs) } : { runs, boundMs };
-  },
+  // The stop's deadline waits out the runner's whole close: its drain, then the stop of the loops left, so a run's end
+  // and release are never cut short (besideStopping).
+  stopping: () => (runnerProc ? besideStopping(serve.stopping(), runnerProc.runner.held().length, drainMs) : serve.stopping()),
   done: (code) => (removeOwnRecord(record), process.exit(code)),
   say: (line) => console.error(line),
 });

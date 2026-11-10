@@ -2,6 +2,7 @@
 // the template eval's in-process server (template-eval.ts), which would otherwise leave every run it starts queued.
 import { maxRunsOf } from "../host.js";
 import { durationMs } from "../print.js";
+import { runnerCloseBoundMs } from "./runner.js";
 
 /** How long a busy run may finish its turn when the server stops, unless --drain-timeout says (cli.ts). */
 export const DRAIN_TIMEOUT = "30s";
@@ -15,6 +16,13 @@ export function besideRunnerOptions(serve: { maxRuns?: number; drainTimeout?: st
   const drainMs = durationMs(drainTimeout);
   if (drainMs === undefined) throw new Error(`the drain timeout ${drainTimeout} is not a duration such as 8s`);
   return { loops: maxRunsOf(env, serve.maxRuns), drainMs };
+}
+
+/** What the CLI's stop waits on (stop-signals.ts StopDeps.stopping) with a runner beside the server: the server's runs
+ *  and the runs the runner holds, and the longer of the server's bound and the runner's whole close (its drain, then
+ *  the stop of the loops left: runnerCloseBoundMs), so the stop's deadline never cuts a run's end and release short. */
+export function besideStopping(server: { runs: number; boundMs: number }, held: number, drainMs: number): { runs: number; boundMs: number } {
+  return { runs: server.runs + held, boundMs: Math.max(server.boundMs, runnerCloseBoundMs(drainMs)) };
 }
 
 /** A runner beside the server on the same data directory (the CLI start's server-and-runner, and the `runner` subcommand):
