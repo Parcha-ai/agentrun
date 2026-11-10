@@ -108,6 +108,10 @@ export type LearnedWorkflowRun = {
   /** Where the gate's permission of a tool was set (tool-gate.ts RunGate denyFrom), so a refusal names it: this agent's
    *  settings or this server's. None: the server's. */
   denyFrom?: (tool: string) => SettingFrom;
+  /** Reads the gate's settings again (a runner's are in its store, read anew at each of its gate's decisions), awaited as
+   *  each call node runs, before `policy` is asked: a tool set to deny since the call began is then refused. None: the
+   *  gate reads its settings live (main's process). */
+  refresh?: () => Promise<void>;
 };
 
 /** The most characters of a learned workflow's output its answer holds, monid's bound (monid.ts CLIP): within the
@@ -222,6 +226,7 @@ export async function runLearned(run: LearnedWorkflowRun, flow: LearnedWorkflow,
     // The gate's one rule, read as each call node runs, as a workflow revision's call node reads it (app.ts runEffect):
     // a tool set to deny since the call began is refused in the gate's words, one set to ask too, since a call node
     // cannot wait for an approval. Neither runs.
+    await run.refresh?.();
     const permission = run.policy?.(tool!) ?? "allow";
     if (permission === "deny") throw new Error(deniedText(tool!, undefined, run.denyFrom?.(tool!)));
     if (permission === "ask") throw new Error(`This ${tool} call needs a person's approval, which a workflow's call node cannot wait for; it was not run.`);
