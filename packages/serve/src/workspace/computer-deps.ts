@@ -14,14 +14,8 @@
 //
 // A key goes into the server-side provider call alone (the provider's create() options): the spec a computer is made
 // with names no key, no account key and no database or Redis credential, and carries no environment at all.
-//
-// The Mode 1 default (an agent with no computer setting: a sandbox on Docker when Docker answers here) asks Docker once
-// per composition (one runner), as the server's boxes probe it once at its start: `docker version`, as the Docker
-// provider asks it, bounded, its answer kept for the composition's life. AGENTRUN_BOXES opts out without asking.
-import { execFile } from "node:child_process";
 import { type ComputerSpec, DEFAULT_DOCKER_IMAGE, DOCKER_RECIPE, DOCKER_RECIPE_HAS, PROVIDERS, providerFor, readBackOf, servingRefusals, SETTING_KINDS } from "@parcha/agentrun-computer";
 import { DOCKER_IMAGE_ENV } from "../box-image.js";
-import { enabledBoxes, PROBE_TIMEOUT_MS } from "../boxes.js";
 import type { ProviderFactories } from "../computer-keys.js";
 import type { FauxComputers } from "../faux-computers.js";
 import { envValue, type KeyEnv, keyReader } from "../key-meta.js";
@@ -56,40 +50,13 @@ export interface ComputerDepsOptions {
   readonly kinds?: KindRegistry;
   /** How a provider is built from its id and options: the package's providerFor unless given (a test's stand-in). */
   readonly load?: ProviderLoad;
-  /** Whether a provider that binds a folder of this machine answers here now (Docker), for the Mode 1 default: Docker's
-   *  readiness, asked once (dockerAnswers), unless given. */
+  /** Whether a provider that binds a folder of this machine answers here now (Docker), for the Mode 1 default. */
   readonly answers?: ComputerForClaimDeps["answers"];
-  /** The bound of that one Docker probe: the boxes' probe bound (PROBE_TIMEOUT_MS) unless given, as boxRegistry takes its own. */
-  readonly dockerProbeMs?: number;
   /** The live view's registration for a desktop or a phone (proxy-only): absent, no view is opened. */
   readonly openComputerView?: OpenComputerView;
   /** --faux's computers (faux-computers.ts), in place of the computer package's: their kind registry, key table, launch
    *  and factories. */
   readonly faux?: FauxComputers;
-}
-
-/** Whether Docker answers here: `docker version`, as the Docker provider asks it before it makes a computer (its create),
- *  on this process's PATH as every call of the provider runs, within `timeoutMs`. False on any error or silence. */
-function dockerVersionAnswers(timeoutMs: number): Promise<boolean> {
-  return new Promise((resolve) => {
-    execFile("docker", ["version", "--format", "{{.Server.Arch}}"], { encoding: "utf8", timeout: timeoutMs, killSignal: "SIGKILL" }, (error, stdout) => resolve(!error && stdout.trim() !== ""));
-  });
-}
-
-/** The Mode 1 default's `answers` for one composition: Docker when AGENTRUN_BOXES lists it (unset: the boxes' default,
- *  docker), asked once and its answer kept for the composition's life (a Docker that was down stays so until the runner
- *  restarts, as the server's boxes probe once at its start); a list that leaves docker out, or none, never asks it. Any
- *  other provider: false. */
-function dockerAnswers(env: KeyEnv, timeoutMs: number): NonNullable<ComputerForClaimDeps["answers"]> {
-  let listed: boolean;
-  try {
-    listed = enabledBoxes(env as NodeJS.ProcessEnv).has("docker");
-  } catch {
-    // An AGENTRUN_BOXES that names no box: the server refuses to start on it; here, no box.
-    listed = false;
-  }
-  let docker: Promise<boolean> | undefined;
-  return async (provider) => provider === "docker" && listed && (await (docker ??= dockerVersionAnswers(timeoutMs)));
 }
 
 /** The spec a computer of `kind` on `entry` is made with, besides its labels and its mount: its image (Docker's: the
@@ -153,8 +120,7 @@ export function computerDepsFrom(options: ComputerDepsOptions): { computerForCla
     keyOf: keyReader(store, sealKey, env),
     // Under --faux, its launch makes the computer, with its key table: no provider of the package is built.
     ...(faux ? { keyTable: faux.keyTable, launch: (entry, spec) => faux.launch(entry as never, spec) } : {}),
-    // The Mode 1 default's readiness: Docker, asked once for this composition (one runner), unless given.
-    answers: options.answers ?? dockerAnswers(env, options.dockerProbeMs ?? PROBE_TIMEOUT_MS),
+    ...(options.answers ? { answers: options.answers } : {}),
     ...(options.openComputerView ? { openComputerView: options.openComputerView } : {}),
   };
   const factories = faux?.factories ?? computerProviderFactories(providers, (id) => storeLedger(store.computerLedger, id));
