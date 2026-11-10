@@ -319,8 +319,9 @@ test("box_allow is the computer's egress list: a sandbox with none has no networ
   // A launch that names no box_allow (a row from before every launch carried one): this server's own setting now, the
   // default list when AGENTRUN_BOX_ALLOW is unset, the operator's list or none when set; never "open" for it.
   assert.deepEqual(spec(entryOf("docker"), "desktop", {}).network, { allow: [...DEFAULT_BOX_ALLOW] }, "a Docker desktop with no box_allow: the server's default list");
-  assert.deepEqual(computerSpecOf({ AGENTRUN_BOX_ALLOW: "pypi.org" })(entryOf("docker"), "desktop", {}).network, { allow: ["pypi.org"] }, "the operator's list");
-  assert.equal(computerSpecOf({ AGENTRUN_BOX_ALLOW: "none" })(entryOf("docker"), "desktop", {}).network, "none", "the operator's none");
+  // A Docker desktop needs an image the owner named (the recipe has no X server): the same named image here.
+  assert.deepEqual(computerSpecOf({ AGENTRUN_DOCKER_IMAGE: named, AGENTRUN_BOX_ALLOW: "pypi.org" })(entryOf("docker"), "desktop", {}).network, { allow: ["pypi.org"] }, "the operator's list");
+  assert.equal(computerSpecOf({ AGENTRUN_DOCKER_IMAGE: named, AGENTRUN_BOX_ALLOW: "none" })(entryOf("docker"), "desktop", {}).network, "none", "the operator's none");
   assert.equal(computerSpecOf({ AGENTRUN_BOX_ALLOW: "none" })(entryOf("docker"), "sandbox", {}).network, "none");
   assert.deepEqual(spec(entryOf("docker"), "desktop", { boxAllow: ["example.com"] }).network, { allow: ["example.com"] }, "an explicit list applies to a Docker desktop");
   assert.equal(spec(entryOf("e2b"), "desktop", { boxAllow: "none" }).network, "none", "an explicit none applies to any kind");
