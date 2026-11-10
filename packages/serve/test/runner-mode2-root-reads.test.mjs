@@ -109,8 +109,9 @@ const mountingComputer = async (_launch, _store, given) => {
  *  and used (`use`) is recorded. `computer`: the run's computerForClaim (none by default). The control plane is the
  *  fake as a fetch function (`control`: no port), and every other outbound fetch is refused (`outbound`). `tools`: the
  *  revision's grant; `monid`: the answer monid's faked API gives (its key then in the runner's environment). `routeOf`: the
- *  run's model route (the stub by default). `fails`: the build is expected to throw, and its error is answered. */
-async function mode2Spec(t, { harness, build, watch = false, use = async () => {}, computer = async () => ({ release: async () => {} }), signal, phase, tools = ["read", "write"], monid, routeOf = stubRoute, fails = false }) {
+ *  run's model route (the stub by default). `fails`: the build is expected to throw, and its error is answered.
+ *  `controlFetch`: the claim's fetch to the control fake, given the fake's own (a test that loses an answer wraps it). */
+async function mode2Spec(t, { harness, build, watch = false, use = async () => {}, computer = async () => ({ release: async () => {} }), signal, phase, tools = ["read", "write"], monid, routeOf = stubRoute, fails = false, controlFetch = (fetch) => fetch }) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-mode2-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -154,7 +155,7 @@ async function mode2Spec(t, { harness, build, watch = false, use = async () => {
     env, data: dir, journal: (c) => store.journal(c), store, sealKey: SEAL_KEY, routeOf,
     // The run's Archil disk is the fake (Mode 2's disk, for both builders), and its control plane the fake's fetch.
     makeArchilDisk: () => disk,
-    mountControl: { baseUrl: control.baseUrl, fetch: control.fetch },
+    mountControl: { baseUrl: control.baseUrl, fetch: controlFetch(control.fetch) },
     computerForClaim: computer,
   };
   // The run's whole local folder path, the run's directory above its work folder included.
@@ -338,3 +339,44 @@ test("pi's spec in Mode 2: a build that throws after its computer and tools are 
   assert.deepEqual(deletesOf(control), [`DELETE ${DISK_PATH}/users/token?identifier=tok-1`], "the credential removed, once");
   assert.deepEqual(outbound, []);
 });
+
+// A mint whose answer is lost (Archil made the token user; the claim never heard of it) is still removed: the claim's
+// revoke looks for the run's users by name, this epoch's too, once a mint was asked for.
+for (const [name, harness, build] of [["pi's spec", undefined, adapterRunSpecFromLaunch], ["the CLI spec (opencode)", "opencode", cliRunSpecFromLaunch]]) {
+  test(`${name} in Mode 2: a mint whose answer is lost (the user made at Archil, the claim never told) is removed by the run's name when the build throws`, async (t) => {
+    // The fake makes the user, then the connection drops before its answer reaches the claim.
+    const losing = (fetch) => async (input, init) => {
+      const answer = await fetch(input, init);
+      if ((init?.method ?? "GET") === "POST") throw new TypeError("fetch failed: the connection closed before the answer");
+      return answer;
+    };
+    const failing = async (_launch, _store, given) => {
+      await given.workspace.mountSpec();
+      return { release: async () => {} };
+    };
+    const { error, control, outbound } = await mode2Spec(t, { harness, build, computer: failing, controlFetch: losing, fails: true });
+    assert.match(error.message, /the connection closed before the answer/, "the build throws the mint's own failure");
+    assert.equal(control.requests.filter((one) => one.method === "POST").length, 1, "one mint, made at Archil");
+    assert.deepEqual(deletesOf(control), [`DELETE ${DISK_PATH}/users/token?identifier=tok-1`], "the user the claim never heard of, found by the run's name and removed once");
+    assert.deepEqual([...control.users.values()].filter((user) => user.nickname?.includes(RUN)), [], "no user of the run is left");
+    assert.deepEqual(outbound, []);
+  });
+
+  test(`${name} in Mode 2: a release step that fails (the computer's release rejects) skips none after it: the run's mount credential is still removed`, async (t) => {
+    let tried = 0;
+    // A computer that mints, is made, and whose release rejects without revoking: the spec's own revoke must still run.
+    const stuck = async (_launch, _store, given) => {
+      await given.workspace.mountSpec();
+      return { release: async () => {
+        tried += 1;
+        throw new Error("the provider did not answer the delete");
+      } };
+    };
+    const { spec, control, outbound } = await mode2Spec(t, { harness, build, computer: stuck });
+    await spec.release();
+    await spec.release();
+    assert.equal(tried, 1, "the computer's release is tried once, though a second release is asked for");
+    assert.deepEqual(deletesOf(control), [`DELETE ${DISK_PATH}/users/token?identifier=tok-1`], "the credential removed, once, after the computer's release failed");
+    assert.deepEqual(outbound, []);
+  });
+}
