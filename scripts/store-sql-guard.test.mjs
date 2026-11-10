@@ -27,7 +27,6 @@ const TODAY = [
   "packages/serve/src/agents.ts",
   "packages/serve/src/cap.ts",
   "packages/serve/src/import-summary.ts",
-  "packages/serve/src/import.ts",
   "packages/serve/src/run-db.ts",
   "packages/serve/src/runs.ts",
   "packages/serve/src/server-lock.ts",
@@ -174,7 +173,6 @@ const TODAY_DRIVER = [
   "packages/pi/src/durable/readers.ts",
   "packages/pi/src/signin/store.ts",
   "packages/serve/src/agents.ts",
-  "packages/serve/src/import.ts",
   "packages/serve/src/run-db.ts",
   "packages/serve/src/server-lock.ts",
 ];
