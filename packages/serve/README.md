@@ -2181,7 +2181,7 @@ An agent or a run is archived, never deleted: `DELETE` stays `405`. These routes
 ## The console
 
 Open the link the server prints, once, in a browser. `/` is the console (`apps/console` in the repository), on the
-server's own origin, under a CSP that allows that origin only:
+server's own origin, under a CSP that allows that origin only, but for the provider icons on the Keys page (below):
 
 - **Mission Control**: the store's counts and the latest runs.
 - **Agents**: each agent with its kind and harness, archived ones behind **Archived**. **New agent** and an agent's page:
@@ -2920,8 +2920,12 @@ carries no cost at all, as from a provider that does not price the model. The te
   It sends no CORS headers, so a page on another origin cannot read an answer.
 - Every route but `GET /capabilities` needs `Authorization: Bearer <the token>`, compared in constant time, or the
   browser's cookie under the rules of [the console](#the-console). The console's own files (its HTML, scripts, styles
-  and fonts) hold no data; everything it shows comes through those routes. It loads nothing from the network, and its
-  CSP allows this origin only.
+  and fonts) hold no data; everything it shows comes through those routes. It loads one thing from the network: on
+  Settings → Keys, each provider's icon, from Google's favicon service (`www.google.com/s2/favicons`, which redirects
+  to `t0`-`t3.gstatic.com`). The request names the provider's public site (`chatgpt.com`) and carries no referrer,
+  no cookie of this server's and nothing of yours; Google sees the browser's address and which providers the page
+  lists. Offline, or with those hosts blocked, the page shows a key icon instead. The CSP's `img-src` allows those
+  five hosts; everything else is this origin only.
 - Each run's door listens on loopback and takes only that run's own door token (`DIR/disk/agents/<agent>/runs/<id>/door-token`, 0600, made
   at its first launch); a run's process an older server started keeps the server-wide one (`DIR/.door-token`).
 - A run's process gets the server's environment (the `AGENT_MODEL` variables among it) without the server's token or any
