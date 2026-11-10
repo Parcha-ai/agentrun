@@ -30,7 +30,7 @@ import { WEBHOOK_FILE, webhookSecretIn } from "./webhooks.js";
 import { TRIGGER_ADAPTERS } from "./trigger-adapters.js";
 import { type RefusedReason, readWorkBytes, WorkRefused, walkWork } from "./workspace.js";
 import { journalEntries } from "./runner/journal-reader.js";
-import { bodyOf, type NewRevision, openSqliteStore, type Store, StoreFromEarlierVersion, StoreOwned } from "./store/index.js";
+import { bodyOf, type NewRevision, openStore, SchemaVersionUnknown, type Store, StoreFromEarlierVersion, StoreOwned, storeTarget } from "./store/index.js";
 import { STORE_FILE } from "./store/sqlite/store.js";
 import { foundOverStore } from "./store-reads/import-summary.js";
 
@@ -1133,8 +1133,14 @@ export async function importCommand(
       return options;
     };
     if (values["dry-run"]) {
-      // A dry run writes nothing: a store there already is opened read-only (role runner), one that is not is left unmade.
-      const reader = existsSync(join(dir, STORE_FILE)) ? await openSqliteStore({ dataDir: dir, role: "runner" }) : undefined;
+      // A dry run writes nothing: a store there already is opened read-only (role runner), one that is not is left unmade
+      // (on Postgres, when AGENTRUN_STORE_URL names one: a schema not set up yet).
+      const reader = storeTarget(dir).kind === "postgres"
+        ? await openStore({ dataDir: dir, role: "runner" }).catch((error: unknown) => {
+          if (error instanceof SchemaVersionUnknown && error.found === null) return undefined;
+          throw error;
+        })
+        : existsSync(join(dir, STORE_FILE)) ? await openStore({ dataDir: dir, role: "runner" }) : undefined;
       let plan: Plan;
       let found: Found[];
       try {
@@ -1156,7 +1162,9 @@ export async function importCommand(
     // nothing into it (the refusal is before the store is opened or made), and does not wait on a running server.
     let store: Store;
     try {
-      store = await openSqliteStore({ dataDir: dir, role: "server" });
+      // The store AGENTRUN_STORE_URL names (store/open.ts), else SQLite in the directory; on Postgres a running server's
+      // owner lock is the StoreOwned refused here.
+      store = await openStore({ dataDir: dir, role: "server" });
     } catch (error) {
       if (error instanceof StoreFromEarlierVersion || error instanceof StoreOwned) {
         warnings.push(`agentrun-serve import: ${error.message}`);

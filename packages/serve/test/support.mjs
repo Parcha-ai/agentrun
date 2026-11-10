@@ -43,11 +43,15 @@ export const SECRET_WRITE_PATHS = [
   { methods: ["POST"], path: /^\/triggers$/ },
   { methods: ["POST"], path: /^\/triggers\/[^/]+\/secret$/ },
   { methods: ["PUT"], path: /^\/settings\/webhook$/ },
-  // MCP (mcp-secret-writes.ts): a saved server's PUT (a token or headers it carries), a sign-in's start (a client_secret),
-  // and the private-network OAuth hosts.
-  { methods: ["PUT"], path: /^\/settings\/mcp-servers\/[^/]+$/ },
+  // MCP (mcp-secret-writes.ts): a saved server's PUT (a token or headers it carries, or one that drops its credential)
+  // and DELETE, a sign-in's start, and the private-network OAuth hosts.
+  { methods: ["PUT", "DELETE"], path: /^\/settings\/mcp-servers\/[^/]+$/ },
   { methods: ["POST"], path: /^\/settings\/mcp-servers\/[^/]+\/oauth\/start$/ },
   { methods: ["PUT"], path: /^\/settings\/mcp-servers\/oauth\/private-hosts$/ },
+  // Connecting and disconnecting a GitHub App (github-connection.ts), and forgetting a saved sign-in (sign-ins-secrets.ts).
+  { methods: ["POST"], path: /^\/integrations\/github\/connect$/ },
+  { methods: ["DELETE"], path: /^\/integrations\/github$/ },
+  { methods: ["DELETE"], path: /^\/agents\/[^/]+\/sign-ins\/[^/]+$/ },
 ];
 /** Adds a secret write the client sends from the owner's session (`methods` on `path`, a RegExp over the /v2 path). */
 export const secretWritePath = (methods, path) => void SECRET_WRITE_PATHS.push({ methods, path });

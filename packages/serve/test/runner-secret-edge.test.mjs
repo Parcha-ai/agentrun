@@ -5,8 +5,9 @@
 // and every place a value could reach is read for every planted one:
 //   - a CLI run (OpenCode on its stand-in, its model a gateway on loopback): the child's own environment, written down by
 //     a wrapper before it becomes the stand-in (fixtures/env-dump-standin.mjs);
-//   - a pi run (adapterRunSpecFromLaunch, its model a scripted origin) whose agent runs `env` in its bash: what the bash
-//     saw is the tool's output, in the journal and the next model request;
+//   - a pi run (adapterRunSpecFromLaunch, its model a scripted origin) whose agent runs `env` in its bash, in its sandbox
+//     (a fake computer over the run's folder, its processes real: a run with no computer has no bash): what the bash saw
+//     is the tool's output, in the journal and the next model request;
 //   - each run's journal, the store's files (its tables, sealed columns opened by nobody here) and what the runner wrote
 //     to stderr and the console.
 // The pdf_pages tool (pdf-pages.ts:25, :137) runs its programs with this process's whole environment: its case reads a
@@ -20,6 +21,7 @@ import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { closeOpenSessions, scriptedOrigin } from "./conformance-pi-adapter.mjs";
+import { sandboxForClaim } from "./workspace-fake-processes.mjs";
 
 const { openSqliteStore, sealMcpCredential } = await import("../dist/store/index.js");
 const { startRunner } = await import("../dist/runner/runner.js");
@@ -158,15 +160,17 @@ test("a CLI run through the runner: no planted secret reaches the CLI's child en
   assert.deepEqual(found(logs()), [], "the runner's log holds none");
 });
 
-test("a pi run through the runner whose agent runs `env` in its bash: the shell holds no planted secret, nor do the journal, the model's requests, the store or the runner's log", { timeout: 120_000 }, async (t) => {
+test("a pi run through the runner whose agent runs `env` in its sandbox's bash: the shell holds no planted secret, nor do the journal, the model's requests, the store or the runner's log", { timeout: 120_000 }, async (t) => {
   const logs = captureLogs(t);
   const requests = [];
   const route = { model: "faux-1", provider: { api: "anthropic-messages", origin: "https://route.invalid", credential: () => PLANT.ANTHROPIC_API_KEY }, fetch: scriptedOrigin([{ call: "bash", args: { command: "env" } }, { sayLastResult: true }], requests) };
   const launch = { input: { content: "Run env." }, title: "t", place: { mode: "runner" }, harness: "pi", model: { provider: "anthropic", modelId: "claude-sonnet-5.5" } };
   const opened = await storeWith(t, { tools: ["bash"] }, launch);
-  const deps = { env: { ...PLANT }, data: opened.dir, journal: (claim) => opened.store.journal(claim), store: opened.store, sealKey: SEAL_KEY, routeOf: async () => route, computerForClaim: noComputer };
+  const sandbox = sandboxForClaim();
+  const deps = { env: { ...PLANT }, data: opened.dir, journal: (claim) => opened.store.journal(claim), store: opened.store, sealKey: SEAL_KEY, routeOf: async () => route, computerForClaim: sandbox.forClaim };
   const { row, journal } = await runThrough(t, opened, "pi", (given) => createAdapterLoop((claim, run) => adapterRunSpecFromLaunch(given, run, deps, claim)));
   assert.equal(row.state, "ended", `the run ended: ${JSON.stringify(row)}`);
+  assert.ok(sandbox.made.length === 1 && sandbox.made[0].methods().includes("process.start"), "the bash ran in the sandbox");
   assert.match(journal, /PATH=/, "the bash ran `env`, and its output is in the journal");
   assert.deepEqual(found(journal), [], "the bash's environment, and the whole journal, hold no planted secret");
   assert.deepEqual(found(JSON.stringify(requests)), [], "the model's requests hold none");

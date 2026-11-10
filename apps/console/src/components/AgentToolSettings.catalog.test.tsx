@@ -6,6 +6,7 @@ import { type Agent, toolOffers } from "@/lib/agentForm";
 import { createClient } from "@/lib/client";
 import type { McpServer } from "@/lib/mcp";
 import { toolGates } from "@/lib/toolSettings";
+import "@/test/picker"; // jsdom has no ResizeObserver, which the picker's positioning watches
 
 // An MCP tool (`mcp:<server>/<tool>`) ticked in the Tools step and not saved yet: its row in "This agent's tool settings"
 // is there at once, with the permission its server's read gives (the one this server applies to an agent that sets

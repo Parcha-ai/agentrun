@@ -6,7 +6,7 @@
 // named only by an agent whose place is a box (runnable.ts).
 import { blurbOf } from "./tool-blurbs.js";
 import type { TSchema } from "typebox";
-import { existsSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { defineExtension, defineTool, type Extension, type Harness, ROOT_CONVERSATION_ID, type ToolRegistration, type Tx } from "@earendil-works/pi-durable";
@@ -38,7 +38,7 @@ import { redactedAnswer } from "./key-refusal.js";
 import { SIGN_IN_KEY, SIGN_IN_SAVED, vendorsOver } from "./sign-ins.js";
 import { answerIn, answerOnce } from "./runner/hand-back.js";
 import { runnerSecrets } from "./runner/redact.js";
-import type { HandoverAnswered } from "./runner/journal-kinds.js";
+import { HANDOVER_WAITING, type HandoverAnswered } from "./runner/journal-kinds.js";
 import type { LiveHandover, LiveViewerStore } from "./browser-live.js";
 import type { Claim, Store } from "./store/store.js";
 import { type RunSignIn, runSignIn, verifyRunSignIn } from "./sign-ins-store.js";
@@ -72,7 +72,8 @@ export const askPerson = defineTool({
 });
 // ask_person ends its turn (control.terminate), so the run waits on the person after it. Registered here, where the tool
 // is defined, so every reader of it agrees: the view reads a question row by this (run-view withAsks), and the runner's
-// loop parks on it (adapter-loop endedOnTurnEndingTool), whichever module loads — the loop never imports the view.
+// loop parks on it or waits on it in its claim (adapter-loop endedOnTurnEndingTool), whichever module loads — the loop
+// never imports the view.
 registerTurnEnding(ASK_TOOL);
 
 /** What a tool's binding gets from the run's process. */
@@ -90,6 +91,17 @@ export type ToolHost = {
   beforeResume(settle: (harness: Harness) => void | Promise<void>): void;
   /** Runs when the run's process lets the run go (its work done, or a SIGTERM), while the Harness is still open. */
   beforeRelease(stop: (harness: Harness) => void | Promise<void>): void;
+  /** On the runner: asked when the run's turn ends on its question to the person (ask_person, call `callId`), before the
+   *  run parks. A binding that keeps something open the person may still use while they answer holds the person's time for
+   *  it and answers a hold, and the run waits in its claim instead (adapter-loop.ts HostLifecycle.personWait); `lapsed`
+   *  settles, in words, when the hold can no longer stand, and the run parks then. `since`: when the wait first started
+   *  (its bound runs from then, across claims). Undefined: nothing to keep. Absent on
+   *  the old per-run process, whose wait keeps the process (and so the browser) anyway. */
+  personWait?(hold: (harness: Harness, callId: string, since: number) => Promise<{ readonly lapsed: Promise<string>; drop(): void } | undefined>): void;
+  /** On the runner: stages the run row's `summary` on the next commit that writes a root entry of `kind` whose data `test`
+   *  takes (adapter-loop AdapterRun.rowSummaryOn): a hand-over's wait sets the row's waiting summary in its waiting
+   *  entry's commit, and its answer's commit clears it, so the server tells run.needs_input for a run held in its claim. */
+  rowSummaryOn?(kind: string, test: (data: Record<string, unknown>) => boolean, summary: string | null): void;
   /** The run is on the runner: its browser hand-over's answers are entries of its journal (a browser_hand_back row the
    *  runner applies, the live view's hand-back, the ask's expiry), read and written there, never as answer files
    *  (browser-person.ts personHands `answered`). */
@@ -118,6 +130,10 @@ export type ToolHost = {
   /** The run's one redactor (the runner's: every secret value the runner and the claim hold, in every form): what the
    *  browser's answers pass through before pi stores them or the model reads them. Absent on the old per-run process. */
   redact?: (text: string) => string;
+  /** The run's own Workspace (on the runner: the run's local folder in Mode 1, its folder on the run's disk in Mode 2),
+   *  where a tool files what the run's read finds later (monid's whole answer past the model's cut). Absent, the local
+   *  folder at `where.work`. */
+  workspace?: Workspace;
 };
 
 /** What a name stands for in the run: the pi tools it offers, and the extensions a conversation selects for them. */
@@ -356,7 +372,7 @@ const browserTool: ToolEntry = {
     // own origin alone. The owner drives only after Take over, and the agent may ask them to (browser-person.ts): the
     // person's time is held under the run's cap first, and their turns are rows of the run's timeline.
     const windows = person.personWindows(host.env, Boolean(host.env[FAUX_ENV]));
-    const gates = createDrivingGates({ holdIdleMs: windows.holdMs, holdAwayMs: windows.awayMs });
+    const gates = fauxModelWaits(createDrivingGates({ holdIdleMs: windows.holdMs, holdAwayMs: windows.awayMs }), Boolean(host.env[FAUX_ENV]));
     let opened: Harness | undefined;
     const hands = person.personHands({
       root: host.where.root,
@@ -365,7 +381,16 @@ const browserTool: ToolEntry = {
       carry: (tag, seconds) => spend.carry(tag, seconds),
       // The model's words for the person, with every value this run holds cut, whole, before they are cut to their bound.
       redact: (text) => redactedAnswer(text, [...hostSecrets(host.env), ...(kept ? [kept.ref] : [])]),
-      note: async (kind, data) => void (await opened?.commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind, data })), context)),
+      note: async (kind, data) => {
+        // A hand-over's waiting entry, on the runner: the row says the run waits on the person in its browser from that
+        // commit (the server tells run.needs_input by it), and no more from its answer's, whoever writes it.
+        if (kind === "agent.handover" && data.state === "waiting" && typeof data.id === "string" && host.rowSummaryOn) {
+          const id = data.id;
+          host.rowSummaryOn(kind, (entry) => entry.id === id && entry.state === "waiting", HANDOVER_WAITING);
+          host.rowSummaryOn(kind, (entry) => entry.id === id && entry.state !== "waiting", null);
+        }
+        await opened?.commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind, data })), context);
+      },
       holdMs: windows.holdMs,
       // The run's waiting rows for a session: each is an agent.handover entry of the root's, waiting, naming it.
       waiting: async (tag) => (await opened?.commit(async (tx) => {
@@ -443,6 +468,8 @@ const browserTool: ToolEntry = {
       : undefined;
     // Both hosts of a session's changes: the live view's hand-over, and the sign-in's saved mark.
     const onSessions = async (row: Parameters<typeof savedOnRelease>[0] & Parameters<typeof onSession>[0], change: string) => {
+      // A session let go ends a wait on the person's answer that kept it open (personWait, below): the run parks.
+      if (change === "released") hands.sessionEnded(row.session.tag);
       await saved?.(row, change);
       await onSession(row, change);
     };
@@ -463,6 +490,26 @@ const browserTool: ToolEntry = {
     });
     host.beforeResume(async (harness) => {
       opened = harness;
+      // A hand-over still waiting from an earlier pass or claim (its waiting entry, no answer yet): its answer, in this
+      // pass, clears the row's waiting summary too, as the pass that asked would have.
+      // A first claim has no root yet (the session creates it): nothing waits then.
+      if (host.rowSummaryOn && (await harness.conversation(ROOT_CONVERSATION_ID as never, context).catch(() => undefined))) {
+        const entries: { kind: string; data?: unknown }[] = [];
+        await harness.commit(async (tx) => {
+          for (let cursor: Parameters<Tx["scanEntries"]>[2] | undefined; ; ) {
+            const page = await tx.scanEntries({ conversationId: ROOT_CONVERSATION_ID, order: "ascending" }, 200, cursor);
+            entries.push(...page.items);
+            if (page.next === undefined) return;
+            cursor = page.next;
+          }
+        }, context);
+        const waitingIdOf = (entry: { kind: string; data?: unknown }) => {
+          const data = entry.data as { state?: unknown; id?: unknown } | undefined;
+          return entry.kind === "agent.handover" && data?.state === "waiting" && typeof data.id === "string" ? data.id : undefined;
+        };
+        const waiting = new Set(entries.map(waitingIdOf).filter((id): id is string => id !== undefined));
+        for (const id of waiting) if (!answerIn(entries, id)) host.rowSummaryOn("agent.handover", (entry) => entry.id === id && entry.state !== "waiting", null);
+      }
       // Its charges move what the process counts once each is committed, reconcile's own among them.
       spend.watch(harness, (browser.docs.Inventory as unknown as { definition: { kind: string } }).definition.kind);
       // With its vendor's key gone there is no session to reconcile or release from here: each would only fail.
@@ -482,6 +529,19 @@ const browserTool: ToolEntry = {
           // A browser that cannot be reached has no view to give: the owner reads none, as for any session without one.
         }
       }
+    });
+    // On the runner: the run's turn ended on its question to the person (ask_person). With a session of its browser open
+    // (live, or held for a hand-over), the run waits for the answer in its claim, so the session, its live viewer and its
+    // page stay for the person and for the agent's next turn, as main's process kept them; the person's time on each such
+    // session is held under the run's cap the way a hand-over's is (personHands.wait). With none open, or no room under
+    // the cap for that time, the run parks (its release lets the browser go).
+    host.personWait?.(async (harness, callId, since) => {
+      if (refused) return undefined;
+      const rows = Object.values(((await harness.snapshot(browser.docs.Inventory as never, context)) as { rows?: Record<string, { tag: string; resourceId: string | null; state: string }> } | undefined)?.rows ?? {});
+      const open = rows.filter((row) => (row.state === "live" || row.state === "held") && row.resourceId !== null).map((row) => row.tag);
+      if (!open.length) return undefined;
+      const waited = await hands.wait(callId, open, since);
+      return "refused" in waited ? undefined : waited;
     });
     host.beforeRelease(async (harness) => {
       try {
@@ -661,3 +721,25 @@ export const toolsView = (env: NodeJS.ProcessEnv, settings: ToolSettingsMap = {}
     return { name, summary: entry.summary, ...(blurbOf(name) ? { blurb: blurbOf(name) } : {}), nodes: entry.nodes, calls: entry.effect !== undefined, ...(entry.callOnly ? { call_only: true } : {}), ...(entry.sandboxOnly ? { sandbox_only: true } : {}), available, ...(reason ? { reason } : {}), ...(missing.length ? { missing } : {}), harnesses: name in REPLAY ? [...HARNESSES] : [DEFAULT_HARNESS], ...serverGate(name, settings), ...(plane ? { providers: [...PROVIDERS[name as Pickable]], provider: picked[name as Pickable].provider, default_provider: PROVIDERS[name as Pickable][0], resolves: plane, why: view!.why } : {}) };
   });
 };
+
+/** Tests only (--faux, with the fake browser's $FAUX_BROWSER_LOG): each model call that starts waiting for the person to
+ *  hand the browser back is logged (`{"op":"model_waits"}`) as it starts to wait, so a test hands back once the agent's call
+ *  waits, never before it got there. The gates are the registry's own (one per session, the same object each time), each
+ *  given the note once; anything else is `gates` untouched. */
+function fauxModelWaits<G extends (tag: string) => { untilFree?(signal?: AbortSignal): Promise<void> }>(gates: G, faux: boolean): G {
+  const log = faux ? process.env.FAUX_BROWSER_LOG : undefined;
+  if (!log) return gates;
+  const noted = new WeakSet<object>();
+  return ((tag: string) => {
+    const gate = gates(tag);
+    const until = gate.untilFree?.bind(gate);
+    if (until && !noted.has(gate)) {
+      noted.add(gate);
+      gate.untilFree = (signal?: AbortSignal) => {
+        appendFileSync(log, `${JSON.stringify({ op: "model_waits" })}\n`);
+        return until(signal);
+      };
+    }
+    return gate;
+  }) as G;
+}
