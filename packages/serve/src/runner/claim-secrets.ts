@@ -66,23 +66,22 @@ export const MODEL_KEY_NAMES: readonly string[] = [...new Set([...Object.values(
  *  and a provider the runner holds any key of gets none of its saved ones.
  *  The keys added are never enumerable either: a spread of the result, or a spawn given it, carries none of them. */
 export function withModelKeys(env: NodeJS.ProcessEnv, opened: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  const out: NodeJS.ProcessEnv = { ...env };
-  for (const name of Object.getOwnPropertyNames(env)) {
-    if (!Object.prototype.propertyIsEnumerable.call(env, name)) Object.defineProperty(out, name, Object.getOwnPropertyDescriptor(env, name)!);
-  }
   // A provider's keys are filled together or not at all: only when the runner holds none of them. A credential handed where
   // AgentRun started (ANTHROPIC_AUTH_TOKEN, an AWS key id) is never mixed with a saved key of the same provider, which its
-  // route would send first (ANTHROPIC_API_KEY before the token) or pair with it (another AWS name).
+  // route would send first (ANTHROPIC_API_KEY before the token) or pair with it (another AWS name). A key held empty
+  // (`-e NAME` with no value, which runEnv keeps as a fixed property) holds nothing: the saved key takes its place.
+  const fill = new Map<string, string>();
   for (const names of [...Object.values(PROVIDER_KEYS), [GATEWAY_KEY_ENV]]) {
-    // A key held empty (`-e NAME` with no value) holds nothing: the saved key fills it.
     if (names.some((name) => env[name])) continue;
-    for (const name of names) {
-      if (out[name] || !opened[name]) continue;
-      const held = Object.getOwnPropertyDescriptor(out, name);
-      if (held && !held.configurable) continue;
-      Object.defineProperty(out, name, { value: opened[name], enumerable: false, writable: false, configurable: false });
-    }
+    for (const name of names) if (opened[name]) fill.set(name, opened[name]!);
   }
+  // Every property of `env` as it is (enumerable or not, as runEnv made it), but a name the fill replaces, so a fixed empty
+  // property is never copied in its way.
+  const out: NodeJS.ProcessEnv = {};
+  for (const name of Object.getOwnPropertyNames(env)) {
+    if (!fill.has(name)) Object.defineProperty(out, name, Object.getOwnPropertyDescriptor(env, name)!);
+  }
+  for (const [name, value] of fill) Object.defineProperty(out, name, { value, enumerable: false, writable: false, configurable: false });
   return out;
 }
 
