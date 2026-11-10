@@ -299,7 +299,7 @@ export async function cliRunSpecFromLaunch(launch: RunLaunch, run: AdapterRun, d
     if (launch.plane && Object.keys(launch.plane).length) toolEnv[TOOL_PLANE_ENV] = JSON.stringify(launch.plane);
     if (webNames.length) {
       life = hostLifecycle();
-      const host = buildToolHost({ root, claim, env: toolEnv, run, store: deps.store, sealKey: deps.sealKey, life, redact: held });
+      const host = buildToolHost({ root, workspace: ws.workspace, claim, env: toolEnv, run, store: deps.store, sealKey: deps.sealKey, life, redact: held });
       webTools = await webHostTools(host, granted, ctx);
     }
     learnedTool = await learnedWorkflowHostTool({ run, granted, plane: launch.plane, env: toolEnv, work: root, workflows: seedLaid?.workflows ?? [], ctx });

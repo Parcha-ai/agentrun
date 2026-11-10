@@ -387,7 +387,7 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
 
   // The ToolHost the non-hand tools (browser, web, MCP, decisions, monid) bind through (buildToolHost, the one the CLI
   // spec builds too), on the claim's keys and the run's one ledger and redactor.
-  const host = buildToolHost({ root, claim, env: toolEnv, run, store: deps.store, sealKey: deps.sealKey, life, redact: cut });
+  const host = buildToolHost({ root, workspace: ws.workspace, claim, env: toolEnv, run, store: deps.store, sealKey: deps.sealKey, life, redact: cut });
 
   // The run's tools. The hands (read/write/edit/bash and the background tools) are the kernel registry's over the run's
   // Workspace and computer (runTools.hostTools); the gate is the adapter loop's own (spec.gate), so they run as asked.
@@ -567,10 +567,12 @@ export function answersCut(tool: HostTool, cut: (text: string) => string): HostT
 /** The ToolHost a run's non-hand tools bind through, the one both the pi spec and the CLI spec build: the run's folder and
  *  the claim's environment (claim-secrets.ts: the run's keys from the store, its plane set), the run's registry for an
  *  extension a binding installs, the install lifecycle (`life`, run by the adapter loop from the spec's `lifecycle`), the
- *  store, claim and seal key, the run's one ledger and its one redactor, and the live-viewer seam the browser's writers
- *  hand a session's viewer over through (the store, never files). */
+ *  store, claim and seal key, the run's one ledger and its one redactor, the live-viewer seam the browser's writers hand a
+ *  session's viewer over through (the store, never files), and the run's own Workspace (`workspace`: in Mode 2 its folder
+ *  on the run's disk), where a tool files what the run's read finds later. */
 export function buildToolHost(opts: {
   readonly root: string;
+  readonly workspace: Workspace;
   readonly claim: Claim;
   readonly env: NodeJS.ProcessEnv;
   readonly run: AdapterRun;
@@ -601,6 +603,9 @@ export function buildToolHost(opts: {
     // The run's one redactor: the browser's answers pass it inside their call, before pi stores them (tools.ts).
     redact: opts.redact,
     liveViewers: liveViewersOf(opts.store, opts.sealKey, claim, opts.redact),
+    // What a tool files for the run's read (monid's whole answer past the model's cut) goes in the run's own Workspace, the
+    // one its hands read: in Mode 2 its folder on the run's disk, never the local folder at `root`.
+    workspace: opts.workspace,
   };
 }
 
