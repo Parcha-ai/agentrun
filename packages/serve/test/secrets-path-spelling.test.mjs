@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { test } from "node:test";
 
-const { redactSecrets } = await import("../dist/learn/secrets.js");
+const { redactSecrets, valueMatcher } = await import("../dist/learn/secrets.js");
 
 /** Whether `text` holds any 8 characters of `value` in a row. */
 const holdsPiece = (text, value) => [...Array(Math.max(0, value.length - 7)).keys()].some((i) => text.includes(value.slice(i, i + 8)));
@@ -23,6 +23,21 @@ test("a held value starting with \"/\", named by a path that drops it, is cut: n
   const said = `ENOENT: no such file or directory, open 'notes/${value.slice(1)}.txt'`;
   const shown = redactSecrets(said, [value]);
   assert.equal(holdsPiece(shown, value), false, shown);
+});
+
+test("a held value ending with \"/\", named by a path that drops it, is cut: no piece of it is left", () => {
+  const value = `not-a-secret-path-key-${randomBytes(8).toString("hex")}/`;
+  const said = `ENOENT: no such file or directory, open 'notes/${value.slice(0, -1)}'`;
+  const shown = redactSecrets(said, [value]);
+  assert.equal(holdsPiece(shown, value), false, shown);
+});
+
+test("learning's guard sees a held value as a path names it: the matcher holds the collapsed, the leading-cut and the trailing-cut spellings", () => {
+  const core = `not-a-secret-path-key${randomBytes(8).toString("hex")}`;
+  const value = `/${core.slice(0, 20)}//${core.slice(20)}/`;
+  const holds = valueMatcher([value]);
+  assert.equal(holds(`open 'notes/${core.slice(0, 20)}/${core.slice(20)}'`), true, "collapsed, the slashes at both ends dropped");
+  assert.equal(holds("nothing held here"), false);
 });
 
 test("a held value with \"//\" is still cut as written, and a value with no \"/\" is cut as before", () => {
