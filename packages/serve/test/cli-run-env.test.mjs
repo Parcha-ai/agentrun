@@ -1,34 +1,93 @@
-// A CLI run (claude-agent, codex) on a server whose secrets came over its launcher's pipe: the runner's run environment
-// (runEnv) holds each secret readable by name and never enumerable, and the CLI run's environment (cli-run-spec.ts
-// cliRunEnv) must keep it so: its model route reads the key by name (model.ts, `env[row.field]`), while a program a run
-// spawns with that environment carries none. A spread of the run environment dropped every secret, and the route sent no
-// key at all.
+// A CLI run on a server whose secrets came over its launcher's pipe: the runner's run environment (runEnv) holds each
+// secret readable by name and never enumerable. A CLI run built from it (cli-run-spec.ts, cliRunSpecFromLaunch) must
+// keep it so: its model route reads the key by name, so its requests carry it, while a program the run spawns sees no
+// key. A spread of the run environment dropped every secret, and a Claude Code
+// or Codex run sent its requests with no key (#2165).
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { createServer } from "node:http";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 
-// As the launcher hands it: the secrets module takes it at its load (secrets.ts), and runEnv gives it to the runs.
-const KEY = "test-model-key-not-real";
-process.env.ANTHROPIC_API_KEY = KEY;
-const { runEnv } = await import("../dist/runner/main.js");
-const { cliRunEnv } = await import("../dist/runner/cli-run-spec.js");
-const { hostModel } = await import("../dist/model.js");
-const { DATA_ENV } = await import("../dist/server-fs.js");
+const { openSqliteStore } = await import("../dist/store/sqlite/store.js");
+const { startRunner } = await import("../dist/runner/runner.js");
+const { createDispatchLoop } = await import("../dist/runner/dispatch.js");
+const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
+const { CONFORMANCE_TIMING } = await import("../dist/runner/conformance/harness.js");
+const { cliRunSpecFromLaunch } = await import("../dist/runner/cli-run-spec.js");
+const { OPENCODE_STANDIN_ENV } = await import("../dist/adapters.js");
 
-/** The names a program started with `env` sees in its environment. */
-const seenBy = (env) => spawnSync("sh", ["-c", "env"], { encoding: "utf8", env }).stdout.split("\n").map((line) => line.slice(0, Math.max(0, line.indexOf("=")))).filter(Boolean);
+process.env.AGENTRUN_OPENCODE_STANDIN = "1";
+const STAND_IN = fileURLToPath(new URL("./fixtures/fake-opencode-serve.mjs", import.meta.url));
+const RUN = "run-1";
+const KEY = `not-a-secret-${"gateway-key"}`;
+const until = async (done, what, ms = 60_000) => {
+  const end = Date.now() + ms;
+  for (;;) {
+    const value = await done();
+    if (value) return value;
+    if (Date.now() > end) throw new Error(`not within ${ms} ms: ${what}`);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+};
 
-test("a CLI run's environment keeps the run environment's secrets readable by name, so its model route finds the key, while a program it spawns holds none", () => {
-  const runs = runEnv({ PATH: process.env.PATH });
-  assert.equal(runs.ANTHROPIC_API_KEY, KEY, "the run environment holds the key by name");
-  assert.ok(!Object.keys(runs).includes("ANTHROPIC_API_KEY"), "and never enumerates it");
+/** A gateway on loopback that answers OpenAI's Responses API, recording each request's authorization header. */
+async function gateway(t) {
+  const auth = [];
+  const server = createServer(async (req, res) => {
+    for await (const _ of req);
+    auth.push(req.headers.authorization ?? null);
+    const events = [
+      { type: "response.output_text.delta", item_id: "m_0", output_index: 0, content_index: 0, delta: "Hello." },
+      { type: "response.completed", response: { id: "resp_0", object: "response", status: "completed", usage: { input_tokens: 10, output_tokens: 2, input_tokens_details: { cached_tokens: 0 } } } },
+    ];
+    res.writeHead(200, { "content-type": "text/event-stream" });
+    res.end(events.map((event) => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join(""));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  return { auth, origin: `http://127.0.0.1:${server.address().port}` };
+}
 
-  const env = cliRunEnv(runs, "/data/agentrun");
-  assert.equal(env.ANTHROPIC_API_KEY, KEY, "the CLI run's environment holds it by name");
-  assert.ok(!Object.keys(env).includes("ANTHROPIC_API_KEY"), "and never enumerates it");
-  assert.equal(env[DATA_ENV], "/data/agentrun", "with the server's data directory named");
-  assert.equal(hostModel(env, "default", "claude-agent"), "anthropic/claude-sonnet-5-5", "a claude-agent run's route finds the Anthropic key");
-  assert.equal(hostModel({ ...runs }, "default", "claude-agent"), undefined, "the spread it replaces kept no key: the route found none");
-  assert.ok(!seenBy(env).includes("ANTHROPIC_API_KEY"), "a program spawned with it holds no key");
-  assert.ok(seenBy(env).includes(DATA_ENV), "and sees the data directory");
+test("a CLI run whose model key the runner holds only by name (as the launcher hands it) sends that key on its requests, while the program it starts sees no key", { timeout: 120_000 }, async (t) => {
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "cli-run-env-"));
+  const gw = await gateway(t);
+  // The CLI's process, through a wrapper that writes the names in its environment before it starts the stand-in.
+  const seen = join(dir, "spawned-env.json");
+  const wrapper = join(dir, "spawned.mjs");
+  writeFileSync(wrapper, `import { writeFileSync } from "node:fs";\nwriteFileSync(${JSON.stringify(seen)}, JSON.stringify(Object.keys(process.env)));\nawait import(${JSON.stringify(STAND_IN)});\n`);
+  // The run environment as runEnv gives it (runner/main.ts): the gateway's address an ordinary variable, its key a
+  // property readable by name that never enumerates.
+  const env = { AGENT_MODEL_BASE_URL: gw.origin, [OPENCODE_STANDIN_ENV]: JSON.stringify({ command: process.execPath, args: [wrapper] }), PATH: process.env.PATH };
+  Object.defineProperty(env, "AGENT_MODEL_API_KEY", { value: KEY, enumerable: false, writable: false, configurable: false });
+  assert.ok(!Object.keys(env).includes("AGENT_MODEL_API_KEY"), "the run environment never enumerates the key");
+
+  const server = await openSqliteStore({ dataDir: dir, role: "server" });
+  const store = await openSqliteStore({ dataDir: dir, role: "runner" });
+  let runner;
+  t.after(async () => {
+    await runner?.close().catch(() => {});
+    await store.close().catch(() => {});
+    await server.close().catch(() => {});
+    rmSync(dir, { recursive: true, force: true });
+  });
+  await server.agents.create({ id: "agent-1", name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer briefly.", harness: "opencode", tools: ["read"] } });
+  await server.runs.create({ id: RUN, agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { content: "Say hello." }, title: "t", place: { mode: "runner" }, harness: "opencode", model: { provider: "openai", modelId: "gpt-5" } } });
+  await server.flush?.();
+  const deps = { env, data: dir, journal: (claim) => store.journal(claim), store, sealKey: Buffer.alloc(32, 7), routeOf: async () => assert.fail("a CLI run takes no pi route"), computerForClaim: async () => ({ release: async () => {} }) };
+  runner = startRunner({
+    store, name: "runner-a", ...CONFORMANCE_TIMING, leaseMs: 30_000, stopMarginMs: 5_000,
+    createLoop: createDispatchLoop({ launchOf: (runId) => store.runs.launch(runId), resolve: (name, given) => (name === "opencode" ? createAdapterLoop((claim, run) => cliRunSpecFromLaunch(given, run, deps, claim)) : undefined) }),
+  });
+  const row = await until(async () => {
+    const now = await server.runs.get(RUN);
+    return ["ended", "failed", "stopped"].includes(now.state) && now.runner === null && now;
+  }, "the run's end");
+  assert.equal(row.state, "ended", `the run ended: ${JSON.stringify(row)}`);
+  assert.ok(gw.auth.length > 0, "the run asked its model");
+  assert.ok(gw.auth.every((header) => header === `Bearer ${KEY}`), `every request carried the key: ${JSON.stringify(gw.auth)}`);
+  const names = JSON.parse(readFileSync(seen, "utf8"));
+  assert.ok(names.length > 0 && !names.includes("AGENT_MODEL_API_KEY"), `the program the run started sees no key: ${JSON.stringify(names)}`);
 });

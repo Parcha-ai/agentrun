@@ -116,7 +116,7 @@ type CapPrice = { input: number; output: number; cacheRead: number; cacheWrite: 
  *  harness's model route finds the key its requests carry (model.ts, `env[row.field]`) while a program spawned with this
  *  environment carries none. A spread would drop every secret the launcher handed the runner, and the route would send no
  *  key. The data directory is a plain variable, which a spawn carries. */
-export function cliRunEnv(env: NodeJS.ProcessEnv | undefined, data: string, claimed: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
+function cliRunEnv(env: NodeJS.ProcessEnv | undefined, data: string, claimed: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   const out = withModelKeys(env ?? {}, claimed);
   Object.defineProperty(out, DATA_ENV, { value: data, enumerable: true, writable: true, configurable: true });
   return out;
