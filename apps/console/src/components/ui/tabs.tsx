@@ -6,8 +6,11 @@ export type TabItem<T extends string> = { id: T; label: React.ReactNode };
 
 /** A page's views, one shown at a time: a row of caps labels on the page's rule, the open one underlined in the brand
  *  colour. Left and Right move between tabs and open the one they land on, Home and End go to the ends, and Tab goes
- *  on into the panel. Render the panel yourself with `role="tabpanel"` and the open tab's label. */
-export function Tabs<T extends string>({ tabs, value, onChange, label, className }: { tabs: readonly TabItem<T>[]; value: T; onChange: (id: T) => void; label?: string; className?: string }) {
+ *  on into the panel. Render the panel yourself and spread `tabPanelProps(id, value)` on it: with the same `id` here,
+ *  each tab says which panel it controls and the panel is named by its tab. A `value` that is no tab (its view went
+ *  away) leaves the first tab reachable by Tab. */
+export function Tabs<T extends string>({ tabs, value, onChange, label, id, className }: { tabs: readonly TabItem<T>[]; value: T; onChange: (id: T) => void; label?: string; id?: string; className?: string }) {
+  const stop = tabs.some((t) => t.id === value) ? value : tabs[0]?.id;
   const list = useRef<HTMLDivElement>(null);
   const move = (e: React.KeyboardEvent) => {
     const at = tabs.findIndex((t) => t.id === value);
@@ -20,7 +23,7 @@ export function Tabs<T extends string>({ tabs, value, onChange, label, className
   return (
     <div ref={list} role="tablist" aria-label={label} onKeyDown={move} className={cn("flex border-b px-5 md:px-8", className)}>
       {tabs.map((t) => (
-        <button key={t.id} type="button" role="tab" aria-selected={value === t.id} tabIndex={value === t.id ? 0 : -1} onClick={() => onChange(t.id)}
+        <button key={t.id} type="button" role="tab" id={id && `${id}-tab-${t.id}`} aria-controls={id && `${id}-panel-${t.id}`} aria-selected={value === t.id} tabIndex={stop === t.id ? 0 : -1} onClick={() => onChange(t.id)}
           className={cn("caps -mb-px whitespace-nowrap border-b-2 px-3 py-3 text-small -outline-offset-2 max-sm:px-2.5 max-sm:py-2", value === t.id ? "border-primary text-primary-text" : "border-transparent text-muted-foreground hover:text-foreground")}>
           {t.label}
         </button>
@@ -28,3 +31,6 @@ export function Tabs<T extends string>({ tabs, value, onChange, label, className
     </div>
   );
 }
+
+/** What ties a panel to its tab: spread on the element that shows the open tab's view. `id` is the Tabs' own. */
+export const tabPanelProps = (id: string, value: string) => ({ role: "tabpanel", id: `${id}-panel-${value}`, "aria-labelledby": `${id}-tab-${value}` }) as const;

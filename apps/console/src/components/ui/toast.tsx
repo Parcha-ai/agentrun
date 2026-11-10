@@ -21,7 +21,10 @@ function ToastCard({ toast, done }: { toast: Shown; done: (id: number) => void }
   const onDone = React.useCallback(() => done(toast.id), [done, toast.id]);
   const tone = toast.tone ?? "neutral";
   const ms = toast.duration ?? (tone === "error" ? 0 : DEFAULT_MS);
-  const [held, setHeld] = React.useState(false);
+  // The pointer and the keyboard hold it separately: leaving with one never lets go for the other.
+  const [hovered, setHovered] = React.useState(false);
+  const [focused, setFocused] = React.useState(false);
+  const held = hovered || focused;
   React.useEffect(() => {
     if (!ms || held) return;
     const timer = setTimeout(onDone, ms);
@@ -29,7 +32,7 @@ function ToastCard({ toast, done }: { toast: Shown; done: (id: number) => void }
   }, [ms, held, onDone]);
   const [Icon, colour] = ICON[tone];
   return (
-    <div role={tone === "error" ? "alert" : "status"} onMouseEnter={() => setHeld(true)} onMouseLeave={() => setHeld(false)} onFocus={() => setHeld(true)} onBlur={() => setHeld(false)}
+    <div role={tone === "error" ? "alert" : "status"} onMouseEnter={() => setHovered(true)} onMouseLeave={() => setHovered(false)} onFocus={() => setFocused(true)} onBlur={() => setFocused(false)}
       className="pointer-events-auto flex w-full items-start gap-3 border border-border-strong bg-card p-3 text-body text-card-foreground shadow-float motion-safe:animate-toast-in">
       <Icon className={cn("mt-0.5 size-4 shrink-0", colour)} aria-hidden />
       <div className="min-w-0 flex-1">

@@ -166,7 +166,7 @@ Import from `@/components/ui`.
 | One choice of a few, all in view | `Segmented`; `Radio`s in a `<Field group>` when each needs a sentence | Buttons that look like tabs. |
 | Any of several | `Checkbox` | |
 | On or off, taking effect at once | `Switch` | A checkbox. |
-| A page's views | `Tabs` | |
+| A page's views | `Tabs`, with `tabPanelProps(id, value)` on the panel so each names the other | |
 | A place in the navigation | `NavItem` | |
 | A message that stays until its cause is gone | `Banner`; `bar` for the strip across the top of the shell | A coloured paragraph. |
 | A word that what you just did worked | `useToast()` | A banner that removes itself. |

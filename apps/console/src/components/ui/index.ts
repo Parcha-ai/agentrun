@@ -11,6 +11,6 @@ export { Picker, type PickerOption } from "./picker";
 export { Segmented, type SegmentedOption } from "./segmented";
 export { Spinner } from "./spinner";
 export { Switch } from "./switch";
-export { type TabItem, Tabs } from "./tabs";
+export { type TabItem, tabPanelProps, Tabs } from "./tabs";
 export { Tip } from "./tip";
 export { ToastProvider, type ToastInput, type ToastTone, useToast } from "./toast";
