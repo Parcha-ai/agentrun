@@ -52,7 +52,8 @@ const until = async (done, what, ms = 60_000) => {
 };
 
 /** run-1 on a new store (the browser's keys and `keys` saved sealed, an agent granted `tools`), run by a runner on the
- *  adapter spec with a scripted model of `price` a request. `rest(state)`: when the test has it rest. */
+ *  adapter spec with a scripted model of `price` a request (a figure, or one of the requests sent so far).
+ *  `rest(state)`: when the test has it rest. */
 async function browserRun(t, { script, price = 0, launch = LAUNCH, tools = ["browser"], keys = {} }) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-browser-money-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
@@ -71,11 +72,12 @@ async function browserRun(t, { script, price = 0, launch = LAUNCH, tools = ["bro
   const requests = [];
   const route = {
     model: "faux-1", provider: { api: "anthropic-messages", origin: "https://route.invalid", credential: () => "not-a-secret" },
-    fetch: scriptedOrigin(script, requests), price: () => price, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, outputCeiling: 100,
+    fetch: scriptedOrigin(script, requests), price: () => (typeof price === "function" ? price(requests.length) : price), cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, outputCeiling: 100,
   };
   const deps = { env: { [FAUX_ENV]: "faux", [FAUX_BROWSER_ENV]: FAUX_BROWSER }, data: dir, journal: (claim) => store.journal(claim), store, sealKey: SEAL_KEY, routeOf: async () => route, computerForClaim: async () => ({ release: async () => {} }) };
-  // The run's cap after a raise is the server's to keep (E2), as adapter-pi-cap-raise.test.mjs keeps it: the cap rule
-  // reads the raised figure, here a closure `raise` moves.
+  // Waits on E2 feeding the raised cap: the run's cap after a raise is the server's to keep, and the pi spec's rule reads
+  // the launch's figure alone (adapter-run-spec.ts runCap). Kept here as adapter-pi-cap-raise.test.mjs keeps it: the cap
+  // rule reads the raised figure, a closure `raise` moves.
   let raised;
   const capped = (spec) => (spec.runCap ? { ...spec, runCap: { ...spec.runCap, capUsd: () => raised ?? spec.runCap.capUsd() } } : spec);
   runner = startRunner({
@@ -93,8 +95,9 @@ async function browserRun(t, { script, price = 0, launch = LAUNCH, tools = ["bro
     }, `the run rests ${states.join("|")}`);
     const records = await journalRecords(server.journal({ runId: RUN, runner: "reader", epoch: row.epoch, until: 0, from: row.state }), ctx);
     const view = await viewOverStore(server, RUN, { origin: "", serverSecrets: () => [] });
-    const usage = (await runTimeline(server, RUN, ctx, { settled: true })).filter((one) => one.kind === "usage").at(-1);
-    return { row, records, viewUsd: view?.cost?.usd, usageUsd: usage?.usage?.usd };
+    const rows = await runTimeline(server, RUN, ctx, { settled: true });
+    const usage = rows.filter((one) => one.kind === "usage").at(-1);
+    return { row, records, rows, viewUsd: view?.cost?.usd, usageUsd: usage?.usage?.usd };
   };
   return { server, store, requests, rest, raise };
 }
@@ -123,6 +126,32 @@ for (const [label, price] of [["a free model", 0], ["a model that costs", 0.001]
     assert.equal(eight(r.usageUsd ?? Number.NaN), once, `the timeline's usage row is the same: ${r.usageUsd}`);
   });
 }
+
+test("a session's release charged after the run's spend passed its cap is still counted, once: owed at the provider, its step on the ledger is never refused", { timeout: 120_000 }, async (t) => {
+  // $0.001 for the first request, then $0.05: the run's spend passes its $0.03 cap at its last answer, and the session's
+  // release, a charge under no call, comes after.
+  const run = await browserRun(t, { launch: { ...LAUNCH, max_cost_usd: 0.03 }, price: (sent) => (sent >= 2 ? 0.05 : 0.001), script: [{ call: "snapshot" }, { say: "done" }] });
+  const r = await run.rest(["ended", "failed", "stopped", "parked"]);
+  const spent = spentOf(r.records);
+  const release = r.records.entries.filter((e) => e.kind === "agentrun.browser_charged" && e.data?.final === true);
+  assert.equal(release.length, 1, `the session's release was charged: ${JSON.stringify(spent)}`);
+  assert.ok(spent.model > 0.03, `the run's spend passed its cap before the release: ${JSON.stringify(spent)}`);
+  const once = eight(spent.model + spent.browser);
+  assert.equal(eight(r.row.costUsd ?? Number.NaN), once, `the run row's cost holds the release too, once: ${JSON.stringify({ costUsd: r.row.costUsd, ...spent })}`);
+  assert.equal(eight(r.viewUsd ?? Number.NaN), once, `GET /runs/:id's cost is the same: ${r.viewUsd}`);
+  assert.equal(eight(r.usageUsd ?? Number.NaN), once, `the timeline's usage row is the same: ${r.usageUsd}`);
+});
+
+test("the timeline folds the browser's ledger charges into its calls' rows, as main's: no row of their own, no $0 hold rows", { timeout: 120_000 }, async (t) => {
+  const run = await browserRun(t, { script: [{ call: "snapshot" }, { call: "browser_read" }, { say: "done" }] });
+  const r = await run.rest(["ended", "failed", "stopped"]);
+  const spent = spentOf(r.records);
+  const calls = r.rows.filter((row) => row.kind === "tool_use" && ["snapshot", "browser_read"].includes(row.tool_name));
+  assert.equal(calls.length, 2, `two browser calls: ${JSON.stringify(r.rows.map((row) => [row.kind, row.tool_name]))}`);
+  assert.equal(eight(sum(calls.map((row) => row.usage?.usd ?? 0))), eight(spent.browser), `their rows carry the browser's charges: ${JSON.stringify(calls.map((row) => row.usage))}`);
+  const others = r.rows.filter((row) => row.kind !== "usage" && row.kind !== "tool_use" && row.usage);
+  assert.deepEqual(others.map((row) => [row.kind, row.tool_name, row.summary]), [], "no charge row of its own, no $0 hold row");
+});
 
 test("a browser call the cap refuses for room parks the run: no further model request leaves; a raise resumes it, and the call runs and is booked", { timeout: 120_000 }, async (t) => {
   // A cap the browser's hold ($0.018 at browserbase's $0.12 an hour) does not fit; the model is free.
