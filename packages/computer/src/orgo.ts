@@ -16,13 +16,30 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { childCommands, type DaemonExpected, daemonDrift } from "./child.js";
 import { DaemonClient } from "./client.js";
-import { ORGO, ORGO_BASE_IMAGE } from "./descriptors/orgo.js";
+import { ORGO, ORGO_BASE_IMAGE, ORGO_MACOS_IMAGE, ORGO_WINDOWS_IMAGE } from "./descriptors/orgo.js";
 import { DESKTOP_GROUPS } from "./desktop.js";
-import { COMPUTER_LABEL, DAEMON_IN_COMPUTER, helloDrift, type ProbeReport, probeNetworkDrift, probeNotes, probeReportOf, SOCKET_DIR, WORK } from "./drift.js";
+import { DAEMON_IN_COMPUTER, helloDrift, type ProbeReport, probeNetworkDrift, probeNotes, probeReportOf, SOCKET_DIR, WORK } from "./drift.js";
 import { EPOCH_LABEL, RUN_LABEL } from "./labels.js";
 import type { KindCapabilities } from "./kinds.js";
 import { checkMount, type MountKind } from "./mount.js";
 import { type OrgoChannel, type OrgoRest, type OrgoStart, type OrgoWebSocketFactory, ORGO_API_URL, orgoRest, orgoTerminalChannel, START_LOG } from "./orgo-channel.js";
+import { OrgoDesktopProvider, type OrgoDesktopOptions } from "./orgo-desktop.js";
+import {
+	COMPUTER_ID,
+	filterProblem,
+	type LabelsFile,
+	labelProblem,
+	labelsOf,
+	NAME_MAX,
+	nameParts,
+	type OrgoComputer,
+	orgoName,
+	refProblem,
+	runHash,
+	sameComputer,
+	show,
+	withDeadline,
+} from "./orgo-names.js";
 import type { Group } from "./protocol.js";
 import {
 	type AttachedComputer,
@@ -52,8 +69,14 @@ export const MOUNT: readonly MountKind[] = ORGO.mounts;
 /** The groups every Orgo computer offers: a Linux shell, files and processes, and the desktop's screen and input. */
 const GROUPS: Group[] = ["exec", "files", "processes", ...DESKTOP_GROUPS];
 
-/** What a built provider declares, known without building one: one configuration, a Linux desktop (its descriptor's). */
+/**
+ * What a built provider declares, known without building one, per configuration (its descriptor's): the Linux desktop
+ * with computerd (the default), then the Windows and the macOS desktops Orgo's own API answers (options.os).
+ */
 export const CAPABILITIES: readonly KindCapabilities[] = ORGO.capabilities;
+
+export { ORGO_MACOS_IMAGE, ORGO_WINDOWS_IMAGE, OrgoDesktopProvider, orgoName };
+export type { OrgoDesktopOptions };
 
 /** The conformance CLI's module for Orgo: its live switch, the run's 1 h cap and the drifted twin. */
 export const conformance = () => import("./conformance/orgo.js");
@@ -117,15 +140,11 @@ const RAM_GB = [4, 8, 16, 32] as const;
 const CPU_FOR_RAM: Record<number, number> = { 4: 1, 8: 2, 16: 4, 32: 6 };
 /** The vCPUs a computer may ask for on its own (8 needs Orgo to set the account up). */
 const CPUS = [0.5, 1, 2, 4, 6];
-const NAME_MAX = 80;
-/** A name of this provider's making: computer-<12 hex>, the run label's hash, the epoch label, the deadline (base 36 s). */
-const NAME = /^computer-([0-9a-f]{12})(?:-r([a-z2-7]{16}))?(?:-e(0|[1-9][0-9]{0,15}))?(?:-d([0-9a-z]{1,11}))?$/;
 /** An Orgo template: namespace/name@version. */
 const TEMPLATE = /^[a-z0-9][a-z0-9_.-]{0,63}\/[a-z0-9][a-z0-9_.-]{0,63}@[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$/;
 /** Orgo's base desktop, no template: the image a spec names for a plain Linux desktop, and its descriptor's default. */
 export { ORGO_BASE_IMAGE };
 const BASE = ORGO_BASE_IMAGE;
-const COMPUTER_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 const WORKSPACE_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 const USER = /^(\d+):(\d+)$/;
 const DISPLAY = /^:(\d{1,5})(?:\.\d{1,5})?$/;
@@ -202,29 +221,6 @@ export const LOCKDOWN_SCRIPT = [
 	"exit $failed",
 ].join("\n");
 
-/** What the labels file holds. */
-interface LabelsFile {
-	name: string;
-	labels: Record<string, string>;
-	deadline: string;
-	maxDeadline: string;
-	image: string;
-	cpus?: number;
-	memoryMb?: number;
-}
-
-/** What Orgo reports of a computer, as far as the provider reads it. */
-interface OrgoComputer {
-	id: string;
-	name: string;
-	status: string;
-	workspace_id?: string;
-	project_id?: string;
-	ends_at?: string | null;
-	created_at?: string;
-}
-
-const show = (value: unknown) => (value === undefined ? "nothing" : JSON.stringify(value));
 const seconds = (ms: number) => `${ms / 1000} s`;
 const pause = (ms: number, signal?: AbortSignal) =>
 	new Promise<void>((done) => {
@@ -237,95 +233,6 @@ const pause = (ms: number, signal?: AbortSignal) =>
 		if (signal?.aborted) finish();
 		else signal?.addEventListener("abort", finish, { once: true });
 	});
-
-/** The run label's hash, as a name carries it: base32 of its sha256, lower case, 16 letters. */
-function runHash(run: string): string {
-	const alphabet = "abcdefghijklmnopqrstuvwxyz234567";
-	const bytes = createHash("sha256").update(run, "utf8").digest();
-	let bits = 0;
-	let value = 0;
-	let out = "";
-	for (const byte of bytes) {
-		value = (value << 8) | byte;
-		bits += 8;
-		while (bits >= 5 && out.length < 16) {
-			out += alphabet[(value >>> (bits - 5)) & 31];
-			bits -= 5;
-		}
-		if (out.length >= 16) break;
-	}
-	return out;
-}
-
-/**
- * The name of a computer with these labels: computer-<hex>, then -r<the run label's hash> and -e<the epoch label> when
- * the labels carry a run and an epoch that is one, then -d<the deadline> when given: whole seconds since the epoch,
- * rounded up (never before init's own), in base 36, the janitor's deadline. Only those: a name is no place for a label's
- * value. Everything but the deadline is the name's stable part, which a rename on extend keeps.
- */
-export function orgoName(labels: Record<string, string>, hex: string, deadline?: Date): string {
-	const run = labels[RUN_LABEL];
-	const epoch = labels[EPOCH_LABEL];
-	const stable = `computer-${hex}${typeof run === "string" && run !== "" ? `-r${runHash(run)}` : ""}${typeof epoch === "string" && /^(?:0|[1-9][0-9]{0,15})$/.test(epoch) ? `-e${epoch}` : ""}`;
-	return deadline === undefined ? stable : withDeadline(stable, deadline);
-}
-
-/** A name's stable part with this deadline. */
-function withDeadline(stable: string, deadline: Date): string {
-	return `${stable}-d${Math.ceil(deadline.getTime() / 1000).toString(36)}`;
-}
-
-/** What a name of this provider's making says, or undefined for any other name: its stable part, and its deadline. */
-function nameParts(name: unknown): { hex: string; run?: string; epoch?: string; stable: string; deadline?: Date } | undefined {
-	const match = typeof name === "string" ? NAME.exec(name) : null;
-	if (match === null) return undefined;
-	const seconds = match[4] === undefined ? Number.NaN : Number.parseInt(match[4], 36);
-	return {
-		hex: match[1] as string,
-		...(match[2] ? { run: match[2] } : {}),
-		...(match[3] !== undefined ? { epoch: match[3] } : {}),
-		stable: (name as string).replace(/-d[0-9a-z]+$/, ""),
-		...(Number.isSafeInteger(seconds) ? { deadline: new Date(seconds * 1000) } : {}),
-	};
-}
-
-/** Whether two names are one computer's: their stable parts are the same (the deadline moves with extend). */
-const sameComputer = (a: string, b: string) => nameParts(a)?.stable !== undefined && nameParts(a)?.stable === nameParts(b)?.stable;
-
-function labelProblem(key: string, value: unknown): string | undefined {
-	if (typeof value !== "string") return `the label ${key} must be a string`;
-	if (key === "" || key.includes("\0") || value.includes("\0")) return `the label ${JSON.stringify(key)} must be a non-empty name, and neither holds a NUL byte`;
-	if (key === COMPUTER_LABEL || key.startsWith(`${COMPUTER_LABEL}.`)) return `the label ${key} is in the provider's own namespace (${COMPUTER_LABEL})`;
-	return undefined;
-}
-
-function filterProblem(labels: unknown): string | undefined {
-	if (typeof labels !== "object" || labels === null || Array.isArray(labels)) return "labels must map names to strings";
-	for (const [key, value] of Object.entries(labels)) {
-		if (typeof value !== "string" || key === "" || key.includes("\0") || value.includes("\0")) return `the label ${JSON.stringify(key)} must be a non-empty name and a string, with no NUL byte`;
-	}
-	return undefined;
-}
-
-/** Why ref is not an Orgo computer's ref, or undefined. */
-function refProblem(ref: ComputerRef): string | undefined {
-	if (typeof ref?.name !== "string" || nameParts(ref.name) === undefined) return `${String(ref?.name)} is not the name of an Orgo computer of this provider (computer-<12 hex digits>...)`;
-	if (typeof ref.id !== "string" || !COMPUTER_ID.test(ref.id)) return `${String(ref.id)} is not an Orgo computer id`;
-	return undefined;
-}
-
-/** The labels file as written, or why it is not. */
-function labelsOf(text: string): LabelsFile | string {
-	try {
-		const value = JSON.parse(text) as Partial<LabelsFile> | null;
-		if (typeof value?.name === "string" && typeof value.labels === "object" && value.labels !== null && typeof value.deadline === "string" && typeof value.maxDeadline === "string" && typeof value.image === "string") {
-			return value as LabelsFile;
-		}
-	} catch {
-		// Said below.
-	}
-	return `the labels file ${LABELS_FILE} is not the one create writes`;
-}
 
 /**
  * Orgo desktops: see the module's header. A spec's image is "linux" (Orgo's base desktop) or an Orgo template
@@ -594,7 +501,7 @@ export class OrgoProvider implements ComputerProvider {
 		const read = await this.#channel.run(ref.id, ["sh", "-c", LABELS_READ_SCRIPT, "sh", LABELS_FILE], { timeoutMs: this.#timeouts.execMs, ...(signal ? { signal } : {}) });
 		if (!read.ok) return read;
 		if (read.value.exitCode !== 0) return fail("refused", `${ref.name} has no labels file ${LABELS_FILE} to read (exit ${read.value.exitCode})`);
-		const file = labelsOf(read.value.output);
+		const file = labelsOf(read.value.output, LABELS_FILE);
 		return typeof file === "string" ? fail("refused", `${ref.name}: ${file}`) : ok(file);
 	}
 
@@ -680,7 +587,14 @@ export class OrgoProvider implements ComputerProvider {
 	/** Whether Orgo's record is a computer of this provider: its name's shape, in this workspace. */
 	#ours(record: OrgoComputer, name?: string): boolean {
 		// A ref's name matches by its stable part: extend renames the computer with its new deadline.
-		return nameParts(record.name) !== undefined && (record.workspace_id ?? record.project_id) === this.#workspaceId && (name === undefined || sameComputer(record.name, name)) && record.status !== "deleted";
+		// A Windows or macOS computer in the workspace is the desktop provider's (orgo-desktop.ts), where Orgo says its os.
+		return (
+			nameParts(record.name) !== undefined &&
+			(record.workspace_id ?? record.project_id) === this.#workspaceId &&
+			(name === undefined || sameComputer(record.name, name)) &&
+			record.status !== "deleted" &&
+			(record.os === undefined || record.os === "linux")
+		);
 	}
 
 	/** This provider's computer for ref, as Orgo reads it, or why not. */
@@ -995,8 +909,15 @@ export class OrgoProvider implements ComputerProvider {
  * An OrgoProvider from its options alone, its key included: it reads no environment. Serve passes apiKey from its
  * ORGO_API_KEY setting and its workspace; the conformance module reads COMPUTER_ORGO_* (settingsFromEnv).
  */
-export function create(options: OrgoProviderOptions): OrgoProvider {
-	return new OrgoProvider(options);
+export function create(options: OrgoProviderOptions & { os?: "linux" }): OrgoProvider;
+export function create(options: OrgoDesktopOptions & { os: "windows" | "macos" }): OrgoDesktopProvider;
+export function create(options: (OrgoProviderOptions & { os?: "linux" }) | (OrgoDesktopOptions & { os: "windows" | "macos" })): OrgoProvider | OrgoDesktopProvider;
+export function create(options: (OrgoProviderOptions & { os?: "linux" }) | (OrgoDesktopOptions & { os: "windows" | "macos" })): OrgoProvider | OrgoDesktopProvider {
+	const os = (options as { os?: unknown } | undefined)?.os;
+	if (os === "windows" || os === "macos") return new OrgoDesktopProvider(options as OrgoDesktopOptions);
+	if (os !== undefined && os !== "linux") throw new Error(`os is "linux" (the default), "windows" or "macos", not ${JSON.stringify(os)}`);
+	const { os: _os, ...linux } = options as OrgoProviderOptions & { os?: "linux" };
+	return new OrgoProvider(linux);
 }
 
 export type { OrgoChannel, OrgoStart, OrgoStream, OrgoWebSocketFactory } from "./orgo-channel.js";

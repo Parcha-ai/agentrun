@@ -64,9 +64,19 @@ function providerFiles() {
 	return found;
 }
 
+/**
+ * The provider files by id: a provider's module, and the files of its other configurations, which its module imports
+ * (Orgo's Windows and macOS desktops, orgo-desktop.ts, beside its Linux one): one module per id, the one its descriptor loads.
+ */
+function providerModules() {
+	const byId = new Map();
+	for (const one of providerFiles()) byId.set(one.id, [...(byId.get(one.id) ?? []), one.file]);
+	return [...byId].map(([id, files]) => ({ id, files }));
+}
+
 test("the registry is derived from the descriptors: one per provider file, each a lazy import of that file", () => {
 	// The provider files decide the ids, not a list here: a new provider is its file and its descriptor, nothing else.
-	assert.deepEqual([...providerIds].sort(), providerFiles().map((f) => f.id).sort(), "one registry id per provider file, under the id it reports");
+	assert.deepEqual([...providerIds].sort(), providerModules().map((f) => f.id).sort(), "one registry id per provider, under the id it reports");
 	assert.deepEqual(Object.keys(providers), providerIds);
 	assert.deepEqual(providerIds, index.DESCRIPTORS.map((descriptor) => descriptor.id), "the registry's ids are the descriptors', in their order");
 	for (const descriptor of index.DESCRIPTORS) assert.equal(providers[descriptor.id], descriptor.load, `${descriptor.id}'s line is its descriptor's load()`);
@@ -83,15 +93,18 @@ test("loading the registry, the kind registry or a descriptor loads no provider 
 	}
 });
 
-test("every provider file under src/ has its descriptor, under the id its provider reports, whose load() imports it", () => {
+test("every provider file under src/ has its descriptor, under the id its provider reports, whose load() imports it or the module that imports it", () => {
 	const files = providerFiles();
 	assert.ok(files.length >= 3, `found ${files.map((f) => f.file).join(", ")}`);
 	for (const { file, id } of files) {
 		assert.ok(id, `${file}.ts declares its provider's id as readonly id = "..."`);
 		assert.ok(providerIds.includes(id), `src/${file}.ts implements ComputerProvider: it needs a descriptor in src/descriptors/ with id ${id}`);
-		assert.equal(loadedFile(id), file, `descriptors/${id}.js's load() imports ./${file}.js`);
+		const loaded = loadedFile(id);
+		// Another configuration's file is the provider module's to import: the descriptor still loads one module.
+		if (loaded !== file) assert.ok(staticImports(`../dist/${loaded}.js`).includes(`./${file}.js`), `descriptors/${id}.js's load() imports ./${loaded}.js, which must import ./${file}.js, its other configuration`);
 	}
-	assert.equal(index.DESCRIPTORS.length, files.length, "and no descriptor names a file that is not a provider");
+	for (const { id, files: of } of providerModules()) assert.ok(of.includes(loadedFile(id)), `descriptors/${id}.js's load() imports one of ${of.join(", ")}`);
+	assert.equal(index.DESCRIPTORS.length, providerModules().length, "and no descriptor names a file that is not a provider");
 });
 
 /**
