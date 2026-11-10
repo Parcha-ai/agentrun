@@ -298,7 +298,8 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
   // them in the claim's registry and offers each tool once:
   // - ask_person is pi's own tool (tools.ts): a run granted it carries its native extension, so pi runs it as its own tool
   //   task under the session's gate and keeps its control.terminate — the turn ends on the person's question and the loop
-  //   parks the run (endedOnTurnEndingTool). It stays out of the session's host tools and REPLAY, so a CLI harness still
+  //   parks the run (endedOnTurnEndingTool), or, with the browser's session open, waits for the answer in its claim
+  //   (adapter-loop waitInClaim, the browser's personWait below). It stays out of the session's host tools and REPLAY, so a CLI harness still
   //   refuses it (runnable.ts). pi only.
   // - the browser's durable extension, when the run gets one (bindNonHandTools, below, before the session opens).
   const native: Extension[] = granted.includes(ASK_TOOL) ? [defineExtension({ name: "ask_person", tools: [askPerson] })] : [];
@@ -399,6 +400,7 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
     onConversation: life.register.onConversation,
     beforeResume: life.register.beforeResume,
     beforeRelease: life.register.beforeRelease,
+    personWait: life.register.personWait,
     handoverInJournal: true,
     store: deps.store,
     claim,

@@ -237,8 +237,15 @@ const waitingEntry = (ask: PendingAsk): Record<string, string> => ({
   reason: ask.instruction,
 });
 
-/** A take-over's share of its session's person time (an ask's is `ask:<id>`). */
+/** A take-over's share of its session's person time (an ask's is `ask:<id>`; a wait on an ask_person answer's,
+ *  `wait:<call id>`). */
 const TAKE_USER = "take";
+/** What the person's time is held for while the run waits in its claim on their answer to its question, in the cap's words. */
+const WAIT_WHAT = "keeping the browser open while you answer";
+/** Why such a wait ends when a session it kept open is let go (released, idle or lost). */
+const WAIT_SESSION_GONE = "the browser session it kept open for the person was let go";
+/** Why such a wait ends at its bound: the one a browser hand-over's ask waits (holdMs, PERSON_HOLD_MS by default). */
+const waitExpired = (holdMs: number) => `the person did not answer within ${holdMs >= 60_000 ? `${Math.round(holdMs / 60_000)} minutes` : `${Math.round(holdMs / 1000)} seconds`}, the bound a browser hand-over waits`;
 /** A root entry of the run's: a timeline row's source. A phase's carries `at` (ms), when what it says happened, so its row
  *  shows that time, not the time of the log before it (a model request's start, a call's result). */
 type Note = (kind: string, data: Record<string, string | number>) => Promise<void>;
@@ -338,6 +345,8 @@ export function personHands(options: {
   type Ledger = { holds: Array<{ drop(): void }>; users: Set<string>; ready: Promise<{ refused: string } | undefined>; timer?: unknown; refused?: string; since: number; until: number; turns: Promise<unknown> };
   const now = options.now ?? Date.now;
   const ledgers = new Map<string, Ledger>();
+  /** The runs' waits in their claim on the person's answer (wait), by user: the sessions each keeps open, and its lapse. */
+  const waits = new Map<string, { tags: ReadonlySet<string>; lapse(words: string): void }>();
   /** `work` on `ledger` once every extension before it is done. */
   const inTurn = <T>(ledger: Ledger, work: () => Promise<T>): Promise<T> => {
     const run = ledger.turns.then(work, work);
@@ -446,6 +455,8 @@ export function personHands(options: {
       ledger.refused = hold.refused;
       if (ledger.users.has(TAKE_USER)) options.gates(tag).give?.("cap", hold.refused);
       for (const user of [...ledger.users]) if (user.startsWith("ask:")) capAsk(user.slice(4), hold.refused);
+      // A wait on the person's answer ends too: the run parks on its question, its browser let go.
+      for (const user of [...ledger.users]) if (user.startsWith("wait:")) waits.get(user)?.lapse(hold.refused);
     }), holdMs);
   };
   /** `user` is done with session `tag`: the last one out drops what was held. */
@@ -672,9 +683,54 @@ export function personHands(options: {
         return answered === "expired" && words !== undefined ? { outcome: answered, reason: words } : answered;
       },
     },
+    /** The run waits in its claim on the person's answer to its question (ask_person call `callId`, runner/adapter-loop.ts
+     *  waitInClaim) with its browser sessions `tags` kept open: the person's time on each is held under the cap as a
+     *  hand-over's is (acquire: one hold per session, shared with a take-over or an ask on it, this wait's share
+     *  `wait:<callId>`, held through the wait's bound; the time used carried to the session's next charge when the last
+     *  share goes). Bounded as a hand-over's ask is: holdMs from now (PERSON_HOLD_MS), past which it lapses, the run parks
+     *  and its release lets the browser go, booking its time to then. `pauses: false`: a refusal pauses nothing, the run
+     *  parks on its question as it would with no browser. Refused in the cap's words when there is no room. `lapsed`
+     *  settles, in words, at the bound, when the cap refuses a re-hold (a take-over's sharing the session), or when a
+     *  session it keeps is let go (sessionEnded); drop() lets the shares go, once. */
+    async wait(callId: string, tags: readonly string[]): Promise<{ refused: string } | { lapsed: Promise<string>; drop(): void }> {
+      const user = `wait:${callId}`;
+      const held: string[] = [];
+      let bound: unknown;
+      const letGo = () => {
+        if (bound !== undefined) timers.clear(bound);
+        bound = undefined;
+        for (const tag of held.splice(0)) release(tag, user);
+      };
+      const expiresAt = now() + holdMs;
+      for (const tag of new Set(tags)) {
+        const refused = await acquire(tag, user, WAIT_WHAT, false, expiresAt);
+        if (refused) {
+          letGo();
+          return refused;
+        }
+        held.push(tag);
+      }
+      let lapse: (words: string) => void = () => {};
+      const lapsed = new Promise<string>((resolve) => (lapse = resolve));
+      const entry = { tags: new Set(held), lapse };
+      waits.set(user, entry);
+      bound = timers.set(() => lapse(waitExpired(holdMs)), Math.max(0, expiresAt - now()));
+      return {
+        lapsed,
+        drop: () => {
+          if (waits.get(user) === entry) waits.delete(user);
+          letGo();
+        },
+      };
+    },
+    /** Session `tag` was let go (its release, whatever made it): a wait that kept it open for the person lapses. */
+    sessionEnded(tag: string): void {
+      for (const wait of [...waits.values()]) if (wait.tags.has(tag)) wait.lapse(WAIT_SESSION_GONE);
+    },
     /** The run's process lets go: its holds dropped, its poll stopped. */
     close(): void {
       closed = true;
+      waits.clear();
       if (poll) clearInterval(poll);
       poll = undefined;
       for (const ask of open.values()) ask.drop();

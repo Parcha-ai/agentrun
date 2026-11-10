@@ -137,21 +137,39 @@ export interface HostLifecycle {
   readonly onConversation: readonly ((tx: Tx, conversationId: number) => void | Promise<void>)[];
   readonly beforeResume: readonly ((harness: Harness) => void | Promise<void>)[];
   readonly beforeRelease: readonly ((harness: Harness) => void | Promise<void>)[];
+  /** Asked when the run's turn ends on its question to the person (ask_person), before it parks: a tool host holding
+   *  something the person may still use while they answer (the browser's open session, its live view, its page) holds the
+   *  person's time for it under the run's cap and answers a PersonWait, and the run waits in its claim (the browser's
+   *  hand-over waits the same way). Undefined from every host (nothing open, or no room under the cap): the run parks. */
+  readonly personWait?: readonly ((harness: Harness, callId: string) => Promise<PersonWait | undefined>)[];
 }
 
-/** A HostLifecycle and the three ToolHost members that fill it: what a spec's ToolHost takes, and hands the loop. */
+/** How a session's turn ended (AdapterSession.turnEnd). */
+type TurnEnd = Awaited<ReturnType<AdapterSession["turnEnd"]>>;
+
+/** A tool host's hold while the run waits in its claim on the person's answer (HostLifecycle.personWait): the person's
+ *  time it holds goes with drop(), once the answer comes or the run ends or parks; `lapsed` settles, in words, when the
+ *  hold can no longer stand (the cap refused more of the person's time, or what it kept is gone), and the run parks. */
+export interface PersonWait {
+  readonly lapsed: Promise<string>;
+  drop(): void;
+}
+
+/** A HostLifecycle and the ToolHost members that fill it: what a spec's ToolHost takes, and hands the loop. */
 export function hostLifecycle(): HostLifecycle & {
-  register: { onConversation(write: HostLifecycle["onConversation"][number]): void; beforeResume(settle: HostLifecycle["beforeResume"][number]): void; beforeRelease(stop: HostLifecycle["beforeRelease"][number]): void };
+  register: { onConversation(write: HostLifecycle["onConversation"][number]): void; beforeResume(settle: HostLifecycle["beforeResume"][number]): void; beforeRelease(stop: HostLifecycle["beforeRelease"][number]): void; personWait(hold: NonNullable<HostLifecycle["personWait"]>[number]): void };
 } {
   const onConversation: HostLifecycle["onConversation"][number][] = [];
   const beforeResume: HostLifecycle["beforeResume"][number][] = [];
   const beforeRelease: HostLifecycle["beforeRelease"][number][] = [];
+  const personWait: NonNullable<HostLifecycle["personWait"]>[number][] = [];
   return {
-    onConversation, beforeResume, beforeRelease,
+    onConversation, beforeResume, beforeRelease, personWait,
     register: {
       onConversation: (write) => void onConversation.push(write),
       beforeResume: (settle) => void beforeResume.push(settle),
       beforeRelease: (stop) => void beforeRelease.push(stop),
+      personWait: (hold) => void personWait.push(hold),
     },
   };
 }
@@ -440,6 +458,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
    *  claim's release), so what it writes (a browser release's charge, its paid booking on run.ledger.paid) lands in its
    *  own commits under the live claim, just before. A hook that throws is logged; the run's end or park stands. */
   const releaseHost = async (on: Harness | undefined): Promise<void> => {
+    endWait();
     if (hostReleased || !on) return;
     hostReleased = true;
     for (const stop of specNow?.lifecycle?.beforeRelease ?? []) {
@@ -453,8 +472,29 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
   let reflecting = false;
   /** A run a person's follow-up reopened (the store's runs.reopen: its journal holds the end of its last turn, its session
    *  opens idle): the follow-up's steer is this claim's turn, sent by steer() as a tracked turn (`sent`), and the claim waits
-   *  for it, so the run's next end comes after that turn's answer. Undefined once the claim has read its delivered rows. */
-  let reopen: { sent?: Promise<void> } | undefined;
+   *  for it, so the run's next end comes after that turn's answer. Undefined once the claim has read its delivered rows.
+   *  Also set while the run waits in its claim on the person's answer to its question (waitInClaim): their message is sent
+   *  the same way, as the claim's next turn, and `placed` wakes the wait once it is sent. */
+  let reopen: { sent?: Promise<void>; placed?: () => void } | undefined;
+  /** The tool hosts' holds while the run waits in its claim on the person's answer (HostLifecycle.personWait): dropped
+   *  once the wait is over, whichever way it ends. */
+  let waitHolds: PersonWait[] = [];
+  /** The wait's own `reopen`, while it is set. */
+  let waitTurn: { sent?: Promise<void>; placed?: () => void } | undefined;
+  /** The wait in the claim is over (an answer placed, a lapse, the run's end, park, restart or loss): its holds go. `of`:
+   *  only while it is that wait's (a wait that settles late never ends a later one). */
+  const endWait = (of?: object): void => {
+    if (of !== undefined && of !== waitTurn) return;
+    if (reopen === waitTurn) reopen = undefined;
+    waitTurn = undefined;
+    for (const hold of waitHolds.splice(0)) {
+      try {
+        hold.drop();
+      } catch (error) {
+        console.warn(`[runner] a tool host's person-wait hold failed to drop: ${(error as Error)?.message ?? String(error)}`);
+      }
+    }
+  };
   /** The claim's CLI record (record: "loop"), for the end-of-run turn's answer; undefined for an adapter keeping its own. */
   let cliRecord: CliRecord | undefined;
   /** The session's paid requests admitted and not yet booked (its model port's beforeRequest, then its afterRequest), and
@@ -598,6 +638,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         await cliRecord?.person(text);
         await theSession.send(text, { id: requestId });
       })();
+      reopen.placed?.();
       try {
         await reopen.sent;
       } catch (error) {
@@ -643,7 +684,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     deps.signal.addEventListener("abort", signalAbort, { once: true });
     let fault: KernelFault | undefined;
     try {
-      for (let restarts = 0; ; restarts += 1) {
+      passes: for (let restarts = 0; ; restarts += 1) {
         fault = undefined;
         gate = new Gate(deps.journal(claim));
         if (deps.signal.aborted) gate.seal(new Interrupted("its claim's signal aborted"));
@@ -981,94 +1022,106 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           await session!.send(spec.input, spec.inputOrigin ? { origin: spec.inputOrigin } : undefined);
         }
         else if (session!.state === "open_turn") await session!.recover();
-        const turn = placed ? session!.turnEnd() : Promise.resolve({ status: "completed" as const });
-        const end = await Promise.race([turn.then(() => "answered" as const), parking.then(() => "parked" as const), stopping.then(() => "stop" as const), harness.closed.then(() => "closed" as const)]);
-        if (end === "parked") {
-          // Let the tool host go first (a browser's release, booked under the live claim), then seal.
-          await releaseHost(harness);
-          gate.seal(new Parked());
-          return { state: "parked" };
-        }
-        if (end === "closed" && fault && !stopReason && !deps.signal.aborted) {
-          await closeSession();
-          continue;
-        }
-        if (end === "closed" || (stopReason && stopReason.kind !== "command")) return await interrupted(stopReason?.kind ?? "the Session closed");
-        if (end === "stop" && stopReason?.kind === "command") {
-          // Bounded, the interrupt included: a tool call that ignores its abort keeps the turn from settling, and the claim
-          // is renewed meanwhile. Past the bound the run is failed in words, the stop row taken in that end's commit.
-          const settleMs = spec.stopSettleMs ?? STOP_SETTLE_MS;
-          const settling = (async () => {
-            await session!.interrupt().catch(() => {});
-            await harness!.waitForIdle(context).catch(() => {});
-            return true as const;
-          })();
-          let timer: NodeJS.Timeout | undefined;
-          const settled = await Promise.race([settling, new Promise<false>((resolve) => (timer = setTimeout(() => resolve(false), settleMs)))]);
-          clearTimeout(timer);
-          // A cancel ends the same way, in its own words (main's "cancelled"); the bound is the same.
-          const words = endedBy(stopReason.cancel);
-          const cut = await cutRows(claim, spec, "stopped");
-          if (!settled) return await writeEnd(harness, root, gate, { state: "failed", summary: `${words}, but the turn did not settle within ${settleMs / 1000} s: a tool call ignored its abort` }, [stopReason.commandId], cut);
-          return await writeEnd(harness, root, gate, { state: "stopped", summary: words }, [stopReason.commandId], cut);
-        }
-        const outcome = await turn;
-        // What the model said last, on the record before the run's end.
-        await record?.flushText();
-        await harness.waitForIdle(context);
-        const settledEntries = await entriesOf(gate.journal, root.id, context);
-        const cutOff = restartLimited(settledEntries);
-        let data: EndData;
+        // The turn this claim waits on: the first, then each the person's answer starts while the run waits in its claim on
+        // its question (waitInClaim: ask_person with the browser open); "lapsed" when such a wait can no longer hold.
+        let turn: Promise<TurnEnd | "lapsed"> = placed ? session!.turnEnd() : Promise.resolve({ status: "completed" as const });
+        // Set on every way out of the loop below but parkOn's, which returns before it is read.
+        let data!: EndData;
         let failedWith: string | undefined;
-        if (cutOff) data = { state: "failed", summary: `a tool call faulted on every restart: ${cutOff}` };
-        else if (outcome.status !== "completed" && refused) {
-          // A turn the host's check refused: what that does to the run is the cap's rule (parkOf), as on main. A refusal a
-          // raise could fix parks the run on a raise; one no raise could fix (or a check with no cap) fails it, in the
-          // check's own words, never as a run with no answer.
-          const park = spec.cap?.park(refusalOf(refused));
-          if (park?.outcome === "parked" && pausedAtRefusal) {
-            // Its pause and the run parked landed before pi heard of the refusal.
+        /** The ask_person call the run parks on, its turn ended on it and no wait in the claim holding (parkOnAsk). */
+        let parkOn: string | undefined;
+        /** The ask_person call the run waits on in its claim, while it does. */
+        let waitingOn: string | undefined;
+        for (;;) {
+          const end = await Promise.race([turn.then((ended) => (ended === "lapsed" ? ("lapsed" as const) : ("answered" as const))), parking.then(() => "parked" as const), stopping.then(() => "stop" as const), harness.closed.then(() => "closed" as const)]);
+          if (end === "parked") {
+            // Let the tool host go first (a browser's release, booked under the live claim), then seal.
             await releaseHost(harness);
             gate.seal(new Parked());
             return { state: "parked" };
           }
-          if (park?.outcome === "parked") return await parkAtCap(harness, root, gate, { pending: park.pending, words: park.words });
-          data = { state: "failed", summary: park?.outcome === "failed" ? park.error : refused.refuse };
-        } else if (outcome.status !== "completed") {
-          // A turn that ended on its harness's own error (a CLI's: a codex run whose MCP door could not be reached) fails
-          // the run in those words, bounded; serve redacts a run's summary as it serves it, as every summary. With none,
-          // the loop's own words.
-          const said = outcome.error?.trim();
-          data = { state: "failed", summary: said ? cutWhole(said, TURN_ERROR_MAX) : `the run gave no answer (${outcome.status})` };
-          // A CLI's turn (record "loop"; pi journals its own): its error is also main's error row, pi's error answer in the
-          // end's commit, cut of every secret the runner holds, so the timeline shows it as an error row with no key in it.
-          if (said && spec.record === "loop") failedWith = deps.redact ? deps.redact(said) : said;
+          if (end === "closed" && fault && !stopReason && !deps.signal.aborted) {
+            await closeSession();
+            continue passes;
+          }
+          if (end === "closed" || (stopReason && stopReason.kind !== "command")) return await interrupted(stopReason?.kind ?? "the Session closed");
+          if (end === "stop" && stopReason?.kind === "command") {
+            // Bounded, the interrupt included: a tool call that ignores its abort keeps the turn from settling, and the claim
+            // is renewed meanwhile. Past the bound the run is failed in words, the stop row taken in that end's commit.
+            const settleMs = spec.stopSettleMs ?? STOP_SETTLE_MS;
+            const settling = (async () => {
+              await session!.interrupt().catch(() => {});
+              await harness!.waitForIdle(context).catch(() => {});
+              return true as const;
+            })();
+            let timer: NodeJS.Timeout | undefined;
+            const settled = await Promise.race([settling, new Promise<false>((resolve) => (timer = setTimeout(() => resolve(false), settleMs)))]);
+            clearTimeout(timer);
+            // A cancel ends the same way, in its own words (main's "cancelled"); the bound is the same.
+            const words = endedBy(stopReason.cancel);
+            const cut = await cutRows(claim, spec, "stopped");
+            if (!settled) return await writeEnd(harness, root, gate, { state: "failed", summary: `${words}, but the turn did not settle within ${settleMs / 1000} s: a tool call ignored its abort` }, [stopReason.commandId], cut);
+            return await writeEnd(harness, root, gate, { state: "stopped", summary: words }, [stopReason.commandId], cut);
+          }
+          // The wait in the claim lapsed before the person answered (the cap had no room for more of their time, or the browser
+          // it kept went): the run parks on its question, as it does with nothing open.
+          if (end === "lapsed") {
+            parkOn = waitingOn;
+            break;
+          }
+          const outcome = (await turn) as TurnEnd;
+          // What the model said last, on the record before the run's end.
+          await record?.flushText();
+          await harness.waitForIdle(context);
+          const settledEntries = await entriesOf(gate.journal, root.id, context);
+          const cutOff = restartLimited(settledEntries);
+          if (cutOff) data = { state: "failed", summary: `a tool call faulted on every restart: ${cutOff}` };
+          else if (outcome.status !== "completed" && refused) {
+            // A turn the host's check refused: what that does to the run is the cap's rule (parkOf), as on main. A refusal a
+            // raise could fix parks the run on a raise; one no raise could fix (or a check with no cap) fails it, in the
+            // check's own words, never as a run with no answer.
+            const park = spec.cap?.park(refusalOf(refused));
+            if (park?.outcome === "parked" && pausedAtRefusal) {
+              // Its pause and the run parked landed before pi heard of the refusal.
+              await releaseHost(harness);
+              gate.seal(new Parked());
+              return { state: "parked" };
+            }
+            if (park?.outcome === "parked") return await parkAtCap(harness, root, gate, { pending: park.pending, words: park.words });
+            data = { state: "failed", summary: park?.outcome === "failed" ? park.error : refused.refuse };
+          } else if (outcome.status !== "completed") {
+            // A turn that ended on its harness's own error (a CLI's: a codex run whose MCP door could not be reached) fails
+            // the run in those words, bounded; serve redacts a run's summary as it serves it, as every summary. With none,
+            // the loop's own words.
+            const said = outcome.error?.trim();
+            data = { state: "failed", summary: said ? cutWhole(said, TURN_ERROR_MAX) : `the run gave no answer (${outcome.status})` };
+            // A CLI's turn (record "loop"; pi journals its own): its error is also main's error row, pi's error answer in the
+            // end's commit, cut of every secret the runner holds, so the timeline shows it as an error row with no key in it.
+            if (said && spec.record === "loop") failedWith = deps.redact ? deps.redact(said) : said;
+          }
+          else if (endedOnTurnEndingTool(settledEntries as never) !== undefined) {
+            // The turn ended on a tool that waits on the person (ask_person ended its turn). With something a tool host keeps
+            // open for them meanwhile (the browser's session, its live view and its page), the run waits for their answer in
+            // its claim, as the browser's hand-over does, the person's time held under its cap (waitInClaim); their answer is
+            // its next turn, on the same session. With nothing open, it parks (parkOnAsk).
+            const callId = endedOnTurnEndingTool(settledEntries as never)!;
+            const waited = await waitInClaim(harness, callId);
+            if (waited) {
+              turn = waited.next;
+              waitingOn = callId;
+              continue;
+            }
+            parkOn = callId;
+          }
+          else {
+            // An answer cut at the model's output limit is unfinished: the run fails, saying so, never ended (loop.ts cutLast,
+            // the direct loop's rule: the words are loop-contract's cutAtLimit).
+            const cut = cutLast(settledEntries);
+            data = cut ? { state: "failed", summary: cut } : { state: "ended" };
+          }
+          break;
         }
-        else if (endedOnTurnEndingTool(settledEntries as never) !== undefined) {
-          // The turn ended on a tool that waits on the person (ask_person ended its turn): the run parks, never ends. A
-          // KINDS.personAsked entry naming that call carries the run patch to "parked" (as the cap park commits its pause on
-          // a budget entry), so the runner leaves it for the person's message and never claims it again with nothing to
-          // answer; the reader passes the entry over, and input_required with its question is the view's to read (the same
-          // endedOnTurnEndingTool rule, over the ask_person call pi wrote). First write wins, so a second claim finding it
-          // does not write it again. Then the cap park's move (759): the claim released, nothing more booked. The person's
-          // reply arrives as the run's next user message and resumes it on the next claim, as on main — the ask_person tool
-          // result stays what pi wrote, so nothing is re-asked or re-billed. The summary is plain words, never the question.
-          const conversation = root!;
-          const callId = endedOnTurnEndingTool(settledEntries as never)!;
-          const parkedAt = gate.expect(writesEntry(KINDS.personAsked, (entry) => entry.callId === callId), { run: { state: "parked", summary: ASK_PERSON_WAITING } });
-          parkedAt.catch(() => undefined);
-          await harness.commit((tx) => tx.appendEntry(conversation.id, { kind: KINDS.personAsked, data: { callId } }), context);
-          await parkedAt;
-          await releaseHost(harness);
-          gate.seal(new Parked());
-          return { state: "parked" };
-        }
-        else {
-          // An answer cut at the model's output limit is unfinished: the run fails, saying so, never ended (loop.ts cutLast,
-          // the direct loop's rule: the words are loop-contract's cutAtLimit).
-          const cut = cutLast(settledEntries);
-          data = cut ? { state: "failed", summary: cut } : { state: "ended" };
-        }
+        if (parkOn !== undefined) return await parkOnAsk(harness, root, gate, parkOn);
         // The end-of-run step, once, before the end: its rows ride in the end commit. A stop or a lost claim during it
         // writes no end of the job's (a person's stop ends the run stopped; a lost claim leaves it for the next claim).
         const step = await endOfRunStep(claim, spec, data.state === "failed" ? "failed" : "completed");
@@ -1222,9 +1275,89 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     return { state: "interrupted" };
   }
 
+  /** The run parks on its question to the person (ask_person ended its turn), nothing open for them meanwhile: a
+   *  KINDS.personAsked entry naming that call carries the run patch to "parked" (as the cap park commits its pause on a
+   *  budget entry), so the runner leaves it for the person's message and never claims it again with nothing to answer; the
+   *  reader passes the entry over, and input_required with its question is the view's to read (the same
+   *  endedOnTurnEndingTool rule, over the ask_person call pi wrote). First write wins, so a second claim finding it does
+   *  not write it again. Then the cap park's move: the claim released, nothing more booked. The person's reply arrives as
+   *  the run's next user message and resumes it on the next claim, as on main: the ask_person tool result stays what pi
+   *  wrote, so nothing is re-asked or re-billed. The summary is plain words, never the question. */
+  async function parkOnAsk(on: Harness, conversation: Conversation, theGate: Gate, callId: string): Promise<LoopEnd> {
+    const parkedAt = theGate.expect(writesEntry(KINDS.personAsked, (entry) => entry.callId === callId), { run: { state: "parked", summary: ASK_PERSON_WAITING } });
+    parkedAt.catch(() => undefined);
+    await on.commit((tx) => tx.appendEntry(conversation.id, { kind: KINDS.personAsked, data: { callId } }), context);
+    await parkedAt;
+    await releaseHost(on);
+    theGate.seal(new Parked());
+    return { state: "parked" };
+  }
+
+  /** The run waits in its claim on the person's answer to its question (ask_person `callId` ended its turn) when a tool
+   *  host keeps something open for them meanwhile (HostLifecycle.personWait: the browser's session, whose live view the
+   *  person may watch or take over, and whose page the agent goes on from), as the browser's hand-over waits in the claim.
+   *  Each host's hold holds the person's time under the run's cap. The run reads input_required, waiting on the question,
+   *  from its journal as a parked one does; its claim, its session and its viewer stay. The person's message is sent as the
+   *  claim's next turn (steer, through `reopen`), the holds dropped as it is placed: the turn's end is what this gives. It
+   *  gives "lapsed" when a hold can no longer stand before the answer is placed (the cap refused more of the person's time,
+   *  or the session went), and the run parks on its question. Undefined when no host holds anything: the run parks. */
+  async function waitInClaim(on: Harness, callId: string): Promise<{ next: Promise<TurnEnd | "lapsed"> } | undefined> {
+    const holders = specNow?.lifecycle?.personWait ?? [];
+    if (!holders.length || !session || gate?.sealed) return undefined;
+    // Set before the hosts are asked: an answer sent meanwhile is the claim's next turn, never a steer into no turn.
+    const theSession = session;
+    const mine: { sent?: Promise<void>; placed?: () => void } = {};
+    let placing: Promise<void> = new Promise<void>((resolve) => (mine.placed = resolve));
+    reopen = mine;
+    waitTurn = mine;
+    for (const holder of holders) {
+      const hold = await Promise.resolve().then(() => holder(on, callId)).catch((error: unknown) => {
+        console.warn(`[runner] a tool host's person-wait failed: ${said(error)}`);
+        return undefined;
+      });
+      if (hold) waitHolds.push(hold);
+    }
+    // Nothing held, and no answer placed meanwhile: the run parks.
+    if (!waitHolds.length && !mine.sent) {
+      endWait(mine);
+      return undefined;
+    }
+    const next = new Promise<TurnEnd | "lapsed">((resolve, reject) => {
+      let done = false;
+      let lapsed = false;
+      const finish = (value: Promise<TurnEnd> | "lapsed") => {
+        if (done) return;
+        done = true;
+        endWait(mine);
+        resolve(value);
+      };
+      // A hold that lapses ends the wait, unless the person's answer is being placed: then the answer's turn stands.
+      for (const hold of waitHolds) void hold.lapsed.then(() => {
+        lapsed = true;
+        if (!mine.sent) finish("lapsed");
+      }, () => undefined);
+      void (async () => {
+        for (;;) {
+          await placing;
+          try {
+            await mine.sent;
+            return finish(theSession.turnEnd());
+          } catch {
+            // Not placed (the steer was refused): the next message may be.
+            mine.sent = undefined;
+            placing = new Promise<void>((resolve) => (mine.placed = resolve));
+            if (lapsed) return finish("lapsed");
+          }
+        }
+      })().catch(reject);
+    });
+    return { next };
+  }
+
   /** The session and its Harness closed behind the journal's seal: nothing they write after reaches the store. */
   async function closeSession(): Promise<void> {
     gate?.seal(new Interrupted("the Session is closing"));
+    endWait();
     const closing = Promise.all([session?.close().catch(() => {}), harness?.close(BACKGROUND_CONTEXT).catch(() => {})]);
     let timer: NodeJS.Timeout | undefined;
     await Promise.race([closing, new Promise<void>((resolve) => (timer = setTimeout(resolve, CLOSE_MS)))]);
