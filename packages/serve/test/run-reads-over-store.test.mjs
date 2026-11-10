@@ -167,6 +167,30 @@ test("a full read from after=0 resets with every row", async () => {
   assert.deepEqual(page.cost, { usd: 0.5 }, "the page carries the run's whole Cost object, not a bare number");
 });
 
+test("a page's status is never ahead of its rows: a commit that lands as the status is read is in the rows the page carries", async () => {
+  // The run's store as a parked call writes it: the call's row, then the park that makes the run wait. Here the park lands
+  // while the page reads the run's view, as a commit can between two reads.
+  const store = { rows: [row("e1", "You: add 2 and 3")], view: working };
+  const tl = runTimelines({
+    context: BACKGROUND_CONTEXT, pollMs: 5,
+    // The rows as the store holds them when the read starts (a read is a snapshot), answered a moment later.
+    timelineRows: async () => {
+      const held = store.rows;
+      await new Promise((resolve) => setImmediate(resolve));
+      return held;
+    },
+    runView: async () => {
+      store.rows = [...store.rows, row("e2", "add {a: 2, b: 3}")];
+      store.view = { ...working, status: "input_required", state: "waiting" };
+      return store.view;
+    },
+  });
+  const page = await tl.page({}, "run-1", 0, 0, 100);
+  assert.equal(page.status, "input_required");
+  assert.equal(page.has_more, false);
+  assert.deepEqual(page.rows.map((r) => r.id), ["e1", "e2"], "the waiting call's row comes with the waiting status");
+});
+
 test("a read from the cursor with no change is unchanged, no rows, no drops", async () => {
   const tl = timeline({ rows: [row("e1", "a"), row("e2", "b")], view: working });
   const first = await tl.page({}, "run-1", 0, 0, 100);

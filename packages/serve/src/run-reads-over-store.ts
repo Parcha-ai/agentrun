@@ -184,8 +184,12 @@ export function runTimelines(deps: TimelineDeps): { page(store: Store, runId: st
   const pollMs = deps.pollMs ?? 1_000;
 
   async function once(store: Store, runId: string, after: number, limit: number): Promise<TimelinePage> {
-    const [rows, view] = await Promise.all([deps.timelineRows(store, runId, deps.context), deps.runView(store, runId)]);
+    // The view first, then the rows: rows read after the status hold every commit up to it, so a page never reports a
+    // status (input_required on a parked call, a final one) ahead of the rows that came before it. Read together, a commit
+    // landing between the two reads could give a waiting status with its call's row still missing, and has_more false.
+    const view = await deps.runView(store, runId);
     if (!view) throw new ApiError("not_found", `There is no run ${runId}.`);
+    const rows = await deps.timelineRows(store, runId, deps.context);
     const status = String(view.status);
     const state = String(view.state);
     const log = logOf(runId);
