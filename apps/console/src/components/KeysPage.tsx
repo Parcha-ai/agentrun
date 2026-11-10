@@ -1,6 +1,6 @@
-import { KeyRound } from "lucide-react";
 import { type FormEvent, useEffect, useRef, useState } from "react";
 import { RunError } from "@/components/RunError";
+import { ProviderIcon } from "@/components/ProviderIcon";
 import { SecretRow } from "@/components/SecretRow";
 import { ListSkeleton } from "@/components/Skeleton";
 import { Button } from "@/components/ui/button";
@@ -159,7 +159,7 @@ function KeyRow({ tool: k, cantStore, writable, again, open, problem, onOpen, on
   return (
     <li className="border-b p-4 last:border-b-0">
       <div className="flex flex-wrap items-start gap-3">
-        <KeyRound className="mt-1 size-4 shrink-0 text-muted-foreground" aria-hidden />
+        <ProviderIcon id={k.id} className="mt-1" />
         <div className="min-w-0 flex-1">
           <p className="flex flex-wrap items-center gap-2">
             <span className="font-mono text-prose font-semibold">{k.label}</span>
