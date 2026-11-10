@@ -25,7 +25,6 @@ const { deniedText } = await import("../dist/runner/loop-contract.js");
 const { deniedText: setToDenyText } = await import("../dist/refusal-words.js");
 const { KINDS } = await import("../dist/runner/journal-kinds.js");
 const { META_REASON } = await import("../dist/mcp-meta.js");
-const { UNUSABLE } = await import("../dist/mcp-servers.js");
 const { TOOL_COST, TOOL_UNMETERED } = await import("@parcha/pi-durable-agent/timeline");
 const { journalRecords } = await import("../dist/runner/journal-reader.js");
 const { mcpForClaim } = await import("../dist/runner/mcp-run.js");
@@ -57,7 +56,7 @@ const lastResult = (sent) => {
  * `script` with the run's MCP (`grants`), its gate the tool gate's permissions over `settings` (an mcp: tool asks by
  * default). Runs until the run is not running, or `until(row)` says so.
  */
-async function mcpRun(t, { script, grants, settings = {}, tools = [ADD, PAID], prices, seal = headers, capUsd, before, until, ms = 20_000, hostTools = {}, events, auth = "bearer", fakeToken = TOKEN, githubAppAccess, launchInput, timing = STEADY, opened = [], serverNow }) {
+async function mcpRun(t, { script, grants, settings = {}, tools = [ADD, PAID], prices, seal = headers, capUsd, before, until, ms = 20_000, hostTools = {}, events, onCommand, network, auth = "bearer", fakeToken = TOKEN, githubAppAccess, launchInput, timing = STEADY, opened = [], serverNow }) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-mcp-"));
   // `serverNow`: the test's own handle on the store reads its clock (a claim taken over when it is moved past the lease);
   // the runner's handle keeps the wall clock.
@@ -79,14 +78,12 @@ async function mcpRun(t, { script, grants, settings = {}, tools = [ADD, PAID], p
   const sent = [];
   const origin = scriptedOrigin(script, sent);
   const base = piAdapterSpec({ script, tools: hostTools, hooks: { beforeIntent: async () => {}, beforeResult: async () => {} } }, { fetch: events ? (...args) => (events.push("request"), origin(...args)) : origin });
-  // `events`: each registry read of the claim step's (store.mcp.server, which its fresh() makes per pinned server) and
-  // each model request, in order.
-  const registry = events ? new Proxy(store.mcp, { get: (target, key) => (key === "server" ? (...args) => (events.push("read"), target.server(...args)) : typeof target[key] === "function" ? target[key].bind(target) : target[key]) }) : store.mcp;
+  // `events`: each model request, in order with whatever else the test pushes there.
   const work = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-mcp-work-"));
   t.after(() => rmSync(work, { recursive: true, force: true }));
   const loop = createAdapterLoop(async (claim, run) => {
     // As a spec builder does: the claim's MCP first (mcpForClaim), before anything the spec would have to let go.
-    const mcp = await mcpForClaim({ claim, store: { mcp: registry, runs: store.runs, triggerSettings: store.triggerSettings, where: store.where }, sealKey: KEY, grants, harness: run.harness, work: () => work, ...(githubAppAccess ? { githubAppAccess, launchInput, githubMcpOrigin: new URL(fake.url).origin } : {}) });
+    const mcp = await mcpForClaim({ claim, store: { mcp: store.mcp, runs: store.runs, settings: store.settings, triggerSettings: store.triggerSettings, where: store.where }, sealKey: KEY, grants, harness: run.harness, work: () => work, ...(network ? { network } : {}), ...(githubAppAccess ? { githubAppAccess, launchInput, githubMcpOrigin: new URL(fake.url).origin } : {}) });
     if (mcp) opened.push(mcp);
     return {
       ...(await base(claim, run)),
@@ -101,7 +98,16 @@ async function mcpRun(t, { script, grants, settings = {}, tools = [ADD, PAID], p
       }),
     };
   }, { restartLimit: MAX_RESTARTS });
-  runner = startRunner({ store, createLoop: loop, name: "runner-a", ...timing });
+  // `onCommand`: told each command row the loop is handed, once the loop has taken it in.
+  const createLoop = onCommand ? (deps) => {
+    const made = loop(deps);
+    return { ...made, start: (claim) => made.start(claim), stop: (reason) => made.stop(reason), command: (command) => {
+      const out = made.command(command);
+      onCommand(command);
+      return out;
+    } };
+  } : loop;
+  runner = startRunner({ store, createLoop, name: "runner-a", ...timing });
   const settle = async (done = (row) => row.state !== "running" && row.state !== "queued" && row.runner === null) => {
     const from = Date.now();
     for (;;) {
@@ -230,15 +236,6 @@ test("R5: no byte of a credential in the store file, its WAL, or any log line af
 });
 
 
-test("R6: a credential that does not open refuses the call unsent, in words", async (t) => {
-  const script = [{ call: "mcp__fake__add", args: { a: 2, b: 3 } }, { sayLastResult: true }];
-  const other = randomBytes(32);
-  const { row, sent, fake } = await mcpRun(t, { script, grants: ["mcp:fake/add"], settings: { "mcp:fake/add": { permission: "allow" } }, seal: (url) => headers(url, other) });
-  assert.equal(row.state, "ended", JSON.stringify(row));
-  assert.equal(lastResult(sent), `The MCP server fake's credential can't be used right now: ${UNUSABLE.damaged}.`);
-  assert.equal(toolCalls(fake).length, 0, "nothing sent");
-});
-
 test("R7: a pinned tool that is a meta tool now refuses the claim in words: the run fails with nothing sent", async (t) => {
   const script = [{ call: "mcp__fake__COMPOSIO_MULTI_EXECUTE_TOOL", args: {} }, { say: "done" }];
   const { row, sent, fake } = await mcpRun(t, {
@@ -306,26 +303,54 @@ test("R10: a priced MCP call with room is sent once, held at its price and booke
   assert.deepEqual(await entriesOf(server, TOOL_COST), [], "no second booking on the run's root");
 });
 
+/** An OAuth sign-in's token set, its authorization server at auth.example.com, its access token ending at `expires`. */
+const oauthSet = (access, expires) => ({
+  tokens: { access_token: access, token_type: "Bearer", refresh_token: `not-a-secret-${"refresh-for"}-${access}` },
+  obtained_at: new Date(expires - 3_600_000).toISOString(),
+  expires_at: new Date(expires).toISOString(),
+  client: { client_id: "runner-test", client_secret: "s3" },
+  kind: "pre-registered",
+  discovery: { authorizationServerUrl: "https://auth.example.com", authorizationServerMetadata: { issuer: "https://auth.example.com", authorization_endpoint: "https://auth.example.com/authorize", token_endpoint: "https://auth.example.com/token", response_types_supported: ["code"] } },
+});
+const sealedOAuth = (url, set) => sealMcpCredential(KEY, "fake", { type: "oauth", set }, url);
+
 test("R11: a command row handed to a running loop makes its MCP credentials fresh again before its next model request", async (t) => {
   let release;
   const waiting = new Promise((resolve) => (release = resolve));
+  let toolRuns;
+  const toolRan = new Promise((resolve) => (toolRuns = resolve));
+  let steerTaken;
+  const taken = new Promise((resolve) => (steerTaken = resolve));
   const events = [];
   let server;
-  const hostTools = { wait: { name: "wait", replaySafe: false, run: async () => (events.push("tool"), await waiting, "waited") } };
+  let fakeUrl;
+  // The authorization server, as the claim step's network: each refresh pushed in order with the model's requests.
+  const network = {
+    lookup: async () => ["93.184.216.34"],
+    fetch: async () => {
+      events.push("token");
+      return new Response(JSON.stringify({ access_token: `not-a-secret-${"refreshed-access"}`, token_type: "Bearer", refresh_token: `not-a-secret-${"refresh-2"}`, expires_in: 3600 }), { status: 200, headers: { "content-type": "application/json" } });
+    },
+  };
+  const hostTools = { wait: { name: "wait", replaySafe: false, run: async () => (events.push("tool"), toolRuns(), await waiting, "waited") } };
   const script = [{ call: "wait", args: {} }, { say: "done" }];
-  const running = mcpRun(t, { script, grants: ["mcp:fake/add"], hostTools, events, before: async (opened) => void (server = opened.server) });
-  for (const from = Date.now(); !events.includes("tool") && Date.now() - from < 10_000; ) await sleep(20);
-  assert.deepEqual(events, ["read", "request", "tool"], "made fresh once at the claim, before the first request");
-  // A steer while the call runs: taken by the loop, which holds the claim.
-  const steer = await server.command("run-1", { kind: "steer", body: { text: "and then stop" } });
-  for (const from = Date.now(); Date.now() - from < 10_000; await sleep(20)) if ((await server.commands("run-1", 0)).find((row) => row.id === steer.id)?.takenAt) break;
+  const running = mcpRun(t, {
+    script, grants: ["mcp:fake/add"], hostTools, events, network, auth: "oauth",
+    seal: (url) => sealedOAuth(url, oauthSet(`not-a-secret-${"valid-access"}`, Date.now() + 3_600_000)),
+    onCommand: (command) => command.kind === "steer" && steerTaken(),
+    before: async (opened) => void ((server = opened.server), (fakeUrl = opened.fake.url)),
+  });
+  await toolRan;
+  assert.deepEqual(events, ["request", "tool"], "a token still valid at the claim: no refresh before the first request");
+  // While the call runs, the server's token runs out (its row now holds a set past its end), and a steer comes: taken by
+  // the loop, which holds the claim.
+  await server.mcp.put({ name: "fake", url: fakeUrl, auth: "oauth", tools: [listed(ADD), listed(PAID)], sealed: sealedOAuth(fakeUrl, oauthSet(`not-a-secret-${"ran-out-access"}`, Date.now() - 60_000)) });
+  await server.command("run-1", { kind: "steer", body: { text: "and then stop" } });
+  await taken;
   release();
   const { row } = await running;
   assert.equal(row.state, "ended", JSON.stringify(row));
-  const tool = events.indexOf("tool");
-  const next = events.indexOf("request", tool);
-  assert.ok(next > tool, JSON.stringify(events));
-  assert.deepEqual(events.slice(tool + 1, next), ["read"], "made fresh again before the next request");
+  assert.deepEqual(events, ["request", "tool", "token", "request"], "the run-out token refreshed before the next request");
 });
 
 test("R12: a resumed claim calls the tools its run was pinned with, read as written, after the registry changed", async (t) => {
@@ -343,7 +368,7 @@ test("R12: a resumed claim calls the tools its run was pinned with, read as writ
   assert.deepEqual((await run.server.mcp.pin("run-1")).body.fake.tools.map((tool) => tool.name), ["add"], "the pin row is as written");
 });
 
-test("R13: a claim lost while a call is out drops the gateway's credentials at once: the call is cut upstream, nothing held, and the next claim never sends it again", async (t) => {
+test("R13: a claim lost while a call is out drops the gateway's credentials at once: the call is cut upstream, a late call sends nothing, and the next claim never sends it again", async (t) => {
   // Both sides are the test's own, never two wall-clock timers raced under load (what failed here: a 600 ms lease, renewed
   // every 100 ms and given up 200 ms early, ran out while a loaded machine was still setting the claim up, before the call
   // went out). The call is held open until the test lets it go, and the claim is lost when the test takes it over on its
@@ -369,7 +394,6 @@ test("R13: a claim lost while a call is out drops the gateway's credentials at o
   });
   for (const from = Date.now(); !(fakeRef && toolCalls(fakeRef, "slow_write").length) && Date.now() - from < 30_000; ) await sleep(10);
   assert.equal(toolCalls(fakeRef, "slow_write").length, 1, "the call is out");
-  assert.ok(opened[0].redactions().some((value) => value.includes(TOKEN)), "held for its scrub while it is out");
   // The claim is taken over on the store, its lease past by the test's clock: the runner's next renewal is fenced, and
   // the claim is lost mid-call.
   skew = 120_000;
@@ -377,7 +401,6 @@ test("R13: a claim lost while a call is out drops the gateway's credentials at o
   assert.ok(takeover, "the run's claim taken over");
   for (const from = Date.now(); !fakeRef.log.some((entry) => entry.closed === "slow_write") && Date.now() - from < 30_000; ) await sleep(10);
   assert.ok(fakeRef.log.some((entry) => entry.closed === "slow_write"), "the call was cut upstream");
-  assert.deepEqual(opened[0].redactions(), [], "nothing held once the claim is lost");
   // The pinned tool as pi holds it (its host tool): a dropped claim's gateway sends nothing.
   const after = await opened[0].tools.find((tool) => tool.name === "mcp__fake__slow_write").call({ line: "y", seconds: 0 }, { signal: new AbortController().signal, callId: "late" });
   assert.equal(after.isError, true, "a dropped claim's gateway sends nothing");

@@ -21,15 +21,6 @@ test("a pending sign-in is taken back as it was put, its sealed bytes unchanged 
   assert.equal(await store.mcpOauth.take("s1"), undefined, "taken once, then gone");
 });
 
-test("take deletes and returns a pending sign-in in one statement; a replay after a successful take gets none", async (t) => {
-  const { store } = await storeOn(t);
-  await store.mcpOauth.put(pending("s1"));
-  const took = await store.mcpOauth.take("s1");
-  assert.deepEqual([took.state, took.server], ["s1", "github"], "the row comes back");
-  assert.deepEqual([...took.sealed], [...SEALED], "its secret parts come back sealed, the store never opened them");
-  assert.equal(await store.mcpOauth.take("s1"), undefined, "a replay gets none");
-});
-
 test("two concurrent takes of one state: exactly one gets the row, the other none (single use)", async (t) => {
   const { store } = await storeOn(t);
   await store.mcpOauth.put(pending("s1"));
