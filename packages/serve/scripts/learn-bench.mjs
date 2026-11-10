@@ -30,6 +30,7 @@
 //   node packages/serve/scripts/learn-bench.mjs --out DIR [--jobs DIR] [--job expense,...] [--harness pi,claude-agent]
 //     [--arms on,off] [--steps N] [--data DIR] [--max-usd 10] [--deadline-s 5400] [--no-approve]
 //     [--pi-model provider/id] [--claude-model provider/id] [--eval-grader-model provider/id] [--serve DIR] [--dry]
+//     [--harness-max-runs claude-agent=120]   a harness's step runs bounded by count (one whose spend the server can't see)
 //   node packages/serve/scripts/learn-bench.mjs --render results.json      the summary table (markdown)
 import { createHash, randomBytes } from "node:crypto";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -405,6 +406,9 @@ async function seriesSteps(ctx, job, cases, harness, learns, steps, out) {
     const spent = (await api("GET", "/stats")).body?.analytics?.totals?.cost_usd ?? 0;
     if (spent > options.maxUsd) { out.hard_stop = `the server's spend ${spent} passed --max-usd ${options.maxUsd} before step ${one.id}`; break; }
     if (Date.now() > options.deadline) { out.hard_stop = `the bench's deadline passed before step ${one.id}`; break; }
+    const cap = options.harnessMaxRuns[harness];
+    if (cap !== undefined && (options.runsBy[harness] ?? 0) >= cap) { out.hard_stop = `${harness}'s run cap (${cap} step runs, --harness-max-runs) reached before step ${one.id}`; break; }
+    options.runsBy[harness] = (options.runsBy[harness] ?? 0) + 1;
     if (!learns) { agentId = await agentFor(ctx, job, harness, false); out.agents.push(agentId); }
     const result = await step(ctx, job, one, cases.get(one.id), agentId, harness, learns);
     options.log(`${job.name} ${harness} ${arm} step ${one.id} (${one.kind}): ${result.status}, ${result.pass ? "pass" : "FAIL"}${result.cost_usd === null ? "" : ` $${result.cost_usd}`}`);
@@ -419,7 +423,7 @@ async function main() {
     out: { type: "string" }, jobs: { type: "string", default: join(serveDir, "learn-bench") }, job: { type: "string" }, harness: { type: "string" }, arms: { type: "string", default: "on,off" },
     steps: { type: "string" }, data: { type: "string" }, "max-usd": { type: "string", default: "10" }, "deadline-s": { type: "string", default: "5400" }, "no-approve": { type: "boolean", default: false },
     "pi-model": { type: "string" }, "claude-model": { type: "string" }, "eval-grader-model": { type: "string" }, dry: { type: "boolean", default: false }, "run-timeout-s": { type: "string", default: "900" },
-    serve: { type: "string" }, render: { type: "string" },
+    serve: { type: "string" }, render: { type: "string" }, "harness-max-runs": { type: "string" },
   } });
   if (values.render) {
     const files = values.render.split(",").map((file) => JSON.parse(readFileSync(file, "utf8")));
@@ -448,8 +452,9 @@ async function main() {
     const data = values.data ?? join(scratch, "data");
     const started = new Date().toISOString();
     const server = await startServer(data, templates);
-    const options = { maxUsd: Number(values["max-usd"]), deadline: Date.now() + Number(values["deadline-s"]) * 1000, approve: !values["no-approve"], evalGraderModel: values["eval-grader-model"], runTimeoutMs: Number(values["run-timeout-s"]) * 1000, log: (line) => console.error(line) };
-    const results = { schema: SCHEMA, bench: { sha: process.env.BENCH_SHA ?? "unknown", frozen: process.env.BENCH_FROZEN ? JSON.parse(process.env.BENCH_FROZEN) : {}, models: { pi: models.pi ?? process.env.AGENT_MODEL ?? null, "claude-agent": models["claude-agent"], learning_grader: process.env.AGENTRUN_SERVE_GRADE_MODEL ?? null, eval_grader: options.evalGraderModel ?? null }, caps: { bench_max_usd: options.maxUsd, deadline_s: Number(values["deadline-s"]) }, started_at: started, ended_at: null }, hard_stop: null, series: [] };
+    const harnessMaxRuns = Object.fromEntries((values["harness-max-runs"] ?? "").split(",").filter(Boolean).map((pair) => { const [h, n] = pair.split("="); return [h, Number(n)]; }));
+    const options = { harnessMaxRuns, runsBy: {}, maxUsd: Number(values["max-usd"]), deadline: Date.now() + Number(values["deadline-s"]) * 1000, approve: !values["no-approve"], evalGraderModel: values["eval-grader-model"], runTimeoutMs: Number(values["run-timeout-s"]) * 1000, log: (line) => console.error(line) };
+    const results = { schema: SCHEMA, bench: { sha: process.env.BENCH_SHA ?? "unknown", frozen: process.env.BENCH_FROZEN ? JSON.parse(process.env.BENCH_FROZEN) : {}, models: { pi: models.pi ?? process.env.AGENT_MODEL ?? null, "claude-agent": models["claude-agent"], learning_grader: process.env.AGENTRUN_SERVE_GRADE_MODEL ?? null, eval_grader: options.evalGraderModel ?? null }, caps: { bench_max_usd: options.maxUsd, deadline_s: Number(values["deadline-s"]), harness_max_runs: harnessMaxRuns }, started_at: started, ended_at: null }, hard_stop: null, series: [] };
     const write = () => writeFileSync(join(values.out, "results.json"), `${JSON.stringify(results, null, 1)}\n`);
     try {
       const owner = await ownerOf(server.api, server.base);
@@ -466,7 +471,7 @@ async function main() {
           const done = await series({ api: server.api, store: server.store, pkgName: p.pkg.pkgName, models, options, owner, fakes }, p.job, p.cases, p.harness, p.arm, p.steps);
           results.series.push(done);
           write();
-          if (done.hard_stop) { results.hard_stop = done.hard_stop; break; }
+          if (done.hard_stop && !/--harness-max-runs/.test(done.hard_stop)) { results.hard_stop = done.hard_stop; break; }
         } finally {
           for (const fake of fakes) { await server.api("DELETE", `/settings/mcp-servers/${fake.name}`); await fake.close(); }
         }

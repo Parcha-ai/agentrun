@@ -18,7 +18,7 @@
           "type": "object", "description": "Model names only, never a key.",
           "properties": { "pi": { "type": ["string", "null"] }, "claude-agent": { "type": ["string", "null"] }, "learning_grader": { "type": ["string", "null"], "description": "The server's grade model; null: each run graded on its agent's own." }, "eval_grader": { "type": ["string", "null"], "description": "The llm graders' model; null: the server's default." } }
         },
-        "caps": { "type": "object", "properties": { "bench_max_usd": { "type": "number" }, "deadline_s": { "type": "integer" }, "step_cap_default_usd": { "type": "number" } } },
+        "caps": { "type": "object", "properties": { "harness_max_runs": { "type": "object", "additionalProperties": { "type": "integer" }, "description": "A harness's step runs bounded by count, where the server cannot see its spend (claude-agent books no usage: #2275)." }, "bench_max_usd": { "type": "number" }, "deadline_s": { "type": "integer" }, "step_cap_default_usd": { "type": "number" } } },
         "started_at": { "type": "string" }, "ended_at": { "type": "string" }
       }
     },
