@@ -250,6 +250,9 @@ export interface GateCall {
   readonly callId: string;
   readonly tool: string;
   readonly args: Record<string, unknown>;
+  /** The call runs again after an earlier attempt whose start the log holds (a replay-safe call a crash cut): that
+   *  attempt may have been sent, so a refusal never says nothing was. */
+  readonly replayed?: true;
 }
 
 /** The host's answer before a call's intent: run it, refuse it in these words, or park the run on it. */

@@ -34,6 +34,9 @@ export interface PreIntentCall {
   readonly callId: string;
   readonly tool: string;
   readonly args: Record<string, unknown>;
+  /** An earlier attempt of the call may have been sent (a CLI's kernel bridge, asking about a replay-safe call a crash
+   *  cut: GateCall's `replayed`), so a refusal never says nothing was. */
+  readonly replayed?: true;
 }
 
 /** The host's answer before a call's intent: run it, refuse it, or park the run on it (the call never moves on here). */

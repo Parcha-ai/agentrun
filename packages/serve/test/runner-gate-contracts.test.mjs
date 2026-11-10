@@ -160,6 +160,21 @@ test("two ask calls entered at once, as pi runs a turn's calls in parallel: exac
   assert.match(refused.text, new RegExp(`^This write call was not run: the write call ${first.callId} already waits for a person's approval\\.`));
 });
 
+test("the run's gate asked about a replayed call (one a CLI's bridge or pi reruns) refuses a deny and a pin saying whether it took effect is not known; a first attempt's refusal says nothing was sent", async () => {
+  const { server } = await stores({ runners: 0 });
+  await saveToolSettings(server, { web_fetch: { permission: "deny" }, "mcp:fake/send": { permission: "allow", pin: { channel: "C1" } } });
+  const root = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-gate-contracts-"));
+  const gate = await adapterRunGate(server, { runId: "run-1" }, { kind: "agentic", body: { approvals: "ask" } }, root);
+  const fetch = { callId: "c1", tool: "web_fetch", args: { url: "https://example.com/a" } };
+  const outside = { callId: "c2", tool: "mcp:fake/send", args: { channel: "C9" } };
+  for (const call of [fetch, outside]) {
+    const first = await gate(call);
+    const replayed = await gate(call, { replayed: true });
+    assert.ok(first.deny?.includes(NOT_RUN) && !first.deny.includes(RAN_UNKNOWN), `${call.tool}, first attempt: ${JSON.stringify(first)}`);
+    assert.ok(replayed.deny?.includes(RAN_UNKNOWN) && !replayed.deny.includes(NOT_RUN), `${call.tool}, replayed: ${JSON.stringify(replayed)}`);
+  }
+});
+
 /** Each tool result in one request the model was sent: its call id and text. */
 function toolResults(body) {
   return (body?.messages ?? []).flatMap((message) => (Array.isArray(message.content) ? message.content : [])).filter((part) => part?.type === "tool_result").map((part) => ({ id: part.tool_use_id, text: Array.isArray(part.content) ? part.content.map((each) => each.text ?? "").join("") : String(part.content ?? "") }));

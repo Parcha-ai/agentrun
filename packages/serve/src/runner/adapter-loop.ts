@@ -828,7 +828,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
                 if (other) return { text: alreadyWaitsText(asked, other), isError: true };
                 const answer = await waitedOn(call.callId, answerOf(call, mcp?.priceOf(name) ?? spec.approvalPrice?.({ ...call, tool: name as never }) ?? null, asked));
                 if (answer === "park") return await heldUntilAborted(toolContext.signal);
-                if (!answer.approved) return { text: refusedText(asked, answer.note, "unknown"), isError: true };
+                if (!answer.approved) return { text: refusedText(asked, answer.note?.trim() ? answer.note : undefined, "unknown"), isError: true };
               }
             }
             if (record) await record.start(toolContext.callId, tool.name, args ?? {}, tool.replay === "safe");
@@ -1149,19 +1149,22 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       // The end-of-run turn's notes are kept only from its answer: a write there is refused before its intent.
       if (reflecting && WRITES.has(call.tool) && underLearning(spec.workRoot, call.args)) return { deny: REFLECT_NOTE_ONLY };
       await hooks.beforeIntent(kernelCall);
-      const decision = (await spec.gate?.(kernelCall)) ?? "allow";
+      // A CLI bridge's call run again after an attempt that may have been sent: its refusals say so (RAN_UNKNOWN).
+      const replayed = call.replayed === true;
+      const decision = (await spec.gate?.(kernelCall, replayed ? { replayed } : {})) ?? "allow";
       if (typeof decision === "object") return { deny: decision.deny };
       // Asked about by the name the gate gives (its settings key, as main's pending approval is named), else the call's own;
       // an MCP call by its catalog name (tool) either way, never pi's wire name, and so are its call and its price.
       const asked = spec.gate?.askedAs?.(tool) ?? tool;
       // Main's words for a tool set to deny (tool-gate's deniedText, from its one copy in refusal-words.ts).
-      if (decision === "deny") return { deny: setToDenyText(asked) };
+      if (decision === "deny") return { deny: setToDenyText(asked, undefined, "server", replayed ? "unknown" : "no") };
       if (decision === "allow") return "allow";
       const other = await anotherWaits(call.callId, asked);
       if (other) return { deny: alreadyWaitsText(asked, other) };
       const answer = await waitedOn(call.callId, answerOf({ ...call, tool }, mcp?.priceOf(tool) ?? spec.approvalPrice?.(kernelCall) ?? null, asked));
       if (answer === "park") return { park: true };
-      return answer.approved ? "allow" : { deny: deniedText(asked, answer.note) };
+      if (answer.approved) return "allow";
+      return { deny: replayed ? refusedText(asked, answer.note?.trim() ? answer.note : undefined, "unknown") : deniedText(asked, answer.note) };
     };
   }
 
@@ -1247,16 +1250,16 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
   }
 
   /** Another call than `callId` the journal has asked and not answered, and that has not ended (a call can end with no
-   *  answer: refused by its harness before its gate, a tool gone on a resume): the one that waits, by its asked name. A
-   *  result pi wrote for an abort or an abandon (a parked call's, its pass ended on the park) is no end: it still waits. */
+   *  answer: refused by its harness before its gate, a tool gone on a resume, a nested call abandoned under its caller):
+   *  the one that waits, by its asked name. Any result of pi's is an end: a parked call's never lands (its pass seals the
+   *  journal before the session closes), and a stop's withdrawn answers already count. */
   function waitingOn(entries: readonly { readonly kind: string; readonly data?: unknown; readonly model?: unknown }[], callId: string): { callId: string; tool: string } | undefined {
     const done = new Set(entries.filter((entry) => entry.kind === KINDS.answer).map((entry) => (entry.data as AnswerData).callId));
     for (const entry of entries) {
-      if (entry.kind === KINDS.callEnd && (entry.data as CallEndData).status !== "interrupted") done.add((entry.data as CallEndData).callId);
+      if (entry.kind === KINDS.callEnd) done.add((entry.data as CallEndData).callId);
       if (entry.kind !== "pi.tool-result") continue;
       const result = Array.isArray(entry.model) ? (entry.model[0] as { toolCallId?: unknown } | undefined) : undefined;
-      const diagnostics = (entry.data as { diagnostics?: { code?: string }[] } | undefined)?.diagnostics ?? [];
-      if (typeof result?.toolCallId === "string" && !diagnostics.some((diagnostic) => diagnostic.code === "aborted" || diagnostic.code === "abandoned")) done.add(result.toolCallId);
+      if (typeof result?.toolCallId === "string") done.add(result.toolCallId);
     }
     for (const entry of entries) {
       if (entry.kind !== KINDS.ask) continue;

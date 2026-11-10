@@ -85,3 +85,21 @@ test('without a gate, the bridge runs the call as before', async () => {
   assert.deepEqual(await toolBridge(drive, [payTool(log)]).call('pay', {}, 'c5'), { text: 'paid', isError: false });
   assert.equal(log.length, 1);
 });
+
+test('a replay-safe call a crash cut, asked about again by the next drive, is asked as replayed (it may have been sent); a call never started is not', async () => {
+  const store = memorySessionStore();
+  // The first drive starts the call and is lost with it in flight: its start is in the log, with no end.
+  const first = await openDrive({ writer: await store.open('gate-replayed'), signal: new AbortController().signal });
+  const peek = { name: 'peek', description: 'Peek.', inputSchema: { type: 'object' }, replay: 'safe', execute: () => new Promise(() => {}) };
+  void toolBridge(first, [peek]).call('peek', { q: 'x' }, 'cut');
+  await new Promise((resolve) => setImmediate(resolve));
+  const second = await openDrive({ writer: await store.open('gate-replayed'), signal: new AbortController().signal });
+  const asked = [];
+  const bridge = toolBridge(second, [{ ...peek, execute: async () => 'seen' }], { gate: async (call) => (asked.push(call), { deny: 'Permission denied: peek is set to deny.' }) });
+  await bridge.call('peek', { q: 'x' }, 'cut');
+  await bridge.call('peek', { q: 'y' }, 'fresh');
+  assert.deepEqual(asked, [
+    { callId: 'cut', tool: 'peek', args: { q: 'x' }, replayed: true },
+    { callId: 'fresh', tool: 'peek', args: { q: 'y' } },
+  ]);
+});
