@@ -254,6 +254,8 @@ describe("KeysPage", () => {
     expect([...page.host.querySelectorAll("h2")].map((h) => h.textContent)).toEqual(["Model keys", "Tool keys"]);
     const labels = (section: string) => [...page.host.querySelectorAll(`section[aria-label="${section}"] > ul > li`)].map((li) => li.querySelector("span.font-mono")?.textContent);
     expect([labels("Model keys"), labels("Tool keys")]).toEqual([["Anthropic"], ["Parallel", "Monid", "Browserbase"]]);
+    expect(page.host.querySelector('section[aria-label="Model keys"] > p')?.textContent).toBe("We recommend an OpenRouter key with a dollar cap and an expiration date. Do not share this key with anyone.");
+    expect(page.host.querySelector('section[aria-label="Tool keys"] > p')).toBeNull();
     expect(page.row("Anthropic").textContent).toContain("Model provider · Harnesses pi, claude-agent");
     await page.click(page.row("Anthropic"), /^Paste$/);
     await page.type("ANTHROPIC_API_KEY", FAKE);
@@ -264,6 +266,7 @@ describe("KeysPage", () => {
     document.body.innerHTML = "";
     const older = await open(server([plain]).v2);
     expect(older.host.querySelectorAll("h2")).toHaveLength(0);
+    expect(older.host.textContent).not.toContain("We recommend an OpenRouter key");
     expect(older.row("Parallel").textContent).toContain("Unlocks web_fetch, web_search");
   });
 });

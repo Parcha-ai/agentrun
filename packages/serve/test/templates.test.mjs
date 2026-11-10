@@ -411,6 +411,18 @@ test("a repository parameter is owner/name with no trailing dot: \"acme/widgets.
   }
 });
 
+test("a parameter with a documented default takes it when apply leaves it out: kyb's risk appetite is medium, inbound-lead posts nowhere", async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") });
+  const { api } = await serve(t);
+  const listed = (await api("GET", "/templates")).body.templates;
+  assert.deepEqual([listed.find((x) => x.name === "kyb").parameters.risk_appetite.default, listed.find((x) => x.name === "inbound-lead").parameters.post_to.default], ["medium", "none"]);
+  const kyb = await api("POST", "/templates/kyb/apply", { parameters: {} });
+  assert.equal(kyb.status, 201, JSON.stringify(kyb.body));
+  assert.match((await api("GET", `/agents/${kyb.body.agent_id}`)).body.definition.instructions, /Risk appetite: medium\./);
+  const lead = await api("POST", "/templates/inbound-lead/apply", { parameters: { icp: "B2B fintech" } });
+  assert.equal(lead.status, 201, JSON.stringify(lead.body));
+});
+
 test("every package this server ships applies on a server with nothing saved: no key, no MCP server; what it lacks is a warning, and no tool it grants needs a key", { timeout: 120_000 }, async (t) => {
   withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") }, ["PARALLEL_API_KEY", "MONID_API_KEY", "BROWSERBASE_API_KEY", "KERNEL_API_KEY", "TYPESAFE_API_KEY"]);
   const { api } = await serve(t);

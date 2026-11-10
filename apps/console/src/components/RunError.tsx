@@ -8,9 +8,9 @@ export function RunError({ error, title = "The run failed" }: { error: ApiError;
     <section className="flex gap-3 bg-card px-4 py-4 md:px-5" role="alert">
       <TriangleAlert className="mt-0.5 size-4 shrink-0 text-destructive-text" aria-hidden />
       <div className="min-w-0">
-        <p className="caps text-[12px] font-semibold">{title}</p>
-        <p className="mt-2 break-words font-mono text-[13px] leading-relaxed">{error.message}</p>
-        <p className="mt-2 font-mono text-[11px] text-muted-foreground">
+        <p className="caps text-small font-semibold">{title}</p>
+        <p className="mt-2 break-words font-mono text-body leading-relaxed">{error.message}</p>
+        <p className="mt-2 font-mono text-label text-muted-foreground">
           {error.code}{error.retryable ? " · retryable" : ""}{error.request_id ? ` · ${error.request_id}` : ""}
         </p>
       </div>

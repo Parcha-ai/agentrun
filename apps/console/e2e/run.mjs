@@ -51,7 +51,7 @@ for (const flow of chosen) {
     await within((async () => {
       // A flow that starts signed in: the owner set (through the API when it has none), then this page signed in.
       if (flow.signedIn) { await owner(server); await signIn(page, origin); }
-      await flow.run({ server, context, page, errors, blocked: opened.blocked, browser, origin, base: origin, api: apiOf(server) });
+      await flow.run({ server, context, page, errors, blocked: opened.blocked, icons: opened.icons, browser, origin, base: origin, api: apiOf(server) });
     })(), FLOW_MS, flow.name);
     if (opened.blocked.length && !flow.allowsBlocked) throw new Error(`requests left loopback: ${opened.blocked.join(", ")}`);
     if (errors.length && !flow.allowsErrors) throw new Error(`the page reported errors: ${errors.join(" | ")}`);

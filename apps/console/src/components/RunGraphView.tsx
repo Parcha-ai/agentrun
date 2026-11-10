@@ -68,7 +68,7 @@ export function RunGraphView({ data, actions = {}, fileUrl, initial = null, last
     <div className="flex h-full min-h-0 flex-col">
       <Totals data={data} readAt={readAt} now={now} actions={actions} stale={!final && !!lastRead && now - lastRead > 5000 ? Math.max(1000, now - lastRead) : 0} />
       {data.run.paused && (
-        <p className="border-b border-warning/40 bg-warning/10 px-5 py-2 font-mono text-[12px] text-warning-text md:px-8" role="status">
+        <p className="border-b border-warning/40 bg-warning/10 px-5 py-2 font-mono text-small text-warning-text md:px-8" role="status">
           Paused. Calls already in flight finish; no new node starts until you resume. The run keeps its place across a restart.
         </p>
       )}
@@ -96,23 +96,23 @@ function Totals({ data, readAt, now, actions, stale }: { data: RunGraph; readAt:
   const { usd: cost, unknown } = costOf(data);
   const cells: [string, React.ReactNode, string?][] = [
     ["Elapsed", elapsed(elapsedNow(data, readAt, now))],
-    ["Cost", <>{usd(cost)}{unknown > 0 && <span className="text-[11px] font-normal text-muted-foreground"> + {unknown} unknown</span>}</>, "Decisions and model calls, as the providers priced them"],
+    ["Cost", <>{usd(cost)}{unknown > 0 && <span className="text-label font-normal text-muted-foreground"> + {unknown} unknown</span>}</>, "Decisions and model calls, as the providers priced them"],
     ["Decisions", data.totals.decisions],
     ["Tool calls", data.totals.effects],
     ["Agents", agentsRun(data), "Agent loops this run started. Decision models and tools answer one call each; none of them is an agent."],
   ];
-  if (c) cells.push(["Items", <><span>{c.done}</span><span className="text-muted-foreground">/{c.total}</span>{c.failed > 0 && <span className="ml-2 text-[11px] text-destructive-text">{c.failed} failed</span>}{c.review > 0 && <span className="ml-2 text-[11px] text-warning-text">{c.review} review</span>}</>]);
+  if (c) cells.push(["Items", <><span>{c.done}</span><span className="text-muted-foreground">/{c.total}</span>{c.failed > 0 && <span className="ml-2 text-label text-destructive-text">{c.failed} failed</span>}{c.review > 0 && <span className="ml-2 text-label text-warning-text">{c.review} review</span>}</>]);
   return (
     <div className="flex flex-wrap items-stretch border-b">
       {data.run.paused && <div className="flex items-center pl-5 md:pl-8"><Chip tone="warning"><Pause className="size-3" aria-hidden /> Paused</Chip></div>}
       {cells.map(([l, v, title], k) => (
         <div key={l} className={cn("px-4 py-2", k ? "border-l" : "pl-5 md:pl-8")} title={title}>
-          <p className="caps text-[10px] text-muted-foreground">{l}</p>
-          <p className="font-mono text-[15px] font-semibold tabular-nums">{v}</p>
+          <p className="caps text-micro text-muted-foreground">{l}</p>
+          <p className="font-mono text-prose font-semibold tabular-nums">{v}</p>
         </div>
       ))}
       <div className="flex flex-1 items-center justify-end gap-3 px-5 py-2 md:px-8">
-        {stale > 0 && <span className="font-mono text-[11px] text-muted-foreground" role="status">Last read {elapsed(stale)} ago, reading again</span>}
+        {stale > 0 && <span className="font-mono text-label text-muted-foreground" role="status">Last read {elapsed(stale)} ago, reading again</span>}
         {!final && (data.run.paused
           ? <Button size="sm" variant="solid" onClick={actions.onResume} disabled={!actions.onResume || !!actions.busy}><Play aria-hidden /> {actions.busy === "resume" ? "Resuming" : "Resume"}</Button>
           : <Button size="sm" onClick={actions.onPause} disabled={!actions.onPause || !!actions.busy} title="Calls in flight finish; no new node starts."><Pause aria-hidden /> {actions.busy === "pause" ? "Pausing" : "Pause"}</Button>)}
@@ -129,7 +129,7 @@ const agentsRun = (g: RunGraph) => g.graph.nodes.filter((n) => AGENT_KINDS.has(n
 export function GraphUnavailable({ error }: { error: unknown }) {
   const status = (error as { status?: number } | null)?.status;
   return (
-    <p className={cn("m-8 border p-4 font-mono text-[13px]", status === 404 ? "text-muted-foreground" : "text-destructive-text")} role="status">
+    <p className={cn("m-8 border p-4 font-mono text-body", status === 404 ? "text-muted-foreground" : "text-destructive-text")} role="status">
       {error == null ? "Reading the run's graph..." : status === 404 ? "This server does not give run graphs: GET /v2/runs/{id}/graph is not there." : `The run's graph could not be read: ${(error as Error).message ?? String(error)}`}
     </p>
   );

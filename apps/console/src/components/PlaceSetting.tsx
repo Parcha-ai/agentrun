@@ -32,19 +32,19 @@ export function PlaceSetting({ value, saved, places, tools, picked, onChange, er
   const named = (names: string[]) => names.map((n) => n.charAt(0).toUpperCase() + n.slice(1)).join(" and ");
   const option = (id: "runner" | "sandbox", label: string, note: ReactNode, onPick: () => void, disabled = false) => (
     <label className={cn("flex items-start gap-3 border px-4 py-3", mode === id ? "border-foreground" : "border-border", disabled ? "cursor-not-allowed opacity-60" : "cursor-pointer")}>
-      <input type="radio" name="place" value={id} checked={mode === id} disabled={disabled} onChange={onPick} className="mt-1 accent-[hsl(var(--primary))]" />
-      <span><span className="block text-[14px] font-semibold">{label}</span><span className="mt-0.5 block text-[12px] text-muted-foreground">{note}</span></span>
+      <input type="radio" name="place" value={id} checked={mode === id} disabled={disabled} onChange={onPick} className="mt-1 accent-primary" />
+      <span><span className="block text-lead font-semibold">{label}</span><span className="mt-0.5 block text-small text-muted-foreground">{note}</span></span>
     </label>
   );
   return (
     <div>
-      <div className="mb-2 caps text-[12px] font-semibold">Where it runs</div>
+      <div className="mb-2 caps text-small font-semibold">Where it runs</div>
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2" role="radiogroup" aria-label="Where it runs">
         {option("runner", "On the server", "No box and no shell: its files stay in the run's folder on the server.", toRunner)}
         {option("sandbox", "In a sandbox", "Its file and shell tools run in a box; its keys stay on the server.", () => toSandbox(box), noBox)}
       </div>
       {noBox && (
-        <div className="mt-3 border px-4 py-3 text-[12px] text-muted-foreground" role="status">
+        <div className="mt-3 border px-4 py-3 text-small text-muted-foreground" role="status">
           <p>No box is set up on this server, so this agent runs on the server.</p>
           <ul className="mt-1">{places.boxes.map((b) => <li key={b.id}><span className="font-mono">{b.id}</span>{b.reason ? `: ${b.reason}` : ""}</li>)}</ul>
         </div>
@@ -54,18 +54,18 @@ export function PlaceSetting({ value, saved, places, tools, picked, onChange, er
           {places.boxes.map((b) => (
             <li key={b.id} className="border-b last:border-b-0">
               <label className={cn("flex items-start gap-3 px-4 py-2.5", b.available ? "cursor-pointer" : "cursor-not-allowed text-muted-foreground")}>
-                <input type="radio" name="box" value={b.id} checked={box === b.id} disabled={!b.available && box !== b.id} onChange={() => toSandbox(b.id)} className="mt-1 accent-[hsl(var(--primary))]" />
-                <span className="min-w-0"><span className="block font-mono text-[13px]">{b.id}</span>{!b.available && b.reason && <span className="mt-0.5 block text-[12px]">{b.reason}</span>}</span>
+                <input type="radio" name="box" value={b.id} checked={box === b.id} disabled={!b.available && box !== b.id} onChange={() => toSandbox(b.id)} className="mt-1 accent-primary" />
+                <span className="min-w-0"><span className="block font-mono text-body">{b.id}</span>{!b.available && b.reason && <span className="mt-0.5 block text-small">{b.reason}</span>}</span>
               </label>
             </li>
           ))}
         </ul>
       )}
       {mode === "runner" && dropped.length > 0 && (
-        <p className="mt-2 text-[12px] text-muted-foreground" role="status">{named(dropped)} {dropped.length === 1 ? "runs" : "run"} only in a sandbox, so {dropped.length === 1 ? "it's" : "they're"} turned off for this agent.</p>
+        <p className="mt-2 text-small text-muted-foreground" role="status">{named(dropped)} {dropped.length === 1 ? "runs" : "run"} only in a sandbox, so {dropped.length === 1 ? "it's" : "they're"} turned off for this agent.</p>
       )}
-      {error && <p className="mt-2 font-mono text-[12px] text-destructive-text" role="alert">{error}</p>}
-      {warning && <p className="mt-2 font-mono text-[12px] text-warning-text">{warning}</p>}
+      {error && <p className="mt-2 font-mono text-small text-destructive-text" role="alert">{error}</p>}
+      {warning && <p className="mt-2 font-mono text-small text-warning-text">{warning}</p>}
     </div>
   );
 }

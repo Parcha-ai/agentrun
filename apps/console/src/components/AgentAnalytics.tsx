@@ -93,9 +93,9 @@ export function AnalyticsTab({ agent, v2, now = Date.now, stats: first }: { agen
   return (
     <div className="space-y-6">
       <AnalyticsFilter range={range} onRange={setRange} agent={null} agents={[]} />
-      {error ? <p className="border p-4 font-mono text-[13px] text-destructive-text" role="alert">The analytics could not be read: {error}</p>
-        : !stats || !a ? <p className="py-12 text-center font-mono text-[13px] text-muted-foreground">Loading analytics...</p>
-        : !a.totals.runs ? <div className="border px-4 py-12 text-center"><p className="font-mono text-[13px] text-muted-foreground">No runs of this agent in this range.</p></div>
+      {error ? <p className="border p-4 font-mono text-body text-destructive-text" role="alert">The analytics could not be read: {error}</p>
+        : !stats || !a ? <p className="py-12 text-center font-mono text-body text-muted-foreground">Loading analytics...</p>
+        : !a.totals.runs ? <div className="border px-4 py-12 text-center"><p className="font-mono text-body text-muted-foreground">No runs of this agent in this range.</p></div>
         // The store's cost basis, as Mission Control reads it; a refetch keeps the last view, dimmed, until the new one is in.
         : <MissionAnalytics a={a} basis={stats.cost.basis} now={now()} refreshing={loading} />}
     </div>
