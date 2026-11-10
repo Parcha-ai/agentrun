@@ -1,10 +1,12 @@
 // A CLI run's learned_workflow booking through the runner's adapter loop (the one-ledger ruling, for a CLI harness's
 // learned node): a faux CLI harness calls learned_workflow, its model node runs on the session's model proxy under the
 // learned_workflow side key, and the runner's booking records that request labelled learned_workflow, priced by the
-// session as the harness's own. A run whose pin names no learned workflow books nothing under that label. The faux CLI
-// harness is the one the harness table hands the runner (harnessOf), on a gateway on loopback; no sleeps, no port races.
+// session as the harness's own. The workflow is the agent's, learned: active in its learning folder at the commit the
+// run's learning start pinned, read at the claim (runner/learning-seed.ts). A run with no learned workflow books nothing
+// under that label. The faux CLI harness is the one the harness table hands the runner (harnessOf), on a gateway on
+// loopback; no sleeps, no port races.
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -12,6 +14,7 @@ import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { createRegistry, Harness } from "@earendil-works/pi-durable";
 import { startFauxGateway } from "./fixtures/faux-gateway.mjs";
+import { landWorkflows, startAt } from "./learned-workflow-seed-support.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const { openSqliteStore } = await import("../dist/store/sqlite/store.js");
@@ -22,8 +25,6 @@ const { cliRunSpecFromLaunch } = await import("../dist/runner/cli-run-spec.js");
 const { journalSessions } = await import("../dist/runner/sessions.js");
 const { CONFORMANCE_TIMING } = await import("../dist/runner/conformance/harness.js");
 const { LEARNED_WORKFLOW_TOOL } = await import("../dist/learned-workflow.js");
-const { LEARNING_PIN, LEARNED_WORKFLOWS_FILE } = await import("../dist/learning.js");
-const { runFolder } = await import("../dist/workspace/paths.js");
 
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
 const SEAL_KEY = Buffer.alloc(32, 7);
@@ -56,8 +57,9 @@ const until = async (done, what, ms = 40_000) => {
   }
 };
 
-/** A CLI run of the faux harness with `tools` and `input`, its pin naming the `answer` workflow when `learned`, through
- *  the runner's dispatch. Its session's booked requests (runner.request) and turns, and the gateway's requests. */
+/** A CLI run of the faux harness with `tools` and `input`, its agent's learning folder holding the active `answer`
+ *  workflow when `learned` (its launch's learning start pinning that commit), through the runner's dispatch. Its
+ *  session's booked requests (runner.request) and turns, and the gateway's requests. */
 async function cliRun(t, { tools, instructions, learned }) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-cli-booking-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
@@ -75,17 +77,11 @@ async function cliRun(t, { tools, instructions, learned }) {
   });
   // The faux harness reads the turn it runs from the system prompt (the agent's instructions among it), as the harness
   // tests do: so the instruction, not the person's message, names the learned workflow to run.
-  await server.agents.create({ id: "agent-1", name: "Learns" }, { id: "rev-1", kind: "agentic", body: { instructions, harness: HARNESS, tools } });
-  const launch = { input: { content: "Do the task." }, title: "t", place: { mode: "runner" }, harness: HARNESS, model: { provider: "openai", modelId: "gpt-test" } };
+  await server.agents.create({ id: "agent-1", name: "Learns" }, { id: "rev-1", kind: "agentic", body: { instructions, harness: HARNESS, tools, ...(learned ? { learning: true } : {}) } });
+  const seed = learned ? await landWorkflows(dir, "agent-1", [{ name: "answer", description: "Answers a question as a number", workflow: answerFlow }]) : undefined;
+  const launch = { input: { content: "Do the task." }, title: "t", place: { mode: "runner" }, harness: HARNESS, model: { provider: "openai", modelId: "gpt-test" }, ...(learned ? { learning: startAt(seed) } : {}) };
   await server.runs.create({ id: RUN, agentId: "agent-1", revisionId: "rev-1" }, { body: launch });
   await server.flush?.();
-  // The run's pin and its learned workflows in the run's folder, as the run's start writes them, when it has one.
-  if (learned) {
-    const root = runFolder(dir, "agent-1", RUN);
-    mkdirSync(root, { recursive: true });
-    writeFileSync(join(root, LEARNING_PIN), JSON.stringify({ seed: null, section: "", workflows: ["answer"] }));
-    writeFileSync(join(root, LEARNED_WORKFLOWS_FILE), JSON.stringify([{ name: "answer", description: "Answers a question as a number", workflow: JSON.stringify(answerFlow) }]));
-  }
   // The faux CLI harness on a loopback gateway, handed the runner through the env's harness table (harnessOf).
   // The harness table loads a test's module only under a test runner (harness-table.ts): hand the runner the flag, so its
   // cli spec takes the faux harness this test names, never the built-in codex (which is not installed here).
@@ -124,8 +120,16 @@ test("a CLI run's learned_workflow model node books on the run's one ledger, lab
   assert.ok(own.length >= 1 && !own.some((request) => request.turn === node[0].turn), `the harness's own requests carry no learned_workflow label: ${JSON.stringify(own)}`);
 });
 
-test("a CLI run whose pin names no learned workflow books nothing under the learned_workflow label", async (t) => {
+test("a CLI run with no learned workflow books nothing under the learned_workflow label", async (t) => {
   const { row, requests } = await cliRun(t, { tools: ["read"], instructions: "Hold the request that carries the note.", learned: false });
   assert.notEqual(row.state, "failed", `the run did not fail: ${JSON.stringify(row)}`);
   assert.deepEqual(requests.filter((request) => request.host === LEARNED_WORKFLOW_TOOL), [], "no learned workflow, nothing booked under its label");
+});
+
+test("a CLI turn that ends on its own error fails the run in main's words: the harness's name, then the CLI's error", async (t) => {
+  // Main words a CLI turn's own error as `<harness>: <error>` (harness-app.ts), so a person reads which CLI said it.
+  const said = "unexpected status 500 Internal Server Error: upstream broke";
+  const { row } = await cliRun(t, { tools: ["read"], instructions: `Fail with: ${said}`, learned: false });
+  assert.equal(row.state, "failed", `the run failed: ${JSON.stringify(row)}`);
+  assert.equal(row.summary, `${HARNESS}: ${said}`, "the run's error names its harness first");
 });

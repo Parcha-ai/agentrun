@@ -1,3 +1,4 @@
+import cronstrue from "cronstrue";
 import { ClientError } from "./client";
 import { clock, when } from "./format";
 import type { Firing, Trigger, TriggerCreate, TriggerInput, TriggerSource, TriggerTarget } from "./v2";
@@ -35,9 +36,19 @@ export function span(seconds: number): string {
   return n === 1 ? unit : `${n} ${unit}s`;
 }
 
+/** A cron line in words, by cronstrue (MIT, no dependencies) on a 24-hour clock: "0 8 * * 1" is "At 08:00, only on
+ *  Monday". One it can't read stays as it is, said as a cron line. */
+export function cronWords(cron: string): string {
+  try {
+    return cronstrue.toString(cron, { use24HourTimeFormat: true, throwExceptionOnParseError: true, verbose: false });
+  } catch {
+    return `Cron ${cron}`;
+  }
+}
+
 /** When a schedule fires: its cron line and zone, its one time, or its interval. */
 export function whenWords(source: Schedule["source"]): string {
-  if ("cron" in source) return `Cron ${source.cron} · ${source.timezone}`;
+  if ("cron" in source) return `${cronWords(source.cron)} · ${source.timezone}`;
   if ("at" in source) return `Once, ${when(source.at)}`;
   return `Every ${span(source.every_s)}`;
 }
@@ -62,6 +73,16 @@ export const isWebhookTrigger = (t: Trigger): t is WebhookTrigger => t.source.ki
  *  URL or secret of its own. */
 export type GitHubTrigger = Trigger & { source: Extract<TriggerSource, { kind: "github" }>; target: TriggerTarget };
 export const isGitHubTrigger = (t: Trigger): t is GitHubTrigger => t.source.kind === "github" && t.target.kind === "start_run";
+
+/** The GitHub events the form offers, each an event (X-GitHub-Event) and one of its actions. A trigger made through the API
+ *  may take others; its page says them as they are. */
+export const GITHUB_EVENTS: { event: string; action: string; label: string }[] = [
+  { event: "pull_request", action: "opened", label: "A pull request is opened" },
+  { event: "pull_request", action: "synchronize", label: "A pull request gets new commits" },
+  { event: "pull_request", action: "reopened", label: "A pull request is reopened" },
+  { event: "issue_comment", action: "created", label: "Someone comments on an issue or pull request" },
+];
+
 /** The URL a webhook trigger's requests go to: the documented path, POST /v2/hooks/{trigger_id}, on this server's address
  *  as the page has it. */
 export const hookUrlOf = (t: Pick<Trigger, "id">): string => `${location.origin}/v2/hooks/${encodeURIComponent(t.id)}`;
@@ -186,21 +207,41 @@ export const emptyWebhook = (): WebhookDraft => ({ name: "", signature: "standar
 /** A new webhook's create body, or what is missing, by the field the server would name: bodyOf's rules for the run it
  *  starts. The URL and the signing secret are the server's, in the create's answer. */
 export function webhookBodyOf(d: WebhookDraft, capOptional = false): { body?: TriggerCreate; issues?: Record<string, string> } {
-  const issues: Record<string, string> = {};
+  return createOf(d, { kind: "webhook", signature: d.signature }, {}, capOptional, "a webhook");
+}
+
+/** A new GitHub trigger's fields as typed: the picked events as "event:action" (GITHUB_EVENTS), then the run each starts. */
+export type GitHubDraft = { name: string; events: string[]; agentId: string; content: string; maxCost: string };
+export const emptyGitHub = (): GitHubDraft => ({ name: "", events: ["pull_request:opened"], agentId: "", content: "", maxCost: "" });
+
+/** A new GitHub trigger's create body, or what is missing: `accept` groups the picked actions by event, in the list's order. */
+export function githubBodyOf(d: GitHubDraft, capOptional = false): { body?: TriggerCreate; issues?: Record<string, string> } {
+  const accept: { event: string; actions: string[] }[] = [];
+  for (const { event, action } of GITHUB_EVENTS.filter((e) => d.events.includes(`${e.event}:${e.action}`))) {
+    const rule = accept.find((a) => a.event === event);
+    if (rule) rule.actions.push(action);
+    else accept.push({ event, actions: [action] });
+  }
+  return createOf(d, { kind: "github", accept }, accept.length ? {} : { "source.accept": "Pick at least one event." }, capOptional, "a GitHub trigger");
+}
+
+/** A create body from its source and the run it starts (bodyOf's rules for the target), or what is missing. */
+function createOf(d: { name: string; agentId: string; content: string; maxCost: string }, source: TriggerCreate["source"], issues: Record<string, string>, capOptional: boolean, what: string): { body?: TriggerCreate; issues?: Record<string, string> } {
   if (!d.agentId) issues["target.agent_id"] = "Pick an agent.";
   if (!d.content.trim()) issues["target.input"] = "Say what each run is asked.";
   const cap = numberOf(d.maxCost);
-  if (!d.maxCost.trim()) { if (!capOptional) issues["target.max_cost_usd"] = "A cost cap is needed: every run a webhook starts is capped."; }
+  if (!d.maxCost.trim()) { if (!capOptional) issues["target.max_cost_usd"] = `A cost cap is needed: every run ${what} starts is capped.`; }
   else if (cap === undefined) issues["target.max_cost_usd"] = NEEDED;
   if (Object.keys(issues).length) return { issues };
   return {
     body: {
       ...(d.name.trim() ? { name: d.name.trim() } : {}),
-      source: { kind: "webhook", signature: d.signature },
+      source,
       target: { kind: "start_run", agent_id: d.agentId, input: { content: d.content }, ...(cap !== undefined ? { max_cost_usd: cap } : {}) },
     },
   };
 }
+
 
 /** A schedule as the form holds it, to edit: a one time and an interval's start in this browser's zone. */
 export function draftOf(t: Schedule): Draft {

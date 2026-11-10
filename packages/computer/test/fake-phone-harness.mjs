@@ -87,13 +87,16 @@ const json = (status, body, headers = {}) => new Response(JSON.stringify(body), 
  * more: a row's page opens beside the list, which stays; `rowTapsMiss`, a tap on a Settings row does nothing. Either
  * leaves touch.tap with run 6's live words, and the case's words must tell them apart; `endLag`, a DELETE ends the
  * session asynchronously, as the live service did in run 7: it stays listed and readable as `closing` for endLag more
- * reads of it (GET /sessions/{id}), then is gone (404).
+ * reads of it (GET /sessions/{id}), then is gone (404); `unlockEcho`, a wrong unlock code is answered with the code it
+ * was given, twice, on the reply's first line; `onServer(service, stage)`, called with each request to the local adb
+ * server before it is handled ("before") and before its answer goes back ("after"): a promise it answers holds the
+ * request at that stage until it settles, so a test can order a disconnect against a connect.
  *
  * Tasks are as a live Android 15 keeps them (run 5): Settings' search is another package's activity
  * (com.android.settings.intelligence) on top of Settings' own task. A force-stop of Settings leaves it there, a plain
  * `am start` of Settings resumes that task, search in front, and only `--activity-clear-task` starts Settings afresh.
  */
-export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = false, loseRecovery = false, cancelPost, stall, onList, postAnswer, others = [], code, abi = "x86_64", launchHidden = false, launchNothing = false, twoPane = false, rowTapsMiss = false, endLag = 0, clock = fakeClock() } = {}) {
+export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = false, loseRecovery = false, cancelPost, stall, onList, postAnswer, others = [], code, abi = "x86_64", launchHidden = false, launchNothing = false, twoPane = false, rowTapsMiss = false, endLag = 0, unlockEcho = false, onServer, clock = fakeClock() } = {}) {
 	const requests = [];
 	const adbCalls = [];
 	const sessions = new Map(others.map((s) => [s.id, { ...s }]));
@@ -346,7 +349,8 @@ export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = fa
 		}
 		if (w[0] === "echo") return ok(`${w.slice(1).join(" ")}\n`);
 		if (w[0] === "unlock") {
-			if (w[1] !== expected) return ok("wrong code\n");
+			// unlockEcho: a vendor that echoes the code it was given, twice, on the reply's first line.
+			if (w[1] !== expected) return ok(unlockEcho ? `wrong code ${w[1]}: ${w[1]} is not this phone's\n` : "wrong code\n");
 			phone.unlockedNow = true;
 			return ok("unlocked\n");
 		}
@@ -401,13 +405,18 @@ export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = fa
 		return { exitCode: 127, stdout: Buffer.alloc(0), stderr: `/system/bin/sh: ${w[0]}: inaccessible or not found\n` };
 	}
 
+	/**
+	 * A raw screencap, upright as Android's is: the display's own orientation, so a phone turned to landscape
+	 * (phone.landscape) gives its height as the width and its width as the height. `wm size` stays the portrait size.
+	 */
 	function screencap() {
+		const [width, height] = phone.landscape ? [SCREEN.height, SCREEN.width] : [SCREEN.width, SCREEN.height];
 		const header = Buffer.alloc(16);
-		header.writeUInt32LE(SCREEN.width, 0);
-		header.writeUInt32LE(SCREEN.height, 4);
+		header.writeUInt32LE(width, 0);
+		header.writeUInt32LE(height, 4);
 		header.writeUInt32LE(1, 8);
 		header.writeUInt32LE(0, 12);
-		const pixels = Buffer.alloc(SCREEN.width * SCREEN.height * 4);
+		const pixels = Buffer.alloc(width * height * 4);
 		for (let i = 0; i < pixels.length; i += 4) pixels.set([phone.foreground !== LAUNCHER && !launchHidden ? 30 : 200, 60, 90, 255], i);
 		return Buffer.concat([header, pixels]);
 	}
@@ -496,6 +505,16 @@ export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = fa
 	 */
 	async function server(service, options = {}) {
 		serverCalls.push(options.transport === undefined ? service : `host:transport-id:${options.transport} ${service.replace(/unlock \S+/, "unlock [code]")}`);
+		// A test may hold a request before the server handles it, or hold its answer after (onServer answers a promise to
+		// wait on, for the stage "before" or "after").
+		const before = onServer?.(service, "before");
+		if (before) await before;
+		const answer = handle(service, options);
+		const after = onServer?.(service, "after");
+		if (after) await after;
+		return answer;
+	}
+	function handle(service, options) {
 		if (options.transport !== undefined) {
 			const serial = [...transports].find(([, id]) => id === options.transport)?.[0];
 			if (serial === undefined || !phone.connected.has(serial)) return { ok: false, error: { code: "phone", message: `the adb server refused host:transport-id: device not found` } };

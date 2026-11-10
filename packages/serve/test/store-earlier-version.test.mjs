@@ -1,12 +1,15 @@
 // No migration (the lead's ruling): the server's open refuses a data directory an earlier version wrote, naming what it
-// found, with words to start in a new, empty directory. Nothing is read, moved or changed there. An empty directory (or one
+// found, with two choices: keep the directory with the earlier version, or start in a new, empty directory. Nothing is read, moved or changed there. An empty directory (or one
 // not made yet, or one holding this version's store) opens.
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { after, test } from "node:test";
+import { after, test as nodeTest } from "node:test";
+import { sqliteAdapterTests } from "./store-target.mjs";
+
+const test = sqliteAdapterTests(nodeTest, "an earlier version's data directory files");
 
 const { openSqliteStore } = await import("../dist/store/index.js");
 
@@ -79,8 +82,11 @@ for (const [what, make, named] of SHAPES) {
     await assert.rejects(openSqliteStore({ dataDir: dir, role: "server" }), (error) => {
       assert.equal(error.name, "StoreFromEarlierVersion");
       assert.ok(error.found.includes(named), `it names ${named}: ${JSON.stringify(error.found)}`);
-      assert.match(error.message, /earlier version/);
-      assert.match(error.message, /new, empty directory/);
+      assert.match(error.message, /earlier version's data/);
+      // Two choices, both in plain words: keep the directory with the earlier version, or start this version on a new
+      // directory and add the agents (and what they used) there again.
+      assert.match(error.message, /Keep this directory with the earlier version/);
+      assert.match(error.message, /or start this version on a new, empty directory and add your agents, MCP servers, keys and sign-ins there again\.$/);
       return true;
     });
     assert.deepEqual(readdirSync(dir, { recursive: true }).sort(), before, "nothing made, moved or removed");

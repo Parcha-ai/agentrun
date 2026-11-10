@@ -89,8 +89,11 @@ const pauseOn = async (error: unknown): Promise<void> => {
 };
 /** The kernel cap's booking of a run's paid calls (RunTools), as a paid request uses it. */
 export type PaidBooking = {
-  admit(request: { id: string; name: string; holdUsd: number; basis: string; call?: string }): Promise<unknown>;
-  settle(id: string, usd: number | null): Promise<unknown>;
+  /** `chargedBy`: who charges for it (the charge's `charged_by` on main's records: parallel, monid, an MCP server, a
+   *  browser vendor), named on its runner.request. */
+  admit(request: { id: string; name: string; holdUsd: number; basis: string; call?: string; chargedBy?: string }): Promise<unknown>;
+  /** `givenBack`: the hold let go unused, nothing sent (RunTools.settle). */
+  settle(id: string, usd: number | null, options?: { readonly givenBack?: true }): Promise<unknown>;
 };
 const ledgers = new AsyncLocalStorage<Ledger>();
 
@@ -147,8 +150,19 @@ export const holdRefusal = (name: string, error: unknown): string =>
 export const settleOnRoot = (kind: string, data: Record<string, string | number | null>): Promise<void> | undefined => rootRecord?.(kind, data);
 
 /** The ledger of a tool call: its id, and its commits to the run's store. Its mark (TOOL_STARTED) is the call's own
- *  commit, so a stopped turn sends nothing new; its settle goes to the run's root when that is set (settleIn). */
-export const ledgerOf = (api: ToolExecutionApi, context: Context): Ledger => ({ call: api.callId, record: (kind, data) => ((kind === TOOL_COST ? settleOnRoot(kind, data) : undefined) ?? api.commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind, data })), context)) });
+ *  commit, so a stopped turn sends nothing new; its settle goes to the run's root when that is set (settleIn). On the
+ *  runner the call runs inside the run's one ledger (the adapter loop's bookedIn, which carries the run's paid tool calls
+ *  and its pause): its `paid` and `pause` are kept, so a paid request is admitted on the run's cap before it is sent and
+ *  settled there, never booked beside it where the cap does not judge it. */
+export const ledgerOf = (api: ToolExecutionApi, context: Context): Ledger => {
+  const outer = ledgers.getStore();
+  return {
+    call: api.callId,
+    record: (kind, data) => ((kind === TOOL_COST ? settleOnRoot(kind, data) : undefined) ?? api.commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind, data })), context)),
+    ...(outer?.paid ? { paid: outer.paid } : {}),
+    ...(outer?.pause ? { pause: outer.pause } : {}),
+  };
+};
 
 /** `tool` with each call's paid requests booked under it: its execute runs with the call's ledger set. */
 export function booking<T extends ToolRegistration>(tool: T): T {
@@ -205,10 +219,10 @@ export const paidLedger = (): PaidBooking | undefined => ledgers.getStore()?.pai
 
 /** One paid step on the run's one ledger `paid`, under call `call`: admitted at `holdUsd` (refused unsent: the cap's words,
  *  or why its hold could not be kept), then `run`, then settled at `chargeOf` its outcome (null: at its hold). */
-export async function paidStep<T>(paid: PaidBooking, call: string, fee: { name: string; holdUsd: number; basis: string }, run: () => Promise<T>, chargeOf: (outcome: { result: T } | { thrown: unknown }) => number | null): Promise<{ refused: string } | { result: T }> {
+export async function paidStep<T>(paid: PaidBooking, call: string, fee: { name: string; holdUsd: number; basis: string; by: string }, run: () => Promise<T>, chargeOf: (outcome: { result: T } | { thrown: unknown }) => number | null): Promise<{ refused: string } | { result: T }> {
   const id = `${call}#${(paidSeq += 1)}`;
   try {
-    await paid.admit({ id, name: fee.name, holdUsd: fee.holdUsd, basis: fee.basis, call });
+    await paid.admit({ id, name: fee.name, holdUsd: fee.holdUsd, basis: fee.basis, call, chargedBy: fee.by });
   } catch (error) {
     await pauseOn(error);
     return { refused: (error as { code?: unknown })?.code === "spend_cap_reached" ? String((error as Error).message) : holdRefusal(fee.name, error) };
@@ -230,7 +244,7 @@ export async function paidStep<T>(paid: PaidBooking, call: string, fee: { name: 
 async function paidOn(paid: PaidBooking, call: string, fee: Fee, send: () => Promise<Response>, chargeOf: (sent: Sent) => number | undefined): Promise<Response> {
   const id = `${call}#${(paidSeq += 1)}`;
   try {
-    await paid.admit({ id, name: fee.name, holdUsd: fee.usd, basis: fee.basis, call });
+    await paid.admit({ id, name: fee.name, holdUsd: fee.usd, basis: fee.basis, call, chargedBy: fee.by });
   } catch (error) {
     await pauseOn(error);
     const said = String((error as Error)?.message ?? error);

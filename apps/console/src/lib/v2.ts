@@ -33,6 +33,9 @@ export type ToolSettings = Record<string, ToolSetting>;
 export type McpPrivateHosts = Answer<"getMcpPrivateHosts">;
 /** GET /v2/agents/{id}'s `tools`: each tool the agent grants, with its permission and provider in force. */
 export type AgentTool = NonNullable<components["Agent"]["tools"]>[number];
+/** The computer an agent's runs are given (definition.computer): its kind and the provider that serves it, absent for
+ *  none. The server keeps `place` as its v2 view and writes both from either; the console writes this one. */
+export type Computer = NonNullable<components["DefinitionInput"]["computer"]>;
 
 /** An agent's approvals (definition.approvals): "ask", the default, parks a call its tool gate says ask for the owner's
  *  answer; "never" runs it unattended (every tool it has granted; deny and pins still apply). */
@@ -94,9 +97,17 @@ export type RunFiles = components["RunFileList"];
 export type RunBrowser = Answer<"getRunComputer">;
 
 /** Tool keys (GET /v2/settings/tool-keys, a serve extension). The server never sends a value. */
-export type ToolKeys = Answer<"listToolKeys">;
-export type ToolKey = ToolKeys["keys"][number];
+/** A secret as every read says it (SecretMeta): its "<plane>:<id>" name, set or not, where from, and its own last change. */
+export type SecretMeta = components["SecretMeta"];
+/** GET /v2/auth/session's answer, on a server with accounts or without (`accounts`): whether this session may write a
+ *  secret, and why not. */
+export type SessionSecrets = Answer<"getAuthSession">;
+type ServedToolKeys = Answer<"listToolKeys">;
+/** A key with its secrets (`secrets`, "tool:<KEY>"/"model:<KEY>"); `fields` as served, for the paste form. */
+export type ToolKey = ServedToolKeys["keys"][number];
+export type ToolKeys = ServedToolKeys;
 export type ToolKeyField = ToolKey["fields"][number];
+
 /** A saved key's check with its provider. Null, or absent from a server that does not check, says nothing. */
 export type ToolKeyCheck = NonNullable<ToolKey["check"]>;
 /** Saved values that do not open on this server, and why. `fields` is empty when the whole file does not read. */
@@ -113,8 +124,10 @@ export type WebhookAttempt = Answer<"listWebhookDeliveries">["attempts"][number]
 /** `capabilities.features.webhooks`. */
 export type WebhooksFeature = NonNullable<components["Features"]["webhooks"]>;
 
-/** This server's GitHub App (GET /v2/integrations/github; 404 when none is connected): never a secret. */
-export type GitHubConnection = Answer<"getGitHubConnection">;
+/** GET /v2/integrations/github's answer, always a 200: `{connected: false}` with no App, else the App. */
+export type GitHubStatus = Answer<"getGitHubConnection">;
+/** This server's GitHub App, connected (`connected: true`): never a secret. */
+export type GitHubConnection = Extract<GitHubStatus, { connected: true }>;
 /** POST /v2/integrations/github/connect's answer: where the browser posts the App's manifest (`action` carries ?state=). */
 export type GitHubConnectStart = Answer<"connectGitHub">;
 /** DELETE /v2/integrations/github's answer: how many GitHub triggers went off, and what to delete on GitHub. */
@@ -147,5 +160,3 @@ export type Archil = Answer<"getWorkspaceArchil">;
 export type ArchilBody = Body<"putWorkspaceArchil">;
 /** POST /v2/workspace/archil/test's answer. */
 export type ArchilTest = Answer<"testWorkspaceArchil">;
-/** One secret's fields, as every secret read gives them: name ("<plane>:<id>"), set, source and changed_at. */
-export type SecretMeta = components["SecretMeta"];

@@ -4,7 +4,11 @@
 // on its own, and nothing of the slow one is kept.
 import assert from "node:assert/strict";
 import { setTimeout as sleep } from "node:timers/promises";
-import { test } from "node:test";
+import { test as nodeTest } from "node:test";
+import { sqliteAdapterTests } from "./store-target.mjs";
+
+// Postgres runs calls side by side, so none queues behind a transaction; its deadline is store-postgres.test.mjs's.
+const test = sqliteAdapterTests(nodeTest, "the one connection's queue behind a transaction");
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { commitWrites } from "@earendil-works/pi-durable/testing";
 import { runRow, scratchConnection } from "./store-support.mjs";

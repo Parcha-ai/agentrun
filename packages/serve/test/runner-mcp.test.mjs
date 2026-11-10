@@ -22,6 +22,7 @@ const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { MAX_RESTARTS } = await import("../dist/runner/conformance/harness.js");
 const { permissionOf } = await import("../dist/tool-gate.js");
 const { deniedText } = await import("../dist/runner/loop-contract.js");
+const { deniedText: setToDenyText } = await import("../dist/refusal-words.js");
 const { KINDS } = await import("../dist/runner/journal-kinds.js");
 const { META_REASON } = await import("../dist/mcp-meta.js");
 const { UNUSABLE } = await import("../dist/mcp-servers.js");
@@ -55,9 +56,11 @@ const lastResult = (sent) => {
  * `script` with the run's MCP (`grants`), its gate the tool gate's permissions over `settings` (an mcp: tool asks by
  * default). Runs until the run is not running, or `until(row)` says so.
  */
-async function mcpRun(t, { script, grants, settings = {}, tools = [ADD, PAID], prices, seal = headers, capUsd, before, until, ms = 20_000, hostTools = {}, events, auth = "bearer", fakeToken = TOKEN, githubAppAccess, launchInput, timing = STEADY, opened = [], renewing }) {
+async function mcpRun(t, { script, grants, settings = {}, tools = [ADD, PAID], prices, seal = headers, capUsd, before, until, ms = 20_000, hostTools = {}, events, auth = "bearer", fakeToken = TOKEN, githubAppAccess, launchInput, timing = STEADY, opened = [], serverNow }) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-mcp-"));
-  const server = await openSqliteStore({ dataDir: dir, role: "server" });
+  // `serverNow`: the test's own handle on the store reads its clock (a claim taken over when it is moved past the lease);
+  // the runner's handle keeps the wall clock.
+  const server = await openSqliteStore({ dataDir: dir, role: "server", ...(serverNow ? { now: serverNow } : {}) });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
   const fake = await startFakeMcp({ token: fakeToken });
   let runner;
@@ -82,7 +85,7 @@ async function mcpRun(t, { script, grants, settings = {}, tools = [ADD, PAID], p
   t.after(() => rmSync(work, { recursive: true, force: true }));
   const loop = createAdapterLoop(async (claim, run) => {
     // As a spec builder does: the claim's MCP first (mcpForClaim), before anything the spec would have to let go.
-    const mcp = await mcpForClaim({ claim, store: { mcp: registry, runs: store.runs, triggerSettings: store.triggerSettings, where: store.where }, sealKey: KEY, grants, harness: run.harness, work: () => work, ...(githubAppAccess ? { githubAppAccess, launchInput } : {}) });
+    const mcp = await mcpForClaim({ claim, store: { mcp: registry, runs: store.runs, triggerSettings: store.triggerSettings, where: store.where }, sealKey: KEY, grants, harness: run.harness, work: () => work, ...(githubAppAccess ? { githubAppAccess, launchInput, githubMcpOrigin: new URL(fake.url).origin } : {}) });
     if (mcp) opened.push(mcp);
     return {
       ...(await base(claim, run)),
@@ -95,9 +98,7 @@ async function mcpRun(t, { script, grants, settings = {}, tools = [ADD, PAID], p
       }),
     };
   }, { restartLimit: MAX_RESTARTS });
-  // `renewing.renew`: while true, the runner's renewals fail (its claim is lost at its renew deadline).
-  const runnerStore = renewing ? new Proxy(store, { get: (target, key) => (key === "renewMany" ? async (...args) => { if (renewing.renew) throw new Error("the store is out of reach"); return target.renewMany(...args); } : typeof target[key] === "function" ? target[key].bind(target) : target[key]) }) : store;
-  runner = startRunner({ store: runnerStore, createLoop: loop, name: "runner-a", ...timing });
+  runner = startRunner({ store, createLoop: loop, name: "runner-a", ...timing });
   const settle = async (done = (row) => row.state !== "running" && row.state !== "queued" && row.runner === null) => {
     const from = Date.now();
     for (;;) {
@@ -185,8 +186,8 @@ test("R3: a denied MCP call is told in words, and nothing is sent", async (t) =>
   await run.server.command("run-1", { kind: "deny", body: { approval: ask.callId, note: "not today" } });
   const row = await run.settle((r) => r.state === "ended" || r.state === "failed");
   assert.equal(row.state, "ended", JSON.stringify(row));
-  // pi frames a blocked call's words as its harness's error; the words are the loop's.
-  assert.ok(lastResult(run.sent).includes(`Tool call blocked: ${deniedText("mcp:fake/add", "not today")}`), lastResult(run.sent));
+  // The call's error result is main's words, by the call's catalog name.
+  assert.equal(lastResult(run.sent), deniedText("mcp:fake/add", "not today"));
   assert.equal(toolCalls(run.fake).length, 0, "nothing sent");
 });
 
@@ -194,7 +195,7 @@ test("R4: a set-to-deny MCP call is refused in words before its intent, and noth
   const script = [{ call: "mcp__fake__add", args: { a: 1, b: 1 } }, { sayLastResult: true }];
   const { row, sent, fake } = await mcpRun(t, { script, grants: ["mcp:fake/add"], settings: { "mcp:fake/add": { permission: "deny" } } });
   assert.equal(row.state, "ended", JSON.stringify(row));
-  assert.ok(lastResult(sent).includes("Tool call blocked: Permission denied: mcp:fake/add is set to deny."), lastResult(sent));
+  assert.equal(lastResult(sent), setToDenyText("mcp:fake/add"));
   assert.equal(toolCalls(fake).length, 0);
 });
 
@@ -322,35 +323,51 @@ test("R12: a resumed claim calls the tools its run was pinned with, read as writ
 });
 
 test("R13: a claim lost while a call is out drops the gateway's credentials at once: the call is cut upstream, nothing held, and the next claim never sends it again", async (t) => {
+  // Both sides are the test's own, never two wall-clock timers raced under load (what failed here: a 600 ms lease, renewed
+  // every 100 ms and given up 200 ms early, ran out while a loaded machine was still setting the claim up, before the call
+  // went out). The call is held open until the test lets it go, and the claim is lost when the test takes it over on its
+  // own handle's clock, past a lease long enough that it never runs out by itself.
   const opened = [];
-  const block = { renew: false };
   let server;
   let fakeRef;
+  let skew = 0;
+  let letGo;
+  const held = new Promise((resolve) => (letGo = resolve));
+  t.after(() => letGo());
   const script = [{ call: "mcp__fake__slow_write", args: { line: "x", seconds: 5 } }, { say: "done" }];
   const running = mcpRun(t, {
     script, grants: ["mcp:fake/slow_write"], settings: { "mcp:fake/slow_write": { permission: "allow" } }, tools: [SLOW], opened,
-    timing: { leaseMs: 600, renewEveryMs: 100, stopMarginMs: 200, pollMs: 20, commandPollMs: 20 },
-    before: async (got) => void ((server = got.server), (fakeRef = got.fake)),
-    renewing: block,
+    timing: { leaseMs: 60_000, renewEveryMs: 100, stopMarginMs: 5_000, pollMs: 20, commandPollMs: 20 },
+    serverNow: () => Date.now() + skew,
+    before: async (got) => {
+      server = got.server;
+      fakeRef = got.fake;
+      // slow_write answers only when the test lets it go: the call stays out until the claim is lost.
+      got.fake.tools.slow_write = { ...got.fake.tools.slow_write, run: async ({ line }) => (await held, { content: [{ type: "text", text: `wrote ${line}` }] }) };
+    },
   });
-  for (const from = Date.now(); !(fakeRef && toolCalls(fakeRef, "slow_write").length) && Date.now() - from < 10_000; ) await sleep(10);
+  for (const from = Date.now(); !(fakeRef && toolCalls(fakeRef, "slow_write").length) && Date.now() - from < 30_000; ) await sleep(10);
   assert.equal(toolCalls(fakeRef, "slow_write").length, 1, "the call is out");
   assert.ok(opened[0].redactions().some((value) => value.includes(TOKEN)), "held for its scrub while it is out");
-  // Renewals now fail: the runner self-stops at its renew deadline, and the claim is lost mid-call.
-  block.renew = true;
-  for (const from = Date.now(); !fakeRef.log.some((entry) => entry.closed === "slow_write") && Date.now() - from < 10_000; ) await sleep(10);
+  // The claim is taken over on the store, its lease past by the test's clock: the runner's next renewal is fenced, and
+  // the claim is lost mid-call.
+  skew = 120_000;
+  const takeover = await server.claim("run-1", "takeover", { leaseMs: 60_000 });
+  assert.ok(takeover, "the run's claim taken over");
+  for (const from = Date.now(); !fakeRef.log.some((entry) => entry.closed === "slow_write") && Date.now() - from < 30_000; ) await sleep(10);
   assert.ok(fakeRef.log.some((entry) => entry.closed === "slow_write"), "the call was cut upstream");
   assert.deepEqual(opened[0].redactions(), [], "nothing held once the claim is lost");
   // The pinned tool as pi holds it (its host tool): a dropped claim's gateway sends nothing.
   const after = await opened[0].tools.find((tool) => tool.name === "mcp__fake__slow_write").call({ line: "y", seconds: 0 }, { signal: new AbortController().signal, callId: "late" });
   assert.equal(after.isError, true, "a dropped claim's gateway sends nothing");
   assert.equal(toolCalls(fakeRef, "slow_write").length, 1, "nothing more reached the server");
-  block.renew = false;
+  // The takeover gives the run back: the runner claims it again, and its next claim opens its own MCP.
+  skew = 0;
+  await server.release(takeover);
   const { row } = await running;
   assert.equal(row.state, "ended", JSON.stringify(row));
   assert.ok(opened.length >= 2, "the next claim opened its own MCP");
   assert.equal(toolCalls(fakeRef, "slow_write").length, 1, "the cut call is never sent again");
-  void server;
 });
 
 const GH_TOKEN = `not-a-secret-${"github-installation-token"}`;

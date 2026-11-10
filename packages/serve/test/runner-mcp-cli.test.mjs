@@ -23,6 +23,7 @@ const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { permissionOf } = await import("../dist/tool-gate.js");
 const { waitingText } = await import("../dist/tool-gate.js");
 const { deniedText } = await import("../dist/runner/loop-contract.js");
+const { deniedText: setToDenyText } = await import("../dist/refusal-words.js");
 const { KINDS } = await import("../dist/runner/journal-kinds.js");
 const { journalRecords } = await import("../dist/runner/journal-reader.js");
 const { TOOL_UNMETERED } = await import("@parcha/pi-durable-agent/timeline");
@@ -201,7 +202,7 @@ test("C4: a parked call the owner denies is told in their words, and nothing is 
 
 test("C3: a call set to deny is refused in the gate's words, nothing sent", async (t) => {
   const { seen, fake } = await cliRun(t, { settings: { "mcp:fake/add": { permission: "deny" } } });
-  assert.deepEqual(seen.answer, { content: [{ type: "text", text: "Permission denied: mcp:fake/add is set to deny." }], isError: true });
+  assert.deepEqual(seen.answer, { content: [{ type: "text", text: setToDenyText("mcp:fake/add") }], isError: true });
   assert.equal(toolCalls(fake).length, 0, "nothing sent");
 });
 

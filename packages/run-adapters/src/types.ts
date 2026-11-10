@@ -142,8 +142,9 @@ export interface ModelRequest {
   feeUsd?: number;
   /** A paid tool call, no model request (a web search's request, a monid call): held at `feeUsd` alone by the cap's tool
    *  rule, `name` and `basis` in a refusal's words. `call`: the tool call it was booked under, written on its
-   *  runner.request so the run view puts its charge under that call. */
-  paid?: { name: string; basis: string; call?: string };
+   *  runner.request so the run view puts its charge under that call. `charged_by`: who charges for it (the tool's
+   *  provider: parallel, monid, an MCP server, a browser vendor), written there too, as main's charge row names it. */
+  paid?: { name: string; basis: string; call?: string; charged_by?: string };
   /** A side call, never its turn's own: on another model than the session's (a client's title, a summary), or the
    *  host's own request beside the harness's (`host`). */
   side?: true;
@@ -171,6 +172,10 @@ export interface ModelUsage {
   /** A request a crash cut off: it left, and no answer came back to this run. Its tokens are unknown (0 here) and its
    *  price is null; the provider may have billed it. */
   cut?: boolean;
+  /** A paid step's hold given back unused (a workflow call node's, its effect never sent the paid request it held for):
+   *  nothing was sent and nothing charged, at usd 0. Its record says so, so no reader takes it for a $0 charge or an
+   *  unpriced one. */
+  givenBack?: true;
   /** The ids the provider's response gave the request, by header name (the provider's `request-id`, a gateway's call
    *  id such as LiteLLM's `x-litellm-call-id`): what joins this booking to the provider's own log. A cut request has
    *  them only if its response had begun. */
@@ -278,8 +283,9 @@ export type SessionState = "new" | "open_turn" | "idle";
 export interface AdapterSession {
   readonly state: SessionState;
   /** Place the input, then send it: a new turn. `id`: the input's own request id (a follow-up's, such as a raised run's
-   *  turn), so placing it again is the same input, never the run's first one. */
-  send(text: string, options?: { id?: string }): Promise<void>;
+   *  turn), so placing it again is the same input, never the run's first one. `origin`: who wrote it when the person did
+   *  not (a trigger's first input, its launch's): an adapter that keeps the run's record writes it with the input. */
+  send(text: string, options?: { id?: string; origin?: { readonly [key: string]: unknown } }): Promise<void>;
   /** Resume the turn a crash cut off, from the session's records. Only when `state` is `open_turn`. */
   recover(): Promise<void>;
   /** Record the open turn as ended, interrupted, and send nothing: the turn is not to be resumed (a person stopped it, and

@@ -59,7 +59,7 @@ const FRONT = /^---\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/;
  *  `pin`, by tool: the arguments each of its calls must carry (a value, or `${parameters.<name>}`), which apply writes as
  *  the tool's pin in the agent's tool settings, so a send goes only to the destination the owner set. */
 export type McpNeed = { server: string; tools: string[]; required: boolean; allow: string[]; pin: Record<string, Record<string, PinValue>> };
-type Parameter = { type: (typeof PARAMETER_TYPES)[number]; required: boolean; description: string; pattern?: string; default?: string | number | boolean };
+type Parameter = { type: (typeof PARAMETER_TYPES)[number]; required: boolean; description: string; pattern?: string; enum?: (string | number | boolean)[]; default?: string | number | boolean };
 /** Whether `value` is of the parameter type `type`. */
 const ofType = (type: Parameter["type"], value: unknown): boolean => (type === "integer" ? Number.isSafeInteger(value) : type === "number" ? typeof value === "number" && Number.isFinite(value) : typeof value === type);
 /** Whether `text` matches `pattern`; a pattern that does not compile matches nothing (it is reported on its own). */
@@ -115,6 +115,35 @@ export class PackageError extends Error {
     super(`${dir} is not a valid package:\n${problems.map((p) => `- ${p}`).join("\n")}`);
   }
 }
+
+/** A github source split at its where conditions' `in` values, the one place a parameter may fill it: `ins`, each
+ *  condition's list, and `rest`, the source without them. */
+function whereIns(source: Json): { ins: unknown[]; rest: Json } {
+  const ins: unknown[] = [];
+  const accept = Array.isArray(source.accept)
+    ? source.accept.map((rule) => (isObject(rule) && Array.isArray(rule.where)
+      ? { ...rule, where: rule.where.map((condition) => (isObject(condition) && Object.hasOwn(condition, "in") ? (ins.push(condition.in), Object.fromEntries(Object.entries(condition).filter(([key]) => key !== "in"))) : condition)) }
+      : rule))
+    : source.accept;
+  return { ins, rest: { ...source, accept } };
+}
+
+/** What a github trigger an apply made runs on, in words, for the apply's answer: "Code review runs on each pull request
+ *  to acme/widgets." The package's name says what runs; the events are its accept's, the repositories its where
+ *  conditions on /repository/full_name, when every rule names some. */
+export function githubTriggerWords(packageName: string, source: Json): string {
+  const subject = `${packageName.charAt(0).toUpperCase()}${packageName.slice(1).replace(/-/g, " ")}`;
+  const rules = Array.isArray(source.accept) ? source.accept.filter(isObject) : [];
+  const events = [...new Set(rules.map((rule) => GITHUB_EVENT_WORDS[String(rule.event)] ?? String(rule.event).replace(/_/g, " ")))];
+  const reposOf = (rule: Json) => (Array.isArray(rule.where) ? rule.where : []).flatMap((c) => (isObject(c) && c.pointer === "/repository/full_name" && Array.isArray(c.in) ? c.in.filter((v): v is string => typeof v === "string") : []));
+  const repos = rules.every((rule) => reposOf(rule).length) ? [...new Set(rules.flatMap(reposOf))] : [];
+  const or = (words: string[]) => (words.length < 2 ? words.join("") : `${words.slice(0, -1).join(", ")} or ${words.at(-1)}`);
+  return `${subject} runs on each ${or(events)} ${repos.length ? `to ${or(repos)}` : "to a repository the GitHub App is installed on"}.`;
+}
+const GITHUB_EVENT_WORDS: Record<string, string> = { pull_request: "pull request", pull_request_review: "pull request review", pull_request_review_comment: "review comment", issue_comment: "comment", issues: "issue" };
+
+/** What an apply says of a github trigger it skipped because GitHub is not connected here. */
+export const GITHUB_TRIGGER_UNCONNECTED = "Connect GitHub in Settings, then apply again to review pull requests automatically.";
 
 /** Every string in `value`, deep. */
 const strings = (value: unknown): string[] => (typeof value === "string" ? [value] : Array.isArray(value) ? value.flatMap(strings) : isObject(value) ? Object.values(value).flatMap(strings) : []);
@@ -263,9 +292,9 @@ export function readPackage(dir: string): Package {
   if (f.computer !== undefined && f.computer !== "default") bad(MANIFEST, "computer is default (this server's own place): no other computer is known yet");
   const parameters: Record<string, Parameter> = {};
   for (const [key, p] of Object.entries(f.parameters === undefined ? {} : isObject(f.parameters) ? f.parameters : (bad(MANIFEST, "parameters is a mapping of names"), {}))) {
-    const ok = PARAMETER.test(key) && isObject(p) && !unknownFields(p, ["type", "required", "pattern", "description", "default"]).length && (PARAMETER_TYPES as readonly unknown[]).includes(p.type) && (p.required === undefined || typeof p.required === "boolean") && typeof p.description === "string" && p.description.trim() !== "" && (p.pattern === undefined || (p.type === "string" && typeof p.pattern === "string"));
+    const ok = PARAMETER.test(key) && isObject(p) && !unknownFields(p, ["type", "required", "pattern", "enum", "description", "default"]).length && (PARAMETER_TYPES as readonly unknown[]).includes(p.type) && (p.required === undefined || typeof p.required === "boolean") && typeof p.description === "string" && p.description.trim() !== "" && (p.pattern === undefined || (p.type === "string" && typeof p.pattern === "string"));
     if (!ok) {
-      bad(MANIFEST, `parameters.${key} is {type: ${PARAMETER_TYPES.join(" | ")}, required?, pattern? (strings), default?, description}, its name lowercase`);
+      bad(MANIFEST, `parameters.${key} is {type: ${PARAMETER_TYPES.join(" | ")}, required?, pattern? (strings), enum?, default?, description}, its name lowercase`);
       continue;
     }
     try {
@@ -273,12 +302,16 @@ export function readPackage(dir: string): Package {
     } catch {
       bad(MANIFEST, `parameters.${key}.pattern is not a regular expression`);
     }
+    // A closed set of values (a form shows a choice, never a pattern): one or more, each of the parameter's type, once.
+    const choices = p.enum === undefined ? undefined : Array.isArray(p.enum) && p.enum.length > 0 && p.enum.every((one) => ofType(p.type as Parameter["type"], one)) && new Set(p.enum).size === p.enum.length ? (p.enum as (string | number | boolean)[]) : (bad(MANIFEST, `parameters.${key}.enum is a list of one or more distinct ${p.type as string} values`), undefined);
+    if (choices && typeof p.pattern === "string") bad(MANIFEST, `parameters.${key} has an enum and a pattern: the enum says the values, so leave the pattern out`);
+    if (choices && p.default !== undefined && !choices.includes(p.default as string | number | boolean)) bad(MANIFEST, `parameters.${key}.default is not one of its enum`);
     if (p.default !== undefined) {
       if (!ofType(p.type as Parameter["type"], p.default)) bad(MANIFEST, `parameters.${key}.default is a ${p.type as string}, as the parameter is`);
       else if (typeof p.pattern === "string" && typeof p.default === "string" && !safeTest(p.pattern, p.default)) bad(MANIFEST, `parameters.${key}.default does not match its pattern`);
       if (p.required === true) bad(MANIFEST, `parameters.${key} is required and has a default: a default is for a parameter apply may leave out`);
     }
-    parameters[key] = { type: p.type as Parameter["type"], required: p.required === true, description: p.description as string, ...(typeof p.pattern === "string" ? { pattern: p.pattern } : {}), ...(p.default !== undefined && ofType(p.type as Parameter["type"], p.default) ? { default: p.default as string | number | boolean } : {}) };
+    parameters[key] = { type: p.type as Parameter["type"], required: p.required === true, description: p.description as string, ...(typeof p.pattern === "string" ? { pattern: p.pattern } : {}), ...(choices ? { enum: choices } : {}), ...(p.default !== undefined && ofType(p.type as Parameter["type"], p.default) ? { default: p.default as string | number | boolean } : {}) };
   }
   const secrets = list(f.secrets, "secrets", (secret) => /^[A-Z][A-Z0-9_]{0,127}$/.test(secret));
   for (const secret of secrets.filter((name) => !PACKAGE_SECRETS.includes(name))) bad(MANIFEST, `secrets names ${secret}, a key this server cannot hold: a package needs the keys Settings saves and a run is handed (${PACKAGE_SECRETS.join(", ")})`);
@@ -316,17 +349,25 @@ export function readPackage(dir: string): Package {
   for (const value of strings([instructions, triggers, f.display_name, mcp.map((need) => need.pin)])) {
     for (const [, used] of value.matchAll(PLACEHOLDER)) if (!Object.hasOwn(parameters, used!)) bad(MANIFEST, `\${parameters.${used}} names no parameter`);
   }
-  // A placeholder fills text a run reads, and a schedule's time (its cron and timezone, read as the schedule at apply);
-  // a trigger's other settings are the package's own, checked here. A parameter that sets a time has a default, so the
-  // schedule the package ships is checked here too.
+  // A placeholder fills text a run reads, a schedule's time (its cron and timezone, read as the schedule at apply), and a
+  // github trigger's where `in` values (the repository it takes, say); a trigger's other settings are the package's own,
+  // checked here. A parameter that sets a time has a default, so the schedule the package ships is checked here too; one
+  // a github trigger takes is required or has a default, so the trigger never fills empty and takes no event.
   triggers.forEach((trigger, i) => {
     if (!isObject(trigger)) return;
     const timed = isObject(trigger.source) && trigger.source.kind === "schedule";
+    const github = isObject(trigger.source) && trigger.source.kind === "github";
     const fixed = Object.entries(trigger).flatMap(([key, value]) =>
       key === "target" && isObject(value) ? Object.entries(value).filter(([k]) => k !== "input").map(([k, v]) => [`target.${k}`, v] as const)
       : key === "source" && timed && isObject(value) ? Object.entries(value).filter(([k]) => !SCHEDULE_FIELDS.includes(k)).map(([k, v]) => [`source.${k}`, v] as const)
+      : key === "source" && github && isObject(value) ? [[key, whereIns(value).rest] as const]
       : [[key, value] as const]);
-    for (const [at, value] of fixed) for (const [used] of strings(value).flatMap((text) => [...text.matchAll(PLACEHOLDER)])) bad(MANIFEST, `triggers[${i}].${at} holds ${used}: a placeholder goes in display_name, the instructions, a trigger's target.input, a schedule's cron and timezone, or an mcp pin's values`);
+    for (const [at, value] of fixed) for (const [used] of strings(value).flatMap((text) => [...text.matchAll(PLACEHOLDER)])) bad(MANIFEST, `triggers[${i}].${at} holds ${used}: a placeholder goes in display_name, the instructions, a trigger's target.input, a schedule's cron and timezone, a github trigger's where in values, or an mcp pin's values`);
+    if (github) {
+      for (const used of new Set(strings(whereIns(trigger.source as Json).ins).flatMap((text) => [...text.matchAll(PLACEHOLDER)].map((m) => m[1]!)))) {
+        if (Object.hasOwn(parameters, used) && !parameters[used]!.required && parameters[used]!.default === undefined) bad(MANIFEST, `parameters.${used} is used in triggers[${i}].source.accept, so it is required or has a default: a github trigger filled empty takes no event`);
+      }
+    }
     if (!timed) return;
     for (const field of SCHEDULE_FIELDS) {
       for (const [, used] of strings((trigger.source as Json)[field]).flatMap((text) => [...text.matchAll(PLACEHOLDER)])) {
@@ -467,6 +508,7 @@ export function applyBodyOf(p: Package, body: Json): { parameters: Record<string
     const typed = spec && ofType(spec.type, value);
     if (!spec) issues.push({ field: `parameters.${key}`, reason: "not_allowed", message: `The package ${p.name} takes no parameter ${key}.` });
     else if (!typed) issues.push({ field: `parameters.${key}`, reason: "wrong_type", message: `parameters.${key} is a ${spec.type}: ${spec.description}` });
+    else if (spec.enum && !spec.enum.includes(value as string | number | boolean)) issues.push({ field: `parameters.${key}`, reason: "not_an_option", message: `parameters.${key} is one of ${spec.enum.join(", ")}: ${spec.description}` });
     else if (spec.pattern && !new RegExp(spec.pattern, "u").test(value as string)) issues.push({ field: `parameters.${key}`, reason: "bad_format", message: `parameters.${key} is ${spec.description}` });
     else parameters[key] = value as string | number | boolean;
   }

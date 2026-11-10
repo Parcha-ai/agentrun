@@ -4,8 +4,8 @@
 // that reason, never dropped. The bound is read in the transaction that queues the row, so two firings cannot both pass
 // it. A message_run trigger whose run was deleted turns itself off, in words, and its last run reference is cleared.
 import assert from "node:assert/strict";
-import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
+import { raw } from "./store-target.mjs";
 import { Triggers } from "../dist/triggers.js";
 import { storeOn, T0 } from "./store-helpers.mjs";
 import { fakeClock } from "./trigger-support.mjs";
@@ -47,7 +47,14 @@ async function engineOn(t) {
   const queued = async () => (await store.triggers.firings(trigger.id)).length;
   let trigger;
   const make = async (source) => (trigger = await engine.create({ name: "poke", source, target: { kind: "message_run", run_id: "run-1", input: { content: "Poke." } } }));
-  const commands = () => new DatabaseSync(file, { readOnly: true }).prepare("SELECT COUNT(*) AS n FROM commands WHERE run_id = 'run-1' AND taken_at IS NULL").get().n;
+  const commands = async () => {
+    const db = await raw(file, { readOnly: true });
+    try {
+      return Number((await db.get("SELECT COUNT(*) AS n FROM commands WHERE run_id = 'run-1' AND taken_at IS NULL")).n);
+    } finally {
+      await db.close();
+    }
+  };
   return { ...opened, engine, clock, make, queued, commands };
 }
 
@@ -63,7 +70,7 @@ test("a schedule ticking three times into a busy run queues one message; the two
   }
   const statuses = (await store.triggers.firings(trigger.id)).reverse().map((f) => [f.status, f.reason]);
   assert.deepEqual(statuses, [["sent", null], ["skipped", WAITING], ["skipped", WAITING]]);
-  assert.equal(commands(), 1, "one queued command row");
+  assert.equal(await commands(), 1, "one queued command row");
 });
 
 test("twenty-one webhook events into one busy run queue twenty messages; the twenty-first is skipped, never dropped", async (t) => {
@@ -79,7 +86,7 @@ test("twenty-one webhook events into one busy run queue twenty messages; the twe
   const skipped = firings.filter((f) => f.status === "skipped");
   assert.equal(skipped.length, 1);
   assert.match(skipped[0].reason, /^20 messages from this trigger are already waiting/);
-  assert.equal(commands(), 20, "twenty queued command rows");
+  assert.equal(await commands(), 20, "twenty queued command rows");
 });
 
 test("the bound is read in the queueing transaction: two firings at once cannot both pass a bound of one", async (t) => {
@@ -108,12 +115,12 @@ test("a message_run trigger whose run was deleted turns itself off at its next f
   const { store, file, engine, make } = await engineOn(t);
   const trigger = await make({ kind: "webhook" });
   await store.triggers.update(trigger.id, {});
-  const db = new DatabaseSync(file);
-  db.exec("PRAGMA foreign_keys = ON");
-  db.prepare("UPDATE triggers SET last_run_id = 'run-1' WHERE id = ?").run(trigger.id);
-  db.prepare("DELETE FROM runs WHERE id = 'run-1'").run();
+  const db = await raw(file);
+  if (db.kind === "sqlite") await db.exec("PRAGMA foreign_keys = ON");
+  await db.run("UPDATE triggers SET last_run_id = 'run-1' WHERE id = ?", trigger.id);
+  await db.run("DELETE FROM runs WHERE id = 'run-1'");
   assert.equal((await store.triggers.get(trigger.id)).lastRunId, null, "the trigger's last run reference cleared with the run");
-  db.close();
+  await db.close();
   await engine.receive(trigger.id, "evt-1", "{}");
   await until(async () => (await store.triggers.get(trigger.id)).enabled === false, "turned off");
   const off = await store.triggers.get(trigger.id);

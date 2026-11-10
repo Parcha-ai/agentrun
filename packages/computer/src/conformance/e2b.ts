@@ -15,7 +15,7 @@
 // disk's object API (the shared archilRunFolder, ./archil.ts: the host's disk SDK with COMPUTER_ARCHIL_API_KEY and
 // COMPUTER_ARCHIL_S3_URL, or an object API given as archil.objects); with no disk named it makes none, and the cases
 // are skipped. An Archil computer needs a provider whose daemon user is the tool user: COMPUTER_E2B_USER=2510:2510.
-import { create, type E2BOptions, type E2BProvider } from "../e2b.js";
+import { create, E2B_BASE_TEMPLATE, E2B_DESKTOP_TEMPLATE, type E2BOptions, type E2BProvider } from "../e2b.js";
 import type { MountKind } from "../mount.js";
 import { type ArchilRunFolderOptions, archilRunFolder, archilSettings } from "./archil.js";
 import { buildDriftDaemon, DRIFT_VERSION } from "./drift-daemon.js";
@@ -41,8 +41,6 @@ export const E2B_ENV = {
 	maxLifetimeMs: "COMPUTER_E2B_MAX_LIFETIME_MS",
 	/** daemonUser: uid:gid the daemon runs as; default 2510:2510. */
 	user: "COMPUTER_E2B_USER",
-	/** publicStream: 1, computers take public traffic and stream() gives a URL; network open only. */
-	publicStream: "COMPUTER_E2B_PUBLIC_STREAM",
 } as const;
 
 /** The names this module reads, under the conformance modules' common name (ConformanceModule.ENV). */
@@ -62,8 +60,6 @@ export function settingsFromEnv(env: Record<string, string | undefined> = proces
 	if (env.E2B_SANDBOX_URL) throw new Error("the E2B provider refuses to start while E2B_SANDBOX_URL is set: the SDK would send every call into a sandbox there. Unset it");
 	const lifetime = env[E2B_ENV.maxLifetimeMs] || undefined;
 	if (lifetime !== undefined && !/^\d+$/.test(lifetime)) throw new Error(`${E2B_ENV.maxLifetimeMs} is a whole number of milliseconds, such as 3600000 (Hobby) or 86400000 (Pro)`);
-	const stream = env[E2B_ENV.publicStream] ?? "";
-	if (stream !== "" && stream !== "0" && stream !== "1") throw new Error(`${E2B_ENV.publicStream} is 1 or unset, not ${JSON.stringify(stream)}`);
 	const domain = env[E2B_ENV.domain] || undefined;
 	const daemonPath = env[E2B_ENV.daemon] || undefined;
 	const kind = env[E2B_ENV.kind] || undefined;
@@ -76,7 +72,6 @@ export function settingsFromEnv(env: Record<string, string | undefined> = proces
 		...(kind === undefined ? {} : { kind: kind as "desktop" | "linux" }),
 		...(lifetime === undefined ? {} : { maxLifetimeMs: Number(lifetime) }),
 		...(daemonUser === undefined ? {} : { daemonUser }),
-		...(stream === "1" ? { publicStream: true } : {}),
 	};
 }
 
@@ -85,7 +80,7 @@ export const CONFORMANCE_MAX_LIFETIME_MS = 30 * 60_000;
 
 /** For the run's report: what this configuration means for the suite. */
 export const conformanceNotes: string[] = [
-	"e2b: E2B Hobby plan: every sandbox's timeout is its lifetime, capped at 30 minutes for the run (Hobby caps a sandbox at 1 h, Pro at 24 h). The daemon is a child of E2B's envd, started as a background command; network none is no internet access and no public traffic, read back from E2B and probed from inside; no public stream, so screen.stream is skipped.",
+	"e2b: E2B Hobby plan: every sandbox's timeout is its lifetime, capped at 30 minutes for the run (Hobby caps a sandbox at 1 h, Pro at 24 h). The daemon is a child of E2B's envd, started as a background command; network none is no internet access and no public traffic, read back from E2B and probed from inside; no stream() (a screen is streamed through agentrun, never a vendor URL), so screen.stream is skipped.",
 ];
 
 export interface E2BModuleOptions extends Pick<E2BOptions, "Sandbox" | "daemonPath" | "timeouts" | "onNote"> {
@@ -103,9 +98,9 @@ function live(env: Record<string, string | undefined>): void {
 	}
 }
 
-/** The template every computer of the run starts from: COMPUTER_E2B_TEMPLATE, or E2B Desktop's ("base" for kind linux). */
+/** The template every computer of the run starts from: COMPUTER_E2B_TEMPLATE, or E2B Desktop's (the plain one for kind linux). */
 export function conformanceImage({ env = process.env }: Pick<E2BModuleOptions, "env"> = {}): string {
-	return env[E2B_ENV.template] || (env[E2B_ENV.kind] === "linux" ? "base" : "desktop");
+	return env[E2B_ENV.template] || (env[E2B_ENV.kind] === "linux" ? E2B_BASE_TEMPLATE : E2B_DESKTOP_TEMPLATE);
 }
 
 /** The provider the CLI runs; throws in words without the live switch, or when a setting is missing or wrong. */

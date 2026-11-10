@@ -59,3 +59,25 @@ test("a session imported twice is refused (one run per source and session)", asy
   await assert.rejects(store.importRun({ id: "imp-b", agentId: "agent-1", revisionId: "rev-1", importedFrom: { source: "pi", session: "same" }, launch: launch(), startedAt: T0, transcript: transcript() }), StoreConstraint, "the session is one run's");
   assert.equal(await store.runs.get("imp-b"), undefined, "the second run is not written");
 });
+
+test("importedFrom.file round-trips to the store's own reads and is never on an answer", async (t) => {
+  const { store } = await storeOn(t);
+  await agentWithRevision(store);
+  const file = { path_sha256: "a".repeat(64), size: 1234, mtime_ms: 1699999999000 };
+  await store.importRun({ id: "imp-f", agentId: "agent-1", revisionId: "rev-1", importedFrom: { source: "claude-code", session: "sf", file }, launch: launch(), startedAt: T0, transcript: transcript() });
+  // The store's own reads carry the stamp (the import reads it to skip an unchanged file): runs.get and runs.list.
+  assert.deepEqual((await store.runs.get("imp-f")).importedFrom, { source: "claude-code", session: "sf", file });
+  assert.deepEqual((await store.runs.list({ agentId: "agent-1" }))[0].importedFrom, { source: "claude-code", session: "sf", file });
+  // The answer a reader gets shows only where it came from, never the internal stamp.
+  assert.deepEqual((await readRun(store, "imp-f", context)).importedFrom, { source: "claude-code", session: "sf" }, "no file on the view");
+});
+
+test("the import index keys on source and session alone: the same session with a different file stamp is still one run", async (t) => {
+  const { store } = await storeOn(t);
+  await agentWithRevision(store);
+  const one = { path_sha256: "b".repeat(64), size: 10, mtime_ms: 1 };
+  const two = { path_sha256: "c".repeat(64), size: 20, mtime_ms: 2 };
+  await store.importRun({ id: "imp-x", agentId: "agent-1", revisionId: "rev-1", importedFrom: { source: "codex", session: "s", file: one }, launch: launch(), startedAt: T0, transcript: transcript() });
+  await assert.rejects(store.importRun({ id: "imp-y", agentId: "agent-1", revisionId: "rev-1", importedFrom: { source: "codex", session: "s", file: two }, launch: launch(), startedAt: T0, transcript: transcript() }), StoreConstraint, "same source and session, so the same run whatever the file");
+  assert.equal(await store.runs.get("imp-y"), undefined, "the second run is not written");
+});

@@ -197,12 +197,21 @@ test("M7: an expired token is refreshed once before the loop, its new token used
 
 test("M8: a claim lost while its refresh waited never starts its loop: fresh() re-confirms the claim's epoch and is Fenced", async (t) => {
   const { store, oauth, claim, clock } = await oauthSetUp(t, { expiresAt: T0 - 1_000 });
-  oauth.hang();
-  const pending = claimOf(store, claim, ["mcp:fake/add"], { now: () => T0, bounds: { requestMs: 400, tries: 1 } });
-  // Meanwhile the claim lapses and another runner takes the run.
+  // The refresh's answer is held by the test's authorization server until the test lets it go: the order below is the
+  // test's events, never a timeout (the request's bound is a ceiling the release ends long before).
+  const hold = oauth.holdNext();
+  // Its outcome kept from the start: whenever it settles, nothing is left unhandled.
+  const pending = claimOf(store, claim, ["mcp:fake/add"], { now: () => T0, bounds: { requestMs: 60_000, tries: 1 } }).then(() => "started", (error) => error);
+  // The pin is written and the refresh is in flight (its request granted, its answer held): only then does the claim
+  // lapse and another runner take the run, to completion, so it is the confirm after the refresh that finds it gone.
+  await hold.granted;
+  assert.ok(await store.mcp.pin("run-1"), "the pin was written under the claim before the refresh");
   clock.now = T0 + LEASE + 1;
   assert.ok(await store.claim("run-1", "runner-b", { leaseMs: LEASE }));
-  await assert.rejects(pending, Fenced);
+  hold.answer();
+  const outcome = await pending;
+  assert.ok(outcome instanceof Fenced, `Fenced: ${outcome}`);
+  assert.match(outcome.stack, /\bconfirm\b/, "by the confirm after the refresh, not an earlier write");
 });
 
 test("M9: fresh() run again on a resume refreshes a token that expired since the claim", async (t) => {
@@ -258,12 +267,7 @@ test("M13: two claims refreshing the same expired token at once make one network
   b.release();
 });
 
-test("M11: with no seal key, a server's calls are refused in noSealKey's words, and no refresh is sent", async (t) => {
-  const { store, oauth, claim } = await oauthSetUp(t, { expiresAt: T0 - 1_000 });
-  const step = await claimOf(store, claim, ["mcp:fake/add"], { sealKey: undefined, now: () => T0 });
-  assert.equal(step.credentials.fake?.unopened, UNUSABLE.noSealKey);
-  assert.equal(refreshes(oauth), 0, "no refresh was sent");
-});
+// moved: M11 (a claim with no seal key): a runner never starts without one, seal-key.test.mjs "no seal key and nowhere to keep one: refused in words, never a start without one".
 
 test("M12: a server whose url origin no longer matches its sealed one is damaged: its calls are refused unsent in those words", async (t) => {
   const { store, fake, claim } = await setUp(t);
@@ -327,17 +331,38 @@ test("M15: a pinned server removed since an earlier open is dropped from the ste
  *  the wire when `stop` ends the claim's step; then the answer arrives, and the run's next claim opens the server. */
 async function rotatedAcross(t, { expiresAt, stop }) {
   const { store, oauth, claim } = await oauthSetUp(t, { expiresAt });
+  // The first step's store, which says when its refresh's keepRefreshed has committed.
+  let keptNow;
+  const kept = new Promise((resolve) => (keptNow = resolve));
+  const mcp = new Proxy(store.mcp, {
+    get(target, key) {
+      const value = Reflect.get(target, key, target);
+      if (key === "keepRefreshed") return async (...args) => {
+        const out = await value.apply(target, args);
+        keptNow(out);
+        return out;
+      };
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  const watched = { where: store.where, mcp, runs: store.runs, settings: store.settings };
   const hold = oauth.holdNext();
   const signal = new AbortController();
   // The fake answers when the test says so (hold.answer()), so this bound only catches a hang; a tight one fails under load.
   const bounds = { requestMs: 60_000, tries: 1 };
-  const first = claimOf(store, claim, ["mcp:fake/add"], { now: () => T0, signal: signal.signal, bounds });
+  const first = claimOf(watched, claim, ["mcp:fake/add"], { now: () => T0, signal: signal.signal, bounds });
   // Behind a token still valid, the step returns before the refresh is answered; an expired one is awaited.
   const step = expiresAt > T0 ? await first : undefined;
   await hold.granted;
   stop({ step, signal });
   hold.answer();
   if (!step) await first.catch(() => undefined);
+  // What raced: behind a token still valid, nothing awaited the answered refresh's keep, so the next claim could read the
+  // row before keepRefreshed committed. Its clock (T0 + 120 s) is past the lease the store set on its own clock (T0 +
+  // MCP_REFRESH_LEASE_MS), so it read that lease as lapsed and took the old set, past its expiry: "didn't answer". The
+  // answer is kept before the run's next claim comes, as it is outside a test (a claim minutes later); awaited here. (It
+  // is the same race this branch had closed by waiting for the lease's let-go; the base's await of the keep replaces it.)
+  assert.equal((await kept).kept, true, "the answered refresh's set is kept");
   // Later, past the old token's expiry: the next claim needs the rotated set, or a refresh with the spent token.
   const next = await claimOf(store, claim, ["mcp:fake/add"], { now: () => T0 + 120_000, bounds });
   t.after(() => next.release());

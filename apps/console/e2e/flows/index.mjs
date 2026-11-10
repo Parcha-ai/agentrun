@@ -13,24 +13,34 @@
 //   signedIn                                                 the page starts signed in (the owner set first if it has none)
 //   pending                                                  what the flow waits on; it doesn't run until then
 import connectGitHub from "./connect-github.mjs";
+import githubTrigger from "./github-trigger.mjs";
 import setupOpen from "./setup-open.mjs";
 import setupPublic from "./setup-public.mjs";
+import setupLinkFollow from "./setup-link-follow.mjs";
 import signIn from "./sign-in.mjs";
+import signOutScope from "./sign-out-scope.mjs";
 import signedOutElsewhere from "./signed-out-elsewhere.mjs";
 import runToEnd from "./run-to-end.mjs";
 import takeOver from "./take-over.mjs";
+import secretsWriteOnly from "./secrets-write-only.mjs";
 import templateApply from "./template-apply.mjs";
 import templateUnattended from "./template-unattended.mjs";
 import watchLive from "./watch-live.mjs";
 import serverDeny from "./server-deny.mjs";
 import computersKeys from "./computers-keys.mjs";
 import workspaceArchil from "./workspace-archil.mjs";
+import triggerRowLabel from "./trigger-row-label.mjs";
+import computerStep from "./computer-step.mjs";
 
 export const flows = [
   setupOpen,
   setupPublic,
+  setupLinkFollow,
   signIn,
+  signOutScope,
   connectGitHub,
+  githubTrigger,
+  { name: "github-trigger-create", pending: "waits on a connected GitHub App without GitHub: the server's GitHub API (githubApi) is a programmatic option only, not a flag the built server takes" },
   templateApply,
   templateUnattended,
   runToEnd,
@@ -38,7 +48,10 @@ export const flows = [
   takeOver,
   signedOutElsewhere,
   serverDeny,
+  secretsWriteOnly,
   computersKeys,
   workspaceArchil,
   { name: "box-image-banner", pending: "waits on a server whose Docker box image is still being built or pulled (capabilities.places.boxes state preparing): the e2e servers have no Docker daemon to build one" },
+  triggerRowLabel,
+  computerStep,
 ];

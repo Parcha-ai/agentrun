@@ -1,6 +1,6 @@
 import { BROWSER_OPENERS, BROWSER_STEPS, callFailed, endsTurn, failedWith, inputPreview, labelOf, outcomeOf, savedPaths, type LabelFn, type ToolResultView } from "./labels.js";
 import { cut, firstLine, firstSentence, json, obj, scrubUrls, str, utf8Bytes, type Obj } from "./util.js";
-import { BESIDE_SUFFIX, NOTE_SUFFIX, originMatcher, type TriggerSource } from "./origin.js";
+import { BESIDE_SUFFIX, NOTE_SUFFIX, originMatcher, TRIGGER_LABELS, type TriggerSource } from "./origin.js";
 
 export type TimelineKind =
   | "thinking" | "text_block" | "tool_use" | "tool_result" | "phase"
@@ -43,8 +43,9 @@ export type TimelineEvent = {
    *  which counts, as a person's `user_message` does, as the message its turn took (`isMessageRow`). */
   origin?: "server" | "trigger";
   /** On a trigger's row (`origin: "trigger"`) alone: its trigger, from the message's origin, so a client labels the row
-   *  by its source without reading its summary. */
-  trigger?: { id: string; source: TriggerSource; owner: boolean };
+   *  by its source without reading its summary. `name`, the trigger's name as it is now, is serve's to add (this
+   *  projector writes its id): the one the summary shows, so a client drops exactly that prefix, colons and all. */
+  trigger?: { id: string; source: TriggerSource; owner: boolean; name?: string };
   /** `true` on the server's `phase` row of a spend cap's refusal for room (serve), "Paused at the run's cap", origin
    *  server and its id ending NOTE_SUFFIX: the request was not sent and the run paused for a raise; a pause, never a
    *  failure, whether the run waits on its cap now or was raised since. */
@@ -475,6 +476,12 @@ function diagnosticOf(text: string): string | undefined {
  *  reads as the agent acting while the person had the browser. "then <what it did>" only for a call that succeeded: one
  *  that failed after its wait reads "Waited for you 11 s: <its label> failed: …", never as having acted. */
 const WAITED_FOR_PERSON = "waited_for_person_ms";
+/** A browser act the person's take made stale (pi-browser's `page_changed_while_held` in its result's details): the person
+ *  drove the page while the call waited, so the call did nothing and the agent takes a new look. Its rows say so in these
+ *  words, neutral, never as a failure. */
+const PAGE_CHANGED_WHILE_HELD = "page_changed_while_held";
+export const PAGE_CHANGED_ROW = "The page changed while you had the browser; the agent takes a new look";
+const pageChanged = (tool: string, result: { details?: unknown } | undefined): boolean => BROWSER_STEPS.has(tool) && obj(result?.details)?.[PAGE_CHANGED_WHILE_HELD] === true;
 const waitedFirst = (tool: string, result: ToolResultView | undefined, said: string): string => {
   const ms = obj(result?.details)?.[WAITED_FOR_PERSON];
   if (!BROWSER_STEPS.has(tool) || typeof ms !== "number" || !Number.isFinite(ms) || ms <= 0) return said;
@@ -493,7 +500,7 @@ function createProjector(options: TimelineOptions) {
     const named = (value: unknown) => (typeof value === "string" && value ? options.path!(value) : value);
     return "path" in args || "file_path" in args ? { ...args, ...("path" in args ? { path: named(args.path) } : {}), ...("file_path" in args ? { file_path: named(args.file_path) } : {}) } : args;
   };
-  const label = (tool: string, args: Obj, result?: ToolResultView) => waitedFirst(tool, result, labelOf(tool, shown(args), result, options.labels));
+  const label = (tool: string, args: Obj, result?: ToolResultView) => (pageChanged(tool, result) ? PAGE_CHANGED_ROW : waitedFirst(tool, result, labelOf(tool, shown(args), result, options.labels)));
   const seen = new Set<string>();
   const calls = new Map<string, OpenCall>();
   // Results stored before their call (a harness bridge once wrote a result before the answer holding its call), by
@@ -591,10 +598,10 @@ function createProjector(options: TimelineOptions) {
    *  result's summary and preview) comes from `shown`, its whole text as the host's `redact` makes it (shownOf, once per
    *  result), before any of it is taken or cut, so none keeps a piece of a key. Whether it failed, and why, is read from
    *  the output as it came (`view`), as its status is; only the words the summary shows of that are redacted. */
-  const resultRow = (conv: number, rowId: string, tool: { name: string; callId: string | null; round?: number }, named: string, view: { text: string; isError: boolean }, shown: { text: string }, parent?: string) => {
+  const resultRow = (conv: number, rowId: string, tool: { name: string; callId: string | null; round?: number }, named: string, view: { text: string; isError: boolean; details?: unknown }, shown: { text: string }, parent?: string) => {
     const outcome = outcomeOf(tool.name, view);
     return make("tool_result", conv, rowId, {
-      summary: view.isError ? `${named} failed: ${failure(shown.text)}` : outcome ? `${named}: ${saidOf(outcome.text)}` : `${named}: ok`, tool_name: tool.name, tool_use_id: tool.callId,
+      summary: !view.isError && pageChanged(tool.name, view) ? PAGE_CHANGED_ROW : view.isError ? `${named} failed: ${failure(shown.text)}` : outcome ? `${named}: ${saidOf(outcome.text)}` : `${named}: ok`, tool_name: tool.name, tool_use_id: tool.callId,
       tool_status: failedWith(view, outcome) ? "failed" : "success", tool_result_preview: shown.text ? cut(scrubUrls(shown.text), caps.preview) : null,
       tool_result_size_bytes: utf8Bytes(view.text), round: tool.round, parent_tool_use_id: parent,
     });
@@ -834,9 +841,9 @@ function createProjector(options: TimelineOptions) {
       // A person's message that declined the call: their words are the message the turn took, a row of theirs under a
       // person's rules, with the entry's own id; the server's resume beside it is the server's (`origin: "server"`) but
       // not a message (an id of its own, BESIDE_SUFFIX, which isMessageRow passes over). Any other: the server's row is
-      // that message, with the entry's id and `origin: "server"`. A trigger's message: "Trigger <its id>: …", `origin:
-      // "trigger"`, never the person's.
-      if (origin.kind === "trigger") add(make("phase", conv, base, { summary: `Trigger ${origin.trigger_id}: ${firstLine(text)}`, text, origin: "trigger", trigger: { id: origin.trigger_id, source: origin.source, owner: origin.owner } }));
+      // that message, with the entry's id and `origin: "server"`. A trigger's message: "<its source's label> <its id>: …"
+      // (TRIGGER_LABELS; serve names the trigger as it is now), `origin: "trigger"`, never the person's.
+      if (origin.kind === "trigger") add(make("phase", conv, base, { summary: `${TRIGGER_LABELS[origin.source]} ${origin.trigger_id}: ${firstLine(text)}`, text, origin: "trigger", trigger: { id: origin.trigger_id, source: origin.source, owner: origin.owner } }));
       else if (origin.reason === "approval_declined") {
         const said = redactText(origin.said.trim());
         add(make("phase", conv, `${base}${BESIDE_SUFFIX}`, { summary: `AgentRun: ${firstLine(text)}`, text, origin: "server" }));
@@ -952,6 +959,17 @@ export function timelineOf(entries: readonly EntryLike[], options: TimelineOptio
   if (options.settled) for (const [id, call] of projector.open()) projector.interrupt(call, id);
   const usage = projector.usage();
   return usage ? [...projector.rows(), usage] : [...projector.rows()];
+}
+
+/** The id of the call a run's turn ended waiting on a person by, or undefined: its last meaningful row is a successful tool
+ *  result for a tool that ends its turn (registerTurnEnding — ask_person is serve's). This is the one rule the view reads a
+ *  run `input_required` on a question by (the waiting row withAsks appends sits right after this same result), so the
+ *  runner's loop parks on exactly the turn ends the view would call waiting, and the two can never disagree; the id is the
+ *  call the park entry names. Truthy when it waits, undefined when it does not. */
+export function endedOnTurnEndingTool(entries: readonly EntryLike[]): string | undefined {
+  const last = timelineOf(entries, { settled: true }).findLast((row) => row.kind !== "usage" && row.kind !== "phase");
+  if (last?.kind !== "tool_result" || last.tool_name === null || last.tool_status !== "success" || !endsTurn(last.tool_name)) return undefined;
+  return last.tool_use_id ?? undefined;
 }
 
 /** A workflow's decision receipt as its run's store keeps it (`@parcha/agentrun-pi/durable`'s DecisionRow): the fields

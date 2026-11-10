@@ -87,13 +87,19 @@ export function piAdapter(options: PiAdapterOptions): AgentAdapter {
   };
 }
 
+/** The names of the run's pi-native extensions' tools (options.extensions): the model is offered them beside the session's
+ *  own (so it may call one), and pi runs it. Offered and run by one mechanism; sessionOn never also piTool-wraps a session
+ *  tool a native extension already owns, so the name is in the request's tools exactly once. */
+const nativeToolNames = (options: PiAdapterOptions): readonly string[] =>
+  (options.extensions ?? []).flatMap((extension) => extension.tools ?? []).map((tool) => tool.name);
+
 async function openPi(options: PiAdapterOptions, spec: SessionSpec, io: PiSessionIO): Promise<AdapterSession> {
   const { model } = options;
   const context = withAbortSignal(io.signal, BACKGROUND_CONTEXT);
   // The session's route: pi-ai's requests reach the provider only through this proxy, which admits and books each one
   // through the runner's booking (io.models).
   const proxy = await startModelProxy({
-    policy: await policyFor(options.provider, model, spec.tools.map((tool) => tool.name)),
+    policy: await policyFor(options.provider, model, [...spec.tools.map((tool) => tool.name), ...nativeToolNames(options)]),
     hooks: io.models,
     model,
     origin: options.provider.origin,
@@ -144,9 +150,12 @@ async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: Ses
   models.setProvider(sessionProvider(api, proxy, model, { provider: PROVIDER, keyName: "AGENTRUN_SESSION_KEY", ...(like ? { like } : {}), reasoning: false }));
   run.setModels(models);
 
-  const tools = spec.tools.map((tool) => piTool(tool, io));
+  // A session tool whose name a native extension already owns is run by that extension (pi's own tool task), so it is not
+  // piTool-wrapped here too: one tool by that name on the agent, offered once.
+  const owned = new Set(nativeToolNames(options));
+  const tools = spec.tools.filter((tool) => !owned.has(tool.name)).map((tool) => piTool(tool, io));
   // A refused call's words (the gate's deny, main's), by call: its result is those words alone, as main gives them.
-  const refusals = new Map<string, string>();
+  const refusals = refusalWords();
   const extension = defineExtension({
     name: `agentrun-session-${spec.key}`,
     tools,
@@ -157,7 +166,7 @@ async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: Ses
           const answer = await io.gate({ callId: call.id, tool: call.name, args: (call.arguments ?? {}) as Record<string, unknown> }, hookContext);
           if (answer === "allow") return undefined;
           if ("deny" in answer) {
-            refusals.set(call.id, answer.deny);
+            refusals.refuse(call.id, answer.deny);
             return { block: answer.deny };
           }
           // Parked: held until pi closes the Session, so the call never reaches its intent in this process.
@@ -169,13 +178,7 @@ async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: Ses
         },
         // A call the gate refused: its result is main's words alone, an error, never pi's framing of a blocked call (its
         // diagnostic, which the model reads as "<harness>[error] Tool call blocked: ..."). Every other result is pi's.
-        afterTool: async (call, result) => {
-          const words = refusals.get(call.id);
-          const blocked = result.diagnostics?.some((diagnostic) => diagnostic.code === "blocked");
-          if (words === undefined || !blocked) return undefined;
-          refusals.delete(call.id);
-          return { output: [{ type: "text" as const, text: words }], isError: true } as never;
-        },
+        afterTool: async (call, result) => refusals.resultOf(call.id, result) as never,
       }),
       // An answer's cost is the runner's booking of its request, never pi's $0 for a model it has no price for: set on
       // the answer before pi stores it, so the answer, pi.usage and the live timeline carry it; unknown stays unknown.
@@ -236,7 +239,9 @@ async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: Ses
     },
     async send(text, options) {
       // The run's first input under INPUT_REQUEST; a follow-up (a raised run's turn) under its own id, a turn of its own.
-      input = await root.submit({ type: "input", content: text, requestId: options?.id ?? INPUT_REQUEST }, context);
+      // With `origin` (a trigger's first input), the host's input entry carries it, as a trigger's steer's does.
+      const entry = options?.origin ? { entry: { kind: KINDS.input, data: { origin: options.origin } as JsonValue } } : {};
+      input = await root.submit({ type: "input", content: text, requestId: options?.id ?? INPUT_REQUEST, ...entry } as never, context);
       state = "open_turn";
       watch(input);
     },
@@ -272,6 +277,29 @@ async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: Ses
       await root.submit({ type: "input", content: text, whenBusy: mode, ...(id ? { requestId: id } : {}), ...entry } as never, context);
     },
   } satisfies AdapterSession;
+}
+
+/** A refused call's words by call (the gate's deny, main's words), held from the refusal (beforeTool's block) to the
+ *  call's result (afterTool): a blocked result becomes those words alone, an error, as main gives a refused call's
+ *  result, never pi's framing of a blocked call. Every other result is pi's own. `held`: the words still held. */
+export function refusalWords() {
+  const words = new Map<string, string>();
+  return {
+    refuse(callId: string, text: string): void {
+      words.set(callId, text);
+    },
+    resultOf(callId: string, result: { readonly diagnostics?: readonly { readonly code?: string }[] }): { output: { type: "text"; text: string }[]; isError: true } | undefined {
+      const text = words.get(callId);
+      // Let go on every result: the call has its one result now, whatever it is.
+      words.delete(callId);
+      const blocked = result.diagnostics?.some((diagnostic) => diagnostic.code === "blocked");
+      if (text === undefined || !blocked) return undefined;
+      return { output: [{ type: "text", text }], isError: true };
+    },
+    get held(): number {
+      return words.size;
+    },
+  };
 }
 
 /** A host tool as a pi tool: replay-safe or at most once, its answer the host's text and any images it shows. */

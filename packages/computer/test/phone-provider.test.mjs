@@ -3,7 +3,8 @@
 // adb runs, and no test waits on the wall clock: the fake's clock moves on when the provider sleeps.
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { randomFillSync } from "node:crypto";
+import { mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
@@ -452,6 +453,13 @@ test("connect reaches the phone over adb with its unlock code, which no result o
 	assert.ok(!JSON.stringify(refused).includes(ADB_CODE), "the unlock code is never in an error");
 	assert.ok(!JSON.stringify(refused).includes("ph_"), "nor any part of it");
 
+	// A reply that echoes the code twice: both are redacted.
+	const echo = await setup({ code: "ph_aaaaaaaaaaaaaaaaaaaaaaaaaa", unlockEcho: true });
+	const echoed = await echo.provider.connect((await echo.provider.create(SPEC)).value);
+	assert.equal(echoed.ok, false);
+	assert.match(echoed.error.message, /refused its unlock code: wrong code \[code\]: \[code\] is not this phone's$/);
+	assert.ok(!JSON.stringify(echoed).includes(ADB_CODE), "neither echo of the code is in the error");
+
 	const arm = await setup({ abi: "arm64-v8a" });
 	const armHello = (await arm.provider.connect((await arm.provider.create(SPEC)).value)).value.hello;
 	assert.equal(armHello.arch, "arm64");
@@ -486,6 +494,53 @@ test("two connections to one phone share its adb transport: the second does not 
 	assert.equal(third.ok, true, JSON.stringify(third));
 	assert.equal(fake.shells().filter((command) => /^unlock /.test(command)).length, 2);
 	await third.value.close();
+});
+
+/** A promise and its resolve: a gate a test opens. */
+function gate() {
+	let open;
+	const promise = new Promise((resolve) => (open = resolve));
+	return { promise, open };
+}
+/** Every step that can run without a held request has run: the microtask queue is drained (no timer, no clock). */
+const settled = () => new Promise((resolve) => setImmediate(resolve));
+
+test("a connect and the last holder's release never race the transport: the holder count and the disconnect are one critical section", async () => {
+	const endpoint = `${ADB_HOST}:${22220 + 1}`;
+	let hold;
+	const onServer = (service, stage) => (hold && hold.service === service && hold.stage === stage ? (hold.reached.open(), hold.release.promise) : undefined);
+	const { provider, fake } = await setup({ onServer });
+	const { value: ref } = await provider.create(SPEC);
+	const works = async (connection, what) => {
+		const listed = await connection.client.call("apps.list", {});
+		assert.equal(listed.ok, true, `${what}: ${JSON.stringify(listed)}`);
+	};
+
+	// (a) A connect while the last holder's disconnect is on its way: the connect waits for it, then connects afresh.
+	const first = (await provider.connect(ref)).value;
+	hold = { service: `host:disconnect:${endpoint}`, stage: "before", reached: gate(), release: gate() };
+	const closing = first.close();
+	await hold.reached.promise;
+	const second = provider.connect(ref);
+	await settled();
+	hold.release.open();
+	await closing;
+	const connected = await second;
+	assert.equal(connected.ok, true, JSON.stringify(connected));
+	await works(connected.value, "(a) the connect made during the disconnect");
+
+	// (b) The last holder lets go while a new connect's host:connect has been handled and its answer is on its way: the
+	// release sees the new holder and keeps the transport.
+	hold = { service: `host:connect:${endpoint}`, stage: "after", reached: gate(), release: gate() };
+	const third = provider.connect(ref);
+	await hold.reached.promise;
+	await connected.value.close();
+	hold.release.open();
+	const after = await third;
+	assert.equal(after.ok, true, JSON.stringify(after));
+	await works(after.value, "(b) the connect whose answer crossed the release");
+	await after.value.close();
+	assert.equal(fake.phone.connected.size, 0, "the last close lets the transport go");
 });
 
 test("no spawned adb's argv holds the unlock code or the phone's endpoint, which /proc shows to every user of the host", async () => {
@@ -840,6 +895,142 @@ test("a file ledger loses no phone when processes and calls put at once: every e
 	assert.equal(ids.length, writers * each, `every put landed: ${ids.length} of ${writers * each}`);
 });
 
+/** The pid of a process that has exited: no process holds it now. */
+const deadPid = () => new Promise((resolve) => {
+	const child = execFile(process.execPath, ["-e", ""], () => resolve(child.pid));
+});
+const ENTRY = { labels: {}, image: "android", deadline: "2026-11-08T12:00:00.000Z" };
+
+test("a file ledger never takes a live writer's lock, however old: a put waits for it, and fails in words", async () => {
+	const path = join(dir, "live-lock-ledger.json");
+	// This process is the holder, so it is alive; the lock is an hour old.
+	writeFileSync(`${path}.lock`, `${process.pid} a-live-writer\n`);
+	utimesSync(`${path}.lock`, new Date(Date.now() - 3_600_000), new Date(Date.now() - 3_600_000));
+	await assert.rejects(conformance.fileLedger(path, { waitMs: 0 }).put({ id: "p1", ...ENTRY }), /stayed locked by another writer/);
+	assert.equal(readFileSync(`${path}.lock`, "utf8"), `${process.pid} a-live-writer\n`, "the live writer's lock is untouched");
+	rmSync(`${path}.lock`);
+});
+
+test("a file ledger takes a dead writer's lock at once, however fresh", async () => {
+	const path = join(dir, "dead-lock-ledger.json");
+	writeFileSync(`${path}.lock`, `${await deadPid()} a-dead-writer\n`);
+	await conformance.fileLedger(path, { waitMs: 0 }).put({ id: "p1", ...ENTRY });
+	assert.deepEqual((await conformance.fileLedger(path).list()).map((entry) => entry.id), ["p1"]);
+	assert.throws(() => readFileSync(`${path}.lock`), /ENOENT/, "and lets it go after its write");
+});
+
+test("a ledger writer waits while the lock keeps passing between live writers: waitMs bounds one holder that never lets go, not their progress", async () => {
+	// CI saw a writer of six give up at 10 s while every writer was making progress: under load, the others' queued
+	// writes held the lock in turn for longer than the bound, each hold short. In a child process every take that finds
+	// the lock held hands it to another live writer (new words), 12 times, then the lock is freed. Each hand-over is
+	// progress, so the writer must wait it out (with waitMs 30 ms, far less than the 12 hand-overs take) and land its
+	// write. No timing decides it: the hand-overs follow the writer's own looks.
+	const path = join(dir, "handed-over-ledger.json");
+	const module = new URL("../dist/conformance/phone-harness.js", import.meta.url).href;
+	const script = `
+		import fs from "node:fs";
+		import { syncBuiltinESMExports } from "node:module";
+		const lockPath = process.argv[2] + ".lock";
+		fs.writeFileSync(lockPath, process.pid + " writer-0\\n");
+		const link = fs.linkSync;
+		let handed = 0;
+		fs.linkSync = (from, to) => {
+			if (String(to) !== lockPath) return link(from, to);
+			try {
+				return link(from, to);
+			} catch (error) {
+				if (error.code === "EEXIST") {
+					if (++handed <= 12) fs.writeFileSync(lockPath, process.pid + " writer-" + handed + "\\n");
+					else fs.unlinkSync(lockPath);
+				}
+				throw error;
+			}
+		};
+		syncBuiltinESMExports();
+		const { fileLedger } = await import(process.argv[1]);
+		let error = "";
+		try { await fileLedger(process.argv[2], { waitMs: 30 }).put({ id: "p1", labels: {}, image: "android", deadline: "2026-11-08T12:00:00.000Z" }); } catch (e) { error = e.message; }
+		console.log(JSON.stringify({ error, handed }));`;
+	const ran = await new Promise((resolve) => execFile(process.execPath, ["--input-type=module", "-e", script, module, path], { timeout: 30_000, killSignal: "SIGKILL" }, (error, stdout, stderr) => resolve({ error, stdout, stderr })));
+	assert.equal(ran.error, null, ran.stderr);
+	const { error, handed } = JSON.parse(ran.stdout);
+	assert.equal(error, "", "the writer waited out the hand-overs");
+	assert.equal(handed, 13, "12 hand-overs, then the lock was freed");
+	assert.deepEqual((await conformance.fileLedger(path).list()).map((entry) => entry.id), ["p1"]);
+});
+
+test("two waiters that find the same dead breaker's .break both go on: the one whose unlink finds it gone does not throw", async () => {
+	// The race, made certain in a child process: its first unlink of .break removes the file once more before its own
+	// (as the other waiter's unlink would, between this waiter's check and its unlink), so its own finds it gone.
+	const path = join(dir, "racing-breakers-ledger.json");
+	writeFileSync(`${path}.lock`, `${await deadPid()} a-dead-writer\n`);
+	writeFileSync(`${path}.lock.break`, `${await deadPid()} a-dead-breaker\n`);
+	const module = new URL("../dist/conformance/phone-harness.js", import.meta.url).href;
+	const script = `
+		import fs from "node:fs";
+		import { syncBuiltinESMExports } from "node:module";
+		const unlink = fs.unlinkSync;
+		let raced = 0;
+		fs.unlinkSync = (path) => {
+			if (String(path).endsWith(".lock.break") && raced++ === 0) unlink(path);
+			return unlink(path);
+		};
+		syncBuiltinESMExports();
+		const { fileLedger } = await import(process.argv[1]);
+		let error = "";
+		try { await fileLedger(process.argv[2], { waitMs: 5000 }).put({ id: "p1", labels: {}, image: "android", deadline: "2026-11-08T12:00:00.000Z" }); } catch (e) { error = e.message; }
+		console.log(JSON.stringify({ error, raced }));`;
+	const ran = await new Promise((resolve) => execFile(process.execPath, ["--input-type=module", "-e", script, module, path], { timeout: 30_000, killSignal: "SIGKILL" }, (error, stdout, stderr) => resolve({ error, stdout, stderr })));
+	assert.equal(ran.error, null, ran.stderr);
+	const { error, raced } = JSON.parse(ran.stdout);
+	assert.ok(raced >= 1, "the race was run: the dead .break was found gone at its unlink");
+	assert.equal(error, "", "the waiter went on, and its write landed");
+	assert.deepEqual((await conformance.fileLedger(path).list()).map((entry) => entry.id), ["p1"]);
+	assert.throws(() => readFileSync(`${path}.lock.break`), /ENOENT/, "and no .break is left");
+});
+
+test("a writer that finds a dead lock while a live breaker holds .break waits, gives up at waitMs in words, and never blocks the process", async () => {
+	// The writer runs in a child process: a writer that spins without awaiting blocks every timer of its process, the
+	// test's own included, and only the parent can stop it (the kill below is a bound on a failure, not a timing).
+	const path = join(dir, "paused-breaker-ledger.json");
+	writeFileSync(`${path}.lock`, `${await deadPid()} a-dead-writer\n`);
+	// A breaker that is alive (this test's own process) and paused while it holds .break.
+	writeFileSync(`${path}.lock.break`, `${process.pid} a-paused-breaker\n`);
+	const module = new URL("../dist/conformance/phone-harness.js", import.meta.url).href;
+	const script = `
+		const { fileLedger } = await import(process.argv[1]);
+		let ticks = 0;
+		const timer = setInterval(() => ticks++, 1);
+		let error = "";
+		try { await fileLedger(process.argv[2], { waitMs: 200 }).put({ id: "p1", labels: {}, image: "android", deadline: "2026-11-08T12:00:00.000Z" }); } catch (e) { error = e.message; }
+		clearInterval(timer);
+		console.log(JSON.stringify({ error, ticked: ticks > 0 }));`;
+	const ran = await new Promise((resolve) => execFile(process.execPath, ["--input-type=module", "-e", script, module, path], { timeout: 30_000, killSignal: "SIGKILL" }, (error, stdout, stderr) => resolve({ error, stdout, stderr })));
+	assert.equal(ran.error, null, `the writer ended on its own: ${ran.error?.killed ? "it was killed, spinning" : ran.stderr}`);
+	const { error, ticked } = JSON.parse(ran.stdout);
+	assert.match(error, /stayed locked by another writer for 0\.2 s/);
+	assert.equal(ticked, true, "its process's timers ran while it waited");
+	assert.equal(readFileSync(`${path}.lock.break`, "utf8"), `${process.pid} a-paused-breaker\n`, "the live breaker's lock is untouched");
+	rmSync(`${path}.lock.break`);
+	rmSync(`${path}.lock`);
+});
+
+test("a dead writer's lock, broken by many processes at once, is broken once: every entry lands", async () => {
+	// Two waiters that each find the lock stale could each remove it, the second removing the lock the first had just
+	// taken: two writers at once, and an entry dropped.
+	const path = join(dir, "broken-lock-ledger.json");
+	writeFileSync(`${path}.lock`, `${await deadPid()} a-dead-writer\n`);
+	const module = new URL("../dist/conformance/phone-harness.js", import.meta.url).href;
+	const writers = 6;
+	const each = 20;
+	const script = `const { fileLedger } = await import(process.argv[1]); const ledger = fileLedger(process.argv[2]); const who = process.argv[3]; await Promise.all(Array.from({ length: ${each} }, (_, i) => ledger.put({ id: who + "-" + i, labels: {}, image: "android", deadline: "2026-11-08T12:00:00.000Z" })));`;
+	const ran = await Promise.all(
+		Array.from({ length: writers }, (_, w) => new Promise((resolve) => execFile(process.execPath, ["--input-type=module", "-e", script, module, path, `w${w}`], (error, stdout, stderr) => resolve({ error, stderr })))),
+	);
+	for (const { error, stderr } of ran) assert.equal(error, null, stderr);
+	assert.equal((await conformance.fileLedger(path).list()).length, writers * each, "every put landed");
+});
+
 test("the conformance module reads its own COMPUTER_PHONE_HARNESS_* names, never PHONE_HARNESS_API_KEY, and keeps its ledger in a file", async () => {
 	assert.deepEqual(conformance.PHONE_ENV, {
 		key: "COMPUTER_PHONE_HARNESS_API_KEY",
@@ -878,4 +1069,350 @@ test("the conformance module reads its own COMPUTER_PHONE_HARNESS_* names, never
 	assert.match((await drifted.connect(twin)).error.message, /hello: the daemon reports version \S+, expected /);
 	await drifted.release(twin, "delete");
 	assert.equal(await conformance.conformanceImage(), "android");
+});
+
+test("the phone answers screen.watch: PNG frames of the whole screen, read about once a second, the next only after the ack", async () => {
+	const { provider, fake } = await setup();
+	const { value: ref } = await provider.create(SPEC);
+	const { value: connection } = await provider.connect(ref);
+	const { client } = connection;
+	const screencaps = () => fake.adbCalls().filter((args) => args.includes("screencap")).length;
+	const first = await client.call("screen.watch", { after: 0 });
+	assert.equal(first.ok, true, JSON.stringify(first));
+	assert.deepEqual({ seq: first.value.seq, changed: first.value.changed, format: first.value.format, width: first.value.width, height: first.value.height, frameWidth: first.value.frameWidth, frameHeight: first.value.frameHeight }, { seq: 1, changed: true, format: "png", width: SCREEN.width, height: SCREEN.height, frameWidth: SCREEN.width, frameHeight: SCREEN.height });
+	// An unchanged screen: no frame once waitMs is over, read once a second meanwhile (the fake clock moves at once).
+	const before = screencaps();
+	const idle = await client.call("screen.watch", { after: 1, waitMs: 3000 });
+	assert.deepEqual(idle, { ok: true, value: { seq: 1, changed: false, width: SCREEN.width, height: SCREEN.height } });
+	assert.ok(screencaps() - before >= 3 && screencaps() - before <= 4, `read about once a second over 3 s: ${screencaps() - before} reads`);
+	// Settings in front changes the screen: the next frame.
+	assert.equal((await client.call("apps.launch", { id: SETTINGS })).ok, true);
+	const changed = await client.call("screen.watch", { after: 1, waitMs: 3000 });
+	assert.equal(changed.value.seq, 2);
+	assert.equal(changed.value.changed, true);
+	// An old ack gets the newest frame at once, with no read of the screen.
+	const reads = screencaps();
+	const again = await client.call("screen.watch", { after: 1 });
+	assert.equal(again.value.seq, 2);
+	assert.equal(screencaps(), reads);
+	// maxWidth scales the frame; the size stays the screen's. (A connection's watch keeps its frames' scale: a new one asks.)
+	const { value: other } = await provider.connect(ref);
+	const scaled = await other.client.call("screen.watch", { after: 0, maxWidth: 180 });
+	assert.deepEqual([scaled.value.frameWidth, scaled.value.frameHeight, scaled.value.width, scaled.value.height], [180, 320, SCREEN.width, SCREEN.height]);
+	await other.close();
+	for (const params of [{}, { after: -1 }, { after: 99 }, { after: 0, waitMs: 10_001 }, { after: 0, maxWidth: 0 }, { after: 0, quality: 101 }]) {
+		const refused = await client.call("screen.watch", params);
+		assert.equal(refused.ok, false, JSON.stringify(params));
+		assert.equal(refused.error.code, "invalid", JSON.stringify(params));
+	}
+	await connection.close();
+	await provider.release(ref, "delete");
+});
+
+test("the phone's watch() gives its PNG frames whole and upright, landscape too, and its input() taps where the frame says", async () => {
+	const { toAction } = await import("../dist/index.js");
+	const { provider, fake } = await setup();
+	const { value: ref } = await provider.create(SPEC);
+	const frames = [];
+	let ack;
+	let arrived;
+	const handlers = {
+		frame(frame, given) {
+			frames.push(frame);
+			ack = given;
+			arrived?.();
+		},
+		ended(error) {
+			assert.fail(`ended: ${JSON.stringify(error)}`);
+		},
+	};
+	const next = () => new Promise((resolve) => (arrived = resolve));
+	const waiting = next();
+	const watched = await provider.watch(ref, handlers);
+	assert.equal(watched.ok, true, JSON.stringify(watched));
+	await waiting;
+	assert.equal(frames[0].format, "png");
+	assert.deepEqual([frames[0].width, frames[0].height], [SCREEN.width, SCREEN.height]);
+	assert.deepEqual(png(Buffer.from(frames[0].bytes)), { width: SCREEN.width, height: SCREEN.height });
+	// Turned to landscape: screencap gives the display upright, so the frame's width and height are the turned ones,
+	// and a tap in them reaches input tap as it is (no rotation of ours).
+	fake.phone.landscape = true;
+	const turned = next();
+	ack();
+	await turned;
+	assert.deepEqual([frames[1].width, frames[1].height], [SCREEN.height, SCREEN.width]);
+	assert.deepEqual(png(Buffer.from(frames[1].bytes)), { width: SCREEN.height, height: SCREEN.width });
+	const tap = toAction({ type: "tap", x: SCREEN.height - 20, y: SCREEN.width - 10 }, "android");
+	assert.ok(Array.isArray(tap), JSON.stringify(tap));
+	assert.deepEqual(await watched.value.input(tap), { ok: true, value: { done: 1 } });
+	assert.ok(fake.shells().includes(`input tap ${SCREEN.height - 20} ${SCREEN.width - 10}`), fake.shells().join("\n"));
+	await watched.value.close();
+	await provider.release(ref, "delete");
+});
+
+// --- the live view's phone under a misbehaving phone or viewer (#2017's review and security read) ----------------------
+
+/** The fake's adb with each spawned run going through around(args, options, run): the test's own phone behaviour. */
+function aroundAdb(fake, around) {
+	const run = (args, options = {}) => around(args, options, () => fake.adb.run(args, options));
+	return Object.assign((args, options) => run(args, options), { run, server: fake.adb.server });
+}
+
+/** A run that answers only when its signal fires, as a stalled adb killed by it does; with no signal, never. */
+const stalled = (options) =>
+	new Promise((resolve) => {
+		const stop = () => resolve({ ok: false, error: { code: "aborted", message: "adb was aborted" } });
+		if (options.signal?.aborted) stop();
+		else options.signal?.addEventListener("abort", stop, { once: true });
+	});
+
+test("a phone watch's screencap and its poll sleep end when the watch is cancelled or the connection closed: neither waits for the phone", { timeout: 10_000 }, async (t) => {
+	// A watch that waits for the phone holds no timer: this one keeps the run alive so the test's bound can fail it.
+	const alive = setInterval(() => {}, 1_000);
+	t.after(() => clearInterval(alive));
+	const fake = fakePhoneHarness();
+	let stall = false;
+	let began;
+	const capturing = () => new Promise((resolve) => (began = resolve));
+	const adb = aroundAdb(fake, (args, options, run) => (stall && args.includes("screencap") ? (began(), stalled(options)) : run()));
+	let hang = false;
+	let slept;
+	const sleeping = () => new Promise((resolve) => (slept = resolve));
+	const sleep = (ms) => (hang ? (slept(ms), new Promise(() => {})) : fake.clock.sleep(ms));
+	const provider = await create({ apiKey: KEY, fetch: fake.fetch, adb, ledger: memoryLedger(), now: fake.clock.now, sleep });
+	const { value: ref } = await provider.create(SPEC);
+	const { value: connection } = await provider.connect(ref);
+	const { client } = connection;
+	assert.equal((await client.call("screen.watch", { after: 0 })).ok, true);
+
+	// A screencap that stalls: the watch's cancel ends it.
+	stall = true;
+	let cancel = new AbortController();
+	let started = capturing();
+	let call = client.call("screen.watch", { after: 0 }, { signal: cancel.signal });
+	// after 0 is older than the newest frame: answered at once, with no screencap. after 1 waits for a change.
+	assert.equal((await call).value.seq, 1);
+	call = client.call("screen.watch", { after: 1, waitMs: 3000 }, { signal: cancel.signal });
+	await started;
+	cancel.abort();
+	let ended = await call;
+	assert.equal(ended.ok, false, JSON.stringify(ended));
+	assert.equal(ended.error.code, "aborted");
+
+	// A poll sleep that never ends by itself: the watch's cancel ends it.
+	stall = false;
+	hang = true;
+	cancel = new AbortController();
+	const asleep = sleeping();
+	call = client.call("screen.watch", { after: 1, waitMs: 3000 }, { signal: cancel.signal });
+	await asleep;
+	cancel.abort();
+	ended = await call;
+	assert.equal(ended.ok, false, JSON.stringify(ended));
+	assert.equal(ended.error.code, "aborted");
+	hang = false;
+
+	// A screencap that stalls with no cancel: closing the connection ends it.
+	stall = true;
+	started = capturing();
+	call = client.call("screen.watch", { after: 1, waitMs: 3000 });
+	await started;
+	await connection.close();
+	ended = await call;
+	assert.equal(ended.ok, false, JSON.stringify(ended));
+
+	// watch() over a stalled screencap: close() comes back, the frame reader does not hold it.
+	stall = false;
+	const frames = [];
+	let ack;
+	let arrived;
+	const first = new Promise((resolve) => (arrived = resolve));
+	const watched = await provider.watch(ref, {
+		frame(frame, given) {
+			frames.push(frame);
+			ack = given;
+			arrived();
+		},
+		ended() {},
+	});
+	assert.equal(watched.ok, true, JSON.stringify(watched));
+	await first;
+	stall = true;
+	started = capturing();
+	ack();
+	await started;
+	await watched.value.close();
+	assert.equal(frames.length, 1);
+	await provider.release(ref, "delete");
+});
+
+test("an animated phone screen, acked at once, is read about once a second: the pace holds across calls", { timeout: 10_000 }, async () => {
+	const fake = fakePhoneHarness();
+	const reads = [];
+	let shade = 0;
+	const adb = aroundAdb(fake, async (args, options, run) => {
+		const ran = await run();
+		if (!args.includes("screencap") || !ran.ok) return ran;
+		// Each screencap differs from the last: an animation.
+		reads.push(fake.clock.now());
+		const stdout = Buffer.from(ran.value.stdout);
+		stdout[stdout.length - 2] = shade++ % 256;
+		return { ok: true, value: { ...ran.value, stdout } };
+	});
+	const provider = await create({ apiKey: KEY, fetch: fake.fetch, adb, ledger: memoryLedger(), now: fake.clock.now, sleep: fake.clock.sleep });
+	const { value: ref } = await provider.create(SPEC);
+	const { value: connection } = await provider.connect(ref);
+	for (let after = 0; after < 4; after++) {
+		const frame = await connection.client.call("screen.watch", { after });
+		assert.equal(frame.value.seq, after + 1, JSON.stringify(frame).slice(0, 200));
+	}
+	const gaps = reads.slice(1).map((at, i) => at - reads[i]);
+	assert.ok(gaps.length >= 3 && gaps.every((gap) => gap >= 1000), `screencaps ${gaps.join(", ")} ms apart`);
+	await connection.close();
+	await provider.release(ref, "delete");
+});
+
+test("a phone runs one input batch at a time: a second waits for the first, whole, and never cuts into it", { timeout: 10_000 }, async () => {
+	const fake = fakePhoneHarness();
+	let armed = false;
+	let wake;
+	let began;
+	const waiting = new Promise((resolve) => (began = resolve));
+	const sleep = (ms) => (armed ? (began(ms), new Promise((resolve) => (wake = resolve))) : fake.clock.sleep(ms));
+	const provider = await create({ apiKey: KEY, fetch: fake.fetch, adb: fake.adb, ledger: memoryLedger(), now: fake.clock.now, sleep });
+	const { value: ref } = await provider.create(SPEC);
+	const { value: connection } = await provider.connect(ref);
+	const { client } = connection;
+	armed = true;
+	const first = client.call("input.actions", { actions: [{ type: "wait", ms: 500 }, { type: "tap", at: [100, 300] }] });
+	await waiting;
+	const second = client.call("input.actions", { actions: [{ type: "button", name: "back" }] });
+	for (let turn = 0; turn < 5; turn++) await new Promise((resolve) => setImmediate(resolve));
+	assert.equal(fake.shells().filter((command) => command.startsWith("input keyevent")).length, 0, "the second batch waits for the first");
+	armed = false;
+	wake();
+	assert.deepEqual(await first, { ok: true, value: { done: 2 } });
+	assert.deepEqual(await second, { ok: true, value: { done: 1 } });
+	const order = fake.shells().filter((command) => /^input (tap|keyevent)/.test(command));
+	assert.deepEqual(order, ["input tap 100 300", "input keyevent KEYCODE_BACK"]);
+	await connection.close();
+	await provider.release(ref, "delete");
+});
+
+test("a batch cancelled while it waits its turn answers at once, aborted with none run; the batches before it run on, in order", { timeout: 10_000 }, async (t) => {
+	// A call that waits for the batch before it holds no timer: this keeps the run alive so the test's bound can fail it.
+	const alive = setInterval(() => {}, 1_000);
+	t.after(() => clearInterval(alive));
+	const fake = fakePhoneHarness();
+	let armed = false;
+	let wake;
+	let began;
+	const waiting = new Promise((resolve) => (began = resolve));
+	const sleep = (ms) => (armed ? (began(ms), new Promise((resolve) => (wake = resolve))) : fake.clock.sleep(ms));
+	const provider = await create({ apiKey: KEY, fetch: fake.fetch, adb: fake.adb, ledger: memoryLedger(), now: fake.clock.now, sleep });
+	const { value: ref } = await provider.create(SPEC);
+	const { value: connection } = await provider.connect(ref);
+	const { client } = connection;
+	armed = true;
+	const first = client.call("input.actions", { actions: [{ type: "wait", ms: 300_000 }, { type: "tap", at: [100, 300] }] });
+	await waiting;
+	const cancel = new AbortController();
+	const second = client.call("input.actions", { actions: [{ type: "button", name: "back" }] }, { signal: cancel.signal });
+	const third = client.call("input.actions", { actions: [{ type: "button", name: "home" }] });
+	cancel.abort();
+	const cancelled = await second;
+	assert.equal(cancelled.ok, true, JSON.stringify(cancelled));
+	assert.equal(cancelled.value.done, 0);
+	assert.deepEqual([cancelled.value.failed?.index, cancelled.value.failed?.kind], [0, "aborted"]);
+	assert.match(cancelled.value.failed.message, /^action 0: .*aborted/);
+	armed = false;
+	wake();
+	assert.deepEqual(await first, { ok: true, value: { done: 2 } });
+	assert.deepEqual(await third, { ok: true, value: { done: 1 } });
+	const order = fake.shells().filter((command) => /^input (tap|keyevent)/.test(command));
+	assert.deepEqual(order, ["input tap 100 300", "input keyevent KEYCODE_HOME"], "the cancelled batch never ran, and the others kept their order");
+	await connection.close();
+	await provider.release(ref, "delete");
+});
+
+test("a phone's watch frame over a chunk is held apart from a shot: a screen.shot between its first chunk and its screen.read evicts neither", async () => {
+	// A noisy screen, so its PNG is over a chunk.
+	const fake = fakePhoneHarness();
+	const adb = aroundAdb(fake, async (args, options, run) => {
+		const ran = await run();
+		if (!args.includes("screencap") || !ran.ok) return ran;
+		const stdout = Buffer.from(ran.value.stdout);
+		randomFillSync(stdout, 16);
+		return { ok: true, value: { ...ran.value, stdout } };
+	});
+	const provider = await create({ apiKey: KEY, fetch: fake.fetch, adb, ledger: memoryLedger(), now: fake.clock.now, sleep: fake.clock.sleep });
+	const { value: ref } = await provider.create(SPEC);
+	const { value: connection } = await provider.connect(ref);
+	const { client } = connection;
+	const frame = await client.call("screen.watch", { after: 0 });
+	assert.equal(frame.ok, true, JSON.stringify(frame).slice(0, 200));
+	assert.equal(frame.value.eof, false, "the frame is over a chunk");
+	const first = await client.call("screen.shot", {});
+	assert.equal(first.ok, true);
+	assert.equal(first.value.eof, false, "the shot is over a chunk");
+	// The frame's rest, after the shot: the frame's bytes, whole.
+	const parts = [Buffer.from(frame.value.data, "base64")];
+	for (let eof = false; !eof; ) {
+		const more = await client.call("screen.read", { id: frame.value.id, offset: Buffer.concat(parts).length });
+		assert.equal(more.ok, true, JSON.stringify(more).slice(0, 200));
+		parts.push(Buffer.from(more.value.data, "base64"));
+		eof = more.value.eof;
+	}
+	const bytes = Buffer.concat(parts);
+	assert.equal(bytes.length, frame.value.size);
+	assert.deepEqual(png(bytes), { width: SCREEN.width, height: SCREEN.height });
+	// The shot's rest is still held too.
+	const rest = await client.call("screen.read", { id: first.value.id, offset: Buffer.from(first.value.data, "base64").length });
+	assert.equal(rest.ok, true, JSON.stringify(rest).slice(0, 200));
+	await connection.close();
+	await provider.release(ref, "delete");
+});
+
+test("a phone types 65,536 characters at most in one type action, computerd's bound: one more is refused as limit, with nothing typed", async () => {
+	const { provider, fake } = await setup();
+	const { value: ref } = await provider.create(SPEC);
+	const { client } = (await provider.connect(ref)).value;
+	const over = await client.call("input.actions", { actions: [{ type: "type", text: "a".repeat(65_537) }] });
+	assert.equal(over.ok, true, JSON.stringify(over).slice(0, 300));
+	assert.equal(over.value.done, 0);
+	assert.deepEqual([over.value.failed?.index, over.value.failed?.kind], [0, "limit"]);
+	assert.match(over.value.failed.message, /65537 characters.*65536/);
+	assert.equal(fake.shells().filter((command) => command.startsWith("input text")).length, 0, "nothing typed");
+	const most = await client.call("input.actions", { actions: [{ type: "type", text: "a".repeat(65_536) }] });
+	assert.deepEqual(most, { ok: true, value: { done: 1 } });
+});
+
+test("no phone error carries the phone's endpoint: adb's connect answer gets fixed words, and the adb server's and a shell's words are redacted", async () => {
+	const endpoint = /phone-harness\.test|:2222\d/;
+	// adb's connect answer names the endpoint: the provider's error says what failed in its own words.
+	const fake = fakePhoneHarness();
+	const server = (service, options) => (service.startsWith("host:connect:") ? Promise.resolve({ ok: true, value: `failed to connect to '${service.slice("host:connect:".length)}': Connection refused` }) : fake.adb.server(service, options));
+	const adb = Object.assign((args, options) => fake.adb.run(args, options), { run: fake.adb.run, server });
+	const provider = await create({ apiKey: KEY, fetch: fake.fetch, adb, ledger: memoryLedger(), now: fake.clock.now, sleep: fake.clock.sleep });
+	const { value: ref } = await provider.create(SPEC);
+	const refused = await provider.connect(ref);
+	assert.equal(refused.ok, false);
+	assert.match(refused.error.message, /adb could not reach the phone/);
+	assert.doesNotMatch(refused.error.message, endpoint);
+	// The adb server's FAIL words, which may name the endpoint.
+	const frame = (status, message) => Buffer.from(`${status}${Buffer.byteLength(message).toString(16).padStart(4, "0")}${message}`);
+	const failed = phone.adbAnswer(frame("FAIL", `failed to connect to '${ADB_HOST}:22221'`), "host:connect");
+	assert.equal(failed.ok, false);
+	assert.doesNotMatch(failed.error.message, endpoint);
+	assert.match(failed.error.message, /^the adb server refused host:connect: failed to connect to/);
+	// A shell's stderr, which adb fills with the device's name.
+	const other = fakePhoneHarness();
+	const noisy = aroundAdb(other, (args, options, run) => (args.at(-1)?.startsWith("input tap") ? Promise.resolve({ ok: true, value: { exitCode: 1, stdout: Buffer.alloc(0), stderr: `error: device '${ADB_HOST}:22221' not found\n` } }) : run()));
+	const second = await create({ apiKey: KEY, fetch: other.fetch, adb: noisy, ledger: memoryLedger(), now: other.clock.now, sleep: other.clock.sleep });
+	const { value: ref2 } = await second.create(SPEC);
+	const { client } = (await second.connect(ref2)).value;
+	const tapped = await client.call("input.actions", { actions: [{ type: "tap", at: [100, 300] }] });
+	assert.equal(tapped.ok, true, JSON.stringify(tapped));
+	assert.match(tapped.value.failed.message, /input tap on the phone failed/);
+	assert.doesNotMatch(tapped.value.failed.message, endpoint);
 });

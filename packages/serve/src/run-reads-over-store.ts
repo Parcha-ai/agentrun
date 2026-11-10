@@ -116,8 +116,8 @@ export async function runGraphView(store: Store, runId: string, deps: RunReadsDe
   const launch = await store.runs.launch(runId).then((row) => readLaunchBody(row.body), (error) => (error instanceof StoreLaunchMissing ? undefined : Promise.reject(error)));
   // The run's model-node cost from its rows once it ended (0 before), as the old graph read it from run.rows.
   const rows = ended ? await runTimeline(store, runId, deps.context) : [];
-  // Every part it serves is cut by the run's one cut, as the file path's servedGraph cut it (graph-served.ts servedPart):
-  // its nodes (their labels, items, inputs, states, escalation words), its decisions and its calls.
+  // Every field it serves is cut by the run's one cut (graph-served.ts servedGraphView): its nodes, decisions and calls by
+  // servedPart, and every other field (its workflow, its structure, any added later) whole.
   const cut = await deps.cutValues(store, runId);
   if (cut === "unreadable") throw new ApiError("forbidden", WITHHELD_SIGN_IN);
   return servedGraphView(await runGraph({
@@ -137,8 +137,9 @@ export async function runGraphView(store: Store, runId: string, deps: RunReadsDe
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => { const t = setTimeout(resolve, Math.max(0, ms)); t.unref?.(); });
 
-/** A run's served timeline page, byte-identical to the old route's: the change page (reset/rows/drop/next_after/unchanged/
- *  has_more) with the run's status, state, cost and whether it is final. */
+/** A run's served timeline page: the change page (reset/rows/drop/next_after/unchanged/has_more) with the run's status,
+ *  state, whether it is final, and its cost as the run view serves it. `cost` is the run's whole Cost object (usd, basis,
+ *  cap_usd and the rest, as GET /runs/{id} answers), not a bare number, so the timeline page and the run read agree. */
 export interface TimelinePage {
   readonly run_id: string;
   readonly status: string;
@@ -150,7 +151,7 @@ export interface TimelinePage {
   readonly unchanged: boolean;
   readonly has_more: boolean;
   readonly final: boolean;
-  readonly cost: number | null;
+  readonly cost: Record<string, unknown> | null;
 }
 
 /** What the timeline reader needs beyond the store: a context, the run's timeline rows and its view (status/state/cost). */
@@ -194,7 +195,9 @@ export function runTimelines(deps: TimelineDeps): { page(store: Store, runId: st
     const page = log.page(after, limit);
     // Final when the run is terminal and settled (the view says so with poll_after_ms 0, as the old final did).
     const final = view.poll_after_ms === 0;
-    const cost = (view.cost as { usd?: number | null } | undefined)?.usd ?? null;
+    // The run's whole Cost object, as GET /runs/{id} serves it (store-view costOfView): the page and the run read send the
+    // same shape, so a reader need not read both to price the run.
+    const cost = (view.cost as Record<string, unknown> | undefined) ?? null;
     return { run_id: runId, status, state, reset: page.reset, rows: page.rows, drop: page.drop, next_after: page.next_after, unchanged: page.unchanged, has_more: page.has_more, final, cost };
   }
 

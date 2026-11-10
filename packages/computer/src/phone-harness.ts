@@ -9,7 +9,7 @@
 // in memory by default): list, attach, release and the janitor see only the sessions the ledger names, never another
 // session on the same account.
 import { execFile } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { createConnection } from "node:net";
 import { crc32, deflateSync } from "node:zlib";
@@ -28,6 +28,7 @@ import {
 	MAX_CHUNK_BYTES,
 	MAX_UI_NODES,
 	type Rect,
+	type ScreenWatchResult,
 	type UiNode,
 } from "./protocol.js";
 import {
@@ -46,6 +47,7 @@ import {
 	type Refusal,
 } from "./provider.js";
 import { type ComputerErrorCode, fail, ok, type Result } from "./result.js";
+import { daemonWatch, redactWords, type ScreenWatch, type ScreenWatchHandlers, type WatchOptions } from "./screen-watch.js";
 import { listTested } from "./test-connection.js";
 
 /** The phone harness's API. */
@@ -56,6 +58,8 @@ export const PHONE_GROUPS: readonly Group[] = ["screen", "input.touch", "input.k
 export const MOUNT: readonly MountKind[] = [];
 /** The one configuration it offers, as its capabilities() declare it: the kind registry's entry holds the same. */
 export const CAPABILITIES: readonly KindCapabilities[] = [{ kind: "android", groups: [...PHONE_GROUPS] }];
+/** The image a phone is read back by: a cloud Android has none to choose, so a setting that names none takes this. */
+export const PHONE_IMAGE = "android";
 /** The longest lifetime by default: a rented phone bills by the minute. */
 export const DEFAULT_MAX_LIFETIME_MS = 30 * 60_000;
 /** How long create waits for a phone to be ready by default: the service's own CLI waits 240 s. */
@@ -179,16 +183,25 @@ type AdbRun = (args: string[], options?: { timeoutMs?: number; signal?: AbortSig
 /** The adb server's port when none is given: adb's own default. */
 export const ADB_SERVER_PORT = 5037;
 
+/** The environment variables adb reads to find its server or its device: every one is dropped from a spawned adb's. */
+const ADB_ENV = /^(ADB_|ANDROID_ADB_|ANDROID_SERIAL$)/;
+
 /**
  * The adb CLI (Android platform-tools) at path, by execFile, never a shell, and the adb server it starts, on the
  * loopback at port (adb's own default), spoken to by its socket protocol.
+ *
+ * env is the environment a spawned adb starts from, with every adb variable dropped from it (ADB_SERVER_SOCKET,
+ * ANDROID_ADB_SERVER_SOCKET, ANDROID_ADB_SERVER_ADDRESS, ANDROID_SERIAL, ...), so nothing in it points the CLI at
+ * another server than its socket requests reach. The library reads no environment of its own: a caller passes it (the
+ * conformance module passes process.env). Without env, a spawned adb inherits the process's environment as it is.
  */
-export function adbCli(path = "adb", { port = ADB_SERVER_PORT }: { port?: number } = {}): AdbTransport {
+export function adbCli(path = "adb", { port = ADB_SERVER_PORT, env }: { port?: number; env?: Readonly<Record<string, string | undefined>> } = {}): AdbTransport {
 	// Every spawned adb names the server the socket requests go to: without -P it would take its own default, 5037 or
 	// ANDROID_ADB_SERVER_PORT, and start or ask another server.
+	const spawnEnv = env === undefined ? undefined : Object.fromEntries(Object.entries(env).filter(([name, value]) => value !== undefined && !ADB_ENV.test(name)));
 	const run: AdbTransport["run"] = (args, { timeoutMs, signal, input }) =>
 		new Promise((resolve) => {
-			const child = execFile(path, ["-P", String(port), ...args], { encoding: "buffer", timeout: timeoutMs, killSignal: "SIGKILL", maxBuffer: 64 * 1024 * 1024, ...(signal ? { signal } : {}) }, (error, stdout, stderr) => {
+			const child = execFile(path, ["-P", String(port), ...args], { encoding: "buffer", ...(spawnEnv ? { env: spawnEnv } : {}), timeout: timeoutMs, killSignal: "SIGKILL", maxBuffer: 64 * 1024 * 1024, ...(signal ? { signal } : {}) }, (error, stdout, stderr) => {
 				const code = (error as NodeJS.ErrnoException | null)?.code;
 				if (code === "ENOENT") {
 					return resolve(fail("not_found", `the phone provider needs adb (Android platform-tools) on this machine: ${path} is not there; install platform-tools or give the provider's adb option`));
@@ -254,14 +267,17 @@ export function serviceWords(service: string): string {
 	return `${kind}:${rest.split(/[\s:]/)[0]}`;
 }
 
-/** The adb server's answer: OKAY, or FAIL and its words, each optionally followed by a length-prefixed message. */
+/**
+ * The adb server's answer: OKAY, or FAIL and its words, each optionally followed by a length-prefixed message. FAIL's
+ * words may name the phone's endpoint: they are redacted.
+ */
 export function adbAnswer(raw: Buffer, what: string): Result<string> {
 	const status = raw.subarray(0, 4).toString("latin1");
 	const rest = raw.subarray(4);
 	const length = rest.length >= 4 ? Number.parseInt(rest.subarray(0, 4).toString("latin1"), 16) : Number.NaN;
 	const message = Number.isSafeInteger(length) && length >= 0 && rest.length >= 4 + length ? rest.subarray(4, 4 + length).toString("utf8") : rest.toString("utf8");
 	if (status === "OKAY") return ok(message);
-	if (status === "FAIL") return fail("phone", `the adb server refused ${what}: ${message.trim()}`);
+	if (status === "FAIL") return fail("phone", `the adb server refused ${what}: ${redactWords(message.trim())}`);
 	return fail("phone", `the adb server answered ${what} with ${JSON.stringify(raw.subarray(0, 40).toString("latin1"))}, not OKAY or FAIL`);
 }
 
@@ -341,6 +357,8 @@ export class PhoneHarnessProvider implements ComputerProvider {
 	readonly #daemonVersion: string;
 	/** How many open connections hold each endpoint's adb transport: the last to let go disconnects it. */
 	readonly #holders = new Map<string, number>();
+	/** Each endpoint's host:disconnect still on its way: a connect to that endpoint waits for it before its own. */
+	readonly #leaving = new Map<string, Promise<unknown>>();
 
 	constructor(options: PhoneProviderOptions) {
 		const { apiKey, platform = "android" } = options ?? ({} as PhoneProviderOptions);
@@ -513,6 +531,15 @@ export class PhoneHarnessProvider implements ComputerProvider {
 
 	connect(ref: ComputerRef): Promise<Result<ComputerConnection>> {
 		return ledgerSafe(() => this.#connect(ref));
+	}
+
+	/**
+	 * The live view: the phone client's screen.watch on a connection of the watch's own (daemonWatch), PNG frames from
+	 * screencap. Upright with no rotation of ours: screencap gives the display in its current orientation, and input tap
+	 * and swipe take that same space, so each frame's width and height come from its own screencap, never from wm size.
+	 */
+	watch(ref: ComputerRef, handlers: ScreenWatchHandlers, options?: WatchOptions): Promise<Result<ScreenWatch>> {
+		return daemonWatch(this, ref, handlers, options);
 	}
 
 	async #create(spec: ComputerSpec, { signal }: { signal?: AbortSignal } = {}): Promise<Result<CreatedComputer>> {
@@ -776,14 +803,13 @@ export class PhoneHarnessProvider implements ComputerProvider {
 		const endpoint = `${host}:${port}`;
 		const server = (service: string) => this.#adb.server(service, { timeoutMs: ADB_TIMEOUT_MS });
 		const onPhone = (service: string, id: string) => this.#adb.server(service, { timeoutMs: ADB_TIMEOUT_MS, transport: id });
-		const connected = await server(`host:connect:${endpoint}`);
-		if (!connected.ok) {
-			// This connect holds nothing: it drops the transport only when no other connection of this provider holds it.
-			if (!this.#holders.get(endpoint)) await server(`host:disconnect:${endpoint}`).catch(() => undefined);
-			return connected;
-		}
 		// The adb server keeps one transport per endpoint, and a second connect reuses it ("already connected"): every
-		// connection to the phone holds it, and only the last to let go disconnects it (live run 4).
+		// connection to the phone holds it, and only the last to let go disconnects it (live run 4). The count and the
+		// disconnect are one critical section:
+		// - a disconnect still on its way is waited for first, so this connect never reuses a transport it is dropping;
+		// - the hold is taken before host:connect, with no await in between, so a last release meanwhile sees this holder
+		//   and keeps the transport.
+		while (this.#leaving.has(endpoint)) await this.#leaving.get(endpoint);
 		this.#holders.set(endpoint, (this.#holders.get(endpoint) ?? 0) + 1);
 		let held = true;
 		const release = async () => {
@@ -792,14 +818,26 @@ export class PhoneHarnessProvider implements ComputerProvider {
 			const left = (this.#holders.get(endpoint) ?? 1) - 1;
 			if (left > 0) return void this.#holders.set(endpoint, left);
 			this.#holders.delete(endpoint);
-			await server(`host:disconnect:${endpoint}`).catch(() => undefined);
+			const leaving: Promise<unknown> = server(`host:disconnect:${endpoint}`)
+				.catch(() => undefined)
+				.finally(() => {
+					if (this.#leaving.get(endpoint) === leaving) this.#leaving.delete(endpoint);
+				});
+			this.#leaving.set(endpoint, leaving);
+			await leaving;
 		};
 		const letGo = async <T>(failed: Result<T>): Promise<Result<T>> => {
 			await release();
 			return failed;
 		};
+		// A failed connect lets its hold go: it drops the transport only when no other connection holds it.
+		const connected = await server(`host:connect:${endpoint}`);
+		if (!connected.ok) return letGo(connected);
 		const said = connected.value.trim();
-		if (!said.includes("connected") || /cannot|failed|unable/i.test(said)) return letGo(fail("phone", `adb could not reach the phone of ${ref.id}: ${said.split("\n")[0]}`));
+		// adb's answer names the endpoint, so none of it is passed on: the error is the provider's own words.
+		if (!said.includes("connected") || /cannot|failed|unable/i.test(said)) {
+			return letGo(fail("phone", `adb could not reach the phone of ${ref.id}: the adb server could not connect to its adb endpoint`));
+		}
 		const transport = await this.#transportOf(endpoint);
 		if (!transport.ok) return letGo(transport);
 		const id = transport.value;
@@ -809,7 +847,7 @@ export class PhoneHarnessProvider implements ComputerProvider {
 		const asked = await onPhone("shell:echo ph-ok", id);
 		if (!asked.ok) return letGo(asked);
 		if (!asked.value.includes("ph-ok")) {
-			if (!/^locked\b/.test(asked.value.trim())) return letGo(fail("phone", `the phone of ${ref.id} answered neither ph-ok nor locked: ${asked.value.trim().split("\n")[0]}`));
+			if (!/^locked\b/.test(asked.value.trim())) return letGo(fail("phone", `the phone of ${ref.id} answered neither ph-ok nor locked`));
 			// The vendor's unlock is the shell command `unlock <code>`, once per connection (docs, guides/connect-adb): the
 			// shell service's own string, sent over the adb server's socket bound to the phone, so no argv holds the code.
 			// Probe 1 (2026-11-08) showed it live: "unlocked", and getprop answered after it.
@@ -819,11 +857,12 @@ export class PhoneHarnessProvider implements ComputerProvider {
 			const probe = await adb(["shell", "echo ph-ok"]);
 			if (!probe.ok) return letGo(probe);
 			if (!probe.value.stdout.toString("utf8").includes("ph-ok")) {
-				const words = unlocked.value.trim().split("\n")[0].replace(code, "[code]");
+				// The vendor's answer ("wrong code") may echo the code, more than once, or an endpoint: all are taken out.
+				const words = redactWords(unlocked.value.trim().split("\n")[0].replaceAll(code, "[code]"));
 				return letGo(fail("phone", /\bunlocked\b/.test(unlocked.value) ? `the phone of ${ref.id} stayed locked after its unlock code` : `the phone of ${ref.id} refused its unlock code: ${words}`));
 			}
 		}
-		const client = new AdbClient(id, adb, release, this.#sleep);
+		const client = new AdbClient(id, adb, release, this.#sleep, this.#now);
 		const opened = await client.open(this.#daemonVersion);
 		if (!opened.ok) {
 			await client.closed();
@@ -886,7 +925,25 @@ class AdbClient implements ComputerClient {
 	#hello: HelloResult | undefined;
 	#size: [number, number] = [0, 0];
 	#scale = 1;
+	/** The shot held for screen.read, until read to its end or the next shot. */
 	#held: { id: string; bytes: Buffer } | undefined;
+	/** The newest watch frame's rest, held apart from the shot's (as computerd's is), so neither evicts the other. */
+	#watchHeld: { id: string; bytes: Buffer } | undefined;
+	/**
+	 * screen.watch's state: the newest frame's seq, what it was read from (a digest of the pixels), the frame, and when
+	 * the screen was last read (read, by now()).
+	 */
+	#watch: { seq: number; digest: string; read: number; frame?: { bytes: Buffer; frameWidth: number; frameHeight: number; width: number; height: number } } = {
+		seq: 0,
+		digest: "",
+		read: Number.NEGATIVE_INFINITY,
+	};
+	/** One screen.watch at a time on this connection. */
+	#watching: Promise<unknown> = Promise.resolve();
+	/** One input.actions batch at a time on this connection: a second waits for the first, whole. */
+	#inputs: Promise<unknown> = Promise.resolve();
+	/** Fires on close: every adb run and wait in flight ends with it, so a close never waits for the phone. */
+	readonly #closing = new AbortController();
 
 	/** The disconnect close started, which the connection's close waits for. */
 	#gone: Promise<unknown> = Promise.resolve();
@@ -898,6 +955,7 @@ class AdbClient implements ComputerClient {
 		/** Lets the adb server drop the phone's transport, by its endpoint over the server's socket. */
 		readonly disconnect: () => Promise<unknown>,
 		readonly sleep: (ms: number) => Promise<void>,
+		readonly now: () => number,
 	) {}
 
 	/** What the phone is: its ABI, its screen's size and density; then the hello it answers. */
@@ -923,6 +981,8 @@ class AdbClient implements ComputerClient {
 		if (this.#closed) return;
 		this.#closed = true;
 		this.#held = undefined;
+		this.#watchHeld = undefined;
+		this.#closing.abort();
 		this.#gone = this.disconnect().catch(() => undefined);
 	}
 
@@ -932,21 +992,26 @@ class AdbClient implements ComputerClient {
 		await this.#gone;
 	}
 
-	/** One shell command on the phone: its stdout, or the failure in words. */
+	/** The caller's signal and the connection's close, as one signal. */
+	#either(signal?: AbortSignal): AbortSignal {
+		return signal ? AbortSignal.any([signal, this.#closing.signal]) : this.#closing.signal;
+	}
+
+	/** One shell command on the phone: its stdout, or the failure in words (adb's, redacted: it names the endpoint). */
 	async #shell(command: string, signal?: AbortSignal, timeoutMs?: number): Promise<Result<string>> {
-		const ran = await this.adb(["shell", command], { ...(signal ? { signal } : {}), ...(timeoutMs === undefined ? {} : { timeoutMs }) });
+		const ran = await this.adb(["shell", command], { signal: this.#either(signal), ...(timeoutMs === undefined ? {} : { timeoutMs }) });
 		if (!ran.ok) return ran;
 		if (ran.value.exitCode !== 0) {
 			const why = (ran.value.stderr.trim() || ran.value.stdout.toString("utf8").trim()).split("\n")[0] || `exit code ${ran.value.exitCode}`;
-			return fail("phone", `${command.split(" ").slice(0, 2).join(" ")} on the phone failed: ${why}`);
+			return fail("phone", `${command.split(" ").slice(0, 2).join(" ")} on the phone failed: ${redactWords(why)}`);
 		}
 		return ok(ran.value.stdout.toString("utf8"));
 	}
 
-	async #execOut(command: string): Promise<Result<Buffer>> {
-		const ran = await this.adb(["exec-out", command], { timeoutMs: 60_000 });
+	async #execOut(command: string, signal?: AbortSignal): Promise<Result<Buffer>> {
+		const ran = await this.adb(["exec-out", command], { timeoutMs: 60_000, signal: this.#either(signal) });
 		if (!ran.ok) return ran;
-		if (ran.value.exitCode !== 0) return fail("phone", `${command.split(" ")[0]} on the phone failed: ${ran.value.stderr.trim().split("\n")[0] || `exit code ${ran.value.exitCode}`}`);
+		if (ran.value.exitCode !== 0) return fail("phone", `${command.split(" ")[0]} on the phone failed: ${redactWords(ran.value.stderr.trim().split("\n")[0] || `exit code ${ran.value.exitCode}`)}`);
 		return ok(ran.value.stdout);
 	}
 
@@ -966,8 +1031,13 @@ class AdbClient implements ComputerClient {
 				return this.#shot(params.region);
 			case "screen.read":
 				return this.#read(params.id, params.offset);
+			case "screen.watch": {
+				const turn = this.#watching.then(() => this.#screenWatch(params, this.#either(signal)));
+				this.#watching = turn.catch(() => undefined);
+				return turn;
+			}
 			case "input.actions":
-				return this.#actions(params.actions, signal);
+				return this.#inTurn(params.actions, this.#either(signal));
 			case "apps.list":
 				return this.#appsList();
 			case "apps.launch":
@@ -1008,13 +1078,80 @@ class AdbClient implements ComputerClient {
 		return ok({ id, size: bytes.length, data: data.toString("base64"), eof: data.length === bytes.length, width: rect[2], height: rect[3], scale: this.#scale });
 	}
 
+	/**
+	 * screen.watch: the live view's frames, as computerd answers them but as PNG (format png), read with screencap once
+	 * each WATCH_POLL_MS (about 1 a second) at most, across calls too: an animated screen acked at once is read no faster
+	 * than an idle one is polled. after is the caller's ack; an older one gets the newest frame at once, and one at the
+	 * newest waits for a change until waitMs passes. maxWidth scales the frame (nearest pixel); width and height stay the
+	 * screen's, the input space. quality is checked and has no effect on a PNG. The signal (the caller's cancel and the
+	 * connection's close) ends a screencap and a wait in flight.
+	 */
+	async #screenWatch(params: Record<string, unknown>, signal: AbortSignal): Promise<Call> {
+		const { after, waitMs = 2_000, maxWidth = 1_280, quality = 60 } = params;
+		const whole = (v: unknown, lo: number, hi: number) => Number.isSafeInteger(v) && (v as number) >= lo && (v as number) <= hi;
+		if (!whole(after, 0, Number.MAX_SAFE_INTEGER)) return refuse("invalid", "screen.watch takes after: the seq of the last frame the caller has, 0 for none");
+		if (!whole(waitMs, 0, 10_000)) return refuse("invalid", `waitMs ${show(waitMs)} is outside 0 to 10000`);
+		if (!whole(maxWidth, 1, 16_384)) return refuse("invalid", `maxWidth ${show(maxWidth)} is outside 1 to 16384`);
+		if (!whole(quality, 1, 100)) return refuse("invalid", `quality ${show(quality)} is outside 1 to 100`);
+		const watch = this.#watch;
+		if ((after as number) > watch.seq) return refuse("invalid", `after ${after} is past the newest frame, ${watch.seq}`);
+		if ((after as number) < watch.seq && watch.frame) return ok(this.#frameAnswer());
+		const aborted = () => refuse("aborted", "screen.watch was aborted");
+		const deadline = this.now() + (waitMs as number);
+		for (;;) {
+			const wait = watch.read + WATCH_POLL_MS - this.now();
+			if (wait > 0) await this.#pause(wait, signal);
+			if (signal.aborted || this.#closed) return aborted();
+			watch.read = this.now();
+			const raw = await this.#execOut("screencap", signal);
+			if (signal.aborted || this.#closed) return aborted();
+			if (!raw.ok) return raw;
+			const read = decodeScreencap(raw.value);
+			if (!read.ok) return read;
+			const { width, height, rgba } = read.value;
+			this.#size = [width, height];
+			// The size is in the digest: a phone turned to landscape may give the same pixels, the other way round.
+			const digest = createHash("sha256").update(`${width}x${height}|`).update(rgba).digest("hex");
+			if (watch.seq === 0 || digest !== watch.digest) {
+				const frameWidth = Math.min(width, maxWidth as number);
+				const frameHeight = Math.max(1, Math.floor((height * frameWidth) / width));
+				const pixels = frameWidth === width ? rgba : scaleRgba(rgba, width, height, frameWidth, frameHeight);
+				watch.seq += 1;
+				watch.digest = digest;
+				watch.frame = { bytes: encodePng(pixels, frameWidth, [0, 0, frameWidth, frameHeight]), frameWidth, frameHeight, width, height };
+				return ok(this.#frameAnswer());
+			}
+			const left = deadline - this.now();
+			if (left < WATCH_POLL_MS) {
+				// Not another read before the wait is over: answer no change when it is.
+				if (left > 0) await this.#pause(left, signal);
+				if (signal.aborted || this.#closed) return aborted();
+				return ok({ seq: watch.seq, changed: false, width, height });
+			}
+		}
+	}
+
+	/** The newest frame as screen.watch answers it: its first chunk, the rest held for screen.read. */
+	#frameAnswer(): ScreenWatchResult {
+		const { seq, frame } = this.#watch;
+		const { bytes, frameWidth, frameHeight, width, height } = frame as NonNullable<typeof frame>;
+		const data = bytes.subarray(0, MAX_CHUNK_BYTES);
+		const eof = data.length === bytes.length;
+		const id = randomBytes(6).toString("hex");
+		if (!eof) this.#watchHeld = { id, bytes };
+		return { seq, changed: true, ...(eof ? {} : { id }), size: bytes.length, data: data.toString("base64"), eof, format: "png", frameWidth, frameHeight, width, height };
+	}
+
+	/** The rest of the shot or the watch frame held by id, from offset: each is dropped once read to its end. */
 	#read(id: unknown, offset: unknown): Call {
-		const held = this.#held;
+		const frame = this.#watchHeld !== undefined && this.#watchHeld.id === id;
+		const held = frame ? this.#watchHeld : this.#held;
 		if (held === undefined || held.id !== id) return refuse("not_found", `no shot ${show(id)} is held: take one with screen.shot`);
 		if (!(Number.isSafeInteger(offset) && (offset as number) >= 0 && (offset as number) <= held.bytes.length)) return refuse("invalid", `offset ${show(offset)} is not inside the shot's ${held.bytes.length} bytes`);
 		const data = held.bytes.subarray(offset as number, (offset as number) + MAX_CHUNK_BYTES);
 		const eof = (offset as number) + data.length >= held.bytes.length;
-		if (eof) this.#held = undefined;
+		if (eof && frame) this.#watchHeld = undefined;
+		else if (eof) this.#held = undefined;
 		return ok({ data: data.toString("base64"), eof });
 	}
 
@@ -1101,6 +1238,30 @@ class AdbClient implements ComputerClient {
 		}
 	}
 
+	/**
+	 * A batch in its turn: batches run one at a time, since two at once would interleave their adb commands on the phone.
+	 * A cancel while the batch waits answers at once, aborted with none of it run, and its turn then passes with nothing
+	 * done; a cancel once it runs stops it at the action it is on (#actions).
+	 */
+	#inTurn(actions: unknown, signal: AbortSignal): Promise<Call> {
+		const waitedOut = (): Call =>
+			ok({ done: 0, failed: { index: 0, kind: "aborted", message: "action 0: the batch was aborted while it waited for the batch before it; none of it ran" } } satisfies InputActionsResult);
+		let started = false;
+		const turn = this.#inputs.then((): Promise<Call> | Call => {
+			started = true;
+			return signal.aborted ? waitedOut() : this.#actions(actions, signal);
+		});
+		this.#inputs = turn.catch(() => undefined);
+		return new Promise<Call>((resolve, reject) => {
+			const stop = () => {
+				if (!started) resolve(waitedOut());
+			};
+			signal.addEventListener("abort", stop, { once: true });
+			if (signal.aborted) stop();
+			turn.then(resolve, reject).finally(() => signal.removeEventListener("abort", stop));
+		});
+	}
+
 	async #actions(actions: unknown, signal?: AbortSignal): Promise<Call> {
 		const refused = checkActions(actions, PHONE_GROUPS);
 		if (refused !== undefined) return ok({ done: 0, failed: refused } satisfies InputActionsResult);
@@ -1173,7 +1334,7 @@ class AdbClient implements ComputerClient {
 		// package) on top, and a plain start resumes it there. A cleared task starts the app itself (phone probe 2).
 		const started = await this.#shell(`am start -W --activity-clear-task -n ${component}`);
 		if (!started.ok) return started;
-		if (/Error:|Exception/.test(started.value)) return refuse("phone", `am start of ${component}: ${started.value.trim().split("\n").at(-1)}`);
+		if (/Error:|Exception/.test(started.value)) return refuse("phone", `am start of ${component}: ${redactWords(started.value.trim().split("\n").at(-1) ?? "")}`);
 		return ok({});
 	}
 
@@ -1188,7 +1349,7 @@ class AdbClient implements ComputerClient {
 		if (!raw.ok) return raw;
 		const text = raw.value.toString("utf8");
 		const start = text.indexOf("<?xml");
-		if (start < 0) return refuse("unsupported", `uiautomator gave no tree for this screen: ${text.trim().split("\n")[0] || "nothing"}`);
+		if (start < 0) return refuse("unsupported", `uiautomator gave no tree for this screen: ${redactWords(text.trim().split("\n")[0] || "nothing")}`);
 		return parseUiTree(text.slice(start, text.lastIndexOf(">") + 1), this.#size);
 	}
 }
@@ -1215,6 +1376,22 @@ export function decodeScreencap(raw: Buffer): Result<{ width: number; height: nu
 	else if (format === 5) for (let i = 0; i < rgba.length; i += 4) [rgba[i], rgba[i + 2]] = [rgba[i + 2], rgba[i]];
 	else if (format !== 1) return fail("unsupported", `screencap gave pixel format ${format}, which this provider does not read`);
 	return ok({ width, height, rgba });
+}
+
+/** How often a waiting screen.watch reads a phone's screen: about once a second (the user-approved decision, 2026-11-09). */
+const WATCH_POLL_MS = 1_000;
+
+/** A width x height RGBA frame scaled to toWidth x toHeight by the nearest pixel. */
+function scaleRgba(rgba: Buffer, width: number, height: number, toWidth: number, toHeight: number): Buffer {
+	const out = Buffer.alloc(toWidth * toHeight * 4);
+	for (let y = 0; y < toHeight; y++) {
+		const sy = Math.floor((y * height) / toHeight);
+		for (let x = 0; x < toWidth; x++) {
+			const sx = Math.floor((x * width) / toWidth);
+			rgba.copy(out, (y * toWidth + x) * 4, (sy * width + sx) * 4, (sy * width + sx) * 4 + 4);
+		}
+	}
+	return out;
 }
 
 /** An 8-bit RGBA PNG, non-interlaced, of rect of a width-wide RGBA frame. */

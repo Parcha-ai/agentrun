@@ -5,9 +5,9 @@
 // rolls back. Errors come back typed: Fenced, RunFinal, StoreBusy, StoreConstraint, StoreClosed, StoreOwned.
 import { realpathSync } from "node:fs";
 import { Worker } from "node:worker_threads";
-import { type Dialect, SQLITE } from "../dialect.js";
+import { cleanText, type Dialect, SQLITE } from "../dialect.js";
 import { inMemory } from "./memory.js";
-import { Fenced, RunFinal, StoreBusy, StoreClosed, StoreConstraint, StoreDeadline, StoreOwned, StoreWorkerLost } from "../store.js";
+import { type ConstraintRule, Fenced, RunFinal, StoreBusy, StoreClosed, StoreConstraint, StoreDeadline, StoreOwned, StoreWorkerLost } from "../store.js";
 import type { Mode, Params, Reply, Request, Statement, StatementResult, WorkerError } from "./worker.js";
 
 export type { Params, Statement, StatementResult } from "./worker.js";
@@ -70,6 +70,23 @@ export interface StoreConnection {
   close(): Promise<void>;
 }
 
+/** A statement's text parameters as the store writes text (dialect.ts cleanText: no NUL), on both stores alike. */
+const cleaned = (params: readonly SqliteValue[] | undefined): Params => (params ?? []).map((value) => (typeof value === "string" ? cleanText(value) : value)) as Params;
+const cleanStatement = (statement: Statement): Statement => ({ ...statement, params: cleaned(statement.params as readonly SqliteValue[] | undefined) });
+
+/** SQLite's extended constraint codes, by the rule they name. */
+const RULES: Record<number, ConstraintRule> = { 275: "check", 2067: "unique", 1555: "unique", 787: "foreign_key", 1299: "not_null" };
+
+/** Which rule refused a row, from SQLite's extended code; for a duplicate, its table and columns, which SQLite reports
+ *  only in its message ("UNIQUE constraint failed: t.a, t.b"): read here, in the SQLite adapter alone. */
+function constraintOf(errcode: number, message: string): { rule?: ConstraintRule; unique?: { table: string; columns: string[] } } {
+  const rule = RULES[errcode];
+  if (rule !== "unique") return rule ? { rule } : {};
+  const named = /UNIQUE constraint failed: (.+)$/.exec(message)?.[1]?.split(", ").map((part) => part.split("."));
+  if (!named?.length || named.some((part) => part.length !== 2) || new Set(named.map(([table]) => table)).size !== 1) return { rule };
+  return { rule, unique: { table: named[0]![0]!, columns: named.map(([, column]) => column!) } };
+}
+
 function typed(error: WorkerError): Error {
   switch (error.kind) {
     case "miss":
@@ -77,7 +94,7 @@ function typed(error: WorkerError): Error {
     case "busy":
       return new StoreBusy(`the store stayed locked past its busy wait: ${error.message}`);
     case "constraint":
-      return new StoreConstraint(error.message);
+      return new StoreConstraint(error.message, constraintOf(error.errcode, error.message));
     case "closed":
       return new StoreClosed();
     case "owned":
@@ -207,7 +224,7 @@ export class Connection implements SqliteDatabase, StoreConnection {
   }
 
   #stmt(sql: string, params: readonly SqliteValue[], mode: Mode): Promise<unknown> {
-    return this.#send({ op: "stmt", statement: { sql, params: params as Params }, mode });
+    return this.#send({ op: "stmt", statement: { sql, params: cleaned(params) }, mode });
   }
 
   /** The executor that sends straight to the worker: a transaction's handle, valid while `live()` says so. */
@@ -217,7 +234,7 @@ export class Connection implements SqliteDatabase, StoreConnection {
     };
     return {
       dialect: this.dialect,
-      step: async (statement) => (check(), (await this.#send({ op: "step", statement })) as StatementResult),
+      step: async (statement) => (check(), (await this.#send({ op: "step", statement: cleanStatement(statement) })) as StatementResult),
       exec: async (sql) => (check(), void (await this.#send({ op: "exec", sql }))),
       run: async (sql, ...params) => (check(), void (await this.#stmt(sql, params, "run"))),
       runCounted: async (sql, ...params) => (check(), (await this.#stmt(sql, params, "count")) as number),
@@ -245,7 +262,7 @@ export class Connection implements SqliteDatabase, StoreConnection {
   /** One write transaction of fixed statements: in order; an expectation miss or an error rolls all of them back. `full`: a
    *  FULL commit, durable against a lost box together with every commit before it. */
   write(statements: readonly Statement[], { full = false }: { full?: boolean } = {}): Promise<StatementResult[]> {
-    return this.#queued(async () => (await this.#send({ op: "write", statements, full })) as StatementResult[]);
+    return this.#queued(async () => (await this.#send({ op: "write", statements: statements.map(cleanStatement), full })) as StatementResult[]);
   }
 
   /** A write transaction (BEGIN IMMEDIATE) the callback steps through its handle, deciding each statement from the ones

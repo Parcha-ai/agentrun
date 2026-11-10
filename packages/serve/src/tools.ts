@@ -12,6 +12,7 @@ import { pathToFileURL } from "node:url";
 import { defineExtension, defineTool, type Extension, type Harness, ROOT_CONVERSATION_ID, type ToolRegistration, type Tx } from "@earendil-works/pi-durable";
 import type { AppContext } from "@parcha/pi-durable-disk";
 import type { Revision } from "@parcha/pi-durable-agent";
+import { registerTurnEnding } from "@parcha/pi-durable-agent/timeline";
 import { BACKGROUND_LOG_BYTES, BACKGROUND_MAX, BACKGROUND_PAGE_BYTES } from "./background.js";
 import type { CodingSource } from "./coding-tools.js";
 import { isWorkspaceError, localWorkspace, type Workspace } from "./workspace/index.js";
@@ -22,28 +23,34 @@ import { type Complete, LLM_TOOL } from "./llm.js";
 import { DOCUMENTS_ENV, PDF_PAGES_TOOL, pdfPages } from "./pdf-pages.js";
 import { monidTool } from "./monid.js";
 import { FAUX_ENV, workflowNodes } from "./model.js";
-import { bookedIn, booking, type Ledger } from "./paid-calls.js";
+import { bookedIn, booking, type Ledger, type PaidBooking } from "./paid-calls.js";
+import type { Refusal } from "@parcha/agentrun-kernel";
 import { browserPrice, browserSpend } from "./browser-cost.js";
 import { forModel } from "./result.js";
 import { fetchFor, pagesOf, WEB_FETCH_TOOL, webFetchTool } from "./web-fetch.js";
 import { searchFor, WEB_SEARCH_TOOL, webSearchTool } from "./web-search.js";
 import { browserNeeds, explainsView, isUnavailable, NO_PARALLEL_KEY, type Pickable, PICKABLE, planeOf, type Plane, PROVIDERS, serverGate, type Tooling, type ToolSettingsMap, whyUnavailable, withDefaults } from "./tool-plane.js";
 import type { DenyFrom, SettingFrom } from "./tool-gate.js";
-import { PARALLEL_KEY_ENV } from "./decisions.js";
+import { fauxFetch, PARALLEL_KEY_ENV } from "./decisions.js";
 import { keyNeeded } from "./key-words.js";
 import { handedSignIn, hostSecrets } from "./secrets.js";
 import { redactedAnswer } from "./key-refusal.js";
-import { SIGN_IN_KEY, SIGN_IN_SAVED } from "./sign-ins.js";
+import { SIGN_IN_KEY, SIGN_IN_SAVED, vendorsOver } from "./sign-ins.js";
 import { answerIn, answerOnce } from "./runner/hand-back.js";
+import { runnerSecrets } from "./runner/redact.js";
 import type { HandoverAnswered } from "./runner/journal-kinds.js";
 import type { LiveHandover, LiveViewerStore } from "./browser-live.js";
-import type { Claim } from "./store/store.js";
+import type { Claim, Store } from "./store/store.js";
+import { type RunSignIn, runSignIn, verifyRunSignIn } from "./sign-ins-store.js";
 
 export const ASK_TOOL = "ask_person";
 /** Under `--faux` only: a module whose default export gives the browser's `{ provider, driver }` for the run's
  *  environment, the vendor its plane names (`browserbase`, `kernel`) and the saved sign-in it was handed for that
  *  vendor (`{ provider, ref, save }`, or undefined), in place of that vendor's (the tests' fake backend). */
 export const FAUX_BROWSER_ENV = "AGENTRUN_SERVE_FAUX_BROWSER";
+/** Under `--faux` only: a module whose default export is the fetch a run's first saved sign-in is made with on the runner,
+ *  in place of the browser vendors' REST APIs (the tests' fake). Absent under --faux, none is made: no network. */
+export const FAUX_VENDOR_API_ENV = "AGENTRUN_SERVE_FAUX_VENDOR_API";
 
 /** What the result of `ask_person` says; the person's page shows the question as a waiting row. */
 export const asked = (question: string) => `Asked the person: ${question.slice(0, 500)}. Waiting for their answer.`;
@@ -63,6 +70,10 @@ export const askPerson = defineTool({
     return forModel(asked(question), { details: { question }, control: { terminate: true } });
   },
 });
+// ask_person ends its turn (control.terminate), so the run waits on the person after it. Registered here, where the tool
+// is defined, so every reader of it agrees: the view reads a question row by this (run-view withAsks), and the runner's
+// loop parks on it (adapter-loop endedOnTurnEndingTool), whichever module loads — the loop never imports the view.
+registerTurnEnding(ASK_TOOL);
 
 /** What a tool's binding gets from the run's process. */
 export type ToolHost = {
@@ -90,12 +101,23 @@ export type ToolHost = {
    *  binding reads `liveViewers`, never them directly. Absent on the server path, where the viewer lives in the run's
    *  directory (browser-live.ts sessionHandovers: writeHandover/dropHandover). */
   liveViewers?: { put(handover: LiveHandover): Promise<boolean>; drop(tag?: string): Promise<void> };
-  /** The one store, for the live-viewer seam above (and the sign-in verify the runner saves). */
-  store?: LiveViewerStore;
-  /** The claim this run is held under: the live-viewer rows are written under it (its epoch fences them). */
+  /** The one store, for the live-viewer seam above, the run's saved sign-in (its runs and sign-ins, read under `claim`)
+   *  and the sign-in verify the runner saves. */
+  store?: LiveViewerStore & Pick<Store, "runs" | "signIns">;
+  /** The claim this run is held under: the live-viewer rows are written under it (its epoch fences them), and the run's
+   *  saved sign-in is read and its hand kept under it. Present, the run is on the runner: never the process's own pipe. */
   claim?: Claim;
   /** The key the live-viewer tokens are sealed under before they go to the store (store/seal.ts). */
   sealKey?: Buffer;
+  /** The run's ledger, as the adapter loop hands it (spendcap-1's AdapterRun.ledger): `paid`, the claim's one-ledger
+   *  booking (the kernel cap's paidCalls, paid-calls.ts PaidBooking), and `pause`, how a refusal at the cap parks the run.
+   *  The browser passes `paid` to browserSpend, so its calls are held and settled there and a session's release is booked
+   *  there, never on this process's own spend. The runner installs the browser only with `paid` and the grant, on pi's
+   *  native route (adapter-run-spec.ts browserListed). */
+  ledger?: { paid: PaidBooking; pause?: (refusal: Refusal) => Promise<void> };
+  /** The run's one redactor (the runner's: every secret value the runner and the claim hold, in every form): what the
+   *  browser's answers pass through before pi stores them or the model reads them. Absent on the old per-run process. */
+  redact?: (text: string) => string;
 };
 
 /** What a name stands for in the run: the pi tools it offers, and the extensions a conversation selects for them. */
@@ -221,6 +243,35 @@ export const keptContexts = (ref: string | undefined) => ({
   },
 });
 
+/** Every string in `value` (a tool's answer: its content, its details) passed through `cut`; anything else as it is. */
+function cutStrings<T>(value: T, cut: (text: string) => string): T {
+  if (typeof value === "string") return cut(value) as T;
+  if (Array.isArray(value)) return value.map((item) => cutStrings(item, cut)) as T;
+  if (value && typeof value === "object" && Object.getPrototypeOf(value) === Object.prototype) {
+    return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, item]) => [key, cutStrings(item, cut)])) as T;
+  }
+  return value;
+}
+
+/** `tool` whose answer, and a throw's message, pass `cut` inside its execute: before pi stores the result or the model
+ *  reads it. */
+function answersCutInside(tool: ToolRegistration, cut: (text: string) => string): ToolRegistration {
+  return {
+    ...tool,
+    execute: (async (...args: Parameters<ToolRegistration["execute"]>) => {
+      try {
+        return cutStrings(await (tool.execute as (...a: unknown[]) => Promise<unknown>)(...args), cut);
+      } catch (error) {
+        if (error instanceof Error) {
+          error.message = cut(error.message);
+          if (error.stack) error.stack = cut(error.stack);
+        }
+        throw error;
+      }
+    }) as ToolRegistration["execute"],
+  } as ToolRegistration;
+}
+
 /** Kernel's provider, opening the agent's saved profile (`ref`, its name at Kernel) where a session asks for the
  *  profile `default`: the policy, the session's record and the model see only that name. */
 export const keptProfile = <P extends { create(spec: { profile?: { name: string; save: boolean } }, signal: AbortSignal): unknown }>(provider: P, ref: string): P => ({
@@ -241,6 +292,16 @@ export const asHanded = <P extends { create(spec: { profile?: { name: string; sa
  *  its end), never one the vendor had already lost or never made. */
 export const savedOnRelease = (row: { session: { resourceId: string | null; releaseReason: string | null } }, change: string): boolean =>
   change === "released" && row.session.resourceId !== null && row.session.releaseReason !== null && !["lost", "create_failed"].includes(row.session.releaseReason);
+
+/** On the runner, the per-session hook that verifies the run's saved sign-in: a session that saved to it (savedOnRelease,
+ *  in a run handed it to save) verifies it under the run's claim, at the session's own end (its time, else now), as the
+ *  saved mark main reads at the lease's end. Answers whether it verified (sign-ins-store.ts verifyRunSignIn). */
+export const runSignInSaved = (store: Pick<Store, "runs" | "signIns">, sealKey: Buffer | undefined, claim: Claim, kept: RunSignIn) =>
+  async (row: { session: { resourceId: string | null; releaseReason: string | null; endedAt?: string | null } }, change: string): Promise<boolean> => {
+    if (!kept.save || !savedOnRelease(row, change)) return false;
+    const ended = row.session.endedAt ? Date.parse(row.session.endedAt) : Number.NaN;
+    return verifyRunSignIn(store, sealKey, claim, kept, Number.isFinite(ended) ? ended : Date.now());
+  };
 
 /** A hosted browser driven through Stagehand, on pi-browser's durable adapter: Browserbase or Kernel (headless), the one
  *  the run's plane names (tool-plane.ts: picked, else Browserbase where the server holds its keys, else Kernel), kept
@@ -269,7 +330,13 @@ const browserTool: ToolEntry = {
     ]);
     const vendor = planeOf(host.env).browser ?? "browserbase";
     const refused = isUnavailable(vendor) ? new BrowserFailureError(browserFailure("browser_unavailable", `The browser does not run here: ${whyUnavailable(vendor)}.`)) : undefined;
-    const handed = handedSignIn();
+    // The run's saved sign-in: on the runner (one process, many claims) read from the store under this run's own claim
+    // (sign-ins-store.ts runSignIn), never from the process; on the old per-run process, over its own secrets' pipe.
+    // An agent with none saved has its first made at the vendor now, over this run's own claim keys (host.env), as main's
+    // launch makes it: never the process's environment, so one run's keys never make another's.
+    const runLog = (line: string) => void process.stderr.write(`agentrun-serve: run ${host.where.ref.id}: ${line}\n`);
+    const vendorFetch = async () => (host.env[FAUX_ENV] ? fauxFetch(host.env, FAUX_VENDOR_API_ENV) : fetch);
+    const handed = host.claim ? (refused || !host.store ? undefined : await runSignIn(host.store, host.sealKey, host.claim, vendor, { vendors: vendorsOver(() => host.env, vendorFetch), log: runLog })) : handedSignIn();
     const kept = !refused && handed?.provider === vendor ? handed : undefined;
     const faux = host.env[FAUX_ENV] ? host.env[FAUX_BROWSER_ENV] : undefined;
     const parts = faux
@@ -356,26 +423,37 @@ const browserTool: ToolEntry = {
     // Its session time is the run's spend, at its provider's price, and held under the run's cap (browser-cost.ts).
     const providerName = (parts.provider as { name?: string } | undefined)?.name ?? vendor;
     const price = browserPrice(providerName, host.env);
-    const spend = browserSpend(providerName, price, DEFAULT_BROWSER_POLICY.idleReleaseS, (conversation, at) => browser.release(conversation as never, "close", at));
+    // On the runner, the run's ledger (host.ledger): each call held and settled on its booking, and a session's release one
+    // more request there, never this process's own spend. Undefined on the old per-run process: browserSpend's own then.
+    const spend = browserSpend(providerName, price, DEFAULT_BROWSER_POLICY.idleReleaseS, (conversation, at) => browser.release(conversation as never, "close", at), undefined, { paid: host.ledger?.paid, pause: host.ledger?.pause });
     // browser_downloads is listed only with a workspace to copy into, and only a provider that keeps a session's downloads
     // (Browserbase's; Kernel's keeps none) has any: without one, uploads still read the run's work/, through `files`.
     const downloads = typeof (parts.provider as { downloads?: unknown } | undefined)?.downloads === "object";
     const files = downloads ? { workspace: () => host.where.work } : { files: workspaceFiles(host.where.work) };
     // A session that saved to the sign-in, let go: its time, for the sign-in's verified_at when the run's lease ends.
+    // On the runner, the store's verified_at under the run's claim (runSignInSaved), never a mark in the run's directory.
+    const verify = kept?.save && host.claim && host.store ? runSignInSaved(host.store, host.sealKey, host.claim, kept as RunSignIn) : undefined;
+    // Awaited by the session's change, so the release that lets a run's sessions go (beforeRelease) returns only once its
+    // last save is verified: the run's end commit, which ends the claim, never fences it.
     const saved = kept?.save
-      ? (row: Parameters<typeof savedOnRelease>[0], change: string) => void (savedOnRelease(row, change) && writeFileSync(join(host.where.root, SIGN_IN_SAVED), new Date().toISOString(), { mode: 0o600 }))
+      ? async (row: Parameters<typeof savedOnRelease>[0], change: string): Promise<void> => {
+          if (verify) await verify(row, change);
+          else if (savedOnRelease(row, change)) writeFileSync(join(host.where.root, SIGN_IN_SAVED), new Date().toISOString(), { mode: 0o600 });
+        }
       : undefined;
     // Both hosts of a session's changes: the live view's hand-over, and the sign-in's saved mark.
     const onSessions = async (row: Parameters<typeof savedOnRelease>[0] & Parameters<typeof onSession>[0], change: string) => {
-      saved?.(row, change);
+      await saved?.(row, change);
       await onSession(row, change);
     };
     // The pointer is cut from everything the browser hands the model (its results, their details, its failures): a
     // vendor's refusal can quote it, as pi-browser's one-saver rule names Kernel's profile.
     // A run handed its agent's sign-in tells the model its browser keeps it (`run`'s description): one with none claims
     // cookies across pages only.
-    const browser = createBrowserExtension({ provider, driver: parts.driver as never, evidence: evidenceIn(localWorkspace(host.where.work)) as never, ...files, gates, handoff: hands.handoff, onSession: onSessions as never, signIns: kept !== undefined, beforeCreate: spend.opening, redact: { values: () => (kept ? [kept.ref] : []) }, prices: { sessionUsdPerHour: price.usdPerHour, sessionMinimumS: price.minimumS }, onCharge: spend.onCharge });
-    const tools = (browser.tools as unknown as ToolRegistration[]).map(spend.capped);
+    const browser = createBrowserExtension({ provider, driver: parts.driver as never, evidence: evidenceIn(localWorkspace(host.where.work)) as never, ...files, gates, handoff: hands.handoff, onSession: onSessions as never, signIns: kept !== undefined, beforeCreate: spend.opening, redact: { values: () => [...runnerSecrets(host.env), ...(kept ? [kept.ref] : [])] }, prices: { sessionUsdPerHour: price.usdPerHour, sessionMinimumS: price.minimumS }, onCharge: spend.onCharge });
+    // On the runner, every answer the browser's tools give passes the run's one redactor inside the call, so what pi stores
+    // (its result record) and what the model reads hold no value the runner or the claim holds.
+    const tools = (browser.tools as unknown as ToolRegistration[]).map(spend.capped).map((tool) => (host.redact ? answersCutInside(tool, host.redact) : tool));
     const extension = { ...(browser.extension as unknown as Extension), tools } as Extension;
     host.install(extension);
     host.onConversation(async (tx, conversationId) => {
@@ -414,6 +492,9 @@ const browserTool: ToolEntry = {
           if (conversation) await browser.release(conversation as never, "close", context);
         }
         await browser.drain(harness as never, context);
+        // The releases' charges are booked on the claim's one ledger before the run's release returns, so the run's end
+        // commit, which ends the claim, never fences one (nothing to wait for off the ledger).
+        await spend.ledgerIdle();
       } finally {
         // Every viewer's token dies with the process's hold on its sessions, and the hand-over with it; the person's
         // holds go, and the asks with them.

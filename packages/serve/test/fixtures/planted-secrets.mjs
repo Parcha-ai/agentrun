@@ -21,7 +21,7 @@ import { openSqliteStore } from "../../dist/store/sqlite/store.js";
 import { sealKeyOf } from "../../dist/tool-keys.js";
 import { plantedSignIn, SIGN_IN_WRITE_ROUTES } from "../sign-ins-planted.mjs";
 
-/** @typedef {{ status: number, text: string, json?: unknown }} Answer */
+/** @typedef {{ status: number, text: string, json?: unknown, headers?: Record<string, string | string[]> }} Answer */
 /** @typedef {{ owner: (method: string, path: string, body?: unknown) => Promise<Answer>, token: (method: string, path: string, body?: unknown) => Promise<Answer>, api: Function, server: { port: number, data: string, token: string } }} PlantContext */
 /** @typedef {Record<string, string | string[]>} PlantIds */
 /** @typedef {{ values: string[], ids?: PlantIds, mints?: string[], cleanup?: (ctx: PlantContext, ids: Record<string, string[]>) => Promise<void> }} Planted */
@@ -244,5 +244,17 @@ registerPlant({
     const moved = await token("PUT", "/v2/settings/webhook", { url: "https://hooks.example.com/planted-2" });
     if (moved.status !== 200) throw new Error(`the token could not change the webhook's URL: ${moved.status} ${moved.text}`);
     return [saved.json.signing_secret];
+  },
+});
+
+registerPlant({
+  name: "template apply's webhook trigger secrets",
+  mints: ["applyTemplate"],
+  write: async ({ owner }) => {
+    const applied = await owner("POST", "/v2/templates/inbound-lead/apply", { parameters: { icp: "B2B fintech, 50-2000 people, US or EU; never gambling operators", post_to: "none" } });
+    if (applied.status !== 201) throw new Error(`the template was not applied: ${applied.status} ${applied.text}`);
+    const hooks = (applied.json.webhook_secrets ?? []).filter((made) => made.signing_secret !== undefined);
+    if (!hooks.length) throw new Error(`the apply showed no webhook trigger's secret: ${applied.text}`);
+    return { values: hooks.map((made) => made.signing_secret), ids: { trigger_id: hooks.map((made) => made.trigger_id) } };
   },
 });

@@ -1,6 +1,7 @@
 // The runner's one redactor (runner.ts `redact`, LoopDeps.redact) is the instance a pi run's model route and its session's
 // model proxy use: through the runner and its dispatch (the real spec builder), a provider's error that echoes a value only
-// that redactor knows reaches the run's record cut by it, and the route is handed that very instance.
+// that redactor knows reaches the run's record cut by it, and the route is handed that very instance (the one the runner
+// makes of the redactor it is given and hands every loop, redact.ts heldRedactor).
 import assert from "node:assert/strict";
 import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -58,7 +59,10 @@ test("the runner's one redactor is the instance a pi run's route and model proxy
     return { model: "claude-sonnet-4-5", provider: { api: "anthropic-messages", origin: "https://faux.invalid", credential: () => `not-a-secret-${"r".repeat(8)}` }, fetch: upstream, price: () => 0 };
   };
   const deps = { env: {}, data: dir, journal: (claim) => store.journal(claim), store, sealKey: Buffer.alloc(32, 7), routeOf, computerForClaim: async () => ({ release: async () => {} }) };
-  const createLoop = createDispatchLoop({ launchOf: async () => ({ body: LAUNCH }), resolve: resolveRunnerLoop(deps) });
+  const dispatch = createDispatchLoop({ launchOf: async () => ({ body: LAUNCH }), resolve: resolveRunnerLoop(deps) });
+  // The instance the runner hands each loop (LoopDeps.redact): the one it made of `redact`, able to hold what a claim opens.
+  const handed = [];
+  const createLoop = (loopDeps) => (handed.push(loopDeps.redact), dispatch(loopDeps));
   runner = startRunner({ store, createLoop, name: "runner-a", redact, ...TIMING });
   for (const end = Date.now() + 30_000; ; ) {
     const row = await server.runs.get("run-1");
@@ -67,7 +71,9 @@ test("the runner's one redactor is the instance a pi run's route and model proxy
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
   assert.ok(asked >= 1, "the provider was asked, and refused");
-  assert.ok(routed.length >= 1 && routed.every((given) => given === redact), "the route was handed the runner's redactor itself");
+  assert.ok(handed.length >= 1 && handed.every((given) => given === handed[0]), "every loop was handed the one instance");
+  assert.equal(handed[0](MARK), CUT_BY_RUNNER, "the instance cuts as the runner's redactor does");
+  assert.ok(routed.length >= 1 && routed.every((given) => given === handed[0]), "the route was handed that very instance");
   await store.flush?.();
   const files = filesUnder(dir);
   assert.deepEqual(files.filter((file) => file.text.includes(MARK)).map((file) => file.path.slice(dir.length)), [], "no file of the run's store holds the value");

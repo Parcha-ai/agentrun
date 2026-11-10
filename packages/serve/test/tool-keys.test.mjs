@@ -23,6 +23,9 @@ const KEYS = ["PARALLEL_API_KEY", "MONID_API_KEY", "BROWSERBASE_API_KEY", "BROWS
 const sealKey = () => randomBytes(32).toString("base64");
 /** A throwaway value: none is a real key. */
 const made = () => `not-a-secret-${randomBytes(12).toString("hex")}`;
+/** The log line a start says once when saved keys no longer open under its seal key: where the keys are kept (the store) and
+ *  what a person does about it, never a table's name. */
+const changedLine = (fields) => `event=tool_keys condition=seal_key_changed kept=store fields=${fields} said="these saved keys were sealed under another seal key, so they do not open: save them again in Settings → Tool keys"`;
 /** Each form a value could plausibly leak in: as text, base64, base64url and hex, and its random part's first 8. */
 const formsOf = (value) => [value, ...["base64", "base64url", "hex"].map((code) => Buffer.from(value).toString(code)), value.slice(13, 21)];
 /** A seal key's forms: its base64 text, its bytes, and those as hex and base64url. */
@@ -301,6 +304,8 @@ test("handed no seal key, the server keeps a key under the one it made at its st
   withEnv(t, {}, KEYS);
   const { api, data } = await serve(t);
   assert.deepEqual((await api("GET", "/capabilities")).body.features.tool_keys, { routes: true, at_rest: "sealed" });
+  // Always sealed, so the document says only that: there is no state in which a key is kept unsealed or not at all.
+  assert.deepEqual((await api("GET", "/openapi.json")).body.components.schemas.Features.properties.tool_keys.properties.at_rest, { const: "sealed" });
   const value = made();
   assert.equal((await api("PUT", "/settings/tool-keys/monid", { values: { MONID_API_KEY: value } })).status, 204);
   // Sealed, never in the clear, wherever the server keeps it (the store, or its tool-keys file).
@@ -312,8 +317,6 @@ test("handed no seal key, the server keeps a key under the one it made at its st
 test("values sealed under another key, under the key a server handed none makes, or in a damaged row do not open: the server starts, GET asks for them again with why, the log says so once naming where they are kept and no value, and a PUT seals anew", async (t) => {
   withEnv(t, {}, KEYS);
   const data = join(await scratch(t), "agents");
-  // Where the log says the keys are kept: the store's sealed_keys rows (tool-keys-store.ts, the reenter line).
-  const kept = "store:sealed_keys";
   const lines = [];
   const open = new Set();
   t.after(() => Promise.all([...open].map((server) => server.close())));
@@ -333,7 +336,7 @@ test("values sealed under another key, under the key a server handed none makes,
   server = await started(second);
   const parallel = async () => (await server.api("GET", "/capabilities")).body.workflows.decisions.providers.find((p) => p.id === "parallel").available;
   assert.equal(await parallel(), false, "a value that does not open is absent: no key, never a crash or the ciphertext");
-  assert.deepEqual(server.said().map((line) => line.replace(/^at=\S+ /, "")), [`event=tool_keys condition=seal_key_changed file=${kept} fields=PARALLEL_API_KEY,MONID_API_KEY`], "said once, at the start");
+  assert.deepEqual(server.said().map((line) => line.replace(/^at=\S+ /, "")), [changedLine("PARALLEL_API_KEY,MONID_API_KEY")], "said once, at the start");
   const changed = (await server.api("GET", "/settings/tool-keys")).body;
   assert.deepEqual([fieldsOf(changed).PARALLEL_API_KEY, fieldsOf(changed).MONID_API_KEY, changed.reenter], [AGAIN, AGAIN, { reason: "seal_key_changed", fields: ["PARALLEL_API_KEY", "MONID_API_KEY"] }]);
   assert.equal(server.said().length, 1, "not again for the same condition");
@@ -385,9 +388,8 @@ test("values sealed under another key, under the key a server handed none makes,
   for (const forms of [...Object.values(values).map(formsOf), keyForms(first), keyForms(second), keyForms(madeKey)]) holdsNone(lines.join("\n"), forms, "the log");
 });
 
-test("a key saved is read by name with no restart: capabilities lose the tool's missing names and name its key, a run of it starts and its process gets the key; deleted, it is missing again", { timeout: 60_000 }, async (t) => {
-  const log = join(await scratch(t), "browser.jsonl");
-  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey(), FAUX_BROWSER_LOG: log }, KEYS);
+test("a key saved is read by name with no restart: capabilities lose the tool's missing names and name its key, and a run of it starts; deleted, it is missing again", { timeout: 60_000 }, async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, KEYS);
   const { api } = await serve(t, { fauxBrowser: FAUX_BROWSER });
   const values = { BROWSERBASE_API_KEY: made(), BROWSERBASE_PROJECT_ID: made() };
   const browser = async () => {
@@ -415,12 +417,25 @@ test("a key saved is read by name with no restart: capabilities lose the tool's 
   const started = await api("POST", "/agents/browse/runs", { input: { content: "Browse the example page." } });
   assert.equal(started.status, 202, JSON.stringify(started.body));
   await follow(api, started.body.run_id, ["completed"]);
-  const [seen] = readFileSync(log, "utf8").trim().split("\n").map((line) => JSON.parse(line));
-  assert.deepEqual(seen, { op: "env", BROWSERBASE_API_KEY: "set", BROWSERBASE_PROJECT_ID: "set" }, "the run's process got both, saved");
 
   assert.equal((await api("DELETE", "/settings/tool-keys/browserbase")).status, 204);
   assert.deepEqual(await browser(), unset, "deleted, missing again");
   assert.deepEqual(await refused(), [409, "agent_not_runnable", {}]);
+});
+
+test("a browser key saved by name reaches the run's browser with no restart: its provider gets both fields, saved", { timeout: 60_000 }, async (t) => {
+  const log = join(await scratch(t), "browser.jsonl");
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey(), FAUX_BROWSER_LOG: log }, KEYS);
+  const { api } = await serve(t, { fauxBrowser: FAUX_BROWSER });
+  const values = { BROWSERBASE_API_KEY: made(), BROWSERBASE_PROJECT_ID: made() };
+  assert.equal((await api("POST", "/agents", { definition: { id: "browse", name: "browse", instructions: "Browse.", tools: ["browser"] } })).status, 201);
+  assert.equal((await api("PUT", "/settings/tool-keys/browserbase", { values })).status, 204);
+  const started = await api("POST", "/agents/browse/runs", { input: { content: "Browse the example page." } });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  await follow(api, started.body.run_id, ["completed"]);
+  // The fake browser's first line says whether each field reached the env its provider gets: set or unset, never a value.
+  const [seen] = readFileSync(log, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+  assert.deepEqual(seen, { op: "env", BROWSERBASE_API_KEY: "set", BROWSERBASE_PROJECT_ID: "set" }, "the run's browser got both, saved");
 });
 
 test("the page's owner saves and forgets a key with the session cookie from the page's own origin; from another origin the cookie is no credential", async (t) => {
@@ -492,11 +507,12 @@ test("under its launcher the seal key is made once, outside the data directory, 
   const lost = (await server.api("GET", "/settings/tool-keys")).body;
   assert.deepEqual(lost.reenter, { reason: "seal_key_changed", fields: Object.keys(values) }, "missing shows as changed: the launcher made another");
   said.push(JSON.stringify(lost), await server.stop());
-  assert.ok(said.at(-1).includes(`event=tool_keys condition=seal_key_changed file=${join(data, "tool-keys.json")} fields=${Object.keys(values).join(",")}`), said.at(-1));
+  assert.ok(said.at(-1).includes(changedLine(Object.keys(values).join(","))), said.at(-1));
   assert.deepEqual(readdirSync(join(config, "agentrun")), ["seal.key"], "nothing else beside it");
 
   const files = readdirSync(data, { recursive: true, withFileTypes: true }).filter((entry) => entry.isFile()).map((entry) => join(entry.parentPath, entry.name));
-  assert.ok(files.some((file) => file.endsWith("tool-keys.json")) && files.some((file) => file.endsWith("store.sqlite")), files.join(" "));
+  // The keys are the store's rows: the store is there, and no tool-keys file beside it.
+  assert.ok(files.some((file) => file.endsWith("store.sqlite")) && !files.some((file) => file.endsWith("tool-keys.json")), files.join(" "));
   const forms = [...Object.values(values).flatMap(formsOf), ...keyForms(first), ...keyForms(second)];
   // The positive control: the same check finds the key in the file that does hold it, and a value written out plain.
   assert.throws(() => holdsNone(readFileSync(keyFile), forms, "seal.key"));

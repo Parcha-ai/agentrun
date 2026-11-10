@@ -39,6 +39,7 @@ import {
 	type Refusal,
 } from "./provider.js";
 import { type ComputerError, fail, ok, type Result } from "./result.js";
+import { daemonWatch, type ScreenWatch, type ScreenWatchHandlers, type WatchOptions } from "./screen-watch.js";
 import { listTested } from "./test-connection.js";
 
 /** The mount kinds an Orgo computer takes: none yet (an Archil mount needs an Orgo template that bakes the helper). */
@@ -113,12 +114,13 @@ const CPU_FOR_RAM: Record<number, number> = { 4: 1, 8: 2, 16: 4, 32: 6 };
 /** The vCPUs a computer may ask for on its own (8 needs Orgo to set the account up). */
 const CPUS = [0.5, 1, 2, 4, 6];
 const NAME_MAX = 80;
-/** A name of this provider's making: computer-<12 hex>, the run label's hash, the epoch label. */
-const NAME = /^computer-([0-9a-f]{12})(?:-r([a-z2-7]{16}))?(?:-e(0|[1-9][0-9]{0,15}))?$/;
+/** A name of this provider's making: computer-<12 hex>, the run label's hash, the epoch label, the deadline (base 36 s). */
+const NAME = /^computer-([0-9a-f]{12})(?:-r([a-z2-7]{16}))?(?:-e(0|[1-9][0-9]{0,15}))?(?:-d([0-9a-z]{1,11}))?$/;
 /** An Orgo template: namespace/name@version. */
 const TEMPLATE = /^[a-z0-9][a-z0-9_.-]{0,63}\/[a-z0-9][a-z0-9_.-]{0,63}@[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$/;
-/** The base image, no template. */
-const BASE = "linux";
+/** Orgo's base desktop, no template: the image a spec names for a plain Linux desktop, and the default for kind desktop. */
+export const ORGO_BASE_IMAGE = "linux";
+const BASE = ORGO_BASE_IMAGE;
 const COMPUTER_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 const WORKSPACE_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 const USER = /^(\d+):(\d+)$/;
@@ -150,6 +152,50 @@ const STATUS_SCRIPT = [
 	'if pgrep -f "^$d init" >/dev/null 2>&1; then echo "init running"; else echo "init not running"; fi',
 	'if [ -S "$s" ]; then echo "socket present"; else echo "socket absent"; fi',
 	"echo \"log $(tail -c 300 \"$l\" 2>/dev/null | tr '\\n' ' ')\"",
+].join("\n");
+/**
+ * The TCP ports root listens on in Orgo's own network (its agent, its VNC, anything else of the image's), one decimal
+ * port a line, from /proc/net/tcp and tcp6 (state 0A, LISTEN): no tool of the image's is relied on but awk.
+ */
+const PORTS_SCRIPT = [
+	"# agentrun-computer: orgo-ports",
+	"for f in /proc/net/tcp /proc/net/tcp6; do [ -r \"$f\" ] && awk 'NR > 1 && $4 == \"0A\" { n = split($2, a, \":\"); print a[n] }' \"$f\"; done | sort -u | while read -r h; do printf '%d\\n' \"0x$h\"; done",
+].join("\n");
+/**
+ * The ports Orgo's own agent listens on in a computer, which its tools must never reach: its VNC (5999), websockify
+ * (6080) and desktop API (8080), as live run 4's notes read them (Orgo documents only the host's side). create reads
+ * every port root listens on beside these and holds the tools to none of them either.
+ */
+const ORGO_AGENT_PORTS = [5999, 6080, 8080];
+/**
+ * Every path unix socket of Orgo's desktop made root's alone (owner root, mode 0600), but the display's own ($1) and
+ * computerd's, before any tool runs: the tools reach the X server through that one and nothing else (live run 4 found
+ * root's D-Bus buses connectable by the tool user). Prints `locked <path>` for each, and `failed <path>` for one it
+ * could not lock. Any failure fails the script: the scan, the sort, or one socket's chown or chmod (a later socket that
+ * locks hides none), and create then refuses the computer. Plain sh (no pipefail): the scan and the sort are each
+ * checked, and the loop reads a here-document, so its failed flag is the script's own. Orgo's desktop runs as root, so
+ * nothing of its own loses a socket.
+ */
+export const LOCKDOWN_SCRIPT = [
+	"# agentrun-computer: orgo-lockdown",
+	"x=$1",
+	"set --",
+	'for d in /tmp /run /var/run /dev/shm; do [ -d "$d" ] && set -- "$@" "$d"; done',
+	"[ $# -gt 0 ] || exit 0",
+	// GNU find's -ignore_readdir_race: a socket gone between listing and reading is no failure. Used only where find has it.
+	"r=",
+	"find / -maxdepth 0 -ignore_readdir_race >/dev/null 2>&1 && r=-ignore_readdir_race",
+	'found=$(find "$@" $r -type s) || { echo "scanning for sockets failed"; exit 1; }',
+	"sorted=$(printf '%s\\n' \"$found\" | sort -u) || { echo \"sorting the sockets failed\"; exit 1; }",
+	"failed=0",
+	"while IFS= read -r s; do",
+	'\t[ -n "$s" ] || continue',
+	'\tcase "$s" in "$x" | /run/agentrun/* | /run/agentrun-archil/*) continue ;; esac',
+	'\tif chown 0:0 "$s" && chmod 0600 "$s"; then echo "locked $s"; else echo "failed $s"; failed=1; fi',
+	"done <<EOF",
+	"$sorted",
+	"EOF",
+	"exit $failed",
 ].join("\n");
 
 /** What the labels file holds. */
@@ -209,20 +255,38 @@ function runHash(run: string): string {
 
 /**
  * The name of a computer with these labels: computer-<hex>, then -r<the run label's hash> and -e<the epoch label> when
- * the labels carry a run and an epoch that is one. Only those two: a name is no place for a label's value.
+ * the labels carry a run and an epoch that is one, then -d<the deadline> when given: whole seconds since the epoch,
+ * rounded up (never before init's own), in base 36, the janitor's deadline. Only those: a name is no place for a label's
+ * value. Everything but the deadline is the name's stable part, which a rename on extend keeps.
  */
-export function orgoName(labels: Record<string, string>, hex: string): string {
+export function orgoName(labels: Record<string, string>, hex: string, deadline?: Date): string {
 	const run = labels[RUN_LABEL];
 	const epoch = labels[EPOCH_LABEL];
-	return `computer-${hex}${typeof run === "string" && run !== "" ? `-r${runHash(run)}` : ""}${typeof epoch === "string" && /^(?:0|[1-9][0-9]{0,15})$/.test(epoch) ? `-e${epoch}` : ""}`;
+	const stable = `computer-${hex}${typeof run === "string" && run !== "" ? `-r${runHash(run)}` : ""}${typeof epoch === "string" && /^(?:0|[1-9][0-9]{0,15})$/.test(epoch) ? `-e${epoch}` : ""}`;
+	return deadline === undefined ? stable : withDeadline(stable, deadline);
 }
 
-/** What a name of this provider's making says, or undefined for any other name. */
-function nameParts(name: unknown): { hex: string; run?: string; epoch?: string } | undefined {
+/** A name's stable part with this deadline. */
+function withDeadline(stable: string, deadline: Date): string {
+	return `${stable}-d${Math.ceil(deadline.getTime() / 1000).toString(36)}`;
+}
+
+/** What a name of this provider's making says, or undefined for any other name: its stable part, and its deadline. */
+function nameParts(name: unknown): { hex: string; run?: string; epoch?: string; stable: string; deadline?: Date } | undefined {
 	const match = typeof name === "string" ? NAME.exec(name) : null;
 	if (match === null) return undefined;
-	return { hex: match[1] as string, ...(match[2] ? { run: match[2] } : {}), ...(match[3] !== undefined ? { epoch: match[3] } : {}) };
+	const seconds = match[4] === undefined ? Number.NaN : Number.parseInt(match[4], 36);
+	return {
+		hex: match[1] as string,
+		...(match[2] ? { run: match[2] } : {}),
+		...(match[3] !== undefined ? { epoch: match[3] } : {}),
+		stable: (name as string).replace(/-d[0-9a-z]+$/, ""),
+		...(Number.isSafeInteger(seconds) ? { deadline: new Date(seconds * 1000) } : {}),
+	};
 }
+
+/** Whether two names are one computer's: their stable parts are the same (the deadline moves with extend). */
+const sameComputer = (a: string, b: string) => nameParts(a)?.stable !== undefined && nameParts(a)?.stable === nameParts(b)?.stable;
 
 function labelProblem(key: string, value: unknown): string | undefined {
 	if (typeof value !== "string") return `the label ${key} must be a string`;
@@ -277,6 +341,8 @@ export class OrgoProvider implements ComputerProvider {
 	readonly #display: string;
 	readonly #timeouts: OrgoTimeouts;
 	readonly #probeTargets: string[];
+	/** Each computer's extend in flight, by id: the next waits for it, so two never read the same old deadline. */
+	readonly #extending = new Map<string, Promise<unknown>>();
 
 	constructor({ apiKey, workspaceId, apiUrl = ORGO_API_URL, fetch, webSocket, channel, daemonPath = DEFAULT_DAEMON_PATH, maxLifetimeMs = MAX_LIFETIME_MS, user = "2510:2510", start = "bash", display = ":99", timeouts = {}, probeTargets = DEFAULT_PROBE_TARGETS }: OrgoProviderOptions) {
 		if (typeof apiKey !== "string" || apiKey === "") throw new Error("options.apiKey, an Orgo API key, is required");
@@ -314,15 +380,16 @@ export class OrgoProvider implements ComputerProvider {
 	}
 
 	/**
-	 * daemon child: Orgo's own agent is the VM's first process, and init is a command it ran. lifetime vendor: Orgo
-	 * deletes the computer at ends_in_hours, whole hours from create; init holds the exact deadline inside. network none
-	 * alone, read back by the probe from inside (Orgo reads no policy back). release delete alone: Orgo's stop freezes
-	 * a computer, which nothing here needs.
+	 * daemon child: Orgo's own agent is the VM's first process, and init is a command it ran. lifetime janitor: Orgo ends
+	 * a computer only in whole hours (ends_in_hours, the backstop), so the janitor deletes it at its exact deadline, which
+	 * its name carries (list() reads it with nothing run inside); init ends its programs at that deadline inside. network
+	 * none alone, read back by the probe from inside (Orgo reads no policy back). release delete alone: Orgo's stop
+	 * freezes a computer, which nothing here needs.
 	 */
 	capabilities(): ComputerCapabilities {
 		return {
 			kind: "desktop",
-			lifetime: "vendor",
+			lifetime: "janitor",
 			network: ["none"],
 			networkReadBack: false,
 			isolation: "vm",
@@ -332,6 +399,8 @@ export class OrgoProvider implements ComputerProvider {
 			maxLifetimeMs: this.#maxLifetimeMs,
 			release: ["delete"],
 			mount: [...MOUNT],
+			// Init starts with --own-network (childCommands): no tool reaches these, nor any port root listens on.
+			vendorAgentPorts: [...ORGO_AGENT_PORTS],
 		};
 	}
 
@@ -340,7 +409,7 @@ export class OrgoProvider implements ComputerProvider {
 		const refuse = (field: string, message: string) => refusals.push({ field, message });
 		const given = (typeof spec === "object" && spec !== null ? spec : {}) as unknown as Record<string, unknown>;
 		const { image, lifetimeMs, network, cpus, memoryMb, labels, mount } = given;
-		if (image !== BASE && !(typeof image === "string" && TEMPLATE.test(image))) refuse("image", `an image is "linux" (Orgo's base desktop) or an Orgo template, namespace/name@version`);
+		if (image !== BASE && !(typeof image === "string" && TEMPLATE.test(image))) refuse("image", `an image is "${BASE}" (Orgo's base desktop) or an Orgo template, namespace/name@version`);
 		refusals.push(...checkLifetime(lifetimeMs, this.capabilities()));
 		if (network !== "none") refuse("network", NETWORK);
 		if (memoryMb !== undefined && !RAM_GB.some((gb) => gb * 1024 === memoryMb)) refuse("memoryMb", "memoryMb is one of Orgo's sizes: 4096, 8192, 16384 or 32768");
@@ -372,11 +441,12 @@ export class OrgoProvider implements ComputerProvider {
 		}
 		if (signal?.aborted) return fail("aborted", "create was aborted before Orgo was called");
 		const labels = { ...spec.labels };
-		const name = orgoName(labels, randomBytes(6).toString("hex"));
-		if (name.length > NAME_MAX || nameParts(name) === undefined) return fail("invalid", `the name ${name} is not one Orgo holds: at most ${NAME_MAX} of letters, digits and dashes`);
 		const now = Date.now();
 		const deadline = new Date(now + spec.lifetimeMs).toISOString();
 		const maxDeadline = new Date(now + this.#maxLifetimeMs).toISOString();
+		// The janitor's deadline is in the name, so list() and the sweep read it with nothing run inside.
+		const name = orgoName(labels, randomBytes(6).toString("hex"), new Date(deadline));
+		if (name.length > NAME_MAX || nameParts(name) === undefined) return fail("invalid", `the name ${name} is not one Orgo holds: at most ${NAME_MAX} of letters, digits and dashes`);
 		const ram = spec.memoryMb === undefined ? 4 : spec.memoryMb / 1024;
 		const cpu = spec.cpus ?? (CPU_FOR_RAM[ram] as number);
 		const body = {
@@ -434,6 +504,12 @@ export class OrgoProvider implements ComputerProvider {
 		}
 		const written = await this.#writeLabels(ref, file, signal);
 		if (!written.ok) return written;
+		// Every port root listens on in Orgo's own network, read before init starts in a network of its own.
+		const ports = await this.#rootPorts(ref, signal);
+		if (!ports.ok) return ports;
+		// Every path socket of Orgo's desktop root's alone but the display's own, before any tool runs.
+		const locked = await this.#lockDown(ref, socket, signal);
+		if (!locked.ok) return locked;
 		const started = await this.#channel.start(ref.id, ["sh", "-c", commands.init], { how: this.#start, timeoutMs: execMs, ...(signal ? { signal } : {}) });
 		if (!started.ok) return fail(started.error.code, `starting the daemon in ${ref.name} failed: ${started.error.message}`);
 		const opened = await this.#openWhenListening(ref, signal);
@@ -442,10 +518,41 @@ export class OrgoProvider implements ComputerProvider {
 			return fail(opened.error.code, `the daemon did not answer: ${opened.error.message}; in the computer: ${await this.#status(ref, signal)}`);
 		}
 		try {
-			return await this.#checkInside(opened.value, ref.name, signal);
+			const inside = await this.#checkInside(opened.value, ref.name, ports.value, signal);
+			if (!inside.ok) return inside;
+			return ok([
+				...inside.value,
+				`Orgo's own network listens on ${ports.value.join(", ") || "no TCP port"} (TCP, as root reads it); the tools' probe was refused at each and at ${ORGO_AGENT_PORTS.join(", ")}, on both loopbacks`,
+				`Orgo's desktop sockets made root's alone: ${locked.value.join(", ") || "none"} (the display's own, ${socket}, left to the tools)`,
+			]);
 		} finally {
 			await opened.value.close();
 		}
+	}
+
+	/** Every path socket of Orgo's desktop made root's alone but the display's own (LOCKDOWN_SCRIPT): the paths it locked. */
+	async #lockDown(ref: ComputerRef, display: string, signal?: AbortSignal): Promise<Result<string[]>> {
+		const ran = await this.#channel.run(ref.id, ["sh", "-c", LOCKDOWN_SCRIPT, "sh", display], { timeoutMs: this.#timeouts.execMs, ...(signal ? { signal } : {}) });
+		if (!ran.ok) return ran;
+		if (ran.value.exitCode !== 0) return fail("refused", `making Orgo's desktop sockets root's alone in ${ref.name} failed (exit ${ran.value.exitCode}): ${ran.value.output.trim().slice(0, 200)}`);
+		return ok(ran.value.output.split("\n").flatMap((line) => (line.startsWith("locked ") ? [line.slice("locked ".length).trim()] : [])));
+	}
+
+	/** The TCP ports root listens on in Orgo's own network, sorted, read through the channel. */
+	async #rootPorts(ref: ComputerRef, signal?: AbortSignal): Promise<Result<number[]>> {
+		const read = await this.#channel.run(ref.id, ["sh", "-c", PORTS_SCRIPT], { timeoutMs: this.#timeouts.execMs, ...(signal ? { signal } : {}) });
+		if (!read.ok) return read;
+		if (read.value.exitCode !== 0) return fail("refused", `reading the ports root listens on in ${ref.name} failed (exit ${read.value.exitCode}): ${read.value.output.trim().slice(0, 200)}`);
+		const ports = read.value.output
+			.split("\n")
+			.map((line) => Number(line.trim()))
+			.filter((port) => Number.isSafeInteger(port) && port > 0 && port < 65536);
+		return ok([...new Set(ports)].sort((a, b) => a - b));
+	}
+
+	/** The probe's targets on the computer's own loopbacks: every port given and every declared agent port, on 127.0.0.1 and ::1. */
+	#agentTargets(ports: readonly number[]): string[] {
+		return [...new Set([...ports, ...ORGO_AGENT_PORTS])].sort((a, b) => a - b).flatMap((port) => [`127.0.0.1:${port}`, `[::1]:${port}`]); // key-gate: loopback-rule the computer's own loopbacks, where Orgo's agent listens and its tools must be refused
 	}
 
 	/** What the computer holds, in words, for a daemon that does not answer: init running or not, its socket, its log's tail. */
@@ -491,10 +598,10 @@ export class OrgoProvider implements ComputerProvider {
 	 * The daemon's report (hello with the desktop groups, its credentials, home and binary) and the probe, which refuses
 	 * on an answer from any target and records a silent accept in the notes it returns.
 	 */
-	async #checkInside(connection: ComputerConnection, name: string, signal?: AbortSignal): Promise<Result<string[]>> {
+	async #checkInside(connection: ComputerConnection, name: string, ports: readonly number[], signal?: AbortSignal): Promise<Result<string[]>> {
 		const found = await daemonDrift(connection, this.#daemonExpected(), this.#timeouts.helloMs, signal);
 		if (!found.ok) return found;
-		const probe = await this.#probe(connection, name, signal);
+		const probe = await this.#probe(connection, name, ports, signal);
 		if (!probe.ok) return probe;
 		const drift = [...found.value, ...probeNetworkDrift(probe.value)];
 		return drift.length === 0 ? ok(probeNotes(probe.value, "none")) : fail("refused", `it did not match its spec: ${drift.join("; ")}`);
@@ -509,10 +616,10 @@ export class OrgoProvider implements ComputerProvider {
 		return signal ? AbortSignal.any([signal, AbortSignal.timeout(ms)]) : AbortSignal.timeout(ms);
 	}
 
-	/** `computerd probe` through the daemon, as the tool user. */
-	async #probe(connection: ComputerConnection, name: string, signal?: AbortSignal): Promise<Result<ProbeReport>> {
+	/** `computerd probe` through the daemon, as the tool user: the outside targets, and Orgo's agent's ports (ports and the declared ones) on both loopbacks. */
+	async #probe(connection: ComputerConnection, name: string, ports: readonly number[], signal?: AbortSignal): Promise<Result<ProbeReport>> {
 		const { probeMs } = this.#timeouts;
-		const argv = [DAEMON_IN_COMPUTER, "probe", ...this.#probeTargets.flatMap((target) => ["--connect", target])];
+		const argv = [DAEMON_IN_COMPUTER, "probe", ...[...this.#probeTargets, ...this.#agentTargets(ports)].flatMap((target) => ["--connect", target])];
 		const ran = await connection.client.call("exec.run", { argv, timeoutMs: probeMs }, { signal: this.#bounded(probeMs + 5_000, signal) });
 		if (!ran.ok) {
 			if (signal?.aborted) return fail("aborted", `the probe in ${name} was aborted`);
@@ -568,7 +675,8 @@ export class OrgoProvider implements ComputerProvider {
 
 	/** Whether Orgo's record is a computer of this provider: its name's shape, in this workspace. */
 	#ours(record: OrgoComputer, name?: string): boolean {
-		return nameParts(record.name) !== undefined && (record.workspace_id ?? record.project_id) === this.#workspaceId && (name === undefined || record.name === name) && record.status !== "deleted";
+		// A ref's name matches by its stable part: extend renames the computer with its new deadline.
+		return nameParts(record.name) !== undefined && (record.workspace_id ?? record.project_id) === this.#workspaceId && (name === undefined || sameComputer(record.name, name)) && record.status !== "deleted";
 	}
 
 	/** This provider's computer for ref, as Orgo reads it, or why not. */
@@ -632,6 +740,11 @@ export class OrgoProvider implements ComputerProvider {
 		return ok(desktops.filter((one): one is OrgoComputer => typeof one?.id === "string" && typeof one.name === "string").map((one) => ({ ...one, workspace_id: this.#workspaceId })));
 	}
 
+	/** The live view: screen.watch on a connection of the watch's own (daemonWatch), never Orgo's VNC (proxy only). */
+	watch(ref: ComputerRef, handlers: ScreenWatchHandlers, options?: WatchOptions): Promise<Result<ScreenWatch>> {
+		return daemonWatch(this, ref, handlers, options);
+	}
+
 	async connect(ref: ComputerRef): Promise<Result<ComputerConnection>> {
 		const problem = refProblem(ref);
 		if (problem) return fail("invalid", problem);
@@ -684,7 +797,7 @@ export class OrgoProvider implements ComputerProvider {
 		const found: string[] = [];
 		const parts = nameParts(record.name) as { run?: string; epoch?: string };
 		const { labels } = file.value;
-		if (file.value.name !== record.name) found.push(`name: Orgo's is ${record.name}, the labels file's ${show(file.value.name)}`);
+		if (typeof file.value.name !== "string" || !sameComputer(file.value.name, record.name)) found.push(`name: Orgo's is ${record.name}, the labels file's ${show(file.value.name)}`);
 		const run = labels[RUN_LABEL];
 		if ((parts.run ?? "") !== (typeof run === "string" && run !== "" ? runHash(run) : "")) found.push(`run: the name's run hash ${show(parts.run)} is not the labels file's run ${show(run)}`);
 		if ((parts.epoch ?? "") !== (labels[EPOCH_LABEL] ?? "")) found.push(`epoch: the name says ${show(parts.epoch)}, the labels file ${show(labels[EPOCH_LABEL])}`);
@@ -693,10 +806,12 @@ export class OrgoProvider implements ComputerProvider {
 		let notes: string[] = [];
 		let kind: AttachedComputer["spec"]["kind"];
 		if (found.length === 0) {
+			const ports = await this.#rootPorts(ref, signal);
+			if (!ports.ok) return ports;
 			const opened = await this.#open(ref, signal);
 			if (!opened.ok) return opened;
 			try {
-				const inside = await this.#checkInside(opened.value, ref.name, signal);
+				const inside = await this.#checkInside(opened.value, ref.name, ports.value, signal);
 				if (!inside.ok && inside.error.code !== "refused") return inside;
 				if (!inside.ok) found.push(inside.error.message.replace(/^it did not match its spec: /, ""));
 				else notes = inside.value;
@@ -745,14 +860,15 @@ export class OrgoProvider implements ComputerProvider {
 				...(labels[RUN_LABEL] !== undefined ? { [RUN_LABEL]: labels[RUN_LABEL] } : {}),
 				...(parts.epoch !== undefined ? { [EPOCH_LABEL]: parts.epoch } : {}),
 			};
-			let deadline: Date | undefined = typeof record.ends_at === "string" ? new Date(record.ends_at) : undefined;
+			// The janitor's deadline is the name's; a name of an older make has none, and Orgo's end stands for it.
+			let deadline: Date | undefined = parts.deadline ?? (typeof record.ends_at === "string" ? new Date(record.ends_at) : undefined);
 			if (others.length > 0) {
 				if (record.status !== "running") continue;
 				const file = await this.#readLabels(ref, signal);
 				if (!file.ok) continue;
 				if (!others.every((key) => file.value.labels[key] === labels[key])) continue;
 				read = { ...file.value.labels };
-				deadline = new Date(file.value.deadline);
+				deadline = parts.deadline ?? new Date(file.value.deadline);
 			}
 			infos.push({ ref, labels: read, deadline, state: running ? "running" : "stopped", network: "none" });
 		}
@@ -772,10 +888,12 @@ export class OrgoProvider implements ComputerProvider {
 		const found = await this.#own(ref, signal);
 		if (!found.ok) return found;
 		if (found.value.status !== "running") return fail("refused", `${ref.name} is ${found.value.status}: its network is read from inside, and a read would wake it`);
+		const ports = await this.#rootPorts(ref, signal);
+		if (!ports.ok) return ports;
 		const opened = await this.#open(ref, signal);
 		if (!opened.ok) return opened;
 		try {
-			const probe = await this.#probe(opened.value, ref.name, signal);
+			const probe = await this.#probe(opened.value, ref.name, ports.value, signal);
 			if (!probe.ok) return probe;
 			if (probe.value.reached.length > 0) return ok({ other: `created with network none, yet from inside an answer came back from ${probe.value.reached.join(", ")}` });
 			return ok("none");
@@ -800,9 +918,26 @@ export class OrgoProvider implements ComputerProvider {
 	/**
 	 * Moves the deadline to now + ttlMs, never earlier and never past the most the labels file holds (create's time plus
 	 * the cap): Orgo's end first, in whole hours with an Idempotency-Key, so it never ends the computer before init does;
-	 * then init's deadline; then the labels file. The result is the deadline init took.
+	 * then init's deadline; then the name's, from the time init took; then the labels file. The result is the deadline
+	 * init took. A computer's extends are taken in turn: each reads the deadline the one before it left, so a shorter one
+	 * is refused as earlier, never renaming the computer back to an earlier deadline the janitor would trust.
 	 */
-	async extend(ref: ComputerRef, ttlMs: number, { signal }: CallContext = {}): Promise<Result<{ deadline: Date }>> {
+	extend(ref: ComputerRef, ttlMs: number, context: CallContext = {}): Promise<Result<{ deadline: Date }>> {
+		const key = typeof ref?.id === "string" ? ref.id : "";
+		const before = this.#extending.get(key) ?? Promise.resolve();
+		const turn = before.then(() => this.#extend(ref, ttlMs, context));
+		const settled = turn.then(
+			() => undefined,
+			() => undefined,
+		);
+		this.#extending.set(key, settled);
+		void settled.then(() => {
+			if (this.#extending.get(key) === settled) this.#extending.delete(key);
+		});
+		return turn;
+	}
+
+	async #extend(ref: ComputerRef, ttlMs: number, { signal }: CallContext = {}): Promise<Result<{ deadline: Date }>> {
 		const problem = refProblem(ref);
 		if (problem) return fail("invalid", problem);
 		if (!Number.isSafeInteger(ttlMs) || ttlMs <= 0) return fail("invalid", "extend takes ttlMs, a whole number of milliseconds above 0");
@@ -815,13 +950,18 @@ export class OrgoProvider implements ComputerProvider {
 		const current = Date.parse(file.value.deadline);
 		const target = Date.now() + ttlMs;
 		if (Number.isNaN(most) || target > most) return fail("limit", `${new Date(target).toISOString()} is past ${file.value.maxDeadline}, the most this computer may live`);
-		if (target <= current) return ok({ deadline: new Date(current) });
+		// An extend never shortens a computer's life: one that would is refused in words, and nothing moves.
+		if (target < current) return fail("refused", `${new Date(target).toISOString()} is earlier than ${ref.name}'s deadline ${file.value.deadline}: an extend never moves it earlier; nothing moved`);
+		if (target === current) return ok({ deadline: new Date(current) });
 		const end = typeof found.value.ends_at === "string" ? Date.parse(found.value.ends_at) : Number.NaN;
 		if (!Number.isNaN(end) && end < target) {
 			const hours = Math.ceil((target - end) / HOUR);
 			const moved = await this.#rest.request("POST", `/computers/${encodeURIComponent(ref.id)}/extend`, { body: { hours }, headers: { "idempotency-key": randomUUID() }, timeoutMs: this.#timeouts.requestMs, ...(signal ? { signal } : {}) });
 			if (!moved.ok) return fail(moved.error.code, `Orgo's end did not move, so nothing did: ${moved.error.message}`);
 		}
+		// Init's deadline next, then the janitor's, in the name (a rename, its stable part kept), from the time init took:
+		// the name, init and the labels file then agree. A step that fails leaves the janitor ending the computer no later
+		// than init, never after it.
 		const opened = await this.#open(ref, signal);
 		if (!opened.ok) return fail(opened.error.code, `Orgo's end moved, and init's deadline did not: ${opened.error.message}`);
 		let took: Date;
@@ -834,7 +974,14 @@ export class OrgoProvider implements ComputerProvider {
 		} finally {
 			await opened.value.close();
 		}
-		const written = await this.#writeLabels(ref, { ...file.value, deadline: took.toISOString() }, signal);
+		// The name's deadline never moves back: a name that already holds this deadline or a later one is kept.
+		const parts = nameParts(found.value.name) as { stable: string; deadline?: Date };
+		const name = parts.deadline !== undefined && parts.deadline.getTime() >= Math.ceil(took.getTime() / 1000) * 1000 ? found.value.name : withDeadline(parts.stable, took);
+		if (name !== found.value.name) {
+			const renamed = await this.#rest.request("PATCH", `/computers/${encodeURIComponent(ref.id)}`, { body: { name }, timeoutMs: this.#timeouts.requestMs, ...(signal ? { signal } : {}) });
+			if (!renamed.ok) return fail(renamed.error.code, `init's deadline moved to ${took.toISOString()}, and the deadline in ${found.value.name} did not: ${renamed.error.message}`);
+		}
+		const written = await this.#writeLabels(ref, { ...file.value, name, deadline: took.toISOString() }, signal);
 		if (!written.ok) return fail(written.error.code, `init's deadline moved to ${took.toISOString()}, and the labels file did not: ${written.error.message}`);
 		return ok({ deadline: took });
 	}

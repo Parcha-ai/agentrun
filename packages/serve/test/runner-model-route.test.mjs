@@ -86,6 +86,21 @@ test("under --faux the route answers a Messages request through its fetch from t
   assert.deepEqual([called.stop, called.tools], ["tool_use", [{ name: "read", input: { what: "totals" } }]], "a tool call, in Messages shape");
 });
 
+test("a request the route's model fails answers an error event whose data is the model's own words, as pi-ai throws it", async () => {
+  // pi-ai's Messages client throws an error event's data as the request's error: that data is what the run says, so it
+  // is the model's own words ("500 {...}", as main's in-process pi reports them), never an envelope around them.
+  const route = await routeOf(undefined, { AGENTRUN_SERVE_FAUX: FAUX });
+  const response = await route.fetch(`${route.provider.origin}/v1/messages`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ model: route.model, max_tokens: 256, stream: true, messages: [{ role: "user", content: "fail in your own words" }] }),
+  });
+  const events = (await response.text()).split("\n\n").filter((block) => block.startsWith("event: error"));
+  assert.equal(events.length, 1, "one error event");
+  const data = events[0].split("\n").filter((line) => line.startsWith("data: ")).map((line) => line.slice(6)).join("\n");
+  assert.equal(data, '500 {"message":"the upstream broke"}', "the error event's data is the model's own words");
+});
+
 test("a pi run through the adapter on the faux route goes through the kernel's model proxy and ends with the faux model's answers, its tool call run", async (t) => {
   const route = await routeOf(undefined, { AGENTRUN_SERVE_FAUX: FAUX });
   const opened = await stores({ runners: 1 });

@@ -11,9 +11,10 @@
 // The credentials. The pinned servers' credentials are unsealed (store/seal.ts openMcpCredential) into this step's
 // memory only: handed to the run's gateway, never written to the journal, a command row, the timeline or a log line. The
 // redaction set is fed from the same map. Both are dropped at release(), at the loop's end, or when the claim's signal
-// aborts. A credential that can't be used gives its server's calls a reason (mcp-servers.ts UNUSABLE) and they are refused
-// unsent: no seal key (checked before any refresh, so none is sent), sealed under another key or for another origin than
-// its row's url (damaged), a sign-in refused or expired (signedOut), a refresh that got no answer (silent).
+// aborts. A credential that can't be used gives its server's calls a reason (mcp-probe.ts UNUSABLE) and they are refused
+// unsent: sealed under another key or for another origin than its row's url (damaged), a sign-in refused or expired
+// (signedOut), a refresh that got no answer (silent), an address the check refuses (blocked). A runner never starts
+// without the seal key (seal-key.ts ensureSealKey), so a claim always has one.
 //
 // fresh(). After the pin check and before the loop, and again on a command-row resume: an OAuth access token past its
 // expiry is refreshed, bounded (4 s a request, two tries), under the server's refresh lease (leaseRefresh, then the
@@ -32,8 +33,11 @@ import { type McpCredentials, type McpPin, mcpPinOf } from "../mcp-gateway.js";
 import { META_REASON, metaToolOf } from "../mcp-meta.js";
 import { boundTool, type McpTool } from "../mcp-probe.js";
 import { privateOAuthHosts } from "../mcp-private-hosts.js";
+import { GITHUB_MCP_ONLY, GITHUB_MCP_ORIGIN, githubMcpUrl } from "../github.js";
 import { type GithubAppAccess, type GithubTimer, githubTokens } from "./mcp-github.js";
+import { ClaimRefused } from "./loop-contract.js";
 import { REFRESH_MARGIN_MS, UNKNOWN_EXPIRY_MS, UNUSABLE } from "../mcp-servers.js";
+import { tokenLeftOf } from "../mcp-probe.js";
 import { openMcpCredential, sealMcpCredential, type McpCredential } from "../store/seal.js";
 import { type Claim, Fenced, MCP_REFRESH_CALL_MS, type McpServerRow, type Store } from "../store/index.js";
 
@@ -41,7 +45,7 @@ import { type Claim, Fenced, MCP_REFRESH_CALL_MS, type McpServerRow, type Store 
 const sameSealed = (a: Uint8Array | null, b: Uint8Array | null): boolean => (a === null || b === null ? a === b : Buffer.from(a).equals(Buffer.from(b)));
 
 /** A claim the MCP step refused, in the words a person reads: nothing was sent. */
-export class McpClaimRefused extends Error {
+export class McpClaimRefused extends ClaimRefused {
   override name = "McpClaimRefused";
 }
 
@@ -52,8 +56,8 @@ export interface McpClaimOptions {
   claim: Pick<Claim, "runId" | "epoch">;
   /** The run's granted tools, by catalog name (`mcp:<server>/<tool>` among them). */
   grants: readonly string[];
-  /** The runner's seal key (the server's): undefined when it was started without one. */
-  sealKey: Buffer | undefined;
+  /** The runner's seal key (the server's): a runner never starts without one (seal-key.ts ensureSealKey). */
+  sealKey: Buffer;
   /** The claim's signal: aborted when the claim is lost or the runner stops. */
   signal: AbortSignal;
   /** A refresh's bound: each request's time and how many tries (REFRESH_REQUEST_MS, two). */
@@ -65,6 +69,9 @@ export interface McpClaimOptions {
   /** For a github_app server (auth github_app, nothing sealed): the server's GitHub App mint and the run's repository
    *  (runner/mcp-github.ts). None: such a server's calls are refused in words. */
   githubApp?: GithubAppAccess;
+  /** For tests only (no environment or CLI flag maps onto it): the one origin a github_app server may have, a fake for
+   *  GitHub's hosted MCP (GITHUB_MCP_ORIGIN). */
+  githubMcpOrigin?: string;
   /** For tests: the timer a github_app token's refresh and expiry are armed on. */
   githubTimer?: GithubTimer;
   /** For tests: the timer a wait on another claim's refresh lease, and its next read of the row, are armed on. */
@@ -154,7 +161,9 @@ export async function mcpClaim(options: McpClaimOptions): Promise<McpClaimStep> 
       // Waiting before the read, so a holder that lets go between the read and the wait still wakes it.
       const wait = settledOf(store.where, name, MCP_SETTLE_POLL_MS, stop, timer);
       const row = await store.mcp.server(name);
-      const lapsed = row?.refreshUntil != null && row.refreshUntil <= now();
+      // The lease is the store's: judged by the store's clock (refreshLapsed), never this claim's, which on another
+      // machine may run ahead of it and read a live lease as lapsed.
+      const lapsed = row?.refreshLapsed === true;
       if (!row || row.refreshHolder === null || lapsed || stop.aborted) return wait.cancel(), row;
       await wait.done;
     }
@@ -166,7 +175,8 @@ export async function mcpClaim(options: McpClaimOptions): Promise<McpClaimStep> 
    *  written, never retried, and said by the server's name only. */
   const keep = async (row: McpServerRow, credential: OAuthCredential): Promise<boolean> => {
     const { origin: _origin, ...plain } = credential as OAuthCredential & { origin?: string };
-    const { kept } = await store.mcp.keepRefreshed(row.name, { seen: row.sealed, sealed: sealMcpCredential(sealKey!, row.name, plain as McpCredential, row.url), holder });
+    // The set's token life, measured on the clock that stamped it (this process's, mcp-oauth.ts): the store lays it on its own.
+    const { kept } = await store.mcp.keepRefreshed(row.name, { seen: row.sealed, sealed: sealMcpCredential(sealKey, row.name, plain as McpCredential, row.url), holder, tokenLeftMs: tokenLeftOf(plain) });
     if (!kept) log(`mcp ${row.name}: its credential changed while this claim refreshed it; the refreshed set was dropped and the server's current one is used`);
     return kept;
   };
@@ -192,7 +202,6 @@ export async function mcpClaim(options: McpClaimOptions): Promise<McpClaimStep> 
     if (row.auth === "github_app") return await github.open(name, entry), { awaited: true };
     if (row.sealed === null) return entry({}), { awaited: false };
     // A seal problem first: no refresh is ever sent for a credential this runner cannot open.
-    if (!sealKey) return entry({ unopened: UNUSABLE.noSealKey }), { awaited: false };
     const opened = openMcpCredential(sealKey, row);
     if (!("credential" in opened)) return entry(opened.unusable === "none" ? {} : { unopened: UNUSABLE.damaged }), { awaited: false };
     const credential = opened.credential;
@@ -201,10 +210,16 @@ export async function mcpClaim(options: McpClaimOptions): Promise<McpClaimStep> 
     if (oauth.expired) return entry({ unopened: UNUSABLE.signedOut }), { awaited: false };
     const set = oauth.set;
     const bearer = (tokens: TokenSet) => ({ authorization: `Bearer ${tokens.tokens.access_token}` });
-    const due = set.expires_at ? Date.parse(set.expires_at) : Date.parse(set.obtained_at) + UNKNOWN_EXPIRY_MS;
-    if (due - now() > REFRESH_MARGIN_MS) return entry({ headers: bearer(set) }), { awaited: false };
+    // What is left of the access token: by the store's clock (tokenLeftMs, its end stamped by the store when the credential
+    // was written), less what this claim's own clock has counted since the row was read; never this claim's clock against
+    // the set's expires_at, which the writer stamped on its clock. A row written with no measure of its token (no writer of
+    // serve's) is judged by the set's end on this claim's clock.
+    const readAt = now();
+    const end = set.expires_at ? Date.parse(set.expires_at) : Date.parse(set.obtained_at) + UNKNOWN_EXPIRY_MS;
+    const left = (): number => (row.tokenLeftMs === null ? end - now() : row.tokenLeftMs - (now() - readAt));
+    if (left() > REFRESH_MARGIN_MS) return entry({ headers: bearer(set) }), { awaited: false };
     // Another claim's refresh left this row and it is still due: never refreshed from here once more.
-    if (again) return entry(due > now() ? { headers: bearer(set) } : { unopened: UNUSABLE.silent }), { awaited: false };
+    if (again) return entry(left() > 0 ? { headers: bearer(set) } : { unopened: UNUSABLE.silent }), { awaited: false };
     /** The row another claim's refresh (or an owner's save) left, opened as it is, never refreshed from here once more;
      *  a server forgotten meanwhile loses its entry. */
     const takeLeft = async (left: McpServerRow | undefined): Promise<void> => {
@@ -238,7 +253,7 @@ export async function mcpClaim(options: McpClaimOptions): Promise<McpClaimStep> 
         // its expiry is refused in the check's words (a private host the owner may allow names where).
         if ("blocked" in got) {
           await store.mcp.releaseRefresh(name, holder).catch(() => undefined);
-          if (due <= now()) entry({ unopened: `${UNUSABLE.blocked}: ${got.blocked}` });
+          if (left() <= 0) entry({ unopened: `${UNUSABLE.blocked}: ${got.blocked}` });
           return;
         }
         if ("set" in got) {
@@ -261,13 +276,13 @@ export async function mcpClaim(options: McpClaimOptions): Promise<McpClaimStep> 
         // No answer within its deadline: the lease is let go and the refresh token kept for the next try; an access token
         // past its expiry is never handed over.
         await store.mcp.releaseRefresh(name, holder).catch(() => undefined);
-        if (due <= now()) entry({ unopened: UNUSABLE.silent });
+        if (left() <= 0) entry({ unopened: UNUSABLE.silent });
       } finally {
         // The lease is let go (kept, released, or left to lapse on a failed write): the claims waiting on it read the row.
         settledNow(store.where, name);
       }
     };
-    if (due > now()) {
+    if (left() > 0) {
       // Still valid: used at once, refreshed behind it.
       entry({ headers: bearer(set) });
       void settle(AbortSignal.any([signal, behind.signal])).catch(() => undefined);
@@ -290,12 +305,18 @@ export async function mcpClaim(options: McpClaimOptions): Promise<McpClaimStep> 
 }
 
 /** The run's pin: read, and checked against the meta tools known now; or made at its first claim and written once. */
-async function pinOf({ store, claim, grants }: McpClaimOptions): Promise<McpPin | undefined> {
+async function pinOf({ store, claim, grants, githubMcpOrigin = GITHUB_MCP_ORIGIN }: McpClaimOptions): Promise<McpPin | undefined> {
+  // A github_app server anywhere but GitHub's hosted MCP ends the run here, before any token is minted or anything sent:
+  // the App's tokens go to GitHub alone (github.ts githubMcpUrl, the one check).
+  const offGithub = (server: string, url: string, auth: string | undefined) => {
+    if (auth === "github_app" && !githubMcpUrl(url, githubMcpOrigin)) throw new McpClaimRefused(`The MCP server ${server} (${url}) can't be used: ${GITHUB_MCP_ONLY}. Nothing was sent.`);
+  };
   const stored = await store.mcp.pin(claim.runId);
   if (stored) {
     const pinned = stored.body as McpPin;
     for (const [server, { url, tools }] of Object.entries(pinned)) {
       for (const tool of tools) if (metaToolOf(url, tool.name)) throw new McpClaimRefused(`mcp:${server}/${tool.name} can't be granted: ${META_REASON}`);
+      offGithub(server, url, (await store.mcp.server(server))?.auth);
     }
     return pinned;
   }
@@ -315,6 +336,7 @@ async function pinOf({ store, claim, grants }: McpClaimOptions): Promise<McpPin 
     throw new McpClaimRefused((error as Error).message);
   }
   if (!Object.keys(made).length) return undefined;
+  for (const [server, { url }] of Object.entries(made)) offGithub(server, url, rows.get(server)?.auth);
   return (await store.mcp.pinOnce(claim as Claim, made)).body as McpPin;
 }
 

@@ -32,8 +32,9 @@ import { HarnessInstall, harnessesOf, installDirOf, NPM_STOP_GRACE_MS, npmInstal
 import { healthOf, hostMemory, maxRunsOf, MIN_FREE_MIB, runsThatFit } from "./host.js";
 import { IMPORT_ASKED } from "./import.js";
 import type { ImportAnswer, ImportTask } from "./import-worker.js";
+import { answerStoreCall, type StoreCall } from "./import-proxy.js";
 import type { MessageOrigin } from "@parcha/pi-durable-agent/timeline";
-import { gradeModelOf, LEARNING_LABEL, learningBudgetOf, type LearningMode, learningOf } from "./learning.js";
+import { gradeModelOf, LEARNING_LABEL, learningBudgetOf, type LearningMode, learningOf, seedOf } from "./learning.js";
 import { agentLearning, learningLog, learningNotes, noteBody, pendingCount, readNote, secretsShown, sendNote, writeNote } from "./learning-routes.js";
 import { answerLlms, MCP_PATH, mcpEndpoint } from "./mcp.js";
 import { openapiDocument, servedOpenapi, UNSUPPORTED } from "./openapi.js";
@@ -42,12 +43,12 @@ import { BOX_ALLOW_ENV, boxAllowOf, boxLimitsOf, boxNetworkOf, FAUX_BOX_ENV, fau
 import { Owner, passwordProblem, SESSION_MS } from "./owner.js";
 import { answerPage, byOwnerSession, heldSessions, isJson, overHttps, ownerCookie, ownOrigin, sendHostRefused, signedIn } from "./page.js";
 import { hostFix, hostName, loopbackNames } from "./host-check.js";
-import { computerViewerLink, handoverById, type LiveFamily, type LiveHandover, liveRest, liveViewer, liveViewerById, liveViewerFor, liveViewerLink, OpenViewers, proxyLiveUpgrade, readHandover, readHandovers, serveViewerFile, viewerAnswers, viewerLink } from "./browser-live.js";
+import { computerViewerLink, familyReaches, handoverById, type LiveFamily, type LiveHandover, liveRest, liveViewer, liveViewerById, liveViewerFor, liveViewerLink, OpenViewers, proxyLiveUpgrade, readHandover, readHandovers, serveViewerFile, viewerAnswers, viewerLink } from "./browser-live.js";
 import { browserHandBack, handBackTarget } from "./browser-commands.js";
 import { type ComputerOf, computerView } from "./computer-view.js";
 import { durationMs, logLine } from "./print.js";
 import { knownToolCostOf, redactorOf, type RunMoment, type State, type Status, toolCostOf } from "./run-view.js";
-import { approve, archiveRun, cancel, message, raiseCap, type StartDeps, type StartOptions, startRun, stop as stopRunOverStore, WAITS_ON_A_PERSON } from "./runs-over-store.js";
+import { approve, archiveRun, cancel, message, pause as pauseRunOverStore, raiseCap, resume as resumeRunOverStore, type StartDeps, type StartOptions, startRun, stop as stopRunOverStore, WAITS_ON_A_PERSON } from "./runs-over-store.js";
 import { momentOverStore, summaryOverStore, timelineOverStore, type ViewDeps, viewOverStore, withheldOverStore } from "./store-view.js";
 import { servedTimelineRows } from "./run-timeline-served.js";
 import { servedRunLearning } from "./run-learning-served.js";
@@ -57,6 +58,7 @@ import { listRunFiles as listRunFilesOverStore, readRunFile as readRunFileOverSt
 import { triggerTargets, type TriggerTargetDeps } from "./trigger-targets.js";
 import { listRuns as listRunsOverStore, readRun as readRunOverStore, runOfOrigin as runOfOriginOverStore } from "./store-reads/runs.js";
 import { runEntries, runTimeline } from "./store-reads/journal.js";
+import { metersOverStore } from "./store-reads/cap.js";
 import { watchRun } from "./live/stream.js";
 import { stats as statsOverStore } from "./store-reads/stats.js";
 import { analytics as analyticsOverStore } from "./store-reads/analytics.js";
@@ -82,11 +84,11 @@ import { startBoxRelay } from "./box-relay.js";
 import { vmRelay, type VmSdk } from "./box-relay-vm.js";
 import { memoryMbOf } from "./run-box.js";
 import { DOCUMENTS_ENV } from "./pdf-pages.js";
-import { CAP_MODES, type CapMode, meterFiguresIn } from "./cap.js";
+import { CAP_MODES, type CapMode } from "./cap.js";
 import { type Blocker, blockersOf, CODE_NODES_ENV, issueOf, MCP_HARNESSES, NOT_SET_UP, type RevisionShape } from "./runnable.js";
-import { handedSecret, holdMadeSecret, hostSecrets, SECRET_NAMES, secret, type StoredKeys, withSecrets } from "./secrets.js";
+import { hostSecrets, SECRET_NAMES, secret, type StoredKeys, withSecrets } from "./secrets.js";
 import { isSecretWriteOperation, SECRET_WRITE_REFUSAL, secretsWritableFields, secretWriterFacts, writesSecret, writesSecretsAllowed } from "./secret-writes.js";
-import { ensureSealKey, SealKeyRefused, sealKeyHome, sealKeyLine } from "./seal-key.js";
+import { bootSealKey } from "./seal-key.js";
 import { redactedOutput } from "./key-refusal.js";
 import { analyticsFilter, analyticsView, statsView } from "./stats.js";
 import { agentLearningOverStore, learningCountsOverStore } from "./store-reads/learning.js";
@@ -100,10 +102,12 @@ import { SIGN_INS_DIR, vendorsOver } from "./sign-ins.js";
 import { signInsOverStore } from "./sign-ins-store.js";
 import { MCP_AUTH_TYPES, type McpTool } from "./mcp-probe.js";
 import { mcpServersOverStore } from "./mcp-servers-store.js";
+import { privateHostsRoute } from "./mcp-private-hosts.js";
 import { metaToolOf } from "./mcp-meta.js";
 import { MCP_SETTINGS_PAGE, signInCookie, startedHere } from "./mcp-oauth.js";
 import { type RunNotice, WEBHOOK_EVENTS, Webhooks } from "./webhooks.js";
-import { templateTriggerSecret, triggerMade, triggerRotated, webhookSaved, withTriggerSecret } from "./trigger-secrets-shown.js";
+import { appPermissionWarnings } from "./template-github-permissions.js";
+import { templateApplied, templateTriggerSecret, templateWebhookSecrets, triggerMade, triggerRotated, webhookSaved, withTriggerSecret } from "./trigger-secrets-shown.js";
 import { type SealedSettingsOverStore } from "./sealed-settings-store.js";
 import { type ServerSecrets } from "./server-secrets.js";
 import { openServerSecretsOverStore } from "./server-secrets-store.js";
@@ -117,10 +121,11 @@ import { webhook } from "./trigger-webhook.js";
 import { SCHEME_NAMES } from "./trigger-signatures.js";
 import { permissionFrom, pinWords } from "./tool-gate.js";
 import { CATCHUP_WINDOW_S, FAILURES_TO_PAUSE, HISTORY_KEPT, MIN_EVERY_S, PAYLOAD_KEPT_BYTES, type RunTrigger, SOURCE_KINDS, TARGET_KINDS, type TriggerClock, Triggers } from "./triggers.js";
-import { applyBodyOf, compiled, madeTriggerIssues, type Package, packageModel, packageView, readPackages, type TemplatesDeps } from "./templates.js";
+import { applyBodyOf, compiled, GITHUB_TRIGGER_UNCONNECTED, githubTriggerWords, madeTriggerIssues, type Package, packageModel, packageView, readPackages, type TemplatesDeps } from "./templates.js";
 import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, type DefinitionBody, definitionBodyIssues, ID, IDEMPOTENCY_TTL_S, inputIssues, isObject, type Json, stable, unknownFields } from "./validate.js";
 import { agentTools, browserKeyRow, isUnavailable, keptVendor, type Plane, recheckPlane, settingsIssues, ToolSettings, type ToolSettingsMap, whyUnavailable, withDefaults } from "./tool-plane.js";
 import { toolSettingsOverStore } from "./tool-settings-store.js";
+import { writeApprovers } from "./server-approvers.js";
 import { MAX_FILES_PER_RUN, MAX_UPLOAD_BYTES, Uploads, UPLOADS_DIR } from "./uploads.js";
 import { entryAt, listFiles, sendFile as sendWorkspaceFile, viewOf } from "./run-files.js";
 import { COMPUTER_ROUTES, computerHoldOf, computerRoute } from "./computer-routes.js";
@@ -391,7 +396,7 @@ export type ServeOptions = {
   triggerClock?: TriggerClock;
   /** The server's store (store/index.ts), where the triggers and their firings live, with the agents they run as. Without
    *  it the trigger routes answer unavailable and nothing fires. */
-  store?: Pick<Store, "triggers" | "runs" | "agents">;
+  store?: Pick<Store, "triggers" | "runs" | "agents"> & Partial<Pick<Store, "liveViewers">>;
   /** A test's seam: the trigger sources this server has (default the registry, trigger-adapters.ts). */
   triggerAdapters?: readonly TriggerAdapter[];
   /** A test's seam: GitHub's API, which Connect GitHub converts its code with and asks of the App's installations
@@ -539,8 +544,8 @@ export const ROUTES: readonly Route[] = [
   { method: "POST", pattern: /^\/settings\/mcp-servers\/([^/]+)\/oauth\/start$/, name: "startMcpOAuth" },
   { method: "GET", pattern: /^\/settings\/mcp-servers\/oauth\/callback$/, name: "mcpOAuthCallback" },
   { method: "GET", pattern: /^\/settings\/mcp-servers\/oauth\/client\.json$/, name: "mcpOAuthClient" },
-  // Served over the store-backed registry (mcp-private-hosts.ts privateHostsRoute) once the server runs on the one store:
-  // until then they answer 404, as an unmatched route does.
+  // Over the store-backed registry (mcp-private-hosts.ts privateHostsRoute); the PUT is a secret write as a whole, so the
+  // one secret-write check takes it from the owner's session alone.
   { method: "GET", pattern: /^\/settings\/mcp-servers\/oauth\/private-hosts$/, name: "getMcpPrivateHosts" },
   { method: "PUT", pattern: /^\/settings\/mcp-servers\/oauth\/private-hosts$/, name: "putMcpPrivateHosts" },
   { method: "GET", pattern: /^\/settings\/tools$/, name: "getToolSettings" },
@@ -764,10 +769,10 @@ function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: Ha
       query: false,
       /** GET, PUT and DELETE /settings/tool-keys: a tool's key saved by name, kept sealed under the launcher's seal key
        *  (tool-keys.ts); with none handed over, nothing is kept, never in the clear. */
-      tool_keys: { routes: true, at_rest: sealKeyOf(env[SEAL_KEY_ENV]) ? "sealed" : "unavailable" },
-      /** /settings/mcp-servers: remote MCP servers previewed and saved, each credential sealed under the same seal key
-       *  (mcp-servers.ts); with none, only servers that take no credential are kept. */
-      mcp_client: { transports: ["streamable-http"], auth: [...MCP_AUTH_TYPES], at_rest: sealKeyOf(env[SEAL_KEY_ENV]) ? "sealed" : "unavailable", harnesses: [...MCP_HARNESSES] },
+      tool_keys: { routes: true, at_rest: "sealed" },
+      /** /settings/mcp-servers: remote MCP servers previewed and saved, each credential sealed under the server's seal key,
+       *  which always exists (seal-key.ts), so MCP credentials are always kept sealed. */
+      mcp_client: { transports: ["streamable-http"], auth: [...MCP_AUTH_TYPES], at_rest: "sealed", harnesses: [...MCP_HARNESSES] },
       /** This server's learning switch (`--learning`): on, a run learns when its agent says `learning: true`; off, none does. */
       learning,
       /** /settings/webhook: one URL POSTed, signed by the Standard Webhooks spec, when a run needs its person and when it
@@ -824,16 +829,7 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   delete process.env[HARNESS_TABLE_ENV];
   // No start without a seal key (seal-key.ts): the one handed over, else the one kept under the config home, made at the
   // first start with only its path printed. Every secret here is kept under it; there is no keeping one in the clear.
-  const handedSeal = handedSecret(SEAL_KEY_ENV);
-  let seal;
-  try {
-    seal = ensureSealKey(handedSeal, { configHome: sealKeyHome(process.env) });
-  } catch (error) {
-    if (error instanceof SealKeyRefused) throw new Error(`agentrun-serve does not start without a seal key. ${error.message}`, { cause: error });
-    throw error;
-  }
-  if (!handedSeal) holdMadeSecret(SEAL_KEY_ENV, seal.text);
-  if (seal.generated) process.stderr.write(`${sealKeyLine(seal)}\n`);
+  const seal = bootSealKey();
   await mkdir(resolve(options.data), { recursive: true, mode: 0o700 });
   // Canonical once, here: a box's mount source below it must then be its own canonical path, through no link (run-box.ts).
   const data = await realpath(resolve(options.data));
@@ -922,13 +918,14 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // A stored key that does not open is said once at the start, never a refusal to start.
   toolKeys.view();
   const mcpServers = mcpServersOverStore(store, withSecrets(base, "own"), VERSION);
+  if (options.githubMcpOrigin) mcpServers.appOrigin = options.githubMcpOrigin;
   // The saved MCP servers' metadata (their addresses and the tools they list), a snapshot the run-grant checks read in
   // step (blockersOf's `mcp`, and the template apply): the server is the one writer of these rows (a save, refresh, sign-in
   // or delete), so the snapshot is refreshed after each of those and reads what is saved now. The runner reads the registry,
   // pins and credentials from the store at a run's claim (runner/mcp-claim.ts); this server hands a run no MCP source.
-  let mcpMeta = new Map<string, { url: string; tools: readonly McpTool[] }>();
+  let mcpMeta = new Map<string, { url: string; auth: string; tools: readonly McpTool[] }>();
   const refreshMcpMeta = async (): Promise<void> => {
-    mcpMeta = new Map((await store.mcp.servers()).map((row) => [row.name, { url: row.url, tools: (row.tools as McpTool[]) ?? [] }]));
+    mcpMeta = new Map((await store.mcp.servers()).map((row) => [row.name, { url: row.url, auth: row.auth, tools: (row.tools as McpTool[]) ?? [] }]));
   };
   await refreshMcpMeta();
   // Each saved server's tools in the harnesses' shape (the registry keeps input_schema; a bound tool takes inputSchema),
@@ -945,6 +942,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // once here.
   const settings = toolSettingsOverStore(store);
   await settings.load();
+  // Whether anyone can answer an ask here (accounts on), for the runners, which read it from the store at each claim
+  // (server-approvers.ts): the one way a runner learns it.
+  await writeApprovers(store.settings, options.accounts === true);
   mcpServers.toolSettings = () => settings.get();
   // The server's reading, in parts: `env`, its environment with its secrets, saved keys among them (storedKeys);
   // `offers`, what each harness offers, probed from env without the tool keys (offersEnvOf), the one slow part (each
@@ -1239,11 +1239,32 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     ...(documents ? { documents: resolve(documents) } : {}),
     ...(boxAllow !== undefined ? { boxAllow } : {}),
     modelOf,
+    // The run's learning start, decided at start as the old file-backed start decided it (learning-run.ts onStart/seedFor):
+    // the server's learning switch, the budget its # Learned section fits, the agent's seed read now from its learning folder
+    // (git), and the host's secrets as they are shown now to cut the notes a run is given. runs-over-store.learningStartFor
+    // pins the result (given/seed/section/seedNotes) in the launch for the runner; a seed that cannot be read starts the run
+    // with nothing learned (a fault never refuses it). INERT until the runner installs learning-1's learningEndOfRun as its
+    // endOfRun (cutover-learning-end 283008bb05, E2r3's one-line spec-builder hookup); land this in that same round.
+    learning,
+    learningBudget,
+    seedFor: async (agentId: string) => {
+      // The switch runs no git in this process (learning.ts seedOf: the folder's own script and file API, which checks git
+      // itself); a git or folder fault surfaces here as a seedOf error, so the run starts with nothing learned, never refused.
+      return seedOf(data, agentId).then(
+        (seed) => ({ seed }),
+        (error: Error) => {
+          process.stderr.write(`agentrun-serve: the agent ${agentId}'s learning folder could not be read, so its run starts with nothing learned: ${error.message}\n`);
+          return { failed: error.message };
+        },
+      );
+    },
+    shown: () => secretsShown(serverSecrets()),
   };
   // A run's served view and its live moment, from the store (store-view): `origin` is where this request reaches the
   // console, the secrets are cut live, and the sign-ins give the handed-pointer cut. Trigger and background reads (no
   // request) use the server's public address, else its own.
-  const viewDepsFor = (origin: string): ViewDeps => ({ origin, serverSecrets, signIns });
+  // The run's key read from this server's environment with the keys a person saved, as its Timeline reads it (keyEnv below).
+  const viewDepsFor = (origin: string): ViewDeps => ({ origin, serverSecrets, signIns, keyEnv: () => withSecrets(process.env, "all", storedKeys) });
   const ownOriginOf = (): string => options.publicUrl ?? url;
   // The run read routes (a run's files, its browser state, its workflow graph) over the one store (run-reads-over-store):
   // a run's files through the server's read-only Workspace of its folder (serverRunWorkspace, no runner claim), its view
@@ -1341,9 +1362,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const githubConnection = () => github.view();
   /** What applying a template reads of the server (templates.ts TemplatesDeps). */
   const templateDeps: TemplatesDeps = { githubConnection };
-  // STOPGAP: a github_app MCP server's save-time listing token is set on the MCP registry's `appToken`; the store-backed
-  // registry gains that setter with the github-over-store MCP work, so until then the github MCP listing mints no token here
-  // (a run's own is minted in the runner, runner/mcp-github.ts). Every token minted is a server secret while it may be in use.
+  // A github_app MCP server's tools are listed with an installation token of the App, narrowed to one repository it covers
+  // with metadata read (tokenForListing); a run's own is minted in the runner (runner/github-app.ts). Every token minted
+  // is a server secret while it may be in use.
+  mcpServers.appToken = (signal) => githubConnect.tokenForListing(signal);
   secretStores.add("github-tokens", () => githubConnect.liveTokens());
   const triggers: Triggers = new Triggers({
     // The server's own store (the one it opened) holds the triggers a person writes and reads; a test may inject another
@@ -1381,11 +1403,11 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const onWorker = (task: ImportTask["task"]): Promise<ImportAnswer> =>
     closing ? Promise.resolve({ stopped: true }) : new Promise((answered, failed) => {
       const worker = new Worker(new URL("./import-worker.js", import.meta.url), {
-        // The secrets this process holds (secrets.ts keeps them out of every environment, so the worker's has none), and
-        // the keys saved on its Tool keys page, opened now (each cut too, the same rule as the CLI's import: a saved key
-        // and the server's own of the same name may differ), in the worker's memory alone: what the import cuts out of
-        // everything it writes.
-        workerData: { task, data, home: options.sessionsHome?.home ?? homedir(), ...(options.sessionsHome?.temp ? { temp: options.sessionsHome.temp } : {}), secrets: Object.fromEntries(SECRET_NAMES.flatMap((name) => { const value = secret(name); return value === undefined ? [] : [[name, value]]; })), stored: toolKeys.values() } satisfies ImportTask,
+        // The secrets this process holds (secrets.ts keeps them out of every environment, so the worker's has none), in the
+        // worker's memory alone: what the import cuts out of everything it writes. The keys saved on the Tool keys page are
+        // not passed; the worker reads them from the store over the port (sealed rows it opens with the seal key among these
+        // secrets), the same cut as the CLI's import, where a saved key and the server's own of the same name may differ.
+        workerData: { task, data, home: options.sessionsHome?.home ?? homedir(), ...(options.sessionsHome?.temp ? { temp: options.sessionsHome.temp } : {}), secrets: Object.fromEntries(SECRET_NAMES.flatMap((name) => { const value = secret(name); return value === undefined ? [] : [[name, value]]; })) } satisfies ImportTask,
         // Started from a string (its launcher runs node --input-type=module -e), the server's flags are given again
         // without that string and its type: a worker started from a file with them is refused. Otherwise the worker
         // inherits them as Node passes them on, which leaves out the flags a worker may not take (on Node 24 a test
@@ -1394,7 +1416,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       });
       workers.set(worker, { task, exit: once(worker, "exit").catch(() => undefined) });
       let answer: ImportAnswer | undefined;
-      worker.on("message", (message: ImportAnswer) => void (answer = message));
+      // The import worker opens no store of its own: a message carrying `req` is one of its calls to this server's open
+      // store, answered against it and posted back; anything else is its one final answer.
+      worker.on("message", (message: StoreCall | ImportAnswer) => {
+        if (typeof message === "object" && message !== null && "req" in message) void answerStoreCall(store, ctx, message).then((reply) => worker.postMessage(reply));
+        else answer = message as ImportAnswer;
+      });
       worker.once("error", failed);
       worker.once("exit", (code) => {
         workers.delete(worker);
@@ -1647,7 +1674,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  agent made as POST /agents makes one, its MCP tools at the owner's own settings save those granted, set to allow (a
    *  deny the owner set on this server stays, with a warning), its body held to POST /agents' limit (413), on the first harness of its list this server runs and the model packageModel
    *  picks, then each trigger on it as POST /triggers makes one. A trigger refused undoes the apply: the triggers made
-   *  before it are deleted and the agent is archived (an agent store keeps every agent), and the refusal is the answer, a 422's fields under `triggers.<i>`. A webhook
+   *  before it are deleted and the agent is archived (an agent store keeps every agent), and the refusal is the answer, a 422's fields under `triggers.<i>`; a
+   *  github trigger GitHub is not connected for is skipped instead, with a warning there, and one made is said there. A webhook
    *  trigger's secret is not in the answer (the Idempotency-Key record would keep it): POST /triggers/{id}/secret makes one. */
   async function applyTemplate(pkg: Package, body: Json) {
     const { parameters, grants, model: override, approvals } = applyBodyOf(pkg, body);
@@ -1695,6 +1723,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // Each webhook trigger's signing secret, minted as it is made: handed back in the apply's first answer alone, as POST
     // /triggers hands back its own, so the owner can give it to the sender.
     const secrets: { trigger_id: string; secret: string }[] = [];
+    // A github trigger on a server GitHub is not connected to is skipped, never the apply: the agent stands, and the
+    // answer says to connect GitHub and apply again (a warning under triggers.<i>).
+    const unconnected = new Set<number>();
     try {
       for (const [i, trigger] of made.triggers.entries()) {
         try {
@@ -1702,6 +1733,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
           ids.push(madeId);
           if (secret) secrets.push({ trigger_id: madeId, secret });
         } catch (error) {
+          if (error instanceof ApiError && error.code === "github_not_connected" && isObject(trigger.source) && trigger.source.kind === "github") {
+            unconnected.add(i);
+            continue;
+          }
           if (error instanceof ApiError && error.code === "input_invalid" && error.extra.fields) throw told(new ApiError("input_invalid", error.message, { ...error.extra, fields: error.extra.fields.map((f) => ({ ...f, field: `triggers.${i}.${f.field}` })) }));
           throw error;
         }
@@ -1714,7 +1749,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
           log?.(logLine("template_undo_failed", { template: pkg.name, trigger: id, message: (undo as Error).message }));
         }
       }
-      await agents.setArchived("agent", entry.agent.id, true).catch((undo: Error) => log?.(logLine("template_undo_failed", { template: pkg.name, agent: entry.agent.id, message: undo.message })));
+      // Archived through the trigger engine, as POST /agents/{id}/archive is: a trigger the undo could not remove is turned
+      // off in that same store transaction with the reason agent_archived, never with none, and unarchive answers it.
+      await triggers.agentArchived(entry.agent.id).catch((undo: Error) => log?.(logLine("template_undo_failed", { template: pkg.name, agent: entry.agent.id, message: undo.message })));
       throw error;
     }
     // A pinned send whose destination parameter was not given is denied, never let go anywhere: said, by its gate name.
@@ -1722,9 +1759,20 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // A pin this server's agent store does not keep yet (tool-plane.ts AGENT_LAYER_PINS): said, with the setting that holds
     // the send to its destination meanwhile, the server's.
     const unkept: InputIssue[] = made.unkept.map(({ tool, pin }) => ({ field: `pins.${tool}`, reason: NOT_SET_UP, message: serverPinned.has(tool) ? `${tool} is not pinned to ${pinWords(pin)} for this agent yet (this server's agent store keeps an agent's own pin from the store cutover on); this server's own pin of ${tool} holds its calls meanwhile.` : `${tool} is not pinned to ${pinWords(pin)} for this agent yet: this server's agent store keeps an agent's own pin from the store cutover on. Until then the agent was made with ${tool} set to deny, so nothing it reads can send it elsewhere. Pin it on this server, which holds every agent's calls of ${tool}, and apply again to let it.`, ...(serverPinned.has(tool) ? {} : { fix: `Add ${JSON.stringify({ [tool]: { pin } })} to this server's tool settings (Settings → Tools; PUT /v2/settings/tools replaces the whole map, so send it with the rest).` }) }));
+    // A GitHub tool the package grants that Connect GitHub's App may not use (its manifest asks for less), where the github
+    // MCP server runs on the App's tokens: said now, before a run's first call is refused (template-github-permissions.ts).
+    const appShort = appPermissionWarnings({ name: pkg.name, mcp: saved }, (server) => mcpMeta.get(server)?.auth === "github_app");
     // A webhook trigger's secret is in no apply answer: each one's warning sends the person to the console for it.
     const hooks = made.triggers.flatMap((trigger, i) => (isObject(trigger.source) && trigger.source.kind === "webhook" ? [templateTriggerSecret(i)] : []));
-    return { template: pkg.name, version: pkg.version, agent_id: entry.agent.id, trigger_ids: ids, warnings: [...skipped, ...kept, ...modelWarnings, ...unpinned, ...unkept, ...warnings, ...hooks] };
+    // Each github trigger: what it runs on, when made (a note, never a lack); skipped, what to do about it.
+    const githubTriggers: InputIssue[] = made.triggers.flatMap((trigger, i) => (isObject(trigger.source) && trigger.source.kind === "github"
+      ? [unconnected.has(i) ? { field: `triggers.${i}`, reason: NOT_SET_UP, message: GITHUB_TRIGGER_UNCONNECTED } : { field: `triggers.${i}`, reason: "not_an_option", message: githubTriggerWords(pkg.name, trigger.source) }]
+      : []));
+    // Each trigger it made, a webhook trigger's with its secret's metadata; the values go back beside the answer, never in it
+    // (the route adds them to the first answer to the owner's session, after the Idempotency-Key's record is written).
+    const minted = new Map(secrets.map(({ trigger_id, secret }) => [trigger_id, secret]));
+    const applied = { template: pkg.name, version: pkg.version, agent_id: entry.agent.id, trigger_ids: ids, ...templateWebhookSecrets([...minted.keys()], new Date().toISOString()), warnings: [...skipped, ...kept, ...modelWarnings, ...unpinned, ...unkept, ...warnings, ...hooks, ...githubTriggers, ...appShort] };
+    return { applied, minted };
   }
 
   /** A run create's issues told from the input this server checks (explain.ts): an agentic run's `{content: string}`,
@@ -1935,9 +1983,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
 
   // ---- usage ----------------------------------------------------------------------------------------------------------
 
-  // Each ended run's meters, from its store (meterFiguresIn): kept, as its store no longer changes, keyed by its end, so a run
-  // opened again and ended again is read again. A store that cannot be read leaves it all tokens.
-  const endedMeters = new Map<string, ReturnType<typeof meterFiguresIn>>();
+  // Each ended run's meters, over the one store (store-reads/cap metersOverStore, cap.ts meterFiguresFrom over A's journal):
+  // kept, as a settled run's journal no longer changes, keyed by its end, so a run opened again and ended again is read
+  // again. A run whose journal cannot be read leaves it all tokens.
+  const endedMeters = new Map<string, Awaited<ReturnType<typeof metersOverStore>>>();
   // Each ended run's spend so far as it saved it at its end (serve.json's cost_so_far: every conversation's charges and
   // its decisions' receipts, which its root store alone does not hold), kept as its meters are; undefined when it saved
   // none (a run whose cost is known, or one ended before the figure was kept).
@@ -1955,13 +2004,14 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     }
     return endedSoFar.get(key);
   };
-  const metersOf = (row: { id: string; endedAt?: string | null }) => {
+  const metersOf = async (row: { id: string; endedAt?: string | null }) => {
     const key = `${row.id} ${row.endedAt}`;
     let meters = endedMeters.get(key);
     if (!meters) {
-      // TODO(E3/store-reads): an ended run's meter figures come from store-reads (store-reads/stats over its journal), not
-      // a per-run store file (runStorePath is gone). Empty until the usage route is wired over the store.
-      meters = { tools: 0, tokens: null, browser: { usd: 0, seconds: 0 }, others: 0, known: { tokens: 0, browser: 0, others: 0 } };
+      // An ended run's meter figures over the one store: cap.ts meterFiguresFrom over A's journal, its paid tools' charges
+      // folded back from the paid-tools session (store-reads/journal withPaidCosts), as meterFiguresIn read a file-backed
+      // run's own database — the same figures (the money-parity rule).
+      meters = await metersOverStore(store, row.id, ctx);
       endedMeters.set(key, meters);
     }
     return meters;
@@ -2004,8 +2054,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       // `tokens`, all from the same records: a live run's rows (a call still marked is no charge), else its store as it
       // ended (a call a crash cut makes `tools` unknown, never `tokens`). An unknown meter counts the run as unpriced on it.
       // An ended run's are its store's figures (metersOf keeps them, never its timeline), read for its lines by meter and,
-      // by any group, for what a run of unknown cost is known to have spent.
-      const read = (group === "meter" && usd !== 0) || usd === null ? metersOf(row) : undefined;
+      // by any group, for what a run of unknown cost is known to have spent. Read once per run (the store read is async): by
+      // meter (its lines and its not-metered calls), and for any group of a run of unknown cost (its known so-far).
+      const all = group === "meter" || usd === null ? await metersOf(row) : undefined;
+      const read = (group === "meter" && usd !== 0) || usd === null ? all : undefined;
       // A run whose cost is unknown still spent what is known of it (so_far: each meter's known dollars): that is in the
       // total and its lines, and the run is counted unpriced, so a total is never below a line of its own and reads as
       // the lower bound unpriced_runs says it is.
@@ -2015,7 +2067,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       // Its parts of the lines (usage-lines.ts): an unknown one counts the run unpriced there and adds what is known of it.
       // An unpriced MCP call is in none of them: counted apart as not metered on the tools line, which a $0 run shows only
       // when it made one.
-      const unmetered = group !== "meter" ? 0 : (metersOf(row).notMetered ?? 0);
+      const unmetered = group !== "meter" ? 0 : (all?.notMetered ?? 0);
       notMetered += unmetered;
       if (unmetered && !lines.has("tools")) lines.set("tools", { usd: 0, unpriced: 0 });
       for (const part of runLines({ usd, soFar, key, meters })) {
@@ -2064,8 +2116,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     return { password: body.password as string, body };
   }
 
-  /** POST /v2/setup, POST /v2/auth/sign-in, POST /v2/auth/sign-out and GET /v2/auth/session, answered before any
-   *  credential: their own checks are the setup code (or the token), the password, and the session. */
+  /** POST /v2/setup, POST /v2/auth/sign-in, POST /v2/auth/sign-out, POST /v2/auth/sign-out-everywhere and GET
+   *  /v2/auth/session, answered before any credential: their own checks are the setup code (or the token), the password,
+   *  and the session. */
   async function ownerRoute(req: IncomingMessage, res: ServerResponse, path: string, me: Owner): Promise<void> {
     const method = path === "/auth/session" || path === "/setup/import" ? "GET" : "POST";
     if (req.method !== method) throw new ApiError("method_not_allowed", `${req.method} is not a method of /v2${path}`, {}, { allow: method });
@@ -2126,7 +2179,17 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         }
         return send(res, 200, { signed_in: true }, { "set-cookie": ownerCookie(req, me.session(), SESSION_S) });
       }
+      // This browser: its session revoked on the server (a copy of its cookie is no session either) and its cookie
+      // cleared; every other browser's session left as it is. A viewer watching with it is cut off.
       case "/auth/sign-out": {
+        fromPage(req);
+        if (!signedIn(req, me)) throw new ApiError("unauthenticated", "this browser is not signed in");
+        for (const value of heldSessions(req)) if (me.valid(value)) me.revoke(value);
+        viewers.recheck();
+        return send(res, 200, { signed_out: true }, { "set-cookie": ownerCookie(req, "", 0) });
+      }
+      // Every browser and phone: the sessions' epoch moves on, so every cookie made before is none, this one's too.
+      case "/auth/sign-out-everywhere": {
         fromPage(req);
         if (!signedIn(req, me)) throw new ApiError("unauthenticated", "this browser is not signed in");
         me.signOutEverywhere();
@@ -2615,13 +2678,13 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         return send(res, 200, await runGraphView(store, id, runReadsDeps));
       case "pauseRun":
       case "resumeRun": {
+        // A workflow run's pause or resume is a command its runner reads and applies (runs-over-store.pauseOrResume): an
+        // agentic run has none (501, its turn is stopped instead), an ended or cancelling one takes none (409). The route
+        // adds the run's status from its view.
         const run = await needRun(id);
-        // RULED (A1): an agentic run is not paused or resumed by hand — the cap's raise brings a run paused at its cap back;
-        // there is no manual pause. 501, as the document says.
-        if (run.kind === "agentic") throw unsupported("runs.pause_resume", "A run is not paused or resumed by hand: raise its cap to bring a run paused at its cap back; there is no manual pause.");
-        // A workflow run's pause and resume are real, and come with the runner's pause/resume command kinds and E2c's
-        // journal writers: until those land this is a named TODO, refused as unsupported here (not as a permanent no).
-        throw unsupported("runs.pause_resume", "TODO(pause): a workflow run's pause and resume are being wired (the runner's pause/resume and the store's writers); not available on this build yet.");
+        const { paused } = await (found.name === "pauseRun" ? pauseRunOverStore : resumeRunOverStore)(store, run);
+        const { status } = await runStatusState(run.id);
+        return send(res, 200, { run_id: run.id, paused, status });
       }
       case "readRunFile": {
         await needRun(id);
@@ -2734,9 +2797,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       case "getGitHubConnection": {
         // Repaired from GitHub's own first, at most once a minute: a missed installation event is put right here.
         await githubConnect.reconcile((detail) => triggers.turnOff("github", detail));
+        // Always a 200: not connected is an answer, never an error a browser logs as one.
         const view = githubConnection();
-        if (!view) throw new ApiError("not_found", "No GitHub App is connected to this server: Connect GitHub in Settings.");
-        return send(res, 200, view);
+        return send(res, 200, view ? { connected: true, ...view } : { connected: false });
       }
       case "disconnectGitHub": {
         const view = githubConnection();
@@ -2749,6 +2812,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         log?.(logLine("github", { condition: "github_disconnected", app_id: view.app_id, triggers_off: off }));
         return send(res, 200, { disconnected: true, triggers_off: off, note: `Delete the App itself on GitHub: ${settingsUrl}` });
       }
+      case "getMcpPrivateHosts":
+        return send(res, 200, await privateHostsRoute(mcpServers, { method: "GET" }), { "cache-control": "no-store" });
+      case "putMcpPrivateHosts":
+        return send(res, 200, await privateHostsRoute(mcpServers, { method: "PUT", body: () => bodyOf(req) }), { "cache-control": "no-store" });
       case "deleteMcpServer":
         await mcpServers.remove(id);
         await refreshMcpMeta();
@@ -2853,14 +2920,19 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const pkg = templates.find((t) => t.name === id);
         if (!pkg) throw new ApiError("not_found", `no template ${id}: GET /v2/templates lists them`);
         const body = await bodyOf(req);
-        // A webhook trigger's secret is in no apply answer: each one's warning sends the person to the console for it
-        // (trigger-secrets-shown.ts templateTriggerSecret), as the apply answer carries. The Idempotency-Key's record keeps
-        // the agent and triggers, so a retry under the key gets the same answer.
+        // The Idempotency-Key's record keeps the agent and triggers, so a retry under the key gets the same apply; it never
+        // keeps a webhook trigger's secret (below).
+        let minted = new Map<string, string>();
         const answer = await idempotent(req, `/templates/${pkg.name}/apply`, body, async () => {
-          const applied = await applyTemplate(pkg, body);
-          return { status: 201, body: applied, headers: { location: `/v2/agents/${applied.agent_id}` } };
+          const made = await applyTemplate(pkg, body);
+          minted = made.minted;
+          return { status: 201, body: made.applied, headers: { location: `/v2/agents/${made.applied.agent_id}` } };
         });
-        return send(res, answer.status, answer.body, answer.headers);
+        // Each webhook trigger's secret, to the owner's session in this first answer alone (trigger-secrets-shown.ts
+        // templateApplied): the record above never held it, so a replay under the key shows none.
+        const replayed = answer.headers?.["idempotent-replayed"] === "true";
+        const shown = replayed ? "replay" : mayHoldSecrets(req) ? "first" : "token";
+        return send(res, answer.status, answer.status === 201 ? templateApplied(answer.body as Json, minted, shown) : answer.body, answer.headers);
       }
       case "rotateTriggerSecret":
         // A secret write: the dispatch's one check let only the owner's session this far (trigger-secrets-shown.ts).
@@ -2905,10 +2977,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     await needRun(runId);
     // The run's live viewer from the store (the runner's browser/computer tool wrote it under its claim; liveViewerFor picks
     // a named viewer's handover or the run's open one). None for a run no runner holds; with no seal key this server serves
-    // no live view. A /computer/live path reaches only a computer-kind viewer, a /browser/live path a browser one.
+    // no live view. A /computer/live path reaches a viewer of every kind (the link GET /computer gives, a browser's among
+    // them), a /browser/live path a browser's alone (familyReaches).
     const handover = sealKey ? await liveViewerFor(store, sealKey, runId, rest) : undefined;
-    const browserKind = handover !== undefined && (handover.kind ?? "browser") === "browser";
-    if (handover === undefined || browserKind !== (family === "browser")) throw new ApiError("not_found", `this run's ${family} has no live view at that address`);
+    if (handover === undefined || !familyReaches(family, handover)) throw new ApiError("not_found", `this run's ${family} has no live view at that address`);
     await serveViewerFile(req, res, rest);
   }
 
@@ -3000,11 +3072,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     void (async () => {
       const run = ID.test(viewing[1]!) ? await momentOverStore(store, viewing[1]!, viewDepsFor(ownOriginOf())) : undefined;
       // The run's live viewer from the store (the runner's browser/computer tool wrote it under its claim): none for a run no
-      // runner holds; with no seal key no live view is served. The family (viewing[2]) holds a /computer/live socket to a
-      // computer-kind viewer and a /browser/live socket to a browser one.
-      const liveFamily = viewing[2] as LiveFamily;
+      // runner holds; with no seal key no live view is served. A /computer/live socket reaches a viewer of every kind, a
+      // /browser/live socket a browser's alone (familyReaches), as the page does.
       const viewerHandover = run && sealKey ? await liveViewerById(store, sealKey, run.id, viewing[3]!.slice(3, -3)) : undefined;
-      const handover = viewerHandover !== undefined && (((viewerHandover.kind ?? "browser") === "browser") === (liveFamily === "browser")) ? viewerHandover : undefined;
+      const handover = viewerHandover !== undefined && familyReaches(viewing[2] as LiveFamily, viewerHandover) ? viewerHandover : undefined;
       if (!handover) return deny("404 Not Found");
       // Gone during the lookup, or the server is closing and has ended its viewers, or is about to.
       if (socket.destroyed || closing) return void socket.destroy();

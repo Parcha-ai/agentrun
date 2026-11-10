@@ -41,8 +41,9 @@ export interface McpForClaimOptions {
   /** The one store: the registry's rows, the run's pin row and its run row (the epoch), the GitHub App's settings, and
    *  where it is (Store.where: the claims waiting on a server's refresh lease meet by it). */
   readonly store: Pick<Store, "mcp" | "runs" | "settings" | "triggerSettings" | "where">;
-  /** The runner's seal key (the server's): undefined when it was started without one (every sealed credential refused). */
-  readonly sealKey: Buffer | undefined;
+  /** The runner's seal key (the server's): always present (seal-key.ts boots one before any claim), so the claim's sealed
+   *  credentials always open; there is no no-seal-key path here (E6). */
+  readonly sealKey: Buffer;
   /** The run's granted tools, by catalog name (`mcp:<server>/<tool>` among them), as its revision grants them. */
   readonly grants: readonly string[];
   /** The loop's Harness for this pass (AdapterRun.harness): a call's records (not metered) go on the run's root through it. */
@@ -54,6 +55,9 @@ export interface McpForClaimOptions {
   /** The GitHub App access for a github_app server (githubAppAccess). None: such a server's calls are refused in words
    *  (GITHUB_UNUSABLE.noAccess). */
   readonly githubAppAccess?: GithubAppAccessOf;
+  /** A test's fake GitHub MCP origin, handed to the claim step (mcpClaim's githubMcpOrigin): for tests only: no environment variable, flag or setting maps onto it; absent, GitHub's hosted MCP
+   *  (github.ts GITHUB_MCP_ORIGIN). */
+  readonly githubMcpOrigin?: string;
   /** For tests: the authorization servers' network, a refresh's bound, the gateway's upstream fetch and bounds, and the
    *  timer a github_app token's refresh is armed on. */
   readonly network?: OAuthNetwork;
@@ -114,6 +118,7 @@ export async function mcpForClaim(options: McpForClaimOptions): Promise<ClaimMcp
       ...(options.bounds ? { bounds: options.bounds } : {}),
       ...(options.network ? { network: options.network } : {}),
       ...(githubApp ? { githubApp } : {}),
+      ...(options.githubMcpOrigin ? { githubMcpOrigin: options.githubMcpOrigin } : {}),
       ...(options.githubTimer ? { githubTimer: options.githubTimer } : {}),
     });
   } catch (error) {
