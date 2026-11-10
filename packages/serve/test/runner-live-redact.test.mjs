@@ -12,6 +12,7 @@ import { inspect } from "node:util";
 import { until } from "./runner-support.mjs";
 import { closeOpenSessions, scriptedOrigin } from "./conformance-pi-adapter.mjs";
 import { streamingSandbox } from "./fixtures/streaming-sandbox.mjs";
+import { pastHeldTail } from "./fixtures/live-tail.mjs";
 
 const { startRunner } = await import("../dist/runner/runner.js");
 const { secretRedactor } = await import("../dist/runner/redact.js");
@@ -122,9 +123,9 @@ test("a real pi run's running bash streaming a held secret: its live row (and so
   await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { content: "Go." }, title: "t", place: { mode: "runner" }, harness: "pi", model: { provider: "anthropic", modelId: "claude-sonnet-4-5" } } });
   const folder = runFolder(dir, "agent-1", "run-1");
   mkdirSync(folder, { recursive: true });
-  // Past the secret it prints more than the tail the live view holds back (as long as the widest form of the longest value
-  // the runner holds, its environment's among them), so the head, the secret cut in it, shows while the bash still runs.
-  const command = `echo "token ${SECRET}"; head -c 20000 /dev/zero | tr '\\0' y; while [ ! -e release ]; do sleep 0.05; done`;
+  // Past the secret it prints more than the tail the live view holds back (fixtures/live-tail.mjs, the secret now in the
+  // environment among the values sized), so the head, the secret cut in it, shows while the bash still runs.
+  const command = `echo "token ${SECRET}"; head -c ${pastHeldTail()} /dev/zero | tr '\\0' y; while [ ! -e release ]; do sleep 0.05; done`;
   const requests = [];
   const route = {
     model: "faux-1", provider: { api: "anthropic-messages", origin: "https://route.invalid", credential: () => `not-a-secret-${"r"}` },

@@ -24,6 +24,7 @@ const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { adapterRunSpecFromLaunch } = await import("../dist/runner/adapter-run-spec.js");
 const { runFolder } = await import("../dist/workspace/paths.js");
 const { streamingSandbox } = await import("./fixtures/streaming-sandbox.mjs");
+const { pastHeldTail } = await import("./fixtures/live-tail.mjs");
 const { routeOf } = await import("../dist/runner/model-route.js");
 after(closeOpenSessions);
 
@@ -147,9 +148,9 @@ test("an image over the calling model's limits is held to them: pi's read refuse
 test("a running tool's output reaches the run's live view while it runs, before it ends", { timeout: 60_000 }, async (t) => {
   // bash prints a chunk, then waits for the test's release file: the chunk must show in the live view before the test lets
   // it end. No sleep orders this: the release is written only once the chunk is seen.
-  // Past the chunk, more than the tail the live view holds back while output streams (as long as the widest form of the
-  // longest secret the runner holds, its environment's among them), so the chunk shows while the bash still runs.
-  const command = "echo first-chunk; head -c 3000 /dev/zero | tr '\\0' y; while [ ! -e release ]; do sleep 0.05; done; echo last-chunk";
+  // Past the chunk, more than the tail the live view holds back while output streams (fixtures/live-tail.mjs), so the
+  // chunk shows while the bash still runs.
+  const command = `echo first-chunk; head -c ${pastHeldTail()} /dev/zero | tr '\\0' y; while [ ! -e release ]; do sleep 0.05; done; echo last-chunk`;
   let seen;
   let last;
   const { row } = await piRun(t, {

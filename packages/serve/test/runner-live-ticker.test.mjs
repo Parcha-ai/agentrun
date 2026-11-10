@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fauxLoops, until } from "./runner-support.mjs";
+import { pastHeldTail } from "./fixtures/live-tail.mjs";
 
 const { startRunnerProcess } = await import("../dist/runner/main.js");
 const { startRunner } = await import("../dist/runner/runner.js");
@@ -47,9 +48,9 @@ test("a run on the runner process writes its live row while its tool runs: the t
     return {
       ...inner,
       start: async (claim) => {
-        // Past the chunk, more than the tail the live view holds back while output streams (as long as the widest form of
-        // the longest secret the runner's environment holds): the chunk shows whatever the environment holds.
-        deps.live?.(() => held(`first-chunk\n${"y".repeat(3_000)}`));
+        // Past the chunk, more than the tail the live view holds back while output streams (fixtures/live-tail.mjs): the
+        // chunk shows whatever the environment holds.
+        deps.live?.(() => held(`first-chunk\n${"y".repeat(pastHeldTail())}`));
         await released;
         return inner.start(claim);
       },
