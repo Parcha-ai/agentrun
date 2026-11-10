@@ -59,7 +59,7 @@ test("approving a note is the owner's password session alone, from the console w
   assert.deepEqual(doc.components.securitySchemes.bearer, VENDORED.components.securitySchemes.bearer, "the contract's scheme is as vendored");
 });
 
-test("every route the server serves is in the document, and every operation in it is a route here: served, or marked unsupported with why", async (t) => {
+test("every route the server serves is in the document, and every operation in it is a route here: served, or marked unsupported with why; the contract's operations this server does not serve are left out", async (t) => {
   const { doc } = await served(t);
   const ops = operations(doc);
   for (const route of ROUTES) {
@@ -76,8 +76,10 @@ test("every route the server serves is in the document, and every operation in i
     else assert.equal(op["x-agentrun-serve-unsupported"], undefined, `${op.operationId} is served`);
     if (route.capability) assert.equal(op["x-agentrun-serve-unsupported"].capability, route.capability);
   }
-  assert.equal(ops.filter(({ op }) => op["x-agentrun-serve-unsupported"]).length, 4, "the four this server answers 501");
-  assert.deepEqual(doc.info["x-agentrun-serve"].unsupported.length, 4);
+  assert.equal(ops.filter(({ op }) => op["x-agentrun-serve-unsupported"]).length, 1, "the one this server answers 501: quotes");
+  assert.deepEqual(doc.info["x-agentrun-serve"].unsupported, ["POST /quotes"]);
+  assert.deepEqual(doc.info["x-agentrun-serve"].not_served, ["GET /agents/{agent_id}/home", "PUT /agents/{agent_id}/home", "POST /runs/{run_id}/kill"]);
+  for (const id of ["exportHome", "importHome", "killRun"]) assert.ok(!ops.some(({ op }) => op.operationId === id), `${id} is not in the document`);
 });
 
 test("the contract's operations are as vendored; this server's own are added and marked x-agentrun-serve", async (t) => {
@@ -210,7 +212,10 @@ test("the contract's operations are as vendored; this server's own are added and
     const { requestBody: _c, parameters: _d, ...vendoredSame } = original;
     assert.ok(isDeepStrictEqual(same, vendoredSame), `${op.operationId} is the contract's but for its named changes`);
   }
-  assert.equal(vendored.size + own.length, operations(doc).length, "no contract operation is gone");
+  // No contract operation is gone but those this server does not serve (NOT_SERVED), which the document lists.
+  const notServed = doc.info["x-agentrun-serve"].not_served;
+  assert.deepEqual(notServed.map((at) => vendored.get(at.replace(/^\S+/, (method) => method.toLowerCase()))?.operationId), ["exportHome", "importHome", "killRun"]);
+  assert.equal(vendored.size - notServed.length + own.length, operations(doc).length, "no other contract operation is gone");
   assert.deepEqual(own.sort(), [...doc.info["x-agentrun-serve"].extensions].sort(), "info lists the server's own");
   // Every property this server adds is marked with the addition that made it, and listed; without them, the
   // contract's components are as vendored.
@@ -594,8 +599,7 @@ test("an agent's home is its own addition, home/1: its routes and capabilities.h
     assert.ok(op.responses["404"] && op.responses["401"], `${name} answers 401 and 404`);
   }
   assert.ok(file.put.responses["403"] && file.put.responses["413"] && file.delete.responses["403"], "a write answers 403, and a PUT 413");
-  assert.deepEqual(Object.keys(doc.paths["/agents/{agent_id}/home"]).sort(), Object.keys(VENDORED.paths["/agents/{agent_id}/home"]).sort(), "the contract's packed home keeps its path and methods");
-  assert.equal(doc.paths["/agents/{agent_id}/home"].get["x-agentrun-serve-unsupported"].capability, "home.export");
+  assert.equal(doc.paths["/agents/{agent_id}/home"], undefined, "the contract's packed home is not served here");
   assert.equal(doc.components.schemas.Capabilities.properties.home["x-agentrun-serve"], "home/1");
   assert.ok(doc.info["x-agentrun-serve"].fields.includes("Capabilities.home"));
 

@@ -268,10 +268,10 @@ export class McpSignIns {
 
   private readonly pending = new Map<string, Pending>();
   /** This server's address as a browser reaches it (AGENTRUN_PUBLIC_URL, else where it listens), no trailing slash:
-   *  set by McpServers.attach as the server starts listening. */
+   *  set by the saved servers' attach (mcp-servers-store.ts) as the server starts listening. */
   base = "";
   /** Where this server listens (`http://<host>:<port>`), whatever `base` is: its port is never an endpoint a loopback
-   *  authorization server may name. Set by McpServers.attach. */
+   *  authorization server may name. Set by the same attach. */
   listening = "";
   /** This server's own local addresses, whose ports a loopback authorization server may never name: where it listens,
    *  and its public address too when that is on loopback (a local https proxy on another port, in front of the

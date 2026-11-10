@@ -26,7 +26,6 @@ test("a handed sign-in reads back while it is saved, or forgotten with its tombs
   assert.equal(await signIns.handedSignInReadsBack(store, KEY, run(null)), true, "a run handed none");
   assert.equal(await signIns.handedSignInReadsBack(store, KEY, run([signIns.pointerHash(pointer)])), true, "saved, and it opens");
   assert.equal(await signIns.handedSignInReadsBack(store, randomBytes(32), run([signIns.pointerHash(pointer)])), false, "its seal does not open under another key");
-  assert.equal(await signIns.handedSignInReadsBack(store, undefined, run([signIns.pointerHash(pointer)])), false, "nor with no seal key");
   assert.equal(await signIns.handedSignInReadsBack(store, KEY, run([signIns.pointerHash("ctx-never-kept")])), false, "nothing of it is kept");
   await store.signIns.forget("agent-a", "browserbase", { hash: "not-held" });
   assert.equal(await signIns.handedSignInReadsBack(store, KEY, run([signIns.pointerHash(pointer)])), true, "forgotten, its tombstone opens");

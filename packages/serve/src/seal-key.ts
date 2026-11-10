@@ -22,7 +22,7 @@ import { unseal } from "@parcha/pi-durable-agent";
 import type { Store } from "./store/index.js";
 import { SEAL_KEY_ENV, sealKeyOf } from "./tool-keys.js";
 import { handedSecret, holdSealKey } from "./secrets.js";
-import { webhookSecretIn } from "./webhooks.js";
+import { webhookKeptIn, webhookSecretIn } from "./webhooks.js";
 
 /** The seal key's own directory in the data directory, and its file there. */
 export const SEAL_KEY_DIR = "seal";
@@ -179,10 +179,11 @@ function opensUnder(key: Buffer, sealed: Uint8Array, aad: string): boolean {
 }
 
 /** The values data directory `dataDir` keeps sealed beside the store, under the same key: the outbound webhook's signing
- *  secret (webhooks.ts) and any trigger settings file (sealed-settings.ts), each a check of whether a key opens it. */
+ *  secret (webhooks.ts) and any trigger settings file an earlier version kept there, each a check of whether a key opens
+ *  it. */
 function sealedBeside(dataDir: string): Array<(key: Buffer) => boolean> {
   const checks: Array<(key: Buffer) => boolean> = [];
-  if (webhookSecretIn(dataDir, {}) !== undefined) checks.push((key) => "secret" in (webhookSecretIn(dataDir, { [SEAL_KEY_ENV]: key.toString("base64") }) ?? {}));
+  if (webhookKeptIn(dataDir)) checks.push((key) => "secret" in (webhookSecretIn(dataDir, key) ?? {}));
   let names: string[] = [];
   try {
     names = readdirSync(dataDir);

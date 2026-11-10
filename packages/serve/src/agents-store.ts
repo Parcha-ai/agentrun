@@ -1,5 +1,5 @@
-// The agents this server holds, over the one store (A: store.agents), the store-backed replacement for serve/src/agents.ts's
-// Agents class and pi-durable-agent's agent-store.ts (bodyOf, revisionOf folded into store/agent-body.ts). An agent is a
+// The agents this server holds, over the one store (store.agents); pi-durable-agent's agent-store.ts bodyOf and revisionOf
+// are folded into store/agent-body.ts. An agent is a
 // row with revisions written once; a definition is one revision; an edit commits the next and makes it current. A
 // revision's body is checked by store/agent-body.ts before anything is written; its skill texts ride on the revision's row.
 // The one server per store (the owner lock) is the sole writer of agents and revisions, so a read-then-write here is not
@@ -97,7 +97,7 @@ export function externalOf(agent: AgentRow, revision: RevisionRow | null): (Exte
 /** A definition's tool settings as a revision body keeps them, through the one copy: checked by tool-plane's settingsIssues
  *  (a refusal is an input error) and made canonical by canonicalToolSettings (sorted keys, empty tools dropped, a pin's
  *  arguments sorted). `{ toolSettings }` when any survive, `{}` when none. Whether an agent may set its own pin is the
- *  request layer's gate (validate.ts AGENT_LAYER_PINS); here a pin that reaches this is kept canonical. */
+ *  request layer's gate (validate.ts); here a pin that reaches this is kept canonical. */
 function toolSettingsOf(given: unknown): { toolSettings?: ToolSettings } {
   if (!isObject(given)) return {};
   // Layer "agent": the one copy checks an agent's own tool settings (a broken agent pin is a 422, not served pin_broken).
@@ -108,7 +108,7 @@ function toolSettingsOf(given: unknown): { toolSettings?: ToolSettings } {
 }
 
 /** The revision a checked definition makes, in the store's shape (store/agent-body.ts's input), ready for bodyOf. `files`
- *  are the skill files by path. Ported from serve/src/agents.ts's revisionOf, over the folded validator. */
+ *  are the skill files by path. */
 function revisionInputOf(definition: Json, files: Record<string, string>): RevisionBodyInput {
   const issues = skillIssues(definition.skills, Object.keys(files));
   if (issues.length) throw invalid(issues);
@@ -322,7 +322,7 @@ function editOn(entry: AgentEntry, definition: Json, skills: Record<string, stri
         // The computer and its place go together: an edit naming neither keeps both (the computer, else the place).
         ...(definition.place === undefined && definition.computer === undefined ? (currentBody.computer ? { computer: currentBody.computer } : currentBody.place ? { place: currentBody.place } : {}) : {}),
         ...(definition.learning === undefined && current.kind === "agentic" && !isObject(definition.workflow) && (currentBody as AgenticBody).learning !== undefined ? { learning: (currentBody as AgenticBody).learning } : {}),
-        // No approvals here: an edit that leaves them out asks (openapi.ts DefinitionInput.approvals, as main's agents.ts),
+        // No approvals here: an edit that leaves them out asks (openapi.ts DefinitionInput.approvals),
         // so no edit makes an agent unattended by saying nothing. The console's edit sends back the approvals it read.
         ...(definition.max_cost_usd === undefined && currentBody.maxCostUsd !== undefined ? { max_cost_usd: currentBody.maxCostUsd } : {}),
         ...(definition.cap_mode === undefined && currentBody.capMode !== undefined ? { cap_mode: currentBody.capMode } : {}),
@@ -381,7 +381,7 @@ export function definitionOf(agent: AgentRow, revision: RevisionRow, version: nu
     name: agent.name,
     ...(agent.description !== null && agent.description !== undefined ? { description: agent.description } : {}),
     ...kindBody,
-    // Its approvals, of either kind: "ask" where none is set, as main's definition read says it (agents.ts definitionOf).
+    // Its approvals, of either kind: "ask" where none is set, as the definition read says it (definitionOf).
     approvals: approvalsOf((body as { approvals?: unknown }).approvals),
     harness: harnessOfBody(body),
     ...(body.place ? { place: body.place } : {}),

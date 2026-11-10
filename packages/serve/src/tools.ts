@@ -312,7 +312,7 @@ export const savedOnRelease = (row: { session: { resourceId: string | null; rele
 /** On the runner, the per-session hook that verifies the run's saved sign-in: a session that saved to it (savedOnRelease,
  *  in a run handed it to save) verifies it under the run's claim, at the session's own end (its time, else now), as the
  *  saved mark main reads at the lease's end. Answers whether it verified (sign-ins-store.ts verifyRunSignIn). */
-export const runSignInSaved = (store: Pick<Store, "runs" | "signIns">, sealKey: Buffer | undefined, claim: Claim, kept: RunSignIn) =>
+export const runSignInSaved = (store: Pick<Store, "runs" | "signIns">, sealKey: Buffer, claim: Claim, kept: RunSignIn) =>
   async (row: { session: { resourceId: string | null; releaseReason: string | null; endedAt?: string | null } }, change: string): Promise<boolean> => {
     if (!kept.save || !savedOnRelease(row, change)) return false;
     const ended = row.session.endedAt ? Date.parse(row.session.endedAt) : Number.NaN;
@@ -352,7 +352,7 @@ const browserTool: ToolEntry = {
     // launch makes it: never the process's environment, so one run's keys never make another's.
     const runLog = (line: string) => void process.stderr.write(`agentrun-serve: run ${host.where.ref.id}: ${line}\n`);
     const vendorFetch = async () => (host.env[FAUX_ENV] ? fauxFetch(host.env, FAUX_VENDOR_API_ENV) : fetch);
-    const handed = host.claim ? (refused || !host.store ? undefined : await runSignIn(host.store, host.sealKey, host.claim, vendor, { vendors: vendorsOver(() => host.env, vendorFetch), log: runLog })) : handedSignIn();
+    const handed = host.claim ? (refused || !host.store || !host.sealKey ? undefined : await runSignIn(host.store, host.sealKey, host.claim, vendor, { vendors: vendorsOver(() => host.env, vendorFetch), log: runLog })) : handedSignIn();
     const kept = !refused && handed?.provider === vendor ? handed : undefined;
     const faux = host.env[FAUX_ENV] ? host.env[FAUX_BROWSER_ENV] : undefined;
     const parts = faux
@@ -457,7 +457,7 @@ const browserTool: ToolEntry = {
     const files = downloads ? { workspace: () => host.where.work } : { files: workspaceFiles(host.where.work) };
     // A session that saved to the sign-in, let go: its time, for the sign-in's verified_at when the run's lease ends.
     // On the runner, the store's verified_at under the run's claim (runSignInSaved), never a mark in the run's directory.
-    const verify = kept?.save && host.claim && host.store ? runSignInSaved(host.store, host.sealKey, host.claim, kept as RunSignIn) : undefined;
+    const verify = kept?.save && host.claim && host.store && host.sealKey ? runSignInSaved(host.store, host.sealKey, host.claim, kept as RunSignIn) : undefined;
     // Awaited by the session's change, so the release that lets a run's sessions go (beforeRelease) returns only once its
     // last save is verified: the run's end commit, which ends the claim, never fences it.
     const saved = kept?.save
@@ -699,7 +699,7 @@ export function toolRefusal(names: readonly string[], env: NodeJS.ProcessEnv, wh
  *  is not unavailable, and missing PARALLEL_API_KEY where Parallel is picked without it. An unavailable tool says why
  *  (`reason`). `noBox`: why no box can run a sandbox-only tool here (place.ts noBoxReason), which leaves it
  *  unavailable with that reason; undefined, a box can. `refused`: the variables of the keys this server was started with
- *  that their provider refused at the start (ToolKeys.refused), each with why: a tool that needs one is unavailable,
+ *  that their provider refused at the start (tool-keys-store.ts refused), each with why: a tool that needs one is unavailable,
  *  saying that. Each tool also gives its permission under the server's settings (tool-gate.ts), the owner's default
  *  and the permissions it may be set to. */
 export const toolsView = (env: NodeJS.ProcessEnv, settings: ToolSettingsMap = {}, noBox?: string, refused: Readonly<Record<string, string>> = {}) => {

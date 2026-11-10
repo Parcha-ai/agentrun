@@ -33,15 +33,14 @@ export const ERROR_STATUS = {
   internal: 500,
   unsupported_here: 501,
   unavailable: 503,
-  // This server's own, beside the contract's list (openapi.ts marks them): a tool key its launcher sets, a key saved with
-  // no seal key to keep it under, a send to a webhook a 410 turned off, a write to a learning note that names no
-  // version it read, a remote MCP server that asks for a credential, does not speak MCP, or fails, a saved-servers file
-  // that does not read, which is never written over (mcp-servers.ts), a message to a run paused at its cap, which
-  // takes one once its cap is raised, a saved sign-in forgotten while a run holds its save lease (sign-ins.ts), and an
-  // answer to a browser hand-over that already has a different one (browser-person.ts).
+  // This server's own, beside the contract's list (openapi.ts marks them): a tool key its launcher sets, a send to a
+  // webhook a 410 turned off, a write to a learning note that names no version it read, a remote MCP server that asks
+  // for a credential, does not speak MCP, or fails, a saved-servers file that does not read, which is never written over
+  // (mcp-servers-store.ts), a message to a run paused at its cap, which takes one once its cap is raised, a saved sign-in
+  // forgotten while a run holds its save lease (sign-ins-store.ts), and an answer to a browser hand-over that already has
+  // a different one (browser-person.ts).
   key_set_by_server: 409,
   budget_reached: 409,
-  no_sealing_key: 409,
   webhook_off: 409,
   precondition_required: 428,
   auth_required: 422,
@@ -54,7 +53,7 @@ export const ERROR_STATUS = {
   computer_not_live: 409,
   scope_taken: 409,
   // Connect GitHub (github-connection.ts): a github trigger on a server with no GitHub App, a second App, a Connect that
-  // GitHub could not call back (no public address), one whose secrets could not be kept (no seal key), and GitHub that
+  // GitHub could not call back (no public address), and GitHub that
   // did not answer (a 429, a 5xx, or nothing) while a github_app MCP server's listing token was minted: tried again.
   github_not_connected: 409,
   github_already_connected: 409,

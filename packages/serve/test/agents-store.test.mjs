@@ -160,8 +160,8 @@ test("tool settings survive a round trip, sorted, and equal settings are one rev
 test("tool settings go through the one copy: an argument pin is checked, kept canonical (keys sorted), and an equal pin is one revision; a bad setting is refused", async (t) => {
   const { store } = await storeOn(t);
   const withPin = (pin) => DEF({ id: "a", tool_settings: { "mcp:github/pull_request_review_write": { pin } } });
-  // settingsIssues accepts a valid pin on an MCP tool's key (the request-layer AGENT_LAYER_PINS gate is validate.ts's, not
-  // this module's); canonicalToolSettings sorts the pin's arguments.
+  // settingsIssues accepts a valid pin on an MCP tool's key (the request layer's checks are validate.ts's, not this
+  // module's); canonicalToolSettings sorts the pin's arguments.
   const entry = await createAgent(store, { definition: withPin({ event: "APPROVE", body: "lgtm" }), skills: SKILLS });
   const def = definitionOf(entry.agent, entry.revision, entry.version);
   assert.deepEqual(def.tool_settings["mcp:github/pull_request_review_write"].pin, { body: "lgtm", event: "APPROVE" }, "the pin is kept, its arguments sorted");
