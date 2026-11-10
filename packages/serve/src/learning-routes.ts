@@ -523,7 +523,8 @@ export function runLearningBody(input: { readonly id: string; readonly learning:
     // The grader's, with its item for each new note: a name holding one of the host's secrets reads [redacted], and
     // each text is cut of them, its origin too (a kept row read back is untrusted).
     verdict: verdict ? { merge: verdict.merge, reason: shown.text(verdict.reason), items: (verdict.items ?? []).map(({ file, keep, pending: waits, origin, question, why }) => ({ file: shown.name(file), keep, ...(waits ? { pending: true } : {}), ...(origin ? { origin: shown.text(origin) as typeof origin } : {}), ...(question ? { question: shown.text(question) } : {}), why: shown.text(why) })) } : null,
-    problems: (problems ?? []).map((problem) => printable(problem, secrets)),
+    // Each cut of the host's secrets (printable), then as every served text is (`shown`: no loopback address).
+    problems: (problems ?? []).map((problem) => printable(problem, secrets)).map(({ rule, path, detail }) => ({ rule: shown.text(rule) as typeof rule, ...(path === undefined ? {} : { path: shown.text(path) }), detail: shown.text(detail) })),
     // The grade's alone: the end-of-run turn's cost is in the run's own totals.
     cost_usd: { grade: cost_usd?.grade ?? null },
     tokens: { grade: tokens?.grade ?? null },
@@ -544,14 +545,18 @@ function addedPatch(text: string): string {
  *  its agent's learning folder); before, its kept proposal (new notes only, from its learning_proposals row) against its
  *  seed; a run that proposed nothing, no file, against the seed its launch's learning start names. A run that does not
  *  learn (no learning start and no learning end) is not_found. A file's patch is withheld when too large (as the script
- *  wrote it), or when it holds one of the host's secrets now (`shown`). */
+ *  wrote it), or when it holds one of the host's secrets now (`shown`); any other is served as every learning text is
+ *  (`shown.text`: a loopback address reads "a local address"). */
 export async function runDiffOverStore(data: string, store: Store, runId: string, shown: Shown) {
   const [end, kept, launch, row] = await Promise.all([runLearningEnd(store, runId), store.learning.proposal(runId), launchOf(store, runId), store.runs.get(runId)]);
   const start = launch ? learningStartOf(launch) : undefined;
   if (!row || (!end && !start)) throw new ApiError("not_found", "the run does not learn, so it proposed nothing");
   const file = (name: string, status: string, patch: string) => {
     const path = shown.name(name);
-    return Buffer.byteLength(patch) > PATCH_CAP ? { path, status, withheld: "too_large" } : shown.holds(patch) ? { path, status, withheld: "secret" } : { path, status, patch };
+    if (Buffer.byteLength(patch) > PATCH_CAP) return { path, status, withheld: "too_large" };
+    if (shown.holds(patch)) return { path, status, withheld: "secret" };
+    const served = shown.text(patch);
+    return Buffer.byteLength(served) > PATCH_CAP ? { path, status, withheld: "too_large" } : { path, status, patch: served };
   };
   if (end?.merged) {
     const folder = learningFolderOf(data, row.agentId);

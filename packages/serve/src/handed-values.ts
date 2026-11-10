@@ -45,9 +45,9 @@ const SIGN_IN_VENDORS = ["browserbase", "kernel"] as const;
  *  than what a note may hold. */
 export const WITHHELD_LEARNING = "This server can't read the agent's browser sign-in (its seal key changed or is missing, or the sign-in is damaged), so what it learned is not shown.";
 
-/** Every sign-in pointer of agent `agentId`, live and forgotten, at each vendor that keeps one (each at least MIN_SECRET
- *  long, as every cut takes them): what the learning routes cut beside the server's secrets, so a note, a skill or a
- *  run's learning that wrote one never shows it. `unreadable` when one does not open under this server's key, or a read
+/** Every sign-in pointer agent `agentId` ever held, live and forgotten (the store keeps every forgotten one, never only
+ *  the newest), at each vendor that keeps one (each at least MIN_SECRET long, as every cut takes them): what the learning
+ *  routes cut beside the server's secrets, so a note, a skill or a run's learning that wrote one never shows it. `unreadable` when one does not open under this server's key, or a read
  *  fails: what the agent learned may hold that pointer, so it is withheld (WITHHELD_LEARNING), never shown over a
  *  shorter list. */
 export async function agentPointers(signIns: SignInReader | undefined, agentId: string): Promise<string[] | "unreadable"> {

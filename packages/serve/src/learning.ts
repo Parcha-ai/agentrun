@@ -137,8 +137,8 @@ const REDACTED = "[redacted]";
  *  learn/secrets.ts redactSecrets), and a file's name holding one reads REDACTED whole, not a name of the folder's (its
  *  route still answers the real name, to a caller who knows it); any other text or name is shown as it is. A text served
  *  has no loopback address (key-refusal.ts withoutLoopback, as a run's words, run-view.ts shownOf): the host's own, never a
- *  person's. `local`: kept, for what a run itself is laid (its .learning/ notes, runner/learning-seed.ts), where an
- *  address on the run's own machine is the note's to give. */
+ *  person's. `local`: kept, for what a run itself is given (its .learning/ notes, runner/learning-seed.ts, and its
+ *  # Learned section, server.ts's learning start), where an address on the run's own machine is the note's to give. */
 export function secretsShown(values: readonly string[], { local = false }: { local?: boolean } = {}): Shown {
   const matches = valueMatcher(values);
   const holds = (text: string) => matches(text) || secretShapes(text).length > 0;

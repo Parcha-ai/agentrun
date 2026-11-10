@@ -831,16 +831,15 @@ export interface SignInRow {
 }
 
 /** A forgotten sign-in's pointer, kept sealed byte for byte as its live row held it (so it still opens under the same
- *  binding), only so a server started later can cut it from what a run it was handed shows. */
+ *  binding), only so a server started later can cut it from what a run it was handed shows and from what its agent
+ *  learned. Every one is kept, never only the newest: a note may quote the agent's first pointer, and a shorter list
+ *  would show it. */
 export interface SignInTombstoneRow {
   readonly agentId: string;
   readonly provider: string;
   readonly pointerSealed: Uint8Array;
   readonly forgottenAt: number;
 }
-
-/** How many forgotten pointers an agent keeps per store, the oldest dropped first. */
-export const SIGN_IN_TOMBSTONES_KEPT = 32;
 
 export interface SignIns {
   /** Saves the one live sign-in for the agent and provider, its pointer already sealed by the caller: inserted, or replaced
@@ -865,7 +864,7 @@ export interface SignIns {
   /** Forgets the agent's live sign-in for the provider, in the one transaction a launch shares as its lock: when a running
    *  run holds `hash` in its sign_in_handed (or, with `heldUnreadable`, when any running run was handed a sign-in at all),
    *  the forget is refused (SignInHandedTo, naming the run) and nothing is written; otherwise the live row's sealed pointer
-   *  moves to a tombstone (the newest SIGN_IN_TOMBSTONES_KEPT kept) and the live row goes. SignInMissing when the agent has
+   *  moves to a tombstone (every one kept) and the live row goes. SignInMissing when the agent has
    *  no live sign-in for the provider. */
   forget(agentId: string, provider: string, held: { hash?: string; heldUnreadable?: boolean }): Promise<SignInTombstoneRow>;
   /** The id of a running run whose sign_in_handed holds `hash`, if one does; undefined otherwise. The check the runner
