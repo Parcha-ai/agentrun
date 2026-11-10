@@ -36,7 +36,7 @@ export {
 export { computerProviderFactories, computerProviderMakers, type ProviderLoad } from "./computer-providers.js";
 export {
   claimComputer, claimKinds, type ComputerDeps, computerDepsFrom, type ComputerDepsOptions, computerSpecOf, DAEMON_CACHE_IN_VOLUME, DOCKER_HOST_ADDRESSES_ENV,
-  dockerHostAddressesOf, type DockerVolume, dockerVolumeOf,
+  type DockerComputerOptions, dockerHostAddressesOf, dockerVolumeOf,
 } from "./computer-deps.js";
 export { type ClaimComputer, type ClaimLaunch, computerForClaim, type ComputerForClaimDeps, type ComputerRun, type ImageWait, type OpenComputerView, type ProviderMakers, sweepComputers, type ViewEnd } from "./computer-for-claim.js";
 export { layOwnSkills, RUN_SKILLS_DIR } from "./revision-skills.js";

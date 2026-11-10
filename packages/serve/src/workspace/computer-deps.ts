@@ -16,7 +16,7 @@
 // with names no key, no account key and no database or Redis credential, and carries no environment at all.
 import { isIP } from "node:net";
 import { posix } from "node:path";
-import { type ComputerSpec, DEFAULT_DOCKER_IMAGE, DOCKER_RECIPE, DOCKER_RECIPE_HAS, PROVIDERS, providerFor, readBackOf, servingRefusals, SETTING_KINDS } from "@parcha/agentrun-computer";
+import { type ComputerSpec, DEFAULT_DOCKER_IMAGE, DOCKER_RECIPE, DOCKER_RECIPE_HAS, type DockerVolume, PROVIDERS, providerFor, readBackOf, servingRefusals, SETTING_KINDS } from "@parcha/agentrun-computer";
 import { DOCKER_IMAGE_ENV } from "../box-image.js";
 import type { DockerPaths } from "../box-paths.js";
 import { type HostRead, unionOf } from "../docker-host-addresses.js";
@@ -63,8 +63,8 @@ export const DAEMON_CACHE_IN_VOLUME = ".agentrun/computerd";
  *  and where it is mounted here (`root`), under which the run's folder and the daemon copy are mounted as the volume's
  *  subpaths, and that daemon copy's place under it. Undefined on a host, or where no such volume was found (its reason
  *  then refuses a Docker computer before a run, box-paths.ts dockerComputerRefusal). */
-export type DockerVolume = { readonly volume: { readonly name: string; readonly root: string }; readonly daemonCache: string };
-export function dockerVolumeOf(paths: DockerPaths): DockerVolume | undefined {
+export type DockerComputerOptions = { readonly volume: DockerVolume; readonly daemonCache: string };
+export function dockerVolumeOf(paths: DockerPaths): DockerComputerOptions | undefined {
   if (!("paths" in paths)) return undefined;
   const root = paths.paths.at;
   return { volume: { name: paths.paths.volume, root }, daemonCache: posix.join(root, DAEMON_CACHE_IN_VOLUME) };
