@@ -19,7 +19,7 @@ import type { Store } from "../store/index.js";
 import type { MountCheck } from "./attach.js";
 import { computerHold, heldHands } from "./computer-hold.js";
 import { type ProviderLedger, storeLedger } from "./computer-ledger.js";
-import { type ClaimSide, type ComputerSetting, type ComputerSettingKind, type KindRegistry, type LaunchedComputer, type ProviderEntry, resolveComputer } from "./resolve-computer.js";
+import { type ClaimSide, type ComputerSetting, type ComputerSettingKind, type KindRegistry, type LaunchedComputer, type ProviderEntry, providerKeys, resolveComputer } from "./resolve-computer.js";
 import type { RunComputer, RunHold } from "./run-tools.js";
 import type { Workspace } from "./workspace.js";
 
@@ -216,15 +216,7 @@ export async function computerForClaim(launch: ClaimLaunch, store: Pick<Store, "
   /** The provider entry it was started from: a phone's platform where the computer did not say it. */
   let madeBy: ProviderEntry | undefined;
   const side: ClaimSide = {
-    async keysOf(provider) {
-      const entry = deps.kinds.PROVIDERS.find((one) => one.id === provider);
-      const keys: Record<string, string> = {};
-      for (const key of entry?.keys ?? []) {
-        const value = deps.keyOf ? await deps.keyOf(key.name) : deps.sealKey ? await getSealedKey(store, deps.sealKey, key.name) : undefined;
-        if (value !== undefined) keys[key.name] = value;
-      }
-      return keys;
-    },
+    keysOf: providerKeys(deps.kinds, deps.keyOf ?? (async (name) => (deps.sealKey ? await getSealedKey(store, deps.sealKey, name) : undefined))),
     answers: deps.answers ?? (async () => false),
     async launch(entry, { kind, keys, mount, signal }) {
       if (deps.launch) {

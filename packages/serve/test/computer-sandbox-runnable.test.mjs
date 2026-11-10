@@ -19,6 +19,7 @@ import { test } from "node:test";
 import { scratch, SECRET_WRITE_PATHS, serve, withEnv } from "./support.mjs";
 
 const { blockersOf } = await import("../dist/runnable.js");
+const { computerDepsFrom, resolveComputer } = await import("../dist/workspace/index.js");
 
 // A computer key's save and the Archil settings' PUT are secret writes: the client sends them from the owner's session.
 SECRET_WRITE_PATHS.push({ methods: ["PUT"], path: /^\/computers\/[^/]+\/keys$/ }, { methods: ["PUT"], path: /^\/workspace\/archil$/ });
@@ -41,11 +42,11 @@ async function fakeDocker(t, answers) {
   return `${bin}:${process.env.PATH}`;
 }
 
-/** A server with the real computer registry (no --faux), the server alone, with the default boxes (docker alone, on a
- *  fake that `docker` answers or not); in Mode 2 when `archil`. */
-async function server(t, { archil, docker = false }) {
+/** A server alone, with the default boxes (docker alone, on a fake that `docker` answers or not); on the real models
+ *  (no --faux) unless `faux`; in Mode 2 when `archil`. */
+async function server(t, { archil, docker = false, faux = false }) {
   withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), PATH: await fakeDocker(t, docker) }, UNSET);
-  const { api } = await serve(t, { faux: undefined, runner: false, accounts: true, openSetup: true });
+  const { api } = await serve(t, { ...(faux ? {} : { faux: undefined }), runner: false, accounts: true, openSetup: true });
   if (archil) {
     const saved = await api("PUT", "/workspace/archil", ARCHIL);
     assert.equal(saved.status, 200, JSON.stringify(saved.body));
@@ -149,4 +150,19 @@ test("an agent with only an old place {mode: sandbox, box: docker} keeps the box
   const set = (await blockersOf({}, { kind: "agentic", instructions: "Answer.", place, computer }, {}, options)).filter((one) => one.field === "definition.place" || one.field === "definition.computer");
   assert.deepEqual(set, []);
   assert.deepEqual(asked, [computer]);
+});
+
+test("under --faux, a run's start and its claim answer alike: a faux desktop the claim cannot make is refused at the start in the claim's words, and a Docker desktop it can make is not", async (t) => {
+  // The claim's registry is the one the runner composes with (runner/main.ts, and this suite's in-process runner: no
+  // faux, so the computer package's, which has no faux desktop). Settings → Computers under --faux lists the faux ones;
+  // the start check reads the claim's, so it never lets a run start that its claim would refuse, nor the reverse.
+  const api = await server(t, { archil: false, docker: true, faux: true });
+  const claimed = computerDepsFrom({ env: {}, store: {}, sealKey: randomBytes(32) }).computerDeps.kinds;
+  const side = { keysOf: async () => ({}), answers: async () => false, launch: async () => { throw new Error("nothing is launched here"); } };
+  for (const [id, computer, makes] of [["faux-desk", { kind: "desktop", provider: "faux-desktop" }, false], ["docker-desk", { kind: "desktop", provider: "docker" }, true]]) {
+    const claim = await resolveComputer(computer, 1, claimed, side);
+    assert.equal(!("refused" in claim), makes, `the claim ${makes ? "makes" : "refuses"} ${computer.provider}'s desktop: ${JSON.stringify(claim)}`);
+    const said = await saveAndStart(api, id, { computer });
+    assert.deepEqual(said.refused.map((one) => one[2]), makes ? [] : [claim.refused], `the start answers as the claim does: ${JSON.stringify(said)}`);
+  }
 });

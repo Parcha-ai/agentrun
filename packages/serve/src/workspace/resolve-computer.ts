@@ -56,6 +56,41 @@ export type ClaimSide = {
  *  desktop's screen and input; a phone; a browser. */
 export type Port = "files" | "exec" | "processes" | "screen" | "input" | "phone" | "browser";
 
+/** A provider's keys as the claim reads them: each key its registry entry declares, by `keyOf` (the server's reader:
+ *  key-meta.ts keyReader, the environment's value, else the saved one); a key with no value is left out. */
+export const providerKeys = (registry: Pick<KindRegistry, "PROVIDERS">, keyOf: (name: string) => Promise<string | undefined>): ClaimSide["keysOf"] =>
+  async (provider) => {
+    const keys: Record<string, string> = {};
+    for (const key of registry.PROVIDERS.find((one) => one.id === provider)?.keys ?? []) {
+      const value = await keyOf(key.name);
+      if (value !== undefined) keys[key.name] = value;
+    }
+    return keys;
+  };
+
+/** Whether an agent's computer `setting` can be had in `mode` now, by the answers the claim gives (resolveComputer: the
+ *  kind, the provider and what it serves, the mode's mount, the provider's keys by `keyOf`): ok, or its refusal in words
+ *  that name the fix. Nothing starts. A run's start asks it before the run is made (runnable.ts).
+ *
+ *  `answers`: whether a provider that binds a folder of this machine (Docker) answers here now, or why not, in words
+ *  that say how to fix it (the server's start-time probe of it). A Mode 1 sandbox on such a provider is refused in those
+ *  words here, at the start, where the claim would only fail to launch it. Asked here, not in resolveComputer: the claim
+ *  has no such answer and launches it. Absent: not asked. */
+export async function computerReadiness(setting: ComputerSetting, mode: 1 | 2, registry: KindRegistry, keyOf: (name: string) => Promise<string | undefined>, answers?: (provider: string) => true | string): Promise<{ readonly ok: true } | { readonly refused: string; readonly box?: string }> {
+  const resolved = await resolveComputer(setting, mode, registry, {
+    keysOf: providerKeys(registry, keyOf),
+    // A setting is given, so the Mode 1 default (the only asker) is never read; and nothing is launched.
+    answers: async () => false,
+    launch: async () => { throw new Error("a readiness check starts no computer"); },
+  });
+  if ("refused" in resolved) return { refused: resolved.refused };
+  const entry = registry.PROVIDERS.find((one) => one.id === resolved.provider);
+  const why = mode === 1 && resolved.mounts && entry?.mounts.includes("bind") && answers ? answers(entry.id) : true;
+  // It names the box whose probe said no (a refusal's details.box), as the box check did.
+  if (why !== true) return { refused: `This agent's computer is a ${entry!.label} ${resolved.kind}, and this server cannot run it: ${why.replace(/[.!?]+$/, "")}.`, box: entry!.id };
+  return { ok: true };
+}
+
 /** The run's computer started: what runTools takes (none for kind none), and its release, after the run's end. */
 export type StartedComputer = { readonly computer: RunComputer | undefined; release(): Promise<void> };
 
