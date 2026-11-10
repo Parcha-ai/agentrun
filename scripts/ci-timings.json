@@ -349,7 +349,6 @@
   "packages/serve/test/archive-wait.test.mjs": 12.5,
   "packages/serve/test/archive.test.mjs": 14.6,
   "packages/serve/test/bound-files.test.mjs": 9.6,
-  "packages/serve/test/box-image.test.mjs": 80.7,
   "packages/serve/test/browser.test.mjs": 15.7,
   "packages/serve/test/cancel-before-attach.test.mjs": 5.6,
   "packages/serve/test/cancel-race.test.mjs": 7.3,

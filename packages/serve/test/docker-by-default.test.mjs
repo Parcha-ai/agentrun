@@ -23,7 +23,6 @@ const NO_DOCKER = "Docker isn't running on this machine (no docker command on PA
 const NO_DAEMON = "Docker isn't running on this machine, or this user may not use it (docker version failed: exit 1): start Docker, or add this user to the docker group, then restart AgentRun";
 const NOT_IN_GROUP = "This server's process isn't in the docker group: restart your user manager with `sudo systemctl restart user@$(id -u)`, or log in again if linger is off";
 const JOIN_GROUP = "This server's process isn't in the docker group: add this user to it with `sudo usermod -aG docker $USER`, then restart your user manager with `sudo systemctl restart user@$(id -u)`, or log in again if linger is off";
-const PREPARING = "Preparing the Docker box image (first start only, a few minutes); agents can be made now, and their first run waits for it.";
 const NOT_ENABLED = "not enabled on this server: start AgentRun with AGENTRUN_BOXES=docker";
 
 /** A fake docker first on PATH, its state directory set, and AGENTRUN_BOXES as `boxes` says (undefined: not set at all). */
@@ -199,8 +198,6 @@ test("fresh-HOME start of the built CLI with AGENTRUN_BOXES not set, a fake dock
   t.after(() => {
     if (child.exitCode === null) process.kill(-child.pid, "SIGTERM");
   });
-  let all = "";
-  child.stdout.on("data", (chunk) => (all += chunk));
   const out = await printed(child, /^Boxes: /m);
   const line = out.split("\n").find((text) => text.startsWith("Boxes: "));
   assert.ok(line.startsWith(ON_BY_DEFAULT), line);
@@ -216,10 +213,4 @@ test("fresh-HOME start of the built CLI with AGENTRUN_BOXES not set, a fake dock
   assert.deepEqual(made.body.definition.place, DOCKER);
   assert.ok(made.body.definition.tools.includes("bash"), JSON.stringify(made.body.definition.tools));
   assert.ok(docker.calls().some((args) => args[0] === "version"), "the CLI's start probed docker");
-  // The box image's first build, said as it starts and as it ends, after the banner.
-  await until(async () => /^The Docker box image is ready\.$/m.test(all), "the image's end line");
-  const said = all.split("\n");
-  const at = (text) => said.indexOf(text);
-  assert.ok(at(PREPARING) > said.findIndex((text) => text.startsWith("Boxes: ")), all);
-  assert.ok(at("The Docker box image is ready.") > at(PREPARING), all);
 });

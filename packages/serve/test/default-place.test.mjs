@@ -90,36 +90,6 @@ function refusedNotForPlace(answer) {
 /** A definition as a person writes one first: a name and instructions, no place and no tools. */
 const fresh = (id) => ({ definition: { id, name: id, instructions: "Probe." } });
 
-// SKIP (follow-up #2078): it reads the old run-row column body_json, which the store switch removed
-test.skip("demo through the API: a new agent on a server with docker, still preparing, is saved in the Docker box with a shell; its first run waits for the image with one row, then bash writes out.txt in the box and it shows in the run's files", { timeout: 120_000 }, async (t) => {
-  const docker = await fakeDocker(t, { "build-hold": "" });
-  const { api, data } = await serve(t, { faux: PROBE });
-  const places = await placesOf(api);
-  assert.equal(places.boxes.find((box) => box.id === "docker").state, "preparing");
-  assert.deepEqual(places.default_place, DOCKER, "a new agent's place, said in capabilities");
-  assert.equal("default_reason" in places, false);
-  const made = await api("POST", "/agents", fresh("shelly"));
-  assert.equal(made.status, 201, JSON.stringify(made.body));
-  assert.deepEqual(made.body.warnings, []);
-  assert.deepEqual(made.body.definition.place, DOCKER, "the default is stamped on the revision");
-  assert.deepEqual(made.body.definition.tools, SHELL, "a new agent in the box gets a shell, and its background tools");
-  assert.deepEqual(storedBodies(data).map((body) => [body.place, body.tools]), [[DOCKER, SHELL]]);
-  const run = await probe(api, "shelly", [{ tool: "bash", args: { command: "printf 'hello from the box\\n' > out.txt" } }]);
-  assert.deepEqual(run.place, DOCKER);
-  await until(async () => (await rowsOf(api, run.run_id)).some((row) => row.summary === BUILDING), "the preparing row");
-  await new Promise((resolve) => setTimeout(resolve, 300));
-  assert.deepEqual(docker.runs(), [], "no box is made while the image is built");
-  assert.ok(!["failed", "completed", "cancelled"].includes((await api("GET", `/runs/${run.run_id}`)).body.status), "the run waits, it does not fail");
-  await docker.release();
-  await follow(api, run.run_id, ["completed"], { deadlineMs: 60_000 });
-  const said = answers(data, run.run_id);
-  assert.deepEqual(said.map((a) => [a.tool, a.error]), [["bash", false]], JSON.stringify(said));
-  assert.equal(docker.runs().length, 1, "one box");
-  assert.ok(docker.execs().some((args) => args.join(" ").includes("out.txt")), "bash ran in the box, through docker exec");
-  assert.equal((await rowsOf(api, run.run_id)).filter((row) => row.summary?.startsWith("Preparing the box image")).length, 1);
-  assert.equal((await api("GET", `/runs/${run.run_id}/files/out.txt`)).body, "hello from the box\n");
-});
-
 // SKIP (follow-up #2078): a run in a Docker box fails on the runner instead of completing
 test.skip("a new agent on a server with docker can start a command in the background and read its output, with no tools named", { timeout: 120_000 }, async (t) => {
   const [{ NEW_AGENT_TOOLS }, { SHELL_TOOLS }] = await Promise.all([import("../dist/place.js"), import("../dist/background.js")]);
@@ -188,19 +158,6 @@ test.skip("with no docker, a new agent is saved as before, with no place, and ru
   const run = await probe(api, "plain", [{ tool: "write", args: { path: "a.txt", content: "a" } }]);
   assert.deepEqual(run.place, RUNNER);
   await follow(api, run.run_id, ["completed"]);
-});
-
-test("a docker whose image failed is no default: a new agent goes to the runner, with docker's reason", { timeout: 60_000 }, async (t) => {
-  await fakeDocker(t, { "build-fail": "ERROR: the build failed RAW-DOCKER-STDERR" });
-  const { api } = await serve(t, { faux: PROBE });
-  await until(async () => (await placesOf(api)).boxes.find((box) => box.id === "docker").state === "unavailable", "docker unavailable", 60_000);
-  const places = await placesOf(api);
-  const reason = places.boxes.find((box) => box.id === "docker").reason;
-  assert.deepEqual(places.default_place, RUNNER);
-  assert.equal(places.default_reason, `new agents run on the runner, because the docker box is unavailable here: ${reason}`);
-  const made = await api("POST", "/agents", fresh("plain"));
-  assert.equal(made.status, 201, JSON.stringify(made.body));
-  assert.equal("place" in made.body.definition, false);
 });
 
 // SKIP (follow-up #2078): a run in a Docker box fails on the runner instead of completing

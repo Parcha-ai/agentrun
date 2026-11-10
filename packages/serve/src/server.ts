@@ -78,7 +78,6 @@ import { runLines } from "./usage-lines.js";
 import { type BoxOffer, boxesByDefault, boxesLog, enabledBoxes, placeOffers, withNetworks } from "./place-offers.js";
 import { dockerComputerRefusal, type DockerPaths, dockerPathsOf, FAUX_MOUNTINFO_ENV, remoteDockerOnce } from "./box-paths.js";
 import { hostAddressesOnce, noHostAddresses, unionOf } from "./docker-host-addresses.js";
-import { boxImageOf, clearImage, type DockerImage, dockerImage, type ImageState, withImage } from "./box-image.js";
 import { DOCUMENTS_ENV } from "./pdf-pages.js";
 import { CAP_MODES, type CapMode } from "./cap.js";
 import { type Blocker, blockersOf, CODE_NODES_ENV, issueOf, MCP_HARNESSES, NOT_SET_UP, type RevisionShape } from "./runnable.js";
@@ -276,9 +275,6 @@ export type ServeOptions = {
   settleRetryMs?: number;
   /** Where the log lines go (print.ts); none without it. AGENTRUN_LOG=quiet leaves out the request lines. */
   log?: (line: string) => void;
-  /** Told the Docker box image's state at the start, when this server has a Docker box, then each change (box-image.ts):
-   *  the CLI says a first build in words, as it starts and as it ends. */
-  onBoxImage?: (state: ImageState) => void;
   /** The lines a person reads about a stop on this data root: this server's, as its close begins and runs' processes are
    *  left to finish their turn, and this start's, when it waits for a server that is stopping (server-lock.ts). Default:
    *  standard error, after `agentrun-serve: `. */
@@ -935,9 +931,6 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const fauxDocker = Boolean(options.faux) && options.fauxDocker === true;
   const found = await placeOffers(env, { keyOf: keyReader(store, seal.key, env), fauxDocker });
   const docker = found.some((offer) => offer.id === "docker" && offer.available);
-  // The Docker box's image, asked of Docker now and pulled in the background when Docker has none (box-image.ts): docker
-  // is preparing until it is in, and unavailable if the pull fails. With no Docker box here there is none.
-  let image: DockerImage | undefined;
   // Under --faux, the mountinfo a test gives (fauxMountinfo, or FAUX_MOUNTINFO_ENV in the process's own environment, which
   // `env` leaves out: a server under test in a container names its own /proc/self/mountinfo there); with none, a faux
   // server is on a host.
@@ -959,29 +952,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const hostAddresses = dockerElsewhere === undefined && "paths" in dockerPaths && boxAllow !== "none" ? unionOf(await hostAddressesOnce(env), dockerHostAddressesOf(env)) : undefined;
   if (hostAddresses) log?.(logLine("docker_host_addresses", { addresses: hostAddresses.addresses.join(",") || "none", ...(hostAddresses.why ? { read: hostAddresses.why } : {}) }));
   const dockerRefused = dockerElsewhere ?? (hostAddresses && hostAddresses.addresses.length === 0 ? noHostAddresses(hostAddresses.why ?? "the read through Docker's socket found none") : undefined);
-  // Each box with what it reaches (place-offers.ts withNetworks), docker with its image's state.
-  const offersNow = (): BoxOffer[] => withNetworks(found.map((offer) => (offer.id === "docker" && image ? withImage(offer, image.state()) : offer)), boxAllow, { ...(dockerRefused !== undefined ? { refused: dockerRefused } : {}), ...(hostAddresses ? { hostAddresses: hostAddresses.addresses } : {}), faux: fauxDocker });
-  const imageLog = (state: ImageState, more: Record<string, number> = {}) => log?.(logLine("box_image", { image: image!.image, state: state.state, ...more, ...("reason" in state ? { reason: state.reason } : {}) }));
-  let boxOffers: BoxOffer[] = offersNow();
-  const boxImage = !fauxDocker && docker ? boxImageOf(env) : undefined;
-  if (boxImage) {
-    image = await dockerImage(env, data, boxImage, {
-      warn: (message) => (log ? log(logLine("box_image", { image: boxImage, warning: message })) : void process.stderr.write(`agentrun-serve: ${message}\n`)),
-      onChange: (state, ms) => {
-        boxOffers = offersNow();
-        imageLog(state, { ms });
-        options.onBoxImage?.(state);
-        // The box's state is in caps alone, not in the offers: recomposed now, or, while the start's probe of the offers
-        // has not ended, by that probe, which reads the box offers when it does.
-        if (offers) recompose();
-      },
-    });
-    stops.push(async () => void (await image?.close()));
-    options.onBoxImage?.(image.state());
-  } else await clearImage(data);
-  boxOffers = offersNow();
+  // Each box with what it reaches (place-offers.ts withNetworks).
+  const boxOffers: BoxOffer[] = withNetworks(found, boxAllow, { ...(dockerRefused !== undefined ? { refused: dockerRefused } : {}), ...(hostAddresses ? { hostAddresses: hostAddresses.addresses } : {}), faux: fauxDocker });
   log?.(logLine("boxes", boxesLog(boxOffers, enabledBoxes(env))));
-  if (image) imageLog(image.state());
   const adapters = options.triggerAdapters ?? TRIGGER_ADAPTERS;
   const openapi = openapiDocument((operationId) => ROUTES.find((r) => r.name === operationId)?.capability, adapters);
   const sealKey = seal.key;
@@ -3251,8 +3224,6 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     await Promise.all([...workers.values()].map((w) => w.exit));
     await importing;
     await installStopped;
-    // Before the store closes: the image's last record lands first (box-image.ts), never after the next server's start.
-    await image?.close();
     // The ends' follower stops before the webhooks it feeds and the store it reads.
     clearTimeout(endsTimer);
     await endsRead;
