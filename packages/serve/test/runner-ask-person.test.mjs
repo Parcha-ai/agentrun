@@ -9,6 +9,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { startFauxGateway } from "./fixtures/faux-gateway.mjs";
 
 const { openSqliteStore } = await import("../dist/store/sqlite/store.js");
@@ -18,6 +19,7 @@ const { adapterRunSpecFromLaunch } = await import("../dist/runner/adapter-run-sp
 const { sendCommand } = await import("../dist/runner/commands.js");
 const { viewOverStore } = await import("../dist/store-view.js");
 const { blockersOf } = await import("../dist/runnable.js");
+const { journalRecords } = await import("../dist/runner/journal-reader.js");
 
 const SEAL_KEY = Buffer.alloc(32, 7);
 const RUN = "run-1";
@@ -45,9 +47,11 @@ const driveAsk = ({ body }) => {
   return undefined;
 };
 
-/** A pi run granted `tools`, through the runner's adapter loop; its model calls ask_person once. Settles to its park. The
- *  runner stays up so a test may resume it; its store, server and gateway are returned. */
-async function askRun(t, { tools }) {
+/** A pi run granted `tools`, through the runner's adapter loop; its model calls ask_person once. Settles to its park (or,
+ *  with `settled`, to what that reads). `personWait`: a tool host's hold the spec's lifecycle carries (HostLifecycle
+ *  .personWait), as the browser's is. The runner stays up so a test may resume it; its store, server and gateway are
+ *  returned. */
+async function askRun(t, { tools, personWait, settled }) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-ask-person-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -67,8 +71,12 @@ async function askRun(t, { tools }) {
   const price = (_model, usage) => ((usage.input ?? 0) * 3 + (usage.output ?? 0) * 15) / 1e6;
   const route = { model: "claude-sonnet-4-5", provider: { api: "anthropic-messages", origin: gw.url, credential: () => `not-a-secret-${"pi"}` }, cost: { input: 3, output: 15 }, outputCeiling: 8_192, price, fetch: globalThis.fetch };
   const deps = { env: {}, data: dir, journal: (claim) => store.journal(claim), store, sealKey: SEAL_KEY, routeOf: async () => route, computerForClaim: async () => ({ release: async () => {} }) };
-  runner = startRunner({ store, name: "runner-a", ...TIMING, createLoop: createAdapterLoop((claim, run) => adapterRunSpecFromLaunch(launch, run, deps, claim)) });
-  const row = await until(async () => {
+  const specOf = async (claim, run) => {
+    const spec = await adapterRunSpecFromLaunch(launch, run, deps, claim);
+    return personWait ? { ...spec, lifecycle: { ...spec.lifecycle, personWait: [personWait] } } : spec;
+  };
+  runner = startRunner({ store, name: "runner-a", ...TIMING, createLoop: createAdapterLoop(specOf) });
+  const row = await until(settled ? () => settled(server) : async () => {
     const now = await server.runs.get(RUN);
     return ["parked", "ended", "failed", "stopped"].includes(now.state) && now.runner === null && now;
   }, "the run's park or end");
@@ -114,4 +122,87 @@ test("CLI refused: a CLI-harness run that names ask_person is refused in main's 
   const ask = blockers.find((blocker) => blocker.tool === "ask_person");
   assert.ok(ask, `ask_person is refused on a CLI harness: ${JSON.stringify(blockers)}`);
   assert.match(ask.message, /runs on pi here/, `refused in main's words: ${JSON.stringify(ask)}`);
+});
+
+/** A tool host's hold for the wait in the claim (HostLifecycle.personWait), as the browser's is: what it was asked, how
+ *  often it was dropped, and its lapse, for the test to fire. `holds: false` holds nothing (undefined), as with no browser. */
+function fakeWait({ holds = true } = {}) {
+  const seen = { asked: [], dropped: 0 };
+  let lapse = () => {};
+  const lapsed = new Promise((resolve) => (lapse = resolve));
+  const personWait = async (_harness, callId) => {
+    seen.asked.push(callId);
+    return holds ? { lapsed, drop: () => void (seen.dropped += 1) } : undefined;
+  };
+  return { seen, personWait, lapse: (words) => lapse(words) };
+}
+/** The run waits in its claim: running, a runner holding it, and the host asked for its hold. */
+const waitingInClaim = (seen) => async (server) => {
+  const now = await server.runs.get(RUN);
+  return now.state === "running" && now.runner !== null && seen.asked.length > 0 && now;
+};
+
+test("wait in the claim: a tool host that holds for the wait keeps the run claimed and input_required on its question; the person's message is its next turn in the same claim, the hold dropped as it is placed", async (t) => {
+  const wait = fakeWait();
+  const { row, server, gw } = await askRun(t, { tools: ["ask_person"], personWait: wait.personWait, settled: waitingInClaim(wait.seen) });
+  assert.equal(row.state, "running", "never parked");
+  assert.equal(wait.seen.asked.length, 1, "the host was asked once, for the ask_person call");
+  const view = await viewOverStore(server, RUN, VIEW_DEPS);
+  assert.equal(view.status, "input_required", `the view reads input_required while the run waits in its claim: ${JSON.stringify(view.status)}`);
+  assert.equal(view.state, "waiting");
+  assert.equal(view.pending?.question, QUESTION, JSON.stringify(view.pending));
+  assert.equal(wait.seen.dropped, 0, "held while it waits");
+  await sendCommand(server, RUN, { kind: "steer", body: { text: "us-west-2" } });
+  const ended = await until(async () => {
+    const now = await server.runs.get(RUN);
+    return now.state === "ended" && now.runner === null && now;
+  }, "the answer's turn ends the run");
+  // The claim's release moves the epoch once: a park and a new claim would have moved it more.
+  assert.equal(ended.epoch, row.epoch + 1, "the answer ran in the same claim, never a park and a new claim");
+  const { entries } = await journalRecords(server.readJournal(RUN), BACKGROUND_CONTEXT);
+  assert.equal(entries.filter((entry) => entry.kind === "agentrun.person.asked").length, 0, "no park entry was written");
+  assert.ok(wait.seen.dropped >= 1, "the hold was dropped");
+  const last = modelCalls(gw).at(-1).body;
+  assert.ok((last.messages ?? []).some((message) => JSON.stringify(message.content ?? message).includes("us-west-2")), "the person's message is the next user turn");
+  const asks = modelCalls(gw).flatMap((call) => (call.body?.messages ?? []).flatMap((message) => (Array.isArray(message.content) ? message.content : [])).filter((block) => block?.type === "tool_use" && block?.name === "ask_person"));
+  assert.equal(asks.length, 1, `ask_person was asked once: ${asks.length}`);
+});
+
+test("wait in the claim: a hold that lapses before the answer (the cap refused more of the person's time, or the browser went) parks the run on its question, and the answer resumes it from the park", async (t) => {
+  const wait = fakeWait();
+  const { server } = await askRun(t, { tools: ["ask_person"], personWait: wait.personWait, settled: waitingInClaim(wait.seen) });
+  wait.lapse("spend_cap_reached: no room for more of your time");
+  const parked = await until(async () => {
+    const now = await server.runs.get(RUN);
+    return now.state === "parked" && now.runner === null && now;
+  }, "the lapsed wait parks the run");
+  assert.equal(parked.state, "parked");
+  assert.ok(wait.seen.dropped >= 1, "the hold was dropped");
+  const view = await viewOverStore(server, RUN, VIEW_DEPS);
+  assert.equal(view.status, "input_required");
+  assert.equal(view.pending?.question, QUESTION, JSON.stringify(view.pending));
+  await sendCommand(server, RUN, { kind: "steer", body: { text: "us-west-2" } });
+  await until(async () => {
+    const now = await server.runs.get(RUN);
+    return now.state === "ended" && now.runner === null && now;
+  }, "the answer resumes it from the park");
+});
+
+test("wait in the claim: a stop while the run waits ends it stopped, and the hold is dropped", async (t) => {
+  const wait = fakeWait();
+  const { server } = await askRun(t, { tools: ["ask_person"], personWait: wait.personWait, settled: waitingInClaim(wait.seen) });
+  await sendCommand(server, RUN, { kind: "stop", body: {} });
+  const stopped = await until(async () => {
+    const now = await server.runs.get(RUN);
+    return now.state === "stopped" && now.runner === null && now;
+  }, "the stop ends the waiting run");
+  assert.equal(stopped.state, "stopped");
+  assert.ok(wait.seen.dropped >= 1, "the hold was dropped");
+});
+
+test("wait in the claim: a host that holds nothing (no browser session open) leaves the park as it was", async (t) => {
+  const wait = fakeWait({ holds: false });
+  const { row } = await askRun(t, { tools: ["ask_person"], personWait: wait.personWait });
+  assert.equal(row.state, "parked", JSON.stringify({ state: row.state, summary: row.summary }));
+  assert.equal(wait.seen.asked.length, 1, "the host was asked");
 });

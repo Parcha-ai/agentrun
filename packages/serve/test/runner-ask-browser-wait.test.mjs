@@ -17,7 +17,7 @@ const { journalRecords } = await import("../dist/runner/journal-reader.js");
 
 const FAUX_BROWSER = new URL("./fixtures/faux-browser.mjs", import.meta.url).pathname;
 const BROWSE_ASK_BROWSE = new URL("./fixtures/faux-browse-ask-browse.mjs", import.meta.url).pathname;
-const KEYS = ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "KERNEL_API_KEY", "FAUX_BROWSER_LOG"];
+const KEYS = ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "KERNEL_API_KEY", "FAUX_BROWSER_LOG", "FAUX_BROWSER_PERSON_MS"];
 const json = { "content-type": "application/json" };
 /** A test password, no real one. */
 const PASSWORD = ["not-a-secret", "owner"].join("-");
@@ -34,10 +34,11 @@ const until = async (done, what, ms = 30_000) => {
   }
 };
 
-/** A signed-in owner's server with the faux browser, and a run of an agent with the browser and ask_person on `input`. */
-async function asking(t, input) {
+/** A signed-in owner's server with the faux browser, and a run of an agent with the browser and ask_person on `input`.
+ *  `env`: more of the run's switches (FAUX_BROWSER_PERSON_MS: the person's windows, the wait's bound among them). */
+async function asking(t, input, env = {}) {
   const log = join(await scratch(t), "browser.jsonl");
-  withEnv(t, { BROWSERBASE_API_KEY: "fake-test-key", BROWSERBASE_PROJECT_ID: "fake-project", FAUX_BROWSER_LOG: log }, KEYS);
+  withEnv(t, { BROWSERBASE_API_KEY: "fake-test-key", BROWSERBASE_PROJECT_ID: "fake-project", FAUX_BROWSER_LOG: log, ...env }, KEYS);
   const server = await serve(t, { accounts: true, openSetup: true, console: await builtConsole(t), fauxBrowser: FAUX_BROWSER, faux: BROWSE_ASK_BROWSE });
   const origin = `http://127.0.0.1:${server.port}`;
   const made = await call(server.port, { method: "POST", path: "/v2/setup", headers: { ...json, origin }, body: { password: PASSWORD } });
@@ -53,16 +54,39 @@ async function asking(t, input) {
   return { server, runId, computer, records, ops };
 }
 
-test("ask_person with the browser open waits in the claim: viewer row kept, GET /computer live, input_required with the claim held and the person's time held; the answer resumes on the same session; the end still drains the browser before the seal", { timeout: 180_000 }, async (t) => {
-  const w = await asking(t, "Browse the example page.");
+/** Once the run asked: its park, or its wait in the claim with the person's time held (the hold's ledger entry). */
+async function askedAndSettled(w) {
   await follow(w.server.api, w.runId, ["input_required"]);
-  // Settled one way or the other: the run parked (its claim let go), or it waits in its claim with the person's time held.
-  const settled = await until(async () => {
+  return until(async () => {
     const row = await w.server.store.runs.get(w.runId);
     if (row.state !== "running") return { row };
     const held = (await w.records()).entries.some((entry) => entry.kind === "runner.request" && entry.data?.model === WAIT_HOLD);
     return held && { row, held };
   }, "the run's park, or its wait in the claim with the person's time held");
+}
+
+/** The run let its browser go cleanly: its one session released at the vendor, its viewer row gone, and each release
+ *  task completed before the seal. */
+async function browserLetGo(w, what) {
+  const created = w.ops().filter((op) => op.op === "create");
+  assert.equal(created.length, 1, `${what}: one session at the vendor: ${JSON.stringify(created.map((op) => op.id))}`);
+  assert.deepEqual(w.ops().filter((op) => op.op === "release").map((op) => op.id), [created[0].id], `${what}: the session released at the vendor, no orphan`);
+  assert.deepEqual(await w.server.store.liveViewers.of(w.runId), [], `${what}: the viewer row is gone`);
+  const { tasks } = await w.records();
+  const releases = tasks.filter((task) => task.kind === "browser.release");
+  assert.ok(releases.length >= 1, `${what}: the release task is in the journal: ${JSON.stringify(tasks.map((task) => task.kind))}`);
+  assert.ok(releases.every((task) => task.state?.status === "terminal" && task.state.outcome?.status === "completed"), `${what}: each completed before the seal: ${JSON.stringify(releases.map((task) => task.state))}`);
+}
+/** The run's row once it is `state` and its claim let go. */
+const released = (w, state) => until(async () => {
+  const row = await w.server.store.runs.get(w.runId);
+  return row.state === state && row.runner === null && row;
+}, `the run ${state}, its claim let go`);
+
+test("ask_person with the browser open waits in the claim: viewer row kept, GET /computer live, input_required with the claim held and the person's time held; the answer resumes on the same session; the end still drains the browser before the seal", { timeout: 180_000 }, async (t) => {
+  const w = await asking(t, "Browse the example page.");
+  // Settled one way or the other: the run parked (its claim let go), or it waits in its claim with the person's time held.
+  const settled = await askedAndSettled(w);
 
   // (a) While it waits: the claim held, the viewer row kept, the owner's live view live, the run waiting on its question.
   assert.equal(settled.row.state, "running", `the run waits in its claim, never parked: ${JSON.stringify({ state: settled.row.state, summary: settled.row.summary })}`);
@@ -90,18 +114,37 @@ test("ask_person with the browser open waits in the claim: viewer row kept, GET 
 
   // (d) Its end lets the browser go: released at the vendor, the viewer row gone, the release task done before the seal,
   // and the person's time let go.
-  const ended = await until(async () => {
-    const row = await w.server.store.runs.get(w.runId);
-    return row.state === "ended" && row.runner === null && row;
-  }, "the run's end, its claim let go");
-  assert.equal(ended.state, "ended");
-  assert.deepEqual(w.ops().filter((op) => op.op === "release").map((op) => op.id), [created[0].id], "the one session released at the end");
-  assert.deepEqual(await w.server.store.liveViewers.of(w.runId), [], "the viewer row is gone with the run");
-  const { tasks } = await w.records();
-  const releases = tasks.filter((task) => task.kind === "browser.release");
-  assert.ok(releases.length >= 1, `the release task is in the journal: ${JSON.stringify(tasks.map((task) => task.kind))}`);
-  assert.ok(releases.every((task) => task.state?.status === "terminal" && task.state.outcome?.status === "completed"), `each completed before the seal: ${JSON.stringify(releases.map((task) => task.state))}`);
+  assert.equal((await released(w, "ended")).state, "ended");
+  await browserLetGo(w, "at the run's end");
 });
+
+test("the wait in the claim is bounded as a hand-over is: past the bound the browser is let go, its time booked, and the run parks on its question as before", { timeout: 180_000 }, async (t) => {
+  // The person's windows under --faux (browser-person.ts personWindows): the wait's bound, the hand-over's, is 3 s here.
+  const w = await asking(t, "Browse the example page.", { FAUX_BROWSER_PERSON_MS: "3000,60000" });
+  const parked = await released(w, "parked");
+  assert.equal(parked.state, "parked", JSON.stringify({ state: parked.state, summary: parked.summary }));
+  await browserLetGo(w, "past the bound");
+  const booked = (await w.records()).entries.filter((entry) => entry.kind === "runner.request").map((entry) => entry.data?.model);
+  assert.ok(booked.includes(WAIT_HOLD), `the person's time was held on the run's ledger while it waited: ${JSON.stringify(booked)}`);
+  assert.ok(booked.includes("paid:this browser session's time"), `the session's time, the wait's included, is booked at its release: ${JSON.stringify(booked)}`);
+  assert.equal((await w.computer()).state, "none", "no live view once the browser is let go");
+  const view = await w.server.api("GET", `/runs/${w.runId}`);
+  assert.equal(view.body.status, "input_required");
+  assert.equal(view.body.pending?.kind, "question", JSON.stringify(view.body.pending));
+});
+
+for (const [act, state] of [["stop", "stopped"], ["cancel", "stopped"]]) {
+  test(`a ${act} while the run waits in its claim ends it cleanly: the browser let go and drained before the seal, no orphan session`, { timeout: 180_000 }, async (t) => {
+    const w = await asking(t, "Browse the example page.");
+    const settled = await askedAndSettled(w);
+    assert.equal(settled.row.state, "running", `the run waits in its claim: ${JSON.stringify({ state: settled.row.state })}`);
+    const asked = await w.server.api("POST", `/runs/${w.runId}/${act}`, {});
+    assert.ok(asked.status < 300, `${act}: ${asked.status} ${JSON.stringify(asked.body)}`);
+    const row = await released(w, state);
+    assert.equal(row.state, state);
+    await browserLetGo(w, `after the ${act}`);
+  });
+}
 
 test("ask_person with the browser granted but no session open parks as before: parked, its claim let go, input_required on its question", { timeout: 180_000 }, async (t) => {
   const w = await asking(t, "Ask first.");
