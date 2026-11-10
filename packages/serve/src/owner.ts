@@ -98,7 +98,7 @@ export class Owner {
     if (this.openSetup) return `${this.base}/setup`;
     if (!this.setupCode || Date.now() > this.setupCode.until) {
       this.setupCode = { code: randomBytes(16).toString("base64url"), until: Date.now() + SETUP_TTL_MS, tries: 0 };
-      this.say(`Set up this server: ${this.base}/setup#code=${this.setupCode.code}`);
+      this.say(`Set up this server: ${this.base}/setup#code=${this.setupCode.code} (or paste AGENTRUN_TOKEN)`);
     }
     return `${this.base}/setup#code=${this.setupCode.code}`;
   }

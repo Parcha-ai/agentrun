@@ -1,5 +1,6 @@
 # AgentRun Server on Render: one web service and one persistent disk, built from this repository's Dockerfile.
 # The token is generated once; read it in the service's Environment tab.
+# Needs a paid Render instance (plan 1c-2g) and a 10 GB disk: a card on the workspace.
 services:
   - type: web
     name: agentrun-server
@@ -26,15 +27,16 @@ services:
       # generates it once (base64 of 256 bits); a service that already has it keeps its own. Losing it loses them.
       - key: AGENTRUN_SEAL_KEY
         generateValue: true
-      - key: AGENT_MODEL
-        sync: false
-      - key: AGENT_MODEL_BASE_URL
-        sync: false
-      - key: AGENT_MODEL_API_KEY
+      # One key runs every template: OpenRouter covers every model.
+      - key: OPENROUTER_API_KEY
         sync: false
       - key: ANTHROPIC_API_KEY
         sync: false
       - key: OPENAI_API_KEY
         sync: false
-      - key: OPENROUTER_API_KEY
+      - key: AGENT_MODEL
+        sync: false
+      - key: AGENT_MODEL_BASE_URL
+        sync: false
+      - key: AGENT_MODEL_API_KEY
         sync: false

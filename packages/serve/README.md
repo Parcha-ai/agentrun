@@ -193,12 +193,12 @@ the volume `agentrun-data` keeps `/data` across `down` and `up`. In the containe
 setup takes the code the start prints (`Set up this server: <url>/setup#code=<code>`), and every route but `GET /v2/capabilities` and `GET /v2/health` still needs the token. Compose's `healthcheck` and
 `render.yaml`'s `healthCheckPath` are `GET /v2/health`.
 
-`render.yaml` at the repository's root is a Render blueprint for the same image: one web service with a 1 GB disk at
+`render.yaml` at the repository's root is a Render blueprint for the same image: one web service on the 1 CPU / 2 GB plan with a 10 GB disk at
 `/data`. Render generates `AGENTRUN_TOKEN`, which scripts and the CLI read in the service's Environment tab, and
 `AGENTRUN_SEAL_KEY`, which seals the keys, MCP server credentials and webhook trigger secrets the server saves (keep a
 copy: a service that loses it loses them). With no
-`AGENTRUN_PUBLIC_URL` the server takes Render's own `RENDER_EXTERNAL_URL` as its public address, so setup takes the
-code the start prints in the service's log (`Set up this server: ...`). On another host, set `AGENTRUN_PUBLIC_URL` to
+`AGENTRUN_PUBLIC_URL` the server takes Render's own `RENDER_EXTERNAL_URL` as its public address, so setup takes
+`AGENTRUN_TOKEN` from the Environment tab, or the code the start prints in the service's log (`Set up this server: ...`). On another host, set `AGENTRUN_PUBLIC_URL` to
 the address people open before the first start; without it, whoever opens the console first sets the password. Set
 `AGENT_MODEL` and the provider's key there too. Render waits 30 s after SIGTERM, above the image's 6 s drain; it does not
 let a service with a disk change that.
@@ -2161,7 +2161,7 @@ AgentRun Server is for one person, who signs in to the console with a password (
 no `AGENTRUN_PUBLIC_URL`, listening on loopback (the default), the start prints `Set your password: <url>/setup`, and the
 first visit sets it, 12 characters or more. With a public address, or listening on any other address (`0.0.0.0` in the
 image, a LAN address), the start prints `Set up this server: <url>/setup#code=<code>`, and setup takes that code (or the
-token as the Bearer): anyone who reaches the port could otherwise set the password first. The server keeps a scrypt hash of the password, never the password, in `DIR/owner.json`, and signs its
+token, in the code field or as the Bearer): anyone who reaches the port could otherwise set the password first. The server keeps a scrypt hash of the password, never the password, in `DIR/owner.json`, and signs its
 session cookies with the key in `DIR/.session-secret`; both are 0600, and no run reaches either. A session lasts 30 days.
 **Sign out** (`POST /v2/auth/sign-out`) signs out this browser: its session is revoked on the server (a copy of its
 cookie stops working too) and its cookie cleared, and every other browser stays signed in. **Sign out everywhere** (`POST /v2/auth/sign-out-everywhere`) ends every session on every browser and phone,
