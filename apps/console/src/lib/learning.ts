@@ -7,50 +7,35 @@
 import { cost } from "./format";
 import { elapsed } from "./runGraph";
 import { rowDetail, rowFailed } from "./timeline";
-import type { TimelineRow } from "./v2";
+import type { AgentLearningView, Run, RunLearningDiff, RunSummary, TimelineRow } from "./v2";
 
-export type LearningState = "seeded" | "reflecting" | "proposed" | "merged" | "dropped";
-export type NoteType = "user" | "feedback" | "project" | "reference";
-/** `pending` (a newer server's): a note that changes what the agent trusts or skips (a site it trusts, an approval it
- *  skips, where money or data goes). No run reads it until the owner approves it. */
-export type NoteStatus = "active" | "superseded" | "retired" | "pending";
-export type Page<T> = { items: T[]; total: number; next_cursor: string | null };
+export type LearningState = NonNullable<RunSummary["learning"]>["state"];
+export type NoteType = LearningNote["type"];
+/** `pending`: a note that changes what the agent trusts or skips (a site it trusts, an approval it skips, where money or
+ *  data goes). No run reads it until the owner approves it. */
+export type NoteStatus = LearningNote["status"];
 
 /** A note a run started with (`given`), opened (`read`) or kept (`learned`, with the older notes it replaces), by its file
  *  and its name. */
-export type NoteRef = { file: string; name: string };
-export type LearnedRef = NoteRef & { supersedes?: string[] };
+export type NoteRef = NonNullable<NonNullable<RunSummary["learning"]>["given"]>[number];
+export type LearnedRef = NonNullable<NonNullable<RunSummary["learning"]>["learned"]>[number];
 
-/** A run's learning as a run or a list gives it; null for a run that does not learn. A list from an older server
- *  carries only `state` and `reason`. */
-export type RunLearning = {
-  state: LearningState;
-  reason: string | null;
-  detail?: string | null;
-  at?: string;
-  /** The notes it started with, under `# Learned` (absent when it started with nothing learned). */
-  given?: NoteRef[];
-  /** The note files it opened, once it settled (absent when it opened none). */
-  read?: NoteRef[];
-  learned?: LearnedRef[];
-  /** A newer server's: the notes the run kept that wait for the owner's OK. */
-  pending?: NoteRef[];
-  /** A newer server's: the skill and the workflow the run kept, each `pending` while it waits for the owner's OK. */
-  skills?: LearnedFileRef[];
-  workflows?: LearnedFileRef[];
-} | null;
+/** A run's learning as a run or a list gives it (a list's has no `at`); null for a run that does not learn. `given`, the
+ *  notes it started with; `read`, the note files it opened once it settled; `learned`, `pending`, `skills` and
+ *  `workflows`, what it kept; each absent when there is none. */
+export type RunLearning = (NonNullable<RunSummary["learning"]> & Partial<Pick<NonNullable<Run["learning"]>, "at">>) | null;
 /** A skill or a workflow a run kept: its file (a SKILL.md, a workflow.json), its name, and whether it waits. */
-export type LearnedFileRef = { file: string; name: string; pending?: true };
+export type LearnedFileRef = NonNullable<NonNullable<RunSummary["learning"]>["skills"]>[number];
 /** A skill or a workflow the agent learned, as GET .../learning lists it (a newer server's): its name, its file (a
  *  workflow's README, `readme`, is the file an approval or a retire names), what it is for, whether it waits for the
  *  owner's OK or a person retired it (no later run is given it), the run that kept it, its size, and the version an
  *  approval or a retire names (`etag`). */
-export type LearnedItem = { name: string; file: string; readme?: string; description: string; status: "active" | "pending" | "retired"; run: string | null; bytes: number; etag: string; retired?: Retired; last_change?: LastChange };
+export type LearnedItem = (NonNullable<AgentLearningView["skills"]>[number] & { readme?: never }) | NonNullable<AgentLearningView["workflows"]>[number];
 /** When a retired one was retired, and by whom (absent on one not retired): its retire commit, kept across later
  *  changes. */
-export type Retired = { at: string; by: "person" | "run" };
+export type Retired = NonNullable<LearningNote["retired"]>;
 /** The newest change to an item's file, as the server names it (absent when it names none). */
-export type LastChange = { kind: "approved" | "edited" | "created" | "retired" | "restored" | "learned" | "superseded"; by: "person" | "run"; at: string };
+export type LastChange = NonNullable<LearningNote["last_change"]>;
 const VERBS: Record<LastChange["kind"], string> = { approved: "Approved", edited: "Edited", created: "Created", retired: "Retired", restored: "Restored", learned: "Learned", superseded: "Replaced" };
 /** A change in words: "Approved by you", "Retired by a run". */
 export const changeWords = (kind: LastChange["kind"], by: LastChange["by"]) => `${VERBS[kind]} by ${by === "person" ? "you" : "a run"}`;
@@ -61,18 +46,18 @@ export const statusFile = (item: Pick<LearnedItem, "file" | "readme">) => item.r
 /** `etag`: the note's version, the same value as the file read's ETag, so an edit or a retire is made on the version a
  *  card showed without reading it again (absent from an older server's). */
 /** `runs`: how many runs it was given to, and read in, as the server counts them. */
-export type LearningNote = { file: string; name: string; description: string; type: NoteType; status: NoteStatus; superseded_by: string | null; text: string; etag?: string; origin?: "you" | "run"; retired?: Retired; last_change?: LastChange; runs: { given: number; read: number } };
+export type LearningNote = AgentLearningView["notes"]["items"][number];
 /** One change to what the agent learned, newest first: a run's (`by.run`; `reason`, why it was kept) or a person's. */
-export type LearningChange = { by: { run: string } | { user: true }; commit: string; at: string; reason: string; files: string[] };
-export type LearningCounts = { merged: number; dropped: Record<string, number>; in_progress: number };
+export type LearningChange = AgentLearningView["log"]["items"][number];
+export type LearningCounts = AgentLearningView["counts"];
 /** One side of the before and after: how many runs, the median time to the answer, the median cost of the run's own work
  *  (null when no run's cost is known), and from a newer server how many runs that cost is of (`cost_runs`) and the median
  *  cost of learning itself (`median_learning_usd`). */
-export type ImpactSide = { runs: number; median_duration_s: number; median_cost_usd: number | null; cost_runs?: number; median_learning_usd?: number | null };
+export type ImpactSide = NonNullable<Impact>["before"];
 /** The agent's runs before its first kept note against its runs that started from one; null until each side has two. */
-export type Impact = { before: ImpactSide; after: ImpactSide } | null;
+export type Impact = AgentLearningView["impact"];
 /** GET /v2/agents/{id}/learning. `main` is null until the agent first learns. */
-export type AgentLearning = { agent: string; main: string | null; index: string; notes: Page<LearningNote>; skills?: LearnedItem[]; workflows?: LearnedItem[]; log: Page<LearningChange>; counts: LearningCounts; impact?: Impact };
+export type AgentLearning = AgentLearningView;
 /** A note as GET .../learning/files/{file} answers it, and as a write answers it: its whole text and its version, as
  *  getAgent gives an agent and its ETag. */
 export type NoteText = { note: string; etag: string | null };
@@ -81,7 +66,7 @@ export type NoteText = { note: string; etag: string | null };
  *  that version only if its text is still the text the card showed: `changed` when it is not (someone, or a run,
  *  changed it since), `unknown` when the server named no version. The one place this is decided. */
 export type Seen = { kind: "same"; etag: string; text: string } | { kind: "changed"; now: NoteText } | { kind: "unknown" };
-export async function seenVersion(note: Pick<LearningNote, "text" | "etag">, read: () => Promise<NoteText>): Promise<Seen> {
+export async function seenVersion(note: Pick<LearningNote, "text"> & Partial<Pick<LearningNote, "etag">>, read: () => Promise<NoteText>): Promise<Seen> {
   if (typeof note.etag === "string" && note.etag) return { kind: "same", etag: note.etag, text: note.text };
   const now = await read();
   if (now.note !== note.text) return { kind: "changed", now };
@@ -146,7 +131,7 @@ export const waitingOf = (agent: { learning?: { pending: number } } | null | und
 export const waitingWords = (n: number) => `${n} learned ${n === 1 ? "item waits" : "items wait"} for your OK`;
 /** Who a note is from: the server's `origin` when it sends one, else its front matter's `origin:` line. A note from the
  *  person themselves reads "From you". */
-export function originOf(n: Pick<LearningNote, "origin" | "text">): "you" | "run" | undefined {
+export function originOf(n: Pick<LearningNote, "text"> & Partial<Pick<LearningNote, "origin">>): "you" | "run" | undefined {
   if (n.origin === "you" || n.origin === "run") return n.origin;
   for (const line of noteParts(n.text).rest) {
     const m = /^origin:\s*["']?(you|run)["']?\s*$/.exec(line);
@@ -359,7 +344,7 @@ export function learningSteps(rows: readonly TimelineRow[], learning?: RunLearni
   if (!looked.length) return rows.map(learningLabel);
   const end = rows.findLast((r) => r.kind === LEARNING);
   const fromRow = rowLearning(end);
-  const said = stage(fromRow) > stage(learning ?? undefined) ? fromRow : learning && { ...learning, detail: learning.detail ?? fromRow?.detail ?? end?.summary };
+  const said = stage(fromRow) > stage(learning ?? undefined) ? fromRow : learning && { ...learning, detail: learning.detail ?? fromRow?.detail ?? end?.summary ?? null };
   const first = looked[0]!;
   const step: TimelineRow = {
     id: first.id, seq: first.seq, timestamp: first.timestamp, created_at: first.created_at,
@@ -372,8 +357,8 @@ export function learningSteps(rows: readonly TimelineRow[], learning?: RunLearni
 
 /** What a run's learning changed in its agent's notes, as GET /v2/runs/{id}/learning/diff answers: each file with its
  *  `patch` (git's hunks, no header), or why the server withholds it (`too_large`, or a value of its secrets in it). */
-export type LearningDiffFile = { path: string; status: "added" | "deleted" | "modified"; patch?: string; withheld?: "too_large" | "secret" };
-export type LearningDiff = { base: string | null; head: string | null; files: LearningDiffFile[] };
+export type LearningDiff = RunLearningDiff;
+export type LearningDiffFile = LearningDiff["files"][number];
 /** A line of a note's text before or after: unchanged (`same`), taken out (`removed`), new (`added`), or a `gap` where
  *  unchanged lines are left out. */
 export type DiffLine = { text: string; mark: "same" | "removed" | "added" | "gap" };

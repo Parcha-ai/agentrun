@@ -10,7 +10,7 @@ import { learningSteps } from "@/lib/learning";
 import { NO_MESSAGES, runState } from "@/lib/runState";
 import { latest, pause, TRIES_MS } from "@/lib/viewing";
 import { useLearningSettle } from "@/lib/useLearningSettle";
-import type { Run, TimelineRow } from "@/lib/v2";
+import type { Run, RunSummary, TimelineRow } from "@/lib/v2";
 
 
 /** An agent's latest run as the run page shows it: its status, its timeline followed from the cursor while it goes, and
@@ -19,7 +19,7 @@ import type { Run, TimelineRow } from "@/lib/v2";
  *  status moves begins a new one, or, back at the status the record in hand was read for, cancels the one under way. A
  *  read that fails is tried again (the last page may already have come, and none follows it); one that never lands says
  *  so, with a Retry, rather than leave the old status showing. */
-export function LatestRun({ v2, run, onRun }: { v2: Client; run: Run; onRun: (run: Run) => void }) {
+export function LatestRun({ v2, run, onRun }: { v2: Client; run: RunSummary; onRun: (run: Run) => void }) {
   const [rows, setRows] = useState<TimelineRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   // The status and state the newest timeline page names: whether the timeline is still going is its to say.

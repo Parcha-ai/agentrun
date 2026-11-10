@@ -1,6 +1,6 @@
 import { byName } from "./agents";
 import { cost } from "./format";
-import type { Run } from "./v2";
+import type { Run, RunSummary } from "./v2";
 
 /** What Mission Control shows: counts from the server's store, the cost said with its basis, and the latest runs. */
 export type MissionView = {
@@ -11,7 +11,7 @@ export type MissionView = {
   perAgent: { agentId: string; name: string; runs: number }[];
   /** `usd` sums the runs whose cost is known; `unknownRuns` counts the rest. No known cost at all is null, never 0. */
   cost: { usd: number | null; basis: "estimate" | null; unknownRuns: number };
-  recent: Run[];
+  recent: RunSummary[];
   /** The runs' tokens, time, tools and success over the range the page asked for. */
   analytics: Analytics;
 };
@@ -119,7 +119,7 @@ export function trendDays(byDay: Analytics["by_day"], from: string | null, now =
 }
 
 /** The page's view of the server's stats and its latest runs. */
-export function missionFrom(s: Stats, recent: Run[]): MissionView {
+export function missionFrom(s: Stats, recent: RunSummary[]): MissionView {
   return {
     agents: s.agents,
     runs: { total: s.runs.total, active: s.runs.active, needsInput: s.runs.needs_input, failed: s.runs.failed, statusUnknown: s.runs.status_unknown, needsReview: s.runs.needs_review },

@@ -3,6 +3,7 @@ import { approval, bodyOf, change, changeWords, dropKind, dropWords, fileFor, im
 import { recorded } from "@/fixtures";
 import type { LastChange } from "./learning";
 import type { TimelineRow } from "./v2";
+import { impactSide, runLearning } from "@/test/learning";
 
 // What the console reads of a run's and an agent's learning, and the words it says it in.
 const NOTE = "---\nname: Try /policies/refund-policy first\ndescription: Open it before any other page\ntype: feedback\nsupersedes: [shopify-refund-policy-path.md]\n---\nOpen `/policies/refund-policy` first.\n";
@@ -37,50 +38,50 @@ describe("a note's parts", () => {
 
 describe("a run's learning, read tolerantly", () => {
   it("what it read and kept come from a newer server; an older one's short form shows nothing", () => {
-    expect(readBy({ state: "merged", reason: null })).toEqual([]);
-    expect(learnedBy({ state: "merged", reason: null })).toEqual([]);
+    expect(readBy(runLearning({ state: "merged", reason: null }))).toEqual([]);
+    expect(learnedBy(runLearning({ state: "merged", reason: null }))).toEqual([]);
     expect(readBy(null)).toEqual([]);
     expect(readBy(undefined)).toEqual([]);
-    const l = { state: "merged" as const, reason: null, given: [{ file: "a.md", name: "A" }], read: [{ file: "a.md", name: "A" }, { file: 3 } as never], learned: [{ file: "b.md", name: "B", supersedes: ["a.md"] }] };
+    const l = runLearning({ state: "merged" as const, reason: null, given: [{ file: "a.md", name: "A" }], read: [{ file: "a.md", name: "A" }, { file: 3 } as never], learned: [{ file: "b.md", name: "B", supersedes: ["a.md"] }] });
     expect(readBy(l)).toEqual([{ file: "a.md", name: "A" }]);
     expect(givenBy(l)).toEqual([{ file: "a.md", name: "A" }]);
-    expect(givenBy({ state: "merged", reason: null })).toEqual([]);
+    expect(givenBy(runLearning({ state: "merged", reason: null }))).toEqual([]);
     expect(learnedBy(l)).toEqual([{ file: "b.md", name: "B", supersedes: ["a.md"] }]);
   });
   it("only a run whose learning was kept has learned anything", () => {
-    expect(learnedBy({ state: "dropped", reason: "grader", learned: [{ file: "b.md", name: "B" }] })).toEqual([]);
+    expect(learnedBy(runLearning({ state: "dropped", reason: "grader", learned: [{ file: "b.md", name: "B", supersedes: [] }] }))).toEqual([]);
   });
   it("is under way until it is kept or not", () => {
-    expect(["seeded", "reflecting", "proposed"].map((state) => underWay({ state: state as never, reason: null }))).toEqual([true, true, true]);
-    expect(underWay({ state: "merged", reason: null })).toBe(false);
+    expect(["seeded", "reflecting", "proposed"].map((state) => underWay(runLearning({ state: state as never, reason: null })))).toEqual([true, true, true]);
+    expect(underWay(runLearning({ state: "merged", reason: null }))).toBe(false);
     expect(underWay(null)).toBe(false);
   });
   it("why it kept nothing: the server's own sentence when it sends one, else plain words for the reason", () => {
-    expect(dropWords({ state: "dropped", reason: "grader", detail: "Not kept: too specific to one shop." })).toBe("Not kept: too specific to one shop.");
-    expect(dropWords({ state: "dropped", reason: "empty" })).toBe("Nothing new to remember from this run.");
-    expect(dropWords({ state: "dropped", reason: "no_budget" })).toBe("Skipped: no budget left in this run to look back.");
-    expect(dropWords({ state: "dropped", reason: "a_new_reason" })).toBe("Not kept: learning stopped.");
+    expect(dropWords(runLearning({ state: "dropped", reason: "grader", detail: "Not kept: too specific to one shop." }))).toBe("Not kept: too specific to one shop.");
+    expect(dropWords(runLearning({ state: "dropped", reason: "empty" }))).toBe("Nothing new to remember from this run.");
+    expect(dropWords(runLearning({ state: "dropped", reason: "no_budget" }))).toBe("Skipped: no budget left in this run to look back.");
+    expect(dropWords(runLearning({ state: "dropped", reason: "a_new_reason" as never }))).toBe("Not kept: learning stopped.");
     expect(["grader", "checker", "empty", "no_budget", "crashed", null].map(dropKind)).toEqual(["refused", "refused", "nothing", "skipped", "stopped", "stopped"]);
   });
   it("notes given out of format were turned away, in plain words", () => {
-    expect(dropWords({ state: "dropped", reason: "unparsed" })).toBe("Not kept: its notes weren't in the expected format.");
+    expect(dropWords(runLearning({ state: "dropped", reason: "unparsed" }))).toBe("Not kept: its notes weren't in the expected format.");
     expect(dropKind("unparsed")).toBe("refused");
   });
   it("no reason's words use git's or the loop's own names", () => {
-    const words = ["empty", "unparsed", "grader", "checker", "screen", "screen_down", "no_write_tool", "tool_denied", "no_budget", "unknown_cost", "seed_failed", "cancelled", "crashed", "reflect_timeout", "reflect_failed", "propose_failed", "grade_failed"].map((reason) => dropWords({ state: "dropped", reason })).join(" ");
+    const words = ["empty", "unparsed", "grader", "checker", "screen", "screen_down", "no_write_tool", "tool_denied", "no_budget", "unknown_cost", "seed_failed", "cancelled", "crashed", "reflect_timeout", "reflect_failed", "propose_failed", "grade_failed"].map((reason) => dropWords(runLearning({ state: "dropped", reason: reason as never }))).join(" ");
     expect(words).not.toMatch(/\b(main|merge|merged|commit|grader|verdict|proposal|end-of-run|reflect|seed|checker)\b/i);
   });
 });
 
 describe("the before and after", () => {
-  const impact = { before: { runs: 2, median_duration_s: 18.4, median_cost_usd: 0.1146 }, after: { runs: 4, median_duration_s: 12, median_cost_usd: 0.0311 } };
+  const impact = { before: impactSide({ runs: 2, median_duration_s: 18.4, median_cost_usd: 0.1146 }), after: impactSide({ runs: 4, median_duration_s: 12, median_cost_usd: 0.0311 }) };
   it("says it in a line: the time to the answer and a run's cost, each side's median, on the after side's runs", () => {
     expect(impactWords(impact)).toBe("Since it learned (on 4 runs): answers in 12s instead of 18s · $0.03 est. instead of $0.11 est. a run");
     expect(impactWords({ ...impact, after: { ...impact.after, median_cost_usd: null } })).toBe("Since it learned (on 4 runs): answers in 12s instead of 18s");
     expect(impactWords({ ...impact, after: { ...impact.after, median_learning_usd: 0.008 } })).toBe("Since it learned (on 4 runs): answers in 12s instead of 18s · $0.03 est. instead of $0.11 est. a run · learning itself $0.0080 est. a run");
   });
   it("says a slower or costlier after as it is", () => {
-    expect(impactWords({ before: { runs: 2, median_duration_s: 14, median_cost_usd: 0.0214 }, after: { runs: 4, median_duration_s: 21, median_cost_usd: 0.0377 } })).toBe("Since it learned (on 4 runs): answers in 21s instead of 14s · $0.04 est. instead of $0.02 est. a run");
+    expect(impactWords({ before: impactSide({ runs: 2, median_duration_s: 14, median_cost_usd: 0.0214 }), after: impactSide({ runs: 4, median_duration_s: 21, median_cost_usd: 0.0377 }) })).toBe("Since it learned (on 4 runs): answers in 21s instead of 14s · $0.04 est. instead of $0.02 est. a run");
   });
   it("is shown only when the server sends both sides with two runs each", () => {
     expect(shownImpact(impact)).toBe(true);
@@ -128,14 +129,14 @@ describe("plain words for the machine's", () => {
 
 describe("notes that wait for the owner's OK", () => {
   it("a run's waiting notes come from its `pending`", () => {
-    expect(pendingBy({ state: "merged", reason: null, pending: [{ file: "trust-acme.md", name: "Trust acme.com" }, { nope: 1 } as never] })).toEqual([{ file: "trust-acme.md", name: "Trust acme.com" }]);
-    expect(waitsForOk({ state: "merged", reason: null, pending: [{ file: "trust-acme.md", name: "Trust acme.com" }] })).toBe(true);
-    expect(waitsForOk({ state: "merged", reason: null })).toBe(false);
+    expect(pendingBy(runLearning({ state: "merged", reason: null, pending: [{ file: "trust-acme.md", name: "Trust acme.com" }, { nope: 1 } as never] }))).toEqual([{ file: "trust-acme.md", name: "Trust acme.com" }]);
+    expect(waitsForOk(runLearning({ state: "merged", reason: null, pending: [{ file: "trust-acme.md", name: "Trust acme.com" }] }))).toBe(true);
+    expect(waitsForOk(runLearning({ state: "merged", reason: null }))).toBe(false);
     expect(waitsForOk(null)).toBe(false);
     expect([waitWords(1), waitWords(2), waitWords(0)]).toEqual(["1 note waits for your OK", "2 notes wait for your OK", "A note waits for your OK"]);
   });
   it("a run that kept a note and holds one for the OK looks back on both; one that only holds one says it waits", () => {
-    const both = { state: "merged" as const, reason: null, detail: "Learned: Answer in tables. Waiting for your OK: Buy from PaperDepot24 first.", learned: [{ file: "answer-in-tables.md", name: "Answer in tables", supersedes: [] }], pending: [{ file: "paperdepot24-first.md", name: "Buy from PaperDepot24 first" }] };
+    const both = runLearning({ state: "merged" as const, reason: null, detail: "Learned: Answer in tables. Waiting for your OK: Buy from PaperDepot24 first.", learned: [{ file: "answer-in-tables.md", name: "Answer in tables", supersedes: [] }], pending: [{ file: "paperdepot24-first.md", name: "Buy from PaperDepot24 first" }] });
     expect(waitsForOk(both)).toBe(true);
     expect(lookedBack(both)).toBe("Looked back: kept 1 note (Answer in tables); 1 note waits for your OK (Buy from PaperDepot24 first)");
     expect(lookedBack({ ...both, learned: undefined, detail: "Waiting for your OK: Buy from PaperDepot24 first." })).toBe("Looked back: 1 note waits for your OK (Buy from PaperDepot24 first)");
@@ -174,7 +175,7 @@ describe("the look-back on a run's timeline", () => {
   ];
   const USAGE = row("us", 8, { kind: "usage", summary: "Cost so far: $0.0136 over 4 model requests" });
   const ended = (learning: NonNullable<TimelineRow["learning"]> & { detail: string }) => row("learning", 9, { kind: "learning", agent_label: "learning", summary: learning.detail, text: learning.detail, learning });
-  const MERGED: RunLearning = { state: "merged", reason: null, learned: [{ file: "refund-limit.md", name: "Refund limit", supersedes: [] }, { file: "answer-shape.md", name: "Answer shape", supersedes: ["old.md"] }] };
+  const MERGED: RunLearning = runLearning({ state: "merged", reason: null, learned: [{ file: "refund-limit.md", name: "Refund limit", supersedes: [] }, { file: "answer-shape.md", name: "Answer shape", supersedes: ["old.md"] }] });
   const KEPT = ended({ state: "merged", reason: null, detail: "Learned 2 notes: Refund limit; Answer shape (replaces 1 older note)" });
 
   it("folds into one row where it began, saying what it kept by name, with no file path; the rows are behind it", () => {
@@ -209,28 +210,28 @@ describe("the look-back on a run's timeline", () => {
   });
   it("is keyed on the learning label, not on writes: a look-back that answers with its notes in text folds the same", () => {
     const blocks = row("n1", 4, { kind: "text_block", agent_label: "learning", summary: "<note file=\"refund-limit.md\">…", text: "<note file=\"refund-limit.md\">\n---\nname: Refund limit\n---\nAsk first.\n</note>" });
-    const out = learningSteps([ASKED, LOOK, blocks, ended({ state: "merged", reason: null, detail: "Learned: Refund limit" })], { state: "merged", reason: null, learned: [MERGED!.learned![0]!] });
+    const out = learningSteps([ASKED, LOOK, blocks, ended({ state: "merged", reason: null, detail: "Learned: Refund limit" })], runLearning({ state: "merged", reason: null, learned: [MERGED!.learned![0]!] }));
     expect(out.map((r) => [r.id, r.summary])).toEqual([["u1", ASKED.summary], ["l1", "Looked back: kept 1 note (Refund limit)"]]);
   });
   it("says when there was nothing new to keep, and why a note was not kept", () => {
-    expect(learningSteps([LOOK, ...WRITES, ended({ state: "dropped", reason: "empty", detail: "Nothing new to remember from this run." })], { state: "dropped", reason: "empty" })[0]!.summary).toBe("Looked back: nothing new to keep");
+    expect(learningSteps([LOOK, ...WRITES, ended({ state: "dropped", reason: "empty", detail: "Nothing new to remember from this run." })], runLearning({ state: "dropped", reason: "empty" }))[0]!.summary).toBe("Looked back: nothing new to keep");
     const graded = { state: "dropped" as const, reason: "grader" as const, detail: "Not kept: It's about one shop's returns portal, not a rule other shops share." };
-    expect(learningSteps([LOOK, ...WRITES, ended(graded)], graded)[0]!.summary).toBe("Looked back: Not kept: It's about one shop's returns portal, not a rule other shops share.");
+    expect(learningSteps([LOOK, ...WRITES, ended(graded)], runLearning(graded))[0]!.summary).toBe("Looked back: Not kept: It's about one shop's returns portal, not a rule other shops share.");
   });
   it("while it looks back or checks its notes, says so, in one row that grows", () => {
-    const going = learningSteps([ASKED, LOOK, WRITES[0]!], { state: "reflecting", reason: null });
+    const going = learningSteps([ASKED, LOOK, WRITES[0]!], runLearning({ state: "reflecting", reason: null }));
     expect(going.map((r) => [r.id, r.summary])).toEqual([["u1", ASKED.summary], ["l1", "Looking back on this run…"]]);
     expect(going[1]!.text).toContain("Wrote .learning/refund-limit.md");
     const checking = ended({ state: "proposed", reason: null, detail: "Checking 2 new notes…" });
-    expect(learningSteps([LOOK, ...WRITES, checking], { state: "proposed", reason: null, detail: "Checking 2 new notes…" })[0]!.summary).toBe("Looking back: checking 2 new notes…");
+    expect(learningSteps([LOOK, ...WRITES, checking], runLearning({ state: "proposed", reason: null, detail: "Checking 2 new notes…" }))[0]!.summary).toBe("Looking back: checking 2 new notes…");
   });
   it("a timeline read after the run says how it ended, though the run read before it does not yet", () => {
-    const out = learningSteps([LOOK, ...WRITES, KEPT], { state: "proposed", reason: null });
+    const out = learningSteps([LOOK, ...WRITES, KEPT], runLearning({ state: "proposed", reason: null }));
     expect(out[0]!.summary).toBe("Looked back. Learned 2 notes: Refund limit; Answer shape (replaces 1 older note)");
   });
   it("with no look-back (a skip), the row that says how learning ended stays alone, labelled Learning", () => {
     const skipped = ended({ state: "dropped", reason: "no_budget", detail: "Skipped: no budget left in this run to look back." });
-    const out = learningSteps([ASKED, ANSWER, skipped], { state: "dropped", reason: "no_budget" });
+    const out = learningSteps([ASKED, ANSWER, skipped], runLearning({ state: "dropped", reason: "no_budget" }));
     expect(out.map((r) => r.id)).toEqual(["u1", "a1", "learning"]);
     expect(out[2]).toMatchObject({ kind: "learning", agent_label: null, summary: "Skipped: no budget left in this run to look back." });
   });
@@ -293,7 +294,7 @@ describe("lookedBack, a run that kept nothing for a reason", () => {
   ];
   for (const detail of SHAPES) {
     it(`says the server's sentence as it is: ${detail.slice(0, 40)}…`, () => {
-      const said = lookedBack({ state: "dropped", reason: "grader", detail });
+      const said = lookedBack(runLearning({ state: "dropped", reason: "grader", detail }));
       expect(said).toBe(`Looked back: ${detail}`);
       expect(said.match(/Not kept/g)).toHaveLength(1);
     });

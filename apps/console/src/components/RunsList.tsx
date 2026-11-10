@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button";
 import type { RunsFilter } from "@/lib/client";
 import { cost, runEnded, when, runTitle } from "@/lib/format";
 import type { Problem } from "@/lib/problem";
-import type { Run, RunStatus } from "@/lib/v2";
+import type { Run, RunStatus, RunSummary } from "@/lib/v2";
 
 /** The statuses GET /v2/runs filters by, in the order a run moves through them. */
 export const RUN_STATUSES: readonly RunStatus[] = ["queued", "working", "paused", "input_required", "completed", "failed", "cancelled"];
@@ -17,7 +17,7 @@ const STATUS_LABEL: Record<RunStatus, string> = { queued: "Queued", working: "Wo
 /** Every run on the server, newest first, as the hosted console's history table, with the status column it leaves out
  *  at desktop width. A row opens its run. With `onFilter`, a state filter and the archived runs, as the address keeps them.
  *  A read that failed says so in words, with Try again (`onRetry`); a failed Load more keeps the rows above it. */
-export function RunsList({ runs, agentName, onOpen, error, onRetry, onMore, loadingMore, filter = {}, onFilter }: { runs: Run[] | null; agentName: (id: string) => string; onOpen: (id: string) => void; error?: Problem | null; onRetry?: () => void; onMore?: () => void; loadingMore?: boolean; filter?: RunsFilter; onFilter?: (filter: RunsFilter) => void }) {
+export function RunsList({ runs, agentName, onOpen, error, onRetry, onMore, loadingMore, filter = {}, onFilter }: { runs: RunSummary[] | null; agentName: (id: string) => string; onOpen: (id: string) => void; error?: Problem | null; onRetry?: () => void; onMore?: () => void; loadingMore?: boolean; filter?: RunsFilter; onFilter?: (filter: RunsFilter) => void }) {
   const archived = !!filter.archived;
   return (
     <div className="p-5 md:p-8">
@@ -41,7 +41,7 @@ export function RunsList({ runs, agentName, onOpen, error, onRetry, onMore, load
   );
 }
 
-function RunsTable({ runs, agentName, onOpen }: { runs: Run[]; agentName: (id: string) => string; onOpen: (id: string) => void }) {
+function RunsTable({ runs, agentName, onOpen }: { runs: RunSummary[]; agentName: (id: string) => string; onOpen: (id: string) => void }) {
   return (
     <table className="w-full border-collapse border text-[13px]">
       <thead className="hidden md:table-header-group">

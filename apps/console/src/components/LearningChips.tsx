@@ -3,7 +3,7 @@ import { Chip } from "@/components/ui/chip";
 import { Tip } from "@/components/ui/tip";
 import { counted, dropKind, dropWords, givenBy, goingWords, learnedBy, type LearnedFileRef, learningHash, type NoteRef, notes, pendingBy, readBy, REDACTED, skillsBy, underWay, waitingWords, waitsForOk, waitWords, workflowsBy } from "@/lib/learning";
 import { cn } from "@/lib/utils";
-import type { Run } from "@/lib/v2";
+import type { RunSummary } from "@/lib/v2";
 
 /** A run's learning at a glance: "Started with: 2 notes" for the notes it was given, "Read: 1 note" for the note files it
  *  opened, "Learned 1 note" for the notes it
@@ -14,7 +14,7 @@ import type { Run } from "@/lib/v2";
  *  tooltip on hover and on focus. A chip inside a row that is itself a link stays text and names them in its title. The
  *  names are never only in a tooltip: the chip's label says them, and the link opens them. A name the server cut of a
  *  secret is never linked. */
-export function LearningChips({ run, link = false, className }: { run: Pick<Run, "agent_id" | "learning">; link?: boolean; className?: string }) {
+export function LearningChips({ run, link = false, className }: { run: Pick<RunSummary, "agent_id" | "learning">; link?: boolean; className?: string }) {
   const given = givenBy(run.learning);
   const read = readBy(run.learning);
   const learned = learnedBy(run.learning);

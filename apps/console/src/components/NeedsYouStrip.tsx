@@ -10,15 +10,15 @@ import { cn } from "@/lib/utils";
 import { pausedWords } from "@/components/NeedsYou";
 import { ComputerAskCard } from "@/components/ComputerAskCard";
 import { askOf } from "@/lib/computerAsk";
-import type { BudgetPending, ComputerAsk, HandBackOutcome, PendingApproval, Run } from "@/lib/v2";
+import type { BudgetPending, ComputerAsk, HandBackOutcome, PendingApproval, Run, RunSummary } from "@/lib/v2";
 
 export type NeedsYouProps = {
   /** Runs waiting on a person's answer (`input_required`, with their `pending`: a question, or a tool call's approval). */
-  asking: readonly Run[];
+  asking: readonly RunSummary[];
   /** Failed runs; imported history is left out, and identical failures are said once. */
-  failed: readonly Run[];
+  failed: readonly RunSummary[];
   /** Runs at work now. */
-  live: readonly Run[];
+  live: readonly RunSummary[];
   /** The active agents whose learned items wait for the owner's OK (GET /v2/agents, each one's `learning.pending` above
    *  0), each with how many: approved on its Learning tab. */
   learning?: readonly { agent_id: string; name: string; pending: number }[];
@@ -33,7 +33,7 @@ export type NeedsYouProps = {
   onHandBack?: (runId: string, outcome: HandBackOutcome) => Promise<string | null>;
   /** Starts each run again with its own first message; resolves with the runs it started, and the refusal to show
    *  for one it couldn't (null when all started). */
-  onRunAgain: (runs: readonly Run[]) => Promise<{ started: string[]; problem: string | null }>;
+  onRunAgain: (runs: readonly RunSummary[]) => Promise<{ started: string[]; problem: string | null }>;
   onStop: (runId: string) => Promise<string | null>;
   /** What could not be read, when a read failed: the sections that read are still shown. */
   problem?: string | null;
@@ -73,7 +73,7 @@ export function NeedsYouStrip({ asking, failed, live, learning = [], agentName, 
     return said;
   });
   // What a run waits on now, as `what` names it: its card shows the words itself while it waits on the same thing.
-  const waitsOn = (r: Run) => { const ask = askOf(r); return r.pending?.kind === "approval" ? r.pending.id : ask ? `ask:${ask.asked_at}` : null; };
+  const waitsOn = (r: RunSummary) => { const ask = askOf(r); return r.pending?.kind === "approval" ? r.pending.id : ask ? `ask:${ask.asked_at}` : null; };
   const failures = groups.reduce((n, g) => n + g.runs.length, 0);
   const waiting = learning.filter((a) => a.pending > 0);
   const learned = waiting.reduce((n, a) => n + a.pending, 0);
@@ -134,7 +134,7 @@ export function NeedsYouStrip({ asking, failed, live, learning = [], agentName, 
 
 /** A run's tool call waiting on the owner's approval, answered in place: the run page's card, compact, under the agent,
  *  the run and when it asked. */
-function Approval({ run, pending, agentName, at, onApprove }: { run: Run; pending: PendingApproval; agentName: string; at: number; onApprove: NeedsYouProps["onApprove"] }) {
+function Approval({ run, pending, agentName, at, onApprove }: { run: RunSummary; pending: PendingApproval; agentName: string; at: number; onApprove: NeedsYouProps["onApprove"] }) {
   return (
     <li data-run={run.run_id} className="min-w-0">
       <ApprovalCard compact pending={pending}
@@ -146,7 +146,7 @@ function Approval({ run, pending, agentName, at, onApprove }: { run: Run; pendin
 
 /** A run whose agent asks for the person at its computer: what to do, when it's done, when it expires, the way to its
  *  screen (the run page, which opens on its Screen tab), and Done or Cancel where the page can answer. */
-function Asking({ run, ask, agentName, at, onHandBack }: { run: Run; ask: ComputerAsk; agentName: string; at: number; onHandBack?: (runId: string, ask: ComputerAsk, outcome: HandBackOutcome) => Promise<string | null> }) {
+function Asking({ run, ask, agentName, at, onHandBack }: { run: RunSummary; ask: ComputerAsk; agentName: string; at: number; onHandBack?: (runId: string, ask: ComputerAsk, outcome: HandBackOutcome) => Promise<string | null> }) {
   return (
     <li data-run={run.run_id} className="min-w-0 border border-warning/50 bg-warning/5">
       <ComputerAskCard compact ask={ask}
@@ -157,12 +157,12 @@ function Asking({ run, ask, agentName, at, onHandBack }: { run: Run; ask: Comput
   );
 }
 
-function Question(props: { run: Run; agentName: string; at: number; onAnswer: NeedsYouProps["onAnswer"] }) {
+function Question(props: { run: RunSummary; agentName: string; at: number; onAnswer: NeedsYouProps["onAnswer"] }) {
   // A run paused at its spend cap is no question: it says why, and takes no answer until its cap is raised.
   return props.run.pending?.kind === "budget" ? <Paused run={props.run} pending={props.run.pending} agentName={props.agentName} /> : <Asked {...props} />;
 }
 
-function Paused({ run, pending, agentName }: { run: Run; pending: BudgetPending; agentName: string }) {
+function Paused({ run, pending, agentName }: { run: RunSummary; pending: BudgetPending; agentName: string }) {
   return (
     <li data-run={run.run_id} className="min-w-0 border border-warning/50 bg-warning/5 p-4">
       <p className="flex min-w-0 items-center gap-2 text-[13px]">
@@ -178,7 +178,7 @@ function Paused({ run, pending, agentName }: { run: Run; pending: BudgetPending;
 }
 
 /** A waiting run's line: its agent, its title (a link to the run) and when it asked. */
-function Head({ run, agentName, since }: { run: Run; agentName: string; since?: string }) {
+function Head({ run, agentName, since }: { run: RunSummary; agentName: string; since?: string }) {
   return (
     <p className="flex min-w-0 items-center gap-2 text-[13px]">
       <span className="size-2 shrink-0 rounded-full bg-warning" aria-hidden />
@@ -189,7 +189,7 @@ function Head({ run, agentName, since }: { run: Run; agentName: string; since?: 
   );
 }
 
-function Asked({ run, agentName, at, onAnswer }: { run: Run; agentName: string; at: number; onAnswer: NeedsYouProps["onAnswer"] }) {
+function Asked({ run, agentName, at, onAnswer }: { run: RunSummary; agentName: string; at: number; onAnswer: NeedsYouProps["onAnswer"] }) {
   const pending = run.pending?.kind === "question" ? run.pending : null;
   const question = pending?.question ?? "";
   const choices = choicesOf(question);
@@ -227,7 +227,7 @@ function Asked({ run, agentName, at, onAnswer }: { run: Run; agentName: string; 
   );
 }
 
-function Failure({ message, runs: all, agentName, at, onRunAgain }: { message: string; runs: Run[]; agentName: (id: string) => string; at: number; onRunAgain: NeedsYouProps["onRunAgain"] }) {
+function Failure({ message, runs: all, agentName, at, onRunAgain }: { message: string; runs: RunSummary[]; agentName: (id: string) => string; at: number; onRunAgain: NeedsYouProps["onRunAgain"] }) {
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   // The runs started again, by id: never offered again, while a new failure with the same error is.
@@ -273,7 +273,7 @@ function Failure({ message, runs: all, agentName, at, onRunAgain }: { message: s
   );
 }
 
-function Live({ run, agentName, at, onStop }: { run: Run; agentName: string; at: number; onStop: NeedsYouProps["onStop"] }) {
+function Live({ run, agentName, at, onStop }: { run: RunSummary; agentName: string; at: number; onStop: NeedsYouProps["onStop"] }) {
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const usd = run.cost?.usd;

@@ -1,4 +1,4 @@
-import type { Run } from "./v2";
+import type { Run, RunSummary } from "./v2";
 
 /** A random v4 UUID. `crypto.randomUUID` exists only in a secure context (https or localhost); a console served over
  *  plain http on another host has `getRandomValues` alone. */
@@ -46,7 +46,7 @@ export function keepersByRun(newKey: () => string = uuid): (runId: string) => Re
 
 /** The next page of runs added to those shown: the server's cursor is an offset, so a run a new one pushed down is sent
  *  again and is kept once. */
-export function appendRuns(held: Run[], page: Run[]): Run[] {
+export function appendRuns(held: RunSummary[], page: RunSummary[]): RunSummary[] {
   const seen = new Set(held.map((r) => r.run_id));
   return [...held, ...page.filter((r) => !seen.has(r.run_id))];
 }

@@ -6,6 +6,7 @@ import type { Agent } from "@/lib/agentForm";
 import type { AgentLearning } from "@/lib/learning";
 import type { Run, TimelinePage } from "@/lib/v2";
 import { servedAgent } from "@/test/agent";
+import { learningView } from "@/test/learning";
 
 // The agent page's Learning tab: shown for an agentic agent on a server with learning, at its own address; a run row
 // says what the run read and kept.
@@ -20,7 +21,7 @@ const run: Run = { sha: null, updated_at: "2026-11-04T00:00:00Z", poll_after_ms:
   created_at: "2026-11-03T16:52:00Z", ended_at: "2026-11-03T16:52:04Z", result: null, error: null, cost: { usd: null, basis: "estimate", charge_state: null, cap_usd: null }, archived_at: null,
   learning: { detail: null, at: "2026-11-03T16:52:09Z", state: "merged", reason: null, read: [{ file: "a.md", name: "Shopify refund policy path" }], learned: [{ file: "b.md", name: "Try it first", supersedes: ["a.md"] }] },
 };
-const EMPTY: AgentLearning = { agent: "refunds", main: null, index: "", notes: { items: [], total: 0, next_cursor: null }, log: { items: [], total: 0, next_cursor: null }, counts: { merged: 0, dropped: {}, in_progress: 0 } };
+const EMPTY: AgentLearning = learningView({ agent: "refunds", main: null, index: "", notes: { items: [], total: 0, next_cursor: null }, log: { items: [], total: 0, next_cursor: null }, counts: { merged: 0, dropped: {}, in_progress: 0 } });
 const ended: TimelinePage = { cost: { usd: null, basis: "estimate", charge_state: null, cap_usd: null }, run_id: "run-b", status: "completed", state: "idle", rows: [], drop: [], reset: true, unchanged: false, final: true, has_more: false, next_after: 1 };
 
 let root: ReturnType<typeof createRoot> | undefined;

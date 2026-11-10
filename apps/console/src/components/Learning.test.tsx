@@ -7,6 +7,7 @@ import { ClientError } from "@/lib/client";
 import type { AgentLearning, LearningNote } from "@/lib/learning";
 import type { Run } from "@/lib/v2";
 import { servedAgent } from "@/test/agent";
+import { impactSide, learnedNote, learningView } from "@/test/learning";
 
 // The agent's Learning tab: its notes with where each came from, edit (its version named), retire after a confirm, a
 // note a person adds, what runs did not keep and why, the before and after, and the switch.
@@ -16,14 +17,20 @@ const agent = (learning?: boolean, extra: Partial<Agent["definition"]> = {}): Ag
   agent_id: "refunds", kind: "agentic", revision: "rv1", revisions: 1, archived_at: null,
   definition: { version: 1, name: "Refund policy finder", instructions: "Find it.", harness: "pi", skills: [], tools: ["read", "write"], ...(learning === undefined ? {} : { learning }), ...extra },
 });
-const note = (file: string, name: string, extra: Partial<LearningNote> = {}): LearningNote => ({
-  file, name, description: `When ${name.toLowerCase()} applies`, type: "feedback", status: "active", superseded_by: null, runs: { given: 0, read: 0 },
-  text: `---\nname: ${name}\ndescription: When ${name.toLowerCase()} applies\ntype: feedback\n---\nThe body of ${name}.\n`, ...extra,
-});
+// A note with no version of its own on the card (unless a test gives one), so an edit or a retire reads the note's version
+// first: the path seenVersion keeps for a card without one. The served note always has one; the tests below that give
+// none cover that read.
+const note = (file: string, name: string, extra: Partial<LearningNote> = {}): LearningNote => {
+  const { etag: _none, ...rest } = learnedNote({
+    file, name, description: `When ${name.toLowerCase()} applies`, type: "feedback", status: "active", superseded_by: null, runs: { given: 0, read: 0 },
+    text: `---\nname: ${name}\ndescription: When ${name.toLowerCase()} applies\ntype: feedback\n---\nThe body of ${name}.\n`,
+  });
+  return { ...rest, ...extra } as LearningNote;
+};
 const FIRST = "try-policies-refund-policy-first.md";
 const OLD = "shopify-refund-policy-path.md";
 const MINE = "keep-it-to-three-lines.md";
-const view = (extra: Partial<AgentLearning> = {}): AgentLearning => ({
+const view = (extra: Partial<AgentLearning> = {}): AgentLearning => learningView({
   agent: "refunds", main: "c3", index: `- [Try /policies/refund-policy first](${FIRST}) — Open it first\n- [Keep it to three lines](${MINE}) — Short`,
   notes: { items: [note(MINE, "Keep it to three lines"), note(FIRST, "Try /policies/refund-policy first"), note(OLD, "Shopify refund policy path", { status: "superseded", superseded_by: FIRST })], total: 3, next_cursor: null },
   log: { items: [
@@ -203,7 +210,7 @@ describe("what runs did not keep", () => {
 
 describe("the before and after", () => {
   it("shows run time and cost before and after it learned, on the after side's runs", async () => {
-    const t = await open(agent(true), { learning: async () => view({ impact: { before: { runs: 2, median_duration_s: 18, median_cost_usd: 0.11 }, after: { runs: 4, median_duration_s: 12, median_cost_usd: 0.03 } } }) });
+    const t = await open(agent(true), { learning: async () => view({ impact: { before: impactSide({ runs: 2, median_duration_s: 18, median_cost_usd: 0.11 }), after: impactSide({ runs: 4, median_duration_s: 12, median_cost_usd: 0.03 }) } }) });
     const card = t.host.querySelector('section[aria-label^="Since it learned"]')!;
     expect(card.getAttribute("aria-label")).toBe("Since it learned (on 4 runs): answers in 12s instead of 18s · $0.03 est. instead of $0.11 est. a run");
     expect(card.textContent).toContain("Answers in12sinstead of 18s−33%");
@@ -212,7 +219,7 @@ describe("the before and after", () => {
     expect(card.textContent).not.toContain("Learning itself");
   });
   it("says what learning itself costs a run when the server does, and a costlier after as it is, in the warning colour", async () => {
-    const t = await open(agent(true), { learning: async () => view({ impact: { before: { runs: 2, median_duration_s: 1.2, median_cost_usd: 0.000814, cost_runs: 2 }, after: { runs: 4, median_duration_s: 1.1, median_cost_usd: 0.000837, cost_runs: 4, median_learning_usd: 0.008 } } }) });
+    const t = await open(agent(true), { learning: async () => view({ impact: { before: impactSide({ runs: 2, median_duration_s: 1.2, median_cost_usd: 0.000814, cost_runs: 2 }), after: impactSide({ runs: 4, median_duration_s: 1.1, median_cost_usd: 0.000837, cost_runs: 4, median_learning_usd: 0.008 }) } }) });
     const card = t.host.querySelector('section[aria-label^="Since it learned"]')!;
     expect(card.textContent).toContain("Learning itself$0.0080 est. a run");
     const up = [...card.querySelectorAll("span")].find((x) => x.textContent === "+3%")!;

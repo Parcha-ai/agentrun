@@ -6,6 +6,7 @@ import { agentFixture } from "@/fixtures";
 import type { Agent } from "@/lib/agentForm";
 import type { AgentLearning } from "@/lib/learning";
 import type { AgentTool } from "@/lib/v2";
+import { learningView } from "@/test/learning";
 
 // An agent's page lists the tools its current revision grants, among its facts, each as GET /v2/agents/{id} serves it
 // (serve's agentTools: the provider and permission in force, the agent's own setting over the server's): its name, then
@@ -33,7 +34,7 @@ async function open(agent: Agent) {
   return { dd };
 }
 
-const EMPTY: AgentLearning = { agent: "invoice-checker", main: null, index: "", notes: { items: [], total: 0, next_cursor: null }, log: { items: [], total: 0, next_cursor: null }, counts: { merged: 0, dropped: {}, in_progress: 0 } };
+const EMPTY: AgentLearning = learningView({ agent: "invoice-checker", main: null, index: "", notes: { items: [], total: 0, next_cursor: null }, log: { items: [], total: 0, next_cursor: null }, counts: { merged: 0, dropped: {}, in_progress: 0 } });
 
 describe("AgentPage, the agent's tools", () => {
   it("lists each granted tool with its provider (where it has one) and its permission", async () => {

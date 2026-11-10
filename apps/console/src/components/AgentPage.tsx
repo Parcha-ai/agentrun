@@ -25,7 +25,7 @@ import { type Problem, problem } from "@/lib/problem";
 import { elapsed, metaOf } from "@/lib/runGraph";
 import { cn } from "@/lib/utils";
 import { rangeFrom, type Stats } from "@/lib/mission";
-import type { Run } from "@/lib/v2";
+import type { Run, RunSummary } from "@/lib/v2";
 
 /** `stats`: the page's own read of the agent's stats over the Analytics tab's first range, which that tab starts from. */
 type TabProps = { agent: Agent; v2: Client; go: (hash: string) => void; stats?: Stats | null };
@@ -200,7 +200,7 @@ export function AgentPage({ v2, agentId, routePrefix, harnesses, efforts = [], g
  *  effort when it was given one, when, how long once ended, and its cost once known. A fresh read of the latest run
  *  replaces its row too, so the two never disagree. */
 function RunsTab({ agent, v2 }: TabProps) {
-  const [runs, setRuns] = useState<Run[] | null>(null);
+  const [runs, setRuns] = useState<RunSummary[] | null>(null);
   const [cursor, setCursor] = useState<string | null>(null);
   const [more, setMore] = useState(false);
   const [error, setError] = useState<Problem | null>(null);

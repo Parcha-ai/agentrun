@@ -2,7 +2,7 @@ import { graphDiff, workflowGraph } from "@dsl/graph";
 import { CircleAlert, TriangleAlert } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { GraphLegend, WorkflowGraph } from "@/components/WorkflowGraph";
-import type { WorkflowCheck } from "@/lib/client";
+import type { WorkflowCheck, WorkflowCheckBody } from "@/lib/v2";
 import { metaOf } from "@/lib/runGraph";
 import { cn } from "@/lib/utils";
 import type { GraphMarks } from "@/lib/wfGraph";
@@ -16,7 +16,7 @@ type Check = { text: string; check: WorkflowCheck } | { text: string; failed: st
 /** The server's check of the text, asked CHECK_MS after the last keystroke that left it parseable. A server without the
  *  route (404, 405) is not asked again, and the console's own lint stands in. A check that failed otherwise is named, the
  *  lint stands in for it, and `retry` asks again. Only an answer for the text on screen counts. */
-function useServerCheck(text: string, value: Json | undefined, ok: boolean, tools: string[] | undefined, validate?: (body: { workflow: unknown; tools?: string[] }, signal?: AbortSignal) => Promise<WorkflowCheck>) {
+function useServerCheck(text: string, value: Json | undefined, ok: boolean, tools: string[] | undefined, validate?: (body: WorkflowCheckBody, signal?: AbortSignal) => Promise<WorkflowCheck>) {
   const [check, setCheck] = useState<Check>(null);
   const [again, setAgain] = useState(0);
   const toolsKey = (tools ?? []).join(",");
@@ -24,7 +24,7 @@ function useServerCheck(text: string, value: Json | undefined, ok: boolean, tool
     if (!validate || !ok || check === "unsupported") return;
     const ctl = new AbortController();
     const t = setTimeout(() => {
-      validate({ workflow: value, ...(tools ? { tools } : {}) }, ctl.signal).then(
+      validate({ workflow: value as WorkflowCheckBody["workflow"], ...(tools ? { tools } : {}) }, ctl.signal).then(
         (answer) => { if (!ctl.signal.aborted) setCheck({ text, check: answer }); },
         (e: { status?: number; message?: string }) => {
           if (ctl.signal.aborted) return;
@@ -57,7 +57,7 @@ export function WorkflowEditor({ text, onText, base, baseLabel, serverIssues, re
   /** A revision to look at, not edit: no edit, no check of it, and no problems list. */
   readOnly?: boolean;
   /** The server's check as you type; without it (or on a server without the route) the console's lint is shown. */
-  validate?: (body: { workflow: unknown; tools?: string[] }, signal?: AbortSignal) => Promise<WorkflowCheck>;
+  validate?: (body: WorkflowCheckBody, signal?: AbortSignal) => Promise<WorkflowCheck>;
   /** The definition's tools, for the server's check of call nodes. */
   tools?: string[];
 }) {
@@ -76,7 +76,7 @@ export function WorkflowEditor({ text, onText, base, baseLabel, serverIssues, re
   // The server's answer for this text is the one that counts; the lint shows while it is asked, or when it cannot be.
   const issues = useMemo<Issue[]>(() => (server.mode !== "server" ? lint : [
     ...server.check.issues.map((i) => ({ path: i.path, message: i.message, severity: "error" as const })),
-    ...server.check.warnings.map((w) => (typeof w === "string" ? { path: "", message: w, severity: "warning" as const } : { path: w.path ?? "", message: w.message, severity: "warning" as const })),
+    ...server.check.warnings.map((w) => ({ path: "", message: w, severity: "warning" as const })),
   ]), [server.mode, server.mode === "server" ? server.check : null, lint]); // eslint-disable-line react-hooks/exhaustive-deps
   const selectedPath = parsed.ok ? nodeAtOffset(parsed.spans, graph.nodes.map((n) => n.path), cursor) : null;
   const marks = useMemo<GraphMarks>(() => ({

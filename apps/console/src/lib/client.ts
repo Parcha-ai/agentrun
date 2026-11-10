@@ -1,10 +1,10 @@
 import type { Stats } from "./mission";
 import type { Agent, Definition, SaveWarning } from "./agentForm";
-import type { AgentLearning, LearningChange, LearningDiff, LearningNote, NoteProblem, NoteText, Page } from "./learning";
+import type { AgentLearning, LearningDiff, NoteProblem, NoteText } from "./learning";
 import type { McpAuth, McpClientFeature, McpPreview, McpRefresh, McpServer } from "./mcp";
 import type { RunGraph } from "./runGraph";
 import { applyPage } from "./timeline";
-import type { ApiError, Firing, GitHubConnectStart, GitHubDisconnected, GitHubStatus, InputIssue, McpPrivateHosts, TemplateApplied, TemplateApply, TemplateView, RaiseAnswer, Run, RunComputer, ComputerHoldAnswer, HandBackOutcome, RunFiles, RunStatus, TimelinePage, TimelineRow, SessionSecrets, ToolKeys, ToolKeysFeature, ToolSettings, Trigger, TriggerCreate, TriggerInput, TriggerMade, TriggerSecret, Webhook, WebhookAttempt, WebhookSaved, WebhooksFeature, Archil, ArchilBody, ArchilTest, Computers, ComputerKeysBody, ComputerProvider, ComputerTest } from "./v2";
+import type { AgentList, ApiError, LearningLogPage, LearningNotesPage, DeliveryList, FiringList, McpSignInBody, McpSignInStart, MessageSent, PauseAnswer, RevisionList, RunList, TemplateList, TriggerList, WorkflowCheck, WorkflowCheckBody, Firing, GitHubConnectStart, GitHubDisconnected, GitHubStatus, InputIssue, McpPrivateHosts, TemplateApplied, TemplateApply, TemplateView, RaiseAnswer, Run, RunComputer, ComputerHoldAnswer, HandBackOutcome, RunFiles, RunStatus, TimelinePage, TimelineRow, SessionSecrets, ToolKeys, ToolKeysFeature, ToolSettings, Trigger, TriggerCreate, TriggerInput, TriggerMade, TriggerSecret, Webhook, WebhookAttempt, WebhookSaved, WebhooksFeature, Archil, ArchilBody, ArchilTest, Computers, ComputerKeysBody, ComputerProvider, ComputerTest } from "./v2";
 
 /** A request AgentRun Server refused: its HTTP status and its typed error (`code`, `message`, `retryable`). */
 /** A refusal's issue at one field, as the server names it (with its `fix`, when it says one). Its `reason` is any string, as
@@ -30,9 +30,7 @@ export class ClientError extends Error {
 /** A failed request as a page says it: a refusal as the server's `code: message`, any other failure by its message. */
 export const problemOf = (e: unknown) => (e instanceof ClientError ? `${e.code}: ${e.message}` : e instanceof Error ? e.message : String(e));
 
-/** POST /v2/workflows/validate's answer: issues refuse a save, warnings only advise. Paths are JSON Pointers into the
- *  workflow ("" for the document itself). */
-export type WorkflowCheck = { ok: boolean; issues: { path: string; code: string; message: string }[]; warnings: (string | { path?: string; message: string })[] };
+export type { WorkflowCheck } from "./v2";
 
 /** `GET /v2/setup/import`'s answer. Before the owner is set: the server can import, still counting (202), then its counts
  *  (null for each when the count failed). After: the import's state. `{ offer: false }`: none, either way. */
@@ -129,15 +127,15 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     signOutEverywhere: () => call<{ signed_out: boolean }>("POST", "/auth/sign-out-everywhere", { body: {} }),
     /** Counts and sums from the server's store, for Mission Control (`GET /v2/stats`, a serve extension). */
     stats: () => call<Stats>("GET", "/stats"),
-    listRuns: (limit = 50, cursor?: string | null, filter?: RunsFilter) => call<{ runs: Run[]; next_cursor: string | null }>("GET", `/runs${runsQuery(limit, cursor, filter)}`),
+    listRuns: (limit = 50, cursor?: string | null, filter?: RunsFilter) => call<RunList>("GET", `/runs${runsQuery(limit, cursor, filter)}`),
     /** `filter`: one status and the archived runs only, or (the agent page's) just `archived`: the archived runs only (an
      *  archived agent's runs are all archived with it). */
-    listAgentRuns: (id: string, limit = 50, cursor?: string | null, filter: RunsFilter | boolean = {}) => call<{ runs: Run[]; next_cursor: string | null }>("GET", `${agent(id)}/runs${runsQuery(limit, cursor, typeof filter === "boolean" ? { archived: filter } : filter)}`),
+    listAgentRuns: (id: string, limit = 50, cursor?: string | null, filter: RunsFilter | boolean = {}) => call<RunList>("GET", `${agent(id)}/runs${runsQuery(limit, cursor, typeof filter === "boolean" ? { archived: filter } : filter)}`),
     listAgents: ({ archived = false, cursor }: { archived?: boolean; cursor?: string | null } = {}) => {
       const q = new URLSearchParams();
       if (archived) q.set("archived", "true");
       if (cursor) q.set("cursor", cursor);
-      return call<{ agents: Agent[]; next_cursor: string | null }>("GET", `/agents${q.size ? `?${q}` : ""}`);
+      return call<AgentList>("GET", `/agents${q.size ? `?${q}` : ""}`);
     },
     getAgent: async (id: string) => {
       const r = await callTagged<Agent>("GET", agent(id));
@@ -156,14 +154,14 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
       created.delete(id);
       return { agent: r.body, etag: r.etag };
     },
-    listRevisions: (id: string, cursor?: string | null) => call<{ revisions: { revision: string; version: number; current: boolean; note: string | null; created_at: string; kind: string; definition: Definition }[]; next_cursor: string | null }>("GET", `${agent(id)}/revisions${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`),
+    listRevisions: (id: string, cursor?: string | null) => call<RevisionList>("GET", `${agent(id)}/revisions${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`),
     setCurrent: async (id: string, revision: string) => { const r = await call<Agent>("POST", `${agent(id)}/current`, { body: { revision } }); created.delete(id); return r; },
     archiveAgent: (id: string) => call<Agent>("POST", `${agent(id)}/archive`, { body: {} }),
     unarchiveAgent: (id: string) => call<Agent>("POST", `${agent(id)}/unarchive`, { body: {} }),
     /** What an agent learned: its notes' first page, the index its next run reads, the changes, and how its runs did. */
     agentLearning: (id: string) => call<AgentLearning>("GET", `${agent(id)}/learning`),
-    learningNotes: (id: string, cursor: string) => call<Page<LearningNote>>("GET", `${agent(id)}/learning/notes?cursor=${encodeURIComponent(cursor)}`),
-    learningLog: (id: string, cursor: string) => call<Page<LearningChange>>("GET", `${agent(id)}/learning/log?cursor=${encodeURIComponent(cursor)}`),
+    learningNotes: (id: string, cursor: string) => call<LearningNotesPage>("GET", `${agent(id)}/learning/notes?cursor=${encodeURIComponent(cursor)}`),
+    learningLog: (id: string, cursor: string) => call<LearningLogPage>("GET", `${agent(id)}/learning/log?cursor=${encodeURIComponent(cursor)}`),
     /** A note's whole text and its version, for the If-Match of an edit or a retire. */
     readNote: async (id: string, file: string) => asNote(await callTagged<string>("GET", note(id, file), { headers: noteAccept, text: true })),
     /** Edits a note (`etag`: the version the edit was made on; 412 when it changed since) or creates one (`create`: 412
@@ -212,14 +210,14 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     readFile: (id: string, path: string) => call<string>("GET", `${run(id)}/files/${path.split("/").map(encodeURIComponent).join("/")}`, { text: true }),
     /** One send, one key: a retry of the same send reuses its key, so the server keeps the first request's identity. */
     sendMessage: (id: string, content: string, idempotencyKey: string) =>
-      call<{ mode: string; message_id: string }>("POST", `${run(id)}/messages`, { body: { content }, headers: { "idempotency-key": idempotencyKey } }),
+      call<MessageSent>("POST", `${run(id)}/messages`, { body: { content }, headers: { "idempotency-key": idempotencyKey } }),
     /** A workflow run's graph, live: each node's state, its decisions and tool calls, and the totals. */
     getRunGraph: (id: string, signal?: AbortSignal) => call<RunGraph>("GET", `${run(id)}/graph`, { signal }),
     /** Pauses a workflow run: calls in flight finish, and no new node starts until it resumes. */
-    pauseRun: (id: string) => call<{ paused: boolean }>("POST", `${run(id)}/pause`, { body: {} }),
-    resumeRun: (id: string) => call<{ paused: boolean }>("POST", `${run(id)}/resume`, { body: {} }),
+    pauseRun: (id: string) => call<PauseAnswer>("POST", `${run(id)}/pause`, { body: {} }),
+    resumeRun: (id: string) => call<PauseAnswer>("POST", `${run(id)}/resume`, { body: {} }),
     /** The server's own check of a workflow (the DSL's validator, no code run, nothing stored). 404 on a server without it. */
-    validateWorkflow: (body: { workflow: unknown; tools?: string[] }, signal?: AbortSignal) => call<WorkflowCheck>("POST", "/workflows/validate", { body, signal }),
+    validateWorkflow: (body: WorkflowCheckBody, signal?: AbortSignal) => call<WorkflowCheck>("POST", "/workflows/validate", { body, signal }),
     /** GET /v2/stats with its `analytics` bounded: runs started at or after `from`, of `agent`. Every other number is the
      *  whole store's. */
     statsOver: ({ from, agent: of }: { from?: string; agent?: string }) => {
@@ -261,7 +259,7 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     testWebhook: () => call<WebhookAttempt>("POST", "/settings/webhook/test", { body: {} }),
     /** The last attempts, newest first. */
     /** Triggers (serve's trigger/1): schedules and webhooks, each starting an agent's capped runs. */
-    listTriggers: () => call<{ triggers: Trigger[] }>("GET", "/triggers"),
+    listTriggers: () => call<TriggerList>("GET", "/triggers"),
     getTrigger: (id: string) => call<Trigger>("GET", trigger(id)),
     /** A trigger made: under `key` (Idempotency-Key), so a retry answers the same trigger, a webhook's with `note` in place
      *  of its secret, which the first answer showed once. */
@@ -273,15 +271,15 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     /** Runs a schedule now: `key` is the click's own Idempotency-Key, so the same click sent again fires once. */
     fireTrigger: (id: string, key: string) => call<Firing>("POST", `${trigger(id)}/fire`, { body: {}, headers: { "idempotency-key": key } }),
     /** Its last firings, newest first. */
-    triggerFirings: (id: string) => call<{ firings: Firing[] }>("GET", `${trigger(id)}/firings`),
-    webhookDeliveries: () => call<{ attempts: WebhookAttempt[] }>("GET", "/settings/webhook/deliveries"),
+    triggerFirings: (id: string) => call<FiringList>("GET", `${trigger(id)}/firings`),
+    webhookDeliveries: () => call<DeliveryList>("GET", "/settings/webhook/deliveries"),
     /** A message of the log sent again, once now, under its webhook-id: its attempt. */
     redeliverWebhook: (id: string) => call<WebhookAttempt>("POST", `/settings/webhook/deliveries/${encodeURIComponent(id)}/redeliver`, { body: {} }),
     /** The server's provider per capability that has a choice (its default where it sets none). */
     /** Remote MCP servers (a serve extension): a read shows a credential's state, never its value. A preview stores
      *  nothing; a save with no credential in `auth` keeps the sealed one. */
     /** The templates this server offers. */
-    listTemplates: () => call<{ templates: TemplateView[] }>("GET", "/templates"),
+    listTemplates: () => call<TemplateList>("GET", "/templates"),
     /** Makes a template's agent (and its triggers) under one Idempotency-Key: the same request again answers what it did. */
     applyTemplate: (name: string, body: TemplateApply, idempotencyKey: string) =>
       call<TemplateApplied>("POST", `/templates/${encodeURIComponent(name)}/apply`, { body, headers: { "idempotency-key": idempotencyKey } }),
@@ -292,7 +290,7 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     refreshMcpServer: (name: string) => call<McpRefresh>("POST", `${mcpServer(name)}/refresh`, { body: {} }),
     deleteMcpServer: (name: string) => call<unknown>("DELETE", mcpServer(name)),
     /** Starts an OAuth sign-in to the server at `url`: the page the person opens to approve it. */
-    startMcpSignIn: (name: string, body: { url: string; scopes?: string[]; client_id?: string; client_secret?: string }) => call<{ authorization_url: string }>("POST", `${mcpServer(name)}/oauth/start`, { body }),
+    startMcpSignIn: (name: string, body: McpSignInBody) => call<McpSignInStart>("POST", `${mcpServer(name)}/oauth/start`, { body }),
     /** The private-network hosts an MCP server's authorization server may be on; none by default. */
     mcpPrivateHosts: () => call<McpPrivateHosts>("GET", "/settings/mcp-servers/oauth/private-hosts"),
     /** Replaces them (the owner's password session alone): the list as the server keeps it. */

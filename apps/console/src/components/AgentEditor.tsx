@@ -9,7 +9,7 @@ import { Chip } from "@/components/ui/chip";
 import { AgentToolSettings } from "@/components/ToolSettings";
 import { WorkflowEditor } from "@/components/WorkflowEditor";
 import { type Agent, type AgentFields, capOf, toolSettingsOf, DECISION, DEFAULT_INSTRUCTIONS, defaultTools, harnessOptions, defaultPlaceOf, isStarter, reachesWeb, same, sandboxReason, type SaveProblem, type ToolOffer, toolsFor, warningsFor } from "@/lib/agentForm";
-import type { WorkflowCheck } from "@/lib/client";
+import type { WorkflowCheck, WorkflowCheckBody } from "@/lib/v2";
 import { markdown, when } from "@/lib/format";
 import { harnessDefault, modelLabel, NO_DEFAULT } from "@/lib/models";
 import type { McpServer } from "@/lib/mcp";
@@ -49,7 +49,7 @@ export type EditorProps = {
   /** A workflow agent's JSON to open with instead of the saved one: an unsaved draft. */
   draft?: string;
   /** The server's check of a workflow as it is typed (POST /v2/workflows/validate). */
-  validate?: (body: { workflow: unknown; tools?: string[] }, signal?: AbortSignal) => Promise<WorkflowCheck>;
+  validate?: (body: WorkflowCheckBody, signal?: AbortSignal) => Promise<WorkflowCheck>;
   /** The capabilities with a provider choice (capabilities.tools): the Tools step's tool settings, for those the agent grants. */
   providerChoices?: ToolChoice[];
   /** The saved MCP servers, when `caps.mcp`: null while read, "failed" when they could not be. */

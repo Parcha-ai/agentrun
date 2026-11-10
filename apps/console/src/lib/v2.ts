@@ -62,6 +62,8 @@ export type TemplateApplied = Answer<"applyTemplate">;
 export type Cost = components["Cost"];
 
 export type Run = components["Run"];
+/** A run as a list gives it (GET /v2/runs, an agent's runs): no result, no updated_at or poll_after_ms. A full run fits one. */
+export type RunSummary = components["RunSummary"];
 
 /** A trigger of any kind (GET /v2/triggers/{id}): a schedule or a webhook. */
 export type Trigger = Answer<"getTrigger">;
@@ -175,3 +177,40 @@ export type Archil = Answer<"getWorkspaceArchil">;
 export type ArchilBody = Body<"putWorkspaceArchil">;
 /** POST /v2/workspace/archil/test's answer. */
 export type ArchilTest = Answer<"testWorkspaceArchil">;
+
+// Lists and small answers, as client.ts reads them.
+/** GET /v2/runs's and GET /v2/agents/{id}/runs's answer: a page of runs. */
+export type RunList = components["RunList"];
+/** GET /v2/agents's answer: a page of agents. */
+export type AgentList = Answer<"listAgents">;
+/** GET /v2/agents/{id}/revisions's answer: a page of the agent's revisions, newest first. */
+export type RevisionList = Answer<"listRevisions">;
+/** POST /v2/runs/{id}/messages's answer: how the run took the message. */
+export type MessageSent = Answer<"sendMessage">;
+/** POST /v2/runs/{id}/pause's and …/resume's answer. */
+export type PauseAnswer = Answer<"pauseRun">;
+/** POST /v2/workflows/validate's body and answer: issues refuse a save, warnings only advise. Paths are JSON Pointers into
+ *  the workflow ("" for the document itself). */
+export type WorkflowCheckBody = Body<"validateWorkflow">;
+export type WorkflowCheck = Answer<"validateWorkflow">;
+/** GET /v2/triggers's answer. */
+export type TriggerList = Answer<"listTriggers">;
+/** GET /v2/triggers/{id}/firings's answer. */
+export type FiringList = Answer<"listTriggerFirings">;
+/** GET /v2/settings/webhook/deliveries's answer. */
+export type DeliveryList = Answer<"listWebhookDeliveries">;
+/** GET /v2/templates's answer. */
+export type TemplateList = Answer<"listTemplates">;
+/** POST /v2/settings/mcp-servers/{name}/oauth/start's body and answer. */
+export type McpSignInBody = Body<"startMcpOAuth">;
+export type McpSignInStart = Answer<"startMcpOAuth">;
+
+// What an agent learned (lib/learning.ts reads these).
+/** GET /v2/agents/{id}/learning's answer. `main` is null until the agent first learns. */
+export type AgentLearningView = Answer<"getAgentLearning">;
+/** GET /v2/agents/{id}/learning/notes's and …/log's answers: the next pages of each. */
+export type LearningNotesPage = Answer<"listLearningNotes">;
+export type LearningLogPage = Answer<"listLearningLog">;
+/** GET /v2/runs/{id}/learning/diff's answer: what the run's learning changed, file by file. */
+export type RunLearningDiff = Answer<"getRunLearningDiff">;
+

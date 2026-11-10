@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 import { underWay } from "./learning";
-import type { Run } from "./v2";
+import type { RunSummary } from "./v2";
 
 /** A run in one of these has ended: its learning may still be deciding what to keep. */
 const ENDED: ReadonlySet<string> = new Set(["completed", "failed", "cancelled"]);
@@ -14,7 +14,7 @@ export const SETTLE = { firstMs: 2_000, maxMs: 16_000, totalMs: 120_000 };
  *  hidden waits until it is shown again, and time hidden does not count. Unmounting the page stops the reads.
  *  `moved`: called each time the ended run's learning moves on (not for the first record the page has), so the page reads
  *  its timeline again and the timeline's learning row says what the header says. */
-export function useLearningSettle(run: Pick<Run, "status" | "learning"> | null | undefined, reread: () => unknown, moved?: () => unknown, waits = SETTLE): void {
+export function useLearningSettle(run: Pick<RunSummary, "status" | "learning"> | null | undefined, reread: () => unknown, moved?: () => unknown, waits = SETTLE): void {
   const active = !!run && ENDED.has(run.status) && underWay(run.learning);
   const read = useRef(reread);
   read.current = reread;

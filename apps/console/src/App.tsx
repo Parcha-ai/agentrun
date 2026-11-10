@@ -43,7 +43,7 @@ import { type Template, templateHarness, tryTemplate } from "@/lib/templates";
 import { githubReturnOf } from "@/lib/github";
 import { signInOf } from "@/lib/mcp";
 import { toolChoices, toolGates } from "@/lib/toolSettings";
-import type { HandBackOutcome, Run, RunStatus } from "@/lib/v2";
+import type { HandBackOutcome, Run, RunStatus, RunSummary } from "@/lib/v2";
 
 /** How often the console reads the capabilities again while no model is ready (NoModelBanner, ModelKeyCard). */
 const MODEL_CHECK_MS = 10_000;
@@ -261,7 +261,7 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
   // Whether the runs asking a person have been read at least once: until then the Needs input tile's count is unknown,
   // never the empty list a failed first read leaves (a later failure keeps the last list, and its count).
   const [askingRead, setAskingRead] = useState(false);
-  const [runs, setRuns] = useState<Run[] | null>(null);
+  const [runs, setRuns] = useState<RunSummary[] | null>(null);
   const [cursor, setCursor] = useState<string | null>(null);
   const [more, setMore] = useState(false);
   const [names, setNames] = useState<Record<string, string>>({});
@@ -450,7 +450,7 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
   // its effort and its spend cap. Each start keeps its key until it lands, so a retry after a lost answer is the same
   // start; the runs that started are said, so they're never offered again.
   const againKeys = useRef(new Map<string, string>()).current;
-  const runAgain = async (rs: readonly Run[]) => {
+  const runAgain = async (rs: readonly RunSummary[]) => {
     const started: string[] = [];
     try {
       for (const r of rs) {

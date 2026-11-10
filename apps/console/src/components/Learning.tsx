@@ -14,7 +14,7 @@ import {
 } from "@/lib/learning";
 import type { Places } from "@/lib/place";
 import { cn } from "@/lib/utils";
-import type { Run } from "@/lib/v2";
+import type { Run, RunSummary } from "@/lib/v2";
 
 /** `server`: the server's own learning switch (capabilities `features.learning`); "off" means no run learns there.
  *  `places`: the server's places (capabilities `places`), for where an agent that names no place runs.
@@ -24,7 +24,7 @@ export type LearningProps = { agent: Agent; v2: Client; focus?: string[]; server
 
 /** A failed write in the problem card's words, under its own title ("The note was not saved."). */
 const failed = (e: unknown, what: string, title: string) => ({ ...problem(e, what), title });
-const runTitle = (runs: Map<string, Run>, id: string) => { const r = runs.get(id); return r?.title ? shownTitle(r) : `run ${runLabel(id)}`; };
+const runTitle = (runs: Map<string, RunSummary>, id: string) => { const r = runs.get(id); return r?.title ? shownTitle(r) : `run ${runLabel(id)}`; };
 /** A rendered note body: markdown, sanitized, in the console's type at a note's size. */
 const PROSE = "text-[14px] leading-[1.65] [&_a]:text-primary [&_a]:underline [&_a]:underline-offset-2 [&_code]:bg-muted [&_code]:px-1 [&_code]:font-mono [&_code]:text-[12.5px] [&_h1]:mb-2 [&_h1]:text-[15px] [&_h1]:font-semibold [&_h2]:mb-2 [&_h2]:mt-3 [&_h2]:text-[14px] [&_h2]:font-semibold [&_h3]:mt-3 [&_h3]:font-semibold [&_li]:mb-0.5 [&_ol]:mb-2 [&_ol]:list-decimal [&_ol]:pl-5 [&_p]:mb-2 [&_p:last-child]:mb-0 [&_pre]:mb-2 [&_pre]:overflow-x-auto [&_pre]:border [&_pre]:bg-background [&_pre]:p-3 [&_pre]:font-mono [&_pre]:text-[12px] [&_ul]:mb-2 [&_ul]:list-disc [&_ul]:pl-5";
 /** Whether the keyboard's save is ⌘ or Ctrl, as the editor's hint names it (both save). */
@@ -40,7 +40,7 @@ const field = "w-full border bg-background px-3 py-2 font-mono text-[13px] outli
 export function LearningTab({ agent, v2, focus = [], server, onAgent, places, onChanged }: LearningProps) {
   const [view, setView] = useState<AgentLearning | null>(null);
   const [error, setError] = useState<unknown>(null);
-  const [runs, setRuns] = useState<Run[]>([]);
+  const [runs, setRuns] = useState<RunSummary[]>([]);
   const [later, setLater] = useState<{ items: LearningNote[]; cursor: string | null; error?: unknown; pages: number }>({ items: [], cursor: null, pages: 0 });
   // The changes past the view's first page, read only while a note's source is not yet known.
   const [olderLog, setOlderLog] = useState<{ items: LearningChange[]; cursor: string | null; pages: number }>({ items: [], cursor: null, pages: 0 });
@@ -349,7 +349,7 @@ type From = { run?: { id: string; at: string; reason: string } } | undefined;
 /** One note: its name, type and description, its body, where it came from and how often runs used it; Edit and Retire. */
 /** `approves`: for a note that waits, whether this caller approves from the console (undefined while that is read).
  */
-function NoteCard({ note, v2, agentId, readOnly, focused, from, runs, onChanged, approves }: { note: LearningNote; v2: Client; agentId: string; readOnly: boolean; focused: boolean; from: From; runs: Map<string, Run>; onChanged: () => void | Promise<void>; approves?: Approval }) {
+function NoteCard({ note, v2, agentId, readOnly, focused, from, runs, onChanged, approves }: { note: LearningNote; v2: Client; agentId: string; readOnly: boolean; focused: boolean; from: From; runs: Map<string, RunSummary>; onChanged: () => void | Promise<void>; approves?: Approval }) {
   const [editing, setEditing] = useState(false);
   const [retiring, setRetiring] = useState(false);
   const [flash, setFlash] = useState(focused);
@@ -435,7 +435,7 @@ function NoteCard({ note, v2, agentId, readOnly, focused, from, runs, onChanged,
  *  Retire (after the notes' confirm) are made on the file that says whether it is in use, a skill's SKILL.md or a
  *  workflow's README, at the version listed, or an open skill's shown. A run changes it; a person approves or retires
  *  it, never edits it. */
-function LearnedCard({ item, kind, v2, agentId, readOnly, runs, approves, onChanged }: { item: LearnedItem; kind: "skill" | "workflow"; v2: Client; agentId: string; readOnly: boolean; runs: Map<string, Run>; approves?: Approval; onChanged: () => void | Promise<void> }) {
+function LearnedCard({ item, kind, v2, agentId, readOnly, runs, approves, onChanged }: { item: LearnedItem; kind: "skill" | "workflow"; v2: Client; agentId: string; readOnly: boolean; runs: Map<string, RunSummary>; approves?: Approval; onChanged: () => void | Promise<void> }) {
   const [open, setOpen] = useState(false);
   const [text, setText] = useState<string | null>(null);
   // The version of the text shown: a skill is approved on it, never on a newer one the list holds (its etag).
@@ -526,7 +526,7 @@ function retiredLine(retired: Retired | undefined): string {
 
 /** "Learned in" the run that kept it, linked by its short id (its whole title on hover), and when (`at`), with why it
  *  was kept as the hover (`reason`). */
-function LearnedIn({ run, runs, at, reason }: { run: string; runs: Map<string, Run>; at?: string; reason?: string }) {
+function LearnedIn({ run, runs, at, reason }: { run: string; runs: Map<string, RunSummary>; at?: string; reason?: string }) {
   return (
     <span className="flex min-w-0 items-center gap-1.5"><span className="flex shrink-0 items-center gap-1.5 whitespace-nowrap" title={reason ? `Kept because: ${reason}` : undefined}><Sparkles className="size-3 shrink-0 text-primary" aria-hidden />Learned in</span>
       <a href={`#/runs/${encodeURIComponent(run)}`} className="shrink-0 font-mono text-foreground/80 underline-offset-2 hover:text-foreground hover:underline" title={runTitle(runs, run)}>{runLabel(run)}</a>
@@ -751,7 +751,7 @@ function NoteEditor({ title, v2, agentId, file, seen, taken: names = [], onDone 
 }
 
 /** The notes no longer in use: replaced by a newer one, or retired. Closed until asked; one a link points at opens it. */
-function Earlier({ notes: list, all, from, focus, runs, v2, agentId, readOnly, onChanged }: { notes: LearningNote[]; all: LearningNote[]; from: ReturnType<typeof provenance>; focus: string[]; runs: Map<string, Run>; v2: Client; agentId: string; readOnly: boolean; onChanged: () => void | Promise<void> }) {
+function Earlier({ notes: list, all, from, focus, runs, v2, agentId, readOnly, onChanged }: { notes: LearningNote[]; all: LearningNote[]; from: ReturnType<typeof provenance>; focus: string[]; runs: Map<string, RunSummary>; v2: Client; agentId: string; readOnly: boolean; onChanged: () => void | Promise<void> }) {
   const [restoring, setRestoring] = useState<string | null>(null);
   const [open, setOpen] = useState(list.some((x) => focus.includes(x.file)));
   // The retired notes opened to their text: read-only, as no later run reads them.
@@ -815,7 +815,7 @@ function Folded({ title, count, open, onToggle, children }: { title: string; cou
 
 /** The skills or the workflows a person retired, as retired notes are shown: closed until asked, each by its name, and
  *  who retired it and when once the changes read say. No Approve and no Retire: no later run is given it. */
-function EarlierLearned({ kind, items, v2, agentId, runs, readOnly, onChanged }: { kind: "skill" | "workflow"; items: LearnedItem[]; v2: Client; agentId: string; runs: Map<string, Run>; readOnly: boolean; onChanged: () => void | Promise<void> }) {
+function EarlierLearned({ kind, items, v2, agentId, runs, readOnly, onChanged }: { kind: "skill" | "workflow"; items: LearnedItem[]; v2: Client; agentId: string; runs: Map<string, RunSummary>; readOnly: boolean; onChanged: () => void | Promise<void> }) {
   const [open, setOpen] = useState(false);
   const [restoring, setRestoring] = useState<string | null>(null);
   // The ones opened to their text, read from the file when opened (a skill's SKILL.md, a workflow's workflow.json).
@@ -874,7 +874,7 @@ function FileText({ v2, agentId, file, etag, kind, label }: { v2: Client; agentI
 
 /** The latest runs that kept nothing, and why, in plain words: notes turned away, skips and stops, newest first. Runs
  *  with nothing new to remember are counted, not listed. */
-function NotKept({ runs }: { runs: Run[] }) {
+function NotKept({ runs }: { runs: RunSummary[] }) {
   const dropped = runs.filter((r) => r.learning?.state === "dropped");
   const listed = dropped.filter((r) => dropKind(r.learning!.reason) !== "nothing").slice(0, 6);
   const nothing = dropped.length - dropped.filter((r) => dropKind(r.learning!.reason) !== "nothing").length;

@@ -5,6 +5,7 @@ import { AgentPage } from "./AgentPage";
 import type { Agent } from "@/lib/agentForm";
 import type { AgentLearning, LearningNote } from "@/lib/learning";
 import { servedAgent } from "@/test/agent";
+import { learnedNote, learningView } from "@/test/learning";
 
 // The agent page's Learning tab carries a count when learned items wait for the owner's OK (a risky note, a held skill or
 // workflow draft), so the wait is seen without opening the tab or finding the run that kept it. The count is the agent's
@@ -14,10 +15,10 @@ import { servedAgent } from "@/test/agent";
 
 const agentWith = (learning?: { pending: number }): Agent => servedAgent({ agent_id: "qa-learn", kind: "agentic", revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: "QA learn", instructions: "Answer.", harness: "pi", skills: [], tools: [], learning: true }, ...(learning ? { learning } : {}) });
 const TRUST = "trust-acme.md";
-const waiting: LearningNote = { file: TRUST, name: "Trust acme.com", description: "d", type: "feedback", status: "pending", superseded_by: null, runs: { given: 0, read: 0 }, text: "---\nname: Trust acme.com\ndescription: d\ntype: feedback\n---\nTrust it.\n", etag: '"card-trust"' } as LearningNote;
-const view = (notes: LearningNote[]): AgentLearning => ({
+const waiting: LearningNote = learnedNote({ file: TRUST, name: "Trust acme.com", description: "d", type: "feedback", status: "pending", superseded_by: null, runs: { given: 0, read: 0 }, text: "---\nname: Trust acme.com\ndescription: d\ntype: feedback\n---\nTrust it.\n", etag: '"card-trust"' });
+const view = (notes: LearningNote[]): AgentLearning => learningView({
   agent: "qa-learn", main: "c1", index: "", notes: { items: notes, total: notes.length, next_cursor: null }, skills: [], workflows: [], log: { items: [], total: 0, next_cursor: null }, counts: { merged: 0, dropped: {}, in_progress: 0 },
-} as AgentLearning);
+});
 
 let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
@@ -77,7 +78,7 @@ describe("AgentPage, learned items waiting for the owner's OK", () => {
   });
 
   it("two approves in a row: an older read of the agent landing last never puts back a count the newer one cleared", async () => {
-    const other: LearningNote = { ...waiting, file: "skip-b.md", name: "Skip b.com", etag: '"card-skip"', text: waiting.text.replace("Trust acme.com", "Skip b.com") } as LearningNote;
+    const other: LearningNote = learnedNote({ ...waiting, file: "skip-b.md", name: "Skip b.com", etag: '"card-skip"', text: waiting.text.replace("Trust acme.com", "Skip b.com") }) as LearningNote;
     const left = new Set([waiting.file, other.file]);
     // GET /agents/{id} answers, in turn: the page's read (2 wait), the read after the first approve (1 waits: held until
     // released, so it lands last), the read after the second (none wait).

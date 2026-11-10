@@ -1,4 +1,4 @@
-import type { Run } from "./v2";
+import type { Run, RunSummary } from "./v2";
 
 // What Mission Control's "Needs you" strip reads from the runs lists: the choices a question offers, the failures
 // grouped by their error, and whether the owner has run anything of their own yet.
@@ -25,21 +25,21 @@ export function choicesOf(question: string): string[] {
 
 /** Failures that need a person, grouped by what stopped them: the same error once, with every run it stopped, the most
  *  recent group first. Imported history is never here: it can't be run again. */
-export function failureGroups(failed: readonly Run[]): { message: string; runs: Run[] }[] {
-  const groups = new Map<string, Run[]>();
+export function failureGroups(failed: readonly RunSummary[]): { message: string; runs: RunSummary[] }[] {
+  const groups = new Map<string, RunSummary[]>();
   for (const r of failed) {
     if (r.imported_from) continue;
     const message = r.error?.message?.trim() || "The run failed.";
     groups.set(message, [...(groups.get(message) ?? []), r]);
   }
-  const at = (r: Run) => Date.parse(r.ended_at ?? r.created_at);
+  const at = (r: RunSummary) => Date.parse(r.ended_at ?? r.created_at);
   return [...groups].map(([message, runs]) => ({ message, runs: runs.sort((a, b) => at(b) - at(a)) }))
     .sort((a, b) => at(b.runs[0]!) - at(a.runs[0]!));
 }
 
 /** Whether the owner has run anything here yet: a recent run not imported, or the analytics' runs started here
  *  (`by_source` "live"). Until then Mission Control shows its start-here panel. */
-export function hasOwnRun(recent: readonly Run[], bySource: readonly { source: string; runs: number }[]): boolean {
+export function hasOwnRun(recent: readonly RunSummary[], bySource: readonly { source: string; runs: number }[]): boolean {
   return recent.some((r) => !r.imported_from) || bySource.some((g) => g.source === "live" && g.runs > 0);
 }
 
@@ -58,7 +58,7 @@ const TIMELINE_TEXT_CAP = 2000;
 /** The start of "Run again": the run's whole first message, with its effort and its spend cap, or why it can't be
  *  started again from here. A workflow run takes typed input, and a first message the timeline cut would start a
  *  shortened task: both are refused. */
-export function rerunBody(run: Run, firstMessage: string | null | undefined): { body: { input: { content: string }; effort?: string; max_cost_usd?: number } } | { refusal: string } {
+export function rerunBody(run: RunSummary, firstMessage: string | null | undefined): { body: { input: { content: string }; effort?: string; max_cost_usd?: number } } | { refusal: string } {
   if (run.kind === "workflow") return { refusal: `"${run.title}" is a workflow run: start it again from its agent's page` };
   if (!firstMessage) return { refusal: `"${run.title}": its first message could not be read` };
   if (firstMessage.length >= TIMELINE_TEXT_CAP && firstMessage.endsWith("...")) return { refusal: `"${run.title}": its first message is longer than the timeline keeps; start it again from its agent's page` };
@@ -79,7 +79,7 @@ export function pollSettled(read: () => Promise<unknown>, every: number): () => 
   return () => { stopped = true; clearTimeout(timer); };
 }
 
-export type Needs = { asking: Run[]; failed: Run[]; live: Run[] };
+export type Needs = { asking: RunSummary[]; failed: RunSummary[]; live: RunSummary[] };
 /** Whether a run asks a person for something: its served `pending` names what it waits on (a question today; any kind
  *  the server sends counts, none is named here). Needs you lists exactly these, and the Needs input tile counts them,
  *  so the two never disagree. A run the person stopped (input_required, idle) has none: it asks nothing. */
@@ -91,7 +91,7 @@ const SECTIONS = [["asking", "The runs asking a question"], ["failed", "The fail
 
 /** The strip's three reads, landed apart: each that landed is taken, one that failed keeps the section's last answer,
  *  and `problem` names what could not be read (null when all landed). */
-export function mergeNeeds(prev: Needs | null, reads: readonly PromiseSettledResult<Run[]>[]): { needs: Needs; problem: string | null } {
+export function mergeNeeds(prev: Needs | null, reads: readonly PromiseSettledResult<RunSummary[]>[]): { needs: Needs; problem: string | null } {
   const needs = { asking: prev?.asking ?? [], failed: prev?.failed ?? [], live: prev?.live ?? [] };
   const problems: string[] = [];
   SECTIONS.forEach(([key, name], i) => {
