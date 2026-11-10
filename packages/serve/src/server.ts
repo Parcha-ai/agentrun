@@ -140,7 +140,6 @@ import { writesHeld } from "./workspace.js";
 import { agentHomeFolder, computerProviderFactories, computerProviderMakers, isWorkspaceError, localWorkspace, runFolder, serverRunWorkspace, storeLedger, type Workspace } from "./workspace/index.js";
 // The store's EXCLUSIVE connection is the one-server lock (StoreOwned refuses a second server); server-lock.ts keeps only
 // the record (server.state) a stopping server's start reads, to wait for that stop rather than be refused.
-import { processAlive } from "@parcha/agentrun-kernel/host";
 
 export const CONTRACT = "agentrun.v2/0";
 
@@ -245,7 +244,9 @@ async function openStoreAfterStop(data: string, options: Pick<ServeOptions, "not
       try {
         return await openSqliteStore({ dataDir: data, role: "server" });
       } catch (again) {
-        if (!(again instanceof StoreOwned) || Date.now() >= stopping.until || !processAlive(stopping.pid)) throw again;
+        // Read again each time: another start that won the store has marked it running (no `until`), and this one is
+        // refused at once, never left waiting out the first stop's bound.
+        if (!(again instanceof StoreOwned) || !stoppingOf(data)) throw again;
       }
     }
   }

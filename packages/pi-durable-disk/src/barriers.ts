@@ -195,7 +195,7 @@ export const STORES = {
     what: "the server's lock file on its data root: an exclusive lock, no data",
   },
   "one-store": {
-    opens: ["serve/src/store/sqlite/worker.ts"],
+    opens: ["serve/src/store/sqlite/worker.ts", "serve/src/store/sqlite/store.ts"],
     synchronous: "NORMAL",
     effects: "barriers",
     interface: "serve/src/store/",

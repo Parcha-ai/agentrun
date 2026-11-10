@@ -46,3 +46,24 @@ test("a start while the CLI's server drains its run's turn waits for that stop, 
   assert.match(notices[0], new RegExp(`^the server on this data root \\(pid ${child.pid}\\) is stopping; waiting for it, up to \\d+ s$`));
   assert.equal((await client(next.baseUrl, next.token)("GET", "/agents")).status, 200, "the new server serves the data root");
 });
+
+test("a start waiting on a stop is refused at once once the data root's server is marked running again (another start won it), never left waiting out the stop's bound", { timeout: 60_000 }, async (t) => {
+  const dir = await scratch(t);
+  const data = join(dir, "agents");
+  const { markRunning, markStopping } = await import("../dist/server-lock.js");
+  const first = await startServe({ data, port: 0, faux: FAUX, notice: () => {} });
+  t.after(() => first.close());
+  // The first server says it is stopping, for ten minutes, and keeps the store (its process, this one, lives on).
+  markStopping(data, Date.now() + 600_000);
+  const notices = [];
+  const waiting = startServe({ data, port: 0, faux: FAUX, notice: (line) => notices.push(line) });
+  waiting.then((late) => late.close(), () => {});
+  await until(() => notices.length === 1, "the start says it waits");
+  // Another start won the store: the record says running, with no stop to wait for.
+  markRunning(data);
+  let timer;
+  const bound = new Promise((resolve) => (timer = setTimeout(() => resolve("still waiting"), 10_000)));
+  t.after(() => clearTimeout(timer));
+  const outcome = await Promise.race([waiting.then(() => "started", (error) => error.message), bound]);
+  assert.match(outcome, /another server holds the store/, "refused, as a start on a running server's store is");
+});

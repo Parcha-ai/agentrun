@@ -18,7 +18,7 @@
 //                                         as stmt, or as step (one statement, its changes and rows, its `expect` checked)
 //                                         in between
 //   close
-import { closeSync, openSync } from "node:fs";
+import { chmodSync, existsSync } from "node:fs";
 import { parentPort } from "node:worker_threads";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { inMemory } from "./memory.js";
@@ -167,17 +167,14 @@ function errorOf(error: unknown): WorkerError {
  *  directory, named after no file). */
 function takeOwnerLock(file: string): void {
   if (inMemory(file)) return;
-  // The lock is the server's alone, as server.lock was: made 0600 (no umask takes from that) before SQLite opens it, which
-  // would make it 0644 under a 022 umask. Made only when it is not there ("wx"): a file descriptor opened and closed on a
-  // lock file another connection of this process holds drops that process's POSIX lock on it, so one that is there is
-  // never opened here but through SQLite, which keeps its locks across its own connections.
-  try {
-    closeSync(openSync(`${file}.owner`, "wx", 0o600));
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-  }
+  // The lock file is opened only through SQLite, never by a file descriptor of our own: one opened and closed on a lock
+  // file another connection of this process holds (another start's, even one made a moment ago) drops that process's
+  // POSIX lock on it, and SQLite keeps its locks across its own connections. It is the server's alone, as server.lock
+  // was: one this open made (SQLite makes it 0644 under a 022 umask) is set to 0600 by its path, before the lock is taken.
+  const made = !existsSync(`${file}.owner`);
   const lock = new DatabaseSync(`${file}.owner`);
   try {
+    if (made) chmodSync(`${file}.owner`, 0o600);
     lock.exec("PRAGMA busy_timeout = 0");
     lock.exec("PRAGMA locking_mode = EXCLUSIVE");
     lock.exec("BEGIN EXCLUSIVE");
