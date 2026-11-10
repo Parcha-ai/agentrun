@@ -22,6 +22,7 @@ import { dispatchRunner } from "../dist/runner/harness-loops.js";
 import { computerDepsFrom } from "../dist/workspace/index.js";
 import { routeOf } from "../dist/runner/model-route.js";
 import { FAUX_ENV, withoutFaux } from "../dist/model.js";
+import { FAUX_VENDOR_API_ENV } from "../dist/tools.js";
 import { SEAL_KEY_ENV } from "../dist/tool-keys.js";
 import { ensureSealKey, sealKeyHome } from "../dist/seal-key.js";
 import { secret } from "../dist/secrets.js";
@@ -295,6 +296,9 @@ export async function triggerStore(of) {
  *  dispatch (dispatch.ts): each claim's launch picks its harness loop — pi on the kernel's adapter loop with the run's pi
  *  spec, a learning run on the learning loop, its model route the faux model under `faux`. Returns a close() that stops the
  *  runner and closes its store handle. */
+/** The browser vendors' fakes, each request to the vendor its host names (fixtures/faux-vendor-checks.mjs). */
+const FAUX_VENDOR_CHECKS = fileURLToPath(new URL("./fixtures/faux-vendor-checks.mjs", import.meta.url));
+
 export async function startInProcessRunner(data, { faux, githubApi, githubMcpOrigin, ...switches } = {}) {
   const store = await openSqliteStore({ dataDir: data, role: "runner" });
   // The runner's env mirrors the server's faux (model.ts FAUX_ENV): its model route reads the faux model from it, so a run
@@ -303,6 +307,9 @@ export async function startInProcessRunner(data, { faux, githubApi, githubMcpOri
   // Its tools' fakes and its harness table too, as the server hands a run's process its own (server.ts fauxEnvOf): each
   // the test gave its server (fauxMonid, fauxParallel, fauxJev, harnessTable…).
   const env = { ...withoutFaux(process.env), ...(faux ? fauxEnvOf({ ...switches, faux }) : {}) };
+  // The vendor fakes the test gave its server are its runner's too: a run's first saved sign-in is made there (tools.ts
+  // FAUX_VENDOR_API_ENV), as the server's own sign-in calls reach them.
+  if (faux && (switches.fauxBrowserbase || switches.fauxKernel)) env[FAUX_VENDOR_API_ENV] = FAUX_VENDOR_CHECKS;
   const sealKey = ensureSealKey(secret(SEAL_KEY_ENV), { configHome: sealKeyHome(process.env) }).key;
   // The run's claim-time computer, composed once the one way (workspace/computer-deps.ts computerDepsFrom): none for the
   // runner's place, the real kinds otherwise, keys read from this env then the store's sealed rows.

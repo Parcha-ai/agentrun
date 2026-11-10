@@ -53,6 +53,16 @@ test("a runner-path run handed a sign-in that won't read back is refused at its 
   );
 });
 
+test("after the seal key changed, a run that was never handed the sign-in is taken up at its claim as any run: only a run handed one that won't read back is refused", async (t) => {
+  // The agent's sign-in is kept under another seal key (it does not open here), and this run was never handed it.
+  const got = await specFor(t, {
+    body: { tools: ["read", "browser"] },
+    before: (server) => signIns.saveSignIn(server, randomBytes(32), { agentId: "agent-1", provider: "browserbase", pointer: `ctx-${randomBytes(8).toString("hex")}` }),
+  });
+  assert.ok(got?.spec, "its spec is built, never refused");
+  assert.equal((await got.store.runs.get("run-1")).state, "running");
+});
+
 test("the loop ends a run whose claim is refused failed, in the refusal's words, with nothing sent", async (t) => {
   assert.equal(typeof contract.ClaimRefused, "function", "loop-contract.ts exports ClaimRefused");
   const { store } = await storeOn(t);
