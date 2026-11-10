@@ -196,10 +196,18 @@ const partOf = (block: MessagesBlock): Part[] =>
   block.type === "text" ? [{ type: "text", text: block.text ?? "" }] : block.type === "image" && block.source?.data ? [{ type: "image", data: block.source.data, mimeType: block.source.media_type ?? "image/png" }] : [];
 
 /** A tool_result's content as pi-ai's toolResult content: its parts in order (partOf), so a screenshot a tool returned
- *  reaches the model; a string is one text. Never empty: a result with no text or image part is one empty text. */
+ *  reaches the model, with the texts between two images joined by "\n" into one part, so a result of text alone is the
+ *  one text it always was (textOf). A string is one text. Never empty: a result with no text or image part is one empty
+ *  text. */
 const resultOf = (content: string | MessagesBlock[] | undefined): Part[] => {
-  const parts = typeof content === "string" || content === undefined ? [] : content.flatMap(partOf);
-  return parts.length ? parts : [{ type: "text", text: typeof content === "string" ? content : "" }];
+  if (typeof content === "string" || content === undefined) return [{ type: "text", text: content ?? "" }];
+  const parts: Part[] = [];
+  for (const part of content.flatMap(partOf)) {
+    const last = parts.at(-1);
+    if (part.type === "text" && last?.type === "text") parts[parts.length - 1] = { type: "text", text: `${String(last.text)}\n${String(part.text)}` };
+    else parts.push(part);
+  }
+  return parts.length ? parts : [{ type: "text", text: "" }];
 };
 
 /** A Messages request as pi-ai's context on `target`: its system prompt, tools and turns (a tool_result as its own

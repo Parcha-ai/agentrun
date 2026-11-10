@@ -34,13 +34,17 @@ async function sentFor(t, model, env, request) {
     sent.push({ url: String(url), body: JSON.parse(String(init.body ?? "{}")) });
     return new Response(JSON.stringify({ error: { message: "kept, not answered" } }), { status: 400, headers: { "content-type": "application/json" } });
   };
+  // Restored in this call's own finally, never an after hook: a test that calls this twice gets the real fetch back.
   const real = globalThis.fetch;
   globalThis.fetch = async (url) => { throw new Error(`a real fetch of ${String(url)}`); };
-  t.after(() => { globalThis.fetch = real; });
-  const route = await routeOf(model, env, "default", undefined, upstream);
-  assert.equal(typeof route.fetch, "function", `${model} answers through the route's translation`);
-  const response = await route.fetch(`${route.provider.origin}/v1/messages`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(request) });
-  await response.text();
+  try {
+    const route = await routeOf(model, env, "default", undefined, upstream);
+    assert.equal(typeof route.fetch, "function", `${model} answers through the route's translation`);
+    const response = await route.fetch(`${route.provider.origin}/v1/messages`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(request) });
+    await response.text();
+  } finally {
+    globalThis.fetch = real;
+  }
   assert.equal(sent.length, 1, `one request to the provider: ${JSON.stringify(sent.map((each) => each.url))}`);
   return sent[0].body;
 }
