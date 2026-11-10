@@ -60,7 +60,7 @@ async function watched(t, { faux, cap, env = {}, hook, settled, viewer = true, h
     await ending.server.api("POST", `/runs/${ending.runId}/cancel`);
     await until(async () => (await readLiveViewers(ending.server.store, key, ending.runId)).length === 0);
   });
-  const server = await serve(t, { accounts: true, openSetup: true, console: await builtConsole(t), fauxBrowser: FAUX_BROWSER, faux });
+  const server = await serve(t, { accounts: true, openSetup: true, console: await builtConsole(t), fauxBrowser: FAUX_BROWSER, faux, webhookPrivateTargets: true });
   ending.server = server;
   const origin = `http://127.0.0.1:${server.port}`;
   const made = await call(server.port, { method: "POST", path: "/v2/setup", headers: { ...json, origin }, body: { password: PASSWORD } });
