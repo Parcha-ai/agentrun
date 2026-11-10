@@ -158,7 +158,7 @@ export const storeClockOf = (file: string | undefined): (() => number) => {
 export function openCaseStore({ dataDir, role, url, env, clockFile }: { dataDir: string; role: StoreRole; url: string; env: NodeJS.ProcessEnv; clockFile?: string }): Promise<Store> {
   const now = storeClockOf(clockFile);
   const target = storeTarget(dataDir, env, url);
-  if (target.kind === "sqlite") return openStore({ dataDir, role, now });
+  if (target.kind === "sqlite") return openStore({ dataDir, role, now, url, env });
   return openPostgresStore({ url: target.url, schema: target.schema, role, testClock: now });
 }
 
