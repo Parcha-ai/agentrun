@@ -76,7 +76,9 @@ test("the owner's signed-in page alone gets the viewer's link; the page is frame
   // no file of it in the run's directory.
   assert.deepEqual(Object.keys(handed).sort(), ["at", "id", "kind", "port", "tag", "token"]);
   assert.equal(handed.kind, "browser");
-  assert.ok(!existsSync(join(runFolder(w.server.data, w.runId), "browser-live")), "no hand-over file in the run's directory");
+  const folder = runFolder(w.server.data, w.runId);
+  assert.ok(existsSync(folder), "the run's folder is where the test looks");
+  for (const dir of [folder, join(folder, "work")]) assert.ok(!existsSync(join(dir, "browser-live")), `no hand-over file under ${dir}`);
 
   // Owner-only: no credential 401, the server's token 403, the owner's session 200.
   assert.equal((await computerOf(w, {})).status, 401);
@@ -193,11 +195,14 @@ test("the viewer's token and its file are in no record, row, view, file list, ho
   const open = await liveWs(w, wsPath);
   open.ws.sendJson({ type: "hello", token: handed.token });
   assert.equal(JSON.parse((await open.ws.next(5_000)).data).type, "ready");
-  // The owner hands back: the agent goes on to ask the person, the run parks, and its runner lets its session go.
+  // The owner hands back: the agent goes on to ask the person, and waits for the answer with its session kept (the wait in
+  // the claim, ask_person with the browser open); the answer ends the run, and its runner lets its session go.
   const handedBack = await call(w.server.port, { method: "POST", path: `/v2/runs/${w.runId}/browser/hand-back`, headers: { ...json, origin: w.origin, cookie: w.cookie }, body: { outcome: "done" } });
   assert.ok(handedBack.status < 300, handedBack.text);
   assert.ok(!handedBack.text.includes(handed.token) && !JSON.stringify(handedBack.headers).includes(handed.token), "the hand-back's answer holds no token");
-  await follow(w.server.api, w.runId, ["input_required"], { after: w.after });
+  const asked = await follow(w.server.api, w.runId, ["input_required"], { after: w.after });
+  assert.equal((await w.server.api("POST", `/runs/${w.runId}/messages`, { content: "Thanks." })).status, 202);
+  await follow(w.server.api, w.runId, ["completed"], { after: asked.after });
   const { item: ended } = await open.ws.until((m) => m.type === "close" || (m.type === "text" && JSON.parse(m.data).type === "ended"), 15_000);
   assert.ok(ended, "the open viewer was ended");
   assert.ok(await until(async () => (await w.viewers()).length === 0), "the hand-over went with the session");
@@ -264,10 +269,14 @@ test("a run whose browser key is deleted while it runs keeps its live viewer: it
   assert.equal((await asOwner("DELETE", "/settings/tool-keys/browserbase")).status, 204);
   const kept = await browserNow();
   assert.equal(kept.state, "live", `the key deleted, the running viewer is still served: ${JSON.stringify(kept)}`);
-  // The owner hands back: the agent asks the person, the run parks and lets its session go.
+  // The owner hands back: the agent asks the person and waits with its session kept (the wait in the claim), still live;
+  // the answer ends the run, which lets its session go.
   assert.ok((await call(server.port, { method: "POST", path: `/v2/runs/${runId}/browser/hand-back`, headers: { ...json, origin, cookie }, body: { outcome: "done" } })).status < 300);
-  await follow(server.api, runId, ["input_required"], { after });
-  assert.ok(await until(async () => (await browserNow())?.state !== "live"), "its session let go at the park");
+  const asked = await follow(server.api, runId, ["input_required"], { after });
+  assert.equal((await browserNow())?.state, "live", "the run waits on its question with its session kept");
+  assert.equal((await server.api("POST", `/runs/${runId}/messages`, { content: "Thanks." })).status, 202);
+  await follow(server.api, runId, ["completed"], { after: asked.after });
+  assert.ok(await until(async () => (await browserNow())?.state !== "live"), "its session let go at the run's end");
   const ended = await browserNow();
   assert.equal(ended.state, "off", "its session gone, with no key here: off");
   assert.match(ended.why, /BROWSERBASE_API_KEY/);

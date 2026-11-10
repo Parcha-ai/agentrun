@@ -26,9 +26,9 @@ import type { McpTool } from "@parcha/agentrun-kernel";
 export const MCP_HARNESSES: readonly string[] = HARNESSES.filter((id) => builtinHarness(id)!.mcp);
 
 /** A revision's body as it is saved or stored. `unnamed`: its `place` is the one a revision that names none resolves to
- *  (place.ts defaultPlaceOf), not one it names. */
+ *  (place.ts defaultPlaceOf), not one it names. `computer`: its computer setting (computer-setting.ts), when it has one. */
 export type RevisionShape =
-  | { kind: "agentic"; instructions: string; tools?: readonly string[]; model?: string; harness?: string; place?: { mode: string; box?: string }; unnamed?: true; toolSettings?: ToolSettingsMap; approvals?: "never" }
+  | { kind: "agentic"; instructions: string; tools?: readonly string[]; model?: string; harness?: string; place?: { mode: string; box?: string }; computer?: { kind: string; provider?: string }; unnamed?: true; toolSettings?: ToolSettingsMap; approvals?: "never" }
   | { kind: "workflow"; workflow: unknown; tools?: readonly string[]; harness?: string; place?: { mode: string; box?: string }; unnamed?: true; toolSettings?: ToolSettingsMap; approvals?: "never" };
 
 /** One thing that keeps a revision from running here. `host`: a setting of this host could fix it. `tool` (one it does
@@ -73,8 +73,9 @@ export const CODE_NODES_ENV = "AGENTRUN_SERVE_CODE_NODES";
 
 /** What keeps `revision` from running in `env` under the server's tool `settings` (tool-plane.ts). `boxes`: what this
  *  server's box registry set up at its start (boxes.ts); none, every box is unavailable. `offers`: the harnesses' offers
- *  the server already holds (its reading); none given, they are probed here. */
-export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape, settings: ToolSettingsMap = {}, { capped = false, boxes = [], offers, mcp, decisionPrice }: { capped?: boolean; boxes?: readonly BoxOffer[]; offers?: readonly HarnessCapability[]; mcp?: (server: string) => readonly (McpTool & { grantable?: false; reason?: string })[] | undefined; decisionPrice?: (model: string) => Promise<unknown> } = {}): Promise<Blocker[]> {
+ *  the server already holds (its reading); none given, they are probed here. `computerReady`: whether an agent's computer
+ *  setting can be had here now, or its refusal (resolve-computer.ts computerReadiness); none given, the box check. */
+export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape, settings: ToolSettingsMap = {}, { capped = false, boxes = [], offers, mcp, decisionPrice, computerReady }: { capped?: boolean; boxes?: readonly BoxOffer[]; offers?: readonly HarnessCapability[]; mcp?: (server: string) => readonly (McpTool & { grantable?: false; reason?: string })[] | undefined; decisionPrice?: (model: string) => Promise<unknown>; computerReady?: (setting: { kind: string; provider?: string }) => Promise<{ readonly ok: true } | { readonly refused: string; readonly box?: string }> } = {}): Promise<Blocker[]> {
   const out: Blocker[] = [];
   /** A web tool its run would resolve unavailable (tool-plane.ts): a warning at save, a 409 at a run, never another
    *  provider in its place. One set to deny is not: its run starts, and the gate refuses each call. */
@@ -94,7 +95,12 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
   // A workflow's model and call nodes run on the runner here; in a box they do not run yet. Its fix names the runner: an
   // edit that leaves the place out keeps the agent's (agents.ts), so removing the field would change nothing.
   if (revision.kind === "workflow" && place && place.mode !== "runner") out.push({ field: "definition.place", reason: "not_an_option", message: `A workflow runs on the runner here: its place is runner (or none), not ${place.mode} on ${place.box ?? "no box"}.`, fix: placeFix({ mode: "runner" }), host: false });
-  else if (place && place.mode !== "runner") {
+  // An agent with a computer setting is checked by the claim's own answers (resolve-computer.ts computerReadiness: the
+  // provider and its kind, the mode's mount, its keys), not as a box; one with only an old place keeps the box check.
+  else if (revision.kind === "agentic" && revision.computer && computerReady) {
+    const ready = await computerReady(revision.computer);
+    if ("refused" in ready) out.push({ field: "definition.computer", reason: NOT_SET_UP, message: ready.refused, host: true, ...(ready.box ? { box: ready.box } : {}) });
+  } else if (place && place.mode !== "runner") {
     const box = boxAvailability(boxes).find((b) => b.id === place.box);
     // A box's reason says what to do, with no full stop of its own: the sentence ends in one, whatever the reason ends in.
     if (!box?.available) out.push({ field: "definition.place", reason: NOT_SET_UP, message: sentence(`This agent's place is ${place.mode} on ${place.box ?? "no box"}, and this server cannot run it there: ${box?.reason ?? "that is not a box this server has"}`), host: true, ...(place.box ? { box: place.box } : {}) });
@@ -104,10 +110,10 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
   const shellOnRunner = (tool: string, field: string, named: boolean): Blocker => {
     const where = named ? "this agent's place is the runner" : "this agent names no place, so it runs on the runner";
     const box = boxAvailability(boxes).find((b) => RUN_BOXES.includes(b.id) && b.available);
-    if (box) return { field, reason: "not_an_option", message: `${tool} runs only in a box, and ${where}, which has no shell: give it a sandbox place.`, fix: placeFix({ mode: "sandbox", box: box.id }), host: false, tool };
+    if (box) return { field, reason: "not_an_option", message: `${tool} runs only in a box, and ${where}, which has no shell: give it a sandbox computer (a sandbox place).`, fix: placeFix({ mode: "sandbox", box: box.id }), host: false, tool };
     const fresh = newAgentPlace(boxes);
     const why = "reason" in fresh ? fresh.reason : "no box runs execute in is available here";
-    return { field, reason: "not_an_option", message: `${tool} runs only in a box, and ${where}, which has no shell, and ${why}. Do that, or keep this agent on the runner: name "place": {"mode": "runner"} and remove "${tool}" from definition.tools.`, fix: `Remove "${tool}" from definition.tools.`, host: false, tool };
+    return { field, reason: "not_an_option", message: `${tool} runs only in a box, and ${where}, which has no shell (a shell needs a sandbox computer), and ${why}. Do that, or keep this agent on the runner: name "place": {"mode": "runner"} and remove "${tool}" from definition.tools.`, fix: `Remove "${tool}" from definition.tools.`, host: false, tool };
   };
   // A harness's own MCP client may drop or retype a shape of a tool's schema (its facts' schemaProblems, measured on its
   // pinned build): that would offer the model another tool than the one granted, so its grant is refused here, at the

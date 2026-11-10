@@ -1,7 +1,8 @@
 // A remote MCP server for tests, on loopback: Streamable HTTP through the official SDK (@modelcontextprotocol/server),
 // speaking the 2026-07-28 revision (with the SDK's 2025 fallback) or, with `era: "legacy"`, 2025-era `initialize` only.
 // With a `token` it answers 401 to a request without `Authorization: Bearer <token>`; with `oauth` too, its 401 names
-// protected-resource metadata, as a server behind OAuth does: `oauth` may name its authorization server's URL, and `token`
+// protected-resource metadata, as a server behind OAuth does: `oauth` may name its authorization server's URL (or be a
+// function answering it, read at each request, for a server that moves to another), and `token`
 // may be a check of the Authorization header (fake-oauth-server.mjs `accepts`). Every request is logged: method, tool, and
 // whether an Authorization header came, never its value; a tool call whose client closed its request before the answer is
 // logged again as `closed` (its tool under `closed`, so a count of a tool's calls is not changed by it).
@@ -25,7 +26,7 @@ export const baseTools = () => ({
 
 /** `inspect`: called with each request's headers, for a test that reads one of them (the credential a run sent, a static
  *  header beside it); the log itself never holds a header's value. */
-export async function startFakeMcp({ era = "modern", token, oauth = false, port = 0, name = "fake-mcp", inspect } = {}) {
+export async function startFakeMcp({ era = "modern", token, oauth = false, port = 0, name = "fake-mcp", inspect, hold } = {}) {
   const tools = baseTools();
   const log = [];
   const factory = () => {
@@ -50,10 +51,12 @@ export async function startFakeMcp({ era = "modern", token, oauth = false, port 
     if (req.url === "/.well-known/oauth-protected-resource" || req.url === "/.well-known/oauth-protected-resource/mcp") {
       if (!oauth) return void res.writeHead(404).end();
       res.writeHead(200, { "content-type": "application/json" });
-      return void res.end(JSON.stringify({ resource: `${base}/mcp`, authorization_servers: [typeof oauth === "string" ? oauth : `${base}/auth`] }));
+      return void res.end(JSON.stringify({ resource: `${base}/mcp`, authorization_servers: [typeof oauth === "function" ? oauth() : typeof oauth === "string" ? oauth : `${base}/auth`] }));
     }
     if (req.url !== "/mcp") return void res.writeHead(404).end();
     inspect?.(req.headers);
+    // `hold`: awaited before a request to /mcp is answered, for a test that keeps a listing waiting at a point it chooses.
+    if (hold) await hold(req.headers);
     if (token !== undefined && !(typeof token === "function" ? token(req.headers.authorization) : req.headers.authorization === `Bearer ${token}`)) {
       res.writeHead(401, { "content-type": "application/json", "www-authenticate": oauth ? `Bearer resource_metadata="${base}/.well-known/oauth-protected-resource/mcp"` : 'Bearer realm="fake"' });
       return void res.end('{"error":"unauthorized"}');

@@ -44,7 +44,8 @@ async function heldWrites(t, loops, holdMs = 2_000) {
   store.live.put = async (rows) => (puts.push({ at: Date.now(), rows: rows.length }), put(rows));
   const { tools, letSlowGo } = suiteTools();
   ticker = withLiveTicker(store, piAdapterSubject.createLoop({ script: [{ call: "slow" }, { say: "done" }], tools, hooks: quiet }), { tickMs: TICK_MS });
-  runner = startRunner({ store, createLoop: ticker.createLoop, name: "runner-a", loops: loops + 10, ...TIMING });
+  // The ticker wrapped here, counted per tick: the runner's own is off (live false).
+  runner = startRunner({ store, createLoop: ticker.createLoop, live: false, name: "runner-a", loops: loops + 10, ...TIMING });
   await until(async () => (await server.live.read(Array.from({ length: loops }, (_, i) => `run-${i}`))).length === loops, `every one of ${loops} runs holding its running tool`, 60_000);
   const from = Date.now();
   await sleep(holdMs);
