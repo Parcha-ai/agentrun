@@ -928,7 +928,7 @@ const LEARNING_EXTENSIONS: Record<string, Record<string, Json>> = {
     get: {
       operationId: "getRunLearningDiff", tags: ["runs"], summary: "What the run proposed, file by file",
       description: "404 for a run that does not learn, or whose merge is not in its agent's folder.",
-      parameters: [ref("parameters/RunId")], responses: { "200": json(LEARNING_DIFF, "The run's diff."), ...errors(401, 404, 429, 500) }, ...MARK,
+      parameters: [ref("parameters/RunId")], responses: { "200": json(LEARNING_DIFF, "The run's diff."), ...errors(401, 403, 404, 429, 500) }, ...MARK,
     },
   },
 };
