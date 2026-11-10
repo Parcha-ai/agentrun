@@ -32,7 +32,7 @@ async function setup(t, { disk = new FakeArchilDisk(), ...given } = {}) {
 
 test("an ARCHIL_API_KEY environment variable overrides the saved key: source env, and the test lists the disk with it", async (t) => {
   const disk = new FakeArchilDisk();
-  const { made, call } = await setup(t, { disk, env: { ARCHIL_API_KEY: "archil-env-key-0003" } });
+  const { made, call } = await setup(t, { disk, env: { ARCHIL_API_KEY: "test-key" } });
   assert.deepEqual((await call("getWorkspaceArchil")).secret, { name: "workspace:archil", set: true, source: "env", changed_at: null });
   await call("putWorkspaceArchil", { ...SETTINGS, keys: { ARCHIL_API_KEY: API } });
   assert.equal((await call("getWorkspaceArchil")).secret.source, "env", "the environment still wins over a saved value");
@@ -40,7 +40,7 @@ test("an ARCHIL_API_KEY environment variable overrides the saved key: source env
   const list = disk.listPage.bind(disk);
   disk.listPage = async (...args) => { keys.push(made.at(-1).key()); return list(...args); };
   assert.equal((await call("testWorkspaceArchil")).ok, true);
-  assert.deepEqual(keys, ["archil-env-key-0003"], "the environment's value is the one used");
+  assert.deepEqual(keys, ["test-key"], "the environment's value is the one used");
 });
 const refused = (promise, field) => assert.rejects(promise, (error) => error instanceof ApiError && error.code === "input_invalid" && (field === undefined || error.extra.fields?.some((one) => one.field === field)), field);
 

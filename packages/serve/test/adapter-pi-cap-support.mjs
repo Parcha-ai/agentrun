@@ -15,10 +15,11 @@ const { MAX_RESTARTS } = await import("../dist/runner/conformance/harness.js");
 export const cap = await import("../../run-adapters/dist/kernel/cap/index.js");
 export const { beforeRequestOf } = cap;
 
+/** Every runner of these cases: a lease no stall of a loaded machine outlasts. A claim lost mid-request would be retaken
+ *  and its request read with no answer (held, not booked), which these money checks do not read; the runs end themselves.
+ *  A case that loses a claim does it itself (a killed runner, the store's clock moved past the claim's until). */
+/** The short lease, for the cases that kill a runner and wait for its claim to run out on the real clock. */
 export const TIMING = { leaseMs: 600, renewEveryMs: 150, stopMarginMs: 200, pollMs: 20, commandPollMs: 30 };
-/** capRun's one runner: a lease no stall of a loaded machine outlasts. A claim lost mid-request would be retaken and its
- *  request read with no answer (held, not booked), which these money checks do not read; the runs end themselves. The
- *  short TIMING stays for the cases that kill a runner and wait for its lease to run out. */
 export const STEADY = { leaseMs: 60_000, renewEveryMs: 1_000, stopMarginMs: 5_000, pollMs: 20, commandPollMs: 30 };
 export const quiet = { beforeIntent: async () => {}, beforeResult: async () => {} };
 /** The suite's model as the cap prices it: Sonnet's list price. */
