@@ -6,8 +6,9 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { ApiError } from "../dist/errors.js";
 import {
-  agentView, commitAgent, createAgent, definitionOf, getAgent, listAgents,
+  agentRevision, agentRevisions, agentView, commitAgent, createAgent, definitionOf, getAgent, listAgents,
   setAgentArchived, setCurrentRevision,
+  uuidv7,
 } from "../dist/agents-store.js";
 import { storeOn } from "./store-helpers.mjs";
 
@@ -104,7 +105,33 @@ test("roll back to an older revision with setCurrent; a revision of another agen
   await assert.rejects(setCurrentRevision(store, b, rev1), (e) => e instanceof ApiError && e.code === "not_found");
 });
 
-// Deleted at the merge (flaky in the merge queue, follow-up #2173): "revisions: newest first, each with its number, the current one marked; one that is not the agent's is null".
+test("revisions: newest first, each with its number, the current one marked; one that is not the agent's is null", async (t) => {
+  const { store } = await storeOn(t);
+  const a = await createAgent(store, { definition: DEF({ id: "a" }), skills: SKILLS });
+  const a2 = await commitAgent(store, a, { definition: DEF({ id: "a", instructions: "Second." }), skills: SKILLS });
+  const rows = await agentRevisions(store, "a");
+  assert.deepEqual(rows.map((r) => [r.version, r.current]), [[2, true], [1, false]], "newest first, current marked");
+  const one = await agentRevision(store, "a", a.revision.id);
+  assert.equal(one.version, 1);
+  assert.equal(one.current, false);
+  assert.equal(await agentRevision(store, "a", "not-a-revision"), null);
+  // A revision of another agent is not this agent's.
+  const b = await createAgent(store, { definition: DEF({ id: "b" }), skills: SKILLS });
+  assert.equal(await agentRevision(store, "a", b.revision.id), null);
+  void a2;
+});
+
+// Two minted in one millisecond keep their order (the cause of revisions numbered out of order on a fast machine: two
+// edits in one millisecond tie on created_at, and the listing's tie-break is the id). The clock is the test's own.
+test("ids minted in one millisecond, or after the clock steps back, each sort after the one before", () => {
+  const ids = [];
+  for (let i = 0; i < 5000; i += 1) ids.push(uuidv7(1_700_000_000_000));
+  ids.push(uuidv7(1_699_999_999_000));
+  ids.push(uuidv7(1_700_000_000_005));
+  for (let i = 1; i < ids.length; i += 1) assert.ok(ids[i - 1] < ids[i], `${ids[i - 1]} sorts before ${ids[i]}`);
+  assert.equal(new Set(ids).size, ids.length);
+  assert.ok(ids.every((id) => /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(id)), "each is a UUIDv7");
+});
 
 test("tool settings survive a round trip, sorted, and equal settings are one revision; a change is a new revision", async (t) => {
   const { store } = await storeOn(t);
