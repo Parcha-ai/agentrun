@@ -21,7 +21,7 @@ import type { KernelHooks, ToolCall } from "./conformance/subject.js";
 import { type AnswerData, type ApprovalPrice, type AskData, type BudgetData, type CallEndData, type CallStartData, type CallStatus, endedAnswer, type EndData, KINDS, type MessageData, type RaiseData, withdrawnAnswers } from "./journal-kinds.js";
 import { endedOnTurnEndingTool, type MessageOrigin, originOf, RUN_RESUMED } from "@parcha/pi-durable-agent/timeline";
 import { type AlsoRow, type Claim, ClaimRefused, type Command, type CommandOutcome, deniedText, endedBy, type EndOfRunAnswer, type EndOfRunTurn, type Loop, type LoopDeps, type LoopEnd, type LoopFactory, noteOf, type StopReason } from "./loop-contract.js";
-import { deniedText as setToDenyText } from "../refusal-words.js";
+import { deniedText as setToDenyText, STOPPED_WHILE_WAITING } from "../refusal-words.js";
 import { ADAPTER_API } from "../turn-end.js";
 import { answerText, REFLECT_NOTE_ONLY, reflectRequestId, underLearning, WRITES } from "./end-of-run.js";
 import { approvalOf, CLOSE_MS, CUT_STEP_MS, STOP_SETTLE_MS, commandRequest, cutLast, DEFAULT_RESTART_LIMIT, entriesOf, findData, Gate, heldReporter, Interrupted, KernelFault, Parked, quiet, restartLimited, writesEntry, writesSubmission } from "./loop.js";
@@ -286,8 +286,17 @@ interface CliRecord {
   /** The first input when someone other than the person wrote it (a trigger's): the host's input entry with its origin, as
    *  pi's steer writes one, once for the run like the person's. */
   input(text: string, origin: MessageOrigin): Promise<void>;
-  /** A call's start, before it runs (once per call id). */
+  /** A call's start, before it runs (once per call id). A call parked at its gate (park) gets its sent mark here instead,
+   *  committed before the send: only a parked call with that mark may have been sent. */
   start(callId: string, tool: string, input: unknown, replaySafe: boolean): Promise<void>;
+  /** A call through a CLI's own MCP client, as it reaches its gate: its start, marked parked (nothing sent until start()
+   *  writes its sent mark), so it shows on the record while it waits (once per call id). */
+  park(callId: string, tool: string, input: unknown, replaySafe: boolean): Promise<void>;
+  /** The calls parked at their gate and never sent, still with no end: what a stop withdraws on the record. */
+  unsentParked(): string[];
+  /** An end written elsewhere in a commit of the loop's own (the stop's withdrawal, in its end's commit): kept as this
+   *  record's. */
+  noteEnd(callId: string, status: CallStatus, output?: string): void;
   /** The end the record holds for a call, if any: a call issued again under its id is answered from it, never run. */
   endOf(callId: string): { status: CallStatus; output?: string } | undefined;
   /** A started call's end (once). */
@@ -309,16 +318,22 @@ async function openCliRecord(harness: Harness, journal: Gate["journal"], context
   // Each call started on the record: whether it has its end; and each end, by call id.
   const started = new Map<string, boolean>();
   const ends = new Map<string, { status: CallStatus; output?: string }>();
+  // A call parked at its gate (its start marked parked) and its sent mark: one parked and never marked never left, so it
+  // is never ended interrupted; it waits for its answer, which ends it (run once, refused, or withdrawn).
+  const parked = new Set<string>();
+  const sent = new Set<string>();
   let personWritten = false;
   for (const entry of await entriesOf(journal, root.id, context)) {
-    const data = (entry.data ?? {}) as { callId?: unknown; role?: unknown; status?: CallStatus; output?: unknown };
+    const data = (entry.data ?? {}) as { callId?: unknown; role?: unknown; status?: CallStatus; output?: unknown; parked?: unknown };
     if (entry.kind === KINDS.callEnd && typeof data.callId === "string") ends.set(data.callId, { status: data.status ?? "done", ...(typeof data.output === "string" ? { output: data.output } : {}) });
+    if (entry.kind === KINDS.callStart && typeof data.callId === "string" && data.parked === true) parked.add(data.callId);
+    if (entry.kind === KINDS.callSent && typeof data.callId === "string") sent.add(data.callId);
     if (entry.kind === KINDS.callStart && typeof data.callId === "string") started.set(data.callId, started.get(data.callId) ?? false);
     else if (entry.kind === KINDS.callEnd && typeof data.callId === "string") started.set(data.callId, true);
     else if ((entry.kind === KINDS.message && data.role === "person") || entry.kind === KINDS.input) personWritten = true;
   }
   for (const [callId, ended] of started) {
-    if (ended) continue;
+    if (ended || (parked.has(callId) && !sent.has(callId))) continue;
     await append(KINDS.callEnd, { callId, status: "interrupted" });
     started.set(callId, true);
     ends.set(callId, { status: "interrupted" });
@@ -364,10 +379,31 @@ async function openCliRecord(harness: Harness, journal: Gate["journal"], context
     async start(callId, tool, input, replaySafe) {
       await flushText();
       await inTurn(async () => {
-        if (started.has(callId)) return;
+        if (started.has(callId)) {
+          // Parked at its gate and now sent: its mark first, in its own commit (the flush before the send makes it last).
+          if (parked.has(callId) && !sent.has(callId) && started.get(callId) === false) {
+            await harness.commit((tx) => tx.appendEntry(root.id, { kind: KINDS.callSent, data: { callId } as unknown as JsonValue }), context);
+            sent.add(callId);
+          }
+          return;
+        }
         await append(KINDS.callStart, { callId, tool, input, replaySafe });
         started.set(callId, false);
       });
+    },
+    async park(callId, tool, input, replaySafe) {
+      await flushText();
+      await inTurn(async () => {
+        if (started.has(callId)) return;
+        await append(KINDS.callStart, { callId, tool, input, replaySafe, parked: true });
+        started.set(callId, false);
+        parked.add(callId);
+      });
+    },
+    unsentParked: () => [...parked].filter((callId) => !sent.has(callId) && started.get(callId) === false),
+    noteEnd(callId, status, output) {
+      started.set(callId, true);
+      ends.set(callId, { status, ...(output === undefined ? {} : { output }) });
     },
     endOf: (callId) => ends.get(callId),
     end: (callId, status, output) =>
@@ -878,8 +914,18 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         const ownClient = mcp !== undefined && spec.adapter.capabilities().mcpClient !== undefined;
         const sessionMcp = ownClient
           ? mcp!.session(new Map(tools.filter((tool) => mcpNames.has(tool.name)).map((tool) => [tool.name, tool])), async (call) => {
+              // A call through the door is on the run's record before its gate answers (once per call id; the gate's park
+              // seals the journal): its row, and an approval read beside it, show while it waits. A refused one ends there;
+              // a parked one runs, or is refused, on the claim that resumes it (parkedFollowUp); an allowed one runs now.
+              const wire = mcp!.tools.find((tool) => mcp!.catalogOf(tool.name) === call.tool);
+              if (record) await record.park(call.callId, wire?.name ?? call.tool, call.args ?? {}, wire?.replay === "safe");
               const answer = await gateOf(call, context);
-              return answer === "allow" ? undefined : "deny" in answer ? { refused: answer.deny } : { parked: true as const };
+              if (answer === "allow") return undefined;
+              if ("deny" in answer) {
+                if (record) await record.end(call.callId, "refused", answer.deny);
+                return { refused: answer.deny };
+              }
+              return { parked: true as const };
             })
           : undefined;
         session = await spec.adapter.open({ ...spec.session, tools: ownClient ? tools.filter((tool) => !mcpNames.has(tool.name)) : tools, ...(sessionMcp ? { mcp: sessionMcp } : {}) }, io);
@@ -954,6 +1000,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
               return now === "deny" ? setToDenyText(call.tool) : typeof now === "object" ? now.deny : undefined;
             },
             run: (call) => wrapped.get(mcp!.tools.find((tool) => mcp!.catalogOf(tool.name) === call.tool)!.name)!.call(call.args, { callId: call.callId, signal: deps.signal }),
+            // A parked call refused ends on the run's record (its start was written at its park), in the refusal's words.
+            refused: async (call, text) => cliRecord?.end(call.callId, "refused", text),
           });
           if (follow === "park") {
             gate.seal(new Parked());
@@ -1429,12 +1477,17 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     // card reads answered (withdrawn), never waiting for good on a final run.
     const byPerson = data.state === "stopped" || stopReason?.kind === "command";
     const withdrawn = byPerson ? withdrawnAnswers(await entriesOf(theGate.journal, conversation.id, context), isoNow()) : [];
+    // A CLI's call parked at its gate and never sent, withdrawn here: its record ends in the same commit, in the
+    // withdrawal's words (never interrupted: it never left).
+    const unsent = new Set(cliRecord?.unsentParked() ?? []);
+    const recordEnds = withdrawn.filter((answer) => unsent.has(answer.callId)).map((answer) => answer.callId);
     const ended = theGate.expect(writesEntry(KINDS.end), { run, ...(also.length ? { also } : {}), ...(take.length ? { take } : {}) });
     // A seal while the end is committed fails it before it is awaited: handled here, read by the await below.
     ended.catch(() => undefined);
     try {
       await on.commit(async (tx) => {
         for (const answer of withdrawn) await tx.appendEntry(conversation.id, { kind: KINDS.answer, data: answer as unknown as JsonValue });
+        for (const callId of recordEnds) await tx.appendEntry(conversation.id, { kind: KINDS.callEnd, data: { callId, status: "refused", output: STOPPED_WHILE_WAITING } as unknown as JsonValue });
         if (failedWith !== undefined) await tx.appendEntry(conversation.id, { kind: PI_ASSISTANT, model: [cliErrorAnswer(specNow?.adapter.id ?? "cli", failedWith, now())] as never });
         return tx.appendEntry(conversation.id, { kind: KINDS.end, data: data as unknown as JsonValue });
       }, context);
@@ -1444,6 +1497,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       throw error;
     }
     await ended;
+    for (const callId of recordEnds) cliRecord?.noteEnd(callId, "refused", STOPPED_WHILE_WAITING);
     return data.state === "failed" ? { state: "failed", error: { code: "run-failed", message: data.summary ?? "the run failed" } } : { state: data.state };
   }
 

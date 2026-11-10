@@ -12,6 +12,9 @@ import { INTERRUPTED_TEXT } from "@parcha/agentrun-kernel/kernel";
 export const KINDS = {
   /** A tool call about to run: written before it runs (and before the flush that precedes a side effect). */
   callStart: "agentrun.call.start",
+  /** A call whose start was written at its park (CallStartData.parked) is about to be sent: committed and flushed before
+   *  the send, once. Only a parked call with this mark may have been sent; one without it never left. */
+  callSent: "agentrun.call.sent",
   /** How it ended: written after it ran, or by recovery for a start with no end (replay-safe reruns and ends done;
    *  any other ends interrupted, and the model is told). */
   callEnd: "agentrun.call.end",
@@ -115,6 +118,9 @@ export interface CallStartData {
   readonly input: unknown;
   /** May run again after a crash (it changes nothing outside the run): the tool registry's own flag. */
   readonly replaySafe: boolean;
+  /** Written as the call reached its gate through a CLI's own MCP client, before any answer: nothing is sent until its
+   *  agentrun.call.sent mark (KINDS.callSent). */
+  readonly parked?: true;
 }
 
 export type CallStatus = "done" | "failed" | "refused" | "interrupted";
