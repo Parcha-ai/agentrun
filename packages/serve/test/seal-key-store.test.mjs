@@ -56,7 +56,7 @@ async function startAndStop(data) {
 async function plantSecret(data, key) {
   const store = await openSqliteStore({ dataDir: data, role: "server" });
   try {
-    await store.sealedKeys.put("OPENAI_API_KEY", sealColumn(Buffer.from(key, "base64"), sealedAt.sealedKey("OPENAI_API_KEY"), "sk-planted-value-0123456789"));
+    await store.sealedKeys.put("OPENAI_API_KEY", sealColumn(Buffer.from(key, "base64"), sealedAt.sealedKey("OPENAI_API_KEY"), "fake-test-key-openai-0001"));
   } finally {
     await store.close();
   }
