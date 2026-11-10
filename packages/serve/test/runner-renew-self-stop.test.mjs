@@ -6,44 +6,57 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { startRunner } from "../dist/runner/runner.js";
-import { fauxLoops, observed, queue, recorder, sleep, stores, until } from "./runner-support.mjs";
+import { fakeClock, fauxLoops, nextOrder, observed, queue, recorder, STEADY_LEASE, stores, until } from "./runner-support.mjs";
 
-const TIMING = { leaseMs: 600, renewEveryMs: 100, stopMarginMs: 200, pollMs: 20, commandPollMs: 20 };
+// A lease no stall of a loaded machine runs out: the claim is lost only where a case loses it, at the claim deadline the
+// test moves (fakeClock) or by the store's clock jumping past it. The renew tick is short, so a renew answered Fenced
+// comes within one; only the lease is long.
+const TIMING = { ...STEADY_LEASE, renewEveryMs: 100, pollMs: 20, commandPollMs: 20 };
+/** The claim deadline, from the claim: its lease less the stop margin (RunnerOptions.stopMarginMs). */
+const DEADLINE_MS = TIMING.leaseMs - TIMING.stopMarginMs;
+const WAIT_MS = 10_000;
 
 async function held(t, faux, timing = {}) {
   const opened = await stores({ runners: 1 });
   const record = recorder();
   await queue(opened.server, "run-1");
-  const runner = startRunner({ store: observed(opened.runners[0], record), createLoop: faux.createLoop, name: "runner-a", ...TIMING, ...timing });
+  const events = [];
+  const runner = startRunner({ store: observed(opened.runners[0], record), createLoop: faux.createLoop, name: "runner-a", onEvent: (event) => events.push(event), ...TIMING, ...timing });
   t.after(async () => {
     for (const loop of faux.loops) loop.halted = true;
     await runner.close();
   });
   await until(() => record.commits.some((commit) => commit.epoch === 1), "the loop commits under its claim");
-  return { ...opened, record, runner };
+  return { ...opened, record, runner, events };
 }
 
-test("renews that fail: the loop is stopped before claimed_until, and nothing it commits after the stop lands", async (t) => {
+test("renews that fail: the loop is stopped at its claim deadline, before claimed_until, and nothing it commits after the stop lands", async (t) => {
   const faux = fauxLoops({ stubborn: true, turnMs: 15 });
-  const { server, record, runner } = await held(t, faux);
+  const clock = fakeClock();
+  const { server, record, runner, events } = await held(t, faux, { clock });
   const loop = faux.loops[0];
 
+  // Every renew fails from here (the store busy), so no answer of the store's moves the deadline or loses the claim: the
+  // stop is the runner's own, at its deadline on the clock the test moves.
   record.blockRenew.add("runner-a");
-  const lastUntil = (await server.runs.get("run-1")).claimedUntil;
-  const stop = await until(() => loop.stopCalls[0], "the runner stops the loop", TIMING.leaseMs * 3);
+  clock.advance(DEADLINE_MS - 1);
+  assert.deepEqual(loop.stopCalls, [], "not stopped before its deadline");
+  clock.advance(1);
+  const stop = await until(() => loop.stopCalls[0], "the runner stops the loop at its claim deadline", WAIT_MS);
 
   assert.equal(stop.kind, "claim-lost");
-  assert.ok(stop.at < lastUntil, `stopped ${lastUntil - stop.at} ms before claimed_until (must be > 0)`);
+  assert.ok(events.some((event) => event.type === "claim-lost" && event.why === "not-renewed"), `lost at its deadline, unrenewed: ${JSON.stringify(events)}`);
+  const until_ = (await server.runs.get("run-1")).claimedUntil;
+  assert.ok(stop.at < until_, `stopped ${until_ - stop.at} ms before the store's claimed_until (must be > 0)`);
   assert.equal(loop.deps.signal.aborted, true, "the loop's signal is aborted at the stop");
   // The stubborn loop keeps trying: every commit from the stop on is refused by the runner, never reaching the store.
-  await sleep(TIMING.leaseMs);
-  // Once the claim has run out the run may be claimed again (by this runner too: its claims go through, only its renews
-  // fail), at epoch 2 with a loop of its own; epoch 1's loop is the one that must write nothing.
+  // Waited for by its event (a commit tried after the stop), never by the clock.
+  const late = await until(() => {
+    const tried = loop.commitErrors.filter((error) => error.startedOrder > stop.order);
+    return tried.length > 0 && tried;
+  }, "the loop tries to commit after the stop", WAIT_MS);
   // In the order things happened, not by the clock: a commit tried in the stop's own ms, before it, is not late.
   assert.deepEqual(record.commits.filter((commit) => commit.epoch === 1 && commit.startedOrder > stop.order), [], "no commit of epoch 1 started after the stop lands");
-  // Commits tried from the stop on (one begun before it may be refused after it, by the store).
-  const late = loop.commitErrors.filter((error) => error.startedOrder > stop.order);
-  assert.ok(late.length > 0, "the loop did try to commit after the stop");
   assert.ok(late.every((error) => error.name === "ClaimLost"), `refused by the runner's fence, not the store's: ${JSON.stringify(late.slice(0, 3))}`);
   assert.deepEqual(runner.held().filter((claim) => claim.epoch === 1), [], "the runner no longer holds epoch 1's claim");
   // pi chains on commit's promise: the refusal is a rejected promise, never a throw out of the call itself.
@@ -55,20 +68,25 @@ test("renews that fail: the loop is stopped before claimed_until, and nothing it
 test("a renew refused as Fenced (the store's clock jumped and another runner took the claim): the loop is stopped at once", async (t) => {
   const faux = fauxLoops({ stubborn: true, turnMs: 15 });
   // The runner claims at its start and polls no more: the jumped clock must not let it claim the run again itself.
-  const { server, clock, record } = await held(t, faux, { pollMs: 60_000 });
+  const { server, clock, record, events } = await held(t, faux, { pollMs: 60_000 });
   const loop = faux.loops[0];
 
   // The store's now jumps past the claim's until, and another runner claims the run: the epoch moves.
   clock.skewMs = TIMING.leaseMs * 2;
   const taken = await server.claim("run-1", "runner-z", { leaseMs: 60_000 });
-  const movedAt = Date.now();
+  const movedOrder = nextOrder();
   assert.equal(taken?.epoch, 2, "the other runner's claim");
-  const stop = await until(() => loop.stopCalls[0], "the runner stops the loop", TIMING.renewEveryMs * 4);
+  // The next renew is answered Fenced, and the runner stops the loop on that answer: no deadline is reached (the lease is
+  // long). Waited for by its event, never measured on the clock.
+  const stop = await until(() => loop.stopCalls[0], "the runner stops the loop on the Fenced renew", WAIT_MS);
   assert.equal(stop.kind, "claim-lost");
-  assert.ok(stop.at - movedAt <= TIMING.renewEveryMs * 2, `stopped ${stop.at - movedAt} ms after the fence moved`);
-  await sleep(TIMING.renewEveryMs * 2);
+  assert.ok(stop.order > movedOrder, "stopped after the fence moved");
+  assert.ok(events.some((event) => event.type === "claim-lost" && event.why === "fenced"), `lost on the store's Fenced answer: ${JSON.stringify(events)}`);
   // Before the stop the store's fence refused them (Fenced); from the stop on, the runner's does.
-  const late = loop.commitErrors.filter((error) => error.startedOrder > stop.order);
-  assert.ok(late.length > 0 && late.every((error) => error.name === "ClaimLost"), JSON.stringify(late.slice(0, 3)));
-  assert.equal(record.commits.filter((commit) => commit.epoch === 1 && commit.startedAt >= movedAt).length, 0, "epoch 1 wrote nothing after the move");
+  const late = await until(() => {
+    const tried = loop.commitErrors.filter((error) => error.startedOrder > stop.order);
+    return tried.length > 0 && tried;
+  }, "the loop tries to commit after the stop", WAIT_MS);
+  assert.ok(late.every((error) => error.name === "ClaimLost"), JSON.stringify(late.slice(0, 3)));
+  assert.equal(record.commits.filter((commit) => commit.epoch === 1 && commit.startedOrder > movedOrder).length, 0, "epoch 1 wrote nothing after the move");
 });

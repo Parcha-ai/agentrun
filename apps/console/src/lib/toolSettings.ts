@@ -50,6 +50,8 @@ export type ToolGate = { name: string; permission: Permission; default_permissio
 /** Said wherever a tool the server's table denies shows: the server's deny is absolute (it holds over an agent's own
  *  allow or ask and over Never ask). */
 export const SERVER_DENY = "Refused on this server for every agent, whatever the agent's own setting or Never ask.";
+/** Said beside a tool whose permission is deny: what deny does not do (its words are tl-tools'). */
+export const DENY_ONLY = "Deny stops this tool only. The agent can still reach the web with other tools it has, such as browser, bash or web_search: deny those too to keep it offline.";
 
 /** An MCP tool as its server's read lists it (GET /v2/mcp/servers/{name}): this server's permission in force for it. */
 type McpListed = { name: string; tools: readonly { name: string; permission?: Permission }[] };
