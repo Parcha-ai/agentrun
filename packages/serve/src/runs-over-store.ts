@@ -289,6 +289,8 @@ export interface StartDeps {
  *  it must have a cap (a trigger's), and who its first message is from when the person did not write it. */
 export interface StartOptions {
   readonly trigger?: RunTrigger;
+  /** The run's title when its starter names one (a trigger's: "<Source> <name>"), else it is made from its input. */
+  readonly title?: string;
   readonly origin?: RunOrigin;
   readonly capped?: boolean;
   readonly from?: MessageOrigin;
@@ -320,7 +322,7 @@ async function learningStartFor(deps: StartDeps, entry: AgentEntry, revision: Re
  *  launch body in one transaction (store.runs.create), which a runner reads at its claim. No process, no door, no setup
  *  file: where the run runs is the runner's. Under `origin`, a key that already started a run gets that run (the store's
  *  one-run-per-key), so a retry never starts a second. */
-export async function startRun(store: Pick<Store, "runs" | "runOfOrigin">, deps: StartDeps, entry: AgentEntry, body: Json, { trigger, origin, capped = false, from }: StartOptions = {}): Promise<RunRow> {
+export async function startRun(store: Pick<Store, "runs" | "runOfOrigin">, deps: StartDeps, entry: AgentEntry, body: Json, { trigger, origin, capped = false, from, title: given }: StartOptions = {}): Promise<RunRow> {
   const issues = deps.runBodyIssues(body);
   if (issues.length) {
     // Told from the revision the run would start on (a pinned one, else the current), once it reads as one: a pin that is
@@ -351,7 +353,7 @@ export async function startRun(store: Pick<Store, "runs" | "runOfOrigin">, deps:
   // The title shows on the run's page, the runs list and Mission Control: built from its input as shown, each held value
   // redacted before a long one is cut (a cut key could no longer be found).
   const shown = redactedOutput(input, deps.serverSecrets());
-  const title = revision.kind === "workflow" ? deps.workflowTitle(entry.agent.name || entry.agent.id, isObject(shown) ? shown : {}) : typeof input.content === "string" ? input.content : (Object.values(input).find((v): v is string => typeof v === "string") ?? JSON.stringify(input));
+  const title = given !== undefined ? given : revision.kind === "workflow" ? deps.workflowTitle(entry.agent.name || entry.agent.id, isObject(shown) ? shown : {}) : typeof input.content === "string" ? input.content : (Object.values(input).find((v): v is string => typeof v === "string") ?? JSON.stringify(input));
   // Its tools' providers, resolved before the run exists (tool-plane.ts) and kept in its launch body, so a claim reads them
   // back, never the settings of that moment. (The old start wrote them to serve.json; now they ride the launch row.)
   const tooling = await toolingOf(revision);

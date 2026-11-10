@@ -36,7 +36,7 @@ export interface TriggerTargetDeps {
  *  adapter's sealed settings, the failed-firing webhook) stay server-wired. */
 export type TriggerTargets = {
   targetIssues(target: Target): Promise<InputIssue[]>;
-  start(target: Extract<Target, { kind: "start_run" }>, input: Json, origin: RunTrigger, from: MessageOrigin): Promise<{ run_id: string }>;
+  start(target: Extract<Target, { kind: "start_run" }>, input: Json, origin: RunTrigger, from: MessageOrigin, title?: string): Promise<{ run_id: string }>;
   message(target: Extract<Target, { kind: "message_run" }>, input: Json, key: string, from: MessageOrigin): Promise<void | { skipped: string }>;
   statusOf(runId: string): Promise<string | null>;
   runOf(key: string): Promise<{ run_id: string; setup_lost: boolean } | null>;
@@ -65,7 +65,7 @@ export function triggerTargets(store: Store & RunsStore, deps: TriggerTargetDeps
       const wrong = revision ? await deps.start.explainRun(await deps.start.inputIssuesOf(revision, target.input), { input: target.input }, revision) : [];
       return [...uncapped, ...wrong.map((issue) => ({ ...issue, field: `target.${issue.field}` }))];
     },
-    async start(target, input, trigger, from) {
+    async start(target, input, trigger, from, title) {
       const entry = await deps.needAgent(target.agent_id);
       // The target's cap, else the agent's default as it stands now: a run a trigger starts is never uncapped (capped).
       const run = await startRun(
@@ -73,7 +73,8 @@ export function triggerTargets(store: Store & RunsStore, deps: TriggerTargetDeps
         deps.start,
         entry,
         { input, ...(target.max_cost_usd !== undefined ? { max_cost_usd: target.max_cost_usd } : {}), ...(target.effort ? { effort: target.effort } : {}) },
-        { trigger, origin: { key: trigger.firing_key }, capped: true, from },
+        // Titled from the trigger (the engine's titleOf: "<Source> <name>"), never from its input, a sender's markup.
+        { trigger, origin: { key: trigger.firing_key }, capped: true, from, ...(title ? { title } : {}) },
       );
       return { run_id: run.id };
     },
