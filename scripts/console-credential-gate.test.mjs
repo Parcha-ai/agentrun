@@ -62,7 +62,7 @@ test('a test, fixture, sample, mock or story under src/ is non-production; the c
   for (const file of [
     'fixtures/capabilities.json', 'components/AgentAnalytics.sample.ts', 'sample.ts', 'components/MissionControl.stories.tsx',
     'components/MissionControl.test.tsx', 'components/Agents.stories.test.tsx', '__mocks__/client.ts', 'lib/client.spec.ts',
-    'test/setup.ts', '__fixtures__/run.json', 'lib/client.mock.ts',
+    'test/setup.ts', '__fixtures__/agent.json', 'lib/client.mock.ts',
   ]) assert.ok(isNonProduction(consoleSourceOf(`${root}/src/${file}?url`, root)), file);
   for (const file of ['components/MissionControl.tsx', 'lib/exampleInput.ts', 'lib/testing-utils.ts', 'components/Contest.tsx', 'lib/latest.ts']) {
     assert.equal(isNonProduction(consoleSourceOf(`${root}/src/${file}`, root)), false, file);
