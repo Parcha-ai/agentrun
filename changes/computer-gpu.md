@@ -12,6 +12,7 @@ GPU computers on Modal and Daytona. `ComputerSpec.gpu: { type, count }` asks for
   - The SDK gets `gpu` as one string (`"A100-80GB:2"`). The drift check holds the runtime from both sides, gVisor's kernel exactly on a GPU computer.
   - The spec tag records the GPUs, and `attach` reads them back.
   - `gpu.mounts` is empty, so a GPU with an Archil mount is refused as not proven.
+  - Sometimes Modal refuses an exec because the sandbox is shutting down (its init exited). The create now fails as `gone` and waits up to `timeouts.endedMs` (30 s) for the sandbox to finish. It then reports init's exit code and words.
 - Daytona: `H100`, `H200`, `RTX-PRO-6000`, `RTX-4090`, `RTX-5090`, `MI355X`, up to 8, sent as `gpu` and `gpuType`.
   - A GPU computer is created in region `earth` with `autoDeleteInterval: 0`. Stopping it deletes it (`stopDeletes`): there is no pause or snapshot, so nothing on it persists.
   - Each GPU comes with 16 vCPU, 192 GiB of memory and 512 GiB of disk by default (`perGpu`).
