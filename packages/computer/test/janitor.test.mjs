@@ -1,22 +1,29 @@
 // The janitor against a fake provider: no Docker needed.
 import assert from "node:assert/strict";
 import test from "node:test";
-import { sweep } from "../dist/index.js";
+import { ownerLabels, sweep } from "../dist/index.js";
 
 const NOW = new Date("2026-11-06T12:00:00.000Z");
 const at = (ms) => new Date(NOW.getTime() + ms);
 
-/** A provider that lists `computers` ({name, deadline}) and records every list and release. */
-function fakeProvider(computers, { lifetime = "janitor", failRelease = [], listed, maxLifetimeMs = 30 * 86_400_000 } = {}) {
+/** A provider that lists `computers` ({name, deadline, labels?, detachedAt?}) and records every list and release. */
+function fakeProvider(computers, { lifetime = "janitor", failRelease = [], listed, maxLifetimeMs = 30 * 86_400_000, persistence } = {}) {
 	const calls = [];
 	const provider = {
 		id: "fake",
 		version: "0",
-		capabilities: () => ({ kind: "linux", lifetime, network: ["none"], isolation: "container", os: "linux", daemon: "pid1", groups: ["exec"], maxLifetimeMs }),
+		capabilities: () => ({ kind: "linux", lifetime, network: ["none"], isolation: "container", os: "linux", daemon: "pid1", groups: ["exec"], maxLifetimeMs, ...(persistence ? { persistence } : {}) }),
 		async list(labels, context) {
 			calls.push(["list", labels, context?.signal instanceof AbortSignal]);
 			if (listed) return listed;
-			const infos = computers.map(({ name, deadline, state = "running" }) => ({ ref: { id: `id-${name}`, name }, labels: {}, deadline, state, network: "none" }));
+			const infos = computers.map(({ name, deadline, state = "running", labels = {}, detachedAt }) => ({
+				ref: { id: `id-${name}`, name },
+				labels,
+				deadline,
+				state,
+				network: "none",
+				...(detachedAt ? { detachedAt } : {}),
+			}));
 			return { ok: true, value: infos };
 		},
 		async release(ref, how) {
@@ -87,6 +94,72 @@ test("sweep() refuses a provider whose vendor ends computers itself, with no cal
 	assert.equal(swept.error.code, "refused");
 	assert.match(swept.error.message, /lifetime "vendor".*ends its computers itself/);
 	assert.deepEqual(calls, []);
+});
+
+const PERSISTS = { keepsState: true, resume: false };
+const agent = (id, idleTtlMs) => ownerLabels({ agent: id, ...(idleTtlMs === undefined ? {} : { idleTtlMs }) });
+
+test("sweep() never deletes an agent's computer by a deadline: past, missing or unreadable, it is kept", async () => {
+	const { provider, calls } = fakeProvider(
+		[
+			{ name: "owned-past", deadline: at(-1), labels: agent("a1") },
+			{ name: "owned-none", deadline: undefined, labels: agent("a1"), state: "stopped", detachedAt: at(-86_400_000) },
+			{ name: "run-past", deadline: at(-1) },
+		],
+		{ persistence: PERSISTS },
+	);
+	assert.deepEqual(await sweep(provider, { now: NOW }), { ok: true, value: { deleted: ["run-past"], kept: 2 } });
+	assert.deepEqual(calls.filter(([what]) => what === "release"), [["release", "run-past", "delete"]]);
+});
+
+test("sweep() deletes an agent's computer whose owner is gone, by the caller's answer, and keeps one whose owner is there", async () => {
+	const { provider } = fakeProvider(
+		[
+			{ name: "gone-owner", deadline: undefined, labels: agent("gone") },
+			{ name: "kept-owner", deadline: undefined, labels: agent("here") },
+		],
+		{ persistence: PERSISTS },
+	);
+	const asked = [];
+	const ownerGone = async (id) => (asked.push(id), id === "gone");
+	assert.deepEqual(await sweep(provider, { now: NOW, ownerGone }), { ok: true, value: { deleted: ["gone-owner"], kept: 1 } });
+	assert.deepEqual(asked, ["gone", "here"]);
+});
+
+test("sweep() deletes an agent's computer detached for longer than its owner's idle TTL; one attached, or detached for less, or with no TTL, is kept", async () => {
+	const { provider } = fakeProvider(
+		[
+			{ name: "idle-long", deadline: undefined, labels: agent("a1", 3_600_000), state: "stopped", detachedAt: at(-3_600_000) },
+			{ name: "idle-short", deadline: undefined, labels: agent("a1", 3_600_000), state: "stopped", detachedAt: at(-3_599_999) },
+			{ name: "attached", deadline: undefined, labels: agent("a1", 1) },
+			{ name: "no-ttl", deadline: undefined, labels: agent("a1"), state: "stopped", detachedAt: at(-30 * 86_400_000) },
+		],
+		{ persistence: PERSISTS },
+	);
+	assert.deepEqual(await sweep(provider, { now: NOW }), { ok: true, value: { deleted: ["idle-long"], kept: 3 } });
+});
+
+test("sweep() keeps a computer whose owner label cannot be read: it never deletes an agent's state on a rule it cannot read", async () => {
+	const { provider, calls } = fakeProvider(
+		[
+			{ name: "odd-owner", deadline: at(-1), labels: { "agentrun.owner": "nobody" } },
+			{ name: "odd-ttl", deadline: at(-1), labels: { "agentrun.owner": "agent:a1", "agentrun.idle-ttl-ms": "soon" }, state: "stopped", detachedAt: at(-86_400_000) },
+		],
+		{ persistence: PERSISTS },
+	);
+	assert.deepEqual(await sweep(provider, { now: NOW, ownerGone: () => true }), { ok: true, value: { deleted: [], kept: 2 } });
+	assert.deepEqual(calls.filter(([what]) => what === "release"), []);
+});
+
+test("sweep() of a provider that declares persistence under lifetime vendor sweeps its agents' computers alone; its vendor ends the rest", async () => {
+	const { provider } = fakeProvider(
+		[
+			{ name: "run-past", deadline: at(-1) },
+			{ name: "gone-owner", deadline: undefined, labels: agent("gone") },
+		],
+		{ lifetime: "vendor", persistence: PERSISTS },
+	);
+	assert.deepEqual(await sweep(provider, { now: NOW, ownerGone: (id) => id === "gone" }), { ok: true, value: { deleted: ["gone-owner"], kept: 1 } });
 });
 
 test("sweep() returns list's error as it is", async () => {

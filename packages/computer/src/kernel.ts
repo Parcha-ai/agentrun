@@ -46,19 +46,21 @@ import {
 } from "./browser.js";
 import type { KindCapabilities } from "./kinds.js";
 import type { MountKind } from "./mount.js";
-import type {
-	AttachedComputer,
-	CallContext,
-	ComputerCapabilities,
-	ComputerConnection,
-	ComputerInfo,
-	ComputerProvider,
-	ComputerRef,
-	ComputerSpec,
-	CreatedComputer,
-	NetworkPolicy,
-	NetworkSpec,
-	Refusal,
+import {
+	type AttachedComputer,
+	type CallContext,
+	type ComputerCapabilities,
+	type ComputerConnection,
+	type ComputerInfo,
+	type ComputerProvider,
+	type ComputerRef,
+	type ComputerSpec,
+	type CreatedComputer,
+	type NetworkPolicy,
+	type NetworkSpec,
+	type Refusal,
+	type ReleaseHow,
+	runLifetimeMs,
 } from "./provider.js";
 import { failFor, ok, type Result, vendorFail } from "./result.js";
 import { connectionError } from "./test-connection.js";
@@ -183,7 +185,7 @@ export class KernelProvider implements ComputerProvider {
 		if (refusals.length > 0) return fail("refused", refusals.map(({ field, message }) => `${field}: ${message}`).join("; "));
 		if (signal?.aborted) return fail("aborted", "create was aborted before Kernel was called");
 		const written = { [CREATE_LABEL]: createLabelValue(), ...spec.labels };
-		const body = { ...settings, timeout_seconds: Math.ceil(spec.lifetimeMs / 1000), tags: written };
+		const body = { ...settings, timeout_seconds: Math.ceil(runLifetimeMs(spec) / 1000), tags: written };
 		let made: RestReply;
 		try {
 			made = await this.#request("POST", "/browsers", { body, ...(signal ? { signal } : {}) });
@@ -379,7 +381,7 @@ export class KernelProvider implements ComputerProvider {
 	}
 
 	/** Deletes the browser and waits until Kernel reads it as gone; one already deleted or unknown is released. */
-	async release(ref: ComputerRef, how: "stop" | "delete", { signal }: CallContext = {}): Promise<Result<void>> {
+	async release(ref: ComputerRef, how: ReleaseHow, { signal }: CallContext = {}): Promise<Result<void>> {
 		if (how !== "delete") return fail("refused", `a Kernel browser is released with "delete"; it cannot be stopped and kept, so ${String(how)} is refused and the browser is left as it is`);
 		const id = ref?.id;
 		const problem = idProblem(id, NAME);

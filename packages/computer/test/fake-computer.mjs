@@ -8,7 +8,7 @@ import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmS
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
-import { DaemonClient, epochOf } from "../dist/index.js";
+import { DaemonClient, EPOCH_LABEL, epochOf, ownerLabels, RUN_LABEL } from "../dist/index.js";
 import { MAX_OUTPUT_BYTES } from "../dist/protocol.js";
 
 const fail = (code, message) => ({ ok: false, error: { code, message } });
@@ -111,12 +111,13 @@ function files(computer, method, params) {
 		return { size: Buffer.from(params.data, "base64").length };
 	}
 	if (method === "files.read") {
-		const data = host === undefined ? undefined : (() => { try { return readFileSync(host); } catch { return undefined; } })();
+		const data = host === undefined ? computer.contents.get(params.path) : (() => { try { return readFileSync(host); } catch { return undefined; } })();
 		if (data === undefined) return { error: { code: -32000, message: `no such file: ${params.path}`, data: { kind: "not_found" } } };
 		return { data: data.toString("base64"), eof: true, size: data.length };
 	}
 	if (method === "files.mkdir") tree.set(params.path, "dir");
 	if (method === "files.write") tree.set(params.path, "file");
+	if (method === "files.write") computer.contents.set(params.path, Buffer.from(params.data, "base64"));
 	if (method === "files.write") return { size: Buffer.from(params.data, "base64").length };
 	if (method !== "files.list") return {};
 	const depth = params.depth ?? 1;
@@ -206,6 +207,12 @@ function fakeDaemon(hello, computer) {
  * - `failRelease`: labels; a release of a computer that carries all of them fails ("refused", in words) and leaves it.
  * - `vendorAgentPorts`: capabilities().vendorAgentPorts, left out unless given. `probeInterfaces`: the interfaces
  *   `computerd probe` reports (default the loopback alone); `agentAnswers`: the probe targets that answer (default none).
+ * - `persistence`: capabilities().persistence ({ keepsState: true, resume }), left out unless given. With it, check()
+ *   takes spec.owner with no lifetime, create labels the computer with its owner, release "detach" stops an agent's
+ *   computer with its files kept (and, with resume, its processes), and attach with a claim brings it back under the
+ *   claim's run and epoch, refusing a claim of the same run below the epoch it carries. Without it, an owner and a detach
+ *   are refused in words. `brokenPersistence`: "detach-deletes" (a detach deletes the computer), "forgets" (an attach
+ *   brings it back with no files), "no-fence" (a claim below the epoch is taken).
  */
 export function fakeComputers({
 	id = "fake",
@@ -255,6 +262,8 @@ export function fakeComputers({
 	pathSockets = [],
 	socketSearchIncomplete = [],
 	display,
+	persistence,
+	brokenPersistence,
 } = {}) {
 	/** The mount as attach and list read it back: its kind and source, never the token unless broken so. An Archil mount
 	 *  is exclusive, under the epoch of the computer's agentrun.epoch label; with no such label it is a mount in words. */
@@ -279,7 +288,21 @@ export function fakeComputers({
 	const provider = {
 		id,
 		version,
-		capabilities: () => ({ kind, lifetime, network, isolation: "container", os: "linux", daemon: mode, groups, maxLifetimeMs, release, ...(user ? { user } : {}), ...(mount ? { mount } : {}), ...(vendorAgentPorts ? { vendorAgentPorts } : {}) }),
+		capabilities: () => ({
+			kind,
+			lifetime,
+			network,
+			isolation: "container",
+			os: "linux",
+			daemon: mode,
+			groups,
+			maxLifetimeMs,
+			release,
+			...(user ? { user } : {}),
+			...(mount ? { mount } : {}),
+			...(vendorAgentPorts ? { vendorAgentPorts } : {}),
+			...(persistence ? { persistence } : {}),
+		}),
 		check(spec) {
 			const refusals = [];
 			if (spec.mount !== undefined && !(mount ?? []).includes(spec.mount.kind) && brokenMount !== "check-ignores") {
@@ -287,7 +310,11 @@ export function fakeComputers({
 			} else if (spec.mount !== undefined && brokenMount === "host-refuses") {
 				refusals.push({ field: "mount", message: "this host cannot bind the run folder" });
 			}
-			if (!(Number.isSafeInteger(spec.lifetimeMs) && spec.lifetimeMs > 0)) refusals.push({ field: "lifetimeMs", message: "lifetimeMs is required" });
+			if (spec.owner !== undefined && !persistence) refusals.push({ field: "owner", message: "this fake keeps no computer for an agent" });
+			else if (spec.owner !== undefined && spec.lifetimeMs !== undefined) refusals.push({ field: "lifetimeMs", message: "an agent's computer has no run deadline" });
+			else if (spec.owner !== undefined) {
+				// An agent's computer: no lifetime to check.
+			} else if (!(Number.isSafeInteger(spec.lifetimeMs) && spec.lifetimeMs > 0)) refusals.push({ field: "lifetimeMs", message: "lifetimeMs is required" });
 			else if (spec.lifetimeMs > maxLifetimeMs) refusals.push({ field: "lifetimeMs", message: `lifetimeMs is at most ${maxLifetimeMs} ms` });
 			const kind = typeof spec.network === "string" ? spec.network : "allow";
 			if (!network.includes(kind)) refusals.push({ field: "network", message: `network ${kind} is not offered` });
@@ -305,10 +332,15 @@ export function fakeComputers({
 			const record = {
 				ref: { id: `id-${next}`, name },
 				image: spec.image,
-				labels: { ...spec.labels, ...(brokenMount === "token-in-label" && spec.mount?.token ? { "mount.token": spec.mount.token } : {}) },
+				labels: {
+					...spec.labels,
+					...(brokenMount === "token-in-label" && spec.mount?.token ? { "mount.token": spec.mount.token } : {}),
+					...(spec.owner !== undefined ? ownerLabels(spec.owner) : {}),
+				},
 				network: spec.network,
 				mount: spec.mount,
-				deadline: new Date(Date.now() + spec.lifetimeMs),
+				owner: spec.owner,
+				deadline: spec.owner !== undefined ? undefined : new Date(Date.now() + spec.lifetimeMs),
 				state: "running",
 				daemon: {
 					uid: spec.user ?? String(uid),
@@ -322,6 +354,7 @@ export function fakeComputers({
 					processes: [],
 					listPage,
 					tree: new Map(),
+					contents: new Map(),
 					filesPage,
 					bound: folderOf(spec.mount),
 					toolCannotWrite,
@@ -335,13 +368,29 @@ export function fakeComputers({
 			made.push({ name, labels: record.labels });
 			return ok(notes ? { ...record.ref, notes } : record.ref);
 		},
-		async attach(ref) {
+		async attach(ref, context = {}) {
 			const found = [...computers.values()].filter((c) =>
 				"id" in ref ? c.ref.id === ref.id : Object.entries(ref.labels).every(([k, v]) => c.labels[k] === v),
 			);
 			if (found.length === 0) return fail("not_found", "no such computer");
 			if (found.length > 1) return fail("invalid", `${found.length} computers match`);
 			const [c] = found;
+			const claim = context.claim;
+			if (claim !== undefined) {
+				if (!persistence || c.owner === undefined) return fail("refused", `${c.ref.name} is a run's computer: no claim takes it`);
+				const carried = epochOf(c.labels);
+				if (c.labels[RUN_LABEL] === claim.run && carried.ok && claim.epoch < carried.value && brokenPersistence !== "no-fence") {
+					return fail("refused", `fenced: ${c.ref.name} carries run ${claim.run} at epoch ${carried.value}, above the claim's ${claim.epoch}`);
+				}
+				c.labels = { ...c.labels, [RUN_LABEL]: claim.run, [EPOCH_LABEL]: String(claim.epoch) };
+				if (c.state === "stopped") {
+					// Back from a detach: with resume as it was; else booted again from its kept disk, no process running.
+					if (!persistence.resume) c.daemon.processes = [];
+					if (brokenPersistence === "forgets") c.daemon.contents = new Map();
+				}
+				c.state = "running";
+				c.detachedAt = undefined;
+			}
 			const [u, g = u] = c.daemon.uid.split(":");
 			const read = { image: c.image, user: `${u}:${g}`, network: c.network, deadline: c.deadline, ...readBack(c.mount, c.labels) };
 			return ok(attachSpec === null ? { ...c.ref } : { ...c.ref, spec: { ...read, ...attachSpec } });
@@ -349,7 +398,9 @@ export function fakeComputers({
 		async list(labels) {
 			calls.push(["list", labels]);
 			const found = [...computers.values()].filter((c) => listIgnoresLabels || Object.entries(labels).every(([k, v]) => c.labels[k] === v));
-			return ok(found.map((c) => ({ ref: c.ref, labels: c.labels, deadline: c.deadline, state: c.state, network: c.network, ...readBack(c.mount, c.labels) })));
+			return ok(
+				found.map((c) => ({ ref: c.ref, labels: c.labels, deadline: c.deadline, state: c.state, network: c.network, ...readBack(c.mount, c.labels), ...(c.detachedAt ? { detachedAt: c.detachedAt } : {}) })),
+			);
 		},
 		async network(ref, policy) {
 			const record = computers.get(ref.name);
@@ -384,6 +435,13 @@ export function fakeComputers({
 				return fail("refused", `the fake cannot ${how} ${ref.name}`);
 			}
 			if (how === "stop" && !release.includes("stop") && !stopAnyway) return fail("unsupported", "this fake has no stop that keeps a computer; release it with delete");
+			if (how === "detach") {
+				if (!persistence) return fail("unsupported", "this fake keeps no computer for an agent: release it with delete");
+				if (record && record.owner === undefined) return fail("refused", `${ref.name} is a run's computer: it does not detach`);
+				if (record && brokenPersistence === "detach-deletes") computers.delete(ref.name);
+				else if (record) Object.assign(record, { state: "stopped", detachedAt: new Date() });
+				return ok(undefined);
+			}
 			if (record && how === "stop" && stopDeletes) computers.delete(ref.name);
 			if (record && how === "stop") record.state = "stopped";
 			if (record && how === "delete" && !keepOnRelease) computers.delete(ref.name);

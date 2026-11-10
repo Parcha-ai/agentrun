@@ -67,7 +67,7 @@ import {
 	type AttachedComputer,
 	type CallContext,
 	type ComputerCapabilities,
-	checkLifetime,
+	checkTenure,
 	type ComputerConnection,
 	type ComputerInfo,
 	type ComputerProvider,
@@ -76,6 +76,8 @@ import {
 	type NetworkPolicy,
 	type NetworkSpec,
 	type Refusal,
+	type ReleaseHow,
+	runLifetimeMs,
 } from "./provider.js";
 import { failFor, ok, type Result, vendorFail } from "./result.js";
 import { daemonWatch, type ScreenWatch, type ScreenWatchHandlers, type WatchOptions } from "./screen-watch.js";
@@ -388,7 +390,7 @@ export class DockerProvider implements ComputerProvider {
 		if (typeof image !== "string" || image.trim() === "" || image.startsWith("-")) {
 			refuse("image", "an image is required, such as debian:bookworm-slim");
 		} else if (image.includes("\0")) refuse("image", NUL);
-		refusals.push(...checkLifetime(lifetimeMs, this.capabilities()));
+		refusals.push(...checkTenure(given, this.capabilities(), "Docker"));
 		if (typeof network === "object" && network !== null && "allow" in network) {
 			const allow = allowOf((network as { allow: unknown }).allow);
 			if ("problem" in allow) refuse("network", allow.problem);
@@ -483,7 +485,7 @@ export class DockerProvider implements ComputerProvider {
 		const name = `computer-${randomBytes(6).toString("hex")}`;
 		// The lifetime counts from here: what the proxy and docker run take comes out of it.
 		const lifetimeFrom = Date.now();
-		const deadline = new Date(lifetimeFrom + spec.lifetimeMs).toISOString();
+		const deadline = new Date(lifetimeFrom + runLifetimeMs(spec)).toISOString();
 		if (allow !== undefined) {
 			// The proxy first, ready before the computer exists: a computer never runs with an allowlist it cannot reach.
 			const started = await this.#startEgress(name, user, deadline, allow, spec.labels ?? {}, signal);
@@ -543,8 +545,8 @@ export class DockerProvider implements ComputerProvider {
 		if (state?.Running !== true) {
 			await this.release(ref, "delete");
 			// Init exits 0 at its deadline: one that passed before docker run finished is a lifetime the host's start ate.
-			if (state?.ExitCode === 0 && Date.now() >= lifetimeFrom + spec.lifetimeMs) {
-				return fail("timeout", `the computer ${name}'s lifetime of ${spec.lifetimeMs / 1000} s ended before docker run finished (it took ${Math.round(ranMs / 100) / 10} s), so init ended it and it was removed`);
+			if (state?.ExitCode === 0 && Date.now() >= lifetimeFrom + runLifetimeMs(spec)) {
+				return fail("timeout", `the computer ${name}'s lifetime of ${runLifetimeMs(spec) / 1000} s ended before docker run finished (it took ${Math.round(ranMs / 100) / 10} s), so init ended it and it was removed`);
 			}
 			const why = state ? `status ${state.Status}, exit code ${state.ExitCode}${state.Error ? `: ${state.Error}` : ""}` : "it could not be inspected";
 			return vendorFail("docker",`the computer ${name} was not running after its start (${why}), so it was removed`);
@@ -1102,7 +1104,7 @@ export class DockerProvider implements ComputerProvider {
 	 * egress volume, found the same way: a container or volume of the proxy's name without that label is never touched.
 	 * Each is ok when already gone.
 	 */
-	async release(ref: ComputerRef, how: "stop" | "delete"): Promise<Result<void>> {
+	async release(ref: ComputerRef, how: ReleaseHow): Promise<Result<void>> {
 		if (!NAME.test(ref.name)) return fail("invalid", `${ref.name} is not the name of a Docker computer (computer-<12 hex digits>)`);
 		if (how !== "stop" && how !== "delete") return fail("invalid", `release is "stop" or "delete", not ${String(how)}`);
 		const args = how === "stop" ? ["stop", ref.name] : ["rm", "--force", "--volumes", ref.name];

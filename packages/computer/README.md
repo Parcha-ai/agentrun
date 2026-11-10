@@ -2299,24 +2299,73 @@ computer's `HOME`, which the provider sets, is a directory its user can write, a
 From code: `runConformance(provider, { image, only?, signal?, drifted?, mountFor?, caseTimeoutMs?, cleanupTimeoutMs?,
 fixture?, fetch? })` returns the report, and `formatReport(report)` the text above.
 
+## Persistent computers: an agent's own
+
+A run's computer belongs to its run: it has a deadline (`lifetimeMs`, required), and the janitor or the vendor ends it
+once the deadline passes. A persistent computer belongs to an agent instead. It outlives the agent's runs, which take
+it one at a time, and it keeps its files between them. The contract, in `src/provider.ts` and `src/labels.ts`:
+
+- **Declared.** A provider that keeps computers for agents declares `capabilities().persistence`:
+  `{ keepsState: true, resume }`. `keepsState`: a detached computer keeps its files. `resume`: `true` when it comes back
+  as it was, its processes still running; `false` when it boots again from its kept disk. A provider that declares none
+  refuses `spec.owner` in `check()`, in words, before any vendor call, and refuses `release(ref, "detach")`, the
+  computer left as it was.
+- **Owned.** `spec.owner: { agent, idleTtlMs? }` makes the computer the agent's. It has no run deadline: the rule that
+  refuses a computer with no deadline is a run's computers' alone, and an owned spec that names `lifetimeMs` is refused
+  (`checkTenure(spec, capabilities)` holds both rules, for every provider's `check()`). The computer carries the owner
+  label, `agentrun.owner=agent:<id>` (`OWNER_LABEL`), and `agentrun.idle-ttl-ms` (`IDLE_TTL_LABEL`) when the owner set
+  an idle TTL; `ownerLabels(owner)` gives both and `ownerOf(labels)` reads them back.
+- **Detach.** `release(ref, "detach")` stops the computer with its state kept. It stays the agent's, listed `stopped`,
+  with `detachedAt`, when it was detached. Only an owned computer detaches: a run's computer refuses it in words and
+  runs on. `"delete"` deletes an owned computer, and only the agent or its owner asks for that: the caller's rule, not
+  the provider's.
+- **Attached under a new claim.** A run takes the computer with `attach({ id }, { claim: { run, epoch } })`. The
+  provider brings it back (starts it, when detached) and records the claim, so the computer carries the run's
+  `agentrun.run` and `agentrun.epoch` and `releaseOlder` of that run finds it. A claim of the same run below the epoch
+  the computer carries is refused as fenced, with nothing changed. A claim on a computer with no owner is refused: a
+  run's computer belongs to its run.
+- **The janitor.** `sweep` never deletes an owned computer by a deadline. It deletes one only when its owner agent is
+  gone (`ownerGone(agent)`, the caller's answer, in `SweepOptions`), or when it has been detached for longer than its
+  owner's idle TTL. An owner label it cannot read keeps the computer: the janitor never deletes an agent's state on a
+  rule it cannot read. On a provider that declares persistence it sweeps owned computers under lifetime `"vendor"`
+  too, since no vendor ends them. `releaseOlder` detaches an owned computer of a lower epoch and never deletes it: the
+  new claim attaches it.
+- **Conformance.** `provider.owner` and `provider.detach` are Core for every provider: `check()` refuses an owner
+  without persistence, and a lifetime with one; a run's computer refuses detach and runs on. `provider.persistence` is
+  Full, run where persistence is declared: create with an owner, write a file, detach, attach by id under a new claim,
+  read the file back (with `resume`, find the process still running), refuse a fenced claim, then delete.
+
+`test/fake-computer.mjs`'s `persistence` option is a provider that declares it and passes the cases. Orgo's provider
+is the first vendor to wire it.
+
 ## Adding a computer
 
-A new computer is one provider file and one registry line. The conformance CLI (and serve, once wired) resolves
-providers through the registry, `src/providers.ts`, and nothing else, so neither needs an edit:
+A new computer is one provider file and one descriptor, `src/descriptors/<id>.ts`, declared once and listed in
+`DESCRIPTORS` (`src/descriptors/index.ts`). Everything else is derived from the descriptors: the registry
+(`src/providers.ts`, id to `load()`), the kind registry's `PROVIDERS` (Settings' rows), and the ids. The conformance
+CLI (and serve) resolve providers through them, so neither needs an edit:
 
 ```ts
-export const providers = {
-	docker: () => import("./docker.js"),
-	modal: () => import("./modal.js"),
-	daytona: () => import("./daytona.js"),
-	e2b: () => import("./e2b.js"),
-	fly: () => import("./fly.js"), // a new computer's line
-} satisfies Record<string, () => Promise<ProviderModule>>;
+export const FLY = defineProvider({
+	id: "fly",
+	label: "Fly",
+	keys: [{ name: "FLY_API_TOKEN", option: "apiToken", required: true }], // each key and the create() option it fills
+	metered: true,
+	mounts: [],
+	capabilities: [{ kind: "linux", groups: ["exec", "files", "processes"] }], // one per configuration
+	load: () => import("../fly.js"),
+});
 ```
 
-Each import is lazy: loading the registry loads no provider and no vendor SDK. `providerFor(id, options)` builds a
-provider by id from its options and refuses an id it does not hold, naming the ones it does. The provider file,
-`src/<vendor>.ts`, exports what a `ProviderModule` is:
+A descriptor is data and a lazy `load()`: it imports `../descriptor.js` and other descriptors alone, so loading the
+registry, the kind registry or the package root loads no provider and no vendor SDK. `defineProvider` checks it when
+it is declared (`descriptorProblems`), in words. Its fields: `id`, `label`, `keys` (each key's name, the option it
+fills, and whether it is required), `settings` (a setting that is no key but fills an option, with its default),
+`metered`, `mounts`, `capabilities` (the kind and groups of each configuration), `defaultImage` (by setting kind),
+`prepareImage` (a provider that builds or pulls its image before a run), `local` (a computer on this host), and
+`ledger` (the option a provider's ledger fills). `providerFor(id, options)` builds a provider by id from its options and
+refuses an id it does not hold, naming the ones it does. The provider file, `src/<vendor>.ts`, exports what a
+`ProviderModule` is:
 
 - the provider class, which implements `ComputerProvider` and reports the registry id as its `id`;
 - `MOUNT`, the mount kinds its computers take;

@@ -16,7 +16,7 @@ const HERE = fileURLToPath(new URL(".", import.meta.url));
 const CLI = fileURLToPath(new URL("../dist/conformance/cli.js", import.meta.url));
 const GROUPS = ["health", "exec", "files", "process", "provider", "drift", "isolation", "mount", "screen", "input", "touch", "apps", "lifetime"];
 const PROTOCOL_GROUPS = ["exec", "files", "processes", "screen", "input.pointer", "input.keys", "input.touch", "apps", "apps.install", "apps.ui_tree"];
-const CAPABILITIES = [...PROTOCOL_GROUPS, "network:none", "network:open", "network:allow", "lifetime:janitor", "user:root", "user:uid", "release:stop", "extend", "stream", "mount:bind", "mount:archil", "vendor-agent"];
+const CAPABILITIES = [...PROTOCOL_GROUPS, "network:none", "network:open", "network:allow", "lifetime:janitor", "user:root", "user:uid", "release:stop", "persistence", "extend", "stream", "mount:bind", "mount:archil", "vendor-agent"];
 /** Groups with no Core case: lifetime's extend and the mount of the run's folder are optional for every kind. */
 const OPTIONAL_GROUPS = ["lifetime", "mount"];
 
@@ -825,6 +825,65 @@ test("provider.stop (Core) passes a provider that declares stop and lists the co
 	const report = await runConformance(fake.provider, { image: IMAGE, cases: byId("provider.stop") });
 	assert.deepEqual(statuses(report), { "provider.stop": "pass" }, JSON.stringify(report.results));
 });
+
+const PERSISTENCE_CASES = ["provider.owner", "provider.detach", "provider.persistence"];
+
+test("a provider with no persistence passes provider.owner and provider.detach (Core), refusing both in words; provider.persistence skips", async () => {
+	const fake = fakeComputers();
+	const report = await runConformance(fake.provider, { image: IMAGE, cases: byId(...PERSISTENCE_CASES) });
+	assert.deepEqual(statuses(report), { "provider.owner": "pass", "provider.detach": "pass", "provider.persistence": "skip" }, JSON.stringify(report.results));
+	assert.equal(reasons(report)["provider.persistence"], "the provider does not declare persistence: it keeps no computer for an agent");
+	assert.deepEqual(report.undeclared, ["persistence"]);
+	assert.equal(report.core, "pass");
+	assert.ok(fake.calls.some(([call, , how]) => call === "release" && how === "detach"), "the case asked for detach");
+	assert.deepEqual(fake.alive(), [], "every computer was deleted after");
+});
+
+test("provider.owner (Core) fails a provider with no persistence whose check takes an owner", async () => {
+	const fake = fakeComputers();
+	const check = fake.provider.check;
+	fake.provider.check = (spec) => check(spec).filter((refusal) => refusal.field !== "owner");
+	const report = await runConformance(fake.provider, { image: IMAGE, cases: byId("provider.owner") });
+	assert.equal(statuses(report)["provider.owner"], "fail");
+	assert.match(reasons(report)["provider.owner"], /refuses owner in words/);
+	assert.equal(report.core, "fail");
+});
+
+test("provider.detach (Core) fails a provider whose detach of a run's computer deletes it", async () => {
+	const fake = fakeComputers();
+	const release = fake.provider.release;
+	fake.provider.release = (ref, how) => release(ref, how === "detach" ? "delete" : how);
+	const report = await runConformance(fake.provider, { image: IMAGE, cases: byId("provider.detach") });
+	assert.equal(statuses(report)["provider.detach"], "fail");
+	assert.match(reasons(report)["provider.detach"], /release detach of a run's computer/);
+	assert.equal(report.core, "fail");
+});
+
+for (const resume of [false, true]) {
+	test(`a provider that declares persistence (resume ${resume}) passes provider.owner, provider.detach and provider.persistence, and deletes the agent's computer`, async () => {
+		const fake = fakeComputers({ persistence: { keepsState: true, resume } });
+		const report = await runConformance(fake.provider, { image: IMAGE, cases: byId(...PERSISTENCE_CASES) });
+		assert.deepEqual(statuses(report), Object.fromEntries(PERSISTENCE_CASES.map((id) => [id, "pass"])), JSON.stringify(report.results));
+		assert.equal(report.core, "pass");
+		const owned = fake.made.filter(({ labels }) => labels["agentrun.owner"] !== undefined);
+		assert.equal(owned.length, 1, "one agent's computer was made");
+		assert.match(owned[0].labels["agentrun.owner"], /^agent:conformance-[0-9a-f]{12}$/);
+		assert.deepEqual(fake.alive(), [], "every computer was deleted after");
+	});
+}
+
+for (const [broken, words] of [
+	["detach-deletes", /the agent's computer, listed after detach/],
+	["forgets", /files\.read after the attach/],
+	["no-fence", /attach under the claim at epoch 1, below 2/],
+]) {
+	test(`provider.persistence (Full) fails a provider whose persistence is broken: ${broken}`, async () => {
+		const fake = fakeComputers({ persistence: { keepsState: true, resume: false }, brokenPersistence: broken });
+		const report = await runConformance(fake.provider, { image: IMAGE, cases: byId("provider.persistence") });
+		assert.equal(statuses(report)["provider.persistence"], "fail");
+		assert.match(reasons(report)["provider.persistence"], words);
+	});
+}
 
 test("provider.janitor (Full) needs release:stop: a janitor provider that does not declare stop skips it in words", async () => {
 	const fake = fakeComputers({ release: ["delete"] });

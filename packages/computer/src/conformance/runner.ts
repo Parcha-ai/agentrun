@@ -241,6 +241,8 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 				return `the provider does not declare ${need}`;
 			} else if (need === "release:stop" && !(Array.isArray(capabilities.release) && capabilities.release.includes("stop"))) {
 				return `the provider does not declare ${need}`;
+			} else if (need === "persistence" && capabilities.persistence === undefined) {
+				return `the provider does not declare ${need}: it keeps no computer for an agent`;
 			} else if (need === "vendor-agent" && !Array.isArray(capabilities.vendorAgentPorts)) {
 				return `the provider does not declare ${need} (capabilities().vendorAgentPorts): no vendor's agent runs beside its computers' programs`;
 			}

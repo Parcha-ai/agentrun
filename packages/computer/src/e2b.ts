@@ -49,10 +49,12 @@ import {
 	type ComputerRef,
 	type ComputerSpec,
 	type CreatedComputer,
-	checkLifetime,
+	checkTenure,
 	type NetworkPolicy,
 	type NetworkSpec,
 	type Refusal,
+	type ReleaseHow,
+	runLifetimeMs,
 } from "./provider.js";
 import { type ComputerError, type ComputerErrorCode, failFor, ok, type Result, vendorFail } from "./result.js";
 import { daemonWatch, type ScreenWatch, type ScreenWatchHandlers, type WatchOptions } from "./screen-watch.js";
@@ -670,7 +672,7 @@ export class E2BProvider implements ComputerProvider {
 			);
 		}
 		if (typeof image !== "string" || !TEMPLATE.test(image)) refuse("image", `an image is required: the name or id of an E2B template, such as "${E2B_DESKTOP_TEMPLATE}" (E2B Desktop) or "${E2B_BASE_TEMPLATE}"`);
-		refusals.push(...checkLifetime(lifetimeMs, this.capabilities()));
+		refusals.push(...checkTenure(given, this.capabilities(), "E2B"));
 		if (network === "open" || (typeof network === "object" && network !== null && "allow" in network)) refuse("network", OWN_NETWORK_ONLY);
 		else if (network !== "none") refuse("network", 'network is required: "none"');
 		if (labels !== undefined) {
@@ -718,10 +720,10 @@ export class E2BProvider implements ComputerProvider {
 		if (signal?.aborted) return fail("aborted", "create was aborted before E2B was called");
 		const name = `computer-${randomBytes(6).toString("hex")}`;
 		const now = Date.now();
-		const deadline = new Date(now + spec.lifetimeMs).toISOString();
+		const deadline = new Date(now + runLifetimeMs(spec)).toISOString();
 		const maxDeadline = new Date(now + this.#maxLifetimeMs).toISOString();
 		// E2B kills the sandbox at its timeout, the lifetime in the whole seconds it takes (index.mjs:502-504).
-		const timeoutMs = Math.ceil(spec.lifetimeMs / 1000) * 1000;
+		const timeoutMs = Math.ceil(runLifetimeMs(spec) / 1000) * 1000;
 		const metadata = {
 			...spec.labels,
 			[COMPUTER_LABEL]: "1",
@@ -1608,7 +1610,7 @@ export class E2BProvider implements ComputerProvider {
 	 * whatever that answers. A folder not let go cleanly loses nothing (every call that changed it synced, and the next
 	 * claim revokes the hold), so it is said through onNote, and the release succeeds once the sandbox is gone.
 	 */
-	async release(ref: ComputerRef, how: "stop" | "delete", { signal }: CallContext = {}): Promise<Result<void>> {
+	async release(ref: ComputerRef, how: ReleaseHow, { signal }: CallContext = {}): Promise<Result<void>> {
 		const problem = refProblem(ref);
 		if (problem) return fail("invalid", problem);
 		if (how !== "stop" && how !== "delete") return fail("invalid", `release is "stop" or "delete", not ${String(how)}`);

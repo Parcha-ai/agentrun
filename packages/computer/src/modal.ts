@@ -52,10 +52,12 @@ import {
 	type ComputerRef,
 	type ComputerSpec,
 	type CreatedComputer,
-	checkLifetime,
+	checkTenure,
 	type NetworkPolicy,
 	type NetworkSpec,
 	type Refusal,
+	type ReleaseHow,
+	runLifetimeMs,
 } from "./provider.js";
 import { type ComputerErrorCode, failFor, ok, type Result, vendorFail } from "./result.js";
 import { daemonWatch, type ScreenWatch, type ScreenWatchHandlers, type WatchOptions } from "./screen-watch.js";
@@ -815,7 +817,7 @@ export class ModalProvider implements ComputerProvider {
 		if (typeof image !== "string" || image.trim() === "" || image.startsWith("-") || /\s/.test(image)) {
 			refuse("image", `an image is required: a registry tag for linux/amd64 that Modal can pull, such as ${MODAL_DEFAULT_IMAGE}`);
 		} else if (image.includes("\0")) refuse("image", NUL);
-		refusals.push(...checkLifetime(lifetimeMs, this.capabilities()));
+		refusals.push(...checkTenure(given, this.capabilities(), "Modal"));
 		if (network === "open" || (typeof network === "object" && network !== null && "allow" in network)) refuse("network", OWN_NETWORK_ONLY);
 		else if (network !== "none") refuse("network", 'network is required: "none"');
 		if (cpus !== undefined && !(isNumber(cpus) && cpus >= CPU_REQUEST * CPUS_PER_CORE)) {
@@ -866,7 +868,7 @@ export class ModalProvider implements ComputerProvider {
 		const app = await this.#theApp(signal);
 		if (!app.ok) return app;
 		const name = `computer-${randomBytes(6).toString("hex")}`;
-		const deadline = new Date(Date.now() + spec.lifetimeMs).toISOString();
+		const deadline = new Date(Date.now() + runLifetimeMs(spec)).toISOString();
 		// An Archil mount is made under the run's claim (check() held the spec to both labels), for the tool user alone.
 		const archil = spec.mount?.kind === "archil" ? { mount: spec.mount, run: spec.labels?.[RUN_LABEL] as string, epoch: claimEpoch(spec.labels) } : undefined;
 		const user = archil === undefined ? (userOf(spec.user) ?? this.#user) : ARCHIL_USER;
@@ -916,7 +918,7 @@ export class ModalProvider implements ComputerProvider {
 			runtime: "vm",
 			command,
 			// Modal ends the sandbox at its timeout: the lifetime, in the whole seconds the SDK takes.
-			timeoutMs: Math.ceil(spec.lifetimeMs / 1000) * 1000,
+			timeoutMs: Math.ceil(runLifetimeMs(spec) / 1000) * 1000,
 			workdir,
 			cpu: Math.min(CPU_REQUEST, cpuLimit),
 			cpuLimit,
@@ -1465,7 +1467,7 @@ export class ModalProvider implements ComputerProvider {
 	 * loses nothing (every call that changed it synced, and the next claim revokes the hold), so it is said through
 	 * onNote, and the release succeeds once the sandbox is gone.
 	 */
-	async release(ref: ComputerRef, how: "stop" | "delete", { signal }: CallContext = {}): Promise<Result<void>> {
+	async release(ref: ComputerRef, how: ReleaseHow, { signal }: CallContext = {}): Promise<Result<void>> {
 		const problem = refProblem(ref);
 		if (problem) return fail("invalid", problem);
 		if (how !== "stop" && how !== "delete") return fail("invalid", `release is "stop" or "delete", not ${String(how)}`);

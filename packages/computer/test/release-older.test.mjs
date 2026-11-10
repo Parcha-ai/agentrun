@@ -58,8 +58,8 @@ test("releaseOlder passes its signal to list", async () => {
 
 test("releaseOlder of a run with no computers, or only this epoch's, releases nothing", async () => {
 	const { provider, refs, released } = await setup([["a2", "a", 2]]);
-	assert.deepEqual(await releaseOlder(provider, "none", 5), { ok: true, value: { released: [], kept: [], unproven: [] } });
-	assert.deepEqual(await releaseOlder(provider, "a", 2), { ok: true, value: { released: [], kept: [refs.a2], unproven: [] } });
+	assert.deepEqual(await releaseOlder(provider, "none", 5), { ok: true, value: { released: [], detached: [], kept: [], unproven: [] } });
+	assert.deepEqual(await releaseOlder(provider, "a", 2), { ok: true, value: { released: [], detached: [], kept: [refs.a2], unproven: [] } });
 	assert.deepEqual(released(), []);
 });
 
@@ -124,8 +124,45 @@ test("a computer listed with no run label at all is another run's: never release
 	const fake = fakeComputers({ listIgnoresLabels: true });
 	const stray = await fake.provider.create({ ...SPEC, labels: { [EPOCH_LABEL]: "1" } });
 	const result = await releaseOlder(fake.provider, "a", 3);
-	assert.deepEqual(result, { ok: true, value: { released: [], kept: [], unproven: [] } });
+	assert.deepEqual(result, { ok: true, value: { released: [], detached: [], kept: [], unproven: [] } });
 	assert.deepEqual(fake.alive(), [stray.value.name]);
+});
+
+test("an agent's computer of a lower epoch is detached, never deleted: its state kept for the new claim to attach", async () => {
+	const fake = fakeComputers({ persistence: { keepsState: true, resume: false } });
+	const { lifetimeMs: _, ...base } = SPEC;
+	const owned = await fake.provider.create({ ...base, owner: { agent: "ag1" }, labels: runLabels("a", 1) });
+	const run = await fake.provider.create({ ...SPEC, labels: runLabels("a", 2) });
+	assert.equal(owned.ok && run.ok, true, JSON.stringify([owned, run]));
+	const result = await releaseOlder(fake.provider, "a", 3);
+	assert.equal(result.ok, true, JSON.stringify(result));
+	assert.deepEqual(result.value, { released: [run.value], detached: [owned.value], kept: [], unproven: [] });
+	assert.deepEqual(
+		fake.calls.filter(([what]) => what === "release").map(([, name, how]) => [name, how]),
+		[
+			[owned.value.name, "detach"],
+			[run.value.name, "delete"],
+		],
+	);
+	const listed = await fake.provider.list({ [RUN_LABEL]: "a" });
+	assert.deepEqual(listed.value.map((info) => [info.ref.name, info.state, info.detachedAt instanceof Date]), [[owned.value.name, "stopped", true]], "the agent's computer is kept, detached");
+});
+
+test("a computer whose owner label cannot be read is detached as an agent's, never deleted", async () => {
+	const fake = fakeComputers({ persistence: { keepsState: true, resume: false } });
+	const { lifetimeMs: _, ...base } = SPEC;
+	const odd = await fake.provider.create({ ...base, owner: { agent: "ag1" }, labels: { ...runLabels("a", 1) } });
+	const release = fake.provider.release;
+	const asked = [];
+	fake.provider.release = (ref, how) => (asked.push(how), release(ref, how));
+	const list = fake.provider.list;
+	fake.provider.list = async (labels) => {
+		const listed = await list(labels);
+		return { ok: true, value: listed.value.map((info) => ({ ...info, labels: { ...info.labels, "agentrun.owner": "nobody" } })) };
+	};
+	const result = await releaseOlder(fake.provider, "a", 2);
+	assert.equal(result.ok, true, JSON.stringify(result));
+	assert.deepEqual([result.value.detached, result.value.released, asked], [[odd.value], [], ["detach"]]);
 });
 
 test("a release that fails: every release is still attempted, and the result is a failure naming each computer left and why", async () => {

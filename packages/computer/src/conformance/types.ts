@@ -16,7 +16,8 @@ export type CaseGroup = "health" | "exec" | "files" | "process" | "provider" | "
 /**
  * What a case needs: a group (declared by both the provider's capabilities().groups and the computer's hello), a
  * network the provider declares, the janitor as the keeper of deadlines, a spec.user the provider takes, a release that
- * stops a computer and keeps it, a mount kind capabilities().mount declares, a provider method that is optional
+ * stops a computer and keeps it, an agent's persistent computer (capabilities().persistence), a mount kind
+ * capabilities().mount declares, a provider method that is optional
  * (extend, stream), declared by being there, or the ports of a vendor's agent in the computer (vendor-agent: declared
  * by capabilities().vendorAgentPorts, an empty list included).
  */
@@ -29,6 +30,7 @@ export type Capability =
 	| "user:root"
 	| "user:uid"
 	| "release:stop"
+	| "persistence"
 	| "mount:bind"
 	| "mount:archil"
 	| "extend"

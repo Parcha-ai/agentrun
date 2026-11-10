@@ -48,19 +48,21 @@ import {
 } from "./browser.js";
 import type { KindCapabilities } from "./kinds.js";
 import type { MountKind } from "./mount.js";
-import type {
-	AttachedComputer,
-	CallContext,
-	ComputerCapabilities,
-	ComputerConnection,
-	ComputerInfo,
-	ComputerProvider,
-	ComputerRef,
-	ComputerSpec,
-	CreatedComputer,
-	NetworkPolicy,
-	NetworkSpec,
-	Refusal,
+import {
+	type AttachedComputer,
+	type CallContext,
+	type ComputerCapabilities,
+	type ComputerConnection,
+	type ComputerInfo,
+	type ComputerProvider,
+	type ComputerRef,
+	type ComputerSpec,
+	type CreatedComputer,
+	type NetworkPolicy,
+	type NetworkSpec,
+	type Refusal,
+	type ReleaseHow,
+	runLifetimeMs,
 } from "./provider.js";
 import { failFor, ok, type Result, vendorFail } from "./result.js";
 import { connectionError } from "./test-connection.js";
@@ -272,7 +274,7 @@ export class BrowserbaseProvider implements ComputerProvider {
 		const written = { [CREATE_LABEL]: createLabelValue(), ...spec.labels };
 		const body = {
 			...settings,
-			timeout: Math.ceil(spec.lifetimeMs / 1000),
+			timeout: Math.ceil(runLifetimeMs(spec) / 1000),
 			keepAlive: true,
 			userMetadata: toMetadata(written),
 			...(this.#projectId ? { projectId: this.#projectId } : {}),
@@ -438,7 +440,7 @@ export class BrowserbaseProvider implements ComputerProvider {
 	}
 
 	/** Asks Browserbase to release the session and waits until it reads as ended; one already ended or unknown is released. */
-	async release(ref: ComputerRef, how: "stop" | "delete", { signal }: CallContext = {}): Promise<Result<void>> {
+	async release(ref: ComputerRef, how: ReleaseHow, { signal }: CallContext = {}): Promise<Result<void>> {
 		if (how !== "delete") return fail("refused", `a Browserbase session is released with "delete"; it cannot be stopped and kept, so ${String(how)} is refused and the session is left as it is`);
 		const id = ref?.id;
 		const problem = idProblem(id, NAME);
