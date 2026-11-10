@@ -65,6 +65,26 @@ test("a run that quotes a held value with \"//\" in it shows no piece of it: pi'
   assert.ok(!holdsRun(JSON.stringify(run), key), "nor the run");
 });
 
+test("a run that quotes a held value with a dot segment in it shows no piece of it: pi's read resolves the path the model wrote, rewriting \"/./\", and its error and Timeline row are cut of the value as that path names it", { timeout: 120_000 }, async (t) => {
+  const key = `not-a-secret-path-key/./${randomBytes(8).toString("hex")}`;
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey(), PARALLEL_API_KEY: key });
+  const { api } = await serve(t);
+  assert.equal((await api("POST", "/agents", agent("quotes", { tools: ["read"] }))).status, 201);
+  const file = join(await scratch(t), "key.txt");
+  await writeFile(file, key);
+  const started = await api("POST", "/agents/quotes/runs", { input: { content: `Quote the key in ${file}` } });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  await follow(api, started.body.run_id, ["completed", "failed"]);
+  const run = (await api("GET", `/runs/${started.body.run_id}`)).body;
+  const rows = (await api("GET", `/runs/${started.body.run_id}/timeline`)).body.rows;
+  const read = rows.find((r) => r.kind === "tool_result" && r.tool_name === "read");
+  assert.ok(read, `a read row: ${JSON.stringify(rows.map((r) => r.kind))}`);
+  const resolved = key.replace("/./", "/");
+  assert.ok(!holdsRun(JSON.stringify(rows), resolved), `the Timeline holds no piece of the key as the path names it: ${JSON.stringify(read)}`);
+  assert.ok(!holdsRun(JSON.stringify(rows), key), "nor as written");
+  assert.ok(!holdsRun(JSON.stringify(run), resolved), "nor the run");
+});
+
 /** The spellings of a `whsec_` secret a redaction derives from no other: its key, the base64 after `whsec_`, as written,
  *  printed unpadded (`openssl base64 | tr -d =`), as base64url (- and _ for + and /, no padding), and its bytes as hex;
  *  and, when it holds a /, as a JSON encoder that escapes / writes it. */

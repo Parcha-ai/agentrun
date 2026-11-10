@@ -55,6 +55,47 @@ test("a learning note quoting a held value as a path names it is refused, as one
   assert.equal(clean.problems.some((problem) => problem.rule === "secret_value"), false, "a note holding no part of it is not refused for it");
 });
 
+// A path or a URL writer can also percent-encode a held value (encodeURIComponent: "/" is %2F, "+" is %2B, "=" is %3D;
+// encodeURI keeps those and encodes "^" and "|"), and a resolver rewrites its dot segments ("a/./b" and "a/x/../b" are "a/b"). Each such
+// spelling is cut where it stands, the text around it left as it reads.
+// A value with characters both encoders change: "+", "/" and "=" encodeURIComponent alone; "^" and "|" both.
+const encodable = () => `not-a-secret+path/key=${randomBytes(8).toString("hex")}^tail|end`;
+const dotted = () => [`not-a-secret/./path-key-${randomBytes(8).toString("hex")}`, `not-a-secret/sub/../path-key-${randomBytes(8).toString("hex")}`];
+const normalized = (value) => value.replace("/./", "/").replace("/sub/../", "/");
+
+for (const [name, encode] of [["encodeURIComponent", encodeURIComponent], ["encodeURI", encodeURI]]) {
+  test(`a held value percent-encoded as ${name} writes it is cut where it stands, the text around it left as it reads`, () => {
+    const value = encodable();
+    const said = `fetch failed: https://api.example/v1?key=${encode(value)} answered 401`;
+    assert.notEqual(encode(value), value, "the value has characters it encodes");
+    assert.equal(redactSecrets(said, [value]), "fetch failed: https://api.example/v1?key=[redacted] answered 401");
+  });
+}
+
+test("a held value with a dot segment, named as a resolver normalizes it (\"a/./b\", \"a/x/../b\"), is cut: no piece of it is left", () => {
+  for (const value of dotted()) {
+    const said = `ENOENT: no such file or directory, open 'notes/${normalized(value)}.txt'`;
+    const shown = redactSecrets(said, [value]);
+    assert.equal(holdsPiece(shown, normalized(value)), false, shown);
+    assert.match(shown, /^ENOENT: no such file or directory, open 'notes\/\[redacted\]\.txt'$/, "the rest of the error still reads");
+  }
+});
+
+test("a learning note quoting a held value percent-encoded or dot-normalized is refused as the host's value", () => {
+  const note = (text) => new TextEncoder().encode(`---\nname: where-it-failed\ndescription: The call that failed.\n---\n\n${text}\n`);
+  const encodedValue = encodable();
+  const [dotValue] = dotted();
+  for (const [what, value, text] of [
+    ["encodeURIComponent", encodedValue, `It called ?key=${encodeURIComponent(encodedValue)}.`],
+    ["encodeURI", encodedValue, `It called ${encodeURI(encodedValue)}.`],
+    ["dot-normalized", dotValue, `It read notes/${normalized(dotValue)}.txt.`],
+  ]) {
+    const { problems, note: kept } = checkNote("where-it-failed.md", note(text), [value]);
+    assert.ok(problems.some((problem) => problem.rule === "secret_value"), `${what}: refused as the host's value: ${JSON.stringify(problems)}`);
+    assert.equal(kept, undefined, `${what}: no note kept`);
+  }
+});
+
 test("a held value with \"//\" is still cut as written, and a value with no \"/\" is cut as before", () => {
   const slashed = `not-a-secret-path-key//${randomBytes(8).toString("hex")}`;
   const plain = `not-a-secret-plain-key-${randomBytes(8).toString("hex")}`;
