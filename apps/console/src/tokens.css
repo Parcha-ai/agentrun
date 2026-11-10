@@ -1,6 +1,6 @@
 /* The AgentRun console's design tokens: the one place a colour, a layer, a duration or a size gets its value.
-   docs/console-design-system.md says what each is for; src/design-system.test.ts checks this file (both themes define
-   every colour, the text pairs pass WCAG AA) and that the console's sources use these names and no literal.
+   docs/console-design-system.md says what each is for; src/design-system.test.ts checks this file: both themes define
+   every colour, and the text pairs pass WCAG AA.
 
    Colours are HSL triplets, so a class can add its own alpha: `bg-primary/10` is hsl(var(--primary) / 0.1).
    A token that points at another one (`var(--primary-text)`) follows it in both themes.
