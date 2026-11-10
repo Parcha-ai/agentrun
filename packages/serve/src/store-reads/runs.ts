@@ -65,7 +65,7 @@ function viewOf(run: RunRow, agentArchivedAt: number | null, kind: RevisionKind,
     ...(cost !== null ? { costUsd: cost } : {}),
     ...(run.summary !== null ? { summary: run.summary } : {}),
     ...(archivedAt !== null ? { archivedAt: isoOf(archivedAt) } : {}),
-    ...(run.importedFrom !== null ? { importedFrom: run.importedFrom } : {}),
+    ...(run.importedFrom !== null ? { importedFrom: { source: run.importedFrom.source, session: run.importedFrom.session } } : {}),
   };
 }
 

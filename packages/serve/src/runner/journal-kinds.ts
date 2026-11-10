@@ -7,6 +7,7 @@
 // only (kernel.submission, kernel.start, kernel.end, kernel.retry, kernel.blob, runner.response, runner.submit,
 // runner.accepted, …): the reader skips every one of them, whatever its kind, and never reads it as a call or a message.
 import type { MessageOrigin } from "@parcha/pi-durable-agent/timeline";
+import { INTERRUPTED_TEXT } from "@parcha/agentrun-kernel/kernel";
 
 export const KINDS = {
   /** A tool call about to run: written before it runs (and before the flush that precedes a side effect). */
@@ -124,6 +125,14 @@ export interface CallEndData {
   readonly output?: unknown;
 }
 
+/** What a call that already ended answers when it is asked for again (a parked call's resume, a CLI's re-issue of its id):
+ *  its recorded output; for one a crash cut with none, the kernel's words for an outcome not known (INTERRUPTED_TEXT);
+ *  else that `tool`'s call ended so. An error unless it ended done. */
+export function endedAnswer(tool: string, end: { status: CallStatus; output?: unknown }): { text: string; isError: boolean } {
+  const text = typeof end.output === "string" ? end.output : end.status === "interrupted" ? INTERRUPTED_TEXT : `The ${tool} call ended ${end.status}.`;
+  return { text, isError: end.status !== "done" };
+}
+
 export type MessageRole = "person" | "steer" | "model";
 
 export interface MessageData {
@@ -166,12 +175,12 @@ export interface AnswerData {
   /** The person's words with their answer (a decline's reason): the model reads it with the refusal, and the resume row
    *  shows it. Absent when they gave none. */
   readonly note?: string;
-  /** The allow a stop overrode (main's ApprovalAnswer.superseded): the call was approved but had not finished when its
-   *  run was stopped, so the stop withdrew it. Kept as it was given. */
-  readonly superseded?: { readonly decision: "allow"; readonly answeredAt?: string };
   /** "message": a deny a person's message gave while the call waited (the message route's deny row), which its approval
    *  row reads as "Declined by your message". Absent for an answer given directly. */
   readonly by?: "message";
+  /** The allow a stop overrode (main's ApprovalAnswer.superseded): the call was approved but had not finished when its
+   *  run was stopped, so the stop withdrew it. Kept as it was given. */
+  readonly superseded?: { readonly decision: "allow"; readonly answeredAt?: string };
 }
 
 /** Whether `entries` hold a call's finished result: an agentrun.call.end not cut (a CLI's call), or a pi.tool-result

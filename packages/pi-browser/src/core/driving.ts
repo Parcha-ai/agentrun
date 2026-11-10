@@ -19,7 +19,7 @@ export type DrivingGate = {
   input(): "driving" | "agent_acting";
   /** A model browser call is about to start: a release function, or `person_driving` when a person is driving. `drove` is true when a person has driven
    *  this session and the model has not yet been told (`told`): the page may have changed under the model's last snapshot, whatever its URL says. */
-  model(): { release(): void; drove: boolean } | "person_driving";
+  model(): { release(): void; drove: boolean; handled: boolean } | "person_driving";
   /** The model's call has been told a person drove (its snapshot ids dropped, the notice given): `drove` is false until a person drives again. */
   told(): void;
   /** Called with the new state at every change. Returns the unsubscribe. */
@@ -98,6 +98,9 @@ class Gate implements DrivingGate {
   private viewing_ = false;
   /** A person has driven and the model has not been told yet; kept (and the gate with it) until a call has been told. */
   private drove_ = false;
+  /** The person's own input reached the session since the model was last told (a take alone sets `drove_`, this only their
+   *  hand): what can have changed the page under the model's snapshot. */
+  private handled_ = false;
   /** The person's hold, while there is one: its end's listener, its idle timer and, while no viewer is present, its away timer. */
   private hold: { onEnd?: (why: HoldEnd, message?: string) => void; onStart?: () => void; pending: boolean; idle: unknown; away: unknown } | null = null;
   private epoch_ = 0;
@@ -122,6 +125,7 @@ class Gate implements DrivingGate {
       this.timers.clear(this.hold.idle);
       this.hold.idle = this.timers.set(() => this.endHold("idle"), this.holdIdleMs);
       this.drove_ = true;
+      this.handled_ = true;
       return "driving";
     }
     // Handed back, the person's last command still settling: it is theirs, and it starts no new driving window.
@@ -130,20 +134,22 @@ class Gate implements DrivingGate {
     const before = this.state();
     this.person = true;
     this.drove_ = true;
+    this.handled_ = true;
     if (this.idle !== undefined) this.timers.clear(this.idle);
     this.idle = this.timers.set(() => this.stopDriving(), this.idleMs);
     if (before !== "person") this.announce("person");
     return "driving";
   }
 
-  model(): { release(): void; drove: boolean } | "person_driving" {
+  model(): { release(): void; drove: boolean; handled: boolean } | "person_driving" {
     if (this.person || this.hold || this.settling_) return PERSON_DRIVING;
     const drove = this.drove_;
+    const handled = this.handled_;
     const before = this.state();
     this.model_ += 1;
     if (before !== "agent") this.announce("agent");
     let released = false;
-    return { drove, release: () => {
+    return { drove, handled, release: () => {
       if (released) return;
       released = true;
       this.model_ -= 1;
@@ -155,7 +161,7 @@ class Gate implements DrivingGate {
     } };
   }
 
-  told(): void { this.drove_ = false; this.settle(); }
+  told(): void { this.drove_ = false; this.handled_ = false; this.settle(); }
 
   viewing(): boolean { return this.viewing_; }
 
@@ -240,6 +246,7 @@ class Gate implements DrivingGate {
     this.person = false;
     this.viewing_ = false;
     this.drove_ = false;
+    this.handled_ = false;
     this.model_ = 0;
     this.listeners.clear();
     this.forget(this);

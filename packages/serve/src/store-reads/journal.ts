@@ -66,7 +66,7 @@ function piShaped(entries: readonly EntryLike[]): EntryLike[] {
  *  TOOL_UNMETERED) is a tool with no price set, which books no paid record on the runner, so none is read here. A hold
  *  given back unused shows nothing. Each charge is placed right after its call's result, joined by `call`, as the ledger
  *  wrote it there. A run with no paid-tools session reads unchanged. */
-function withPaidCosts(entries: readonly EntryLike[]): EntryLike[] {
+export function withPaidCosts(entries: readonly EntryLike[]): EntryLike[] {
   const session = entries.find((e) => e.kind === KINDS.sessionKey && (e.data as { key?: unknown } | undefined)?.key === TOOL_SESSION);
   const conv = session ? (session.data as { conversation?: unknown }).conversation : undefined;
   if (typeof conv !== "number") return [...entries];

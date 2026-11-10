@@ -6,7 +6,7 @@ import { AgentEditor } from "./AgentEditor";
 import { type Agent, toolOffers } from "@/lib/agentForm";
 import { placesOf } from "@/lib/place";
 
-// Where an agent runs, in the editor's Settings step: the server's places, bash following the place in the form (a box
+// Where an agent runs, in the editor's Computer step: the server's places, bash following the place in the form (a box
 // opens it, the runner turns it off and says so), the place in the save, and a refusal at a tool on that tool's field.
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 let root: ReturnType<typeof createRoot> | undefined;
@@ -32,34 +32,34 @@ function mount(props: Record<string, unknown>) {
 }
 
 describe("AgentEditor, where the agent runs", () => {
-  it("offers the place in the Settings step only on a server that lists places", () => {
-    expect(renderToStaticMarkup(createElement(AgentEditor, { agent: agent(), caps, step: "settings" }))).toContain('aria-label="Where it runs"');
-    expect(renderToStaticMarkup(createElement(AgentEditor, { agent: agent(), caps: { ...caps, places: null }, step: "settings" }))).not.toContain("Where it runs");
+  it("offers the place in the Computer step only on a server that lists places", () => {
+    expect(renderToStaticMarkup(createElement(AgentEditor, { agent: agent(), caps, step: "computer" }))).toContain('aria-label="Where it runs"');
+    expect(renderToStaticMarkup(createElement(AgentEditor, { agent: agent(), caps: { ...caps, places: null }, step: "computer" }))).not.toContain("Where it runs");
   });
 
   it("an agent that names no place, on a server whose default_place is docker, has bash open, as its runs are in the box; with the browser it is on the runner", () => {
     const boxed = placesOf({ places: { modes: ["runner", "sandbox"], default_place: { mode: "sandbox", box: "docker" }, boxes: [{ id: "docker", available: true }] } });
-    const shell = mount({ agent: agent(), caps: { ...caps, places: boxed }, step: "settings" });
+    const shell = mount({ agent: agent(), caps: { ...caps, places: boxed }, step: "computer" });
     expect(shell.input('input[name="place"][value="sandbox"]')!.checked).toBe(true);
     shell.step(/Tools/);
     expect(shell.input('input[type="checkbox"][value="bash"]')!.disabled).toBe(false);
     act(() => root?.unmount()); document.body.innerHTML = "";
-    const browsing = mount({ agent: agent(undefined, ["read", "browser"]), caps: { ...caps, places: boxed, tools: toolOffers([{ name: "read", available: true }, { name: "browser", available: true }, { name: "bash", available: true, sandbox_only: true }]) }, step: "settings" });
+    const browsing = mount({ agent: agent(undefined, ["read", "browser"]), caps: { ...caps, places: boxed, tools: toolOffers([{ name: "read", available: true }, { name: "browser", available: true }, { name: "bash", available: true, sandbox_only: true }]) }, step: "computer" });
     expect(browsing.input('input[name="place"][value="runner"]')!.checked).toBe(true);
   });
 
-  it("picking Sandbox opens bash's tick at once; it's saved with the place", async () => {
-    const { click, step, input, saved } = mount({ agent: agent(), caps, step: "settings" });
+  it("picking Sandbox opens bash's tick at once; it's saved as the computer", async () => {
+    const { click, step, input, saved } = mount({ agent: agent(), caps, step: "computer" });
     click(input('input[name="place"][value="sandbox"]'));
     step(/Tools/);
     expect(input('input[type="checkbox"][value="bash"]')!.disabled).toBe(false);
     click(input('input[type="checkbox"][value="bash"]'));
     await act(async () => { [...document.querySelectorAll("button")].find((b) => /^Save/.test(b.textContent ?? ""))!.click(); });
-    expect(saved()).toMatchObject({ place: { mode: "sandbox", box: "docker" }, tools: ["read", "bash"] });
+    expect(saved()).toMatchObject({ computer: { kind: "sandbox", provider: "docker" }, tools: ["read", "bash"] });
   });
 
   it("going back to the server turns bash off and says so; bash's tick is then greyed with why", async () => {
-    const { host, click, step, input, saved } = mount({ agent: agent({ mode: "sandbox", box: "docker" }, ["read", "bash"]), caps, step: "settings" });
+    const { host, click, step, input, saved } = mount({ agent: agent({ mode: "sandbox", box: "docker" }, ["read", "bash"]), caps, step: "computer" });
     click(input('input[name="place"][value="runner"]'));
     expect(host.textContent).toContain("Bash runs only in a sandbox, so it's turned off for this agent.");
     step(/Tools/);
@@ -68,7 +68,7 @@ describe("AgentEditor, where the agent runs", () => {
     expect(bash.disabled).toBe(true);
     expect(bash.closest("label")!.textContent).toContain("Sandbox-only");
     await act(async () => { [...document.querySelectorAll("button")].find((b) => /^Save/.test(b.textContent ?? ""))!.click(); });
-    expect(saved()).toMatchObject({ place: { mode: "runner" }, tools: ["read"] });
+    expect(saved()).toMatchObject({ computer: { kind: "none" }, tools: ["read"] });
   });
 
   it("a server refusal at one tool (a 422 at definition.tools[1]) shows on the Tools field", () => {

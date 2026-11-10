@@ -3,20 +3,12 @@
 // only: every provider here is a stand-in, and nothing leaves the process.
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { PROVIDERS } from "@parcha/agentrun-computer";
 import { PROVIDER_KEYS, providerOptions, testConnection } from "../dist/computer-keys.js";
 
-// The kind registry's key names per provider (the computer package's kinds.ts PROVIDERS), copied: the map must take
-// exactly these, no more and no fewer, with the same required flags.
-const REGISTRY_KEYS = {
-  docker: [],
-  daytona: [["DAYTONA_API_KEY", true], ["DAYTONA_API_URL", false], ["DAYTONA_TARGET", false]],
-  modal: [["MODAL_TOKEN_ID", true], ["MODAL_TOKEN_SECRET", true]],
-  e2b: [["E2B_API_KEY", true]],
-  orgo: [["ORGO_API_KEY", true]],
-  "phone-harness": [["PHONE_HARNESS_API_KEY", true]],
-  browserbase: [["BROWSERBASE_API_KEY", true], ["BROWSERBASE_PROJECT_ID", true]],
-  kernel: [["KERNEL_API_KEY", true]],
-};
+// The kind registry's key names per provider (the computer package's PROVIDERS): the map must take exactly these, no
+// more and no fewer, with the same required flags.
+const REGISTRY_KEYS = Object.fromEntries(PROVIDERS.map((one) => [one.id, one.keys.map((key) => [key.name, key.required])]));
 
 const KEY = "fake-test-key-0001";
 const SECRET = "fake-test-key-secret-0002";

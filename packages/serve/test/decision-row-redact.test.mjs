@@ -97,3 +97,29 @@ test("a key saved after a workflow run (no learning) ended, whose value its deci
   const shown = JSON.stringify(rows);
   for (let i = 0; i + 8 <= later.length; i++) assert.ok(!shown.includes(later.slice(i, i + 8)), `the row still holds ${later.slice(i, i + 8)}: ${JSON.stringify(rows.find((row) => row.kind === "decision"))}`);
 });
+
+test("a workflow whose decision provider has no key is refused at the start over the store, in main's words, with no run row; saving the key lets it start", async (t) => {
+  // The provider-missing check (runnable.ts) reads the server's env, into which the store-held tool keys are folded, so a key
+  // saved in the store is seen and a missing one refuses the run before it exists, not a run that fails later on the runner.
+  withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") }, ["PARALLEL_API_KEY", "OPENROUTER_API_KEY", "TYPESAFE_API_KEY"]);
+  // No runner: the test checks the start's refusal and acceptance alone (the run row), never a run that executes.
+  const { api } = await serve(t, { runner: false });
+  const flow = {
+    v: 2, name: "needs-parallel",
+    schemas: { In: { type: "object", required: ["question"], properties: { question: { type: "string" } } }, Coi: { type: "object", required: ["coi"], properties: { coi: { type: "boolean", description: "Is this a certificate of incorporation?" } } } },
+    input: { schemaId: "In" }, output: { schemaId: "Coi", path: "coi" },
+    root: { node: "chain", steps: [{ node: "judge", label: "coi", state: { doc: "{question}" }, out: "Coi", as: "coi", provider: "parallel" }] },
+  };
+  // The agent saves: a missing provider key is a host-fixable warning, not a refusal.
+  assert.equal((await api("POST", "/agents", flowAgent("needs-parallel", flow))).status, 201);
+  // The start is refused in main's words, and no run is created.
+  const refused = await api("POST", "/agents/needs-parallel/runs", { input: { question: "Acme's filing" } });
+  assert.equal(refused.status, 409, JSON.stringify(refused.body));
+  assert.equal(refused.body.error.code, "agent_not_runnable");
+  assert.match(refused.body.error.message, /A decision node naming the provider "parallel" needs/);
+  assert.equal((await api("GET", "/agents/needs-parallel/runs")).body.runs.length, 0, "no run row was created");
+  // Saving the Parallel key in the store lets the start succeed: the check reads the store-held key.
+  assert.equal((await api("PUT", "/settings/tool-keys/parallel", { values: { PARALLEL_API_KEY: `not-a-secret-${"parallel"}` } })).status, 204);
+  const started = await api("POST", "/agents/needs-parallel/runs", { input: { question: "Acme's filing" } });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+});

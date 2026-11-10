@@ -22,6 +22,8 @@ export async function startFakeOAuth({ cimd = false, clients = {}, expiresIn = 3
   let grantedUnanswered = false;
   /** The next `/token` request's hold (holdNext): granted at once, its answer sent when the test lets it go. */
   let holding;
+  /** Who waits on the next request to a path (`next`), each with its path. */
+  const nexts = [];
   const http = createServer(async (req, res) => {
     const url = new URL(req.url, issuer());
     const chunks = [];
@@ -29,6 +31,7 @@ export async function startFakeOAuth({ cimd = false, clients = {}, expiresIn = 3
     const text = Buffer.concat(chunks).toString("utf8");
     const form = (req.headers["content-type"] ?? "").includes("json") ? JSON.parse(text || "{}") : Object.fromEntries(new URLSearchParams(text));
     log.push({ path: url.pathname, query: Object.fromEntries(url.searchParams), form: Object.fromEntries(Object.entries(form).filter(([key]) => !/token|secret|code$|verifier/.test(key))) });
+    for (const waiter of nexts.filter((one) => one.path === url.pathname)) nexts.splice(nexts.indexOf(waiter), 1), waiter.heard(log.at(-1));
     const json = (status, body) => void res.writeHead(status, { "content-type": "application/json", "cache-control": "no-store" }).end(JSON.stringify(body));
     if (url.pathname === "/.well-known/oauth-authorization-server") {
       return json(200, {
@@ -134,6 +137,9 @@ export async function startFakeOAuth({ cimd = false, clients = {}, expiresIn = 3
       holding = { granted, sent: hold.sent };
       return { granted: hold.granted, answer };
     },
+    /** The next request to `path` (default `/token`) as logged, once it has reached this server: it is handled in the same
+     *  turn, so a grant it makes (a refresh token spent) is made by the time the wait answers. */
+    next: (path = "/token") => new Promise((heard) => nexts.push({ path, heard })),
     /** Every access token given so far stops working, as at its expiry; refresh tokens still do. */
     expire: () => access.clear(),
     close: () => new Promise((resolve) => (http.close(resolve), http.closeAllConnections())),

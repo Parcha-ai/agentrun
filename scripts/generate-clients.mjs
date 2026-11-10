@@ -143,6 +143,9 @@ export function operationsOf(doc) {
       found.push({
         operationId: op.operationId, method: method.toUpperCase(), path, tags: op.tags ?? [], summary: op.summary ?? firstLine(op.description),
         unsupported: op['x-agentrun-serve-unsupported'] !== undefined, parameters: [...params.values()],
+        // It writes a secret (the document marks a field of its body x-agentrun-secret, or the operation whole): the CLI,
+        // which holds only the token, has no command for it; the clients keep its method.
+        writesSecret: op['x-agentrun-secret'] === true || marksSecret(doc, op.requestBody),
         body: body === undefined ? null : {
           required: body.required === true, types: Object.keys(body.content ?? {}),
           properties: Object.entries(schema?.properties ?? {}).map(([name, property]) => ({ name, ...shapeOf(doc, property), ...(deref(doc, property)?.const !== undefined ? { const: deref(doc, property).const } : {}), required: schema.required?.includes(name) ?? false, description: firstLine(deref(doc, property)?.description) })),
@@ -158,6 +161,22 @@ export function operationsOf(doc) {
     }
   }
   return found;
+}
+
+/** Whether `node` (in `doc`, each $ref followed once) marks a field `x-agentrun-secret: true`: as the server's
+ *  markedOperations (packages/serve/src/secret-writes.ts) reads the marks; a test holds the two to the same operations. */
+function marksSecret(doc, node, seen = new Set()) {
+  if (node === null || typeof node !== 'object' || seen.has(node)) return false;
+  seen.add(node);
+  if (!Array.isArray(node)) {
+    if (node['x-agentrun-secret'] === true) return true;
+    if (typeof node.$ref === 'string' && node.$ref.startsWith('#/')) {
+      let target = doc;
+      for (const part of node.$ref.slice(2).split('/')) target = target && typeof target === 'object' ? target[part] : undefined;
+      if (marksSecret(doc, target, seen)) return true;
+    }
+  }
+  return Object.values(node).some((value) => marksSecret(doc, value, seen));
 }
 
 /** The string fields of a body schema, each as its path of property names; `*` stands for any key of a map
@@ -203,6 +222,9 @@ export function problemsOf(ops, map) {
   for (const id of [...Object.keys(map.commands), ...map.secretBody, ...Object.keys(map.omit), ...Object.keys(map.multiSegment)]) {
     if (!ids.has(id)) problems.push(`${RESOURCES} names ${id}, which the document has no operation for`);
   }
+  // An operation that writes a secret is left out of the CLI by its mark, never by hand: omitting it would drop its client
+  // method too. Its name in the map stays, as the client's method's.
+  for (const op of ops.filter((o) => o.writesSecret && map.omit[o.operationId] !== undefined)) problems.push(`${RESOURCES} omits ${op.operationId}, which writes a secret and is left out of the CLI by its mark already; omitting it drops its client method`);
   for (const [id, fill] of Object.entries(map.bodyFill ?? {})) {
     const op = ops.find((o) => o.operationId === id);
     if (!op) problems.push(`${RESOURCES} names ${id}, which the document has no operation for`);
@@ -217,7 +239,7 @@ export function problemsOf(ops, map) {
     if (op && !op.path.includes(`{${name}}`)) problems.push(`${RESOURCES} names ${id}'s path parameter ${name}, which its route ${op.path} does not have`);
   }
   const byName = new Map();
-  for (const op of ops) {
+  for (const op of ops.filter((o) => !o.writesSecret)) {
     const command = commandOf(op, map);
     const name = command.join(' ');
     if (byName.has(name)) problems.push(`${byName.get(name)} and ${op.operationId} are both "${name}"`);
@@ -237,7 +259,8 @@ export function problemsOf(ops, map) {
 export function commandsOf(ops, map) {
   const entries = [];
   for (const op of ops) {
-    if (op.unsupported || map.omit[op.operationId] !== undefined) continue;
+    // An operation that writes a secret has no command: the CLI holds only the token, which the server refuses on it.
+    if (op.unsupported || op.writesSecret || map.omit[op.operationId] !== undefined) continue;
     const flag = (p) => ({ name: p.name, ...(flagType(p) ?? { type: 'string' }), required: p.required, description: p.description });
     const query = op.parameters.filter((p) => p.in === 'query').map(flag);
     const taken = new Set([...GLOBAL_FLAGS, ...query.map((q) => flagOf(q.name))]);

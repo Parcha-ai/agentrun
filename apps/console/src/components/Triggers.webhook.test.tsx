@@ -39,12 +39,12 @@ function server({ triggers = [NIGHTLY, HOOK], create, held }: { triggers?: Trigg
     calls.push(call);
     if (call.path === "/v2/agents") return json(200, { agents: AGENTS, next_cursor: null });
     if (call.path === "/v2/triggers" && call.method === "GET") return json(200, { triggers });
-    if (call.path === "/v2/triggers" && call.method === "POST") return create ? create(call) : json(201, { ...HOOK, ...(call.body as object), id: "trg_new", secret: SECRET });
+    if (call.path === "/v2/triggers" && call.method === "POST") return create ? create(call) : json(201, { ...HOOK, ...(call.body as object), id: "trg_new", signing_secret: SECRET });
     const m = /^\/v2\/triggers\/([^/]+)(\/firings|\/secret|\/fire)?$/.exec(call.path);
     const t = m && triggers.find((x) => x.id === decodeURIComponent(m[1]));
     if (m && !t) return json(404, { error: { code: "not_found", message: "no trigger", retryable: false } });
     if (m?.[2] === "/firings") return json(200, { firings: [fired({})] });
-    if (m?.[2] === "/secret") { await held; return json(200, { secret: "CANARY-VALUE-0b2d4e6f" }); }
+    if (m?.[2] === "/secret") { await held; return json(200, { signing_secret: "CANARY-VALUE-0b2d4e6f" }); }
     if (m?.[2] === "/fire") return json(201, fired({ key: "fir_2", by: "manual" }));
     if (m && call.method === "PATCH") { Object.assign(t!, call.body); return json(200, t); }
     if (m && call.method === "DELETE") return new Response(null, { status: 204 });
@@ -203,7 +203,7 @@ describe("Triggers: schedules and webhooks", () => {
   });
 
   it("the made page names the scheme the server saved, not the form's pick", async () => {
-    const s = server({ create: (call) => json(201, { ...HOOK, ...(call.body as object), id: "trg_new", source: { kind: "webhook", signature: "github" }, secret: SECRET }) });
+    const s = server({ create: (call) => json(201, { ...HOOK, ...(call.body as object), id: "trg_new", source: { kind: "webhook", signature: "github" }, signing_secret: SECRET }) });
     const t = await open(s.v2, { trigger: null, kind: "webhook" });
     await t.set("name", "on deploy");
     await t.set("agent", "triage");
