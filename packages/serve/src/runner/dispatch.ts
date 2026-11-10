@@ -39,6 +39,11 @@ export class LaunchUnreadable extends Error {
   }
 }
 
+/** The first wait before a buffered row whose delivery threw is tried again, and the most any later wait (doubling)
+ *  grows to. */
+export const REPLAY_RETRY_FIRST_MS = 250;
+export const REPLAY_RETRY_MAX_MS = 5_000;
+
 /** The loop factory the runner holds for every run: `createDispatchLoop(deps)` picks each run's harness loop at its
  *  claim. The inner loop gets the same LoopDeps the dispatch does, so the runner's fence, flush, live and end-of-run
  *  channels reach it unchanged. */
@@ -77,25 +82,45 @@ function dispatchLoop(deps: DispatchDeps, loopDeps: LoopDeps): Loop {
     inner = factory(innerDeps);
     const end = inner.start(claim);
     // Replay the buffered commands through the inner loop in order, each awaited, then let its `delivered` resolve. A
-    // command the inner loop cannot take any more (its claim ended before it was ready, so its session is gone) is never
-    // thrown out of here, where nothing would catch it and the runner's process would go down. Its row stays untaken (the
-    // dispatch's `taken` is only its word that it holds the row; the store's take is the inner loop's own commit), so the
-    // run's next claim delivers it again and nobody's words are lost.
+    // command whose delivery throws is never thrown out of here, where nothing would catch it and the runner's process
+    // would go down. The runner already moved past its row (the dispatch said it holds it), so the dispatch tries it again
+    // itself while the inner loop runs, as the runner tries again a row whose delivery threw (a store that failed for a
+    // moment). Once the inner loop has ended, a row still not delivered stays untaken (the store's take is the inner
+    // loop's own commit), so the run's next claim delivers it again and nobody's words are lost.
     const buffered = early.splice(0);
-    const loop = inner;
-    void (async () => {
+    void replay(claim.runId, inner, buffered, end);
+    if (earlyStop) void inner.stop(earlyStop);
+    return end;
+  }
+
+  /** Hands `buffered` to `loop` in order; the ones whose delivery threw are tried again, in order, until each goes through
+   *  or the loop has ended. Never rejects. */
+  async function replay(runId: string, loop: Loop, buffered: readonly Command[], end: Promise<LoopEnd>): Promise<void> {
+    let ended = false;
+    const loopEnded = end.then(() => undefined, () => undefined).then(() => void (ended = true));
+    const delivers = async (command: Command): Promise<boolean> => {
       try {
-        for (const command of buffered) {
-          try {
-            await loop.command(command);
-          } catch (error) {
-            console.warn(`[runner] ${claim.runId}: a ${command.kind} row held before its loop was chosen was not delivered, and is left for the run's next claim: ${(error as Error)?.message ?? String(error)}`);
-          }
-        }
-      } finally {
-        replayed();
+        await loop.command(command);
+        return true;
+      } catch (error) {
+        console.warn(`[runner] ${runId}: a ${command.kind} row held before its loop was chosen was not delivered (${(error as Error)?.message ?? String(error)}); it is tried again while the loop runs, else left for the run's next claim`);
+        return false;
       }
-    })();
+    };
+    const failed: Command[] = [];
+    try {
+      for (const command of buffered) if (failed.length > 0 || !(await delivers(command))) failed.push(command);
+    } finally {
+      replayed();
+    }
+    for (let wait = REPLAY_RETRY_FIRST_MS; failed.length > 0 && !ended; wait = Math.min(wait * 2, REPLAY_RETRY_MAX_MS)) {
+      let timer: NodeJS.Timeout | undefined;
+      await Promise.race([loopEnded, new Promise<void>((resolve) => (timer = setTimeout(resolve, wait)))]);
+      clearTimeout(timer);
+      if (ended) break;
+      while (failed.length > 0 && !ended && (await delivers(failed[0]!))) failed.shift();
+    }
+  }
     if (earlyStop) void inner.stop(earlyStop);
     return end;
   }

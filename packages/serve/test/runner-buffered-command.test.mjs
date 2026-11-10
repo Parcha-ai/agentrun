@@ -5,8 +5,10 @@
 // closed", and the unhandled rejection took the runner's process down with every claim it held.
 //
 // Here: the adapter loop never reads a closed Harness, and answers such a row `later` (left untaken for the run's next
-// claim, so nobody's words are lost); the dispatch's replay never throws, whatever its inner loop does; and the runner's
-// process logs a rejection nothing handled and keeps serving. No sleeps: each wait is on the event it names.
+// claim, so nobody's words are lost); the dispatch's replay never throws, whatever its inner loop does, and tries a row
+// whose delivery threw again while the loop runs; and the standalone runner's process, meeting an error nothing handled,
+// says so with the stack and exits 1, so its claims lapse and are taken back. No sleeps: each wait is on the event it
+// names.
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
 import { spawn } from "node:child_process";
@@ -18,7 +20,6 @@ import { queue, stores, until } from "./runner-support.mjs";
 
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { createDispatchLoop } = await import("../dist/runner/dispatch.js");
-const { lastResort } = await import("../dist/runner/main.js");
 const { startRunner } = await import("../dist/runner/runner.js");
 const { sendCommand } = await import("../dist/runner/commands.js");
 const { adapterRunGate } = await import("../dist/runner/adapter-run-spec.js");
@@ -106,6 +107,43 @@ test("the dispatch's replay of a row buffered before its loop was chosen never t
   assert.deepEqual(value, { state: "interrupted" });
 });
 
+test("a buffered row whose delivery throws once while its loop keeps running is tried again and goes through: never skipped for the rest of the claim", { timeout: 30_000 }, async () => {
+  const launched = defer();
+  const secondTry = defer();
+  const finish = defer();
+  const tries = [];
+  const inner = {
+    start() {
+      return finish.promise.then(() => ({ state: "ended" }));
+    },
+    async command(command) {
+      tries.push(command.id);
+      // The first try meets a store that failed for a moment; the loop goes on running.
+      if (tries.length === 1) throw new Error("the store was busy for a moment");
+      secondTry.resolve();
+      return { taken: true };
+    },
+    async stop() {
+      finish.resolve();
+    },
+  };
+  const dispatch = createDispatchLoop({
+    launchOf: async () => (await launched.promise, { body: { place: { mode: "runner" }, harness: "pi" } }),
+    resolve: () => () => inner,
+  })({ journal: () => ({}), flush: async () => {}, signal: new AbortController().signal });
+  const { value, seen } = await noUnhandled(async () => {
+    const run = dispatch.start({ runId: "run-1", runner: "runner-a", epoch: 1, until: 0, from: "running" });
+    assert.deepEqual(await dispatch.command(answer(9, "call-1")), { taken: true }, "buffered: the runner moves past its row");
+    launched.resolve();
+    await secondTry.promise;
+    finish.resolve();
+    return run;
+  });
+  assert.deepEqual(tries, [9, 9], "the row was handed to the loop again after its first delivery threw");
+  assert.deepEqual(seen, []);
+  assert.deepEqual(value, { state: "ended" });
+});
+
 test("an approve for a parked call, buffered on a resume claim whose loop closes before it is ready, stays untaken in the store: the next claim takes it, and the call runs once as approved", { timeout: 90_000 }, async (t) => {
   const opened = await stores({ runners: 1 });
   await opened.server.settings.put("tool-settings", { web_fetch: { permission: "ask" } });
@@ -182,7 +220,10 @@ test("an approve for a parked call, buffered on a resume claim whose loop closes
   assert.deepEqual(unhandled, []);
 });
 
-test("the runner process's last resort says what went wrong in the runner's name with its stack, then exits 1", () => {
+test("the runner process's last resort says what went wrong in the runner's name with its stack, then exits 1", async () => {
+  // Imported here, so a runner main with no last resort fails this case alone.
+  const { lastResort } = await import("../dist/runner/main.js");
+  assert.equal(typeof lastResort, "function", "the runner's main has its last resort");
   const lines = [];
   const exits = [];
   const handle = lastResort("runner-a", (line) => lines.push(line), (code) => exits.push(code));

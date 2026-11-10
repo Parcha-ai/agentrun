@@ -7,7 +7,7 @@
 // connection. SIGTERM or SIGINT closes it: every loop stopped where it can resume and its run handed back at once for
 // another runner (a loop that never stops is given up when its claim would run out, and its run is claimable when its
 // lease lapses); then 0. Bad arguments exit 2, a store schema it does not know 3, anything else 1.
-import { mkdirSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { mkdirSync, statSync, utimesSync, writeFileSync, writeSync } from "node:fs";
 import { join } from "node:path";
 import { SECRET_NAMES, secret } from "../secrets.js";
 import { migrationsIn, openStore, SchemaVersionUnknown, type Store, storePlace, storeTarget } from "../store/index.js";
@@ -246,8 +246,9 @@ export async function runUntilSignalled(process: RunnerProcess, signals: readonl
  *  went wrong, in the runner's name with its stack, then exits 1 at once, closing nothing. A runner that went on after
  *  an error nothing handled could keep renewing the claim of a run whose loop is dead, and that run would hang claimed
  *  by a live runner. Exiting lets the claim lapse: another runner (or this one, started again) takes the run back at the
- *  next epoch, and the fence refuses the dead loop's late writes. Exported for its test. */
-export function lastResort(name: string, write: (line: string) => void = (line) => void process.stderr.write(line), exit: (code: number) => void = (code) => process.exit(code)): (reason: unknown) => void {
+ *  next epoch, and the fence refuses the dead loop's late writes. The line is written to stderr synchronously
+ *  (writeSync), so a pipe's slow reader still gets the whole stack before the exit. Exported for its test. */
+export function lastResort(name: string, write: (line: string) => void = (line) => void writeSync(2, line), exit: (code: number) => void = (code) => process.exit(code)): (reason: unknown) => void {
   return (reason) => {
     const said = reason instanceof Error ? (reason.stack ?? `${reason.name}: ${reason.message}`) : String(reason);
     write(`agentrun-serve runner: Runner ${name}: an error nothing handled, so the runner exits (its claims lapse, and are taken back): ${said}\n`);
