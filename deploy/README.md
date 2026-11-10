@@ -96,7 +96,8 @@ exits and is started again.
 
 **Render.** `render.yaml` at the repository's root runs the image's default command: the server with one runner beside
 it, on a disk only that one service can mount. More runners on Render need the Postgres store: the server with
-`--no-runner`, and each runner a background worker from the same image with `runner --data /data --name <name>`.
+`--no-runner`, and each runner a background worker from the same image with `runner --data /data --name <name>`. A first
+deploy needs one model key in Render's form, then `AGENTRUN_TOKEN` from the service's Environment tab at the first visit.
 
 ## Upgrading from an earlier server
 

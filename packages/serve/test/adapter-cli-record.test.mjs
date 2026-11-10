@@ -6,12 +6,15 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { observed, queue, recorder, stores, until } from "./runner-support.mjs";
+import { observed, queue, recorder, STEADY_LEASE, stores, until } from "./runner-support.mjs";
 
 const { startRunner } = await import("../dist/runner/runner.js");
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { callsOf, journalRecords, messagesOf } = await import("../dist/runner/journal-reader.js");
-const TIMING = { leaseMs: 600, renewEveryMs: 150, stopMarginMs: 200, pollMs: 20, commandPollMs: 30 };
+/** A lease no stall of a loaded machine outlasts: no case here is about the lease. On a short one (600 ms) a stall of the
+ *  box while the call ran let the claim lapse unrenewed, the runner took the run back, and the reopened session ended the
+ *  cut call interrupted, never done. */
+const STEADY = { ...STEADY_LEASE, pollMs: 20, commandPollMs: 30 };
 const quiet = { beforeIntent: async () => {}, beforeResult: async () => {} };
 
 /** A CLI stand-in: each turn says "Looking.", calls `tool` through the gate, then says what the tool answered. Like a
@@ -71,7 +74,7 @@ test("a CLI run's record: the person's input, the call's start and end around it
     hooks: quiet,
     gate: () => "allow",
   }));
-  const runner = startRunner({ store: observed(opened.runners[0], recorder()), createLoop, name: "runner-a", ...TIMING });
+  const runner = startRunner({ store: observed(opened.runners[0], recorder()), createLoop, name: "runner-a", ...STEADY });
   t.after(() => runner.close());
   const row = await until(async () => {
     const now = await opened.server.runs.get("run-1");
@@ -102,7 +105,7 @@ test("a call a fault cut off after it ran ends interrupted when the session open
     hooks,
     gate: () => "allow",
   }), { restartLimit: 3 });
-  const runner = startRunner({ store: observed(opened.runners[0], recorder()), createLoop, name: "runner-a", ...TIMING });
+  const runner = startRunner({ store: observed(opened.runners[0], recorder()), createLoop, name: "runner-a", ...STEADY });
   t.after(() => runner.close());
   const row = await until(async () => {
     const now = await opened.server.runs.get("run-1");
@@ -125,7 +128,7 @@ test("a pi-style run (the adapter keeps its own record) gets no call or message 
     runCap: { capUsd: () => undefined, modelOf: () => undefined },
     hooks: quiet,
   }));
-  const runner = startRunner({ store: observed(opened.runners[0], recorder()), createLoop, name: "runner-a", ...TIMING });
+  const runner = startRunner({ store: observed(opened.runners[0], recorder()), createLoop, name: "runner-a", ...STEADY });
   t.after(() => runner.close());
   const row = await until(async () => {
     const now = await opened.server.runs.get("run-1");
