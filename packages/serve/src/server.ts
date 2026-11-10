@@ -13,7 +13,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import { type Revision, type RunOrigin } from "@parcha/pi-durable-agent";
-import { type AgentEntry, agentRevision, agentRevisions, agentView, commitAgent, createAgent, definitionOf, etagOf, getAgent, listAgents, revisionView, setAgentArchived, setCurrentRevision } from "./agents-store.js";
+import { type AgentEntry, agentRevision, agentRevisions, agentView, commitAgent, createAgent, definitionOf, etagOf, getAgent, listAgents, makeRevision, refuseExternal, revisionView, setAgentArchived, setCurrentRevision } from "./agents-store.js";
 import { WORKFLOW_ADAPTERS } from "./app.js";
 import { DECISION_ADAPTER, decisionsOf, FAUX_JEV_ENV, FAUX_OPENROUTER_ENV, FAUX_PARALLEL_ENV, fauxFetch } from "./decisions.js";
 import { FAUX_WEB_ENV } from "./web-fetch-direct.js";
@@ -48,7 +48,7 @@ import { browserHandBack, handBackTarget } from "./browser-commands.js";
 import { type ComputerOf, computerView } from "./computer-view.js";
 import { durationMs, logLine } from "./print.js";
 import { knownToolCostOf, redactorOf, type RunMoment, type State, type Status, toolCostOf } from "./run-view.js";
-import { approve, archiveRun, cancel, message, pause as pauseRunOverStore, raiseCap, resume as resumeRunOverStore, type StartDeps, type StartOptions, startRun, stop as stopRunOverStore, WAITS_ON_A_PERSON } from "./runs-over-store.js";
+import { approve, archiveRun, cancel, message, pause as pauseRunOverStore, raiseCap, resume as resumeRunOverStore, type StartDeps, startInline, type StartOptions, startRun, stop as stopRunOverStore, WAITS_ON_A_PERSON } from "./runs-over-store.js";
 import { momentOverStore, summaryOverStore, timelineOverStore, type ViewDeps, viewOverStore, withheldOverStore } from "./store-view.js";
 import { servedTimelineRows } from "./run-timeline-served.js";
 import { servedRunLearning } from "./run-learning-served.js";
@@ -63,7 +63,7 @@ import { watchRun } from "./live/stream.js";
 import { stats as statsOverStore } from "./store-reads/stats.js";
 import { analytics as analyticsOverStore } from "./store-reads/analytics.js";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { type AgenticBody, type NewRevision, openSqliteStore, type RevisionPlace, type RunRow, type Store, StoreBusy, StoreConstraint, StoreOwned, type WorkflowBody } from "./store/index.js";
+import { type AgenticBody, type NewRevision, openStore, type RevisionPlace, type RunRow, type Store, StoreBusy, StoreConstraint, StoreOwned, type WorkflowBody } from "./store/index.js";
 import { markRunning, markStopping, stoppingOf } from "./server-lock.js";
 import { FINAL_STATES } from "./store/store.js";
 import { runModelRef } from "./model.js";
@@ -122,7 +122,7 @@ import { SCHEME_NAMES } from "./trigger-signatures.js";
 import { permissionFrom, pinWords } from "./tool-gate.js";
 import { CATCHUP_WINDOW_S, FAILURES_TO_PAUSE, HISTORY_KEPT, MIN_EVERY_S, PAYLOAD_KEPT_BYTES, type RunTrigger, SOURCE_KINDS, TARGET_KINDS, type TriggerClock, Triggers } from "./triggers.js";
 import { applyBodyOf, compiled, GITHUB_TRIGGER_UNCONNECTED, githubTriggerWords, madeTriggerIssues, type Package, packageModel, packageView, readPackages, type TemplatesDeps } from "./templates.js";
-import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, type DefinitionBody, definitionBodyIssues, ID, IDEMPOTENCY_TTL_S, inputIssues, isObject, type Json, stable, unknownFields } from "./validate.js";
+import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, type DefinitionBody, definitionBodyIssues, EXTERNAL_NAME, ID, IDEMPOTENCY_TTL_S, inputIssues, isObject, type Json, stable, unknownFields } from "./validate.js";
 import { agentTools, browserKeyRow, isUnavailable, keptVendor, type Plane, recheckPlane, settingsIssues, ToolSettings, type ToolSettingsMap, whyUnavailable, withDefaults } from "./tool-plane.js";
 import { toolSettingsOverStore } from "./tool-settings-store.js";
 import { writeApprovers } from "./server-approvers.js";
@@ -233,7 +233,7 @@ async function stopOnce(serve: Pick<Serve, "stopping" | "close">, runner: Runner
  */
 async function openStoreAfterStop(data: string, options: Pick<ServeOptions, "notice">): Promise<Store> {
   try {
-    return await openSqliteStore({ dataDir: data, role: "server" });
+    return await openStore({ dataDir: data, role: "server" });
   } catch (error) {
     if (!(error instanceof StoreOwned)) throw error;
     const stopping = stoppingOf(data);
@@ -242,7 +242,7 @@ async function openStoreAfterStop(data: string, options: Pick<ServeOptions, "not
     for (;;) {
       await new Promise((resolve) => setTimeout(resolve, 250));
       try {
-        return await openSqliteStore({ dataDir: data, role: "server" });
+        return await openStore({ dataDir: data, role: "server" });
       } catch (again) {
         // Read again each time: another start that won the store has marked it running (no `until`), and this one is
         // refused at once, never left waiting out the first stop's bound.
@@ -261,8 +261,9 @@ export type ServeOptions = {
   data: string;
   /** The owner, signed in with a password (owner.ts): the page asks for it, and the token stays for scripts and the CLI. */
   accounts?: boolean;
-  /** With accounts: the first visit sets the password with no setup code (a server with no public address). Off, setup
-   *  takes the code this server prints, or the token. */
+  /** With accounts: the first visit sets the password with no setup code (a server with no public address). Honored only
+   *  on a loopback listener: on any other address anyone who reaches the port could set the password first, so setup
+   *  takes the code this server prints, or the token, as it does off. */
   openSetup?: boolean;
   /** With accounts: the address people open (AGENTRUN_PUBLIC_URL), which the printed setup link uses. */
   publicUrl?: string;
@@ -454,9 +455,10 @@ export function fauxEnvOf(options: ServeOptions): NodeJS.ProcessEnv {
 }
 
 /** `tokenFile` is null when `options.token` gave the token; `tokenMade` says this start made the token in it. */
-/** `setupUrl`: with accounts and no password yet, the page that sets it (with its code when setup needs one). */
+/** `setupUrl`: with accounts and no password yet, the page that sets it (with its code when setup needs one);
+ *  `setupOpen`: whether that setup takes no code (open setup on a loopback listener). */
 /** `boxesLine`: what the start's banner says of the boxes, in words (place.ts boxesLine). */
-export type Serve = { url: string; baseUrl: string; port: number; token: string; tokenFile: string | null; tokenMade: boolean; setupUrl?: string; boxesLine: string; close(): Promise<void>;
+export type Serve = { url: string; baseUrl: string; port: number; token: string; tokenFile: string | null; tokenMade: boolean; setupUrl?: string; setupOpen?: boolean; boxesLine: string; close(): Promise<void>;
   /** What a stop waits on: the runs whose processes still finish their turn, and the longest it waits on them. */
   stopping(): { runs: number; boundMs: number } };
 
@@ -516,6 +518,7 @@ export const ROUTES: readonly Route[] = [
   { method: "PUT", pattern: /^\/agents\/([^/]+)\/home\/files\/(.+)$/, name: "writeHomeFile" },
   { method: "DELETE", pattern: /^\/agents\/([^/]+)\/home\/files\/(.+)$/, name: "deleteHomeFile" },
   { method: "GET", pattern: /^\/runs$/, name: "listAllRuns" },
+  { method: "POST", pattern: /^\/runs$/, name: "createInlineRun" },
   { method: "GET", pattern: /^\/runs\/([^/]+)$/, name: "getRun" },
   { method: "PATCH", pattern: /^\/runs\/([^/]+)$/, name: "raiseRunCap" },
   { method: "GET", pattern: /^\/runs\/([^/]+)\/timeline$/, name: "getTimeline" },
@@ -918,6 +921,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // EXCLUSIVE lock is the one-server lock (no server-lock.ts), and it refuses a data directory an earlier version wrote, in
   // words, to start fresh (no oldHomes/oldLayout checks, no migration). Every agent, run, setting and sign-in is a row; the
   // server writes and reads rows, and a runner (its own process, sharing only this store) runs every run.
+  // On Postgres when this process's AGENTRUN_STORE_URL secret names one (store/open.ts), its owner lock the one-server lock.
   // A start while the last server on this root stops (its runner draining) waits for it (openStoreAfterStop); the record
   // then says this one runs, for the next start to read.
   const store = await openStoreAfterStop(data, options);
@@ -1346,7 +1350,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         await rename(`${keptFile}.partial`, keptFile);
       }));
   const host = options.host ?? "127.0.0.1";
-  const owner = options.accounts ? new Owner(data, options.openSetup === true, (line) => void process.stdout.write(`${line}\n`), options.signInAddresses) : undefined;
+  // Open setup (no code) only where no one else reaches the port: a loopback listener. Bound to any other address
+  // (0.0.0.0 in the image, a LAN address), the first visit takes the printed code even with no public address.
+  const openSetup = options.openSetup === true && isLoopback(host);
+  const owner = options.accounts ? new Owner(data, openSetup, (line) => void process.stdout.write(`${line}\n`), options.signInAddresses) : undefined;
   /** Whether `req` may be shown a secret this server mints (trigger-secrets-shown.ts): the caller that may write one. */
   const mayHoldSecrets = (req: IncomingMessage) => writesSecretsAllowed(req, { accounts: owner !== undefined, loopbackBound: isLoopback(host) });
   /** A trigger's view with its minted secret's metadata, never the secret (trigger-secrets-shown.ts). */
@@ -1420,7 +1427,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // Setup's import of this machine's sessions: offered by a server on this machine only (no public address, listening
   // on loopback), counted once (a listing, no transcript kept), run once, each on a worker thread (import-worker.ts) so
   // a busy store's wait and the sessions' parsing never hold up a request.
-  const offersImport = options.openSetup === true && options.publicUrl === undefined && isLoopback(host);
+  const offersImport = openSetup && options.publicUrl === undefined;
   let closing = false;
   const workers = new Map<Worker, { task: ImportTask["task"]; exit: Promise<unknown> }>();
   // Once the server closes, no worker starts: a setup still being answered then leaves its yes for the next start.
@@ -1856,6 +1863,69 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     });
   }
 
+  /** POST /runs: a run of an agent another system owns, given inline. The body is POST /agents/{agent_id}/runs' own, but
+   *  `revision` (the run's revision is its external version's), with the agent's reference in its source (`external`) and
+   *  the agent as POST /agents takes one (`definition`, `skills`, `note`), checked as that route checks it, in its words.
+   *  Its first run makes the agent, a version's first run its revision; a later run of the version reuses both
+   *  (runs-over-store startInline). The answer is POST /agents/{agent_id}/runs' own: 202 and the run. */
+  async function createInlineRun(req: IncomingMessage) {
+    const body = await bodyOf(req);
+    const { external, definition, skills, note, revision: pinned, ...run } = body;
+    const given = { definition, ...(skills !== undefined ? { skills } : {}), ...(note !== undefined ? { note } : {}) };
+    const issues: InputIssue[] = [
+      ...externalIssues(external),
+      ...(pinned !== undefined ? [{ field: "revision", reason: "not_allowed", message: "An inline run pins no revision: it runs the revision of its external version.", fix: "Remove revision." }] : []),
+      ...runBodyIssues(run),
+      ...definitionBodyIssues(given),
+      // The agent's id is this server's, one per external reference, and its version is the reference's.
+      ...(["id", "version"] as const).flatMap((key) => (isObject(definition) && definition[key] !== undefined ? [{ field: `definition.${key}`, reason: "not_allowed", message: `An inline agent's ${key} is its external reference's: the definition names none.`, fix: `Remove definition.${key}.` }] : [])),
+    ];
+    if (issues.length) throw invalid(issues);
+    const checked = checkDefinitionBody(given);
+    const revision = makeRevision(checked.definition, checked.skills ?? {}, checked.note);
+    // Refused where POST /agents refuses the definition (one this host can never run); what this host still lacks for it
+    // is the run's own refusal (prepareLaunch's runnable), as for a run of a stored agent.
+    await saveable(revision);
+    const ref = external as { source: string; kind: string; id: string; version: string | number };
+    const inline = {
+      external: { source: ref.source, kind: ref.kind, id: ref.id, version: String(ref.version) },
+      name: checked.definition.name as string,
+      description: typeof checked.definition.description === "string" ? checked.definition.description : null,
+      revision,
+    };
+    return idempotent(req, "/runs", body, async (origin) => {
+      // A run the store started under this key, though no answer was kept (its server went down first): that run, as it is now.
+      const first = origin && (await agents.request(() => agents.store.runOfOrigin(origin.key)));
+      if (first) {
+        if (first.existing?.fingerprint !== origin.fingerprint) throw mismatch();
+        const headers: Record<string, string> = { location: `/v2/runs/${first.runId}`, "idempotent-replayed": "true" };
+        return { status: 202, body: await viewOverStore(store, first.runId, viewDepsFor(linkOrigin(req))), headers };
+      }
+      const started = await startInline(store, startDeps, inline, run, { ...(origin ? { origin } : {}) });
+      return { status: 202, body: await viewOverStore(store, started.id, viewDepsFor(linkOrigin(req))), headers: { location: `/v2/runs/${started.id}` } };
+    });
+  }
+
+  /** An inline run's `external`, field by field: its source and kind (no colon, which the reference's key splits on), its
+   *  id in its source (text), and its version there (text or a whole number). */
+  function externalIssues(external: unknown): InputIssue[] {
+    if (external === undefined) return [{ field: "external", reason: "missing", message: "external is the agent's reference in the system that owns it: {source, kind, id, version}" }];
+    if (!isObject(external)) return [{ field: "external", reason: "wrong_type", message: "external is an object: {source, kind, id, version}" }];
+    const issues: InputIssue[] = unknownFields(external, ["source", "kind", "id", "version"]).map((issue) => ({ ...issue, field: `external.${issue.field}`, message: `external keeps no field ${issue.field}.` }));
+    for (const key of ["source", "kind"] as const) {
+      const value = external[key];
+      if (value === undefined) issues.push({ field: `external.${key}`, reason: "missing", message: `external.${key} is required` });
+      else if (typeof value !== "string") issues.push({ field: `external.${key}`, reason: "wrong_type", message: `external.${key} is text` });
+      else if (!EXTERNAL_NAME.test(value)) issues.push({ field: `external.${key}`, reason: "bad_format", message: `external.${key} does not match ${EXTERNAL_NAME.source}` });
+    }
+    if (external.id === undefined) issues.push({ field: "external.id", reason: "missing", message: "external.id is required" });
+    else if (typeof external.id !== "string" || external.id.length < 1 || external.id.length > 255) issues.push({ field: "external.id", reason: "wrong_type", message: "external.id is the agent's id in its source: text of 1 to 255 characters" });
+    const { version } = external;
+    if (version === undefined) issues.push({ field: "external.version", reason: "missing", message: "external.version is required" });
+    else if (!((typeof version === "string" && version.length >= 1 && version.length <= 128) || (Number.isSafeInteger(version) && (version as number) >= 0))) issues.push({ field: "external.version", reason: "wrong_type", message: "external.version is the agent's version in its source: text of 1 to 128 characters, or a whole number" });
+    return issues;
+  }
+
   /** A run of `entry`'s agent from a create's body, checked as POST /agents/{id}/runs checks it: that route's, and a
    *  trigger's firing's, which names itself as the run's `trigger`. Under `origin`, a key that already started a run
    *  gets that run (the agent store's run_origins). */
@@ -2260,6 +2330,11 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const BODY_CHECKS: Record<string, (sent: Json) => ((body: unknown) => readonly InputIssue[]) | undefined> = {
     createAgent: () => definitionCheck(true),
     updateDefinition: (sent) => ("definition" in sent ? definitionCheck(false) : undefined),
+    // POST /runs' agent, given inline, is POST /agents' body inside its own: checked as that one is.
+    createInlineRun: () => (body: unknown) => {
+      const { definition, skills, note } = isObject(body) ? body : {};
+      return definitionBodyIssues({ definition, ...(skills !== undefined ? { skills } : {}), ...(note !== undefined ? { note } : {}) });
+    },
   };
 
   /** An operation's documented request bodies (its JSON media type's examples), each its value. */
@@ -2455,7 +2530,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       }
       case "archiveAgent":
       case "unarchiveAgent": {
-        await needAgent(id);
+        // An agent another system owns is that system's to keep or drop: archiving it here is refused, as an edit is.
+        refuseExternal((await needAgent(id)).agent);
         // No run sweep on archive: a runner reads an archived agent's run rows directly, nothing to sweep.
         // The engine archives (or unarchives) the agent itself: archived, every trigger that runs as it turns off with
         // agent_archived in that same store transaction; unarchived, none turns on. Never archived first by another path,
@@ -2477,6 +2553,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       }
       case "createRun": {
         const answer = await createRun(req, id);
+        return send(res, answer.status, answer.body, answer.headers);
+      }
+      case "createInlineRun": {
+        const answer = await createInlineRun(req);
         return send(res, answer.status, answer.body, answer.headers);
       }
       case "listRuns":
@@ -3272,7 +3352,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     token,
     tokenFile,
     tokenMade: stored?.made ?? false,
-    ...(setupUrl ? { setupUrl } : {}),
+    ...(setupUrl ? { setupUrl, setupOpen: openSetup } : {}),
     boxesLine: boxesLine(boxOffers, enabledBoxes(env), boxAllow, boxesByDefault(env)),
     // Once: a second call, at any time, is the first one's promise, so a close repeated after the next server started
     // never writes this data root's record again (the next server's, by then).

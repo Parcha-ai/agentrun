@@ -1,17 +1,18 @@
 // A run's tools by its computer's kind (serve/src/workspace/run-tools.ts runTools, computer-ports.ts): the run folder
 // is attached only when the kind has files and exec AND the provider mounts it (a sandbox always; a desktop when its
-// provider mounts); otherwise it stays the no-computer Workspace and the shell is "local". The kind's own tools come on
+// provider mounts); otherwise it stays the no-computer Workspace with no computer's shell: none in Mode 1 (the folder is
+// one of this server's own: no bash family), Archil's exec in Mode 2 ("local", bash only). The kind's own tools come on
 // top, their ports filled from the computer's capabilities: a desktop's screen and input from computerd's screen.shot
 // and input.actions, a phone's from its touch and apps calls, a browser's from its CDP connect. Screenshots go back as
 // images. Every computer here is a loopback fake: nothing leaves this process.
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { checkActions, KEYS, MAX_ACTIONS, readBackOf } from "@parcha/agentrun-computer";
-import { DESKTOP_ACTIONS, DESKTOP_KEYS, DESKTOP_MAX_ACTIONS } from "@parcha/agentrun-kernel/kernel";
+import { DESKTOP_ACTIONS, DESKTOP_KEYS, DESKTOP_MAX_ACTIONS, NO_SHELL } from "@parcha/agentrun-kernel/kernel";
 import { BROWSER_TOOLS, listedFor } from "@parcha/pi-browser";
 import { inputOf, localWorkspace, phoneOf, runTools, screenOf } from "../dist/workspace/index.js";
 import { fakeComputer } from "./workspace-fake-computer.mjs";
@@ -28,7 +29,10 @@ function scratch() {
 const call = (tools, name, args) => tools.find((tool) => tool.name === name).call(args, { callId: `c-${name}-${Math.random()}`, signal: new AbortController().signal });
 const names = (run) => run.registry.list().map((def) => def.name);
 
-const LOCAL = ["read", "write", "edit", "bash"];
+/** The file tools alone: no computer's shell in Mode 1. */
+const FILES = ["read", "write", "edit"];
+/** With Archil's exec (Mode 2, no computer's shell): bash only. */
+const LOCAL = [...FILES, "bash"];
 const COMPUTER = [...LOCAL, "bash_background", "bash_output", "bash_input", "bash_signal", "bash_list"];
 const DESKTOP = ["desktop_screen", "desktop_input", "computer_request_handoff"];
 const PHONE = ["phone_screen", "phone_tree", "phone_tap", "phone_swipe", "phone_type", "phone_key", "phone_apps", "phone_open", "computer_request_handoff"];
@@ -49,15 +53,17 @@ function fakeDesktop(root) {
   return computer;
 }
 
-test("a desktop whose provider does not mount: the run folder stays the runner's (shell local, no processes), and the desktop's tools come on top", async () => {
+test("a desktop whose provider does not mount, in Mode 1: the run folder stays the runner's with no shell (no bash family, no processes), and the desktop's tools come on top", async () => {
   const root = scratch();
   const computer = fakeDesktop(root);
   const run = await runTools(localWorkspace(root), { kind: "desktop", computer, groups: DESKTOP_GROUPS }, { mode: 1, context: ctx });
-  assert.deepEqual(names(run), [...LOCAL, ...DESKTOP]);
+  assert.deepEqual(names(run), [...FILES, ...DESKTOP]);
   assert.equal(run.hands.processes, undefined, "no background processes on an unmounted desktop");
   const tools = run.hostTools(["bash", ...DESKTOP]);
-  assert.deepEqual(await call(tools, "bash", { command: "echo here" }), { text: "here\n", isError: false });
-  assert.ok(!computer.methods().includes("exec.run"), "bash ran in the run's folder on the runner, not on the desktop");
+  assert.ok(!tools.some((tool) => tool.name === "bash"), "bash is not bound, granted or not");
+  assert.equal((await run.registry.invoke("bash", { command: "touch ran" }, { hands: run.hands })).error, NO_SHELL, "a call of it anyway says how to get a shell");
+  assert.ok(!existsSync(join(root, "ran")), "and runs nothing");
+  assert.ok(!computer.methods().includes("exec.run") && !computer.methods().includes("process.start"), "nor on the desktop");
   const shot = await call(tools, "desktop_screen", {});
   assert.deepEqual(shot, { text: "A screenshot of the whole screen, 1280x800 pixels.", isError: false, images: [{ mimeType: "image/png", data: PNG.toString("base64") }] });
   assert.deepEqual(computer.calls.filter(([method]) => method.startsWith("screen.")), [["screen.shot", {}], ["screen.read", { id: "s1", offset: Math.floor(PNG.length / 2) }]]);
@@ -80,7 +86,7 @@ test("a desktop whose provider mounts: the run folder is attached (shell compute
   assert.ok(computer.methods().includes("readBack"), "attach read the mount back");
   // A desktop with no exec or files (a screen alone) attaches nothing, mount or not.
   const bare = await runTools(localWorkspace(scratch()), { kind: "desktop", computer: fakeDesktop(root), groups: ["screen", "input.pointer"], check: { readBackOf } }, { mode: 1, context: ctx });
-  assert.deepEqual(names(bare), [...LOCAL, ...DESKTOP]);
+  assert.deepEqual(names(bare), [...FILES, ...DESKTOP]);
 });
 
 test("a sandbox: today's computer list, attached; no kind tools", async () => {
@@ -203,9 +209,9 @@ test("a browser: the browser's tools are pi-browser's BROWSER_TOOLS (the same ob
     return { text: `${contract.name} ran` };
   }]));
   const run = await runTools(localWorkspace(root), { kind: "browser", connect }, { mode: 1, context: ctx, browser: { executors, offers } });
-  assert.deepEqual(names(run), [...LOCAL, ...listed.map((contract) => contract.name)]);
+  assert.deepEqual(names(run), [...FILES, ...listed.map((contract) => contract.name)]);
   assert.ok(!names(run).includes("browser_downloads"), "no downloads where the provider keeps none");
-  for (const def of run.registry.list().slice(LOCAL.length)) {
+  for (const def of run.registry.list().slice(FILES.length)) {
     const contract = BROWSER_TOOLS.find((one) => one.name === def.name);
     assert.equal(def.description, contract.description, def.name);
     assert.equal(def.parameters, contract.parameters, `${def.name}: pi-browser's own schema object`);

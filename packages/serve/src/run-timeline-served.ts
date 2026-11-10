@@ -4,9 +4,11 @@
 // a workflow's decision rows among them by time, each
 // shown through the same set (decision-rows.ts withDecisions); and each error row read as the run's error is (main's
 // servedError): a refused key in plain words (key-refusal.ts keyRefusal), else the provider's words in the error's one
-// rule (shownOf: no held value, no loopback address). A run whose hand can't be read back here serves no row.
+// rule (shownOf: no held value, no loopback address). A run whose hand can't be read back here serves no row. A trigger's
+// row names the trigger as it is now (main's servedTriggerRow): its name read by its id from the store at each read,
+// never one the run's launch froze, cut as the row's words are; a trigger gone keeps the id the journal wrote.
 import type { Context } from "@earendil-works/chord";
-import type { TimelineEvent } from "@parcha/pi-durable-agent/timeline";
+import { TRIGGER_LABELS, type TimelineEvent } from "@parcha/pi-durable-agent/timeline";
 import { withDecisions } from "./decision-rows.js";
 import { redacted } from "./key-refusal.js";
 import { runCutValues, runErrorWordsOf } from "./run-cut.js";
@@ -50,12 +52,27 @@ export async function servedTimelineRows(deps: ServedTimelineDeps, store: Store,
   const workflow = (await readRun(store, runId, context))?.kind === "workflow";
   const words = await runErrorWordsOf(deps, store, runId, { workflow });
   if (words === "unreadable") return [];
+  // Each trigger the rows name, read once for this read: its name now, or none for one gone.
+  const names = new Map<string, string | undefined>();
+  for (const row of own) if (row.trigger && !names.has(row.trigger.id)) names.set(row.trigger.id, (await store.triggers.get(row.trigger.id))?.name);
   // A refused key's plain words are its summary and its text alike; any other error keeps each in the one rule.
   const shown = shownOf(values);
   return own.map((row) => {
+    if (row.trigger) return named(row, names.get(row.trigger.id), redact);
     if (row.kind !== "error") return row;
     const said = row.text ? words(row.text) : undefined;
     if (said !== undefined && said !== shown(row.text!)) return { ...row, summary: said, text: said };
     return { ...row, ...(row.summary ? { summary: shown(row.summary) } : {}), ...(said !== undefined ? { text: said } : {}) };
   });
+}
+
+/** A trigger's row as served: "<label> <its name>: <its first line>", the name on its trigger too, for a trigger that has
+ *  one now (`given`, read by its id), cut by the run's redactor first (a key pasted into a trigger's name never shows)
+ *  and on one line; as the journal wrote it, "<label> <its id>: …", for one that is gone. */
+function named(row: TimelineEvent, given: string | undefined, redact: (text: string) => string): TimelineEvent {
+  const { id, source } = row.trigger!;
+  const name = given === undefined ? undefined : redact(given).replace(/\s+/g, " ").trim();
+  const label = TRIGGER_LABELS[source];
+  const written = `${label} ${id}: `;
+  return name && row.summary?.startsWith(written) ? { ...row, summary: `${label} ${name}: ${row.summary.slice(written.length)}`, trigger: { ...row.trigger!, name } } : row;
 }

@@ -151,6 +151,10 @@ export function llmTiers(nodes: readonly Record<string, unknown>[], tiers: reado
 export type ModelRef = { provider: string; modelId: string };
 /** What a run that cannot have its model here needs: a provider's key, or another model. */
 export type ModelNeeds = "key" | "model";
+/** A run's model as its start pinned it (`pinned`: what chooseModel chose then, runs-over-store StartDeps.modelOf), with
+ *  the revision's own ref (`ref`, absent for the host's model): what the runner routes a claimed run on. */
+export type PinnedModel = { readonly pinned: ModelRef; readonly ref?: string | undefined };
+type Choice = { model: ModelRef; namedProvider?: string } | { why: string; host: boolean; needs: ModelNeeds };
 
 /**
  * The model a revision runs on here, or why it cannot: `ref` is an agentic revision's "provider/model-id", absent for
@@ -159,9 +163,10 @@ export type ModelNeeds = "key" | "model";
  * provider, whose catalog entry prices the model. `host` says a setting of this host (a key, a default model) could
  * make it reachable; a model the revision names that pi-ai does not know is not. `needs`: what would: a provider's key
  * (none names a model, or the model's provider has no key here), or another model. `harness` picks the host's model
- * when `ref` is absent (hostModel).
+ * when `ref` is absent (hostModel). A PinnedModel is the pin itself, never chosen again (pinnedChoice).
  */
-export async function chooseModel(env: NodeJS.ProcessEnv, ref: string | undefined, tier: Tier = "default", harness: string = DEFAULT_HARNESS): Promise<{ model: ModelRef; namedProvider?: string } | { why: string; host: boolean; needs: ModelNeeds }> {
+export async function chooseModel(env: NodeJS.ProcessEnv, ref: string | PinnedModel | undefined, tier: Tier = "default", harness: string = DEFAULT_HARNESS): Promise<Choice> {
+  if (typeof ref === "object") return pinnedChoice(env, ref, tier, harness);
   if (env[FAUX_ENV]) return { model: { provider: "faux", modelId: fauxModel(env, tier) } };
   const named = ref ?? hostModel(env, tier, harness);
   // In a person's words (a first run from npx sees them): what to add and where. Operator detail is the README's.
@@ -198,6 +203,23 @@ export async function chooseModel(env: NodeJS.ProcessEnv, ref: string | undefine
     return { why: `No ${row?.label ?? provider} key here for ${named}: ${row ? `add one in Settings → Model keys, or set ${field}` : `set ${field}`} where AgentRun starts.`, host: true, needs: "key" };
   }
   return { model: { provider, modelId } };
+}
+
+/** The choice of a run whose start pinned its model: the pin itself, never chosen again. A gateway's pin (MODEL_PROVIDER)
+ *  is the id the gateway was sent then, which no ref chooses back (joined to its provider it names no gateway model, and
+ *  bare ids would cut it again), so it goes exactly as pinned, priced as main prices it (its namedProvider) while the
+ *  revision's ref still chooses that id here. Any other pin is its own provider/model-id. */
+async function pinnedChoice(env: NodeJS.ProcessEnv, { pinned, ref }: PinnedModel, tier: Tier, harness: string): Promise<Choice> {
+  if (pinned.provider !== MODEL_PROVIDER || env[FAUX_ENV]) return chooseModel(env, `${pinned.provider}/${pinned.modelId}`, tier, harness);
+  if (!env.AGENT_MODEL_BASE_URL) return { why: "This run started on the model gateway, and AGENT_MODEL_BASE_URL names none here.", host: true, needs: "key" };
+  // The one base rule (gatewayBase) holds for a pinned run as for any: its key never goes to a gateway it may not.
+  try {
+    gatewayBase("AGENT_MODEL_BASE_URL", env.AGENT_MODEL_BASE_URL);
+  } catch (error) {
+    return { why: (error as Error).message, host: true, needs: "key" };
+  }
+  const now = await chooseModel(env, ref, tier, harness);
+  return "model" in now && now.model.provider === MODEL_PROVIDER && now.model.modelId === pinned.modelId ? now : { model: pinned };
 }
 
 /**
@@ -290,10 +312,10 @@ export type FauxHelpers = {
 };
 
 /** The models for a run, and its model of each tier it uses and of no other: an agentic revision's `ref` (or the
- *  default) is its `default`, and a workflow's tiers are the ones its nodes name. The faux module's replies, the gateway
- *  in the environment, or pi-ai's providers. `unpriced`: the ids of its models serve has no price for (a gateway model the
- *  catalog does not list, with no price set), which a cap cannot be kept on. */
-export async function runModels(env: NodeJS.ProcessEnv, ref: string | undefined, tiers: readonly Tier[] = ["default"], harness: string = DEFAULT_HARNESS) {
+ *  default) is its `default` (a claimed run's: its pin, chooseModel), and a workflow's tiers are the ones its nodes name.
+ *  The faux module's replies, the gateway in the environment, or pi-ai's providers. `unpriced`: the ids of its models
+ *  serve has no price for (a gateway model the catalog does not list, with no price set), which a cap cannot be kept on. */
+export async function runModels(env: NodeJS.ProcessEnv, ref: string | PinnedModel | undefined, tiers: readonly Tier[] = ["default"], harness: string = DEFAULT_HARNESS) {
   const ai = await import("@earendil-works/pi-ai");
   const { createModels, createProvider } = await import("@earendil-works/pi-ai/models");
   const faux = env[FAUX_ENV];
