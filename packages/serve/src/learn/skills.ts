@@ -156,11 +156,20 @@ export const LEARNED_KEYS: readonly string[] = ["name", "description"];
 export function servedSkill(text: string): string {
   const front = frontOf(text);
   if (typeof front === "string") return text;
-  const description = front.value("description") ?? "";
-  // Quoted only where YAML would read it as more than one plain line of text.
-  const plain = /^[^\s\-?:,[\]{}#&*!|>'"%@`][^\n]*$/.test(description) && !/: |\s#|:$/.test(description);
-  const lines = [`name: ${front.value("name") ?? ""}`, `description: ${plain ? description : JSON.stringify(description)}`];
+  const lines = [`name: ${yamlString(front.value("name") ?? "")}`, `description: ${yamlString(front.value("description") ?? "")}`];
   return `---\n${lines.join("\n")}\n---\n${front.lf.slice(front.end + 5)}`;
+}
+
+/** A plain word YAML 1.1 or 1.2 reads as no string: null, a boolean, a number in any of its spellings, infinity and
+ *  NaN, or a date. */
+const COERCED = /^(?:~|null|true|false|yes|no|on|off|y|n|[-+]?(?:0|[1-9][\d_]*)(?:\.[\d_]*)?(?:e[-+]?\d+)?|[-+]?\.\d[\d_]*(?:e[-+]?\d+)?|0x[\da-f_]+|0o[0-7_]+|0b[01_]+|0[0-7_]+|[-+]?\.inf|\.nan|\d{4}-\d\d?-\d\d?(?:[tT ].*)?|[-+]?\d[\d_]*(?::[0-5]?\d)+(?:\.[\d_]*)?)$/i;
+
+/** `value` as one YAML scalar that reads back as this very string: plain when YAML reads it so (one line of text that
+ *  starts with no indicator, holds no `: ` or ` #`, and is no word YAML would read as null, a boolean, a number or a
+ *  date), else quoted as JSON writes it, which YAML reads as the same string. */
+function yamlString(value: string): string {
+  const plain = /^[^\s\-?:,[\]{}#&*!|>'"%@`][^\n]*$/.test(value) && !/: |\s#|:$|\s$/.test(value) && !COERCED.test(value);
+  return plain ? value : JSON.stringify(value);
 }
 
 /** Why a `SKILL.md` for the skill `name`, or a draft's `README.md` for the workflow `name`, is out of shape; empty when

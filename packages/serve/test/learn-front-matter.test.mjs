@@ -100,3 +100,28 @@ test("the folder's snapshot reads a hand-written skill whose front matter reads 
     await folder.end();
   }
 });
+
+test("a served SKILL.md's name and description read back as the strings they are: a word YAML would read as null, a boolean, a number or a date is quoted (#1619)", async () => {
+  const { parse } = await import("yaml");
+  const { servedSkill } = await import("../dist/learn/skills.js");
+  const frontOfServed = (text) => parse(text.split("---\n")[1]);
+  for (const word of ["null", "~", "true", "False", "yes", "no", "on", "off", "y", "123", "1e3", "-4.5", "0x1f", "0o17", ".inf", "-.Inf", ".nan", "2026-01-01", "12:30", "1_000"]) {
+    const served = servedSkill(skill(`name: ${word}\ndescription: ${word}\n`));
+    assert.deepEqual(frontOfServed(served), { name: word, description: word }, `${word}: ${served}`);
+  }
+  // Plain text stays plain; text YAML would read as more than one string stays quoted.
+  assert.match(servedSkill(skill(CLEAN)), /^---\nname: weekly-summary\ndescription: Summarize the week\.\n---\n/);
+  assert.deepEqual(frontOfServed(servedSkill(skill("name: weekly-summary\ndescription: \"Use when: the week ends\"\n"))), { name: "weekly-summary", description: "Use when: the week ends" });
+});
+
+test("a learned skill counts the bytes the run is given: its SKILL.md as served, a few bytes over its blob when its description is quoted (#1576)", async () => {
+  const { seedFrom } = await import("../dist/learning.js");
+  const { servedSkill } = await import("../dist/learn/skills.js");
+  const text = skill("name: weekly-summary\ndescription: yes\n");
+  const reference = "A table.\n";
+  const seed = await seedFrom("c".repeat(40), async () => ({ ok: true, files: [{ path: "skills/weekly-summary/SKILL.md", text }, { path: "skills/weekly-summary/reference.md", text: reference }], refused: [] }));
+  const served = servedSkill(text);
+  assert.ok(served.includes('description: "yes"'), served);
+  assert.ok(Buffer.byteLength(served) > Buffer.byteLength(text), "served, it is larger than its blob");
+  assert.equal(seed.skills[0].bytes, Buffer.byteLength(served) + Buffer.byteLength(reference));
+});

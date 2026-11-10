@@ -539,7 +539,9 @@ export async function seedFrom(commit: string | null, read: SeedReader, { order,
   seed.files = [...new Set([...(seed.index === undefined ? [] : [INDEX_FILE]), ...Object.keys(seed.notes), ...noteAt.keys(), ...(skills.size ? [SKILLS_DIR] : [])])];
   seed.skills = [...skills.keys()].sort(by(skillAt)).map((name) => {
     const files = skills.get(name)!;
-    const bytes = Object.values(files).reduce((sum, text) => sum + Buffer.byteLength(text, "utf8"), 0);
+    // What the run is given, counted as given: a SKILL.md as servedSkill writes it (its name and description alone, each
+    // quoted where YAML needs it), which can be a few bytes more than the blob, every other file as it is.
+    const bytes = Object.entries(files).reduce((sum, [path, text]) => sum + Buffer.byteLength(path === "SKILL.md" ? servedSkill(text) : text, "utf8"), 0);
     return bytes > LEARNED_SKILLS_BUDGET ? { name, bytes } : { name, bytes, files };
   });
   // The active learned workflows, by name, each with its workflow.json whole. The read gives an active one's README.md
