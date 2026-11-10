@@ -49,14 +49,30 @@ const ALLOWED: { rule: string; file: string; has: string; why: string }[] = [
   { rule: "focus-removed", file: "components/ui/picker.tsx", has: "shadow-float outline-none", why: "An open list holds the focus itself and shows it on the active option (data-[focus]:bg-accent)." },
 ];
 
+/** A source with its comments turned to spaces of the same shape, so every line number stays what it was. A `//` or
+ *  `/*` inside a quoted string (a title, a URL) is text, not a comment. A quote opened on a line ends with the line
+ *  (an apostrophe in JSX text opens nothing that lasts); a template string runs on. */
+function withoutComments(text: string): string {
+  let out = "", quote = "";
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i]!, two = text.slice(i, i + 2);
+    if (quote) { if (c === quote || (c === "\n" && quote !== "`")) quote = ""; out += c; continue; }
+    // An apostrophe after a letter ("Couldn't") is text, not the start of a string.
+    if (c === '"' || c === "`" || (c === "'" && !/[A-Za-z]/.test(text[i - 1] ?? ""))) { quote = c; out += c; continue; }
+    const end = two === "//" ? text.indexOf("\n", i) : two === "/*" ? text.indexOf("*/", i) + 2 : -1;
+    if (two !== "//" && two !== "/*") { out += c; continue; }
+    const stop = two === "//" ? (end < 0 ? text.length : end) : (end < 2 ? text.length : end);
+    out += text.slice(i, stop).replace(/[^\n]/g, " "); i = stop - 1;
+  }
+  return out;
+}
+
 /** Each opening tag of a native control in a source, joined onto one line, with the line it starts on. A `>` inside
  *  braces (an arrow function, a comparison) or inside quotes (a title) is not the tag's end. A tag in a comment, or
  *  one that is the text of a string, is no control and is not read. */
 function controlTags(text: string): { line: number; text: string }[] {
   const tags: { line: number; text: string }[] = [];
-  // Comments become spaces of the same shape, so every line number stays what it was.
-  const blank = (c: string) => c.replace(/[^\n]/g, " ");
-  text = text.replace(/\/\*[\s\S]*?\*\//g, blank).replace(/(^|\s)\/\/.*$/gm, blank);
+  text = withoutComments(text);
   for (const m of text.matchAll(/<(?:button|input|select|textarea)\b/g)) {
     if (/["'`]/.test(text[m.index - 1] ?? "")) continue;
     let end = m.index + m[0].length;
@@ -123,6 +139,12 @@ describe("the console's sources follow the design system", () => {
     expect(one('/**\n * e.g. <select name="a">\n */')).toEqual([]);
     expect(one("const example = '<input name=\"q\" />';")).toEqual([]);
     expect(controlTags('// <input name="q" />\n<p>see https://a.example/x</p>\n<input name="real" />')).toEqual([{ line: 3, text: '<input name="real" />' }]);
+    // A // or /* inside a quoted attribute is text: the rest of the tag is still read.
+    const slashes = '<input type="checkbox" title="Paths start with // on Windows" className="accent-primary" />';
+    expect(one(slashes)).toEqual([slashes]);
+    expect(breaks(rule("choice-by-hand"), one(slashes)[0]!)).toBe(false);
+    expect(breaks(rule("choice-by-hand"), one('<input type="checkbox" title="a /* b" className="accent-primary" />')[0]!)).toBe(false);
+    expect(one("<p>Couldn't read it</p> // <input name=\"q\" />\n<input name=\"real\" />")).toEqual(['<input name="real" />']);
   });
   it("reads a wrapped class list's focus replacement, a token's variable in any spelling, and layer 0", () => {
     const rule = (id: string) => RULES.find((r) => r.id === id)!;

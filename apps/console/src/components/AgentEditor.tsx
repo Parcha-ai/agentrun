@@ -421,7 +421,7 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
               {revisions.map((r) => (
                 <li key={r.revision} className="flex flex-wrap items-center gap-3 border-b px-4 py-3 last:border-b-0">
                   <span className="caps w-14 text-small">rev {r.version}</span>
-                  <span className="min-w-0 flex-1 text-lead">{r.note ?? <span className="text-muted-foreground">No note</span>}</span>
+                  <span className="min-w-0 flex-[1_1_14rem] break-words text-lead">{r.note ?? <span className="text-muted-foreground">No note</span>}</span>
                   <span className="font-mono text-label text-muted-foreground">{when(r.created_at)}</span>
                   {workflow && !r.current && r.definition?.workflow !== undefined && <Button size="sm" variant="ghost" onClick={() => setViewing(r)} aria-label={`View rev ${r.version}`}><Eye aria-hidden /> View</Button>}
                   {r.current ? <Chip tone="success">Current</Chip> : <Button size="sm" onClick={() => onMakeCurrent?.(r.revision)} disabled={!onMakeCurrent}>Make current</Button>}

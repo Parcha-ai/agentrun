@@ -176,7 +176,7 @@ function KeyRow({ tool: k, cantStore, writable, again, open, problem, onOpen, on
               None while a form or a confirm is open. */}
           <ul className="mt-3 space-y-1.5">
             {k.secrets.map((s) => (
-              <SecretRow key={s.name} field={s} writable={writable && open === null} disabled={cantStore} note={fieldOf(s)?.stored_unreadable ? UNREADABLE : undefined}
+              <SecretRow key={s.name} field={s} stateSaid={k.secrets.length === 1} writable={writable && open === null} disabled={cantStore} note={fieldOf(s)?.stored_unreadable ? UNREADABLE : undefined}
                 onPaste={() => onOpen("edit")} onRemove={s.source === "console" ? () => onOpen("remove") : undefined} />
             ))}
           </ul>

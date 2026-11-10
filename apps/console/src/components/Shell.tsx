@@ -85,7 +85,7 @@ export function Shell({ active, settings = false, triggers = false, onNavigate, 
         {onSignOutEverywhere && (everywhere ? (
           <div role="alertdialog" aria-label="Sign out everywhere?" onKeyDown={(e) => { if (e.key === "Escape") closeEverywhere(); }} className="mt-2 space-y-2 border border-destructive/50 px-3 py-2.5 text-small">
             <p>Signs out every browser and phone signed in to this server, this one too.</p>
-            <div className="flex gap-2">
+            <div className="flex flex-wrap gap-2">
               <Button type="button" variant="destructive" size="xs" onClick={() => { setEverywhere(false); onSignOutEverywhere(); }}>Sign out everywhere</Button>
               <Button type="button" ref={cancel} onClick={closeEverywhere} size="xs">Cancel</Button>
             </div>
