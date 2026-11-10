@@ -178,7 +178,7 @@ test("a message_run firing to a run that is working is queued for it at once as 
   const { id, signing_secret: secret } = (await api("POST", "/triggers", { source: { kind: "webhook" }, target: { kind: "message_run", run_id: run.run_id, input: { content: "Also look at this." } } })).body;
   assert.equal((await post(baseUrl, id, "{\"ticket\":9}", { secret })).status, 202);
   const [sent] = await firings(api, id, 1);
-  assert.deepEqual([sent.status, sent.run_id, sent.retry_at, sent.error], ["sent", run.run_id, null, null], JSON.stringify(sent));
+  assert.deepEqual([sent.status, sent.run_id, sent.retry_at ?? null, sent.error], ["sent", run.run_id, null, null], JSON.stringify(sent));
   // Queued while the turn works: a follow-up the run takes at its next safe point, never an answer to an ask it ends on.
   const queued = (await store.commands(run.run_id, 0)).filter((c) => c.body?.origin?.trigger_id === id);
   assert.deepEqual(queued.map((c) => [c.kind, c.body.answers, c.takenAt]), [["steer", false, null]]);

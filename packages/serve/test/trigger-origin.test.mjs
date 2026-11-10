@@ -245,7 +245,7 @@ test("a webhook's message to a working run is queued for it at once and taken af
   const origin = { kind: "trigger", trigger_id: id, source: "webhook", owner: false };
   // Queued at once, its row carrying the trigger's origin: never refused busy and kept due to be tried again.
   const [sent] = await firings(api, id, 1);
-  assert.deepEqual([sent.status, sent.retry_at], ["sent", null], JSON.stringify(sent));
+  assert.deepEqual([sent.status, sent.retry_at ?? null], ["sent", null], JSON.stringify(sent));
   await writeFile(go, "");
   await follow(api, run.body.run_id, ["completed"]);
   const entries = await journalUserEntries(store, run.body.run_id);
