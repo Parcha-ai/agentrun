@@ -1,27 +1,36 @@
-// A desktop's live view in a real browser, end to end on the built server and console: the server started in this process
-// with the store's viewers and a seal key (the one store a runner shares with it), a run of an agent that waits on the
-// person, and on the runner's side, in the same store under the run's claim, a desktop's view opened by openComputerView
-// over a fake watch (its frames PNGs this script makes, its input recorded) and a fake computer-hold. The console frames
-// the viewer on the run's page (GET /computer: live, kind desktop); in the framed viewer Take over holds the computer,
-// a key typed reaches the fake watch's input, and Hand back gives it back. Headless Chrome; nothing leaves loopback.
-// Every wait is for a condition, with a bound. Exits 0 when every check holds, else 1.
+// A desktop's live view in a real browser, end to end on the built server and console, on the real runner path: the server
+// started in this process on a fresh data directory, and beside it a runner on the same store composed as the CLI's runner
+// composes it (runner/main.ts runnerComputers), whose provider loader makes a fake desktop (its frames PNGs, its input
+// recorded; no vendor, no network). The run's second model turn waits until this script lets it go, so the desktop is up
+// and its view open (computer-live.ts openClaimView) while the console frames the viewer on the run's page (GET /computer:
+// live, kind desktop). In the framed viewer, Take over is a take-over row the runner applies to the run's hold, a click
+// and a key typed reach the desktop's watch, the page losing focus lets go of a held button, and Hand back gives the
+// desktop back; let go, the run ends, and the viewer says its computer went. Headless Chrome; nothing leaves loopback. Every wait is for a condition, with a bound. Exits 0
+// when every check holds, else 1.
 //   CHROME_PATH=<chrome> node apps/console/e2e/computer-live.e2e.mjs [--tap FILE]
 // Needs the repository built (npm run build).
-import { randomBytes } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
-import { deflateSync } from "node:zlib";
-import { execFileSync } from "node:child_process";
 import { fixture, launchBrowser, LOOPBACK, newContext, newPage, ROOT, setUp } from "./harness.mjs";
 
 const { values } = parseArgs({ options: { tap: { type: "string" } } });
+const dir = await mkdtemp(join(tmpdir(), "agentrun-e2e-computer-"));
+// The seal key the server makes at its start and its runner reads: one config home for both, this run's own.
+process.env.XDG_CONFIG_HOME = join(dir, "config");
+// The desktop's provider key: a stand-in, given only to the fake desktop.
+process.env.E2B_API_KEY = "e2b-test-not-a-key";
 const dist = (file) => import(join(ROOT, "packages/serve/dist", file));
-const { startServe } = await dist("server.js");
-const { openSqliteStore } = await dist("store/sqlite/store.js");
-const { openComputerView } = await dist("computer-live.js");
-const { fakeHold, fakeWatch } = await import(join(ROOT, "packages/serve/test/computer-live-support.mjs"));
+const { startServe, fauxEnvOf } = await dist("server.js");
+const { openSqliteStore } = await dist("store/index.js");
+const { startRunner } = await dist("runner/runner.js");
+const { dispatchRunner } = await dist("runner/harness-loops.js");
+const { runEnv, runnerComputers } = await dist("runner/main.js");
+const { routeOf } = await dist("runner/model-route.js");
+const { ensureSealKey, sealKeyHome } = await dist("seal-key.js");
+const { fakeDesktopProvider } = await import(join(ROOT, "packages/serve/test/computer-live-support.mjs"));
 
 const results = [];
 const check = (what, ok, detail = "") => { results.push({ what, ok }); console.log(`${ok ? "ok  " : "FAIL"} ${what}${detail ? `: ${detail}` : ""}`); };
@@ -36,48 +45,37 @@ async function until(test, what, ms = 20_000) {
   }
 }
 
-/** A PNG of `w` x `h` pixels, one colour: a frame the browser draws. */
-function png(w, h, [r, g, b]) {
-  const crc = (buf) => { let c = ~0; for (const byte of buf) { c ^= byte; for (let k = 0; k < 8; k++) c = (c >>> 1) ^ (0xedb88320 & -(c & 1)); } return ~c >>> 0; };
-  const chunk = (type, data) => { const len = Buffer.alloc(4); len.writeUInt32BE(data.length); const body = Buffer.concat([Buffer.from(type), data]); const sum = Buffer.alloc(4); sum.writeUInt32BE(crc(body)); return Buffer.concat([len, body, sum]); };
-  const head = Buffer.alloc(13); head.writeUInt32BE(w, 0); head.writeUInt32BE(h, 4); head[8] = 8; head[9] = 2;
-  const rows = Buffer.alloc((w * 3 + 1) * h);
-  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) rows.set([r, g, b], y * (w * 3 + 1) + 1 + x * 3);
-  return Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), chunk("IHDR", head), chunk("IDAT", deflateSync(rows)), chunk("IEND", Buffer.alloc(0))]);
-}
-
-const dir = await mkdtemp(join(tmpdir(), "agentrun-e2e-computer-"));
-const sealKey = randomBytes(32);
-process.env.AGENTRUN_SEAL_KEY = sealKey.toString("base64");
-const store = await openSqliteStore({ file: join(dir, "store.sqlite"), role: "server" });
+const data = join(dir, "data");
+const faux = fixture("faux-held.mjs");
+// The run's second model turn waits on this until the script lets it go (fixtures/faux-held.mjs, in this process).
+let letGo;
+globalThis[Symbol.for("agentrun.test.held")] = new Promise((resolve) => (letGo = resolve));
+const desktop = fakeDesktopProvider();
 let server;
+let runner;
+let runnerStore;
 let browser;
-let view;
 try {
-  server = await startServe({ data: join(dir, "data"), port: 0, host: LOOPBACK, faux: fixture("faux-ask.mjs"), accounts: true, openSetup: true, store: { triggers: store.triggers, runs: store.runs, liveViewers: store.liveViewers } });
+  server = await startServe({ data, port: 0, host: LOOPBACK, faux, accounts: true, openSetup: true });
   const origin = `http://${LOOPBACK}:${server.port}`;
+  // The runner beside it, on the same store, with the server's seal key and the faux model.
+  runnerStore = await openSqliteStore({ dataDir: data, role: "runner" });
+  const env = { ...runEnv(process.env), ...fauxEnvOf({ faux }) };
+  const sealKey = ensureSealKey(undefined, { configHome: sealKeyHome(process.env) }).key;
+  const computers = runnerComputers(runnerStore, env, sealKey, { load: desktop.load });
+  runner = startRunner({ store: runnerStore, createLoop: dispatchRunner({ env, data, journal: (claim) => runnerStore.journal(claim), store: runnerStore, sealKey, routeOf, computerForClaim: computers.computerForClaim, computerDeps: computers.computerDeps }) });
+
   const api = async (method, path, body) => {
     const res = await fetch(`${origin}/v2${path}`, { method, headers: { authorization: `Bearer ${server.token}`, ...(body ? { "content-type": "application/json" } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) });
     return { status: res.status, body: await res.json().catch(() => null) };
   };
-  check("the agent is made", (await api("POST", "/agents", { definition: { id: "desk", name: "Desk", instructions: "Ask.", tools: ["ask_person"] } })).status === 201);
-  const started = await api("POST", "/agents/desk/runs", { input: { content: "Use the desktop." } });
+  check("the agent is made", (await api("POST", "/agents", { definition: { id: "desk", name: "Desk", instructions: "Look.", tools: ["read"], computer: { kind: "desktop", provider: "e2b" } } })).status === 201);
+  const started = await api("POST", "/agents/desk/runs", { input: { content: "Look at the desktop." } });
   check("the run starts", started.status === 202, String(started.status));
   const runId = started.body.run_id;
-  await until(async () => (await api("GET", `/runs/${runId}`)).body?.status === "input_required", "the run waits on the person");
-
-  // The runner's side: the run as the store holds it, claimed, and its desktop's view opened.
-  if (!(await store.runs.get(runId))) {
-    await store.agents.create({ id: "desk", name: "Desk" }, { id: "rev-desk", kind: "agentic", body: { instructions: "Ask." } });
-    await store.runs.create({ id: runId, agentId: "desk", revisionId: "rev-desk" });
-  }
-  const claim = (await store.runs.claimMany("runner-e2e", 10, { leaseMs: 600_000 })).find((c) => c.runId === runId);
-  check("the runner claims the run", !!claim);
-  const watch = fakeWatch();
-  const hold = fakeHold({ grant: true });
-  const opened = await openComputerView({ store, sealKey, claim, kind: "desktop", input: "desktop", tag: "cmp-e2e-desktop", watch: watch.watch, hold: hold.hold });
-  check("the desktop's view is handed over", opened.ok === true, JSON.stringify(opened.ok ? "" : opened));
-  view = opened.view;
+  // Up: the run's journal says so once its first turn is committed.
+  await until(async () => (await api("GET", `/runs/${runId}`)).body?.computer?.state === "ready", "the run's desktop is up", 30_000);
+  check("the runner made the desktop at the claim", desktop.record.created.length === 1);
 
   browser = await launchBrowser();
   const { context, blocked } = await newContext(browser, origin);
@@ -98,54 +96,60 @@ try {
   check("a desktop shows no phone buttons", await viewer.locator("#phone").isHidden());
   // The token leaves the viewer's address at once: its fragment is gone after load.
   const viewerFrame = page.frames().find((f) => new URL(f.url()).pathname.includes("/computer/live/v/"));
-  check("the viewer's location.hash is empty after load", (await viewerFrame.evaluate(() => location.hash)) === "", await viewerFrame.evaluate(() => location.hash));
+  check("the viewer's location.hash is empty after load", (await viewerFrame.evaluate(() => location.hash)) === "");
 
-  // A frame: drawn, and acked by the page once drawn.
-  await watch.opened();
-  await Promise.race([watch.push({ format: "png", bytes: png(64, 40, [30, 120, 200]), width: 1280, height: 800, frameWidth: 64, frameHeight: 40 }), new Promise((r) => setTimeout(r, 20_000))]);
-  check("the page drew the frame and acked it", watch.state.acks === 1);
+  // The desktop's frame: drawn, and acked by the page once drawn.
+  await until(() => desktop.record.acks === 1, "the page drew the frame and acked it").catch(() => {});
+  check("the page drew the frame and acked it", desktop.record.acks === 1);
   check("the canvas has the frame's size", await viewer.locator("#screen").evaluate((c) => c.width === 64 && c.height === 40));
 
-  // Take over, type, Hand back.
+  // Take over: a take-over row the runner applies to the run's hold.
   await hands.click();
   await viewer.locator("#hands", { hasText: "Hand back" }).waitFor({ timeout: 20_000 });
-  check("Take over reached the hold", hold.calls.includes("take"));
+  check("the person holds the desktop", (await viewer.locator("#drive").innerText()) === "you have the computer");
   await viewer.locator("#screen").click({ position: { x: 5, y: 5 } });
   await page.keyboard.type("q");
   const typed = (actions) => actions.some((a) => a.type === "type" && a.text === "q");
-  await until(() => watch.state.inputs.some(typed), "the key typed reaches the computer").catch(() => {});
-  check("the click reached the computer once held", watch.state.inputs.some((actions) => actions.some((a) => a.type === "down" && a.button === "left")), JSON.stringify(watch.state.inputs));
-  check("the key typed reached it as text", watch.state.inputs.some(typed), JSON.stringify(watch.state.inputs));
-  await hands.click();
-  await viewer.locator("#hands", { hasText: "Take over" }).waitFor({ timeout: 20_000 });
-  check("Hand back reached the hold", hold.calls.includes("give"));
-  check("the viewer says the computer went back", (await viewer.locator("#notice").innerText()).includes("You handed the computer back"));
+  await until(() => desktop.record.inputs.some(typed), "the key typed reaches the computer").catch(() => {});
+  check("the click reached the desktop once held", desktop.record.inputs.some((actions) => actions.some((a) => a.type === "down" && a.button === "left")), JSON.stringify(desktop.record.inputs));
+  check("the key typed reached it as text", desktop.record.inputs.some(typed), JSON.stringify(desktop.record.inputs));
+  // A button held when the page loses focus is let go.
+  const presses = () => desktop.record.inputs.filter((actions) => actions.some((a) => a.type === "down")).length;
+  const lifted = (actions) => actions.length === 1 && actions[0].type === "up" && actions[0].button === "left";
+  await viewer.locator("#screen").hover({ position: { x: 8, y: 8 } });
+  await page.mouse.down();
+  await until(() => presses() === 2, "the second press reaches the desktop").catch(() => {});
+  await viewerFrame.evaluate(() => window.dispatchEvent(new Event("blur")));
+  await until(() => desktop.record.inputs.some(lifted), "the blur lets go of the button").catch(() => {});
+  check("losing focus lets go of the held button", desktop.record.inputs.some(lifted), JSON.stringify(desktop.record.inputs));
+  await page.mouse.up();
 
-  // Words from the computer and from the hold are text, never markup.
-  const PROBE = '<img src=x onerror="document.title=\'owned\'">';
-  const notice = viewer.locator("#notice");
-  const images = () => viewerFrame.evaluate(() => document.querySelectorAll("img").length);
+  // Hand back: the agent drives again; let go, the run ends, which ends the view.
   await hands.click();
-  await viewer.locator("#hands", { hasText: "Hand back" }).waitFor({ timeout: 20_000 });
-  watch.state.refuse = PROBE;
-  await viewer.locator("#screen").click({ position: { x: 6, y: 6 } });
-  await until(async () => (await notice.textContent()) === PROBE, "the computer's refusal is shown").catch(() => {});
-  check("a vendor error renders as inert text", (await notice.textContent()) === PROBE && (await images()) === 0, `${await notice.textContent()} / ${await images()} img`);
-  hold.emit({ state: "agent", ended: "idle", message: PROBE });
-  const idle = `The computer went back to the agent: no input came from you for 15 minutes. ${PROBE}`;
-  await until(async () => (await notice.textContent()) === idle, "the hold's words are shown").catch(() => {});
-  check("a hold message renders as inert text", (await notice.textContent()) === idle && (await images()) === 0, `${await notice.textContent()} / ${await images()} img`);
-  check("no probe ran", (await viewerFrame.evaluate(() => document.title)) !== "owned");
+  await viewer.locator("#notice", { hasText: "You handed the computer back" }).waitFor({ timeout: 20_000 }).catch(() => {});
+  check("the viewer says the computer went back", (await viewer.locator("#notice").innerText()).includes("You handed the computer back"));
+  letGo();
+  await until(async () => (await api("GET", `/runs/${runId}`)).body?.status === "completed", "the run ends").catch(() => {});
+  check("the run ends once the desktop is handed back", (await api("GET", `/runs/${runId}`)).body?.status === "completed");
+  // The view ends with the run: the viewer says its computer was released, or the run's page has already taken the frame
+  // away (its tab closes with the run's computer), whichever the page shows first.
+  const ended = await until(async () => {
+    if ((await iframe.count()) === 0) return "the frame is gone";
+    const said = await viewer.locator("#notice").innerText({ timeout: 1_000 }).catch(() => "");
+    return said.includes("This computer has been released.") ? "the viewer says it was released" : false;
+  }, "the view ends with the run").catch(() => undefined);
+  check("the view ends with the run", ended !== undefined, ended);
   check("the page reached nothing but its own origin", blocked.length === 0, blocked.join(", "));
   check("the page logged no error", errors.length === 0, errors.join(" | "));
   await context.close();
 } catch (error) {
   check("the flow ran to its end", false, (error && error.message) || String(error));
 } finally {
-  await view?.close("ended").catch(() => {});
+  letGo();
   await browser?.close().catch(() => {});
+  await runner?.close().catch(() => {});
+  await runnerStore?.close().catch(() => {});
   await server?.close().catch(() => {});
-  await store.close().catch(() => {});
   await rm(dir, { recursive: true, force: true });
 }
 const failed = results.filter((r) => !r.ok).length;

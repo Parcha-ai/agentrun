@@ -1,110 +1,109 @@
-// A desktop's live view through the server (computer-live.ts on the runner side, the server's store read): the runner's
-// row in the store under the run's claim makes GET /computer live with kind desktop and its link under /computer/live;
-// the server serves the computer viewer's own page there (LIVE_CSP), and proxies the viewer's WebSocket to the runner's
-// endpoint, from its own origin with the owner's cookie alone; Take over, input to the fake watch, Hand back. The
-// browser's own route never shows a desktop. The token is in the owner's GET alone. Fakes only: no network, no key.
+// A desktop's live view on the real runner path: a run of an agent whose computer is a desktop is claimed by the runner
+// beside the server, composed as the CLI's runner composes it (runner/main.ts runnerComputers), its desktop made at the
+// claim through the provider loader (a fake desktop: no vendor, no network), and its view opened there under the run's
+// claim (computer-live.ts openClaimView). The run's second model turn waits until the test lets it go, its desktop up
+// meanwhile. GET /computer is live with kind desktop and its link under /computer/live, for the owner's session alone;
+// the computer viewer's page is served there under LIVE_CSP, and its socket is proxied to the runner's endpoint from this
+// server's origin with the owner's cookie. Take over is a take-over row the runner applies to the run's hold; input
+// reaches the desktop's watch; Hand back gives it back; the run then ends, which closes the view. The token is in the
+// owner's GET alone.
 import assert from "node:assert/strict";
-import { randomBytes } from "node:crypto";
 import { test } from "node:test";
-import { openComputerView } from "../dist/computer-live.js";
-import { fakeHold, fakeWatch } from "./computer-live-support.mjs";
+import { fakeDesktopProvider } from "./computer-live-support.mjs";
 import { connect } from "./fixtures/ws-client.mjs";
-import { builtConsole, call, cookieOf, follow, serve, storeOfData, withEnv } from "./support.mjs";
+import { agent, call, clientOwnerSession, follow, serve, withEnv } from "./support.mjs";
 
-const json = { "content-type": "application/json" };
-/** A test password, no real one. */
-const PASSWORD = ["not-a-secret", "owner"].join("-");
-const JPEG = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 7, 7, 7]);
+const FAUX = new URL("./fixtures/faux-held.mjs", import.meta.url).pathname;
+const HELD = Symbol.for("agentrun.test.held");
+/** Until `check()` holds, bounded; each try after the next turn of the timers. */
+async function until(check, what, ms = 30_000) {
+  for (const deadline = Date.now() + ms; !(await check());) {
+    assert.ok(Date.now() < deadline, what);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+}
+const next = async (ws, type) => JSON.parse((await ws.until((m) => m.type === "text" && JSON.parse(m.data).type === type, 10_000)).item?.data ?? "null");
 
-/** A signed-in owner's server with the store's viewers and a seal key, a run of an agent with no browser, and that run
- *  claimed in the store by a runner that opened its desktop's view. */
-async function desktop(t) {
-  const sealKey = randomBytes(32);
-  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey.toString("base64") }, ["AGENTRUN_SEAL_KEY"]);
-  const server = await serve(t, { accounts: true, openSetup: true, console: await builtConsole(t) });
-  const origin = `http://127.0.0.1:${server.port}`;
-  const made = await call(server.port, { method: "POST", path: "/v2/setup", headers: { ...json, origin }, body: { password: PASSWORD } });
-  assert.equal(made.status, 201, made.text);
-  const cookie = cookieOf(made);
-  assert.equal((await server.api("POST", "/agents", { definition: { id: "desk", name: "desk", instructions: "Answer.", tools: [] } })).status, 201);
-  const started = await server.api("POST", "/agents/desk/runs", { input: { content: "hi" } });
+test("a runner run's desktop registers its live view: GET /computer is live with kind desktop for the owner alone, the viewer's page and socket reach the runner's endpoint, and Take over, input and Hand back go through the run's hold", { timeout: 120_000 }, async (t) => {
+  // The desktop's provider key, as the server and its runner read it: a stand-in, which only the fake desktop is given.
+  withEnv(t, { E2B_API_KEY: "e2b-test-not-a-key" }, ["E2B_API_KEY"]);
+  // The run's model turn waits on this until the test lets it go (fixtures/faux-held.mjs).
+  let letGo;
+  globalThis[HELD] = new Promise((resolve) => (letGo = resolve));
+  t.after(() => (letGo(), delete globalThis[HELD]));
+  const desktop = fakeDesktopProvider();
+  const server = await serve(t, { accounts: true, openSetup: true, faux: FAUX, computers: { load: desktop.load } });
+  const owner = await clientOwnerSession(server);
+  const made = await server.api("POST", "/agents", agent("desk", { tools: ["read"], computer: { kind: "desktop", provider: "e2b" } }));
+  assert.equal(made.status, 201, JSON.stringify(made.body));
+  const started = await server.api("POST", "/agents/desk/runs", { input: { content: "Look at the desktop." } });
   assert.equal(started.status, 202, JSON.stringify(started.body));
   const runId = started.body.run_id;
-  await follow(server.api, runId, ["completed", "input_required"]);
-  // The runner's side, on the same store: the run as the store holds it, claimed, and its desktop's view opened.
-  const store = storeOfData(server.data);
-  if (!(await store.runs.get(runId))) {
-    if (!(await store.agents.get("desk"))) await store.agents.create({ id: "desk", name: "desk" }, { id: "rev-desk", kind: "agentic", body: { instructions: "Answer." } });
-    await store.runs.create({ id: runId, agentId: "desk", revisionId: (await store.agents.get("desk")).currentRevisionId ?? "rev-desk" });
-  }
-  const claims = await store.runs.claimMany("runner-a", 10, { leaseMs: 600_000 });
-  const claim = claims.find((c) => c.runId === runId);
-  assert.ok(claim, `the run is claimed: ${JSON.stringify(claims)}`);
-  const watch = fakeWatch();
-  const hold = fakeHold({ grant: true });
-  const opened = await openComputerView({ store, sealKey, claim, kind: "desktop", input: "desktop", tag: "cmp-desk-1", watch: watch.watch, hold: hold.hold });
-  assert.equal(opened.ok, true, JSON.stringify(opened));
-  t.after(() => opened.view.close("ended"));
-  return { server, origin, cookie, runId, watch, hold, view: opened.view };
-}
+  const path = `/v2/runs/${runId}/computer`;
+  const get = (p, headers) => call(server.port, { path: p, headers });
+  // The run's desktop is made at the claim and its view opened there: GET /computer goes live.
+  await until(async () => (await get(path, { cookie: owner.cookie })).json?.state === "live", "the run's desktop went live");
+  assert.equal(desktop.record.created.length, 1, "one desktop made at the claim");
 
-const get = (w, path, headers) => call(w.server.port, { path, headers });
-const next = async (ws, type) => JSON.parse((await ws.until((m) => m.type === "text" && JSON.parse(m.data).type === type, 5_000)).item?.data ?? "null");
-
-test("GET /computer is live with kind desktop and its link under /computer/live, for the owner alone; the browser's own route shows no desktop; the computer viewer's page is served under LIVE_CSP; its socket goes to the runner's endpoint: Take over, input to the computer, Hand back", { timeout: 120_000 }, async (t) => {
-  const w = await desktop(t);
-  const path = `/v2/runs/${w.runId}/computer`;
-  assert.equal((await get(w, path, {})).status, 401);
-  assert.equal((await get(w, path, { authorization: `Bearer ${w.server.token}` })).status, 403);
-  const answer = await get(w, path, { cookie: w.cookie });
+  // GET /computer: the owner's session alone.
+  assert.equal((await get(path, {})).status, 401);
+  assert.equal((await get(path, { authorization: `Bearer ${server.token}` })).status, 403);
+  const answer = await get(path, { cookie: owner.cookie });
   assert.equal(answer.status, 200, answer.text);
   const [, id, token] = /^\/v2\/runs\/[^/]+\/computer\/live\/v\/([A-Za-z0-9_-]{22})#t=([A-Za-z0-9_-]{43})$/.exec(answer.json.viewer ?? "") ?? [];
-  assert.ok(id && token, JSON.stringify(answer.json));
+  assert.ok(id && token, "the viewer's link, its token in the fragment");
   assert.deepEqual({ ...answer.json, viewer: "" }, { state: "live", kind: "desktop", viewer: "", hold: "agent" });
-  // The browser's own route: this run has no browser, and a desktop's viewer is never its.
-  assert.deepEqual((await get(w, `/v2/runs/${w.runId}/browser`, { cookie: w.cookie })).json, { state: "off", reason: "this run's agent has no browser tool" });
-  assert.equal((await get(w, `/v2/runs/${w.runId}/browser/live/v/${id}`, { cookie: w.cookie })).status, 404);
+  assert.equal(answer.headers["cache-control"], "no-store");
+  assert.equal((await get(`/v2/runs/${runId}/browser/live/v/${id}`, { cookie: owner.cookie })).status, 404, "a desktop's viewer is never under the browser's route");
 
-  // The page: the computer viewer's own, under this route's CSP, owner only.
-  const pagePath = `/v2/runs/${w.runId}/computer/live/v/${id}`;
-  assert.equal((await get(w, pagePath, {})).status, 401);
-  const page = await get(w, pagePath, { cookie: w.cookie });
+  // The page: the computer viewer's own, under LIVE_CSP, for the owner alone.
+  const pagePath = `/v2/runs/${runId}/computer/live/v/${id}`;
+  assert.equal((await get(pagePath, {})).status, 401);
+  const page = await get(pagePath, { cookie: owner.cookie });
   assert.equal(page.status, 200, page.text);
   assert.match(page.text, /computer-viewer\.js/);
   assert.match(page.headers["content-security-policy"], /frame-ancestors 'self'/);
-  const script = await get(w, `/v2/runs/${w.runId}/computer/live/computer-viewer.js`, { cookie: w.cookie });
+  const script = await get(`/v2/runs/${runId}/computer/live/computer-viewer.js`, { cookie: owner.cookie });
   assert.equal(script.status, 200);
   assert.match(script.text, /This computer has ended/);
 
   // The socket: this server's origin and the owner's cookie, proxied to the runner's endpoint.
-  const wsPath = `${pagePath}/ws`;
-  assert.equal((await connect(`ws://127.0.0.1:${w.server.port}${wsPath}`, { origin: "http://evil.example", headers: { cookie: w.cookie } })).status, 403);
-  assert.equal((await connect(`ws://127.0.0.1:${w.server.port}${wsPath}`, { origin: w.origin })).status, 401);
-  assert.equal((await connect(`ws://127.0.0.1:${w.server.port}/v2/runs/${w.runId}/browser/live/v/${id}/ws`, { origin: w.origin, headers: { cookie: w.cookie } })).status, 404, "never under the browser's own route");
-  const c = await connect(`ws://127.0.0.1:${w.server.port}${wsPath}`, { origin: w.origin, headers: { cookie: w.cookie } });
+  const wsUrl = `ws://127.0.0.1:${server.port}${pagePath}/ws`;
+  assert.equal((await connect(wsUrl, { origin: "http://evil.example", headers: { cookie: owner.cookie } })).status, 403);
+  assert.equal((await connect(wsUrl, { origin: owner.origin })).status, 401);
+  const c = await connect(wsUrl, { origin: owner.origin, headers: { cookie: owner.cookie } });
   assert.equal(c.status, 101);
   const ws = c.ws;
   t.after(() => ws.destroy());
   ws.sendJson({ type: "hello", token });
-  assert.equal((await next(ws, "ready")).kind, "desktop");
-  await w.watch.opened();
-  const acked = w.watch.push({ bytes: JPEG, width: 1024, height: 768 });
-  const frame = (await ws.until((m) => m.type === "binary", 5_000)).item;
-  assert.deepEqual([frame.data.readUInt16BE(0), frame.data.readUInt16BE(2)], [1024, 768]);
+  assert.deepEqual(await next(ws, "ready"), { type: "ready", drive: "agent", takeOver: true, held: false, kind: "desktop", input: "desktop" });
+  const frame = (await ws.until((m) => m.type === "binary", 10_000)).item;
+  assert.deepEqual([frame.data.readUInt16BE(0), frame.data.readUInt16BE(2)], [1280, 800], "the screen's own pixels");
   ws.sendJson({ type: "ack" });
-  await acked;
+
+  // Take over, once the run's journal says its desktop is up (its first turn committed): a take-over row the runner applies
+  // to the run's hold, then the person's.
+  await until(async () => (await server.api("GET", `/runs/${runId}`)).body.computer?.state === "ready", "the run's journal says its desktop is up");
   ws.sendJson({ type: "take" });
   assert.deepEqual(await next(ws, "hold"), { type: "hold", held: true });
-  const sent = w.watch.nextInput();
-  ws.sendJson({ type: "key", action: "char", key: "x", code: "KeyX", text: "x", modifiers: 0 });
-  assert.deepEqual(await sent, [{ type: "type", text: "x" }]);
+  assert.equal((await get(path, { cookie: owner.cookie })).json.hold, "person");
+  const typed = desktop.nextInput();
+  ws.sendJson({ type: "key", action: "char", key: "q", code: "KeyQ", text: "q", modifiers: 0 });
+  assert.deepEqual(await typed, [{ type: "type", text: "q" }]);
+  // Hand back: the agent drives again; let go, the run ends, and its view with it.
   ws.sendJson({ type: "give" });
-  assert.deepEqual(await next(ws, "hold"), { type: "hold", held: false, reason: "given" });
+  const given = await next(ws, "hold");
+  assert.deepEqual([given.held, given.reason], [false, "given"]);
+  assert.equal((await get(path, { cookie: owner.cookie })).json.hold, "agent");
+  letGo();
+  assert.equal((await next(ws, "ended")).reason, "released");
+  await follow(server.api, runId, ["completed"]);
+  assert.notEqual((await get(path, { cookie: owner.cookie })).json.state, "live", "no viewer once the run ended");
+  assert.deepEqual(desktop.record.released, [["desk-1", "delete"]]);
 
   // The token is in the owner's GET alone.
-  for (const p of [`/runs/${w.runId}`, `/runs/${w.runId}/timeline`, "/runs"]) assert.ok(!JSON.stringify((await w.server.api("GET", p)).body).includes(token), p);
-  // Closed by its runner: none.
-  await w.view.close("released");
-  assert.equal((await next(ws, "ended")).reason, "released");
-  assert.equal((await get(w, path, { cookie: w.cookie })).json.state === "live", false, "no viewer once closed");
+  for (const p of [`/runs/${runId}`, `/runs/${runId}/timeline`, "/runs"]) assert.ok(!JSON.stringify((await server.api("GET", p)).body).includes(token), p);
+  const said = JSON.stringify((await server.api("GET", `/runs/${runId}/timeline`)).body);
+  assert.match(said, /You took over the desktop/);
+  assert.match(said, /You handed the desktop back/);
 });

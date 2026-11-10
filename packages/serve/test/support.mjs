@@ -20,7 +20,7 @@ import { resolve } from "node:path";
 import { openSqliteStore } from "../dist/store/index.js";
 import { startRunner } from "../dist/runner/runner.js";
 import { dispatchRunner } from "../dist/runner/harness-loops.js";
-import { computerDepsFrom } from "../dist/workspace/index.js";
+import { runnerComputers } from "../dist/runner/main.js";
 import { routeOf } from "../dist/runner/model-route.js";
 import { FAUX_ENV, withoutFaux } from "../dist/model.js";
 import { SEAL_KEY_ENV } from "../dist/tool-keys.js";
@@ -296,7 +296,7 @@ export async function triggerStore(of) {
  *  dispatch (dispatch.ts): each claim's launch picks its harness loop — pi on the kernel's adapter loop with the run's pi
  *  spec, a learning run on the learning loop, its model route the faux model under `faux`. Returns a close() that stops the
  *  runner and closes its store handle. */
-export async function startInProcessRunner(data, { faux, githubApi, githubMcpOrigin, ...switches } = {}) {
+export async function startInProcessRunner(data, { faux, githubApi, githubMcpOrigin, computers: own, ...switches } = {}) {
   const store = await openSqliteStore({ dataDir: data, role: "runner" });
   // The runner's env mirrors the server's faux (model.ts FAUX_ENV): its model route reads the faux model from it, so a run
   // never reaches the network. The seal key is the server's (seal-key.ts), read as the CLI's runner reads it: the one
@@ -305,9 +305,10 @@ export async function startInProcessRunner(data, { faux, githubApi, githubMcpOri
   // the test gave its server (fauxMonid, fauxParallel, fauxJev, harnessTable…).
   const env = { ...withoutFaux(process.env), ...(faux ? fauxEnvOf({ ...switches, faux }) : {}) };
   const sealKey = ensureSealKey(secret(SEAL_KEY_ENV), { configHome: sealKeyHome(process.env) }).key;
-  // The run's claim-time computer, composed once the one way (workspace/computer-deps.ts computerDepsFrom): none for the
-  // runner's place, the real kinds otherwise, keys read from this env then the store's sealed rows.
-  const computers = computerDepsFrom({ env, store, sealKey });
+  // The run's claim-time computer, composed once the one way, as the CLI's runner composes it (main.ts runnerComputers, a
+  // desktop's or a phone's live view with it): none for the runner's place, the real kinds otherwise, keys read from this
+  // env then the store's sealed rows. `computers`: a test's kind registry and provider loader ({ kinds, load }).
+  const computers = runnerComputers(store, env, sealKey, own);
   let runner;
   try {
     runner = startRunner({
