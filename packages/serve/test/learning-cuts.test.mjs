@@ -5,8 +5,9 @@
 //    view, a note read), and a note shown cut so is never saved over;
 // 3. a run's learning body cuts its `reason`, each problem's `rule` and each verdict item's `origin` (a kept row read
 //    back is untrusted);
-// 4. a served learning text holds no loopback address (as a run's words, shownOf); what a run is laid keeps it, and a
-//    note shown without it is never saved over.
+// 4. a served learning text holds no loopback address (as a run's words, shownOf); what a run is laid keeps it (its
+//    `.learning/` files and its `# Learned` section), and a note shown without it is never saved over;
+// 5. a run's learning problems hold none either, as every other text of its learning.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { learningCommit } from "../dist/learn/commit.js";
@@ -15,7 +16,11 @@ import { wordsOf } from "../dist/learning-words.js";
 import { runLearningBody } from "../dist/learning-routes.js";
 import { redactSecrets } from "../dist/learn/secrets.js";
 import { learningWorkspace } from "../dist/workspace/index.js";
+import { seedOf } from "../dist/learning.js";
+import { readLaunchBody } from "../dist/run-launch.js";
 import { forgotten, holdsNone, pointerOf, saved, server } from "./custody-support.mjs";
+import { started } from "./learn-support.mjs";
+import { agent, serve } from "./support.mjs";
 
 /** A test value the host holds secret, never a real one. */
 const SECRET = `planted${"q8".repeat(12)}`;
@@ -46,6 +51,35 @@ test("4. a served learning text holds no loopback address; what a run is laid ke
   assert.equal(/127\.0\.0\.1|localhost/.test(served), false, served);
   assert.match(served, /a local address/);
   assert.equal(secretsShown([], { local: true }).text(text), text, "a run's own .learning/ keeps it");
+});
+
+test("4. a run's # Learned section keeps a note's local address, as its .learning/ files do", { timeout: 60_000 }, async (t) => {
+  const { api, data, store } = await serve(t, { runner: false, learning: "on" });
+  assert.equal((await api("POST", "/agents", agent("local", { learning: true }))).status, 201);
+  await seedOf(data, "local");
+  const folder = learningWorkspace({ mode: "local", data, agentId: "local" });
+  try {
+    const made = await learningCommit(folder.workspace, { kind: "person", action: "created", file: "local-proxy.md", text: note("Local proxy", "Call http://localhost:8080 for the proxy."), ifMatch: null });
+    assert.equal(made.ok, true, JSON.stringify(made));
+  } finally {
+    await folder.end();
+  }
+  const runId = await started(api, "local");
+  const section = readLaunchBody((await store.runs.launch(runId)).body).learning?.section ?? "";
+  assert.match(section, /Call http:\/\/localhost:8080 for the proxy\./, section);
+  assert.equal(section.includes("a local address"), false, section);
+});
+
+test("5. a run's learning problems hold no loopback address", () => {
+  const learning = {
+    state: "dropped", reason: "checks", detail: null, at: "2026-11-10T00:00:00.000Z",
+    problems: [{ rule: "note", path: "http://localhost:8080.md", detail: "It calls http://127.0.0.1:43123/v1 first, or localhost:9000." }],
+  };
+  const body = runLearningBody({ id: "run-1", learning, seed: null, settled: true }, secretsShown([]), []);
+  const problems = JSON.stringify(body.problems);
+  assert.equal(/127\.0\.0\.1|localhost/.test(problems), false, problems);
+  assert.match(problems, /a local address/);
+  assert.equal(body.problems[0].rule, "note", "the rule is kept");
 });
 
 test("2 and 4. an agent's learning routes cut its own sign-in pointers, live and forgotten, and a local address; a note shown cut is never saved over", { timeout: 120_000 }, async (t) => {

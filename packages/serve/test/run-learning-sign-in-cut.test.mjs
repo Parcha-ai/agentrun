@@ -1,7 +1,8 @@
 // A run's learning reads cut what it learned of its agent's own browser sign-in pointers, as the agent's learning routes
 // do (learning-routes-sign-in-cut.test.mjs): GET /runs/{id}/learning shows none of a live or forgotten pointer a merged
 // note holds, and GET /runs/{id}/learning/diff withholds that note's patch ("secret"). When a pointer of the agent's does
-// not open here (a sign-in sealed under another key), both answer 403, in words, never served over a shorter list.
+// not open here (a sign-in sealed under another key), both answer 403, in words, never served over a shorter list. A
+// patch holding a loopback address reads "a local address" there, as every served learning text does.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { test } from "node:test";
@@ -14,7 +15,7 @@ import { follow, serve, withEnv } from "./support.mjs";
 /** Test pointers, never real ones: a Browserbase context the agent signs in with now, and a Kernel profile it forgot. */
 const LIVE = `ctx/${randomBytes(16).toString("hex")}`;
 const FORGOTTEN = `agentrun-${randomBytes(10).toString("hex")}`;
-const SIGN_IN = note("Where to sign in", `The context is ${LIVE}`, `Open ${LIVE}, or the old ${FORGOTTEN}.\n`);
+const SIGN_IN = note("Where to sign in", `The context is ${LIVE}`, `Open ${LIVE}, or the old ${FORGOTTEN}. The proxy is at http://localhost:8080/v1.\n`);
 
 /** An answer's body as text. */
 const textOf = (got) => (typeof got.body === "string" ? got.body : JSON.stringify(got.body));
@@ -44,6 +45,9 @@ test("a run's learning and its learning diff show none of its agent's sign-in po
   const before = await api("GET", `/runs/${run}/learning/diff`);
   assert.equal(before.status, 200, textOf(before));
   assert.ok(before.body.files.some((f) => f.path === "sign-in.md" && f.patch?.includes(LIVE)), textOf(before));
+  // Its loopback address is the host's, never served: the patch reads "a local address" in its place.
+  assert.equal(/localhost|127\.0\.0\.1/.test(textOf(before)), false, textOf(before));
+  assert.ok(before.body.files.some((f) => f.path === "sign-in.md" && f.patch?.includes("The proxy is at a local address")), textOf(before));
 
   // The agent's sign-ins under this server's key: a Kernel one forgotten, a Browserbase one live.
   await saveSignIn(store, seal, { agentId: "signer", provider: "kernel", pointer: FORGOTTEN });
