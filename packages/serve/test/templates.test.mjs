@@ -423,6 +423,19 @@ test("a parameter with a documented default takes it when apply leaves it out: k
   assert.equal(lead.status, 201, JSON.stringify(lead.body));
 });
 
+test("a string parameter can say what its value is: market-monitor's schedule is a cron line and a time zone, shown in the list; a bad format is refused", async (t) => {
+  const { api } = await serve(t);
+  const monitor = (await api("GET", "/templates")).body.templates.find((x) => x.name === "market-monitor").parameters;
+  assert.deepEqual([monitor.cron.format, monitor.timezone.format, monitor.competitors.format], ["cron", "timezone", undefined]);
+  for (const [to, said] of [
+    ["focus: { type: string, format: date, description: x }", /parameters\.focus\.format is one of cron, timezone, on a string parameter/],
+    ["focus: { type: integer, format: cron, description: x }", /parameters\.focus\.format is one of cron, timezone, on a string parameter/],
+  ]) {
+    const problems = await problemsOf(t, ({ edit }) => edit(/focus: \{ type: string, description: .*\}/, to));
+    assert.ok(problems.some((one) => said.test(one)), `${to}: ${problems.join(" | ")}`);
+  }
+});
+
 test("every package this server ships applies on a server with nothing saved: no key, no MCP server; what it lacks is a warning, and no tool it grants needs a key", { timeout: 120_000 }, async (t) => {
   withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") }, ["PARALLEL_API_KEY", "MONID_API_KEY", "BROWSERBASE_API_KEY", "KERNEL_API_KEY", "TYPESAFE_API_KEY"]);
   const { api } = await serve(t);
