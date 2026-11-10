@@ -78,7 +78,7 @@
               "work_cost_per_run_usd": { "type": ["number", "null"], "description": "The job's own turns, per run." },
               "cost_trend_usd_per_run": { "type": ["number", "null"], "description": "The least-squares slope of the work cost over the steps' order: below 0, the work got cheaper as it went." },
               "reflect_cost_per_run_usd": { "type": ["number", "null"], "description": "on: the end-of-run learning turn, per run." },
-              "learning_overhead_usd_per_run": { "type": ["number", "null"], "description": "on: what learning adds to a run: its end-of-run turn and its grade, over the steps where both are known." },
+              "learning_overhead_usd_per_run": { "type": ["number", "null"], "description": "on: what learning adds to a run: its end-of-run turn and its grade. A grade of unknown cost counts 0, so with grade_cost_unknown_steps above 0 this is a lower bound." },
               "cost_first_usd": { "type": ["number", "null"] }, "cost_last_usd": { "type": ["number", "null"] },
               "workflow_proposal_rate": { "type": ["number", "null"], "description": "on: teach steps whose learning proposed a workflow, over the teach steps." },
               "reuse_rate": { "type": ["number", "null"], "description": "on: steps after a workflow was first kept that called learned_workflow; null before one is kept." },

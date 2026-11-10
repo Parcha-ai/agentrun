@@ -249,7 +249,9 @@ async function step(ctx, job, one, kase, agentId, harness, learns) {
   // The grade's cost as its learning says it; 0 with tokens counted is a usage with no price (LS-09): unknown, never $0.
   const gradeTokens = learning?.tokens?.grade;
   const counted = gradeTokens && typeof gradeTokens === "object" && Object.values(gradeTokens).some((n) => typeof n === "number" && n > 0);
-  const gradeRaw = learning ? usd(learning.cost_usd?.grade) : null;
+  // A learning that ended with no grade run (dropped before it was proposed: empty, unparsed, the checks) graded nothing: 0.
+  const gradeRan = Boolean(learning?.verdict) || learning?.state === "merged" || learning?.reason === "grader";
+  const gradeRaw = !learning ? null : learning.cost_usd?.grade !== undefined ? usd(learning.cost_usd.grade) : ["merged", "dropped"].includes(learning.state) && !gradeRan ? 0 : null;
   const unpriced = Boolean(learning && gradeRaw === 0 && counted);
   const learned = learning ? { notes: (learning.learned ?? []).map((x) => x.name), skills: (learning.skills ?? []).map((x) => x.name), workflows: (learning.workflows ?? []).map((x) => x.name) } : null;
   const toolRows = rows.filter((r) => r.kind === "tool_use" && r.agent_label !== "learning" && r.tool_name);
@@ -338,7 +340,8 @@ export function metricsOf(steps, learns) {
     cost_first_usd: steps[0]?.work_cost_usd ?? null, cost_last_usd: steps.at(-1)?.work_cost_usd ?? null,
     reflect_cost_per_run_usd: learns ? mean(steps.map((s) => s.reflect_cost_usd)) : null,
     // What learning adds to each run: its end-of-run turn and its grade, where both are known.
-    learning_overhead_usd_per_run: learns ? mean(steps.map((s) => (s.reflect_cost_usd === null || s.grade_cost_usd === null ? null : s.reflect_cost_usd + s.grade_cost_usd))) : null,
+    // A grade whose cost is unknown counts 0 here: then the overhead is a lower bound, and grade_cost_unknown_steps says so.
+    learning_overhead_usd_per_run: learns ? mean(steps.map((s) => (s.reflect_cost_usd === null ? null : s.reflect_cost_usd + (s.grade_cost_usd ?? 0)))) : null,
     workflow_proposal_rate: learns ? rate(at((s) => s.kind === "teach").map((s) => s.workflow_proposed)) : null,
     reuse_rate: learns && firstFlow >= 0 ? rate(steps.slice(firstFlow + 1).map((s) => s.learned_workflow_calls > 0)) : null,
     staleness,
@@ -450,7 +453,7 @@ export function render(results) {
     const st = (m.staleness ?? []).map((x) => `${x.change_step}: ${pct(x.change_graders_pass_rate)} / ${yes(x.skill_updated)} / ${yes(x.workflow_updated)}`).join("; ") || "-";
     const trend = m.cost_trend_usd_per_run === null ? "-" : `${m.cost_trend_usd_per_run >= 0 ? "+" : ""}${m.cost_trend_usd_per_run.toFixed(5)}`;
     const grade = s.arm === "off" ? "-" : `${money(m.grade_cost_usd)}${m.grade_cost_unknown_steps ? ` (+${m.grade_cost_unknown_steps} unknown)` : ""}`;
-    out.push(`| ${s.job} | ${s.harness} | ${s.arm} | ${s.steps.length} | ${pct(m.follow_rate)} | ${pct(m.pass_rate)} | ${money(m.work_cost_per_run_usd)} | ${trend} | ${money(m.learning_overhead_usd_per_run)} | ${grade} | ${pct(m.workflow_proposal_rate)} | ${pct(m.reuse_rate)} | ${st} | ${m.wrong_keeps ?? "-"} |`);
+    out.push(`| ${s.job} | ${s.harness} | ${s.arm} | ${s.steps.length} | ${pct(m.follow_rate)} | ${pct(m.pass_rate)} | ${money(m.work_cost_per_run_usd)} | ${trend} | ${m.grade_cost_unknown_steps ? "≥" : ""}${money(m.learning_overhead_usd_per_run)} | ${grade} | ${pct(m.workflow_proposal_rate)} | ${pct(m.reuse_rate)} | ${st} | ${m.wrong_keeps ?? "-"} |`);
   }
   for (const s of order) {
     out.push("", `${s.job} / ${s.harness} / ${s.arm}: graders ${Object.entries(s.metrics.grader_pass_rates ?? {}).map(([g, r]) => `${g} ${pct(r)}`).join(", ")}`);
