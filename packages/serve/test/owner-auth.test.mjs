@@ -319,6 +319,36 @@ test("accounts off: no owner file, no setup or sign-in routes (their old address
   assert.equal((await call(server.port, { path: "/v2/agents", headers: { authorization: `Bearer ${server.token}` } })).status, 200);
 });
 
+// Any listener but loopback reaches whoever reaches the port: setup there takes the printed code (or the token), even with
+// no public address, so no one who finds the port first becomes the owner.
+const ANY = "0.0.0.0"; // key-gate: the all-interfaces listener the image binds, the case under test
+
+test("open setup holds only on a loopback listener: bound to every interface with no public address, setup takes the printed code", async (t) => {
+  const server = await serve(t, { accounts: true, openSetup: true, host: ANY });
+  assert.equal(server.setupOpen, false);
+  const code = new URL(server.setupUrl).hash.slice("#code=".length);
+  assert.match(code, /^[A-Za-z0-9_-]{22}$/, "the setup link carries its code");
+  assert.deepEqual((await call(server.port, { path: "/v2/auth/session" })).json.setup_code, true);
+  const none = await setup(server, { password: PASSWORD });
+  assert.equal(none.status, 403, "no code: refused");
+  assert.equal((await setup(server, { password: PASSWORD, code })).status, 201, "the printed code sets the password");
+});
+
+test("the bin: listening on every interface with no public address prints the setup link with its code, never the open first-visit line", { timeout: 60_000 }, async (t) => {
+  const { spawn } = await import("node:child_process");
+  const root = await scratch(t);
+  const child = spawn(process.execPath, [new URL("../dist/cli.js", import.meta.url).pathname, "--data", join(root, "agents"), "--port", "0", "--listen", ANY], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, HOME: root, AGENTRUN_PUBLIC_URL: "", RENDER_EXTERNAL_URL: "", AGENTRUN_ACCOUNTS: "" } });
+  t.after(() => child.kill("SIGTERM"));
+  let out = "";
+  for await (const chunk of child.stdout) {
+    out += chunk;
+    if (/^Open .*\n/m.test(out)) break;
+  }
+  child.kill("SIGTERM");
+  assert.match(out, /^Set up this server: \S+\/setup#code=[A-Za-z0-9_-]{22}$/m);
+  assert.doesNotMatch(out, /Set your password/);
+});
+
 test("the bin: accounts on with no AGENTRUN_ACCOUNTS, the first-visit line with no public address, the code line with one, none with AGENTRUN_ACCOUNTS=0", { timeout: 60_000 }, async (t) => {
   const bin = async (env, done) => {
     const { spawn } = await import("node:child_process");
