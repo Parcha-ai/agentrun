@@ -16,7 +16,7 @@ import * as learning from "../dist/learning.js";
 import { LEARNED_WORKFLOW_TOOL, learnedWorkflowDescription } from "../dist/learned-workflow.js";
 import { REPLAY } from "../dist/host-tools.js";
 import { localWorkspace } from "../dist/workspace/index.js";
-import { entriesOf, git, resnap, WORKFLOWS_TODO } from "./learn-support.mjs";
+import { entriesOf, git, resnap, CLI_TOOLS_TODO, WORKFLOWS_TODO } from "./learn-support.mjs";
 import { agent, answerFlow, call, cookieOf, follow, runDir, scratch, serve, withEnv } from "./support.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
 
@@ -126,7 +126,7 @@ test("a learned workflow whose output names no path is refused before any node r
 });
 
 for (const harness of ["pi", "claude-agent", "codex"]) {
-  test(`a ${harness} run calls the workflow its agent learned as learned_workflow and gets its output, with no edit of its definition; its model requests are the run's, as side requests`, { timeout: 120_000, skip: WORKFLOWS_TODO }, async (t) => {
+  test(`a ${harness} run calls the workflow its agent learned as learned_workflow and gets its output, with no edit of its definition; its model requests are the run's, as side requests`, { timeout: 120_000, skip: harness === "pi" ? WORKFLOWS_TODO : CLI_TOOLS_TODO }, async (t) => {
     const opened = join(await scratch(t), "opened.jsonl");
     withEnv(t, { AGENTRUN_TEST_FAUX_HARNESS_OPENED: opened });
     const { api, data } = await serve(t, { learning: "on", harnessTable: fauxTable(FAUX_HARNESS), ...(harness === "pi" ? {} : await routed(t, harness)) });
@@ -337,7 +337,7 @@ test("a learned workflow's call node through a paid web tool is booked under the
   assert.equal(view.cost.usd, 0.001, "the faux model is $0: the run's cost is Parallel's fee");
 });
 
-test("a claude-agent run's learned workflow searches natively through the session's proxy: its call node's web_search on the provider's hosted search, at the operator's gateway", { timeout: 120_000, skip: WORKFLOWS_TODO }, async (t) => {
+test("a claude-agent run's learned workflow searches natively through the session's proxy: its call node's web_search on the provider's hosted search, at the operator's gateway", { timeout: 120_000, skip: CLI_TOOLS_TODO }, async (t) => {
   const dir = await scratch(t);
   const upstream = join(dir, "upstream.jsonl");
   withEnv(t, { ANTHROPIC_API_KEY: "not-a-secret", ANTHROPIC_BASE_URL: await upstreamAt(t), AGENT_MODEL: "anthropic/claude-sonnet-4-5", AGENTRUN_TEST_FAUX_UPSTREAM_CALLS: upstream }, ["PARALLEL_API_KEY", "AGENT_MODEL_BASE_URL", "AGENTRUN_TEST_FAUX_UPSTREAM"]);
@@ -351,7 +351,7 @@ test("a claude-agent run's learned workflow searches natively through the sessio
   assert.deepEqual(sent.map((call) => call.path), ["/v1/messages"], "one request to the provider's hosted search");
 });
 
-test("a claude-agent run on Claude's dotted name (anthropic/claude-sonnet-4.5) with a direct key searches natively on the model its run prepared: the dashed one its models hold", { timeout: 120_000, skip: WORKFLOWS_TODO }, async (t) => {
+test("a claude-agent run on Claude's dotted name (anthropic/claude-sonnet-4.5) with a direct key searches natively on the model its run prepared: the dashed one its models hold", { timeout: 120_000, skip: CLI_TOOLS_TODO }, async (t) => {
   const dir = await scratch(t);
   const upstream = join(dir, "upstream.jsonl");
   // The session's proxy forwards to claude-agent's own provider: ANTHROPIC_BASE_URL, set here for the server, at the
@@ -395,7 +395,7 @@ test("on pi, learned_workflow set to deny for the agent is refused by the gate i
 });
 
 for (const harness of ["codex", "claude-agent"]) {
-  test(`on ${harness}, learned_workflow set to ask parks the run; the owner's allow runs it once (its node's request goes out once the allow un-parks the run) and the run resumes with its output`, { timeout: 180_000, skip: WORKFLOWS_TODO }, async (t) => {
+  test(`on ${harness}, learned_workflow set to ask parks the run; the owner's allow runs it once (its node's request goes out once the allow un-parks the run) and the run resumes with its output`, { timeout: 180_000, skip: CLI_TOOLS_TODO }, async (t) => {
     const server = await serve(t, { learning: "on", harnessTable: fauxTable(FAUX_HARNESS), accounts: true, openSetup: true, ...(await routed(t, harness)) });
     const { api, data } = server;
     const origin = `http://127.0.0.1:${server.port}`;
@@ -434,7 +434,7 @@ for (const harness of ["codex", "claude-agent"]) {
 // it reads the next answer). The parked call stays the turn's to end: its result interrupts the turn, and no request of
 // the harness's own leaves after the allow; the approved call's node is the one request that does.
 for (const harness of ["codex", "claude-agent"]) {
-  test(`on ${harness}, an allow that lands before the parked call's result is in still ends the parked turn: interrupted, with no request of the harness's own after the allow until the resume's turn`, { timeout: 180_000, skip: WORKFLOWS_TODO }, async (t) => {
+  test(`on ${harness}, an allow that lands before the parked call's result is in still ends the parked turn: interrupted, with no request of the harness's own after the allow until the resume's turn`, { timeout: 180_000, skip: CLI_TOOLS_TODO }, async (t) => {
     const held = join(await scratch(t), "result-held");
     const ask = `Use the learned workflow answer on What is six times seven, its result held until ${held}.`;
     const gw = await startFauxGateway({ call: submitsAnswer });
