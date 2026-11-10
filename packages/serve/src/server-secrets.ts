@@ -60,7 +60,9 @@ export function openServerSecrets(data: string, env: NodeJS.ProcessEnv, adapters
   // Where a webhook trigger's secret was kept before its source's sealed settings were: no longer read.
   const leftover = join(data, "trigger-secrets.json");
   if (existsSync(leftover)) say({ condition: "trigger_secrets_left_over", file: leftover, effect: "not read: give each webhook trigger made before a new secret with POST /v2/triggers/{id}/secret, or make it again" });
+  // There is always a seal key (seal-key.ts): every caller hands this one.
   const key = sealKeyOf(env[SEAL_KEY_ENV]);
+  if (!key) throw new Error(`the server's own secrets open only under its seal key (${SEAL_KEY_ENV}), and none was handed`);
   const settings = new Map<string, SealedSettings>();
   for (const adapter of adapters) {
     if (!adapter.settings) continue;

@@ -123,7 +123,7 @@ export class GitHubConnection {
   }
 
   /** Why nothing can be kept: this server keeps no github source's settings (no such source here). Its seal key is always
-   *  there (seal-key.ts ensureSealKey). */
+   *  there (seal-key.ts bootSealKey). */
   unwritable(): ApiError | undefined {
     return this.settings ? undefined : new ApiError("unavailable", "This server has no GitHub source to keep an App in.");
   }

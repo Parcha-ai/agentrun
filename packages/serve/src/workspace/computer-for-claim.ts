@@ -50,8 +50,11 @@ export interface ComputerRun {
 }
 
 /** A provider module's create(), by provider id: its options from the saved keys, and the store's ledger for a provider
- *  that keeps one (the phone's `ledger` option). The computer package's providers, or a test's stand-in. */
-export type ProviderMakers = Readonly<Partial<Record<string, (options: Record<string, string>, extras: { readonly ledger: ProviderLedger }) => ComputerProvider | Promise<ComputerProvider>>>>;
+ *  that keeps one (the phone's `ledger` option); for a claim, what its run's computer may reach (`boxAllow`, the
+ *  launch's box_allow), which no provider option carries. The computer package's providers, or a test's stand-in. */
+export type ProviderMakers = Readonly<Partial<Record<string, (options: Record<string, string>, extras: ProviderExtras) => ComputerProvider | Promise<ComputerProvider>>>>;
+/** What a provider is made with beside its options: the store's ledger, and the claim's box_allow when a claim makes it. */
+export type ProviderExtras = { readonly ledger: ProviderLedger; readonly boxAllow?: readonly string[] | "none" };
 
 /** Why a live view ends: the computer was released, or the run ended. */
 export type ViewEnd = "released" | "ended";
@@ -244,7 +247,7 @@ export async function computerForClaim(launch: ClaimLaunch, store: Pick<Store, "
       if (!make) throw new Error(`this server has no ${entry.label} provider to start one with`);
       const options = providerOptions(entry.id, keys, deps.settings ?? {}, table);
       if (!options.ok) throw new Error(options.error.message);
-      const provider = await make(options.options, { ledger: storeLedger(store.computerLedger, entry.id) });
+      const provider = await make(options.options, { ledger: storeLedger(store.computerLedger, entry.id), ...(launch.boxAllow === undefined ? {} : { boxAllow: launch.boxAllow }) });
       // What this provider makes, as it declares it: the spec asks for one of its networks, within its lifetime
       // (computer-deps.ts computerSpecOf).
       const { network: networks, maxLifetimeMs } = provider.capabilities();

@@ -14,17 +14,27 @@ export async function runnerBeside(dataDir: string, { loops, env }: { loops?: nu
   // The server's store, the runner's one way in (main.ts openRunnerStore, store/open.ts): Postgres when this process's
   // AGENTRUN_STORE_URL secret names one, else SQLite in the data directory; a schema it does not know is RunnerRefused.
   const { store } = await openRunnerStore(dataDir, process.env, (message) => void process.stderr.write(`agentrun-serve runner: ${message}\n`), undefined);
-  // The server's seal key (seal-key.ts): the one handed over (read through secrets.js, which moves it out of the
-  // environment as it loads), else the one the server keeps under the config home. A runner never starts without it: it
-  // seals the live-viewer tokens, and there is no stand-in key.
+  // The server's seal key (seal-key.ts), booted the one way and checked against the store: the one handed over (read
+  // through secrets.js, which moves it out of the environment as it loads), else the one in the data directory. A runner
+  // never starts without it, nor with a key that is not the store's: it seals the live-viewer tokens, and there is no
+  // stand-in key.
   const { bootSealKey } = await import("../seal-key.js");
-  const sealKey = bootSealKey().key;
+  let seal: Awaited<ReturnType<typeof bootSealKey>>;
+  try {
+    seal = await bootSealKey(store, dataDir, { role: "runner" });
+  } catch (error) {
+    await store.close();
+    throw error;
+  }
   // The beside-runner sees the server's environment as a separate runner would (runEnv, not withoutFaux): so an API run on
   // a --faux server reaches the faux gateway and its computers. The run's claim-time computer is composed once, the one way
-  // (main.ts runnerComputers, a desktop's or a phone's live view with it), from that same environment.
+  // (main.ts runnerComputers, a desktop's or a phone's live view with it), from that same environment; a Docker computer's
+  // mounts by where this process's Docker has the data directory (box-paths.ts), read once.
   const runs = env ?? runEnv(process.env);
-  const computers = runnerComputers(store, runs, sealKey);
-  const createLoop = dispatchRunner({ env: runs, data: dataDir, journal: (claim) => store.journal(claim), store, sealKey, routeOf, computerForClaim: computers.computerForClaim, computerDeps: computers.computerDeps });
+  const { dockerPathsForRuns } = await import("../box-paths.js");
+  const { hostAddressesOnce } = await import("../docker-host-addresses.js");
+  const computers = runnerComputers(store, runs, seal.key, { dockerPaths: () => dockerPathsForRuns(runs, dataDir), hostAddresses: () => hostAddressesOnce(runs) });
+  const createLoop = dispatchRunner({ env: runs, data: dataDir, journal: (claim) => store.journal(claim), store, sealKey: seal.key, routeOf, computerForClaim: computers.computerForClaim, computerDeps: computers.computerDeps });
   const runner = startRunner({ store, createLoop, ...(loops !== undefined ? { loops } : {}) });
-  return { runner, close: async () => { await runner.close(); await store.close(); } };
+  return { runner, close: async () => { await runner.close(); await store.close(); seal.release(); } };
 }
