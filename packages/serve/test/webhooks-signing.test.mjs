@@ -13,7 +13,7 @@ import { signatureOf, Webhooks } from "../dist/webhooks.js";
 import { verify } from "../dist/standard-webhooks.js";
 import { client, follow, scratch, secretWritePath, serve, startRun } from "./support.mjs";
 import {
-  askerStore, endedInStore, endNotice, filesIn, hadWebhook, meetsDocument, noticed, noticeId, ofType, onDisk, outboxOf, parkedOnQuestion, receiver, reclaimed,
+  askerStore, endedInStore, endNotice, filesIn, nothingPending, hadWebhook, meetsDocument, noticed, noticeId, ofType, onDisk, outboxOf, parkedOnQuestion, receiver, reclaimed,
   settled, startWithRunner, verifies, waitNotice, Webhook, webhookOn,
 } from "./webhook-support.mjs";
 

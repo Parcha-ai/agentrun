@@ -44,13 +44,13 @@ test("a told row replacing a prefix drops the run's markers under it first, in t
 test("a settle writes the post's state with its try in one transaction; the channel keeps its newest tries, and of its sent or dropped posts only those a kept try names", async (t) => {
   const store = await opened(t);
   for (const id of ["msg_a", "msg_b", "msg_c"]) await store.channels.post(post(id));
-  await store.channels.settle("msg_a", { state: "queued", attempts: 1, nextAt: 9_000, reason: "answered 500" }, tried("msg_a", 1), 2);
+  await store.channels.settle("msg_a", { state: "queued", attempts: 1, nextAt: 9_000, reason: "answered 500" }, tried("msg_a", 1), { kept: 2 });
   assert.deepEqual(await store.channels.get("msg_a").then((p) => [p.state, p.attempts, p.nextAt, p.reason]), ["queued", 1, 9_000, "answered 500"]);
-  await store.channels.settle("msg_a", { state: "sent", attempts: 2, reason: null }, tried("msg_a", 2, { statusCode: 200, error: null }), 2);
-  await store.channels.settle("msg_b", { state: "dropped", attempts: 1, reason: "answered 410" }, tried("msg_b", 3, { statusCode: 410, error: "answered 410" }), 2);
+  await store.channels.settle("msg_a", { state: "sent", attempts: 2, reason: null }, tried("msg_a", 2, { statusCode: 200, error: null }), { kept: 2 });
+  await store.channels.settle("msg_b", { state: "dropped", attempts: 1, reason: "answered 410" }, tried("msg_b", 3, { statusCode: 410, error: "answered 410" }), { kept: 2 });
   // Two tries kept: msg_a's second and msg_b's. msg_a is still named, so kept; then a third try pushes msg_a's out.
   assert.deepEqual((await store.channels.attempts(CHANNEL, 10)).map((a) => [a.postId, a.statusCode, a.redelivery]), [["msg_b", 410, false], ["msg_a", 200, false]], "newest first");
-  await store.channels.settle("msg_c", { state: "sent", attempts: 1 }, tried("msg_c", 4, { statusCode: 200, error: null, redelivery: true }), 2);
+  await store.channels.settle("msg_c", { state: "sent", attempts: 1 }, tried("msg_c", 4, { statusCode: 200, error: null, redelivery: true }), { kept: 2 });
   assert.deepEqual((await store.channels.attempts(CHANNEL, 10)).map((a) => a.postId), ["msg_c", "msg_b"]);
   assert.equal(await store.channels.get("msg_a"), undefined, "a sent post no kept try names goes");
   assert.equal((await store.channels.get("msg_b")).state, "dropped", "a dropped one a kept try names stays, for a redelivery");
@@ -69,4 +69,15 @@ test("dropAll drops every queued post of the channel, with why, and answers how 
   assert.deepEqual(await store.channels.get("msg_1").then((p) => [p.state, p.reason]), ["dropped", "the webhook was removed"]);
   assert.equal((await store.channels.get("msg_3")).state, "sent");
   assert.equal((await store.channels.queued("slack")).length, 1, "another channel's post is its own");
+});
+
+test("a sent post with a try in flight (sending) stays, though no kept try names it, so a redelivery of it still finds it", async (t) => {
+  const store = await opened(t);
+  await store.channels.post(post("msg_held"));
+  await store.channels.settle("msg_held", { state: "sent", attempts: 1 }, tried("msg_held", 1, { statusCode: 200, error: null }), { kept: 1 });
+  await store.channels.post(post("msg_next"));
+  await store.channels.settle("msg_next", { state: "sent", attempts: 1 }, tried("msg_next", 2, { statusCode: 200, error: null }), { kept: 1, sending: ["msg_held"] });
+  assert.equal((await store.channels.get("msg_held")).state, "sent", "kept while its try is in flight");
+  await store.channels.settle("msg_next", { state: "sent", attempts: 1 }, tried("msg_next", 3, { statusCode: 200, error: null }), { kept: 1 });
+  assert.equal(await store.channels.get("msg_held"), undefined, "then it goes");
 });

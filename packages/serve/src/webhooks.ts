@@ -114,6 +114,9 @@ export class Webhooks {
   private readonly timers = new Map<string, NodeJS.Timeout>();
   /** The tries in flight, which close() stops and waits for: nothing is written once it is closed. */
   private readonly trying = new Set<Promise<Attempt>>();
+  /** The messages with a try in flight, and how many: a settle keeps each in the store until it lands, so one whose
+   *  earlier attempts left the log meanwhile can still be redelivered. */
+  private readonly sending = new Map<string, number>();
   private readonly stop = new AbortController();
   private closed = false;
 
@@ -363,7 +366,13 @@ export class Webhooks {
   }
 
   private attempt(id: string, how: { retry: boolean; redelivery: boolean }): Promise<Attempt> {
-    const trying = this.tryOnce(id, how).finally(() => this.trying.delete(trying));
+    this.sending.set(id, (this.sending.get(id) ?? 0) + 1);
+    const trying = this.tryOnce(id, how).finally(() => {
+      this.trying.delete(trying);
+      const left = this.sending.get(id)! - 1;
+      if (left) this.sending.set(id, left);
+      else this.sending.delete(id);
+    });
     this.trying.add(trying);
     return trying;
   }
@@ -427,7 +436,7 @@ export class Webhooks {
       retryAt: attempt.retry_at === null ? null : Date.parse(attempt.retry_at), redelivery: how.redelivery,
     };
     try {
-      await this.store.channels.settle(id, to ?? { state: standingPost.state, reason: standingPost.reason }, row, ATTEMPTS_KEPT);
+      await this.store.channels.settle(id, to ?? { state: standingPost.state, reason: standingPost.reason }, row, { kept: ATTEMPTS_KEPT, sending: [...this.sending.keys()] });
     } catch (error) {
       // Not written: the message stays as the store held it, and a queued one is tried again after the next wait (its
       // receiver may get it twice, under the same webhook-id).

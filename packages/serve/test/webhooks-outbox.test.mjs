@@ -8,11 +8,14 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { describe, test } from "node:test";
 import { ATTEMPTS_KEPT } from "../dist/webhooks.js";
-import { client, FAUX, follow, scratch, serve, startRun } from "./support.mjs";
+import { client, FAUX, follow, scratch, secretWritePath, serve, startRun } from "./support.mjs";
 import {
-  arriving, askerStore, endedInStore, endNotice, endParked, hadWebhook, killed, logged, noticed, noticeId, nothingPending, ofType, onDisk, outboxOf, parkedOnQuestion,
+  arriving, askerStore, endedInStore, meetsDocument, endNotice, endParked, hadWebhook, killed, logged, noticed, noticeId, nothingPending, ofType, onDisk, outboxOf, parkedOnQuestion,
   leftAs, processOn, receiver, refusing, rejections, saidBy, settled, startWithRunner, turn, waitNotice, Webhook, webhookOn,
 } from "./webhook-support.mjs";
+
+// Removing the outbound webhook takes its secret with it: the client sends it from the owner's session, as the console does.
+secretWritePath(["DELETE"], /^\/settings\/webhook$/);
 
 /** A catch-up's rows, and its read of each run as the store holds it now: as the rows say, with an ended run's notice. */
 /** The webhook's setting as the store holds it (its URL, when it was set, why it is off). */

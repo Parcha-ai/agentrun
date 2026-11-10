@@ -1083,7 +1083,7 @@ class SqliteStore implements Store {
       },
       queued: async (channel) =>
         (await db.all<ChannelPostRecord>(`SELECT ${CHANNEL_POST_COLUMNS} FROM channel_posts WHERE channel = ? AND state IN ('queued', 'sending') ORDER BY created_at, id`, channel)).map(channelPostOf),
-      settle: async (id, to, attempt, kept = 50) => {
+      settle: async (id, to, attempt, { kept = 50, sending = [] } = {}) => {
         await db.transaction(async (tx) => {
           const post = await tx.get<{ channel: string }>("SELECT channel FROM channel_posts WHERE id = ?", id);
           if (!post) return;
@@ -1097,7 +1097,8 @@ class SqliteStore implements Store {
             post.channel, attempt.postId, attempt.moment, attempt.at, attempt.statusCode, attempt.latencyMs, attempt.error, attempt.retryAt, attempt.redelivery ? 1 : 0,
           );
           await tx.run("DELETE FROM channel_attempts WHERE channel = ? AND seq NOT IN (SELECT seq FROM channel_attempts WHERE channel = ? ORDER BY seq DESC LIMIT ?)", post.channel, post.channel, kept);
-          await tx.run("DELETE FROM channel_posts WHERE channel = ? AND state IN ('sent', 'dropped') AND id NOT IN (SELECT post_id FROM channel_attempts WHERE channel = ?)", post.channel, post.channel);
+          const sent = await tx.all<{ id: string }>("SELECT id FROM channel_posts WHERE channel = ? AND state IN ('sent', 'dropped') AND id NOT IN (SELECT post_id FROM channel_attempts WHERE channel = ?)", post.channel, post.channel);
+          for (const { id: gone } of sent) if (!sending.includes(gone)) await tx.run("DELETE FROM channel_posts WHERE id = ?", gone);
         });
       },
       dropAll: async (channel, reason) =>

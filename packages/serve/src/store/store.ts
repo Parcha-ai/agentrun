@@ -336,8 +336,9 @@ export interface Channels {
   /** `channel`'s posts still to send (queued or sending), oldest first. */
   queued(channel: string): Promise<ChannelPostRow[]>;
   /** The post's new state, with `attempt` added to its channel's tries in the same transaction; the channel keeps its
-   *  newest `kept` tries, and of its sent or dropped posts only those a kept try names. */
-  settle(id: string, to: { state: ChannelPostRow["state"]; attempts?: number; nextAt?: number; reason?: string | null }, attempt?: ChannelAttemptRow, kept?: number): Promise<void>;
+   *  newest `kept` tries (50 by default), and of its sent or dropped posts only those a kept try names or `sending` lists
+   *  (a try of it still in flight, which a redelivery may send again). */
+  settle(id: string, to: { state: ChannelPostRow["state"]; attempts?: number; nextAt?: number; reason?: string | null }, attempt?: ChannelAttemptRow, options?: { kept?: number; sending?: readonly string[] }): Promise<void>;
   /** Every queued or sending post of `channel` dropped, `reason` kept on each: how many. */
   dropAll(channel: string, reason: string): Promise<number>;
   /** `channel`'s newest tries, newest first, at most `limit`. */

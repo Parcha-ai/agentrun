@@ -189,6 +189,9 @@ export function refusing(t, dir, when) {
 export async function processOn(t, data, args = [CLI, "--data", data, "--port", "0", "--faux", FAUX]) {
   const child = spawn(process.execPath, args, { stdio: ["ignore", "pipe", "pipe"] });
   t.after(() => child.kill("SIGKILL"));
+  // Everything it prints, from its start: its log lines are on stdout (the CLI's log), its errors on stderr.
+  child.printed = "";
+  for (const stream of [child.stdout, child.stderr]) stream.on("data", (chunk) => (child.printed += chunk));
   const out = await printed(child, /^AGENTRUN_API_KEY=/m);
   return { child, api: client(/AGENTRUN_BASE_URL=(\S+)/.exec(out)[1], readFileSync(join(data, ".token"), "utf8").trim()) };
 }
@@ -320,36 +323,14 @@ export async function webhookOn(t, dir, { retryMs = [] } = {}) {
   };
 }
 
-/** Once a server in a process of its own (processOn) has said `text` on its stderr, its log: what it tried, as it says it. */
+/** Once a server in a process of its own (processOn) has printed `text` (its log is on stdout), what it printed. */
 export function saidBy(child, text) {
-  let err = "";
-  let onErr;
+  let onData;
   const heard = new Promise((resolve) => {
-    onErr = (chunk) => {
-      err += chunk;
-      if (err.includes(text)) resolve(err);
-    };
-    child.stderr.on("data", onErr);
+    onData = () => child.printed.includes(text) && resolve(child.printed);
+    child.stdout.on("data", onData);
+    child.stderr.on("data", onData);
+    onData();
   });
-  return arriving(heard, `the line with ${text} on the server's stderr`).finally(() => child.stderr.off("data", onErr));
-}
-
-/** The webhook's store in `dir` as an earlier server, or a pruning, left it: `told` its ledger rows ({run: {ended, wait}}),
- *  written as they stand, and its messages and tries gone (`cleared`), as later attempts push them out of the log. */
-export function leftAs(dir, { told, cleared = false } = {}) {
-  const db = new DatabaseSync(join(dir, "store.sqlite"), { timeout: 10_000 });
-  try {
-    if (cleared) {
-      db.prepare("DELETE FROM channel_attempts WHERE channel = 'webhook-out'").run();
-      db.prepare("DELETE FROM channel_posts WHERE channel = 'webhook-out'").run();
-    }
-    if (told) {
-      db.prepare("DELETE FROM channel_told WHERE channel = 'webhook-out'").run();
-      for (const [runId, noticed] of Object.entries(told)) {
-        for (const [kind, marker] of Object.entries(noticed)) db.prepare("INSERT INTO channel_told (channel, run_id, marker, at) VALUES ('webhook-out', ?, ?, ?)").run(runId, `${kind === "ended" ? "ended" : "wait"}:${marker}`, Date.now());
-      }
-    }
-  } finally {
-    db.close();
-  }
+  return arriving(heard, `the line with ${text} from the server's process`).finally(() => (child.stdout.off("data", onData), child.stderr.off("data", onData)));
 }
