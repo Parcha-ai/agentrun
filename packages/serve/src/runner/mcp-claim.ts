@@ -9,12 +9,15 @@
 // At every claim the pin is checked again: a pinned tool that is a meta tool now refuses the claim in words, nothing sent.
 //
 // The credentials. The pinned servers' credentials are unsealed (store/seal.ts openMcpCredential) into this step's
-// memory only: handed to the run's gateway, never written to the journal, a command row, the timeline or a log line. The
-// redaction set is fed from the same map. Both are dropped at release(), at the loop's end, or when the claim's signal
-// aborts. A credential that can't be used gives its server's calls a reason (mcp-probe.ts UNUSABLE) and they are refused
-// unsent: sealed under another key or for another origin than its row's url (damaged), a sign-in refused or expired
-// (signedOut), a refresh that got no answer (silent), an address the check refuses (blocked). A runner never starts
-// without the seal key (seal-key.ts ensureSealKey), so a claim always has one.
+// memory only: handed to the run's gateway, never written to the journal, a command row, the timeline or a log line.
+// Every value handed over (a header's, a bearer's token alone, an access token refreshed mid-claim, a github_app token
+// minted or minted again) is held by the run's one redactor (`redact`) at that moment, through the one place an entry is
+// made, so a log line or error text the run writes is cut of it as the gateway's own scrub cuts a call's answer. The
+// entries are dropped at release(), at the loop's end, or when the claim's signal aborts. A credential that can't be
+// used gives its server's calls a reason (mcp-probe.ts UNUSABLE) and they are refused unsent: sealed under another key
+// or for another origin than its row's url (damaged), a sign-in refused or expired (signedOut), a refresh that got no
+// answer (silent), an address the check refuses (blocked). A runner never starts without the seal key
+// (seal-key.ts ensureSealKey), so a claim always has one.
 //
 // fresh(). After the pin check and before the loop, and again on a command-row resume: an OAuth access token past its
 // expiry is refreshed, bounded (4 s a request, two tries), under the server's refresh lease (leaseRefresh, then the
@@ -47,6 +50,11 @@ import { REFRESH_MARGIN_MS, UNKNOWN_EXPIRY_MS, UNUSABLE } from "../mcp-servers.j
 import { tokenLeftOf } from "../mcp-probe.js";
 import { openMcpCredential, sealMcpCredential, type McpCredential } from "../store/seal.js";
 import { type Claim, Fenced, MCP_REFRESH_CALL_MS, type McpServerRow, type Store } from "../store/index.js";
+
+/** Every credential value of `headers`: each header's value, and its token alone with any one-word scheme taken off
+ *  (`Bearer `), which a server may echo bare (as the gateway's scrub cuts them). */
+const credentialValues = (headers: Record<string, string>): string[] =>
+  Object.values(headers).flatMap((value) => [value, value.replace(/^[A-Za-z][A-Za-z0-9_-]*\s+(?=\S+$)/, "")]);
 
 /** Whether two sealed credentials are the same bytes (none equals none). */
 const sameSealed = (a: Uint8Array | null, b: Uint8Array | null): boolean => (a === null || b === null ? a === b : Buffer.from(a).equals(Buffer.from(b)));
@@ -85,6 +93,9 @@ export interface McpClaimOptions {
   timer?: SettleTimer;
   /** Where a refreshed set dropped for a newer credential is said, by its server's name only (console.warn by default). */
   log?: (line: string) => void;
+  /** The run's one redactor (runner/redact.ts HeldRedact, the spec's `cut`): every credential value this step hands the
+   *  gateway is held by it as it is handed over. None: the gateway's per-call scrub alone. */
+  redact?: { hold(values: readonly string[]): void };
 }
 
 export interface McpClaimStep {
@@ -209,6 +220,8 @@ export async function mcpClaim(options: McpClaimOptions): Promise<McpClaimStep> 
     gone.delete(name);
     stamps.set(name, { url: row.url, auth: row.auth, changedAt: row.credentialChangedAt });
     const entry = (extra: { headers?: Record<string, string>; unopened?: string }) => {
+      // Held by the run's redactor before anything else: a value opened is a value to cut, sent or not.
+      if (extra.headers) options.redact?.hold(credentialValues(extra.headers));
       if (released || gone.has(name)) return;
       // Headers go only to the URL the run was pinned to: a server moved since is refused per call by the gateway.
       credentials[name] = { url: row.url, ...(extra.unopened ? { unopened: extra.unopened } : extra.headers && row.url === pinnedUrl ? { headers: extra.headers } : {}) };

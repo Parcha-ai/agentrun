@@ -13,6 +13,7 @@ import { queued, storeOn } from "./store-helpers.mjs";
 
 const { mcpServersOverStore } = await import("../dist/mcp-servers-store.js");
 const { mcpForClaim } = await import("../dist/runner/mcp-run.js");
+const { mcpClaim } = await import("../dist/runner/mcp-claim.js");
 
 const KEY = randomBytes(32);
 const TOKEN = `not-a-secret-${"first-bearer-0123"}`;
@@ -29,10 +30,11 @@ async function registryOn(t) {
   return { store, clock, dir, registry };
 }
 
-/** The run's MCP for its claim, granted `server`'s add, and a call of it by id. */
-async function claimed(t, { store, dir }, server) {
+/** The run's MCP for its claim, granted `server`'s add, and a call of it by id. `redact`: the run's redactor it holds
+ *  every credential value with. */
+async function claimed(t, { store, dir }, server, redact) {
   const claim = await store.claim("run-1", "runner-a", { leaseMs: 10 * HOUR });
-  const mcp = await mcpForClaim({ claim, store, sealKey: KEY, grants: [`mcp:${server}/add`], harness: { commit: async () => undefined }, work: () => dir });
+  const mcp = await mcpForClaim({ claim, store, sealKey: KEY, grants: [`mcp:${server}/add`], harness: { commit: async () => undefined }, work: () => dir, ...(redact ? { redact } : {}) });
   t.after(() => mcp.release());
   const add = mcp.tools.find((tool) => tool.name === `mcp__${server}__add`);
   return (callId) => add.call({ a: 2, b: 3 }, { callId, signal: new AbortController().signal });
@@ -84,7 +86,8 @@ test("an OAuth access token that runs out mid-run: the next call refreshes it fi
   const mcp = await startFakeMcp({ token: oauth.accepts, oauth: oauth.issuer, inspect: (headers) => seen.push(headers.authorization) });
   t.after(() => Promise.all([mcp.close(), oauth.close()]));
   await signedIn(on.registry, "docs", mcp);
-  const call = await claimed(t, on, "docs");
+  const held = [];
+  const call = await claimed(t, on, "docs", { hold: (values) => held.push(...values) });
   assert.deepEqual(await call("call-1"), { text: "5" }, "the signed-in token, an hour left");
   const first = seen.at(-1);
   const refreshes = () => oauth.log.filter((entry) => entry.path === "/token" && entry.form.grant_type === "refresh_token").length;
@@ -99,6 +102,37 @@ test("an OAuth access token that runs out mid-run: the next call refreshes it fi
   assert.ok(sent.length > 0 && sent.every((authorization) => authorization !== first && oauth.accepts(authorization)), "the call carried the new token alone");
   assert.deepEqual(await call("call-3"), { text: "5" });
   assert.equal(refreshes(), 1, "still one refresh: the new token has its hour");
+  // Every token the server was sent, the signed-in one and the one refreshed mid-claim, was held by the run's redactor,
+  // with its scheme and bare.
+  for (const authorization of new Set(seen.filter(Boolean))) assert.ok(held.includes(authorization) && held.includes(authorization.replace(/^Bearer /, "")), "held, whole and bare");
+});
+
+test("every credential value the claim hands over is held by the run's redactor as it is handed over: a header's and a bearer's token alone, and a github_app token at its mint and at its mint again", async (t) => {
+  const on = await registryOn(t);
+  const fake = await startFakeMcp({ token: TOKEN });
+  t.after(() => fake.close());
+  await on.registry.save("live", { url: fake.url, auth: { type: "headers", headers: { authorization: `Bearer ${TOKEN}`, "x-region-key": NEXT } } });
+  const origin = "https://gh.example.test";
+  await on.store.mcp.put({ name: "gh", url: `${origin}/mcp`, auth: "github_app", tools: [{ name: "add", input_schema: { type: "object" } }], sealed: null });
+  const [first, again] = [`not-a-secret-${"github-first-0123"}`, `not-a-secret-${"github-again-4567"}`];
+  const minted = [first, again];
+  const armed = [];
+  const held = [];
+  const claim = await on.store.claim("run-1", "runner-a", { leaseMs: 10 * HOUR });
+  const step = await mcpClaim({
+    store: on.store, claim, grants: ["mcp:live/add", "mcp:gh/add"], sealKey: KEY, signal: new AbortController().signal,
+    githubApp: { mint: async () => ({ ok: true, token: minted.shift(), expires_at: Date.now() + HOUR }), target: { repo: "acme/widgets" } },
+    githubMcpOrigin: origin, githubTimer: (fire) => (armed.push(fire), { clear() {} }),
+    redact: { hold: (values) => held.push(...values) },
+  });
+  t.after(() => step.release());
+  for (const value of [`Bearer ${TOKEN}`, TOKEN, NEXT, `Bearer ${first}`, first]) assert.ok(held.includes(value), `held at the claim: ${value.slice(0, 20)}`);
+  assert.ok(!held.includes(again), "nothing minted yet is held");
+  // The token minted again mid-run, as the refresh before its expiry does: held as it is handed over.
+  armed.shift()();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(step.credentials.gh.headers.authorization, `Bearer ${again}`);
+  assert.ok(held.includes(again), "the token minted again is held");
 });
 
 test("removing an OAuth server revokes its refresh token at its authorization server, once; a revocation that fails still removes it", async (t) => {

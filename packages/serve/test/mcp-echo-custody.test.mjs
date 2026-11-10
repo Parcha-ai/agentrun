@@ -10,6 +10,7 @@ import { createServer } from "node:http";
 import { join } from "node:path";
 import { test } from "node:test";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
+import { startFakeOAuth } from "./fixtures/fake-oauth-server.mjs";
 import { agent, follow, scratch, serve, storeBytes, withEnv } from "./support.mjs";
 import { copyStandIn } from "../../run-adapters-codex/test/stand-in.mjs";
 
@@ -121,4 +122,55 @@ test("codex: an MCP server that echoes its bearer and a header value to Codex's 
   const logs = logsOf(t);
   const server = await serve(t, { faux: undefined });
   await echoRun(t, server, logs, { harness: "codex", content: "mcp echo whoami {}", answered: /^whoami returned: authorization: .+; region key: .+ \(item \S+\)$/ });
+});
+
+test("pi: an OAuth access token refreshed mid-claim, echoed by its server in a tool's answer and in a tool's error: no token of the sign-in reaches a journal entry, a row, a file or a log", { timeout: 120_000 }, async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") });
+  const logs = logsOf(t);
+  const { api, data } = await serve(t, { faux: FAUX_MCP, harnesses: true });
+  // Its tokens last two minutes, inside the refresh margin: the claim refreshes behind the first, and each call first.
+  const oauth = await startFakeOAuth({ expiresIn: 120 });
+  t.after(() => oauth.close());
+  let seen = {};
+  const carried = [];
+  const fake = await startFakeMcp({ token: oauth.accepts, oauth: oauth.issuer, inspect: (headers) => (seen = headers) });
+  t.after(() => fake.close());
+  fake.tools.whoami = {
+    description: "Say who called.",
+    input: { type: "object", properties: {}, additionalProperties: false },
+    run: () => (carried.push(seen.authorization), { content: [{ type: "text", text: `authorization: ${seen.authorization}` }] }),
+  };
+  fake.tools.whoami_denied = {
+    description: "Refuse, saying who called.",
+    input: { type: "object", properties: {}, additionalProperties: false },
+    run: () => (carried.push(seen.authorization), { content: [{ type: "text", text: `denied: the token ${seen.authorization.replace(/^Bearer /, "")} may not do this` }], isError: true }),
+  };
+
+  // The owner signs in: the start's cookie, the authorization server's approval, the callback.
+  const started = await api("POST", "/settings/mcp-servers/echo/oauth/start", { url: fake.url });
+  assert.equal(started.status, 200, JSON.stringify(started.body));
+  const asked = await fetch(started.body.authorization_url, { redirect: "manual" });
+  const back = await fetch(asked.headers.get("location"), { redirect: "manual", headers: { cookie: started.headers.get("set-cookie").split(";")[0] } });
+  assert.equal(back.headers.get("location"), "/#/settings/mcp?server=echo&sign_in=ok");
+  const signedIn = oauth.issued[0];
+  assert.equal((await api("POST", "/agents", agent("echo-oauth", { tools: ["mcp:echo/whoami", "mcp:echo/whoami_denied"], tool_settings: ALLOW }))).status, 201);
+
+  const views = [];
+  for (const [tool, answered] of [["whoami", /^The tool said: authorization: .+$/], ["whoami_denied", /^The tool said: denied: the token .+ may not do this$/]]) {
+    const run = await api("POST", "/agents/echo-oauth/runs", { input: { content: `Call mcp__echo__${tool} with {}` } });
+    assert.equal(run.status, 202, JSON.stringify(run.body));
+    const { last } = await follow(api, run.body.run_id, ["completed", "failed"], { deadlineMs: 60_000 });
+    assert.equal(last.status, "completed", JSON.stringify(last));
+    const view = (await api("GET", `/runs/${run.body.run_id}`)).body;
+    assert.match(view.result?.final_answer ?? "", answered, `${tool}: the run read the tool's answer`);
+    views.push({ path: `${tool}'s run view`, text: JSON.stringify(view) }, { path: `${tool}'s timeline`, text: JSON.stringify((await api("GET", `/runs/${run.body.run_id}/timeline?limit=500`)).body) });
+  }
+  // Refreshed mid-claim: each call carried a token the sign-in did not give, which the server echoed.
+  assert.ok(oauth.log.some((entry) => entry.path === "/token" && entry.form.grant_type === "refresh_token"), "refreshed while the runs held their claims");
+  assert.equal(carried.length, 2);
+  assert.ok(carried.every((authorization) => authorization !== `Bearer ${signedIn}` && oauth.issued.includes(authorization.replace(/^Bearer /, ""))), "each call carried a refreshed token");
+
+  const where = [...views, { path: "the store's files (its journal and rows)", text: storeBytes(data).toString("latin1") }, ...(await filesUnder(data)), { path: "the server's and runner's logs", text: logs() }];
+  assert.ok(storeBytes(data).length > 0 && where.length > 5);
+  for (const token of oauth.issued) assert.deepEqual(where.filter((place) => place.text.includes(token)).map((place) => place.path), [], "no access or refresh token of the sign-in is anywhere");
 });
