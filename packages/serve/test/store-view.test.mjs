@@ -385,6 +385,10 @@ test("the moment of a run parked at its cap reads paused with the pause words, s
   // The write half's raiseCap reads moment.paused to resume the run, as it does for a cap-paused run on main.
   const result = await raiseCap(store, moment, 11);
   assert.deepEqual(result, { resumed: true });
+  // Right after the raise, before its runner takes it, the run reads as going on: never input_required on the cap it
+  // was just raised past (a client's runs.wait right after the raise returned input_required again).
+  const raised = await viewOverStore(store, "run-1", deps);
+  assert.ok(["queued", "working"].includes(raised.status), `right after the raise: ${JSON.stringify({ status: raised.status, state: raised.state, pending: raised.pending?.kind })}`);
 });
 
 test("a run whose agent asked for a person in its browser reads input_required with the browser card", async (t) => {
