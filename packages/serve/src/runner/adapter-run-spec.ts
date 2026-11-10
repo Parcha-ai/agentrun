@@ -33,7 +33,6 @@ import { environmentLine } from "../environment.js";
 import { effortGuidance } from "../effort-guidance.js";
 import { laidLearned, type LearnedWorkflow, learningFolderOf, secretsShown } from "../learning.js";
 import { layLearningSeed } from "./learning-seed.js";
-import { savedKeyValues } from "../server-keys.js";
 import { learningWorkspace } from "../learn/folder.js";
 import { learningEndOfRun } from "./learning-end.js";
 import { LEARNED_WORKFLOW_TOOL, learnedWorkflowTool } from "../learned-workflow.js";
@@ -58,12 +57,12 @@ import type { ModelRoute, RouteCost } from "./model-route.js";
 import { archilClaim, type ArchilClaimOptions, MOUNT_TTL_MS } from "../workspace/archil-claim.js";
 import { loadArchilSettings } from "../archil-settings.js";
 import type { ComputerSetting } from "../computer-setting.js";
-import type { claimComputer, ComputerDeps } from "../workspace/computer-deps.js";
+import { type claimComputer, type ComputerDeps, imageWaitWords } from "../workspace/computer-deps.js";
 import type { RunComputer } from "../workspace/run-tools.js";
 import type { Workspace } from "../workspace/workspace.js";
 import { type HeldRedact, heldRedactor, holdClaimed, runnerSecrets, secretRedactor } from "./redact.js";
 import { githubAppAccess } from "./github-app.js";
-import { holdStored } from "./store-secrets.js";
+import { holdStored, storeSecrets } from "./store-secrets.js";
 
 /** What a claim gives the shared computerForClaim: the run, its epoch, its revision, its place and any computer choice. */
 export interface ClaimLaunch {
@@ -282,7 +281,7 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
     deps.store,
     // revokeMount removes the run's Archil mount credential when the computer is released (and if a start fails after a mint);
     // the run's end revokes it too (below), so it goes on every outcome even when no computer is made. Idempotent.
-    { ...deps.computerDeps, mode, workspace: ws.workspace, sealKey: deps.sealKey, ...(archil ? { revokeMount: () => archil.revoke() } : {}) },
+    { ...deps.computerDeps, mode, workspace: ws.workspace, sealKey: deps.sealKey, ...(archil ? { revokeMount: () => archil.revoke() } : {}), ...(run.phase ? { onImageWait: (making, image) => run.phase?.(imageWaitWords(making, image)) } : {}) },
   );
 
   // The run's mode bounds its shell: 600 s locally or on a computer, 295 s on Archil's serverless exec (Mode 2, none).
@@ -375,7 +374,7 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
       seed: start.seed,
       folder: () => (archil === undefined ? learningFolderOf(deps.data, runRow.agentId) : learningWorkspace({ mode: "archil", agentId: runRow.agentId, archil })),
       own: Object.keys(revisionRow.skills ?? {}),
-      shown: async () => secretsShown(runnerSecrets(deps.env, await savedKeyValues(deps.store, deps.sealKey))),
+      shown: async () => secretsShown(runnerSecrets(deps.env, await storeSecrets(deps.store, deps.sealKey, deps.data))),
       log,
     })
     : undefined;
@@ -453,10 +452,12 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
     store: deps.store,
     data: deps.data,
     ...(deps.env ? { env: deps.env } : {}),
-    // What the run must never learn beside the runner's secrets: the keys its claim handed it, and its sign-in's pointers,
-    // read back from the store's sign-ins under the seal key (learning-run.ts refused, on the runner).
+    // What the run must never learn beside the runner's secrets: the keys its claim handed it, every secret the server
+    // keeps sealed (storeSecrets: the run's redactor holds the same list), and its sign-in's pointers, read back from the
+    // store's sign-ins under the seal key (learning-run.ts refused, on the runner).
     signIns: signInReads(deps.store, deps.sealKey),
     handed: runnerSecrets(toolEnv),
+    stored: () => storeSecrets(deps.store, deps.sealKey, deps.data),
     learningFolder: archil === undefined
       ? (agentId: string) => learningFolderOf(deps.data, agentId)
       : (agentId: string) => learningWorkspace({ mode: "archil", agentId, archil }),

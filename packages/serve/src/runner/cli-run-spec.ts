@@ -27,7 +27,6 @@ import { environmentLine } from "../environment.js";
 import { type HarnessEntry, harnessOf } from "../harness-table.js";
 import { laidLearned, learningFolderOf, secretsShown } from "../learning.js";
 import { layLearningSeed } from "./learning-seed.js";
-import { savedKeyValues } from "../server-keys.js";
 import { learningWorkspace } from "../learn/folder.js";
 import { learningEndOfRun } from "./learning-end.js";
 import { type ModelRef, providerModels, runModels } from "../model.js";
@@ -45,6 +44,7 @@ import { archilClaim, MOUNT_TTL_MS } from "../workspace/archil-claim.js";
 import { loadArchilSettings } from "../archil-settings.js";
 import type { Workspace } from "../workspace/workspace.js";
 import type { ComputerSetting } from "../computer-setting.js";
+import { imageWaitWords } from "../workspace/computer-deps.js";
 import type { AdapterRun, AdapterRunSpec, RunCapConfig } from "./adapter-loop.js";
 import { adapterRunGate, type AdapterSpecDeps, answersCut, hostToolCtxOf, learnedWorkflowHostTool } from "./adapter-run-spec.js";
 import { signInReads } from "../sign-ins-store.js";
@@ -58,7 +58,7 @@ import type { Claim } from "./loop-contract.js";
 import { runMetrics } from "./metrics.js";
 import { heldRedactor, holdClaimed, runnerSecrets, secretRedactor } from "./redact.js";
 import { githubAppAccess } from "./github-app.js";
-import { holdStored } from "./store-secrets.js";
+import { holdStored, storeSecrets } from "./store-secrets.js";
 
 /** The shared claim-time computer types live on the base spec (adapter-run-spec.ts), re-exported for this module's API. */
 export type { ClaimComputer, ClaimDeps, ClaimLaunch, ComputerForClaim } from "./adapter-run-spec.js";
@@ -178,7 +178,7 @@ export async function cliRunSpecFromLaunch(launch: RunLaunch, run: AdapterRun, d
     deps.store,
     // revokeMount removes the run's Archil mount credential at the computer's release (and if a start fails after a mint); the
     // run's end revokes it too, so it goes on every outcome even with no computer. Idempotent. As the pi spec does.
-    { ...deps.computerDeps, mode, workspace: ws.workspace, sealKey: deps.sealKey, ...(archil ? { revokeMount: () => archil.revoke() } : {}) },
+    { ...deps.computerDeps, mode, workspace: ws.workspace, sealKey: deps.sealKey, ...(archil ? { revokeMount: () => archil.revoke() } : {}), ...(run.phase ? { onImageWait: (making, image) => run.phase?.(imageWaitWords(making, image)) } : {}) },
   );
 
   // The CLI works in the run's scratch folder on this machine (its working directory, swept at the run's end), its own
@@ -209,7 +209,7 @@ export async function cliRunSpecFromLaunch(launch: RunLaunch, run: AdapterRun, d
       seed: start.seed,
       folder: () => (archil === undefined ? learningFolderOf(deps.data, runRow.agentId) : learningWorkspace({ mode: "archil", agentId: runRow.agentId, archil })),
       own: Object.keys(revisionRow.skills ?? {}),
-      shown: async () => secretsShown(runnerSecrets(deps.env, await savedKeyValues(deps.store, deps.sealKey))),
+      shown: async () => secretsShown(runnerSecrets(deps.env, await storeSecrets(deps.store, deps.sealKey, deps.data))),
       log,
     })
     : undefined;
@@ -307,10 +307,12 @@ export async function cliRunSpecFromLaunch(launch: RunLaunch, run: AdapterRun, d
     store: deps.store,
     data: deps.data,
     ...(deps.env ? { env: deps.env } : {}),
-    // What the run must never learn beside the runner's secrets: the keys its claim handed it, and its sign-in's pointers,
-    // read back from the store's sign-ins under the seal key (learning-run.ts refused, on the runner).
+    // What the run must never learn beside the runner's secrets: the keys its claim handed it, every secret the server
+    // keeps sealed (storeSecrets: the run's redactor holds the same list), and its sign-in's pointers, read back from the
+    // store's sign-ins under the seal key (learning-run.ts refused, on the runner).
     signIns: signInReads(deps.store, deps.sealKey),
     handed: handedKeys,
+    stored: () => storeSecrets(deps.store, deps.sealKey, deps.data),
     learningFolder: archil === undefined
       ? (agentId: string) => learningFolderOf(deps.data, agentId)
       : (agentId: string) => learningWorkspace({ mode: "archil", agentId, archil }),
