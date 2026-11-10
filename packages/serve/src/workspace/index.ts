@@ -34,7 +34,10 @@ export {
   type ProviderEntry, resolveComputer, type ResolvedComputer, runShellOf, type ShellPlace, shellPlaceOf, type StartedComputer,
 } from "./resolve-computer.js";
 export { computerProviderFactories, computerProviderMakers, type ProviderLoad } from "./computer-providers.js";
-export { claimComputer, claimKinds, type ComputerDeps, computerDepsFrom, type ComputerDepsOptions, computerSpecOf, DOCKER_HOST_ADDRESSES_ENV, dockerHostAddressesOf } from "./computer-deps.js";
+export {
+  claimComputer, claimKinds, type ComputerDeps, computerDepsFrom, type ComputerDepsOptions, computerSpecOf, DAEMON_CACHE_IN_VOLUME, DOCKER_HOST_ADDRESSES_ENV,
+  dockerHostAddressesOf, type DockerVolume, dockerVolumeOf,
+} from "./computer-deps.js";
 export { type ClaimComputer, type ClaimLaunch, computerForClaim, type ComputerForClaimDeps, type ComputerRun, type ImageWait, type OpenComputerView, type ProviderMakers, sweepComputers, type ViewEnd } from "./computer-for-claim.js";
 export { layOwnSkills, RUN_SKILLS_DIR } from "./revision-skills.js";
 export { KIND_SKILLS, type KindSkill, kindSkillOf, type SkillKind } from "./kind-skills.js";

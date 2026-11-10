@@ -15,8 +15,10 @@
 // A key goes into the server-side provider call alone (the provider's create() options): the spec a computer is made
 // with names no key, no account key and no database or Redis credential, and carries no environment at all.
 import { isIP } from "node:net";
+import { posix } from "node:path";
 import { type ComputerSpec, DEFAULT_DOCKER_IMAGE, DOCKER_RECIPE, DOCKER_RECIPE_HAS, PROVIDERS, providerFor, readBackOf, servingRefusals, SETTING_KINDS } from "@parcha/agentrun-computer";
 import { DOCKER_IMAGE_ENV } from "../box-image.js";
+import type { DockerPaths } from "../box-paths.js";
 import type { ProviderFactories } from "../computer-keys.js";
 import type { FauxComputers } from "../faux-computers.js";
 import { envValue, type KeyEnv, keyReader } from "../key-meta.js";
@@ -52,6 +54,21 @@ export function dockerHostAddressesOf(env: KeyEnv): string[] | undefined {
   return addresses.length > 0 ? addresses : undefined;
 }
 
+/** Where the Docker provider's daemon copy goes on a server in a container: under the named volume's mount, so the
+ *  host's Docker reaches it as that volume's subpath, as it reaches the run's folder. */
+export const DAEMON_CACHE_IN_VOLUME = ".agentrun/computerd";
+
+/** The Docker provider's options for a server in a container of its Docker's, its data on a named volume: the volume
+ *  and where it is mounted here (`root`), under which the run's folder and the daemon copy are mounted as the volume's
+ *  subpaths, and that daemon copy's place under it. Undefined on a host, or where no such volume was found (its reason
+ *  then refuses a Docker computer before a run, box-paths.ts dockerComputerRefusal). */
+export type DockerVolume = { readonly volume: { readonly name: string; readonly root: string }; readonly daemonCache: string };
+export function dockerVolumeOf(paths: DockerPaths): DockerVolume | undefined {
+  if (!("paths" in paths)) return undefined;
+  const root = paths.paths.at;
+  return { volume: { name: paths.paths.volume, root }, daemonCache: posix.join(root, DAEMON_CACHE_IN_VOLUME) };
+}
+
 /** The deps computerForClaim takes once per process: all but the claim's own. */
 export type ComputerDeps = Omit<ComputerForClaimDeps, "mode" | "workspace" | "sealKey" | "revokeMount" | "signal">;
 
@@ -67,6 +84,10 @@ export interface ComputerDepsOptions {
   readonly kinds?: KindRegistry;
   /** How a provider is built from its id and options: the package's providerFor unless given (a test's stand-in). */
   readonly load?: ProviderLoad;
+  /** Where this process's Docker has the data directory (box-paths.ts dockerPathsForRuns), read once when a Docker
+   *  provider is first built: in a container with a named data volume, the provider mounts by that volume
+   *  (dockerVolumeOf). Absent: as on a host. */
+  readonly dockerPaths?: () => Promise<DockerPaths>;
   /** Whether a provider that binds a folder of this machine answers here now (Docker), for the Mode 1 default. */
   readonly answers?: ComputerForClaimDeps["answers"];
   /** The live view's registration for a desktop or a phone (proxy-only): absent, no view is opened. */
@@ -154,8 +175,12 @@ export function computerDepsFrom(options: ComputerDepsOptions): { computerForCla
   // allow-list there.
   const hostAddresses = dockerHostAddressesOf(env);
   const docker = { image: dockerImage, ...(hostAddresses ? { egress: { hostAddresses } } : {}) };
+  // And, for a server in a container of its Docker's, the named volume that holds its data and the daemon copy's place
+  // under it (dockerVolumeOf): where this process's Docker has the data, read once, when a Docker provider is first built.
+  let paths: Promise<DockerPaths> | undefined;
+  const volumeOf = async (): Promise<DockerVolume | undefined> => (options.dockerPaths ? dockerVolumeOf(await (paths ??= options.dockerPaths())) : undefined);
   const load = options.load ?? (providerFor as unknown as ProviderLoad);
-  const providers = computerProviderMakers({ load: (id, given) => load(id, id === "docker" ? { ...given, ...docker } : given) });
+  const providers = computerProviderMakers({ load: async (id, given) => load(id, id === "docker" ? { ...given, ...docker, ...(await volumeOf()) } : given) });
   const computerDeps: ComputerDeps = {
     kinds,
     providers,

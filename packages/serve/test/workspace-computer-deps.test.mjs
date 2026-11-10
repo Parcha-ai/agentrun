@@ -19,7 +19,7 @@ import { dockerHost } from "./docker-host-fake.mjs";
 import { FAUX_VIEW_PATH, fauxComputers } from "../dist/faux-computers.js";
 import { DEFAULT_BOX_ALLOW } from "../dist/run-box.js";
 import { putSealedKey } from "../dist/server-keys.js";
-import { computerDepsFrom, computerSpecOf, dockerHostAddressesOf, localWorkspace } from "../dist/workspace/index.js";
+import { computerDepsFrom, computerSpecOf, dockerHostAddressesOf, dockerVolumeOf, localWorkspace } from "../dist/workspace/index.js";
 import { fakeComputer } from "./workspace-fake-computer.mjs";
 import { KINDS } from "./workspace-kinds-fixture.mjs";
 
@@ -364,4 +364,40 @@ test("the claim's Docker provider gets the Docker host's addresses as its egress
   // to Docker.
   const provider = await providerFor("docker", { daemonPath: join(scratch(), "computerd"), user: "1000:1000", egress: options.egress, image: { image: DEFAULT_DOCKER_IMAGE } });
   assert.equal(typeof provider.create, "function");
+});
+
+// A server in a container of its Docker's, its data on a named volume (compose.yaml): the Docker provider mounts the run's
+// folder and its daemon copy as that volume's subpaths, so the daemon copy goes under the volume's mount, never the
+// server's home. On a host, or where no such volume was found, nothing is given.
+test("on a named data volume, the Docker provider gets the volume, where it is mounted, and a daemon copy under it; on a host or with no volume, none", () => {
+  const compose = dockerVolumeOf({ paths: { at: "/data", volume: "agentrun_agentrun-data" } });
+  assert.deepEqual(compose, { volume: { name: "agentrun_agentrun-data", root: "/data" }, daemonCache: "/data/.agentrun/computerd" });
+  assert.ok(compose.daemonCache.startsWith(`${compose.volume.root}/`), "the daemon copy is under the volume's mount");
+  assert.equal(dockerVolumeOf({ here: true }), undefined);
+  assert.equal(dockerVolumeOf({ reason: "no named volume" }), undefined);
+});
+
+test("the claim's Docker provider is built with the named data volume where this process's Docker has the data, read once", async () => {
+  let read = 0;
+  const dockerPaths = async () => (read++, { paths: { at: "/data", volume: "agentrun_agentrun-data" } });
+  const root = scratch();
+  const sealKey = randomBytes(32);
+  const store = await savedKeysStore(sealKey);
+  const record = { created: [], released: [], loaded: [] };
+  const load = async (id, options) => (record.loaded.push([id, options]), fakeSandbox(root, record));
+  const { computerForClaim, computerDeps } = computerDepsFrom({ env: ENV, store, sealKey, kinds: KINDS, load, dockerPaths });
+  for (const epoch of [3, 4]) {
+    const answer = await computerForClaim({ runId: "run-1", epoch, computer: { kind: "sandbox", provider: "docker" } }, store, { ...computerDeps, mode: 1, workspace: localWorkspace(root), sealKey });
+    await answer.release();
+  }
+  assert.deepEqual(record.loaded.map(([id, options]) => [id, options.volume, options.daemonCache]), [
+    ["docker", { name: "agentrun_agentrun-data", root: "/data" }, "/data/.agentrun/computerd"],
+    ["docker", { name: "agentrun_agentrun-data", root: "/data" }, "/data/.agentrun/computerd"],
+  ]);
+  assert.equal(read, 1, "where the Docker has the data is read once");
+  // On a host: no volume and no daemon copy's place is given; the provider keeps its own.
+  const host = computerDepsFrom({ env: ENV, store, sealKey, kinds: KINDS, load, dockerPaths: async () => ({ here: true }) });
+  const answer = await host.computerForClaim({ runId: "run-2", epoch: 1, computer: { kind: "sandbox", provider: "docker" } }, store, { ...host.computerDeps, mode: 1, workspace: localWorkspace(root), sealKey });
+  await answer.release();
+  assert.deepEqual([record.loaded[2][1].volume, record.loaded[2][1].daemonCache], [undefined, undefined]);
 });

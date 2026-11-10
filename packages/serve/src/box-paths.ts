@@ -11,6 +11,7 @@
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
+import { FAUX_ENV } from "./model.js";
 import { withoutSecrets } from "./secrets.js";
 
 /** Where the daemon has the data directory: the named volume mounted at `at`, as pi-transport's Docker `paths` takes it. */
@@ -24,11 +25,8 @@ export const IN_COMPOSE = "run AgentRun in a container with `docker compose up` 
 /** An engine that cannot mount a volume's subpath. */
 export const OLD_ENGINE = "Docker Engine <26 can't mount a named volume's subpath: upgrade to Docker 26+";
 
-/** Why a Docker computer can't run for a server that is not on its Docker's own host: a run's computer binds the run's
- *  folder (and the computer's daemon) by this server's own paths, which a daemon elsewhere doesn't have. Not yet a way
- *  in: the named volume's subpaths the old box stack mounted aren't the computer's. */
-export const COMPUTERS_IN_CONTAINER = "the server runs in a container: Docker can't mount the run's folder from inside it yet, so Docker computers aren't available on this setup (give the agent another computer, or run the server on the Docker host)";
-/** The same, for a daemon this server reaches other than through a local unix socket. */
+/** Why a Docker computer can't run for a server whose Docker daemon is another machine's: a run's computer mounts the
+ *  run's folder (and the computer's daemon) by this server's own paths, which that daemon doesn't have. */
 export const COMPUTERS_REMOTE_DOCKER = "DOCKER_HOST names a Docker daemon that isn't a local unix socket: it can't mount the run's folder from this machine, so Docker computers aren't available on this setup (give the agent another computer, or run the server on the Docker host)";
 
 /** Whether `env`'s DOCKER_HOST names a daemon other than a local unix socket (tcp://, ssh://, or any other). Unset or
@@ -37,6 +35,27 @@ export const remoteDocker = (env: NodeJS.ProcessEnv): boolean => {
   const host = env.DOCKER_HOST?.trim();
   return host !== undefined && host !== "" && !host.startsWith("unix://");
 };
+
+/** Why this server can't run a Docker computer, or undefined when it can: on its Docker's own host (`here`), or in a
+ *  container of that Docker's with its data on a named volume (`paths`: the computer mounts the run's folder and its
+ *  daemon as that volume's subpaths, workspace/computer-deps.ts dockerVolumeOf). Any other layout says why (`reason`,
+ *  dockerPathsOf), and so does a daemon of another machine. The one check every reader of Docker's offer takes. */
+export function dockerComputerRefusal(paths: DockerPaths, env: NodeJS.ProcessEnv): string | undefined {
+  if ("reason" in paths) return paths.reason;
+  return remoteDocker(env) ? COMPUTERS_REMOTE_DOCKER : undefined;
+}
+
+/** Where a runner's Docker has the data directory `data`, read once by the runner that makes a Docker computer: as the
+ *  server reads it at its start (dockerPathsOf), on Linux alone; under `--faux` from the mountinfo file the tests name
+ *  (FAUX_MOUNTINFO_ENV), else as a host. */
+export async function dockerPathsForRuns(env: NodeJS.ProcessEnv, data: string, platform: NodeJS.Platform = process.platform): Promise<DockerPaths> {
+  if (platform !== "linux") return { here: true };
+  if (env[FAUX_ENV]) {
+    const faux = env[FAUX_MOUNTINFO_ENV];
+    return faux ? dockerPathsOf(env, data, { mountinfo: await readFile(faux, "utf8"), inContainer: true }) : { here: true };
+  }
+  return dockerPathsOf(env, data);
+}
 
 /** Under `--faux` only: a file the server reads as its /proc/self/mountinfo (server.ts fauxMountinfo). */
 export const FAUX_MOUNTINFO_ENV = "AGENTRUN_SERVE_FAUX_MOUNTINFO";

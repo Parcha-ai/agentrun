@@ -9,6 +9,7 @@
 // lease lapses); then 0. Bad arguments exit 2, a store schema it does not know 3, anything else 1.
 import { mkdirSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { dockerPathsForRuns } from "../box-paths.js";
 import { SECRET_NAMES, secret } from "../secrets.js";
 import { migrationsIn, openStore, SchemaVersionUnknown, type Store, storePlace, storeTarget } from "../store/index.js";
 import { SCHEMA_VERSION } from "../store/schema.js";
@@ -109,8 +110,9 @@ export function runnerLoop(store: Store, dataDir: string, env: NodeJS.ProcessEnv
   if (!sealKey) throw new RunnerRefused(`A runner needs the server's seal key (${SEAL_KEY_ENV}): start it through the server's launcher, which hands it over.`);
   const runs = runEnv(env);
   // The run's computer at its claim, composed once (workspace/computer-deps.ts): none for the runner's place, a box's
-  // computer by the agent's setting, its keys read from the run environment first, then the store's sealed rows.
-  const computers = computerDepsFrom({ env: runs, store, sealKey });
+  // computer by the agent's setting, its keys read from the run environment first, then the store's sealed rows; a
+  // Docker computer's mounts by where this process's Docker has the data directory (box-paths.ts), read once.
+  const computers = computerDepsFrom({ env: runs, store, sealKey, dockerPaths: () => dockerPathsForRuns(runs, dataDir) });
   const deps = {
     env: runs, data: dataDir, journal: (claim: Parameters<Store["journal"]>[0]) => store.journal(claim), store, sealKey, routeOf,
     computerForClaim: computers.computerForClaim, computerDeps: computers.computerDeps,

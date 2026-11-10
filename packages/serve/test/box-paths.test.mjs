@@ -170,16 +170,13 @@ test("a Mac server is never in a container of its Docker's: even given a contain
   assert.deepEqual(asked, [], "no inspect of its own container");
 });
 
-/** Why a server in a container has no Docker computer yet (box-paths.ts COMPUTERS_IN_CONTAINER). */
-const IN_CONTAINER = "the server runs in a container: Docker can't mount the run's folder from inside it yet, so Docker computers aren't available on this setup (give the agent another computer, or run the server on the Docker host)";
+const IN_COMPOSE = "run AgentRun in a container with `docker compose up` from compose.yaml (its named data volume is how boxes reach a run's files)";
 
 test("the server in a container that this Docker does not have, its data not on a named volume, or on an engine that can't mount a volume's subpath: docker is unavailable at start, saying why, and no box is made", { timeout: 120_000 }, async (t) => {
-  // Every layout in a container says the one reason: a run's Docker computer binds the run's folder by the server's own
-  // path, which no daemon outside the container has.
   for (const [given, reason] of [
-    [{ own: false }, IN_CONTAINER],
-    [{ bind: true }, IN_CONTAINER],
-    [{ marks: { "docker-api": "1.44\n" } }, IN_CONTAINER],
+    [{ own: false }, IN_COMPOSE],
+    [{ bind: true }, IN_COMPOSE],
+    [{ marks: { "docker-api": "1.44\n" } }, "Docker Engine <26 can't mount a named volume's subpath: upgrade to Docker 26+"],
   ]) {
     const data = await dataDir(t);
     const mounts = given.bind ? [{ Type: "bind", Source: "/opt/agentrun-data", Destination: data, RW: true }] : [{ Type: "volume", Name: "v", Source: "/var/lib/docker/volumes/v/_data", Destination: data, RW: true }];
@@ -195,16 +192,17 @@ test("the server in a container that this Docker does not have, its data not on 
   }
 });
 
-// compose.yaml's own layout (its data a named volume, Docker Engine 26+), the one the old box stack mounted by the
-// volume's subpaths: a run's Docker computer can't, so Docker isn't offered, said once in the words every reader takes.
-// A run that names a Docker computer is refused at its start in them, and a new agent falls back as on a machine with no
-// Docker: the runner, with the file tools and no shell.
-test("the server in a container of its Docker's, its data a named volume (compose.yaml's layout): Docker computers aren't offered, a run naming one is refused at its start in those words, and a new agent gets the runner", { timeout: 120_000 }, async (t) => {
+// A server in a container with no named data volume can't run a Docker computer (its run's folder and the computer's
+// daemon would be mounted by paths the host's Docker doesn't have): the words above refuse a run that names one at its
+// start, never at its create, and an agent with no computer falls back as on a machine with no Docker, to the runner,
+// with the file tools and no shell.
+test("the server in a container with no named data volume: a run naming a Docker computer is refused at its start in those words, and a new agent gets the runner", { timeout: 120_000 }, async (t) => {
   const data = await dataDir(t);
-  const fake = await containerDocker(t, { mounts: [{ Type: "volume", Name: "agentrun_agentrun-data", Source: "/var/lib/docker/volumes/agentrun_agentrun-data/_data", Destination: data, RW: true }], volumes: { "agentrun_agentrun-data": data } });
-  const { api } = await serve(t, { data, faux: PROBE, fauxEgress: FAKE_EGRESS, fauxMountinfo: fake.mountinfo });
+  const fake = await containerDocker(t, { mounts: [{ Type: "bind", Source: "/opt/agentrun-data", Destination: data, RW: true }] });
+  withEnv(t, { AGENTRUN_SERVE_FAUX_MOUNTINFO: fake.mountinfo });
+  const { api } = await serve(t, { data, faux: PROBE, fauxEgress: FAKE_EGRESS });
   const offer = await docker(api);
-  assert.deepEqual([offer.available, offer.state, offer.reason], [false, "unavailable", IN_CONTAINER], JSON.stringify(offer));
+  assert.deepEqual([offer.available, offer.state, offer.reason], [false, "unavailable", IN_COMPOSE], JSON.stringify(offer));
 
   const made = await api("POST", "/agents", { definition: { id: "boxed-computer", name: "boxed", instructions: "Probe.", computer: { kind: "sandbox", provider: "docker" } } });
   assert.equal(made.status, 201, JSON.stringify(made.body));
@@ -212,7 +210,7 @@ test("the server in a container of its Docker's, its data a named volume (compos
   assert.equal(started.status, 409, JSON.stringify(started.body));
   assert.equal(started.body.error.code, "agent_not_runnable");
   const field = started.body.error.fields.find((one) => one.field === "definition.computer");
-  assert.equal(field?.message, `This agent's computer is a Docker sandbox, and this server cannot run it: ${IN_CONTAINER}.`, JSON.stringify(started.body));
+  assert.equal(field?.message, `This agent's computer is a Docker sandbox, and this server cannot run it: ${IN_COMPOSE}.`, JSON.stringify(started.body));
 
   // An agent that names no place or computer: the runner, as where there is no Docker, with no default tools (no shell).
   const plain = await api("POST", "/agents", { definition: { id: "plain", name: "plain", instructions: "Answer." } });
