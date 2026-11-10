@@ -230,8 +230,10 @@ export interface McpGatewayOptions {
    *  credentials are copied at construction and a client sends the headers it connected with. */
   liveCredentials?: true;
   /** The claim's per-call check of a server's credential (its custody stamp): awaited before each call is checked for
-   *  sending, it may drop the credential (`credentials[server].unopened`), which the call then refuses unsent. Only the
-   *  runner's MCP claim step passes it, with liveCredentials: a github_app token whose App was disconnected or replaced. */
+   *  sending, it may drop the credential (`credentials[server].unopened`), which the call then refuses unsent; one that
+   *  throws (a store read failed, the call was stopped) refuses the call unsent too, in words, and the run goes on. Only
+   *  the runner's MCP claim step passes it, with liveCredentials: a github_app token whose App was disconnected or
+   *  replaced. Both doors meet in it: pi's host tools and a CLI harness's session proxy each end in the same call. */
   beforeCall?: (server: string, signal: AbortSignal) => Promise<void>;
 }
 
@@ -408,8 +410,15 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
 
   /** A call the gate let go: a priced one under the run's cap and booked, an unpriced one marked not metered. */
   const sent = async (server: string, tool: string, args: Record<string, unknown>, callId: string, signal: AbortSignal): Promise<McpCallResult> => {
-    // The credential's custody checked first: one the claim drops now is refused below, unsent.
-    await options.beforeCall?.(server, signal);
+    // The credential's custody checked first: one the claim drops now is refused below, unsent. A check that could not
+    // be made (a store read failed, the call was stopped) refuses this call unsent too, in words: never sent unchecked.
+    if (options.beforeCall) {
+      try {
+        await options.beforeCall(server, signal);
+      } catch {
+        return said(`The MCP server ${server}'s credential can't be used right now: it could not be checked just now. Nothing was sent.`, true);
+      }
+    }
     const why = unsendable(server, tool);
     if (why) return said(why, true);
     const { url, prices, tools: pinnedTools } = pins.get(server)!;

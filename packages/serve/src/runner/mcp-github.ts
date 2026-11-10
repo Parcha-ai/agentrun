@@ -119,7 +119,8 @@ export function githubTokens(access: GithubAppAccess | undefined, { now = Date.n
      *  and revoked, and the server's calls refused in words. */
     async check(name: string): Promise<void> {
       const kept = held.get(name);
-      if (!kept || !access?.same || (await access.same().catch(() => true))) return;
+      // A read that fails throws on: the gateway refuses the call unsent, the token kept (fail closed, never dropped).
+      if (!kept || !access?.same || (await access.same())) return;
       if (released || held.get(name) !== kept) return;
       drop(name);
       kept.put({ unopened: GITHUB_UNUSABLE.disconnected });

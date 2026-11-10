@@ -304,7 +304,8 @@ export async function mcpClaim(options: McpClaimOptions): Promise<McpClaimStep> 
   };
 
   await fresh();
-  const beforeCall = async (server: string): Promise<void> => {
+  const beforeCall = async (server: string, signal: AbortSignal): Promise<void> => {
+    signal.throwIfAborted();
     if (!released) await github.check(server);
   };
   return { pin, credentials, secrets, fresh, release, beforeCall };

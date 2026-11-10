@@ -17,6 +17,7 @@ const { githubAppAccess } = await import("../dist/runner/github-app.js");
 const { mcpClaim } = await import("../dist/runner/mcp-claim.js");
 const { mcpGateway } = await import("../dist/mcp-gateway.js");
 const { githubTokens, GITHUB_UNUSABLE } = await import("../dist/runner/mcp-github.js");
+const { mcpForClaim } = await import("../dist/runner/mcp-run.js");
 
 const KEY = randomBytes(32);
 const { privateKey: PEM } = generateKeyPairSync("rsa", { modulusLength: 2048, privateKeyEncoding: { type: "pkcs1", format: "pem" }, publicKeyEncoding: { type: "spki", format: "pem" } });
@@ -215,7 +216,9 @@ test("an App disconnected or replaced while a run holds its token stops it at th
   await until(() => github.revoked.length === before + 1);
 });
 
-test("an App disconnected between two calls of one claim refuses the second call in words before anything is sent, with no mint in between, and the token the first call used is revoked", async (t) => {
+/** A claim's MCP for run-1 with a github_app server "gh" at a fake MCP server, through mcpForClaim as a spec builder makes
+ *  it, and its two doors: pi's host tool, and the session a CLI harness's own MCP client reaches through its proxy. */
+async function claimedGitHub(t, { failSame } = {}) {
   const { store } = await storeOn(t);
   await connected(store);
   const github = await fakeGitHub(t);
@@ -225,21 +228,51 @@ test("an App disconnected between two calls of one claim refuses the second call
   await store.mcp.put({ name: "gh", url: fake.url, auth: "github_app", tools: [ADD], sealed: null });
   await queued(store, "run-1");
   const claim = await store.claim("run-1", "runner-a", { leaseMs: 60_000 });
-  const githubApp = await githubAppAccess(store, KEY, { content: "Fix https://github.com/acme/widgets" }, { api: github.api });
-  const step = await mcpClaim({ store, claim, grants: ["mcp:gh/add"], sealKey: KEY, signal: new AbortController().signal, githubApp, githubMcpOrigin: new URL(fake.url).origin });
-  t.after(() => step.release());
   const work = mkdtempSync(join(tmpdir(), "github-app-"));
   t.after(() => rmSync(work, { recursive: true, force: true }));
-  const gateway = mcpGateway({ pin: step.pin, credentials: step.credentials, work: () => work, liveCredentials: true, beforeCall: step.beforeCall });
-  const call = () => gateway.call("gh", "add", { a: 1, b: 1 }, { signal: new AbortController().signal });
-  assert.deepEqual(await call(), { content: [{ type: "text", text: "2" }] }, "the first call, with the App's token");
-  const sentBefore = fake.log.filter((entry) => entry.method === "tools/call").length;
-  await store.triggerSettings.removeScope("github", "server");
-  const refused = await call();
-  assert.equal(refused.isError, true, JSON.stringify(refused));
-  assert.equal(refused.content[0].text, `The MCP server gh's credential can't be used right now: ${GITHUB_UNUSABLE.disconnected}.`);
-  assert.equal(fake.log.filter((entry) => entry.method === "tools/call").length, sentBefore, "nothing sent");
-  assert.deepEqual(github.asked.filter((a) => a.method === "POST").map((a) => a.url), ["/app/installations/777/access_tokens"], "no mint in between");
-  for (let i = 0; i < 1000 && !github.revoked.length; i++) await new Promise((resolve) => setImmediate(resolve));
-  assert.deepEqual(github.revoked, ["not-a-secret-ghs-token"], "the token the first call used, revoked");
+  const access = await githubAppAccess(store, KEY, { content: "Fix https://github.com/acme/widgets" }, { api: github.api });
+  const failing = { ...access, same: async () => (failSame?.() ? Promise.reject(new Error("the store did not answer")) : access.same()) };
+  const mcp = await mcpForClaim({ claim, store, sealKey: KEY, grants: ["mcp:gh/add"], harness: { commit: async () => { throw new Error("no record here"); } }, work: () => work, launchInput: {}, githubAppAccess: async () => failing, githubMcpOrigin: new URL(fake.url).origin });
+  t.after(() => mcp.release());
+  const host = mcp.tools.find((tool) => tool.name === "mcp__gh__add");
+  let n = 0;
+  const doors = {
+    pi: async () => host.call({ a: 1, b: 1 }, { signal: new AbortController().signal, callId: `pi-${++n}` }),
+    cli: async () => {
+      const said = await mcp.session(new Map([[host.name, host]]), async () => undefined).call("gh", "add", { a: 1, b: 1 }, { signal: new AbortController().signal, callId: `cli-${++n}` });
+      return { text: said.content.map((block) => block.text).join("\n\n"), isError: said.isError === true };
+    },
+  };
+  const calls = () => fake.log.filter((entry) => entry.method === "tools/call").length;
+  return { store, github, doors, calls };
+}
+
+test("both doors check the App at each call: on pi's host tools and on a CLI harness's session, an App disconnected between two calls of one claim refuses the second unsent, and its token is revoked", async (t) => {
+  for (const door of ["pi", "cli"]) {
+    const { store, github, doors, calls } = await claimedGitHub(t);
+    assert.equal((await doors[door]()).text, "2", `${door}: the first call, with the App's token`);
+    const sent = calls();
+    await store.triggerSettings.removeScope("github", "server");
+    const refused = await doors[door]();
+    assert.deepEqual([refused.isError, refused.text], [true, `The MCP server gh's credential can't be used right now: ${GITHUB_UNUSABLE.disconnected}.`], door);
+    assert.equal(calls(), sent, `${door}: nothing sent`);
+    for (let i = 0; i < 1000 && !github.revoked.length; i++) await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(github.revoked, ["not-a-secret-ghs-token"], `${door}: revoked`);
+  }
+});
+
+test("a per-call check that fails (the App's read throws) refuses the call unsent in words on either door, keeps the token, and the next call that checks goes through", async (t) => {
+  for (const door of ["pi", "cli"]) {
+    let failing = false;
+    const { github, doors, calls } = await claimedGitHub(t, { failSame: () => failing });
+    assert.equal((await doors[door]()).text, "2", door);
+    const sent = calls();
+    failing = true;
+    const refused = await doors[door]();
+    assert.deepEqual([refused.isError, refused.text], [true, "The MCP server gh's credential can't be used right now: it could not be checked just now. Nothing was sent."], door);
+    assert.equal(calls(), sent, `${door}: nothing sent`);
+    assert.deepEqual(github.revoked, [], `${door}: the token kept, never dropped on a read that failed`);
+    failing = false;
+    assert.equal((await doors[door]()).text, "2", `${door}: the next call checks and goes through`);
+  }
 });
