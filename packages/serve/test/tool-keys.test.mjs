@@ -609,3 +609,27 @@ test("a tool-settings PUT and a tool key's PUT and DELETE answer without probing
   });
   assert.deepEqual(events, ["probe:start", "PUT /v2/settings/tools", "PUT /v2/settings/tools", "PUT /v2/settings/tool-keys/parallel", "PUT /v2/settings/tool-keys/monid", "DELETE /v2/settings/tool-keys/monid", "DELETE /v2/settings/tool-keys/parallel"]);
 });
+
+test("a model key's row names the harnesses that key runs here, the same before and after another provider's key is saved: with claude-agent on the host's endpoint, OpenRouter's row never names it", async (t) => {
+  const standIn = await codexStandIn(t);
+  for (const [label, vars] of [
+    ["claude-agent on the host's endpoint", { ANTHROPIC_BASE_URL: "https://gateway.invalid" }],
+    ["no endpoint set", {}],
+  ]) {
+    await t.test(label, async (st) => {
+      withEnv(st, { AGENTRUN_SEAL_KEY: sealKey(), AGENTRUN_SERVE_CODEX_STANDIN: standIn, ...vars }, [...KEYS, ...HARNESS_VARS]);
+      withMemory(st, ROOMY_MIB);
+      const { api } = await serve(st, { harnesses: true });
+      const rows = async () => Object.fromEntries((await api("GET", "/settings/tool-keys")).body.keys.filter((key) => key.kind === "model").map((key) => [key.id, key.harnesses]));
+      const before = await rows();
+      assert.equal((await api("PUT", "/settings/tool-keys/anthropic", { values: { ANTHROPIC_API_KEY: made() } })).status, 204);
+      const offers = (await api("GET", "/capabilities")).body.harnesses;
+      assert.equal(offers.find((offer) => offer.id === "claude-agent").available, true, `Anthropic's key runs claude-agent now: ${JSON.stringify(offers)}`);
+      const after = await rows();
+      assert.deepEqual(after, before, "no row's harnesses change when Anthropic's key is saved");
+      assert.ok(after.anthropic.includes("claude-agent"), "Anthropic's row names claude-agent");
+      if (vars.ANTHROPIC_BASE_URL) assert.ok(!after.openrouter.includes("claude-agent"), `OpenRouter's key never reaches claude-agent on the host's endpoint: ${JSON.stringify(after)}`);
+      else assert.ok(after.openrouter.includes("claude-agent"), "with no endpoint, OpenRouter's key runs claude-agent");
+    });
+  }
+});
