@@ -281,6 +281,65 @@ describe("applying a template", () => {
     expect([...made.querySelectorAll('a[href="#/triggers/trg_hook"]')].map((a) => a.textContent)).toContain("Open lead-webhook to get its signing secret (Rotate)");
   });
 
+  it("offers a parameter whose pattern is a plain alternation as a choice of its values, and never prints a raw pattern", async () => {
+    const LEAD: TemplateView = { ...REVIEWER, name: "inbound-lead", parameters: {
+      post_to: { type: "string", required: true, description: "where each brief goes", pattern: "^(crm|slack|none)$" },
+      slack_channel: { type: "string", required: false, description: "the Slack channel's id", pattern: "^[CG][A-Z0-9]{8,12}$" },
+    } };
+    const t = await open("inbound-lead", { templates: [LEAD] });
+    const field = t.host.querySelector('[data-field="parameters.post_to"]')!;
+    const select = field.querySelector("select")!;
+    expect(select).toBeTruthy();
+    expect(field.querySelector('input[type="text"]')).toBeNull();
+    expect([...select.options].map((o) => o.value).filter(Boolean)).toEqual(["crm", "slack", "none"]);
+    // The help says the parameter's own words, never its pattern.
+    const section = t.host.querySelector('section[aria-label="Parameters"]')!.textContent ?? "";
+    expect(section).not.toContain("^(");
+    expect(section).not.toContain("(as ");
+    expect(section).not.toContain("[CG]");
+    expect(field.textContent).toContain("where each brief goes");
+    await act(async () => { select.value = "slack"; select.dispatchEvent(new Event("change", { bubbles: true })); });
+    await t.click(t.button(/^Apply/));
+    expect(t.sent[0].body.parameters).toEqual({ post_to: "slack" });
+  });
+
+  it("keeps a pattern with a wildcard as a text field, and names an optional choice's default in its empty option", async () => {
+    const T: TemplateView = { ...REVIEWER, name: "mixed", parameters: {
+      host: { type: "string", required: true, description: "a host", pattern: "^(foo.bar|other)$" },
+      post_to: { type: "string", required: false, description: "where it goes", pattern: "^(crm|slack|none)$", default: "crm" },
+    } };
+    const t = await open("mixed", { templates: [T] });
+    // "." matches any character for the server: not a fixed list, so it stays a text field.
+    expect(t.host.querySelector('[data-field="parameters.host"] select')).toBeNull();
+    expect(t.host.querySelector('[data-field="parameters.host"] input[type="text"]')).toBeTruthy();
+    // Left on its empty option, the server applies the default: the option says so.
+    const empty = t.host.querySelector<HTMLOptionElement>('[data-field="parameters.post_to"] select option[value=""]')!;
+    expect(empty.textContent).toBe("crm (default)");
+  });
+
+  it("offers a parameter's enum as a choice of its values, sends an integer one as a number, and shows not_an_option under it", async () => {
+    const T: TemplateView = { ...REVIEWER, name: "inbound-lead", parameters: {
+      post_to: { type: "string", required: true, description: "where each brief goes", enum: ["crm", "slack", "none"] },
+      depth: { type: "integer", required: false, description: "how many pages to read", enum: [1, 3, 7], default: 3 },
+    } };
+    const refusal = Object.assign(new ClientError(422, "input_invalid", "The template's input is not valid."), { fields: [
+      { field: "parameters.post_to", reason: "not_an_option", message: "parameters.post_to is one of crm, slack, none: where each brief goes" },
+    ] });
+    const t = await open("inbound-lead", { templates: [T], apply: async () => { throw refusal; } });
+    const post = t.host.querySelector<HTMLSelectElement>('[data-field="parameters.post_to"] select')!;
+    expect(post).toBeTruthy();
+    expect(t.host.querySelector('[data-field="parameters.post_to"] input')).toBeNull();
+    expect([...post.options].map((o) => o.value).filter(Boolean)).toEqual(["crm", "slack", "none"]);
+    const depth = t.host.querySelector<HTMLSelectElement>('[data-field="parameters.depth"] select')!;
+    expect([...depth.options].map((o) => o.value).filter(Boolean)).toEqual(["1", "3", "7"]);
+    expect(depth.querySelector('option[value=""]')!.textContent).toBe("3 (default)");
+    await act(async () => { post.value = "slack"; post.dispatchEvent(new Event("change", { bubbles: true })); });
+    await act(async () => { depth.value = "7"; depth.dispatchEvent(new Event("change", { bubbles: true })); });
+    await t.click(t.button(/^Apply/));
+    expect(t.sent[0].body.parameters).toEqual({ post_to: "slack", depth: 7 });
+    expect(t.host.querySelector('[data-field="parameters.post_to"]')!.textContent).toContain("parameters.post_to is one of crm, slack, none: where each brief goes");
+  });
+
   it("opens the made agent at once when there are no warnings", async () => {
     const t = await open("pr-reviewer");
     await t.type(t.host.querySelector('[data-field="parameters.repo"] input'), "acme/web");
