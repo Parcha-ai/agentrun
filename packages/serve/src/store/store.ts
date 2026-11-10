@@ -445,6 +445,16 @@ export interface Templates {
   upgrade(agentId: string, revision: NewRevision, triggers: { upsert: readonly TriggerDef[]; remove: readonly string[] }): Promise<void>;
 }
 
+/** A trigger's conversation (store schema `trigger_conversations`): a thread its source keeps per trigger, its run once
+ *  one started there, and when it was first and last written in (ms). */
+export interface TriggerConversationRow {
+  readonly triggerId: string;
+  readonly key: string;
+  readonly runId: string | null;
+  readonly createdAt: number;
+  readonly lastAt: number;
+}
+
 export interface Triggers {
   get(id: string): Promise<TriggerRow | undefined>;
   list(agentId: string): Promise<TriggerRow[]>;
@@ -471,6 +481,15 @@ export interface Triggers {
   fire(firing: Firing, run: { id: string; agentId: string; revisionId: string }, options?: { launch?: RunLaunchInput }): Promise<RunRow>;
   /** The enabled triggers listening on (`kind`, `scope`): its scope rows. */
   scoped(kind: string, scope: string): Promise<string[]>;
+  /** Conversation `key` of trigger `triggerId` (a Slack trigger's thread), or undefined: the run it started, if one has,
+   *  and when it was first and last written in (ms). */
+  conversation(triggerId: string, key: string): Promise<TriggerConversationRow | undefined>;
+  /** Conversation `key` written in at `at` (ms): made when it is new (created then), its last_at moved on, and its run set
+   *  once given (`runId`; never cleared, never moved to another run). */
+  keepConversation(conversation: { triggerId: string; key: string; runId?: string; at: number }): Promise<void>;
+  /** The trigger's conversations not written in for `keptMs` before `now` removed, then the oldest past `kept`: a later
+   *  event in one that went is no message to its run. Answers how many went. */
+  pruneConversations(triggerId: string, options: { keptMs: number; kept: number; now: number }): Promise<number>;
   /** `firings` recorded and the trigger's `patch` applied, in one transaction; a key already there is not recorded again
    *  (`created` false for it). With `room`, a due firing is refused (TriggerFull, nothing written) while the trigger holds
    *  `room` due already. Undefined when there is no such trigger. */

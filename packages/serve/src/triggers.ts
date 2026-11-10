@@ -22,11 +22,11 @@
 // latest fires if it is within the trigger's catch-up window and the rest are one `missed` row; the schedule goes on from
 // now. A failed firing queues a trigger.failed webhook message.
 import { createHash, randomBytes } from "node:crypto";
-import { type MessageOrigin, TRIGGER_LABELS, type TriggerSource } from "@parcha/pi-durable-agent/timeline";
+import { type MessageOrigin, triggerLabel } from "@parcha/pi-durable-agent/timeline";
 import { ApiError, type InputIssue, invalid } from "./errors.js";
 import { EFFORTS } from "./model.js";
 import { AgentArchived, type FiringRow, type NewFiring, type Store, StoreConstraint, TriggerFull, type TriggerPatch, type TriggerRow } from "./store/index.js";
-import { second, type Source, type TriggerAdapter, validZone } from "./trigger-adapter.js";
+import { type PushEvent, second, SENDER_STARTS, type Source, type TriggerAdapter, validZone } from "./trigger-adapter.js";
 import { TRIGGER_ADAPTERS } from "./trigger-adapters.js";
 import { MAX_EVERY_S } from "./trigger-schedule.js";
 import { ID, IDEMPOTENCY_TTL_S, isObject, type Json, unknownFields } from "./validate.js";
@@ -65,6 +65,15 @@ const MISSED_COUNTED = 10_000;
 const MAX_TIMEOUT_MS = 2 ** 31 - 1;
 const MAX_NAME = 200;
 const DAY_MS = IDEMPOTENCY_TTL_S * 1000;
+/** A trigger's conversations (a Slack trigger's threads) are kept this long after their last event, and at most
+ *  CONVERSATIONS_KEPT: a later event in one that went is no message to its run. */
+const CONVERSATION_KEPT_MS = 30 * 86_400_000;
+const CONVERSATIONS_KEPT = 1_000;
+/** How soon a reply waits again for its conversation's run, while the conversation's start is still due. */
+const CONVERSATION_WAIT_MS = 2_000;
+/** Why a source that declares a steering message may answer a run's question is refused: no run takes a trigger's
+ *  message as an answer yet. */
+export const ANSWERS_UNSUPPORTED = "A steering message that answers a run's question is not supported yet: no run takes a trigger's message as an answer.";
 /** The most keys each trigger keeps for their day past its history (an ignored request's, a pushed or run now firing's
  *  that left the history): a sender's event sent again within its day starts nothing, however many came between. Past
  *  it the oldest go first, and the log says so. */
@@ -292,6 +301,7 @@ export class Triggers {
   async create(body: Json) {
     const now = this.clock.now();
     const { issues, source, target, settings } = readBody(this.adapters, body, now);
+    if (source && target) issues.push(...this.aimIssues(source, target));
     // Checked as its runs are given it: the input, then the line saying what fired it (a name the trigger may yet take).
     if (target) issues.push(...(await this.deps.targetIssues(this.given(typeof body.name === "string" ? body.name.trim() : `trg_${"0".repeat(24)}`, source, target, now))));
     if (issues.length || !source || !target) throw invalid(issues);
@@ -422,19 +432,62 @@ export class Triggers {
     }
   }
 
-  /** A delivered request for trigger `id` (its pushed source's checks passed, server.ts): its firing, keyed by the
-   *  sender's own id for it (a webhook's `webhook-id`), with what its source says of it (`attrs`), recorded due in one
-   *  write and driven after the answer. `created` false: that id's firing, as it stands, or `{ok: "duplicate"}` for a
-   *  request ignored within its day. */
+  /** A delivered request for trigger `id` with one event, as a webhook's is (`attrs`: what its source says of the
+   *  payload): receiveEvent's, which takes it. */
   async receive(id: string, eventId: string, payload: string, attrs?: Record<string, string>): Promise<{ created: boolean; firing: ReturnType<typeof firingView> | { ok: "duplicate" } }> {
+    return (await this.receiveEvent(id, { key: eventId, text: payload, ...(attrs ? { attrs } : {}) }))!;
+  }
+
+  /** An event its pushed source delivered for trigger `id` (its checks passed, push-handler.ts), held to the trust its
+   *  source declares (Trust), here alone: one from an actor it may not start a run for starts nothing, and one in a
+   *  conversation steers that conversation's run only from an actor it may steer. In a conversation this trigger
+   *  started a run for (and kept), it is a message to that run; else, when it asks to (`opens`), a new conversation and
+   *  its run. Keyed by the sender's own id for it, so a retry is one firing; recorded due, with its conversation (in its
+   *  attrs), and driven after the answer; refused (429) while the trigger holds DUE_KEPT firings due. Undefined: nothing
+   *  to act on. `created` false: that id's firing, as it stands, or `{ok: "duplicate"}` for one ignored within its day. */
+  async receiveEvent(id: string, event: PushEvent): Promise<{ created: boolean; firing: ReturnType<typeof firingView> | { ok: "duplicate" } } | undefined> {
     const trigger = await this.need(id);
     const by = trigger.source.kind;
-    const key = firingKey(by, id, eventId);
+    const trust = this.adapter(trigger.source).trust ?? SENDER_STARTS;
+    const actor = event.actor ?? "sender";
+    const key = firingKey(by, id, event.key);
+    // The same key again is its firing as it stands, whoever sent it: trust was held to when it was first taken.
+    const known = await this.store.triggers.firing(id, key);
+    if (known) return known.status === "ignored" ? { created: false, firing: { ok: "duplicate" } } : { created: false, firing: firingView(known) };
     const now = this.clock.now();
-    const recorded = await this.record(trigger, { key, by, nominalAt: Math.floor(now / 1000) * 1000, status: "due", payload: cut(payload), ...(attrs && Object.keys(attrs).length ? { attrs } : {}) }, { room: true });
+    const conversation = event.conversation;
+    const held = conversation === undefined ? undefined : await this.store.triggers.conversation(id, conversation);
+    const kept = held !== undefined && now - held.lastAt <= CONVERSATION_KEPT_MS;
+    // A conversation whose start made no run (refused, or gone), and is not still due: an event that asks to opens it
+    // again, under its own key; one that does not reaches nothing there.
+    const unstarted = held !== undefined && held.runId === null && !(await this.startDue(id, conversation!));
+    const reply = kept && !(unstarted && event.opens === true);
+    if (reply ? !trust.steer.includes(actor) : !trust.start.includes(actor) || (conversation !== undefined && event.opens !== true)) return undefined;
+    const attrs = { ...(event.attrs ?? {}), ...(conversation === undefined ? {} : { [CONVERSATION]: conversation }), ...(reply ? { [REPLY]: "1" } : {}) };
+    const recorded = await this.record(trigger, { key, by, nominalAt: Math.floor(now / 1000) * 1000, status: "due", payload: cut(event.text), ...(Object.keys(attrs).length ? { attrs } : {}) }, { room: true });
+    if (recorded.created && conversation !== undefined) {
+      await this.store.triggers.keepConversation({ triggerId: id, key: conversation, at: now });
+      // Conversations untouched for CONVERSATION_KEPT_MS go, and the oldest past CONVERSATIONS_KEPT.
+      await this.store.triggers.pruneConversations(id, { keptMs: CONVERSATION_KEPT_MS, kept: CONVERSATIONS_KEPT, now });
+    }
     if (recorded.created) void this.inTurn(id, key);
     if (!recorded.created && recorded.firing.status === "ignored") return { created: false, firing: { ok: "duplicate" } };
     return { created: recorded.created, firing: firingView(recorded.firing) };
+  }
+
+  /** Whether conversation `key` of trigger `id`'s start (a firing in it that is no reply) is still due: its run may yet
+   *  start, so a reply waits for it. */
+  private async startDue(id: string, key: string): Promise<boolean> {
+    return (await this.store.triggers.pending()).some((f) => f.triggerId === id && f.status === "due" && conversationOf(f.attrs) === key && !isReply(f.attrs));
+  }
+
+  /** The conversation trigger `triggerId`'s firing `key` started a run in, if it started one: where a line about the run
+   *  is posted (a Slack trigger's thread). */
+  async conversationOfFiring(triggerId: string, key: string): Promise<{ trigger: Trigger; conversation: string } | undefined> {
+    const firing = await this.store.triggers.firing(triggerId, key);
+    const conversation = firing && !isReply(firing.attrs) ? conversationOf(firing.attrs) : undefined;
+    const trigger = conversation === undefined ? undefined : await this.find(triggerId);
+    return trigger && conversation !== undefined ? { trigger, conversation } : undefined;
   }
 
   /** PATCH: any of name, enabled, source, target, catchup_window_s and max_active_runs. Enabled again, or its source changed, a trigger goes on from now: a
@@ -456,6 +509,10 @@ export class Triggers {
     if (issues.length || (body.source !== undefined && !source) || (body.target !== undefined && !target)) throw invalid(issues);
     const trigger = await this.need(id);
     if (source && source.kind !== trigger.source.kind) throw invalid([{ field: "source.kind", reason: "not_allowed", message: "A trigger's source kind is fixed: make a new trigger for another." }]);
+    if (target) {
+      const aimed = this.aimIssues(trigger.source, target);
+      if (aimed.length) throw invalid(aimed);
+    }
     const now = this.clock.now();
     const enabled = typeof body.enabled === "boolean" ? body.enabled : trigger.enabled;
     const adapter = this.adapter(trigger.source);
@@ -612,6 +669,11 @@ export class Triggers {
     try {
       const firing = await this.store.triggers.firing(triggerId, key);
       if (!firing || firing.status !== "due") return;
+      // An event in a conversation whose run started is a message to that run.
+      if (isReply(firing.attrs)) {
+        const trigger = await this.find(triggerId);
+        return trigger ? void (await this.send(trigger, firing)) : undefined;
+      }
       // Its run already started (the store has its key) is its run, whatever runs now.
       const prior = await this.deps.runOf(key);
       if (this.closed) return;
@@ -626,7 +688,8 @@ export class Triggers {
       if (this.closed) return;
       if (archived) return void (await this.store.triggers.settle(triggerId, key, { status: "skipped", reason: archived }));
       if (trigger.target.kind === "message_run") return void (await this.send(trigger, firing));
-      const busy = await this.busy(trigger, firing);
+      // A conversation is one run of its own: a new one starts its run whatever another's is doing.
+      const busy = conversationOf(firing.attrs) !== undefined ? undefined : await this.busy(trigger, firing);
       if (this.closed) return;
       if (busy && "skipped" in busy) return void (await this.store.triggers.settle(triggerId, key, { status: "skipped", reason: busy.skipped }));
       if (busy && "waitsOn" in busy) return void (await this.wait(triggerId, key, busy.waitsOn, busy.reason));
@@ -660,8 +723,18 @@ export class Triggers {
    *  source's or a run now's keep each, up to DUE_KEPT; past it the firing is skipped in words. A target run that is gone
    *  turns the trigger off. */
   private async send(trigger: Trigger, firing: FiringRow): Promise<void> {
-    if (trigger.target.kind !== "message_run") return;
-    const { target } = trigger;
+    let target = trigger.target;
+    if (isReply(firing.attrs)) {
+      // An event in a conversation: its message to the conversation's run, once that run started; it waits while the
+      // conversation's start is still due, and is skipped when that start made no run.
+      const conversation = await this.store.triggers.conversation(trigger.id, conversationOf(firing.attrs)!);
+      if (!conversation?.runId) {
+        if (conversation && (await this.startDue(trigger.id, conversation.key))) return void (await this.store.triggers.settle(trigger.id, firing.key, { retryAt: this.clock.now() + CONVERSATION_WAIT_MS, reason: "The conversation's run has not started yet." }));
+        return void (await this.store.triggers.settle(trigger.id, firing.key, { status: "skipped", reason: "The conversation's run never started." }));
+      }
+      target = { kind: "message_run", run_id: conversation.runId, input: {} };
+    }
+    if (target.kind !== "message_run") return;
     if (!(await this.store.runs.get(target.run_id))) {
       await this.store.triggers.update(trigger.id, { enabled: false, nextAt: null, disabled: { at: iso(this.clock.now()), reason: "source_unreadable", detail: RUN_DELETED } });
       await this.store.triggers.settle(trigger.id, firing.key, { status: "skipped", reason: RUN_DELETED });
@@ -745,6 +818,10 @@ export class Triggers {
 
   private async started(triggerId: string, key: string, runId: string): Promise<void> {
     await this.store.triggers.settle(triggerId, key, { status: "started", runId }, { reset: true });
+    // A conversation's start: its run, which its later events message.
+    const firing = await this.store.triggers.firing(triggerId, key);
+    const conversation = firing && !isReply(firing.attrs) ? conversationOf(firing.attrs) : undefined;
+    if (conversation !== undefined) await this.store.triggers.keepConversation({ triggerId, key: conversation, runId, at: this.clock.now() });
     this.deps.say({ condition: "trigger_fired", trigger: triggerId, firing: key, run: runId });
   }
 
@@ -876,13 +953,15 @@ export class Triggers {
     if (refused) throw refused;
   }
 
-  /** The 409 scope_taken for `source`'s scope when another enabled trigger holds it, else undefined. */
+  /** The 409 scope_taken for the first of `source`'s scopes another enabled trigger holds, else undefined. */
   private async scopeRefusal(source: Source, id: string): Promise<ApiError | undefined> {
     const adapter = this.adapter(source);
     if (!adapter.scopeOf) return undefined;
-    const scope = adapter.scopeOf(source);
-    const other = (await this.store.triggers.scoped(source.kind, scope)).find((t) => t !== id);
-    return other ? new ApiError("scope_taken", `The ${adapter.label} scope ${scope} belongs to the trigger ${other}: a scope belongs to one trigger. Turn that one off, or give this one another scope.`, { details: { source: adapter.id, scope, trigger_id: other } }) : undefined;
+    for (const scope of adapter.scopeOf(source)) {
+      const other = (await this.store.triggers.scoped(source.kind, scope)).find((t) => t !== id);
+      if (other) return new ApiError("scope_taken", `The ${adapter.label} scope ${scope} belongs to the trigger ${other}: a scope belongs to one trigger. Turn that one off, or give this one another scope.`, { details: { source: adapter.id, scope, trigger_id: other } });
+    }
+    return undefined;
   }
 
   /** A store refusal on the scope rows (two writes raced past scopeFree): the same 409 scope_taken; undefined for any
@@ -892,10 +971,20 @@ export class Triggers {
     return (await this.scopeRefusal(source, id)) ?? new ApiError("scope_taken", "That scope belongs to another trigger: a scope belongs to one trigger.");
   }
 
-  /** `source`'s scope rows, while its trigger is on: its adapter's scopeOf, or none. */
+  /** `source`'s scope rows, while its trigger is on: one for each of its adapter's scopeOf (a Slack trigger's channels), or none. */
   private scopesOf(source: Source): { kind: string; scope: string }[] {
     const scopeOf = this.adapter(source).scopeOf;
-    return scopeOf ? [{ kind: source.kind, scope: scopeOf(source) }] : [];
+    return scopeOf ? scopeOf(source).map((scope) => ({ kind: source.kind, scope })) : [];
+  }
+
+  /** A source whose events steer their conversation's run (its trust lets someone steer) starts a run for each new
+   *  conversation: a target that messages one run is no target of it. A source that lets a steering message answer a
+   *  run's question is refused until a run takes a trigger's message as an answer. */
+  private aimIssues(source: Source, target: Target): InputIssue[] {
+    const adapter = this.adapter(source);
+    if (adapter.trust?.answers) return [{ field: "source.kind", reason: "not_allowed", message: ANSWERS_UNSUPPORTED }];
+    if (!adapter.trust?.steer.length || target.kind === "start_run") return [];
+    return [{ field: "target.kind", reason: "not_allowed", message: `A ${adapter.label} starts a run for each new conversation (a ${adapter.title} thread); a reply in it is a message to that run.` }];
   }
 
   /** Why `source` no longer reads on this server, if it does not. */
@@ -913,10 +1002,10 @@ export class Triggers {
   }
 
   /** A run's title, from the trigger that starts it: "<its source> <its name>" (the word its Timeline row begins with,
-   *  pi-durable-agent's TRIGGER_LABELS), and the event its payload's tag names, when one does ("Webhook reviews:
+   *  pi-durable-agent's triggerLabel), and the event its payload's tag names, when one does ("Webhook reviews:
    *  pull_request opened"); never its input, which may be a sender's markup. */
   private titleOf(trigger: Trigger, firing: Pick<FiringRow, "by" | "nominalAt" | "payload"> & { attrs?: unknown }): string {
-    const source = TRIGGER_LABELS[trigger.source.kind as TriggerSource] ?? trigger.source.kind;
+    const source = triggerLabel(trigger.source.kind);
     const attrs = firing.attrs as Record<string, string> | undefined;
     const event = attrs?.event;
     const action = attrs?.action;
@@ -940,6 +1029,8 @@ export class Triggers {
     // The payload is whatever its sender wrote: an instruction in it is data, and its closing tag, in any case, cannot end
     // the block.
     const payload = firing.payload === null ? "" : `\n\n<trigger-payload source="${firing.by}"${tagAttrs(firing.attrs)} untrusted>\n${firing.payload.replace(/<(\/trigger-payload)/gi, "<\\$1")}\n</trigger-payload>`;
+    // An event in a conversation whose run started is its message and that line alone.
+    if (isReply(firing.attrs)) return { content: `${payload.trimStart()}\n\n${line}` };
     const { input } = trigger.target;
     return typeof input.content === "string" ? { ...input, content: `${input.content}${payload}\n\n${line}` } : input;
   }
@@ -959,13 +1050,20 @@ function firingView(firing: FiringRow) {
   };
 }
 
+/** The attrs a firing keeps its conversation in (a Slack thread's key) and whether it is a reply in it (a message to that
+ *  conversation's run): the kernel's own, never on the payload's tag or in a firing's view. */
+const CONVERSATION = "conversation";
+const REPLY = "reply";
+const conversationOf = (attrs: unknown): string | undefined => (isObject(attrs) && typeof attrs[CONVERSATION] === "string" ? (attrs[CONVERSATION] as string) : undefined);
+const isReply = (attrs: unknown): boolean => isObject(attrs) && attrs[REPLY] === "1";
+
 /** A payload tag's attributes from its source's `attrs`, each ` name="value"`: a name of lowercase letters, digits, `_` and
  *  `-` (never one the tag sets itself), a value cut to 200 characters with `&`, `<`, `>`, `"` escaped and line breaks
  *  made spaces, so a sender's words cannot end the tag or open another. */
 function tagAttrs(attrs: unknown): string {
   if (!isObject(attrs)) return "";
   const escape = (value: string) => value.slice(0, 200).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!).replace(/[\r\n\t]/g, " ");
-  return Object.entries(attrs).filter(([name, value]) => /^[a-z][a-z0-9_-]{0,31}$/.test(name) && name !== "source" && name !== "untrusted" && typeof value === "string").map(([name, value]) => ` ${name}="${escape(value as string)}"`).join("");
+  return Object.entries(attrs).filter(([name, value]) => /^[a-z][a-z0-9_-]{0,31}$/.test(name) && name !== "source" && name !== "untrusted" && name !== CONVERSATION && name !== REPLY && typeof value === "string").map(([name, value]) => ` ${name}="${escape(value as string)}"`).join("");
 }
 
 /** `text` cut to PAYLOAD_KEPT_BYTES of UTF-8 at a character's start, and said to be cut. */

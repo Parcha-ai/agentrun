@@ -61,6 +61,8 @@ export const ERROR_STATUS = {
   github_no_public_url: 409,
   github_wrong_origin: 409,
   github_failed: 502,
+  // A source's settings a server manages itself (a GitHub App Connect GitHub made): never written through the settings route.
+  settings_managed: 409,
 } as const;
 
 export type ErrorCode = keyof typeof ERROR_STATUS;

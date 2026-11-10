@@ -41,6 +41,7 @@ const SCHEMAS: ObjectSchema[] = [
 export const schedule: TriggerAdapter = {
   id: "schedule",
   label: "schedule",
+  title: "Schedule",
   delivery: "clock",
   owner: true,
   describe: '{kind: "schedule", cron, timezone}, {kind: "schedule", at}, {kind: "schedule", every_s, start_at?}',

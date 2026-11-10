@@ -33,6 +33,7 @@ function fieldsOf(value: Record<string, unknown>, bad: (field: string, reason: s
 export const github: TriggerAdapter = {
   id: "github",
   label: "GitHub trigger",
+  title: "GitHub",
   delivery: "push",
   owner: false,
   // The connection's App, the server's one: its secrets, and what is no secret beside them (github-connection.ts).

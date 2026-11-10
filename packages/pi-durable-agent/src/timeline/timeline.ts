@@ -1,6 +1,6 @@
 import { BROWSER_OPENERS, BROWSER_STEPS, callFailed, endsTurn, failedWith, inputPreview, labelOf, outcomeOf, savedPaths, type LabelFn, type ToolResultView } from "./labels.js";
 import { cut, firstLine, firstSentence, json, obj, scrubUrls, str, utf8Bytes, type Obj } from "./util.js";
-import { BESIDE_SUFFIX, NOTE_SUFFIX, originMatcher, TRIGGER_LABELS, type TriggerSource } from "./origin.js";
+import { BESIDE_SUFFIX, NOTE_SUFFIX, originMatcher, triggerLabel, type TriggerSource } from "./origin.js";
 
 export type TimelineKind =
   | "thinking" | "text_block" | "tool_use" | "tool_result" | "phase"
@@ -842,8 +842,8 @@ function createProjector(options: TimelineOptions) {
       // person's rules, with the entry's own id; the server's resume beside it is the server's (`origin: "server"`) but
       // not a message (an id of its own, BESIDE_SUFFIX, which isMessageRow passes over). Any other: the server's row is
       // that message, with the entry's id and `origin: "server"`. A trigger's message: "<its source's label> <its id>: …"
-      // (TRIGGER_LABELS; serve names the trigger as it is now), `origin: "trigger"`, never the person's.
-      if (origin.kind === "trigger") add(make("phase", conv, base, { summary: `${TRIGGER_LABELS[origin.source]} ${origin.trigger_id}: ${firstLine(text)}`, text, origin: "trigger", trigger: { id: origin.trigger_id, source: origin.source, owner: origin.owner } }));
+      // (triggerLabel; serve names the trigger as it is now), `origin: "trigger"`, never the person's.
+      if (origin.kind === "trigger") add(make("phase", conv, base, { summary: `${triggerLabel(origin.source)} ${origin.trigger_id}: ${firstLine(text)}`, text, origin: "trigger", trigger: { id: origin.trigger_id, source: origin.source, owner: origin.owner } }));
       else if (origin.reason === "approval_declined") {
         const said = redactText(origin.said.trim());
         add(make("phase", conv, `${base}${BESIDE_SUFFIX}`, { summary: `AgentRun: ${firstLine(text)}`, text, origin: "server" }));

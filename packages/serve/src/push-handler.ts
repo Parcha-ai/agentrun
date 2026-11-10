@@ -10,7 +10,7 @@
 import { randomBytes } from "node:crypto";
 import type { IncomingMessage } from "node:http";
 import { ApiError } from "./errors.js";
-import type { Headers, PushContext, Source, TriggerAdapter } from "./trigger-adapter.js";
+import type { Headers, PushContext, PushEvent, Source, TriggerAdapter } from "./trigger-adapter.js";
 import { ID } from "./validate.js";
 
 /** The kernel's one decoy key: what a request is checked against when it names no trigger, or one with no key. */
@@ -61,8 +61,9 @@ export type PushDeps = {
   bodyMs?: number;
   /** A request trigger `id` ignored, under the key its event would have (triggers.ts ignored): kept for its day. */
   ignored?(id: string, eventId: string): Promise<void>;
-  /** Its firing for the event, recorded (triggers.ts receive, in the store), with what the source says of it (`attrs`). */
-  receive(id: string, eventId: string, payload: string, attrs?: Record<string, string>): Promise<{ created: boolean; firing: unknown }>;
+  /** Its firing for the event, recorded (triggers.ts receiveEvent, in the store), or undefined when there is nothing to
+   *  act on there: one its source does not trust to start or steer, or a reply in no conversation it started. */
+  receive(id: string, event: PushEvent): Promise<{ created: boolean; firing: unknown } | undefined>;
   /** The triggers of the pushed source `kind`, on, that listen on `scope` (their scope rows). */
   scoped(kind: string, scope: string): Promise<string[]>;
   /** The triggers of the pushed source `kind` that are on, with their sources: the ones its adapter's takes reads. */
@@ -115,7 +116,8 @@ export async function receivePush(deps: PushDeps, req: IncomingMessage, segment:
   };
   const handshake = await push.handshake?.(req.headers as Headers, body, ctx);
   if (handshake) return handshake;
-  const events = push.parse(req.headers as Headers, body, source);
+  // The parse reads its settings' public fields alone (who a Slack app is), never a secret.
+  const events = push.parse(req.headers as Headers, body, source, (field) => (adapter.settings?.fields[field]?.public ? deps.setting(adapter.id, own ? "server" : pathTrigger!, field) : undefined));
   // Verified, and not an event its trigger takes: answered, so the sender does not send it again, and said once.
   if (!Array.isArray(events)) {
     deps.say({ condition: "hook_ignored", source: adapter.id, route, ...(pathTrigger ? { trigger: pathTrigger } : {}), reason: events.ignored, ...(events.event ? { event: events.event } : {}) });
@@ -130,8 +132,11 @@ export async function receivePush(deps: PushDeps, req: IncomingMessage, segment:
   // server-wide source's are, by the firings they made.
   if (pathTrigger) {
     const fired: { created: boolean; firing: unknown }[] = [];
-    for (const event of events) fired.push(await deps.receive(pathTrigger, event.key, event.text, event.attrs));
-    if (fired.length > 1) return { status: fired.some((f) => f.created) ? 202 : 200, body: { firings: fired.map((f) => f.firing) } };
+    for (const event of events) {
+      const taken = await deps.receive(pathTrigger, event);
+      if (taken) fired.push(taken);
+    }
+    if (fired.length !== 1) return { status: fired.some((f) => f.created) ? 202 : 200, body: { firings: fired.map((f) => f.firing) } };
     const { created, firing } = fired[0]!;
     return { status: created ? 202 : 200, body: firing, ...(created ? {} : { headers: { "idempotent-replayed": "true" } }) };
   }
@@ -152,7 +157,8 @@ export async function receivePush(deps: PushDeps, req: IncomingMessage, segment:
         }
         taken = true;
         try {
-          fired.push(await deps.receive(id, event.key, event.text, event.attrs));
+          const taken = await deps.receive(id, event);
+          if (taken) fired.push(taken);
         } catch (error) {
           if (!(error instanceof ApiError) || error.code !== "rate_limited") throw error;
           refused = error;
@@ -172,7 +178,12 @@ export async function receivePush(deps: PushDeps, req: IncomingMessage, segment:
   const fired: { created: boolean; firing: unknown }[] = [];
   for (const event of events) {
     const ids = event.scope === undefined ? [] : await deps.scoped(adapter.id, event.scope);
-    if (ids.length === 1) fired.push(await deps.receive(ids[0]!, event.key, event.text, event.attrs));
+    // Taken by its trigger, or nothing to act on there (trust, or no conversation to steer: triggers.ts receiveEvent).
+    if (ids.length === 1) {
+      const taken = await deps.receive(ids[0]!, event);
+      if (taken) fired.push(taken);
+      else deps.say({ condition: "hook_ignored", source: adapter.id, route, trigger: ids[0]! });
+    }
     else if (!ids.length) deps.say({ condition: "hook_no_trigger", source: adapter.id, route, scope: String(event.scope ?? "") });
     else deps.say({ condition: "hook_scope_ambiguous", source: adapter.id, route, scope: String(event.scope), triggers: ids.join(",") });
   }

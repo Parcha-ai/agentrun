@@ -110,12 +110,15 @@ import { templateApplied, templateTriggerSecret, templateWebhookSecrets, trigger
 import { type SealedSettingsOverStore } from "./sealed-settings-store.js";
 import { type ServerSecrets } from "./server-secrets.js";
 import { openServerSecretsOverStore } from "./server-secrets-store.js";
+import { Slack } from "./slack.js";
+import { slackThreadOf as threadIn } from "./trigger-slack.js";
+import { removeSourceSettings, saveSourceSettings, serverSettingsOf, sourceSettingsView } from "./source-settings.js";
 import { HOOK_TOLERANCE_S } from "./standard-webhooks.js";
 import { GitHubConnect, GitHubConnection, INSTALLED_PATH, startedHere as gitHubStartedHere, stateCookie } from "./github-connection.js";
 import { GITHUB_API } from "./github.js";
 import { HookCut, receivePush } from "./push-handler.js";
 import type { TriggerAdapter } from "./trigger-adapter.js";
-import { TRIGGER_ADAPTERS } from "./trigger-adapters.js";
+import { registerSources, TRIGGER_ADAPTERS } from "./trigger-adapters.js";
 import { webhook } from "./trigger-webhook.js";
 import { SCHEME_NAMES } from "./trigger-signatures.js";
 import { permissionFrom, pinWords } from "./tool-gate.js";
@@ -350,8 +353,11 @@ export type ServeOptions = {
   hookBodyMs?: number;
   /** A test's seam: the folder the template packages are read from, in place of the package's own (templates.ts). */
   templates?: string;
-  /** The waits before each try again of a webhook delivery (default 5 s, 5 min, 30 min, 2 h, 5 h and 10 h: webhooks.ts RETRY_MS). */
+  /** The waits before each try again of a webhook delivery (default 5 s, 5 min, 30 min, 2 h, 5 h and 10 h: webhooks.ts RETRY_MS);
+   *  a Slack post's too (slack.ts). */
   webhookRetryMs?: readonly number[];
+  /** A test's seam: each trigger source's service, by source, in place of its own (Slack's Web API: trigger-slack.ts). */
+  sourceApis?: Readonly<Record<string, string>>;
   /** The box runs' harnesses run in (4a's Box: its reap; on a shared server its run cgroups): the boxes runs leave are
    *  swept at start and let go at archive. The quarantine of boxes a reap could not empty is kept in the data directory. */
   box?: BoxHost;
@@ -496,6 +502,9 @@ export const ROUTES: readonly Route[] = [
   { method: "PUT", pattern: /^\/settings\/webhook$/, name: "saveWebhook" },
   { method: "DELETE", pattern: /^\/settings\/webhook$/, name: "deleteWebhook" },
   { method: "POST", pattern: /^\/settings\/webhook\/test$/, name: "testWebhook" },
+  { method: "GET", pattern: /^\/settings\/sources\/([^/]+)$/, name: "getSourceSettings" },
+  { method: "PUT", pattern: /^\/settings\/sources\/([^/]+)$/, name: "putSourceSettings" },
+  { method: "DELETE", pattern: /^\/settings\/sources\/([^/]+)$/, name: "deleteSourceSettings" },
   { method: "GET", pattern: /^\/settings\/webhook\/deliveries$/, name: "listWebhookDeliveries" },
   { method: "POST", pattern: /^\/settings\/webhook\/deliveries\/([^/]+)\/redeliver$/, name: "redeliverWebhook" },
   { method: "GET", pattern: /^\/triggers$/, name: "listTriggers" },
@@ -509,6 +518,9 @@ export const ROUTES: readonly Route[] = [
   { method: "GET", pattern: /^\/templates$/, name: "listTemplates" },
   { method: "POST", pattern: /^\/templates\/([^/]+)\/apply$/, name: "applyTemplate" },
   // Answered before the bearer check: the request's signature is its credential.
+  // A pushed source whose settings are the server's has its own hook, POST /hooks/{its id}, one operation each; it and a
+  // trigger's are served by the same handler (push-handler.ts).
+  ...TRIGGER_ADAPTERS.filter((a) => a.push && a.settings?.scope === "server").map((a) => ({ method: "POST", pattern: new RegExp(`^/hooks/${a.id}$`), name: `receiveHook_${a.id}` })),
   { method: "POST", pattern: /^\/hooks\/([^/]+)$/, name: "receiveHook" },
   { method: "GET", pattern: /^\/integrations\/github$/, name: "getGitHubConnection" },
   { method: "DELETE", pattern: /^\/integrations\/github$/, name: "disconnectGitHub" },
@@ -1039,6 +1051,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   log?.(logLine("boxes", boxesLog(boxOffers, enabledBoxes(env))));
   if (image) imageLog(image.state());
   const adapters = options.triggerAdapters ?? TRIGGER_ADAPTERS;
+  // A test's own sources are ones a run's message origin may name too (the registry's are already).
+  if (options.triggerAdapters) registerSources(adapters);
   const openapi = openapiDocument((operationId) => ROUTES.find((r) => r.name === operationId)?.capability, adapters);
   const sealKey = sealKeyOf(withSecrets(base, "own")[SEAL_KEY_ENV]);
   // Settings → Computers and the owner's Archil settings, over the one store (computers.ts, archil-routes.ts), built once
@@ -1109,6 +1123,53 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // The outbound webhook's secret, as it stands (set by a PUT, gone with a DELETE), and each it held before.
   secretStores.add("webhook", () => webhooks.signingSecrets());
   stops.push(() => webhooks.close());
+  // The server's Slack app (slack.ts): its settings in the Slack source's sealed settings, its lines posted in threads.
+  const slack = new Slack(data, triggerSettings.get("slack"), (fields) => (log ? log(logLine("slack", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("slack", fields)}\n`)), options.sourceApis?.slack, options.webhookRetryMs);
+  stops.push(async () => slack.close());
+  // A run a Slack trigger started is told in its thread when it needs its person and when it ends, beside the webhook's
+  // notice (the run follower below). Its thread is the conversation its trigger's firing started it in: the run's launch
+  // names the trigger and the firing (triggers.ts conversationOfFiring).
+  const slackThreadOf = async (runId: string): Promise<{ channel: string; thread_ts: string; post_answer: boolean } | undefined> => {
+    const launch = await store.runs.launch(runId).catch(() => undefined);
+    const trigger = isObject(launch?.body) && isObject(launch.body.trigger) ? launch.body.trigger : undefined;
+    if (typeof trigger?.id !== "string" || typeof trigger.firing_key !== "string") return undefined;
+    const found = await triggers.conversationOfFiring(trigger.id, trigger.firing_key);
+    return found?.trigger.source.kind === "slack" ? { ...threadIn(found.conversation), post_answer: found.trigger.source.post_answer === true } : undefined;
+  };
+  // An answer-bearing end whose run cannot be read yet (a busy store) is read again after each of these waits, never
+  // told without its answer; past the last it stays untold here, and the next start's catch-up tells it.
+  const SLACK_READ_RETRY_MS = [1_000, 2_000, 5_000, 15_000, 60_000, 300_000];
+  const slackReads = new Set<NodeJS.Timeout>();
+  stops.push(async () => slackReads.forEach((timer) => clearTimeout(timer)));
+  const tellSlack = (event: "run.needs_input" | "run.ended", run: RunNotice, marker: string, tries = 0): void => {
+    void (async () => {
+      const thread = await slackThreadOf(run.run_id);
+      if (!thread) return;
+      // Read from the run's view only where the line needs it: the answer, for a trigger that posts it (its source's
+      // post_answer, as the trigger is now); the tool an approval waits on, which the notice does not carry.
+      const answered = event === "run.ended" && run.status === "completed" && thread.post_answer;
+      const approval = event === "run.needs_input" && run.pending?.kind === "approval";
+      const emit = (view: Json | null) => {
+        const tool = approval ? (view?.pending as { tool?: unknown } | null | undefined)?.tool : undefined;
+        const told = typeof tool === "string" ? ({ ...run, pending: { kind: "approval", tool } } as RunNotice) : run;
+        const answer = answered ? ((view?.result as { final_answer?: string } | null | undefined)?.final_answer ?? null) : null;
+        slack.emit(event, told, marker, { channel: thread.channel, thread_ts: thread.thread_ts }, answer);
+      };
+      if (!answered && !approval) return emit(null);
+      await viewOverStore(store, run.run_id, viewDepsFor(ownOriginOf())).then(
+        (view) => emit((view as Json | null) ?? null),
+        (error: Error) => {
+          // Unread: an approval's line goes without its tool's name; an end that carries the answer waits for it.
+          if (!answered) return emit(null);
+          const wait = SLACK_READ_RETRY_MS[tries];
+          if (wait === undefined) return void process.stderr.write(`agentrun-serve: slack: the answer of run ${run.run_id} is still unread (${error.message}); its end is left for the next start\n`);
+          const timer = setTimeout(() => (slackReads.delete(timer), tellSlack(event, run, marker, tries + 1)), wait);
+          timer.unref();
+          slackReads.add(timer);
+        },
+      );
+    })().catch((error: Error) => void process.stderr.write(`agentrun-serve: slack: ${error.message}\n`));
+  };
   const uploads = new Uploads(join(data, UPLOADS_DIR));
   // Under the data directory's lock and before this server answers anything, so no PUT of its own is in flight: an upload
   // temp file found now is a crashed one's.
@@ -2217,9 +2278,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     if (found.name === "getAuthSession") return send(res, 200, { accounts: false, ...secretsWritableFields(secretWriterFacts(req, { accounts: false, loopbackBound: isLoopback(host) })) });
     // The one route with no token: a pushed trigger source's request, checked by its source before anything else is
     // read (push-handler.ts).
-    if (found.name === "receiveHook") {
+    if (found.name === "receiveHook" || found.name.startsWith("receiveHook_")) {
       // A body cut at its cap or its time is answered, then its socket closed: never read to its end.
-      const answer = await receivePush({ adapters, hooked: (id) => triggers.hookSource(id), ...(options.hookBodyMs !== undefined ? { bodyMs: options.hookBodyMs } : {}), ignored: (id, eventId) => triggers.ignored(id, eventId), listening: (kind) => triggers.listening(kind), notice: async (adapterId, event, body) => (adapterId === "github" && event === "installation" ? githubConnect.installationEvent(body, (detail) => triggers.turnOff("github", detail)) : undefined), receive: (id, eventId, payload, attrs) => triggers.receive(id, eventId, payload, attrs), scoped: (kind, scope) => triggers.scoped(kind, scope), setting: (adapterId, scope, field) => triggerSettings.get(adapterId)?.get(scope, field), refused: authFailed, say: (fields) => (log ? log(logLine("trigger", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("trigger", fields)}\n`)) }, req, /^\/hooks\/([^/]+)$/.exec(path)![1]!);
+      const answer = await receivePush({ adapters, hooked: (id) => triggers.hookSource(id), ...(options.hookBodyMs !== undefined ? { bodyMs: options.hookBodyMs } : {}), ignored: (id, eventId) => triggers.ignored(id, eventId), listening: (kind) => triggers.listening(kind), notice: async (adapterId, event, body) => (adapterId === "github" && event === "installation" ? githubConnect.installationEvent(body, (detail) => triggers.turnOff("github", detail)) : undefined), receive: (id, event) => triggers.receiveEvent(id, event), scoped: (kind, scope) => triggers.scoped(kind, scope), setting: (adapterId, scope, field) => triggerSettings.get(adapterId)?.get(scope, field), refused: authFailed, say: (fields) => (log ? log(logLine("trigger", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("trigger", fields)}\n`)) }, req, /^\/hooks\/([^/]+)$/.exec(path)![1]!);
       return send(res, answer.status, answer.body, answer.headers ?? {});
     }
     // An MCP server's OAuth sign-in: the browser coming back from its authorization server carries no token (the state
@@ -2830,6 +2891,20 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       case "deleteWebhook":
         webhooks.remove();
         return void res.writeHead(204, { "cache-control": "no-store" }).end();
+      case "getSourceSettings": {
+        const adapter = serverSettingsOf(adapters, id);
+        return send(res, 200, sourceSettingsView(adapter, triggerSettings.get(adapter.id)));
+      }
+      // Never through `idempotent`: its record keeps the body, and this body is the secrets.
+      case "putSourceSettings": {
+        const adapter = serverSettingsOf(adapters, id);
+        return send(res, 200, await saveSourceSettings(adapter, triggerSettings.get(adapter.id), await bodyOf(req), options.sourceApis?.[adapter.id]));
+      }
+      case "deleteSourceSettings": {
+        const adapter = serverSettingsOf(adapters, id);
+        await removeSourceSettings(adapter, triggerSettings.get(adapter.id));
+        return void res.writeHead(204, { "cache-control": "no-store" }).end();
+      }
       case "testWebhook":
         return send(res, 200, await webhooks.test());
       case "listWebhookDeliveries":
@@ -3060,6 +3135,16 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const url = `http://${shown.includes(":") ? `[${shown}]` : shown}:${address.port}`;
   owner?.attach(options.publicUrl ?? url);
   webhooks.attach(options.publicUrl ?? url);
+  // A line in Slack links its run only at an address a person there can open: the public one, when the server has one.
+  slack.attach(options.publicUrl);
+  // A queued waiting line in a Slack thread goes only while its run still waits there: on the wait the follower read
+  // (its last row that shows), none once the run moved on.
+  slack.watchWaits(async (runId) => {
+    const view = await viewOverStore(store, runId, viewDepsFor(ownOriginOf()));
+    if (view?.status !== "input_required") return null;
+    const rows = (await timelineOverStore(store, runId, viewDepsFor(ownOriginOf()))) ?? [];
+    return rows.findLast((r) => r.kind !== "usage" && r.kind !== "phase" && r.agent_label !== LEARNING_LABEL)?.id ?? null;
+  });
   mcpServers.attach(options.publicUrl ?? url, url);
   // A run's end and its wait are the outbound webhook's run.ended and run.needs_input (webhooks.ts). The runners write them
   // to the store and this server runs no run, so it follows the store: each read takes the runs not final yet and the
@@ -3097,6 +3182,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const card = (view.pending as { kind?: unknown } | null | undefined)?.kind;
     const kind = view.state !== "waiting" ? "stopped" : typeof card === "string" && waitKinds.has(card) ? card : "question";
     const notice = { run_id: row.id, agent_id: row.agentId, status: "input_required", title: typeof view.title === "string" ? view.title : "", pending: { kind } } as RunNotice;
+    tellSlack("run.needs_input", notice, marker);
     if (webhooks.emit("run.needs_input", notice, marker) !== "unsaved") readWaits.set(row.id, seen);
   };
   let openRuns = new Set<string>();
@@ -3122,6 +3208,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       }
       readWaits.delete(id);
       if (!now?.endedAt || toldEnds.get(id) === now.endedAt) continue;
+      tellSlack("run.ended", now.notice, now.endedAt);
       if (webhooks.emit("run.ended", now.notice, now.endedAt) !== "unsaved") toldEnds.set(id, now.endedAt);
     }
     openRuns = open;
@@ -3172,6 +3259,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     clearTimeout(endsTimer);
     await endsRead;
     await webhooks.close();
+    // And the Slack posts: one still to try stays in the outbox, for the next server, never tried by this one too.
+    slack.close();
     // An upgraded socket is no connection closeAllConnections ends, and server.close waits for it.
     viewers.close();
     await new Promise((done) => (server.close(done), server.closeAllConnections()));

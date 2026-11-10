@@ -35,6 +35,27 @@ const EVENT = /^[\x21-\x7e]{1,200}$/;
 const GITHUB_SIGNATURE = /^sha256=([0-9a-f]{64})$/i;
 const githubHmac = (secret: string, body: string | Buffer): Buffer => createHmac("sha256", Buffer.from(secret, "utf8")).update(body).digest();
 
+/** How far a Slack request's X-Slack-Request-Timestamp may be from this server's clock, either way. */
+export const SLACK_TOLERANCE_S = 300;
+const SLACK_SIGNATURE = /^v0=[0-9a-f]{64}$/;
+
+function slackPrecheck(headers: Headers, nowMs: number): string | undefined {
+  const timestamp = headers["x-slack-request-timestamp"];
+  const signature = headers["x-slack-signature"];
+  if (typeof timestamp !== "string" || typeof signature !== "string") return "missing_headers";
+  if (!/^\d{1,12}$/.test(timestamp) || !SLACK_SIGNATURE.test(signature)) return "malformed_headers";
+  if (Math.abs(nowMs / 1000 - Number(timestamp)) > SLACK_TOLERANCE_S) return "stale_timestamp";
+  return undefined;
+}
+
+const jsonOf = (body: Buffer): unknown => {
+  try {
+    return JSON.parse(body.toString("utf8"));
+  } catch {
+    return undefined;
+  }
+};
+
 function githubPrecheck(headers: Headers): string | undefined {
   const [signature, delivery, event] = ["x-hub-signature-256", "x-github-delivery", "x-github-event"].map((name) => headers[name]);
   if (typeof signature !== "string" || typeof delivery !== "string" || typeof event !== "string") return "missing_headers";
@@ -86,6 +107,25 @@ export const SIGNATURE_SCHEMES = {
         ...(typeof sha === "string" && /^[0-9a-f]{40}$/.test(sha) ? { head_sha: sha } : {}),
       };
     },
+  },
+  // Slack's ("Verifying requests from Slack"), keyed by the app's signing secret as Slack shows it: the server's Slack
+  // app's (trigger-slack.ts), or a webhook trigger's. It signs the timestamp and the body, so the firing's key is the
+  // signed body's event_id (Slack's retries repeat it), else the body's SHA-256.
+  slack: {
+    signatureHeader: "x-slack-signature",
+    describe: `\`slack\` takes a Slack app's request: \`X-Slack-Signature: v0=<hex HMAC-SHA256 of "v0:{X-Slack-Request-Timestamp}:{body}">\` keyed by the UTF-8 bytes of the signing secret, \`X-Slack-Request-Timestamp\` (Unix seconds, within ${SLACK_TOLERANCE_S} s of this server's clock either way).`,
+    precheck: slackPrecheck,
+    verify(key, headers, body, nowMs) {
+      const early = slackPrecheck(headers, nowMs);
+      if (early) return early;
+      const expected = Buffer.from(`v0=${createHmac("sha256", key).update(`v0:${headers["x-slack-request-timestamp"] as string}:`).update(body).digest("hex")}`);
+      return timingSafeEqual(expected, Buffer.from(headers["x-slack-signature"] as string)) ? undefined : "bad_signature";
+    },
+    firingKeyOf: (_headers, body) => {
+      const doc = jsonOf(body);
+      return isObject(doc) && typeof doc.event_id === "string" ? doc.event_id : `sha256:${createHash("sha256").update(body).digest("hex")}`;
+    },
+    eventOf: (_headers, json) => (isObject(json) && isObject(json.event) && typeof json.event.type === "string" ? json.event.type : isObject(json) && typeof json.type === "string" ? json.type : undefined),
   },
 } satisfies Record<string, Scheme>;
 

@@ -2,7 +2,7 @@ export { groupTimeline, foldCalls, failedCall, type Call, type Fold, type Group 
 export { callFailed, foldLabel, inputPreview, labelOf, nameOf, registerLabel, registerOutcome, registerTurnEnding, type FoldSpec, type LabelFn, type OutcomeFn, type ToolResultView } from "./labels.js";
 export { renderText } from "./render-text.js";
 export { costLabel, endedUsage, PAGE_CHANGED_ROW, RUN_RESUMED, TURN_END } from "./timeline.js";
-export { isMessageRow, isUserEntry, MESSAGE_ORIGIN, messageOrigins, NOTE_SUFFIX, originMatcher, originOf, TRIGGER_LABELS, TRIGGER_SOURCES, type MessageOrigin, type TriggerSource } from "./origin.js";
+export { isMessageRow, isUserEntry, MESSAGE_ORIGIN, messageOrigins, NOTE_SUFFIX, originMatcher, originOf, registerTriggerSource, TRIGGER_SOURCES, triggerLabel, triggerSources, type MessageOrigin, type TriggerSource } from "./origin.js";
 export { cut, scrubUrls } from "./util.js";
 export {
   BROWSER_CHARGE, CAP_WRAPUP, CAPS, chargedTool, endedOnTurnEndingTool, HOST_PHASE, METRIC_NAMES, REQUEST_CONTINUED, REQUEST_COST, REQUEST_COST_LATE, REQUEST_COST_PENDING, REQUEST_ENDED, REQUEST_REFUSED, REQUEST_STARTED, runMetricsOf, runMetricsWithDecisions, timelineOf, timelineReducer, TOOL_COST, TOOL_STARTED, TOOL_UNMETERED,

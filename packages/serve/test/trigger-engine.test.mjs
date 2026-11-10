@@ -480,6 +480,33 @@ test("a source is one adapter the engine is given: its kind, its check, its firi
   assert.deepEqual([off.enabled, off.disabled?.reason, off.disabled?.detail], [false, "source_unreadable", "this server has no ping source"]);
 });
 
+test("a pushed source declares who may start a run and who may steer one, and the kernel holds every event to it: a conversation opens only by one who may start and asks to, a reply steers only from one who may steer, and only a source that says so lets a reply answer a question", async (t) => {
+  const source = (id, trust) => ({ id, label: `${id} trigger`, delivery: "push", owner: false, describe: `{kind: "${id}"}`, fires: id, schemas: [], trust, parse: () => ({ kind: id }), wellFormed: () => true });
+  const desk = source("desk", { start: ["member"], steer: ["member"], answers: "question" });
+  const feed = source("feed", { start: ["sender"], steer: [] });
+  const messages = [];
+  let runs = 0;
+  const { triggers } = await engine(t, { adapters: [desk, feed], settings: () => undefined, start: async () => ({ run_id: `run-${++runs}` }), message: async (target, input, key, from, options) => void messages.push({ run: target.run_id, key, options }) });
+  const make = async (kind) => (await triggers.create({ name: kind, source: { kind }, target: { kind: "start_run", agent_id: "a", input: { content: "Hello." }, max_cost_usd: 0.5 } })).id;
+  const deskId = await make("desk");
+  const feedId = await make("feed");
+  // A bot may not start one; a member who does not ask to (a plain message, no mention) does not either.
+  assert.equal(triggers.receiveEvent(deskId, { key: "k1", text: "hi", conversation: "c1", actor: "bot", opens: true }), undefined, "a bot starts nothing");
+  assert.equal(triggers.receiveEvent(deskId, { key: "k2", text: "hi", conversation: "c1", actor: "member" }), undefined, "no conversation is opened unasked");
+  assert.equal(triggers.receiveEvent(deskId, { key: "k3", text: "hi", conversation: "c1", actor: "member", opens: true })?.created, true);
+  await until(() => triggers.conversationOf("run-1")?.conversation === "c1", "the conversation's run");
+  // In it, a bot's reply steers nothing; a member's does, and may answer the run's question, as the source declares.
+  assert.equal(triggers.receiveEvent(deskId, { key: "k4", text: "do this", conversation: "c1", actor: "bot" }), undefined, "a bot steers nothing");
+  assert.equal(triggers.receiveEvent(deskId, { key: "k5", text: "do this", conversation: "c1", actor: "member" })?.created, true);
+  await until(() => messages.length === 1, "the reply sent");
+  assert.deepEqual(messages[0], { run: "run-1", key: firingKey("desk", deskId, "k5"), options: { answers: "question" } });
+  // A source that lets no one steer: a reply in its conversation is no message to its run.
+  assert.equal(triggers.receiveEvent(feedId, { key: "f1", text: "event", conversation: "c9", actor: "sender", opens: true })?.created, true);
+  await until(() => triggers.conversationOf("run-2")?.conversation === "c9", "its run");
+  assert.equal(triggers.receiveEvent(feedId, { key: "f2", text: "more", conversation: "c9", actor: "sender" }), undefined, "no steer");
+  assert.equal(messages.length, 1);
+});
+
 const hookBody = { name: "inbox", source: { kind: "webhook" }, target: { kind: "start_run", agent_id: "a", input: { content: "Hi." }, max_cost_usd: 0.5 } };
 /** A start that names a new run each time, and `ended()`: the runs it started, but those in `live`, ended as their runner
  *  ends them (the store's prune never takes a started firing whose run still works out of the history). */

@@ -181,7 +181,7 @@ test("a trigger that would start an uncapped run, a workflow's included, or fire
   onFlow.target.input = { question: "What is six times seven?" };
   const { max_cost_usd: __, ...flowUncapped } = onFlow.target;
   assert.match(await refused({ ...onFlow, target: flowUncapped }, "target.max_cost_usd", "missing"), /set the agent's/);
-  await refused({ ...schedule("capped", { every_s: 600 }), source: { kind: "slack" } }, "source.kind", "not_an_option");
+  await refused({ ...schedule("capped", { every_s: 600 }), source: { kind: "teams" } }, "source.kind", "not_an_option");
   await refused(schedule("capped", { every_s: 30 }), "source.every_s", "invalid");
   await refused(schedule("capped", { cron: "* * * * * *" }), "source.cron", "invalid");
   await refused(schedule("capped", { cron: "0 9 * * *", timezone: "Mars/Olympus" }), "source.timezone", "invalid");
@@ -190,6 +190,15 @@ test("a trigger that would start an uncapped run, a workflow's included, or fire
   assert.deepEqual((await api("GET", "/triggers")).body.triggers, [], "nothing kept");
   assert.equal((await api("DELETE", "/triggers/trg_none")).status, 404);
   // A capped one on a workflow agent is taken, as one on an agentic agent is: a workflow run's spend is capped (#1861).
+
+  assert.deepEqual((await api("GET", "/capabilities")).body.features.triggers, { routes: true, sources: ["schedule", "webhook", "slack"], targets: ["start_run", "message_run"], min_every_s: 60, history_kept: 200, catchup_window_s: 3600, failures_to_pause: 5, webhook: { signing: "standard-webhooks/v1", signatures: ["standard", "github", "slack"], tolerance_s: 300, max_body_bytes: 262144, payload_kept_bytes: 16384, at_rest: "unavailable" } });
+});
+
+test("a capped trigger on a workflow agent is taken, as one on an agentic agent is: a workflow run's spend is capped", { timeout: 120_000 }, async (t) => {
+  const { api } = await serve(t, { triggerClock: fakeClock("2026-06-01T00:00:00Z") });
+  assert.equal((await api("POST", "/agents", flowAgent("flow"))).status, 201);
+  const onFlow = schedule("flow", { every_s: 600 });
+  onFlow.target.input = { question: "What is six times seven?" };
   const taken = await api("POST", "/triggers", onFlow);
   assert.equal(taken.status, 201, JSON.stringify(taken.body));
   assert.deepEqual((await api("GET", "/triggers")).body.triggers.map((trigger) => [trigger.target.agent_id, trigger.target.max_cost_usd]), [["flow", 0.5]]);

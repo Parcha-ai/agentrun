@@ -1,11 +1,21 @@
 import type { EntryLike } from "./timeline.js";
 import { obj, str, type Obj } from "./util.js";
 
-/** What fired a trigger: its definition's kind, never what its payload says. */
+/** The sources every host has, built in: what fired a trigger is its definition's kind, never what its payload says. */
 export const TRIGGER_SOURCES = ["schedule", "webhook", "slack", "github"] as const;
-export type TriggerSource = (typeof TRIGGER_SOURCES)[number];
-/** How a trigger's Timeline row names its source: "<label> <trigger>: <its first line>". */
-export const TRIGGER_LABELS: Readonly<Record<TriggerSource, string>> = { schedule: "Schedule", webhook: "Webhook", slack: "Slack", github: "GitHub" };
+/** A registered source's id (triggerSources). */
+export type TriggerSource = string;
+/** The sources a trigger's message may come from, each with how its Timeline row names it ("<label> <trigger>: <its
+ *  first line>"): the built-in ones, and each a host registers (registerTriggerSource), as its trigger registry has them. */
+const SOURCE_LABELS = new Map<string, string>([["schedule", "Schedule"], ["webhook", "Webhook"], ["slack", "Slack"], ["github", "GitHub"]]);
+/** A host's trigger source, `id`, its rows labelled `label`: an origin of it reads as one from then on. */
+export function registerTriggerSource(id: string, label: string): void {
+  SOURCE_LABELS.set(id, label);
+}
+/** Every source registered now, the built-in ones first. */
+export const triggerSources = (): string[] => [...SOURCE_LABELS.keys()];
+/** How a row names `source`: its registered label, else its id. */
+export const triggerLabel = (source: string): string => SOURCE_LABELS.get(source) ?? source;
 
 /** Who wrote a user-role message that the person did not type. The model reads the message as it reads any; only its
  *  attribution differs, so the Timeline never shows it as "You".
@@ -20,7 +30,6 @@ export type MessageOrigin =
   | { kind: "server"; reason: "approval_declined"; said: string }
   | { kind: "trigger"; trigger_id: string; source: TriggerSource; owner: boolean };
 const REASONS: ReadonlySet<string> = new Set(["cap_raised", "approval"]);
-const SOURCES: ReadonlySet<string> = new Set(TRIGGER_SOURCES);
 
 /** An entry kind that names the origin of the next user entry in its conversation whose text is exactly `text`: written
  *  just before the input it names (pi-durable writes a user entry with no data of its own), placed in the same queue.
@@ -32,7 +41,7 @@ export function originOf(value: unknown): MessageOrigin | undefined {
   const at = obj(value);
   if (at?.kind === "trigger") {
     const { trigger_id, source, owner } = at;
-    return typeof trigger_id === "string" && trigger_id !== "" && typeof source === "string" && SOURCES.has(source) && typeof owner === "boolean" ? { kind: "trigger", trigger_id, source: source as TriggerSource, owner } : undefined;
+    return typeof trigger_id === "string" && trigger_id !== "" && typeof source === "string" && SOURCE_LABELS.has(source) && typeof owner === "boolean" ? { kind: "trigger", trigger_id, source, owner } : undefined;
   }
   if (!at || at.kind !== "server" || typeof at.reason !== "string") return undefined;
   if (at.reason === "approval_declined") return typeof at.said === "string" && at.said.trim() ? { kind: "server", reason: "approval_declined", said: at.said } : undefined;

@@ -16,10 +16,14 @@ import { isObject } from "./validate.js";
 /** What an adapter keeps sealed, and where: `server`, one set for the server; `trigger`, one set per trigger, by its id.
  *  A field with `mint` is a Standard Webhooks secret this server makes (standard-webhooks.ts), shown once; any other is
  *  given (set). `minBytes`: the fewest bytes its value may hold (standard-webhooks.ts keyBytes), MIN_KEY_BYTES for a key
- *  a request is verified with. `public`: a value that is no secret (an app's id, its name), kept with the rest but never
- *  in the list of the server's secrets, so no run's text is cut of it, and of any length. `format: "pem"`: a PEM private
- *  key, whose lines each are listed as secrets. */
-export type SettingsSpec = { scope: "server" | "trigger"; fields: Record<string, { mint?: true; minBytes?: number; public?: true; format?: "pem" }> };
+  *  a request is verified with. `public`: a value that is no secret (an app's id, its name; who a Slack app is: its
+ *  workspace's and its bot's ids), kept beside the secrets, sealed as they are, shown by GET
+ *  /v2/settings/sources/{source}, never in the list of the server's secrets, and of any length. `format: "pem"`: a PEM
+ *  private key, whose lines each are listed as secrets. `given`: a field a PUT of the settings may give (the rest its
+ *  source's check fills). `managed`: settings a flow of their own writes (Connect GitHub's), named here, which PUT and
+ *  DELETE /v2/settings/sources/{source} refuse (source-settings.ts). */
+export type SettingsField = { mint?: true; minBytes?: number; public?: true; format?: "pem"; given?: true };
+export type SettingsSpec = { scope: "server" | "trigger"; fields: Record<string, SettingsField>; managed?: string };
 /** A PEM private key, whole: its BEGIN line, its base64 lines, its END line. */
 const PEM = /^-----BEGIN ((?:[A-Z]+ )*)PRIVATE KEY-----\r?\n[A-Za-z0-9+/=\r\n]+-----END \1PRIVATE KEY-----\s*$/;
 /** The scope of a server-scoped adapter's settings. */
@@ -111,6 +115,11 @@ export class SealedSettings {
     const was = this.opened[scope]?.[field];
     if (was !== undefined && was !== value) this.retire(field, was);
     (this.opened[scope] ??= {})[field] = value;
+  }
+
+  /** Whether a value can be kept here: the server was handed a seal key, and the file reads. */
+  canSeal(): boolean {
+    return this.key !== undefined && !this.unreadable;
   }
 
   /** `scope`'s `field`, opened; undefined when it is not set, or does not open here. */

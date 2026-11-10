@@ -118,6 +118,30 @@ test("a schedule's runs take their input as the trigger's, owner true: fired on 
   }
 });
 
+test("a schedule's run's first Timeline row names the schedule by its name, on a live page and in the final rows; once the trigger is deleted, by its id", { timeout: 120_000, skip: RUN_EXEC }, async (t) => {
+  const { api } = await serve(t);
+  await made(api, "clock");
+  const gate = join(await scratch(t), "go");
+  const created = await api("POST", "/triggers", { name: "utc-check", source: { kind: "schedule", every_s: 3600 }, target: { kind: "start_run", agent_id: "clock", input: { content: `Tell me the time in UTC. Hold the answer until ${gate}.` }, max_cost_usd: 0.5 } });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  const { id } = created.body;
+  const fired = await api("POST", `/triggers/${id}/fire`, undefined, { "idempotency-key": "by-hand-1" });
+  assert.ok(fired.status < 300, JSON.stringify(fired.body));
+  const [firing] = await firings(api, id, 1);
+  const named = (rows) => rows.filter((r) => r.origin === "trigger").map((r) => r.summary);
+  const live = await follow(api, firing.run_id, ["working"], { deadlineMs: 60_000 });
+  assert.equal(live.last.status, "working", "the page was read while the run still worked");
+  assert.deepEqual(named(live.rows), [`Schedule utc-check: Tell me the time in UTC. Hold the answer until ${gate}.`], "a live page names the schedule");
+  await writeFile(gate, "");
+  const { rows } = await follow(api, firing.run_id, ["completed"]);
+  assert.deepEqual(named(rows), [`Schedule utc-check: Tell me the time in UTC. Hold the answer until ${gate}.`], "the final rows name it");
+  assert.deepEqual(rows.find((r) => r.origin === "trigger").trigger, { id, source: "schedule", owner: true });
+  assert.equal((await api("GET", `/runs/${firing.run_id}`)).body.title, "Schedule utc-check");
+  assert.equal((await api("DELETE", `/triggers/${id}`)).status, 204);
+  const after = (await api("GET", `/runs/${firing.run_id}/timeline`)).body.rows;
+  assert.deepEqual(named(after), [`Schedule ${id}: Tell me the time in UTC. Hold the answer until ${gate}.`], "a deleted trigger's row names it by its id");
+});
+
 test("a webhook's message to a working run is refused busy and sent again on the engine's retry: its entry reads the trigger's origin, and every refused try's marker is withdrawn, none left open", { timeout: 120_000, skip: RUN_EXEC }, async (t) => {
   withEnv(t, SEAL);
   const { api, baseUrl, data } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });

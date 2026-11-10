@@ -16,7 +16,7 @@ import { processAlive } from "@parcha/agentrun-kernel/host";
 import { doorKey, doorTook } from "@parcha/pi-durable-disk";
 import { RUN_STATUS_TABLE } from "@parcha/pi-durable-disk/internals";
 import { AgentHomeError, type Revision, runDirIn, type RevisionKind, type RunOrigin, type RunRow, type RunState, type StoredMetrics } from "@parcha/pi-durable-agent";
-import { endedUsage, isMessageRow, MESSAGE_ORIGIN, type MessageOrigin, NOTE_SUFFIX, originOf, REQUEST_STARTED, type RunMetrics, runMetricsWithDecisions, scrubUrls, type TimelineEvent, timelineOf, timelineReducer, TRIGGER_LABELS } from "@parcha/pi-durable-agent/timeline";
+import { endedUsage, isMessageRow, MESSAGE_ORIGIN, type MessageOrigin, NOTE_SUFFIX, originOf, REQUEST_STARTED, type RunMetrics, runMetricsWithDecisions, scrubUrls, type TimelineEvent, timelineOf, timelineReducer, triggerLabel } from "@parcha/pi-durable-agent/timeline";
 import { HARNESS_LOG_EVENT, harnessModelKeys, thinkingFor } from "./adapters.js";
 import { runLink } from "./console-links.js";
 import { harnessOfBody } from "./harness.js";
@@ -962,7 +962,7 @@ export async function lastLogLine(run: Pick<Run, "dir">): Promise<string> {
 
 /** Seams for tests, each unset in a server: `personsTurn` holds a person's turn just after its origin went;
  *  `beforeRestartCheck` holds a settle that found the run's process gone just before it decides whether to open it again. */
-export const runsTestHooks: { personsTurn?: (runDir: string) => Promise<void> | void; beforeRestartCheck?: (runDir: string) => Promise<void> | void } = {};
+export const runsTestHooks: { personsTurn?: (runDir: string) => Promise<void> | void; beforeRestartCheck?: (runDir: string) => Promise<void> | void; /** Before a view's read of the agent store, which may throw as a busy store would. */ storeRead?: (runId: string) => void } = {};
 
 export class Runs {
   private readonly runs = new Map<string, Run>();
@@ -1444,7 +1444,7 @@ export class Runs {
     const { id, source } = row.trigger!;
     const given = this.triggerNames.get(id);
     const name = given === undefined ? undefined : this.redactor(run)(given).replace(/\s+/g, " ").trim();
-    const label = TRIGGER_LABELS[source];
+    const label = triggerLabel(source);
     const written = `${label} ${id}: `;
     // The name on the row's trigger too, as the summary shows it: a client drops exactly "<label> <name>: ", whatever
     // colons the name and the message hold.
@@ -4041,7 +4041,7 @@ export class Runs {
    *  neither archived nor ended), and its start's answer must not read the store once the run exists, since a busy store
    *  would then refuse a run that runs. */
   async view(run: Run, origin: string, known?: { stored: RunRow | null }) {
-    const stored = known ? (known.stored ?? undefined) : await this.options.agents.request(() => this.store.readRun(run.id));
+    const stored = known ? (known.stored ?? undefined) : (runsTestHooks.storeRead?.(run.id), await this.options.agents.request(() => this.store.readRun(run.id)));
     // After the read: the run may have moved on while it waited, and every field below is of this one moment.
     const { status, state } = statusOf(run);
     const row = TERMINAL.has(status) ? stored : undefined;
@@ -4135,6 +4135,24 @@ export class Runs {
       // Its row says it ended: what serve.json holds of its learning is as it settled.
       learning: this.learning.short(isObject(meta?.learning) ? ((await this.learning.current(row.agent, meta.learning as Learning)) ?? null) : null, true),
     };
+  }
+
+  /** What `run` waits on, when it waits on its person: a tool call's approval, its spend cap, a stop, or a question. A
+   *  message that may answer a question (a Slack thread's reply: server.ts) answers a question or goes on from a stop,
+   *  and never an approval or a cap. */
+  waitingOn(run: Run): "approval" | "budget" | "stopped" | "question" | null {
+    const { status, state } = statusOf(run);
+    if (status !== "input_required" || state !== "waiting") return null;
+    if (waitingApproval(run)) return "approval";
+    if (pausedAt(run) !== undefined) return "budget";
+    return stopped(run) ? "stopped" : "question";
+  }
+
+  /** The marker of the wait run `id` stands at now (its run.needs_input notice's, waitMark), or null when it waits on
+   *  nothing (working, ended, or gone): a queued waiting line goes only while it is still its run's (slack.ts). */
+  async currentWait(id: string): Promise<string | null> {
+    const run = await this.get(id);
+    return run && statusOf(run).status === "input_required" ? waitMark(run) : null;
   }
 
   /** A key was saved on this server or deleted from it: each held run's learning row and decision rows shown again, cut

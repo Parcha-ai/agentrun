@@ -511,6 +511,22 @@ class SqliteStore implements Store {
         return row && triggerOf(row);
       },
       scoped: async (kind, scope) => (await db.all<{ trigger_id: string }>("SELECT trigger_id FROM trigger_scopes WHERE kind = ? AND scope = ?", kind, scope)).map((r) => r.trigger_id),
+      conversation: async (triggerId, key) => {
+        const row = await db.get<{ trigger_id: string; key: string; run_id: string | null; created_at: number; last_at: number }>("SELECT trigger_id, key, run_id, created_at, last_at FROM trigger_conversations WHERE trigger_id = ? AND key = ?", triggerId, key);
+        return row && { triggerId: row.trigger_id, key: row.key, runId: row.run_id, createdAt: Number(row.created_at), lastAt: Number(row.last_at) };
+      },
+      // Its run is set once (COALESCE keeps the first), so a conversation never moves to another run; its last_at only moves on.
+      keepConversation: async ({ triggerId, key, runId, at }) => {
+        await db.write([{ sql: `INSERT INTO trigger_conversations (trigger_id, key, run_id, created_at, last_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT (trigger_id, key) DO UPDATE SET last_at = ${d.greatest}(trigger_conversations.last_at, excluded.last_at), run_id = COALESCE(trigger_conversations.run_id, excluded.run_id)`, params: [triggerId, key, runId ?? null, at, at] }]);
+      },
+      pruneConversations: async (triggerId, { keptMs, kept, now: at }) =>
+        db.transaction(async (tx) => {
+          const stale = await tx.all<{ key: string }>("SELECT key FROM trigger_conversations WHERE trigger_id = ? AND last_at < ?", triggerId, at - keptMs);
+          const over = await tx.all<{ key: string }>(`SELECT key FROM trigger_conversations WHERE trigger_id = ? AND last_at >= ? ORDER BY last_at DESC, key DESC ${d.limitAll} OFFSET ?`, triggerId, at - keptMs, kept);
+          const gone = [...stale, ...over].map((r) => r.key);
+          for (const key of gone) await tx.run("DELETE FROM trigger_conversations WHERE trigger_id = ? AND key = ?", triggerId, key);
+          return gone.length;
+        }),
       remove: async (id) => {
         await db.write([{ sql: "DELETE FROM triggers WHERE id = ?", params: [id] }]);
       },

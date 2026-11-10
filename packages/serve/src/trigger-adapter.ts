@@ -25,6 +25,9 @@ export type TriggerAdapter = {
   id: string;
   /** How a person names one: `the <label> "<name>"`, in each run's provenance line. */
   label: string;
+  /** How a run's Timeline row names its source: "<title> <the trigger's name>: <its first line>" (pi-durable-agent's
+   *  registerTriggerSource). */
+  title: string;
   /** `clock`: it fires on its own times, read by the engine's timer. `push`: a request delivered to the server fires it,
    *  keyed by the sender's own id, which a retry repeats. */
   delivery: "clock" | "push";
@@ -59,17 +62,33 @@ export type TriggerAdapter = {
   /** A pushed source's requests (push-handler.ts), served at /v2/hooks/{trigger_id} when its settings are a trigger's,
    *  else at /v2/hooks/{its id}, with no token: the request's check is its credential. */
   push?: Push;
-  /** For a pushed source whose settings are the server's: the scope a trigger of it listens on, matched to each event's
-   *  `scope` to find the triggers it fires. */
-  scopeOf?(source: Source): string;
+  /** For a pushed source whose settings are the server's: the scopes a trigger of it listens on (a Slack trigger's
+   *  channels), matched to each event's `scope` to find the trigger it fires. A scope is one trigger's (scope_taken). */
+  scopeOf?(source: Source): readonly string[];
   /** For a pushed source whose settings are the server's and whose triggers each choose their own events (no scope): why
    *  a trigger of `source` does not take `event`, or undefined when it does. Every trigger that takes an event fires, each
    *  its own firing; triggers may take the same events. */
   takes?(source: Source, event: PushEvent): string | undefined;
+  /** For a source whose settings are the server's: its check of what a PUT of them gives, before anything is kept (a
+   *  Slack app's bot token, with Slack's auth.test), answering the public fields it fills; a refusal is thrown in its own
+   *  words (422). `api`: its service's address, in place of its own (a test's). */
+  check?(values: Readonly<Record<string, string>>, api?: string): Promise<Record<string, string>>;
+  /** Who may start a run through it and who may steer one (a message in a conversation its run started), held to by
+   *  the kernel for every event (triggers.ts receiveEvent); `answers: "question"`: a steering message may answer the
+   *  run's question, never an approval or a cap. Absent: whoever passed the check may start one (`sender`), and no one
+   *  steers. */
+  trust?: Trust;
   /** Whether each firing of a trigger of `source` starts its own run, its last run active or not (a webhook that takes
    *  only the events it names). Default false: a firing while the last run is active is skipped. */
   concurrent?(source: Source): boolean;
 };
+
+/** Who an event is from, as its source's parse says: `member`, a person of the source's own (a Slack workspace's);
+ *  `bot`, a program there; `sender`, whoever holds the key the request was checked by (a webhook's secret). */
+export type Actor = "member" | "bot" | "sender";
+export type Trust = { start: readonly Actor[]; steer: readonly Actor[]; answers?: "question" };
+/** Whoever passed the check may start a run; no one steers one. */
+export const SENDER_STARTS: Trust = { start: ["sender"], steer: [] };
 
 /** Request headers, as Node gives them. */
 export type Headers = Record<string, string | string[] | undefined>;
@@ -89,8 +108,9 @@ export type Push = {
   handshake?(headers: Headers, body: Buffer, ctx: PushContext): { status: number; body: Json } | undefined | Promise<{ status: number; body: Json } | undefined>;
   /** The events the request holds, none or more: none is a request this source takes nothing from (answered 200, and
    *  said). `ignored`: a request `source` does not take (its trigger's own filter), with why: answered 200
-   *  `{ok: "ignored"}`, and said. */
-  parse(headers: Headers, body: Buffer, source?: Source): PushEvent[] | PushIgnored;
+   *  `{ok: "ignored"}`, and said. `own`: its settings' public fields for the request's scope (who a Slack app is; never
+   *  a secret), to tell its own messages from others'. */
+  parse(headers: Headers, body: Buffer, source?: Source, own?: (field: string) => string | undefined): PushEvent[] | PushIgnored;
 };
 /** A verified request its trigger's source does not take: why (`ignored`), the event it was, when it names one, and its
  *  key (`key`, as its event would be keyed), which its trigger keeps for its day: the same request sent again under
@@ -106,9 +126,11 @@ export type PushContext = {
 };
 /** One event a pushed source delivers: `key`, its id (the sender's, which a retry repeats: one event delivered twice is
  *  one firing); `text`, what its run is given; `scope`, for a source whose settings are the server's, where it happened
- *  (a channel, a repository), matched to each trigger's scopeOf; `attrs`, what else the source says of it; `event` and
- *  `body`, its event's name and its parsed body, which a source's takes reads (never kept). */
-export type PushEvent = { key: string; text: string; scope?: string; attrs?: Record<string, string>; event?: string; body?: unknown };
+  *  (a channel, a repository), matched to each trigger's scopeOf; `attrs`, what else the source says of it, named on the
+ *  payload's tag; `event` and `body`, its event's name and its parsed body, which a source's takes reads (never kept).
+ *  `conversation`: the thread it is in (a Slack thread), whose run it steers once one started there; `opens`, whether it
+ *  asks to start a run when none did (a mention of the app); `actor`, who it is from (default `sender`). */
+export type PushEvent = { key: string; text: string; scope?: string; attrs?: Record<string, string>; event?: string; body?: unknown; conversation?: string; opens?: boolean; actor?: Actor };
 /** A closed object's JSON Schema: its fields, each by its own schema, and the ones it always holds. */
 export type ObjectSchema = { type: "object"; additionalProperties: false; required: string[]; properties: Record<string, Json> };
 

@@ -1695,7 +1695,8 @@ model reads the very text it did; the run's timeline shows it as a `phase` row t
 it is now, "Schedule utc-check: <its first line>" (the trigger's id once it is gone), with `origin: "trigger"` and
 `trigger: {id, source, owner}` (so a client labels it by its source without reading the summary), never as "You: ...",
 and what the run learns reads it as the trigger's. A trigger renamed renames the row; the name it had when it fired is
-not kept yet.
+not kept yet. `source` is one of the server's trigger sources, read from its registry (`schedule`, `webhook`, `github`, `slack`),
+each with the word its rows begin with.
 
 A trigger's target may also be `{kind: "message_run", run_id, input: {content}}`, with a webhook or a schedule source:
 each firing sends its input to that run as `POST /v2/runs/{id}/messages` would (a steer, or a follow-up that opens a
@@ -1704,8 +1705,57 @@ run that has none fails), and a firing never answers a run that waits on its per
 cap): it is `skipped`, "The run is waiting on a person.", and the run still waits. The firing's key is the message's id in the run's store, which takes
 one message per id; a firing driven again after a restart first looks for it there, so it sends the message once and
 never opens a completed run again for one it already has. A firing to a run that is working waits for it (tried every
-5 s), and a trigger holds at most 20 firings due: past them a webhook event and a run now answer `429 rate_limited`
-with `Retry-After: 30`, recording nothing, and a schedule's time is `skipped`.
+5 s), and a trigger holds at most 20 firings due: past them a webhook event, a Slack message and a run now answer `429
+rate_limited` with `Retry-After: 30`, recording nothing, and a schedule's time is `skipped`.
+
+### Slack triggers
+
+Mention the server's Slack app in a channel to start a run, and reply in the thread to steer it. One Slack app a
+server: `PUT /v2/settings/slack` with `{signing_secret, bot_token, app_id?}` checks the bot token with Slack's
+`auth.test`, which names the workspace and the app's bot user, and keeps both secrets in the Slack source's sealed
+settings, `DIR/trigger-settings-slack.json`, under `AGENTRUN_SEAL_KEY` (`409 no_sealing_key` with none); `GET` never
+shows them, and `DELETE` removes them. In the app's settings, set Event Subscriptions' Request URL to `https://<the
+server's public address>/v2/hooks/slack`, subscribe to the bot events `app_mention` and `message.channels` (and
+`message.groups` for private channels), and give the bot the scopes `app_mentions:read`, `channels:history` (and
+`groups:history`) and `chat:write`. Socket Mode is not used, so the server needs a public HTTPS address in front of it.
+
+`/v2/hooks/slack` is the trigger kernel's one push handler, as a webhook trigger's hook is: each request is checked by
+Slack's v0 signature on its raw body before anything else (the hex HMAC-SHA256 of `v0:{X-Slack-Request-Timestamp}:{body}`
+under the signing secret, the timestamp within 5 minutes of this server's clock); one that fails, or a server with no
+Slack set, is the one `401`. Slack's `url_verification` is answered with its challenge only after that check. A message
+is answered at once, inside Slack's 3 seconds, once its firing is recorded: `202` with the firing it made, `200` with
+the one it already had (Slack's retry) or with none (nothing to act on); the run starts, or the message goes, after.
+
+A trigger with `source: {kind: "slack", channels: ["C...", ...], post_answer?}` and a `start_run` target owns its
+channels: a channel another Slack trigger that is on lists is `409 scope_taken`, naming it. A Slack trigger declares who
+may start a run and who may steer one: a member of the workspace starts one by a mention of the app in one of its
+channels (a top-level message is its own thread), and every member's message in that thread after it, mention or not, is
+a message to that run: a steer, a follow-up that opens a completed run again, the answer to the run's question, or the
+word to go on after a stop. It never answers a tool call waiting for its owner's approval, nor a run paused at its spend
+cap: that message is skipped, and the wait stands for the console. A bot does neither: a message from a bot, this app's
+own posts included, from a person of another workspace in a shared channel, an edit, a direct message, and a message in
+no thread the trigger started that mentions no one, start nothing. Each thread is one run, whatever another thread's run
+is doing. A firing's key is the Slack message itself (its workspace, channel and `ts`), so Slack's retries
+(`x-slack-retry-num`) and the same message told both as `app_mention` and as `message` are one firing, never dropped and
+never done twice, kept for the key's day after it leaves the history; firings run in the trigger's turn, one after
+another, as a webhook event's do. The agent gets the trigger's input, then the message, cut at 16 KiB, inside
+`<trigger-payload source="slack" user="U..." channel="C..." untrusted>...</trigger-payload>`; a reply is that block
+alone. A trigger keeps a thread for 30 days after its last mention or reply, and its 1,000 most recent; a reply in a
+thread it no longer keeps reaches nothing, and a mention there starts a new thread. So does a mention in a thread whose
+first start made no run (its agent archived, say), once the cause is fixed; a reply there reaches nothing.
+
+When the run comes to need its person, and when it ends, one line is posted in its thread through `chat.postMessage`:
+"Waiting for your answer: reply in this thread", "Waiting for your approval of <tool>: approve in the console" (a tool
+call waiting on its owner's OK, which no reply in the thread approves), "Stopped: reply in this thread to go on", "Paused
+at its spend cap", "Done", "Failed" or "Cancelled", each with a link to the run when the server has a public address
+(`AGENTRUN_PUBLIC_URL`). A trigger whose source sets `post_answer: true` (default false, each trigger its own) has a
+completed run's line carry its final answer, redacted, cut to 3,000 characters and escaped, so it mentions no one and
+links nowhere in Slack; the trigger is read as it is when the run ends, and a run that cannot be read yet (a busy store)
+has its line wait for the answer, never posted without it. Lines wait in `DIR/slack-outbox.json` and are tried again on
+the webhook's schedule until Slack takes them; a post whose answer never came is tried again, so it can show twice. A
+bot token Slack refuses turns posting off until the app is set again. The Slack secrets are the server's own: an import
+cuts them out of what it keeps, a learned note holding one is refused, and no run's answer, post or learning text shows
+them.
 
 ### GitHub triggers (Connect GitHub)
 
@@ -1844,6 +1894,7 @@ failed, 2 when nothing ran. The runner, the graders and the report are in
 | `GET /settings/mcp-servers`, `POST /settings/mcp-servers/preview`, `GET`, `PUT` and `DELETE /settings/mcp-servers/{name}`, `POST .../{name}/refresh`, `POST .../{name}/oauth/start`, `GET /settings/mcp-servers/oauth/callback` and `GET .../oauth/client.json` | [MCP servers](#mcp-servers), this server's own routes (`x-agentrun-serve: "mcpservers/1"`): preview a remote MCP server's tools, save it with its credential sealed, read it back without the credential, refresh its tools, forget it, or [sign in to it with OAuth](#signing-in-with-oauth) (the callback and the client document take no token). |
 | `GET /settings/tools`, `PUT /settings/tools` | This server's own: the providers of `web_search`, `web_fetch` and `browser` ([search and fetch](#search-and-fetch)). |
 | `GET /runs/{id}/browser` | This server's own (`x-agentrun-serve: "liveview/1"`): the run's live browser view for the owner, `{state: "off", reason}`, `{state: "none"}` or `{state: "live", viewer}` ([the live view](#the-browsers-live-view)). |
+| `GET`, `PUT` and `DELETE /settings/slack`, `POST /hooks/slack` (no token: [signed by Slack](#slack-triggers)) | [Slack triggers](#slack-triggers), this server's own routes (`x-agentrun-serve: "slack/1"`): the server's Slack app, and its events. |
 | `POST /runs/{id}/browser/hand-back` | This server's own (`liveview/2`): the owner's answer to the agent's ask for them in its browser, `{outcome: "done" \| "cancelled"}`; the first answer wins, a different one is `409 handoff_answered` ([the live view](#the-browsers-live-view)). |
 | `GET /runs/{id}/computer` | This server's own (`computer/1`): the run's live computer view for the owner, one family for every kind, `{state: "off", hold, why?}`, `{state: "none", kind, hold}` or `{state: "live", kind, viewer, hold}`, its viewer under `/runs/{id}/computer/live/`; the browser is kind `browser` here, beside its own route ([the live view](#the-browsers-live-view)). |
 | `GET`, `PUT` and `DELETE /settings/webhook`, `POST /settings/webhook/test`, `GET /settings/webhook/deliveries` and `POST .../deliveries/{webhook_id}/redeliver` | [Webhooks](#webhooks), this server's own routes (`x-agentrun-serve: "webhook/1"`): the URL run notices are POSTed to, signed by the Standard Webhooks spec; never its secret but once. |
