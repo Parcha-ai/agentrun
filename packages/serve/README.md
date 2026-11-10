@@ -182,6 +182,10 @@ docker compose logs agentrun | grep Open
 The `.env` beside `compose.yaml` keeps the socket's group (`DOCKER_GID`) for every later `docker compose` command, in any
 shell: compose reads it each time, and `compose.yaml` needs it to be read at all.
 
+This `compose.yaml` doesn't pass `AGENTRUN_SEAL_KEY` to the server yet (#2164), so the server keeps its seal key inside
+the container, outside `/data`: recreating the container loses every saved key and sign-in. Until that's fixed, use
+[`deploy/compose.yaml`](../../deploy/README.md), which requires the key, or don't recreate the container.
+
 From a checkout, the same command in its root, with `--build` to build the image from it.
 `packages/serve/docker/Dockerfile` builds that image: the server and the open packages it runs, on Node 22 and Debian 13
 (trixie), with git 2.47 for an agent's learning folder and the Docker client. Everything it keeps is under `/data`: the agent store,
@@ -302,7 +306,10 @@ end to end. The [published image](#in-the-published-image) hosts Docker boxes th
 ### Place
 
 A definition may name where its runs execute: `{"mode": "runner"}` or `{"mode": "sandbox", "box": ...}`, the box one of
-the ids under [Boxes](#boxes). A runner has no shell. In a sandbox the agent's `bash` runs in the named box and its
+the providers under [Computers](#computers). `place` is the v2 view of the agent's computer setting: `runner` is kind
+`none`, and `sandbox` a sandbox on that provider. On the runner a run has no shell where its folder is on this
+server's disk (Mode 1), and `bash` on Archil's serverless exec where it is on Archil (Mode 2)
+([where `bash` runs](#computers)). In a sandbox the agent's `bash` runs in the named box and its
 file tools (`read`, `write`, `edit`) work on the `work/` the box has ([a run in a Docker box](#a-run-in-a-docker-box)),
 while the agent's loop, its log and every key stay on the server, whatever its harness. Any other shape is `422 input_invalid` on `definition.place`, whose `fix` is the change to make: the field to
 remove, or the place it most likely meant, to copy (`"place": {"mode": "sandbox", "box": "docker"}`). One that names a
@@ -670,8 +677,17 @@ has the Docker client (Debian's `docker-cli`) and no daemon; `group_add` gives t
   trust as a server on a host whose user is in the `docker` group. Give the server the socket only where you would give
   it root. A box never gets it.
 - **A box is a container beside the server's.** It is made as on a Linux host (`--network none`, every capability dropped,
-  no new privileges, the server's uid, the box limits), and its only way out is the run's egress proxy, with the same
-  host list and the same address rule ([a run in a Docker box](#a-run-in-a-docker-box)).
+  no new privileges, the server's uid, the box limits).
+- **No host list from a container yet.** A Docker sandbox's egress proxy refuses the Docker host's own addresses, so it
+  must know them, and a provider that runs in a container (`/.dockerenv`, `/run/.containerenv` or a container's cgroup)
+  can't read them from its own interfaces. The computer package's Docker provider takes them as its
+  `egress.hostAddresses` option (IP addresses, the host's public ones and any NAT'd or elastic IP;
+  [its README](../computer/README.md)), but this server sets no such option and has no setting for it. So in a
+  container, a Docker sandbox asked for a host list (`AGENTRUN_BOX_ALLOW`, whose default is a list) is refused before
+  anything is made: "this provider runs in a container (…), so this provider's own interfaces are not the Docker
+  host's, and the egress proxy could not refuse the host's own addresses: pass them as egress.hostAddresses, or ask for
+  network none or open". With `AGENTRUN_BOX_ALLOW=none` a sandbox asks for no network, which this check does not
+  refuse.
 - **Its files.** The daemon has none of the server's paths, only what it mounted into the server's container. At its
   start the server reads its own container's id from `/proc/self/mountinfo`, asks Docker for that container's mounts
   (`docker inspect`), and takes the named volume that holds the data directory. A run's sandbox mounts that run's folder
@@ -699,60 +715,93 @@ has the Docker client (Debian's `docker-cli`) and no daemon; `group_add` gives t
 - On a host the server finds no container of its own and asks Docker nothing: a box binds this machine's paths and its
   proxy's directory is under `/tmp`, as before.
 
-### Boxes
+<a id="boxes"></a>
 
-A box is a machine apart from this one where a run's tools run. Runs execute in `docker`, `daytona` and `modal` boxes
-([place](#place)); the others are set up and probed, and say runs in them are not available yet.
+### Computers
 
-Docker is on by default. With `AGENTRUN_BOXES` not set at all (a plain `npx @parcha/agentrun`), the server probes
-`docker` as if it were listed, and offers it when Docker answers (`ready`, or `preparing` while its image comes), so a
-new agent lands in the Docker box with a shell. When Docker does not answer, new agents run on the runner, and the
-banner, `capabilities.places.default_reason`, docker's own `reason` and the console's new-agent form say why. Every
-other box is yours to list.
+An agent's computer is one setting, `computer: {kind, provider}` in its definition, set in the console under
+Settings → Computers. The kind says what the agent is given, and the provider who runs it:
 
-`AGENTRUN_BOXES`, when set, wins: it lists the boxes to set up, as a comma list of the ids below
-(`AGENTRUN_BOXES=docker,daytona`), and the server never probes a box the list does not name, Docker included. An empty
-value (`AGENTRUN_BOXES=`) or `AGENTRUN_BOXES=none` sets up no box. `none` stands alone, and a name that is no box
-refuses the start. At start the server probes each listed box once. The probes run at once, each within 5 s. Then one
-log line says what the server found:
+| Kind | What the agent gets | Providers |
+|---|---|---|
+| `none` | The run's folder alone: no computer, and no provider (`{"kind": "none"}`) | |
+| `sandbox` | A Linux shell, with files and processes | `docker`, `daytona`, `modal`, `e2b` |
+| `desktop` | A screen, a pointer and keys (`desktop_screen`, `desktop_input`), and a shell where its provider mounts the run's folder | `docker` (with an image that has an X server), `e2b`, `orgo` |
+| `phone` | A rented Android: its screen, touch and apps (the `phone_*` tools) | `phone-harness` |
+| `browser` | A hosted browser (the browser tools) | `browserbase`, `kernel` |
+
+A kind with no provider, a provider that does not serve the kind, or a provider whose required keys are not saved is
+refused before anything starts, in words that name the fix in Settings → Computers. `GET /v2/computers` lists each kind,
+whether this server offers it now, the tools it brings, and each provider with its key names and whether each is saved
+(never a value). `PUT /v2/computers/{provider}/keys` saves a provider's keys, sealed under the server's seal key, from
+the owner's signed-in session only (the API token is 403), and `POST /v2/computers/{provider}/test` makes one read at
+the provider with them and starts nothing. A key set in the server's environment wins over the saved one. The keys are
+`DAYTONA_API_KEY` (with `DAYTONA_API_URL` and `DAYTONA_TARGET` optional), `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET`,
+`E2B_API_KEY`, `ORGO_API_KEY`, `PHONE_HARNESS_API_KEY`, `BROWSERBASE_API_KEY` and `BROWSERBASE_PROJECT_ID`, and
+`KERNEL_API_KEY`; Docker takes none. The vendors bill their computers by time on their own pages: this server meters no
+computer time. The older [`place`](#place) is this setting's v2 view: `{"mode": "runner"}` is kind `none`, and
+`{"mode": "sandbox", "box": X}` is a sandbox on provider X. Writing either sets both.
+
+**Where the run's folder lives.** A server keeps its runs' folders in one of two modes:
+
+- **Mode 1** (the default): on this server's own disk. Only a provider that binds a folder of this machine can hold
+  it, so a sandbox runs on Docker only; a Daytona, Modal or E2B sandbox is refused ("Mode 1 runs a sandbox only on
+  Docker").
+- **Mode 2**: on your own Archil disk. `PUT /v2/workspace/archil` turns it on with the disk's id, its region, its S3 URL
+  (and an exec image pinned by digest, if you want one other than Archil's default), and the account key,
+  `ARCHIL_API_KEY`; `DELETE` turns it off. A Daytona, Modal or E2B sandbox mounts the run's folder from the disk with a
+  mount credential minted for that run alone; Docker's sandbox is refused, since it cannot mount the disk.
+
+A desktop, a phone and a browser run in either mode. The run's folder is at `/workspace` in every computer that mounts
+it: a sandbox always, and a desktop whose provider mounts the mode's folder (Docker's in Mode 1, E2B's in Mode 2). A
+phone and a browser never mount it.
+
+**Where `bash` runs.** It follows the mount:
+
+- A computer that mounts the run's folder runs `bash` and the background tools (`bash_background`, `bash_output`,
+  `bash_input`, `bash_signal`, `bash_list`). A call with no timeout runs 120 s, and none runs past 600 s.
+- With no computer that mounts it (kind `none`, a phone, a browser, or a desktop that does not mount), in **Mode 1** the
+  run has no shell at all: the folder is one of this server's own, and a command there would run on the server, able
+  to read its data and its keys. The run gets `read`, `write` and `edit`, confined to its folder; `bash` and the
+  background tools are not offered, and a `bash` call answers "bash is not available in this run: it has no computer to
+  run commands in, and commands never run on the server itself." So an agent with no computer on a server without
+  Docker gets the file tools and no shell.
+- With no computer that mounts it in **Mode 2**, `bash` runs on Archil's serverless exec: a fresh container that holds
+  the run's folder alone, never a process of this server. Only `bash`: the background tools answer that background
+  programs need a computer. `bash` is held to its own setting, as on a computer. Archil's limits hold for it: a command
+  runs at most 295 s (Archil cuts a call at 300 s, and a longer timeout is refused, not cut); once sent it can't be
+  stopped, so a cancel answers at once while the command runs on to its own deadline, holding the folder (later writes
+  and commands wait for it); and its output comes back whole when it ends, not as it runs. Through Archil's file API a
+  write does not keep a file's mode (a `0755` file is `0644` after a write), and a symbolic link a command made is never
+  followed: reading one is refused, a write through a linked folder is refused, and `bash` refuses a working directory
+  with a link on the way.
+
+**An agent with no setting.** With no `computer` and no `place`, the server decides at each run's start: in Mode 1, the
+Docker sandbox where this server's Docker answers, else no computer; in Mode 2, no computer. A workflow always runs with
+no computer.
+
+**What a computer reaches.** A Docker sandbox reaches the hosts of `AGENTRUN_BOX_ALLOW` (by default the package
+registries and GitHub) through its egress proxy, and nothing else; `AGENTRUN_BOX_ALLOW=none` gives it no network. From a
+server in a container the proxy also refuses the Docker host's own addresses, which the server reads through the socket
+([in the published image](#in-the-published-image)). A
+Daytona, Modal or E2B sandbox has no network of its own (loopback only). A phone and a browser are on their vendor's
+own network, whatever the list says.
+
+**Docker.** A Docker computer runs where this server's Docker answers. With `AGENTRUN_BOXES` not set at all (a plain
+`npx @parcha/agentrun`), the server probes `docker` at its start (within 5 s) and offers it when Docker answers
+(`ready`, or `preparing` while its image is built or pulled, as [the box's image](#the-boxs-image) says); `AGENTRUN_BOXES`,
+when set, lists what it probes, and `AGENTRUN_BOXES=none` probes nothing. One log line says what it found:
 
     event=boxes available=<ids or none> unavailable=<ids> <id>="<why>" ...
 
-The line gives a reason for each listed box that is unavailable, and the banner says the same in words
-(`Boxes: docker is ready, so sandbox agents run their tools there.` with a list; `Boxes: docker (on by default; set
-AGENTRUN_BOXES to change).` without one). Each reason says what to do next: a box the list
-does not name says `not enabled on this server: start AgentRun with AGENTRUN_BOXES=docker` (keeping the boxes it already
-lists), a missing `docker` command says `Docker isn't running on this machine (no docker command on PATH): install or
-start Docker, then restart AgentRun`, and a `docker` whose daemon does not answer says to start Docker or add this
-user to the `docker` group, then restart AgentRun, since the probe runs once. A reason never holds a key, a command's output or a
-provider's answer.
+A missing `docker` command says `Docker isn't running on this machine (no docker command on PATH): install or start
+Docker, then restart AgentRun`; a daemon that does not answer says to start Docker or add this user to the `docker`
+group, then restart AgentRun, since the probe runs once. A run whose agent names a Docker computer here is then refused
+at its start in those words. Every other provider needs only its keys. A Docker desktop has no default image: it needs
+one with an X server, and `AGENTRUN_DOCKER_IMAGE` names the image of every Docker computer, sandbox and desktop alike.
 
-- `docker`: the `docker` command on PATH, with a daemon that answers `docker version` for this server's user. It needs no key.
-  Then the server asks Docker for [the box's image](#the-boxs-image) (`docker image inspect`). When Docker has it (the
-  default with this recipe's hash), the box is `ready`. When not, the server builds the default, or pulls the image
-  `AGENTRUN_DOCKER_IMAGE` names, once, in the background, for at most 10 minutes. Meanwhile the box is available and
-  `preparing` (`building the box image (python, git, curl, node, npm, rg)`, or `pulling <image>`), and a sandbox run whose
-  first box comes then waits for the image, with one row on its timeline (`Preparing the box image: building it (python,
-  git, curl, node, npm, rg)…`), instead of a first tool call that pulls it silently. A build or pull that fails is tried once
-  more, 5 seconds later, the box `preparing` meanwhile with what failed (`trying once more: the build of the box image
-  could not reach the network (…)`). One that fails again, or takes longer, makes the box unavailable with the reason
-  (the build could not reach the network, pull its base or install a package, ran out of disk; the registry refused the
-  image, has no such image, could not be reached; or the time ran out) until a restart tries again. A run that was
-  waiting fails its call with that reason, and the next sandbox run is `409 agent_not_runnable`. A server stopped or
-  killed while its image comes leaves no run waiting on it: a run's first box fails its call at once, with `the server
-  stopped while building it: restart the server to build it again`, never Docker's own error, and the next start
-  builds it again.
-- `daytona`: needs `DAYTONA_API_KEY`. Set `DAYTONA_API_URL` and `DAYTONA_TARGET` when Daytona's defaults do not fit.
-  The probe makes one authenticated read, of a box that does not exist. If Daytona refuses the key, the box is unavailable.
-- `modal`: needs `MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET` and the SDK, which the host installs (`npm install modal`).
-  Its sandboxes live in the app that `AGENTRUN_BOX_APP` names (default `agentrun`). The probe checks that the SDK loads
-  and the token is set. It asks nothing of the provider. Runs execute in it: [a run in a Modal sandbox](#a-run-in-a-modal-sandbox).
-- `bwrap` is not in this release yet.
-
-The boxes come from `@parcha/pi-transport`, a dependency of this package, so every install of the server, `npx
-@parcha/agentrun`'s included, has the Docker box's provider.
-The keys belong to the server alone. The launcher hands them over with the server's other secrets, and no run's process
-gets them, in its environment or on its pipe.
+The keys belong to the server alone. A provider is handed its declared keys only when a run's computer starts or its
+connection is tested, and no run's process gets them, in its environment or on its pipe.
 
 ## Models
 
@@ -1479,7 +1528,8 @@ asked by default.
   tool's top-level arguments, each to the one JSON scalar its calls must carry (`null`: the argument left out), or a
   list of 1 to 16 of them, the argument one of the list, compared strictly:
   `{"mcp:slack/slack_send_message": {"permission": "allow", "pin": {"channel_id": "C0123"}}}`,
-  `{"mcp:github/pull_request_review_write": {"pin": {"method": ["create", "submit_pending"], "event": [null, "COMMENT"]}}}`. The gate checks a pinned
+  `{"mcp:github/pull_request_review_write": {"pin": {"event": [null, "COMMENT"], "method": ["create", "delete_pending", "submit_pending"]}}}`
+  (the `code-review` template's pin). The gate checks a pinned
   tool's call before it runs or asks anyone, whatever the permission (an allow, an ask, a grant): a call whose arguments
   are not as pinned is refused, never sent and never asked about, and the model reads "mcp:slack/slack_send_message may
   only be called with channel_id = C0123: its destination is fixed by the agent's settings". The run's process logs a
@@ -1490,9 +1540,8 @@ asked by default.
   `tool-settings.json` that does not read refuses every call of its tool, and `GET /settings/tools` serves it as
   `pin_broken: true`. A `PUT` that keeps the tool's key and sets no valid pin (the mark sent back as served, or the pin
   left out) keeps it broken, so saving another tool's setting never lifts it; a valid pin repairs it, and leaving the
-  key out removes the setting. Until the agent
-  store's cutover an agent's own pin (`definition.tool_settings.<tool>.pin`) is refused, `422 not_set_up_here`: the
-  store this server writes today keeps no pin, so set it on the server meanwhile.
+  key out removes the setting. An agent keeps a pin of its own in `definition.tool_settings.<tool>.pin`, and the gate
+  holds its runs to it and to the server's.
 - **Prices.** `PUT /v2/settings/mcp-servers/{name}` takes `prices`, each tool's price in USD a call
   (`{"prices": {"search": 0.01}}`; a finite number, 0 or more, for a tool the server lists; else `422`). A priced call
   is held at its price under the run's `max_cost_usd`, refused unsent when the cap cannot take it, and booked as the
@@ -1509,7 +1558,8 @@ asked by default.
 One URL hears of your runs without anyone watching the page. `PUT /v2/settings/webhook` with `{url}` sets it: an `http`
 or `https` address, with no user or password in it. Loopback and private-network addresses are allowed, so a receiver
 on your own machine or network works. Two kinds of message are POSTed to it about runs: `run.needs_input` when a run comes to
-need its person (`input_required`: an `ask_person` question, or a stopped turn) and `run.ended` when it ends
+need its person (`input_required`: a question, a call held for approval, a pause at its cap, an ask for its person in
+its browser, desktop or phone, or a stopped turn) and `run.ended` when it ends
 (completed, failed or cancelled, once carried back). A [schedule](#schedules) whose firing fails sends a third,
 `trigger.failed`; a server with no triggers never sends one.
 
@@ -1519,8 +1569,7 @@ store has the end, so a receiver that reads the run back on its message (`GET /v
 store refuses the end (a full disk, a busy store), nothing is sent, until a later try of the write or the next server
 stores it. The outbox (`DIR/webhook-outbox.json`) keeps, in the same write as each message, which end and which wait of
 each run it queued. A server that starts queues any end of the last day that the agent store holds and the outbox does
-not, under the same `webhook-id` (one lost to a kill, or to a crash of the machine; one whose run's `serve.json` can't
-be read goes with an empty `title`), and a server that takes over a run
+not, under the same `webhook-id` (one lost to a kill, or to a crash of the machine), and a server that takes over a run
 queues a wait it stands at that the outbox does not name (one the run came to while no server was up), under its one
 `webhook-id`. An end before the webhook was set is never sent. A run is continued only once its end's
 `run.ended` is in the outbox on disk (`503` meanwhile), so a continued run's next end is its own, under its own id.
@@ -1532,9 +1581,13 @@ queues a wait it stands at that the outbox does not name (one the run came to wh
 ```
 
 A message is thin: ids, the status, the title and a link to the run on the page; never a tool's arguments, an output
-or an input, which the API reads (`GET /v2/runs/{id}`). `pending.kind` is `question` (an `ask_person`),
-`approval` (a tool call that waits for a person's approval), `stopped`, `budget` (a run paused at its cap) or `browser`
-(the agent asked for the owner in its browser).
+or an input, which the API reads (`GET /v2/runs/{id}`). The title is the run's own, as the store holds it: a trigger's
+run is titled from its trigger, `<Source> <name>` and the event when its source names one ("Webhook reviews:
+pull_request opened"), never from its input; a workflow run's from its agent's name and its input; any other run's
+from its input. `pending.kind` is `question` (an `ask_person`),
+`approval` (a tool call that waits for a person's approval), `stopped` (a stopped turn), `budget` (a run paused at its
+cap) or `browser` (the agent asked for the owner in its browser). An agent's ask for the owner on its desktop or phone
+(the run's `pending.kind` `computer`) is told as `question`.
 
 Messages are signed by the [Standard Webhooks](https://www.standardwebhooks.com) spec, so a receiver verifies them
 with any of its libraries: `webhook-id` (the same on every try of a message, so it is the receiver's idempotency key),
@@ -1799,9 +1852,10 @@ installation and repository (the server's own payload tag); any other names it i
 the run's MCP calls with the static headers beside it, lives only in memory (handed to the run's process over its pipe,
 never its environment, journal, a log line or an answer), and is cut from whatever a run shows while it may be in use.
 A run whose repository the App does not cover, or that names none, has those calls answered in words ("The GitHub App
-isn't installed on owner/repo"). A known limit: a token lasts an hour and is not renewed inside a live run's process
-(it is minted at each launch): a run still working past it has its GitHub calls answered, unsent, "The GitHub token for
-this run expired: it is minted again when the run resumes", and its next resume mints a fresh one.
+isn't installed on owner/repo"). A token lasts an hour, and the runner mints a new one for the run 5 minutes before it
+expires, so a long run's calls never carry an expired token. When that mint fails, the token held keeps working until
+it expires; then the run's calls of that server are answered, unsent, that its GitHub App token expired and a new one
+could not be made, with GitHub's reason, and the next launch (a resume) mints a fresh one.
 
 ## Templates
 
@@ -1843,7 +1897,7 @@ failed, 2 when nothing ran. The runner, the graders and the report are in
 | `DELETE /agents/{id}/sign-ins/{key}` | This server's own route (`x-agentrun-serve: "signins/1"`): forgets one of the agent's [saved sign-ins](#saved-sign-ins), at its vendor and here. `409 sign_in_held` while a run holds its save lease, or while a run it was handed is still going. |
 | `POST /agents/{id}/runs`, `GET /agents/{id}/runs` | A run of the current revision, or of `revision`. An agentic run's input is `{content: string}`; a workflow run's is what its workflow's input schema takes. `file_ids` names [uploaded](#uploads) files, copied into the run's `work/inputs/` before it starts and named in its first message. The agent's runs, newest first. |
 | `GET /runs` | Every agent's runs, newest first, a page of at most 100; `agent`, `revision` and `status` narrow it, and `archived=true` lists only archived ones. A failed run's summary carries its `error`, and a waiting run's its `pending`. |
-| `GET /runs/{id}` | The run: its revision, kind, status, state, result, error, `pending` (this server's own, `pending/1`: what it waits on, by `kind`, such as `{kind: "question", question, asked_at}` for a question it asked a person, or `{kind: "browser", instruction, completion_condition, asked_at, expires_at}` for its agent's ask for the owner in its browser; else null) and cost (`basis: estimate`; $0 before its first model request, a cancelled run's included). |
+| `GET /runs/{id}` | The run: its revision, kind, status, state, result, error, `pending` (this server's own, `pending/1`: what a waiting run waits on, by `kind`: `{kind: "question", question, asked_at}` for a question it asked a person; `approval` for a tool call held for a person's approval, with the tool, its arguments and its price; `budget` for a run paused at its cap ([a run paused at its cap](#a-run-paused-at-its-cap)); `{kind: "browser", instruction, completion_condition, asked_at, expires_at}` for its agent's ask for the owner in its browser; or `{kind: "computer", computer: "desktop" | "phone", instruction, completion_condition, asked_at, expires_at}` for its agent's ask for the owner on its desktop or phone; else null, a stopped turn's included) and cost (`basis: estimate`; $0 before its first model request, a cancelled run's included). |
 | `GET /runs/{id}/timeline` | JSON pages with the change-number cursor (`after`, `next_after`, `reset`, `drop`, `has_more`, `final`, `wait_ms` long poll, and this server's own `limit`, 1 to 500 rows a page, default 500), or server-sent events with `Accept: text/event-stream` (`id` is the cursor, `Last-Event-ID` resumes). Rows sort by `seq`; the usage row (`Cost so far`), the run's running total, is always the last row, and moves to the end when a row comes after it. |
 | `POST /runs/{id}/messages` | To an agentic run: `steer` while the agent works, `answer` when it asked the person, `follow_up` after a stop or after it completed: a completed run opens again, the same run on its own session and store, takes a place under `--max-runs` (`429` when none is free), and completes again. A failed or cancelled run, an archived run and a run of an archived agent are `409 not_continuable`; a workflow run takes none (`501`). |
 | `POST /runs/{id}/stop`, `POST /runs/{id}/cancel` | Stop ends an agentic run's turn and leaves the run `input_required` and idle. Cancel ends a run `cancelled` once its process has exited. |
@@ -2235,8 +2289,9 @@ left out: 2 sessions still being written: they come in next time
 2. The app reads the run's revision from the store.
    - An agentic revision runs as the root agent: its instructions and skills, its model, and the tools it names of the
      workspace's `read`, `write` and `edit`, and `ask_person`, which ends the turn; the timeline then shows a `waiting`
-     row, and the run is `input_required` and `waiting` until a message answers it. `bash` is bound only in a
-     [sandbox](#sandbox), where it and the file tools run in the run's box. The run is `queued` until its first message shows; while the process runs, the
+     row, and the run is `input_required` and `waiting` until a message answers it. `bash` is bound only where the run
+     has a shell ([computers](#computers)): in a computer that mounts the run's folder, or on Archil's serverless exec
+     in Mode 2; in Mode 1 a run with no such computer has the file tools alone. The run is `queued` until its first message shows; while the process runs, the
      timeline comes from its door's events through `@parcha/pi-durable-agent/timeline`. Once the run is idle and its
      newest row is the agent's answer, the server sends the process SIGTERM. A model error ends it `failed`
      (`run_failed`). A run whose `max_cost_usd` cannot buy its next request is paused, `input_required` and `waiting`
@@ -2264,8 +2319,11 @@ left out: 2 sessions still being written: they come in next time
    workflow run's model nodes), and the server carries the run back, every run of both kinds: `carryBack` records its
    state, cost and a summary in the store (an agentic run's answer; a workflow run's `workflowCarry`, its completed
    nodes, then where it failed or escalated). Its last
-   page says `final`. v2's `cancelled` is the store's `stopped`; a workflow that escalated ends `failed` with
-   `error: {code: "escalated", message: <its summary>}`, in the run and in the lists.
+   page says `final`. v2's `cancelled` is the store's `stopped`; a workflow that escalated ends `completed`, its work
+   done and waiting for a person's review: `error` is null and `review` is `{kind, node, reason, at}`, in the run and in the
+   lists. In this release `kind` and `node` are always null: the store keeps only the escalation's summary (`reason`)
+   and the run's end (`at`). Every other run's
+   `review` is null. `GET /v2/stats` counts it in `needs_review`, never in `failed`.
 4. When the server starts, it reads every run the store says is running. A run process an earlier server started and
    that still serves the run is supervised again, by the holder its row names (its pid, its start, its door); a run
    that already ended is carried
