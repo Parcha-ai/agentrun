@@ -22,6 +22,7 @@ import signOutScope from "./sign-out-scope.mjs";
 import signedOutElsewhere from "./signed-out-elsewhere.mjs";
 import runToEnd from "./run-to-end.mjs";
 import takeOver from "./take-over.mjs";
+import askDone from "./ask-done.mjs";
 import secretsWriteOnly from "./secrets-write-only.mjs";
 import templateApply from "./template-apply.mjs";
 import templateUnattended from "./template-unattended.mjs";
@@ -46,6 +47,7 @@ export const flows = [
   runToEnd,
   watchLive,
   takeOver,
+  askDone,
   signedOutElsewhere,
   serverDeny,
   secretsWriteOnly,

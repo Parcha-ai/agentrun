@@ -225,13 +225,27 @@ async function storeRunOf(store: Store, runId: string, deps: ViewDeps): Promise<
   // The browser hand-over the agent waits on (E2c's reader over the run's hand-over entries and hand-back commands), read
   // against the server's clock. Only a run with a hand-over entry fetches its commands, so a run with none reads none and
   // makes no extra store read.
+  // The run's command rows, read once for what needs them: a hand-over's answers, and the person's messages not yet taken.
+  let commandRows: Awaited<ReturnType<Store["commands"]>> | undefined;
+  const commandsNow = async () => (commandRows ??= await store.commands(runId, 0));
   const browserAsk = records.entries.some((e) => e.kind === BROWSER_HANDOVER_KIND)
-    ? browserAskOf(records.entries as unknown as Parameters<typeof browserAskOf>[0], await store.commands(runId, 0), deps.now?.() ?? Date.now())
+    ? browserAskOf(records.entries as unknown as Parameters<typeof browserAskOf>[0], await commandsNow(), deps.now?.() ?? Date.now())
     : undefined;
   // The agent's ask on its desktop or phone, read the same way (computer-commands.ts): only a run with one fetches its rows.
   const computerAsk = records.entries.some((e) => e.kind === COMPUTER_HANDOVER_KIND)
-    ? computerAskOf(records.entries as unknown as Parameters<typeof computerAskOf>[0], await store.commands(runId, 0), deps.now?.() ?? Date.now())
+    ? computerAskOf(records.entries as unknown as Parameters<typeof computerAskOf>[0], await commandsNow(), deps.now?.() ?? Date.now())
     : undefined;
+  // The person's messages its runner has not taken yet (steer rows neither taken nor refused): the file path's `submitted`.
+  // A run that waits on its person (a parked question) and has just been answered reads as going on from the answer's
+  // row, never input_required again until its runner places it, as main's run read once the message was submitted.
+  // Read only for a run not working now (a working run reads working anyway), so a run list adds no read for those; and
+  // only a message that may answer a person counts (a trigger's, answers: false, never does, and is refused while it waits).
+  // A run parked at its cap counts its raises not taken yet the same way: raised, it reads as going on from the raise's
+  // row, never input_required again until its runner takes it (and parks it anew if the raise falls short).
+  const pending = (command: { kind: string; takenAt: number | null; refused: string | null; body: unknown }) =>
+    command.takenAt === null && command.refused === null &&
+    ((command.kind === "steer" && (command.body as { answers?: unknown } | null)?.answers !== false) || (command.kind === "raise" && budget?.kind === "budget"));
+  const submitted = terminal || row.kind !== "agentic" || working ? 0 : (await commandsNow()).filter(pending).length;
   const outcome = terminal ? STATUS_OF[row.state as Exclude<RunReadState, "running">] : undefined;
   const view: RunView = {
     id: row.id,
@@ -243,7 +257,7 @@ async function storeRunOf(store: Store, runId: string, deps: ViewDeps): Promise<
     // The store's "stopped" state is a cancellation; its moment reads cancelled.
     cancel: row.state === "stopped",
     working,
-    submitted: 0,
+    submitted,
     updatedAt: iso(updatedAtMs),
     rows,
     turns,
