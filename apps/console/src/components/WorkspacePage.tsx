@@ -3,6 +3,7 @@ import { type FormEvent, useCallback, useEffect, useRef, useState } from "react"
 import { SecretRow } from "@/components/SecretRow";
 import { ListSkeleton } from "@/components/Skeleton";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/field";
 import { Chip } from "@/components/ui/chip";
 import { type Client, ClientError, problemOf } from "@/lib/client";
 import { clock } from "@/lib/format";
@@ -64,8 +65,8 @@ export function WorkspacePage({ v2, writable, whyNot = "sign_in" }: {
 
   if (!view) return loadError
     ? <div className="m-8 border p-4" role="alert">
-        <p className="font-mono text-[13px] text-destructive-text">Archil's settings could not be read: {loadError.code}: {loadError.message}</p>
-        <button type="button" onClick={load} className="caps mt-3 border px-3 py-2 text-[12px] hover:bg-accent">Try again</button>
+        <p className="font-mono text-body text-destructive-text">Archil's settings could not be read: {loadError.code}: {loadError.message}</p>
+        <Button size="sm" onClick={load} className="mt-3">Try again</Button>
       </div>
     : <div className="p-5 md:p-8"><ListSkeleton label="Loading Archil's settings" rows={2} /></div>;
 
@@ -109,39 +110,38 @@ export function WorkspacePage({ v2, writable, whyNot = "sign_in" }: {
     <div className="h-full overflow-auto">
       <div className="mx-auto max-w-[1100px] space-y-6 px-6 py-8">
         <div>
-          <p className="caps text-[11px] text-muted-foreground">Settings</p>
+          <p className="caps text-label text-muted-foreground">Settings</p>
           <h1 className="mt-1 text-2xl font-semibold">Workspace</h1>
-          <p className="mt-2 text-[14px] text-muted-foreground">{COPY}</p>
+          <p className="mt-2 text-lead text-muted-foreground">{COPY}</p>
         </div>
-        {!writable && <p role="status" className="border bg-card p-4 text-[13px]">{WHY_NOT_WORDS[whyNot]}</p>}
+        {!writable && <p role="status" className="border bg-card p-4 text-body">{WHY_NOT_WORDS[whyNot]}</p>}
         <section aria-label="Archil" className="border p-4">
           <div className="flex flex-wrap items-center gap-3">
             <HardDrive className="size-4 text-muted-foreground" aria-hidden />
-            <span className="font-mono text-[15px] font-semibold">Archil</span>
+            <span className="font-mono text-prose font-semibold">Archil</span>
             <span data-archil-state>{view.on ? <Chip tone="success">On</Chip> : <Chip>Off</Chip>}</span>
-            {view.on && <span data-disk className="font-mono text-[12px] text-muted-foreground">{`${view.diskId ?? ""} · ${view.region ?? ""}`}</span>}
+            {view.on && <span data-disk className="font-mono text-small text-muted-foreground">{`${view.diskId ?? ""} · ${view.region ?? ""}`}</span>}
             <span className="flex-1" />
             <Button size="sm" onClick={() => void test()} disabled={testing}>{testing ? "Testing…" : "Test"}</Button>
             {view.on && <Button size="sm" variant="destructive" onClick={() => setConfirming(true)}>Turn off</Button>}
           </div>
-          {tested && <p data-test className={`mt-3 text-[12px] ${tested.ok ? "text-success-text" : "text-destructive-text"}`}>{`${tested.ok ? "Passed" : "Failed"} · ${clock(tested.at)} · ${tested.words}`}</p>}
+          {tested && <p data-test className={`mt-3 text-small ${tested.ok ? "text-success-text" : "text-destructive-text"}`}>{`${tested.ok ? "Passed" : "Failed"} · ${clock(tested.at)} · ${tested.words}`}</p>}
           {confirming && (
             <div data-confirm className="mt-4 flex flex-wrap items-center gap-3 border bg-card p-3">
-              <p className="min-w-0 flex-1 text-[13px]">Turn Archil off? Its keys are kept, for turning it on again.</p>
+              <p className="min-w-0 flex-1 text-body">Turn Archil off? Its keys are kept, for turning it on again.</p>
               <Button size="sm" variant="destructive" onClick={() => void turnOff()}>Turn off</Button>
               <Button size="sm" onClick={() => setConfirming(false)}>Cancel</Button>
             </div>
           )}
-          {problem && <p role="alert" className="mt-4 border border-destructive/50 px-3 py-2 font-mono text-[12px] text-destructive-text">{problem}</p>}
+          {problem && <p role="alert" className="mt-4 border border-destructive/50 px-3 py-2 font-mono text-small text-destructive-text">{problem}</p>}
 
           <form ref={form} autoComplete="off" onSubmit={save} className="mt-5 space-y-4" aria-label="Archil settings">
             {FIELDS.map((f) => (
               <label key={f.name} className="block">
-                <span className="caps mb-2 block text-[12px] font-semibold">{f.label}</span>
-                <input name={f.name} value={fields[f.name]} placeholder={f.placeholder} spellCheck={false} autoCapitalize="off" autoCorrect="off"
-                  onChange={(e) => { const value = e.currentTarget.value; setFields((now) => ({ ...now, [f.name]: value })); }}
-                  className="w-full border bg-background px-3 py-2.5 font-mono text-[13px] outline-none focus:border-border-strong" />
-                {invalid?.fields[f.name] && <span className="mt-2 block font-mono text-[12px] text-destructive-text" role="alert">{invalid.fields[f.name]}</span>}
+                <span className="caps mb-2 block text-small font-semibold">{f.label}</span>
+                <Input name={f.name} value={fields[f.name]} placeholder={f.placeholder} spellCheck={false} autoCapitalize="off" autoCorrect="off"
+                  onChange={(e) => { const value = e.currentTarget.value; setFields((now) => ({ ...now, [f.name]: value })); }} />
+                {invalid?.fields[f.name] && <span className="mt-2 block font-mono text-small text-destructive-text" role="alert">{invalid.fields[f.name]}</span>}
               </label>
             ))}
             {/* The key sits with the settings it saves with; SecretRow's buttons never submit this form. */}
@@ -151,7 +151,7 @@ export function WorkspacePage({ v2, writable, whyNot = "sign_in" }: {
             </ul>
             {writable && removingKey && (
               <div data-confirm-key className="flex flex-wrap items-center gap-3 border bg-card p-3">
-                <p className="min-w-0 flex-1 text-[13px]">Remove {KEY} saved on this server?</p>
+                <p className="min-w-0 flex-1 text-body">Remove {KEY} saved on this server?</p>
                 <Button type="button" size="sm" variant="destructive" onClick={() => void put(null)}>Remove</Button>
                 <Button type="button" size="sm" onClick={() => setRemovingKey(false)}>Cancel</Button>
               </div>
@@ -159,14 +159,13 @@ export function WorkspacePage({ v2, writable, whyNot = "sign_in" }: {
             {writable && pasting && (
               // Uncontrolled, as every key field: a key must never be in the DOM, and it is sent only when typed in.
               <label className="block">
-                <span className="caps mb-2 block text-[12px] font-semibold">{KEY}</span>
-                <input type="password" name={KEY} autoComplete="new-password" spellCheck={false} autoCapitalize="off" autoCorrect="off" data-1p-ignore data-lpignore="true"
-                  className="w-full border bg-background px-3 py-2.5 font-mono text-[13px] outline-none focus:border-border-strong" />
-                {invalid?.fields[KEY] && <span className="mt-2 block font-mono text-[12px] text-destructive-text" role="alert">{invalid.fields[KEY]}</span>}
+                <span className="caps mb-2 block text-small font-semibold">{KEY}</span>
+                <Input type="password" name={KEY} autoComplete="new-password" spellCheck={false} autoCapitalize="off" autoCorrect="off" data-1p-ignore data-lpignore="true" />
+                {invalid?.fields[KEY] && <span className="mt-2 block font-mono text-small text-destructive-text" role="alert">{invalid.fields[KEY]}</span>}
               </label>
             )}
             {writable && pasting && <Button type="button" size="sm" onClick={() => setPasting(false)}>Cancel</Button>}
-            {invalid?.message && <p className="font-mono text-[12px] text-destructive-text" role="alert">{invalid.message}</p>}
+            {invalid?.message && <p className="font-mono text-small text-destructive-text" role="alert">{invalid.message}</p>}
             <Button type="submit" size="sm" variant="solid" disabled={busy}>{busy ? "Saving" : view.on ? "Save" : "Turn on"}</Button>
           </form>
         </section>

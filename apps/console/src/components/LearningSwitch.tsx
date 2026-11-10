@@ -15,12 +15,12 @@ export function LearningSwitch({ id, checked, onChange, busy, disabled, quiet, s
     <div className={cn("space-y-2", className)}>
       <div className={cn("flex gap-4", quiet ? "items-center" : "items-start")}>
         <div className="min-w-0 flex-1">
-          <p id={id} className="text-[14px] font-semibold">Learns from its runs</p>
-          {!quiet && <p className="mt-0.5 text-[13px] text-muted-foreground">After each run, it looks back and keeps a short note when something will help next time; later runs read them first.</p>}
+          <p id={id} className="text-lead font-semibold">Learns from its runs</p>
+          {!quiet && <p className="mt-0.5 text-body text-muted-foreground">After each run, it looks back and keeps a short note when something will help next time; later runs read them first.</p>}
         </div>
         <Switch checked={checked} onChange={onChange} busy={busy} disabled={disabled} labelledBy={id} />
       </div>
-      {server === "off" && <p className="font-mono text-[11px] text-warning-text">This server has learning turned off, so no run learns until it's on.</p>}
+      {server === "off" && <p className="font-mono text-label text-warning-text">This server has learning turned off, so no run learns until it's on.</p>}
       {problem}
     </div>
   );
@@ -34,11 +34,11 @@ export function LearningField({ fields, onFields, saved, server, error, warning 
   const on = (fields.learning ?? saved) === true;
   return (
     <div>
-      <div className="mb-2"><span className="caps text-[12px] font-semibold">Learning</span></div>
+      <div className="mb-2"><span className="caps text-small font-semibold">Learning</span></div>
       <LearningSwitch id="learning-switch" className="border px-4 py-3" checked={on} server={server}
         onChange={(next) => onFields({ learning: next ? true : saved === undefined ? undefined : false })} />
-      {error && <p className="mt-2 font-mono text-[12px] text-destructive-text" role="alert">{error}</p>}
-      {warning && <p className="mt-2 font-mono text-[12px] text-warning-text">{warning}</p>}
+      {error && <p className="mt-2 font-mono text-small text-destructive-text" role="alert">{error}</p>}
+      {warning && <p className="mt-2 font-mono text-small text-warning-text">{warning}</p>}
     </div>
   );
 }

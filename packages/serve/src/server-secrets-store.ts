@@ -46,7 +46,7 @@ export async function openServerSecretsOverStore(
   const kept = (name: string) => read.get(name) || (read.set(name, fileIn(data, name)), read.get(name)!);
   // The owner's API token and the sign-in session secret stay files beside the store; the per-run door token is gone.
   secrets.add("files", () => [kept(TOKEN_FILE), kept(SESSION_SECRET_FILE)]);
-  // The server always has its seal key (seal-key.ts ensureSealKey, at its start): no setting is ever kept in the clear.
+  // The server always has its seal key (seal-key.ts bootSealKey, at its start): no setting is ever kept in the clear.
   const key = sealKeyOf(env[SEAL_KEY_ENV]);
   if (!key) throw new Error(`the server starts with its seal key (${SEAL_KEY_ENV}), made at the first start when none is handed over`);
   // The outbound webhook's secret, and each it held before, kept in the store (webhooks.ts); and one an earlier version

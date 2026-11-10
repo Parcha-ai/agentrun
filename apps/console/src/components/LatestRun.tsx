@@ -4,6 +4,7 @@ import { LearningChips } from "@/components/LearningChips";
 import { StatusBadge } from "@/components/StatusBadge";
 import { Timeline } from "@/components/Timeline";
 import { Chip } from "@/components/ui/chip";
+import { Button } from "@/components/ui/button";
 import { type Client, follow, problemOf } from "@/lib/client";
 import { when, runTitle } from "@/lib/format";
 import { learningSteps } from "@/lib/learning";
@@ -78,23 +79,23 @@ export function LatestRun({ v2, run, onRun }: { v2: Client; run: Run; onRun: (ru
   return (
     <section className="mb-6 border" aria-label="Latest run">
       <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-b px-4 py-2">
-        <span className="caps text-[11px] font-semibold">Latest run</span>
+        <span className="caps text-label font-semibold">Latest run</span>
         {stale ? <Chip tone="muted">Not refreshed</Chip> : <StatusBadge run={run} />}
-        <a href={href} className="min-w-0 flex-1 truncate text-[14px] hover:underline" title={runTitle(run)}>{runTitle(run)}</a>
+        <a href={href} className="min-w-0 flex-1 truncate text-lead hover:underline" title={runTitle(run)}>{runTitle(run)}</a>
         <LearningChips run={run} link />
-        <span className="font-mono text-[12px] text-muted-foreground">{when(run.created_at)}</span>
-        <a href={href} className="caps flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground">Open the run <ArrowRight className="size-3" aria-hidden /></a>
+        <span className="font-mono text-small text-muted-foreground">{when(run.created_at)}</span>
+        <a href={href} className="caps flex items-center gap-1 text-label text-muted-foreground hover:text-foreground">Open the run <ArrowRight className="size-3" aria-hidden /></a>
       </div>
       {stale && (
-        <p className="flex flex-wrap items-center gap-3 border-b px-4 py-2 font-mono text-[12px] text-destructive-text" role="alert">
+        <p className="flex flex-wrap items-center gap-3 border-b px-4 py-2 font-mono text-small text-destructive-text" role="alert">
           This run could not be refreshed: {stale}
-          <button type="button" disabled={retrying} onClick={() => { setRetrying(true); void reread(want.current).finally(() => setRetrying(false)); }} className="caps border px-2 py-1 text-[11px] text-foreground hover:bg-accent disabled:opacity-45">{retrying ? "Retrying" : "Retry"}</button>
+          <Button type="button" disabled={retrying} onClick={() => { setRetrying(true); void reread(want.current).finally(() => setRetrying(false)); }} size="xs" className="text-foreground">{retrying ? "Retrying" : "Retry"}</Button>
         </p>
       )}
       <div className="px-4 py-3">
-        {error ? <p className="font-mono text-[13px] text-destructive-text" role="alert">The timeline could not be read: {error}</p>
+        {error ? <p className="font-mono text-body text-destructive-text" role="alert">The timeline could not be read: {error}</p>
           : rows ? <Timeline rows={learningSteps(rows, run.learning)} live={runState(now.status, now.state, run.kind, NO_MESSAGES, true).live} />
-          : <p className="py-6 text-center font-mono text-[13px] text-muted-foreground">Reading the timeline...</p>}
+          : <p className="py-6 text-center font-mono text-body text-muted-foreground">Reading the timeline...</p>}
       </div>
     </section>
   );

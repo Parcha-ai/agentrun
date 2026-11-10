@@ -139,13 +139,13 @@ export function FilePicker({ attachments, limits = {}, disabled, compact = false
         <Button type="button" size="sm" onClick={() => input.current?.click()} disabled={off} title={compact ? `Attach files${said ? ` (${said})` : ""}` : undefined} className={cn(compact && "max-sm:h-10 max-sm:w-10 max-sm:px-0")}>
           <Paperclip aria-hidden /> <span className={cn(compact && "max-sm:sr-only")}>Attach files</span>
         </Button>
-        <span className={cn("text-[12px] text-muted-foreground", compact && "max-sm:hidden")}>or drop them here{said ? ` (${said})` : ""}. The run finds them in inputs/.</span>
+        <span className={cn("text-small text-muted-foreground", compact && "max-sm:hidden")}>or drop them here{said ? ` (${said})` : ""}. The run finds them in inputs/.</span>
         <input ref={input} type="file" multiple hidden aria-label="Pick files" onChange={(e) => { add([...(e.target.files ?? [])]); e.target.value = ""; }} />
       </div>
       {items.length > 0 && (
         <ul className="mt-2 flex flex-wrap gap-2" aria-label="Attached files">
           {items.map((x) => (
-            <li key={x.key} className="flex h-7 items-center gap-2 border bg-card px-2 font-mono text-[12px]">
+            <li key={x.key} className="flex h-7 items-center gap-2 border bg-card px-2 font-mono text-small">
               <span className="max-w-[16rem] truncate" title={x.name}>{x.name}</span>
               <span className="text-muted-foreground">{bytes(x.size)}</span>
               {!x.file && <span className="text-muted-foreground" aria-label={`${x.name} sent ${Math.round(x.progress * 100)}%`}>{Math.round(x.progress * 100)}%</span>}
@@ -155,8 +155,8 @@ export function FilePicker({ attachments, limits = {}, disabled, compact = false
           ))}
         </ul>
       )}
-      {items.some((x) => !x.file) && <p className="mt-2 text-[12px] text-muted-foreground" role="status">The run can start once every file is sent.</p>}
-      {refusals.length > 0 && <ul className="mt-2 font-mono text-[12px] text-destructive-text" role="alert">{refusals.map((r, i) => <li key={`${i}:${r}`}>{r}</li>)}</ul>}
+      {items.some((x) => !x.file) && <p className="mt-2 text-small text-muted-foreground" role="status">The run can start once every file is sent.</p>}
+      {refusals.length > 0 && <ul className="mt-2 font-mono text-small text-destructive-text" role="alert">{refusals.map((r, i) => <li key={`${i}:${r}`}>{r}</li>)}</ul>}
     </div>
   );
 }

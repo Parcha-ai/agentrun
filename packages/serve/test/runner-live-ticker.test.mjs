@@ -6,11 +6,13 @@
 // the store fences a write by its run's epoch and live lease, but a claim lost for its renews is lost before its lease
 // runs out, and the old runner's ticker must not write past it.
 import assert from "node:assert/strict";
+import { randomBytes } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fauxLoops, until } from "./runner-support.mjs";
+import { pastHeldTail } from "./fixtures/live-tail.mjs";
 
 const { startRunnerProcess } = await import("../dist/runner/main.js");
 const { startRunner } = await import("../dist/runner/runner.js");
@@ -47,13 +49,16 @@ test("a run on the runner process writes its live row while its tool runs: the t
     return {
       ...inner,
       start: async (claim) => {
-        deps.live?.(() => held("first-chunk\n"));
+        // Past the chunk, more than the tail the live view holds back while output streams (fixtures/live-tail.mjs): the
+        // chunk shows whatever the environment holds.
+        deps.live?.(() => held(`first-chunk\n${"y".repeat(pastHeldTail())}`));
         await released;
         return inner.start(claim);
       },
     };
   };
-  const runner = await startRunnerProcess({ dataDir: dir, name: "runner-a", createLoop });
+  // The server's seal key handed over: a runner never makes one (seal-key.ts), and this store had no server start to.
+  const runner = await startRunnerProcess({ dataDir: dir, name: "runner-a", createLoop, env: { ...process.env, AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") } });
   let closed = false;
   t.after(async () => {
     release();
@@ -65,7 +70,7 @@ test("a run on the runner process writes its live row while its tool runs: the t
   } finally {
     release();
   }
-  assert.deepEqual(seen.tools[0], { callId: "call-1", name: "bash", output: "first-chunk\n" });
+  assert.deepEqual([seen.tools[0].callId, seen.tools[0].name, seen.tools[0].output.startsWith("first-chunk\nyyy")], ["call-1", "bash", true]);
   await until(async () => (await server.runs.get("run-1")).state === "ended" && (await server.runs.get("run-1")).runner === null, "the run ends and is released");
   assert.equal(await liveRow(server), undefined, "its live row goes when its loop ends");
   await runner.close();
