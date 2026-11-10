@@ -5,11 +5,13 @@
 // once the loop waits for the turn's end (turnEnd()): a loop that never waits ends the run with the call never made.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { observed, queue, recorder, stores, until } from "./runner-support.mjs";
+import { observed, queue, recorder, STEADY_LEASE, stores, until } from "./runner-support.mjs";
 
 const { startRunner } = await import("../dist/runner/runner.js");
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
-const TIMING = { leaseMs: 600, renewEveryMs: 150, stopMarginMs: 200, pollMs: 20, commandPollMs: 30 };
+// One runner that never loses its claim: a lease no stall of a loaded machine runs out (a claim lost to a stall would be
+// retaken, and the run read back would be the takeover's).
+const TIMING = { ...STEADY_LEASE, pollMs: 20, commandPollMs: 30 };
 const quiet = { beforeIntent: async () => {}, beforeResult: async () => {} };
 
 /** A session that reads idle as soon as its turn is sent, as the CLI adapters do. Its turn calls `tool` once, when the
