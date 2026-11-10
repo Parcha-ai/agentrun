@@ -107,9 +107,7 @@ export function runEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv 
  *  of a desktop or a phone (computer-live.ts openClaimView) with it: runnerLoop's, runnerBeside's and a test's in-process
  *  runner's. `own`: a test's kind registry and provider loader, in place of the computer package's. */
 export const runnerComputers = (store: Store, env: KeyEnv, sealKey: Buffer, own: Pick<ComputerDepsOptions, "kinds" | "load"> = {}) =>
-  // TODO(tl-places k2): the cast goes once computerForClaim hands the launched computer's watch(handlers, options), the
-  // shape openClaimView takes, and its refusals include "failed".
-  computerDepsFrom({ env, store, sealKey, openComputerView: openClaimView as unknown as ComputerDepsOptions["openComputerView"], ...own });
+  computerDepsFrom({ env, store, sealKey, openComputerView: openClaimView, ...own });
 
 /** The runner's loop for every run: the dispatch over the store (createDispatchLoop), each run's harness loop picked by
  *  its launch (harness-loops.ts resolveRunnerLoop), with the data directory, the run environment (runEnv), the store's

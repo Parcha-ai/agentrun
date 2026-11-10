@@ -10,7 +10,7 @@
 // map of key names to options (computer-keys.ts providerOptions); a provider that keeps sessions with no labels of their
 // own (the phone's) is given the store's computer ledger. Nothing here knows a vendor: the registry, the providers' create
 // and a test's stand-ins are passed in.
-import type { ComputerProvider, ComputerSpec, MountReadBack, Result, Swept } from "@parcha/agentrun-computer";
+import type { ComputerProvider, ComputerSpec, MountReadBack, Result, ScreenWatch, ScreenWatchHandlers, Swept, WatchOptions } from "@parcha/agentrun-computer";
 import { releaseOlder, runLabels, sweep } from "@parcha/agentrun-computer";
 import { computerOfPlace, type ComputerSetting as RevisionComputer, type PlaceView } from "../computer-setting.js";
 import { KEY_TABLE, type KeyTable, type ProviderSettings, providerOptions } from "../computer-keys.js";
@@ -50,9 +50,12 @@ export type ProviderMakers = Readonly<Partial<Record<string, (options: Record<st
 /** Why a live view ends: the computer was released, or the run ended. */
 export type ViewEnd = "released" | "ended";
 
-/** The live view of a desktop or a phone, proxy-only, as its registration (computer-live.ts
- *  openComputerView, taken as a dep until it is on the base) opens it at the claim: fenced on the claim, tagged with the
- *  computer's ref id, fed by the provider's watch, and held by the run's take-over hold. */
+/** A computer's live frames and input: its provider's watch on the computer's ref (ComputerProvider.watch). */
+export type WatchOf = (handlers: ScreenWatchHandlers, options: WatchOptions) => Promise<Result<ScreenWatch>>;
+
+/** The live view of a desktop or a phone, proxy-only, as its registration (computer-live.ts openClaimView, which the
+ *  runner composes in) opens it at the claim: fenced on the claim, tagged with the computer's ref id, fed by the
+ *  provider's watch, and held by the run's take-over hold. */
 export type OpenComputerView = (args: {
   readonly store: unknown;
   readonly sealKey: Buffer | undefined;
@@ -61,9 +64,11 @@ export type OpenComputerView = (args: {
   /** How the viewer's input is made into actions: a desktop's, or the phone's platform (its machine kind). */
   readonly input: "desktop" | "android" | "ios";
   readonly tag: string;
-  readonly watch: (signal: AbortSignal) => unknown;
+  /** The launched computer's watch, bound to its ref: the opener gives the handlers and the signal. */
+  readonly watch: WatchOf;
+  /** The run's hold (computer-hold.ts ComputerHold). */
   readonly hold: unknown;
-}) => Promise<{ readonly ok: true; readonly view: { close(why: ViewEnd): unknown } } | { readonly ok: false; readonly refused: "fenced" | "bad_tag" | "kind"; readonly message: string }>;
+}) => Promise<{ readonly ok: true; readonly view: { close(why: ViewEnd): unknown } } | { readonly ok: false; readonly refused: "fenced" | "bad_tag" | "kind" | "failed"; readonly message: string }>;
 
 export interface ComputerForClaimDeps {
   /** The server's folder mode: 1, a folder of this machine; 2, Archil. */
@@ -131,7 +136,6 @@ function phonePlatform(machine: string | undefined, entry: ProviderEntry | undef
   return said === "ios" ? "ios" : "android";
 }
 
-/** The provider's watch of a computer's screen (ComputerProvider.watch), where it has one. */
 /** A provider that makes its computers' image ready itself (Docker's image(): its recipe built when Docker lacks it, or
  *  its image by name pulled), answering the tag to start from. */
 type ImageMaker = { image(context: { readonly signal?: AbortSignal; readonly onWait?: ImageWait }): Promise<Result<string>> };
@@ -147,9 +151,9 @@ async function readyImage(provider: ComputerProvider, signal: AbortSignal | unde
   return ready.value;
 }
 
-type Watching = { watch(ref: { readonly id: string; readonly name: string }, context: { readonly signal: AbortSignal }): unknown };
-const watching = (provider: ComputerProvider): Watching | undefined =>
-  typeof (provider as Partial<Watching>).watch === "function" ? (provider as unknown as Watching) : undefined;
+/** The provider's watch of a computer's screen on `ref` (ComputerProvider.watch), where it has one. */
+const watchOf = (provider: ComputerProvider, ref: { readonly id: string; readonly name: string }): WatchOf | undefined =>
+  typeof provider.watch === "function" ? (handlers, options) => provider.watch!(ref, handlers, options) : undefined;
 
 /** `entry`'s computer started through its provider: the run's computers of a lower claim epoch released first (the
  *  janitor's releaseOlder: one claim's computer at a time), then made with the run's labels (and the run's folder, when
@@ -159,7 +163,7 @@ async function providerLaunch(
   claim: { readonly runId: string; readonly epoch: number },
   spec: ComputerSpec,
   signal: AbortSignal | undefined,
-): Promise<LaunchedComputer & { machine: string; watch?: (signal: AbortSignal) => unknown }> {
+): Promise<LaunchedComputer & { machine: string; watch?: WatchOf }> {
   const older = await releaseOlder(provider, claim.runId, claim.epoch, signal ? { signal } : {});
   if (!older.ok) throw new Error(older.error.message);
   const created = await provider.create(spec, signal ? { signal } : {});
@@ -175,6 +179,7 @@ async function providerLaunch(
     throw new Error(connected.error.message);
   }
   const { client, hello } = connected.value;
+  const watch = watchOf(provider, ref);
   return {
     id: ref.id,
     groups: hello.groups,
@@ -187,7 +192,7 @@ async function providerLaunch(
       return attached.value.spec.mount ? { ok: true, value: attached.value.spec.mount } : { ok: false, error: { code: "not_found", message: "nothing is mounted in this computer" } };
     },
     // The provider's watch of the screen (provider.watch), which feeds the run's proxied live view.
-    ...(watching(provider) ? { watch: (signal: AbortSignal) => watching(provider)!.watch(ref, { signal }) } : {}),
+    ...(watch ? { watch } : {}),
     async release() {
       await connected.value.close().catch(() => undefined);
       await release();
@@ -212,7 +217,7 @@ export async function sweepComputers(providers: readonly ComputerProvider[], lab
 export async function computerForClaim(launch: ClaimLaunch, store: Pick<Store, "agents" | "sealedKeys" | "computerLedger">, deps: ComputerForClaimDeps): Promise<ClaimComputer> {
   const table = deps.keyTable ?? KEY_TABLE;
   /** The computer this claim started (one per claim): its ref id tags its live view, and its watch feeds it. */
-  let made: { readonly id: string; readonly machine?: string; readonly watch?: (signal: AbortSignal) => unknown } | undefined;
+  let made: { readonly id: string; readonly machine?: string; readonly watch?: WatchOf } | undefined;
   /** The provider entry it was started from: a phone's platform where the computer did not say it. */
   let madeBy: ProviderEntry | undefined;
   const side: ClaimSide = {
@@ -229,7 +234,7 @@ export async function computerForClaim(launch: ClaimLaunch, store: Pick<Store, "
     async launch(entry, { kind, keys, mount, signal }) {
       if (deps.launch) {
         const own = await deps.launch(entry, { kind, keys, ...(mount ? { mount } : {}), ...(signal ? { signal } : {}) });
-        const ownWatch = (own as unknown as { watch?: (signal: AbortSignal) => unknown }).watch;
+        const ownWatch = (own as unknown as { watch?: WatchOf }).watch;
         made = { id: own.id, ...(ownWatch ? { watch: ownWatch } : {}) };
         madeBy = entry;
         return own;
@@ -278,7 +283,7 @@ export async function computerForClaim(launch: ClaimLaunch, store: Pick<Store, "
     if (deps.openComputerView && made?.watch) {
       const watch = made.watch;
       const input = computer.kind === "desktop" ? "desktop" : phonePlatform(made.machine, madeBy);
-      const opened = await deps.openComputerView({ store, sealKey: deps.sealKey, claim: launch.claim ?? { runId: launch.runId, epoch: launch.epoch }, kind: computer.kind, input, tag: made.id, watch: (signal) => watch(signal), hold: theHold });
+      const opened = await deps.openComputerView({ store, sealKey: deps.sealKey, claim: launch.claim ?? { runId: launch.runId, epoch: launch.epoch }, kind: computer.kind, input, tag: made.id, watch, hold: theHold });
       if (!opened.ok) {
         await started.release().catch(() => undefined);
         await revoke().catch(() => undefined);
