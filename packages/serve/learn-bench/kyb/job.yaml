@@ -7,6 +7,7 @@ template: kyb
 parameters: { risk_appetite: medium, jurisdictions_of_interest: "" }
 grants: []
 fakes: {}
+deny: [web_search, web_fetch]
 harnesses: [pi, claude-agent]
 steps:
   - { id: "01", kind: teach }   # Maplestone Logistics Inc.

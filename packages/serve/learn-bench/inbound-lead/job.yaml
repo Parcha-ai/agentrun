@@ -10,6 +10,7 @@ parameters:
   competitors: "Alloy, Persona, Middesk, Sardine"
 grants: []
 fakes: {}
+deny: [web_search, web_fetch]
 harnesses: [pi, claude-agent]
 steps:
   - { id: "01", kind: teach }   # Northbeam Studio

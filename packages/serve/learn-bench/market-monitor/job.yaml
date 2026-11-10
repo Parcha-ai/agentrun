@@ -6,6 +6,7 @@ template: market-monitor
 parameters: { competitors: "Quillforge (quillforge.example)", lookback_days: 7 }
 grants: []
 fakes: {}
+deny: [web_search, web_fetch]
 harnesses: [pi, claude-agent]
 steps:
   - { id: "01", kind: teach }   # week of 2026-09-21
