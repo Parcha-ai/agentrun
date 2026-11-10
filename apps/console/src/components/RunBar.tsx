@@ -1,6 +1,7 @@
 import { Play } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { FilePicker, type UploadLimits, useAttachments } from "@/components/FilePicker";
+import { Picker } from "@/components/ui/picker";
 import { ToolBlockers } from "@/components/ToolBlockers";
 import { Button } from "@/components/ui/button";
 import type { Agent } from "@/lib/agentForm";
@@ -69,12 +70,10 @@ export function RunBar({ agent, efforts, v2, go, blocked, limits, upload = sendU
             className={cn("min-w-0 flex-1 resize-y border bg-background px-3 py-2.5 font-mono text-[13px] outline-none placeholder:text-muted-foreground focus:border-border-strong max-sm:order-first max-sm:basis-full", workflow ? "leading-[1.6]" : "max-sm:h-10")} />
           <div className="flex shrink-0 items-center gap-3 max-sm:order-last max-sm:gap-2">
             {efforts.length > 0 && (
-              <label className="flex items-center gap-2" title="How hard the model thinks before it answers. default leaves it to the agent.">
-                <span className="flex flex-col leading-tight"><span className="caps text-[11px] text-muted-foreground">Effort</span><span className="text-[11px] text-muted-foreground max-sm:hidden">How hard the model thinks</span></span>
-                <select value={effort} onChange={(e) => setEffort(e.target.value)} aria-label="Effort" className="h-10 border bg-background px-3 font-mono text-[13px]">
-                  {["", ...efforts].map((e) => <option key={e || "default"} value={e}>{e || "default"}</option>)}
-                </select>
-              </label>
+              <div className="flex items-center gap-2" title="How hard the model thinks before it answers. default leaves it to the agent.">
+                <span className="flex flex-col leading-tight"><label htmlFor="runbar-effort" className="caps text-[11px] text-muted-foreground">Effort</label><span className="text-[11px] text-muted-foreground max-sm:hidden">How hard the model thinks</span></span>
+                <Picker id="runbar-effort" label="Effort" value={effort} onChange={setEffort} className="w-32" options={["", ...efforts].map((e) => ({ value: e, label: e || "default" }))} />
+              </div>
             )}
             <Button variant="solid" onClick={() => void start()} disabled={!built.ok || sending || !!blocked || attachments.busy} title={blocked ?? (attachments.busy ? "Waiting for the files to be sent" : undefined)}><Play aria-hidden /> {sending ? "Starting" : "Run"}</Button>
           </div>
