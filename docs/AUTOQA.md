@@ -19,7 +19,7 @@ When this runs from a pipeline or a periodic QA job, the scope is fixed here and
 
 ## How to run
 
-Node 22.19 or later on 22 (`.nvmrc` pins 22.23.2), or 24.2 or later. Node 23 and 24.0 to 24.1 are refused. npm 11
+Node 24.11 or later (`.nvmrc` pins 24.21.0); anything older is refused. npm 11
 is the documented toolchain, but `npm ci` also works with npm 10.9 (the npm bundled with Node 22.23.2).
 
 ```sh
@@ -39,7 +39,7 @@ there and never print it.
 | Env | Why |
 | --- | --- |
 | `TMPDIR`, `--data` | Use a fresh data dir and a temp dir of its own per run, so no earlier run's state is read. |
-| `XDG_CONFIG_HOME` | The launcher writes `agentrun/seal.key` there. Point it at a QA dir so your own config directory is never touched. |
+| `XDG_CONFIG_HOME` | Point it at a QA dir so your own config directory is never touched. The seal key is `AGENTRUN_SEAL_KEY`, else `<data>/seal/seal.key`, made at the server's first start; nothing is kept under the config home. |
 | `AGENT_MODEL_BASE_URL`, `AGENT_MODEL_API_KEY`, `AGENT_MODEL` | Gateway for the pi and codex harnesses (OpenAI Responses). Point them at your gateway (its `/v1` base URL) and set `AGENT_MODEL` to a small, cheap model for smokes. |
 | `ANTHROPIC_BASE_URL`, `ANTHROPIC_API_KEY` | The claude-agent harness only, on Anthropic Messages. Your gateway may serve `/v1/messages` too. |
 | `AGENTRUN_MAX_RUNS` | Cap concurrent runs (3 is plenty for QA). |
