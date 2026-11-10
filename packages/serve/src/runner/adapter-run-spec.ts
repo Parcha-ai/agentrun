@@ -17,7 +17,7 @@ import type { BeforeRequest, HostTool, SessionSpec, Wire } from "@parcha/agentru
 import type { Approvals } from "../approvals.js";
 import type { LiveHandover, LiveViewerStore } from "../browser-live.js";
 import { dropLiveViewer, putLiveViewer } from "../browser-live.js";
-import type { Tier } from "../model.js";
+import type { PinnedModel, Tier } from "../model.js";
 import { firstMessage } from "../run-manifest.js";
 import { learningStartOf, type RunLaunch } from "../run-launch.js";
 import type { Store } from "../store/store.js";
@@ -121,7 +121,7 @@ export interface AdapterSpecDeps {
   readonly sealKey: Buffer;
   /** The run's model route (model-route.ts routeOf), the one route the pi adapter and the cap read, on a wire of `wires`
    *  (the caller's; pi speaks both of main's, PI_WIRES). */
-  readonly routeOf: (model: string | undefined, env: NodeJS.ProcessEnv, tier?: Tier, wires?: readonly Wire[], upstream?: typeof fetch, redact?: (text: string) => string) => Promise<ModelRoute>;
+  readonly routeOf: (model: string | PinnedModel | undefined, env: NodeJS.ProcessEnv, tier?: Tier, wires?: readonly Wire[], upstream?: typeof fetch, redact?: (text: string) => string) => Promise<ModelRoute>;
   /** The run's log line (what its Workspace and computer have to say that is not a run failure). */
   readonly log?: (message: string) => void;
   /** The one shared claim-time computer (computer-for-claim.ts), for both the pi and the CLI spec: none for a runner place.
@@ -170,7 +170,17 @@ type RevisionBody = {
   readonly harness?: string;
   readonly approvals?: Approvals;
   readonly skills?: Record<string, unknown>;
+  /** The revision's own model ("provider/model-id"), absent for the host's. */
+  readonly model?: string;
 };
+
+/** What the runner routes a claimed run on: the launch's model as its start pinned it, sent as pinned, with the
+ *  revision's own ref beside it (main prices a gateway's id by the provider that ref names); the revision's ref alone
+ *  when the start pinned none. Never the pin's provider and id joined into a ref: a gateway refuses the joined id, and
+ *  bare ids would cut it again (model.ts pinnedChoice). */
+export function modelAskOf(pinned: { provider: string; modelId: string } | undefined, ref: string | undefined): string | PinnedModel | undefined {
+  return pinned ? { pinned, ...(ref ? { ref } : {}) } : ref;
+}
 
 /**
  * One claimed pi run's AdapterRunSpec, built from its launch record and its revision.
@@ -293,7 +303,7 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
   // pi speaks both of main's wires: an OpenAI-family model's route is OpenAI's Responses itself.
   // The runner's one redactor (run.redact) goes to the route's translation and to the session's model proxy: a provider's
   // error that echoes a secret reaches pi's record with none in it, on any route.
-  const route = await deps.routeOf(launch.model ? `${launch.model.provider}/${launch.model.modelId}` : undefined, deps.env, "default", PI_WIRES, undefined, cut);
+  const route = await deps.routeOf(modelAskOf(launch.model, body.model), deps.env, "default", PI_WIRES, undefined, cut);
   // The run's pi-native extensions, in the root agent through the pi adapter (PiAdapterOptions.extensions), which installs
   // them in the claim's registry and offers each tool once:
   // - ask_person is pi's own tool (tools.ts): a run granted it carries its native extension, so pi runs it as its own tool
