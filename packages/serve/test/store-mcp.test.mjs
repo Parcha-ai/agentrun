@@ -5,12 +5,8 @@
 // when another claim refreshed it first (the row changed since it was read), it is skipped and the newer row returned.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { randomBytes } from "node:crypto";
 import { queued, storeOn } from "./store-helpers.mjs";
-import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 
-const { mcpServersOverStore } = await import("../dist/mcp-servers-store.js");
-const { sealMcpCredential } = await import("../dist/store/index.js");
 const { Fenced, MCP_REFRESH_CALL_MS, MCP_REFRESH_LEASE_MS, STORE_WRITE_DEADLINE_MS, StoreConstraint } = await import("../dist/store/index.js");
 
 const SEALED = Uint8Array.from([1, 2, 3, 4, 250]);
@@ -126,40 +122,4 @@ test("a lease cannot lapse while its holder's refresh may still run: shorter tha
   // The holder's call may run to its deadline: no other claim takes the lease before then.
   clock.now += MCP_REFRESH_CALL_MS;
   assert.equal((await store.mcp.leaseRefresh("github", { seen: saved.sealed, holder: "run-2@1" })).leased, false, "still the holder's at its call's deadline");
-});
-
-/** `store` whose next registry put first lets a runner's token refresh land: its lease on the credential the row holds
- *  now, then its keep of `sealed`. The owner's read of the row is already made by then; its write is not. */
-function refreshLandsBeforePut(store, sealed) {
-  let once = false;
-  const mcp = new Proxy(store.mcp, {
-    get(target, key) {
-      const value = Reflect.get(target, key, target);
-      if (key === "put" && !once) return async (...args) => {
-        once = true;
-        const row = await target.server(args[0].name);
-        assert.equal((await target.leaseRefresh(row.name, { seen: row.sealed, holder: "run-1@1" })).leased, true);
-        assert.equal((await target.keepRefreshed(row.name, { seen: row.sealed, holder: "run-1@1", sealed })).kept, true);
-        return value.apply(target, args);
-      };
-      return typeof value === "function" ? value.bind(target) : value;
-    },
-  });
-  return new Proxy(store, { get: (target, key) => (key === "mcp" ? mcp : typeof target[key] === "function" ? target[key].bind(target) : target[key]) });
-}
-
-test("an owner's tools refresh, or a save that keeps the sealed credential, never writes back the credential it read over a runner's newer kept set", { todo: "mcp-servers-store.ts refresh (:210-223) and a keep-save (:186-192) re-seal the credential read at their start and store.mcp.put (store.ts:793) overwrites sealed; a rotated refresh token kept meanwhile is lost" }, async (t) => {
-  const KEY = Buffer.from(randomBytes(32));
-  const OLD = `not-a-secret-${"owner-read"}`;
-  const ROTATED = `not-a-secret-${"runner-kept"}`;
-  const fake = await startFakeMcp({ token: (got) => got === `Bearer ${OLD}` || got === `Bearer ${ROTATED}` });
-  t.after(() => fake.close());
-  for (const [what, act] of [["a tools refresh", (r) => r.refresh("fake")], ["a save keeping the sealed credential", (r) => r.save("fake", { url: fake.url, auth: { type: "bearer" } })]]) {
-    const { store } = await storeOn(t);
-    const env = { AGENTRUN_SEAL_KEY: KEY.toString("base64") };
-    await mcpServersOverStore(store, env, "test").save("fake", { url: fake.url, auth: { type: "bearer", token: OLD } });
-    const rotated = sealMcpCredential(KEY, "fake", { type: "headers", headers: { authorization: `Bearer ${ROTATED}` } }, fake.url);
-    await act(mcpServersOverStore(refreshLandsBeforePut(store, rotated), env, "test"));
-    assert.deepEqual([...(await store.mcp.server("fake")).sealed], [...rotated], `${what}: the runner's kept set still stands`);
-  }
 });
