@@ -23,16 +23,25 @@ export const PORT_PROVIDER = "agentrun-session";
  *  adapters/pi.ts). */
 export const sessionBaseUrl = (api: SessionPort["api"], url: string): string => (api === "anthropic-messages" ? url : `${url}/v1`);
 
+/** The catalog's entry for a session's model, as its route carries it (model-route.ts `like`): its reasoning, price,
+ *  window and ceiling, and what it takes as input with its input limits. */
+export type SessionLike = Partial<Pick<Model<Api>, "reasoning" | "cost" | "contextWindow" | "maxTokens">> & { readonly input?: readonly string[]; readonly inputLimits?: unknown };
+
 /** The one model of a session's route as pi-ai lists it, for the port's requests and for pi's own (runner adapters/pi.ts):
  *  `model` in `api` at the proxy `url` (sessionBaseUrl), under `provider`, with `headers` (the session key as the proxy
- *  reads one, a bearer token), its reasoning, limits and price from `like` (the catalog's entry), `reasoning` when it
- *  says none. It takes images on either wire: a host tool's images (a screenshot) reach the model in its tool result.
- *  OpenAI's Responses through a gateway takes no developer role (pi-ai sends its system prompt as a system message). */
-export function sessionModel(api: SessionPort["api"], url: string, model: string, options: { provider: string; headers?: Readonly<Record<string, string | null>>; like?: Partial<Pick<Model<Api>, "reasoning" | "cost" | "contextWindow" | "maxTokens">>; reasoning: boolean }): Model<Api> {
+ *  reads one, a bearer token), its reasoning, limits, price, input and input limits from `like` (the catalog's entry),
+ *  `reasoning` when it says none. With no input said it takes images on either wire: a host tool's images (a screenshot)
+ *  reach the model in its tool result. OpenAI's Responses through a gateway takes no developer role (pi-ai sends its
+ *  system prompt as a system message). */
+export function sessionModel(api: SessionPort["api"], url: string, model: string, options: { provider: string; headers?: Readonly<Record<string, string | null>>; like?: SessionLike; reasoning: boolean }): Model<Api> {
   const { like } = options;
   return {
     id: model, name: model, api, provider: options.provider, baseUrl: sessionBaseUrl(api, url), ...(options.headers ? { headers: options.headers } : {}),
-    reasoning: like?.reasoning ?? options.reasoning, input: ["text", "image"],
+    // What the model takes as input and its input limits, as the catalog says (the route's `like`): a model that takes no
+    // images is sent pi-ai's placeholder in place of one, and pi's read holds an image to its limits. Unsaid, text and
+    // images within pi's defaults.
+    reasoning: like?.reasoning ?? options.reasoning, input: like?.input ? [...like.input] : ["text", "image"],
+    ...(like?.inputLimits ? { inputLimits: like.inputLimits } : {}),
     cost: like?.cost ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     contextWindow: like?.contextWindow ?? 200_000, maxTokens: like?.maxTokens ?? 32_000,
     ...(api === "openai-responses" ? { compat: { supportsDeveloperRole: false } } : {}),
@@ -45,7 +54,7 @@ export function sessionModel(api: SessionPort["api"], url: string, model: string
  *  on the model, since pi-ai's Anthropic client sends its key as x-api-key, which the proxy does not forward; on Responses
  *  pi-ai sends the key as that bearer token itself. The one client every runner caller of a session proxy builds: pi's
  *  sessions, the learning grader, a workflow's model nodes. */
-export function sessionProvider(api: SessionPort["api"], proxy: { readonly url: string; readonly key: string }, model: string, options: { provider: string; keyName: string; like?: Partial<Pick<Model<Api>, "reasoning" | "cost" | "contextWindow" | "maxTokens">>; reasoning: boolean }): ReturnType<typeof createProvider> {
+export function sessionProvider(api: SessionPort["api"], proxy: { readonly url: string; readonly key: string }, model: string, options: { provider: string; keyName: string; like?: SessionLike; reasoning: boolean }): ReturnType<typeof createProvider> {
   return createProvider({
     id: options.provider,
     baseUrl: sessionBaseUrl(api, proxy.url),
