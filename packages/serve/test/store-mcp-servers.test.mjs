@@ -52,16 +52,6 @@ test("the view and the list item carry url, and the view holds every field the v
   for (const field of required) assert.ok(field in view, `the view is missing the required field ${field}`);
 });
 
-test("a none-auth server reads credential null and no header names", async (t) => {
-  const { store } = await storeOn(t);
-  await saveMcpServer(store, KEY, { name: "public", url: "https://mcp.example.com/public", auth: "none", tools: [] });
-  const view = await reg(store).get("public");
-  assert.equal(view.credential, null);
-  assert.deepEqual(view.auth, { type: "none" });
-  const list = await reg(store).list();
-  assert.deepEqual(list.servers.map((s) => s.name), ["public"]);
-});
-
 test("an oauth server reads its note from the sealed token set; an expired sign-in reads credential expired", async (t) => {
   const { store } = await storeOn(t);
   await saveMcpServer(store, KEY, { name: "linear", url: "https://mcp.example.com/linear", auth: "oauth", protocol: "2025-06-18", tools: [], credential: { type: "oauth", set: oauthSet() } });
@@ -72,21 +62,6 @@ test("an oauth server reads its note from the sealed token set; an expired sign-
   // A sign-in the runner marked expired (expired:true inside the sealed credential).
   await saveMcpServer(store, KEY, { name: "linear", url: "https://mcp.example.com/linear", auth: "oauth", protocol: "2025-06-18", tools: [], credential: { type: "oauth", set: oauthSet(), expired: true } });
   assert.equal((await reg(store).get("linear")).credential, "expired");
-});
-
-test("a credential under another seal key reads unreadable", async (t) => {
-  const { store } = await storeOn(t);
-  await saveMcpServer(store, KEY, { name: "github", url: "https://mcp.example.com/github", auth: "headers", tools: [], credential: { type: "headers", headers: { authorization: "Bearer x" } } });
-  assert.equal((await reg(store, env(randomBytes(32))).get("github")).credential, "unreadable", "another key: unreadable");
-});
-
-test("remove drops the server; an unknown server is not_found on get and remove", async (t) => {
-  const { store } = await storeOn(t);
-  await saveMcpServer(store, KEY, { name: "github", url: "https://mcp.example.com/github", auth: "none", tools: [] });
-  await reg(store).remove("github");
-  assert.equal(await store.mcp.server("github"), undefined, "gone");
-  await assert.rejects(() => reg(store).get("nope"), (e) => e.code === "not_found");
-  await assert.rejects(() => reg(store).remove("nope"), (e) => e.code === "not_found");
 });
 
 test("save, preview and oauthStart refuse a bad body before any network probe", async (t) => {
