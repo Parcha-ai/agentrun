@@ -43,3 +43,5 @@ CREATE TABLE channel_attempts (
   redelivery BIGINT NOT NULL CHECK (redelivery IN (0, 1))
 );
 CREATE INDEX channel_attempts_by_channel ON channel_attempts (channel, seq);
+
+UPDATE store_meta SET schema_version = 3 WHERE singleton = 1;
