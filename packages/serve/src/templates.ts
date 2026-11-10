@@ -140,10 +140,12 @@ export function githubTriggerWords(packageName: string, source: Json): string {
   const or = (words: string[]) => (words.length < 2 ? words.join("") : `${words.slice(0, -1).join(", ")} or ${words.at(-1)}`);
   return `${subject} runs on each ${or(events)} ${repos.length ? `to ${or(repos)}` : "to a repository the GitHub App is installed on"}.`;
 }
-const GITHUB_EVENT_WORDS: Record<string, string> = { pull_request: "pull request", pull_request_review: "pull request review", pull_request_review_comment: "review comment", issue_comment: "comment", issues: "issue" };
+const GITHUB_EVENT_WORDS: Record<string, string> = { pull_request: "pull request", pull_request_review: "pull request review", pull_request_review_comment: "review comment", issue_comment: "comment", issues: "issue", release: "release" };
 
-/** What an apply says of a github trigger it skipped because GitHub is not connected here. */
-export const GITHUB_TRIGGER_UNCONNECTED = "Connect GitHub in Settings, then apply again to review pull requests automatically.";
+/** What an apply says of a github trigger it skipped because GitHub is not connected here: what to do, and what the
+ *  trigger would then run on, in the package's own words ("Code review runs on each pull request to acme/widgets."). */
+export const githubTriggerUnconnected = (packageName: string, source: Json): string =>
+  `Connect GitHub in Settings, then apply again so it runs by itself: ${githubTriggerWords(packageName, source)}`;
 
 /** Every string in `value`, deep. */
 const strings = (value: unknown): string[] => (typeof value === "string" ? [value] : Array.isArray(value) ? value.flatMap(strings) : isObject(value) ? Object.values(value).flatMap(strings) : []);

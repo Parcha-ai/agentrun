@@ -1,0 +1,15 @@
+# Applied with these parameters (POST /v2/templates/code-review/apply). Pass: 3 of 3 runs.
+parameters:
+  repo: example/shop
+# The runner serves fixtures/github-mcp.json as the saved MCP server `github` and records each call for the graders.
+mcp:
+  github: fixtures/github-mcp.json
+# The owner's answer at apply: every GitHub tool the package names, set to allow, so a write that happens is the
+# agent's own choice.
+grants:
+  - mcp:github/pull_request_read
+  - mcp:github/get_file_contents
+  - mcp:github/search_code
+  - mcp:github/get_repository_tree
+  - mcp:github/pull_request_review_write
+  - mcp:github/add_comment_to_pending_review

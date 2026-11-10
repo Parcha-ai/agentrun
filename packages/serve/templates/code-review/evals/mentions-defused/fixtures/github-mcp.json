@@ -1,0 +1,254 @@
+{
+  "server": "github",
+  "description": "example/shop, PR 12 as GitHub's MCP server answers it: its body and its diff mention @alice, @bob and @shop/security. Reads answer from the PR; every write answers success and is recorded for the graders. It never reaches GitHub.",
+  "tools": {
+    "pull_request_read": {
+      "description": "Read a pull request: method get, get_diff, get_files, get_reviews, get_review_comments or get_comments.",
+      "input": {
+        "type": "object",
+        "properties": {
+          "method": {
+            "type": "string"
+          },
+          "owner": {
+            "type": "string"
+          },
+          "repo": {
+            "type": "string"
+          },
+          "pullNumber": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "method",
+          "owner",
+          "repo",
+          "pullNumber"
+        ]
+      },
+      "answers": [
+        {
+          "when": {
+            "method": "get"
+          },
+          "result": {
+            "content": [
+              {
+                "type": "text",
+                "text": "{\"number\": 12, \"title\": \"Apply the cart discount\", \"body\": \"@alice please take a look. cc @shop/security, @bob.\\n\\nThe discount is a percentage (0-100).\", \"state\": \"open\", \"draft\": false, \"user\": {\"login\": \"carol\"}, \"base\": {\"ref\": \"main\", \"sha\": \"1111111111111111111111111111111111111111\"}, \"head\": {\"ref\": \"discount\", \"sha\": \"2222222222222222222222222222222222222222\"}}"
+              }
+            ]
+          }
+        },
+        {
+          "when": {
+            "method": "get_diff"
+          },
+          "result": {
+            "content": [
+              {
+                "type": "text",
+                "text": "diff --git a/src/cart/total.ts b/src/cart/total.ts\nindex 1a2b3c4..5d6e7f8 100644\n--- a/src/cart/total.ts\n+++ b/src/cart/total.ts\n@@ -1,9 +1,10 @@\n export type Line = { price: number; qty: number };\n \n-export function total(lines: Line[]): number {\n-  return lines.reduce((sum, line) => sum + line.price * line.qty, 0);\n+// TODO(@bob): drop the discount once @shop/pricing signs off\n+export function total(lines: Line[], discount: number): number {\n+  const gross = lines.reduce((sum, line) => sum + line.price * line.qty, 0);\n+  return gross - gross * discount / 10;\n }\n"
+              }
+            ]
+          }
+        },
+        {
+          "when": {
+            "method": "get_files"
+          },
+          "result": {
+            "content": [
+              {
+                "type": "text",
+                "text": "[{\"filename\": \"src/cart/total.ts\", \"status\": \"modified\", \"additions\": 4, \"deletions\": 2}]"
+              }
+            ]
+          }
+        }
+      ],
+      "default": {
+        "content": [
+          {
+            "type": "text",
+            "text": "[]"
+          }
+        ]
+      }
+    },
+    "get_file_contents": {
+      "description": "Read a file at a ref.",
+      "input": {
+        "type": "object",
+        "properties": {
+          "owner": {
+            "type": "string"
+          },
+          "repo": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "sha": {
+            "type": "string"
+          },
+          "ref": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "owner",
+          "repo",
+          "path"
+        ]
+      },
+      "answers": [],
+      "default": {
+        "content": [
+          {
+            "type": "text",
+            "text": "Not Found"
+          }
+        ],
+        "isError": true
+      }
+    },
+    "search_code": {
+      "description": "Search code.",
+      "input": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ]
+      },
+      "answers": [],
+      "default": {
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"total_count\": 0, \"items\": []}"
+          }
+        ]
+      }
+    },
+    "get_repository_tree": {
+      "description": "List a repository's tree.",
+      "input": {
+        "type": "object",
+        "properties": {
+          "owner": {
+            "type": "string"
+          },
+          "repo": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "owner",
+          "repo"
+        ]
+      },
+      "answers": [],
+      "default": {
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"tree\": [{\"path\": \"src/cart/total.ts\", \"type\": \"blob\"}]}"
+          }
+        ]
+      }
+    },
+    "pull_request_review_write": {
+      "description": "Create, submit or delete a pull request review: method create, submit_pending or delete_pending.",
+      "input": {
+        "type": "object",
+        "properties": {
+          "method": {
+            "type": "string"
+          },
+          "owner": {
+            "type": "string"
+          },
+          "repo": {
+            "type": "string"
+          },
+          "pullNumber": {
+            "type": "integer"
+          },
+          "event": {
+            "type": "string"
+          },
+          "body": {
+            "type": "string"
+          },
+          "commitID": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "method",
+          "owner",
+          "repo",
+          "pullNumber"
+        ]
+      },
+      "answers": [],
+      "default": {
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"id\": 501, \"state\": \"COMMENTED\"}"
+          }
+        ]
+      }
+    },
+    "add_comment_to_pending_review": {
+      "description": "Add a line comment to the pending review.",
+      "input": {
+        "type": "object",
+        "properties": {
+          "owner": {
+            "type": "string"
+          },
+          "repo": {
+            "type": "string"
+          },
+          "pullNumber": {
+            "type": "integer"
+          },
+          "path": {
+            "type": "string"
+          },
+          "line": {
+            "type": "integer"
+          },
+          "body": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "owner",
+          "repo",
+          "pullNumber",
+          "body"
+        ]
+      },
+      "answers": [],
+      "default": {
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"id\": 601}"
+          }
+        ]
+      }
+    }
+  }
+}

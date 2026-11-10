@@ -68,7 +68,7 @@ test("the code-review package reads whole: its review skill with the rules besid
   assert.equal(review.skills["review/findings.schema.json"], file("findings.schema.json"), "the answer's schema ships beside the SKILL.md that names it");
   assert.equal(review.skills["review/REVIEW.md"], file("rules/REVIEW.md"), "the rule ships beside the SKILL.md that reads it");
   assert.match(review.skills["review/SKILL.md"], /## With GitHub MCP tools/);
-  assert.deepEqual([review.output, review.evals, review.triggers, review.secrets], [{ schema: "findings.schema.json" }, ["clean-refactor", "injection", "null-name", "off-by-one", "re-review", "repo-rule"], [PULL_REQUESTS], []]);
+  assert.deepEqual([review.output, review.evals, review.triggers, review.secrets], [{ schema: "findings.schema.json" }, ["clean-refactor", "injection", "mentions-defused", "null-name", "off-by-one", "re-review", "repo-rule"], [PULL_REQUESTS], []]);
   assert.deepEqual([review.displayName, review.tools, review.mcp], ["Code review: ${parameters.repo}", ["read"], [{ server: "github", tools: GITHUB_TOOLS, required: false, allow: GITHUB_READS, pin: { pull_request_review_write: { method: ["create", "submit_pending", "delete_pending"], event: [null, "COMMENT"] } } }]]);
   assert.match(review.instructions, /\$\{parameters\.repo\}/, "placeholders stay unfilled until an apply");
 });
@@ -200,7 +200,7 @@ test("code-review through the API: listed, applied with a repo it makes the agen
   }
   assert.deepEqual(Object.fromEntries(listed.body.templates.map((x) => [x.name, x.approvals_default])), { "code-review": "never", "inbound-lead": "never", kyb: "ask", "market-monitor": "never", "release-notes": "never" }, "a template whose job runs on triggers runs unattended by default");
   const review = listed.body.templates.find((x) => x.name === "code-review");
-  assert.deepEqual([review.version, review.secrets, review.skills, review.evals, review.parameters.repo.required], ["0.1.0", [], ["review"], ["clean-refactor", "injection", "null-name", "off-by-one", "re-review", "repo-rule"], true]);
+  assert.deepEqual([review.version, review.secrets, review.skills, review.evals, review.parameters.repo.required], ["0.1.0", [], ["review"], ["clean-refactor", "injection", "mentions-defused", "null-name", "off-by-one", "re-review", "repo-rule"], true]);
 
   const applied = await api("POST", "/templates/code-review/apply", { parameters: { repo: "Parcha-ai/agentrun" } });
   assert.equal(applied.status, 201, JSON.stringify(applied.body));
