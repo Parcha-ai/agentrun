@@ -140,6 +140,8 @@ test('configuration is opt-in and safe errors omit module failure bodies', async
     await writeFile(join(temp, 'good.mjs'), 'export default { runJudge: async () => ({}) };');
     assert.equal(typeof (await loadResearchAdapters({ config: join(temp, 'good.mjs'), agents: false })).runJudge, 'function');
     await assert.rejects(loadResearchAdapters({ config: join(temp, 'good.mjs') }), /runNode/);
+    // Agent steps run on the host's own agents: without --config there is no default runner to fall back on.
+    await assert.rejects(loadResearchAdapters({}), error => error.code === 'configuration' && /pass --config/.test(error.message));
   } finally { await rm(temp, { recursive: true, force: true }); }
 });
 

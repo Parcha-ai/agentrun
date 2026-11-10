@@ -37,23 +37,15 @@ Labels and reasons stay out of model inputs. The report hashes the normalized ca
 
 Keep useful partial answers and contrary evidence. A passage need not settle the entire question. Selection establishes relevance, not sufficient support for a conclusion. Writers are instructed to preserve conditions and say what remains unknown; these instructions are not a verified claim-support gate. Write self-contained questions: "What review process applies to documentation in the code repository?" gives an independent step more context than "How would reviews change?" A host can also pass the parent question into each child as explicit context. Keep separate cases for checking changes; do not lower the cutoff just to pass a known failure.
 
-## Add an agent for the report
+## Add your agents for the report
 
-If Pi is configured, the example uses its saved default. Otherwise, open `./node_modules/.bin/pi`, configure access using [Pi's setup instructions](https://pi.dev/docs/latest), and use `/model` to save your preferred available default. The example reads it without selecting a fallback or changing your settings.
-
-```sh
-npm run demo:research -- --live --out research-live.json
-```
-
-The planner proposes subquestions, the workflow researches them in parallel, and a final agent writes the report. A question the corpus cannot answer may cause escalation. Pi's agent steps receive the selected evidence; this example grants them no filesystem or shell tools.
-
-## Use your existing agents
-
-Pi is optional. Supply a trusted module that default-exports `{ runJudge, runNode }`:
+Agent steps run on your own agents. Supply a trusted module that default-exports `{ runJudge, runNode }`:
 
 ```sh
 npm run demo:research -- --live --config ./approved-adapters.mjs --out research-live.json
 ```
+
+The planner proposes subquestions, the workflow researches them in parallel, and a final agent writes the report. A question the corpus cannot answer may cause escalation. The agent steps receive the selected evidence; grant them no filesystem or shell tools for this example.
 
 `runNode({ system, user, schema, signal })` calls your existing agent with the instructions, JSON input and output schema, then returns its parsed output object. `runJudge` implements the [decision adapter contract](../packages/jev/README.md); you can use `createJevRunner()` for it. Evaluation needs only `runJudge`.
 
