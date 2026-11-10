@@ -97,7 +97,7 @@ function NotesChip({ agentId, refs, link, kind, replaces = 0 }: { agentId: strin
   const tip = (
     <>
       <span className="caps block text-[10px] text-muted-foreground">{kind === "given" ? "This run started with" : kind === "read" ? "This run read" : kind === "learned" ? "This run kept" : "Waits for your OK before any run reads it"}</span>
-      {refs.length > 0 && <ul className="mt-1 space-y-0.5">{refs.map((r) => <li key={r.file} className="font-medium">{r.name}</li>)}</ul>}
+      {refs.length > 0 && <ul className="mt-1 space-y-0.5">{refs.map((r) => <li key={r.file} className="font-semibold">{r.name}</li>)}</ul>}
       {replaces > 0 && <span className="mt-1 block text-muted-foreground">Replaces {replaces === 1 ? "1 older note" : `${replaces} older notes`}.</span>}
       <span className="mt-1.5 block text-[11px] text-muted-foreground">Open in Learning</span>
     </>
