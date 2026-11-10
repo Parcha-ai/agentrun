@@ -74,7 +74,7 @@ test("the gate of a run on that revision is handed the pin whole: a call not as 
   const { api, data } = await pinned(t);
   const read = (await api("GET", "/agents/pinned")).body;
   const root = join(data, "runs", "run-pin");
-  const gate = runGate({ root, work: join(root, "work") }, "run-pin", { kind: "agentic", body: { toolSettings: read.definition.tool_settings } });
+  const gate = runGate({ root, work: join(root, "work") }, "run-pin", { kind: "agentic", body: { toolSettings: read.definition.tool_settings } }, () => ({ settings: {}, problems: [] }), undefined, true);
   assert.deepEqual(gate["overrides"], { [SEND]: KEPT });
   const refused = gate["pinned"](SEND, { channel_id: "C0EVIL", message: "the digest" });
   assert.equal(refused?.text, `${SEND} may only be called with channel_id in (C0A | C0B), thread_ts absent: its destination is fixed by the agent's settings. It was not run: nothing was sent and nothing was charged.`);
