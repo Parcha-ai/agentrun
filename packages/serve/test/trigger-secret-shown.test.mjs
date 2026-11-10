@@ -116,20 +116,25 @@ test("the outbound webhook set with the API token: its secret's metadata and the
   assert.ok(!JSON.stringify(read.body).includes("whsec_"));
 });
 
-test("the outbound webhook set from the owner's session: its secret shown this once with its metadata; a later save keeps it and its time", async (t) => {
+test("the outbound webhook set from the owner's session: its secret shown this once with its metadata; a save of the same URL keeps it and its time; one of a new URL makes a new secret, shown to the session alone", async (t) => {
   const { page, token } = await owned(t);
   const saved = await page("PUT", "/settings/webhook", { url: "https://hooks.example.com/agentrun" });
   assert.equal(saved.status, 201, saved.text);
   assert.match(saved.body.signing_secret, /^whsec_/);
   assert.deepEqual([saved.body.secret.name, saved.body.secret.set, saved.body.secret.source], ["webhook:outbound", true, "console"]);
-  const again = await page("PUT", "/settings/webhook", { url: "https://hooks.example.com/agentrun-2" });
-  assert.equal(again.status, 200, again.text);
-  assert.ok(!("signing_secret" in again.body), "a later save mints none, so shows none");
-  assert.equal(again.body.secret.changed_at, saved.body.secret.changed_at, "the secret's own time, not the webhook's");
+  const same = await page("PUT", "/settings/webhook", { url: "https://hooks.example.com/agentrun" });
+  assert.equal(same.status, 200, same.text);
+  assert.ok(!("signing_secret" in same.body), "the same URL mints none, so shows none");
+  assert.equal(same.body.secret.changed_at, saved.body.secret.changed_at, "the secret's own time, not the webhook's");
+  const moved = await page("PUT", "/settings/webhook", { url: "https://hooks.example.com/agentrun-2" });
+  assert.equal(moved.status, 200, moved.text);
+  assert.match(moved.body.signing_secret, /^whsec_/, "a new URL, a new secret, shown this once");
+  assert.notEqual(moved.body.signing_secret, saved.body.signing_secret);
+  assert.notEqual(moved.body.secret.changed_at, saved.body.secret.changed_at);
   const byToken = await token("PUT", "/settings/webhook", { url: "https://hooks.example.com/agentrun-3" });
-  assert.equal(byToken.status, 200, "a later save is no secret write: the token may change the URL");
-  assert.ok(!JSON.stringify(byToken.body).includes("whsec_"));
-  assert.equal(byToken.body.secret.changed_at, saved.body.secret.changed_at);
+  assert.equal(byToken.status, 200, "the token may change the URL");
+  assert.ok(!JSON.stringify(byToken.body).includes("whsec_"), "and the new secret it makes is never shown to it");
+  assert.notEqual(byToken.body.secret.changed_at, moved.body.secret.changed_at, "a new secret all the same: no URL it sets gets the old one's signatures");
 });
 
 test("no outbound webhook set: GET says so, with its secret not set", async (t) => {
