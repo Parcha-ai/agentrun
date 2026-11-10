@@ -183,16 +183,25 @@ type AdbRun = (args: string[], options?: { timeoutMs?: number; signal?: AbortSig
 /** The adb server's port when none is given: adb's own default. */
 export const ADB_SERVER_PORT = 5037;
 
+/** The environment variables adb reads to find its server or its device: every one is dropped from a spawned adb's. */
+const ADB_ENV = /^(ADB_|ANDROID_ADB_|ANDROID_SERIAL$)/;
+
 /**
  * The adb CLI (Android platform-tools) at path, by execFile, never a shell, and the adb server it starts, on the
  * loopback at port (adb's own default), spoken to by its socket protocol.
+ *
+ * env is the environment a spawned adb starts from, with every adb variable dropped from it (ADB_SERVER_SOCKET,
+ * ANDROID_ADB_SERVER_SOCKET, ANDROID_ADB_SERVER_ADDRESS, ANDROID_SERIAL, ...), so nothing in it points the CLI at
+ * another server than its socket requests reach. The library reads no environment of its own: a caller passes it (the
+ * conformance module passes process.env). Without env, a spawned adb inherits the process's environment as it is.
  */
-export function adbCli(path = "adb", { port = ADB_SERVER_PORT }: { port?: number } = {}): AdbTransport {
+export function adbCli(path = "adb", { port = ADB_SERVER_PORT, env }: { port?: number; env?: Readonly<Record<string, string | undefined>> } = {}): AdbTransport {
 	// Every spawned adb names the server the socket requests go to: without -P it would take its own default, 5037 or
 	// ANDROID_ADB_SERVER_PORT, and start or ask another server.
+	const spawnEnv = env === undefined ? undefined : Object.fromEntries(Object.entries(env).filter(([name, value]) => value !== undefined && !ADB_ENV.test(name)));
 	const run: AdbTransport["run"] = (args, { timeoutMs, signal, input }) =>
 		new Promise((resolve) => {
-			const child = execFile(path, ["-P", String(port), ...args], { encoding: "buffer", timeout: timeoutMs, killSignal: "SIGKILL", maxBuffer: 64 * 1024 * 1024, ...(signal ? { signal } : {}) }, (error, stdout, stderr) => {
+			const child = execFile(path, ["-P", String(port), ...args], { encoding: "buffer", ...(spawnEnv ? { env: spawnEnv } : {}), timeout: timeoutMs, killSignal: "SIGKILL", maxBuffer: 64 * 1024 * 1024, ...(signal ? { signal } : {}) }, (error, stdout, stderr) => {
 				const code = (error as NodeJS.ErrnoException | null)?.code;
 				if (code === "ENOENT") {
 					return resolve(fail("not_found", `the phone provider needs adb (Android platform-tools) on this machine: ${path} is not there; install platform-tools or give the provider's adb option`));
@@ -348,6 +357,8 @@ export class PhoneHarnessProvider implements ComputerProvider {
 	readonly #daemonVersion: string;
 	/** How many open connections hold each endpoint's adb transport: the last to let go disconnects it. */
 	readonly #holders = new Map<string, number>();
+	/** Each endpoint's host:disconnect still on its way: a connect to that endpoint waits for it before its own. */
+	readonly #leaving = new Map<string, Promise<unknown>>();
 
 	constructor(options: PhoneProviderOptions) {
 		const { apiKey, platform = "android" } = options ?? ({} as PhoneProviderOptions);
@@ -792,14 +803,13 @@ export class PhoneHarnessProvider implements ComputerProvider {
 		const endpoint = `${host}:${port}`;
 		const server = (service: string) => this.#adb.server(service, { timeoutMs: ADB_TIMEOUT_MS });
 		const onPhone = (service: string, id: string) => this.#adb.server(service, { timeoutMs: ADB_TIMEOUT_MS, transport: id });
-		const connected = await server(`host:connect:${endpoint}`);
-		if (!connected.ok) {
-			// This connect holds nothing: it drops the transport only when no other connection of this provider holds it.
-			if (!this.#holders.get(endpoint)) await server(`host:disconnect:${endpoint}`).catch(() => undefined);
-			return connected;
-		}
 		// The adb server keeps one transport per endpoint, and a second connect reuses it ("already connected"): every
-		// connection to the phone holds it, and only the last to let go disconnects it (live run 4).
+		// connection to the phone holds it, and only the last to let go disconnects it (live run 4). The count and the
+		// disconnect are one critical section:
+		// - a disconnect still on its way is waited for first, so this connect never reuses a transport it is dropping;
+		// - the hold is taken before host:connect, with no await in between, so a last release meanwhile sees this holder
+		//   and keeps the transport.
+		while (this.#leaving.has(endpoint)) await this.#leaving.get(endpoint);
 		this.#holders.set(endpoint, (this.#holders.get(endpoint) ?? 0) + 1);
 		let held = true;
 		const release = async () => {
@@ -808,12 +818,21 @@ export class PhoneHarnessProvider implements ComputerProvider {
 			const left = (this.#holders.get(endpoint) ?? 1) - 1;
 			if (left > 0) return void this.#holders.set(endpoint, left);
 			this.#holders.delete(endpoint);
-			await server(`host:disconnect:${endpoint}`).catch(() => undefined);
+			const leaving: Promise<unknown> = server(`host:disconnect:${endpoint}`)
+				.catch(() => undefined)
+				.finally(() => {
+					if (this.#leaving.get(endpoint) === leaving) this.#leaving.delete(endpoint);
+				});
+			this.#leaving.set(endpoint, leaving);
+			await leaving;
 		};
 		const letGo = async <T>(failed: Result<T>): Promise<Result<T>> => {
 			await release();
 			return failed;
 		};
+		// A failed connect lets its hold go: it drops the transport only when no other connection holds it.
+		const connected = await server(`host:connect:${endpoint}`);
+		if (!connected.ok) return letGo(connected);
 		const said = connected.value.trim();
 		// adb's answer names the endpoint, so none of it is passed on: the error is the provider's own words.
 		if (!said.includes("connected") || /cannot|failed|unable/i.test(said)) {
@@ -838,7 +857,7 @@ export class PhoneHarnessProvider implements ComputerProvider {
 			const probe = await adb(["shell", "echo ph-ok"]);
 			if (!probe.ok) return letGo(probe);
 			if (!probe.value.stdout.toString("utf8").includes("ph-ok")) {
-				// The vendor's answer ("wrong code") may echo the code or an endpoint: both are taken out.
+				// The vendor's answer ("wrong code") may echo the code, more than once, or an endpoint: all are taken out.
 				const words = redactWords(unlocked.value.trim().split("\n")[0].replaceAll(code, "[code]"));
 				return letGo(fail("phone", /\bunlocked\b/.test(unlocked.value) ? `the phone of ${ref.id} stayed locked after its unlock code` : `the phone of ${ref.id} refused its unlock code: ${words}`));
 			}
