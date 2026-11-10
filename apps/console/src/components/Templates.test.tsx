@@ -5,6 +5,7 @@ import { route } from "@/App";
 import { TemplatesPage } from "./Templates";
 import { ClientError } from "@/lib/client";
 import type { TemplateView } from "@/lib/v2";
+import { firstPicker, optionsOf, pick } from "@/test/picker";
 
 // The server's templates (GET /v2/templates) and applying one (POST /v2/templates/{name}/apply): the list says what each
 // needs; the Apply screen takes its parameters and the owner's consent, one tick per MCP tool, none ticked until the owner
@@ -230,34 +231,115 @@ describe("applying a template", () => {
     expect(t.host.querySelector('section[aria-label="Applied"] h1')!.textContent).toContain("Code review: acme/web applied");
   });
 
-  it("shows each webhook trigger's secret once beside its URL, with Copy and that it won't be shown again", async () => {
-    const SECRET = "CANARY-VALUE-5e1f0a2b9c";
-    const t = await open("pr-reviewer", { apply: async () => ({ template: "pr-reviewer", version: "1.0.0", agent_id: "pr-reviewer-1", trigger_ids: ["trg_hook", "trg_cron"], warnings: [],
-      webhook_secrets: [{ trigger_id: "trg_hook", secret: SECRET }] }) });
+  it("a webhook trigger the apply made: the server's warning in its words, with a link to that trigger for its signing secret", async () => {
+    const LEAD: TemplateView = { ...REVIEWER, name: "inbound-lead", triggers: [{ name: "lead-webhook", source: { kind: "webhook" } }, { name: "weekly", source: { kind: "schedule" } }] };
+    const SAYS = "This webhook trigger's signing secret is not in an apply answer. Open its trigger in the console to get it (Rotate).";
+    const t = await open("inbound-lead", { templates: [LEAD], apply: async () => ({ template: "inbound-lead", version: "1.0.0", agent_id: "lead-1", trigger_ids: ["trg_hook", "trg_cron"],
+      warnings: [{ field: "triggers.0.secret", reason: "not_allowed", message: SAYS }] }) });
     await t.type(t.host.querySelector('[data-field="parameters.repo"] input'), "acme/web");
     await t.click(t.button(/^Apply/));
-    // A secret shown once keeps the screen: it never moves on past it.
     expect(t.went).toEqual([]);
     const made = t.host.querySelector('section[aria-label="Applied"]')!;
+    expect(made.textContent).toContain(SAYS);
+    const link = [...made.querySelectorAll("a")].find((a) => a.getAttribute("href") === "#/triggers/trg_hook");
+    expect(link?.textContent).toBe("Open lead-webhook to get its signing secret (Rotate)");
+    // Only the webhook's: the schedule (trg_cron) has no secret and gets no link.
+    expect(made.querySelector('a[href="#/triggers/trg_cron"]')).toBeNull();
+    // No secret is shown here any more.
+    expect(made.textContent).not.toContain("You won't see this secret again.");
+  });
+
+  const LEAD_T: TemplateView = { ...REVIEWER, name: "inbound-lead", triggers: [{ name: "lead-webhook", source: { kind: "webhook" } }, { name: "weekly", source: { kind: "schedule" } }] };
+  const META = { name: "trigger:trg_hook", set: true, source: "console" as const, changed_at: "2026-11-10T08:00:00Z" };
+  const HOOK_WARNING = { field: "triggers.0.secret", reason: "not_allowed" as const, message: "This webhook trigger's signing secret is shown once." };
+
+  it("shows a webhook trigger's signing secret once, beside its hook URL, when the first answer carries it", async () => {
+    const SECRET = "CANARY-VALUE-7c2e91d0aa";
+    const t = await open("inbound-lead", { templates: [LEAD_T], apply: async () => ({ template: "inbound-lead", version: "1.0.0", agent_id: "lead-1", trigger_ids: ["trg_hook", "trg_cron"],
+      warnings: [HOOK_WARNING], webhook_secrets: [{ trigger_id: "trg_hook", secret: META, signing_secret: SECRET }] }) });
+    await t.type(t.host.querySelector('[data-field="parameters.repo"] input'), "acme/web");
+    await t.click(t.button(/^Apply/));
+    const made = t.host.querySelector('section[aria-label="Applied"]')!;
     const once = made.querySelector('section[aria-label^="The webhook\'s URL and secret"]')!;
+    expect(once).toBeTruthy();
     expect(once.textContent).toContain(`${location.origin}/v2/hooks/trg_hook`);
     expect(once.textContent).toContain(SECRET);
     expect(once.textContent).toContain("You won't see this secret again.");
     expect([...once.querySelectorAll("button")].some((b) => /Copy secret/.test(b.textContent ?? ""))).toBe(true);
-    // Only the webhook trigger's: a schedule's (trg_cron) has no secret and is not listed.
-    expect(made.textContent).not.toContain("/v2/hooks/trg_cron");
-    expect(made.querySelector('a[href="#/agents/pr-reviewer-1"]')?.textContent).toContain("Open the agent");
+    // With the secret here, no link sends the person to rotate it.
+    expect(made.querySelector('a[href="#/triggers/trg_hook"]')).toBeNull();
   });
 
-  it("on a retry of the same apply, shows the server's note in place of a secret it no longer sends", async () => {
-    const t = await open("pr-reviewer", { apply: async () => ({ template: "pr-reviewer", version: "1.0.0", agent_id: "pr-reviewer-1", trigger_ids: ["trg_hook"], warnings: [],
-      note: "This apply was made before: its webhook secrets were shown then and are not shown again." }) });
+  it("without the value (a replay, a token): the item's note in the server's words, and the link to rotate it", async () => {
+    const NOTE = "shown once, in this apply's first answer; rotate it in the console to get a new one.";
+    const t = await open("inbound-lead", { templates: [LEAD_T], apply: async () => ({ template: "inbound-lead", version: "1.0.0", agent_id: "lead-1", trigger_ids: ["trg_hook", "trg_cron"],
+      warnings: [HOOK_WARNING], webhook_secrets: [{ trigger_id: "trg_hook", secret: META, secret_set: true, note: NOTE }] }) });
     await t.type(t.host.querySelector('[data-field="parameters.repo"] input'), "acme/web");
     await t.click(t.button(/^Apply/));
-    expect(t.went).toEqual([]);
     const made = t.host.querySelector('section[aria-label="Applied"]')!;
-    expect(made.textContent).toContain("This apply was made before: its webhook secrets were shown then and are not shown again.");
-    expect(made.textContent).not.toContain("CANARY-VALUE");
+    expect(made.textContent).toContain(NOTE);
+    expect(made.textContent).not.toContain("You won't see this secret again.");
+    expect([...made.querySelectorAll('a[href="#/triggers/trg_hook"]')].map((a) => a.textContent)).toContain("Open lead-webhook to get its signing secret (Rotate)");
+  });
+
+  it("offers a parameter whose pattern is a plain alternation as a choice of its values, and never prints a raw pattern", async () => {
+    const LEAD: TemplateView = { ...REVIEWER, name: "inbound-lead", parameters: {
+      post_to: { type: "string", required: true, description: "where each brief goes", pattern: "^(crm|slack|none)$" },
+      slack_channel: { type: "string", required: false, description: "the Slack channel's id", pattern: "^[CG][A-Z0-9]{8,12}$" },
+    } };
+    const t = await open("inbound-lead", { templates: [LEAD] });
+    const field = t.host.querySelector('[data-field="parameters.post_to"]')!;
+    const select = firstPicker(field)!;
+    expect(select).toBeTruthy();
+    expect(field.querySelector('input[type="text"]')).toBeNull();
+    expect((await optionsOf(select)).map((o) => o.value).filter(Boolean)).toEqual(["crm", "slack", "none"]);
+    // The help says the parameter's own words, never its pattern.
+    const section = t.host.querySelector('section[aria-label="Parameters"]')!.textContent ?? "";
+    expect(section).not.toContain("^(");
+    expect(section).not.toContain("(as ");
+    expect(section).not.toContain("[CG]");
+    expect(field.textContent).toContain("where each brief goes");
+    await pick(select, "slack");
+    await t.click(t.button(/^Apply/));
+    expect(t.sent[0].body.parameters).toEqual({ post_to: "slack" });
+  });
+
+  it("keeps a pattern with a wildcard as a text field, and names an optional choice's default in its empty option", async () => {
+    const T: TemplateView = { ...REVIEWER, name: "mixed", parameters: {
+      host: { type: "string", required: true, description: "a host", pattern: "^(foo.bar|other)$" },
+      post_to: { type: "string", required: false, description: "where it goes", pattern: "^(crm|slack|none)$", default: "crm" },
+    } };
+    const t = await open("mixed", { templates: [T] });
+    // "." matches any character for the server: not a fixed list, so it stays a text field.
+    expect(firstPicker(t.host.querySelector('[data-field="parameters.host"]')!)).toBeNull();
+    expect(t.host.querySelector('[data-field="parameters.host"] input[type="text"]')).toBeTruthy();
+    // Left on its empty option, the server applies the default: the option says so.
+    const empty = (await optionsOf(firstPicker(t.host.querySelector('[data-field="parameters.post_to"]')!)!)).find((o) => o.value === "")!;
+    expect(empty.text).toBe("crm (default)");
+  });
+
+  it("offers a parameter's enum as a choice of its values, sends an integer one as a number, and shows not_an_option under it", async () => {
+    const T: TemplateView = { ...REVIEWER, name: "inbound-lead", parameters: {
+      post_to: { type: "string", required: true, description: "where each brief goes", enum: ["crm", "slack", "none"] },
+      depth: { type: "integer", required: false, description: "how many pages to read", enum: [1, 3, 7], default: 3 },
+    } };
+    const refusal = Object.assign(new ClientError(422, "input_invalid", "The template's input is not valid."), { fields: [
+      { field: "parameters.post_to", reason: "not_an_option", message: "parameters.post_to is one of crm, slack, none: where each brief goes" },
+    ] });
+    const t = await open("inbound-lead", { templates: [T], apply: async () => { throw refusal; } });
+    const post = firstPicker(t.host.querySelector('[data-field="parameters.post_to"]')!)!;
+    expect(post).toBeTruthy();
+    expect(t.host.querySelector('[data-field="parameters.post_to"] input:not([type="hidden"])')).toBeNull();
+    expect((await optionsOf(post)).map((o) => o.value).filter(Boolean)).toEqual(["crm", "slack", "none"]);
+    const depth = firstPicker(t.host.querySelector('[data-field="parameters.depth"]')!)!;
+    const depths = await optionsOf(depth);
+    expect(depths.map((o) => o.value).filter(Boolean)).toEqual(["1", "3", "7"]);
+    expect(depths.find((o) => o.value === "")!.text).toBe("3 (default)");
+    await pick(post, "slack");
+    await pick(depth, "7");
+    await t.click(t.button(/^Apply/));
+    expect(t.sent[0].body.parameters).toEqual({ post_to: "slack", depth: 7 });
+    expect(t.host.querySelector('[data-field="parameters.post_to"]')!.textContent).toContain("parameters.post_to is one of crm, slack, none: where each brief goes");
   });
 
   it("opens the made agent at once when there are no warnings", async () => {

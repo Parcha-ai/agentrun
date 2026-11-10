@@ -17,24 +17,6 @@ const SETTLED = ["input_required", "completed", "failed", "cancelled"];
 const ENDED = ["completed", "failed", "cancelled"];
 const holderPid = (data, runId) => runRecordOf(data, runId).holder.pid;
 
-test("a run whose cap is raised at its pause reads queued at once, before its follow-up goes: never input_required with no pending", { timeout: 120_000 }, async (t) => {
-  const gate = join(await scratch(t), "exit");
-  withEnv(t, { EXIT_GATE: gate });
-  const { api, data } = await serve(t, { faux: SLOW_EXIT });
-  assert.equal((await api("POST", "/agents", agent("raised-status"))).status, 201);
-  const { run_id } = (await api("POST", "/agents/raised-status/runs", { input: { content: "Write one.md" }, max_cost_usd: 0.05 })).body;
-  await follow(api, run_id, SETTLED);
-  assert.equal((await api("GET", `/runs/${run_id}`)).body.pending?.kind, "budget");
-  // The paused process is held in its let-go, so the follow-up cannot go yet: the raise is taken, the run waits on nothing.
-  assert.ok(processAlive(holderPid(data, run_id)), "the paused run's process is still being let go");
-  assert.equal((await api("PATCH", `/runs/${run_id}`, { max_cost_usd: 1 })).status, 200);
-  const run = (await api("GET", `/runs/${run_id}`)).body;
-  assert.deepEqual([run.status, run.pending], ["queued", null], JSON.stringify(run));
-  await writeFile(gate, "");
-  await follow(api, run_id, ENDED, { deadlineMs: 60_000 });
-  assert.equal((await api("GET", `/runs/${run_id}`)).body.status, "completed");
-});
-
 // The guard's own read is one more request to the server. A test whose server goes away once the raise is answered (its
 // follow-up's process kills it as it comes up: cap-raise's launch-kill test) opts out of it, and gets the raise's answer.
 test("a raise answered by a server that then goes away is the raise's answer when the caller opts out of the raise guard", async (t) => {

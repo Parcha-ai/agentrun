@@ -17,19 +17,27 @@ describe("authMode", () => {
     expect(authMode({ status: signedOut.status, body: signedOut.body })).toBe("sign_in");
     expect(authMode({ status: signedIn.status, body: signedIn.body })).toBe("signed_in");
   });
-  it("a server without accounts (no session route) is reached through the link it printed", () => {
-    expect(authMode({ status: 404, body: null })).toBe("token_link");
-    expect(authMode({ status: 404, body: null }, 401)).toBe("token_link");
+  // A server without accounts answers its session read too (accounts: false), never a 404.
+  it("a server without accounts is reached through the link it printed", () => {
+    expect(authMode({ status: 200, body: { accounts: false, secrets_writable: false, secrets_reason: "token" } })).toBe("token_link");
+    expect(authMode({ status: 200, body: { accounts: false, secrets_writable: false, secrets_reason: "token" } }, 401)).toBe("token_link");
   });
   it("a server without accounts whose protected read already succeeds (a token is sent) is in", () => {
-    expect(authMode({ status: 404, body: null }, 200)).toBe("signed_in");
+    expect(authMode({ status: 200, body: { accounts: false, secrets_writable: true } }, 200)).toBe("signed_in");
+  });
+  it("a 404 is no longer read as a server without accounts", () => {
+    expect(authMode({ status: 404, body: null }, 200)).not.toBe("signed_in");
   });
 });
 
 describe("signInProblem", () => {
   it("says a wrong password plainly, and a limit with its wait", () => {
     expect(signInProblem(err(wrong as never))).toBe("That is not the password.");
-    expect(signInProblem(Object.assign(new ClientError(429, "rate_limited", "too many sign-ins; try again later"), {}))).toBe("Too many sign-ins from here. Try again in 15 minutes.");
+    const limited = (ms?: number) => Object.assign(new ClientError(429, "rate_limited", "too many sign-ins from this address; try again in 8 s"), ms === undefined ? {} : { retryAfterMs: ms });
+    expect(signInProblem(limited(800))).toBe("Too many sign-ins. Try again in a second.");
+    expect(signInProblem(limited(7_200))).toBe("Too many sign-ins. Try again in 8 seconds.");
+    expect(signInProblem(limited(60_000))).toBe("Too many sign-ins. Try again in a minute.");
+    expect(signInProblem(limited())).toBe("Too many sign-ins. Try again in a minute.");
   });
   it("on setup: a refused code, from the link or typed, says what to do: the newest link in the server's log, or the token", () => {
     const refused = new ClientError(403, "forbidden", "that is not the setup code in the server's log");
@@ -59,5 +67,12 @@ describe("takeSetupCode", () => {
   it("is nothing when the fragment has no code (a console route)", () => {
     expect(takeSetupCode("#/runs/r1")).toEqual({ code: null, rest: "#/runs/r1" });
     expect(takeSetupCode("")).toEqual({ code: null, rest: "" });
+  });
+});
+
+describe("authMode on a server with no accounts that answers its session read", () => {
+  it("reads accounts: false as a 404 does: in when a protected read succeeds, else the token link", () => {
+    expect(authMode({ status: 200, body: { accounts: false, secrets_writable: true } }, 200)).toBe("signed_in");
+    expect(authMode({ status: 200, body: { accounts: false, secrets_writable: false } }, 401)).toBe("token_link");
   });
 });

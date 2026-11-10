@@ -1,10 +1,10 @@
 import { Archive, ArrowUpRight } from "lucide-react";
+import { Picker } from "@/components/ui/picker";
 import { ProblemCard } from "@/components/Problem";
 import { ScheduleChip } from "@/components/ScheduleChip";
 import { ListSkeleton } from "@/components/Skeleton";
 import { StatusBadge } from "@/components/StatusBadge";
 import { Button } from "@/components/ui/button";
-import { NativeSelect } from "@/components/ui/field";
 import type { RunsFilter } from "@/lib/client";
 import { cost, runEnded, when, runTitle } from "@/lib/format";
 import type { Problem } from "@/lib/problem";
@@ -25,11 +25,8 @@ export function RunsList({ runs, agentName, onOpen, error, onRetry, onMore, load
         <h1 className="mr-auto font-mono text-2xl font-semibold">{archived ? "Archived runs" : "Runs"}</h1>
         {onFilter && (
           <>
-            <NativeSelect aria-label="Runs in one state" value={filter.status ?? ""} onChange={(e) => onFilter({ ...filter, status: (e.target.value || undefined) as RunStatus | undefined })}
-              className="h-control-lg">
-              <option value="">Any state</option>
-              {RUN_STATUSES.map((s) => <option key={s} value={s}>{STATUS_LABEL[s]}</option>)}
-            </NativeSelect>
+            <Picker label="Runs in one state" value={filter.status ?? ""} onChange={(v) => onFilter({ ...filter, status: (v || undefined) as RunStatus | undefined })} className="h-11 w-48"
+              options={[{ value: "", label: "Any state" }, ...RUN_STATUSES.map((s) => ({ value: s, label: STATUS_LABEL[s] }))]} />
             <Button size="lg" variant={archived ? "primary" : "outline"} aria-pressed={archived} onClick={() => onFilter({ ...filter, archived: !archived })}><Archive aria-hidden /> Archived</Button>
           </>
         )}

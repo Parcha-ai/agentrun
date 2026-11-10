@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "engines": {
-    "node": ">=22.19.0"
+    "node": ">=24.11.0"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
@@ -12,8 +12,8 @@
     "test": "npm run build && node --test dist/workflow.test.js"
   },
   "dependencies": {
-    "@parcha/agentrun-dsl": "0.1.0-beta.31",
-    "@parcha/agentrun-jev": "0.1.0-beta.31",
+    "@parcha/agentrun-dsl": "0.1.0-beta.32",
+    "@parcha/agentrun-jev": "0.1.0-beta.32",
     "zod": "4.6.5"
   },
   "devDependencies": {

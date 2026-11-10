@@ -1,12 +1,13 @@
 import { Play } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { FilePicker, type UploadLimits, useAttachments } from "@/components/FilePicker";
+import { Picker } from "@/components/ui/picker";
 import { ToolBlockers } from "@/components/ToolBlockers";
 import { Button } from "@/components/ui/button";
-import { NativeSelect, Textarea } from "@/components/ui/field";
+import { Textarea } from "@/components/ui/field";
 import type { Agent } from "@/lib/agentForm";
 import { type Client, ClientError, type FieldIssue } from "@/lib/client";
-import { exampleInput, keeper, startBody, submitStart } from "@/lib/runStart";
+import { exampleHint, exampleInput, keeper, startBody, submitStart } from "@/lib/runStart";
 import { sendUpload, type Upload } from "@/lib/uploads";
 import { cn } from "@/lib/utils";
 
@@ -70,19 +71,17 @@ export function RunBar({ agent, efforts, v2, go, blocked, limits, upload = sendU
             className={cn("min-w-0 flex-1 resize-y max-sm:order-first max-sm:basis-full", workflow ? "leading-[1.6]" : "max-sm:h-10")} />
           <div className="flex shrink-0 items-center gap-3 max-sm:order-last max-sm:gap-2">
             {efforts.length > 0 && (
-              <label className="flex items-center gap-2" title="How hard the model thinks before it answers. default leaves it to the agent.">
-                <span className="flex flex-col leading-tight"><span className="caps text-label text-muted-foreground">Effort</span><span className="text-label text-muted-foreground max-sm:hidden">How hard the model thinks</span></span>
-                <NativeSelect value={effort} onChange={(e) => setEffort(e.target.value)} aria-label="Effort">
-                  {["", ...efforts].map((e) => <option key={e || "default"} value={e}>{e || "default"}</option>)}
-                </NativeSelect>
-              </label>
+              <div className="flex items-center gap-2" title="How hard the model thinks before it answers. default leaves it to the agent.">
+                <span className="flex flex-col leading-tight"><label htmlFor="runbar-effort" className="caps text-label text-muted-foreground">Effort</label><span className="text-label text-muted-foreground max-sm:hidden">How hard the model thinks</span></span>
+                <Picker id="runbar-effort" label="Effort" value={effort} onChange={setEffort} className="w-32" options={["", ...efforts].map((e) => ({ value: e, label: e || "default" }))} />
+              </div>
             )}
             <Button variant="solid" onClick={() => void start()} disabled={!built.ok || sending || !!blocked || attachments.busy} title={blocked ?? (attachments.busy ? "Waiting for the files to be sent" : undefined)}><Play aria-hidden /> {sending ? "Starting" : "Run"}</Button>
           </div>
         </div>
         <div className="mt-3 max-sm:mt-0"><FilePicker attachments={attachments} limits={limits} disabled={!!blocked} compact /></div>
       </div>
-      {example && <p className="mt-2 font-mono text-label text-muted-foreground">{example.from === "example" ? "The workflow's example input. Edit it, then run." : "The workflow's input, its fields empty. Fill them in, then run."}</p>}
+      {example && <p className="mt-2 font-mono text-label text-muted-foreground">{exampleHint(example, "run")}</p>}
       {!built.ok && text.trim() && <p className="mt-2 font-mono text-small text-destructive-text" role="alert">{built.message}</p>}
       {problem && (
         <div className="mt-3 border border-destructive/50 bg-destructive/10 px-3 py-2 font-mono text-small text-destructive-text" role="alert">

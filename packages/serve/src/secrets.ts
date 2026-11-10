@@ -103,13 +103,36 @@ const SECRET_NAME = /(?:^|_)(?:KEY|TOKEN|SECRET|PASSWORD)$/i;
  *  every other key, token, secret or password `env` names. One shorter than the checker's MIN_SECRET,
  *  whitespace aside, matches too much text by chance to be refused, and is left out. */
 export const hostSecrets = (env: NodeJS.ProcessEnv, stored?: StoredKeys): string[] => {
-  const held = [...SECRET_NAMES.flatMap((name) => [secret(name) ?? "", stored?.(name) ?? ""]), ...mcpSecretValues(mcpCredentials())];
+  const held = [...SECRET_NAMES.flatMap((name) => [secret(name) ?? "", stored?.(name) ?? ""]), ...mcpSecretValues(mcpCredentials()), ...sealKeys.keys()];
   const named = Object.entries(env).filter(([name]) => SECRET_NAME.test(name) && !SECRET_NAMES.includes(name)).map(([, value]) => value ?? "");
   return [...new Set([...held, ...named])].filter((value) => value.replace(/\s+/g, "").length >= MIN_SECRET);
 };
 
+/** The seal keys this process's open stores were booted with (seal-key.ts bootSealKey), by how many hold each: several
+ *  data directories in one process each keep their own. Never read as a secret by name (each holder passes its own key
+ *  on): only listed by hostSecrets, so what a run writes is cut of every one. */
+const sealKeys = new Map<string, number>();
+
+/** Lists `text` among this process's seal keys, for redaction alone, until the returned release is called. */
+export function holdSealKey(text: string): () => void {
+  sealKeys.set(text, (sealKeys.get(text) ?? 0) + 1);
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    const left = (sealKeys.get(text) ?? 1) - 1;
+    if (left > 0) sealKeys.set(text, left);
+    else sealKeys.delete(text);
+  };
+}
+
 /** A secret this process was started with: as handed over, else (no launcher) as its environment has it now. */
 const own = (name: string): string | undefined => held.get(name) ?? process.env[name];
+
+/** A secret this process was handed (over its pipe, or in its environment), never one it made itself: what a start asks
+ *  to tell a handed seal key from none, so a second server in one process makes or reads its own and is not handed the
+ *  first one's. */
+export const handedSecret = (name: string): string | undefined => held.get(name) ?? process.env[name];
 
 /** A secret's value: this process's own, which wins (tool-keys.ts' `source: "server"` is exactly these), else a key
  *  saved on the server `stored` reads for, opened now. One that does not open is absent, never a crash. */

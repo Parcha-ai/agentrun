@@ -1,8 +1,8 @@
 import { Fragment, type ReactNode, useEffect, useRef } from "react";
 import { Button } from "@/components/ui/button";
-import { NativeSelect } from "@/components/ui/field";
-import { HARNESS_ORDER, issuesFor, providerHelp, providerLabel, resolution, SERVER_DENY, serverDenies, type ToolChoice, type ToolGate, withPermission, withProvider } from "@/lib/toolSettings";
+import { HARNESS_ORDER, issuesFor, PIN_BROKEN, PIN_HOLDS, pinLine, providerHelp, providerLabel, resolution, DENY_ONLY, SERVER_DENY, serverDenies, type ToolChoice, type ToolGate, withPermission, withProvider } from "@/lib/toolSettings";
 import { cn } from "@/lib/utils";
+import { Picker } from "@/components/ui/picker";
 import type { Agent } from "@/lib/agentForm";
 import { grantOf, type McpServer } from "@/lib/mcp";
 import type { Permission, ToolSetting, ToolSettings } from "@/lib/v2";
@@ -21,6 +21,15 @@ export function toolRows(choices: readonly ToolChoice[], gates: readonly ToolGat
   });
 }
 
+/** A tool's pin, as a setting holds it: its words under `label` ("Pinned", "Pinned for this agent"), then that calls outside
+ *  it are refused (`also`: the server pins the tool too, and both hold); or, for a pin that doesn't read, that every call is
+ *  refused. Nothing for a setting with no pin. */
+export function PinNote({ setting, label = "Pinned", also = false }: { setting?: ToolSetting; label?: string; also?: boolean }) {
+  if (setting?.pin_broken) return <p className="max-w-[640px] text-small text-warning-text" role="note">{PIN_BROKEN}</p>;
+  if (!setting?.pin) return null;
+  return <p className="max-w-[640px] text-small text-muted-foreground" role="note"><span className="text-foreground">{label}:</span> {pinLine(setting.pin)}. {PIN_HOLDS}{also ? " This server pins it too; both hold." : ""}</p>;
+}
+
 /** Said once above a table where ask can't be answered: accounts off. */
 export const ASK_OFF = "Ask is off on this server: approving a call takes the owner's password sign-in, and this server runs with accounts off.";
 
@@ -32,7 +41,7 @@ export const ASK_OFF = "Ask is off on this server: approving a call takes the ow
  *  Ask, where it can't be answered here (`ask_needs`), is offered disabled, with why. `refused`: whether a row's tool is
  *  refused by the server's deny, which holds for every agent (SERVER_DENY, said under it); `locked`, whether that also
  *  holds its permission at deny here (an agent's table: its own setting holds nothing over it). */
-export function ToolTable({ label, rows, settings, fallbackOf, permissionFallbackOf = (g) => g.default_permission, resolvesOf, issues, busy = false, refused = () => false, locked = false, unattended = false, onEdit }: {
+export function ToolTable({ label, rows, settings, fallbackOf, permissionFallbackOf = (g) => g.default_permission, resolvesOf, issues, busy = false, refused = () => false, locked = false, unattended = false, noteOf, onEdit }: {
   label: string;
   /** The agent never asks (its approvals): a tool whose permission is ask runs without asking, and says so. */
   unattended?: boolean;
@@ -43,6 +52,8 @@ export function ToolTable({ label, rows, settings, fallbackOf, permissionFallbac
   resolvesOf: (row: ToolChoice, provider: string) => ReactNode;
   issues: Record<string, string[]>;
   busy?: boolean;
+  /** Said under a row, across the table (a tool's pin). */
+  noteOf?: (name: string) => ReactNode;
   refused?: (name: string, permission: Permission) => boolean;
   locked?: boolean;
   /** A person's change of one key's one field, as an edit of the whole map: applied to the map as it is when it is
@@ -83,22 +94,21 @@ export function ToolTable({ label, rows, settings, fallbackOf, permissionFallbac
                     <td className="px-3 py-2.5 font-mono text-body">{name}</td>
                     {permissions && <td className="px-3 py-2">
                       {gate ? <>
-                        <NativeSelect aria-label={`${name} permission`} value={permission} disabled={busy || held} onChange={(e) => { const chosen = e.target.value as Permission; onEdit((current) => withPermission(current, name, chosen, gateFallback)); }}
-                          className={cn("h-auto px-2 py-1.5 text-small", permissionSet && "border-primary text-primary-text")}>
-                          {gate.permissions.map((p) => <option key={p} value={p} disabled={p === "ask" && gate.ask_needs === "password" && !unattended}>{p}{p === gateFallback ? " (default)" : ""}</option>)}
-                        </NativeSelect>
+                        <Picker small label={`${name} permission`} value={permission} disabled={busy || held} onChange={(v) => { const chosen = v as Permission; onEdit((current) => withPermission(current, name, chosen, gateFallback)); }}
+                          className={cn("w-36", permissionSet && "border-primary text-primary")}
+                          options={gate.permissions.map((p) => ({ value: p, label: `${p}${p === gateFallback ? " (default)" : ""}`, ...(p === "ask" && gate.ask_needs === "password" && !unattended ? { disabled: true, title: "No one can approve a call here: it takes the owner's password sign-in." } : {}) }))} />
                         {permissionSet && !held && <span className="mt-1 block font-mono text-label text-muted-foreground">default: {gateFallback}</span>}
                         {denied && <span className="mt-1 block max-w-[260px] text-label text-warning-text">{SERVER_DENY}</span>}
+                        {permission === "deny" && <span className="mt-1 block max-w-[260px] text-label text-muted-foreground">{DENY_ONLY}</span>}
                         {permission === "ask" && unattended && !denied && <span className="mt-1 block max-w-[220px] text-label text-warning-text">Runs without asking: Never ask is on.</span>}
                         {permission === "ask" && gate.ask_needs === "password" && !unattended && <span className="mt-1 block max-w-[220px] text-label text-warning-text">Each call is refused: no one can approve it here.</span>}
                       </> : none}
                     </td>}
                     {providers && <td className="px-3 py-2">
                       {t ? <>
-                        <NativeSelect aria-label={`${name} provider`} value={provider} disabled={busy} onChange={(e) => pick(e.target.value as ToolSetting["provider"])}
-                          className={cn("h-auto px-2 py-1.5 text-small", set && "border-primary text-primary-text")}>
-                          {t.providers.map((p) => <option key={p} value={p}>{providerLabel(p, name)}{p === fallback ? " (default)" : ""}</option>)}
-                        </NativeSelect>
+                        <Picker small label={`${name} provider`} value={provider} disabled={busy} onChange={(v) => pick(v as ToolSetting["provider"])}
+                          className={cn("w-56 max-w-full", set && "border-primary text-primary")}
+                          options={t.providers.map((p) => ({ value: p, label: `${providerLabel(p, name)}${p === fallback ? " (default)" : ""}` }))} />
                         {providerHelp(provider, name) && <span className="mt-1 block max-w-[300px] text-label text-muted-foreground">{providerHelp(provider, name)}</span>}
                         {set && <span className="mt-1 block font-mono text-label text-muted-foreground">default: {providerLabel(fallback, name)}</span>}
                       </> : none}
@@ -108,6 +118,7 @@ export function ToolTable({ label, rows, settings, fallbackOf, permissionFallbac
                       {set && <Button size="sm" variant="ghost" disabled={busy} aria-label={`Reset ${name} to its default`} onClick={() => pick(undefined)}>Reset</Button>}
                     </td>
                   </tr>
+                  {noteOf?.(name) ? <tr data-note={name}><td colSpan={heads.length + 1} className="px-3 pb-2.5">{noteOf(name)}</td></tr> : null}
                   {issues[name]?.length ? (
                     <tr><td colSpan={heads.length + 1} className="px-3 pb-2.5">{issues[name].map((m) => <p key={m} className="font-mono text-small text-destructive-text" role="alert">{m}</p>)}</td></tr>
                   ) : null}
@@ -133,7 +144,7 @@ export const PerHarness = ({ choice }: { choice: ToolChoice }) => <>{HARNESS_ORD
 /** The agent editor's tool settings: per capability with a provider choice that this agent grants, or that the server's
  *  pick leaves unavailable (the agent's own pick may be what makes it run, before it is granted), its provider, the
  *  server's pick its default, and what it resolves to on the agent's harness and model. Nothing at all when none has one. */
-export function AgentToolSettings({ agent, harness, model, tools, choices, gates = [], mcpServers, focus, callTools, value, issues, unattended = false, onChange }: {
+export function AgentToolSettings({ agent, harness, model, tools, choices, gates = [], mcpServers, serverSettings, focus, callTools, value, issues, unattended = false, onChange }: {
   agent: Agent | null;
   /** The agent never asks, as the form has it: its tools set to ask run without asking. */
   unattended?: boolean;
@@ -148,7 +159,9 @@ export function AgentToolSettings({ agent, harness, model, tools, choices, gates
    *  (the server's in force, and those offered) from its server's read, which neither capabilities nor the agent's read
    *  list. */
   mcpServers?: readonly McpServer[];
-  /** A tool to focus the permission of as this opens (a legacy name at its settings key's row). */
+  /** This server's tool settings (GET /v2/settings/tools), for its pins: where it pins a tool the agent pins too, both hold. */
+  serverSettings?: ToolSettings;
+  /** A tool to focus the permission of as this opens. */
   focus?: string;
   /** A workflow agent's: the tools its call nodes call (callNodeTools). Its rows are those alone, each with a permission as
    *  this server lists it; no catalog tool, which no call node runs. */
@@ -189,7 +202,7 @@ export function AgentToolSettings({ agent, harness, model, tools, choices, gates
   useEffect(() => {
     if (!focus) return;
     const label = `${focus} permission`;
-    const select = [...(section.current?.querySelectorAll("select") ?? [])].find((s) => s.getAttribute("aria-label") === label);
+    const select = [...(section.current?.querySelectorAll<HTMLElement>('button[aria-haspopup="listbox"]') ?? [])].find((s) => s.getAttribute("aria-label") === label);
     select?.scrollIntoView?.({ block: "center" });
     select?.focus();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
@@ -205,6 +218,17 @@ export function AgentToolSettings({ agent, harness, model, tools, choices, gates
           wait, so the server refuses the start (its asks blocker, runnable.ts), in the same words. */}
       <p className="-mt-1 mb-2 text-small text-muted-foreground">Each of these tools takes this server's setting (its default here) unless it is changed here. {callTools ? "A call node can't wait for an approval: a tool set to ask stops the run from starting. Set it to allow." : unattended ? "Never ask is on: a tool on ask runs without waiting for you. A tool set to deny still holds." : "A tool on ask makes the run wait for your approval at each call."}</p>
       <ToolTable label="This agent's tool settings" unattended={unattended} rows={rows} settings={value} fallbackOf={(t) => t.provider} issues={byTool} onEdit={(edit) => onChange(edit(value))}
+        // A pin: the agent's own, the server's beside it where it pins the tool too; the server's alone where only it does.
+        noteOf={(name) => {
+          const own = value[name];
+          const server = serverSettings?.[name];
+          const owned = !!(own?.pin || own?.pin_broken);
+          if (!owned && !server?.pin && !server?.pin_broken) return null;
+          return <>
+            {owned && <PinNote setting={own} label="Pinned for this agent" also={!!server?.pin} />}
+            {(!owned || server?.pin_broken) && <PinNote setting={server} label="Pinned on this server" />}
+          </>;
+        }}
         // The server's deny holds over this agent's own setting (rule A): the row stays at deny and says why.
         refused={(name) => serverDenies(name, gates, agent?.tools, mcpServers)} locked
         // The agent's own setting for every tool of its MCP server when the form has one; else the server's permission for

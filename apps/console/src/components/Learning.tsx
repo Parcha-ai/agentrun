@@ -11,7 +11,7 @@ import { type Client, ClientError } from "@/lib/client";
 import { markdown, runLabel, when, runTitle as shownTitle } from "@/lib/format";
 import {
   type AgentLearning, bodyOf, type LearningChange, change, costsShown, dropKind, dropWords, fileFor, impactWords, learningCost, type LearningNote, money, type NoteParts, noteParts,
-  APPROVE_LATER, APPROVE_SIGN_IN, type Approval, approval, CHANGED, changeWords, HOST_RUNS, type LastChange, RESTORE_SIGN_IN, RESTORES, type Retired, isPending, NO_VERSION, type NoteProblem, originOf, WAITS_WHY, notes, noteText, NOTE_TYPES, provenance, runsWord, seenVersion, shortTitle, shownImpact, took, TYPE_HINT, typeLabel,
+  APPROVE_LATER, APPROVE_SIGN_IN, type Approval, approval, CHANGED, changeWords, HOST_RUNS, type LastChange, RESTORE_SIGN_IN, RESTORES, type Retired, isPending, NO_VERSION, type NoteProblem, originOf, WAITS_WHY, notes, noteText, NOTE_TYPES, provenance, runsWord, seenVersion, shownImpact, took, TYPE_HINT, typeLabel,
   counted, type LearnedItem, learnedItems, statusFile,
 } from "@/lib/learning";
 import type { Places } from "@/lib/place";
@@ -19,8 +19,10 @@ import { cn } from "@/lib/utils";
 import type { Run } from "@/lib/v2";
 
 /** `server`: the server's own learning switch (capabilities `features.learning`); "off" means no run learns there.
- *  `places`: the server's places (capabilities `places`), for where an agent that names no place runs. */
-export type LearningProps = { agent: Agent; v2: Client; focus?: string[]; server?: "on" | "off" | null; onAgent?: (agent: Agent) => void; places?: Places | null };
+ *  `places`: the server's places (capabilities `places`), for where an agent that names no place runs.
+ *  `onChanged`: a write of the tab's own landed (an approve, a retire, an edit, a new note), so what waits for the owner's
+ *  OK may have moved; the page around the tab reads its count again. Never for the tab's first read. */
+export type LearningProps = { agent: Agent; v2: Client; focus?: string[]; server?: "on" | "off" | null; onAgent?: (agent: Agent) => void; places?: Places | null; onChanged?: () => void };
 
 /** A failed write in the problem card's words, under its own title ("The note was not saved."). */
 const failed = (e: unknown, what: string, title: string) => ({ ...problem(e, what), title });
@@ -36,7 +38,7 @@ const MORE_PAGES = 20;
  *  shows where it came from and how often it was used, and a person edits it (its version named, so a change made since
  *  is never written over), retires it, or adds one. Beside them: the learning switch, what runs did not keep and why, the
  *  before and after once there is one, and what the next run reads. */
-export function LearningTab({ agent, v2, focus = [], server, onAgent, places }: LearningProps) {
+export function LearningTab({ agent, v2, focus = [], server, onAgent, places, onChanged }: LearningProps) {
   const [view, setView] = useState<AgentLearning | null>(null);
   const [error, setError] = useState<unknown>(null);
   const [runs, setRuns] = useState<Run[]>([]);
@@ -62,6 +64,8 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent, places }: 
     return learning;
   };
   useEffect(() => { void read(); }, [v2, agent.agent_id]); // eslint-disable-line react-hooks/exhaustive-deps
+  // After a write of the tab's own: the tab reads again, and the page is told.
+  const changed = (): Promise<void> => { onChanged?.(); return read(); };
   // The next page of notes, for this read only: a page asked for before a refresh (an edit, a retire) never lands after
   // it, so old and new versions never mix and the cursor is always the current read's.
   const more = () => {
@@ -139,7 +143,7 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent, places }: 
           <ul className="space-y-3 p-4">
             {waiting.map((x) => (
               <li key={x.file}>
-                <NoteCard note={x} v2={v2} agentId={agent.agent_id} readOnly={readOnly} focused={focus.includes(x.file)} from={from.get(x.file)} runs={byRun} onChanged={read} approves={approves} />
+                <NoteCard note={x} v2={v2} agentId={agent.agent_id} readOnly={readOnly} focused={focus.includes(x.file)} from={from.get(x.file)} runs={byRun} onChanged={changed} approves={approves} />
               </li>
             ))}
           </ul>
@@ -158,17 +162,17 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent, places }: 
           </div>
           {stale}
           {!on && <Off server={server} />}
-          {adding && <NoteEditor key="new" title="New note" v2={v2} agentId={agent.agent_id} taken={all.map((x) => x.file)} onDone={(saved) => { setAdding(false); if (saved) read(); }} />}
+          {adding && <NoteEditor key="new" title="New note" v2={v2} agentId={agent.agent_id} taken={all.map((x) => x.file)} onDone={(saved) => { setAdding(false); if (saved) void changed(); }} />}
           <ul className="space-y-3">
             {active.map((x) => (
               <li key={x.file}>
-                <NoteCard note={x} v2={v2} agentId={agent.agent_id} readOnly={readOnly} focused={focus.includes(x.file)} from={from.get(x.file)} runs={byRun} onChanged={read} />
+                <NoteCard note={x} v2={v2} agentId={agent.agent_id} readOnly={readOnly} focused={focus.includes(x.file)} from={from.get(x.file)} runs={byRun} onChanged={changed} />
               </li>
             ))}
           </ul>
           {later.error !== undefined && <ProblemCard problem={problem(later.error, "more notes")} onRetry={more} className="" />}
           {later.cursor && <div className="flex justify-center"><Button size="sm" onClick={more}>Load more notes</Button></div>}
-          {earlier.length > 0 && <Earlier notes={earlier} all={all} from={from} focus={focus} runs={byRun} v2={v2} agentId={agent.agent_id} readOnly={readOnly} onChanged={read} />}
+          {earlier.length > 0 && <Earlier notes={earlier} all={all} from={from} focus={focus} runs={byRun} v2={v2} agentId={agent.agent_id} readOnly={readOnly} onChanged={changed} />}
         </section>
         {(["skill", "workflow"] as const).map((kind) => {
           const items = kind === "skill" ? skills : workflows;
@@ -185,10 +189,10 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent, places }: 
               </div>
               {inUse.length > 0 && (
                 <ul className="space-y-3">
-                  {inUse.map((x) => <li key={x.file}><LearnedCard item={x} kind={kind} v2={v2} agentId={agent.agent_id} readOnly={readOnly} runs={byRun} approves={approves} onChanged={read} /></li>)}
+                  {inUse.map((x) => <li key={x.file}><LearnedCard item={x} kind={kind} v2={v2} agentId={agent.agent_id} readOnly={readOnly} runs={byRun} approves={approves} onChanged={changed} /></li>)}
                 </ul>
               )}
-              {gone.length > 0 && <EarlierLearned kind={kind} items={gone} v2={v2} agentId={agent.agent_id} runs={byRun} readOnly={readOnly} onChanged={read} />}
+              {gone.length > 0 && <EarlierLearned kind={kind} items={gone} v2={v2} agentId={agent.agent_id} runs={byRun} readOnly={readOnly} onChanged={changed} />}
             </section>
           );
         })}
@@ -518,11 +522,12 @@ function retiredLine(retired: Retired | undefined): string {
   return retired ? `${changeWords("retired", retired.by)} · ${when(retired.at)}` : "Retired";
 }
 
-/** "Learned in" the run that kept it, linked by its title, and when (`at`), with why it was kept as the hover (`reason`). */
+/** "Learned in" the run that kept it, linked by its short id (its whole title on hover), and when (`at`), with why it
+ *  was kept as the hover (`reason`). */
 function LearnedIn({ run, runs, at, reason }: { run: string; runs: Map<string, Run>; at?: string; reason?: string }) {
   return (
     <span className="flex min-w-0 items-center gap-1.5"><span className="flex shrink-0 items-center gap-1.5 whitespace-nowrap" title={reason ? `Kept because: ${reason}` : undefined}><Sparkles className="size-3 shrink-0 text-primary-text" aria-hidden />Learned in</span>
-      <a href={`#/runs/${encodeURIComponent(run)}`} className="min-w-0 truncate text-foreground/80 underline-offset-2 hover:text-foreground hover:underline" title={runTitle(runs, run)}>{shortTitle(runTitle(runs, run))}</a>
+      <a href={`#/runs/${encodeURIComponent(run)}`} className="shrink-0 font-mono text-foreground/80 underline-offset-2 hover:text-foreground hover:underline" title={runTitle(runs, run)}>{runLabel(run)}</a>
       {at && <span className="shrink-0">· {when(at)}</span>}
     </span>
   );
@@ -900,6 +905,9 @@ function NotKept({ runs }: { runs: Run[] }) {
 function NextRun({ index, skills, off }: { index: string; skills: string[]; off: boolean }) {
   const [open, setOpen] = useState(false);
   const lines = off ? 0 : index.split("\n").filter((l) => l.trim()).length;
+  // The index as Markdown, sanitized (markdown(): HTML a run wrote reads as text). A note's file is no address here, so
+  // its link reads as its name.
+  const rendered = useMemo(() => markdown(index.trim()), [index]);
   const active = off ? [] : skills;
   const given = active.length ? `${active.length} ${active.length === 1 ? "skill" : "skills"}` : "";
   return (
@@ -912,7 +920,7 @@ function NextRun({ index, skills, off }: { index: string; skills: string[]; off:
       {open && (
         <div className="border-t">
           {off ? <p className="px-4 py-3 text-body text-muted-foreground">Learning is off: the next run gets no notes or skills.</p>
-            : lines ? <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words px-4 py-3 font-mono text-small leading-[1.7]">{index.trim()}</pre>
+            : lines ? <div className={cn(PROSE, "max-h-72 overflow-auto break-words px-4 py-3 text-body")} dangerouslySetInnerHTML={{ __html: rendered }} />
             : <p className="px-4 py-3 text-body text-muted-foreground">{active.length ? "No note is in use." : "Nothing yet: no note is in use."}</p>}
           {active.length > 0 && <p className="break-words border-t px-4 py-3 font-mono text-small leading-[1.7]">Active skills: {active.join(", ")}</p>}
           <p className="border-t px-4 py-2 text-label text-muted-foreground">Read-only: the notes in use, one line each, and the agent's active skills.</p>

@@ -1,5 +1,6 @@
-// The runner's tests on module A's store (store/, SqliteStore on a file of its own): the server's store sets the schema
-// up, and each runner opens the file as a runner, as a runner process does. `observed` records what a test reads back
+// The runner's tests on module A's store (store/, SqliteStore on a file of its own, or on Postgres a schema of its own when
+// AGENTRUN_TEST_PG_URL is set: store-target.mjs): the server's store sets the schema up, and each runner opens it as a
+// runner, as a runner process does. `observed` records what a test reads back
 // (claims, journal commits, flushes and releases in order) and can fail a runner's renews; faux loops write real journal
 // commits (pi-durable's commitWrites), with the run's end staged in the last one.
 import { mkdtempSync, rmSync } from "node:fs";
@@ -9,7 +10,9 @@ import { after } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { commitWrites } from "@earendil-works/pi-durable/testing";
 
-const { openSqliteStore } = await import("../dist/store/index.js");
+import { dropSchema, freshSchema, onPostgres, PG_URL } from "./store-target.mjs";
+
+const { openPostgresStore, openSqliteStore } = await import("../dist/store/index.js");
 
 export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -65,11 +68,15 @@ export async function until(check, what, ms = 5_000) {
 // were added, so a store closed by a hook added before a runner's close would close under the runner.
 const opened = [];
 after(async () => {
-  for (const { stores, dir } of opened.splice(0)) {
+  for (const { stores, dir, schema } of opened.splice(0)) {
     for (const store of stores) await store.close().catch(() => undefined);
     rmSync(dir, { recursive: true, force: true });
+    if (schema) await dropSchema(schema);
   }
 });
+
+/** The store at the test's place, as `role`: the file in `dir`, or on Postgres the schema `schema`. */
+const openAt = ({ file, schema }, role, now) => (schema ? openPostgresStore({ url: PG_URL, schema, role, testClock: now }) : openSqliteStore({ file, role, now }));
 
 /**
  * A store file of its own: the server's store (schema set up), and `runners` more opened on the same file as runners.
@@ -77,15 +84,17 @@ after(async () => {
  */
 export async function stores({ runners = 1 } = {}) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-runner-"));
-  const file = join(dir, "store.sqlite");
+  const schema = onPostgres ? await freshSchema() : undefined;
+  const file = schema ? `pg:${schema}` : join(dir, "store.sqlite");
   const clock = { skewMs: 0 };
   const now = () => Date.now() + clock.skewMs;
-  const server = await openSqliteStore({ file, role: "server", now });
-  const entry = { stores: [server], dir };
+  const entry = { stores: [], dir, schema };
   opened.push(entry);
+  const server = await openAt({ file, schema }, "server", now);
+  entry.stores.push(server);
   const forRunners = [];
   for (let i = 0; i < runners; i++) {
-    const store = await openSqliteStore({ file, role: "runner", now });
+    const store = await openAt({ file, schema }, "runner", now);
     entry.stores.unshift(store);
     forRunners.push(store);
   }

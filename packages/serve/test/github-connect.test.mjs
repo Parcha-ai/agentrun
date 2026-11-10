@@ -5,11 +5,12 @@
 import assert from "node:assert/strict";
 import { createHash, createVerify, generateKeyPairSync, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
-import { callback, CONNECTED, connect, connectable, deliver, failedWith, held, install, PUBLIC, SEAL, startConnect } from "./github-support.mjs";
+import { callback, CONNECTED, connect, connectable, deliver, failedWith, fakeGitHub, firstInput, held, install, PUBLIC, SEAL, startConnect, storeOf } from "./github-support.mjs";
 import { schemaProblems } from "./schema-support.mjs";
-import { runDir, serve, withEnv } from "./support.mjs";
+import { runDir, scratch, serve, withEnv } from "./support.mjs";
 import { firings, keyOf, made } from "./trigger-support.mjs";
 
 const target = (agentId, content = "Review it.") => ({ kind: "start_run", agent_id: agentId, input: { content }, max_cost_usd: 0.5 });
@@ -45,21 +46,18 @@ test("Connect GitHub starts GitHub's app-manifest flow: the manifest names the s
   assert.deepEqual(schemaProblems(doc, doc.paths["/integrations/github/connect"].post.responses["200"].content["application/json"].schema, started.body), []);
 });
 
-test("with no public URL, or no seal key, Connect GitHub is refused in words: GitHub could not reach the hook, or its secrets could not be kept", { timeout: 60_000 }, async (t) => {
+// The cutover's server always has a seal key at its start (it makes one when none is given), so only the public URL can
+// be missing here.
+test("with no public URL, Connect GitHub is refused in words: GitHub could not reach the hook", { timeout: 60_000 }, async (t) => {
   withEnv(t, SEAL);
   const bare = await serve(t);
   const refused = await bare.api("POST", "/integrations/github/connect", {});
   assert.deepEqual([refused.status, refused.body.error.code], [409, "github_no_public_url"], JSON.stringify(refused.body));
   assert.match(refused.body.error.message, /^GitHub can't reach this server: set its public URL first/);
   assert.match(refused.body.error.message, /AGENTRUN_PUBLIC_URL/);
-  withEnv(t, {}, ["AGENTRUN_SEAL_KEY"]);
-  const unsealed = await serve(t, { publicUrl: PUBLIC });
-  const noKey = await startConnect(unsealed, {});
-  assert.deepEqual([noKey.status, noKey.body.error.code], [409, "github_no_seal_key"], JSON.stringify(noKey.body));
-  assert.match(noKey.body.error.message, /AGENTRUN_SEAL_KEY/, "names the setting");
 });
 
-test("the callback takes a state once, from the browser that started it: a bad, a replayed or another browser's state sends the browser to the console with state_invalid, a code GitHub does not convert with conversion_failed; a good one converts the code, seals the App's fields, drops its client secret, logs and answers no secret, and sends the browser to install the App", { timeout: 60_000 }, async (t) => {
+test("the callback takes a state once, from the browser that started it: a bad, a replayed or another browser's state sends the browser to the console with state_invalid (a code GitHub does not convert is the next case); a good one converts the code, seals the App's fields, drops its client secret, logs and answers no secret, and sends the browser to install the App", { timeout: 60_000 }, async (t) => {
   const server = await connectable(t);
   // Before the App is installed GitHub holds no installation of it: the read finds none.
   server.github.installations.clear();
@@ -80,7 +78,10 @@ test("the callback takes a state once, from the browser that started it: a bad, 
   assert.deepEqual(conversions.map((r) => r.method), ["POST"], "converted once");
 
   const { app } = server.github;
-  const file = await readFile(join(server.data, "trigger-settings-github.json"), "utf8");
+  // Kept in the store's trigger_settings rows (adapter github, scope server), sealed: the runner reads the App there.
+  const rows = await (await storeOf(t, server)).triggerSettings.get("github");
+  assert.deepEqual(rows.map((r) => r.field).sort(), ["app_id", "client_id", "installations", "private_key", "settings_url", "slug", "webhook_secret"], "in the store, its client secret never");
+  const file = JSON.stringify(rows);
   for (const secret of [app.webhook_secret, app.client_secret, app.pem.split("\n")[1]]) assert.ok(!file.includes(secret), "kept only sealed");
   const view = await server.api("GET", "/integrations/github");
   assert.deepEqual([view.status, view.body], [200, { connected: true, app_id: "4242", slug: "agentrun-test-app", installations: [] }]);
@@ -190,7 +191,7 @@ test("demo: one signed pull_request reaches /v2/hooks/github and fires every git
   assert.deepEqual([one.status, two.status], ["started", "started"]);
   assert.notEqual(one.run_id, two.run_id, "each its own run");
   assert.deepEqual((await server.api("GET", `/triggers/${comments.id}/firings`)).body.firings, [], "not taken, not fired");
-  const { content } = JSON.parse(await readFile(join(runDir(server.data, one.run_id), "serve.json"), "utf8")).input;
+  const { content } = await firstInput(t, server, one.run_id);
   assert.ok(content.includes(`<trigger-payload source="github" scheme="github" event="pull_request" action="opened" delivery="${delivery}" installation="777" repo="acme/widgets" number="12" untrusted>`), content);
 
   const again = await deliver(server.baseUrl, secret, "pull_request", pr());
@@ -434,9 +435,8 @@ test("a server that closes while its start's repair waits on GitHub stops waitin
   await second.close();
   await dropped;
   hold.release();
-  const triggers = JSON.parse(await readFile(join(first.data, "triggers.json"), "utf8"));
-  const trigger = triggers.triggers.find((x) => x.id === id);
-  assert.deepEqual([trigger.enabled, trigger.disabled], [true, null], "still on");
+  const trigger = await (await storeOf(t, first)).triggers.get(id);
+  assert.deepEqual([trigger.enabled, trigger.disabled ?? null], [true, null], "still on");
   assert.deepEqual(lines.filter((line) => /github_installations_repaired|connection_lost/.test(line)), [], "no repair taken");
   assert.deepEqual(unhandled, [], "no unhandled rejection");
 });
@@ -486,8 +486,8 @@ test("a server that closes while an installation event's check waits on GitHub s
   await server.close();
   await dropped;
   hold.release();
-  const trigger = JSON.parse(await readFile(join(server.data, "triggers.json"), "utf8")).triggers.find((x) => x.id === id);
-  assert.deepEqual([trigger.enabled, trigger.disabled], [true, null], "still on");
+  const trigger = await (await storeOf(t, server)).triggers.get(id);
+  assert.deepEqual([trigger.enabled, trigger.disabled ?? null], [true, null], "still on");
   assert.deepEqual(server.lines.filter((line) => /github_installation_lost|connection_lost/.test(line)), [], "the deletion not taken");
   assert.deepEqual(unhandled, [], "no unhandled rejection");
 });
@@ -568,4 +568,21 @@ test("the installed redirect never records a suspended installation", { timeout:
   const res = await install(server, 777, back);
   assert.deepEqual([res.status, res.headers.get("location")], [302, failedWith("installation_unverified")]);
   assert.ok(!server.lines.some((line) => line.includes("condition=github_installed")), "nothing recorded");
+});
+
+test("a server started with no AGENTRUN_SEAL_KEY still has one (bootSealKey makes it in its data directory): GitHub's sealed settings take the App, and Connect never answers github_no_seal_key", { timeout: 60_000 }, async (t) => {
+  // No key handed, and a config home of the test's own: the key is made in the server's data directory, nowhere else.
+  const config = await scratch(t);
+  withEnv(t, { XDG_CONFIG_HOME: config }, ["AGENTRUN_SEAL_KEY"]);
+  const github = await fakeGitHub(t);
+  const server = await serve(t, { publicUrl: PUBLIC, githubApi: github.url });
+  const started = await startConnect(server);
+  assert.equal(started.status, 200, JSON.stringify(started.body));
+  const back = await callback(server, "code-1", started.body.state, String(started.headers.get("set-cookie") ?? "").split(";")[0]);
+  assert.equal(back.status, 302);
+  assert.ok(back.location.includes("/installations/new"), `on to install the App: ${back.location}`);
+  const rows = await (await storeOf(t, server)).triggerSettings.get("github");
+  assert.ok(rows.some((r) => r.field === "private_key"), "the App's key kept, sealed");
+  assert.ok(existsSync(join(server.data, "seal", "seal.key")), "its key is in its data directory");
+  assert.equal(existsSync(join(config, "agentrun")), false, "and nothing under the config home");
 });

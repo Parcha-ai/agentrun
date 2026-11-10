@@ -66,6 +66,17 @@ test("a skill's or a draft's block out of format is unparsed: no name or two, tw
   assert.ok(reflect.ANSWER_MAX >= 8 * CAPS.runNote + 2 * CAPS.file + CAPS.readme, "room for every note, a skill and a draft at their caps");
 });
 
+test("a skill or a draft given only in three backticks is unparsed, and says the block must open with four, front matter or not (L8's claude-agent answer)", () => {
+  const detail = (answer) => {
+    const parsed = parseReflection(answer);
+    assert.deepEqual([parsed.ok, parsed.reason], [false, "unparsed"], answer.slice(0, 60));
+    return parsed.detail;
+  };
+  assert.equal(detail(`Here is what I learned.\n\n${block("skill", "find-policies", SKILL, "```")}\n`), "a skill's block must open with four backticks: ````skill <name>");
+  assert.equal(detail(block("skill", "find-policies", "# Find policies\n\nRead the footer.\n", "```")), "a skill's block must open with four backticks: ````skill <name>", "with no front matter, it tried all the same");
+  assert.equal(detail(block("workflow", "find-policies", "{}", "```")), "a workflow's block must open with four backticks: ````workflow <name>");
+});
+
 test("only the asked fence opens a skill: a skill given first in three backticks, cut short by one code example or two, then in the four-backtick block the format asks for, is read whole from the four (a Claude Code run's own answer)", () => {
   const answer = readFileSync(new URL("./fixtures/answer-skill-twice.txt", import.meta.url), "utf8");
   const parsed = parseReflection(answer);
@@ -194,7 +205,7 @@ test("the verdict is read per item: a note's file, a skill's SKILL.md and a draf
   const answer = (decisions) => JSON.stringify({ merge: decisions.every((d) => d !== "drop"), reason: "r", items: items.map((file, i) => ({ file, decision: decisions[i], why: "w", ...(decisions[i] === "drop" ? { question: "Workflow case" } : decisions[i] === "pending" ? { question: "Risky" } : {}) })) });
   assert.equal(parseVerdict(answer(["keep", "keep", "keep"]), items).merge, true);
   const dropped = parseVerdict(answer(["keep", "keep", "drop"]), items);
-  // A verdict per item: the dropped draft is left out (keptProposal) and the note and the skill merge.
+  // A verdict per item: the dropped draft is left out (the learning run's keptOf) and the note and the skill merge.
   assert.deepEqual([dropped.merge, dropped.items.map((item) => item.keep), dropped.items[2].question], [true, [true, true, false], "Workflow case"]);
   assert.equal(parseVerdict(answer(["drop", "drop", "drop"]), items).merge, false, "nothing kept");
   assert.equal(parseVerdict(answer(["keep", "pending", "keep"]), items).items[1].pending, true);

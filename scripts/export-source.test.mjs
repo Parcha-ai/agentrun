@@ -20,7 +20,7 @@ async function fixture(t) {
   await write('scripts/export-source.mjs', exporter);
   await write('package.json', JSON.stringify({ name: 'fixture', private: true }));
   await write('package-lock.json', JSON.stringify({ lockfileVersion: 3, packages: {
-    '': {}, 'packages/dsl': {}, 'packages/jev': {}, 'packages/pi': {}, 'packages/pi-durable-disk': {}, 'packages/pi-browser': {}, 'packages/pi-transport': {}, 'packages/pi-durable-agent': {}, 'packages/serve': {}, 'packages/decisions': {}, 'packages/computer': {}, 'packages/run-adapters': {}, 'packages/run-adapters-claude-agent': {}, 'packages/run-adapters-codex': {}, 'packages/agentrun': {},
+    '': {}, 'packages/dsl': {}, 'packages/jev': {}, 'packages/pi': {}, 'packages/pi-durable-disk': {}, 'packages/pi-browser': {}, 'packages/pi-transport': {}, 'packages/pi-durable-agent': {}, 'packages/serve': {}, 'packages/decisions': {}, 'packages/computer': {}, 'packages/client': {}, 'packages/run-adapters': {}, 'packages/run-adapters-claude-agent': {}, 'packages/run-adapters-codex': {}, 'packages/agentrun': {},
   } }));
   await write('docs/guide.md', '# Public fixture\n');
   await write('packages/dsl/schema/workflow.schema.json', '{}\n');
@@ -191,6 +191,21 @@ test('a recorded event stream (.sse) is archived and scanned as text: a machine 
   assert.ok(blocked.findings.some(finding => finding.path === path));
 });
 
+test('a SQL migration (.sql) is archived and scanned as text: a machine path planted in one stops the export', async t => {
+  const f = await fixture(t);
+  const path = 'packages/x/src/store/postgres/migrations/0001_initial.sql';
+  await f.write(path, '-- the schema\nCREATE TABLE runs (id TEXT PRIMARY KEY);\n');
+  await f.run();
+  const receipt = JSON.parse(await readFile(join(f.root, '.release/source-export-receipt.json'), 'utf8'));
+  assert.ok((await f.listing()).includes(`agentrun-dsl-source/${path}\n`));
+  assert.equal(receipt.files.find(file => file.path === path)?.kind, 'text');
+  const machinePath = ['', 'home', 'someone', 'dump.sql'].join('/');
+  await f.write(path, `-- restored from ${machinePath}\nCREATE TABLE runs (id TEXT PRIMARY KEY);\n`);
+  await assert.rejects(f.run(), /Source export blocked/);
+  const blocked = JSON.parse(await readFile(join(f.root, '.release/source-export-receipt.json'), 'utf8'));
+  assert.ok(blocked.findings.some(finding => finding.path === path));
+});
+
 test('a /home/ or /Users/ right after a path parameter is an API route, not a machine path; a real one still stops the export', async t => {
   const f = await fixture(t);
   const route = 'packages/x/lib/routes.mjs';
@@ -268,7 +283,7 @@ test('inventory generation works without build output and does not produce an ar
 
 test('the dependency inventory follows the runtime graph only: a lock that changes a dev-only entry gives the same bytes, a runtime dependency changes them', async t => {
   const f = await fixture(t);
-  const workspaces = Object.fromEntries(['dsl', 'jev', 'pi', 'pi-durable-disk', 'pi-browser', 'pi-transport', 'pi-durable-agent', 'serve', 'decisions', 'computer', 'run-adapters', 'run-adapters-claude-agent', 'run-adapters-codex', 'agentrun'].map(name => [`packages/${name}`, {}]));
+  const workspaces = Object.fromEntries(['dsl', 'jev', 'pi', 'pi-durable-disk', 'pi-browser', 'pi-transport', 'pi-durable-agent', 'serve', 'decisions', 'computer', 'client', 'run-adapters', 'run-adapters-claude-agent', 'run-adapters-codex', 'agentrun'].map(name => [`packages/${name}`, {}]));
   const lock = ({ dev, runtime } = {}) => JSON.stringify({ lockfileVersion: 3, packages: {
     '': dev ? { devDependencies: { 'dev-tool': dev } } : {},
     ...workspaces,
@@ -293,7 +308,7 @@ test('the dependency inventory follows the runtime graph only: a lock that chang
 // version is read as its manifest says again (UNKNOWN until it is checked), never carried over.
 test('the inventory reads the pinned OpenCode binaries as MIT, flags nothing for them, and reads a bumped one as its manifest says', async t => {
   const f = await fixture(t);
-  const workspaces = Object.fromEntries(['dsl', 'jev', 'pi', 'pi-durable-disk', 'pi-browser', 'pi-transport', 'pi-durable-agent', 'serve', 'decisions', 'computer', 'run-adapters', 'run-adapters-claude-agent', 'run-adapters-codex', 'agentrun'].map(name => [`packages/${name}`, {}]));
+  const workspaces = Object.fromEntries(['dsl', 'jev', 'pi', 'pi-durable-disk', 'pi-browser', 'pi-transport', 'pi-durable-agent', 'serve', 'decisions', 'computer', 'client', 'run-adapters', 'run-adapters-claude-agent', 'run-adapters-codex', 'agentrun'].map(name => [`packages/${name}`, {}]));
   const lock = version => JSON.stringify({ lockfileVersion: 3, packages: {
     '': {},
     ...workspaces,
@@ -320,7 +335,7 @@ test('the inventory reads the pinned OpenCode binaries as MIT, flags nothing for
 // package names the host it runs in as an optional peer, which the inventory keeps.
 const optionalPeerLock = ({ requiredBy } = {}) => JSON.stringify({ lockfileVersion: 3, packages: {
   '': { devDependencies: { 'test-runner': '1.0.0', 'host-agent': '1.0.0' } },
-  ...Object.fromEntries(['dsl', 'jev', 'pi', 'pi-durable-disk', 'pi-browser', 'pi-transport', 'pi-durable-agent', 'serve', 'decisions', 'computer', 'run-adapters', 'run-adapters-claude-agent', 'run-adapters-codex', 'agentrun'].map(name => [`packages/${name}`, {}])),
+  ...Object.fromEntries(['dsl', 'jev', 'pi', 'pi-durable-disk', 'pi-browser', 'pi-transport', 'pi-durable-agent', 'serve', 'decisions', 'computer', 'client', 'run-adapters', 'run-adapters-claude-agent', 'run-adapters-codex', 'agentrun'].map(name => [`packages/${name}`, {}])),
   'packages/serve': { dependencies: { 'auth-lib': '1.0.0' } },
   'packages/pi-browser': { peerDependencies: { 'host-agent': '*', 'absent-host': '*' }, peerDependenciesMeta: { 'host-agent': { optional: true }, 'absent-host': { optional: true } } },
   'node_modules/host-agent': { version: '1.0.0', license: 'MIT', dev: true },
@@ -422,7 +437,7 @@ test('a TSX source file is archived and scanned like any other source', async t 
 
 test('the Python client is source: its .py files, pyproject.toml and py.typed are archived and scanned; its bytecode is left out', async t => {
   const f = await fixture(t);
-  const sources = ['python/pyproject.toml', 'python/README.md', 'python/agentrun/__init__.py', 'python/agentrun/py.typed', 'python/tests/test_rules.py'];
+  const sources = ['python/pyproject.toml', 'python/README.md', 'python/LICENSE', 'python/NOTICE', 'python/agentrun/__init__.py', 'python/agentrun/py.typed', 'python/tests/test_rules.py'];
   for (const path of sources) await f.write(path, `# ${path}\n`);
   await f.write('python/agentrun/__pycache__/_client.cpython-311.pyc', 'BYTECODE\n');
   await f.write('python/tests/__pycache__/helpers.cpython-311.pyc', 'BYTECODE\n');

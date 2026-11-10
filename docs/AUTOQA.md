@@ -19,7 +19,7 @@ When this runs from a pipeline or a periodic QA job, the scope is fixed here and
 
 ## How to run
 
-Node 22.19 or later on 22 (`.nvmrc` pins 22.23.2), or 24.2 or later. Node 23 and 24.0 to 24.1 are refused. npm 11
+Node 24.11 or later (`.nvmrc` pins 24.21.0); anything older is refused. npm 11
 is the documented toolchain, but `npm ci` also works with npm 10.9 (the npm bundled with Node 22.23.2).
 
 ```sh
@@ -39,7 +39,7 @@ there and never print it.
 | Env | Why |
 | --- | --- |
 | `TMPDIR`, `--data` | Use a fresh data dir and a temp dir of its own per run, so no earlier run's state is read. |
-| `XDG_CONFIG_HOME` | The launcher writes `agentrun/seal.key` there. Point it at a QA dir so your own config directory is never touched. |
+| `XDG_CONFIG_HOME` | Point it at a QA dir so your own config directory is never touched. The seal key is `AGENTRUN_SEAL_KEY`, else `<data>/seal/seal.key`, made at the server's first start; nothing is kept under the config home. |
 | `AGENT_MODEL_BASE_URL`, `AGENT_MODEL_API_KEY`, `AGENT_MODEL` | Gateway for the pi and codex harnesses (OpenAI Responses). Point them at your gateway (its `/v1` base URL) and set `AGENT_MODEL` to a small, cheap model for smokes. |
 | `ANTHROPIC_BASE_URL`, `ANTHROPIC_API_KEY` | The claude-agent harness only, on Anthropic Messages. Your gateway may serve `/v1/messages` too. |
 | `AGENTRUN_MAX_RUNS` | Cap concurrent runs (3 is plenty for QA). |
@@ -170,8 +170,8 @@ lines. Then:
   `packages/serve`:
 
   ```sh
-  node --test --test-reporter=tap test/runs.test.mjs test/harness-run.test.mjs test/cap-unknown.test.mjs \
-    test/harness-cap.test.mjs test/claude-run.test.mjs test/codex-run.test.mjs test/recovery.test.mjs
+  node --test --test-reporter=tap test/harness-run.test.mjs test/cap-unknown.test.mjs \
+    test/claude-run.test.mjs test/codex-run.test.mjs
   ```
 
   The checks below name these files without `.test.mjs`.
@@ -209,8 +209,8 @@ The journal is the `entries` table of the run's `store/run.sqlite`.
    once. Alone: the restart on pi through the CLI, and `recovery`; the crash in `harness-run` and `claude-run`, and in
    `codex-run`, which checks that no Codex process is left behind.
 6. **A multi-tool turn completes on claude-agent and codex.** Two tool calls in one model response end `completed`,
-   each call shown before its result under the answer that asked for it, none interrupted. Alone:
-   `node --test test/harness-multi-tool.test.mjs` from `packages/serve`. On a live model it is part of row 8.
+   each call shown before its result under the answer that asked for it, none interrupted. Its faux-model test was
+   deleted at the cutover merge (follow-up #2078). On a live model it is part of row 8.
 
 ### Tool plane
 
@@ -321,12 +321,11 @@ npm test -w @parcha/pi-transport -- sync-extract sync-run-files               # 
 # serve: node:test over dist, on the faux model
 npm run build
 (cd packages/serve && node --test test/place.test.mjs test/boxes.test.mjs test/files.test.mjs \
-  test/box-sweep.test.mjs test/box-record.test.mjs test/boxed-tools.test.mjs test/run-box.test.mjs \
+  test/box-sweep.test.mjs test/box-record.test.mjs test/boxed-tools.test.mjs \
   test/coding-tools.test.mjs test/host-tools.test.mjs test/run-manifest.test.mjs)
 ```
 
-`boxed-tools.test.mjs` runs sandbox runs on a faux box (pi-transport's local box, `startServe({ fauxBox })`), and
-`run-box.test.mjs` puts its own fake `docker` first on `PATH`, which runs a box's commands on the host.
+`boxed-tools.test.mjs` runs sandbox runs on a faux box (pi-transport's local box, `startServe({ fauxBox })`).
 
 The Docker variant runs only where Docker exists, as CI's `transport-docker` job does:
 `docker pull debian:bookworm-slim && npm run test:live:docker -w @parcha/pi-transport`, then serve's
@@ -353,7 +352,7 @@ or a real `docker` on `PATH` for a server under test.
    a `..` segment, a target of `/` and a repeated target before `docker run`; `box-local` refuses any mount.
 6. **Run files and the sweep**: `files.test.mjs` never lists or serves a dotfile or a symlink, and refuses `..` with the
    contract's codes; `box-sweep.test.mjs` reaps a box whose writer is gone and quarantines one it cannot empty.
-7. **Boxed tools**: `boxed-tools.test.mjs` and `run-box.test.mjs` pass. A sandbox run's `bash` `printf hi > out.txt`
+7. **Boxed tools**: `boxed-tools.test.mjs` passes. A sandbox run's `bash` `printf hi > out.txt`
    shows in `GET /v2/runs/{id}/files` on pi, claude-agent and codex; the box's environment is `LANG`, `HOME=/tmp` and
    its `PATH`, with no key or token; every `docker run` has `--network none`, `--user` the server's uid:gid, one
    `--mount` of `work/` at `/workspace` and only `NAME=value` envs; a run request naming `place` is a 422 and

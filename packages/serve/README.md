@@ -1,18 +1,15 @@
 # @parcha/agentrun-serve
 
-AgentRun Server: the Agentrun v2 API on your own machine, or in one container. `agentrun-serve` serves the same `/v2` contract (`agentrun.v2/0`) as the hosted
-API, over one agent store of [`@parcha/pi-durable-agent`](../pi-durable-agent/README.md) in a directory: many agents,
-each with revisions written once (an agentic prompt, or an agentrun-dsl workflow), and every run pinned to the revision
-it ran. Each run is a [`@parcha/pi-durable-disk`](../pi-durable-disk/README.md) run directory beside the store. An SDK
-pointed at it works the way it works against the hosted API; the capabilities document says what this server does not
-offer.
+The AgentRun server: the process you deploy to run AgentRun, the open-source platform that supercharges your agents. `agentrun-serve` serves the `/v2` API (`agentrun.v2/0`) and the console over one store (SQLite in its data
+directory, or Postgres): many agents, each with revisions written once (an agentic prompt, or an agentrun-dsl
+workflow), and every run pinned to the revision it ran. Runners claim runs from that store and run them; by default one
+runner starts beside the server. The capabilities document (`GET /v2/capabilities`) says what this server offers.
 
-Published to npm from the next release (`@latest`): `npx @parcha/agentrun-serve` then starts it with nothing else installed, its
-console included. Until then, run it from a checkout (below) or the container.
+`npx @parcha/agentrun` starts it, with its console, on your machine; the container image runs it on a server (below).
 
 ## Quick start (no key, no network)
 
-Node 22.19 or later on 22, or 24.2 or later. In a checkout of this repository:
+Node 24.11 or later. In a checkout of this repository:
 
 ```sh
 npm ci --ignore-scripts && npm run build
@@ -157,7 +154,9 @@ once without checking again (a key some harness reads would, with `why=key`).
 
 The image is public: `ghcr.io/parcha-ai/agentrun-server` (`:beta`, or an exact version such as `:v0.1.0-beta.27`).
 `compose.yaml` at the repository's root is the one way to run it: the server, its data on a named volume, and the host's
-Docker socket, so each run's `bash` gets a Docker box ([in the published image](#in-the-published-image)).
+Docker socket, so each run's Docker sandbox is a container beside the server's, its run's folder mounted from that
+volume ([in the published image](#in-the-published-image)). It takes Docker Engine 26 or later, which mounts a
+volume's subpath.
 
 1. Start it (below).
 2. Open the console and set your password.
@@ -173,12 +172,17 @@ On a Linux host with Docker Engine 26 or later, with no checkout:
 curl -fsSLO https://raw.githubusercontent.com/Parcha-ai/agentrun/main/compose.yaml
 export AGENT_MODEL=openrouter/anthropic/claude-sonnet-5.5 OPENROUTER_API_KEY=...
 echo "DOCKER_GID=$(stat -c %g /var/run/docker.sock)" >> .env
+echo "AGENTRUN_SEAL_KEY=$(openssl rand -base64 32)" >> .env && chmod 600 .env   # once; keep it
 docker compose up -d
 docker compose logs agentrun | grep Open
 ```
 
 The `.env` beside `compose.yaml` keeps the socket's group (`DOCKER_GID`) for every later `docker compose` command, in any
 shell: compose reads it each time, and `compose.yaml` needs it to be read at all.
+
+This `compose.yaml` doesn't pass `AGENTRUN_SEAL_KEY` to the server yet (#2164), so the server keeps its seal key inside
+the container, outside `/data`: recreating the container loses every saved key and sign-in. Until that's fixed, use
+[`deploy/compose.yaml`](../../deploy/README.md), which requires the key, or don't recreate the container.
 
 From a checkout, the same command in its root, with `--build` to build the image from it.
 `packages/serve/docker/Dockerfile` builds that image: the server and the open packages it runs, on Node 22 and Debian 13
@@ -189,16 +193,16 @@ The token is in the log of the start that made it. On a stop the server gives a 
 (`--drain-timeout 6s`) to finish its turn, so a busy `docker stop` ends in about 7.5 s, inside Docker's default 10 s
 grace, and Compose's `stop_grace_period` is 15 s; a turn cut off resumes at the next start. Compose publishes the port
 on this machine's loopback only (port 7340, or `AGENTRUN_PORT`; set `AGENTRUN_PUBLIC_URL` with it, so the printed link names that port), and
-the volume `agentrun-data` keeps `/data` across `down` and `up`. In the container the server listens on `0.0.0.0`, and
-every route but `GET /v2/capabilities` and `GET /v2/health` still needs the token. Compose's `healthcheck` and
+the volume `agentrun-data` keeps `/data` across `down` and `up`. In the container the server listens on `0.0.0.0`, so
+setup takes the code the start prints (`Set up this server: <url>/setup#code=<code>`), and every route but `GET /v2/capabilities` and `GET /v2/health` still needs the token. Compose's `healthcheck` and
 `render.yaml`'s `healthCheckPath` are `GET /v2/health`.
 
-`render.yaml` at the repository's root is a Render blueprint for the same image: one web service with a 1 GB disk at
+`render.yaml` at the repository's root is a Render blueprint for the same image: one web service on the 1 CPU / 2 GB plan with a 10 GB disk at
 `/data`. Render generates `AGENTRUN_TOKEN`, which scripts and the CLI read in the service's Environment tab, and
 `AGENTRUN_SEAL_KEY`, which seals the keys, MCP server credentials and webhook trigger secrets the server saves (keep a
 copy: a service that loses it loses them). With no
-`AGENTRUN_PUBLIC_URL` the server takes Render's own `RENDER_EXTERNAL_URL` as its public address, so setup takes the
-code the start prints in the service's log (`Set up this server: ...`). On another host, set `AGENTRUN_PUBLIC_URL` to
+`AGENTRUN_PUBLIC_URL` the server takes Render's own `RENDER_EXTERNAL_URL` as its public address, so setup takes
+`AGENTRUN_TOKEN` from the Environment tab, or the code the start prints in the service's log (`Set up this server: ...`). On another host, set `AGENTRUN_PUBLIC_URL` to
 the address people open before the first start; without it, whoever opens the console first sets the password. Set
 `AGENT_MODEL` and the provider's key there too. Render waits 30 s after SIGTERM, above the image's 6 s drain; it does not
 let a service with a disk change that.
@@ -220,6 +224,11 @@ the run back (its epoch bumped, the server its holder) and checkpoints its WAL i
 A data directory an earlier version wrote, with its runs under `DIR/runs/` (or a store of store version 1), is refused
 at start, saying so: this version neither reads nor moves it. Keep it with that version, or start this one on a new data
 directory (an empty folder, or a new volume).
+
+When a run's folder is on the owner's Archil disk and the run has no computer, a command runs through Archil's
+serverless exec, for at most 295 s. A known limit: a command, once sent, cannot be stopped. Stopping the call answers at
+once, but the command runs on to its own deadline, and the run's next command, or a write to its folder, waits until it
+has ended. A command not yet sent when the call is stopped is never sent.
 
 ## Upgrading from 0.1.0-beta.26
 
@@ -295,7 +304,10 @@ end to end. The [published image](#in-the-published-image) hosts Docker boxes th
 ### Place
 
 A definition may name where its runs execute: `{"mode": "runner"}` or `{"mode": "sandbox", "box": ...}`, the box one of
-the ids under [Boxes](#boxes). A runner has no shell. In a sandbox the agent's `bash` runs in the named box and its
+the providers under [Computers](#computers). `place` is the v2 view of the agent's computer setting: `runner` is kind
+`none`, and `sandbox` a sandbox on that provider. On the runner a run has no shell where its folder is on this
+server's disk (Mode 1), and `bash` on Archil's serverless exec where it is on Archil (Mode 2)
+([where `bash` runs](#computers)). In a sandbox the agent's `bash` runs in the named box and its
 file tools (`read`, `write`, `edit`) work on the `work/` the box has ([a run in a Docker box](#a-run-in-a-docker-box)),
 while the agent's loop, its log and every key stay on the server, whatever its harness. Any other shape is `422 input_invalid` on `definition.place`, whose `fix` is the change to make: the field to
 remove, or the place it most likely meant, to copy (`"place": {"mode": "sandbox", "box": "docker"}`). One that names a
@@ -653,8 +665,8 @@ never runs; the box's first process is a `sleep` of its lifetime.
 
 ### In the published image
 
-The published image, `ghcr.io/parcha-ai/agentrun-server`, runs Docker boxes on the Docker of the host it runs on, through
-that Docker's socket, as `compose.yaml` at the repository's root starts it ([in a container](#in-a-container)). The image
+The published image, `ghcr.io/parcha-ai/agentrun-server`, runs Docker sandboxes on the Docker of the host it runs on,
+through that Docker's socket, as `compose.yaml` at the repository's root starts it ([in a container](#in-a-container)). The image
 has the Docker client (Debian's `docker-cli`) and no daemon; `group_add` gives the image's `node` user the socket's group
 (`DOCKER_GID`), so the server never runs as root.
 
@@ -663,76 +675,123 @@ has the Docker client (Debian's `docker-cli`) and no daemon; `group_add` gives t
   trust as a server on a host whose user is in the `docker` group. Give the server the socket only where you would give
   it root. A box never gets it.
 - **A box is a container beside the server's.** It is made as on a Linux host (`--network none`, every capability dropped,
-  no new privileges, the server's uid, the box limits), and its only way out is the run's egress proxy, with the same
-  host list and the same address rule ([a run in a Docker box](#a-run-in-a-docker-box)).
+  no new privileges, the server's uid, the box limits).
 - **Its files.** The daemon has none of the server's paths, only what it mounted into the server's container. At its
   start the server reads its own container's id from `/proc/self/mountinfo`, asks Docker for that container's mounts
-  (`docker inspect`), and takes the named volume that holds the data directory. A box mounts that run's `work/` from it,
-  and the run's egress proxy's directory (`<data>/box-egress/<16 hex>/`, read-only), as the volume's subpaths
-  (`--mount type=volume,...,volume-subpath=disk/agents/<key>/runs/<run>/work`), never the rest. The run's files and the box's are the same
+  (`docker inspect`), and takes the named volume that holds the data directory. A run's sandbox mounts that run's folder
+  from it, and the sandbox's own daemon (copied to `<volume mount>/.agentrun/computerd`, read-only), as the volume's
+  subpaths (`--mount type=volume,...,volume-subpath=...`), never the rest. The run's files and the sandbox's are the same
   files, as on a host.
+- **The host's own addresses.** A sandbox's egress proxy refuses the Docker host's own addresses, which the server in a
+  container can't see on its interfaces. At its start it reads them once through the socket: one container on the
+  host's network (`--network host`, with `host.docker.internal` added for Docker Desktop and OrbStack, whose listing is
+  the VM's), from the proxy's own image, as nobody (`65534:65534`), every capability dropped, no new privileges, a
+  read-only root, 64 MiB and 32 processes, removed at its exit, bounded to 60 s. To those it adds
+  `AGENTRUN_DOCKER_HOST_ADDRESSES` (a comma list of IP addresses, checked at the start), for what no interface shows,
+  such as a NAT'd or elastic public address. The union is in capabilities' docker entry (`host_addresses`) and the
+  `event=docker_host_addresses` line. With none known under an allow-list (the read failed, nothing set), docker is
+  unavailable at the start, saying so and naming the setting or `AGENTRUN_BOX_ALLOW=none`; under `none` nothing is read.
 - **Any other layout** (the data directory not on a read-write named volume of the server's own container, the socket of
   another Docker than the one that runs the server, a container whose id `/proc/self/mountinfo` does not name) makes
   docker unavailable at the start, its reason in capabilities and the `event=box_paths` line: `run AgentRun in a
   container with docker compose up from compose.yaml (its named data volume is how boxes reach a run's files)`. On an
-  older engine: `Docker Engine <26 can't mount a named volume's subpath: upgrade to Docker 26+`.
+  older engine: `Docker Engine <26 can't mount a named volume's subpath: upgrade to Docker 26+`. A daemon of another
+  machine makes it unavailable too, whether `DOCKER_HOST` names it or the current Docker context does (`DOCKER_CONTEXT`,
+  else the saved current one, read once with `docker context inspect`): that daemon has none of this machine's paths.
+  Another machine's is `ssh://`, or `tcp://` to a host that isn't loopback; `unix://`, `npipe://` (Docker Desktop on
+  Windows) and `tcp://` to loopback are this machine's. An agent that
+  names a Docker computer is refused at its run's start in those words, and one with no computer runs on the runner,
+  with the file tools and no shell.
 - On a host the server finds no container of its own and asks Docker nothing: a box binds this machine's paths and its
   proxy's directory is under `/tmp`, as before.
 
-### Boxes
+<a id="boxes"></a>
 
-A box is a machine apart from this one where a run's tools run. Runs execute in `docker`, `daytona` and `modal` boxes
-([place](#place)); the others are set up and probed, and say runs in them are not available yet.
+### Computers
 
-Docker is on by default. With `AGENTRUN_BOXES` not set at all (a plain `npx @parcha/agentrun`), the server probes
-`docker` as if it were listed, and offers it when Docker answers (`ready`, or `preparing` while its image comes), so a
-new agent lands in the Docker box with a shell. When Docker does not answer, new agents run on the runner, and the
-banner, `capabilities.places.default_reason`, docker's own `reason` and the console's new-agent form say why. Every
-other box is yours to list.
+An agent's computer is one setting, `computer: {kind, provider}` in its definition, set in the console under
+Settings → Computers. The kind says what the agent is given, and the provider who runs it:
 
-`AGENTRUN_BOXES`, when set, wins: it lists the boxes to set up, as a comma list of the ids below
-(`AGENTRUN_BOXES=docker,daytona`), and the server never probes a box the list does not name, Docker included. An empty
-value (`AGENTRUN_BOXES=`) or `AGENTRUN_BOXES=none` sets up no box. `none` stands alone, and a name that is no box
-refuses the start. At start the server probes each listed box once. The probes run at once, each within 5 s. Then one
-log line says what the server found:
+| Kind | What the agent gets | Providers |
+|---|---|---|
+| `none` | The run's folder alone: no computer, and no provider (`{"kind": "none"}`) | |
+| `sandbox` | A Linux shell, with files and processes | `docker`, `daytona`, `modal`, `e2b` |
+| `desktop` | A screen, a pointer and keys (`desktop_screen`, `desktop_input`), and a shell where its provider mounts the run's folder | `docker` (with an image that has an X server), `e2b`, `orgo` |
+| `phone` | A rented Android: its screen, touch and apps (the `phone_*` tools) | `phone-harness` |
+| `browser` | A hosted browser (the browser tools) | `browserbase`, `kernel` |
+
+A kind with no provider, a provider that does not serve the kind, or a provider whose required keys are not saved is
+refused before anything starts, in words that name the fix in Settings → Computers. `GET /v2/computers` lists each kind,
+whether this server offers it now, the tools it brings, and each provider with its key names and whether each is saved
+(never a value). `PUT /v2/computers/{provider}/keys` saves a provider's keys, sealed under the server's seal key, from
+the owner's signed-in session only (the API token is 403), and `POST /v2/computers/{provider}/test` makes one read at
+the provider with them and starts nothing. A key set in the server's environment wins over the saved one. The keys are
+`DAYTONA_API_KEY` (with `DAYTONA_API_URL` and `DAYTONA_TARGET` optional), `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET`,
+`E2B_API_KEY`, `ORGO_API_KEY`, `PHONE_HARNESS_API_KEY`, `BROWSERBASE_API_KEY` and `BROWSERBASE_PROJECT_ID`, and
+`KERNEL_API_KEY`; Docker takes none. The vendors bill their computers by time on their own pages: this server meters no
+computer time. The older [`place`](#place) is this setting's v2 view: `{"mode": "runner"}` is kind `none`, and
+`{"mode": "sandbox", "box": X}` is a sandbox on provider X. Writing either sets both.
+
+**Where the run's folder lives.** A server keeps its runs' folders in one of two modes:
+
+- **Mode 1** (the default): on this server's own disk. Only a provider that binds a folder of this machine can hold
+  it, so a sandbox runs on Docker only; a Daytona, Modal or E2B sandbox is refused ("Mode 1 runs a sandbox only on
+  Docker").
+- **Mode 2**: on your own Archil disk. `PUT /v2/workspace/archil` turns it on with the disk's id, its region, its S3 URL
+  (and an exec image pinned by digest, if you want one other than Archil's default), and the account key,
+  `ARCHIL_API_KEY`; `DELETE` turns it off. A Daytona, Modal or E2B sandbox mounts the run's folder from the disk with a
+  mount credential minted for that run alone; Docker's sandbox is refused, since it cannot mount the disk.
+
+A desktop, a phone and a browser run in either mode. The run's folder is at `/workspace` in every computer that mounts
+it: a sandbox always, and a desktop whose provider mounts the mode's folder (Docker's in Mode 1, E2B's in Mode 2). A
+phone and a browser never mount it.
+
+**Where `bash` runs.** It follows the mount:
+
+- A computer that mounts the run's folder runs `bash` and the background tools (`bash_background`, `bash_output`,
+  `bash_input`, `bash_signal`, `bash_list`). A call with no timeout runs 120 s, and none runs past 600 s.
+- With no computer that mounts it (kind `none`, a phone, a browser, or a desktop that does not mount), in **Mode 1** the
+  run has no shell at all: the folder is one of this server's own, and a command there would run on the server, able
+  to read its data and its keys. The run gets `read`, `write` and `edit`, confined to its folder; `bash` and the
+  background tools are not offered, and a `bash` call answers "bash is not available in this run: it has no computer to
+  run commands in, and commands never run on the server itself." So an agent with no computer on a server without
+  Docker gets the file tools and no shell.
+- With no computer that mounts it in **Mode 2**, `bash` runs on Archil's serverless exec: a fresh container that holds
+  the run's folder alone, never a process of this server. Only `bash`: the background tools answer that background
+  programs need a computer. `bash` is held to its own setting, as on a computer. Archil's limits hold for it: a command
+  runs at most 295 s (Archil cuts a call at 300 s, and a longer timeout is refused, not cut); once sent it can't be
+  stopped, so a cancel answers at once while the command runs on to its own deadline, holding the folder (later writes
+  and commands wait for it); and its output comes back whole when it ends, not as it runs. Through Archil's file API a
+  write does not keep a file's mode (a `0755` file is `0644` after a write), and a symbolic link a command made is never
+  followed: reading one is refused, a write through a linked folder is refused, and `bash` refuses a working directory
+  with a link on the way.
+
+**An agent with no setting.** With no `computer` and no `place`, the server decides at each run's start: in Mode 1, the
+Docker sandbox where this server's Docker answers, else no computer; in Mode 2, no computer. A workflow always runs with
+no computer.
+
+**What a computer reaches.** A Docker sandbox reaches the hosts of `AGENTRUN_BOX_ALLOW` (by default the package
+registries and GitHub) through its egress proxy, and nothing else; `AGENTRUN_BOX_ALLOW=none` gives it no network. From a
+server in a container the proxy also refuses the Docker host's own addresses, which the server reads through the socket
+([in the published image](#in-the-published-image)). A
+Daytona, Modal or E2B sandbox has no network of its own (loopback only). A phone and a browser are on their vendor's
+own network, whatever the list says.
+
+**Docker.** A Docker computer runs where this server's Docker answers. With `AGENTRUN_BOXES` not set at all (a plain
+`npx @parcha/agentrun`), the server probes `docker` at its start (within 5 s) and offers it when Docker answers
+(`ready`, or `preparing` while its image is built or pulled, as [the box's image](#the-boxs-image) says); `AGENTRUN_BOXES`,
+when set, lists what it probes, and `AGENTRUN_BOXES=none` probes nothing. One log line says what it found:
 
     event=boxes available=<ids or none> unavailable=<ids> <id>="<why>" ...
 
-The line gives a reason for each listed box that is unavailable, and the banner says the same in words
-(`Boxes: docker is ready, so sandbox agents run their tools there.` with a list; `Boxes: docker (on by default; set
-AGENTRUN_BOXES to change).` without one). Each reason says what to do next: a box the list
-does not name says `not enabled on this server: start AgentRun with AGENTRUN_BOXES=docker` (keeping the boxes it already
-lists), a missing `docker` command says `Docker isn't running on this machine (no docker command on PATH): install or
-start Docker, then restart AgentRun`, and a `docker` whose daemon does not answer says to start Docker or add this
-user to the `docker` group, then restart AgentRun, since the probe runs once. A reason never holds a key, a command's output or a
-provider's answer.
+A missing `docker` command says `Docker isn't running on this machine (no docker command on PATH): install or start
+Docker, then restart AgentRun`; a daemon that does not answer says to start Docker or add this user to the `docker`
+group, then restart AgentRun, since the probe runs once. A run whose agent names a Docker computer here is then refused
+at its start in those words. Every other provider needs only its keys. A Docker desktop has no default image: it needs
+one with an X server, and `AGENTRUN_DOCKER_IMAGE` names the image of every Docker computer, sandbox and desktop alike.
 
-- `docker`: the `docker` command on PATH, with a daemon that answers `docker version` for this server's user. It needs no key.
-  Then the server asks Docker for [the box's image](#the-boxs-image) (`docker image inspect`). When Docker has it (the
-  default with this recipe's hash), the box is `ready`. When not, the server builds the default, or pulls the image
-  `AGENTRUN_DOCKER_IMAGE` names, once, in the background, for at most 10 minutes. Meanwhile the box is available and
-  `preparing` (`building the box image (python, git, curl, node, npm, rg)`, or `pulling <image>`), and a sandbox run whose
-  first box comes then waits for the image, with one row on its timeline (`Preparing the box image: building it (python,
-  git, curl, node, npm, rg)…`), instead of a first tool call that pulls it silently. A build or pull that fails is tried once
-  more, 5 seconds later, the box `preparing` meanwhile with what failed (`trying once more: the build of the box image
-  could not reach the network (…)`). One that fails again, or takes longer, makes the box unavailable with the reason
-  (the build could not reach the network, pull its base or install a package, ran out of disk; the registry refused the
-  image, has no such image, could not be reached; or the time ran out) until a restart tries again. A run that was
-  waiting fails its call with that reason, and the next sandbox run is `409 agent_not_runnable`. A server stopped or
-  killed while its image comes leaves no run waiting on it: a run's first box fails its call at once, with `the server
-  stopped while building it: restart the server to build it again`, never Docker's own error, and the next start
-  builds it again.
-- `daytona`: needs `DAYTONA_API_KEY`. Set `DAYTONA_API_URL` and `DAYTONA_TARGET` when Daytona's defaults do not fit.
-  The probe makes one authenticated read, of a box that does not exist. If Daytona refuses the key, the box is unavailable.
-- `modal`: needs `MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET` and the SDK, which the host installs (`npm install modal`).
-  Its sandboxes live in the app that `AGENTRUN_BOX_APP` names (default `agentrun`). The probe checks that the SDK loads
-  and the token is set. It asks nothing of the provider. Runs execute in it: [a run in a Modal sandbox](#a-run-in-a-modal-sandbox).
-- `bwrap` is not in this release yet.
-
-The boxes come from `@parcha/pi-transport`, a dependency of this package, so every install of the server, `npx
-@parcha/agentrun`'s included, has the Docker box's provider.
-The keys belong to the server alone. The launcher hands them over with the server's other secrets, and no run's process
-gets them, in its environment or on its pipe.
+The keys belong to the server alone. A provider is handed its declared keys only when a run's computer starts or its
+connection is tested, and no run's process gets them, in its environment or on its pipe.
 
 ## Models
 
@@ -1061,7 +1120,10 @@ view. A session a restarted process keeps (it was still running at the vendor) g
 new process, with a new token, and nobody holding the browser. `GET /v2/runs/{id}/browser` answers `{state: "live", viewer}` while a session is open (`viewer`, a link on this server
 with its token in the fragment), `{state: "none"}` when the run has a browser but no session is open, and
 `{state: "off", reason}` when it has none: its agent has no `browser` tool, or its browser resolves unavailable here (the
-tool plane's words, `a local Chrome is not set up on this server`, or for Kernel with no key, that it needs a Kernel key). It takes the owner's
+tool plane's words, `a local Chrome is not set up on this server`, or for Kernel with no key, that it needs a Kernel key). The
+same view is the computer family's too, one for every kind (`browser`, `desktop`, `phone`), read through the same code:
+`GET /v2/runs/{id}/computer` answers `{state: "live", kind, viewer, hold}` (the link under `/v2/runs/{id}/computer/live/`),
+`{state: "none", kind, hold}` or `{state: "off", hold, why}`; `hold` says who drives now (`agent`, `pending` or `person`). It takes the owner's
 password session in the console: a token, which a run's process, an MCP client or a script may hold, is `403`.
 
 The viewer lives under `/v2/runs/{id}/browser/live/`. Its page, script and style are this server's own (the files of the
@@ -1259,18 +1321,20 @@ runs' calls alone; with none, its `check` stays null.
 
 A saved key is kept only as ciphertext: AES-256-GCM in `DIR/tool-keys.json` (0600), each value bound to its field's
 name, under the seal key `AGENTRUN_SEAL_KEY`, which only the server opens it with. A run's process never gets the seal
-key. With `AGENTRUN_SEAL_KEY` not set, the launcher keeps it in `agentrun/seal.key` under `$XDG_CONFIG_HOME` (or
-`~/.config`), making it the first time: 32 random bytes in base64, 0600 in a 0700 directory, and one another user can
-read is refused, not changed. It is outside the data directory on purpose: a copy or a backup of the data directory
-holds the keys as ciphertext alone, and opens nowhere without the seal key. With no seal key (started with no launcher and
-no `AGENTRUN_SEAL_KEY`, or with no home directory) nothing is saved, never in the clear: `409 no_sealing_key`, and capabilities' `features.tool_keys.at_rest` is
-`unavailable` (`sealed` otherwise).
+key. With `AGENTRUN_SEAL_KEY` not set, the server keeps it in `seal/seal.key` in its data directory, beside the store,
+making it at the first start: 32 random bytes in base64, 0600 in a 0700 directory, and one another user can read is
+refused, not changed. It lives and dies with the data (a disk, a volume): back it up with the data directory, and keep
+the two together. The store records the key's fingerprint (an HMAC of a fixed label under the key, never the key), and
+the server, every runner and `import` check the key they hold against it: a store whose secrets were sealed with another
+key does not start ("this store's secrets were sealed with another key; hand the server the original
+AGENTRUN_SEAL_KEY"), and no key is ever made over sealed secrets, so a lost `seal.key` is never replaced by a new one.
+The same holds on Postgres: a second machine with another key refuses. Only the server's start makes the key; a runner
+reads it from `AGENTRUN_SEAL_KEY` or the data directory, never makes one, and is refused without one. Set
+`AGENTRUN_SEAL_KEY` explicitly, the same in every process, and keep it.
 
 A stored value that does not open is never a reason not to start. It reads `set: false, stored_unreadable: true`, and
-`reenter` names those fields with why: `seal_key_missing`, `seal_key_changed` (a lost `seal.key` is made anew, so it
-shows as this) or `file_unreadable`. The log says so once, naming the condition and the file, never a value; a `PUT` of
-the value seals it again under the current key. In a container, `~/.config` is the container's own and goes with it:
-pass `AGENTRUN_SEAL_KEY`, or mount a directory at `XDG_CONFIG_HOME`, so a new container opens the keys the volume holds.
+`reenter` names those fields with why: `seal_key_changed` (sealed under another key) or `file_unreadable`. The log says
+so once, naming the condition and the file, never a value; a `PUT` of the value seals it again under the current key.
 
 A saved key is read by name like one the launcher hands over, and the launcher's value wins for a name it holds. A run
 gets the saved keys at its launch, over the pipe its secrets come on (a workflow run's `PARALLEL_API_KEY` on its
@@ -1456,7 +1520,8 @@ asked by default.
   tool's top-level arguments, each to the one JSON scalar its calls must carry (`null`: the argument left out), or a
   list of 1 to 16 of them, the argument one of the list, compared strictly:
   `{"mcp:slack/slack_send_message": {"permission": "allow", "pin": {"channel_id": "C0123"}}}`,
-  `{"mcp:github/pull_request_review_write": {"pin": {"method": ["create", "submit_pending"], "event": [null, "COMMENT"]}}}`. The gate checks a pinned
+  `{"mcp:github/pull_request_review_write": {"pin": {"event": [null, "COMMENT"], "method": ["create", "delete_pending", "submit_pending"]}}}`
+  (the `code-review` template's pin). The gate checks a pinned
   tool's call before it runs or asks anyone, whatever the permission (an allow, an ask, a grant): a call whose arguments
   are not as pinned is refused, never sent and never asked about, and the model reads "mcp:slack/slack_send_message may
   only be called with channel_id = C0123: its destination is fixed by the agent's settings". The run's process logs a
@@ -1467,9 +1532,8 @@ asked by default.
   `tool-settings.json` that does not read refuses every call of its tool, and `GET /settings/tools` serves it as
   `pin_broken: true`. A `PUT` that keeps the tool's key and sets no valid pin (the mark sent back as served, or the pin
   left out) keeps it broken, so saving another tool's setting never lifts it; a valid pin repairs it, and leaving the
-  key out removes the setting. Until the agent
-  store's cutover an agent's own pin (`definition.tool_settings.<tool>.pin`) is refused, `422 not_set_up_here`: the
-  store this server writes today keeps no pin, so set it on the server meanwhile.
+  key out removes the setting. An agent keeps a pin of its own in `definition.tool_settings.<tool>.pin`, and the gate
+  holds its runs to it and to the server's.
 - **Prices.** `PUT /v2/settings/mcp-servers/{name}` takes `prices`, each tool's price in USD a call
   (`{"prices": {"search": 0.01}}`; a finite number, 0 or more, for a tool the server lists; else `422`). A priced call
   is held at its price under the run's `max_cost_usd`, refused unsent when the cap cannot take it, and booked as the
@@ -1486,7 +1550,8 @@ asked by default.
 One URL hears of your runs without anyone watching the page. `PUT /v2/settings/webhook` with `{url}` sets it: an `http`
 or `https` address, with no user or password in it. Loopback and private-network addresses are allowed, so a receiver
 on your own machine or network works. Two kinds of message are POSTed to it about runs: `run.needs_input` when a run comes to
-need its person (`input_required`: an `ask_person` question, or a stopped turn) and `run.ended` when it ends
+need its person (`input_required`: a question, a call held for approval, a pause at its cap, an ask for its person in
+its browser, desktop or phone, or a stopped turn) and `run.ended` when it ends
 (completed, failed or cancelled, once carried back). A [schedule](#schedules) whose firing fails sends a third,
 `trigger.failed`; a server with no triggers never sends one.
 
@@ -1496,8 +1561,7 @@ store has the end, so a receiver that reads the run back on its message (`GET /v
 store refuses the end (a full disk, a busy store), nothing is sent, until a later try of the write or the next server
 stores it. The outbox (`DIR/webhook-outbox.json`) keeps, in the same write as each message, which end and which wait of
 each run it queued. A server that starts queues any end of the last day that the agent store holds and the outbox does
-not, under the same `webhook-id` (one lost to a kill, or to a crash of the machine; one whose run's `serve.json` can't
-be read goes with an empty `title`), and a server that takes over a run
+not, under the same `webhook-id` (one lost to a kill, or to a crash of the machine), and a server that takes over a run
 queues a wait it stands at that the outbox does not name (one the run came to while no server was up), under its one
 `webhook-id`. An end before the webhook was set is never sent. A run is continued only once its end's
 `run.ended` is in the outbox on disk (`503` meanwhile), so a continued run's next end is its own, under its own id.
@@ -1509,9 +1573,13 @@ queues a wait it stands at that the outbox does not name (one the run came to wh
 ```
 
 A message is thin: ids, the status, the title and a link to the run on the page; never a tool's arguments, an output
-or an input, which the API reads (`GET /v2/runs/{id}`). `pending.kind` is `question` (an `ask_person`),
-`approval` (a tool call that waits for a person's approval), `stopped`, `budget` (a run paused at its cap) or `browser`
-(the agent asked for the owner in its browser).
+or an input, which the API reads (`GET /v2/runs/{id}`). The title is the run's own, as the store holds it: a trigger's
+run is titled from its trigger, `<Source> <name>` and the event when its source names one ("Webhook reviews:
+pull_request opened"), never from its input; a workflow run's from its agent's name and its input; any other run's
+from its input. `pending.kind` is `question` (an `ask_person`),
+`approval` (a tool call that waits for a person's approval), `stopped` (a stopped turn), `budget` (a run paused at its
+cap) or `browser` (the agent asked for the owner in its browser). An agent's ask for the owner on its desktop or phone
+(the run's `pending.kind` `computer`) is told as `question`.
 
 Messages are signed by the [Standard Webhooks](https://www.standardwebhooks.com) spec, so a receiver verifies them
 with any of its libraries: `webhook-id` (the same on every try of a message, so it is the receiver's idempotency key),
@@ -1562,8 +1630,8 @@ A firing starts its run once. Its key comes from the trigger and its nominal tim
 a restart drives again finds its run. A firing's key stays bound to that run: when the server stopped while setting the
 run up, the firing reads `failed` ("The server stopped while setting up the run.") with that run's id, it never fires
 again, the next firing goes ahead, and `POST /v2/triggers/{id}/fire` is how a person tries it again. While the trigger's last run is active (working, or waiting on a person), a firing
-is `skipped`, with why (a webhook trigger with `accept` is the exception: [each event it takes](#webhook-triggers)
-starts its own run); a full server (`429`) keeps it due and tries again. Times missed while the server was down are
+is `skipped`, with why (a webhook trigger with `accept` or `max_active_runs` is the exception: [each event it
+takes](#webhook-triggers) starts its own run); a full server (`429`) keeps it due and tries again. Times missed while the server was down are
 one `missed` firing with their count, and the schedule goes on from now; the latest of them still fires, once, when it is
 no older than the trigger's `catchup_window_s` (default an hour; 0, never), marked `catch_up`. A
 firing while the last run is active (working, or parked waiting on a person) is skipped with why, never queued,
@@ -1573,7 +1641,8 @@ gets a `trigger.failed` message for it (`data: {trigger_id, name, firing_key, no
 trigger off (`disabled: {reason: "auto_paused"}`); a firing that starts its run resets the count, and so does turning
 it on again. Run now (below) works on an auto-paused trigger too, and counts toward the streak like any firing: one that
 starts its run resets it, one that fails adds to it. A trigger whose cron line or zone no longer reads here (after an
-upgrade of the cron library or of the time zone data) is turned off alone, at a start or when it comes due
+upgrade of the cron library or of the time zone data), or whose `every_s` a hand edit of its row put out of range, is
+turned off alone, at a start or when it comes due
 (`disabled: {reason: "source_unreadable", detail}`), and every other schedule goes on firing; turning it on again takes a
 new source. A trigger's firings are driven one at a time, in order, so a firing a crash left due settles to its run
 before the next one's overlap is checked. `PATCH /v2/triggers/{id}` changes it, and
@@ -1584,7 +1653,8 @@ firing has left the history too, and later it is a new firing that a run the key
 ### Webhook triggers
 
 A trigger with `source: {kind: "webhook"}` fires on each request to `POST /v2/hooks/{trigger_id}`: this server's one
-route with no token. The request is signed by the trigger's own secret under the
+route with no token. Its view carries that address as `hook_url`, at the server's public URL when it has one
+(`AGENTRUN_PUBLIC_URL`), else the path; a schedule has none. The request is signed by the trigger's own secret under the
 [Standard Webhooks](https://www.standardwebhooks.com) spec, the one this server's outbound [webhooks](#webhooks) sign
 with, so a sender uses any of its libraries: `webhook-id` (1 to 255 printable ASCII characters, no space), `webhook-timestamp` (Unix seconds, within 5 minutes of this
 server's clock either way) and `webhook-signature: v1,<base64 HMAC-SHA256 of "{id}.{timestamp}.{body}">` under the
@@ -1597,7 +1667,10 @@ shows it. It is kept sealed under `AGENTRUN_SEAL_KEY` in `DIR/trigger-settings-w
 sealed settings have a file of their own), so with no seal key no webhook trigger is made (`409 no_sealing_key`).
 `POST /v2/triggers/{id}/secret` makes a new one, shown once, and the old one signs nothing from then on. Like every
 secret this server keeps (its tokens, its outbound webhook's secret), it is cut from what a run shows, from what an
-import keeps and from every learning text. A secret that does not open under the seal key the server starts with is
+import keeps and from every learning text. A secret replaced by a rotation, or whose trigger is deleted, is kept too,
+sealed in a retired row of its own (scope `retired:<trigger>:<n>`), never a setting and in no `GET`: a run that quoted it
+before is still cut on every later server. Retired rows are kept for good for now; dropping one once no run older than
+it is left is still to come. A secret that does not open under the seal key the server starts with is
 said in its log (`condition=trigger_setting_unopened`, naming the trigger), and its trigger is refused until a new
 secret is made. A `trigger-settings-webhook.json` that does not read is never written over: until it is fixed or moved
 away, no webhook trigger is made or rotated (`409 store_unreadable`) and none fires.
@@ -1666,8 +1739,12 @@ Such a trigger can take every run this server has room for, starving other trigg
 `max_active_runs` (1 to 100; `null` clears it): past that many of its runs active, a firing waits due and is tried
 again, as at a full server, and is never skipped. It counts the runs this trigger started while they work, kept apart
 from its history (so a long run counts however many firings follow it) and read again at each check; a run a person
-opens again after it ended is that person's follow-up, not counted. Only a trigger whose firings each start a run
-takes it (`422` otherwise). On a public repository, a rule for `issue_comment` or `issues` events needs a condition on
+opens again after it ended is that person's follow-up, not counted. Any `start_run` trigger of a pushed source (a
+webhook) takes it, with or without `accept`: set, each event starts its own run, never skipped behind the last, up to the
+cap; past it a firing waits due, and past 20 due an event answers `429 rate_limited` with `Retry-After`. Without
+`max_active_runs`, a trigger with no `accept` keeps the overlap skip: an event while its last run is active is
+`skipped`. A schedule keeps the overlap skip and takes no cap, and nor does a `message_run` target, which starts no run
+(`422` for either). On a public repository, a rule for `issue_comment` or `issues` events needs a condition on
 `/comment/author_association` or `/issue/author_association` (`in: ["OWNER", "MEMBER", "COLLABORATOR"]`): without one,
 anyone who can comment starts runs.
 
@@ -1767,9 +1844,10 @@ installation and repository (the server's own payload tag); any other names it i
 the run's MCP calls with the static headers beside it, lives only in memory (handed to the run's process over its pipe,
 never its environment, journal, a log line or an answer), and is cut from whatever a run shows while it may be in use.
 A run whose repository the App does not cover, or that names none, has those calls answered in words ("The GitHub App
-isn't installed on owner/repo"). A known limit: a token lasts an hour and is not renewed inside a live run's process
-(it is minted at each launch): a run still working past it has its GitHub calls answered, unsent, "The GitHub token for
-this run expired: it is minted again when the run resumes", and its next resume mints a fresh one.
+isn't installed on owner/repo"). A token lasts an hour, and the runner mints a new one for the run 5 minutes before it
+expires, so a long run's calls never carry an expired token. When that mint fails, the token held keeps working until
+it expires; then the run's calls of that server are answered, unsent, that its GitHub App token expired and a new one
+could not be made, with GitHub's reason, and the next launch (a resume) mints a fresh one.
 
 ## Templates
 
@@ -1811,7 +1889,7 @@ failed, 2 when nothing ran. The runner, the graders and the report are in
 | `DELETE /agents/{id}/sign-ins/{key}` | This server's own route (`x-agentrun-serve: "signins/1"`): forgets one of the agent's [saved sign-ins](#saved-sign-ins), at its vendor and here. `409 sign_in_held` while a run holds its save lease, or while a run it was handed is still going. |
 | `POST /agents/{id}/runs`, `GET /agents/{id}/runs` | A run of the current revision, or of `revision`. An agentic run's input is `{content: string}`; a workflow run's is what its workflow's input schema takes. `file_ids` names [uploaded](#uploads) files, copied into the run's `work/inputs/` before it starts and named in its first message. The agent's runs, newest first. |
 | `GET /runs` | Every agent's runs, newest first, a page of at most 100; `agent`, `revision` and `status` narrow it, and `archived=true` lists only archived ones. A failed run's summary carries its `error`, and a waiting run's its `pending`. |
-| `GET /runs/{id}` | The run: its revision, kind, status, state, result, error, `pending` (this server's own, `pending/1`: what it waits on, by `kind`, such as `{kind: "question", question, asked_at}` for a question it asked a person, or `{kind: "browser", instruction, completion_condition, asked_at, expires_at}` for its agent's ask for the owner in its browser; else null) and cost (`basis: estimate`; $0 before its first model request, a cancelled run's included). |
+| `GET /runs/{id}` | The run: its revision, kind, status, state, result, error, `pending` (this server's own, `pending/1`: what a waiting run waits on, by `kind`: `{kind: "question", question, asked_at}` for a question it asked a person; `approval` for a tool call held for a person's approval, with the tool, its arguments and its price; `budget` for a run paused at its cap ([a run paused at its cap](#a-run-paused-at-its-cap)); `{kind: "browser", instruction, completion_condition, asked_at, expires_at}` for its agent's ask for the owner in its browser; or `{kind: "computer", computer: "desktop" | "phone", instruction, completion_condition, asked_at, expires_at}` for its agent's ask for the owner on its desktop or phone; else null, a stopped turn's included) and cost (`basis: estimate`; $0 before its first model request, a cancelled run's included). |
 | `GET /runs/{id}/timeline` | JSON pages with the change-number cursor (`after`, `next_after`, `reset`, `drop`, `has_more`, `final`, `wait_ms` long poll, and this server's own `limit`, 1 to 500 rows a page, default 500), or server-sent events with `Accept: text/event-stream` (`id` is the cursor, `Last-Event-ID` resumes). Rows sort by `seq`; the usage row (`Cost so far`), the run's running total, is always the last row, and moves to the end when a row comes after it. |
 | `POST /runs/{id}/messages` | To an agentic run: `steer` while the agent works, `answer` when it asked the person, `follow_up` after a stop or after it completed: a completed run opens again, the same run on its own session and store, takes a place under `--max-runs` (`429` when none is free), and completes again. A failed or cancelled run, an archived run and a run of an archived agent are `409 not_continuable`; a workflow run takes none (`501`). |
 | `POST /runs/{id}/stop`, `POST /runs/{id}/cancel` | Stop ends an agentic run's turn and leaves the run `input_required` and idle. Cancel ends a run `cancelled` once its process has exited. |
@@ -1828,6 +1906,7 @@ failed, 2 when nothing ran. The runner, the graders and the report are in
 | `GET /settings/tools`, `PUT /settings/tools` | This server's own: the providers of `web_search`, `web_fetch` and `browser` ([search and fetch](#search-and-fetch)). |
 | `GET /runs/{id}/browser` | This server's own (`x-agentrun-serve: "liveview/1"`): the run's live browser view for the owner, `{state: "off", reason}`, `{state: "none"}` or `{state: "live", viewer}` ([the live view](#the-browsers-live-view)). |
 | `POST /runs/{id}/browser/hand-back` | This server's own (`liveview/2`): the owner's answer to the agent's ask for them in its browser, `{outcome: "done" \| "cancelled"}`; the first answer wins, a different one is `409 handoff_answered` ([the live view](#the-browsers-live-view)). |
+| `GET /runs/{id}/computer` | This server's own (`computer/1`): the run's live computer view for the owner, one family for every kind, `{state: "off", hold, why?}`, `{state: "none", kind, hold}` or `{state: "live", kind, viewer, hold}`, its viewer under `/runs/{id}/computer/live/`; the browser is kind `browser` here, beside its own route ([the live view](#the-browsers-live-view)). |
 | `GET`, `PUT` and `DELETE /settings/webhook`, `POST /settings/webhook/test`, `GET /settings/webhook/deliveries` and `POST .../deliveries/{webhook_id}/redeliver` | [Webhooks](#webhooks), this server's own routes (`x-agentrun-serve: "webhook/1"`): the URL run notices are POSTed to, signed by the Standard Webhooks spec; never its secret but once. |
 | `GET` and `POST /triggers`, `GET`, `PATCH` and `DELETE /triggers/{id}`, `POST /triggers/{id}/fire`, `GET /triggers/{id}/firings`, `POST /triggers/{id}/secret`, `POST /hooks/{id}` (no token: [signed](#webhook-triggers)) | [Schedules](#schedules), this server's own routes (`x-agentrun-serve: "trigger/1"`): schedules that start an agent's capped runs, each firing once, and their history. |
 | `GET /templates`, `POST /templates/{name}/apply` | [Templates](#templates), this server's own routes (`x-agentrun-serve: "templates/1"`): the template packages it ships, and an apply that makes one's agent and triggers, all or nothing. |
@@ -2082,6 +2161,12 @@ An agent or a run is archived, never deleted: `DELETE` stays `405`. These routes
 - `POST /v2/agents/{id}/archive` hides the agent and its runs from `GET /agents`, `GET /runs` and
   `GET /agents/{id}/runs`; `POST /v2/runs/{id}/archive` hides one run. `.../unarchive` shows them again. Each is
   idempotent (archiving again keeps the first time), takes no body, and answers what it changed.
+- Archiving an agent turns off every trigger that runs as it (a `start_run` of it, a `message_run` to one of its
+  runs) with the archive, in one write: `disabled: {reason: "agent_archived", detail}`, and the answer lists them in
+  `triggers_off: [{id, name}]`. From then no firing starts a run of it: one that comes due anyway (waiting on its
+  `max_active_runs`, or on a retry) is `skipped`, "The agent <name> is archived.". While it is archived, a trigger made
+  on, turned on or aimed at it is `409 agent_archived`. Unarchiving turns none on: its answer lists those still off, and
+  `PATCH /v2/triggers/{id}` `{enabled: true}` turns each on.
 - Each list takes `archived=true` to list only archived ones (`false`, the default, lists the others).
 - Every read by id still answers, with `archived_at` (null when it is not archived; a run's is its own, else its
   agent's): `GET /agents/{id}`, `GET /runs/{id}`, its timeline and its files. `/usage` still counts archived runs: the
@@ -2134,14 +2219,27 @@ send the browser to `/`, which keeps a link's `#code`.
 ## Your password
 
 AgentRun Server is for one person, who signs in to the console with a password (`AGENTRUN_ACCOUNTS=0` turns this off). With
-no `AGENTRUN_PUBLIC_URL`, the start prints `Set your password: <url>/setup`, and the first visit sets it, 12 characters or
-more. With it, the start prints `Set up this server: <url>/setup#code=<code>`, and setup takes that code (or the token as
-the Bearer). The server keeps a scrypt hash of the password, never the password, in `DIR/owner.json`, and signs its
+no `AGENTRUN_PUBLIC_URL`, listening on loopback (the default), the start prints `Set your password: <url>/setup`, and the
+first visit sets it, 12 characters or more. With a public address, or listening on any other address (`0.0.0.0` in the
+image, a LAN address), the start prints `Set up this server: <url>/setup#code=<code>`, and setup takes that code (or the
+token, in the code field or as the Bearer): anyone who reaches the port could otherwise set the password first. The server keeps a scrypt hash of the password, never the password, in `DIR/owner.json`, and signs its
 session cookies with the key in `DIR/.session-secret`; both are 0600, and no run reaches either. A session lasts 30 days.
 **Sign out** (`POST /v2/auth/sign-out`) signs out this browser: its session is revoked on the server (a copy of its
 cookie stops working too) and its cookie cleared, and every other browser stays signed in. **Sign out everywhere** (`POST /v2/auth/sign-out-everywhere`) ends every session on every browser and phone,
-this one too. Sign-in tries are limited per address, ten in 15 minutes, and the limit keeps up to 10,000 addresses: past that a
-new address gets a 429 until older ones expire, and an address already limited stays limited. Forgot it: run
+this one too.
+
+Sign-in tries are limited, and never for good. Each address (an IPv6 one by its /64) has ten tries in 15 minutes; past
+them each next try waits a second after the last, twice that the time after, never more than a minute. The whole server
+takes 100 wrong passwords in 15 minutes; past them every try, from any address, waits the same way after the last wrong
+one. A refused try is a 429 that says how long (`retry-after`, `retry_after_ms`). The limit counts up to 10,000 addresses
+at once; a new one past that is held by the server's budget only, and no address counted is ever dropped to make room.
+Behind a proxy every visitor would be the proxy's address, so one guesser would hold the owner too: set
+`AGENTRUN_TRUSTED_PROXIES` to the proxy's addresses or ranges (comma-separated, or `loopback`, `linklocal`,
+`uniquelocal`), and a request from one of them counts under the client its `X-Forwarded-For` names (the nearest address
+that is not itself a trusted proxy). Unset, that header is never read. `render.yaml` sets it to `uniquelocal`, the private
+ranges Render's proxy reaches a service from.
+
+Forgot it: run
 `agentrun-serve reset-password --data DIR` where the data directory is (`docker exec agentrun node
 /opt/agentrun/packages/serve/dist/cli.js reset-password --data /data` in the image). It clears the password and signs every
 browser out, and the next visit sets a new one. The token works for scripts and the CLI either way.
@@ -2183,8 +2281,9 @@ left out: 2 sessions still being written: they come in next time
 2. The app reads the run's revision from the store.
    - An agentic revision runs as the root agent: its instructions and skills, its model, and the tools it names of the
      workspace's `read`, `write` and `edit`, and `ask_person`, which ends the turn; the timeline then shows a `waiting`
-     row, and the run is `input_required` and `waiting` until a message answers it. `bash` is bound only in a
-     [sandbox](#sandbox), where it and the file tools run in the run's box. The run is `queued` until its first message shows; while the process runs, the
+     row, and the run is `input_required` and `waiting` until a message answers it. `bash` is bound only where the run
+     has a shell ([computers](#computers)): in a computer that mounts the run's folder, or on Archil's serverless exec
+     in Mode 2; in Mode 1 a run with no such computer has the file tools alone. The run is `queued` until its first message shows; while the process runs, the
      timeline comes from its door's events through `@parcha/pi-durable-agent/timeline`. Once the run is idle and its
      newest row is the agent's answer, the server sends the process SIGTERM. A model error ends it `failed`
      (`run_failed`). A run whose `max_cost_usd` cannot buy its next request is paused, `input_required` and `waiting`
@@ -2212,8 +2311,11 @@ left out: 2 sessions still being written: they come in next time
    workflow run's model nodes), and the server carries the run back, every run of both kinds: `carryBack` records its
    state, cost and a summary in the store (an agentic run's answer; a workflow run's `workflowCarry`, its completed
    nodes, then where it failed or escalated). Its last
-   page says `final`. v2's `cancelled` is the store's `stopped`; a workflow that escalated ends `failed` with
-   `error: {code: "escalated", message: <its summary>}`, in the run and in the lists.
+   page says `final`. v2's `cancelled` is the store's `stopped`; a workflow that escalated ends `completed`, its work
+   done and waiting for a person's review: `error` is null and `review` is `{kind, node, reason, at}`, in the run and in the
+   lists. In this release `kind` and `node` are always null: the store keeps only the escalation's summary (`reason`)
+   and the run's end (`at`). Every other run's
+   `review` is null. `GET /v2/stats` counts it in `needs_review`, never in `failed`.
 4. When the server starts, it reads every run the store says is running. A run process an earlier server started and
    that still serves the run is supervised again, by the holder its row names (its pid, its start, its door); a run
    that already ended is carried
@@ -2474,13 +2576,16 @@ with the token, an archived agent's too:
   `GET /runs/{run_id}/learning/diff`: a merged run's merge commit against its parent, else its proposal against its
   seed, each file's patch as git writes it from the first `@@`, or `withheld` (`too_large`, `secret`).
 
-Every read is git plumbing at one commit, with no optional lock, and every text it answers is cut of the server's
-secrets as they are then; a file name holding one (a note named after a value made secret since, say) reads
+Every read is the folder's snapshot (`.agentrun/snapshot.json`, written last by the same exec as each commit to
+`main`), the files it names, each checked against its blob id (a file that is not, read twice, is a write in flight:
+`503`), and a merge's `.agentrun/diffs/<run>.json`, through the folder's file API: no git and no exec. Every text it
+answers is cut of the server's secrets as they are then; a file name holding one (a note named after a value made secret since, say) reads
 `[redacted]` whole, in the notes (`file`, `superseded_by`), the log's `files` and a diff's `path`, and a write's
-`Location` leaves it out, while its route still answers the real name to a caller who knows it. A commit's notes are
-parsed once and kept, for the few commits last read, so the view and every page at that commit read no note again; a
-log page reads only its own commits (`git log` from the cursor's offset, at most `limit`), and the log's `total` is
-counted once a commit. A symbolic link at the agent's home, its learning folder or the folder's `.git` is never
+`Location` leaves it out, while its route still answers the real name to a caller who knows it. A page reads only its
+own notes' files, each once at its blob; a log page reads the snapshot alone (it keeps the newest 200 changes). A
+cursor reads at the main it names while this server still holds that snapshot, else as the first page of `main` now.
+Every write to `main` (a run's merge, a person's edit, create, retire, approve or restore) is one exec of the learning
+script, a compare and swap on `main`. A symbolic link at the agent's home, its learning folder or the folder's `.git` is never
 followed: a read or a write there answers `500`, and nothing is written.
 
 ### Approving a note that waits
@@ -2878,6 +2983,9 @@ carries no cost at all, as from a provider that does not price the model. The te
   value under another name.
 - The 4,096-byte pipe limit stays until the launcher writes the pipe from a background subshell that blocks until the
   server has read it.
+- The browser's evidence is numbered from the highest number the run's `evidence/` holds when its browser first files
+  there, through the run's Workspace, which has no exclusive create. One browser per run files there, so two never pick
+  one number; two filing into one run's `evidence/` at the same moment could.
 
 ## Test
 

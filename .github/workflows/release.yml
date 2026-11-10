@@ -1,7 +1,8 @@
 name: Publish verified beta
 
 # Ordinary pushes, PRs and tags never publish. Configure each package's npm
-# trusted publisher for Parcha-ai/agentrun, release.yml, environment npm-release.
+# trusted publisher for Parcha-ai/agentrun, release.yml, environment npm-release,
+# and parcha-agentrun's PyPI trusted publisher with the same three.
 on:
   workflow_dispatch:
     inputs:
@@ -44,13 +45,13 @@ jobs:
         run: test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
       - uses: actions/setup-node@v4
         with:
-          node-version: '22.23.2'
+          node-version: '24.21.0'
       - name: Install OIDC-capable npm
         run: npm install --global npm@11.21.0 --ignore-scripts
       - name: The tagged commit passed CI on main
         # The merge queue ran every suite on this tree and ci.yml ran again on the commit when it reached main. The release
-        # trusts that run's verify gates instead of running the suites a third time; scripts/release-ci-gate.mjs stops the release
-        # unless they all passed. The checks below build the archives the release publishes, and still run.
+        # trusts that run's verify gate instead of running the suites a third time; scripts/release-ci-gate.mjs stops the release
+        # unless it passed. The checks below build the archives the release publishes, and still run.
         env:
           GH_TOKEN: ${{ github.token }}
         run: node scripts/release-ci-gate.mjs
@@ -131,6 +132,56 @@ jobs:
           path: .release/
           include-hidden-files: true
           if-no-files-found: ignore
+
+  # The Python client, parcha-agentrun (python/), on its own version line (python/pyproject.toml; docs/releasing.md), published to
+  # PyPI from the same reviewed tag once the npm packages are published and verified. PyPI trusted publishing: no token or secret,
+  # only this job's OIDC token, so every action is pinned by commit. A version already on PyPI is not published again.
+  pypi:
+    needs: publish
+    if: github.repository == 'Parcha-ai/agentrun' && github.event.repository.private == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: npm-release
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.tag }}
+          persist-credentials: false
+      - name: Match the checkout to the provenance commit
+        run: test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '24.21.0'
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: '3.13'
+      - run: python -m pip install --disable-pip-version-check build==1.6.1 twine==7.0.0
+      - name: Build the sdist and wheel
+        run: python -m build --sdist --wheel --outdir "$RUNNER_TEMP/python-dist" python
+      # The project, the archives against this tree's python/ file for file, twine check, and a clean venv's offline smoke.
+      - run: node scripts/python-release.mjs --verify "$RUNNER_TEMP/python-dist" --python python
+      # On PyPI already: skipped only when its wheel is this build's agentrun/, byte for byte; other contents stop the job.
+      - name: Is this version on PyPI already?
+        id: pypi
+        run: node scripts/python-release.mjs --on-pypi "$RUNNER_TEMP/python-dist" --python python
+      - if: steps.pypi.outputs.publish == 'true'
+        uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
+        with:
+          packages-dir: ${{ runner.temp }}/python-dist
+      # The plan and the exact archives, kept as the publish job keeps its evidence (the repository's retention).
+      - name: Retain the Python archives and plan
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: pypi-release-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/python-dist
+            .release/python-plan.json
+          if-no-files-found: ignore
+          include-hidden-files: true
 
   # AgentRun Server's container image, built from the same reviewed tag once the packages are published and verified.
   # It runs only after the approved publish job and pushes with this run's GITHUB_TOKEN, so it needs no environment.

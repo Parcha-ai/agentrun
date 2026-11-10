@@ -15,6 +15,7 @@
 import type { JsonValue } from "@earendil-works/chord";
 import { AgentDoc, type EntryRecord, type SubmissionRecord, UsageDoc } from "@earendil-works/pi-durable";
 import { HOST_PHASE, RUN_RESUMED } from "@parcha/pi-durable-agent/timeline";
+import { REFLECT_LABEL, reflectFrom } from "../runner/end-of-run.js";
 import { type CallEndData, type CallStartData, type EndData, KINDS, type MessageData, type SessionKeyData } from "../runner/journal-kinds.js";
 import { PI_STOP } from "../runner/pi-stop.js";
 import type { JournalCommit } from "../store/journal/storage.js";
@@ -50,6 +51,9 @@ export interface LiveState {
   readonly calls: Map<string, { name: string; args?: unknown }>;
   /** An answer streamed as a partial (held): its stored message is only its end. */
   partial: boolean;
+  /** Where the run's end-of-run turn began (end-of-run.ts reflectFrom), once its input is placed: its messages from there
+   *  on carry the learning label, a tag the reader puts on (the run writes nothing for it). */
+  reflectFrom?: number;
 }
 
 export function emptyState(): LiveState {
@@ -128,6 +132,8 @@ export function snapshotOf(state: LiveState): LiveEvent {
     inbox: (inbox?.items ?? []).map((item) => ({ id: item.id, mode: item.mode })),
     agent: (doc(state, "pi.agent") as JsonValue | undefined) ?? AgentDoc.definition.initial(),
     usage: (doc(state, "pi.usage") as JsonValue | undefined) ?? UsageDoc.definition.initial(),
+    // The end-of-run turn under way: where it began, as the server's Reflect names it (`after`, the entry before its input).
+    ...(state.reflectFrom !== undefined ? { reflect: { after: state.reflectFrom - 1 } } : {}),
   };
 }
 
@@ -154,6 +160,9 @@ export function translate(state: LiveState, commit: JournalCommit): LiveEvent[] 
   const entries = commit.entries.filter(mine);
   const tasks = commit.tasks.filter(mine);
   const submissions = commit.submissions.filter(mine);
+  // The end-of-run turn's input placed in this commit: its messages from there on are the turn's.
+  state.reflectFrom ??= reflectFrom(submissions);
+  const tag = (entry: EntryRecord) => (state.reflectFrom !== undefined && Number(entry.id) >= state.reflectFrom ? { agent_label: REFLECT_LABEL } : {});
   for (const entry of entries) {
     const message = modelOf(entry);
     if (message?.role === "assistant" && Array.isArray(message.content)) {
@@ -216,7 +225,7 @@ export function translate(state: LiveState, commit: JournalCommit): LiveEvent[] 
       const message = { role: ROLE[said.role] ?? "user", content: said.role === "model" ? [{ type: "text", text: said.text }] : said.text };
       const synthetic = { ...entry, model: [message] } as unknown as EntryRecord;
       state.entries.push(synthetic);
-      events.push({ type: "message_start", message }, { type: "message_end", entry: synthetic });
+      events.push({ type: "message_start", message, ...tag(entry) }, { type: "message_end", entry: synthetic, ...tag(entry) });
       continue;
     }
     if (entry.kind === KINDS.end) {
@@ -240,8 +249,8 @@ export function translate(state: LiveState, commit: JournalCommit): LiveEvent[] 
     if (message.role === "toolResult" && message.toolCallId) endCall(message.toolCallId, shown);
     const streamed = message.role === "assistant" && state.partial;
     if (message.role === "assistant") state.partial = false;
-    if (!streamed) events.push({ type: "message_start", message });
-    events.push({ type: "message_end", entry: shown });
+    if (!streamed) events.push({ type: "message_start", message, ...tag(entry) });
+    events.push({ type: "message_end", entry: shown, ...tag(entry) });
   }
 
   // Calls that ended without a result entry (aborted, cut off): their end.

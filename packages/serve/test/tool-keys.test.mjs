@@ -3,28 +3,33 @@
 // that does not open (no seal key, another one, a damaged file) is asked for again, said once in the log, and never
 // stops the server; there is no clear fallback.
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { spawn, spawnSync } from "node:child_process";
+import { createHash, randomBytes } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
-import { unseal } from "@parcha/pi-durable-agent";
 import { startServe } from "../dist/index.js";
-import { secret } from "../dist/secrets.js";
+import { secret, SECRET_NAMES } from "../dist/secrets.js";
 import { readingOf } from "../dist/server.js";
+import { openSqliteStore, STORE_FILE } from "../dist/store/sqlite/store.js";
 import { rowUnlocks, TOOL_KEYS, unlockedBy } from "../dist/tool-keys.js";
 import { schemaProblems } from "./schema-support.mjs";
-import { agent, call, harnessData, client, cookieOf, FAUX, follow, printed, scratch, serve, withEnv } from "./support.mjs";
+import { agent, call, harnessData, client, cookieOf, FAUX, follow, printed, scratch, serve, storeBytes, withEnv } from "./support.mjs";
 
 const LAUNCHER = new URL("../launcher/agentrun-serve", import.meta.url).pathname;
 const FAUX_BROWSER = new URL("./fixtures/faux-browser.mjs", import.meta.url).pathname;
+const FAUX_MONID = new URL("./fixtures/faux-monid.mjs", import.meta.url).pathname;
 const KEYS = ["PARALLEL_API_KEY", "MONID_API_KEY", "BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "KERNEL_API_KEY", "TYPESAFE_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY", "AGENTRUN_SEAL_KEY"];
 const sealKey = () => randomBytes(32).toString("base64");
 /** A throwaway value: none is a real key. */
 const made = () => `not-a-secret-${randomBytes(12).toString("hex")}`;
+/** The log line a start says once when saved keys no longer open under its seal key: where the keys are kept (the store) and
+ *  what a person does about it, never a table's name. */
 /** Each form a value could plausibly leak in: as text, base64, base64url and hex, and its random part's first 8. */
 const formsOf = (value) => [value, ...["base64", "base64url", "hex"].map((code) => Buffer.from(value).toString(code)), value.slice(13, 21)];
 /** A seal key's forms: its base64 text, its bytes, and those as hex and base64url. */
+/** The refusal of a store whose secrets another key sealed (seal-key.ts), word for word. */
+const SEALED_ELSEWHERE = "this store's secrets were sealed with another key; hand the server the original AGENTRUN_SEAL_KEY";
 const keyForms = (key) => [key, Buffer.from(key, "base64"), ...["hex", "base64url"].map((code) => Buffer.from(key, "base64").toString(code))];
 const holdsNone = (bytes, forms, where) => { for (const form of forms) assert.ok(!Buffer.from(bytes).includes(form), `${where} holds a key (${String(form).length} long)`); };
 const MiB = 2 ** 20;
@@ -79,10 +84,7 @@ test("a tool key saved then removed in Settings: the refusal names Settings → 
   assert.ok(search.body.error.message.includes("web_search does not run here on pi: parallel is picked, and it needs a Parallel key: save one in Settings → Tool keys (or set PARALLEL_API_KEY where the server starts)"), search.body.error.message);
 });
 
-test("a key saved by name is kept sealed: GET says which fields are set and from where, never a value; PUT merges by field, DELETE forgets; the file is 0600 and holds no value", async (t) => {
-  // Under a permissive umask, so the mode seen is the one the write asks for, not what the umask leaves of it.
-  const umask = process.umask(0o022);
-  t.after(() => process.umask(umask));
+test("a key saved by name is kept sealed over the store: GET says which fields are set and from where, never a value; PUT merges by field, DELETE forgets; the store holds no value", async (t) => {
   const key = sealKey();
   withEnv(t, { AGENTRUN_SEAL_KEY: key, AGENTRUN_SERVE_CODEX_STANDIN: await codexStandIn(t) }, [...KEYS, ...HARNESS_VARS]);
   withMemory(t, ROOMY_MIB);
@@ -107,22 +109,15 @@ test("a key saved by name is kept sealed: GET says which fields are set and from
   ], "only what this server binds: web_fetch and web_search on every harness; the monid tools on every harness, as capabilities run them");
   assert.equal(listed.body.reenter, null);
   await meetsDocument(api, listed.body);
-  const file = join(data, "tool-keys.json");
-  assert.equal(statSync(file).mode & 0o777, 0o600);
+  // Sealed at rest: no answer and no store byte (the DB and its WAL/shm) holds a saved value or the seal key in the clear.
+  // How each value is sealed in its own row, bound to its field's name, and read back is store-tool-keys' (store path).
   for (const value of Object.values(values)) {
     holdsNone(JSON.stringify(listed.body), formsOf(value), "GET's answer");
-    holdsNone(readFileSync(file), formsOf(value), "tool-keys.json");
+    holdsNone(storeBytes(data), formsOf(value), "the store");
   }
-  // The file's own reading: each value opens under the seal key bound to its own name and this format, no other.
-  const kept = JSON.parse(readFileSync(file, "utf8"));
-  assert.deepEqual(Object.keys(kept.fields).sort(), Object.keys(values).sort());
-  const sealed = Buffer.from(kept.fields.PARALLEL_API_KEY.sealed, "base64");
-  assert.equal(unseal(Buffer.from(key, "base64"), sealed, "tool-keys/1|PARALLEL_API_KEY").toString(), values.PARALLEL_API_KEY);
-  assert.throws(() => unseal(Buffer.from(key, "base64"), sealed, "tool-keys/1|MONID_API_KEY"));
-  holdsNone(readFileSync(file), keyForms(key), "tool-keys.json");
+  holdsNone(storeBytes(data), keyForms(key), "the store");
   assert.equal((await api("DELETE", "/settings/tool-keys/browserbase")).status, 204);
   assert.deepEqual(fieldsOf((await api("GET", "/settings/tool-keys")).body), { PARALLEL_API_KEY: STORED, MONID_API_KEY: UNSET, BROWSERBASE_API_KEY: UNSET, BROWSERBASE_PROJECT_ID: UNSET, KERNEL_API_KEY: UNSET, TYPESAFE_API_KEY: UNSET, ANTHROPIC_API_KEY: UNSET, OPENAI_API_KEY: UNSET, OPENROUTER_API_KEY: UNSET });
-  assert.deepEqual(Object.keys(JSON.parse(readFileSync(file, "utf8")).fields), ["PARALLEL_API_KEY"]);
 });
 
 test("each key unlocks only what capabilities bind, a tool or a decision provider, and runs on the union of those tools' harnesses; a name bound later shows with no edit to the key table", async (t) => {
@@ -201,18 +196,6 @@ test("before any model key is saved, a model key's row names every harness the k
   }
 });
 
-test("a sealed value moved to another field's name does not open there: it is asked for again as a damaged entry", async (t) => {
-  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, KEYS);
-  const { api, data } = await serve(t);
-  assert.equal((await api("PUT", "/settings/tool-keys/parallel", { values: { PARALLEL_API_KEY: made() } })).status, 204);
-  const file = join(data, "tool-keys.json");
-  const kept = JSON.parse(readFileSync(file, "utf8"));
-  writeFileSync(file, JSON.stringify({ v: 1, fields: { MONID_API_KEY: kept.fields.PARALLEL_API_KEY } }));
-  const view = (await api("GET", "/settings/tool-keys")).body;
-  assert.deepEqual([fieldsOf(view).MONID_API_KEY, fieldsOf(view).PARALLEL_API_KEY], [AGAIN, UNSET]);
-  assert.deepEqual(view.reenter, { reason: "file_unreadable", fields: ["MONID_API_KEY"] }, "its key check matches: not another key, a moved value");
-});
-
 test("PUT refuses with 422 an unknown key or field, an empty value, a control character, over 1 KiB, or another body field, and keeps nothing; no answer holds the value", async (t) => {
   withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, KEYS);
   const { api, data } = await serve(t);
@@ -255,20 +238,86 @@ test("a field the server is started with is the server's: GET says so, PUT and D
   assert.deepEqual(fieldsOf((await api("GET", "/settings/tool-keys")).body).BROWSERBASE_PROJECT_ID, UNSET);
 });
 
-test("with no seal key nothing is kept, never in the clear: PUT is 409 no_sealing_key, nothing is written, and capabilities say unavailable", async (t) => {
+test("a value the server is started with wins over one pasted before, for a tool key and a model key: GET's secrets say env with no changed_at, PUT and DELETE are 409, and the tool's check at the start is sent the server's value", async (t) => {
+  const log = join(await scratch(t), "monid-calls.jsonl");
+  const pasted = { MONID_API_KEY: made(), OPENROUTER_API_KEY: made() };
+  const started = { MONID_API_KEY: made(), OPENROUTER_API_KEY: made() };
+  const digest = (value) => createHash("sha256").update(value).digest("hex");
+  // Faux monid accepts the pasted value, so it is kept; it refuses any other.
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey(), AGENTRUN_TEST_FAUX_MONID_CALLS: log, AGENTRUN_TEST_FAUX_MONID_ACCEPTS: digest(pasted.MONID_API_KEY) }, [...KEYS, "AGENTRUN_TEST_FAUX_MONID_CALLS", "AGENTRUN_TEST_FAUX_MONID_ACCEPTS"]);
+  const calls = () => (existsSync(log) ? readFileSync(log, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line)) : []);
+  const secretsOf = (view) => Object.fromEntries(view.keys.flatMap((key) => key.secrets.map(({ name, ...meta }) => [name, meta])));
+  const data = join(await scratch(t), "agents");
+  const first = await serve(t, { data, fauxMonid: FAUX_MONID });
+  for (const [id, name] of [["monid", "MONID_API_KEY"], ["openrouter", "OPENROUTER_API_KEY"]]) assert.equal((await first.api("PUT", `/settings/tool-keys/${id}`, { values: { [name]: pasted[name] } })).status, 204, name);
+  const pastedSecrets = secretsOf((await first.api("GET", "/settings/tool-keys")).body);
+  for (const name of ["tool:MONID_API_KEY", "model:OPENROUTER_API_KEY"]) {
+    assert.deepEqual([pastedSecrets[name]?.set, pastedSecrets[name]?.source], [true, "console"], name);
+    assert.match(pastedSecrets[name].changed_at, /^\d{4}-\d\d-\d\dT/, `${name}: a pasted value's own time`);
+  }
+  await first.close();
+
+  // Started again with both set where it starts: the server's values win, and the pasted ones stay stored, unread.
+  Object.assign(process.env, started);
+  const before = calls().length;
+  // The start's check of a key it was given goes to a check's own fake (server.ts startFetch), never the runs' one.
+  const second = await serve(t, { data, fauxMonid: FAUX_MONID, fauxMonidCheck: FAUX_MONID });
+  const view = (await second.api("GET", "/settings/tool-keys")).body;
+  const fields = fieldsOf(view);
+  assert.deepEqual([fields.MONID_API_KEY, fields.OPENROUTER_API_KEY], [{ set: true, source: "server" }, { set: true, source: "server" }]);
+  const secrets = secretsOf(view);
+  for (const name of ["tool:MONID_API_KEY", "model:OPENROUTER_API_KEY"]) assert.deepEqual(secrets[name], { set: true, source: "env", changed_at: null }, `${name}: env, and no time the server could know`);
+  for (const [id, name] of [["monid", "MONID_API_KEY"], ["openrouter", "OPENROUTER_API_KEY"]]) {
+    const put = await second.api("PUT", `/settings/tool-keys/${id}`, { values: { [name]: made() } });
+    assert.deepEqual([put.status, put.body.error?.code], [409, "key_set_by_server"], `${name}: a paste is refused while the server sets it`);
+    assert.equal((await second.api("DELETE", `/settings/tool-keys/${id}`)).body.error?.code, "key_set_by_server", `${name}: so is a removal`);
+  }
+  // The tool's check at this start goes out on the server's value, never the pasted one (faux monid refuses it, so the
+  // check reads refused, in words that say to set the right one where AgentRun starts).
+  let checked;
+  for (let turn = 0; turn < 400 && !(checked = calls().slice(before).find((call) => call.path === "/v1/discover")); turn++) await new Promise((go) => setTimeout(go, 25));
+  assert.ok(checked, "the start checked monid's key");
+  assert.equal(checked.key, digest(started.MONID_API_KEY).slice(0, 16), "sent the server's value");
+  assert.ok(!calls().slice(before).some((call) => call.key === digest(pasted.MONID_API_KEY).slice(0, 16)), "the pasted value is never sent");
+  const check = (await second.api("GET", "/settings/tool-keys")).body.keys.find((key) => key.id === "monid").check;
+  assert.equal(check?.state, "refused", JSON.stringify(check));
+  const text = JSON.stringify((await second.api("GET", "/settings/tool-keys")).body);
+  for (const value of [...Object.values(pasted), ...Object.values(started)]) holdsNone(text, formsOf(value), "the view");
+});
+
+test("every field of every tool and model key is on the launcher's SECRETS, so the server holds it in memory, never in its environment: secrets.ts takes each out of process.env as it loads", () => {
+  const fields = [...new Set(TOOL_KEYS.flatMap((row) => row.fields))];
+  assert.deepEqual(fields.filter((name) => !SECRET_NAMES.includes(name)), [], "a key's field not on the list would stay in process.env, and every child would inherit it");
+  // A process started with each in its environment, as one with no launcher is: once secrets.js loads, none is left in
+  // process.env (nor in a child's default environment), and each is still read by name.
+  const values = Object.fromEntries(fields.map((name) => [name, made()]));
+  const probe = `const m = await import(${JSON.stringify(new URL("../dist/secrets.js", import.meta.url).href)}); const names = ${JSON.stringify(fields)};
+    process.stdout.write(JSON.stringify({ left: names.filter((n) => n in process.env), read: names.filter((n) => m.secret(n) !== undefined) }));`;
+  const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !SECRET_NAMES.includes(name)));
+  const ran = spawnSync(process.execPath, ["--input-type=module", "-e", probe], { env: { ...env, ...values }, encoding: "utf8" });
+  assert.equal(ran.status, 0, ran.stderr);
+  assert.deepEqual(JSON.parse(ran.stdout), { left: [], read: fields });
+  holdsNone(ran.stdout + ran.stderr, Object.values(values).flatMap(formsOf), "what it printed");
+});
+
+test("handed no seal key, the server keeps a key under the one it made at its start, never in the clear: PUT is 204, and capabilities say sealed", async (t) => {
+  // A server never runs without a seal key (seal-key.ts): handed none, it makes one in its data directory.
   withEnv(t, {}, KEYS);
   const { api, data } = await serve(t);
-  assert.deepEqual((await api("GET", "/capabilities")).body.features.tool_keys, { routes: true, at_rest: "unavailable" });
-  const refused = await api("PUT", "/settings/tool-keys/monid", { values: { MONID_API_KEY: made() } });
-  assert.deepEqual([refused.status, refused.body.error.code], [409, "no_sealing_key"]);
-  assert.equal(existsSync(join(data, "tool-keys.json")), false);
+  assert.deepEqual((await api("GET", "/capabilities")).body.features.tool_keys, { routes: true, at_rest: "sealed" });
+  // Always sealed, so the document says only that: there is no state in which a key is kept unsealed or not at all.
+  assert.deepEqual((await api("GET", "/openapi.json")).body.components.schemas.Features.properties.tool_keys.properties.at_rest, { const: "sealed" });
+  const value = made();
+  assert.equal((await api("PUT", "/settings/tool-keys/monid", { values: { MONID_API_KEY: value } })).status, 204);
+  // Sealed, never in the clear, wherever the server keeps it (the store, or its tool-keys file).
+  const kept = existsSync(join(data, "tool-keys.json")) ? readFileSync(join(data, "tool-keys.json"), "latin1") : "";
+  assert.ok(!`${storeBytes(data).toString("latin1")}${kept}`.includes(value), "sealed, never in the clear");
   assert.deepEqual((await api("GET", "/settings/tool-keys")).body.reenter, null);
 });
 
-test("values sealed under another key, with no key, or in a damaged file do not open: the server starts, GET asks for them again with why, the log says so once naming the file and no value, and a PUT seals anew", async (t) => {
+test("a store sealed under one key refuses a server handed another, and one handed none with no key file in its data directory, making no key; a damaged row does not open: the server starts, GET asks for it again with why, the log says so once naming where it is kept and no value, and a PUT seals anew", async (t) => {
   withEnv(t, {}, KEYS);
   const data = join(await scratch(t), "agents");
-  const file = join(data, "tool-keys.json");
   const lines = [];
   const open = new Set();
   t.after(() => Promise.all([...open].map((server) => server.close())));
@@ -285,41 +334,37 @@ test("values sealed under another key, with no key, or in a damaged file do not 
   for (const [id, name] of [["parallel", "PARALLEL_API_KEY"], ["monid", "MONID_API_KEY"]]) assert.equal((await server.api("PUT", `/settings/tool-keys/${id}`, { values: { [name]: values[name] } })).status, 204);
   await server.close();
 
-  server = await started(second);
+  // The store records the key its secrets are sealed under (seal-key.ts): handed another, or none with no key file in the
+  // data directory, the server does not start, in words, and no key is made over the saved keys.
+  const refusal = (error) => String(error.message).includes(SEALED_ELSEWHERE);
+  await assert.rejects(started(second), refusal, "another key handed");
+  await assert.rejects(started(undefined), refusal, "none handed and none in the data directory");
+  assert.equal(existsSync(join(data, "seal", "seal.key")), false, "no key is made over the saved keys");
+
+  server = await started(first);
   const parallel = async () => (await server.api("GET", "/capabilities")).body.workflows.decisions.providers.find((p) => p.id === "parallel").available;
+  assert.equal(await parallel(), true, "under the store's own key the saved keys open");
+  await server.close();
+  // A damaged row: Parallel's sealed bytes, under the key it was sealed with, overwritten; Monid's row removed, so the
+  // damage is the only thing that does not open.
+  const store = await openSqliteStore({ file: join(data, STORE_FILE), role: "server", now: Date.now });
+  await store.sealedKeys.put("PARALLEL_API_KEY", Uint8Array.from(Buffer.from("garbage-not-sealed")));
+  await store.sealedKeys.remove("MONID_API_KEY");
+  await store.close();
+  server = await started(first);
+  assert.equal((await server.api("GET", "/health")).status, 200, "a damaged row never stops the server");
   assert.equal(await parallel(), false, "a value that does not open is absent: no key, never a crash or the ciphertext");
-  assert.deepEqual(server.said().map((line) => line.replace(/^at=\S+ /, "")), [`event=tool_keys condition=seal_key_changed file=${file} fields=PARALLEL_API_KEY,MONID_API_KEY`], "said once, at the start");
-  const changed = (await server.api("GET", "/settings/tool-keys")).body;
-  assert.deepEqual([fieldsOf(changed).PARALLEL_API_KEY, fieldsOf(changed).MONID_API_KEY, changed.reenter], [AGAIN, AGAIN, { reason: "seal_key_changed", fields: ["PARALLEL_API_KEY", "MONID_API_KEY"] }]);
-  assert.equal(server.said().length, 1, "not again for the same condition");
-  await meetsDocument(server.api, changed);
-  assert.equal((await server.api("PUT", "/settings/tool-keys/parallel", { values: { PARALLEL_API_KEY: values.PARALLEL_API_KEY } })).status, 204);
-  assert.equal(await parallel(), true, "sealed anew, it is read at once");
-  const resealed = (await server.api("GET", "/settings/tool-keys")).body;
-  assert.deepEqual([fieldsOf(resealed).PARALLEL_API_KEY, resealed.reenter], [STORED, { reason: "seal_key_changed", fields: ["MONID_API_KEY"] }], "sealed anew under the current key");
-  await server.close();
-
-  server = await started(undefined);
-  assert.equal(await parallel(), false, "with no seal key, nothing opens");
-  const missing = await server.api("GET", "/settings/tool-keys");
-  assert.deepEqual(missing.body.reenter, { reason: "seal_key_missing", fields: ["PARALLEL_API_KEY", "MONID_API_KEY"] });
-  assert.equal((await server.api("PUT", "/settings/tool-keys/parallel", { values: { PARALLEL_API_KEY: values.PARALLEL_API_KEY } })).body.error.code, "no_sealing_key");
-  await server.close();
-
-  writeFileSync(file, "{ not json");
-  server = await started(second);
-  assert.equal((await server.api("GET", "/health")).status, 200, "a damaged file never stops the server");
-  assert.deepEqual((await server.api("GET", "/settings/tool-keys")).body.reenter, { reason: "file_unreadable", fields: [] }, "a file that does not read names no field");
+  assert.deepEqual((await server.api("GET", "/settings/tool-keys")).body.reenter, { reason: "file_unreadable", fields: ["PARALLEL_API_KEY"] }, "a row that does not open names its field");
   assert.equal((await server.api("PUT", "/settings/tool-keys/parallel", { values: { PARALLEL_API_KEY: values.PARALLEL_API_KEY } })).status, 204, "a PUT replaces it");
   assert.deepEqual((await server.api("GET", "/settings/tool-keys")).body.reenter, null);
+  assert.equal(await parallel(), true, "sealed anew, it is read at once");
   await server.close();
-  assert.deepEqual(server.said().map((line) => /condition=(\S+)/.exec(line)[1]), ["seal_key_changed", "seal_key_changed", "seal_key_missing", "file_unreadable"]);
+  assert.deepEqual(server.said().map((line) => /condition=(\S+)/.exec(line)[1]), ["file_unreadable"], "said once, at the start");
   for (const forms of [...Object.values(values).map(formsOf), keyForms(first), keyForms(second)]) holdsNone(lines.join("\n"), forms, "the log");
 });
 
-test("a key saved is read by name with no restart: capabilities lose the tool's missing names and name its key, a run of it starts and its process gets the key; deleted, it is missing again", { timeout: 60_000 }, async (t) => {
-  const log = join(await scratch(t), "browser.jsonl");
-  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey(), FAUX_BROWSER_LOG: log }, KEYS);
+test("a key saved is read by name with no restart: capabilities lose the tool's missing names and name its key, and a run of it starts; deleted, it is missing again", { timeout: 60_000 }, async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, KEYS);
   const { api } = await serve(t, { fauxBrowser: FAUX_BROWSER });
   const values = { BROWSERBASE_API_KEY: made(), BROWSERBASE_PROJECT_ID: made() };
   const browser = async () => {
@@ -347,12 +392,25 @@ test("a key saved is read by name with no restart: capabilities lose the tool's 
   const started = await api("POST", "/agents/browse/runs", { input: { content: "Browse the example page." } });
   assert.equal(started.status, 202, JSON.stringify(started.body));
   await follow(api, started.body.run_id, ["completed"]);
-  const [seen] = readFileSync(log, "utf8").trim().split("\n").map((line) => JSON.parse(line));
-  assert.deepEqual(seen, { op: "env", BROWSERBASE_API_KEY: "set", BROWSERBASE_PROJECT_ID: "set" }, "the run's process got both, saved");
 
   assert.equal((await api("DELETE", "/settings/tool-keys/browserbase")).status, 204);
   assert.deepEqual(await browser(), unset, "deleted, missing again");
   assert.deepEqual(await refused(), [409, "agent_not_runnable", {}]);
+});
+
+test("a browser key saved by name reaches the run's browser with no restart: its provider gets both fields, saved", { timeout: 60_000 }, async (t) => {
+  const log = join(await scratch(t), "browser.jsonl");
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey(), FAUX_BROWSER_LOG: log }, KEYS);
+  const { api } = await serve(t, { fauxBrowser: FAUX_BROWSER });
+  const values = { BROWSERBASE_API_KEY: made(), BROWSERBASE_PROJECT_ID: made() };
+  assert.equal((await api("POST", "/agents", { definition: { id: "browse", name: "browse", instructions: "Browse.", tools: ["browser"] } })).status, 201);
+  assert.equal((await api("PUT", "/settings/tool-keys/browserbase", { values })).status, 204);
+  const started = await api("POST", "/agents/browse/runs", { input: { content: "Browse the example page." } });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  await follow(api, started.body.run_id, ["completed"]);
+  // The fake browser's first line says whether each field reached the env its provider gets: set or unset, never a value.
+  const [seen] = readFileSync(log, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+  assert.deepEqual(seen, { op: "env", BROWSERBASE_API_KEY: "set", BROWSERBASE_PROJECT_ID: "set" }, "the run's browser got both, saved");
 });
 
 test("the page's owner saves and forgets a key with the session cookie from the page's own origin; from another origin the cookie is no credential", async (t) => {
@@ -393,16 +451,17 @@ async function launched(t, data, config, token) {
   return { api: client(/AGENTRUN_BASE_URL=(\S+)/.exec(out)[1], token), stop: async () => (await stop(), out) };
 }
 
-test("under its launcher the seal key is made once, outside the data directory, 0600 in a 0700 directory; a lost one comes back as another key, so the saved keys are asked for again; no file under the data directory and no log line holds a key in any form", { timeout: 60_000 }, async (t) => {
+test("under its launcher the seal key is made once, in the data directory beside the store, 0600 in a 0700 directory; a lost one stops the start in words and none is made over the saved keys; no other file under the data directory and no log line holds a key in any form", { timeout: 60_000 }, async (t) => {
   const dir = await scratch(t);
   const [data, config] = [join(dir, "agents"), join(dir, "config")];
-  const keyFile = join(config, "agentrun", "seal.key");
+  const keyFile = join(data, "seal", "seal.key");
   const token = `not-a-secret-token-${randomBytes(16).toString("hex")}`;
   const values = { PARALLEL_API_KEY: made(), BROWSERBASE_API_KEY: made(), BROWSERBASE_PROJECT_ID: made() };
   const said = [];
   let server = await launched(t, data, config, token);
-  assert.equal(statSync(join(config, "agentrun")).mode & 0o777, 0o700);
+  assert.equal(statSync(join(data, "seal")).mode & 0o777, 0o700);
   assert.equal(statSync(keyFile).mode & 0o777, 0o600);
+  assert.equal(existsSync(join(config, "agentrun")), false, "nothing is kept under the config home");
   const first = readFileSync(keyFile, "utf8").trim();
   assert.equal(Buffer.from(first, "base64").length, 32);
   assert.deepEqual((await server.api("GET", "/capabilities")).body.features.tool_keys, { routes: true, at_rest: "sealed" });
@@ -416,31 +475,31 @@ test("under its launcher the seal key is made once, outside the data directory, 
   const kept = (await server.api("GET", "/settings/tool-keys")).body;
   assert.deepEqual([fieldsOf(kept).PARALLEL_API_KEY, kept.reenter], [STORED, null]);
   said.push(JSON.stringify(kept), await server.stop());
+  assert.deepEqual(readdirSync(join(data, "seal")), ["seal.key"], "nothing else beside it");
+  const keyBytes = readFileSync(keyFile);
 
   rmSync(keyFile);
-  server = await launched(t, data, config, token);
-  const second = readFileSync(keyFile, "utf8").trim();
-  assert.notEqual(second, first, "a lost key is made anew");
-  const lost = (await server.api("GET", "/settings/tool-keys")).body;
-  assert.deepEqual(lost.reenter, { reason: "seal_key_changed", fields: Object.keys(values) }, "missing shows as changed: the launcher made another");
-  said.push(JSON.stringify(lost), await server.stop());
-  assert.ok(said.at(-1).includes(`event=tool_keys condition=seal_key_changed file=${join(data, "tool-keys.json")} fields=${Object.keys(values).join(",")}`), said.at(-1));
-  assert.deepEqual(readdirSync(join(config, "agentrun")), ["seal.key"], "nothing else beside it");
+  let out = "";
+  await assert.rejects(launched(t, data, config, token), (error) => ((out = String(error.message)), true));
+  assert.ok(out.includes(SEALED_ELSEWHERE), out);
+  assert.equal(existsSync(keyFile), false, "a lost key is never made anew over the saved keys");
+  said.push(out);
 
   const files = readdirSync(data, { recursive: true, withFileTypes: true }).filter((entry) => entry.isFile()).map((entry) => join(entry.parentPath, entry.name));
-  assert.ok(files.some((file) => file.endsWith("tool-keys.json")) && files.some((file) => file.endsWith("store.sqlite")), files.join(" "));
-  const forms = [...Object.values(values).flatMap(formsOf), ...keyForms(first), ...keyForms(second)];
-  // The positive control: the same check finds the key in the file that does hold it, and a value written out plain.
-  assert.throws(() => holdsNone(readFileSync(keyFile), forms, "seal.key"));
+  // The keys are the store's rows: the store is there, and no tool-keys file beside it.
+  assert.ok(files.some((file) => file.endsWith("store.sqlite")) && !files.some((file) => file.endsWith("tool-keys.json")), files.join(" "));
+  const forms = [...Object.values(values).flatMap(formsOf), ...keyForms(first)];
+  // The positive control: the same check finds the key in the file that held it, and a value written out plain.
+  assert.throws(() => holdsNone(keyBytes, forms, "seal.key"));
   assert.throws(() => holdsNone(`x${Buffer.from(values.BROWSERBASE_PROJECT_ID).toString("hex")}x`, forms, "a hex value"));
   for (const file of files) holdsNone(readFileSync(file), forms, file);
   holdsNone(said.join("\n"), forms, "the server's log and answers");
 });
 
-test("under its launcher, a config directory the person made with a plain mkdir (0755) and no key yet: the launcher tightens its own directory to 0700, makes the key 0600, and the server keeps tool keys", { timeout: 60_000 }, async (t) => {
+test("under its launcher, a key directory in the data directory made with a plain mkdir (0755) and no key yet: the server tightens it to 0700, makes the key 0600, and keeps tool keys", { timeout: 60_000 }, async (t) => {
   const dir = await scratch(t);
   const [data, config] = [join(dir, "agents"), join(dir, "config")];
-  const keys = join(config, "agentrun");
+  const keys = join(data, "seal");
   mkdirSync(keys, { recursive: true });
   chmodSync(keys, 0o755);
   const token = `not-a-secret-token-${randomBytes(16).toString("hex")}`;
@@ -452,34 +511,37 @@ test("under its launcher, a config directory the person made with a plain mkdir 
   assert.ok(!out.includes("no seal key"), out);
 });
 
-test("under its launcher, a key that already exists in a directory another user can read is refused and never changed: nothing is chmod-ed, and the message names the exact fix", { timeout: 60_000 }, async (t) => {
+test("under its launcher, a key that already exists in a directory another user can read is refused and never changed: the server does not start, nothing is chmod-ed, and the message names the exact fix", { timeout: 60_000 }, async (t) => {
   const dir = await scratch(t);
   const [data, config] = [join(dir, "agents"), join(dir, "config")];
-  const keys = join(config, "agentrun");
+  const keys = join(data, "seal");
   mkdirSync(keys, { recursive: true });
   chmodSync(keys, 0o755);
   const key = randomBytes(32).toString("base64");
   writeFileSync(join(keys, "seal.key"), `${key}\n`, { mode: 0o600 });
   const token = `not-a-secret-token-${randomBytes(16).toString("hex")}`;
-  const server = await launched(t, data, config, token);
-  assert.deepEqual((await server.api("GET", "/capabilities")).body.features.tool_keys, { routes: true, at_rest: "unavailable" });
-  const out = await server.stop();
+  // The server never starts without a key it can keep (seal-key.ts): it stops, saying so, naming the fix.
+  let out = "";
+  await assert.rejects(launched(t, data, config, token), (error) => ((out = String(error.message)), true));
+  assert.match(out, /exited \(1\)/, out);
+  assert.ok(out.includes("agentrun-serve does not start without a seal key") && out.includes(`chmod 700 ${keys}`), out);
   assert.equal(statSync(keys).mode & 0o777, 0o755, "an existing key's directory is never changed");
   assert.equal(readFileSync(join(keys, "seal.key"), "utf8").trim(), key, "the key is untouched");
-  assert.ok(out.includes(`no seal key in ${join(keys, "seal.key")}`) && out.includes(`chmod 700 ${keys}; chmod 600 ${join(keys, "seal.key")}`), out);
 });
 
-test("under its launcher, a key directory that is a symlink is never chmod-ed: a shared target keeps its mode, even when the user owns it", { timeout: 60_000 }, async (t) => {
+test("under its launcher, a key directory that is a symlink is never chmod-ed: the server does not start, and a shared target keeps its mode, even when the user owns it", { timeout: 60_000 }, async (t) => {
   const dir = await scratch(t);
   const [data, config, shared] = [join(dir, "agents"), join(dir, "config"), join(dir, "shared")];
-  const keys = join(config, "agentrun");
-  mkdirSync(config, { recursive: true });
+  const keys = join(data, "seal");
+  mkdirSync(data, { recursive: true, mode: 0o700 });
   mkdirSync(shared, { recursive: true });
   chmodSync(shared, 0o755);
   symlinkSync(shared, keys);
   const token = `not-a-secret-token-${randomBytes(16).toString("hex")}`;
-  const server = await launched(t, data, config, token);
-  await server.stop();
+  // A linked key directory is never followed: the server does not start without a key (seal-key.ts), saying why.
+  let out = "";
+  await assert.rejects(launched(t, data, config, token), (error) => ((out = String(error.message)), true));
+  assert.ok(out.includes("agentrun-serve does not start without a seal key") && out.includes(`${keys} is a link`), out);
   assert.equal(statSync(shared).mode & 0o777, 0o755, "the symlink's shared target keeps its mode");
 });
 
@@ -504,7 +566,7 @@ test("TypeSafe's key unlocks Jev's decisions: saved, the jev provider is availab
   const { api } = await serve(t);
   const jev = async () => (await api("GET", "/capabilities")).body.workflows.decisions.providers.find((provider) => provider.id === "jev").available;
   const row = async () => (await api("GET", "/settings/tool-keys")).body.keys.find((key) => key.id === "typesafe");
-  assert.deepEqual(await row(), { id: "typesafe", kind: "tool", label: "TypeSafe (Jev)", unlocks: ["decisions.jev"], harnesses: [], fields: [{ name: "TYPESAFE_API_KEY", ...UNSET }], check: null });
+  assert.deepEqual(await row(), { id: "typesafe", kind: "tool", label: "TypeSafe (Jev)", unlocks: ["decisions.jev"], harnesses: [], fields: [{ name: "TYPESAFE_API_KEY", ...UNSET }], secrets: [{ name: "tool:TYPESAFE_API_KEY", set: false, source: null, changed_at: null }], check: null });
   assert.equal(await jev(), false);
   assert.equal((await api("PUT", "/settings/tool-keys/typesafe", { values: { TYPESAFE_API_KEY: made() } })).status, 204);
   assert.deepEqual([await jev(), (await row()).fields], [true, [{ name: "TYPESAFE_API_KEY", ...STORED }]], "no restart");
@@ -546,4 +608,28 @@ test("a tool-settings PUT and a tool key's PUT and DELETE answer without probing
     return probe ? [`probe:${probe[1]}`] : write ? [`${write[1]} ${write[2]}`] : [];
   });
   assert.deepEqual(events, ["probe:start", "PUT /v2/settings/tools", "PUT /v2/settings/tools", "PUT /v2/settings/tool-keys/parallel", "PUT /v2/settings/tool-keys/monid", "DELETE /v2/settings/tool-keys/monid", "DELETE /v2/settings/tool-keys/parallel"]);
+});
+
+test("a model key's row names the harnesses that key runs here, the same before and after another provider's key is saved: with claude-agent on the host's endpoint, OpenRouter's row never names it", async (t) => {
+  const standIn = await codexStandIn(t);
+  for (const [label, vars] of [
+    ["claude-agent on the host's endpoint", { ANTHROPIC_BASE_URL: "https://gateway.invalid" }],
+    ["no endpoint set", {}],
+  ]) {
+    await t.test(label, async (st) => {
+      withEnv(st, { AGENTRUN_SEAL_KEY: sealKey(), AGENTRUN_SERVE_CODEX_STANDIN: standIn, ...vars }, [...KEYS, ...HARNESS_VARS]);
+      withMemory(st, ROOMY_MIB);
+      const { api } = await serve(st, { harnesses: true });
+      const rows = async () => Object.fromEntries((await api("GET", "/settings/tool-keys")).body.keys.filter((key) => key.kind === "model").map((key) => [key.id, key.harnesses]));
+      const before = await rows();
+      assert.equal((await api("PUT", "/settings/tool-keys/anthropic", { values: { ANTHROPIC_API_KEY: made() } })).status, 204);
+      const offers = (await api("GET", "/capabilities")).body.harnesses;
+      assert.equal(offers.find((offer) => offer.id === "claude-agent").available, true, `Anthropic's key runs claude-agent now: ${JSON.stringify(offers)}`);
+      const after = await rows();
+      assert.deepEqual(after, before, "no row's harnesses change when Anthropic's key is saved");
+      assert.ok(after.anthropic.includes("claude-agent"), "Anthropic's row names claude-agent");
+      if (vars.ANTHROPIC_BASE_URL) assert.ok(!after.openrouter.includes("claude-agent"), `OpenRouter's key never reaches claude-agent on the host's endpoint: ${JSON.stringify(after)}`);
+      else assert.ok(after.openrouter.includes("claude-agent"), "with no endpoint, OpenRouter's key runs claude-agent");
+    });
+  }
 });

@@ -1,19 +1,27 @@
 # Contributing
 
-Use Node 22.19+ or 24.2+ and npm 11.21.0. From the repository root:
+Use Node 24.11 or newer (`.nvmrc` pins 24.21.0) and npm 11.21.0. From the repository root:
 
 ```sh
 npm install --global npm@11.21.0 --ignore-scripts
 npm ci --ignore-scripts
 npm run check
+npm run build:daemon -w @parcha/agentrun-computer
 npm run verify:packages
 ```
+
+`npm run verify:packages` needs the computer daemon built first: `npm run build:daemon -w @parcha/agentrun-computer`
+(after the build, with Go on PATH, the version `packages/computer/daemon/go.mod` names or newer) writes
+`dist/computerd-linux-amd64` and `-arm64`, which `@parcha/agentrun-computer`'s archive must hold, and verification
+stops without them.
 
 `npm run build` builds the console (`apps/console`, outside the workspaces, with its own lockfile) before the packages, so the server's build carries it. It installs the console's dependencies when npm's record of them differs from its lockfile, and skips the console's build when `apps/console/dist` was built from the same sources (a hash of them, written beside the build).
 
 - `npm test` runs every workspace's tests, several workspaces at once, with at most one test file per core in all (`AGENTRUN_TEST_TOTAL=<n>` sets that total, `AGENTRUN_TEST_JOBS=<n>` how many workspaces, `1` one by one), and ends with each one's result and time.
 - `npm run test:changed` runs only the workspaces changed since `origin/main` (`npm run test:changed -- --base <ref>` for another base), and every workspace that depends on them.
 - `npm test -w @parcha/agentrun-dsl` runs one workspace's tests.
+
+Rounds run the affected suites; CI runs everything. `npm run test:affected` runs only the test files a change reaches since its merge base with `origin/untangle/cutover` (else `origin/main`; `-- --base <ref>` for another, or `-- <path>...` for given paths): a changed test file, every test that imports a changed source file directly or through other files (read from the imports, with `dist/` mapped back to `src/` and workspace names resolved through `exports`), every test of a package whose `package.json`, tsconfig or build script changed, and the tests that name a changed file where an import can't say (a fixture read by path). A change to the root manifests, `scripts/` or `.github/` adds only the tests that import it. A fast smoke file per package always runs. `node scripts/test-affected.mjs` prints the command per suite without running it, `--list` the files, `--json` why each was picked; `--concurrency <n>` caps each command on a shared machine. It is a round's check, not the record: CI on the pushed head runs every suite.
 
 Tests use scripted adapters and must not require model credentials. Package verification installs built tarballs into a separate application and needs network access to download dependencies. Live examples are opt-in.
 

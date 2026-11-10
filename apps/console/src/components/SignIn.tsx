@@ -67,7 +67,7 @@ export function SignIn({ mode, code = null, codeNeeded = false, onSubmit, proble
         {mode !== "token_link" && (
           <form className="space-y-5" onSubmit={(e) => { e.preventDefault(); void submit(); }}>
             {asksCode && (
-              <Field label="Setup code" id="setup-code" hint="Find the setup code in the server's log (on Render, the Logs tab), or open the link the log prints. The server's API token (AGENTRUN_TOKEN) works here too.">
+              <Field label="Setup code" id="setup-code" hint="On Render: paste the server's AGENTRUN_TOKEN from the service's Environment tab. Elsewhere: paste the setup code the server printed in its log, or open the link it prints.">
                 <Input name="setup-code" value={setupCode} onChange={(e) => setSetupCode(e.target.value)} autoComplete="one-time-code" spellCheck={false} className="text-lead" />
               </Field>
             )}

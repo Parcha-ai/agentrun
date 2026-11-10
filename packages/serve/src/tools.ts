@@ -6,15 +6,16 @@
 // named only by an agent whose place is a box (runnable.ts).
 import { blurbOf } from "./tool-blurbs.js";
 import type { TSchema } from "typebox";
-import { existsSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { defineExtension, defineTool, type Extension, type Harness, ROOT_CONVERSATION_ID, type ToolRegistration, type Tx } from "@earendil-works/pi-durable";
 import type { AppContext } from "@parcha/pi-durable-disk";
 import type { Revision } from "@parcha/pi-durable-agent";
+import { registerTurnEnding } from "@parcha/pi-durable-agent/timeline";
 import { BACKGROUND_LOG_BYTES, BACKGROUND_MAX, BACKGROUND_PAGE_BYTES } from "./background.js";
 import type { CodingSource } from "./coding-tools.js";
-import { writeInWork } from "./workspace.js";
+import { isWorkspaceError, localWorkspace, type Workspace } from "./workspace/index.js";
 import { fetchOptions, HTML_READ_CHARS, TEXT_CAP } from "./web-fetch-direct.js";
 import { DEFAULT_HARNESS, HARNESSES } from "./harness.js";
 import { REPLAY } from "./host-tools.js";
@@ -22,24 +23,34 @@ import { type Complete, LLM_TOOL } from "./llm.js";
 import { DOCUMENTS_ENV, PDF_PAGES_TOOL, pdfPages } from "./pdf-pages.js";
 import { monidTool } from "./monid.js";
 import { FAUX_ENV, workflowNodes } from "./model.js";
-import { bookedIn, booking, type Ledger } from "./paid-calls.js";
+import { bookedIn, booking, type Ledger, type PaidBooking } from "./paid-calls.js";
+import type { Refusal } from "@parcha/agentrun-kernel";
 import { browserPrice, browserSpend } from "./browser-cost.js";
 import { forModel } from "./result.js";
-import { fetchFor, runPages, WEB_FETCH_TOOL, webFetchTool } from "./web-fetch.js";
+import { fetchFor, pagesOf, WEB_FETCH_TOOL, webFetchTool } from "./web-fetch.js";
 import { searchFor, WEB_SEARCH_TOOL, webSearchTool } from "./web-search.js";
 import { browserNeeds, explainsView, isUnavailable, NO_PARALLEL_KEY, type Pickable, PICKABLE, planeOf, type Plane, PROVIDERS, serverGate, type Tooling, type ToolSettingsMap, whyUnavailable, withDefaults } from "./tool-plane.js";
 import type { DenyFrom, SettingFrom } from "./tool-gate.js";
-import { PARALLEL_KEY_ENV } from "./decisions.js";
+import { fauxFetch, PARALLEL_KEY_ENV } from "./decisions.js";
 import { keyNeeded } from "./key-words.js";
 import { handedSignIn, hostSecrets } from "./secrets.js";
 import { redactedAnswer } from "./key-refusal.js";
-import { SIGN_IN_KEY, SIGN_IN_SAVED } from "./sign-ins.js";
+import { SIGN_IN_KEY, SIGN_IN_SAVED, vendorsOver } from "./sign-ins.js";
+import { answerIn, answerOnce } from "./runner/hand-back.js";
+import { runnerSecrets } from "./runner/redact.js";
+import { HANDOVER_WAITING, type HandoverAnswered } from "./runner/journal-kinds.js";
+import type { LiveHandover, LiveViewerStore } from "./browser-live.js";
+import type { Claim, Store } from "./store/store.js";
+import { type RunSignIn, runSignIn, verifyRunSignIn } from "./sign-ins-store.js";
 
 export const ASK_TOOL = "ask_person";
 /** Under `--faux` only: a module whose default export gives the browser's `{ provider, driver }` for the run's
  *  environment, the vendor its plane names (`browserbase`, `kernel`) and the saved sign-in it was handed for that
  *  vendor (`{ provider, ref, save }`, or undefined), in place of that vendor's (the tests' fake backend). */
 export const FAUX_BROWSER_ENV = "AGENTRUN_SERVE_FAUX_BROWSER";
+/** Under `--faux` only: a module whose default export is the fetch a run's first saved sign-in is made with on the runner,
+ *  in place of the browser vendors' REST APIs (the tests' fake). Absent under --faux, none is made: no network. */
+export const FAUX_VENDOR_API_ENV = "AGENTRUN_SERVE_FAUX_VENDOR_API";
 
 /** What the result of `ask_person` says; the person's page shows the question as a waiting row. */
 export const asked = (question: string) => `Asked the person: ${question.slice(0, 500)}. Waiting for their answer.`;
@@ -59,6 +70,11 @@ export const askPerson = defineTool({
     return forModel(asked(question), { details: { question }, control: { terminate: true } });
   },
 });
+// ask_person ends its turn (control.terminate), so the run waits on the person after it. Registered here, where the tool
+// is defined, so every reader of it agrees: the view reads a question row by this (run-view withAsks), and the runner's
+// loop parks on it or waits on it in its claim (adapter-loop endedOnTurnEndingTool), whichever module loads — the loop
+// never imports the view.
+registerTurnEnding(ASK_TOOL);
 
 /** What a tool's binding gets from the run's process. */
 export type ToolHost = {
@@ -75,6 +91,49 @@ export type ToolHost = {
   beforeResume(settle: (harness: Harness) => void | Promise<void>): void;
   /** Runs when the run's process lets the run go (its work done, or a SIGTERM), while the Harness is still open. */
   beforeRelease(stop: (harness: Harness) => void | Promise<void>): void;
+  /** On the runner: asked when the run's turn ends on its question to the person (ask_person, call `callId`), before the
+   *  run parks. A binding that keeps something open the person may still use while they answer holds the person's time for
+   *  it and answers a hold, and the run waits in its claim instead (adapter-loop.ts HostLifecycle.personWait); `lapsed`
+   *  settles, in words, when the hold can no longer stand, and the run parks then. `since`: when the wait first started
+   *  (its bound runs from then, across claims). Undefined: nothing to keep. Absent on
+   *  the old per-run process, whose wait keeps the process (and so the browser) anyway. */
+  personWait?(hold: (harness: Harness, callId: string, since: number) => Promise<{ readonly lapsed: Promise<string>; drop(): void } | undefined>): void;
+  /** On the runner: stages the run row's `summary` on the next commit that writes a root entry of `kind` whose data `test`
+   *  takes (adapter-loop AdapterRun.rowSummaryOn): a hand-over's wait sets the row's waiting summary in its waiting
+   *  entry's commit, and its answer's commit clears it, so the server tells run.needs_input for a run held in its claim. */
+  rowSummaryOn?(kind: string, test: (data: Record<string, unknown>) => boolean, summary: string | null): void;
+  /** The run is on the runner: its browser hand-over's answers are entries of its journal (a browser_hand_back row the
+   *  runner applies, the live view's hand-back, the ask's expiry), read and written there, never as answer files
+   *  (browser-person.ts personHands `answered`). */
+  handoverInJournal?: boolean;
+  /** The run is on the runner: its live viewers are handed over through the store, not through files in its directory
+   *  (browser-live.ts putLiveViewer/dropLiveViewer). The browser tool's live-viewer writers hang off this: `put` hands a
+   *  session's viewer over (its token sealed under the run's `sealKey`), `drop` takes one (or all of the run's) back. The
+   *  three fields below are what builds these (the one store, the claim the row is written under, the seal key); a tool's
+   *  binding reads `liveViewers`, never them directly. Absent on the server path, where the viewer lives in the run's
+   *  directory (browser-live.ts sessionHandovers: writeHandover/dropHandover). */
+  liveViewers?: { put(handover: LiveHandover): Promise<boolean>; drop(tag?: string): Promise<void> };
+  /** The one store, for the live-viewer seam above, the run's saved sign-in (its runs and sign-ins, read under `claim`)
+   *  and the sign-in verify the runner saves. */
+  store?: LiveViewerStore & Pick<Store, "runs" | "signIns">;
+  /** The claim this run is held under: the live-viewer rows are written under it (its epoch fences them), and the run's
+   *  saved sign-in is read and its hand kept under it. Present, the run is on the runner: never the process's own pipe. */
+  claim?: Claim;
+  /** The key the live-viewer tokens are sealed under before they go to the store (store/seal.ts). */
+  sealKey?: Buffer;
+  /** The run's ledger, as the adapter loop hands it (spendcap-1's AdapterRun.ledger): `paid`, the claim's one-ledger
+   *  booking (the kernel cap's paidCalls, paid-calls.ts PaidBooking), and `pause`, how a refusal at the cap parks the run.
+   *  The browser passes `paid` to browserSpend, so its calls are held and settled there and a session's release is booked
+   *  there, never on this process's own spend. The runner installs the browser only with `paid` and the grant, on pi's
+   *  native route (adapter-run-spec.ts browserListed). */
+  ledger?: { paid: PaidBooking; pause?: (refusal: Refusal) => Promise<void> };
+  /** The run's one redactor (the runner's: every secret value the runner and the claim hold, in every form): what the
+   *  browser's answers pass through before pi stores them or the model reads them. Absent on the old per-run process. */
+  redact?: (text: string) => string;
+  /** The run's own Workspace (on the runner: the run's local folder in Mode 1, its folder on the run's disk in Mode 2),
+   *  where a tool files what the run's read finds later (monid's whole answer past the model's cut). Absent, the local
+   *  folder at `where.work`. */
+  workspace?: Workspace;
 };
 
 /** What a name stands for in the run: the pi tools it offers, and the extensions a conversation selects for them. */
@@ -129,9 +188,9 @@ const webFetchEntry = (name: string): ToolEntry => ({
     return { tools: [tool], extensions: [extension] };
   },
   // A call node's Page is the workflow's, not a model's context: it reads the most of a part by default, from the page
-  // the run read (runPages) where it holds the URL. Its request to Parallel, when it makes one, is booked under the call
+  // the run read (pagesOf(run.env)) where it holds the URL. Its request to Parallel, when it makes one, is booked under the call
   // (paid-calls.ts); a part from what the run read makes none and books nothing.
-  effect: async (args, run) => bookedIn(run.ledger, async () => fetchFor(run.env, args.url, { ...(await fetchOptions(run.env, FAUX_ENV)), offset: args.offset as number | undefined, maxChars: (args.max_chars as number | undefined) ?? TEXT_CAP, pages: runPages, signal: run.signal })),
+  effect: async (args, run) => bookedIn(run.ledger, async () => fetchFor(run.env, args.url, { ...(await fetchOptions(run.env, FAUX_ENV)), offset: args.offset as number | undefined, maxChars: (args.max_chars as number | undefined) ?? TEXT_CAP, pages: pagesOf(run.env), signal: run.signal })),
 });
 
 /** A coding tool, from the run's coding source: a name it does not hold (bash on the runner) binds no tool. */
@@ -146,28 +205,45 @@ const fileTool = (name: string, summary: string, sandboxOnly = false): ToolEntry
   },
 });
 
-/** Where the browser files what it reads: `work/evidence/`, so the run's files show it and the agent can read it back. A
- *  text body follows one line of the read's facts; a capture's bytes go beside its facts. Each read takes the next free
- *  number, reserved by an exclusive create, so reads at once (parallel nodes, one turn's calls) and the reads of a later
- *  process never overwrite one another. */
-export const evidenceIn = (work: string) => {
-  let seq = 0;
+/** The folder the browser files what it reads in. */
+const EVIDENCE = "evidence";
+/** How many names taken by a link a read steps past before it gives up. */
+const EVIDENCE_TRIES = 100;
+
+/** The highest number a file in the run's evidence/ is named by (`0007-browser_read.md`), 0 for none or no folder. A
+ *  link at evidence/ itself throws (ESCAPE): nothing is filed through it. */
+async function lastEvidence(work: Workspace): Promise<number> {
+  try {
+    return Math.max(0, ...(await work.list(EVIDENCE)).map((entry) => Number(/^(\d+)-/.exec(entry.name)?.[1] ?? 0)));
+  } catch (error) {
+    if (isWorkspaceError(error, "NOT_FOUND")) return 0;
+    throw error;
+  }
+}
+
+/** Where the browser files what it reads: the run's `evidence/`, through its Workspace, so the run's files show it and
+ *  the agent can read it back. A text body follows one line of the read's facts; a capture's bytes go beside its facts.
+ *  Each read takes the next number after the highest the folder holds when the sink first files, so a later process's
+ *  sink never overwrites one, and reads at once (parallel nodes, one turn's calls) each take their own. A name a link
+ *  holds is never written through: the read takes the next. */
+export const evidenceIn = (work: Workspace) => {
+  let seq: Promise<{ n: number }> | undefined;
   return {
     file: async (label: string, record: { tool: string; facts: Record<string, unknown>; body: string | Uint8Array; ext?: string }) => {
       const facts = JSON.stringify({ label, tool: record.tool, ...record.facts });
       const text = typeof record.body === "string";
-      for (;;) {
-        const name = `${String(++seq).padStart(4, "0")}-${record.tool}`;
+      const counter = await (seq ??= lastEvidence(work).then((n) => ({ n })));
+      for (let tries = 0; ; tries++) {
+        const name = `${String(++counter.n).padStart(4, "0")}-${record.tool}`;
         try {
-          // Never through a link a box's command planted in work/ (files.ts).
-          await writeInWork(work, ["evidence"], text ? `${name}.md` : `${name}.json`, text ? `${facts}\n\n${record.body}` : `${facts}\n`);
+          await work.write(`${EVIDENCE}/${text ? `${name}.md` : `${name}.json`}`, text ? `${facts}\n\n${record.body}` : `${facts}\n`);
         } catch (error) {
-          if ((error as NodeJS.ErrnoException).code === "EEXIST") continue;
+          if (isWorkspaceError(error, "ESCAPE") && tries < EVIDENCE_TRIES) continue;
           throw error;
         }
-        if (text) return { path: `evidence/${name}.md`, bodyLine: 3 };
-        await writeInWork(work, ["evidence"], `${name}.${record.ext ?? "bin"}`, record.body);
-        return { path: `evidence/${name}.json`, bodyPath: `evidence/${name}.${record.ext ?? "bin"}` };
+        if (text) return { path: `${EVIDENCE}/${name}.md`, bodyLine: 3 };
+        await work.write(`${EVIDENCE}/${name}.${record.ext ?? "bin"}`, record.body);
+        return { path: `${EVIDENCE}/${name}.json`, bodyPath: `${EVIDENCE}/${name}.${record.ext ?? "bin"}` };
       }
     },
   };
@@ -182,6 +258,35 @@ export const keptContexts = (ref: string | undefined) => ({
     throw new Error("this run's browser has no saved sign-in to open");
   },
 });
+
+/** Every string in `value` (a tool's answer: its content, its details) passed through `cut`; anything else as it is. */
+function cutStrings<T>(value: T, cut: (text: string) => string): T {
+  if (typeof value === "string") return cut(value) as T;
+  if (Array.isArray(value)) return value.map((item) => cutStrings(item, cut)) as T;
+  if (value && typeof value === "object" && Object.getPrototypeOf(value) === Object.prototype) {
+    return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, item]) => [key, cutStrings(item, cut)])) as T;
+  }
+  return value;
+}
+
+/** `tool` whose answer, and a throw's message, pass `cut` inside its execute: before pi stores the result or the model
+ *  reads it. */
+function answersCutInside(tool: ToolRegistration, cut: (text: string) => string): ToolRegistration {
+  return {
+    ...tool,
+    execute: (async (...args: Parameters<ToolRegistration["execute"]>) => {
+      try {
+        return cutStrings(await (tool.execute as (...a: unknown[]) => Promise<unknown>)(...args), cut);
+      } catch (error) {
+        if (error instanceof Error) {
+          error.message = cut(error.message);
+          if (error.stack) error.stack = cut(error.stack);
+        }
+        throw error;
+      }
+    }) as ToolRegistration["execute"],
+  } as ToolRegistration;
+}
 
 /** Kernel's provider, opening the agent's saved profile (`ref`, its name at Kernel) where a session asks for the
  *  profile `default`: the policy, the session's record and the model see only that name. */
@@ -203,6 +308,16 @@ export const asHanded = <P extends { create(spec: { profile?: { name: string; sa
  *  its end), never one the vendor had already lost or never made. */
 export const savedOnRelease = (row: { session: { resourceId: string | null; releaseReason: string | null } }, change: string): boolean =>
   change === "released" && row.session.resourceId !== null && row.session.releaseReason !== null && !["lost", "create_failed"].includes(row.session.releaseReason);
+
+/** On the runner, the per-session hook that verifies the run's saved sign-in: a session that saved to it (savedOnRelease,
+ *  in a run handed it to save) verifies it under the run's claim, at the session's own end (its time, else now), as the
+ *  saved mark main reads at the lease's end. Answers whether it verified (sign-ins-store.ts verifyRunSignIn). */
+export const runSignInSaved = (store: Pick<Store, "runs" | "signIns">, sealKey: Buffer | undefined, claim: Claim, kept: RunSignIn) =>
+  async (row: { session: { resourceId: string | null; releaseReason: string | null; endedAt?: string | null } }, change: string): Promise<boolean> => {
+    if (!kept.save || !savedOnRelease(row, change)) return false;
+    const ended = row.session.endedAt ? Date.parse(row.session.endedAt) : Number.NaN;
+    return verifyRunSignIn(store, sealKey, claim, kept, Number.isFinite(ended) ? ended : Date.now());
+  };
 
 /** A hosted browser driven through Stagehand, on pi-browser's durable adapter: Browserbase or Kernel (headless), the one
  *  the run's plane names (tool-plane.ts: picked, else Browserbase where the server holds its keys, else Kernel), kept
@@ -231,7 +346,13 @@ const browserTool: ToolEntry = {
     ]);
     const vendor = planeOf(host.env).browser ?? "browserbase";
     const refused = isUnavailable(vendor) ? new BrowserFailureError(browserFailure("browser_unavailable", `The browser does not run here: ${whyUnavailable(vendor)}.`)) : undefined;
-    const handed = handedSignIn();
+    // The run's saved sign-in: on the runner (one process, many claims) read from the store under this run's own claim
+    // (sign-ins-store.ts runSignIn), never from the process; on the old per-run process, over its own secrets' pipe.
+    // An agent with none saved has its first made at the vendor now, over this run's own claim keys (host.env), as main's
+    // launch makes it: never the process's environment, so one run's keys never make another's.
+    const runLog = (line: string) => void process.stderr.write(`agentrun-serve: run ${host.where.ref.id}: ${line}\n`);
+    const vendorFetch = async () => (host.env[FAUX_ENV] ? fauxFetch(host.env, FAUX_VENDOR_API_ENV) : fetch);
+    const handed = host.claim ? (refused || !host.store ? undefined : await runSignIn(host.store, host.sealKey, host.claim, vendor, { vendors: vendorsOver(() => host.env, vendorFetch), log: runLog })) : handedSignIn();
     const kept = !refused && handed?.provider === vendor ? handed : undefined;
     const faux = host.env[FAUX_ENV] ? host.env[FAUX_BROWSER_ENV] : undefined;
     const parts = faux
@@ -251,7 +372,7 @@ const browserTool: ToolEntry = {
     // own origin alone. The owner drives only after Take over, and the agent may ask them to (browser-person.ts): the
     // person's time is held under the run's cap first, and their turns are rows of the run's timeline.
     const windows = person.personWindows(host.env, Boolean(host.env[FAUX_ENV]));
-    const gates = createDrivingGates({ holdIdleMs: windows.holdMs, holdAwayMs: windows.awayMs });
+    const gates = fauxModelWaits(createDrivingGates({ holdIdleMs: windows.holdMs, holdAwayMs: windows.awayMs }), Boolean(host.env[FAUX_ENV]));
     let opened: Harness | undefined;
     const hands = person.personHands({
       root: host.where.root,
@@ -260,7 +381,16 @@ const browserTool: ToolEntry = {
       carry: (tag, seconds) => spend.carry(tag, seconds),
       // The model's words for the person, with every value this run holds cut, whole, before they are cut to their bound.
       redact: (text) => redactedAnswer(text, [...hostSecrets(host.env), ...(kept ? [kept.ref] : [])]),
-      note: async (kind, data) => void (await opened?.commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind, data })), context)),
+      note: async (kind, data) => {
+        // A hand-over's waiting entry, on the runner: the row says the run waits on the person in its browser from that
+        // commit (the server tells run.needs_input by it), and no more from its answer's, whoever writes it.
+        if (kind === "agent.handover" && data.state === "waiting" && typeof data.id === "string" && host.rowSummaryOn) {
+          const id = data.id;
+          host.rowSummaryOn(kind, (entry) => entry.id === id && entry.state === "waiting", HANDOVER_WAITING);
+          host.rowSummaryOn(kind, (entry) => entry.id === id && entry.state !== "waiting", null);
+        }
+        await opened?.commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind, data })), context);
+      },
       holdMs: windows.holdMs,
       // The run's waiting rows for a session: each is an agent.handover entry of the root's, waiting, naming it.
       waiting: async (tag) => (await opened?.commit(async (tx) => {
@@ -275,6 +405,28 @@ const browserTool: ToolEntry = {
           cursor = page.next;
         }
       }, context)) ?? 0,
+      // On the runner: an ask's answer is the root's first answered hand-over entry for it (runner/hand-back.ts).
+      ...(host.handoverInJournal ? {
+        answered: async (id: string) => (await opened?.commit(async (tx) => {
+          for (let cursor: Parameters<Tx["scanEntries"]>[2] | undefined; ; ) {
+            const page = await tx.scanEntries({ conversationId: ROOT_CONVERSATION_ID, order: "ascending" }, 200, cursor);
+            const found = answerIn(page.items, id);
+            if (found) return { outcome: found.state, at: found.at, ...(found.reason !== undefined ? { reason: found.reason } : {}) };
+            if (page.next === undefined) return undefined;
+            cursor = page.next;
+          }
+        }, context)) ?? undefined,
+        // The answer written only when the ask has none, read and written in one commit: exactly one answered entry.
+        answer: async (id: string, data: Record<string, string>) => {
+          if (!opened) throw new Error("the run's journal is not open");
+          const on = opened;
+          const { stood } = await answerOnce((change) => on.commit(change, context), ROOT_CONVERSATION_ID, (entries) => {
+            const found = answerIn(entries, id);
+            return found ? { stood: found } : { write: data as unknown as HandoverAnswered, stood: data as unknown as HandoverAnswered };
+          });
+          return { outcome: stood.state, at: stood.at, ...(stood.reason !== undefined ? { reason: stood.reason } : {}) };
+        },
+      } : {}),
       // Tests only (--faux): the process dies once between an ask's record and its row.
       afterRecord: host.env[FAUX_ENV] && host.env[person.FAUX_ASK_DIES_ENV] ? () => {
         const mark = host.env[person.FAUX_ASK_DIES_ENV]!;
@@ -289,35 +441,46 @@ const browserTool: ToolEntry = {
       if (refused) throw refused;
       return watched as never;
     };
-    // Each session's viewer reaches the server in the run's directory, never work/: written as it launches, gone as it ends.
-    const onSession = async (row: { session: { tag: string }; liveView: { fullscreen: string } | null }, change: string) => {
-      if (change === "released") return live.dropHandover(host.where.root, row.session.tag);
-      const handover = row.liveView ? live.handoverOf(row.liveView.fullscreen, row.session.tag) : undefined;
-      if (handover) await live.writeHandover(host.where.root, handover);
-    };
+    // Each session's viewer reaches the server as it launches, and goes as it ends: on the runner through the store, under
+    // the run's claim (host.liveViewers); on the old per-run process, in the run's directory, never work/.
+    const viewers = live.sessionHandovers(host.where.root, host.liveViewers);
+    const onSession = (row: { session: { tag: string }; liveView: { fullscreen: string } | null }, change: string) => viewers.changed(row, change);
     // Its session time is the run's spend, at its provider's price, and held under the run's cap (browser-cost.ts).
     const providerName = (parts.provider as { name?: string } | undefined)?.name ?? vendor;
     const price = browserPrice(providerName, host.env);
-    const spend = browserSpend(providerName, price, DEFAULT_BROWSER_POLICY.idleReleaseS, (conversation, at) => browser.release(conversation as never, "close", at));
+    // On the runner, the run's ledger (host.ledger): each call held and settled on its booking, and a session's release one
+    // more request there, never this process's own spend. Undefined on the old per-run process: browserSpend's own then.
+    const spend = browserSpend(providerName, price, DEFAULT_BROWSER_POLICY.idleReleaseS, (conversation, at) => browser.release(conversation as never, "close", at), undefined, { paid: host.ledger?.paid, pause: host.ledger?.pause });
     // browser_downloads is listed only with a workspace to copy into, and only a provider that keeps a session's downloads
     // (Browserbase's; Kernel's keeps none) has any: without one, uploads still read the run's work/, through `files`.
     const downloads = typeof (parts.provider as { downloads?: unknown } | undefined)?.downloads === "object";
     const files = downloads ? { workspace: () => host.where.work } : { files: workspaceFiles(host.where.work) };
     // A session that saved to the sign-in, let go: its time, for the sign-in's verified_at when the run's lease ends.
+    // On the runner, the store's verified_at under the run's claim (runSignInSaved), never a mark in the run's directory.
+    const verify = kept?.save && host.claim && host.store ? runSignInSaved(host.store, host.sealKey, host.claim, kept as RunSignIn) : undefined;
+    // Awaited by the session's change, so the release that lets a run's sessions go (beforeRelease) returns only once its
+    // last save is verified: the run's end commit, which ends the claim, never fences it.
     const saved = kept?.save
-      ? (row: Parameters<typeof savedOnRelease>[0], change: string) => void (savedOnRelease(row, change) && writeFileSync(join(host.where.root, SIGN_IN_SAVED), new Date().toISOString(), { mode: 0o600 }))
+      ? async (row: Parameters<typeof savedOnRelease>[0], change: string): Promise<void> => {
+          if (verify) await verify(row, change);
+          else if (savedOnRelease(row, change)) writeFileSync(join(host.where.root, SIGN_IN_SAVED), new Date().toISOString(), { mode: 0o600 });
+        }
       : undefined;
     // Both hosts of a session's changes: the live view's hand-over, and the sign-in's saved mark.
     const onSessions = async (row: Parameters<typeof savedOnRelease>[0] & Parameters<typeof onSession>[0], change: string) => {
-      saved?.(row, change);
+      // A session let go ends a wait on the person's answer that kept it open (personWait, below): the run parks.
+      if (change === "released") hands.sessionEnded(row.session.tag);
+      await saved?.(row, change);
       await onSession(row, change);
     };
     // The pointer is cut from everything the browser hands the model (its results, their details, its failures): a
     // vendor's refusal can quote it, as pi-browser's one-saver rule names Kernel's profile.
     // A run handed its agent's sign-in tells the model its browser keeps it (`run`'s description): one with none claims
     // cookies across pages only.
-    const browser = createBrowserExtension({ provider, driver: parts.driver as never, evidence: evidenceIn(host.where.work) as never, ...files, gates, handoff: hands.handoff, onSession: onSessions as never, signIns: kept !== undefined, beforeCreate: spend.opening, redact: { values: () => (kept ? [kept.ref] : []) }, prices: { sessionUsdPerHour: price.usdPerHour, sessionMinimumS: price.minimumS }, onCharge: spend.onCharge });
-    const tools = (browser.tools as unknown as ToolRegistration[]).map(spend.capped);
+    const browser = createBrowserExtension({ provider, driver: parts.driver as never, evidence: evidenceIn(localWorkspace(host.where.work)) as never, ...files, gates, handoff: hands.handoff, onSession: onSessions as never, signIns: kept !== undefined, beforeCreate: spend.opening, redact: { values: () => [...runnerSecrets(host.env), ...(kept ? [kept.ref] : [])] }, prices: { sessionUsdPerHour: price.usdPerHour, sessionMinimumS: price.minimumS }, onCharge: spend.onCharge });
+    // On the runner, every answer the browser's tools give passes the run's one redactor inside the call, so what pi stores
+    // (its result record) and what the model reads hold no value the runner or the claim holds.
+    const tools = (browser.tools as unknown as ToolRegistration[]).map(spend.capped).map((tool) => (host.redact ? answersCutInside(tool, host.redact) : tool));
     const extension = { ...(browser.extension as unknown as Extension), tools } as Extension;
     host.install(extension);
     host.onConversation(async (tx, conversationId) => {
@@ -327,6 +490,26 @@ const browserTool: ToolEntry = {
     });
     host.beforeResume(async (harness) => {
       opened = harness;
+      // A hand-over still waiting from an earlier pass or claim (its waiting entry, no answer yet): its answer, in this
+      // pass, clears the row's waiting summary too, as the pass that asked would have.
+      // A first claim has no root yet (the session creates it): nothing waits then.
+      if (host.rowSummaryOn && (await harness.conversation(ROOT_CONVERSATION_ID as never, context).catch(() => undefined))) {
+        const entries: { kind: string; data?: unknown }[] = [];
+        await harness.commit(async (tx) => {
+          for (let cursor: Parameters<Tx["scanEntries"]>[2] | undefined; ; ) {
+            const page = await tx.scanEntries({ conversationId: ROOT_CONVERSATION_ID, order: "ascending" }, 200, cursor);
+            entries.push(...page.items);
+            if (page.next === undefined) return;
+            cursor = page.next;
+          }
+        }, context);
+        const waitingIdOf = (entry: { kind: string; data?: unknown }) => {
+          const data = entry.data as { state?: unknown; id?: unknown } | undefined;
+          return entry.kind === "agent.handover" && data?.state === "waiting" && typeof data.id === "string" ? data.id : undefined;
+        };
+        const waiting = new Set(entries.map(waitingIdOf).filter((id): id is string => id !== undefined));
+        for (const id of waiting) if (!answerIn(entries, id)) host.rowSummaryOn("agent.handover", (entry) => entry.id === id && entry.state !== "waiting", null);
+      }
       // Its charges move what the process counts once each is committed, reconcile's own among them.
       spend.watch(harness, (browser.docs.Inventory as unknown as { definition: { kind: string } }).definition.kind);
       // With its vendor's key gone there is no session to reconcile or release from here: each would only fail.
@@ -341,12 +524,24 @@ const browserTool: ToolEntry = {
       for (const row of kept.filter((r) => (r.state === "live" || r.state === "held") && r.resourceId !== null)) {
         try {
           const opened = await watched?.liveView?.({ id: row.resourceId!, tag: row.tag });
-          const handover = opened?.fullscreen ? live.handoverOf(opened.fullscreen, row.tag) : undefined;
-          if (handover) await live.writeHandover(host.where.root, handover);
+          await viewers.reopened(row.tag, opened?.fullscreen);
         } catch {
           // A browser that cannot be reached has no view to give: the owner reads none, as for any session without one.
         }
       }
+    });
+    // On the runner: the run's turn ended on its question to the person (ask_person). With a session of its browser open
+    // (live, or held for a hand-over), the run waits for the answer in its claim, so the session, its live viewer and its
+    // page stay for the person and for the agent's next turn, as main's process kept them; the person's time on each such
+    // session is held under the run's cap the way a hand-over's is (personHands.wait). With none open, or no room under
+    // the cap for that time, the run parks (its release lets the browser go).
+    host.personWait?.(async (harness, callId, since) => {
+      if (refused) return undefined;
+      const rows = Object.values(((await harness.snapshot(browser.docs.Inventory as never, context)) as { rows?: Record<string, { tag: string; resourceId: string | null; state: string }> } | undefined)?.rows ?? {});
+      const open = rows.filter((row) => (row.state === "live" || row.state === "held") && row.resourceId !== null).map((row) => row.tag);
+      if (!open.length) return undefined;
+      const waited = await hands.wait(callId, open, since);
+      return "refused" in waited ? undefined : waited;
     });
     host.beforeRelease(async (harness) => {
       try {
@@ -357,12 +552,15 @@ const browserTool: ToolEntry = {
           if (conversation) await browser.release(conversation as never, "close", context);
         }
         await browser.drain(harness as never, context);
+        // The releases' charges are booked on the claim's one ledger before the run's release returns, so the run's end
+        // commit, which ends the claim, never fences one (nothing to wait for off the ledger).
+        await spend.ledgerIdle();
       } finally {
         // Every viewer's token dies with the process's hold on its sessions, and the hand-over with it; the person's
         // holds go, and the asks with them.
         await view.close();
         hands.close();
-        await live.dropHandover(host.where.root);
+        await viewers.released();
         person.dropAsks(host.where.root);
       }
     });
@@ -402,7 +600,7 @@ export const TOOLS: Readonly<Record<string, ToolEntry>> = Object.freeze({
   "monid.run": monidTool("run"),
   [PDF_PAGES_TOOL]: callOnly(
     "A workflow call: { path, maxPages?, dpi? } -> { name, pageCount, dpi, pages: [{ page, image }], text }; the document's first pages drawn as PNGs under work/pages/<stem>/<dpi>/ (the dpi lowered so a page's long side is at most 1568 px), from the server's documents (--documents) or the run's work directory.",
-    (args, run) => pdfPages(args, { work: run.work, documents: run.env[DOCUMENTS_ENV], signal: run.signal }),
+    (args, run) => pdfPages(args, { work: localWorkspace(run.work), documents: run.env[DOCUMENTS_ENV], signal: run.signal }),
   ),
   [LLM_TOOL]: callOnly(
     "A workflow call: { prompt, system?, maxTokens?, tier? } -> { text, model, usage, cost_usd }; one completion on the model of the tier (default), no tools and no loop.",
@@ -523,3 +721,25 @@ export const toolsView = (env: NodeJS.ProcessEnv, settings: ToolSettingsMap = {}
     return { name, summary: entry.summary, ...(blurbOf(name) ? { blurb: blurbOf(name) } : {}), nodes: entry.nodes, calls: entry.effect !== undefined, ...(entry.callOnly ? { call_only: true } : {}), ...(entry.sandboxOnly ? { sandbox_only: true } : {}), available, ...(reason ? { reason } : {}), ...(missing.length ? { missing } : {}), harnesses: name in REPLAY ? [...HARNESSES] : [DEFAULT_HARNESS], ...serverGate(name, settings), ...(plane ? { providers: [...PROVIDERS[name as Pickable]], provider: picked[name as Pickable].provider, default_provider: PROVIDERS[name as Pickable][0], resolves: plane, why: view!.why } : {}) };
   });
 };
+
+/** Tests only (--faux, with the fake browser's $FAUX_BROWSER_LOG): each model call that starts waiting for the person to
+ *  hand the browser back is logged (`{"op":"model_waits"}`) as it starts to wait, so a test hands back once the agent's call
+ *  waits, never before it got there. The gates are the registry's own (one per session, the same object each time), each
+ *  given the note once; anything else is `gates` untouched. */
+function fauxModelWaits<G extends (tag: string) => { untilFree?(signal?: AbortSignal): Promise<void> }>(gates: G, faux: boolean): G {
+  const log = faux ? process.env.FAUX_BROWSER_LOG : undefined;
+  if (!log) return gates;
+  const noted = new WeakSet<object>();
+  return ((tag: string) => {
+    const gate = gates(tag);
+    const until = gate.untilFree?.bind(gate);
+    if (until && !noted.has(gate)) {
+      noted.add(gate);
+      gate.untilFree = (signal?: AbortSignal) => {
+        appendFileSync(log, `${JSON.stringify({ op: "model_waits" })}\n`);
+        return until(signal);
+      };
+    }
+    return gate;
+  }) as G;
+}

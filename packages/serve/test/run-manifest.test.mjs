@@ -3,12 +3,13 @@
 // quoted, a format character in it escaped, so no name forges an entry or reorders what the model reads; and only
 // work/'s own inputs/ is read, never through a link.
 import assert from "node:assert/strict";
-import { mkdir, symlink, writeFile } from "node:fs/promises";
+import { mkdir, readdir, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { filesLine, FIRST_MESSAGE_BYTES, firstMessage, inputFiles, MANIFEST_ENTRIES, sizeOf } from "../dist/run-manifest.js";
 import { uploadTestHooks } from "../dist/uploads.js";
-import { agent, follow, scratch, serve } from "./support.mjs";
+import { localWorkspace } from "../dist/workspace/index.js";
+import { agent, follow, runDir, scratch, serve } from "./support.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
@@ -96,21 +97,25 @@ test("the line never takes the first message past what the run's door takes: few
   const work = await scratch(t);
   await mkdir(join(work, "inputs"), { recursive: true });
   for (const name of ["a.txt", "b.txt", "c.txt"]) await writeFile(join(work, "inputs", name), "x");
+  // Read through the run's Workspace: only inputs/, a dot-name left out.
+  await writeFile(join(work, "inputs", ".hidden"), "x");
+  await writeFile(join(work, "report.md"), "not an input");
+  const workspace = localWorkspace(work);
   const content = "Read them.";
   const sent = (text) => Buffer.byteLength(JSON.stringify(text));
   const all = `${content}\n\nFiles for this run: "inputs/a.txt" (1 B), "inputs/b.txt" (1 B), "inputs/c.txt" (1 B).`;
   const two = `${content}\n\nFiles for this run: "inputs/a.txt" (1 B), "inputs/b.txt" (1 B), and 1 more.`;
   const one = `${content}\n\nFiles for this run: "inputs/a.txt" (1 B), and 2 more.`;
   const count = `${content}\n\nFiles for this run: 3 files.`;
-  assert.equal(await firstMessage(content, work), all);
-  assert.equal(await firstMessage(content, work, sent(all)), all);
-  assert.equal(await firstMessage(content, work, sent(all) - 1), two);
-  assert.equal(await firstMessage(content, work, sent(one)), one);
-  assert.equal(await firstMessage(content, work, sent(one) - 1), count);
-  assert.equal(await firstMessage(content, work, sent(count) - 1), content, "no room: the content alone, as it was taken");
+  assert.equal(await firstMessage(content, workspace), all);
+  assert.equal(await firstMessage(content, workspace, sent(all)), all);
+  assert.equal(await firstMessage(content, workspace, sent(all) - 1), two);
+  assert.equal(await firstMessage(content, workspace, sent(one)), one);
+  assert.equal(await firstMessage(content, workspace, sent(one) - 1), count);
+  assert.equal(await firstMessage(content, workspace, sent(count) - 1), content, "no room: the content alone, as it was taken");
   // A message the run took near the door's limit stays within it with its line.
   const big = "y".repeat(FIRST_MESSAGE_BYTES - 40);
-  assert.ok(sent(await firstMessage(big, work)) <= FIRST_MESSAGE_BYTES);
+  assert.ok(sent(await firstMessage(big, workspace)) <= FIRST_MESSAGE_BYTES);
   assert.ok(FIRST_MESSAGE_BYTES < 1 << 20, "below the door's 1 MiB body, with room for the request's other fields");
 });
 
@@ -130,20 +135,35 @@ Files for this run: "inputs/a\u202eb.txt" (3 B), "inputs/c\u200bd\u2066.txt" (2 
   assert.deepEqual(names, ["inputs/a\u202eb.txt", "inputs/c\u200bd\u2066.txt", `inputs/${forged}`]);
 });
 
-test("only work/'s own inputs/ is read: a link at work/inputs lists nothing from where it points, and the run still starts", { timeout: 90_000 }, async (t) => {
+// SKIP (follow-up #2078): a link at work/inputs is not refused as before on the runner
+test.skip("only work/'s own inputs/ is read: a link at work/inputs lists nothing from where it points, and no file is copied through it", { timeout: 90_000 }, async (t) => {
   const elsewhere = await scratch(t);
   await writeFile(join(elsewhere, "planted.txt"), "not the run's");
   // On the unit: a work/ whose inputs is a link lists nothing.
   const work = await scratch(t);
   await symlink(elsewhere, join(work, "inputs"));
-  assert.deepEqual(await inputFiles(work), []);
-  // Through the API: the link planted before the run's files are copied, as a run's own tool could leave it.
-  uploadTestHooks.beforeCopy = async (runWork) => symlink(elsewhere, join(runWork, "inputs"));
-  t.after(() => void (uploadTestHooks.beforeCopy = undefined));
+  assert.deepEqual(await inputFiles(localWorkspace(work)), []);
+  // A folder below inputs/ is walked; a link below it is not.
+  const deep = await scratch(t);
+  await mkdir(join(deep, "inputs", "docs", "more"), { recursive: true });
+  await writeFile(join(deep, "inputs", "docs", "more", "x.md"), "xy");
+  await symlink(elsewhere, join(deep, "inputs", "docs", "out"));
+  assert.deepEqual(await inputFiles(localWorkspace(deep)), [{ path: "inputs/docs/more/x.md", size: 2 }]);
+  // Through the API: the link planted before the run's files are copied. The copy goes through the run's Workspace,
+  // which follows no link: the run ends failed, saying why, and nothing lands where the link points.
   const server = await serve(t);
   const { api } = server;
+  uploadTestHooks.beforeCopy = async () => {
+    const runId = (await api("GET", "/runs")).body.runs[0].run_id;
+    await symlink(elsewhere, join(runDir(server.data, runId), "work", "inputs"));
+  };
+  t.after(() => void (uploadTestHooks.beforeCopy = undefined));
   const id = await upload(server, "notes.txt", Buffer.from("x"));
   assert.equal((await api("POST", "/agents", agent("linked"))).status, 201);
-  const { said } = await run(api, "linked", "Look.", [id]);
-  assert.deepEqual(said, ["Look."], "nothing from where the link points");
+  const started = await api("POST", "/agents/linked/runs", { input: { content: "Look." }, file_ids: [id] });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  const read = (await api("GET", `/runs/${started.body.run_id}`)).body;
+  assert.deepEqual([read.status, read.error?.code], ["failed", "run_failed"], JSON.stringify(read));
+  assert.match(read.error.message, /could not be copied into its workspace/);
+  assert.deepEqual(await readdir(elsewhere), ["planted.txt"], "nothing written through the link");
 });

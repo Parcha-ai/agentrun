@@ -3,16 +3,43 @@
 // implements `Loop` for pi and the CLI adapters; the runner knows nothing about harnesses.
 
 import { refusedText } from "../refusal-words.js";
-import type { Claim, Command, Journal } from "../store/store.js";
+import type { AlsoRow, Claim, Command, Journal } from "../store/store.js";
+import type { Redact } from "./redact.js";
 
 // The store's own: a claim (its epoch fences every write made under it; `until` in epoch ms) and a command row (taken_at
 // set once, by the loop's journal commit that applies it or by the runner's refusal, with `refused` its reason).
-export type { Claim, Command, Journal };
+export type { AlsoRow, Claim, Command, Journal };
 
 /** Why a run ends failed when the answer it would end on was cut at the model's output limit (stopReason "length"): the
  *  answer is unfinished, so the run never reads ended. `tokens`: what the cut answer used, when its harness says. */
 export const cutAtLimit = (tokens?: number): string =>
   `the model stopped at its output limit${tokens !== undefined && Number.isSafeInteger(tokens) && tokens > 0 ? ` (${tokens} tokens)` : ""} before finishing its answer`;
+
+/** How an end-of-run turn the loop asked ended: its answer's text, its deadline passed (the turn is aborted), or it
+ *  failed. */
+export type EndOfRunAnswer = { readonly ended: true; readonly answer: string } | { readonly timedOut: true } | { readonly failed: { readonly code: string; readonly message: string } };
+
+/**
+ * The end-of-run step (the learning lane's end-of-run turn): asked once, after the job's last turn ended and before the
+ * loop writes the run's end. `ask` sends one more turn through the run's own session, its origin `reflect`: while it
+ * runs the loop refuses its writes and edits under work/.learning/ (REFLECT_NOTE_ONLY), and it is aborted at
+ * `deadlineMs`. The rows it returns are staged into the end commit, so they land in that commit's one transaction or not
+ * at all. A stop or a lost claim aborts `signal`: no end is written, and the next claim asks again (the turn's request
+ * id is one per run, so its model is asked once).
+ */
+export type EndOfRunTurn = (input: {
+  readonly runId: string;
+  readonly agentId: string;
+  readonly claim: Claim;
+  /** How the job ended. */
+  readonly outcome: "completed" | "failed";
+  /** The run was cut before it could look back: by a person's stop (`stopped`), by one during the end-of-run turn
+   *  (`stopped-looking`), or by a fault (`faulted`). The step must not call `ask`: it returns only what a cut run keeps. */
+  readonly cut?: "stopped" | "stopped-looking" | "faulted";
+  /** `again`: the turn asked once more in the same session (its first answer out of format), as its own request. */
+  ask(prompt: string, opts: { readonly origin: "reflect"; readonly deadlineMs: number; readonly again?: true }): Promise<EndOfRunAnswer>;
+  readonly signal: AbortSignal;
+}) => Promise<{ readonly also: readonly AlsoRow[] } | undefined>;
 
 /** How a loop's start() ended. The run's own outcome (state, cost) is already in the journal's last commit. */
 export type LoopEnd =
@@ -32,6 +59,12 @@ export type StopReason =
   | { readonly kind: "claim-lost" }
   /** The runner is closing: the loop stops where it can resume, and the run is released to another runner. */
   | { readonly kind: "shutdown" };
+
+/** A claim its spec builder refuses before anything of the run runs (a handed sign-in that won't read back, an MCP pin
+ *  that can't be made): the loop ends the run failed in these words, with nothing sent. Its message names no secret. */
+export class ClaimRefused extends Error {
+  override name = "ClaimRefused";
+}
 
 /** The end a person's stop or cancel writes: stopped, in words that say which. A cancel's are main's ("cancelled"). */
 export function endedBy(cancel: boolean | undefined): string {
@@ -74,6 +107,8 @@ export interface LoopDeps {
   flush(): Promise<void>;
   /** Aborted on claim loss, self-stop or shutdown: in-flight model and tool calls are cut at once. */
   signal: AbortSignal;
+  /** The end-of-run step (EndOfRunTurn): asked once before a run that answered or failed writes its end. Absent: none. */
+  endOfRun?: EndOfRunTurn;
   /** Resolves once the claim's first delivery has handed every untaken row it read to command() (each call returned),
    *  or at once when there were none: a resumed ask with no answer row waits for it before it parks again, so an
    *  approve already on its way is never raced. Never rejects. */
@@ -84,6 +119,9 @@ export interface LoopDeps {
    *  The ticker writes it to the run's run_live row, one store transaction per tick for all its loops, never into the
    *  journal. Absent: not reported. */
   live?: (read: () => HeldState | undefined) => void;
+  /** The runner's one redactor (redact.ts): an error's text the loop writes to its run's end goes through it, so no
+   *  secret the runner holds is stored, and its values cut the run's live view (live-ticker.ts). Absent: none cut. */
+  redact?: Redact;
 }
 
 /** A run's held state: what pi shows before it stores it. The live view (live/stream.ts) streams it beside the stored

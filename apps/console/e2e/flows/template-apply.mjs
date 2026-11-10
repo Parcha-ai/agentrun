@@ -25,7 +25,9 @@ export default {
     const title = page.getByRole("heading", { level: 1 });
     await title.waitFor();
     check(!(await page.locator("main").innerText()).includes("${"), "the Apply screen shows a raw ${…} placeholder");
-    await page.locator('[data-field="parameters.risk_appetite"] input').fill(RISK);
+    // risk_appetite is one of low, medium or high (its pattern): a choice, never a box to type in.
+    await page.locator('[data-field="parameters.risk_appetite"] button[aria-haspopup="listbox"]').click();
+    await page.locator(`[role="option"][data-value="${RISK}"]`).click();
     await title.getByText(`KYB due diligence (${RISK} risk appetite)`, { exact: false }).waitFor();
     const answered = page.waitForResponse((r) => r.request().method() === "POST" && new URL(r.url()).pathname === `/v2/templates/${TEMPLATE}/apply`);
     await page.getByRole("button", { name: "Apply", exact: true }).click();

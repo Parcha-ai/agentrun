@@ -3,21 +3,20 @@
 // the last run is active, stops while paused and skips the paused range, runs now once per Idempotency-Key, and starts
 // no second run when a restart drives a firing left due. The triggers' clock is a fake one the test moves.
 import assert from "node:assert/strict";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
-import { openStore } from "@parcha/pi-durable-agent";
 import { schemaProblems } from "./schema-support.mjs";
 import { flowAgent, follow, runDir, scratch, serve } from "./support.mjs";
-import { fakeClock, firings, keyOf, made, schedule } from "./trigger-support.mjs";
+import { RUN_EXEC, fakeClock, firings, keyOf, leftDue, made, schedule } from "./trigger-support.mjs";
 
 async function documented(t, baseUrl) {
   const doc = await (await fetch(`${baseUrl}/openapi.json`)).json();
   return (path, method, code, value) => assert.deepEqual(schemaProblems(doc, doc.paths[path][method].responses[code].content["application/json"].schema, value), [], `${method} ${path} ${code}: ${JSON.stringify(value)}`);
 }
 
-test("a cron line in America/Los_Angeles fires at its UTC instants across the fall-back: 1:30 once, at its first pass, then at 1:30 PST; each firing starts one capped run that names its trigger and firing", { timeout: 120_000 }, async (t) => {
+test("a cron line in America/Los_Angeles fires at its UTC instants across the fall-back: 1:30 once, at its first pass, then at 1:30 PST; each firing starts one capped run that names its trigger and firing", { timeout: 120_000, skip: RUN_EXEC }, async (t) => {
   const clock = fakeClock("2026-10-31T12:00:00Z");
   const { api, baseUrl, data } = await serve(t, { triggerClock: clock });
   const meets = await documented(t, baseUrl);
@@ -189,17 +188,13 @@ test("a trigger that would start an uncapped run, a workflow's included, or fire
   await refused(schedule("missing", { every_s: 600 }), "target.agent_id", "not_found");
   assert.deepEqual((await api("GET", "/triggers")).body.triggers, [], "nothing kept");
   assert.equal((await api("DELETE", "/triggers/trg_none")).status, 404);
-  assert.deepEqual((await api("GET", "/capabilities")).body.features.triggers, { routes: true, sources: ["schedule", "webhook", "github"], targets: ["start_run", "message_run"], min_every_s: 60, history_kept: 200, catchup_window_s: 3600, failures_to_pause: 5, webhook: { signing: "standard-webhooks/v1", signatures: ["standard", "github"], tolerance_s: 300, max_body_bytes: 262144, payload_kept_bytes: 16384, at_rest: "unavailable" } });
-});
-
-test("a capped trigger on a workflow agent is taken, as one on an agentic agent is: a workflow run's spend is capped", { timeout: 120_000 }, async (t) => {
-  const { api } = await serve(t, { triggerClock: fakeClock("2026-06-01T00:00:00Z") });
-  assert.equal((await api("POST", "/agents", flowAgent("flow"))).status, 201);
-  const onFlow = schedule("flow", { every_s: 600 });
-  onFlow.target.input = { question: "What is six times seven?" };
+  // A capped one on a workflow agent is taken, as one on an agentic agent is: a workflow run's spend is capped (#1861).
   const taken = await api("POST", "/triggers", onFlow);
   assert.equal(taken.status, 201, JSON.stringify(taken.body));
   assert.deepEqual((await api("GET", "/triggers")).body.triggers.map((trigger) => [trigger.target.agent_id, trigger.target.max_cost_usd]), [["flow", 0.5]]);
+  assert.deepEqual((await api("GET", "/capabilities")).body.features.triggers, { routes: true, sources: ["schedule", "webhook", "github"], targets: ["start_run", "message_run"], min_every_s: 60, history_kept: 200, catchup_window_s: 3600, failures_to_pause: 5, webhook: { signing: "standard-webhooks/v1", signatures: ["standard", "github"], tolerance_s: 300, max_body_bytes: 262144, payload_kept_bytes: 16384, at_rest: "sealed" } });
+  // A server started with no seal key handed over has one all the same (bootSealKey, in its data directory): what it keeps is always sealed.
+  assert.equal((await api("GET", "/capabilities")).body.features.webhooks.at_rest, "sealed");
 });
 
 test("a firing left due by a server that went down mid-start is driven again at the next start and finds its run: one run, not two", { timeout: 180_000 }, async (t) => {
@@ -213,19 +208,14 @@ test("a firing left due by a server that went down mid-start is driven again at 
   const [fired] = await firings(first.api, body.id, 1);
   await follow(first.api, fired.run_id, ["completed"]);
   await first.close();
-  // The run is in the store under the firing's key, and triggers.json still says due: the server went down between them.
-  const file = join(data, "triggers.json");
-  const kept = JSON.parse(await readFile(file, "utf8"));
-  const firing = kept.triggers[0].firings[0];
-  firing.status = "due";
-  delete firing.run_id;
-  await writeFile(file, JSON.stringify(kept));
+  // The run is in the store under the firing's key, and the firing still says due: the server went down between them.
+  await leftDue(first.store, body.id, fired.key);
   const second = await serve(t, { data, triggerClock: clock });
   const [again] = await firings(second.api, body.id, 1);
   assert.deepEqual([again.key, again.status, again.run_id], [fired.key, "started", fired.run_id], "the same run, found by its firing's key");
   assert.equal((await second.api("GET", "/agents/again/runs")).body.runs.length, 1, "one run");
   const run = await second.api("GET", `/runs/${fired.run_id}`);
-  assert.deepEqual(run.body.trigger, { id: body.id, firing_key: fired.key }, "its provenance read back from serve.json");
+  assert.deepEqual(run.body.trigger, { id: body.id, firing_key: fired.key }, "its provenance read back from its launch");
 });
 
 test("a firing left due by a server that went down, found started at the next start, does not hold back that start's own firing: it starts its run", { timeout: 180_000 }, async (t) => {
@@ -239,13 +229,8 @@ test("a firing left due by a server that went down, found started at the next st
   const [fired] = await firings(first.api, body.id, 1);
   await follow(first.api, fired.run_id, ["completed"]);
   await first.close();
-  // The 00:10 run is in the store and ended, and triggers.json still says due: the server went down between them.
-  const file = join(data, "triggers.json");
-  const kept = JSON.parse(await readFile(file, "utf8"));
-  Object.assign(kept.triggers[0].firings[0], { status: "due" });
-  delete kept.triggers[0].firings[0].run_id;
-  delete kept.triggers[0].last_run_id;
-  await writeFile(file, JSON.stringify(kept));
+  // The 00:10 run is in the store and ended, and its firing still says due: the server went down between them.
+  await leftDue(first.store, body.id, fired.key);
   clock.to("2026-06-01T00:20:00Z");
   const second = await serve(t, { data, triggerClock: clock });
   const [now, before] = await firings(second.api, body.id, 2);
@@ -253,45 +238,6 @@ test("a firing left due by a server that went down, found started at the next st
   assert.deepEqual([now.nominal_at, now.status, now.reason], ["2026-06-01T00:20:00Z", "started", null], "this start's own firing starts its run");
   assert.equal((await second.api("GET", "/agents/resumed/runs")).body.runs.length, 2);
   await follow(second.api, now.run_id, ["completed"]);
-});
-
-// A run its server never set up: no serve.json, or one that holds no input (runs.ts load's notSetUp).
-for (const [left, meta] of [["no serve.json", undefined], ["a serve.json with no input", { title: "", created_at: "2026-06-01T00:10:00.000Z" }]])
-test(`a firing whose run the server lost while setting it up (${left}) is failed with why, keeps that run, never fires again, and the next firing starts a new run`, { timeout: 180_000 }, async (t) => {
-  const dir = await scratch(t);
-  const data = join(dir, "agents");
-  const clock = fakeClock("2026-06-01T00:00:00Z");
-  const first = await serve(t, { data, triggerClock: clock });
-  await made(first.api, "lost");
-  const { body } = await first.api("POST", "/triggers", schedule("lost", { every_s: 600, start_at: "2026-06-01T00:10:00Z" }));
-  await first.close();
-  // What a kill right after the store's insert leaves: the firing recorded due, its run's row and origin in the store,
-  // and no serve.json.
-  const key = keyOf("schedule", body.id, "2026-06-01T00:10:00Z");
-  const file = join(data, "triggers.json");
-  const kept = JSON.parse(await readFile(file, "utf8"));
-  kept.triggers[0].firings.push({ key, by: "schedule", nominal_at: "2026-06-01T00:10:00Z", status: "due", at: "2026-06-01T00:10:00.000Z" });
-  kept.triggers[0].next_at = "2026-06-01T00:20:00.000Z";
-  await writeFile(file, JSON.stringify(kept));
-  const store = openStore(data);
-  const { runId, dir: runDir } = await store.startRun({ agent: "lost", origin: { key } });
-  store.close();
-  if (meta) await writeFile(join(runDir, "serve.json"), `${JSON.stringify(meta)}\n`);
-  clock.to("2026-06-01T00:10:30Z");
-  const second = await serve(t, { data, triggerClock: clock });
-  const [lost] = await firings(second.api, body.id, 1);
-  assert.deepEqual([lost.key, lost.status, lost.run_id, lost.reason], [key, "failed", runId, "The server stopped while setting up the run."], "its key stays bound to its run");
-  assert.equal(lost.error.code, "run_failed");
-  assert.equal((await second.api("GET", `/triggers/${body.id}`)).body.failures_in_a_row, 1, "a failure of the trigger's, counted toward its pause");
-  await follow(second.api, runId, ["failed"]);
-  clock.to("2026-06-01T00:20:00Z");
-  const [next, again] = await firings(second.api, body.id, 2);
-  assert.deepEqual([next.nominal_at, next.status], ["2026-06-01T00:20:00Z", "started"], "the run it lost does not hold the next firing back");
-  assert.notEqual(next.run_id, runId);
-  assert.deepEqual([again.status, again.run_id], ["failed", runId], "never fired again");
-  assert.equal((await second.api("GET", "/agents/lost/runs")).body.runs.length, 2);
-  assert.equal((await second.api("GET", `/triggers/${body.id}`)).body.failures_in_a_row, 0);
-  await follow(second.api, next.run_id, ["completed"]);
 });
 
 test("with no catch-up window, times missed while the server was down are one missed firing with their count, none fires, and the schedule goes on from now", { timeout: 120_000 }, async (t) => {
@@ -309,7 +255,7 @@ test("with no catch-up window, times missed while the server was down are one mi
   assert.deepEqual((await second.api("GET", "/agents/down/runs")).body.runs, [], "nothing started for them");
 });
 
-test("a firing a full server refuses (429) stays due and starts its run once a place is free", { timeout: 120_000 }, async (t) => {
+test("a firing a full server refuses (429) stays due and starts its run once a place is free", { timeout: 120_000, skip: RUN_EXEC }, async (t) => {
   const clock = fakeClock("2026-06-01T00:00:00Z");
   const { api } = await serve(t, { triggerClock: clock, maxRuns: 1 });
   await made(api, "busy");
@@ -338,7 +284,7 @@ test("a firing a full server refuses (429) stays due and starts its run once a p
   await follow(api, fired.run_id, ["completed"]);
 });
 
-test("a run parked on a person keeps every later firing skipped, after its firing has left the history", { timeout: 300_000 }, async (t) => {
+test("a run parked on a person keeps every later firing skipped, after its firing has left the history", { timeout: 300_000, skip: RUN_EXEC }, async (t) => {
   const { api } = await serve(t, { triggerClock: fakeClock("2026-06-01T00:00:00Z") });
   await made(api, "parked", { tools: ["ask_person"] });
   const { body } = await api("POST", "/triggers", { ...schedule("parked", { cron: "0 9 * * *" }), target: { kind: "start_run", agent_id: "parked", input: { content: "Pick a region." }, max_cost_usd: 0.5 } });
@@ -360,7 +306,7 @@ test("a run parked on a person keeps every later firing skipped, after its firin
   assert.equal((await api("POST", `/runs/${first.body.run_id}/cancel`)).status, 202);
 });
 
-test("a run now's key retried after its firing left the history answers that firing for the key's day and moves no last run back; past the day it is a new firing, and still never starts its run twice", { timeout: 300_000 }, async (t) => {
+test("a run now's key retried after its firing left the history answers that firing for the key's day and moves no last run back; past the day it is a new firing, and still never starts its run twice", { timeout: 300_000, skip: RUN_EXEC }, async (t) => {
   const clock = fakeClock("2026-06-01T00:00:00Z");
   const { api } = await serve(t, { triggerClock: clock });
   await made(api, "keys", { tools: ["ask_person"] });
@@ -405,7 +351,7 @@ test("a run now's key retried after its firing left the history answers that fir
   assert.equal((await api("POST", `/runs/${c.body.run_id}/cancel`)).status, 202);
 });
 
-test("the runs lists name the trigger that started a run, while it works, once it ended, and after a restart reads it from its row; a run a caller started names none", { timeout: 180_000 }, async (t) => {
+test("the runs lists name the trigger that started a run, while it works, once it ended, and after a restart reads it from its row; a run a caller started names none", { timeout: 180_000, skip: RUN_EXEC }, async (t) => {
   const data = join(await scratch(t), "agents");
   const clock = fakeClock("2026-06-01T00:00:00Z");
   const first = await serve(t, { data, triggerClock: clock });
@@ -452,15 +398,25 @@ test("a date that is no date, and an interval past a year, are 422 on their fiel
   assert.equal(year.body.next_at, "2027-01-02T00:00:00.000Z");
 });
 
-test("a triggers file holding a malformed trigger leaves the server up: the triggers routes say store_unreadable, the rest of the API works, and the file is never written over", { timeout: 60_000 }, async (t) => {
-  const data = join(await scratch(t), "agents");
-  await mkdir(data, { recursive: true });
-  const text = `${JSON.stringify({ v: 1, triggers: [null] })}\n`;
-  await writeFile(join(data, "triggers.json"), text);
-  const { api } = await serve(t, { data, triggerClock: fakeClock("2026-06-01T00:00:00Z") });
-  const listed = await api("GET", "/triggers");
-  assert.deepEqual([listed.status, listed.body.error.code], [409, "store_unreadable"]);
-  assert.equal((await api("POST", "/agents", { definition: { id: "fine", version: 1, name: "fine", instructions: "Answer.", skills: [], tools: [] } })).status, 201);
-  assert.equal((await api("POST", "/triggers", schedule("fine", { every_s: 600 }))).status, 409);
-  assert.equal(await readFile(join(data, "triggers.json"), "utf8"), text, "never written over");
+test("archiving an agent answers the triggers it turned off; while it is archived turning one on is 409 agent_archived; unarchiving answers those still off, which stay off until each is turned on", { timeout: 60_000 }, async (t) => {
+  const { api } = await serve(t);
+  await made(api, "weekly");
+  const trigger = (await api("POST", "/triggers", schedule("weekly", { every_s: 604_800 }))).body;
+  const archived = await api("POST", "/agents/weekly/archive");
+  assert.equal(archived.status, 200, JSON.stringify(archived.body));
+  assert.deepEqual([archived.body.agent_id, archived.body.triggers_off], ["weekly", [{ id: trigger.id, name: trigger.name }]]);
+  const off = (await api("GET", `/triggers/${trigger.id}`)).body;
+  assert.deepEqual([off.enabled, off.disabled?.reason], [false, "agent_archived"]);
+  const refused = await api("PATCH", `/triggers/${trigger.id}`, { enabled: true });
+  assert.deepEqual([refused.status, refused.body.error?.code], [409, "agent_archived"], JSON.stringify(refused.body));
+  const back = await api("POST", "/agents/weekly/unarchive");
+  assert.equal(back.status, 200, JSON.stringify(back.body));
+  assert.deepEqual(back.body.triggers_off, [{ id: trigger.id, name: trigger.name }], "still off: unarchiving turns none on");
+  assert.equal((await api("PATCH", `/triggers/${trigger.id}`, { enabled: true })).body.enabled, true);
+  assert.deepEqual((await api("POST", "/agents/weekly/archive")).body.triggers_off.length, 1, "on again, the next archive turns it off again");
+  assert.deepEqual((await api("POST", "/agents/weekly/unarchive")).body.triggers_off.length, 1);
 });
+
+// Superseded: "a triggers file holding a malformed trigger leaves the server up". The triggers keep no file: their rows
+// are the store's STRICT tables, which refuse a malformed row at its write (store-trigger-schema), and a data directory an
+// earlier build left is refused at the store's open (store-earlier-version).

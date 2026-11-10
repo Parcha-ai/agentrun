@@ -16,6 +16,7 @@
 import type { Context } from "@earendil-works/chord";
 import type { CommitResult, ConversationId, EntryRecord, StorageWrite } from "@earendil-works/pi-durable";
 import type { KernelHooks, ToolCall } from "./conformance/subject.js";
+import { KINDS } from "./journal-kinds.js";
 import { type Command, cutAtLimit, type HeldState, type Journal, type LoopDeps } from "./loop-contract.js";
 import { PI_STOP } from "./pi-stop.js";
 import type { Staged } from "../store/store.js";
@@ -36,6 +37,8 @@ export const quiet: KernelHooks = { beforeIntent: async () => {}, beforeResult: 
 export const CLOSE_MS = 2_000;
 /** How long a person's stop waits for the turn to settle, by default. */
 export const STOP_SETTLE_MS = 30_000;
+/** The most a cut run's end-of-run step (a store read), or the end's patch, may take before the end is written without it. */
+export const CUT_STEP_MS = 2_000;
 
 /** Where a commit's batches hold what an expectation waits for: the batch's index and the matched record's id. */
 type Matched = { readonly index: number; readonly id: number };
@@ -168,11 +171,17 @@ export function heldStateOf(value: unknown): HeldState | undefined {
   return { tools, ...(text ? { partial: { text } } : {}) };
 }
 
-/** Why the run fails, when the answer it would end on (the root's last pi.assistant) was cut at the model's output limit
+/** Why the run fails, when the answer it would end on (the root's last pi.assistant, or a CLI record's last model message)
+ *  was cut at the model's output limit
  *  (stopReason "length"): unfinished, so never ended. A cut answer the run went on from (a later turn answered after it)
  *  is not its last, and changes nothing. */
 export function cutLast(entries: readonly EntryRecord[]): string | undefined {
-  const last = [...entries].reverse().find((entry) => entry.kind === "pi.assistant");
+  // The newest model answer: pi's assistant entry, or a CLI record's model message (its turn_end's stop reason).
+  const last = [...entries].reverse().find((entry) => entry.kind === "pi.assistant" || (entry.kind === KINDS.message && (entry.data as { role?: unknown } | undefined)?.role === "model"));
+  if (last?.kind === KINDS.message) {
+    const said = last.data as { stopReason?: string; outputTokens?: number };
+    return said.stopReason === "length" ? cutAtLimit(said.outputTokens) : undefined;
+  }
   const message = (last as { model?: { stopReason?: string; usage?: { output?: number } }[] } | undefined)?.model?.[0];
   return message?.stopReason === PI_STOP.length ? cutAtLimit(message.usage?.output) : undefined;
 }

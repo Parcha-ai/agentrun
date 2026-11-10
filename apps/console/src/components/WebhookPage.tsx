@@ -49,8 +49,8 @@ export function WebhookPage({ v2, atRest }: { v2: Client; atRest?: "sealed" | "u
       const saved = await v2.saveWebhook(url.trim());
       // Shown this once: the answer that made it holds it, and nothing reads it again. The answer is the webhook as
       // saved, shown at once, whatever the read after it does.
-      if (saved.secret) setSecret(saved.secret);
-      const { secret: _shown, ...view } = saved;
+      if (saved.signing_secret) setSecret(saved.signing_secret);
+      const { signing_secret: _shown, ...view } = saved;
       setWebhook(view);
     });
   };
@@ -104,7 +104,7 @@ export function WebhookPage({ v2, atRest }: { v2: Client; atRest?: "sealed" | "u
           {removing && (
             <div className="mt-3 flex flex-wrap items-center gap-2 text-body">
               <span>Its pending messages are dropped; the log of attempts stays.</span>
-              <Button type="button" variant="destructive" disabled={busy} onClick={() => { setRemoving(false); setUrl(""); setTested(null); void act("The webhook was not removed", async () => { await v2.removeWebhook(); setWebhook({ configured: false }); setSecret(null); }); }}>Remove the webhook</Button>
+              <Button type="button" variant="destructive" disabled={busy} onClick={() => { setRemoving(false); setUrl(""); setTested(null); void act("The webhook was not removed", async () => { await v2.removeWebhook(); setWebhook({ configured: false, secret: { name: "webhook:outbound", set: false, source: null, changed_at: null } }); setSecret(null); }); }}>Remove the webhook</Button>
               <Button type="button" variant="ghost" onClick={() => setRemoving(false)}>Cancel</Button>
             </div>
           )}

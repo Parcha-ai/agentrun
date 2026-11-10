@@ -22,15 +22,16 @@ const reviewed = new Map([
   ['packages/computer/src/entry.ts', realpathForm],
   ['packages/pi-durable-disk/src/cli.ts', realpathForm],
   ['packages/pi-durable-agent/test/agent-store.test.mjs', childScript],
-  ['packages/serve/test/graph-lockfree.test.mjs', childScript],
   ['packages/pi-durable-agent/test/serve-store.test.mjs', childScript],
   ['packages/pi-durable-agent/test/serve.test.mjs', childScript],
   ['packages/pi-durable-disk/test/commands.test.ts', childScript],
   ['packages/pi-durable-disk/test/place.test.ts', childScript],
   ['packages/pi/test/signin-entry.test.mjs', childScript],
   ['packages/serve/test/secret-custody.test.mjs', childScript],
+  ['packages/serve/test/learn-support.mjs', childScript],
   ['packages/computer/test/phone-provider.test.mjs', childScript],
   ['spec/lean/sweep/capture-dsl.mjs', label],
+  ['packages/serve/test/store-target.mjs', label],
 ]);
 
 const suspect = (source) => source.includes('process.argv[1]');

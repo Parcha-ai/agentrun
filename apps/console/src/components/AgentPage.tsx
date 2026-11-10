@@ -9,7 +9,7 @@ import { RunBar } from "@/components/RunBar";
 import { AgentSkeleton, ListSkeleton } from "@/components/Skeleton";
 import { StatusBadge } from "@/components/StatusBadge";
 import { LearningTab } from "@/components/Learning";
-import { LearningChips } from "@/components/LearningChips";
+import { LearningChips, WaitingCount } from "@/components/LearningChips";
 import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
 import { GraphLegend, WorkflowGraph } from "@/components/WorkflowGraph";
@@ -17,9 +17,11 @@ import { Tabs } from "@/components/ui/tabs";
 import { type Agent, runsWhere } from "@/lib/agentForm";
 import { type Client, ClientError } from "@/lib/client";
 import { cost, runEnded, soFar, when, runTitle } from "@/lib/format";
+import { waitingOf } from "@/lib/learning";
 import { appendRuns } from "@/lib/idempotency";
 import { harnessDefault, type HarnessInfo, modelLabel, NO_MODEL_YET } from "@/lib/models";
 import { placeLabel, type Places } from "@/lib/place";
+import { providerLabel } from "@/lib/toolSettings";
 import { type Problem, problem } from "@/lib/problem";
 import { elapsed, metaOf } from "@/lib/runGraph";
 import { cn } from "@/lib/utils";
@@ -34,7 +36,7 @@ type Server = { analytics: boolean };
 /** What the Learning tab takes beside a tab's own: the notes an address points at (`focus`), the server's learning
  *  switch, and the agent as the tab's write left it (`onAgent`, a new revision). `learning` beside the server's: whether
  *  it has learning at all, undefined until its capabilities are read. */
-type LearningTabProps = { focus?: string[]; learning?: "on" | "off" | null; onAgent?: (agent: Agent) => void; places?: Places | null };
+type LearningTabProps = { focus?: string[]; learning?: "on" | "off" | null; onAgent?: (agent: Agent) => void; places?: Places | null; onChanged?: () => void };
 type LearningServer = { learning?: boolean };
 
 /** The page's tabs, in order, each at `#/agents/{id}/{tab}`. A tab shows only on an agent it has content for; a new one
@@ -42,7 +44,7 @@ type LearningServer = { learning?: boolean };
 const TABS: { id: string; label: string; shows: (a: Agent, server: Server & LearningServer) => boolean; Body: (p: TabProps & LearningTabProps) => JSX.Element }[] = [
   { id: "runs", label: "Runs", shows: () => true, Body: RunsTab },
   { id: "workflow", label: "Workflow", shows: (a) => a.kind === "workflow", Body: WorkflowTab },
-  { id: "learning", label: "Learning", shows: (a, server) => a.kind === "agentic" && server.learning !== false, Body: (p) => <LearningTab agent={p.agent} v2={p.v2} focus={p.focus} server={p.learning} onAgent={p.onAgent} places={p.places} /> },
+  { id: "learning", label: "Learning", shows: (a, server) => a.kind === "agentic" && server.learning !== false, Body: (p) => <LearningTab agent={p.agent} v2={p.v2} focus={p.focus} server={p.learning} onAgent={p.onAgent} places={p.places} onChanged={p.onChanged} /> },
   { id: "analytics", label: "Analytics", shows: (_, server) => server.analytics, Body: AnalyticsTab },
 ];
 
@@ -55,7 +57,7 @@ export const agentHash = (id: string, view?: string) => `#/agents/${encodeURICom
  *  `learning`: the server's learning switch, undefined until its capabilities are read and null when it has none;
  *  `notes`: the notes an address in the Learning tab points at. `places`: the server's places (capabilities `places`), for
  *  where a revision that names no place runs. */
-export function AgentPage({ v2, agentId, defaultModel, modelSource, routePrefix, harnesses, efforts = [], go, tab, limits, learning, notes, places }: { v2: Client; agentId: string; defaultModel?: string; modelSource?: string; routePrefix?: string | null; harnesses?: HarnessInfo[]; efforts?: string[]; go: (hash: string) => void; tab?: string; limits?: UploadLimits; learning?: "on" | "off" | null; notes?: string[]; places?: Places | null }) {
+export function AgentPage({ v2, agentId, routePrefix, harnesses, efforts = [], go, tab, limits, learning, notes, places }: { v2: Client; agentId: string; routePrefix?: string | null; harnesses?: HarnessInfo[]; efforts?: string[]; go: (hash: string) => void; tab?: string; limits?: UploadLimits; learning?: "on" | "off" | null; notes?: string[]; places?: Places | null }) {
   const [agent, setAgent] = useState<Agent | null>(null);
   // The agent's read failed: a 404 is an agent this server has no record of; anything else is said in words.
   const [error, setError] = useState<{ cause: unknown } | null>(null);
@@ -72,6 +74,25 @@ export function AgentPage({ v2, agentId, defaultModel, modelSource, routePrefix,
     v2.statsOver({ from: rangeFrom(FIRST_RANGE), agent: agentId }).then((r) => { if (live) setStats(r); }, () => { if (live) setStats(null); });
     return () => { live = false; };
   }, [v2, agentId, tries]);
+  // Learned items that wait for the owner's OK, counted on the Learning tab from the agent's own `learning.pending`: no
+  // read of what it learned for it. A write on the tab (an approve, a retire, an edit) reads the agent again for it.
+  const itemsWaiting = waitingOf(agent);
+  // The agent read again after a write on the page: the Learning tab's own (an approve, a retire, an edit: `onChanged`)
+  // and the learning switch's save (`onAgent`, whose answer carries no `tools`: only GET /v2/agents/{id} serves them, so
+  // the page shows the save's answer with the tools it showed until the read lands). One counter for both: only the
+  // newest read lands, so one answered last never puts back an older count or revision. A read that fails says so, with
+  // a retry.
+  const rereads = useRef(0);
+  const [stale, setStale] = useState(false);
+  const reread = () => {
+    const n = ++rereads.current;
+    v2.getAgent(agentId).then(
+      (r) => { if (n === rereads.current) { setAgent((cur) => (cur && cur.agent_id === r.agent.agent_id ? r.agent : cur)); setStale(false); } },
+      () => { if (n === rereads.current) setStale(true); },
+    );
+  };
+  const onAgent = (saved: Agent) => { setAgent((cur) => ({ ...saved, tools: cur?.tools ?? saved.tools })); reread(); };
+  const onChanged = reread;
   const analytics = stats === undefined ? undefined : stats !== null;
   if (error) return error.cause instanceof ClientError && error.cause.status === 404
     ? <NotHere what="agent" id={agentId} list={{ href: "#/agents", label: "Open the agents list" }} />
@@ -81,14 +102,12 @@ export function AgentPage({ v2, agentId, defaultModel, modelSource, routePrefix,
   const workflow = agent.kind === "workflow";
   const Icon = workflow ? Workflow : Bot;
   // A workflow revision has no harness, model or thinking of its own (the server refuses them beside a workflow).
-  // The model as a person reads it (the gateway's routing prefix off, the full id in a title): its own, else this
-  // harness's default, else none for a harness the server's default is not offered for.
-  const models = { source: modelSource, default: defaultModel, route_prefix: routePrefix };
-  const fallback = harnessDefault(d.harness ?? "pi", harnesses, defaultModel);
-  const model = d.model ? modelLabel(d.model, models)
-    : fallback ? (({ text, title }) => ({ text: `${text} (default)`, title }))(modelLabel(fallback, models))
-    // A server that names each harness's default and names none for this one: there is none, for pi too.
-    : { text: (d.harness ?? "pi") === "pi" && !harnesses?.some((h) => h.id === "pi" && "default_model" in h) ? "default" : NO_MODEL_YET };
+  // The model as a person reads it (the gateway's routing prefix off, the full id in a title): its own, else the default
+  // the server names for this harness (capabilities' harnesses[].default_model), else none yet.
+  const fallback = harnessDefault(d.harness ?? "pi", harnesses);
+  const model = d.model ? modelLabel(d.model, routePrefix)
+    : fallback ? (({ text, title }) => ({ text: `${text} (default)`, title }))(modelLabel(fallback, routePrefix))
+    : { text: NO_MODEL_YET };
   // A harness the server can't run: why, where its Run would fail (capabilities' harnesses[].reason).
   const off = workflow ? undefined : harnesses?.find((h) => h.id === (d.harness ?? "pi") && h.available === false);
   const offText = off ? `${off.id} doesn't run on this server${off.reason ? `: ${off.reason}` : "."}` : undefined;
@@ -135,13 +154,36 @@ export function AgentPage({ v2, agentId, defaultModel, modelSource, routePrefix,
           {facts.map(([k, v, title]) => (
             <div key={k} className="flex items-baseline gap-2"><dt className="caps text-micro text-muted-foreground">{k}</dt><dd className="font-mono text-small" title={title}>{v}</dd></div>
           ))}
+          {/* The tools the current revision grants, as GET /v2/agents/{id} serves them (the provider and permission in force,
+              the agent's own setting over the server's): the name (its line for people as its title), the provider where
+              it has a choice of one, the permission. A workflow's tools are its call nodes', which its editor shows. */}
+          {!workflow && (
+            <div className="flex items-baseline gap-2">
+              <dt className="caps text-micro text-muted-foreground">Tools</dt>
+              <dd className="font-mono text-small">
+                {agent.tools?.length ? (
+                  <ul className="flex flex-wrap gap-x-4 gap-y-1" aria-label="Tools">
+                    {agent.tools.map((t) => (
+                      <li key={t.name}><span title={t.blurb}>{t.name}</span>{t.provider ? ` · ${providerLabel(t.provider, t.name)}` : ""}{t.permission ? ` · ${t.permission}` : ""}</li>
+                    ))}
+                  </ul>
+                ) : "none"}
+              </dd>
+            </div>
+          )}
         </dl>
+        {stale && (
+          <p role="alert" className="mt-3 flex items-center gap-3 text-body text-warning-text">
+            Couldn't refresh this agent.
+            <Button size="sm" variant="outline" onClick={reread}>Retry</Button>
+          </p>
+        )}
         {offText && <p className="mt-3 font-mono text-small text-warning-text" role="status" aria-label="Harness not available">{offText}</p>}
       </header>
       {!agent.archived_at && <RunBar agent={agent} efforts={efforts} v2={v2} go={go} blocked={offText} limits={limits} />}
-      <Tabs tabs={tabs} value={at.id} onChange={(id) => go(agentHash(agent.agent_id, id))} />
+      <Tabs tabs={tabs.map((t) => (t.id === "learning" ? { ...t, label: <>{t.label}<WaitingCount n={itemsWaiting} className="ml-1.5" /></> } : t))} value={at.id} onChange={(id) => go(agentHash(agent.agent_id, id))} />
       <div role="tabpanel" aria-label={waiting ? undefined : at.label} className="min-h-0 flex-1 overflow-auto px-5 py-6 md:px-8">
-        {waiting ? <ListSkeleton label="Loading the tab" rows={4} /> : <at.Body agent={agent} v2={v2} go={go} stats={stats} focus={notes} learning={learning} onAgent={setAgent} places={places} />}
+        {waiting ? <ListSkeleton label="Loading the tab" rows={4} /> : <at.Body agent={agent} v2={v2} go={go} stats={stats} focus={notes} learning={learning} onAgent={onAgent} onChanged={onChanged} places={places} />}
       </div>
     </div>
   );

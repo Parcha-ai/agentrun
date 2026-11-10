@@ -164,7 +164,7 @@ Import from `@/components/ui`.
 | A state or a kind | `Chip` with a tone; a run's state through `StatusBadge` | A hand-built span. |
 | A text field | `Field` around `Input` or `Textarea`. `note` goes before the control, `hint` after it | A bare `<input>` with its own classes. |
 | A field with an icon or buttons inside its edge | A box with `fieldBoxClass` around `<Input bare>` or `<Textarea bare>` | A field with `outline-none` and no focus of its own. |
-| A choice from a list | `Picker` (opens under its field); `NativeSelect` for a short list in a dense row | A bare `<select>`. |
+| A choice from a list | `Picker` (opens under its field), for every list; inside a `Field` the label, hint and error are wired to it | A bare `<select>`. |
 | One choice of a few, all in view | `Segmented`; `Radio`s in a `<Field group>` when each needs a sentence | Buttons that look like tabs. |
 | Any of several | `Checkbox`; a native input with `accent-primary` where a row has its own layout | |
 | On or off, taking effect at once | `Switch` | A checkbox. |

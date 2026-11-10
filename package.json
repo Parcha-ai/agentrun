@@ -1,18 +1,19 @@
 {
   "name": "agentrun-dsl-workspace",
   "private": true,
-  "version": "0.1.0-beta.31",
+  "version": "0.1.0-beta.32",
   "type": "module",
   "workspaces": [
     "packages/*"
   ],
   "engines": {
-    "node": ">=22.19.0"
+    "node": ">=24.11.0"
   },
   "scripts": {
     "build": "node scripts/check-node.mjs && node scripts/build-console.mjs && node scripts/build-workspaces.mjs",
     "test": "node scripts/test-workspaces.mjs",
     "test:changed": "node scripts/test-workspaces.mjs --changed",
+    "test:affected": "node scripts/test-affected.mjs --run",
     "typecheck": "npm run typecheck --workspaces --if-present && tsc -p examples/tsconfig.json",
     "check": "npm run build && node scripts/generate-schema.mjs --check && node scripts/generate-author-contract.mjs --check && node scripts/generate-author-references.mjs --check && node scripts/generate-clients.mjs --check && npm run typecheck && npm test && npm run test:release && npm run test:examples",
     "demo": "node scripts/check-node.mjs && node examples/run-typed-research.ts",

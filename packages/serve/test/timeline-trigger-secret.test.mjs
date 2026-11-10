@@ -44,12 +44,12 @@ test("a webhook trigger's secret pasted into a run's message, as hex, base64 or 
   assert.equal((await api("POST", "/agents", agent("target"))).status, 201);
   const created = await api("POST", "/triggers", hooked);
   assert.equal(created.status, 201, JSON.stringify(created.body));
-  const first = formsOf(created.body.secret);
+  const first = formsOf(created.body.signing_secret);
   const shown = await pasted(t, api, "pasted", first);
   for (const [form, value] of Object.entries(first)) assert.equal(holdsPiece(shown, value), false, `the secret's ${form} form shows nowhere: ${shown.slice(0, 600)}`);
   const rotated = await api("POST", `/triggers/${created.body.id}/secret`);
   assert.equal(rotated.status, 200, JSON.stringify(rotated.body));
-  const next = formsOf(rotated.body.secret);
+  const next = formsOf(rotated.body.signing_secret);
   const after = await pasted(t, api, "rotated", next);
   for (const [form, value] of Object.entries(next)) assert.equal(holdsPiece(after, value), false, `the new secret's ${form} form shows nowhere: ${after.slice(0, 600)}`);
 });

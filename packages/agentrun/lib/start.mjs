@@ -101,7 +101,7 @@ export function npmExecOf(env, from = process.ppid) {
 }
 
 export const USAGE = `Usage: npx @parcha/agentrun [--port N] [--data DIR] [--no-open]   start the server
-       npx @parcha/agentrun import|reset-password [--data DIR]   a server command
+       npx @parcha/agentrun import|reset-password|runner [--data DIR]   a server command (runner: one more runner on this store)
        npx @parcha/agentrun <command> [args]   the server's API: agents, runs, triggers, ..., api (npx @parcha/agentrun help)`;
 
 /** The server's launcher, installed with this package (its dependency), or undefined. */
@@ -119,7 +119,7 @@ export const serverArgs = (argv) => (argv.includes("--no-open") ? argv.filter((a
 
 /** The server's own commands (its CLI's first word), which this command runs on its store: every other first word is
  *  the CLI's, which names a command it has or says it has none. */
-export const SERVER_COMMANDS = ["eval-template", "import", "reset-password", "validate-template"];
+export const SERVER_COMMANDS = ["eval-template", "import", "reset-password", "runner", "validate-template"];
 
 /** How many of the server's refusals and ignored deliveries a start says, each route and reason once, before one line
  *  that says the rest are not: under this command the server's log goes nowhere else (its stdout is read here and dropped). */
@@ -130,7 +130,7 @@ const REFUSED = new Map([
   ["wrong_token", "the API token is not this server's"],
   ["no_credential", "it carried no API token"],
   ["wrong_password", "the password is wrong"],
-  ["sign_in_table_full", "too many sign-ins at once"],
+  ["sign_in_table_full", "a sign-in from more addresses than the limit counts one by one"],
 ]);
 
 /** The fields of one of the server's log lines (print.ts: `key=value` or `key="value"`); a repeated key keeps its first

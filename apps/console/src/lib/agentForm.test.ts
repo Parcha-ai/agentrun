@@ -105,6 +105,38 @@ describe("the agent's default spend cap per run (definition.max_cost_usd)", () =
   });
 });
 
+describe("the agent's computer (definition.computer)", () => {
+  // The server keeps `place` as computer's view and writes both from either: the console writes computer, never place.
+  const placed = { ...(agent.body as object), definition: { ...agent.body.definition, place: { mode: "sandbox", box: "docker" }, computer: { kind: "sandbox", provider: "docker" } } } as never;
+  it("a new agent's first revision carries the computer picked, and no place", () => {
+    const f = { name: "A", description: "", instructions: "Do it.", harness: "pi", tools: [] };
+    const body = createBody({ ...f, computer: { kind: "desktop", provider: "orgo" } }).definition;
+    expect(body.computer).toEqual({ kind: "desktop", provider: "orgo" });
+    expect(body).not.toHaveProperty("place");
+  });
+  it("a new agent's first revision never carries a place, whatever the form held: the computer is the setting", () => {
+    const body = createBody({ name: "A", description: "", instructions: "Do it.", harness: "pi", tools: [], place: { mode: "sandbox", box: "docker" } } as never).definition;
+    expect(body).not.toHaveProperty("place");
+  });
+  it("a new agent with no computer picked sends none: the server gives it its default", () => {
+    const body = createBody({ name: "A", description: "", instructions: "Do it.", harness: "pi", tools: [] }).definition;
+    expect(body).not.toHaveProperty("computer");
+    expect(body).not.toHaveProperty("place");
+  });
+  it("a starter (a workflow agent) never carries a computer", () => {
+    expect(createBody({ name: "A", description: "", instructions: "", harness: DECISION, tools: [], decisionProvider: "jev", computer: { kind: "sandbox", provider: "docker" } }).definition).not.toHaveProperty("computer");
+  });
+  it("an edit that changes the computer sends the new one and drops the old place, which would say the old one", () => {
+    const body = editBody(placed, { computer: { kind: "none" } }, "");
+    expect(body.definition.computer).toEqual({ kind: "none" });
+    expect(body.definition).not.toHaveProperty("place");
+    expect(body.unchanged).toBe(false);
+  });
+  it("an edit that keeps the computer is unchanged, whatever place the read carried beside it", () => {
+    expect(editBody(placed, { computer: { kind: "sandbox", provider: "docker" } }, "").unchanged).toBe(true);
+  });
+});
+
 describe("capOf, the default cap field's text", () => {
   it("empty is none, a number (with or without a leading $) is that number, and a $ alone or text is refused", () => {
     expect(capOf("")).toEqual({ ok: true, value: undefined });
@@ -119,8 +151,8 @@ describe("harnessOptions", () => {
   it("offers pi, Claude and Codex in that order, each available or disabled with the server's reason", () => {
     expect(harnessOptions(caps.body.harnesses)).toEqual([
       { id: "pi", label: "Pi", available: true, reason: undefined },
-      { id: "claude-agent", label: "Claude", available: false, reason: "This server does not run claude-agent yet." },
-      { id: "codex", label: "Codex", available: false, reason: "This server does not run codex yet." },
+      { id: "claude-agent", label: "Claude", available: false, reason: "claude-agent needs ANTHROPIC_API_KEY." },
+      { id: "codex", label: "Codex", available: false, reason: "codex needs OPENAI_API_KEY, or a gateway in AGENT_MODEL_BASE_URL." },
     ]);
   });
   it("offers nothing the server does not list", () => {
@@ -328,12 +360,8 @@ describe("sandbox-only tools", () => {
   });
 });
 
-// Where an agent runs: a new agent's place goes in its first revision, and a tool's reason from the server is kept.
+// Where an agent runs (its computer: "the agent's computer" above), and a tool's reason from the server is kept.
 describe("places in the definition", () => {
-  it("createBody carries the place the form picked, and none when it picked none", () => {
-    expect(createBody({ name: "A", description: "", instructions: "Do it.", harness: "pi", tools: ["read", "bash"], place: { mode: "sandbox", box: "docker" } }).definition.place).toEqual({ mode: "sandbox", box: "docker" });
-    expect(createBody({ name: "A", description: "", instructions: "Do it.", harness: "pi", tools: [] }).definition).not.toHaveProperty("place");
-  });
   it("toolOffers keeps a tool's reason, for a tool the server can't run with nothing missing", () => {
     expect(toolOffers([{ name: "bash", available: false, sandbox_only: true, reason: "fixture: no box" }])).toEqual([{ name: "bash", available: false, sandbox_only: true, reason: "fixture: no box" }]);
   });

@@ -31,6 +31,9 @@ const failure = (e: unknown): Failure => ({ api: asApiError(e), title: refusalTi
  *  messages. A write's acceptance is not its effect: the page shows what the run and its timeline say afterwards. */
 export function LiveRun({ v2, runId, caps, agentName }: { v2: Client; runId: string; caps: Capabilities | null; agentName: (id: string) => string }) {
   const [run, setRun] = useState<Run | null>(null);
+  // The newest timeline page's cost: each page carries the run's cost as it stands, so while the run works the header
+  // follows it (the first read of the run can be older than every priced request); once it ends, the run's own read has it.
+  const [pageCost, setPageCost] = useState<Run["cost"] | null>(null);
   const [rows, setRows] = useState<TimelineRow[]>([]);
   const [files, setFiles] = useState<RunFile[]>([]);
   const [error, setError] = useState<Failure | null>(null);
@@ -68,13 +71,18 @@ export function LiveRun({ v2, runId, caps, agentName }: { v2: Client; runId: str
   useResumed(() => { void refresh(); });
   useEffect(() => {
     const ctl = new AbortController();
+    setPageCost(null);
     follow(v2, runId, {
       signal: ctl.signal,
       // A tool round can write files while the run stays working: re-read them when a call ends (its result row; with one
       // row per action, its own row stopping running).
       onRows: (r) => { setRows(r); const seen = r.filter((x) => x.kind === APPROVAL_ROW).map((x) => `${x.id}\u0000${x.summary}`).join("\u0001"); if (seen !== approvals.current) { approvals.current = seen; void refresh(); } const n = r.filter((x) => x.kind === "tool_result").length; if (n > toolResults.current) { toolResults.current = n; const k = fileReads.begin(); void v2.listFiles(runId).then((f) => { if (fileReads.current(k)) setFiles(f.files); }).catch(() => {}); } },
       // A page names the run's status and state: when they move, the run record (result, error, cost) and files move too.
-      onPage: (p) => { const s = `${p.status}/${p.state}`; if (s !== status.current) { status.current = s; void refresh(); } },
+      // A run that waits on the person can move from one wait to the next with the same status and state (a hand-back
+      // answers the agent's browser ask and it asks its question at once, between two timeline reads, which sample the run
+      // about once a second): while it waits, a page that brings anything new reads the run again, so its `pending` (the
+      // card the person answers) is never an earlier wait's.
+      onPage: (p) => { if (p.cost) setPageCost(p.cost); const s = `${p.status}/${p.state}`; if (s !== status.current || (p.status === "input_required" && !p.unchanged)) { status.current = s; void refresh(); } },
     }).catch((e) => { if (!ctl.signal.aborted) setError(failure(e)); });
     return () => ctl.abort();
   }, [runId, follows]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -119,6 +127,13 @@ export function LiveRun({ v2, runId, caps, agentName }: { v2: Client; runId: str
     return refused;
   };
 
+  // A take-over or a hand-back of the run's computer (an ask's answer among them): its answer goes back to the Screen tab
+  // (who drives, or the refusal), and the run and its timeline are read again after it either way: an answered ask moves
+  // the run on.
+  const computerMove = async <T,>(go: () => Promise<T>): Promise<T> => {
+    try { return await go(); } finally { await refresh(); setFollows((n) => n + 1); }
+  };
+
   // A workflow run's graph is read here, outside the tabs, so the header's cost (its totals) stays current whichever tab is
   // open. A server without the route gives the run's other views only.
   const graph = useRunGraph((signal) => v2.getRunGraph(runId, signal), { key: runId, enabled: run?.kind === "workflow" });
@@ -130,13 +145,15 @@ export function LiveRun({ v2, runId, caps, agentName }: { v2: Client; runId: str
     // Try again reads the run and its files, and follows its timeline again (a failed first read ended that).
     return <ProblemCard problem={problem(error.cause, "the run")} onRetry={() => { setError(null); void refresh(); setFollows((n) => n + 1); }} />;
   }
+  // While it works, the run with the newest page's cost; ended, the run as its own read says (the end-of-run read).
+  const shown = pageCost && !FINAL_RUN.has(run.status) ? { ...run, cost: pageCost } : run;
   return (
     <div className="flex h-full min-h-0 flex-col">
       {error && <div className="border-b p-3"><RunError title={error.title} error={error.api} /></div>}
-      <RunDetail key={run.run_id} run={run} agentName={agentName(run.agent_id)} messages={offer.messages} harnessSteers={offer.steers}
+      <RunDetail key={run.run_id} run={shown} agentName={agentName(run.agent_id)} messages={offer.messages} harnessSteers={offer.steers}
         graphView={run.kind === "workflow" && !noGraph ? <LiveGraph v2={v2} runId={runId} graph={graph} onMoved={() => { void refresh(); }} /> : undefined}
         costText={run.kind === "workflow" && !FINAL_RUN.has(run.status) && graph.data ? graphCostText(graph.data) : undefined}
-        rows={rows} files={files} readFile={(f) => v2.readFile(runId, f.path)} readLearningDiff={() => v2.runLearningDiff(runId)} readBrowser={() => v2.runBrowser(runId)} onMessage={message} onApprove={approve}
+        rows={rows} files={files} readFile={(f) => v2.readFile(runId, f.path)} readLearningDiff={() => v2.runLearningDiff(runId)} readComputer={() => v2.runComputer(runId)} onTakeOver={() => computerMove(() => v2.takeOverComputer(runId))} onHandBack={(outcome) => computerMove(() => v2.handBackComputer(runId, outcome))} readComputers={() => v2.computers()} onMessage={message} onApprove={approve}
         actions={{ onStop: () => void act("stop"), onCancel: () => void act("cancel"), onArchive: () => void archive(), onRaiseCap: raiseCap, busy }} />
     </div>
   );

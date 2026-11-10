@@ -4,7 +4,7 @@ export { Banner, type BannerTone } from "./banner";
 export { Button, buttonVariants, type ButtonProps } from "./button";
 export { Chip, type ChipTone } from "./chip";
 export { ConfirmDialog, Dialog } from "./dialog";
-export { bareFieldClass, Checkbox, Field, fieldBoxClass, fieldClass, Input, NativeSelect, Radio, Textarea } from "./field";
+export { bareFieldClass, Checkbox, Field, fieldBoxClass, fieldClass, Input, Radio, Textarea } from "./field";
 export { Menu, MenuItem, MenuSeparator } from "./menu";
 export { NavItem } from "./nav-item";
 export { Picker, type PickerOption } from "./picker";

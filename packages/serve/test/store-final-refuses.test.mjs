@@ -3,11 +3,11 @@
 // run (RunFinal), so a row left untaken by the end would stay so for good; a runner that dies right after the end leaves
 // none. Both writes that end a run: runs.update, and a journal commit that lands a final run patch.
 import assert from "node:assert/strict";
-import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { commitWrites } from "@earendil-works/pi-durable/testing";
 import { queued, storeOn } from "./store-helpers.mjs";
+import { raw } from "./store-target.mjs";
 
 const { endedReason } = await import("../dist/store/index.js");
 const commandRow = async (store, id) => (await store.commands("run-1", id - 1)).find((row) => row.id === id);
@@ -45,10 +45,15 @@ test("a release never makes a run final: only the end commit does, so no final r
 /** A test-only trigger on the store's file that aborts any write refusing a command row: the end and its refusals must
  *  stand or fall together, so with the trigger the whole end rolls back (the run not final, its stop untaken). Were the
  *  refusals a write of their own after the end, the run would land final while they failed. */
-function refusalsAbort(file) {
-  const db = new DatabaseSync(file);
-  db.exec("CREATE TRIGGER test_no_refusal BEFORE UPDATE OF refused ON commands WHEN NEW.refused IS NOT NULL BEGIN SELECT RAISE(ABORT, 'a refusal aborted by the test'); END");
-  db.close();
+async function refusalsAbort(file) {
+  const db = await raw(file);
+  if (db.kind === "sqlite") {
+    await db.exec("CREATE TRIGGER test_no_refusal BEFORE UPDATE OF refused ON commands WHEN NEW.refused IS NOT NULL BEGIN SELECT RAISE(ABORT, 'a refusal aborted by the test'); END");
+  } else {
+    await db.exec(`CREATE FUNCTION test_no_refusal() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'a refusal aborted by the test'; END $$;
+      CREATE TRIGGER test_no_refusal BEFORE UPDATE OF refused ON commands FOR EACH ROW WHEN (NEW.refused IS NOT NULL) EXECUTE FUNCTION test_no_refusal()`);
+  }
+  await db.close();
 }
 
 test("runs.update to a final state and its refusals are one transaction: a refusal that fails rolls the end back", async (t) => {
@@ -57,7 +62,7 @@ test("runs.update to a final state and its refusals are one transaction: a refus
   const claim = await store.claim("run-1", "runner-a", { leaseMs: 30_000 });
   const raise = await store.command("run-1", { kind: "raise", body: { capUsd: 5 } });
   const stop = await store.command("run-1", { kind: "stop" });
-  refusalsAbort(file);
+  await refusalsAbort(file);
   await assert.rejects(store.runs.update(claim, { state: "stopped", summary: "stopped by a person" }, { take: [stop.id] }), /a refusal aborted by the test/);
   assert.equal((await store.runs.get("run-1")).state, "running", "the end rolled back with its refusal: not final");
   assert.equal((await commandRow(store, stop.id)).takenAt, null, "its stop untaken");
@@ -71,7 +76,7 @@ test("a journal commit's final run patch and its refusals are one transaction: a
   const steer = await store.command("run-1", { kind: "steer", body: { text: "too late" } });
   const journal = store.journal(claim);
   await commitWrites(journal, [{ type: "conversation", value: { id: 1 } }], BACKGROUND_CONTEXT);
-  refusalsAbort(file);
+  await refusalsAbort(file);
   const end = await journal.mintId();
   journal.stage({ run: { state: "ended" }, effect: end });
   await assert.rejects(commitWrites(journal, [{ type: "entry", value: { id: end, conversationId: 1, kind: "agentrun.end", data: { state: "ended" } } }], BACKGROUND_CONTEXT), /a refusal aborted by the test/);

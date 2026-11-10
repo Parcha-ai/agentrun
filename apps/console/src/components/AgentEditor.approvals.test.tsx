@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { AgentEditor } from "./AgentEditor";
 import { type Agent, createBody, editBody, toolOffers } from "@/lib/agentForm";
 import { toolChoices, toolGates } from "@/lib/toolSettings";
+import { optionsOf, picker } from "@/test/picker";
 
 // An agent's approvals (definition.approvals): "ask", the default, parks a call its tool gate says ask for the owner's
 // answer; "never" runs it unattended, every tool it has granted (deny and pins still apply). The editor's Tools step sets
@@ -87,7 +88,7 @@ describe("AgentEditor, the agent's approvals while a save is under way and with 
     for (const r of radios()) expect(r.disabled).toBe(false);
   });
 
-  it("with ask off on this server, a tool set to ask under Never ask says it runs, not that it is refused", () => {
+  it("with ask off on this server, a tool set to ask under Never ask says it runs, not that it is refused", async () => {
     const off = toolGates([{ name: "bash", permission: "ask", default_permission: "ask", permissions: ["allow", "ask", "deny"], ask_needs: "password" }]);
     const host = document.body.appendChild(document.createElement("div"));
     root = createRoot(host);
@@ -95,7 +96,7 @@ describe("AgentEditor, the agent's approvals while a save is under way and with 
     const row = host.querySelector('tr[data-tool="bash"]')!;
     expect(row.textContent).toContain("Runs without asking: Never ask is on.");
     expect(row.textContent).not.toContain("Each call is refused");
-    expect(row.querySelector<HTMLOptionElement>('select[aria-label="bash permission"] option[value="ask"]')!.disabled).toBe(false);
+    expect((await optionsOf(picker(row, "bash permission")!)).find((o) => o.value === "ask")?.disabled).toBe(false);
   });
 });
 
