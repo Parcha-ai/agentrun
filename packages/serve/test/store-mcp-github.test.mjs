@@ -67,7 +67,7 @@ async function setUp(t, { answers = [] } = {}) {
     // The fake MCP server stands in for GitHub's hosted one (githubMcpOrigin, the claim's test-only seam).
     mcpClaim({ store, claim, grants: ["mcp:gh/add"], sealKey: KEY, signal: new AbortController().signal, now: () => clock.now, githubApp: access, githubTimer, githubMcpOrigin: new URL(fake.url).origin });
   const call = (step) => mcpGateway({ pin: step.pin, credentials: step.credentials, work: () => work, liveCredentials: true }).call("gh", "add", { a: 1, b: 1 }, { signal: new AbortController().signal });
-  return { store, clock, fake, seen, valid, mints, timers, to, claimOf, call, mint };
+  return { store, clock, fake, seen, valid, mints, timers, to, claimOf, call, mint, work };
 }
 const bearer = (step) => step.credentials.gh?.headers?.authorization;
 const calls = (fake) => fake.log.filter((entry) => entry.method === "tools/call");
@@ -87,8 +87,10 @@ test("G1: a run's github_app token is minted at its claim for its repository, us
 });
 
 test("G2: a run past 55 minutes has its token minted again once, mid-run, and its next call carries the new one; fresh() within a token's life mints nothing", async (t) => {
-  const { clock, valid, mints, to, claimOf, call } = await setUp(t);
+  const { clock, fake, seen, valid, mints, to, claimOf, call, work } = await setUp(t);
   const step = await claimOf();
+  // One gateway built at the claim, as the run's is, and used after the token was minted again.
+  const gateway = mcpGateway({ pin: step.pin, credentials: step.credentials, work: () => work, liveCredentials: true });
   await step.fresh();
   assert.equal(mints.length, 1, "a fresh() while the token has more than five minutes left mints nothing");
   await to(clock.now + 55 * 60_000);
@@ -96,6 +98,10 @@ test("G2: a run past 55 minutes has its token minted again once, mid-run, and it
   assert.equal(bearer(step), `Bearer ${token(2)}`);
   valid.delete(token(1));
   assert.deepEqual(await call(step), { content: [{ type: "text", text: "2" }] }, "the next call carries the new token");
+  // A server that answers with the token it was sent: the re-minted one is scrubbed too, by the gateway built before it.
+  fake.tools.add = { ...fake.tools.add, run: () => ({ content: [{ type: "text", text: `you sent ${seen.authorization}` }] }) };
+  const echoed = JSON.stringify(await gateway.call("gh", "add", { a: 1, b: 1 }, { signal: new AbortController().signal }));
+  assert.ok(echoed.includes("you sent") && !echoed.includes(token(2)) && !echoed.includes(token(1)), `the re-minted token is scrubbed from the answer: ${echoed}`);
   await to(clock.now + 60_000);
   assert.equal(mints.length, 2, "no second refresh before the new token's own 55 minutes");
   step.release();
