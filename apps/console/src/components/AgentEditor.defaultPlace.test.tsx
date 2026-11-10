@@ -7,7 +7,7 @@ import { placesOf } from "@/lib/place";
 
 // A new agent's place, as the server serves it (capabilities.places.default_place): the form starts on it, and in a
 // sandbox it ticks bash with the other tools, so a new agent in the box has a shell. On the server (the runner), or with
-// no default_place served (it is optional in capabilities.places), the form starts on the server: no place sent, bash not
+// no default_place (the server always serves one; the recorded capabilities predate it), the form starts on the server: no place sent, bash not
 // ticked. What the person picks or unticks is what is sent.
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 let root: ReturnType<typeof createRoot> | undefined;
