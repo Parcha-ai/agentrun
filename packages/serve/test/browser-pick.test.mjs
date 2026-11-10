@@ -98,7 +98,8 @@ test("Kernel's key check: one free call, a list of at most one browser, on the k
   assert.deepEqual(refused, { state: "refused", message: "Kernel refused this key (401: Invalid API key)" });
 });
 
-test("pick the browser through the API: a Kernel key saved and checked, Kernel picked for the server, and a run gets Kernel while an agent that picks Browserbase gets Browserbase; capabilities, settings and each run's plane say which", { skip: "follow-up: #2095 (reads a per-run file the runner path no longer writes)", timeout: 90_000 }, async (t) => {
+// SKIP (follow-up #2078): it reads agents/tool-keys.json, which the server no longer writes
+test.skip("pick the browser through the API: a Kernel key saved and checked, Kernel picked for the server, and a run gets Kernel while an agent that picks Browserbase gets Browserbase; capabilities, settings and each run's plane say which", { timeout: 90_000 }, async (t) => {
   const log = join(await scratch(t), "browser.jsonl");
   withEnv(t, { ...BB, AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), FAUX_BROWSER_LOG: log }, KEYS);
   const { api, data } = await serve(t, { fauxBrowser: FAUX_BROWSER, fauxKernel: FAUX_KERNEL });
@@ -194,7 +195,8 @@ test("capabilities name the browser's vendor: tools[].key is the key row of the 
   assert.deepEqual(await browserIn({}), [false, "browserbase", "none"]);
 });
 
-test("an older run reopened while Browserbase's keys are missing reads its browser unavailable, and keeps Browserbase as its choice: restored keys make its next launch run there", { skip: "follow-up: #2095 (reads a per-run file the runner path no longer writes)", timeout: 120_000 }, async (t) => {
+// SKIP (follow-up #2078): it reads the run's serve.json file, which runs no longer write
+test.skip("an older run reopened while Browserbase's keys are missing reads its browser unavailable, and keeps Browserbase as its choice: restored keys make its next launch run there", { timeout: 120_000 }, async (t) => {
   const log = join(await scratch(t), "browser.jsonl");
   withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), FAUX_BROWSER_LOG: log }, KEYS);
   const first = await serve(t, { fauxBrowser: FAUX_BROWSER });
@@ -221,7 +223,8 @@ test("an older run reopened while Browserbase's keys are missing reads its brows
   assert.equal(await launch(), "browserbase", "restored, the next launch runs on Browserbase");
 });
 
-test("a run an earlier server saved with Browserbase's missing-key refusal runs on Browserbase once its keys are restored, and keeps the vendor from then on", { skip: "follow-up: #2095 (reads a per-run file the runner path no longer writes)", timeout: 120_000 }, async (t) => {
+// SKIP (follow-up #2078): it reads the run's serve.json file, which runs no longer write
+test.skip("a run an earlier server saved with Browserbase's missing-key refusal runs on Browserbase once its keys are restored, and keeps the vendor from then on", { timeout: 120_000 }, async (t) => {
   const log = join(await scratch(t), "browser.jsonl");
   withEnv(t, { ...BB, FAUX_BROWSER_LOG: log }, KEYS);
   const first = await serve(t, { fauxBrowser: FAUX_BROWSER });
@@ -243,7 +246,8 @@ test("a run an earlier server saved with Browserbase's missing-key refusal runs 
   assert.equal(JSON.parse(await readFile(file, "utf8")).tool_plane.browser, "browserbase", "the vendor saved back");
 });
 
-test("a run made before the browser was pickable keeps Browserbase when it is launched again, though the server now picks Kernel", { skip: "follow-up: #2095 (reads a per-run file the runner path no longer writes)", timeout: 90_000 }, async (t) => {
+// SKIP (follow-up #2078): it reads the run's serve.json file, which runs no longer write
+test.skip("a run made before the browser was pickable keeps Browserbase when it is launched again, though the server now picks Kernel", { timeout: 90_000 }, async (t) => {
   const log = join(await scratch(t), "browser.jsonl");
   withEnv(t, { ...BB, AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), FAUX_BROWSER_LOG: log }, KEYS);
   const first = await serve(t, { fauxBrowser: FAUX_BROWSER, fauxKernel: FAUX_KERNEL });
