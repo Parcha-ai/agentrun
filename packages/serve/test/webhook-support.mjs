@@ -168,7 +168,8 @@ export const noticeId = (runId, type, marker) => `msg_${createHash("sha256").upd
  *  rest of the store is written as ever. Answers its release; the test's end releases it at the latest. */
 export function refusing(t, dir, when) {
   const name = `test_refuses_${when}`;
-  const db = new DatabaseSync(join(dir, "store.sqlite"), { timeout: 10_000 });
+  // Its schema change waits its turn behind the server's and the runner's writes, however loaded the machine.
+  const db = new DatabaseSync(join(dir, "store.sqlite"), { timeout: 60_000 });
   const on = when === "outbox"
     ? [`BEFORE INSERT ON channel_posts WHEN NEW.channel = '${CHANNEL}'`]
     : [`BEFORE INSERT ON settings WHEN NEW.key = '${CHANNEL}'`, `BEFORE UPDATE ON settings WHEN NEW.key = '${CHANNEL}'`];
