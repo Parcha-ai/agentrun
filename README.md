@@ -112,8 +112,22 @@ approval. `runs timeline RUN_ID --follow` streams each step as it happens, and e
 page. `npx @parcha/agentrun help` lists every command; `npx @parcha/agentrun skill install --claude` (or `--codex`)
 teaches your coding agent the CLI.
 
-To call the server from code, the TypeScript client (`packages/client`) and the Python client (`python/`) install from
-this repository; neither is on npm or PyPI yet.
+From code, the same run with the TypeScript client (`npm install @parcha/agentrun-client`, no dependencies). The
+server prints where its API token is; with `npx @parcha/agentrun` it's `~/.agentrun/.token`:
+
+```ts
+import { AgentRun } from "@parcha/agentrun-client";
+
+const client = new AgentRun({ baseUrl: "http://127.0.0.1:7340/v2", apiKey: process.env.AGENTRUN_API_KEY });
+const started = await client.runs.start("notes", { input: { content: "Ask me which region to cover, then write region.md about it." }, max_cost_usd: 1 });
+let run = await client.runs.wait(started.run_id);
+if (run.pending?.kind === "question") await client.runs.message(run.run_id, { content: "Europe" });
+run = await client.runs.wait(run.run_id);
+console.log(run.status, run.cost.usd);
+```
+
+The Python client is `pip install parcha-agentrun`, with the same methods
+([TypeScript client](packages/client/README.md), [Python client](python/README.md)).
 
 ## Templates
 
