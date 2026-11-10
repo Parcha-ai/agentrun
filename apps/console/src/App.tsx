@@ -313,8 +313,7 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
   useEffect(() => { readCaps(); }, [v2]); // eslint-disable-line react-hooks/exhaustive-deps
   // The agents' names, every page of the active ones and of the archived: read at the start, and again each time a runs
   // view or Mission Control opens (the list, one agent's runs, a run's page), so an agent made since, here or elsewhere,
-  // is named at once, and again when an import at setup ends while this page watches (`refreshed`). The same read of the
-  // active ones says which wait for their owner's OK on what they learned (`learning.pending`), for Needs you.
+  // is named at once, and again when an import at setup ends while this page watches (`refreshed`).
   // Only the newest read lands.
   useEffect(() => {
     if (namesAsked.current && where.section !== "runs" && where.section !== "mission" && namesAfter.current === refreshed) return;
@@ -330,8 +329,6 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
       const whole = reads.every((r) => r.status === "fulfilled");
       setNames((held) => (whole ? fresh : { ...held, ...fresh }));
       setNamesRead(whole);
-      // A failed read of the active agents keeps the last answer.
-      if (reads[0]?.status === "fulfilled") setLearningWaits(reads[0].value.filter((a) => waitingOf(a) > 0).map((a) => ({ agent_id: a.agent_id, name: a.definition.name ?? a.agent_id, pending: waitingOf(a) })));
     });
   }, [v2, where, refreshed]);
   const runsFilter: RunsFilter = { status: where.status, archived: where.archived };
@@ -421,9 +418,14 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
     let live = true;
     // Up to 100 runs of each status, newest first; each read lands apart, and one that fails keeps its section's last answer.
     const upTo = (status: RunStatus) => allPages((cursor) => v2.listRuns(50, cursor, { status }), (p) => p.runs, 2);
-    const read = () => Promise.allSettled([upTo("input_required"), upTo("failed"), upTo("working")])
-      .then((reads) => {
+    // With them, every active agent, for which wait for their owner's OK on what they learned (`learning.pending`): a
+    // run that ends leaving learned items shows in Needs you at the next read. A failed read keeps the last answer.
+    const waiting = () => allPages((cursor) => v2.listAgents({ archived: false, cursor }), (p) => p.agents)
+      .then((agents) => { if (live) setLearningWaits(agents.filter((a) => waitingOf(a) > 0).map((a) => ({ agent_id: a.agent_id, name: a.definition.name ?? a.agent_id, pending: waitingOf(a) }))); }, () => {});
+    const read = () => Promise.allSettled([upTo("input_required"), upTo("failed"), upTo("working"), waiting()])
+      .then(([asking, failed, working]) => {
         if (!live) return;
+        const reads = [asking, failed, working];
         const day = Date.now() - 86_400_000;
         setNeedsProblem(mergeNeeds(null, reads).problem);
         if (reads[0]?.status === "fulfilled") setAskingRead(true);

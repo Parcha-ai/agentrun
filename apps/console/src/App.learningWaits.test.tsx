@@ -8,7 +8,7 @@ import { ANALYTICS } from "@/components/AgentAnalytics.sample";
 // (each agent's `learning.pending`): absent or 0 lists nothing, and an archived agent is not listed.
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 let root: ReturnType<typeof createRoot> | undefined;
-afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; vi.unstubAllGlobals(); location.hash = ""; });
+afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; vi.unstubAllGlobals(); vi.useRealTimers(); location.hash = ""; });
 vi.setConfig({ testTimeout: 20_000 });
 
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
@@ -22,14 +22,14 @@ const STATS = {
 };
 const DONE = { run_id: "r1", agent_id: "qa-learn", agent_version: 1, revision: "r1", kind: "agentic", title: "Find the policy", status: "completed", state: "idle", created_at: "2026-11-05T00:30:00Z", ended_at: "2026-11-05T00:31:00Z", result: null, error: null, cost: null, archived_at: null };
 
-function serve() {
+function serve(active: () => object[] = () => ACTIVE) {
   vi.stubGlobal("fetch", async (url: string) => {
     const u = new URL(url, "http://serve.test");
     if (u.pathname === "/v2/auth/session") return json(200, { password_set: true, signed_in: true });
     if (u.pathname === "/v2/capabilities") return json(200, CAPS);
     if (u.pathname === "/v2/health") return json(200, { status: "ok" });
     if (u.pathname === "/v2/stats") return json(200, STATS);
-    if (u.pathname === "/v2/agents") return json(200, { agents: u.searchParams.get("archived") === "true" ? ARCHIVED : ACTIVE, next_cursor: null });
+    if (u.pathname === "/v2/agents") return json(200, { agents: u.searchParams.get("archived") === "true" ? ARCHIVED : active(), next_cursor: null });
     if (u.pathname === "/v2/runs") return json(200, { runs: u.searchParams.get("status") ? [] : [DONE], next_cursor: null });
     return json(404, { error: { code: "not_found", message: `no route ${u.pathname}`, retryable: false } });
   });
@@ -52,5 +52,24 @@ describe("Mission Control's Needs you, learned items waiting", () => {
     expect(needs()!.querySelector("h2")?.textContent).toBe("Needs you · 2");
     expect(needs()!.querySelector('a[href="#/agents/qa-learn/learning"]')!.closest("li")?.textContent).toContain("2 learned items wait for your OK");
     for (const id of ["calc", "off", "gone"]) expect(needs()!.querySelector(`a[href="#/agents/${id}/learning"]`), id).toBeNull();
+  });
+
+  it("a run that ends leaving learned items shows them at Mission Control's next read, with the page left open", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+    let pending = 0;
+    serve(() => [agent("qa-learn", "QA learn", { learning: { pending } })]);
+    location.hash = "#/";
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    act(() => root!.render(createElement(App)));
+    const needs = () => host.querySelector('section[aria-label="Needs you"]');
+    const row = () => needs()?.querySelector('a[href="#/agents/qa-learn/learning"]') ?? null;
+    await wait(() => !!host.querySelector("main"), "Mission Control");
+    await act(async () => { await vi.advanceTimersByTimeAsync(500); });
+    expect(row(), "nothing waits yet").toBeNull();
+    pending = 3;
+    await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
+    await wait(() => !!row(), "Needs you with QA learn's 3 waiting items after the next read");
+    expect(row()!.closest("li")?.textContent).toContain("3 learned items wait for your OK");
   });
 });
