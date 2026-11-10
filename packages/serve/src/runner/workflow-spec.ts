@@ -38,7 +38,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { bookedIn, type PaidBooking, parallelExtractFee, parallelSearchFee } from "../paid-calls.js";
 import { searchArgs, WEB_SEARCH_TOOL } from "../web-search.js";
 import { money, pricingOf, requestPrice, type RunTools, TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
-import { claimSecrets } from "./claim-secrets.js";
+import { claimSecrets, withModelKeys } from "./claim-secrets.js";
 import { type ModelRoute, routeOf } from "./model-route.js";
 import { PI_WIRES } from "./adapter-run-spec.js";
 import { policyFor } from "./adapters/pi.js";
@@ -193,8 +193,6 @@ function capRuleOf(capUsd: number): WorkflowCapRule {
  *  provider, and returns the spec. The model proxies and the booking are started per claim (release closes them). */
 export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string }, run?: WorkflowSpecRun) => Promise<WorkflowRunSpec> {
   const now = deps.now ?? Date.now;
-  // The run's models resolve the one way the runner resolves any (routeProviderOf over routeOf), unless a test gives its own.
-  const providerOf = deps.providerOf ?? routeProviderOf(deps.env ?? process.env);
   // The proxies a claim started: closed by the spec's release once the claim is done, or here when the claim fails before
   // its spec is returned (the loop then has no spec to release), so a failed claim leaves no proxy listening.
   return async (claim, run) => {
@@ -223,6 +221,17 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string 
     // Every secret the server keeps sealed (store-secrets.ts) held by the runner's one redactor before the workflow runs.
     if (run?.redact) await holdStored(heldRedactor(run.redact), deps.store, deps.sealKey, deps.data);
     const tiers = tiersOf(claimed.workflow);
+
+    // The run's own keys, as the server's runnable check reads them: each by its name from the runner's environment first,
+    // then the store's sealed value (claim-secrets.ts; the environment wins, rule 4), scoped to what the run needs. Its
+    // models, its decisions, its call nodes' effects and its model nodes' tools all run on these, never on another run's
+    // keys or on this process's whole environment.
+    // Held by the runner's one redactor before anything can echo one (holding: run.redact), as the decision keys were.
+    const claimedEnv = await holding(claimSecrets({ store: deps.store, sealKey: deps.sealKey, ...(deps.env ? { env: deps.env } : {}) }, claimed.revision, { plane: claimed.plane }));
+    // The run's models resolve the one way the runner resolves any (routeProviderOf over routeOf), unless a test gives its
+    // own: each tier's key from the runner's environment, else the one the claim opened (a key saved in
+    // Settings → Model keys runs the next run with no restart).
+    const providerOf = deps.providerOf ?? routeProviderOf(withModelKeys(deps.env ?? process.env, claimedEnv));
 
     // Each tier's provider and cap model, resolved once; the proxies start here (before the Harness opens, since the models
     // catalog the Harness takes points at them), their hooks deferred to the booking wired at harnessReady.
@@ -267,12 +276,6 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string 
     // The cap read against every request: the run's cap, raised in place once harnessReady reads this claim's raise.
     let effectiveCapUsd = claimed.capUsd;
 
-    // The run's own keys, as the server's runnable check reads them: each by its name from the runner's environment first,
-    // then the store's sealed value (claim-secrets.ts; the environment wins, rule 4), scoped to what the run needs. Its
-    // decisions, its call nodes' effects and its model nodes' tools all run on these, never on another run's keys or on this
-    // process's whole environment.
-    // Held by the runner's one redactor before anything can echo one (holding: run.redact), as the decision keys were.
-    const claimedEnv = await holding(claimSecrets({ store: deps.store, sealKey: deps.sealKey, ...(deps.env ? { env: deps.env } : {}) }, claimed.revision, { plane: claimed.plane }));
     // The run's decision providers, when its workflow has a decision node: the scripted resolver a test gives, else built
     // on the run's own keys (decisionProvidersIn). The decisions book on the run's ONE cap (runCap), created with the model
     // booking once the Harness is open (harnessReady); a decision node runs after that, so it reaches the cap through a

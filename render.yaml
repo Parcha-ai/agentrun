@@ -1,11 +1,13 @@
-# AgentRun Server on Render: one web service and one persistent disk, built from this repository's Dockerfile.
+# AgentRun Server on Render: one web service and one persistent disk, from the release's published image (no build).
 # The token is generated once; read it in the service's Environment tab.
+# Needs a paid Render instance (plan 1c-2g) and a 10 GB disk: a card on the workspace.
 services:
   - type: web
     name: agentrun-server
-    runtime: docker
-    dockerfilePath: ./packages/serve/docker/Dockerfile
-    dockerContext: .
+    runtime: image
+    # The release's published image (ghcr, built by release.yml from the reviewed tag): a deploy pulls it.
+    image:
+      url: ghcr.io/parcha-ai/agentrun-server:v0.1.0-beta.32
     # 2 GB and a 10 GB disk at the least: Claude Code and Codex install themselves on first use onto the disk (the image
     # leaves them out), which fills 1 GB, and 512 MB is short for them.
     plan: 1c-2g
@@ -32,15 +34,16 @@ services:
       # Every runner must be given this same value.
       - key: AGENTRUN_SEAL_KEY
         generateValue: true
-      - key: AGENT_MODEL
-        sync: false
-      - key: AGENT_MODEL_BASE_URL
-        sync: false
-      - key: AGENT_MODEL_API_KEY
+      # The recommended key: OpenRouter covers every model, Jev included.
+      - key: OPENROUTER_API_KEY
         sync: false
       - key: ANTHROPIC_API_KEY
         sync: false
       - key: OPENAI_API_KEY
         sync: false
-      - key: OPENROUTER_API_KEY
+      - key: AGENT_MODEL
+        sync: false
+      - key: AGENT_MODEL_BASE_URL
+        sync: false
+      - key: AGENT_MODEL_API_KEY
         sync: false

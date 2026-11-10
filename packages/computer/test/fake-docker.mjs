@@ -36,17 +36,20 @@ export const COPY_NAME = `computerd-${createHash("sha256").update(DAEMON_BYTES).
 export function report({
 	id, name, image = "debian:bookworm-slim", labels = {}, cmd, user = "1000:1000", workdir = "/work", env = ["HOME=/work"], network = "none", running = true,
 	capDrop = ["ALL"], securityOpt = ["no-new-privileges"], pids = 1024, memory = 4096 * 1024 * 1024, swap = memory, period = 100_000, quota = 200_000,
-	tmpfs, ipc = "private", cgroupns = "private", daemonPath = "@daemon", apparmor = false, masked, readonly, binds = [], volumes = [],
+	tmpfs, ipc = "private", cgroupns = "private", daemonPath = "@daemon", daemonVolume, apparmor = false, masked, readonly, binds = [], volumes = [],
 }) {
+	// A named volume's mount, as Docker 29 records it: volume-nocopy and volume-subpath under VolumeOptions in
+	// HostConfig.Mounts, and in Mounts the volume by name, its source the volume's own directory.
+	const volumeOptions = (v) => (v.subpath !== undefined || v.nocopy ? { VolumeOptions: { ...(v.nocopy ? { NoCopy: true } : {}), ...(v.subpath !== undefined ? { Subpath: v.subpath } : {}) } } : {});
+	const volumeHost = (v) => ({ Type: "volume", Source: v.src, Target: v.dst, ...(v.readonly ? { ReadOnly: true } : {}), ...volumeOptions(v) });
+	const volumePoint = (v) => ({ Type: "volume", Name: v.src, Source: `/var/lib/docker/volumes/${v.src}/_data`, Destination: v.dst, Driver: "local", Mode: "z", RW: !v.readonly, Propagation: "" });
 	// Each further --mount, after the daemon's, as Docker 29 reports it: a bind, or a named volume; ReadOnly only when it is.
-	const hostBinds = [
-		...binds.map((b) => ({ Type: "bind", Source: b.src, Target: b.dst, ...(b.readonly ? { ReadOnly: true } : {}) })),
-		...volumes.map((v) => ({ Type: "volume", Source: v.src, Target: v.dst, ...(v.readonly ? { ReadOnly: true } : {}) })),
-	];
-	const mountBinds = [
-		...binds.map((b) => ({ Type: "bind", Source: b.src, Destination: b.dst, Mode: "", RW: !b.readonly, Propagation: "rprivate" })),
-		...volumes.map((v) => ({ Type: "volume", Name: v.src, Source: `/var/lib/docker/volumes/${v.src}/_data`, Destination: v.dst, Driver: "local", Mode: "z", RW: !v.readonly, Propagation: "" })),
-	];
+	const hostBinds = [...binds.map((b) => ({ Type: "bind", Source: b.src, Target: b.dst, ...(b.readonly ? { ReadOnly: true } : {}) })), ...volumes.map(volumeHost)];
+	const mountBinds = [...binds.map((b) => ({ Type: "bind", Source: b.src, Destination: b.dst, Mode: "", RW: !b.readonly, Propagation: "rprivate" })), ...volumes.map(volumePoint)];
+	// The daemon: a bind of daemonPath, or, from a provider with the volume option, daemonVolume ({ src, subpath }).
+	const daemonAt = daemonVolume === undefined ? undefined : { src: daemonVolume.src, dst: daemonVolume.dst ?? "/opt/agentrun", readonly: true, subpath: daemonVolume.subpath, nocopy: true };
+	const daemonHost = daemonAt === undefined ? { Type: "bind", Source: daemonPath, Target: "/opt/agentrun/computerd", ReadOnly: true } : volumeHost(daemonAt);
+	const daemonPoint = daemonAt === undefined ? { Type: "bind", Source: daemonPath, Destination: "/opt/agentrun/computerd", Mode: "", RW: false, Propagation: "rprivate" } : volumePoint(daemonAt);
 	const [uid, gid] = user.split(":");
 	return {
 		Id: id,
@@ -73,11 +76,11 @@ export function report({
 			BlkioWeightDevice: [], BlkioDeviceReadBps: [], BlkioDeviceWriteBps: [], BlkioDeviceReadIOps: [], BlkioDeviceWriteIOps: [], CpuPeriod: period, CpuQuota: quota,
 			CpuRealtimePeriod: 0, CpuRealtimeRuntime: 0, CpusetCpus: "", CpusetMems: "", Devices: [], DeviceCgroupRules: null, DeviceRequests: null, MemoryReservation: 0,
 			MemorySwap: swap, MemorySwappiness: null, OomKillDisable: null, PidsLimit: pids, Ulimits: [], CpuCount: 0, CpuPercent: 0, IOMaximumIOps: 0, IOMaximumBandwidth: 0,
-			Mounts: [{ Type: "bind", Source: daemonPath, Target: "/opt/agentrun/computerd", ReadOnly: true }, ...hostBinds],
+			Mounts: [daemonHost, ...hostBinds],
 			MaskedPaths: masked ?? ["/proc/acpi", "/proc/asound", "/proc/interrupts", "/proc/kcore", "/proc/keys", "/proc/latency_stats", "/proc/sched_debug", "/proc/scsi", "/proc/timer_list", "/proc/timer_stats", "/sys/devices/virtual/powercap", "/sys/firmware"],
 			ReadonlyPaths: readonly ?? ["/proc/bus", "/proc/fs", "/proc/irq", "/proc/sys", "/proc/sysrq-trigger"],
 		},
-		Mounts: [{ Type: "bind", Source: daemonPath, Destination: "/opt/agentrun/computerd", Mode: "", RW: false, Propagation: "rprivate" }, ...mountBinds],
+		Mounts: [daemonPoint, ...mountBinds],
 		NetworkSettings: { Networks: { [network]: {} } },
 	};
 }
@@ -110,7 +113,10 @@ export function proxyReport({
 			NetworkMode: network, CapDrop: capDrop, CapAdd: null, Privileged: privileged, SecurityOpt: securityOpt, ReadonlyRootfs: readonlyRootfs, PortBindings: {}, PublishAllPorts: false,
 			Binds: null, VolumesFrom: null, Devices: [], PidMode: "", UsernsMode: "", IpcMode: ipc, CgroupnsMode: cgroupns, RestartPolicy: { Name: "no", MaximumRetryCount: 0 },
 			Memory: memory, MemorySwap: swap, PidsLimit: pids, LogConfig: logConfig, CpuPeriod: period, CpuQuota: quota, Ulimits: ulimits,
-			Mounts: mounts.map((m) => ({ Type: m.type, Source: m.src, Target: m.dst, ...(m.readonly ? { ReadOnly: true } : {}) })),
+			Mounts: mounts.map((m) => ({
+				Type: m.type, Source: m.src, Target: m.dst, ...(m.readonly ? { ReadOnly: true } : {}),
+				...(m.subpath !== undefined || m.nocopy ? { VolumeOptions: { ...(m.nocopy ? { NoCopy: true } : {}), ...(m.subpath !== undefined ? { Subpath: m.subpath } : {}) } } : {}),
+			})),
 		},
 		Mounts: mounts.map((m) =>
 			m.type === "volume"
@@ -175,9 +181,11 @@ export function egressVolume({ computer, deadline = new Date(Date.now() + 600_00
  * Docker whose proxy does not run what it was asked to; `egressOptions` is the provider's egress option. `endpoint` is
  * the daemon `docker context inspect` names (a local unix socket by default), or null when it fails. `images` lists the
  * images on the host (default: every image is), which `image inspect` finds, `pull` adds and `run --pull never` needs;
- * `pull` is "ok" or "fails" (the registry refuses it); "pull" can be held too.
+ * `pull` is "ok" or "fails" (the registry refuses it); "pull" can be held too. `volume` is the provider's volume option;
+ * `volumeRoots` maps a volume's name to the directory its files are in, so a `volume-subpath` that is not there fails as
+ * Docker's does. docker info reports `ServerVersion` 29.0.0 unless `info` says otherwise.
  */
-export function fakeDocker({ running = true, gone = false, containers = [], patch = {}, hello = {}, arch = "x86_64", info = {}, vanish = [], noDaemon = false, user, hold = [], desktop, display = "up", binds = {}, daemonMode = 0o755, daemonCache, volumes = [], egress = "ready", proxyPatch = {}, proxyLocal, egressOptions, endpoint = "unix:///var/run/docker.sock", images, pull = "ok" } = {}) {
+export function fakeDocker({ running = true, gone = false, containers = [], patch = {}, hello = {}, arch = "x86_64", info = {}, vanish = [], noDaemon = false, user, hold = [], desktop, display = "up", binds = {}, daemonMode = 0o755, daemonCache, volumes = [], egress = "ready", proxyPatch = {}, proxyLocal, egressOptions, endpoint = "unix:///var/run/docker.sock", images, pull = "ok", volume, volumeRoots = {} } = {}) {
 	const dir = mkdtempSync(join(tmpdir(), "computer-fake-docker-"));
 	dirs.push(dir);
 	const log = join(dir, "calls.jsonl");
@@ -194,8 +202,8 @@ export function fakeDocker({ running = true, gone = false, containers = [], patc
 	writeFileSync(daemonPath, DAEMON_BYTES);
 	chmodSync(daemonPath, daemonMode);
 	const program = join(dir, "docker");
-	const config = JSON.stringify({ dir, log, state, volumeState, imageState, pull, running, gone, patch, binds, egress, proxyPatch, proxyLocal: proxyLocal ?? null, endpoint, hello: { ...HELLO, ...hello },
-		info: { Architecture: arch, SecurityOptions: ["name=seccomp,profile=builtin", "name=cgroupns"], MemoryLimit: true, SwapLimit: true, PidsLimit: true, CPUCfsQuota: true, CPUCfsPeriod: true, ...info },
+	const config = JSON.stringify({ dir, log, state, volumeState, imageState, volumeRoots, pull, running, gone, patch, binds, egress, proxyPatch, proxyLocal: proxyLocal ?? null, endpoint, hello: { ...HELLO, ...hello },
+		info: { Architecture: arch, SecurityOptions: ["name=seccomp,profile=builtin", "name=cgroupns"], MemoryLimit: true, SwapLimit: true, PidsLimit: true, CPUCfsQuota: true, CPUCfsPeriod: true, ServerVersion: "29.0.0", ...info },
 		vanish, noDaemon, hold, display, desktopHello: { ...HELLO, ...hello, kind: "desktop", groups: [...HELLO.groups, "screen", "input.pointer", "input.keys"] } });
 	writeFileSync(
 		program,
@@ -252,6 +260,14 @@ switch (args[0]) {
 			if (flags["--pull"]?.[0] === "never") { process.stderr.write("docker: Error response from daemon: No such image: " + args[i] + "\\n"); process.exit(125); }
 			saveImages([...present, args[i]]);
 		}
+		// A volume's subpath must be there, as Docker requires: config.volumeRoots names where each volume's files are.
+		for (const m of parsed) {
+			const root = m.type === "volume" && m["volume-subpath"] !== undefined ? config.volumeRoots[m.src] : undefined;
+			if (root !== undefined && !existsSync(root + "/" + m["volume-subpath"])) {
+				process.stderr.write("docker: Error response from daemon: cannot access path " + m["volume-subpath"] + " of volume " + m.src + "\\n");
+				process.exit(125);
+			}
+		}
 		if (flags["--entrypoint"]?.[0] === "node") {
 			// An egress proxy: config.egress says whether it says it is ready, never does, or ends at once.
 			const ends = config.egress === "exits";
@@ -264,7 +280,7 @@ switch (args[0]) {
 			const made = proxyReport({
 				id: createHash("sha256").update(name).digest("hex"), name, image: args[i], labels, entrypoint: ["node"], cmd, user: flags["--user"]?.[0] ?? "",
 				running: !ends, exitCode: ends ? 2 : 0, network: flags["--network"]?.[0] ?? "default", capDrop: flags["--cap-drop"], securityOpt: flags["--security-opt"], readonlyRootfs: "--read-only" in flags,
-				mounts: parsed.map((m) => ({ type: m.type, src: m.src, dst: m.dst, readonly: "readonly" in m })),
+				mounts: parsed.map((m) => ({ type: m.type, src: m.src, dst: m.dst, readonly: "readonly" in m, subpath: m["volume-subpath"], nocopy: "volume-nocopy" in m })),
 				memory: Number.parseInt(flags["--memory"]?.[0] ?? "0", 10) * 1024 * 1024, swap: Number.parseInt(flags["--memory-swap"]?.[0] ?? "0", 10) * 1024 * 1024,
 				pids: Number(flags["--pids-limit"]?.[0] ?? 0), ipc: flags["--ipc"]?.[0] ?? "", cgroupns: flags["--cgroupns"]?.[0] ?? "",
 				logConfig: { Type: flags["--log-driver"]?.[0] ?? "json-file", Config: Object.fromEntries((flags["--log-opt"] ?? []).map((o) => [o.slice(0, o.indexOf("=")), o.slice(o.indexOf("=") + 1)])) },
@@ -280,7 +296,8 @@ switch (args[0]) {
 		// config.binds is merged over each further bind as Docker made it, or "drop" leaves them out: a Docker that does
 		// not bind what it was asked to.
 		const binds = config.binds === "drop" ? [] : more.filter((m) => m.type === "bind").map((m) => ({ src: m.src, dst: m.dst, readonly: "readonly" in m, ...config.binds }));
-		const volumes = more.filter((m) => m.type === "volume").map((m) => ({ src: m.src, dst: m.dst, readonly: "readonly" in m }));
+		const volumes = more.filter((m) => m.type === "volume").map((m) => ({ src: m.src, dst: m.dst, readonly: "readonly" in m, subpath: m["volume-subpath"], nocopy: "volume-nocopy" in m }));
+		const daemonVolume = mount.type === "volume" ? { src: mount.src, subpath: mount["volume-subpath"], dst: mount.dst } : undefined;
 		const network = flags["--network"][0];
 		const memory = flags["--memory"] ? Number.parseInt(flags["--memory"][0], 10) * 1024 * 1024 : 0;
 		const swap = flags["--memory-swap"] ? Number.parseInt(flags["--memory-swap"][0], 10) * 1024 * 1024 : 0;
@@ -289,7 +306,7 @@ switch (args[0]) {
 			env: flags["--env"] ?? [], network, running: config.running, capDrop: flags["--cap-drop"], securityOpt: flags["--security-opt"], pids: Number(flags["--pids-limit"][0]),
 			memory, swap, period: Number(flags["--cpu-period"]?.[0] ?? 0), quota: Number(flags["--cpu-quota"]?.[0] ?? 0),
 			tmpfs: Object.fromEntries((flags["--tmpfs"] ?? []).map((t) => [t.slice(0, t.indexOf(":")), t.slice(t.indexOf(":") + 1)])),
-			ipc: flags["--ipc"]?.[0] ?? "private", cgroupns: flags["--cgroupns"]?.[0] ?? "private", daemonPath: mount.src,
+			ipc: flags["--ipc"]?.[0] ?? "private", cgroupns: flags["--cgroupns"]?.[0] ?? "private", daemonPath: mount.src, daemonVolume,
 			apparmor: config.info.SecurityOptions.some((option) => option.startsWith("name=apparmor")), binds, volumes,
 		});
 		made.HostConfig.Mounts[0].ReadOnly = "readonly" in mount;
@@ -428,8 +445,9 @@ switch (args[0]) {
 	// container; egressOptions.hostRoot replaces it.
 	const hostRoot = join(dir, "host-root");
 	mkdirSync(hostRoot);
-	const options = { daemonPath, daemonCache: cache, docker: program, ...(user === undefined ? {} : { user }), ...(desktop === undefined ? {} : { desktop }), egress: { hostRoot, ...egressOptions } };
-	return { provider: new DockerProvider(options), calls, names, volumeNames, alter, daemonPath, bound, cache, program, proceed, started };
+	const options = { daemonPath, daemonCache: cache, docker: program, ...(user === undefined ? {} : { user }), ...(desktop === undefined ? {} : { desktop }), egress: { hostRoot, ...egressOptions }, ...(volume === undefined ? {} : { volume }) };
+	// `options` makes a fresh provider over the same Docker: another process's.
+	return { provider: new DockerProvider(options), options, calls, names, volumeNames, alter, daemonPath, bound, cache, program, proceed, started };
 }
 
 /** The docker calls that delete computer `name` with nothing else of its own: rm it, then look for its egress proxy and

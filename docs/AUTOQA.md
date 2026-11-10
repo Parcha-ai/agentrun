@@ -19,7 +19,7 @@ When this runs from a pipeline or a periodic QA job, the scope is fixed here and
 
 ## How to run
 
-Node 22.19 or later on 22 (`.nvmrc` pins 22.23.2), or 24.2 or later. Node 23 and 24.0 to 24.1 are refused. npm 11
+Node 24.11 or later (`.nvmrc` pins 24.21.0); anything older is refused. npm 11
 is the documented toolchain, but `npm ci` also works with npm 10.9 (the npm bundled with Node 22.23.2).
 
 ```sh
