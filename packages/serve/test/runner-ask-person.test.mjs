@@ -167,7 +167,7 @@ test("wait in the claim: a tool host that holds for the wait keeps the run claim
   // The claim's release moves the epoch once: a park and a new claim would have moved it more.
   assert.equal(ended.epoch, row.epoch + 1, "the answer ran in the same claim, never a park and a new claim");
   const { entries } = await journalRecords(server.readJournal(RUN), BACKGROUND_CONTEXT);
-  assert.equal(entries.filter((entry) => entry.kind === "agentrun.person.asked").length, 0, "no park entry was written");
+  assert.equal(entries.filter((entry) => entry.kind === "agentrun.person.asked" && entry.data?.inClaim !== true).length, 0, "no park entry was written (only the wait's own, in the claim)");
   assert.ok(wait.seen.dropped >= 1, "the hold was dropped");
   const last = modelCalls(gw).at(-1).body;
   assert.ok((last.messages ?? []).some((message) => JSON.stringify(message.content ?? message).includes("us-west-2")), "the person's message is the next user turn");

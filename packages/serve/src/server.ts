@@ -50,6 +50,7 @@ import { durationMs, logLine } from "./print.js";
 import { knownToolCostOf, redactorOf, type RunMoment, type State, type Status, toolCostOf } from "./run-view.js";
 import { approve, archiveRun, cancel, message, pause as pauseRunOverStore, raiseCap, resume as resumeRunOverStore, type StartDeps, type StartOptions, startRun, stop as stopRunOverStore, WAITS_ON_A_PERSON } from "./runs-over-store.js";
 import { momentOverStore, summaryOverStore, timelineOverStore, type ViewDeps, viewOverStore, withheldOverStore } from "./store-view.js";
+import { ASK_PERSON_WAITING } from "./runner/journal-kinds.js";
 import { servedTimelineRows } from "./run-timeline-served.js";
 import { servedRunLearning } from "./run-learning-served.js";
 import { runCutValues } from "./run-cut.js";
@@ -3087,7 +3088,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   /** The wait of a run its runner left parked (or let go of), told once as main told it: its marker the run's last row
    *  that shows (not usage, a phase or learning's), its kind the pending card's (a stop's when it waits on no card). */
   const tellWait = async (row: RunRow): Promise<void> => {
-    const seen = `${row.state}\n${row.epoch}\n${row.runner ?? ""}`;
+    const seen = `${row.state}\n${row.epoch}\n${row.runner ?? ""}\n${row.summary ?? ""}`;
     if (readWaits.get(row.id) === seen) return;
     const view = await viewOverStore(store, row.id, viewDepsFor(ownOriginOf()));
     if (view?.status !== "input_required") return void readWaits.set(row.id, seen);
@@ -3107,8 +3108,11 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     for (const state of ["queued", "running", "parked"] as const) {
       for (const row of await store.runs.list({ state })) {
         open.add(row.id);
-        // A run waits on its person once its runner has let it go: parked, or running with no runner.
-        if (!closing && (row.state === "parked" || (row.state === "running" && row.runner === null))) await tellWait(row).catch(() => undefined);
+        // A run waits on its person once its runner has let it go: parked, or running with no runner. Or held in its claim
+        // waiting on the answer to its question (adapter-loop waitInClaim: ask_person with its browser open), which its
+        // row's summary says; a new ask there sets it anew, so each is read and told once.
+        const waitsInClaim = row.state === "running" && row.runner !== null && row.summary === ASK_PERSON_WAITING;
+        if (!closing && (row.state === "parked" || (row.state === "running" && row.runner === null) || waitsInClaim)) await tellWait(row).catch(() => undefined);
       }
     }
     const newest = await store.runs.list({ limit: RUN_ENDS_NEWEST });

@@ -18,7 +18,7 @@ import { createModels } from "@earendil-works/pi-ai/models";
 import { type Conversation, type ConversationId, createRegistry, Harness, LiveDoc, ROOT_CONVERSATION_ID, type Tx } from "@earendil-works/pi-durable";
 import { type AdapterSession, type AgentAdapter, type BeforeRequest, type HostTool, modelPortFor, type Refusal, RUNNER_RECORDS, type SessionRecord, type SessionSpec, sessionSpendOf } from "@parcha/agentrun-kernel";
 import type { KernelHooks, ToolCall } from "./conformance/subject.js";
-import { type AnswerData, type ApprovalPrice, type AskData, type BudgetData, type CallEndData, type CallStartData, type CallStatus, endedAnswer, type EndData, KINDS, type MessageData, type RaiseData, withdrawnAnswers } from "./journal-kinds.js";
+import { type AnswerData, type ApprovalPrice, ASK_PERSON_WAITING, type AskData, type BudgetData, type CallEndData, type CallStartData, type CallStatus, endedAnswer, type EndData, KINDS, type MessageData, type RaiseData, withdrawnAnswers } from "./journal-kinds.js";
 import { endedOnTurnEndingTool, type MessageOrigin, originOf, RUN_RESUMED } from "@parcha/pi-durable-agent/timeline";
 import { type AlsoRow, type Claim, ClaimRefused, type Command, type CommandOutcome, deniedText, endedBy, type EndOfRunAnswer, type EndOfRunTurn, type Loop, type LoopDeps, type LoopEnd, type LoopFactory, noteOf, type StopReason } from "./loop-contract.js";
 import { deniedText as setToDenyText } from "../refusal-words.js";
@@ -140,8 +140,10 @@ export interface HostLifecycle {
   /** Asked when the run's turn ends on its question to the person (ask_person), before it parks: a tool host holding
    *  something the person may still use while they answer (the browser's open session, its live view, its page) holds the
    *  person's time for it under the run's cap and answers a PersonWait, and the run waits in its claim (the browser's
-   *  hand-over waits the same way). Undefined from every host (nothing open, or no room under the cap): the run parks. */
-  readonly personWait?: readonly ((harness: Harness, callId: string) => Promise<PersonWait | undefined>)[];
+   *  hand-over waits the same way). Undefined from every host (nothing open, no room under the cap, or past the wait's
+   *  bound): the run parks. `since` (ms): when the wait first started, kept in the journal, so a later claim's wait keeps
+   *  the first one's bound. */
+  readonly personWait?: readonly ((harness: Harness, callId: string, since: number) => Promise<PersonWait | undefined>)[];
 }
 
 /** How a session's turn ended (AdapterSession.turnEnd). */
@@ -215,15 +217,15 @@ export interface AdapterLoopOptions {
   /** How many times pi restarts a call's task cut off without progress before it ends it (restart_limit); finite.
    *  Default DEFAULT_RESTART_LIMIT. */
   readonly restartLimit?: number;
-  /** The gate's clock (epoch ms): when an ask was asked and answered. Default Date.now. */
+  /** The gate's clock (epoch ms): when an ask was asked and answered, and when a wait in the claim on the person's answer
+   *  started. Default Date.now. */
   readonly now?: () => number;
+  /** For tests: awaited as a wait in the claim on the person's answer starts, before it takes their messages. */
+  readonly beforePersonWait?: () => Promise<void>;
 }
 
 /** The most of a harness's own turn error a failed run's summary keeps. */
 const TURN_ERROR_MAX = 500;
-/** A run parked on an ask_person question reads this fixed summary; the view reads the question itself from the call (never
- *  this entry), so the model's question text is never copied into the run row. */
-const ASK_PERSON_WAITING = "Waiting for your reply";
 
 /** `text` cut to at most `max` UTF-16 units, never inside a character: a high surrogate the cut leaves alone goes too. */
 const cutWhole = (text: string, max: number): string => {
@@ -488,6 +490,10 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
   let waitHolds: PersonWait[] = [];
   /** The wait's own `reopen`, while it is set. */
   let waitTurn: { sent?: Promise<void>; placed?: () => void } | undefined;
+  /** A person's message placed as a steer while the session was idle and no wait took it (its turn tracked by no one): the
+   *  answer to a question that landed between the question's turn end and the wait's start. The wait takes it as its
+   *  answer (waitInClaim), once. */
+  let idleSteer: { requestId: string; placed: Promise<boolean> } | undefined;
   /** The wait in the claim is over (an answer placed, a lapse, the run's end, park, restart or loss): its holds go. `of`:
    *  only while it is that wait's (a wait that settles late never ends a later one). */
   const endWait = (of?: object): void => {
@@ -639,7 +645,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     // follow-up are), its row taken in its submission's commit; the claim waits on it before the run's next end.
     if (reopen && !reopen.sent && session.state === "idle") {
       const theSession = session;
-      const taken = gate.expect(writesSubmission(requestId), { take: [command.id] });
+      // The answer to a wait in the claim: the row's waiting summary goes in its commit.
+      const taken = gate.expect(writesSubmission(requestId), { take: [command.id], ...(reopen === waitTurn ? { run: { summary: null } } : {}) });
       taken.catch(() => undefined);
       reopen.sent = (async () => {
         await cliRecord?.person(text);
@@ -665,8 +672,13 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     // A seal while the steer is placed fails it before it is awaited: handled here.
     taken.catch(() => undefined);
     const theGate = gate;
+    // The session idle (a turn just ended, no wait taking messages yet): this places a turn no one tracks. Kept, so a wait
+    // that starts next takes it as its answer.
+    const idle = session.state === "idle";
+    const steering = session.steer(text, requestId, followUp ? "followUp" : "steer", origin ? { origin } : undefined);
+    if (idle) idleSteer = { requestId, placed: steering.then(() => true, () => false) };
     try {
-      await session.steer(text, requestId, followUp ? "followUp" : "steer", origin ? { origin } : undefined);
+      await steering;
     } catch (error) {
       // Sealed while it was placed (the run parked meanwhile): left for the resume, as above.
       if (theGate.sealed) return { later: "the run is parking: the steer waits for its resume" };
@@ -1304,6 +1316,26 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     return { state: "parked" };
   }
 
+  /** The row's waiting summary of a wait in the claim, gone: its answer came by a way whose commit did not clear it. */
+  async function notWaiting(on: Harness, theGate: Gate, conversation: Conversation, callId: string): Promise<void> {
+    const cleared = theGate.expect(writesEntry(KINDS.personAsked, (data) => data.callId === callId && data.answered === true), { run: { summary: null } });
+    cleared.catch(() => undefined);
+    await on.commit((tx) => tx.appendEntry(conversation.id, { kind: KINDS.personAsked, data: { callId, inClaim: true, answered: true } }), context);
+    await cleared;
+  }
+
+  /** How the turn of the root's submission `requestId` ended (a steer of the idle session, which no session tracks). */
+  async function turnOfRequest(on: Harness, conversation: Conversation, requestId: string): Promise<TurnEnd> {
+    const found = await on.commit((tx) => tx.submissionByRequest(conversation.id, requestId), context);
+    if (!found) {
+      await on.waitForIdle(context);
+      return { status: "completed" };
+    }
+    const submission = await on.submission(found.id, context);
+    const record = submission ? await submission.wait(context) : undefined;
+    return { status: !record || record.status === "done" ? "completed" : "failed" };
+  }
+
   /** The run waits in its claim on the person's answer to its question (ask_person `callId` ended its turn) when a tool
    *  host keeps something open for them meanwhile (HostLifecycle.personWait: the browser's session, whose live view the
    *  person may watch or take over, and whose page the agent goes on from), as the browser's hand-over waits in the claim.
@@ -1314,15 +1346,31 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
    *  or the session went), and the run parks on its question. Undefined when no host holds anything: the run parks. */
   async function waitInClaim(on: Harness, callId: string): Promise<{ next: Promise<TurnEnd | "lapsed"> } | undefined> {
     const holders = specNow?.lifecycle?.personWait ?? [];
-    if (!holders.length || !session || gate?.sealed) return undefined;
-    // Set before the hosts are asked: an answer sent meanwhile is the claim's next turn, never a steer into no turn.
-    const theSession = session;
+    if (!holders.length || !session || !gate || gate.sealed || !root) return undefined;
+    await options.beforePersonWait?.();
+    // Set before anything else: an answer sent from here is the claim's next turn, never a steer into no turn.
+    const [theSession, theGate, conversation] = [session, gate, root];
     const mine: { sent?: Promise<void>; placed?: () => void } = {};
     let placing: Promise<void> = new Promise<void>((resolve) => (mine.placed = resolve));
     reopen = mine;
     waitTurn = mine;
+    // The wait as the journal has it: an earlier claim's (its start, so its bound never restarts), or none.
+    const entries = await entriesOf(theGate.journal, conversation.id, context);
+    const marked = findData<{ callId?: unknown; inClaim?: unknown; at?: unknown }>(entries, KINDS.personAsked, (data) => data.callId === callId && data.inClaim === true && typeof data.at === "number");
+    const answeredMark = findData<{ callId?: unknown; answered?: unknown }>(entries, KINDS.personAsked, (data) => data.callId === callId && data.answered === true);
+    const showing = marked !== undefined && answeredMark === undefined;
+    // The answer already came, between the question's turn end and here, placed as a steer of the idle session (steer):
+    // its turn is the next, at once; the row's waiting summary goes.
+    const early = idleSteer;
+    idleSteer = undefined;
+    if (early && (await early.placed)) {
+      endWait(mine);
+      if (showing) await notWaiting(on, theGate, conversation, callId);
+      return { next: turnOfRequest(on, conversation, early.requestId) };
+    }
+    const since = marked ? (marked.at as number) : now();
     for (const holder of holders) {
-      const hold = await Promise.resolve().then(() => holder(on, callId)).catch((error: unknown) => {
+      const hold = await Promise.resolve().then(() => holder(on, callId, since)).catch((error: unknown) => {
         console.warn(`[runner] a tool host's person-wait failed: ${said(error)}`);
         return undefined;
       });
@@ -1332,6 +1380,13 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     if (!waitHolds.length && !mine.sent) {
       endWait(mine);
       return undefined;
+    }
+    // The wait's start, once, in the journal, with the row's waiting summary (the server tells run.needs_input by it).
+    if (!marked && !mine.sent) {
+      const shown = theGate.expect(writesEntry(KINDS.personAsked, (data) => data.callId === callId && data.inClaim === true), { run: { summary: ASK_PERSON_WAITING } });
+      shown.catch(() => undefined);
+      await on.commit((tx) => tx.appendEntry(conversation.id, { kind: KINDS.personAsked, data: { callId, inClaim: true, at: since } }), context);
+      await shown;
     }
     const next = new Promise<TurnEnd | "lapsed">((resolve, reject) => {
       let done = false;

@@ -47,7 +47,8 @@ async function asking(t, input, env = {}, hook = undefined) {
   const made = await call(server.port, { method: "POST", path: "/v2/setup", headers: { ...json, origin }, body: { password: PASSWORD } });
   assert.equal(made.status, 201, made.text);
   const cookie = cookieOf(made);
-  if (hook) assert.equal((await server.api("PUT", "/settings/webhook", { url: hook })).status, 201);
+  // The webhook is a secret write: the owner's own session sets it.
+  if (hook) assert.equal((await call(server.port, { method: "PUT", path: "/v2/settings/webhook", headers: { ...json, origin, cookie }, body: { url: hook } })).status, 201);
   assert.equal((await server.api("POST", "/agents", { definition: { id: "watch", name: "watch", instructions: "Browse, then ask.", tools: ["browser", "ask_person"] } })).status, 201);
   const started = await server.api("POST", "/agents/watch/runs", { input: { content: input } });
   assert.equal(started.status, 202, JSON.stringify(started.body));

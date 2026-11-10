@@ -94,9 +94,10 @@ export type ToolHost = {
   /** On the runner: asked when the run's turn ends on its question to the person (ask_person, call `callId`), before the
    *  run parks. A binding that keeps something open the person may still use while they answer holds the person's time for
    *  it and answers a hold, and the run waits in its claim instead (adapter-loop.ts HostLifecycle.personWait); `lapsed`
-   *  settles, in words, when the hold can no longer stand, and the run parks then. Undefined: nothing to keep. Absent on
+   *  settles, in words, when the hold can no longer stand, and the run parks then. `since`: when the wait first started
+   *  (its bound runs from then, across claims). Undefined: nothing to keep. Absent on
    *  the old per-run process, whose wait keeps the process (and so the browser) anyway. */
-  personWait?(hold: (harness: Harness, callId: string) => Promise<{ readonly lapsed: Promise<string>; drop(): void } | undefined>): void;
+  personWait?(hold: (harness: Harness, callId: string, since: number) => Promise<{ readonly lapsed: Promise<string>; drop(): void } | undefined>): void;
   /** The run is on the runner: its browser hand-over's answers are entries of its journal (a browser_hand_back row the
    *  runner applies, the live view's hand-back, the ask's expiry), read and written there, never as answer files
    *  (browser-person.ts personHands `answered`). */
@@ -497,12 +498,12 @@ const browserTool: ToolEntry = {
     // page stay for the person and for the agent's next turn, as main's process kept them; the person's time on each such
     // session is held under the run's cap the way a hand-over's is (personHands.wait). With none open, or no room under
     // the cap for that time, the run parks (its release lets the browser go).
-    host.personWait?.(async (harness, callId) => {
+    host.personWait?.(async (harness, callId, since) => {
       if (refused) return undefined;
       const rows = Object.values(((await harness.snapshot(browser.docs.Inventory as never, context)) as { rows?: Record<string, { tag: string; resourceId: string | null; state: string }> } | undefined)?.rows ?? {});
       const open = rows.filter((row) => (row.state === "live" || row.state === "held") && row.resourceId !== null).map((row) => row.tag);
       if (!open.length) return undefined;
-      const waited = await hands.wait(callId, open);
+      const waited = await hands.wait(callId, open, since);
       return "refused" in waited ? undefined : waited;
     });
     host.beforeRelease(async (harness) => {
