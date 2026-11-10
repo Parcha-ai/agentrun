@@ -6,6 +6,7 @@ import { randomBytes } from "node:crypto";
 import { test } from "node:test";
 
 const { redactSecrets, valueMatcher } = await import("../dist/learn/secrets.js");
+const { checkNote } = await import("../dist/learn/check.js");
 
 /** Whether `text` holds any 8 characters of `value` in a row. */
 const holdsPiece = (text, value) => [...Array(Math.max(0, value.length - 7)).keys()].some((i) => text.includes(value.slice(i, i + 8)));
@@ -38,6 +39,20 @@ test("learning's guard sees a held value as a path names it: the matcher holds t
   const holds = valueMatcher([value]);
   assert.equal(holds(`open 'notes/${core.slice(0, 20)}/${core.slice(20)}'`), true, "collapsed, the slashes at both ends dropped");
   assert.equal(holds("nothing held here"), false);
+});
+
+test("a learning note quoting a held value as a path names it is refused, as one quoting it as written is: never laid into a later run", () => {
+  const value = `not-a-secret-path-key//${randomBytes(8).toString("hex")}/`;
+  const spelled = value.replace("//", "/").slice(0, -1);
+  const note = (text) => new TextEncoder().encode(`---\nname: where-it-failed\ndescription: The read that failed.\n---\n\n${text}\n`);
+  for (const [what, text] of [["as a path names it", `The read failed: open 'notes/${spelled}.txt'.`], ["as written", `The key is ${value}.`]]) {
+    const { problems, note: kept } = checkNote("where-it-failed.md", note(text), [value]);
+    assert.ok(problems.some((problem) => problem.rule === "secret_value"), `${what}: refused as the host's value: ${JSON.stringify(problems)}`);
+    assert.equal(kept, undefined, `${what}: no note kept`);
+    assert.equal(holdsPiece(JSON.stringify(problems), value), false, `${what}: its problems print no piece of it`);
+  }
+  const clean = checkNote("where-it-failed.md", note("The read failed: the file was not there."), [value]);
+  assert.equal(clean.problems.some((problem) => problem.rule === "secret_value"), false, "a note holding no part of it is not refused for it");
 });
 
 test("a held value with \"//\" is still cut as written, and a value with no \"/\" is cut as before", () => {
