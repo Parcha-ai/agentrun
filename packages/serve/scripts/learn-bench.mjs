@@ -148,6 +148,26 @@ async function startServer(data, templates) {
   return { api: apiOf(base, token), base, store, close: async () => { await store.close(); await beside.close(); await serve.close(); } };
 }
 
+/** Each harness of the plan installed before its first series: a claude-agent or codex that this data directory has not
+ *  installed yet installs on first use (capabilities `installs: on_first_use`), and a run that starts while it installs
+ *  fails, so its teaching step would be lost. An agent saved on it starts the install; the bench waits for it. */
+async function installed(api, harnesses, log) {
+  for (const harness of harnesses) {
+    const offer = () => api("GET", "/capabilities").then((got) => (got.body?.harnesses ?? []).find((h) => h.id === harness));
+    if (!(await offer())?.installs) continue;
+    log(`installing ${harness} (first use) before its series`);
+    ok(`saving an agent on ${harness}`, await api("POST", "/agents", { definition: { version: 1, name: `Bench install ${harness}`, description: "Saved by the learning bench to install its harness before the runs.", instructions: "Answer briefly.", harness, skills: [], tools: [], learning: false, place: { mode: "runner" } } }));
+    const until = Date.now() + 10 * 60_000;
+    for (;;) {
+      const now = await offer();
+      if (!now?.installs) break;
+      if (Date.now() > until) throw new Error(`${harness} did not install within 10 minutes`);
+      await sleep(3000);
+    }
+    log(`${harness} installed`);
+  }
+}
+
 /** The owner's password session: setup with a password made here, held in memory alone. */
 async function ownerOf(api, base) {
   const origin = base.replace(/\/v2$/, "");
@@ -238,13 +258,17 @@ async function step(ctx, job, one, kase, agentId, harness, learns) {
     }
   }
   const verdictFiles = (learning?.verdict?.items ?? []).map((item) => item.file ?? "");
-  const total = usd(view.cost?.usd);
+  // A run that answered cost something: $0 is a usage with no price (a harness whose requests the server could not price),
+  // so it reads unknown, never $0 (cost_unpriced), as an unpriced grade does.
+  const priced = usd(view.cost?.usd);
+  const costUnpriced = priced === 0 && view.status === "completed";
+  const total = costUnpriced ? null : priced;
   // The run's cost split: its job's own turns (what it had cost when the job answered) and its end-of-run learning turn
   // (what looking back cost), from its kept learning row. A run that did not learn, or did not look back, spent it all on
   // its job.
   const kept = learns ? ((await ctx.store.learning.proposal(runId))?.proposal ?? {}) : {};
   const looked = learns && kept.answered_at !== undefined;
-  const work = looked ? usd(kept.job_cost_usd) : total;
+  const work = costUnpriced ? null : looked ? usd(kept.job_cost_usd) : total;
   const reflect = looked ? usd(kept.look_back_usd) : total === null ? null : 0;
   // The grade's cost as its learning says it; 0 with tokens counted is a usage with no price (LS-09): unknown, never $0.
   const gradeTokens = learning?.tokens?.grade;
@@ -261,7 +285,7 @@ async function step(ctx, job, one, kase, agentId, harness, learns) {
     pass: graded && graders.every((g) => g.pass), graders,
     // The answer the graders read, its head: what a failed grader is checked against when its reason is not enough.
     answer: record.answer.slice(0, 4000),
-    cost_usd: total, work_cost_usd: work, reflect_cost_usd: learns ? reflect : 0, eval_grader_cost_usd: graders.some((g) => g.type === "llm") ? round(graders.reduce((s, g) => s + (g.cost_usd ?? 0), 0)) : null,
+    cost_usd: total, cost_unpriced: costUnpriced, work_cost_usd: work, reflect_cost_usd: learns ? reflect : 0, eval_grader_cost_usd: graders.some((g) => g.type === "llm") ? round(graders.reduce((s, g) => s + (g.cost_usd ?? 0), 0)) : null,
     learning: learning ? { state: learning.state ?? null, reason: learning.reason ?? null, detail: learning.detail ?? null } : null,
     grade_cost_usd: unpriced ? null : gradeRaw, grade_cost_unpriced: unpriced,
     learned, workflow_proposed: Boolean(learned && (learned.workflows.length || verdictFiles.some((f) => f.startsWith("workflows/")))),
@@ -351,6 +375,7 @@ export function metricsOf(steps, learns) {
     grade_cost_unknown_steps: learns ? steps.filter((x) => x.grade_cost_unpriced || (x.learning?.state === "merged" && x.grade_cost_usd === null)).length : null,
     eval_grader_cost_usd: steps.some((s) => s.eval_grader_cost_usd !== null) ? round(steps.reduce((s, x) => s + (x.eval_grader_cost_usd ?? 0), 0)) : null,
     approvals: steps.reduce((n, s) => n + (s.approvals?.length ?? 0), 0),
+    cost_unknown_steps: steps.filter((s) => s.cost_unpriced).length,
   };
 }
 
@@ -411,6 +436,7 @@ async function main() {
     const write = () => writeFileSync(join(values.out, "results.json"), `${JSON.stringify(results, null, 1)}\n`);
     try {
       const owner = await ownerOf(server.api, server.base);
+      await installed(server.api, [...new Set(plan.map((p) => p.harness))], options.log);
       for (const p of plan) {
         const fakes = [];
         try {
@@ -453,7 +479,7 @@ export function render(results) {
     const st = (m.staleness ?? []).map((x) => `${x.change_step}: ${pct(x.change_graders_pass_rate)} / ${yes(x.skill_updated)} / ${yes(x.workflow_updated)}`).join("; ") || "-";
     const trend = m.cost_trend_usd_per_run === null ? "-" : `${m.cost_trend_usd_per_run >= 0 ? "+" : ""}${m.cost_trend_usd_per_run.toFixed(5)}`;
     const grade = s.arm === "off" ? "-" : `${money(m.grade_cost_usd)}${m.grade_cost_unknown_steps ? ` (+${m.grade_cost_unknown_steps} unknown)` : ""}`;
-    out.push(`| ${s.job} | ${s.harness} | ${s.arm} | ${s.steps.length} | ${pct(m.follow_rate)} | ${pct(m.pass_rate)} | ${money(m.work_cost_per_run_usd)} | ${trend} | ${m.grade_cost_unknown_steps ? "≥" : ""}${money(m.learning_overhead_usd_per_run)} | ${grade} | ${pct(m.workflow_proposal_rate)} | ${pct(m.reuse_rate)} | ${st} | ${m.wrong_keeps ?? "-"} |`);
+    out.push(`| ${s.job} | ${s.harness} | ${s.arm} | ${s.steps.length} | ${pct(m.follow_rate)} | ${pct(m.pass_rate)} | ${m.cost_unknown_steps === s.steps.length ? "unknown" : money(m.work_cost_per_run_usd)} | ${trend} | ${m.grade_cost_unknown_steps ? "≥" : ""}${money(m.learning_overhead_usd_per_run)} | ${grade} | ${pct(m.workflow_proposal_rate)} | ${pct(m.reuse_rate)} | ${st} | ${m.wrong_keeps ?? "-"} |`);
   }
   for (const s of order) {
     out.push("", `${s.job} / ${s.harness} / ${s.arm}: graders ${Object.entries(s.metrics.grader_pass_rates ?? {}).map(([g, r]) => `${g} ${pct(r)}`).join(", ")}`);

@@ -53,6 +53,7 @@
                 },
                 "answer": { "type": "string", "description": "The run's final answer as the graders read it, its first 4000 characters." },
                 "cost_usd": { "type": ["number", "null"], "description": "The step's run, whole: its job's turns and its end-of-run learning turn (its learning run, the grade, is apart)." },
+                "cost_unpriced": { "type": "boolean", "description": "The run completed and its cost read $0: a usage the server could not price; its costs read null." },
                 "work_cost_usd": { "type": ["number", "null"], "description": "The job's own turns: what the run had cost when its job answered (its kept learning row's job_cost_usd); the whole run for one that did not learn or look back." },
                 "reflect_cost_usd": { "type": ["number", "null"], "description": "The end-of-run learning turn (the kept row's look_back_usd); 0 for a run that did not learn or look back." },
                 "eval_grader_cost_usd": { "type": ["number", "null"], "description": "Its llm graders' runs." },
@@ -101,7 +102,8 @@
               "grade_cost_usd": { "type": ["number", "null"], "description": "on: the learning runs' grade cost." },
               "grade_cost_unknown_steps": { "type": ["integer", "null"], "description": "on: steps whose grade cost is unknown (unpriced, or merged and read null)." },
               "eval_grader_cost_usd": { "type": ["number", "null"] },
-              "approvals": { "type": "integer" }
+              "approvals": { "type": "integer" },
+              "cost_unknown_steps": { "type": "integer", "description": "Steps whose run cost is unknown (cost_unpriced)." }
             }
           }
         }
