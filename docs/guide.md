@@ -5,7 +5,7 @@ AgentRun defines workflows that combine tools, code, Jev system one decisions, a
 <a id="quickstart"></a>
 ## Start with an example
 
-Use Node 22.19+ or 24.2+ and npm. Follow the [support example](examples.md#run-the-support-example) to install, build and run the support example without credentials. It searches for an answer, checks it, and calls an agent only when investigation is needed. [Connect your own tools and models](support-quickstart.md) after the scripted example works.
+Use Node 24.11 or newer and npm. Follow the [support example](examples.md#run-the-support-example) to install, build and run the support example without credentials. It searches for an answer, checks it, and calls an agent only when investigation is needed. [Connect your own tools and models](support-quickstart.md) after the scripted example works.
 
 For TypeScript authoring and reusable child workflows, follow the [research tutorial](authoring.md). The [standalone starter](../examples/starter/README.md) runs outside this checkout. See [all examples](examples.md) for their commands and failure paths.
 

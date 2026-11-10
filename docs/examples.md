@@ -8,7 +8,7 @@ Every example below runs on scripted models by default, with no key: it exercise
 
 ## Run the support example
 
-The workflow in the animation, from a checkout (Node 22.19+ or 24.2+ and npm):
+The workflow in the animation, from a checkout (Node 24.11 or newer, and npm):
 
 ```sh
 git clone --branch main --single-branch https://github.com/Parcha-ai/agentrun.git
