@@ -373,7 +373,7 @@ jobs:
         run: sh deploy/walk/smoke.sh
 
   real-chrome:
-    # @parcha/pi-browser's suites that drive a real local Chrome (the cdp provider, Stagehand's
+    # @parcha/pi-browser's suites that drive a real local Chrome (the coding agent's default provider, the cdp provider, Stagehand's
     # driver and its trace-export seal). They are not part of the verify matrix: they need one pinned browser, not both Node versions.
     # Chrome for Testing is used because the runner's own Chrome answers Extensions.loadUnpacked with "Method not available", so
     # Stagehand's extension cannot load in it. A missing or incapable Chrome fails a test here instead of skipping it.
