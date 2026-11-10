@@ -9,7 +9,9 @@
 //     own left out), as learning-run.ts turnOf reads them;
 //   - the checks: propose.ts proposeRun against the seed it started from, the server's one rule, which keeps the
 //     proposal the hook stores beside the run's end (learning_proposals);
-//   - what the run must never learn (learning-run.ts refused): the runner's secrets, the keys its claim handed it, and
+//   - what the run must never learn (learning-run.ts refused, the server's serverSecrets as far as the runner reads
+//     them): every secret the server keeps sealed (store-secrets.ts storeSecrets: the store's planes, and the API token,
+//     session secret and outbound webhook secret beside it), the runner's secrets, the keys its claim handed it, and
 //     the sign-in pointers its row says it was handed, read back from the store (handed-values.ts handedValuesOf). A run
 //     whose pointers can't be read back learns nothing (the hook drops it, saying why), never over a shorter list. A
 //     runner's run has no door token: its loop runs in the runner's process.
@@ -52,6 +54,9 @@ export interface LearningEndDeps {
   readonly signIns?: SignInReader;
   /** The secret values the run's claim handed it (claim-secrets.ts: its tool and model keys), never learned. */
   readonly handed?: readonly string[];
+  /** Every secret the server keeps sealed, read once at the run's end (store-secrets.ts storeSecrets over the store, the
+   *  seal key and the data directory), never learned. A throw is a list that can't be read: the run learns nothing. */
+  readonly stored?: () => Promise<readonly string[]>;
   /** The grade model the server names (learning.ts gradeModelOf); none, from `env` as the server reads it. */
   readonly gradeModel?: string;
 }
@@ -80,12 +85,19 @@ export function learningEndOfRun(launch: RunLaunch, deps: LearningEndDeps): EndO
       const triggered = heard.flatMap(({ text, source }) => (source === undefined ? [] : [{ source, text }]));
       return { asked: heard.filter((one) => one.source === undefined).map(({ text }) => text), ...(triggered.length ? { triggered } : {}) };
     },
-    // learning-run.ts refused(run): the runner's secrets, what the claim handed the run, and the sign-in pointers it was
-    // handed (each at least MIN_SECRET long, as every cut takes them); `unreadable` when those can't be read back.
+    // learning-run.ts refused(run): the runner's secrets, what the claim handed the run, every secret the server keeps
+    // sealed, and the sign-in pointers it was handed (each at least MIN_SECRET long, as every cut takes them);
+    // `unreadable` when those can't be read back, or the server's secrets can't be read (never a check over a shorter list).
     refuse: async (runId) => {
       const pointers = await handedValuesOf(deps, deps.store, runId);
       if (pointers === "unreadable") return "unreadable";
-      return runnerSecrets(env, [...(deps.handed ?? []), ...pointers.refs.filter((ref) => ref.length >= MIN_SECRET)]);
+      let stored: readonly string[];
+      try {
+        stored = deps.stored ? await deps.stored() : [];
+      } catch {
+        return "unreadable";
+      }
+      return runnerSecrets(env, [...(deps.handed ?? []), ...stored, ...pointers.refs.filter((ref) => ref.length >= MIN_SECRET)]);
     },
     check: async ({ runId, agentId, turn, outcome, refuse }) => {
       if (start.seed === null) throw new Error("the run's learning start names no commit of main to propose against");

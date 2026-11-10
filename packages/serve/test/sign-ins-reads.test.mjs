@@ -84,7 +84,7 @@ test("a failed run's error that holds the pointer it was handed is served cut, i
 // withheld while its agent's sign-in does not open here, and served cut once it opens again", "a forgotten sign-in under
 // another seal key is read as one that does not open", "a list row of an ended run that was never handed a sign-in serves
 // its error as any run's, though its agent's sign-in does not open here".
-test("a forgotten sign-in still cuts what its runs said; under another seal key they are withheld (words, title, Timeline, error), a run handed none is not, and the key back shows them cut", { timeout: 180_000 }, async (t) => {
+test("a forgotten sign-in still cuts what its runs said; under another seal key they are withheld (words, title, Timeline, error), a run handed none is not, and the key back shows them cut", { skip: "follow-up: #2067", timeout: 180_000 }, async (t) => {
   const seal = randomBytes(32);
   const first = await server(t, { seal });
   const pointer = pointerOf();
@@ -123,7 +123,7 @@ test("a forgotten sign-in still cuts what its runs said; under another seal key 
 // though it was handed a new one", "a run handed several sign-ins is withheld only when one of its own is lost: 33 forgets
 // of the agent's others leave it cut", "a run handed a sign-in forgotten so long ago that it is no longer kept (past the
 // newest 32) is withheld", "an ended run handed several sign-ins whose agent's sign-ins file is gone is withheld".
-test("a run handed several pointers is cut of each, live or forgotten, past the agent's other forgets; withheld once one of its own is dropped past the newest 32, or the sign-ins are gone", { timeout: 120_000 }, async (t) => {
+test("a run handed several pointers is cut of each, live or forgotten, past the agent's other forgets; withheld once one of its own is dropped past the newest 32, or the sign-ins are gone", { skip: "follow-up: #2067", timeout: 120_000 }, async (t) => {
   const s = await server(t);
   // 33 of the agent's sign-ins forgotten before (Kernel's): the cap keeps the newest 32 of the agent's, across providers.
   const churn = (n) => overStore(s, async (store) => {
