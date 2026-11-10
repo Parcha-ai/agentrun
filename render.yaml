@@ -24,6 +24,7 @@ services:
         generateValue: true
       # The key saved model and tool keys, MCP server credentials and webhook trigger secrets are sealed under. Render
       # generates it once (base64 of 256 bits); a service that already has it keeps its own. Losing it loses them.
+      # Every runner must be given this same value.
       - key: AGENTRUN_SEAL_KEY
         generateValue: true
       - key: AGENT_MODEL

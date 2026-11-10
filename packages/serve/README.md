@@ -1274,9 +1274,9 @@ the two together. The store records the key's fingerprint (an HMAC of a fixed la
 the server, every runner and `import` check the key they hold against it: a store whose secrets were sealed with another
 key does not start ("this store's secrets were sealed with another key; hand the server the original
 AGENTRUN_SEAL_KEY"), and no key is ever made over sealed secrets, so a lost `seal.key` is never replaced by a new one.
-The same holds on Postgres: a second machine with another key refuses. A key an earlier build kept under
-`$XDG_CONFIG_HOME/agentrun/seal.key` (or `~/.config`) is moved into the data directory at the next start, only when it is
-the store's own.
+The same holds on Postgres: a second machine with another key refuses. Only the server's start makes the key; a runner
+reads it from `AGENTRUN_SEAL_KEY` or the data directory, never makes one, and is refused without one. Set
+`AGENTRUN_SEAL_KEY` explicitly, the same in every process, and keep it.
 
 A stored value that does not open is never a reason not to start. It reads `set: false, stored_unreadable: true`, and
 `reenter` names those fields with why: `seal_key_changed` (sealed under another key) or `file_unreadable`. The log says

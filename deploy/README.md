@@ -29,7 +29,7 @@ What each takes, from its environment alone:
 
 | Setting | Server | Runner | What it is |
 | --- | --- | --- | --- |
-| `AGENTRUN_SEAL_KEY` | required | required | The key saved model keys, tool keys and MCP credentials are sealed under. The server and every runner must have the same one. Make it once with `openssl rand -base64 32` and keep it: losing it loses what it sealed. Unset, the server keeps one in `/data/seal/seal.key`, beside the store, and a runner on the same volume reads it; a runner on another machine must be handed it. The store records the key's fingerprint, so a process with another key does not start. |
+| `AGENTRUN_SEAL_KEY` | required | required | The key saved model keys, tool keys and MCP credentials are sealed under. Set it explicitly, the same in every process (`openssl rand -base64 32`), and keep it. Without it the server keeps one in the data directory beside the store, made at the first start. A store whose secrets were sealed with another key refuses to start, in words: hand the server the original key. |
 | `AGENTRUN_STORE_URL` | optional | optional | A `postgres://` URL for a Postgres store. Unset, the store is SQLite in `/data`, and every process must share that one volume. It holds the database's password, so it is a secret: give it from an env file or a secret store, never written into a compose file or a command line. The launcher hands it to the process over a pipe and keeps it out of the process environment, so no run sees it. |
 | `AGENTRUN_STORE_SCHEMA` | optional | optional | The Postgres schema the store is in (default `agentrun`). |
 | `AGENTRUN_RUNNER_NAME` | | optional | The runner's name when `--name` gives none: in the runs it claims, its log lines and its heartbeat. Give each runner its own. |
@@ -97,6 +97,8 @@ exits and is started again.
 **Render.** `render.yaml` at the repository's root runs the image's default command: the server with one runner beside
 it, on a disk only that one service can mount. More runners on Render need the Postgres store: the server with
 `--no-runner`, and each runner a background worker from the same image with `runner --data /data --name <name>`.
+render.yaml has Render generate AGENTRUN_SEAL_KEY once; keep it with the service. More runners on Render need the same
+value set on each worker.
 
 ## Upgrading from an earlier server
 
