@@ -18,7 +18,7 @@ import {
 import { listMcpServers, openServerCredential, putPendingSignIn, removeMcpServer, saveMcpServer, takePendingSignIn } from "./mcp-store.js";
 import { checkPrivateHosts, privateOAuthHosts, savePrivateOAuthHosts } from "./mcp-private-hosts.js";
 // MCP's secret writes, registered with the one gate as the registry loads (the server's dispatch reads them).
-import "./mcp-secret-writes.js";
+import { credentialMark } from "./mcp-secret-writes.js";
 import { type SecretMeta, secretMeta, secretName } from "./secret-writes.js";
 import { type ClientKind, issuerOf, MAX_PENDING, MCP_SETTINGS_PAGE, McpSignIns, type OAuthNetwork, type Pending, type PendingStore, reasonOf, SIGN_IN_AGAIN, systemNetwork, type TokenSet } from "./mcp-oauth.js";
 import { SEAL_KEY_ENV, sealKeyOf } from "./tool-keys.js";
@@ -164,10 +164,13 @@ export class McpServersOverStore {
 
   /** PUT: preview, then keep the server with the tools listed. A body with no credential keeps the sealed one, while the
    *  auth type and the URL's origin stay the same. */
-  async save(name: string, body: Record<string, unknown>, stop?: AbortSignal) {
+  async save(name: string, body: Record<string, unknown>, stop?: AbortSignal, checkedAgainst?: string) {
     nameOf(name);
     const { url, auth, prices } = this.admit(body, true);
     const was = await this.store.mcp.server(name);
+    // The credential this save may write over: the one the secret-write gate let it through against (`checkedAgainst`,
+    // its credentialMark), else the one read here. Checked again before the write, after the listing's wait.
+    const against = checkedAgainst ?? credentialMark(was);
     let credential: McpCredential | undefined;
     // The sealed credential kept (no new one sent) keeps its own time (credential_changed_at); a new one moves it.
     let kept: number | null | undefined;
@@ -198,12 +201,21 @@ export class McpServersOverStore {
     if (unlisted.length) throw invalid(unlisted.map((tool) => ({ field: `prices.${tool}`, reason: "not_an_option", message: `The server ${name} lists no tool ${tool}; its tools are ${listed.tools.map((t) => t.name).join(", ") || "none"}.` })));
     // A body with no `prices` keeps the saved ones, for the tools still listed at the same address.
     const priced = prices ?? (was?.url === url.href ? pricesListed((was.prices ?? undefined) as McpPrices | undefined, listed.tools) : undefined);
+    await this.unchanged(name, against);
     const saved = await saveMcpServer(this.store, this.sealKey, {
       name, url: url.href, auth: auth.type, protocol: listed.protocol, tools: listed.tools, serverInfo: listed.server_info, instructions: listed.instructions ?? null,
       ...(priced && Object.keys(priced).length ? { prices: priced } : {}), ...(credential ? { credential } : {}), ...(kept !== undefined ? { credentialChangedAt: kept } : {}),
     }, { githubMcpOrigin: this.appOrigin });
     await this.store.flush();
     return this.view(saved);
+  }
+
+  /** Refuses a write whose server's credential is no longer `against` (its credentialMark): another save, a sign-in or
+   *  a removal landed while this one listed the server's tools, and writing now would drop or undo it. */
+  private async unchanged(name: string, against: string) {
+    if (credentialMark(await this.store.mcp.server(name)) !== against) {
+      throw new ApiError("precondition_failed", `The MCP server ${name}'s credential changed while this save ran (another save, a sign-in or a removal): read it again, then save again.`);
+    }
   }
 
   /** POST refresh: list the saved server's tools again, keep them, and say what was added, removed and changed. */
@@ -214,6 +226,8 @@ export class McpServersOverStore {
     const before = new Map((was.tools as McpTool[]).map((tool) => [tool.name, canonical(tool)]));
     const after = new Map(listed.tools.map((tool) => [tool.name, canonical(tool)]));
     const prices = pricesListed((was.prices ?? undefined) as McpPrices | undefined, listed.tools);
+    // It writes back the credential it read: never over one the owner saved or signed in with while it listed.
+    await this.unchanged(name, credentialMark(was));
     const saved = await saveMcpServer(this.store, this.sealKey, {
       name, url: was.url, auth: was.auth, protocol: listed.protocol, tools: listed.tools, serverInfo: listed.server_info, instructions: listed.instructions ?? null,
       ...(Object.keys(prices).length ? { prices } : {}), ...(was.sealed !== null ? { credential: open.credential } : {}),

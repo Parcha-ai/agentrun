@@ -20,8 +20,14 @@ export function mcpWritesSecret(operation: string, body: unknown): boolean {
   return token !== undefined || (isObject(headers) && Object.keys(headers).length > 0);
 }
 
-/** The least of the store a save's check reads: the saved server's auth type and whether it holds a sealed credential. */
-type SavedServers = { mcp: { server(name: string): Promise<{ auth: string; sealed: unknown } | undefined> } };
+/** The least of a saved server's row a save's check reads: its auth type, its sealed credential and when that was set. */
+type SavedRow = { auth: string; sealed: unknown; credentialChangedAt?: number | null };
+type SavedServers = { mcp: { server(name: string): Promise<SavedRow | undefined> } };
+
+/** A saved server's credential as a save's check saw it: its auth type, whether one is sealed, and when it was set (a
+ *  token refresh keeps that time; a new credential or a sign-in moves it). A save allowed against one mark is refused
+ *  when the row's mark differs by the time it writes (mcp-servers-store.ts save). */
+export const credentialMark = (row: SavedRow | undefined): string => (row ? JSON.stringify([row.auth, row.sealed !== null && row.sealed !== undefined, row.credentialChangedAt ?? null]) : "absent");
 
 /** Whether a save of the server its path names (with no value in its body) would drop or change the credential the
  *  server holds: it holds one, and the save names another auth type, or none (a body with no auth is none). */
@@ -29,6 +35,8 @@ export async function mcpSaveDropsSecret(body: unknown, request: SecretRequest):
   const [name] = request.params;
   if (!name) return false;
   const was = await (request.store as SavedServers).mcp.server(name);
+  // What the save is let through against: it lands only if the credential is still this one.
+  request.seen = credentialMark(was);
   if (!was || was.sealed === null || was.sealed === undefined) return false;
   const auth = isObject(body) ? body.auth : undefined;
   const type = auth === undefined ? "none" : isObject(auth) ? auth.type : undefined;

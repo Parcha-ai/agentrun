@@ -2,6 +2,7 @@
 // or a script may hold, never does. Through the server, on the one gate in its dispatch (secret-writes.ts):
 // - a save that would drop a saved MCP server's credential (auth none over a bearer) is refused to the token, and the
 //   credential stays; the owner's session drops it;
+// - a token's save let through against no credential never lands over one the owner saved while it listed (412);
 // - removing an MCP server is refused to the token, and the server stays; the console removes it, its request made as the
 //   page makes it (the session's cookie, same origin, JSON, no token);
 // - a sign-in's start is refused to the token, with no state cookie handed back;
@@ -56,6 +57,39 @@ test("a save that would drop a saved MCP server's credential is the owner's alon
   const drop = await page("PUT", "/settings/mcp-servers/fake", { url: fake.url, auth: { type: "none" } });
   assert.equal(drop.status, 200, drop.text);
   assert.equal((await savedAuth(page))?.auth?.type, "none");
+});
+
+test("a token's save let through against no credential never lands over one the owner saved while it listed: it is refused 412, and the owner's credential stays", async (t) => {
+  const server = await serve(t);
+  // Once `holding`, a listing with no Authorization (the token's save of auth none) waits until released.
+  let holding = false;
+  let reached;
+  const blocked = new Promise((resolve) => (reached = resolve));
+  let release;
+  const released = new Promise((resolve) => (release = resolve));
+  const seen = [];
+  const fake = await startFakeMcp({ inspect: (headers) => seen.push(headers.authorization), hold: async (headers) => { if (holding && headers.authorization === undefined) (reached(), await released); } });
+  t.after(() => (release(), fake.close()));
+  const page = await asPage(server);
+  const token = asToken(server);
+  // Saved with no credential: a token's save with none is no secret write, so the gate lets it through.
+  assert.equal((await page("PUT", "/settings/mcp-servers/fake", { url: fake.url })).status, 200);
+  holding = true;
+  const late = token("PUT", "/settings/mcp-servers/fake", { url: fake.url, auth: { type: "none" } });
+  await blocked;
+  // The owner saves a bearer while the token's save lists (the owner's listing carries the bearer: not held).
+  const saved = await page("PUT", "/settings/mcp-servers/fake", { url: fake.url, auth: { type: "bearer", token: TOKEN } });
+  assert.equal(saved.status, 200, saved.text);
+  release();
+  const refused = await late;
+  assert.equal(refused.status, 412, refused.text);
+  assert.equal(refused.json?.error?.code, "precondition_failed");
+  assert.equal((await savedAuth(page))?.auth?.type, "bearer", "the owner's credential stays");
+  // A refresh lists with it: the token's save wrote nothing over it.
+  seen.length = 0;
+  const refreshed = await token("POST", "/settings/mcp-servers/fake/refresh");
+  assert.equal(refreshed.status, 200, refreshed.text);
+  assert.ok(seen.includes(`Bearer ${TOKEN}`), "the bearer is what a refresh lists with");
 });
 
 test("removing an MCP server is the owner's alone: the token is refused and the server stays; the console removes it as the page does", async (t) => {

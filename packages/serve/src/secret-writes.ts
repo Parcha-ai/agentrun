@@ -84,8 +84,10 @@ export function secretsWritableFields(facts: SecretWriterFacts): { secrets_writa
 export type SecretPredicate = (body: unknown) => boolean;
 
 /** What a request is besides its body, for a predicate that must read what is stored: the route's path parameters (in
- *  the order its pattern names them) and the server's one store. */
-export type SecretRequest = { readonly params: readonly string[]; readonly store: unknown };
+ *  the order its pattern names them) and the server's one store. `seen`: what the predicate read to let the request
+ *  through, which the dispatch hands its operation, so a write allowed against one stored state is refused when that
+ *  state changed before the write lands. */
+export type SecretRequest = { readonly params: readonly string[]; readonly store: unknown; seen?: unknown };
 /** Whether a request writes a secret by what it would do to what is stored (drop or replace a sealed credential), read
  *  from the store: beside the body's predicate, in the same one check. */
 export type StoredSecretPredicate = (body: unknown, request: SecretRequest) => Promise<boolean>;
