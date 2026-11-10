@@ -32,8 +32,8 @@ const encode = (text) => {
   const head = n < 126 ? Buffer.from([0x81, n]) : Buffer.from([0x81, 126, n >> 8, n & 255]);
   return Buffer.concat([head, payload]);
 };
-/** Masked client text frames out of a growing buffer. */
-const decoder = (onText) => {
+/** Masked client text frames out of a growing buffer; a close frame calls `onClose`. */
+const decoder = (onText, onClose = () => {}) => {
   let buffer = Buffer.alloc(0);
   return (chunk) => {
     buffer = Buffer.concat([buffer, chunk]);
@@ -51,6 +51,7 @@ const decoder = (onText) => {
       const opcode = buffer[0] & 15;
       buffer = buffer.subarray(at + length);
       if (opcode === 1) onText(body.toString("utf8"));
+      else if (opcode === 8) return onClose();
     }
   };
 };
@@ -73,6 +74,10 @@ const devtoolsUrl = () => (devtools ??= new Promise((resolve) => {
       if (method === "Target.setDiscoverTargets") send({ method: "Target.targetCreated", params: { targetInfo: page } });
       else if (method === "Target.attachToTarget") send({ method: "Target.attachedToTarget", params: { sessionId: "FLAT1", targetInfo: page, waitingForDebugger: false } });
       else if (method === "Page.startScreencast") send({ method: "Page.screencastFrame", sessionId: "FLAT1", params: { data: FRAME.bytes.toString("base64"), metadata: { deviceWidth: FRAME.w, deviceHeight: FRAME.h }, sessionId: 1 } });
+    }, () => {
+      // The client's close (the live view's stream closed at a session's release): answered and ended, as a browser's
+      // DevTools endpoint does, so no half-closed socket outlives it. The runner runs in a test's own process.
+      if (!socket.destroyed) socket.end(Buffer.from([0x88, 0x00]));
     }));
   });
   server.listen(0, "127.0.0.1", () => {

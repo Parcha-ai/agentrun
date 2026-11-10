@@ -28,6 +28,7 @@ const { KINDS } = await import("../dist/runner/journal-kinds.js");
 const { journalRecords } = await import("../dist/runner/journal-reader.js");
 const { TOOL_UNMETERED } = await import("@parcha/pi-durable-agent/timeline");
 const { mcpForClaim } = await import("../dist/runner/mcp-run.js");
+const { adapterRunGate } = await import("../dist/runner/adapter-run-spec.js");
 
 const KEY = randomBytes(32);
 const TOKEN = `not-a-secret-${"runner-mcp-cli-bearer-for-the-scan"}`;
@@ -90,13 +91,18 @@ function mcpCli(seen) {
         async settleOpenTurn() { state = "idle"; },
         turnEnd: () => turn,
         async interrupt() {},
-        async close() { await proxy.close().catch(() => undefined); },
+        // Closed once its turn has heard the door's answer: a call that parks is answered (main's waiting words) before
+        // the session closes, and the CLI keeps what it heard.
+        async close() {
+          await turn?.catch(() => undefined);
+          await proxy.close().catch(() => undefined);
+        },
       };
     },
   };
 }
 
-async function cliRun(t, { settings = {}, grants = ["mcp:fake/add"] } = {}) {
+async function cliRun(t, { settings = {}, grants = ["mcp:fake/add"], before, gateOf } = {}) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-mcp-cli-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -112,6 +118,7 @@ async function cliRun(t, { settings = {}, grants = ["mcp:fake/add"] } = {}) {
   await server.mcp.put({ name: "fake", url: fake.url, auth: "bearer", tools: [listed(ADD)], sealed: sealMcpCredential(KEY, "fake", { type: "headers", headers: { authorization: `Bearer ${TOKEN}` } }, fake.url) });
   await server.agents.create({ id: "agent-1", name: "Cli" }, { id: "rev-1", kind: "agentic", body: {} });
   await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" });
+  await before?.({ server });
   const seen = {};
   const lookup = { name: "lookup", description: "Look it up.", inputSchema: { type: "object" }, replay: "never", call: async () => ({ text: "found" }) };
   const work = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-mcp-cli-work-"));
@@ -124,19 +131,21 @@ async function cliRun(t, { settings = {}, grants = ["mcp:fake/add"] } = {}) {
       input: "Add them.",
       record: "loop",
       hooks: quiet,
-      gate: (call) => permissionOf(call.tool, settings),
+      // `gateOf`: the run's own gate as a run's spec makes it (adapterRunGate over the store's settings), else the plain
+      // permission of `settings`.
+      gate: gateOf ? await gateOf({ store, claim, work }) : (call) => permissionOf(call.tool, settings),
       runCap: { capUsd: () => undefined, modelOf: () => undefined },
       ...(mcp ? { mcp } : {}),
     };
   });
   runner = startRunner({ store, createLoop: loop, name: "runner-a", ...STEADY });
-  /** The run once it is no longer running, and its journal's entries. */
-  const settled = async () => {
+  /** The run once it is no longer running (or once `done` says so), and its journal's entries. */
+  const settled = async (done = (row) => row.state !== "running" && row.state !== "queued" && row.runner === null) => {
     const from = Date.now();
     let row;
     for (;;) {
       row = await server.runs.get("run-1");
-      if ((row.state !== "running" && row.state !== "queued" && row.runner === null) || Date.now() - from > 20_000) break;
+      if (done(row) || Date.now() - from > 20_000) break;
       await sleep(20);
     }
     const entries = (await journalRecords(server.journal({ runId: "run-1", runner: "reader", epoch: row.epoch, until: 0, from: row.state }), BACKGROUND_CONTEXT)).entries;
@@ -172,15 +181,14 @@ test("C1: the CLI's session carries the run's MCP, not its tools as host tools; 
 test("C2: a call set to ask parks the run with nothing sent, the CLI answered main's waiting words; the owner's Allow runs it exactly once and the session goes on with its result", async (t) => {
   const run = await cliRun(t);
   assert.equal(run.row.state, "parked", JSON.stringify(run.row));
-  // The run parks on the ask and its session closes: the door's answer, when it reaches the CLI before that, is the
-  // waiting words (the door sends no parked flag).
-  if (run.seen.answer !== undefined) assert.deepEqual(run.seen.answer, { content: [{ type: "text", text: waitingText("mcp:fake/add") }] });
+  // The run parks on the ask and its session closes once the CLI heard the door's answer: the waiting words (the door
+  // sends no parked flag).
+  assert.deepEqual(run.seen.answer, { content: [{ type: "text", text: waitingText("mcp:fake/add") }] });
   assert.equal(toolCalls(run.fake).length, 0, "nothing sent while it waits");
   const [ask] = run.entries.filter((entry) => entry.kind === KINDS.ask).map((entry) => entry.data);
   assert.deepEqual([ask?.callId, ask?.tool, ask?.price], [CALL_ID, "mcp:fake/add", "not metered"], "asked by the CLI's own call id, as main's card");
   await run.server.command("run-1", { kind: "approve", body: { approval: CALL_ID } });
-  for (const from = Date.now(); (await run.server.runs.get("run-1")).state !== "ended" && Date.now() - from < 20_000; ) await sleep(20);
-  const { row, entries } = await run.settled();
+  const { row, entries } = await run.settled((row) => row.state === "ended" && row.runner === null);
   assert.equal(row.state, "ended", JSON.stringify(row));
   assert.equal(toolCalls(run.fake).length, 1, "run exactly once");
   assert.equal(run.seen.followUps?.length, 1, "one resume message");
@@ -193,8 +201,7 @@ test("C4: a parked call the owner denies is told in their words, and nothing is 
   const run = await cliRun(t);
   assert.equal(run.row.state, "parked", JSON.stringify(run.row));
   await run.server.command("run-1", { kind: "deny", body: { approval: CALL_ID, note: "not today" } });
-  for (const from = Date.now(); (await run.server.runs.get("run-1")).state !== "ended" && Date.now() - from < 20_000; ) await sleep(20);
-  const { row } = await run.settled();
+  const { row } = await run.settled((row) => row.state === "ended" && row.runner === null);
   assert.equal(row.state, "ended", JSON.stringify(row));
   assert.equal(toolCalls(run.fake).length, 0, "nothing sent");
   assert.ok(run.seen.followUps?.[0]?.endsWith(`\n${deniedText("mcp:fake/add", "not today")}`), run.seen.followUps?.[0]);
@@ -206,13 +213,26 @@ test("C3: a call set to deny is refused in the gate's words, nothing sent", asyn
   assert.equal(toolCalls(fake).length, 0, "nothing sent");
 });
 
+test("C3b: a CLI's call outside its server's argument pin is refused in the pin's words before it is asked or sent, through the run's own gate", async (t) => {
+  // The server's setting allows the tool pinned to a = 7; the CLI calls it with a = 2.
+  const { seen, fake } = await cliRun(t, {
+    before: ({ server }) => server.settings.put("tool-settings", { "mcp:fake/add": { permission: "allow", pin: { a: 7 } } }),
+    gateOf: ({ store, claim, work }) => adapterRunGate(store, claim, { kind: "agentic", body: {} }, work),
+  });
+  const said = seen.answer?.content?.[0]?.text ?? "";
+  assert.equal(seen.answer?.isError, true, JSON.stringify(seen.answer));
+  assert.match(said, /mcp:fake\/add/, said);
+  assert.match(said, /a = 7/, `the pin's words: ${said}`);
+  assert.match(said, /nothing was sent and nothing was charged/, said);
+  assert.equal(toolCalls(fake).length, 0, "nothing sent");
+});
+
 test("C5: a parked call across a new runner: the runner that parked it goes, another claims it at the owner's Allow and runs it exactly once", async (t) => {
   const run = await cliRun(t);
   assert.equal(run.row.state, "parked", JSON.stringify(run.row));
   await run.replaceRunner();
   await run.server.command("run-1", { kind: "approve", body: { approval: CALL_ID } });
-  for (const from = Date.now(); (await run.server.runs.get("run-1")).state !== "ended" && Date.now() - from < 20_000; ) await sleep(20);
-  const { row } = await run.settled();
+  const { row } = await run.settled((row) => row.state === "ended" && row.runner === null);
   assert.equal(row.state, "ended", JSON.stringify(row));
   assert.equal(row.runner, null);
   assert.equal(toolCalls(run.fake).length, 1, "run exactly once");
