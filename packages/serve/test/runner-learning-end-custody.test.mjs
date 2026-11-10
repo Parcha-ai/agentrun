@@ -5,7 +5,8 @@
 // its snapshot and its diffs) nor the run's kept learning (learning_proposals: its turn and its proposal) holds the
 // pointer, plain, JSON-escaped, URL-encoded or a slice of it. A run whose mark can't be read back (a pointer that no
 // longer opens here) learns nothing: its learning is dropped saying why, and no learning run is queued. Fail closed:
-// never a check over a shorter list.
+// never a check over a shorter list. A note that writes the pointer's identifier uppercased and its dashes dropped is
+// refused the same: nothing of it, however written, reaches the folder or the kept learning.
 import assert from "node:assert/strict";
 import { randomBytes, randomUUID } from "node:crypto";
 import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
@@ -39,7 +40,12 @@ const holds = (text) => FORMS.filter((form) => text.includes(form));
 /** The end-of-run turn's answer: one note that quotes the pointer, and one that doesn't. */
 const LEAKY = `---\nname: Session to reuse\ndescription: Open the browser on the saved session\ntype: reference\n---\nOpen the browser on session ${POINTER} before anything else.\n`;
 const CLEAN = "---\nname: Retry slowly\ndescription: Back off between retries\ntype: reference\n---\nWait a little longer after each failed call.\n";
-const REFLECTED = `\`\`\`note session-to-reuse.md\n${LEAKY}\`\`\`\n\n\`\`\`note retry-slowly.md\n${CLEAN}\`\`\`\n\nReflected.`;
+/** The end-of-run answer with `leaky` and the clean note. */
+const reflected = (leaky) => `\`\`\`note session-to-reuse.md\n${leaky}\`\`\`\n\n\`\`\`note retry-slowly.md\n${CLEAN}\`\`\`\n\nReflected.`;
+/** The pointer's identifier as a note may write it to get past a check of its plain forms: uppercased, no dashes. */
+const FOLDED = POINTER.slice(4).replaceAll("-", "").toUpperCase();
+/** Whether `text` holds the pointer's identifier however written: in any case, its separators dropped. */
+const holdsFolded = (text) => text.toLowerCase().replace(/[-_:.]/g, "").includes(FOLDED.toLowerCase());
 /** The grader keeps every item it is shown. */
 const KEEP = JSON.stringify({ merge: true, reason: "Worth keeping.", items: [{ file: "session-to-reuse.md", decision: "keep", why: "useful" }, { file: "retry-slowly.md", decision: "keep", why: "useful" }] });
 
@@ -48,8 +54,9 @@ const KEEP = JSON.stringify({ merge: true, reason: "Worth keeping.", items: [{ f
  *  pointer whose hash is `handed` at its claim, as the runner's bind writes it; or, with `mark`, its row's
  *  sign_in_handed set to that value as written, which no writer writes) with the learning end over the store's
  *  sign-ins (and `stored`, the server's sealed secrets as the learning end reads them, when given), and any learning
- *  run it queues on the learning loop, whose grader keeps everything. */
-async function world(t, { handed, mark, stored }) {
+ *  run it queues on the learning loop, whose grader keeps everything. `leaky`: the note the end-of-run answer quotes the
+ *  pointer in. */
+async function world(t, { handed, mark, leaky = LEAKY, stored }) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-learning-custody-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const runners = [];
@@ -68,7 +75,7 @@ async function world(t, { handed, mark, stored }) {
 
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
   stores.push(store);
-  const script = piAdapterSpec({ script: [{ say: `Logged in on ${POINTER}.` }, { say: REFLECTED }], tools: {}, hooks: quiet });
+  const script = piAdapterSpec({ script: [{ say: `Logged in on ${POINTER}.` }, { say: reflected(leaky) }], tools: {}, hooks: quiet });
   const spec = async (claim, run) => {
     if (mark === undefined) await store.runs.update(claim, { signInHanded: [handed] });
     else {
@@ -170,6 +177,18 @@ for (const [what, markOf] of [["a legacy true", () => true], ["an object", (hash
     for (const [path, text] of Object.entries(folderFiles(w.dir))) assert.deepEqual(holds(text), [], `${path} holds the pointer`);
   });
 }
+
+test("a run handed its sign-in pointer whose note writes it uppercased and without its dashes learns nothing that holds it, however written", { timeout: 120_000 }, async (t) => {
+  const folded = LEAKY.replace(POINTER, FOLDED);
+  assert.ok(!folded.includes(POINTER) && folded.includes(FOLDED), "the note writes the pointer's identifier folded");
+  const w = await world(t, { handed: pointerHash(POINTER), leaky: folded });
+  const kept = await w.learned();
+  assert.ok(kept, "the run kept its learning");
+  assert.equal(holdsFolded(JSON.stringify(kept)), false, `its kept learning holds the pointer: ${JSON.stringify(kept).slice(0, 600)}`);
+  const files = folderFiles(w.dir);
+  assert.ok(Object.keys(files).some((path) => path.endsWith("snapshot.json")), "the folder's snapshot is scanned");
+  for (const [path, text] of Object.entries(files)) assert.equal(holdsFolded(text), false, `${path} holds the pointer`);
+});
 
 test("a run whose server secrets can't be read learns nothing: its learning is dropped saying why, and no learning run is queued", { timeout: 120_000 }, async (t) => {
   // Its sign-in reads back; the server's sealed secrets do not (the store's read throws): never a check over a shorter list.

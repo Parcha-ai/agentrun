@@ -77,6 +77,23 @@ function serverWrite(sealKey: Buffer, server: McpServerSave, githubMcpOrigin: st
   };
 }
 
+/** Rewrites a server's row the owner read, its sealed credential kept as it is (store.mcp.rewrite): written iff the
+ *  credential is still `seen`; undefined, writing nothing, when it changed meanwhile or the row went. Bounded and
+ *  github_app-guarded as saveMcpServer. */
+export async function rewriteMcpServer(
+  store: { mcp: Pick<Mcp, "rewrite"> },
+  server: { name: string; url: string; auth: string; protocol?: string | null; tools: unknown; prices?: unknown; serverInfo?: unknown; instructions?: string | null; listedAt?: number; updatedAt?: number },
+  seen: Uint8Array | null,
+  { githubMcpOrigin = GITHUB_MCP_ORIGIN }: { githubMcpOrigin?: string } = {},
+): Promise<McpServerRow | undefined> {
+  if (server.auth === "github_app" && !githubMcpUrl(server.url, githubMcpOrigin)) throw new Error(`The MCP server ${server.name} is not kept: ${GITHUB_MCP_ONLY}.`);
+  return store.mcp.rewrite({
+    name: server.name, url: server.url, auth: server.auth, protocol: server.protocol ?? null, tools: server.tools, prices: server.prices ?? null,
+    serverInfo: boundedServerInfo(server.serverInfo), instructions: boundedInstructions(server.instructions),
+    ...(server.listedAt !== undefined ? { listedAt: server.listedAt } : {}), ...(server.updatedAt !== undefined ? { updatedAt: server.updatedAt } : {}),
+  }, seen);
+}
+
 /** The server's row goes. */
 export async function removeMcpServer(store: { mcp: Pick<Mcp, "remove"> }, name: string): Promise<void> {
   await store.mcp.remove(name);

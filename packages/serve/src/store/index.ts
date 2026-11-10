@@ -1,5 +1,5 @@
 // The one store (design 2.1), for the cutover: nothing on main imports it until then.
-export { AgentArchived, CommandTaken, endedReason, FINAL_STATES, Fenced, MCP_REFRESH_CALL_MS, MCP_REFRESH_LEASE_MS, RunFinal, SchemaVersionUnknown, SIGN_IN_TOMBSTONES_KEPT, SignInHandedTo, SignInMissing, StoreBusy, StoreClosed, StoreConstraint, StoreDeadline, StoreFromEarlierVersion, StoreLaunchMissing, StoreOwned, StoreWorkerLost, STORE_WRITE_DEADLINE_MS, TriggerFull } from "./store.js";
+export { AgentArchived, CommandTaken, endedReason, ExternalBodyConflict, FINAL_STATES, Fenced, MCP_REFRESH_CALL_MS, MCP_REFRESH_LEASE_MS, RunFinal, SchemaVersionUnknown, SIGN_IN_TOMBSTONES_KEPT, SignInHandedTo, SignInMissing, StoreBusy, StoreClosed, StoreConstraint, StoreDeadline, StoreFromEarlierVersion, StoreLaunchMissing, StoreOwned, StoreWorkerLost, STORE_WRITE_DEADLINE_MS, TriggerFull } from "./store.js";
 export type {
   ConstraintRule,
   AgentRow, Agents, AlsoRow, ChannelPost, Claim, Command, ComputerLedger, ComputerLedgerRow, Firing, FiringChange, FiringRow, FiringStatus, FiringStreak, Journal, Live, LiveRow, Mcp, McpCredentialMark, McpOauth, McpOauthPendingRow, McpPinRow,
@@ -22,7 +22,7 @@ export { Connection, DEFAULT_TRANSACTION_DEADLINE_MS, type SqliteDatabase, type 
 export { cleanText, type Dialect, SQLITE } from "./dialect.js";
 export { openStore, type OpenStoreOptions, storePlace, storeTarget, type StoreTarget } from "./open.js";
 export { CLOCK_WARN_MS, DEFAULT_SCHEMA, openPostgresStore, type PostgresStoreOptions, postgresWhere } from "./postgres/store.js";
-export { PgConnection, SCHEMA_NAME } from "./postgres/connection.js";
+export { LEASE_DEADLINE_MS, PgConnection, SCHEMA_NAME, STORE_CONNECT_TIMEOUT_MS, Unanswered } from "./postgres/connection.js";
 export { dropPostgresSchema, migrate, migrationsIn, versionOf as postgresVersionOf } from "./postgres/migrate.js";
 export { applyRunPatch, RUN_COLUMNS, runOf, type RunRecord } from "./sqlite/run-patch.js";
 export { readLaunch, writeLaunch } from "./sqlite/run-launch.js";

@@ -5,8 +5,9 @@ import { FilePicker, type UploadLimits, useAttachments } from "@/components/File
 import { Button } from "@/components/ui/button";
 import { Picker } from "@/components/ui/picker";
 import type { Agent } from "@/lib/agentForm";
+import { agentsByName } from "@/lib/agents";
 import { ClientError } from "@/lib/client";
-import { curlFor, exampleInput, keeper, type StartBody, startBody, submitStart } from "@/lib/runStart";
+import { curlFor, exampleHint, exampleInput, keeper, type StartBody, startBody, submitStart } from "@/lib/runStart";
 import { sendUpload, type Upload } from "@/lib/uploads";
 import { cn } from "@/lib/utils";
 
@@ -70,8 +71,11 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
   const [result, setResult] = useState<StartResult | null>(initialResult);
   // A refused start, said plainly above its answer: the server's reason, and the box it names when it lacks one.
   const refusal = useMemo(() => {
-    const error = (result && result.status >= 400 ? (result.body as { error?: { code?: unknown; message?: unknown; details?: { box?: unknown } & Record<string, unknown> } } | null)?.error : undefined);
-    return error && typeof error.message === "string" ? { message: error.message, box: typeof error.details?.box === "string" ? error.details.box : undefined, details: error.code === "agent_not_runnable" ? error.details : undefined } : undefined;
+    const error = (result && result.status >= 400 ? (result.body as { error?: { code?: unknown; message?: unknown; fields?: unknown; details?: { box?: unknown } & Record<string, unknown> } } | null)?.error : undefined);
+    if (!error || typeof error.message !== "string") return undefined;
+    // A 422 names its fields: each one whose message says more than the refusal's is listed under it, as the Run bar does.
+    const fields = Array.isArray(error.fields) ? error.fields.filter((f): f is { field: string; message: string } => !!f && typeof f.field === "string" && typeof f.message === "string" && f.message !== error.message) : [];
+    return { message: error.message, more: fields, box: typeof error.details?.box === "string" ? error.details.box : undefined, details: error.code === "agent_not_runnable" ? error.details : undefined };
   }, [result]);
   const [sending, setSending] = useState(false);
   const keys = useMemo(() => keeper(), []);
@@ -97,7 +101,7 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
         <div className="flex min-w-0 items-center gap-2 text-[12px]">
           <label htmlFor="playground-agent" className="caps text-muted-foreground">Agent</label>
           <Picker id="playground-agent" label="Agent" value={agentId} onChange={(id) => { setAgentId(id); setRevision(""); onAgent?.(id); }}
-            options={agents.map((a) => ({ value: a.agent_id, label: a.definition.name }))} className="w-56 max-w-[60vw]" />
+            options={agentsByName(agents).map((a) => ({ value: a.agent_id, label: a.definition.name }))} className="w-56 max-w-[60vw]" />
         </div>
         <span className="font-mono text-[12px]"><span className="text-primary">POST</span> <span className="text-muted-foreground">/v2/agents/{agentId || "{agent_id}"}/runs</span></span>
         <span className="flex-1" />
@@ -127,7 +131,7 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
                   <textarea value={text} onChange={(e) => setText(e.target.value)} rows={kind === "agentic" ? 4 : 7} placeholder={placeholder} className={field} />
                   {example && (
                     <p className="mt-1 font-mono text-[11px] text-muted-foreground">
-                      {example.from === "example" ? "The workflow's example input. Edit it, then start." : "The workflow's input, its fields empty. Fill them in, then start."}
+                      {exampleHint(example, "start")}
                       {example.fields.length > 0 && <> Fields: {example.fields.map((f, k) => <span key={f.name} title={f.note}>{k ? ", " : ""}<span className="text-foreground">{f.name}</span></span>)}.</>}
                     </p>
                   )}
@@ -176,6 +180,7 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
                 <p className="border-b px-5 py-2.5 font-mono text-[12px] text-destructive-text md:px-6" role="alert">
                   The run did not start: {refusal.message}{refusal.box ? <span className="text-muted-foreground"> (box: {refusal.box})</span> : null}
                   <ToolBlockers agentId={agentId} details={refusal.details} />
+                  {refusal.more.length > 0 && <span className="mt-1 block">{refusal.more.map((f) => <span key={`${f.field}:${f.message}`} className="block">{f.field}: {f.message}</span>)}</span>}
                 </p>
               )}
               {result.runId && live ? (
