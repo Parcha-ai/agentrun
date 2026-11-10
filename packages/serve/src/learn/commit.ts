@@ -31,6 +31,10 @@ export type LearningChange =
        *  it (a person retired or approved it, another run's merge changed it) is a conflict, never written over. The
        *  script checks it on main as it commits. Optional, past COMMIT-API.md v1. */
       seed?: string;
+      /** New notes written over the note main holds by the same name: each one the run's note supersedes by its own
+       *  name (the learning loop's takenOnMain), its blob on main in `graded`, so a change since is a conflict. Any
+       *  other new note main holds a note by is refused (`exists`). */
+      replace?: string[];
     }
   | {
       kind: "person";
@@ -127,11 +131,13 @@ async function mergeOf(change: Extract<LearningChange, { kind: "merge" }>, snaps
   const notes = snapshotNotes(snapshot);
   const active = new Set(notes.filter((note) => note.status === "active").map((note) => note.file));
   const refused: Problem[] = [];
-  const fresh = [...files].filter(([path]) => isNote(path) && blobOf(snapshot, path) === undefined).flatMap(([path, text]) => {
+  const replaced = new Set(change.replace ?? []);
+  const fresh = [...files].filter(([path]) => isNote(path) && (blobOf(snapshot, path) === undefined || replaced.has(path))).flatMap(([path, text]) => {
     const note = parseNoteFile(path, text);
     return Array.isArray(note) ? [] : [note];
   });
-  const marks = change.supersede ?? [...supersededBy(fresh)].map(([path, by]) => ({ path, by }));
+  // A note written over main's by its own name supersedes that note by being it: never a mark of itself.
+  const marks = change.supersede ?? [...supersededBy(fresh)].filter(([path, by]) => path !== by).map(([path, by]) => ({ path, by }));
   // The verdict was on the blobs the grade read: one this merge would write (mark or replace) that is another blob on
   // main now is the caller's conflict, named by the note that would mark it. One it leaves alone (a held note marks
   // nothing) is not written over, so it stands.
@@ -154,7 +160,7 @@ async function mergeOf(change: Extract<LearningChange, { kind: "merge" }>, snaps
     written.push(note);
     // A merge adds notes and marks the ones they supersede: it never writes over another note main holds.
     if (blobOf(snapshot, path) === undefined) added.push(note);
-    else if (!marks.some((one) => one.path === path)) refused.push({ rule: "exists", path, detail: "the folder has a note by this name" });
+    else if (!marks.some((one) => one.path === path) && !replaced.has(path)) refused.push({ rule: "exists", path, detail: "the folder has a note by this name" });
   }
   // mergeProblems asks of the new notes what a merge always asks: a free name, what they supersede active and named
   // once, the index's lines.

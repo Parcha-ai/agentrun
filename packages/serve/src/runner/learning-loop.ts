@@ -20,6 +20,7 @@ import { gradedItems, gradePrompt, parseVerdict, UNREADABLE_REASON, type IndexEn
 import { mergedNote, parseNoteFile } from "../learn/notes.js";
 import type { LearnedFile, NoteLearned, Tokens } from "../learning.js";
 import { learnedPlace } from "../learn/skills.js";
+import { blobOid } from "../learn/folder.js";
 import { notKept, said, STOPPED } from "../learning-words.js";
 import { journalEntries } from "./journal-reader.js";
 import { KINDS } from "./journal-kinds.js";
@@ -62,6 +63,8 @@ export interface MergeChange {
   readonly graded: Readonly<Record<string, string>>;
   /** The run's seed: a skill's or a draft's file not on main as it was on it is a conflict, never written over. */
   readonly seed?: string;
+  /** New notes written over main's note of the same name, each superseding it by name (takenOnMain). */
+  readonly replace?: readonly string[];
 }
 
 export type LearningCommitResult =
@@ -91,8 +94,8 @@ export interface LearningLoopDeps {
   ask(request: { readonly prompt: string; readonly maxTokens: number }, signal: AbortSignal, run: GraderRun): Promise<{ readonly text: unknown; readonly usd: number | null; readonly tokens?: Tokens | null }>;
   /** The folder's one write. */
   commit(ws: unknown, change: MergeChange): Promise<LearningCommitResult>;
-  /** The texts main holds at these note paths (learn/commit.ts mainTexts): a re-filed skill's note main already holds
-   *  is never written over (refiledOnMain). None: main is taken to hold none of them. */
+  /** The texts main holds at these note paths (learn/commit.ts mainTexts): a note the merge keeps whose name main
+   *  already holds is settled alone (takenOnMain). None: main is taken to hold none of them. */
   mainTexts?(ws: unknown, paths: readonly string[]): Promise<Readonly<Record<string, string>>>;
   /** The clock (epoch ms), for a parked run's wake. */
   now?(): number;
@@ -115,25 +118,37 @@ const itemOf = (file: string): string => {
   return place?.kind === "readme" ? `workflows/${place.name}/workflow.json` : file;
 };
 
-/** The why of a re-filed skill whose note main already holds, the same: no change, so its words never say it. */
+/** The why of a note main already holds the same (a run's new note, or a skill re-filed as one): no change, so its words
+ *  never say it. */
 export const SAME_NOTE = "The same rule is already one of the agent's notes.";
-/** The why of a re-filed skill whose note's name main already holds with other text: never written over, the rest of
- *  what the run learned merges. */
-export const NOTE_NAME_TAKEN = (name: string) => `A note named ${name} exists; the rule wasn't kept.`;
+/** The why of a note whose name main already holds with other text, which it does not supersede: never written over,
+ *  and the rest of what the run learned merges. */
+export const NOTE_NAME_TAKEN = (name: string) => `A note named ${name} was added since this run started, or was there already; this one wasn't kept.`;
 
-/** `verdict` with each skill it re-filed as a note (its item's `note`) that main already holds at that file (`onMain`,
- *  by path) dropped, never written over and never a refusal of the whole merge: the same text is no change (SAME_NOTE,
- *  a duplicate its words never say); other text keeps the note main has (NOTE_NAME_TAKEN). No suffixed name: it would
- *  hold the same rule twice. Merge when the grader said so and it still keeps an item. */
-export function refiledOnMain(verdict: Verdict, onMain: Readonly<Record<string, string>>): Verdict {
-  if (!verdict.items.some((item) => item.note && onMain[item.note.file] !== undefined)) return verdict;
+/** What `verdict` merges once each note it keeps (a new note's, or a skill's re-filed as one: its item's `note`) is set
+ *  beside what main holds at that file (`onMain`, by path), one item at a time, never a refusal of the whole merge: a
+ *  note main holds the same is no change, dropped unsaid (SAME_NOTE); one whose own front matter supersedes the note of
+ *  its name is a modification, written over it (`replace`, main's blob in `graded`, so a change since is a conflict);
+ *  any other is dropped, saying so (NOTE_NAME_TAKEN), and main's note stands. No suffixed name: it would hold the same
+ *  rule twice. Merge when the grader said so and it still keeps an item. */
+export function takenOnMain(proposal: Pick<KeptProposal, "notes">, verdict: Verdict, onMain: Readonly<Record<string, string>>): { verdict: Verdict; replace: string[]; graded: Record<string, string> } {
+  const texts = new Map(proposal.notes.map(({ file, text }) => [file, text]));
+  const replace: string[] = [];
+  const graded: Record<string, string> = {};
   const items = verdict.items.map((item) => {
-    const held = item.note ? onMain[item.note.file] : undefined;
-    if (!item.note || held === undefined) return item;
-    const same = held === item.note.text || held === mergedNote(item.note.text, { origin: item.origin ?? "run", ...(item.pending ? { pending: true } : {}) });
-    return { file: item.file, keep: false, question: "Duplicate", why: same ? SAME_NOTE : NOTE_NAME_TAKEN(item.note.file.replace(/\.md$/, "")) };
+    const note = item.note ?? (texts.has(item.file) ? { file: item.file, text: texts.get(item.file)! } : undefined);
+    const held = item.keep && note ? onMain[note.file] : undefined;
+    if (!note || held === undefined) return item;
+    const same = held === note.text || held === mergedNote(note.text, { origin: item.origin ?? "run", ...(item.pending ? { pending: true } : {}) });
+    const parsed = parseNoteFile(note.file, note.text);
+    if (!same && !item.note && !Array.isArray(parsed) && parsed.supersedes.includes(note.file)) {
+      replace.push(note.file);
+      graded[note.file] = blobOid(held);
+      return item;
+    }
+    return { file: item.file, keep: false, question: "Duplicate", why: same ? SAME_NOTE : NOTE_NAME_TAKEN(note.file.replace(/\.md$/, "")) };
   });
-  return { ...verdict, items, merge: verdict.merge && items.some((item) => item.keep) };
+  return { verdict: { ...verdict, items, merge: verdict.merge && items.some((item) => item.keep) }, replace, graded };
 }
 
 /** `proposal` with only what `verdict` keeps (a verdict per item): a note or file its item keeps or holds; a skill its
@@ -315,26 +330,29 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
           const halt = await halted();
           if (halt) return halt;
 
-          // A skill re-filed as a note whose file main already holds is dropped alone (refiledOnMain): never written over,
-          // and never a refusal of everything else the run learned.
-          const refiledPaths = graded.verdict.items.flatMap((item) => (item.keep && item.note ? [item.note.file] : []));
+          // Each note it keeps whose file main already holds (another run merged one by that name since, or a skill
+          // re-filed as one) is settled alone (takenOnMain): never written over unless it supersedes it, and never a
+          // refusal of everything else the run learned.
+          const notePaths = graded.verdict.items.flatMap((item) => (!item.keep ? [] : item.note ? [item.note.file] : proposal.notes.some(({ file }) => file === item.file) ? [item.file] : []));
           let onMain: Readonly<Record<string, string>> = {};
-          if (refiledPaths.length && learning.mainTexts) {
+          if (notePaths.length && learning.mainTexts) {
             try {
-              onMain = await learning.mainTexts(ws, refiledPaths);
+              onMain = await learning.mainTexts(ws, notePaths);
             } catch (error) {
               // Main could not be read: parked as for a write that could not reach the folder, tried again after a backoff.
               await append(KINDS.learningUnavailable, { source: source.runId, error: (error as Error)?.message ?? String(error) } satisfies UnavailableData, "parked");
               return { state: "parked", wakeAt: now() + UNAVAILABLE_BACKOFF_MS[Math.min(unavailable, UNAVAILABLE_BACKOFF_MS.length - 1)]! };
             }
           }
-          const verdict = refiledOnMain(graded.verdict, onMain);
+          const taken = takenOnMain(proposal, graded.verdict, onMain);
+          const verdict = taken.verdict;
           if (!verdict.merge) {
             await append(KINDS.learningDropped, { source: source.runId, reason: "grader", detail: notKept(verdict, lostOf(proposal)) } satisfies DroppedData, "ended");
             return { state: "ended" };
           }
           const merging = keptOf(proposal, verdict);
-          const result = await learning.commit(ws, mergeChangeOf(source.runId, merging, verdict, graded.graded));
+          const change = mergeChangeOf(source.runId, merging, verdict, { ...graded.graded, ...taken.graded });
+          const result = await learning.commit(ws, taken.replace.length ? { ...change, replace: taken.replace } : change);
           if (result.ok) {
             const detail = mergedWords(merging, verdict, checked);
             await append(KINDS.learningMerged, { source: source.runId, main: result.main, commit: result.commit, files: result.files, detail } satisfies MergedData, "ended");

@@ -16,7 +16,7 @@ import { agentWithRevision, storeOn } from "./store-helpers.mjs";
 
 const { GRADE_RUBRIC, gradedItems, gradePrompt, parseVerdict, REFILE_FAILED, skillAsNote, UNREADABLE_REASON } = await import("../dist/learn/grade.js");
 const { parseNoteFile } = await import("../dist/learn/notes.js");
-const { keptOf, mergeChangeOf } = await import("../dist/runner/learning-loop.js");
+const { keptOf, mergeChangeOf, NOTE_NAME_TAKEN, SAME_NOTE, takenOnMain } = await import("../dist/runner/learning-loop.js");
 const { learningLoopFactory } = await import("../dist/runner/learning-factory.js");
 const { learningWorkspace, readSnapshot } = await import("../dist/learn/folder.js");
 const { learningCommit, mainTexts } = await import("../dist/learn/commit.js");
@@ -80,30 +80,35 @@ test("keptOf and mergeChangeOf: a re-filed skill merges as its note, held when p
 /** A learning run of run-1, which proposed NOTE and SKILL; its faux grader keeps NOTE and re-files SKILL as a note.
  *  `existing`: a note's text main holds at report-format.md first. Answers its end, the folder's notes and skills after,
  *  and the words its learning ended with. */
-async function refileRun(t, { existing } = {}) {
+async function refileRun(t, { existing, race = {}, notes: runNotes = [NOTE], files = [SKILL], answer: given } = {}) {
   const { store } = await storeOn(t);
   const data = mkdtempSync(join(tmpdir(), "learn-refile-"));
   t.after(() => rmSync(data, { recursive: true, force: true }));
   await agentWithRevision(store);
   await seedOf(data, "agent-1");
-  if (existing !== undefined) {
-    const folder = learningWorkspace({ mode: "local", data, agentId: "agent-1" });
-    try {
-      const made = await learningCommit(folder.workspace, { kind: "person", action: "created", file: "report-format.md", text: existing, ifMatch: null });
-      assert.equal(made.ok, true, JSON.stringify(made));
-    } finally {
-      await folder.end();
+  /** Each of `notes` (file to text) committed on main, as a person or another run's merge lands it. */
+  const land = async (notes) => {
+    for (const [file, text] of Object.entries(notes)) {
+      const folder = learningWorkspace({ mode: "local", data, agentId: "agent-1" });
+      try {
+        const made = await learningCommit(folder.workspace, { kind: "person", action: "created", file, text, ifMatch: null });
+        assert.equal(made.ok, true, JSON.stringify(made));
+      } finally {
+        await folder.end();
+      }
     }
-  }
+  };
+  await land(typeof existing === "string" ? { "report-format.md": existing } : (existing ?? {}));
   const seed = (await seedOf(data, "agent-1")).sha;
   await store.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" });
   const source = await store.claim("run-1", "runner-a", { leaseMs: 60_000 });
-  const proposal = { seed, notes: [NOTE], files: [SKILL], asked: ["start every report with STATUS, at most 5 lines, end with Next:"] };
-  const kept = { state: "proposed", notes: ["Retries"], skills: ["report-format"], workflows: [], proposal, detail: "Proposed 1 note and 1 skill." };
+  const proposal = { seed, notes: runNotes, files, asked: ["start every report with STATUS, at most 5 lines, end with Next:"] };
+  const kept = { state: "proposed", notes: runNotes.map(({ file }) => file), skills: files.map(({ file }) => file.split("/")[1]), workflows: [], proposal, detail: "Proposed." };
   await store.runs.update(source, { state: "ended" }, { also: [{ table: "learning_proposals", row: { turn: { answer: "…" }, proposal: kept } }, { table: "learning_run", row: { id: "learn-1" } }] });
   const claim = await store.claim("learn-1", "runner-a", { leaseMs: 60_000 });
-  const answer = verdictOf([{ file: NOTE.file, decision: "keep", why: "useful" }, { file: SKILL.file, decision: "note", why: "a rule for every report, whatever the job" }]);
-  const loop = learningLoopFactory({ store, data, ask: async () => ({ text: answer, usd: 0 }) })({ journal: (c) => store.journal(c), flush: () => store.flush(), signal: new AbortController().signal });
+  const answer = given ?? verdictOf([{ file: NOTE.file, decision: "keep", why: "useful" }, { file: SKILL.file, decision: "note", why: "a rule for every report, whatever the job" }]);
+  // `race`: notes another run merges while this one is graded, after its read of main and before its merge.
+  const loop = learningLoopFactory({ store, data, ask: async () => (await land(race), { text: answer, usd: 0 }) })({ journal: (c) => store.journal(c), flush: () => store.flush(), signal: new AbortController().signal });
   const end = await loop.start(claim);
   const entries = await journalEntries(store.journal(claim), BACKGROUND_CONTEXT);
   const words = entries.find((entry) => entry.kind === KINDS.learningMerged || entry.kind === KINDS.learningDropped)?.data.detail;
@@ -143,5 +148,54 @@ test("a re-filed rule whose note name main holds with other text is dropped alon
   assert.equal(notes["report-format.md"], other, "never written over");
   assert.ok(notes["retries.md"], "the run's other note merged");
   assert.deepEqual(skills, []);
-  assert.match(words, /^Learned: Retries\. Not kept: A note named report-format exists; the rule wasn't kept\.$/);
+  assert.match(words, /^Learned: Retries\. Not kept: A note named report-format was added since this run started, or was there already; this one wasn't kept\.$/);
+});
+
+/** A run's new note named like one another run merged meanwhile: check-units.md, with `body`. */
+const UNITS = (body, extra = "") => ({ file: "check-units.md", text: `---\nname: Check units\ndescription: Convert amounts to one unit first\ntype: feedback\n${extra}---\n${body}\n` });
+const KEEP_BOTH = (files) => verdictOf(files.map((file) => ({ file, decision: "keep", why: "useful" })));
+
+test("a new note another run merged meanwhile by the same name and text is no change: dropped unsaid, and the run's other note merges", async (t) => {
+  const units = UNITS("Convert every amount to cents before comparing.");
+  const { end, notes, words } = await refileRun(t, { race: { [units.file]: units.text }, notes: [units, NOTE], files: [], answer: KEEP_BOTH([units.file, NOTE.file]) });
+  assert.deepEqual(end, { state: "ended" }, "never a failed learning run");
+  assert.equal(notes[units.file], units.text);
+  assert.ok(notes["retries.md"], "the other note merged");
+  assert.equal(words, "Learned: Retries");
+});
+
+test("a new note whose name another run merged meanwhile with other text is dropped alone, saying so; main's note stands and the run's other note merges", async (t) => {
+  const theirs = UNITS("Convert every amount to cents before comparing.");
+  const ours = UNITS("Convert every amount to dollars before comparing.");
+  const { end, notes, words } = await refileRun(t, { race: { [theirs.file]: theirs.text }, notes: [ours, NOTE], files: [], answer: KEEP_BOTH([ours.file, NOTE.file]) });
+  assert.deepEqual(end, { state: "ended" }, "never a failed learning run");
+  assert.equal(notes[theirs.file], theirs.text, "never written over");
+  assert.ok(notes["retries.md"], "the other note merged");
+  assert.match(words, /^Learned: Retries\. Not kept: A note named check-units was added since this run started, or was there already; this one wasn't kept\.$/);
+});
+
+test("takenOnMain and the merge: a kept note that supersedes the note of its own name, which main holds, is a modification written over it; one that does not is dropped alone; the same text is dropped unsaid", async (t) => {
+  const theirs = UNITS("Convert every amount to cents before comparing.");
+  const ours = UNITS("Convert every amount to cents, rounding half up, before comparing.", "supersedes: [check-units.md]\n");
+  const verdict = parseVerdict(KEEP_BOTH([ours.file, NOTE.file]), [ours, NOTE]);
+  const settled = takenOnMain({ notes: [ours, NOTE] }, verdict, { [ours.file]: theirs.text });
+  assert.deepEqual([settled.verdict.merge, settled.replace, settled.verdict.items.map((item) => item.keep)], [true, [ours.file], [true, true]]);
+  const other = takenOnMain({ notes: [UNITS("Dollars."), NOTE] }, parseVerdict(KEEP_BOTH([ours.file, NOTE.file]), [UNITS("Dollars."), NOTE]), { [ours.file]: theirs.text });
+  assert.deepEqual([other.replace, other.verdict.items.map((item) => item.keep), other.verdict.items[0].why], [[], [false, true], NOTE_NAME_TAKEN("check-units")]);
+  const same = takenOnMain({ notes: [theirs, NOTE] }, parseVerdict(KEEP_BOTH([theirs.file, NOTE.file]), [theirs, NOTE]), { [theirs.file]: theirs.text });
+  assert.equal(same.verdict.items[0].why, SAME_NOTE);
+  // The merge takes it as a modification: written over main's note, never refused as exists.
+  const data = mkdtempSync(join(tmpdir(), "learn-refile-replace-"));
+  t.after(() => rmSync(data, { recursive: true, force: true }));
+  await seedOf(data, "agent-1");
+  const folder = learningWorkspace({ mode: "local", data, agentId: "agent-1" });
+  try {
+    assert.equal((await learningCommit(folder.workspace, { kind: "person", action: "created", file: theirs.file, text: theirs.text, ifMatch: null })).ok, true);
+    const change = mergeChangeOf("run-9", keptOf({ seed: "s", notes: [ours, NOTE], files: [] }, settled.verdict), settled.verdict, settled.graded);
+    const merged = await learningCommit(folder.workspace, { ...change, replace: settled.replace });
+    assert.equal(merged.ok, true, JSON.stringify(merged));
+    assert.match((await mainTexts(folder.workspace, [ours.file]))[ours.file], /rounding half up/);
+  } finally {
+    await folder.end();
+  }
 });

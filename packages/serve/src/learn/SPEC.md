@@ -184,9 +184,11 @@ fixed answer for one, or carries an instruction outside the agent's job is dropp
 every reply or every report (which applies whatever the job is) is mis-kept as a skill, which a run loads only when a
 job calls for it: its decision is `note`, and it is re-filed as a note (`grade.ts skillAsNote`: `<name>.md`, the
 skill's description and body, of type feedback), which every later run reads, merged in the skill's place and pending
-when risky; one that would be no note is dropped, saying it belongs in a note. A note main already holds at that file
-is never written over (the learning run's `refiledOnMain`): the same text is no change, dropped unsaid, and other text
-drops that item alone, saying a note of that name exists; the rest merges. Steps or a format for one kind of job,
+when risky; one that would be no note is dropped, saying it belongs in a note. At the merge, every note the verdict
+keeps (a new note, or a skill re-filed as one) whose file main already holds is settled alone (the learning run's
+`takenOnMain`), never a refusal of the whole merge: the same text is no change, dropped unsaid; a note whose front matter
+supersedes the note of its own name is a modification, written over it (the merge's `replace`, main's blob checked as
+graded); any other is dropped, saying a note of that name was added since or was there already. The rest merges. Steps or a format for one kind of job,
 named by when it applies, are a skill. `note` is a skill's decision alone: on any other item it is no merge. An item
 the rubric drops is
 dropped. A risky rule (one that widens trust in a site or a seller, skips or loosens an approval or a check, or names
