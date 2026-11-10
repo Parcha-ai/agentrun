@@ -27,7 +27,7 @@ import { Playground, type StartResult, startFailure } from "@/components/Playgro
 import { type Agent, decisionProvider, toolOffers } from "@/lib/agentForm";
 import { RUN_STATUSES, RunsList } from "@/components/RunsList";
 import { type Section, Shell } from "@/components/Shell";
-import { SignIn } from "@/components/SignIn";
+import { SessionUnread, SignIn } from "@/components/SignIn";
 import { type AuthMode, authMode, noAccounts, setupTakesCode, signInProblem, takeSetupCode } from "@/lib/auth";
 import { approvalRefusal } from "@/lib/approval";
 import { computerRefusal } from "@/lib/computerAsk";
@@ -181,7 +181,26 @@ export function App() {
     } catch { /* the session could not be read: the console stays as it is, and the next refusal checks again */ }
     finally { checking.current = false; }
   };
-  useEffect(() => { readSession().catch(() => setAuth("sign_in")); }, [v2]); // eslint-disable-line react-hooks/exhaustive-deps
+  // The first read of the session decides the page. One that fails (the server's answer unreadable, a proxy's page in its
+  // place, the connection cut) is said as it is and tried again, 1 s after the first, doubling to 30 s, with Retry now:
+  // never a sign-in, which would claim the server has a password when the page can't know (#2222).
+  const [sessionUnread, setSessionUnread] = useState<string | null>(null);
+  const [sessionTry, setSessionTry] = useState(0);
+  useEffect(() => {
+    let live = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    readSession().then(
+      () => { if (live) setSessionUnread(null); },
+      (e) => {
+        if (!live) return;
+        const ms = Math.min(1000 * 2 ** sessionTry, 30_000);
+        // A refusal with no error of the server's own (http_error) is another's page in its place: the status alone.
+        setSessionUnread(e instanceof ClientError ? `GET /v2/auth/session answered ${e.status}${e.code === "http_error" ? ", not as this server answers" : `: ${e.message}`}` : problemOf(e));
+        timer = setTimeout(() => setSessionTry((n) => n + 1), ms);
+      },
+    );
+    return () => { live = false; clearTimeout(timer); };
+  }, [v2, sessionTry]); // eslint-disable-line react-hooks/exhaustive-deps
   // Setup's box, offered at once where the server can import this machine's sessions (on loopback, before an owner), its
   // counts read until the server has them. A read that fails once the box shows leaves it, its count unknown; one that
   // fails before it shows (a 5xx, the network) is tried again at the next poll while setup is open, so a passing failure
@@ -206,6 +225,7 @@ export function App() {
     })();
     return () => { live = false; };
   }, [v2, auth]);
+  if (auth === null && sessionUnread !== null) return <SessionUnread problem={sessionUnread} onRetry={() => setSessionTry((n) => n + 1)} />;
   if (auth === null) return <ConnectionProvider connection={connection}><Starting /></ConnectionProvider>;
   if (auth !== "signed_in") {
     return (

@@ -94,8 +94,9 @@ export async function startServer({ env = {}, faux = "faux-model.mjs", fauxBrows
   try {
     const [, baseUrl] = await line(/^agentrun-serve on (http:\/\/127\.0\.0\.1:\d+\/v2)\b/);
     const server = { baseUrl, origin: baseUrl.replace(/\/v2$/, ""), line, log: () => lines.map(redact).join("\n"), stop };
-    // At a public URL, setup takes the code in the link the server prints; kept in memory, never shown.
-    if (env.AGENTRUN_PUBLIC_URL) server.setupCode = async () => (await line(/\/setup#code=([^&\s]+)/))[1];
+    // At a public URL (AGENTRUN_PUBLIC_URL, or on Render its RENDER_EXTERNAL_URL), setup takes the code in the link the
+    // server prints; kept in memory, never shown.
+    if (env.AGENTRUN_PUBLIC_URL || env.RENDER_EXTERNAL_URL) server.setupCode = async () => (await line(/\/setup#code=([^&\s]+)/))[1];
     return server;
   } catch (error) {
     await stop();
