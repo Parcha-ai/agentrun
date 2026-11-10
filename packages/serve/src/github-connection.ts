@@ -510,16 +510,25 @@ export class GitHubConnect {
     if (!installations.length) return { unusable: "The GitHub App is not installed anywhere yet: install it on an account, then save the server." };
     try {
       const jwt = appJwt(credentials.appId, credentials.pem, this.options.now?.() ?? Date.now());
+      // Each installation in turn, until one gives a token: one that refuses, covers no repository or that GitHub did not
+      // answer for leaves the next to try.
       const refusals: { unusable: string }[] = [];
+      let unanswered: Unanswered | undefined;
       for (const installation of installations) {
         const refused = { unusable: `GitHub gave no token for the App's installation on ${installation.account}.` };
         const found = await this.firstRepository(installation.id, jwt, refused, signal);
-        // GitHub that does not answer says nothing of the installations: tried again, never read as "no repository".
-        if ("failed" in found) return found;
-        if ("unusable" in found) refusals.push(found);
-        // The least a listing needs: metadata read, of one repository; never the App's write permissions, never all of them.
-        else if (found.repo !== undefined) return await this.mint(installation.id, jwt, [found.repo], refused, signal, { metadata: "read" });
+        if ("failed" in found) unanswered = found;
+        else if ("unusable" in found) refusals.push(found);
+        else if (found.repo !== undefined) {
+          // The least a listing needs: metadata read, of one repository; never the App's write permissions, never all of them.
+          const minted = await this.mint(installation.id, jwt, [found.repo], refused, signal, { metadata: "read" });
+          if ("token" in minted) return minted;
+          if ("failed" in minted) unanswered = minted;
+          else refusals.push(minted);
+        }
       }
+      // GitHub that did not answer for one says nothing of it: tried again, never read as refused or as "no repository".
+      if (unanswered) return unanswered;
       if (refusals.length === installations.length) return refusals[0]!;
       return installations.length === 1
         ? { unusable: `The GitHub App's installation on ${installations[0]!.account} covers no repository yet: add one to it, then save the server.` }
