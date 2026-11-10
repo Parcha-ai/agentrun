@@ -285,7 +285,10 @@ async function step(ctx, job, one, kase, agentId, harness, learns) {
     pass: graded && graders.every((g) => g.pass), graders,
     // The answer the graders read, its head: what a failed grader is checked against when its reason is not enough.
     answer: record.answer.slice(0, 4000),
-    cost_usd: total, cost_unpriced: costUnpriced, work_cost_usd: work, reflect_cost_usd: learns ? reflect : 0, eval_grader_cost_usd: graders.some((g) => g.type === "llm") ? round(graders.reduce((s, g) => s + (g.cost_usd ?? 0), 0)) : null,
+    cost_usd: total, cost_unpriced: costUnpriced, work_cost_usd: work,
+    // The run's usage row as the timeline gives it (its requests, tokens and cost): why a cost reads unknown.
+    usage: (() => { const u = rows.findLast((r) => r.kind === "usage")?.usage; return u ? JSON.parse(JSON.stringify(u)) : null; })(),
+    cost_view: view.cost ?? null, reflect_cost_usd: learns ? reflect : 0, eval_grader_cost_usd: graders.some((g) => g.type === "llm") ? round(graders.reduce((s, g) => s + (g.cost_usd ?? 0), 0)) : null,
     learning: learning ? { state: learning.state ?? null, reason: learning.reason ?? null, detail: learning.detail ?? null } : null,
     grade_cost_usd: unpriced ? null : gradeRaw, grade_cost_unpriced: unpriced,
     learned, workflow_proposed: Boolean(learned && (learned.workflows.length || verdictFiles.some((f) => f.startsWith("workflows/")))),

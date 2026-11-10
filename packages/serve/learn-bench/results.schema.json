@@ -54,6 +54,8 @@
                 "answer": { "type": "string", "description": "The run's final answer as the graders read it, its first 4000 characters." },
                 "cost_usd": { "type": ["number", "null"], "description": "The step's run, whole: its job's turns and its end-of-run learning turn (its learning run, the grade, is apart)." },
                 "cost_unpriced": { "type": "boolean", "description": "The run completed and its cost read $0: a usage the server could not price; its costs read null." },
+                "usage": { "type": ["object", "null"], "description": "The run's usage row (its timeline's): requests, tokens and cost as the server counted them." },
+                "cost_view": { "type": ["object", "null"], "description": "The run view's cost object as served (usd, basis, charge_state, cap)." },
                 "work_cost_usd": { "type": ["number", "null"], "description": "The job's own turns: what the run had cost when its job answered (its kept learning row's job_cost_usd); the whole run for one that did not learn or look back." },
                 "reflect_cost_usd": { "type": ["number", "null"], "description": "The end-of-run learning turn (the kept row's look_back_usd); 0 for a run that did not learn or look back." },
                 "eval_grader_cost_usd": { "type": ["number", "null"], "description": "Its llm graders' runs." },
