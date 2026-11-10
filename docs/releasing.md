@@ -51,7 +51,7 @@ Confirm publishing access to the `@parcha` npm organization. New packages need a
 
 Once each package exists, configure its trusted publisher for this repository's `release.yml` workflow. This workflow publishes directly, so the association must allow direct publishing. Configure the `npm-release` GitHub environment with maintainer review and allowed tags. Subsequent workflow releases use OIDC and provenance. See [npm trust](https://docs.npmjs.com/cli/v11/commands/npm-trust/) for publisher configuration.
 
-On PyPI, add a trusted publisher to the `parcha-agentrun` project (Manage, Publishing): owner `Parcha-ai`, repository `agentrun`, workflow `release.yml`, environment `pypi-release`. Configure the `pypi-release` GitHub environment as `npm-release` is, with maintainer review and allowed tags. The job holds no token or secret; PyPI accepts its upload only from that workflow and environment. See [PyPI trusted publishers](https://docs.pypi.org/trusted-publishers/).
+On PyPI, add a trusted publisher to the `parcha-agentrun` project (Manage, Publishing): owner `Parcha-ai`, repository `agentrun`, workflow `release.yml`, environment `npm-release`, the same approved environment the npm packages publish from. The job holds no token or secret; PyPI accepts its upload only from that workflow and environment. See [PyPI trusted publishers](https://docs.pypi.org/trusted-publishers/).
 
 Before creating the release tag:
 

@@ -128,7 +128,7 @@ test('release.yml publishes parcha-agentrun only after the npm packages, by trus
   const job = workflow.jobs.pypi;
   assert.equal(job.needs, 'publish', 'after the npm packages are published and verified');
   assert.equal(job.if, workflow.jobs.publish.if, 'where npm publishing runs, and nowhere else');
-  assert.equal(job.environment, 'pypi-release');
+  assert.equal(job.environment, 'npm-release', 'the approved release environment, the one the PyPI trusted publisher names');
   assert.deepEqual(job.permissions, { contents: 'read', 'id-token': 'write' });
   const uses = job.steps.filter((step) => step.uses).map((step) => step.uses);
   for (const action of uses) assert.match(action, /@[0-9a-f]{40}$/, `${action} is pinned by commit: the job holds an OIDC token`);

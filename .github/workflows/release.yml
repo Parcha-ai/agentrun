@@ -2,8 +2,7 @@ name: Publish verified beta
 
 # Ordinary pushes, PRs and tags never publish. Configure each package's npm
 # trusted publisher for Parcha-ai/agentrun, release.yml, environment npm-release,
-# and parcha-agentrun's PyPI trusted publisher for Parcha-ai/agentrun, release.yml,
-# environment pypi-release.
+# and parcha-agentrun's PyPI trusted publisher with the same three.
 on:
   workflow_dispatch:
     inputs:
@@ -142,7 +141,7 @@ jobs:
     if: github.repository == 'Parcha-ai/agentrun' && github.event.repository.private == false
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    environment: pypi-release
+    environment: npm-release
     permissions:
       contents: read
       id-token: write
