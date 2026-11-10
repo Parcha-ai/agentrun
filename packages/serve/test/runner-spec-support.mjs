@@ -26,6 +26,7 @@ const stubRoute = async () => ({ model: "faux-1", provider: { api: "anthropic-me
 /**
  * Build a run's AdapterRunSpec through the dispatch's spec builder.
  *   body     the pinned revision's body (tools, approvals, instructions, toolSettings, harness)
+ *   kind     the revision's kind ("agentic" by default)
  *   launch   the launch body (merged over sane defaults: a runner place, a person's first message)
  *   settings the server's tool settings saved in the one store (store.settings), or none
  *   routeOf  the model route (a stub by default)
@@ -38,8 +39,8 @@ const stubRoute = async () => ({ model: "faux-1", provider: { api: "anthropic-me
  *            then the seal key and the run's data dir (where a test lands what the claim reads, e.g. a learning seed)
  */
 export async function specFor(t, options = {}) {
-  strictOptions("specFor", options, ["body", "skills", "launch", "settings", "routeOf", "uploads", "env", "keys", "ledger", "before"]);
-  const { body = {}, skills, launch = {}, settings, routeOf = stubRoute, uploads = [], env = {}, keys = {}, ledger, before } = options;
+  strictOptions("specFor", options, ["body", "kind", "skills", "launch", "settings", "routeOf", "uploads", "env", "keys", "ledger", "before"]);
+  const { body = {}, kind = "agentic", skills, launch = {}, settings, routeOf = stubRoute, uploads = [], env = {}, keys = {}, ledger, before } = options;
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-spec-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -51,7 +52,7 @@ export async function specFor(t, options = {}) {
     rmSync(dir, { recursive: true, force: true });
   });
   // `skills`: the revision's skill files (path to text), kept on its row as the store keeps them; the body names each path.
-  await server.agents.create({ id: "agent-1", name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", ...(skills ? { skills: Object.fromEntries(Object.keys(skills).map((path) => [path, "0".repeat(64)])) } : {}), ...body }, ...(skills ? { skills } : {}) });
+  await server.agents.create({ id: "agent-1", name: "Agent" }, { id: "rev-1", kind, body: { instructions: "Answer.", ...(skills ? { skills: Object.fromEntries(Object.keys(skills).map((path) => [path, "0".repeat(64)])) } : {}), ...body }, ...(skills ? { skills } : {}) });
   await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" });
   if (settings !== undefined) await server.settings.put("tool-settings", settings);
   for (const [name, value] of Object.entries(keys)) await putSealedKey(server, SEAL_KEY, name, value);

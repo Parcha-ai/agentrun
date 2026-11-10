@@ -6,7 +6,7 @@
 // named only by an agent whose place is a box (runnable.ts).
 import { blurbOf } from "./tool-blurbs.js";
 import type { TSchema } from "typebox";
-import { existsSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { defineExtension, defineTool, type Extension, type Harness, ROOT_CONVERSATION_ID, type ToolRegistration, type Tx } from "@earendil-works/pi-durable";
@@ -118,6 +118,10 @@ export type ToolHost = {
   /** The run's one redactor (the runner's: every secret value the runner and the claim hold, in every form): what the
    *  browser's answers pass through before pi stores them or the model reads them. Absent on the old per-run process. */
   redact?: (text: string) => string;
+  /** The run's own Workspace (on the runner: the run's local folder in Mode 1, its folder on the run's disk in Mode 2),
+   *  where a tool files what the run's read finds later (monid's whole answer past the model's cut). Absent, the local
+   *  folder at `where.work`. */
+  workspace?: Workspace;
 };
 
 /** What a name stands for in the run: the pi tools it offers, and the extensions a conversation selects for them. */
@@ -356,7 +360,7 @@ const browserTool: ToolEntry = {
     // own origin alone. The owner drives only after Take over, and the agent may ask them to (browser-person.ts): the
     // person's time is held under the run's cap first, and their turns are rows of the run's timeline.
     const windows = person.personWindows(host.env, Boolean(host.env[FAUX_ENV]));
-    const gates = createDrivingGates({ holdIdleMs: windows.holdMs, holdAwayMs: windows.awayMs });
+    const gates = fauxModelWaits(createDrivingGates({ holdIdleMs: windows.holdMs, holdAwayMs: windows.awayMs }), Boolean(host.env[FAUX_ENV]));
     let opened: Harness | undefined;
     const hands = person.personHands({
       root: host.where.root,
@@ -661,3 +665,25 @@ export const toolsView = (env: NodeJS.ProcessEnv, settings: ToolSettingsMap = {}
     return { name, summary: entry.summary, ...(blurbOf(name) ? { blurb: blurbOf(name) } : {}), nodes: entry.nodes, calls: entry.effect !== undefined, ...(entry.callOnly ? { call_only: true } : {}), ...(entry.sandboxOnly ? { sandbox_only: true } : {}), available, ...(reason ? { reason } : {}), ...(missing.length ? { missing } : {}), harnesses: name in REPLAY ? [...HARNESSES] : [DEFAULT_HARNESS], ...serverGate(name, settings), ...(plane ? { providers: [...PROVIDERS[name as Pickable]], provider: picked[name as Pickable].provider, default_provider: PROVIDERS[name as Pickable][0], resolves: plane, why: view!.why } : {}) };
   });
 };
+
+/** Tests only (--faux, with the fake browser's $FAUX_BROWSER_LOG): each model call that starts waiting for the person to
+ *  hand the browser back is logged (`{"op":"model_waits"}`) as it starts to wait, so a test hands back once the agent's call
+ *  waits, never before it got there. The gates are the registry's own (one per session, the same object each time), each
+ *  given the note once; anything else is `gates` untouched. */
+function fauxModelWaits<G extends (tag: string) => { untilFree?(signal?: AbortSignal): Promise<void> }>(gates: G, faux: boolean): G {
+  const log = faux ? process.env.FAUX_BROWSER_LOG : undefined;
+  if (!log) return gates;
+  const noted = new WeakSet<object>();
+  return ((tag: string) => {
+    const gate = gates(tag);
+    const until = gate.untilFree?.bind(gate);
+    if (until && !noted.has(gate)) {
+      noted.add(gate);
+      gate.untilFree = (signal?: AbortSignal) => {
+        appendFileSync(log, `${JSON.stringify({ op: "model_waits" })}\n`);
+        return until(signal);
+      };
+    }
+    return gate;
+  }) as G;
+}

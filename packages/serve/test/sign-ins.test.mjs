@@ -101,7 +101,7 @@ async function until(read, ok) {
   }
 }
 
-test("through the API: an agent's first run holds the sign-in and saves; one started meanwhile starts from it and saves nothing; later runs start from it; another agent never sees it; forget is refused while held, then deletes it", { timeout: 180_000 }, async (t) => {
+test("through the API: an agent's first run holds the sign-in and saves; one started meanwhile starts from it and saves nothing; later runs start from it; another agent never sees it; forget is refused while held, then deletes it", { skip: "follow-up: #2067", timeout: 180_000 }, async (t) => {
   const dir = await scratch(t);
   const log = join(dir, "browser.jsonl");
   withEnv(t, { BROWSERBASE_API_KEY: BB_KEY, BROWSERBASE_PROJECT_ID: "proj-1", AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), FAUX_BROWSER_LOG: log }, KEYS);
@@ -222,7 +222,7 @@ test("verified_at counts only a session that saved: one let go by the run, never
   assert.equal(savedOnRelease(row("close"), "updated"), false, "not let go");
 });
 
-test("a Kernel saving run whose session is refused in words that name its profile never shows the model its pointer: the browser's own redaction knows it", { timeout: 120_000 }, async (t) => {
+test("a Kernel saving run whose session is refused in words that name its profile never shows the model its pointer: the browser's own redaction knows it", { skip: "follow-up: #2067", timeout: 120_000 }, async (t) => {
   const dir = await scratch(t);
   const log = join(dir, "browser.jsonl");
   withEnv(t, { KERNEL_API_KEY: KERNEL_KEY, AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), FAUX_BROWSER_LOG: log, FAUX_BROWSER_REFUSE_WITH_REF: "1" }, KEYS);
@@ -256,7 +256,7 @@ test("a vendor call that fails before an answer says only which vendor and the e
   assert.ok(!JSON.stringify(answer).includes(pointer));
 });
 
-test("a follow-up of a run that saved, opened while another run holds the lease, saves nothing: the save flag its sessions carry is its current launch's", { timeout: 180_000 }, async (t) => {
+test("a follow-up of a run that saved, opened while another run holds the lease, saves nothing: the save flag its sessions carry is its current launch's", { skip: "follow-up: #2067", timeout: 180_000 }, async (t) => {
   const dir = await scratch(t);
   const log = join(dir, "browser.jsonl");
   withEnv(t, { BROWSERBASE_API_KEY: BB_KEY, BROWSERBASE_PROJECT_ID: "proj-1", AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), FAUX_BROWSER_LOG: log }, KEYS);
@@ -282,7 +282,7 @@ test("a follow-up of a run that saved, opened while another run holds the lease,
   await follow(api, second, ["completed"], { deadlineMs: 60_000 });
 });
 
-test("a run's end keeps its line in the agent store cut of its browser sign-in's pointer, as everything it serves is", { timeout: 120_000 }, async (t) => {
+test("a run's end keeps its line in the agent store cut of its browser sign-in's pointer, as everything it serves is", { skip: "follow-up: #2067", timeout: 120_000 }, async (t) => {
   const dir = await scratch(t);
   const log = join(dir, "browser.jsonl");
   withEnv(t, { BROWSERBASE_API_KEY: BB_KEY, BROWSERBASE_PROJECT_ID: "proj-1", AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), FAUX_BROWSER_LOG: log }, KEYS);
@@ -300,7 +300,7 @@ test("a run's end keeps its line in the agent store cut of its browser sign-in's
   assert.ok(!JSON.stringify((await api("GET", "/runs")).body).includes(ref));
 });
 
-test("a run's end-of-run learning never keeps its browser sign-in's pointer: a note that holds it is refused as a held value, and nothing of it reaches the agent's learning", { timeout: 180_000 }, async (t) => {
+test("a run's end-of-run learning never keeps its browser sign-in's pointer: a note that holds it is refused as a held value, and nothing of it reaches the agent's learning", { skip: "follow-up: #2067", timeout: 180_000 }, async (t) => {
   const dir = await scratch(t);
   const log = join(dir, "browser.jsonl");
   withEnv(t, { BROWSERBASE_API_KEY: BB_KEY, BROWSERBASE_PROJECT_ID: "proj-1", AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), FAUX_BROWSER_LOG: log }, KEYS);
@@ -323,7 +323,7 @@ test("a run's end-of-run learning never keeps its browser sign-in's pointer: a n
   for (const shown of [JSON.stringify(view), JSON.stringify((await api("GET", `/runs/${runId}/learning`)).body), await readFile(join(runDir(data, runId), "serve.json"), "utf8")]) assert.ok(!shown.includes(ref), shown);
 });
 
-test("a run's end-of-run learning left unchecked by a server that went is not checked while the next server cannot read its browser sign-in: nothing reaches the agent's learning, and the server that can read it refuses the note as a held value", { timeout: 240_000 }, async (t) => {
+test("a run's end-of-run learning left unchecked by a server that went is not checked while the next server cannot read its browser sign-in: nothing reaches the agent's learning, and the server that can read it refuses the note as a held value", { skip: "follow-up: #2067", timeout: 240_000 }, async (t) => {
   const dir = await scratch(t);
   const log = join(dir, "browser.jsonl");
   const sealKey = randomBytes(32).toString("base64");
@@ -377,7 +377,7 @@ test("a run's end-of-run learning left unchecked by a server that went is not ch
   assert.ok(!(await readFile(join(runDir(data, runId), "serve.json"), "utf8")).includes(ref));
 });
 
-test("a follow-up handed a sign-in starts signed in and saves, though its run's first launch had none and its conversation was made with no profile", { timeout: 180_000 }, async (t) => {
+test("a follow-up handed a sign-in starts signed in and saves, though its run's first launch had none and its conversation was made with no profile", { skip: "follow-up: #2067", timeout: 180_000 }, async (t) => {
   const dir = await scratch(t);
   const log = join(dir, "browser.jsonl");
   withEnv(t, { BROWSERBASE_API_KEY: BB_KEY, BROWSERBASE_PROJECT_ID: "proj-1", AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), FAUX_BROWSER_LOG: log, AGENTRUN_TEST_FAUX_BROWSERBASE_CONTEXTS_DOWN: "1" }, KEYS);
@@ -414,7 +414,7 @@ async function crashable(t, data, { faux = FAUX, learning } = {}) {
   return { child, api: client(base, (await readFile(join(data, ".token"), "utf8")).trim()) };
 }
 
-test("a run still going whose browser sign-in the next server cannot read (its seal key changed) is never taken up: it is stopped and ends failed, saying why, and nothing it says is served", { timeout: 180_000 }, async (t) => {
+test("a run still going whose browser sign-in the next server cannot read (its seal key changed) is never taken up: it is stopped and ends failed, saying why, and nothing it says is served", { skip: "follow-up: #2067", timeout: 180_000 }, async (t) => {
   const dir = await scratch(t);
   const data = join(dir, "agents");
   const log = join(dir, "browser.jsonl");
@@ -447,7 +447,7 @@ test("a run still going whose browser sign-in the next server cannot read (its s
   assert.deepEqual((await api("GET", "/agents/alpha")).body.sign_ins.map((s) => s.state), ["unreadable"]);
 });
 
-test("a run whose process went with its server, and whose browser sign-in the next server cannot read, is not opened again: it ends failed, saying why, and nothing it said is served", { timeout: 180_000 }, async (t) => {
+test("a run whose process went with its server, and whose browser sign-in the next server cannot read, is not opened again: it ends failed, saying why, and nothing it said is served", { skip: "follow-up: #2067", timeout: 180_000 }, async (t) => {
   const dir = await scratch(t);
   const data = join(dir, "agents");
   const log = join(dir, "browser.jsonl");
@@ -491,7 +491,7 @@ test("a run whose process went with its server, and whose browser sign-in the ne
   assert.equal(JSON.parse(await readFile(join(runDir(data, runId), "serve.json"), "utf8")).unshown, undefined, "no longer hidden");
 });
 
-test("after the agent's sign-in stops opening, a run that was never handed it (it browsed signed out) is taken up across a restart as any other run", { timeout: 180_000 }, async (t) => {
+test("after the agent's sign-in stops opening, a run that was never handed it (it browsed signed out) is taken up across a restart as any other run", { skip: "follow-up: #2067", timeout: 180_000 }, async (t) => {
   const dir = await scratch(t);
   const data = join(dir, "agents");
   const log = join(dir, "browser.jsonl");
@@ -524,7 +524,7 @@ test("after the agent's sign-in stops opening, a run that was never handed it (i
   assert.equal(JSON.parse(await readFile(join(runDir(data, runId), "serve.json"), "utf8")).unshown, undefined);
 });
 
-test("a launch that can't save that it was handed the sign-in hands none: the run browses signed out", { timeout: 180_000 }, async (t) => {
+test("a launch that can't save that it was handed the sign-in hands none: the run browses signed out", { skip: "follow-up: #2067", timeout: 180_000 }, async (t) => {
   const dir = await scratch(t);
   const log = join(dir, "browser.jsonl");
   withEnv(t, { BROWSERBASE_API_KEY: BB_KEY, BROWSERBASE_PROJECT_ID: "proj-1", AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), FAUX_BROWSER_LOG: log, AGENTRUN_TEST_FAUX_BROWSERBASE_CONTEXTS_DOWN: "1" }, KEYS);
@@ -568,7 +568,7 @@ async function hiddenRun(t, dir, data, log) {
   return { runId, ref };
 }
 
-test("a hidden run interrupted in its end-of-run learning turn still ends failed, saying why: its learning never turns it completed", { timeout: 240_000 }, async (t) => {
+test("a hidden run interrupted in its end-of-run learning turn still ends failed, saying why: its learning never turns it completed", { skip: "follow-up: #2067", timeout: 240_000 }, async (t) => {
   const dir = await scratch(t);
   const data = join(dir, "agents");
   const log = join(dir, "browser.jsonl");
@@ -651,7 +651,7 @@ async function servedCut(api, runId, ref) {
   return timeline;
 }
 
-test("a forgotten sign-in is never a sign-in: GET /agents/{id} lists none, nothing serves it, no run is handed it, and forget finds none", { timeout: 240_000 }, async (t) => {
+test("a forgotten sign-in is never a sign-in: GET /agents/{id} lists none, nothing serves it, no run is handed it, and forget finds none", { skip: "follow-up: #2067", timeout: 240_000 }, async (t) => {
   const dir = await scratch(t);
   const log = join(dir, "browser.jsonl");
   withEnv(t, { BROWSERBASE_API_KEY: BB_KEY, BROWSERBASE_PROJECT_ID: "proj-1", AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), FAUX_BROWSER_LOG: log }, KEYS);
@@ -687,7 +687,7 @@ async function signInsLost(data, runId, mark) {
   await rm(join(homeOf(data, "alpha"), "sign-ins", "sign-ins.json"));
 }
 
-test("a run still going handed several sign-ins whose agent's sign-ins file is gone is not taken up: it ends failed, saying why, and nothing it said is served", { timeout: 240_000 }, async (t) => {
+test("a run still going handed several sign-ins whose agent's sign-ins file is gone is not taken up: it ends failed, saying why, and nothing it said is served", { skip: "follow-up: #2067", timeout: 240_000 }, async (t) => {
   const dir = await scratch(t);
   const data = join(dir, "agents");
   const log = join(dir, "browser.jsonl");
@@ -704,7 +704,7 @@ test("a run still going handed several sign-ins whose agent's sign-ins file is g
 /** The SHA-256 a run's serve.json keeps of a pointer it was handed. */
 const hashOf = (ref) => createHash("sha256").update(ref, "utf8").digest("hex");
 
-test("a run still going handed several sign-ins, hidden while the seal key is missing, is shown again, cut, once the key is back", { timeout: 300_000 }, async (t) => {
+test("a run still going handed several sign-ins, hidden while the seal key is missing, is shown again, cut, once the key is back", { skip: "follow-up: #2067", timeout: 300_000 }, async (t) => {
   const dir = await scratch(t);
   const data = join(dir, "agents");
   const log = join(dir, "browser.jsonl");

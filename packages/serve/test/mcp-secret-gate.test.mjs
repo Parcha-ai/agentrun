@@ -29,9 +29,15 @@ test("a token's PUT of a bearer token is 403 in the one refusal and keeps nothin
   assert.equal(fake.log.length, 0, "nothing was sent to the MCP server");
 
   const owner = asOwner(server);
+  const asked = new Date().toISOString();
   const saved = await owner("PUT", "/settings/mcp-servers/fake", { url: fake.url, auth: { type: "bearer", token: TOKEN } });
+  const answered = new Date().toISOString();
   assert.equal(saved.status, 200, JSON.stringify(saved.body));
-  assert.deepEqual(saved.body.secret, { name: "mcp:fake", set: true, source: "console", changed_at: saved.body.secret.changed_at });
+  const { changed_at: changed, ...secret } = saved.body.secret;
+  assert.deepEqual(secret, { name: "mcp:fake", set: true, source: "console" });
+  // The credential's own time is this save's: an ISO instant between the request and its answer.
+  assert.match(changed, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/, `changed_at is an ISO time: ${changed}`);
+  assert.ok(asked <= changed && changed <= answered, `changed_at ${changed} is the save's time (${asked} .. ${answered})`);
 
   const prices = await put("fake", { url: fake.url, auth: { type: "bearer" }, prices: { add: 0.01 } });
   assert.equal(prices.status, 200, `a token edits the prices, the sealed token kept: ${prices.text}`);

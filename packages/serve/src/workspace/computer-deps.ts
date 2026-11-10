@@ -14,14 +14,14 @@
 //
 // A key goes into the server-side provider call alone (the provider's create() options): the spec a computer is made
 // with names no key, no account key and no database or Redis credential, and carries no environment at all.
-import { type ComputerSpec, DEFAULT_DOCKER_IMAGE, DOCKER_RECIPE, PROVIDERS, providerFor, readBackOf, servingRefusals, SETTING_KINDS } from "@parcha/agentrun-computer";
+import { type ComputerSpec, DEFAULT_DOCKER_IMAGE, DOCKER_RECIPE, DOCKER_RECIPE_HAS, PROVIDERS, providerFor, readBackOf, servingRefusals, SETTING_KINDS } from "@parcha/agentrun-computer";
 import { DOCKER_IMAGE_ENV } from "../box-image.js";
 import type { ProviderFactories } from "../computer-keys.js";
 import type { FauxComputers } from "../faux-computers.js";
 import { envValue, type KeyEnv, keyReader } from "../key-meta.js";
 import { readLaunchBody } from "../run-launch.js";
 import type { Store } from "../store/index.js";
-import { type ClaimComputer, type ClaimLaunch, computerForClaim, type ComputerForClaimDeps, type OpenComputerView } from "./computer-for-claim.js";
+import { type ClaimComputer, type ClaimLaunch, computerForClaim, type ComputerForClaimDeps, type ComputerRun, type OpenComputerView } from "./computer-for-claim.js";
 import { storeLedger } from "./computer-ledger.js";
 import { computerProviderFactories, computerProviderMakers, type ProviderLoad } from "./computer-providers.js";
 import type { ComputerSettingKind, KindRegistry, ProviderEntry } from "./resolve-computer.js";
@@ -64,7 +64,8 @@ export interface ComputerDepsOptions {
  *  entry's defaultImage for the kind, the computer package's PROVIDERS[].defaultImage; a kind with none refused in
  *  words, a Docker desktop's saying it needs an image with an X server, which the recipe lacks), the leak bound for its lifetime (its clean end is the run's release), and its network. box_allow is a
  *  sandbox's egress list: a sandbox with none, or "none", has no network; a browser, desktop or phone with none has its
- *  provider's own ("open"); an explicit list or "none" applies to any kind. No key and no environment. */
+ *  provider's own ("open"); an explicit list or "none" applies to any kind, narrowed to "none" for a provider that makes
+ *  no other (networkOf). No key and no environment. */
 export function computerSpecOf(env: KeyEnv): ComputerForClaimDeps["spec"] {
   const named = envValue(env, DOCKER_IMAGE_ENV);
   const imageOf = (entry: ProviderEntry, kind: ComputerKindOf): string => {
@@ -78,10 +79,26 @@ export function computerSpecOf(env: KeyEnv): ComputerForClaimDeps["spec"] {
   };
   return (entry, kind, run) => ({
     image: imageOf(entry, kind),
-    lifetimeMs: COMPUTER_LIFETIME_MS,
-    network: run.boxAllow === undefined ? (kind === "sandbox" ? "none" : "open") : run.boxAllow === "none" ? "none" : { allow: [...run.boxAllow] },
+    // The leak bound, within the longest the provider makes (E2B's is an hour): a longer one it refuses at create.
+    lifetimeMs: Math.min(COMPUTER_LIFETIME_MS, run.maxLifetimeMs ?? COMPUTER_LIFETIME_MS),
+    network: networkOf(kind, run),
   });
 }
+
+/** The network a computer of `kind` asks for: as the run allows (box_allow), narrowed to "none" when its provider makes
+ *  "none" but not what the run allows. A remote computer (Daytona's or E2B's, each one whose capabilities' network is
+ *  ["none"]) runs its programs in a network of their own, so an open or listed network is one it refuses at create;
+ *  "none" reaches less than the run allows, never more. Nothing is ever widened. */
+function networkOf(kind: ComputerKindOf, run: ComputerRun): ComputerSpec["network"] {
+  const allowed: ComputerSpec["network"] = run.boxAllow === undefined ? (kind === "sandbox" ? "none" : "open") : run.boxAllow === "none" ? "none" : { allow: [...run.boxAllow] };
+  const form = allowed === "none" || allowed === "open" ? allowed : "allow";
+  return run.networks && !run.networks.includes(form) && run.networks.includes("none") ? "none" : allowed;
+}
+
+/** The run's timeline phase while its claim waits on its computer's image (computerForClaim's onImageWait): main's box
+ *  image row, the computer's noun for the box's. */
+export const imageWaitWords = (making: "build" | "pull", image: string): string =>
+  making === "build" ? `Preparing the computer's image: building it (${DOCKER_RECIPE_HAS})…` : `Preparing the computer's image: pulling ${image}…`;
 
 /** The claim's computer as the runner's specs call it: what the run's launch lets the computer reach (its box_allow),
  *  read from the launch row when the store has one and the claim does not say, then computerForClaim. */
@@ -95,11 +112,18 @@ export const claimComputer = async (
   return computerForClaim(boxAllow === undefined ? launch : { ...launch, boxAllow }, store, deps);
 };
 
+/** The kind registry a claim composed with `options` resolves a setting against: --faux's when it is given faux, else a
+ *  test's own, else the computer package's. The one choice: computerDepsFrom makes it, and the server's start check
+ *  (server.ts computerReady) asks it with what the runner composes with, so a run's start and its claim answer alike. */
+export function claimKinds(options: Pick<ComputerDepsOptions, "faux" | "kinds">): KindRegistry {
+  // The faux registry is Settings' shape (computers.ts); the claim reads the same data as resolve-computer.ts's.
+  return (options.faux?.kinds as unknown as KindRegistry | undefined) ?? options.kinds ?? ({ SETTING_KINDS, PROVIDERS, servingRefusals } as unknown as KindRegistry);
+}
+
 /** computerForClaim and its process-wide deps, composed once; and Settings → Computers' factories from the same makers. */
 export function computerDepsFrom(options: ComputerDepsOptions): { computerForClaim: typeof claimComputer; computerDeps: ComputerDeps; factories: ProviderFactories } {
   const { env, store, sealKey, faux } = options;
-  // The faux registry is Settings' shape (computers.ts); the claim reads the same data as resolve-computer.ts's.
-  const kinds = (faux?.kinds as unknown as KindRegistry | undefined) ?? options.kinds ?? ({ SETTING_KINDS, PROVIDERS, servingRefusals } as unknown as KindRegistry);
+  const kinds = claimKinds(options);
   // The Docker provider is given its image's source, which it makes ready itself (its image(): built from the recipe
   // when Docker lacks it, or pulled by name): the owner's AGENTRUN_DOCKER_IMAGE, else the package's recipe. Never the
   // recipe's bare tag, which no registry has.
