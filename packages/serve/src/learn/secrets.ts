@@ -69,8 +69,8 @@ export const PRINT_MAX = 4096;
 
 /** `text` with each of `values` (as written, as JSON writes it, and in each form the matcher finds as it stands: hex in
  *  any case, base64, a hex identifier in it folded) and each secret-shaped run replaced by "[redacted]": what the
- *  checker prints never holds a secret, wherever it was found, a file's name included, and as a path names it (its runs
- *  of "/" collapsed: pathSpelling). Every form is found in `text` as given, and overlapping finds are redacted as one, so
+ *  checker prints never holds a secret, wherever it was found, a file's name included, each value as a path names it too
+ *  (pathSpelling). Every form is found in `text` as given, and overlapping finds are redacted as one, so
  *  one value never hides part of another from the search. A text
  *  that still holds a value or a shape after that (a form not found as it stands: percent encoded, split by whitespace,
  *  an NFKC variant), or that is over `max` bytes (PRINT_MAX unless the caller names more), is redacted whole, never in
@@ -79,8 +79,8 @@ export const PRINT_MAX = 4096;
  *  what is left (a folded value split by whitespace or percent-encoded is found there, never handed back). */
 export function redactSecrets(text: string, values: readonly string[], max = PRINT_MAX): string {
   if (Buffer.byteLength(text) > max) return "[redacted]";
-  const given = values.filter((v) => v.length > 0);
-  const forms = new Set(given.flatMap((v) => [v, asJson(v), ...pathSpelling(v), ...(longEnough(v) ? needlesOf(v).plain : [])]).filter((form) => form.length > 0));
+  const given = withPathSpellings(values.filter((v) => v.length > 0));
+  const forms = new Set(given.flatMap((v) => [v, asJson(v), ...(longEnough(v) ? needlesOf(v).plain : [])]).filter((form) => form.length > 0));
   const found = [
     ...[...forms].flatMap((form) => places(text, form)),
     ...given.filter(longEnough).flatMap((v) => spans(text, new RegExp(needlesOf(v).hex, "i"))),
@@ -136,12 +136,15 @@ function percentDecode(text: string, plusIsSpace: boolean): string {
 
 const asJson = (value: string) => JSON.stringify(value).slice(1, -1);
 /** `value` as a path names it, when that differs: a tool that resolves a path the model wrote (pi's read) collapses each
- *  run of "/" to one and drops a leading one, and its error names that path, so a held value holding "//" (a random
- *  base64 key does, now and then) comes back so. Only a spelling still long enough to be a secret: none shorter is cut. */
+ *  run of "/" to one and drops a leading and a trailing one, and its error names that path, so a held value holding "//"
+ *  (a random base64 key does, now and then) comes back so. A normalizer also rewrites "/./" and "/../", which base64 has
+ *  no "." to make; a value holding them is not respelled. Only a spelling still long enough to be a secret is listed. */
 const pathSpelling = (value: string): string[] => {
-  const path = value.replace(/\/{2,}/g, "/").replace(/^\//, "");
+  const path = value.replace(/\/{2,}/g, "/").replace(/^\//, "").replace(/\/$/, "");
   return path !== value && longEnough(path) ? [path] : [];
 };
+/** Each held value, then its path spelling when it has one: every form a cut or the guard derives, derived of both. */
+const withPathSpellings = (values: readonly string[]): string[] => values.flatMap((value) => [value, ...pathSpelling(value)]);
 
 /** The separators a hex identifier is written with: a UUID's dashes, and the underscores, colons and dots of others. */
 const SEPARATORS = /[-_:.]/g;
@@ -182,7 +185,7 @@ const longEnough = (value: string) => [...value].length >= MIN_SECRET;
  *  shorter than MIN_SECRET are left out. `fold: false`, the matcher without the folded needles (redactSecrets' first
  *  whole-text check). */
 export function valueMatcher(values: readonly string[], { fold = true }: { fold?: boolean } = {}): (text: string) => boolean {
-  const needles = values.filter(longEnough).map(needlesOf).map((n) => (fold ? n : { ...n, folded: [] }));
+  const needles = withPathSpellings(values).filter(longEnough).map(needlesOf).map((n) => (fold ? n : { ...n, folded: [] }));
   if (!needles.length) return () => false;
   return (text) => {
     const views = [...new Set([squeeze(text), squeeze(percentDecode(text, false)), squeeze(percentDecode(text, true))])];
