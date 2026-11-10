@@ -45,8 +45,9 @@ const MAX_MESSAGE_BYTES = 64 * 1024;
  *  its hello and how many may wait for one; past `slowViewerBytes` unsent no frame is sent (nor the watch acked) until the
  *  socket drains, and past `maxBufferedBytes` the viewer is cut off (refused slow_viewer); at most `maxQueuedInput`
  *  events wait behind the one being sent, the rest answered held busy; a frame left unacked past `ackIdleMs` ends the
- *  viewer (a take in progress handed back through the hold's away). */
-export const VIEWER_LIMITS = { helloMs: 5_000, maxPending: 8, slowViewerBytes: 512 * 1024, maxBufferedBytes: 4 * 1024 * 1024, maxQueuedInput: 32, ackIdleMs: 60_000 } as const;
+ *  viewer (a take in progress handed back through the hold's away); the ups a leaving viewer's take sends, and the watch's
+ *  close, are waited for `settleMs` at most, then let be. */
+export const VIEWER_LIMITS = { helloMs: 5_000, maxPending: 8, slowViewerBytes: 512 * 1024, maxBufferedBytes: 4 * 1024 * 1024, maxQueuedInput: 32, ackIdleMs: 60_000, settleMs: 5_000 } as const;
 /** A viewer whose frame waits unacked past ackIdleMs is ended in these words. */
 export const STOPPED_ANSWERING = "This view stopped answering; open the live view again.";
 /** Its close code. */
@@ -135,8 +136,9 @@ export type OpenComputerView = {
   maxWidth?: number;
   quality?: number;
   /** For tests: the bounds (VIEWER_LIMITS), the timers the hello's wait runs on, a socket's unsent bytes as read, and each
-   *  socket as it is upgraded. */
+   *  socket as it is upgraded. `log`: a line in words for a wait let be (default stderr). */
   limits?: Partial<typeof VIEWER_LIMITS>;
+  log?: (line: string) => void;
   timers?: { set(run: () => void, ms: number): unknown; clear(handle: unknown): void };
   bufferedOf?: (conn: WsConn) => number;
   sockets?: (socket: Duplex) => void;
@@ -263,6 +265,23 @@ async function openOne(input: OpenComputerView, key: string): Promise<OpenedComp
   const limits = { ...VIEWER_LIMITS, ...input.limits };
   const timers = input.timers ?? { set: (run: () => void, ms: number) => setTimeout(run, ms).unref(), clear: (handle: unknown) => clearTimeout(handle as NodeJS.Timeout) };
   const bufferedOf = input.bufferedOf ?? ((conn: WsConn) => conn.buffered);
+  const log = input.log ?? ((line: string) => void process.stderr.write(`agentrun-serve: ${line}\n`));
+  /** `work` waited for settleMs at most: past it the caller goes on, and says so in words. Never rejects. */
+  const settled = (work: Promise<unknown>, what: string): Promise<void> => new Promise((resolve) => {
+    let done = false;
+    const handle = timers.set(() => {
+      if (done) return;
+      done = true;
+      log(`the ${kind}'s ${what} did not answer within ${limits.settleMs} ms; going on without it`);
+      resolve();
+    }, limits.settleMs);
+    void work.catch(() => undefined).then(() => {
+      if (done) return;
+      done = true;
+      timers.clear(handle);
+      resolve();
+    });
+  });
   // A relaunch of the same computer: the old view goes first, its row with it, and its viewer is told it ended.
   await opened.get(key)?.close("ended");
 
@@ -272,15 +291,19 @@ async function openOne(input: OpenComputerView, key: string): Promise<OpenedComp
   let origin = "";
   const pending = new Set<WsConn>();
   type Parked = { frame: ScreenFrame; ack: () => void };
-  type Viewer = { conn: WsConn; watch?: ScreenWatch; abort: AbortController; ack?: () => void; parked?: Parked; chain: Promise<void>; queued: number; idle?: unknown };
+  /** `leaving`: the viewer went, and its watch is not let go yet (its ups are being sent): a frame then waits, unacked. */
+  type Viewer = { conn: WsConn; watch?: ScreenWatch; abort: AbortController; ack?: () => void; parked?: Parked; chain: Promise<void>; queued: number; idle?: unknown; leaving?: boolean };
   let viewer: Viewer | null = null;
   let state: HoldState = "agent";
   /** Moves on with every take and every hand back: an event queued under one take is never sent under the next. */
   let epoch = 0;
   /** This take's mapper of the viewer's events: one per take, a new one each time a take begins. */
   let mapper: ActionMapper = createActionMapper(input.input);
-  /** The viewer went while a take was pending or held: a take that lands after it goes back at once (the hold's away). */
+  /** The viewer went while a take was pending or held, or while its Take over was being written: a take that lands after
+   *  it goes back at once (the hold's away). */
   let awayOwed = false;
+  /** A Take over is being written (hold.take() not answered yet). */
+  let taking = false;
   const newTake = (): void => {
     epoch += 1;
     mapper.release();
@@ -333,6 +356,14 @@ async function openOne(input: OpenComputerView, key: string): Promise<OpenedComp
    *  a newer frame takes the slot, and the one it replaced is acked. */
   const sendFrame = (current: Viewer, frame: ScreenFrame, ack: () => void): void => {
     const conn = current.conn;
+    // A viewer that went, its watch not let go yet: the frame waits in the slot (acked when the watch is let go), so the
+    // watch is not asked for frame after frame nobody draws.
+    if (current.leaving && viewer !== current) {
+      const replaced = current.parked;
+      current.parked = { frame, ack };
+      replaced?.ack();
+      return;
+    }
     if (viewer !== current || conn.closed) return ack();
     awaitAck(current);
     if (bufferedOf(conn) > limits.maxBufferedBytes) {
@@ -403,15 +434,21 @@ async function openOne(input: OpenComputerView, key: string): Promise<OpenedComp
     const ups = mapper.release();
     // The watch ends before its frames are acked: an ack then asks for no frame more.
     const stop = (): void => {
+      gone.leaving = false;
       gone.abort.abort();
       letGoFrames(gone);
-      void gone.watch?.close().catch(() => undefined);
+      void settled(Promise.resolve(gone.watch?.close()), "watch's close");
     };
-    if (ups.length && gone.watch) void gone.watch.input(ups).catch(() => undefined).finally(stop);
-    else stop();
-    if (!closed && (state === "person" || state === "pending")) {
+    if (ups.length && gone.watch) {
+      // The ups go behind the input still being sent (a press in flight is never overtaken by its own release), bounded.
+      gone.leaving = true;
+      const watch = gone.watch;
+      void settled(gone.chain.then(() => watch.input(ups)), "release of the buttons held").then(stop);
+    } else stop();
+    if (!closed && (taking || state === "person" || state === "pending")) {
       awayOwed = true;
-      void Promise.resolve().then(() => hold.away()).catch(() => undefined);
+      // A Take over still being written has nothing to hand back yet: its landing does (moved, onHands).
+      if (state !== "agent") void Promise.resolve().then(() => hold.away()).catch(() => undefined);
     }
   };
 
@@ -480,9 +517,18 @@ async function openOne(input: OpenComputerView, key: string): Promise<OpenedComp
       if (which === "take") {
         if (state === "person") return send(conn, { type: "hold", held: true });
         newTake();
-        const answer = await hold.take();
+        // Marked before the write: a viewer that goes meanwhile owes the take an away once it lands.
+        taking = true;
+        let answer: { readonly hold: HoldState };
+        try {
+          answer = await hold.take();
+        } finally {
+          taking = false;
+        }
         // The answer moves the viewer on from the agent, never back from a change already heard.
         if (viewer === current && state === "agent" && answer.hold !== "agent") moved({ state: answer.hold });
+        // Gone meanwhile, and the take landed: back at once.
+        else if (viewer !== current && awayOwed && !closed && answer.hold !== "agent") void Promise.resolve().then(() => hold.away()).catch(() => undefined);
         return;
       }
       // Hand back: what is queued is not sent, what this take holds is let go, then the hold is given.
@@ -614,9 +660,15 @@ async function openOne(input: OpenComputerView, key: string): Promise<OpenedComp
       if (viewer) {
         const gone = viewer;
         viewer = null;
+        // What its take holds down is let go first, behind the input still being sent, bounded.
+        const ups = mapper.release();
+        if (ups.length && gone.watch) {
+          const watch = gone.watch;
+          await settled(gone.chain.then(() => watch.input(ups)), "release of the buttons held");
+        }
         gone.abort.abort();
         letGoFrames(gone);
-        await gone.watch?.close().catch(() => undefined);
+        await settled(Promise.resolve(gone.watch?.close()), "watch's close");
       }
       await stopServer();
     },
