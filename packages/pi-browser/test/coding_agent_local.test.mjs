@@ -6,7 +6,7 @@ import { fetch as undiciFetch } from "undici";
 import path from "node:path";
 import test from "node:test";
 import { FakeBackend, fakeDriver } from "@parcha/pi-browser/testing";
-import { fileEvidenceSink, findChrome, httpBackup, isPrivateAddress, pinnedLookup } from "../dist/coding-agent-local.js";
+import { fileEvidenceSink, httpBackup, isPrivateAddress, pinnedLookup } from "../dist/coding-agent-local.js";
 import { createWebTools } from "../dist/core/web.js";
 import { startAgent, turn } from "./coding-agent/rig.mjs";
 import { scratch } from "./fixtures/scratch.mjs";
@@ -118,17 +118,6 @@ test("a reply the fetch refuses without reading (not text, an error status, a re
 test("private, loopback, link-local and v4-mapped addresses are private; ordinary ones are not", () => {
   for (const ip of ["127.0.0.1", "10.0.0.1", "172.16.5.5", "192.168.1.1", "169.254.169.254", "100.64.0.1", "0.0.0.0", "::1", "::", "fd00::1", "fe80::1", "::ffff:127.0.0.1", "::ffff:10.0.0.1", "not an address"]) assert.equal(isPrivateAddress(ip), true, ip);
   for (const ip of ["93.184.216.34", "8.8.8.8", "172.32.0.1", "2606:4700:4700::1111", "::ffff:8.8.8.8"]) assert.equal(isPrivateAddress(ip), false, ip);
-});
-
-test("a Chrome the person names comes first, then the first install that exists; none is null", () => {
-  const present = new Set(["/opt/google/chrome/chrome", "/opt/me/chrome-custom", "/usr/local/bin/chromium"]);
-  const exists = (file) => present.has(file);
-  assert.equal(findChrome({ PI_BROWSER_CHROME: "/opt/me/chrome-custom", PATH: "/usr/local/bin" }, exists), "/opt/me/chrome-custom");
-  assert.equal(findChrome({ CHROME_PATH: "/opt/me/chrome-custom" }, exists), "/opt/me/chrome-custom");
-  assert.equal(findChrome({ PI_BROWSER_CHROME: "/missing", PATH: "/usr/local/bin" }, exists), "/usr/local/bin/chromium", "a named path that is absent falls through to the search");
-  assert.equal(findChrome({ PATH: "/nowhere" }, exists), "/opt/google/chrome/chrome");
-  assert.equal(findChrome({ PATH: "/nowhere" }, (file) => file === "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"), "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome");
-  assert.equal(findChrome({ PATH: "/nowhere" }, () => false), null);
 });
 
 test("evidence is filed under the label with a counter, the receipt header carries every fact, and a hostile label stays inside the directory", async (t) => {

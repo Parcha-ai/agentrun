@@ -1,4 +1,3 @@
-import { existsSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { publicFetch } from "./core/public-fetch.js";
@@ -6,14 +5,7 @@ import { READ_MAX_CHARS, readPage, thousands } from "./core/read-page.js";
 import type { EvidenceRecord, EvidenceSink } from "./core/evidence.js";
 import type { WebBackup } from "./core/web.js";
 
-const LINUX_NAMES = ["google-chrome", "google-chrome-stable", "chromium", "chromium-browser"];
-
-export function findChrome(env: NodeJS.ProcessEnv = process.env, exists: (file: string) => boolean = existsSync): string | null {
-  for (const named of [env.PI_BROWSER_CHROME, env.CHROME_PATH]) if (named && exists(named)) return named;
-  const onPath = (env.PATH ?? "").split(path.delimiter).filter(Boolean).flatMap((dir) => LINUX_NAMES.map((name) => path.join(dir, name)));
-  const fixed = ["/opt/google/chrome/chrome", "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"];
-  return [...onPath, ...fixed].find((file) => exists(file)) ?? null;
-}
+export { findChrome } from "./providers/chrome-args.js";
 
 /** One path segment of `[A-Za-z0-9._-]`; a label of only dots (`.`, `..`) is never a directory name. */
 const safe = (part: string) => {
