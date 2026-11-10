@@ -83,6 +83,13 @@ whose `+` arrived as a space. `AGENTRUN_PUBLIC_URL`, when set, is the
 address people open (a container's published port, or a proxy's URL): the printed `Open` link and `AGENTRUN_BASE_URL`
 use it.
 
+`AGENTRUN_TOKEN_NEXT`, when set, is a second token the server takes beside the token (the same rules: 32 characters or
+more, no whitespace), so callers move to a new token with none refused. Either opens every route the token opens (`/v2`,
+`/mcp`, the store's `/api/*` data, the setup code's field), and each is compared in constant time. The console's
+accounts-off cookie and `Open` link stay the token's. It is a secret like the token: the launcher hands it over its pipe,
+and no run's process or runner loop gets it. The steps of a rotation are in
+[deploy/README.md](../../deploy/README.md#rotating-the-api-token).
+
 ## Sandbox in 60 seconds
 
 An agent with a shell, in a Docker container of its own: on a machine with Docker, in a checkout built as above, with
@@ -2928,7 +2935,7 @@ carries no cost at all, as from a provider that does not price the model. The te
 - Each run's door listens on loopback and takes only that run's own door token (`DIR/disk/agents/<agent>/runs/<id>/door-token`, 0600, made
   at its first launch); a run's process an older server started keeps the server-wide one (`DIR/.door-token`).
 - A run's process gets the server's environment (the `AGENT_MODEL` variables among it) without the server's token or any
-  key: no `AGENTRUN_TOKEN`, no `AGENTRUN_API_KEY`, no variable whose value is the token, and no variable named like a key
+  key: no `AGENTRUN_TOKEN`, no `AGENTRUN_TOKEN_NEXT`, no `AGENTRUN_API_KEY`, no variable whose value is the token, and no variable named like a key
   (one of its `_`-separated segments, in any case, is `KEY`, `TOKEN`, `SECRET`, `PASSWORD`, `PASSWD`, `PASS`, `PAT`,
   `CREDENTIAL`, `CREDENTIALS` or `DSN`, or its last is `PWD` after another: `SERVICE_KEY`, `GITHUB_TOKEN_RO`, `DB_PASS`,
   `SENTRY_DSN`, `DB_PWD`; never `PWD` or `OLDPWD`), whether the launcher's list names it or not. The rule is

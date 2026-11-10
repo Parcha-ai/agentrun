@@ -34,6 +34,7 @@ What each takes, from its environment alone:
 | `AGENTRUN_STORE_SCHEMA` | optional | optional | The Postgres schema the store is in (default `agentrun`). |
 | `AGENTRUN_RUNNER_NAME` | | optional | The runner's name when `--name` gives none: in the runs it claims, its log lines and its heartbeat. Give each runner its own. |
 | `AGENTRUN_TOKEN` | optional | | The API token. Unset, the server makes one in `/data/.token` and prints it once. |
+| `AGENTRUN_TOKEN_NEXT` | optional | | A second API token, taken beside the token while callers move to it ([Rotating the API token](#rotating-the-api-token)). 32 characters or more, no whitespace. A secret, like the token. |
 | Model keys (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `AGENT_MODEL`, ...) | yes | yes | The runner makes a run's model requests; the server checks a run's model can run before it starts it. |
 
 The server listens where `--listen` says: above, its container's own address (its hostname), where Docker publishes the
@@ -100,6 +101,23 @@ it, on a disk only that one service can mount. More runners on Render need the P
 deploy needs one model key in Render's form, then `AGENTRUN_TOKEN` from the service's Environment tab at the first visit.
 render.yaml has Render generate AGENTRUN_SEAL_KEY once; keep it with the service. More runners on Render need the same
 value set on each worker.
+
+## Rotating the API token
+
+The server takes two tokens at once: `AGENTRUN_TOKEN` (or `/data/.token` when that is unset) and
+`AGENTRUN_TOKEN_NEXT`. Either opens every route the token opens, and each is compared in constant time. Runners hold no
+API token, so a rotation touches the server alone.
+
+1. Make the new token (`openssl rand -hex 32`), set it as `AGENTRUN_TOKEN_NEXT`, and restart the server. Its banner
+   says the next token is taken beside the old one. Both tokens work now.
+2. Move every caller (your backend, scripts, `AGENTRUN_API_KEY` for the CLI) to the new token. Each request with either
+   token is answered, so callers can move one at a time.
+3. Set `AGENTRUN_TOKEN` to the new token, unset `AGENTRUN_TOKEN_NEXT`, and restart the server. The old token is refused
+   from now on (`401`, logged as `wrong_token`).
+
+No caller is refused at any step. Each step is a server restart, which drains as any stop does (`--drain-timeout`);
+callers ride it out as they would any restart. With accounts off, a browser holding the console's cookie opens the new
+`Open` link after step 3: the cookie is made from the token.
 
 ## Upgrading from an earlier server
 

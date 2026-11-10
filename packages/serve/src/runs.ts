@@ -826,7 +826,7 @@ export const WAITS_ON_A_PERSON = "The run is waiting on a person.";
 /** The server's own secrets, which a run's process never gets: the API token, by name or by value, the seal key
  *  the tool keys are kept under (tool-keys.ts), the store's URL (it may hold the database's password), and the boxes'
  *  keys (boxes.ts), which only the server's box providers use. */
-const SERVER_ONLY = new Set(["AGENTRUN_TOKEN", "AGENTRUN_API_KEY", "AGENTRUN_SEAL_KEY", "AGENTRUN_STORE_URL", ...BOX_KEYS]);
+const SERVER_ONLY = new Set(["AGENTRUN_TOKEN", "AGENTRUN_TOKEN_NEXT", "AGENTRUN_API_KEY", "AGENTRUN_SEAL_KEY", "AGENTRUN_STORE_URL", ...BOX_KEYS]);
 /** The secrets a run's process is handed over its pipe (secrets.ts): every one but the server's own and the decision
  *  keys, which go on their own descriptor. */
 export const RUN_SECRETS = SECRET_NAMES.filter((name) => !SERVER_ONLY.has(name) && !DECISION_KEYS.includes(name));

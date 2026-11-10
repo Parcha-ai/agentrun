@@ -1,6 +1,6 @@
 // The /v2 API over the agent store in a data directory: the contract agentrun.v2/0, served on loopback with a bearer
 // token.
-import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { chmod, lstat, mkdir, readdir, readFile, realpath, rename, stat, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { Duplex } from "node:stream";
@@ -42,6 +42,7 @@ import { openapiDocument, servedOpenapi, UNSUPPORTED } from "./openapi.js";
 import { boxAvailability, boxesLine, defaultPlaceOf, NEW_AGENT_TOOLS, newAgentPlace, noBoxReason, type Place, placesOf, resolvePlace } from "./place.js";
 import { BOX_ALLOW_ENV, boxAllowOf, boxLimitsOf, boxNetworkOf, FAUX_BOX_ENV, fauxBoxes } from "./run-box.js";
 import { Owner, passwordProblem, SESSION_MS } from "./owner.js";
+import { acceptedTokens, bearerCheck, TOKEN_NEXT_ENV, tokenProblem } from "./api-token.js";
 import { answerPage, byOwnerSession, heldSessions, isJson, overHttps, ownerCookie, ownOrigin, sendHostRefused, signedIn } from "./page.js";
 import { hostFix, hostName, loopbackNames } from "./host-check.js";
 import { computerViewerLink, familyReaches, handoverById, type LiveFamily, type LiveHandover, liveRest, liveViewer, liveViewerById, liveViewerFor, liveViewerLink, OpenViewers, proxyLiveUpgrade, readHandover, readHandovers, serveViewerFile, viewerAnswers, viewerLink } from "./browser-live.js";
@@ -208,6 +209,9 @@ export type ServeOptions = {
   host?: string;
   /** The token to require in place of the one `DIR/.token` keeps: 32 characters or more, no whitespace. */
   token?: string;
+  /** The next token (AGENTRUN_TOKEN_NEXT), taken beside the token while callers move to it (api-token.ts): the same rules
+   *  as the token. The token stays the one the page's cookie and printed link are made from. */
+  nextToken?: string;
   /** Default 7340; 0 is any free port. */
   port?: number;
   /** When the port is taken at the listen, the next one that is not, of the 100 from it: the port is found by listening,
@@ -405,7 +409,6 @@ async function tokenIn(file: string): Promise<{ token: string; made: boolean }> 
   return { token, made: true };
 }
 
-const digest = (text: string) => createHash("sha256").update(text).digest();
 /** Why a trigger never messages a run: it has no spend cap, and every turn a trigger drives is capped. */
 const NO_CAP = "The run has no spend cap: a trigger only messages a run with one, as every turn it drives is capped.";
 
@@ -785,7 +788,10 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   await mkdir(resolve(options.data), { recursive: true, mode: 0o700 });
   // Canonical once, here: a box's mount source below it must then be its own canonical path, through no link (run-box.ts).
   const data = await realpath(resolve(options.data));
-  if (options.token !== undefined && (options.token.length < 32 || /\s/.test(options.token))) throw new Error("the token must be 32 characters or more, with no whitespace");
+  const tokenRefused = options.token === undefined ? undefined : tokenProblem(options.token);
+  if (tokenRefused) throw new Error(tokenRefused);
+  const nextRefused = options.nextToken === undefined ? undefined : tokenProblem(options.nextToken, `the next token (${TOKEN_NEXT_ENV})`);
+  if (nextRefused) throw new Error(nextRefused);
   if (options.drainTimeout !== undefined && durationMs(options.drainTimeout) === undefined) throw new Error(`the drain timeout ${options.drainTimeout} is not a duration such as 8s`);
   enabledBoxes(process.env);
   boxLimitsOf(process.env);
@@ -827,6 +833,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const tokenFile = options.token === undefined ? join(data, TOKEN_FILE) : null;
   const stored = options.token === undefined ? await tokenIn(tokenFile!) : undefined;
   const token = options.token ?? stored!.token;
+  // The token, and during a rotation the next one (AGENTRUN_TOKEN_NEXT): each opens every route the token does.
+  const tokens = acceptedTokens(token, options.nextToken);
   // Given a token (AGENTRUN_TOKEN), a .token an earlier start made holds one this server refuses: it goes, so nothing
   // (a person told the token is there, a CLI that reads it) takes a dead token from it. A later start without one makes a
   // new file and token.
@@ -1149,7 +1157,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     close: () => store.close(),
   };
   ({ secrets: secretStores, settings: triggerSettings } = await openServerSecretsOverStore(store, data, env, adapters, (fields) => (log ? log(logLine("trigger", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("trigger", fields)}\n`))));
-  secretStores.add("server", () => [token]);
+  secretStores.add("server", () => [...tokens]);
   // Each agent's saved sign-ins, over the one store (module A, sign-ins-store): the vendor's calls on the server's keys
   // (under faux, the vendor's fake alone), under this server's seal key. The store holds whether a sign-in is still held
   // (a live run's sign_in_handed) and who was handed it, so this takes no `holds`/`handedTo` callback — one store, one lock.
@@ -1290,7 +1298,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     runStatus: async (runId: string) => ((await viewOverStore(store, runId, viewDepsFor(ownOriginOf())))?.status as string | undefined) ?? null,
   };
   const targets = triggerTargets(store, triggerDeps);
-  const expected = digest(`Bearer ${token}`);
+  // Every presented token is checked here, against the token and the next one, in constant time (api-token.ts).
+  const bearer = bearerCheck(tokens);
   // The old per-run-process test hooks (beforeAbort/beforeReopenLaunch/onRunLoad/messageOrigin …) are the runner's now
   // (E2r), not the server's: a run executes in a runner process, not here. TODO(E2r): the equivalents on the runner's loop.
   // Answered keys are kept in the data directory for the retention capabilities state, and written before the answer
@@ -2192,7 +2201,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     switch (path) {
       case "/setup": {
         const byToken = req.headers.authorization !== undefined;
-        if (byToken && !timingSafeEqual(digest(String(req.headers.authorization)), expected)) throw new ApiError("unauthenticated", "the Bearer here is the server's token, or none", {}, { "www-authenticate": "Bearer" });
+        if (byToken && !bearer(req.headers.authorization)) throw new ApiError("unauthenticated", "the Bearer here is the server's token, or none", {}, { "www-authenticate": "Bearer" });
         if (!byToken) fromPage(req);
         const { password, body } = await passwordIn(req, ["password", "code", "import"]);
         if (body.import !== undefined && typeof body.import !== "boolean") throw invalid([{ field: "import", reason: "wrong_type", message: "import is true or false" }]);
@@ -2202,7 +2211,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const along = body.import === true ? { keep: () => writeDurable(importAsked, ""), drop: () => rm(importAsked, { force: true }) } : undefined;
         // The server's API token stands in for the code in the code field too (on Render it is in the Environment tab, the
         // code only in the log), compared as the header is, in constant time; a wrong one counts as a wrong code.
-        const tokenAsCode = typeof body.code === "string" && body.code !== "" && timingSafeEqual(digest(`Bearer ${body.code}`), expected);
+        const tokenAsCode = typeof body.code === "string" && body.code !== "" && bearer(`Bearer ${body.code}`);
         const made = await me.setFirst(password, body.code, byToken || tokenAsCode, along);
         if (made === "exists") throw new ApiError("forbidden", "this server has its owner, or is being set up: sign in");
         if (made === "missing") throw new ApiError("forbidden", "this server's setup takes the setup code in its log: send it as code");
@@ -2459,7 +2468,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       }
       secretSeen = checked.seen;
     }
-    if (!timingSafeEqual(digest(String(req.headers.authorization ?? "")), expected)) {
+    if (!bearer(req.headers.authorization)) {
       authFailed(`/v2${path}`, req.headers.authorization === undefined ? "no_credential" : "wrong_token");
       throw new ApiError("unauthenticated", "this route needs Authorization: Bearer <the token in the data directory>", {}, { "www-authenticate": "Bearer" });
     }
@@ -3060,7 +3069,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   }
 
   // The MCP endpoint's tools are the routes above, called in process with the caller's token (mcp.ts).
-  const mcp = mcpEndpoint({ route, authorized: (header) => timingSafeEqual(digest(header), expected), authFailed, version: VERSION });
+  const mcp = mcpEndpoint({ route, authorized: (header) => bearer(header), authFailed, version: VERSION });
 
   function send(res: ServerResponse, status: number, body: unknown, headers: Record<string, string> = {}): void {
     const text = JSON.stringify(body);
@@ -3132,7 +3141,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     if (owner && (raw === "/v2/setup" || raw === "/v2/setup/import" || raw.startsWith("/v2/auth/"))) return void ownerRoute(req, res, raw.slice(3), owner).catch(fail);
     if (raw === MCP_PATH) return void mcp(req, res).catch(fail);
     if (raw === "/llms.txt") return void answerLlms(req, res).catch(fail);
-    if (answerPage(req, res, raw, { token, dir: data, authFailed, console: options.console, takesBytes, ...(owner ? { owner } : {}), ...(options.publicUrl ? { publicUrl: options.publicUrl } : {}) })) return;
+    if (answerPage(req, res, raw, { token, bearer, dir: data, authFailed, console: options.console, takesBytes, ...(owner ? { owner } : {}), ...(options.publicUrl ? { publicUrl: options.publicUrl } : {}) })) return;
     // Under --faux only: a faux desktop's live view, a page on this server's own address (faux-computers.ts viewPage), so
     // a run's take-over has a viewer to open in the console's real-browser flows. Gone after the computer's release.
     if (options.faux && raw.startsWith(`${FAUX_VIEW_PATH}/`)) {

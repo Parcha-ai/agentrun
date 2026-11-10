@@ -71,7 +71,9 @@ const refuse = (req: IncomingMessage, res: ServerResponse, error: ApiError) =>
 
 /** `takesBytes`: whether a request of `method` to `path` (under /v2) goes to a route whose body is bytes (server.ts). */
 /** `publicUrl`: the address people open (AGENTRUN_PUBLIC_URL); an https one adds HSTS to every page answer (hstsHeaders). */
-type PageServer = { token: string; dir: string; authFailed?: (route: string, reason: string) => void; owner?: Owner; console?: string | undefined; takesBytes?: (method: string | undefined, path: string) => boolean; publicUrl?: string };
+/** `bearer`: whether an Authorization header carries a token this server takes (api-token.ts bearerCheck: the token, or
+ *  during a rotation the next one); the token alone when absent. The cookie and the printed link stay the token's. */
+type PageServer = { token: string; bearer?: (header: string | undefined) => boolean; dir: string; authFailed?: (route: string, reason: string) => void; owner?: Owner; console?: string | undefined; takesBytes?: (method: string | undefined, path: string) => boolean; publicUrl?: string };
 
 const redirect = (res: ServerResponse, location: string, headers: Record<string, string> = {}) => (res.writeHead(303, { ...SECURITY, location, "content-length": 0, ...headers }), void res.end());
 
@@ -93,7 +95,8 @@ async function file(req: IncomingMessage, res: ServerResponse, raw: string, dir:
 async function answer(req: IncomingMessage, res: ServerResponse, raw: string, server: PageServer, held: boolean): Promise<void> {
   if (req.method !== "GET" && req.method !== "HEAD") return refuse(req, res, new ApiError("method_not_allowed", `the console answers GET and HEAD; ${req.method} is not one`, {}, { allow: "GET, HEAD" }));
   if (raw.startsWith("/api/")) {
-    if (!held && !same(String(req.headers.authorization ?? ""), `Bearer ${server.token}`)) {
+    const byBearer = server.bearer ? server.bearer(req.headers.authorization) : same(String(req.headers.authorization ?? ""), `Bearer ${server.token}`);
+    if (!held && !byBearer) {
       server.authFailed?.(raw, req.headers.authorization === undefined ? "no_credential" : "wrong_token");
       return refuse(req, res, new ApiError("unauthenticated", "the page's data needs the cookie the printed link sets, or Authorization: Bearer <the token>"));
     }

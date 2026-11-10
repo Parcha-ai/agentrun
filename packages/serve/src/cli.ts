@@ -62,7 +62,8 @@ Without --faux, a revision's model ("provider/model-id", or AGENT_MODEL when it 
 to AGENT_MODEL_FAST or AGENT_MODEL_STRONG, each falling back to AGENT_MODEL) is served by pi-ai's providers with their
 keys from the environment, or, with AGENT_MODEL_BASE_URL, by that one OpenAI Responses gateway (AGENT_MODEL_API_KEY when
 it needs a key). AGENTRUN_TOKEN, when set, is the token in place of DIR/.token's (a DIR/.token from an earlier start is removed), and is never printed; DIR/.token's is
-printed only by the start that made it. AGENTRUN_PUBLIC_URL, when set, is the address people open (a container's
+printed only by the start that made it. AGENTRUN_TOKEN_NEXT, when set, is taken beside the token, for moving callers to a
+new token with no caller refused; it is never printed either. AGENTRUN_PUBLIC_URL, when set, is the address people open (a container's
 published port, or a proxy's URL), and the link printed uses it; with none, Render's RENDER_EXTERNAL_URL is. stdout gets one line per request, per run start and
 end, and per refused credential; AGENTRUN_LOG=quiet leaves out the request lines.
 
@@ -277,6 +278,8 @@ if (budget !== undefined && !/^\d+$/.test(budget)) {
 }
 const data = values.data ?? defaultData();
 const given = secret("AGENTRUN_TOKEN") || undefined;
+// During a rotation, the next token, taken beside the token (api-token.ts); never printed.
+const givenNext = secret("AGENTRUN_TOKEN_NEXT") || undefined;
 // A stdout its reader closed (a pipe left behind) loses the log lines, never the server.
 process.stdout.on("error", () => undefined);
 const accounts = process.env.AGENTRUN_ACCOUNTS !== "0";
@@ -300,7 +303,7 @@ const trustedProxies = (process.env.AGENTRUN_TRUSTED_PROXIES ?? "").split(",").m
 try {
   serve = await startServe(serveOptions = {
     onBoxImage,
-    data, port, ...(values.port === undefined ? { nextFreePort: true } : {}), ...(values.listen ? { host: values.listen } : {}), ...(given ? { token: given } : {}), ...(values.faux ? { faux: values.faux } : {}), ...(values["faux-browser"] ? { fauxBrowser: values["faux-browser"] } : {}), allowHosts: values["allow-host"],
+    data, port, ...(values.port === undefined ? { nextFreePort: true } : {}), ...(values.listen ? { host: values.listen } : {}), ...(given ? { token: given } : {}), ...(givenNext ? { nextToken: givenNext } : {}), ...(values.faux ? { faux: values.faux } : {}), ...(values["faux-browser"] ? { fauxBrowser: values["faux-browser"] } : {}), allowHosts: values["allow-host"],
     ...(values["max-runs"] !== undefined ? { maxRuns: Number(values["max-runs"]) } : {}),
     ...(values["drain-timeout"] ? { drainTimeout: values["drain-timeout"] } : {}), ...(values.documents ? { documents: values.documents } : {}), ...(values["allow-code-nodes"] ? { allowCodeNodes: true } : {}), ...(values.learning !== undefined ? { learning: values.learning as LearningMode } : {}), ...(values["grade-model"] ? { gradeModel: values["grade-model"] } : {}), ...(budget !== undefined ? { learningBudget: Number(budget) } : {}), log: (line) => void process.stdout.write(`${line}\n`),
     // The public address is the server's with accounts on or off: the Host names it serves, the webhook URLs it gives.
@@ -333,7 +336,7 @@ if (!values["no-runner"]) {
 }
 // A token from the environment is the operator's already, and the stored one is printed by the start that made it only.
 const source = given ? "env" : serve.tokenMade ? "made" : "file";
-for (const line of banner({ url: serve.url, baseUrl: serve.baseUrl, data, token: serve.token, source, accounts, boxes: serve.boxesLine, ...(values.listen ? { listen: values.listen } : {}), ...(publicUrl ? { publicUrl } : {}) })) console.log(line);
+for (const line of banner({ url: serve.url, baseUrl: serve.baseUrl, data, token: serve.token, source, ...(givenNext && givenNext !== serve.token ? { next: true } : {}), accounts, boxes: serve.boxesLine, ...(values.listen ? { listen: values.listen } : {}), ...(publicUrl ? { publicUrl } : {}) })) console.log(line);
 // Open setup (no public address, a loopback listener): the link that sets the password. Any other start printed the
 // setup link with its code as the code was made (owner.ts).
 if (serve.setupUrl && serve.setupOpen) console.log(`Set your password: ${serve.setupUrl} (the first visit sets it)`);
