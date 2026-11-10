@@ -99,7 +99,9 @@ test("capabilities: a linux VM whose lifetime Modal enforces up to 24 hours, ini
 		release: ["delete"],
 		mount: ["archil"],
 		vendorAgentPorts: [],
+		gpu: { types: ["T4", "L4", "A10", "L40S", "A100", "A100-40GB", "A100-80GB", "RTX-PRO-6000", "H100", "H200", "B200", "B300"], max: 8 },
 	});
+	assert.deepEqual(modal.CAPABILITIES[0].gpu, provider.capabilities().gpu, "the static configuration declares the same GPUs");
 	assert.deepEqual(kindRefusals(provider.capabilities()), []);
 	assert.equal(provider.extend, undefined, "no extend()");
 	assert.equal(provider.stream, undefined, "no stream()");
@@ -148,8 +150,12 @@ test("check() refuses in words, field by field, with no SDK call", () => {
 	}
 	for (const workdir of ["work", "/my work", "/w$HOME", "/w\nx", "/w\0"]) assert.deepEqual(refused({ ...SPEC, workdir }), ["workdir"], `workdir ${JSON.stringify(workdir)}`);
 	for (const user of ["alice", "-1", "1000:", "4294967295"]) assert.deepEqual(refused({ ...SPEC, user }), ["user"], `user ${user}`);
-	assert.deepEqual(refused({ ...SPEC, gpu: "A100" }), ["gpu"]);
-	assert.match(words({ ...SPEC, gpu: "A100" }, "gpu"), /gVisor/);
+	// A GPU is { type, count }: a type Modal offers, a count from 1 to 8.
+	for (const gpu of ["A100", { type: "A100" }, { type: "V100", count: 1 }, { type: "H100!", count: 1 }, { type: "T4", count: 0 }, { type: "T4", count: 9 }, { type: "T4", count: 1.5 }]) {
+		assert.deepEqual(refused({ ...SPEC, gpu }), ["gpu"], `gpu ${JSON.stringify(gpu)}`);
+	}
+	assert.match(words({ ...SPEC, gpu: { type: "V100", count: 1 } }, "gpu"), /not one this provider offers: T4, L4/);
+	assert.match(words({ ...SPEC, gpu: { type: "T4", count: 9 } }, "gpu"), /from 1 to 8/);
 	assert.deepEqual(refused({ ...SPEC, region: "us-east-1" }), ["region"]);
 	assert.deepEqual(fake.calls, [], "check made no SDK call");
 });
@@ -202,6 +208,46 @@ test("create: one VM sandbox with the daemon as its command, its tags, the drift
 	assert.equal(fake.stdinClosed, 1, "the drift check's connection was closed");
 	assert.equal(made.running, true);
 	assert.equal(made.terminated, 0);
+});
+
+test("create of a GPU computer: Modal's GPU option on its gVisor runtime, recorded in the spec tag, read back by attach; a VM's kernel on it is drift", async () => {
+	const gpu = { type: "A100-80GB", count: 2 };
+	const { provider, fake } = setup();
+	assert.deepEqual(provider.check({ ...SPEC, gpu }), []);
+	const created = await provider.create({ ...SPEC, gpu });
+	assert.equal(created.ok, true, JSON.stringify(created));
+	const params = createdParams(fake);
+	assert.equal(params.runtime, "gvisor", "Modal offers GPUs on gVisor only");
+	assert.equal(params.gpu, "A100-80GB:2", "the SDK's gpu: the type, then :count");
+	const recorded = JSON.parse(params.tags[SPEC_TAG]);
+	assert.deepEqual([recorded.runtime, recorded.gpu], ["gvisor", gpu], "the spec tag records the runtime and the GPUs");
+	const attached = await provider.attach({ id: created.value.id });
+	assert.equal(attached.ok, true, JSON.stringify(attached));
+	assert.deepEqual(attached.value.spec.gpu, gpu, "attach reads back the GPUs create recorded");
+	// One GPU is the type alone, as Modal takes it.
+	const one = setup();
+	assert.equal((await one.provider.create({ ...SPEC, gpu: { type: "T4", count: 1 } })).ok, true);
+	assert.equal(createdParams(one.fake).gpu, "T4");
+	// A computer with no GPU stays on the VM runtime, with no gpu sent.
+	const plain = setup();
+	assert.equal((await plain.provider.create(SPEC)).ok, true);
+	assert.equal(createdParams(plain.fake).runtime, "vm");
+	assert.equal("gpu" in createdParams(plain.fake), false);
+	// A GPU computer whose probe reads a VM's kernel is not on Modal's GPU runtime: refused and terminated.
+	const drifted = setup({}, { box: { kernel: "7.2.6" } });
+	const refused = await drifted.provider.create({ ...SPEC, gpu });
+	assert.equal(refused.ok, false);
+	assert.match(refused.error.message, /runtime: declared gVisor \(a GPU computer\), read back another kernel/);
+	assert.equal(only(drifted.fake).running, false, "the drifted sandbox was terminated");
+});
+
+test("check() refuses a GPU with an Archil mount on Modal: its gVisor runtime has no proven Archil mount", () => {
+	const { provider } = setup();
+	const mount = { kind: "archil", disk: "dsk-00000000000baf76", region: "aws-us-east-1", folder: "agents/a1/runs/r1/work", token: "tok-modal-archil-0123456789abcdef" };
+	const spec = { ...SPEC, labels: { "agentrun.run": "r1", "agentrun.epoch": "1" }, mount, gpu: { type: "T4", count: 1 } };
+	const refusals = provider.check(spec);
+	assert.ok(refusals.some((r) => r.field === "gpu" && /gVisor runtime, where the Archil mount is not proven/.test(r.message)), JSON.stringify(refusals));
+	assert.ok(!JSON.stringify(refusals).includes(mount.token));
 });
 
 test("create: sizes, user and workdir map onto Modal's fields; open makes nothing", async () => {

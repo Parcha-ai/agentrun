@@ -44,18 +44,20 @@ export interface CliIo {
 	providerOptions?: { env?: ProviderEnv } & Record<string, unknown>;
 }
 
-const USAGE = `usage: npm run conformance -w @parcha/agentrun-computer -- --provider ${providerIds.join("|")}|<module.js> [--image <image>] [--only <group|case>,... | --kind <kind>] [--fixture <path>] [--json]
+const USAGE = `usage: npm run conformance -w @parcha/agentrun-computer -- --provider ${providerIds.join("|")}|<module.js> [--image <image>] [--only <group|case>,... | --kind <kind>] [--fixture <path>] [--gpu <type>[:<count>]] [--json]
   --provider  a computer in the registry (${providerIds.join(", ")}), or a module path: a provider file that exports
               create(options), or a conformance module that exports createProvider() (and, for the drift case,
               createDriftedProvider(); for the mount cases, mountFor(kind), a fresh run folder for that mount kind)
   --image     the image every computer starts from (default the module's conformanceImage(), else debian:bookworm-slim)
   --only      run only these groups (health, exec, files, process, provider, drift, mount, screen, input, touch,
-              apps, lifetime; browser, run alone for a provider of kind browser) or case ids; a run that leaves Core cases out is partial: no Core verdict, and exit 3 when
+              apps, lifetime, gpu; browser, run alone for a provider of kind browser) or case ids; a run that leaves Core cases out is partial: no Core verdict, and exit 3 when
               every case that ran passed
   --kind      run a setting kind's cases (sandbox, desktop, phone, browser) and exit on its verdict: the provider passes the kind only
               when it serves it and every case of each required group passes; not with --only
   --fixture   the fixture the screen, input, touch and apps cases check effects with: computerd-fixture for a
               desktop, the fixture APK for an Android phone
+  --gpu       the GPU the gpu case's one computer asks for, a type the provider declares and a count (default 1), such
+              as T4 or H100:2; it bills by the second, so without it the gpu case skips
   --json      print the report as JSON
 exit: 0 Core passes, 1 it fails, 2 usage error, 3 partial (--only) and every case that ran passed; with --kind,
       0 the provider passes the kind, 1 it does not`;
@@ -69,8 +71,16 @@ interface Args {
 	only?: string[];
 	kind?: ComputerSettingKind;
 	fixture?: string;
+	gpu?: { type: string; count: number };
 	json: boolean;
 	help: boolean;
+}
+
+/** --gpu's value: a type, then :count (default 1), such as T4 or H100:2; whether the provider offers it is check()'s. */
+function gpuOf(text: string): { type: string; count: number } {
+	const match = /^([^:\s]+)(?::([1-9][0-9]*))?$/.exec(text);
+	if (match === null) throw new Usage(`--gpu: ${JSON.stringify(text)} is not <type>[:<count>], such as T4 or H100:2`);
+	return { type: match[1] as string, count: match[2] === undefined ? 1 : Number(match[2]) };
 }
 
 function parse(argv: string[], cases: Case[]): Args {
@@ -92,6 +102,7 @@ function parse(argv: string[], cases: Case[]): Args {
 			if (problem !== undefined) throw new Usage(`--kind ${kind}: ${problem}`);
 			args.kind = kind as ComputerSettingKind;
 		} else if (flag === "--fixture") args.fixture = value();
+		else if (flag === "--gpu") args.gpu = gpuOf(value());
 		else if (flag === "--json") args.json = true;
 		else if (flag === "--help" || flag === "-h") args.help = true;
 		else throw new Usage(`unknown option ${flag}`);
@@ -111,6 +122,7 @@ function parse(argv: string[], cases: Case[]): Args {
 		...(args.only ? { only: args.only } : {}),
 		...(args.kind ? { kind: args.kind } : {}),
 		...(args.fixture ? { fixture: args.fixture } : {}),
+		...(args.gpu ? { gpu: args.gpu } : {}),
 		json: args.json,
 		help: false,
 	};
@@ -236,6 +248,7 @@ export async function main(argv: string[], io: CliIo = {}): Promise<number> {
 		...(args.only ? { only: args.only } : {}),
 		...(args.kind ? { kind: args.kind } : {}),
 		...(args.fixture ? { fixture: resolve(cwd, args.fixture) } : {}),
+		...(args.gpu ? { gpu: args.gpu } : {}),
 		...(signal ? { signal } : {}),
 		...(target.drifted ? { drifted: target.drifted } : {}),
 		...(target.mountFor ? { mountFor: target.mountFor } : {}),

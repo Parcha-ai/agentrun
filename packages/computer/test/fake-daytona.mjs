@@ -146,7 +146,9 @@ export function fakeDaytona(initial = {}) {
 			kvm: false,
 			target: body.target ?? "us",
 			cpu: 1,
-			gpu: 0,
+			// The GPUs asked for (CreateSandbox gpu, gpuType as a preference list), read back as gpu and the type assigned.
+			gpu: body.gpu ?? 0,
+			...(Array.isArray(body.gpuType) ? { gpuType: body.gpuType[0] } : {}),
 			memory: 1,
 			disk: 3,
 			state: knobs.stuck ? "pending_build" : "creating",
@@ -308,6 +310,12 @@ export function fakeDaytona(initial = {}) {
 			const report = { uid: 2510, gid: 2510, kernel: "6.8.0", interfaces: knobs.interfaces ?? ["lo"], quiet: knobs.quiet ?? [], raised: knobs.raised ?? [], reached: [], accepted: [], results: [] };
 			return reply({ result: { exitCode: 0, stdout: Buffer.from(`${JSON.stringify(report)}\n`).toString("base64"), stderr: "", timedOut: false, truncated: false } });
 		}
+		// nvidia-smi -L, as the computer's user: one line per GPU the sandbox was made with, else not found.
+		if (method === "exec.run" && params.argv[0] === "sh" && params.argv[2] === "nvidia-smi -L") {
+			if (!box.gpus) return reply({ result: { exitCode: 127, stdout: "", stderr: Buffer.from("sh: nvidia-smi: not found\n").toString("base64"), timedOut: false, truncated: false } });
+			const lines = Array.from({ length: box.gpus.count }, (_, i) => `GPU ${i}: NVIDIA ${box.gpus.type} (UUID: GPU-0000000${i}-fake)`);
+			return reply({ result: { exitCode: 0, stdout: Buffer.from(`${lines.join("\n")}\n`).toString("base64"), stderr: "", timedOut: false, truncated: false } });
+		}
 		if (method === "exec.run") {
 			const stdout = Buffer.from(`${params.argv.slice(1).join(" ")}\n`).toString("base64");
 			return reply({ result: { exitCode: 0, stdout, stderr: "", timedOut: false, truncated: false } });
@@ -407,7 +415,8 @@ export function fakeDaytona(initial = {}) {
 			if (knobs.createStatus) return json(knobs.createStatus, { statusCode: knobs.createStatus, message: "create refused by the fake" });
 			const sb = sandboxOf(body);
 			sandboxes.set(sb.id, sb);
-			inside.set(sb.id, { reads: 0, files: new Map(), sessions: new Map(), running: false, installed: [], unknown: [], commandCount: 0 });
+			const gpus = Number.isInteger(body.gpu) && body.gpu > 0 ? { type: Array.isArray(body.gpuType) ? body.gpuType[0] : "H100", count: body.gpu } : undefined;
+			inside.set(sb.id, { reads: 0, files: new Map(), sessions: new Map(), running: false, installed: [], unknown: [], commandCount: 0, ...(gpus ? { gpus } : {}) });
 			return json(200, sb);
 		}
 		if (method === "GET" && path === "/api/sandbox") {

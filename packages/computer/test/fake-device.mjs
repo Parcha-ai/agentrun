@@ -4,7 +4,7 @@
 // `broken` names one behavior that is wrong, so each case of the extension is seen to fail. No Docker, no daemon, no X
 // server, no phone.
 import { deflateSync } from "node:zlib";
-import { checkActions, checkLifetime, daemonWatch, FIXTURE_APP_ID, FIXTURE_BUTTON, FIXTURE_COLORS, FIXTURE_WINDOW, fixtureAppLog } from "../dist/index.js";
+import { checkActions, checkGpu, checkLifetime, daemonWatch, FIXTURE_APP_ID, FIXTURE_BUTTON, FIXTURE_COLORS, FIXTURE_WINDOW, fixtureAppLog } from "../dist/index.js";
 
 const ok = (value) => ({ ok: true, value });
 const fail = (code, message) => ({ ok: false, error: { code, message } });
@@ -368,6 +368,7 @@ export function fakeDevices({
 			const refusals = broken === "no-cap" ? (Number.isSafeInteger(spec.lifetimeMs) && spec.lifetimeMs > 0 ? [] : [{ field: "lifetimeMs", message: "lifetimeMs is required" }]) : checkLifetime(spec.lifetimeMs, capabilities());
 			const asked = typeof spec.network === "string" ? spec.network : "allow";
 			if (!network.includes(asked)) refusals.push({ field: "network", message: `network ${asked} is not offered` });
+			refusals.push(...checkGpu(spec.gpu, capabilities()));
 			return refusals;
 		},
 		async create(spec) {

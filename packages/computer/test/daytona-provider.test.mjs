@@ -86,6 +86,7 @@ test("capabilities: a linux computer with init a child of Daytona's toolbox, a v
 		stopDeletes: false,
 		mount: ["archil"],
 		vendorAgentPorts: [2280],
+		gpu: { types: ["H100", "H200", "RTX-PRO-6000", "RTX-4090", "RTX-5090", "MI355X"], max: 8 },
 	});
 	assert.deepEqual(kindRefusals(provider.capabilities()), []);
 	assert.equal(provider.extend, undefined, "no extend()");
@@ -131,7 +132,10 @@ test("check() refuses in words, field by field, before any request", () => {
 	assert.match(words({ ...SPEC, pids: 64 }), /size of its snapshot/);
 	assert.match(words({ ...SPEC, user: "0" }), /daemon user \(2510:2510\)/);
 	assert.match(words({ ...SPEC, workdir: "/data" }), /works in \/work/);
-	assert.match(words({ ...SPEC, gpu: 1 }), /does not support gpu/);
+	assert.match(words({ ...SPEC, gpu: 1 }), /gpu is \{ type, count \}/);
+	assert.match(words({ ...SPEC, gpu: { type: "T4", count: 1 } }), /not one this provider offers: H100, H200/);
+	assert.match(words({ ...SPEC, gpu: { type: "H100", count: 9 } }), /from 1 to 8/);
+	assert.deepEqual(provider.check({ ...SPEC, gpu: { type: "RTX-PRO-6000", count: 8 } }), []);
 	assert.deepEqual(refused({ ...SPEC, labels: { "agentrun.computer.deadline": "never" } }), ["labels"]);
 	assert.deepEqual(refused({ ...SPEC, labels: { team: 1 } }), ["labels"]);
 	assert.equal(fake.requests.length, 0, "check makes no request");
@@ -314,6 +318,35 @@ test("the constructor takes autoStopMinutes and autoDeleteMinutes as whole minut
 	}
 });
 
+test("create() of a GPU computer asks Daytona for gpu and gpuType, holds the read-back to them, and attach reports the GPUs", async () => {
+	const gpu = { type: "H100", count: 2 };
+	const { provider, fake } = setup();
+	const made = await provider.create({ ...SPEC, gpu });
+	assert.equal(made.ok, true, JSON.stringify(made));
+	const [posted] = of(fake, "POST", "/api/sandbox");
+	assert.equal(posted.body.gpu, 2, "CreateSandbox gpu: how many");
+	assert.deepEqual(posted.body.gpuType, ["H100"], "CreateSandbox gpuType: the one type asked, as Daytona's preference list");
+	const attached = await provider.attach({ id: made.value.id });
+	assert.equal(attached.ok, true, JSON.stringify(attached));
+	assert.deepEqual(attached.value.spec.gpu, gpu, "attach reports the GPUs Daytona reads back");
+	// A computer with no GPU sends neither field.
+	const plain = setup();
+	assert.equal((await plain.provider.create(SPEC)).ok, true);
+	const [none] = of(plain.fake, "POST", "/api/sandbox");
+	assert.equal("gpu" in none.body || "gpuType" in none.body, false);
+	// Daytona's read-back is the truth: fewer GPUs, or another type, is drift, and the sandbox is deleted.
+	for (const [readBack, words] of [
+		[{ gpu: 1, gpuType: "H100" }, /gpu: declared 2, read back 1/],
+		[{ gpu: 2, gpuType: "H200" }, /gpuType: declared "H100", read back "H200"/],
+	]) {
+		const drifted = setup({ readBack: () => readBack });
+		const refused = await drifted.provider.create({ ...SPEC, gpu });
+		assert.equal(refused.ok, false, JSON.stringify(readBack));
+		assert.match(refused.error.message, words);
+		assert.equal(of(drifted.fake, "DELETE", /^\/api\/sandbox\/[^/]+$/).length > 0, true, "the drifted sandbox is deleted");
+	}
+});
+
 test("create() sends autoStopMinutes and autoDeleteMinutes as Daytona's autoStopInterval and autoDeleteInterval, and the drift check holds them", async () => {
 	const lifetimes = { autoStopMinutes: 30, autoDeleteMinutes: 0 };
 	const { provider, fake } = setup({}, lifetimes);
@@ -463,7 +496,7 @@ const DRIFT = [
 	["a volume", { readBack: () => ({ volumes: [{ volumeId: "v", mountPath: "/data" }] }) }, /volumes: declared \[\]/],
 	["a linked sandbox", { readBack: () => ({ linkedSandboxId: "other-sandbox" }) }, /linkedSandboxId/],
 	["KVM", { readBack: () => ({ kvm: true }) }, /kvm: declared false, read back true/],
-	["a GPU", { readBack: () => ({ gpu: 1 }) }, /gpu: declared 0, read back 1/],
+	["a GPU it was not asked for", { readBack: () => ({ gpu: 1 }) }, /gpu: declared 0, read back 1/],
 	["a daemon of another version", { hello: { version: "9.9.9" } }, new RegExp(`hello: the daemon reports version 9\\.9\\.9, expected ${VERSION.replaceAll(".", "\\.")}`)],
 	["a daemon of another arch", { hello: { arch: "arm64" } }, /hello: the daemon reports arch arm64, expected the host's amd64/],
 	["a daemon that lacks a group", { hello: { groups: ["exec", "files"] } }, /groups lack processes/],

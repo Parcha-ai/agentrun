@@ -168,9 +168,9 @@ test("a built provider's capabilities, in each configuration, are its entry's st
 	for (const [id, builds] of Object.entries(BUILT)) {
 		const entry = PROVIDERS.find((one) => one.id === id);
 		const seen = builds.map((build) => {
-			const { kind, groups } = build().capabilities();
-			return { kind, groups };
+			const { kind, groups, gpu } = build().capabilities();
+			return { kind, groups, ...(gpu === undefined ? {} : { gpu }) };
 		});
-		assert.deepEqual(seen, entry.capabilities, `${id}: each configuration's kind and groups`);
+		assert.deepEqual(seen, entry.capabilities, `${id}: each configuration's kind, groups and GPUs`);
 	}
 });

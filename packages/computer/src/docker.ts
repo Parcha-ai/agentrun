@@ -64,6 +64,7 @@ import {
 	type AttachedComputer,
 	type CallContext,
 	type ComputerCapabilities,
+	checkGpu,
 	checkLifetime,
 	type ComputerConnection,
 	type ComputerInfo,
@@ -213,7 +214,7 @@ const LIST_FORMAT =
 /** The longest lifetime: 30 days. A computer meant to live longer is asked for again. No extend(): the deadline is a
  *  container label, and a label cannot change after create. */
 const MAX_LIFETIME_MS = 30 * 24 * 60 * 60 * 1000;
-const SPEC_FIELDS = new Set(["image", "lifetimeMs", "network", "cpus", "memoryMb", "pids", "labels", "workdir", "user", "mount"]);
+const SPEC_FIELDS = new Set(["image", "lifetimeMs", "network", "cpus", "memoryMb", "pids", "labels", "workdir", "user", "mount", "gpu"]);
 const NUL = "a NUL byte cannot be passed to docker run";
 /** What --mount's comma-separated fields cannot hold in a source path. */
 const MOUNT_UNSAFE = /[,"\r\n]/;
@@ -412,6 +413,7 @@ export class DockerProvider implements ComputerProvider {
 		if (mounts.length === 0 && typeof path === "string" && MOUNT_UNSAFE.test(path)) {
 			refuse("mount", `mount.path ${JSON.stringify(path)}: a Docker mount cannot hold a comma, a double quote or a line break in its path`);
 		}
+		refusals.push(...checkGpu(given.gpu, this.capabilities()));
 		for (const [field, value] of Object.entries(given)) {
 			if (!SPEC_FIELDS.has(field) && value !== undefined) refuse(field, `a Docker computer does not support ${field}`);
 		}

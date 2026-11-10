@@ -40,7 +40,9 @@ import {
 	type ComputerProvider,
 	type ComputerRef,
 	type ComputerSpec,
+	checkGpu,
 	checkLifetime,
+	type GpuCapability,
 	type NetworkPolicy,
 	type NetworkSpec,
 	type Refusal,
@@ -142,6 +144,8 @@ interface Sandbox {
 	kvm?: boolean;
 	cpu?: number;
 	gpu?: number;
+	/** The GPU type Daytona assigned (its GpuType enum), when the sandbox has GPUs. */
+	gpuType?: string;
 	memory?: number;
 	disk?: number;
 	autoStopInterval?: number;
@@ -174,8 +178,18 @@ interface CallInit {
  */
 export const MOUNT: readonly MountKind[] = ["archil"];
 
-/** The machine kind and groups of its one configuration: a linux computer. */
-export const CAPABILITIES: readonly KindCapabilities[] = [{ kind: "linux", groups: ["exec", "files", "processes"] }];
+/**
+ * The GPU types Daytona takes, by its own names: the GpuType enum of its API (daytona_api_client 0.214.0
+ * models/gpu_type.py; dotfiles/gpu-sandboxes, 11-10). A sandbox asks for them as gpu (how many) and gpuType (a
+ * preference list, here the one type asked), and reads them back as gpu and gpuType.
+ */
+export const DAYTONA_GPU_TYPES = ["H100", "H200", "RTX-PRO-6000", "RTX-4090", "RTX-5090", "MI355X"] as const;
+/** The most GPUs Daytona gives one sandbox: 8, dedicated through VFIO (dotfiles/gpu-sandboxes). */
+export const DAYTONA_GPU_MAX = 8;
+const DAYTONA_GPU: GpuCapability = { types: [...DAYTONA_GPU_TYPES], max: DAYTONA_GPU_MAX };
+
+/** The machine kind, groups and GPUs of its one configuration: a linux computer, with GPUs when asked. */
+export const CAPABILITIES: readonly KindCapabilities[] = [{ kind: "linux", groups: ["exec", "files", "processes"], gpu: DAYTONA_GPU }];
 
 /** What create() takes: the provider's options, the daemon optional (default this package's build for the arch). */
 export type DaytonaCreateOptions = Omit<DaytonaProviderOptions, "daemonPath"> & { daemonPath?: string };
@@ -239,7 +253,7 @@ const MAX_CIDRS = 10;
 const TOOLBOX_PORT = 2280;
 const INIT_SESSION = "agentrun-computerd";
 const STAGING = "/tmp/agentrun-computerd-";
-const SPEC_FIELDS = new Set(["image", "lifetimeMs", "network", "labels", "mount"]);
+const SPEC_FIELDS = new Set(["image", "lifetimeMs", "network", "labels", "mount", "gpu"]);
 /** The provider's root channel: argv run as root in a session of its own; the image's user is root, never sudo. */
 const ROOT_RUN = [
 	"# agentrun-computer: root",
@@ -537,7 +551,10 @@ function sandboxDrift(spec: ComputerSpec, sb: Sandbox, expected: SandboxExpected
 	if (sb.sandboxClass !== expected.sandboxClass) mismatch("sandboxClass", expected.sandboxClass, sb.sandboxClass);
 	if (sb.public !== false) mismatch("public", false, sb.public);
 	if (sb.kvm === true) mismatch("kvm", false, sb.kvm);
-	if (sb.gpu !== undefined && sb.gpu !== 0) mismatch("gpu", 0, sb.gpu);
+	// The GPUs asked for, read back: how many (none is 0), and the type Daytona assigned.
+	const gpus = spec.gpu?.count ?? 0;
+	if ((sb.gpu ?? 0) !== gpus) mismatch("gpu", gpus, sb.gpu);
+	if (spec.gpu !== undefined && sb.gpuType !== spec.gpu.type) mismatch("gpuType", spec.gpu.type, sb.gpuType);
 	if (Array.isArray(sb.volumes) ? sb.volumes.length > 0 : sb.volumes !== undefined && sb.volumes !== null) mismatch("volumes", [], sb.volumes);
 	if (typeof sb.linkedSandboxId === "string" && sb.linkedSandboxId !== "") mismatch("linkedSandboxId", "none", sb.linkedSandboxId);
 	return found;
@@ -699,6 +716,7 @@ export class DaytonaProvider implements ComputerProvider {
 			stopDeletes: this.#autoDelete === 0,
 			mount: [...MOUNT],
 			vendorAgentPorts: [TOOLBOX_PORT],
+			gpu: { types: [...DAYTONA_GPU.types], max: DAYTONA_GPU.max },
 		};
 	}
 
@@ -726,6 +744,7 @@ export class DaytonaProvider implements ComputerProvider {
 				refuse("mount", `an Archil mount's tools run as agentrun-tool, ${tool}:${tool}, and this provider's daemon user is ${this.#uid}:${this.#gid}: give it daemonUser "${tool}:${tool}"`);
 			}
 		}
+		refusals.push(...checkGpu(given.gpu, this.capabilities()));
 		for (const [field, value] of Object.entries(given)) {
 			if (SPEC_FIELDS.has(field) || value === undefined) continue;
 			if (SIZE_FIELDS.has(field)) refuse(field, `a Daytona computer has the size of its snapshot: name a snapshot of the size you need, not ${field}`);
@@ -765,6 +784,8 @@ export class DaytonaProvider implements ComputerProvider {
 			// An Archil computer's root reaches Archil: Daytona's network is open, and init's own namespace (loopback alone)
 			// holds the tools to none.
 			...(networkBody(archil ? "open" : spec.network) ?? { networkBlockAll: true }),
+			// The GPUs: how many, and the one type asked as Daytona's preference list (CreateSandbox gpu and gpuType).
+			...(spec.gpu === undefined ? {} : { gpu: spec.gpu.count, gpuType: [spec.gpu.type] }),
 		};
 		const posted = await this.#rest.json("POST", this.#rest.sandbox(), { json: body, timeoutMs: this.#timeouts.createMs }, signal);
 		const made = posted.ok ? (posted.value as Sandbox | null) : undefined;
@@ -1155,7 +1176,9 @@ export class DaytonaProvider implements ComputerProvider {
 		// The image create was asked for, from its label; a computer made before the label was written reports its snapshot.
 		const asked = sb.labels?.[IMAGE_LABEL];
 		const specNetwork = archilComputer || (typeof network === "object" && "other" in network) ? "none" : network;
-		const spec = { image: asked ?? sb.snapshot, lifetimeMs: 1, network: specNetwork, labels } as ComputerSpec;
+		// The GPUs Daytona reports, held to what check() allows: a type this provider declares, a count up to its max.
+		const gpu = isWhole(sb.gpu) && sb.gpu > 0 ? { type: String(sb.gpuType), count: sb.gpu } : undefined;
+		const spec = { image: asked ?? sb.snapshot, lifetimeMs: 1, network: specNetwork, labels, ...(gpu === undefined ? {} : { gpu }) } as ComputerSpec;
 		found.push(...this.check(spec).map(({ field, message }) => `${field}: ${message}, read back from the computer`));
 		const vendor = sandboxDrift(spec, sb, this.#sandboxExpected(sb.labels?.[DEADLINE_LABEL] ?? ""));
 		found.push(
@@ -1209,6 +1232,7 @@ export class DaytonaProvider implements ComputerProvider {
 				...(workdir === undefined ? {} : { workdir }),
 				...(deadline === undefined ? {} : { deadline }),
 				...(kind === undefined ? {} : { kind }),
+				...(gpu === undefined ? {} : { gpu }),
 			},
 		});
 	}

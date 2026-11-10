@@ -23,6 +23,24 @@ export interface ComputerSpec {
 	 * refuses any other kind before a vendor call. An Archil token is never in a label, a read-back or an error.
 	 */
 	mount?: MountSpec;
+	/**
+	 * GPUs for the computer: a type the provider declares (capabilities().gpu.types, the vendor's own name, such as Modal's
+	 * "A100-80GB" or Daytona's "H100") and how many, 1 up to capabilities().gpu.max. check() refuses one the provider does
+	 * not declare in words before a vendor call; a provider that declares no gpu refuses any.
+	 */
+	gpu?: GpuSpec;
+}
+
+/** A computer's GPUs: one type, and how many of it. */
+export interface GpuSpec {
+	type: string;
+	count: number;
+}
+
+/** The GPUs a provider offers: the types it takes, by the vendor's own names, and the most one computer may have. */
+export interface GpuCapability {
+	types: string[];
+	max: number;
 }
 
 /** One kind of allowlist entry a provider takes: how many a list may hold, and the ports an entry opens. */
@@ -90,6 +108,8 @@ export interface ComputerCapabilities {
 	 * Absent: no vendor's agent runs beside the programs (Docker). A child daemon must declare it.
 	 */
 	vendorAgentPorts?: number[];
+	/** The GPUs spec.gpu may ask for. Absent: none, and check() refuses any spec.gpu. */
+	gpu?: GpuCapability;
 }
 
 /** The os and daemon modes each kind may have; no other pair is valid. */
@@ -131,6 +151,25 @@ export function checkLifetime(lifetimeMs: unknown, { lifetime, maxLifetimeMs }: 
 	return [];
 }
 
+/**
+ * The one GPU rule every provider's check() shares, with no vendor call: no spec.gpu is no refusal; one given is an
+ * object of a declared type (capabilities().gpu.types) and a whole count from 1 to capabilities().gpu.max; a provider
+ * that declares no gpu refuses any.
+ */
+export function checkGpu(gpu: unknown, { gpu: offered }: Pick<ComputerCapabilities, "gpu">): Refusal[] {
+	if (gpu === undefined) return [];
+	const refuse = (message: string): Refusal[] => [{ field: "gpu", message }];
+	if (offered === undefined) return refuse("this provider offers no GPU: ask a provider that declares one (capabilities().gpu) for a GPU computer");
+	if (typeof gpu !== "object" || gpu === null || Array.isArray(gpu)) return refuse("gpu is { type, count }: a GPU type this provider declares, and how many");
+	const { type, count } = gpu as { type?: unknown; count?: unknown };
+	const types = offered.types.join(", ");
+	if (typeof type !== "string" || !offered.types.includes(type)) return refuse(`gpu.type ${JSON.stringify(type)} is not one this provider offers: ${types}`);
+	if (!Number.isSafeInteger(count) || (count as number) < 1 || (count as number) > offered.max) {
+		return refuse(`gpu.count ${JSON.stringify(count)} is not a whole number from 1 to ${offered.max}, the most GPUs this provider gives one computer`);
+	}
+	return [];
+}
+
 /** Why a spec is refused, in words, before any vendor call. */
 export interface Refusal {
 	field: string;
@@ -164,6 +203,8 @@ export interface ReadBackSpec {
 	kind?: ComputerKind;
 	/** What is mounted at /workspace, never a token; absent when nothing is. */
 	mount?: MountReadBack;
+	/** The GPUs the computer was given, as the vendor reports them (Daytona) or as create recorded them (Modal); absent: none. */
+	gpu?: GpuSpec;
 }
 
 /**

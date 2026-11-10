@@ -57,10 +57,13 @@ test("check() refuses in words, field by field, with no docker call", () => {
 	assert.deepEqual(refused({ ...SPEC, pids: 0 }), ["pids"]);
 	assert.deepEqual(refused({ ...SPEC, workdir: "relative" }), ["workdir"]);
 	assert.deepEqual(refused({ ...SPEC, labels: { "agentrun.computer.deadline": "never" } }), ["labels"]);
-	const gpu = provider.check({ ...SPEC, gpu: "a100" });
-	assert.equal(gpu.length, 1);
-	assert.equal(gpu[0].field, "gpu");
-	assert.match(gpu[0].message, /Docker computer does not support gpu/);
+	// Docker declares no gpu: any spec.gpu is refused once, in the words every provider shares.
+	for (const asked of ["a100", { type: "T4", count: 1 }]) {
+		const gpu = provider.check({ ...SPEC, gpu: asked });
+		assert.equal(gpu.length, 1, JSON.stringify(asked));
+		assert.equal(gpu[0].field, "gpu");
+		assert.match(gpu[0].message, /this provider offers no GPU/);
+	}
 	assert.deepEqual(refused({ lifetimeMs: 0, network: { allow: [] } }), ["image", "lifetimeMs", "network"]);
 	assert.equal(calls().length, 0);
 });

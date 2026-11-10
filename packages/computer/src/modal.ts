@@ -51,7 +51,10 @@ import {
 	type ComputerRef,
 	type ComputerSpec,
 	type CreatedComputer,
+	checkGpu,
 	checkLifetime,
+	type GpuCapability,
+	type GpuSpec,
 	type NetworkPolicy,
 	type NetworkSpec,
 	type Refusal,
@@ -73,7 +76,10 @@ export interface ModalImage {
 
 /** What sandboxes.create is given: every field is one of the SDK's SandboxCreateParams (js/src/sandbox.ts:356-474). */
 export interface ModalCreateParams {
-	runtime: "vm";
+	/** vm, or gvisor for a GPU computer: Modal offers GPUs on gVisor only. */
+	runtime: ModalRuntime;
+	/** The GPUs, as the SDK takes them ("T4", "A100-80GB:4"): a GPU computer only. */
+	gpu?: string;
 	command: string[];
 	timeoutMs: number;
 	workdir: string;
@@ -185,8 +191,24 @@ export interface ModalProviderOptions {
 /** The mount kinds a Modal computer takes, as capabilities().mount declares them: the run's folder on an Archil disk. */
 export const MOUNT: readonly MountKind[] = ["archil"];
 
-/** The machine kind and groups of its one configuration: a linux computer. */
-export const CAPABILITIES: readonly KindCapabilities[] = [{ kind: "linux", groups: ["exec", "files", "processes"] }];
+/** The runtime a Modal sandbox runs under: vm, or gvisor for a GPU computer (Modal offers GPUs on gVisor only). */
+export type ModalRuntime = "vm" | "gvisor";
+
+/**
+ * The GPU types Modal takes, by its own names (guide/gpu, 11-10): "A100" is the 40 GB one, "A100-40GB" its explicit
+ * name. Its "H100!" and "B200+" variants (no upgrade to an H200; a B200 or B300) are not offered: what a computer gets
+ * should be what it asked for.
+ */
+export const MODAL_GPU_TYPES = ["T4", "L4", "A10", "L40S", "A100", "A100-40GB", "A100-80GB", "RTX-PRO-6000", "H100", "H200", "B200", "B300"] as const;
+/** The most GPUs Modal gives one container: 8 (guide/gpu; an A10 container takes at most 4, which Modal refuses in words past). */
+export const MODAL_GPU_MAX = 8;
+/** The GPUs Modal offers, as capabilities().gpu and CAPABILITIES declare them. */
+const MODAL_GPU: GpuCapability = { types: [...MODAL_GPU_TYPES], max: MODAL_GPU_MAX };
+/** A GPU as the SDK takes it: the type, then :count past one ("T4", "H100:8"). */
+const modalGpu = ({ type, count }: GpuSpec) => (count === 1 ? type : `${type}:${count}`);
+
+/** The machine kind, groups and GPUs of its one configuration: a linux computer, with GPUs when asked. */
+export const CAPABILITIES: readonly KindCapabilities[] = [{ kind: "linux", groups: ["exec", "files", "processes"], gpu: MODAL_GPU }];
 /** A registry tag for linux/amd64 that Modal can pull: the default when a setting names no image. */
 export const MODAL_DEFAULT_IMAGE = "debian:bookworm-slim";
 
@@ -450,7 +472,7 @@ export function modalCommands({
 const DEFAULT_PROBE_TARGETS = ["1.1.1.1:443", "8.8.8.8:443", "[2606:4700:4700::1111]:443", "1.1.1.1:53/udp", "[2606:4700:4700::1111]:53/udp"];
 /** How long close waits for the stdio bridge to exit once its stdin has ended. Modal has no kill for an exec. */
 const CLOSE_WAIT_MS = 5_000;
-const SPEC_FIELDS = new Set(["image", "lifetimeMs", "network", "cpus", "memoryMb", "pids", "labels", "workdir", "user", "mount"]);
+const SPEC_FIELDS = new Set(["image", "lifetimeMs", "network", "cpus", "memoryMb", "pids", "labels", "workdir", "user", "mount", "gpu"]);
 const NUL = "a NUL byte cannot be passed to Modal";
 const FIXED =
 	"a Modal computer's network is fixed at create: Modal cannot update the policy of a sandbox made with blockNetwork, and updates only an allowlist set at create; create a new computer";
@@ -465,9 +487,12 @@ interface Recorded {
 	cpus: number;
 	memoryMb: number;
 	workdir: string;
-	runtime: "vm";
+	/** gvisor exactly when the computer has a GPU. */
+	runtime: ModalRuntime;
 	/** An Archil computer's mount as it reads back (readBackOf, under the claim's epoch): never the token. */
 	mount?: MountReadBack;
+	/** A GPU computer's GPUs, as asked: Modal reads none of them back. */
+	gpu?: GpuSpec;
 }
 
 const isNumber = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
@@ -684,11 +709,14 @@ function recordedArchil(tags: Record<string, string>): RecordedArchil | undefine
 }
 
 /** Every way the probe's report differs from what the computer should be. */
-function probeDrift(probe: ProbeReport, expected: { user?: string; network?: NetworkSpec }): string[] {
+function probeDrift(probe: ProbeReport, expected: { user?: string; network?: NetworkSpec; runtime?: ModalRuntime }): string[] {
 	const found: string[] = [];
 	const user = `${probe.uid}:${probe.gid}`;
 	if (expected.user !== undefined && user !== expected.user) found.push(`user: declared ${expected.user}, read back ${user} (the uid:gid the daemon's programs run as)`);
-	if (/gvisor/i.test(probe.kernel)) found.push(`runtime: declared vm, read back gVisor (the kernel reports ${JSON.stringify(probe.kernel)})`);
+	// The probe's kernel is the only runtime read-back: gVisor exactly for a GPU computer, a VM's kernel for every other.
+	const gvisor = /gvisor/i.test(probe.kernel);
+	if ((expected.runtime ?? "vm") === "vm" && gvisor) found.push(`runtime: declared vm, read back gVisor (the kernel reports ${JSON.stringify(probe.kernel)})`);
+	if (expected.runtime === "gvisor" && !gvisor) found.push(`runtime: declared gVisor (a GPU computer), read back another kernel (${JSON.stringify(probe.kernel)})`);
 	if (expected.network === "none") found.push(...probeNetworkDrift(probe));
 	// Its own network: the live interfaces lo alone (a kernel's quiet tunnels are none), and none it could bring up.
 	found.push(...probeOwnNetworkDrift(probe));
@@ -793,6 +821,8 @@ export class ModalProvider implements ComputerProvider {
 			release: ["delete"],
 			mount: [...MOUNT],
 			vendorAgentPorts: [],
+			// A GPU computer runs on gVisor, Modal's one GPU runtime: isolation vm is every other computer's.
+			gpu: { types: [...MODAL_GPU.types], max: MODAL_GPU.max },
 		};
 	}
 
@@ -836,10 +866,12 @@ export class ModalProvider implements ComputerProvider {
 		if (archil && user !== undefined && !isRootUser(user) && userOf(user) !== ARCHIL_USER) {
 			refuse("user", `a computer with an Archil mount runs its tools as agentrun-tool, ${ARCHIL_USER}, the user its image makes with no way to root; leave user unset or ask for ${ARCHIL_USER}`);
 		}
+		// A GPU computer runs on gVisor, Modal's one GPU runtime, where the Archil client's FUSE mount is not yet proven.
+		refusals.push(...checkGpu(given.gpu, this.capabilities()));
+		if (archil && given.gpu !== undefined) refuse("gpu", "a GPU computer runs on Modal's gVisor runtime, where the Archil mount is not proven yet: ask for a GPU computer without a mount, or a mount without a GPU");
 		for (const [field, value] of Object.entries(given)) {
 			if (SPEC_FIELDS.has(field) || value === undefined) continue;
-			if (field === "gpu") refuse(field, "this provider makes VM computers, and Modal offers GPUs on the gVisor runtime only");
-			else refuse(field, `a Modal computer does not support ${field}`);
+			refuse(field, `a Modal computer does not support ${field}`);
 		}
 		return refusals;
 	}
@@ -875,8 +907,10 @@ export class ModalProvider implements ComputerProvider {
 			cpus,
 			memoryMb,
 			workdir,
-			runtime: "vm",
+			// Modal offers GPUs on gVisor only: a GPU computer's runtime, read back by the probe's kernel like a VM's.
+			runtime: spec.gpu === undefined ? "vm" : "gvisor",
 			...(archil === undefined ? {} : { mount: readBackOf(archil.mount, archil.epoch) }),
+			...(spec.gpu === undefined ? {} : { gpu: { type: spec.gpu.type, count: spec.gpu.count } }),
 		};
 		const tags = { ...spec.labels, [COMPUTER_LABEL]: "1", [NAME_TAG]: name, [DEADLINE_LABEL]: deadline, [SPEC_TAG]: JSON.stringify(recorded) };
 		// With daemonImage the daemon comes in as a layer of the computer's own image, there before the command starts.
@@ -908,7 +942,8 @@ export class ModalProvider implements ComputerProvider {
 				: modalCommands({ deadline, user, waitSeconds: Math.ceil(waitMs / 1000), home: WORK, ...(gate === undefined ? {} : { gate }) }).entrypoint;
 		const cpuLimit = cpus / CPUS_PER_CORE;
 		const params: ModalCreateParams = {
-			runtime: "vm",
+			runtime: recorded.runtime,
+			...(spec.gpu === undefined ? {} : { gpu: modalGpu(spec.gpu) }),
 			command,
 			// Modal ends the sandbox at its timeout: the lifetime, in the whole seconds the SDK takes.
 			timeoutMs: Math.ceil(spec.lifetimeMs / 1000) * 1000,
@@ -1107,7 +1142,7 @@ export class ModalProvider implements ComputerProvider {
 		const found = [
 			...tagDrift(tags, read.value),
 			...helloDrift(inside.value.hello, this.#expected()),
-			...probeDrift(inside.value.probe, { user: recorded.user, network: recorded.network }),
+			...probeDrift(inside.value.probe, { user: recorded.user, network: recorded.network, runtime: recorded.runtime }),
 			...(archil === undefined ? [] : mountDrift(archil.expected, inside.value.mount)),
 		];
 		return found.length === 0 ? ok(probeNotes(inside.value.probe, recorded.network)) : fail("refused", `it did not match its spec: ${found.join("; ")}`);
@@ -1336,9 +1371,11 @@ export class ModalProvider implements ComputerProvider {
 		const recorded = recordedOf(tags);
 		if (typeof recorded === "string") found.push(recorded);
 		else {
-			if (recorded.runtime !== "vm") found.push(`runtime: the tag ${SPEC_TAG} says ${show(recorded.runtime)}; this provider makes vm computers`);
-			const { image, network, cpus, memoryMb, workdir, user } = recorded;
-			const refusals = this.check({ image, lifetimeMs: 1, network, cpus, memoryMb, workdir, user } as ComputerSpec);
+			// gvisor exactly for a GPU computer, vm for every other: anything else this provider never makes.
+			const runtime = recorded.gpu === undefined ? "vm" : "gvisor";
+			if (recorded.runtime !== runtime) found.push(`runtime: the tag ${SPEC_TAG} says ${show(recorded.runtime)}; this provider makes ${runtime} computers ${recorded.gpu === undefined ? "with no GPU" : "with a GPU"}`);
+			const { image, network, cpus, memoryMb, workdir, user, gpu } = recorded;
+			const refusals = this.check({ image, lifetimeMs: 1, network, cpus, memoryMb, workdir, user, ...(gpu === undefined ? {} : { gpu }) } as ComputerSpec);
 			found.push(...refusals.map(({ field, message }) => `${field}: ${message}, as recorded at create`));
 			// No exec in a computer whose user is root: the bridge would run what that user could have replaced.
 			if (isRootUser(user)) return fail("refused", `the computer ${name} does not match this provider, so attach refuses it and it is left as it is: ${found.join("; ")}`);
@@ -1348,17 +1385,29 @@ export class ModalProvider implements ComputerProvider {
 		if (!inside.ok) return inside;
 		const { hello, probe, mount } = inside.value;
 		found.push(...helloDrift(hello, this.#expected()));
-		if (typeof recorded !== "string") found.push(...probeDrift(probe, { user: recorded.user, network: recorded.network }));
+		if (typeof recorded !== "string") found.push(...probeDrift(probe, { user: recorded.user, network: recorded.network, runtime: recorded.runtime }));
 		// The mount read back from inside is the one the spec tag records, under the computer's epoch label.
 		if (archil !== undefined) found.push(...mountDrift(archil.expected, mount));
 		if (found.length > 0 || typeof recorded === "string" || deadline === undefined) {
 			return fail("refused", `the computer ${name} does not match this provider, so attach refuses it and it is left as it is: ${found.join("; ")}`);
 		}
-		const { image, network, cpus, memoryMb, workdir } = recorded;
+		const { image, network, cpus, memoryMb, workdir, gpu } = recorded;
 		const notes = probeNotes(probe, network);
 		return ok({
 			...ref,
-			spec: { image, user: `${probe.uid}:${probe.gid}`, network, cpus, memoryMb, workdir, deadline, kind: hello.kind, ...(archil === undefined || mount === undefined ? {} : { mount }) },
+			spec: {
+				image,
+				user: `${probe.uid}:${probe.gid}`,
+				network,
+				cpus,
+				memoryMb,
+				workdir,
+				deadline,
+				kind: hello.kind,
+				...(archil === undefined || mount === undefined ? {} : { mount }),
+				// Modal reads no GPU back: what create recorded, on a computer the probe read as gVisor, Modal's GPU runtime.
+				...(gpu === undefined ? {} : { gpu }),
+			},
 			...(notes.length > 0 ? { notes } : {}),
 		});
 	}

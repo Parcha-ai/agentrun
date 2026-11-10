@@ -48,6 +48,7 @@ import {
 	type ComputerRef,
 	type ComputerSpec,
 	type CreatedComputer,
+	checkGpu,
 	checkLifetime,
 	type NetworkPolicy,
 	type NetworkSpec,
@@ -335,7 +336,7 @@ const STAGING = "/tmp/agentrun-computerd-";
 const DEFAULT_PROBE_TARGETS = ["1.1.1.1:443", "8.8.8.8:443", "[2606:4700:4700::1111]:443", "1.1.1.1:53/udp", "[2606:4700:4700::1111]:53/udp"];
 /** A probe target: host:port, over TCP, or host:port/udp, a DNS query over UDP. */
 const TARGET = /^(?:\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9.-]+):[0-9]{1,5}(?:\/udp)?$/;
-const SPEC_FIELDS = new Set(["image", "lifetimeMs", "network", "labels", "mount"]);
+const SPEC_FIELDS = new Set(["image", "lifetimeMs", "network", "labels", "mount", "gpu"]);
 const NUL = "a NUL byte cannot be sent to E2B";
 const FIXED = "an E2B computer's network is fixed at create: create a new computer";
 const PUBLIC =
@@ -678,6 +679,7 @@ export class E2BProvider implements ComputerProvider {
 			const bad = entries === undefined ? "labels must map names to strings" : entries.map(([key, value]) => labelProblem(key, value)).find(Boolean);
 			if (bad) refuse("labels", bad);
 		}
+		refusals.push(...checkGpu(given.gpu, this.capabilities()));
 		for (const [field, value] of Object.entries(given)) {
 			if (SPEC_FIELDS.has(field) || value === undefined) continue;
 			if (field === "cpus" || field === "memoryMb" || field === "pids") refuse(field, `an E2B computer has the size of its template: name a template of the size you need, not ${field}`);

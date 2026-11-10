@@ -95,7 +95,7 @@ function whenAborted(signal: AbortSignal): Promise<never> {
  */
 export async function runConformance(provider: ComputerProvider, options: ConformanceOptions): Promise<ConformanceReport> {
 	// Given no cases, the run takes its computer's suite: a browser's own cases, as the CLI does, else the suite's.
-	const { image, only, kind, signal, cases = casesFor(provider.capabilities().kind), drifted, mountFor, onResult, notes, caseTimeoutMs = 180_000, patience = 30_000, cleanupTimeoutMs = 60_000, fixture } = options;
+	const { image, only, kind, signal, cases = casesFor(provider.capabilities().kind), drifted, mountFor, onResult, notes, caseTimeoutMs = 180_000, patience = 30_000, cleanupTimeoutMs = 60_000, fixture, gpu } = options;
 	if (kind !== undefined && only !== undefined) throw new TypeError("a run takes kind and only apart: a kind runs its own cases");
 	const kindProblem = kind === undefined ? undefined : kindRunProblem(kind);
 	if (kindProblem !== undefined) throw new TypeError(kindProblem);
@@ -243,6 +243,8 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 				return `the provider does not declare ${need}`;
 			} else if (need === "vendor-agent" && !Array.isArray(capabilities.vendorAgentPorts)) {
 				return `the provider does not declare ${need} (capabilities().vendorAgentPorts): no vendor's agent runs beside its computers' programs`;
+			} else if (need === "gpu" && capabilities.gpu === undefined) {
+				return "the provider does not declare gpu (capabilities().gpu): it offers no GPU";
 			}
 		}
 		return undefined;
@@ -405,6 +407,11 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 					if (ended) keep(bounded(folder.close().catch(() => {}), CLOSE_MS), `close of a run folder (${c.id})`);
 					else folders.push(folder);
 					return folder;
+				},
+				gpu() {
+					// A GPU bills by the second: the run names the one it pays for, never a default.
+					if (gpu === undefined) return t.skip("the run named no GPU: give --gpu <type>[:<count>] (or options.gpu), one the provider declares in capabilities().gpu");
+					return { type: gpu.type, count: gpu.count };
 				},
 				async exec(argv: string[], extra: Partial<ExecRunParams> = {}, client: ComputerClient = t.client): Promise<Ran> {
 					const ran = unwrap(await client.call("exec.run", { argv, timeoutMs: patience, ...extra }, { signal: caseSignal }), `exec.run ${show(argv)}`);

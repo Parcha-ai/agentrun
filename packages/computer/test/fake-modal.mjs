@@ -193,6 +193,13 @@ function bridge(box, fake) {
 				const text = box.probe === "garbled" ? "not json\n" : `${JSON.stringify(report)}\n`;
 				return reply({ result: { exitCode: 0, stdout: Buffer.from(text).toString("base64"), stderr: "", timedOut: false, truncated: false } });
 			}
+			// nvidia-smi -L, as the computer's user: one line per GPU the sandbox was made with, else not found (no GPU, no
+			// driver's tools).
+			if (argv[0] === "sh" && argv[2] === "nvidia-smi -L") {
+				if (!box.gpus) return reply({ result: { exitCode: 127, stdout: "", stderr: Buffer.from("sh: nvidia-smi: not found\n").toString("base64"), timedOut: false, truncated: false } });
+				const lines = Array.from({ length: box.gpus.count }, (_, i) => `GPU ${i}: NVIDIA ${box.gpus.type} (UUID: GPU-0000000${i}-fake)`);
+				return reply({ result: { exitCode: 0, stdout: Buffer.from(`${lines.join("\n")}\n`).toString("base64"), stderr: "", timedOut: false, truncated: false } });
+			}
 			return reply({ result: { exitCode: 0, stdout: Buffer.from(`${argv.join(" ")}\n`).toString("base64"), stderr: "", timedOut: false, truncated: false } });
 		}
 		return reply({ error: { code: -32601, message: `${request.method} is not a method`, data: { kind: "unsupported" } } });
@@ -368,7 +375,10 @@ export function fakeModal({ create = "ok", box = {}, tags: tagPatch = {}, sandbo
 			daemon: !isScript(params?.command, ENTRYPOINT_MARK) || copies,
 			...(gateAt >= 0 ? { gate: params.command[gateAt + 1], gateOpen: false } : {}),
 			hello: { ...HELLO },
-			kernel: VM_KERNEL,
+			// Modal offers GPUs on gVisor only: a sandbox made with runtime gvisor reports gVisor's kernel.
+			kernel: params?.runtime === "gvisor" ? GVISOR_KERNEL : VM_KERNEL,
+			// The GPUs asked for, as the SDK takes them ("T4", "H100:2"): what nvidia-smi lists inside.
+			...(typeof params?.gpu === "string" ? { gpus: { type: params.gpu.split(":")[0], count: Number(params.gpu.split(":")[1] ?? 1) } } : {}),
 			uid,
 			gid,
 			network: params?.blockNetwork === true ? "none" : "open",

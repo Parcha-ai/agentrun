@@ -1,7 +1,7 @@
 // The conformance suite's shapes: a case is data that names its level, its group and the capabilities it needs.
 import type { MountKind, MountSpec } from "../mount.js";
 import type { ComputerClient, ComputerKind, DaemonMethod, DaemonMethods, ExecRunParams, Group, HelloResult } from "../protocol.js";
-import type { ComputerConnection, ComputerProvider, ComputerRef, ComputerSpec, DaemonMode } from "../provider.js";
+import type { ComputerConnection, ComputerProvider, ComputerRef, ComputerSpec, DaemonMode, GpuSpec } from "../provider.js";
 import type { ComputerError, ComputerErrorCode, Result } from "../result.js";
 import type { ComputerSettingKind } from "../kinds.js";
 import type { CdpDialer, CdpSocket } from "./cdp.js";
@@ -11,14 +11,14 @@ import type { KindVerdict } from "./kind.js";
 /** Core: what a computer of its kind must do. Full: an optional capability, tested only where it is declared. */
 export type Level = "core" | "full";
 /** The suite's own grouping of its cases, the first part of each case id; not the protocol's Group. */
-export type CaseGroup = "health" | "exec" | "files" | "process" | "provider" | "drift" | "isolation" | "mount" | "screen" | "input" | "touch" | "apps" | "lifetime" | "browser";
+export type CaseGroup = "health" | "exec" | "files" | "process" | "provider" | "drift" | "isolation" | "mount" | "screen" | "input" | "touch" | "apps" | "lifetime" | "browser" | "gpu";
 
 /**
  * What a case needs: a group (declared by both the provider's capabilities().groups and the computer's hello), a
  * network the provider declares, the janitor as the keeper of deadlines, a spec.user the provider takes, a release that
  * stops a computer and keeps it, a mount kind capabilities().mount declares, a provider method that is optional
- * (extend, stream), declared by being there, or the ports of a vendor's agent in the computer (vendor-agent: declared
- * by capabilities().vendorAgentPorts, an empty list included).
+ * (extend, stream), declared by being there, the ports of a vendor's agent in the computer (vendor-agent: declared
+ * by capabilities().vendorAgentPorts, an empty list included), or GPUs (gpu: declared by capabilities().gpu).
  */
 export type Capability =
 	| Group
@@ -33,7 +33,8 @@ export type Capability =
 	| "mount:archil"
 	| "extend"
 	| "stream"
-	| "vendor-agent";
+	| "vendor-agent"
+	| "gpu";
 
 /**
  * A fresh run's folder for one mount kind, made by the provider's conformance module: the mount that reaches it, and its
@@ -123,6 +124,8 @@ export interface CaseContext {
 	drifted(): Promise<ComputerProvider>;
 	/** A fresh run's folder for this mount kind, closed when the case ends; skips the case when the run can make none. */
 	runFolder(kind: MountKind): Promise<RunFolder>;
+	/** The GPU the run pays for (options.gpu, the CLI's --gpu); skips the case when the run names none. */
+	gpu(): GpuSpec;
 	/**
 	 * Starts the run's fixture in the case's computer and waits until it is up: an app that logs each input event it
 	 * gets, so a case checks what an action did with no model. It is stopped when the case ends. Skips the case when the
@@ -269,6 +272,11 @@ export interface ConformanceOptions {
 	 * fixture APK for an Android phone. Without it those cases skip, and Core cannot pass where kind requires them.
 	 */
 	fixture?: string;
+	/**
+	 * The GPU the gpu case asks for: a type the provider declares and a count. A GPU bills by the second, so the run names
+	 * the one it pays for; without it the case skips in words.
+	 */
+	gpu?: GpuSpec;
 	/** fetch for screen.stream; default the global one. */
 	fetch?: CaseContext["fetch"];
 	/** How the browser cases open a CDP socket; default a WebSocket (dialCdp). Tests give a fake browser's. */

@@ -1139,7 +1139,7 @@ const modal = new ModalProvider({
 const made = await modal.create({ image: "debian:bookworm-slim", lifetimeMs: 600_000, network: "none" });
 ```
 
-`ModalProvider` makes Modal sandboxes on the VM runtime only, through the slice of Modal's JS SDK named by `ModalSdk`
+`ModalProvider` makes Modal sandboxes on the VM runtime, or on gVisor for a GPU computer (below), through the slice of Modal's JS SDK named by `ModalSdk`
 (apps, images, sandboxes and five methods of a sandbox). It has not yet run against real Modal: every test uses a fake
 of that slice, and the live conformance file waits for a key (below).
 
@@ -1256,7 +1256,17 @@ of that slice, and the live conformance file waits for a key (below).
   terminates it and waits as release does, within `releaseMs`, so nothing is left listed when it returns. The terminate
   is sent whatever the caller's signal; the wait takes it, so an aborted create returns at once, and a wait past the
   bound or cut short by an abort says the sandbox may still be ending and what `poll()` last read.
-- **GPU** is refused: this provider makes VM sandboxes, and Modal offers GPUs on gVisor only.
+- **GPU.** `capabilities().gpu` declares Modal's GPU types by its own names (guide/gpu): `T4`, `L4`, `A10`, `L40S`,
+  `A100` (40 GB), `A100-40GB`, `A100-80GB`, `RTX-PRO-6000`, `H100`, `H200`, `B200`, `B300`, at most 8 to a computer
+  (Modal refuses an `A10` past 4, in its words). Its `H100!` and `B200+` variants are not offered: a computer gets the
+  type it asked for. `spec.gpu: { type, count }` becomes the SDK's `gpu` (`"T4"`, `"A100-80GB:2"`), and since Modal
+  offers GPUs on gVisor only, such a sandbox runs with `runtime: "gvisor"`; every other computer stays on the VM
+  runtime. The drift check holds the runtime from both sides: the probe's kernel must be gVisor's on a GPU computer, and a
+  VM's on any other. Init starts with `--own-network` as on every computer, so a gVisor that cannot give it its own network
+  namespace refuses at init and the create fails in words, never with a weaker isolation. Modal reads no GPU back: the
+  spec tag records the GPUs, and attach reports them on a computer the probe reads as gVisor. `capabilities().isolation`
+  stays `vm`, every other computer's; a GPU computer's is gVisor. A GPU with an Archil mount is refused: the Archil
+  client's FUSE mount is not proven on gVisor yet.
 
 ### What every Modal fact rests on
 
@@ -1498,6 +1508,7 @@ the TTL.
 | `user` | none | the daemon runs as the provider's `daemonUser`; a spec cannot name a user |
 | `release` | `stop`, `delete` | `POST /sandbox/{id}/stop` and `DELETE /sandbox/{id}` |
 | `stopDeletes` | `true` with `autoDeleteMinutes: 0`, else `false` | `autoDeleteInterval` 0 deletes a sandbox as soon as it stops |
+| `gpu` | `H100`, `H200`, `RTX-PRO-6000`, `RTX-4090`, `RTX-5090`, `MI355X`; at most 8 | Daytona's `GpuType` names (its API's enum, `daytona_api_client` 0.214.0) and its 8 VFIO GPUs to a sandbox ([dotfiles/gpu-sandboxes](https://www.daytona.io/dotfiles/gpu-sandboxes)); `spec.gpu` becomes `gpu` (how many) and `gpuType` (the one type, as its preference list), and the read-back's `gpu` and `gpuType` must match. Whether a GPU sandbox takes a snapshot of box/Dockerfile, its class, and the root init needs for its own network, waits for a live run |
 
 ### What the provider does
 
@@ -1562,7 +1573,8 @@ From Daytona's read of the sandbox:
 | `autoStopInterval`, `autoDeleteInterval` | `autoStopMinutes` (0 unset), `autoDeleteMinutes` (-1 unset), exactly |
 | `autoDestroyAt` | set, and no later than the deadline plus the TTL's minute and 2 minutes of clock skew |
 | `sandboxClass` | the provider's class |
-| `public`, `kvm`, `gpu`, `volumes`, `linkedSandboxId` | false, not true, 0, none, none |
+| `gpu`, `gpuType` | `spec.gpu`'s count (0 with none) and, with one, its type |
+| `public`, `kvm`, `volumes`, `linkedSandboxId` | false, not true, none, none |
 
 From the daemon, over one connection: hello (the provider's version, `linux`, the `arch` option, every daemon
 capability), `/proc/self/status` (Uid and Gid the daemon user's four times, no groups, `NoNewPrivs: 1`, `CapInh`,
@@ -2116,7 +2128,7 @@ through `apps.ui_tree` (`src/conformance/cases/settings.ts`):
 
 A provider for another vendor passes the same suite as Docker's, with one command. The suite is data: each case in
 `src/conformance/cases/` names its level, its group (`health`, `exec`, `files`, `process`, `provider`, `drift`,
-`isolation`, `mount`, `screen`, `input`, `touch`, `apps`, `lifetime`, `browser`) and the capabilities it needs, and uses only `ComputerProvider`,
+`isolation`, `mount`, `screen`, `input`, `touch`, `apps`, `lifetime`, `browser`, `gpu`) and the capabilities it needs, and uses only `ComputerProvider`,
 `ComputerClient` and the suite's assertion helpers, so the same cases run against a provider with daemon `none`.
 
 ```sh

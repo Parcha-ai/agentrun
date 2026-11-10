@@ -7,9 +7,9 @@
 // The default images are values: each from the provider module that owns it. Those modules import this one for types
 // alone, so this is no import cycle.
 import { BROWSER_IMAGE } from "./browser.js";
-import { DAYTONA_DEFAULT_SNAPSHOT } from "./daytona.js";
+import { DAYTONA_DEFAULT_SNAPSHOT, DAYTONA_GPU_MAX, DAYTONA_GPU_TYPES } from "./daytona.js";
 import { E2B_BASE_TEMPLATE, E2B_DESKTOP_TEMPLATE } from "./e2b.js";
-import { MODAL_DEFAULT_IMAGE } from "./modal.js";
+import { MODAL_DEFAULT_IMAGE, MODAL_GPU_MAX, MODAL_GPU_TYPES } from "./modal.js";
 import type { MountKind } from "./mount.js";
 import { ORGO_BASE_IMAGE } from "./orgo.js";
 import { PHONE_IMAGE } from "./phone-harness.js";
@@ -45,8 +45,8 @@ export const SETTING_KINDS: Readonly<Record<ComputerSettingKind, SettingKindSpec
 /** Every setting kind, in the table's order. */
 export const SETTING_KIND_NAMES = Object.keys(SETTING_KINDS) as ComputerSettingKind[];
 
-/** The capabilities serves() and kindOf() read. */
-export type KindCapabilities = Pick<ComputerCapabilities, "kind" | "groups">;
+/** The capabilities serves() and kindOf() read, and the GPUs a configuration offers (Settings' GPU choice). */
+export type KindCapabilities = Pick<ComputerCapabilities, "kind" | "groups" | "gpu">;
 
 /** Why capabilities do not serve a setting kind, in words; none when they do. */
 export function servingRefusals(capabilities: KindCapabilities, kind: ComputerSettingKind): string[] {
@@ -127,7 +127,7 @@ export const PROVIDERS: readonly ProviderEntry[] = [
 		],
 		mounts: ["archil"],
 		metered: true,
-		capabilities: [SANDBOX],
+		capabilities: [{ ...SANDBOX, gpu: { types: [...DAYTONA_GPU_TYPES], max: DAYTONA_GPU_MAX } }],
 		defaultImage: { sandbox: DAYTONA_DEFAULT_SNAPSHOT },
 	}),
 	entry({
@@ -139,7 +139,7 @@ export const PROVIDERS: readonly ProviderEntry[] = [
 		],
 		mounts: ["archil"],
 		metered: true,
-		capabilities: [SANDBOX],
+		capabilities: [{ ...SANDBOX, gpu: { types: [...MODAL_GPU_TYPES], max: MODAL_GPU_MAX } }],
 		defaultImage: { sandbox: MODAL_DEFAULT_IMAGE },
 	}),
 	entry({
