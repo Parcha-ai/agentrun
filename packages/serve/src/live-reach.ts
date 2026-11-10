@@ -18,7 +18,7 @@ export const LIVE_PROOF_MS = 60_000;
 /** A host a row may name: a DNS name or an IPv4 address, nothing with a port, a path or a scheme. */
 const HOST = /^(?=.{1,253}$)[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$/;
 /** Where every viewer answers when its runner is on the server's own machine. */
-export const LOOPBACK = "127.0.0.1"; // key-gate: loopback-rule the address a viewer on the server's own machine answers at
+export const LOOPBACK = "127.0.0.1"; // key-gate: loopback-rule where a viewer on the same machine as its server answers
 /** The derived key's label: the seal key itself is never a MAC key. */
 const LABEL = "agentrun live proxy v1";
 

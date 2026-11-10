@@ -97,7 +97,7 @@ test("the browser's hand-over on a runner on another host: a viewer's link on th
   const link = (host) => `http://${host}:45001/v/${"A".repeat(22)}#t=${"b".repeat(43)}`;
   assert.equal(handoverOf(link(REMOTE), "tag-1", REMOTE)?.host, REMOTE);
   assert.equal(handoverOf(link(REMOTE), "tag-1"), undefined, "no live host: loopback alone");
-  assert.equal(handoverOf(link("10.0.0.9"), "tag-1", REMOTE), undefined, "a host the runner did not name");
+  assert.equal(handoverOf(link("elsewhere.test"), "tag-1", REMOTE), undefined, "a host the runner did not name");
   assert.equal(handoverOf(link("127.0.0.1"), "tag-1", REMOTE)?.host, undefined, "loopback still, with no host in its row");
   const store = fakeLiveViewersStore();
   const claim = store.claim("run-3");
