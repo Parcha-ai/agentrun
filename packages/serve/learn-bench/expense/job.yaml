@@ -1,0 +1,11 @@
+# The expense smoke job (sprint learning.md section 1c): categorise a week's card transactions in one fixed format.
+# No template: the job's own agent.md is the package. No fakes, no grants.
+harnesses: [pi, claude-agent]
+steps:
+  - { id: "01", kind: teach }
+  - { id: "02", kind: repeat }
+  - { id: "03", kind: repeat }
+  - { id: "04", kind: teach }
+  - { id: "05", kind: repeat }
+  - { id: "06", kind: change }
+  - { id: "07", kind: repeat }
