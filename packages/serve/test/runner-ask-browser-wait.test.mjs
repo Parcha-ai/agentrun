@@ -7,7 +7,9 @@
 // still lets the browser go and drains its release before the seal. A run with nothing open parks on ask_person as before.
 // Through the server and its in-process runner, on the faux model and the faux browser: no network, no key.
 import assert from "node:assert/strict";
+import { randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { createServer } from "node:http";
 import { join } from "node:path";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
@@ -17,7 +19,7 @@ const { journalRecords } = await import("../dist/runner/journal-reader.js");
 
 const FAUX_BROWSER = new URL("./fixtures/faux-browser.mjs", import.meta.url).pathname;
 const BROWSE_ASK_BROWSE = new URL("./fixtures/faux-browse-ask-browse.mjs", import.meta.url).pathname;
-const KEYS = ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "KERNEL_API_KEY", "FAUX_BROWSER_LOG", "FAUX_BROWSER_PERSON_MS"];
+const KEYS = ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "KERNEL_API_KEY", "FAUX_BROWSER_LOG", "FAUX_BROWSER_PERSON_MS", "AGENTRUN_SEAL_KEY"];
 const json = { "content-type": "application/json" };
 /** A test password, no real one. */
 const PASSWORD = ["not-a-secret", "owner"].join("-");
@@ -35,8 +37,9 @@ const until = async (done, what, ms = 30_000) => {
 };
 
 /** A signed-in owner's server with the faux browser, and a run of an agent with the browser and ask_person on `input`.
- *  `env`: more of the run's switches (FAUX_BROWSER_PERSON_MS: the person's windows, the wait's bound among them). */
-async function asking(t, input, env = {}) {
+ *  `env`: more of the run's switches (FAUX_BROWSER_PERSON_MS: the person's windows, the wait's bound among them).
+ *  `hook`: the server's outbound webhook, set before the run starts. */
+async function asking(t, input, env = {}, hook = undefined) {
   const log = join(await scratch(t), "browser.jsonl");
   withEnv(t, { BROWSERBASE_API_KEY: "fake-test-key", BROWSERBASE_PROJECT_ID: "fake-project", FAUX_BROWSER_LOG: log, ...env }, KEYS);
   const server = await serve(t, { accounts: true, openSetup: true, console: await builtConsole(t), fauxBrowser: FAUX_BROWSER, faux: BROWSE_ASK_BROWSE });
@@ -44,6 +47,7 @@ async function asking(t, input, env = {}) {
   const made = await call(server.port, { method: "POST", path: "/v2/setup", headers: { ...json, origin }, body: { password: PASSWORD } });
   assert.equal(made.status, 201, made.text);
   const cookie = cookieOf(made);
+  if (hook) assert.equal((await server.api("PUT", "/settings/webhook", { url: hook })).status, 201);
   assert.equal((await server.api("POST", "/agents", { definition: { id: "watch", name: "watch", instructions: "Browse, then ask.", tools: ["browser", "ask_person"] } })).status, 201);
   const started = await server.api("POST", "/agents/watch/runs", { input: { content: input } });
   assert.equal(started.status, 202, JSON.stringify(started.body));
@@ -161,4 +165,23 @@ test("ask_person with the browser granted but no session open parks as before: p
   // The answer resumes it from the park, as today.
   assert.equal((await w.server.api("POST", `/runs/${w.runId}/messages`, { content: "Yes." })).status, 202);
   await follow(w.server.api, w.runId, ["completed"]);
+});
+
+test("the wait in the claim tells run.needs_input once, as the park did: a webhook subscriber hears the question while the run's claim is held", { timeout: 180_000 }, async (t) => {
+  const got = [];
+  const receiver = createServer((req, res) => { const chunks = []; req.on("data", (c) => chunks.push(c)); req.on("end", () => { try { got.push(JSON.parse(Buffer.concat(chunks).toString("utf8"))); } catch { /* not a message */ } res.writeHead(200).end(); }); });
+  await new Promise((resolve) => receiver.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => (receiver.close(resolve), receiver.closeAllConnections())));
+  const w = await asking(t, "Browse the example page.", { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") }, `http://127.0.0.1:${receiver.address().port}/hook`);
+  const settled = await askedAndSettled(w);
+  assert.equal(settled.row.state, "running", "the run waits in its claim");
+  const needs = await until(() => got.find((m) => m.type === "run.needs_input" && m.data.run_id === w.runId), "run.needs_input for the wait");
+  assert.deepEqual(needs.data.pending, { kind: "question" }, "it says the run waits on its question");
+  const row = await w.server.store.runs.get(w.runId);
+  assert.equal(row.state, "running", "told while the claim is held");
+  assert.notEqual(row.runner, null);
+  assert.equal((await w.server.api("POST", `/runs/${w.runId}/messages`, { content: "Yes, go on." })).status, 202);
+  await released(w, "ended");
+  await until(() => got.some((m) => m.type === "run.ended" && m.data.run_id === w.runId), "run.ended");
+  assert.equal(got.filter((m) => m.type === "run.needs_input" && m.data.run_id === w.runId).length, 1, "told once for the ask");
 });

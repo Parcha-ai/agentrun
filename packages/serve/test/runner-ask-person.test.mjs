@@ -51,7 +51,7 @@ const driveAsk = ({ body }) => {
  *  with `settled`, to what that reads). `personWait`: a tool host's hold the spec's lifecycle carries (HostLifecycle
  *  .personWait), as the browser's is. The runner stays up so a test may resume it; its store, server and gateway are
  *  returned. */
-async function askRun(t, { tools, personWait, settled }) {
+async function askRun(t, { tools, personWait, settled, loopOptions = {} }) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-ask-person-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -75,12 +75,18 @@ async function askRun(t, { tools, personWait, settled }) {
     const spec = await adapterRunSpecFromLaunch(launch, run, deps, claim);
     return personWait ? { ...spec, lifecycle: { ...spec.lifecycle, personWait: [personWait] } } : spec;
   };
-  runner = startRunner({ store, name: "runner-a", ...TIMING, createLoop: createAdapterLoop(specOf) });
+  const start = (name) => (runner = startRunner({ store, name, ...TIMING, createLoop: createAdapterLoop(specOf, loopOptions) }));
+  start("runner-a");
+  /** The runner shut down (its claims let go, as a deploy's drain does), and another started on the same store. */
+  const restart = async () => {
+    await runner.close();
+    start("runner-b");
+  };
   const row = await until(settled ? () => settled(server) : async () => {
     const now = await server.runs.get(RUN);
     return ["parked", "ended", "failed", "stopped"].includes(now.state) && now.runner === null && now;
   }, "the run's park or end");
-  return { row, server, store, gw };
+  return { row, server, store, gw, restart };
 }
 
 test("park: a pi run that calls ask_person parks on its question, input_required with the question pending, claim released, one request and no re-run", async (t) => {
@@ -130,8 +136,9 @@ function fakeWait({ holds = true } = {}) {
   const seen = { asked: [], dropped: 0 };
   let lapse = () => {};
   const lapsed = new Promise((resolve) => (lapse = resolve));
-  const personWait = async (_harness, callId) => {
+  const personWait = async (_harness, callId, since) => {
     seen.asked.push(callId);
+    (seen.since ??= []).push(since);
     return holds ? { lapsed, drop: () => void (seen.dropped += 1) } : undefined;
   };
   return { seen, personWait, lapse: (words) => lapse(words) };
@@ -205,4 +212,64 @@ test("wait in the claim: a host that holds nothing (no browser session open) lea
   const { row } = await askRun(t, { tools: ["ask_person"], personWait: wait.personWait });
   assert.equal(row.state, "parked", JSON.stringify({ state: row.state, summary: row.summary }));
   assert.equal(wait.seen.asked.length, 1, "the host was asked");
+});
+
+test("wait in the claim: the person's answer that lands between the turn's end and the wait's start ends the wait at once, in the same claim, never held to its bound", async (t) => {
+  const wait = fakeWait();
+  let server;
+  let sent;
+  // Fires at the start of the wait, before it takes the person's message (adapter-loop's beforePersonWait): the answer
+  // lands there, placed as a steer of the idle session.
+  const beforePersonWait = async () => {
+    if (sent) return;
+    sent = await sendCommand(server, RUN, { kind: "steer", body: { text: "us-west-2" } });
+    await until(async () => (await server.commands(RUN, 0)).find((row) => row.id === sent.id)?.takenAt != null, "the answer taken");
+  };
+  const opened = await askRun(t, { tools: ["ask_person"], personWait: wait.personWait, loopOptions: { beforePersonWait }, settled: async (s) => {
+    server = s;
+    const now = await s.runs.get(RUN);
+    return now.state !== "queued" && now.state !== "running" && now.runner === null && now;
+  } });
+  assert.ok(sent, "the answer was sent in the window");
+  assert.equal(opened.row.state, "ended", `the answer's turn ended the run, never held to the bound: ${JSON.stringify({ state: opened.row.state, summary: opened.row.summary })}`);
+  const last = modelCalls(opened.gw).at(-1).body;
+  assert.ok((last.messages ?? []).some((message) => JSON.stringify(message.content ?? message).includes("us-west-2")), "the answer was the run's next turn");
+});
+
+test("wait in the claim across a re-claim: the next claim waits again from the ask's first start (the bound never restarts), and the answer ends the run", async (t) => {
+  const wait = fakeWait();
+  const { server, restart } = await askRun(t, { tools: ["ask_person"], personWait: wait.personWait, settled: waitingInClaim(wait.seen) });
+  const first = await server.runs.get(RUN);
+  await restart();
+  const again = await until(async () => {
+    const now = await server.runs.get(RUN);
+    return now.state === "running" && now.runner === "runner-b" && wait.seen.asked.length >= 2 && now;
+  }, "the next claim waits again");
+  assert.ok(again.epoch > first.epoch, "a new claim");
+  assert.equal(wait.seen.since.length, 2);
+  assert.equal(wait.seen.since[1], wait.seen.since[0], `the wait's start is the ask's first, from the journal: ${JSON.stringify(wait.seen.since)}`);
+  assert.ok(Number.isFinite(wait.seen.since[0]));
+  await sendCommand(server, RUN, { kind: "steer", body: { text: "us-west-2" } });
+  await until(async () => {
+    const now = await server.runs.get(RUN);
+    return now.state === "ended" && now.runner === null && now;
+  }, "the answer ends the run");
+});
+
+test("wait in the claim: the run row says it waits on the person while its claim is held (the server tells run.needs_input from it), and says so no more once the answer is taken", async (t) => {
+  const wait = fakeWait();
+  const { row, server } = await askRun(t, { tools: ["ask_person"], personWait: wait.personWait, settled: waitingInClaim(wait.seen) });
+  const waiting = await until(async () => {
+    const now = await server.runs.get(RUN);
+    return now.summary === "Waiting for your reply" && now;
+  }, "the row's waiting summary");
+  assert.equal(waiting.state, "running");
+  assert.notEqual(waiting.runner, null);
+  assert.equal(waiting.epoch, row.epoch);
+  await sendCommand(server, RUN, { kind: "steer", body: { text: "us-west-2" } });
+  const ended = await until(async () => {
+    const now = await server.runs.get(RUN);
+    return now.state === "ended" && now.runner === null && now;
+  }, "the answer ends the run");
+  assert.notEqual(ended.summary, "Waiting for your reply", "the waiting summary is gone with the answer");
 });

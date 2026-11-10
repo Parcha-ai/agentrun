@@ -1129,3 +1129,37 @@ test("a wait in the claim lapses when a session it keeps is let go", async (t) =
   assert.match(await gone.lapsed, /browser session it kept open for the person was let go/);
   gone.drop();
 });
+
+test("a wait in the claim taken up again (a re-claim) keeps its first start: its bound is from then, and one past its bound is refused at once", async (t) => {
+  const root = await scratch(t);
+  const clock = fakeClock(100 * 60_000);
+  const holdMs = 15 * 60_000;
+  const { person, held } = hands(root, { timers: clock.timers, holdMs, now: clock.now });
+  t.after(() => person.close());
+  const since = clock.now() - 10 * 60_000;
+  const waited = await person.wait("call-7", ["ar-run-36-1"], since);
+  assert.ok("lapsed" in waited);
+  await clock.tick(5 * 60_000 - 1);
+  assert.equal(await settledNow(waited.lapsed), false, "still waiting just before its first start's bound");
+  await clock.tick(1);
+  assert.match(await waited.lapsed, /did not answer within 15 minutes/, "lapsed at its first start's bound, not 15 minutes after the re-claim");
+  waited.drop();
+  const taken = held.taken;
+  assert.deepEqual(await person.wait("call-8", ["ar-run-36-2"], clock.now() - holdMs), { refused: "the person did not answer within 15 minutes, the bound a browser hand-over waits" }, "past its bound: refused, nothing held");
+  assert.equal(held.taken, taken);
+});
+
+test("a session let go while a wait's hold is being admitted still ends the wait", async (t) => {
+  const root = await scratch(t);
+  let admit = () => {};
+  const person = personHands({ root, gates: () => ({ give: () => false }), pollMs: 60_000, note: async () => {}, personTime: () => new Promise((resolve) => (admit = () => resolve({ drop: () => {} }))) });
+  t.after(() => person.close());
+  const waiting = person.wait("call-9", ["ar-run-37-1"]);
+  await sleep(5);
+  person.sessionEnded("ar-run-37-1");
+  admit();
+  const waited = await waiting;
+  assert.ok("lapsed" in waited);
+  assert.match(await Promise.race([waited.lapsed, sleep(200).then(() => "still waiting")]), /let go/, "the release that came during the admission ends the wait");
+  waited.drop();
+});
