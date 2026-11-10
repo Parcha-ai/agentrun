@@ -55,4 +55,44 @@ describe("App, a first session read that fails", () => {
     await until(() => heading(host) === "Start building", "Retry now opens setup", 800);
     expect(reads.session).toBe(2);
   });
+
+  it("an older read that answers after a newer one opened setup, and after the owner set it up, changes nothing", async () => {
+    let release: (r: Response) => void = () => {};
+    const held = new Promise<Response>((resolve) => { release = resolve; });
+    let session = 0;
+    let set = false;
+    vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
+      const path = new URL(url, "http://serve.test").pathname;
+      if (path === "/v2/auth/session") {
+        session++;
+        if (session === 1) return new Response("<h1>Not Found</h1>", { status: 404, headers: { "content-type": "text/html" } });
+        if (session === 2) return held;
+        return json(200, set ? { ...OWNERLESS, password_set: true, signed_in: true, secrets_writable: true } : OWNERLESS);
+      }
+      if (path === "/v2/setup" && init?.method === "POST") { set = true; return json(201, { signed_in: true }); }
+      if (path === "/v2/health") return json(200, { status: "ok" });
+      if (path === "/v2/setup/import") return json(200, { offer: false });
+      return json(404, { error: { code: "not_found", message: path, retryable: false } });
+    });
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    act(() => root!.render(createElement(App)));
+    const retry = () => act(async () => { [...host.querySelectorAll("button")].find((b) => b.textContent === "Retry now")!.click(); });
+    await until(() => heading(host) === "Can't read this server's sign-in", "the first read failed");
+    await retry();
+    await until(() => session === 2, "the second read is asked and held");
+    await retry();
+    await until(() => heading(host) === "Start building", "the third read opens setup");
+    const type = async (el: HTMLInputElement, value: string) => act(async () => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(el, value); el.dispatchEvent(new Event("input", { bubbles: true })); });
+    await type(host.querySelector("#setup-code") as HTMLInputElement, "the-printed-code");
+    await type(host.querySelector('input[aria-label="New password"]') as HTMLInputElement, "not-a-secret-password");
+    await type(host.querySelector('input[aria-label="Password again"]') as HTMLInputElement, "not-a-secret-password");
+    await act(async () => { (host.querySelector("form") as HTMLFormElement).requestSubmit(); });
+    await until(() => set && !host.querySelector("form#setup, input[aria-label='New password']"), "the owner is set up and the setup form is gone");
+    // The held second read answers now, as the server answered before the owner was set: it decides nothing.
+    await act(async () => { release(json(200, OWNERLESS)); await new Promise((r) => setTimeout(r, 50)); });
+    for (let i = 0; i < 5; i++) await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+    expect(heading(host), "the console stays, not setup").not.toBe("Start building");
+    expect(host.querySelector('input[aria-label="New password"]')).toBeNull();
+  });
 });

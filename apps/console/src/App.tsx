@@ -163,13 +163,17 @@ export function App() {
   }, [auth]);
   // Whether setup takes the server's printed code (its session read says so), so the form asks for it with no link.
   const [codeNeeded, setCodeNeeded] = useState(false);
-  /** The mode the server's session asks for now. */
-  const sessionMode = async () => {
+  /** The mode the server's session asks for now, and whether its setup takes the printed code. */
+  const sessionRead = async () => {
     const r = await v2.session();
-    setCodeNeeded(setupTakesCode(r));
     // A server without accounts: a protected read tells whether this browser is in already (a token it sends).
     const probe = noAccounts(r) ? await v2.listAgents().then(() => 200, (e) => (e instanceof ClientError ? e.status : 0)) : undefined;
-    return authMode(r, probe);
+    return { mode: authMode(r, probe), codeNeeded: setupTakesCode(r) };
+  };
+  const sessionMode = async () => {
+    const read = await sessionRead();
+    setCodeNeeded(read.codeNeeded);
+    return read.mode;
   };
   const readSession = async () => setAuth(await sessionMode());
   recheck.current = async () => {
@@ -186,13 +190,20 @@ export function App() {
   // never a sign-in, which would claim the server has a password when the page can't know (#2222).
   const [sessionUnread, setSessionUnread] = useState<string | null>(null);
   const [sessionTry, setSessionTry] = useState(0);
+  // Only the newest read decides, and only while nothing has: an older one (a Retry now before it answered) that lands
+  // after a newer one opened setup or sign-in, or after the owner signed in, changes nothing.
   useEffect(() => {
     let live = true;
     let timer: ReturnType<typeof setTimeout> | undefined;
-    readSession().then(
-      () => { if (live) setSessionUnread(null); },
+    sessionRead().then(
+      (read) => {
+        if (!live || authNow.current !== null) return;
+        setCodeNeeded(read.codeNeeded);
+        setAuth(read.mode);
+        setSessionUnread(null);
+      },
       (e) => {
-        if (!live) return;
+        if (!live || authNow.current !== null) return;
         const ms = Math.min(1000 * 2 ** sessionTry, 30_000);
         // A refusal with no error of the server's own (http_error) is another's page in its place: the status alone.
         setSessionUnread(e instanceof ClientError ? `GET /v2/auth/session answered ${e.status}${e.code === "http_error" ? ", not as this server answers" : `: ${e.message}`}` : problemOf(e));
