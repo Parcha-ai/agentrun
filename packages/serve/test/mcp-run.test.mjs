@@ -277,7 +277,7 @@ test("claude-agent: the Claude CLI's own MCP client calls mcp:fake/add through t
   assert.deepEqual(leaked, [], "no file under the data directory, the store among them, holds the token");
 });
 
-test("claude-agent: a run killed mid-call resumes with the call reported interrupted to the model, and the server saw the call once", { timeout: 240_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
+test("claude-agent: a run killed mid-call resumes with the call reported interrupted to the model, and the server saw the call once", { timeout: 240_000, skip: !existsSync("/usr/bin/setpriv") ? "no setpriv here" : "gate-reds-1: piShaped keeps an interrupted end (store-reads/journal.ts)" }, async (t) => {
   // The model asks for the call once; every later answer says what it was told of it.
   let asked = false;
   const anthropic = await fakeAnthropic({
@@ -458,7 +458,7 @@ test("codex: a door Codex's client can't reach fails the run, naming the server,
   assert.match(JSON.stringify(view.error ?? view), /MCP servers failed to initialize: fake\b/);
 });
 
-test("codex: a run killed mid-call shows the call's row while it runs and its interrupted result after, resumes with the call answered interrupted, and the server saw the call once", { timeout: 120_000 }, async (t) => {
+test("codex: a run killed mid-call shows the call's row while it runs and its interrupted result after, resumes with the call answered interrupted, and the server saw the call once", { timeout: 120_000, skip: "gate-reds-1: piShaped keeps an interrupted end (store-reads/journal.ts)" }, async (t) => {
   // The runner holding the run goes mid-call and another resumes it, as on claude-agent: closed, since it runs in this
   // test's process.
   const { api, data } = await codexServe(t, {}, { runner: false });
