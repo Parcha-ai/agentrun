@@ -8,7 +8,7 @@ import type { EntryLike, TimelineEvent, TimelineOptions } from "@parcha/pi-durab
 import { CAPS, costLabel, timelineOf, TOOL_COST } from "@parcha/pi-durable-agent/timeline";
 import { type BookedCost, bookedCostOf, costIsBooked } from "../runner/booked-cost.js";
 import { RUNNER_RECORDS } from "@parcha/agentrun-kernel";
-import { TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
+import { DECISION_SESSION, TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
 import { Hearing } from "../heard.js";
 import { redactedAnswer } from "../key-refusal.js";
 import { labelled, type Reflect } from "../learning-run.js";
@@ -139,15 +139,17 @@ function withBookedUsage(rows: readonly TimelineEvent[], booked: BookedCost, opt
 /** A run's timeline rows, the renderer (timelineOf) unchanged, over the one store's entries, with a CLI harness's record
  *  rendered as its pi-shaped entries (piShaped) and its paid tool charges read back from the paid-tools session
  *  (withPaidCosts). A run whose record carries no booked cost of its own (a CLI harness's, a workflow's, a learning
- *  run's: booked-cost.ts costIsBooked) has its usage row say what its sessions booked (withBookedUsage), the figures its
- *  cap holds it to, never the $0 its answers carry. The end-of-run turn's rows are labelled as the server labels them
+ *  run's: booked-cost.ts costIsBooked) has its usage row say what its sessions booked (withBookedUsage), its decisions'
+ *  apart, the figures its cap holds it to, never the $0 its answers carry. The end-of-run turn's rows are labelled as the server labels them
  *  (learning-run.ts labelled). */
 export async function runTimeline(store: Store, runId: string, context: Context, options: TimelineOptions = {}): Promise<TimelineEvent[]> {
   const entries = await runEntries(store, runId, context);
   const cli = isCliRecord(entries);
   const rendered = timelineOf(withPaidCosts(cli ? piShaped(entries) : entries), options);
-  // A CLI run that booked nothing keeps no usage row: its record has no cost, so it reads its stored total.
-  const booked = costIsBooked(entries, cli) ? bookedCostOf(entries, { settled: options.settled === true }) : undefined;
+  // A CLI run that booked nothing keeps no usage row: its record has no cost, so it reads its stored total. A workflow's
+  // decisions are no model request of the usage row's: their rows and their cost come from their receipts (decision-rows.ts
+  // withDecisions), once.
+  const booked = costIsBooked(entries, cli) ? bookedCostOf(entries, { settled: options.settled === true, except: [DECISION_SESSION] }) : undefined;
   const rows = booked ? withBookedUsage(rendered, booked, options) : cli ? rendered.filter((row) => row.kind !== "usage") : rendered;
   return labelled((await runReflect(store, runId, context)) as Reflect | undefined, await datedRows(store, runId, rows));
 }

@@ -41,6 +41,8 @@ import {
   withApprovalRows,
 } from "./run-view.js";
 import { reflects, type Reflect } from "./learning-run.js";
+import { DECISION_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
+import { type BookedCost, bookedCostOf } from "./runner/booked-cost.js";
 import { journalRecords, recordOf } from "./runner/journal-reader.js";
 import { type EndData, KINDS } from "./runner/journal-kinds.js";
 import { notesReadOf, runLearningEnd, type RunLearning, withNotes } from "./store-reads/learning.js";
@@ -169,6 +171,9 @@ interface StoreRun {
   readonly approvalsMode: Approvals;
   /** A completed workflow run's output, as its end kept it (EndData.output); null when it kept none. */
   readonly output: unknown;
+  /** What the run's decisions booked (their own session, booked-cost.ts), undefined when it booked none: the run's cost
+   *  adds it to its usage row's, as the timeline adds their receipts. */
+  readonly decisions: BookedCost | undefined;
 }
 
 /** A runner holds the run's claim now: it is not in a final state, a runner is named on its row, and its lease has not run
@@ -298,7 +303,9 @@ async function storeRunOf(store: Store, runId: string, deps: ViewDeps): Promise<
   // A completed workflow run's output, from its end (the workflow loop keeps it there, as main kept it on the run).
   const end = row.kind === "workflow" ? records.entries.findLast((entry) => entry.kind === KINDS.end) : undefined;
   const output = (end?.data as EndData | undefined)?.output ?? null;
-  return { row, runRow, launch, rows, version, harness, learningEnd, view, unshown, values, live, updatedAtMs, lastProgressAt, budget, paused, browserAsk, computerAsk, approvalsMode, output };
+  // What its decisions booked (their own session, never on the usage row, which counts its model requests and paid tools).
+  const decisions = bookedCostOf(records.entries as never, { settled: terminal, only: [DECISION_SESSION] });
+  return { row, runRow, launch, rows, version, harness, learningEnd, view, unshown, values, live, updatedAtMs, lastProgressAt, budget, paused, browserAsk, computerAsk, approvalsMode, output, decisions };
 }
 
 /** A run's learning as the view shows it: its end from the store, in a person's words cut of the host's secrets now, and,
@@ -319,8 +326,10 @@ function costOfView(run: StoreRun): Record<string, unknown> {
   // no stored cost (its column is written only at the end), so it reads undefined, which costView turns into 0 before any
   // request — never null.
   const stored = run.row.state === "running" ? undefined : run.runRow.costUsd;
-  const usd = imported ? (stored ?? null) : costView(run.rows, stored, undefined);
-  const soFar = usd === null && !imported ? soFarOf(run.rows) : undefined;
+  // Its decisions' booked cost joins its usage row's (costView), one unknown making it unknown.
+  const decisions = run.decisions;
+  const usd = imported ? (stored ?? null) : costView(run.rows, stored, decisions ? decisions.usd : undefined);
+  const soFar = usd === null && !imported ? soFarOf(run.rows, decisions ? { known: decisions.soFarUsd, unpriced: decisions.unpriced } : undefined) : undefined;
   // The run's cap as it stands (its view's meta: the newest raise's, else the launch's).
   const cap = run.view.meta.max_cost_usd;
   const bound = cap === undefined ? {} : { overshoot_bound_usd: 0 };

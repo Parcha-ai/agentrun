@@ -44,8 +44,9 @@ export function costIsBooked(entries: readonly EntryLike[], cli: boolean): boole
 
 /** What the run's sessions booked, from its journal's `entries` (every conversation's); undefined when it booked no paid
  *  request. `settled`: nothing is running, so a request with no answer was cut (its cost unknown); while the run goes on,
- *  one with no answer is in flight and counts in no figure but the cap's. `except`: sessions left out, by key. */
-export function bookedCostOf(entries: readonly EntryLike[], options: { settled: boolean; except?: readonly string[] }): BookedCost | undefined {
+ *  one with no answer is in flight and counts in no figure but the cap's. `except`: sessions left out, by key; `only`:
+ *  the sessions read, by key. */
+export function bookedCostOf(entries: readonly EntryLike[], options: { settled: boolean; except?: readonly string[]; only?: readonly string[] }): BookedCost | undefined {
   let soFarUsd = 0;
   let unpriced = 0;
   let requests = 0;
@@ -53,7 +54,7 @@ export function bookedCostOf(entries: readonly EntryLike[], options: { settled: 
   let spentUsd: number | null = 0;
   let any = false;
   for (const [key, records] of sessionsOf(entries)) {
-    if (options.except?.includes(key)) continue;
+    if (options.except?.includes(key) || (options.only && !options.only.includes(key))) continue;
     const read = sessionSpendOf(records);
     if (!read.turns.length && !read.answered.size) continue;
     any = true;

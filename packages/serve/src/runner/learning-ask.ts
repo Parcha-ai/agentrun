@@ -17,8 +17,6 @@ import type { LearningLoopDeps } from "./learning-loop.js";
 import { journalSessions } from "./sessions.js";
 
 import { GRADE_SESSION } from "./journal-kinds.js";
-/** The session the grader's requests are booked under, in the learning run's journal. */
-export { GRADE_SESSION };
 const PROVIDER = "agentrun-grade";
 
 /** Where the grader's request goes: the route's wire (`api`, Anthropic's Messages or OpenAI's Responses) at `origin`, for
