@@ -447,8 +447,7 @@ test("a timeline row's usage says where it shows here: a browser call's row carr
 /** The closed list of a run's learning reasons, as the console's read shape names them. */
 const REASONS = ["seed_failed", "no_budget", "unknown_cost", "cancelled", "crashed", "reflect_timeout", "reflect_failed", "empty", "unparsed", "propose_failed", "checker", "grader", "grade_failed"];
 
-// SKIP (follow-up #2080): a learner run's timeline has no learning row on the runner.
-test.skip("learning is this server's own addition, learning/1: the definition's switch, the server's in capabilities, a run's learning whole on its read and short in lists, its timeline row, the usage meter and the stats block, each enum whole, and the answers meet the document", { timeout: 120_000 }, async (t) => {
+test("learning is this server's own addition, learning/1: the definition's switch, the server's in capabilities, a run's learning whole on its read and short in lists, its timeline row, the usage meter and the stats block, each enum whole, and the answers meet the document", { timeout: 120_000 }, async (t) => {
   const { api, baseUrl, data } = await serve(t);
   const doc = await (await fetch(`${baseUrl}/openapi.json`)).json();
   const schemas = doc.components.schemas;
