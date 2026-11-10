@@ -46,7 +46,7 @@ async function graphed(t, id, second, extra = {}, cleared = []) {
   return { api, runId: started.body.run_id };
 }
 
-test("a workflow run's graph shows its llm call's output and a failed call's error with the held key redacted, 0 times whole or in part", { timeout: 60_000, skip: "waits on a workflow call node's output and error in the store journal (learning-1's (C) work on call nodes): its effects read [] on the switch; the graph's cut itself is proven by graph-custody.test.mjs" }, async (t) => {
+test("a workflow run's graph shows its llm call's output and a failed call's error with the held key redacted, 0 times whole or in part", { timeout: 60_000 }, async (t) => {
   const { api, runId } = await graphed(t, "graph-keyed", true);
   const graph = (await api("GET", `/runs/${runId}/graph`)).body;
   assert.deepEqual(graph.effects.map((e) => [e.tool, e.status]), [["llm", "done"], ["llm", "failed"]], JSON.stringify(graph.effects.map((e) => [e.tool, e.status, e.error])));
@@ -55,7 +55,7 @@ test("a workflow run's graph shows its llm call's output and a failed call's err
   assert.match(graph.effects[1].error, /\[redacted\]/, graph.effects[1].error);
 });
 
-test("a workflow run's graph is redacted once per held key set: a second read reads nothing again, and a key saved after redacts on the next read", { timeout: 60_000, skip: "waits on a workflow call node's output and error in the store journal (learning-1's (C) work on call nodes): its effects read [] on the switch; the graph's cut itself is proven by graph-custody.test.mjs" }, async (t) => {
+test("a workflow run's graph is redacted once per held key set: a second read reads nothing again, and a key saved after redacts on the next read", { timeout: 60_000, skip: "each graph read over the store reads the run's view (viewOverStore), which redacts its workflow output again on every read; the graph's own parts are cut once (graph-parts-cache.test.mjs)" }, async (t) => {
   const { api, runId } = await graphed(t, "graph-again", false, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") }, ["PARALLEL_API_KEY"]);
   await api("GET", `/runs/${runId}/graph`);
   const read = refusal.answerPasses.count;

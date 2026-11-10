@@ -130,6 +130,25 @@ test("a workflow run that still goes shows its call from its journal: working wh
   assert.equal(ended.nodes["/root/steps/0"].status, "done");
 });
 
+test("a graph read that fails on a value it parses answers internal in fixed words, and logs the failure with no part of the value it quoted", async (t) => {
+  const { store } = await storeOn(t);
+  const held = "sk-held-graph-0123456789";
+  // V8's JSON.parse error quotes about ten characters of its input: here the start of a held key.
+  const thrown = (() => { try { JSON.parse(`${held} and more`); } catch (error) { return error; } })();
+  assert.match(thrown.message, /sk-held/, "the parse error quotes its input");
+  const logged = [];
+  const deps = { ...graphDeps(viewOf("running")), runView: async () => { throw thrown; }, cutValues: async () => ({ values: [held] }), log: (line) => logged.push(line) };
+  await assert.rejects(runGraphView(store, "run-1", deps), (error) => {
+    assert.equal(error.code, "internal");
+    assert.equal(error.message, "the run's graph could not be read");
+    return true;
+  });
+  assert.equal(logged.length, 1, JSON.stringify(logged));
+  assert.match(logged[0], /run-1/);
+  assert.match(logged[0], /SyntaxError/);
+  assert.doesNotMatch(logged[0], /sk-h|held-graph/, `no part of the quoted value is logged: ${logged[0]}`);
+});
+
 /** A workflow of one `llm` call: the question's answer, in one completion. */
 const llmFlow = {
   v: 2, name: "ask-once",

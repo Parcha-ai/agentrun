@@ -51,11 +51,12 @@ import { heldRedactor, holdClaimed } from "./redact.js";
 import { holdStored } from "./store-secrets.js";
 import { type DecisionDriver, type NodeToolBinding, type WorkflowCap, workflowHost, type WorkflowHostDeps } from "./workflow-host.js";
 import type { Store } from "../store/store.js";
+import { TOOL_FAILED } from "../store-reads/workflow.js";
 
 /** The one session key the workflow's model requests book under (the run's one booking sums it, runBooking). */
 const SESSION = "workflow";
-/** A call node's tool failure and a cap-held effect, as app.ts's runEffect completed them (the loop's `failing` reads them). */
-const TOOL_FAILED = "agentrun_serve_tool_failed";
+/** A cap-held effect, as app.ts's runEffect completed it (the loop's `failing` reads it beside TOOL_FAILED, which
+ *  store-reads/workflow.ts keeps, where the graph reads a failed call by it too). */
 const CAP_HELD = "agentrun_serve_cap_held";
 
 type RunJudge = NonNullable<WorkflowDeps["runJudge"]>;

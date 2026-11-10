@@ -2,13 +2,11 @@
 // of the revision's workflow; each node's state is `nodeStatus` over the journal's frame (and, once the run ended,
 // `readWorkflowRun`'s, with the task's end); a map's items, a route's branch taken and the interrupted decisions come
 // from the frame; the decisions are the receipts, each joined to its graph node by its execution path (`graphNodeOf`);
-// the calls and the nodes' times are the run process's node log (pause.ts).
+// the calls are the engine's effect records.
 //
-// Where the frame and the receipts come from: while the run goes its process holds its store exclusively, so they are
-// the process's live view (pause.ts `live.json`), and the store is never opened (an open racing the process's own would
-// fail it). Once the run ended, the store.
+// Everything is read from the run's journal in the one store, while the run goes and once it ended alike: there is no
+// run directory, and nothing is read from the disk.
 import type { Context } from "@earendil-works/chord";
-import { llmAnswers, type NodeLine, readLiveView, readNodeLog } from "./pause.js";
 import type { Store } from "./store/store.js";
 
 export type GraphNodeStatus = "pending" | "working" | "done" | "failed" | "stopped" | "escalated" | "not_run" | "needs_review";
@@ -17,22 +15,17 @@ type NodeView = { status: GraphNodeStatus; startedAt?: string; endedAt?: string;
 
 export type GraphInput = {
   run: { id: string; agent: string; revision: string; status: string; paused: boolean; startedAt: string; endedAt: string | null };
-  /** The run has ended: a node it never reached is `not_run`, not `pending`, and its store is read, lock-free. */
+  /** The run has ended: a node it never reached is `not_run`, not `pending`, and a call still unknown is `stopped`. */
   ended: boolean;
   workflow: unknown;
-  storeFile: string;
-  /** The run's directory: its node log is there. */
-  root: string;
   /** The run's input: what a map's items are read from before its state has them. */
   input: unknown;
-  /** The model nodes' cost from the run's rows (read once it ended; 0 before), null when unknown. */
-  modelCost: number | null;
-  /** How many of its llm calls' answers its node log held when its rows were last read: their cost is in `modelCost`. */
-  llmRead?: number;
-  /** The one store and a context: when both are given, an ended run's view, pin and decisions read from A's journal
-   *  (store.readJournal) instead of its per-run store file. The cut passes them; without them the file path is read. */
-  store?: Store;
-  context?: Context;
+  /** Once the run ended, its own cost as its view serves it (the one ledger its end stored: its model requests, its
+   *  decisions and its paid calls), null when unknown; absent while it goes. */
+  endCost?: number | null;
+  /** The one store and a context: the run's view, pin, decisions and calls are read from its journal there. */
+  store: Store;
+  context: Context;
 };
 
 type Frame = { done?: string[]; states?: Record<string, unknown>; inputs?: Record<string, unknown>; steps?: Record<string, unknown>; routes?: Record<string, { branch?: string }>; decisions?: Record<string, Record<string, { status?: string }>>; failures?: Record<string, unknown>; partial?: { path?: string } };
@@ -53,47 +46,32 @@ const labelOf = (item: unknown): string | undefined => {
 
 
 export async function runGraph(given: GraphInput) {
-  const [{ graphNodeOf, nodeStatus, workflowGraph }, { readWorkflowRun }, { durableDecisions, readJournal }] = await Promise.all([
+  const [{ graphNodeOf, nodeStatus, workflowGraph }, { decisionsOverStore }, { effectsOverStore, readWorkflowRunOver, TOOL_FAILED }] = await Promise.all([
     import("@parcha/agentrun-dsl/graph"),
-    import("@parcha/pi-durable-agent/workflow"),
-    import("@parcha/agentrun-pi/durable"),
+    import("./store-reads/decisions.js"),
+    import("./store-reads/workflow.js"),
   ]);
   const { id } = given.run;
+  const { store, context } = given;
   const graph = workflowGraph(given.workflow);
-  let view: { status: Record<string, string>; escalatedAt?: { path: string }; escalation?: { kind: string | null } };
+  const readAt = new Date().toISOString();
+  // The pin frame is the driver document's `state.pin`, as readWorkflowRun reads it internally over the journal.
   let pin: Frame;
-  let receipts: Array<Record<string, unknown>>;
-  let readAt = new Date().toISOString();
-  if (given.ended && given.store && given.context) {
-    // From the one store's journal (store.readJournal), no file: the run's view and pin as readWorkflowRun reads them over
-    // A, and its decisions as receipts. The same answers as the file path; the cut passes the store and a context.
-    const { store, context } = given;
-    const [{ decisionsOverStore }, { readWorkflowRunOver }] = await Promise.all([import("./store-reads/decisions.js"), import("./store-reads/workflow.js")]);
-    // The one reader of a workflow run's view over A (node status, outcome, escalation): the workflow-loop builder's.
-    view = (await readWorkflowRunOver(store, id, context)) ?? { status: {} };
-    const reads = store.readJournal(id);
-    try {
-      // The pin frame is the driver document's `state.pin`, as readWorkflowRun reads it internally over the journal.
-      const driver = await reads.findDocument({ kind: "agentrun.driver", scope: { kind: "session" }, key: id } as never, "current", context);
-      const driverValue = driver ? ((await reads.document(driver.id, "current", context))?.value as { state?: { pin?: Frame } } | undefined) : undefined;
-      pin = driverValue?.state?.pin ?? {};
-    } finally {
-      await reads.close(context);
-    }
-    receipts = await decisionsOverStore(store, id, context);
-  } else if (given.ended) {
-    // Lock-free, as every server read of a run's database (run-db.ts): nothing made beside it, never a lock to wait on.
-    view = await readWorkflowRun({ runId: id, storePath: given.storeFile, revision: { body: { workflow: given.workflow } } as never }, { unlocked: true });
-    pin = ((readJournal(given.storeFile, id, { unlocked: true })?.state as { pin?: Frame } | undefined)?.pin) ?? {};
-    receipts = durableDecisions(given.storeFile, { unlocked: true });
-  } else {
-    const live = await readLiveView(given.root);
-    pin = (live?.pin as Frame | undefined) ?? {};
-    receipts = live?.receipts ?? [];
-    if (live?.at) readAt = live.at;
-    view = { status: nodeStatus(graph, { pin: pin as never, result: null }) as Record<string, string> };
+  const reads = store.readJournal(id);
+  try {
+    const driver = await reads.findDocument({ kind: "agentrun.driver", scope: { kind: "session" }, key: id } as never, "current", context);
+    const driverValue = driver ? ((await reads.document(driver.id, "current", context))?.value as { state?: { pin?: Frame } } | undefined) : undefined;
+    pin = driverValue?.state?.pin ?? {};
+  } finally {
+    await reads.close(context);
   }
-  const lines = await readNodeLog(given.root);
+  // Once it ended, the one reader of a workflow run's view over the store (node status, outcome, escalation); while it
+  // goes, each node's status from the frame its driver last committed.
+  const view: { status: Record<string, string>; escalatedAt?: { path: string }; escalation?: { kind: string | null } } = given.ended
+    ? ((await readWorkflowRunOver(store, id, context)) ?? { status: {} })
+    : { status: nodeStatus(graph, { pin: pin as never, result: null }) as Record<string, string> };
+  const receipts = await decisionsOverStore(store, id, context);
+  const stored = await effectsOverStore(store, id, context);
   const nodeAt = (path: unknown) => (typeof path === "string" ? (graphNodeOf(graph, path)?.path ?? (graph.nodes.some((n) => n.path === path) ? path : undefined)) : undefined);
   const kinds = new Map(graph.nodes.map((node) => [node.path, node.kind]));
 
@@ -114,24 +92,7 @@ export async function runGraph(given: GraphInput) {
   }
   if (view.escalation?.kind === "decision_interrupted" && view.escalatedAt && nodes[view.escalatedAt.path]) nodes[view.escalatedAt.path]!.status = "needs_review";
 
-  // Times: a node's first start and, once it ended, its last end, over all its instances; a container's from what is in it.
-  const starts = new Map<string, string>();
-  const ends = new Map<string, string>();
-  for (const line of lines) {
-    if (line.t !== "node.start" && line.t !== "node.end") continue;
-    const path = nodeAt(line.path);
-    if (!path) continue;
-    if (line.t === "node.start" && (!starts.has(path) || line.at < starts.get(path)!)) starts.set(path, line.at);
-    if (line.t === "node.end" && (!ends.has(path) || line.at > ends.get(path)!)) ends.set(path, line.at);
-  }
-  for (const node of graph.nodes) {
-    const own = nodes[node.path]!;
-    const inside = [...starts.keys()].filter((path) => path === node.path || path.startsWith(`${node.path}/`));
-    const first = inside.map((path) => starts.get(path)!).sort()[0];
-    const last = [...ends.entries()].filter(([path]) => path === node.path || path.startsWith(`${node.path}/`)).map(([, when]) => when).sort().at(-1);
-    if (first) own.startedAt = first;
-    if (last && ["done", "failed", "escalated", "stopped", "needs_review"].includes(own.status)) own.endedAt = last;
-  }
+  // A node's times are left out: the journal keeps no clock per node (they are optional on the answer).
 
   // A route's branch taken: its committed decision, else the branch whose body ran (a route by value).
   for (const node of graph.nodes.filter((n) => n.kind === "route")) {
@@ -149,7 +110,7 @@ export async function runGraph(given: GraphInput) {
   const workflow = given.workflow as Record<string, unknown>;
   const definition = (path: string): Record<string, unknown> | undefined => path.split("/").slice(1).reduce<unknown>((value, part) => (typeof value === "object" && value !== null ? (value as Record<string, unknown>)[part.replace(/~1/g, "/").replace(/~0/g, "~")] : undefined), workflow) as Record<string, unknown> | undefined;
   const keys = [...(pin.done ?? []), ...Object.keys(pin.states ?? {}), ...Object.keys(pin.inputs ?? {}), ...Object.keys(pin.steps ?? {}), ...Object.keys(pin.failures ?? {}), ...Object.keys(pin.decisions ?? {}), ...Object.keys(pin.routes ?? {}),
-    ...lines.flatMap((line) => (typeof line.path === "string" ? [line.path] : [])), ...receipts.map((r) => String(r.execution_path ?? ""))];
+    ...stored.flatMap((effect) => (effect.path !== null ? [effect.path] : [])), ...receipts.map((r) => String(r.execution_path ?? ""))];
   const done = new Set(pin.done ?? []);
   // The run's real input first: a map over an input list has its whole list, in order, from the start.
   const candidates = [given.input, ...Object.values(pin.states ?? {})];
@@ -208,33 +169,33 @@ export async function runGraph(given: GraphInput) {
     };
   });
 
-  // The calls, each start paired with its end in order.
-  const open = new Map<string, Extract<NodeLine, { t: "effect.start" }>[]>();
-  const effects: Array<{ node: string | null; executionPath: string | null; item: number | null; tool: string; status: string; input: unknown; output: unknown; error: string | null; error_cut?: boolean; startedAt: string; endedAt: string | null }> = [];
-  const placeOf = new Map<Extract<NodeLine, { t: "effect.start" }>, number>();
-  for (const line of lines) {
-    if (line.t === "effect.start") {
-      const key = `${line.path}\n${line.tool}\n${line.label}`;
-      (open.get(key) ?? open.set(key, []).get(key)!).push(line);
-      placeOf.set(line, effects.length);
-      effects.push({ node: nodeAt(line.path) ?? null, executionPath: line.path, item: line.item, tool: line.tool, status: given.ended ? "stopped" : "working", input: line.input, output: null, error: null, startedAt: line.at, endedAt: null });
-    } else if (line.t === "effect.end") {
-      const start = open.get(`${line.path}\n${line.tool}\n${line.label}`)?.shift();
-      if (!start) continue;
-      const effect = effects[placeOf.get(start)!]!;
-      // An error is stored whole up to 64 KB (app.ts), longer ones cut and marked; one of a log from before, cut at 2000.
-      // Whole, as logged (up to 64 KB, app.ts); `error_cut` marks one stored cut, for the server to hold its tail back
-      // (graph-served.ts, which also takes one of exactly 2000 characters, from a log made before, as cut).
-      Object.assign(effect, { status: line.status, output: line.output ?? null, error: line.error ?? null, ...(line.error_truncated === true ? { error_cut: true } : {}), endedAt: line.at });
-    }
-  }
+  // The calls, in the order they were admitted: one completed with the tool's failure (TOOL_FAILED) failed in its words,
+  // any other completed one done with its answer, and one admitted and never completed working while the run goes,
+  // stopped once it ended. The journal keeps no clock per call, so a call's start reads as the run's, and a completed
+  // call's end as the run's end (or this read, while it goes): a done call always has an end, never drawn as going.
+  const effects = stored.map((effect) => {
+    const node = nodeAt(effect.path) ?? null;
+    const declared = node ? definition(node)?.tool : undefined;
+    const tool = typeof declared === "string" ? declared : effect.tool ?? effect.name;
+    const items = effect.path ? [...effect.path.matchAll(/\/items\/(\d+)(?=\/|$)/g)] : [];
+    const item = items.length ? Number(items.at(-1)![1]) : null;
+    const failed = isObject(effect.value) && typeof effect.value[TOOL_FAILED] === "string" ? (effect.value[TOOL_FAILED] as string) : null;
+    const status = effect.status === "completed" ? (failed !== null ? "failed" : "done") : given.ended ? "stopped" : "working";
+    return {
+      node, executionPath: effect.path, item, tool, status, input: effect.input,
+      output: effect.status === "completed" && failed === null ? effect.value : null, error: failed,
+      startedAt: given.run.startedAt, endedAt: effect.status === "completed" ? (given.run.endedAt ?? readAt) : null,
+    };
+  });
 
-  // The run's spend: its decisions', its llm calls' and its model nodes'; one unknown makes it unknown. An llm call's cost
-  // is a REQUEST_COST entry, in `modelCost` once the run's rows hold it: the first `llmRead` answers of the node log (an
-  // answer is logged after its cost is committed). Only the later ones are counted from the node log.
-  const calls = llmAnswers(lines).slice(given.llmRead ?? 0).map((line) => (isObject(line.output) && typeof line.output.cost_usd === "number" ? line.output.cost_usd : null));
-  const costs: Array<number | null> = [...decisions.map((d) => d.cost_usd), ...calls, given.modelCost];
-  const cost = costs.some((c) => c === null) ? null : Math.round((costs as number[]).reduce((a, b) => a + b, 0) * 1e8) / 1e8;
+  // The run's spend. Once it ended, its own cost (`endCost`), which holds every part of it once: nothing here is added to
+  // it. While it goes, what it has paid that the journal shows: its decisions' and its answered llm calls'; one unknown
+  // makes it unknown (its model nodes' cost joins at its end).
+  const calls = effects.filter((effect) => effect.tool === "llm" && effect.status === "done")
+    .map((effect) => (isObject(effect.output) && typeof effect.output.cost_usd === "number" ? effect.output.cost_usd : null));
+  const costs: Array<number | null> = [...decisions.map((d) => d.cost_usd), ...calls];
+  const sum = costs.some((c) => c === null) ? null : Math.round((costs as number[]).reduce((a, b) => a + b, 0) * 1e8) / 1e8;
+  const cost = given.ended && given.endCost !== undefined ? given.endCost : sum;
   const startedMs = Date.parse(given.run.startedAt);
   const endMs = given.run.endedAt ? Date.parse(given.run.endedAt) : Date.now();
   return {

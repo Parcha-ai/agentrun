@@ -11,12 +11,12 @@ import { ApiError } from "./errors.js";
 import { GRAPH_CACHE_BYTES, PartCache, servedGraphView } from "./graph-served.js";
 import { runGraph } from "./graph-view.js";
 import { checkedPath, decodedPath } from "./home-path.js";
-import { costOf, WITHHELD_SIGN_IN } from "./run-view.js";
+import { WITHHELD_SIGN_IN } from "./run-view.js";
 import { ChangeClock, type Page, RowLog } from "./rows.js";
 import { listFiles, sendFile, type FileView } from "./run-files.js";
 import { readLaunchBody } from "./run-launch.js";
-import { runTimeline } from "./store-reads/journal.js";
-import { StoreLaunchMissing, type Store } from "./store/index.js";
+import { redactedOutput } from "./key-refusal.js";
+import { StoreBusy, StoreLaunchMissing, type Store } from "./store/index.js";
 import { isUnavailable, type Plane, recheckPlane, whyUnavailable } from "./tool-plane.js";
 import type { Workspace } from "./workspace/index.js";
 
@@ -48,6 +48,22 @@ export interface RunReadsDeps {
   cutValues(store: RunReadsStore, runId: string): Promise<{ values: string[] } | "unreadable">;
   /** A context for the journal reads (graph, timeline). */
   readonly context: Context;
+  /** Where a read that failed for a reason of its own says why, for the operator (the server's stderr); absent: unsaid. */
+  log?(line: string): void;
+}
+
+/** The words a graph read that failed for a reason of its own answers with (500 internal): fixed, never the error's
+ *  own, which can quote what it read (a JSON parse error quotes about ten characters of its input). */
+export const GRAPH_UNREADABLE = "the run's graph could not be read";
+
+/** An error's words with every quoted run of text left out ("…"), cut of `values`, at most 500 characters: what of a
+ *  failed read is logged. A parse error's quote of its input can be the start of a held value, which no cut finds. */
+function loggedWords(error: unknown, values: readonly string[]): string {
+  const name = (error as Error | null)?.name ?? "Error";
+  const words = String((error as Error | null)?.message ?? error)
+    .replace(/"(?:[^"\\]|\\.)*"?(?:\.\.\.)?/g, "\"…\"")
+    .replace(/'(?:[^'\\]|\\.)*'?/g, "'…'");
+  return `${name}: ${String(redactedOutput(words, values)).slice(0, 500)}`;
 }
 
 /** A run's files, through its Workspace (listRunFiles): every file, path-sorted, cut at the cap. A run with no folder lists
@@ -103,8 +119,21 @@ const graphParts = new PartCache(GRAPH_CACHE_BYTES);
 
 /** A workflow run's graph (getRunGraph): its nodes, decisions and calls, from its journal over the store (graph-view's
  *  runGraph, the store path). An agentic run has none (404, the route's words); a run whose output is withheld is refused
- *  (403 WITHHELD_SIGN_IN), as the route refused it, before anything of it is served. */
+ *  (403 WITHHELD_SIGN_IN), as the route refused it, before anything of it is served. A read that fails for a reason of
+ *  its own (not an answer, nor a busy store) answers 500 internal in fixed words (GRAPH_UNREADABLE), and its words, with
+ *  what they quote left out, go to the log. */
 export async function runGraphView(store: Store, runId: string, deps: RunReadsDeps): Promise<Record<string, unknown>> {
+  try {
+    return await graphOf(store, runId, deps);
+  } catch (error) {
+    if (error instanceof ApiError || error instanceof StoreBusy) throw error;
+    const cut = await deps.cutValues(store, runId).catch(() => "unreadable" as const);
+    deps.log?.(`agentrun-serve: the graph of run ${runId} could not be read: ${loggedWords(error, cut === "unreadable" ? [] : cut.values)}`);
+    throw new ApiError("internal", GRAPH_UNREADABLE);
+  }
+}
+
+async function graphOf(store: Store, runId: string, deps: RunReadsDeps): Promise<Record<string, unknown>> {
   const view = await deps.runView(store, runId);
   if (!view) throw new ApiError("not_found", `There is no run ${runId}.`);
   if (view.kind !== "workflow") throw new ApiError("not_found", `the run ${runId} is an agentic run; only a workflow run has a graph`);
@@ -114,8 +143,9 @@ export async function runGraphView(store: Store, runId: string, deps: RunReadsDe
   const status = String(view.status);
   const ended = view.ended_at !== null;
   const launch = await store.runs.launch(runId).then((row) => readLaunchBody(row.body), (error) => (error instanceof StoreLaunchMissing ? undefined : Promise.reject(error)));
-  // The run's model-node cost from its rows once it ended (0 before), as the old graph read it from run.rows.
-  const rows = ended ? await runTimeline(store, runId, deps.context) : [];
+  // Once it ended, the run's own cost as its view serves it (GET /runs/{id} cost.usd): the one ledger its end stored, its
+  // model requests, decisions and paid calls each counted once.
+  const endCost = ended ? ((view.cost as { usd?: number | null } | null | undefined)?.usd ?? null) : undefined;
   // Every field it serves is cut by the run's one cut (graph-served.ts servedGraphView): its nodes, decisions and calls by
   // servedPart, and every other field (its workflow, its structure, any added later) whole.
   const cut = await deps.cutValues(store, runId);
@@ -124,12 +154,9 @@ export async function runGraphView(store: Store, runId: string, deps: RunReadsDe
     run: { id: runId, agent: String(view.agent_id), revision: String(view.revision), status, paused: status === "paused", startedAt: String(view.created_at), endedAt: view.ended_at as string | null },
     ended,
     workflow,
-    // No per-run store file and no run directory now: the store and a context carry the journal the graph reads.
-    storeFile: "",
-    root: "",
+    // The store and a context carry the journal the graph reads; there is no run directory, and nothing on the disk.
     input: launch?.input ?? {},
-    modelCost: ended ? costOf(rows) : 0,
-    llmRead: 0,
+    ...(endCost !== undefined ? { endCost } : {}),
     store,
     context: deps.context,
   }), cut.values, graphParts);
